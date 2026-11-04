@@ -282,6 +282,8 @@ fn commit_across_labels_waits_whole_across_restart_spec_commits_4() {
     m.set(i0, &REG, &word).unwrap();
     m.set(i1, &REG, &word).unwrap();
     let id = s.commit(a, m).unwrap().unwrap();
+    // one blob per commit (spec/sync.md §3): the blob under g0's label carries both parts, and
+    // r, reading both groups, applies the commit whole from that label alone, across a restart
     for restart in [false, true] {
         if restart {
             s.restart_node(r).unwrap();
@@ -289,9 +291,12 @@ fn commit_across_labels_waits_whole_across_restart_spec_commits_4() {
         s.advance(61_000).unwrap();
         s.settle().unwrap();
         let e = s.engine(r).unwrap();
-        assert!(e.pending().contains(&(id, Reason::WaitDeltas)), "restart {restart}: waits for the other label");
-        assert_eq!(e.get_typed(&i0, &REG).unwrap(), before, "restart {restart}: nothing of it read");
+        assert!(!e.pending().iter().any(|p| p.0 == id), "restart {restart}: nothing waits: {:?}", e.pending());
+        assert_eq!(e.commit_parts_missing().get(&id).map(|g| g.len()), Some(0), "restart {restart}: whole");
+        assert_eq!(e.get_typed(&i0, &REG).unwrap(), Some(word.clone()), "restart {restart}: both parts read");
+        assert_eq!(e.get_typed(&i1, &REG).unwrap(), Some(word.clone()), "restart {restart}: both parts read");
     }
+    let _ = (before, Reason::WaitDeltas);
 
     s.heal(Party::N(r), Party::S(s1));
     s.run_until_quiescent(60).unwrap();

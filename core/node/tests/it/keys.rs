@@ -152,7 +152,7 @@ fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
 
 // spec/commits.md §4, spec/crypto.md §4: a syncer holding only a rotation's `secrets.0` part
 // applies the role commit; the `keys.0` part joining later establishes the epoch as a
-// whole arrival does (a size-split body, or a projection, may come first).
+// whole arrival does (a certificate copy of some parts may come first).
 #[test]
 fn late_keys_part_establishes_rotation_spec_crypto_4() {
     let mut lp = net(2, 86);

@@ -434,18 +434,22 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
 // input, so a writer cannot set a tombstone to expire at the host.
 #[test]
 fn header_only_prefix_is_checked_spec_sync_1() {
-    use osis_node::labeling::{Body, open_commit, seal_body};
     let Chat { mut net, b, t, .. } = chat();
     let c = msg(&mut net, b, t, "y", permanent());
     let pk = net.engine(b).package(&c).unwrap().unwrap();
     let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let pt = osis_commit::rewrite(&blob, |_, _| true).encode();
-    let body = |expires| Body { commit: c, reader: t, parts: Vec::new(), expires, keys: Vec::new(), blind: blob.header.blind, plaintext: pt.clone(), role_commit: false, order: 1 };
+    let bare = osis_commit::rewrite(&blob, |_, _| true);
     let mut rng = osis_crypto::SeededRng::from_u64(5);
-    let good = seal_body(&body(None), &mut rng).unwrap();
-    assert!(open_commit(&good.blob, &good.key).is_ok());
-    let bad = seal_body(&body(Some(FOREVER)), &mut rng).unwrap();
-    assert!(open_commit(&bad.blob, &bad.key).is_err());
+    let read = net.engine(b).wrap_secret(&t, None).unwrap().unwrap();
+    let env = osis_commit::seal_commit(&bare, |_| (), |_, _| Some((read.clone(), vec![])), &[], &mut rng).unwrap();
+    let frame = |expires: Option<u64>, rng: &mut osis_crypto::SeededRng| {
+        let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(rng), expires.map(osis_base::WallMs), vec![]).unwrap();
+        osis_label::frame(&prefix, &env.encode(), rng).unwrap()
+    };
+    let (key, good) = frame(None, &mut rng);
+    assert!(net.engine(b).open_commit(&good, &key, None).is_ok());
+    let (key, bad) = frame(Some(FOREVER), &mut rng);
+    assert!(net.engine(b).open_commit(&bad, &key, None).is_err());
 }
 
 fn pending(net: &mut Net, n: usize) -> usize {

@@ -54,7 +54,7 @@ pub(super) fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize)
 }
 
 /// Whether commit `id` waits whole for nothing. A role commit any part of which is held: it may be
-/// held only as a projection (a certificate copy, an inbox blob, spec/sync.md §3), whose rest need
+/// held only as a copy of some parts (a certificate copy, an inbox blob, spec/sync.md §3), whose rest need
 /// never come, and the node cannot tell one from its things' labels' bodies; the rest joins on
 /// arrival. An applied commit, unless only creation records of it are applied: it has nothing left
 /// to hold back.
@@ -100,7 +100,7 @@ pub(crate) fn gating(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitI
 
 /// The things with a content part among `parts`: each is a unit of atomic apply whatever the node
 /// syncs. A role commit's or roster snapshot's parts and a `created.0` chain copy are not: a
-/// projection of them is all a node may ever get. Nor is an ephemeral snapshot atomic.
+/// copy of some of them is all a node may ever get. Nor is an ephemeral snapshot atomic.
 pub(super) fn held_units(h: &Header, parts: impl Iterator<Item = (usize, usize)>) -> BTreeSet<Tid> {
     if h.ephemeral.is_some() && h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot {
         return BTreeSet::new();

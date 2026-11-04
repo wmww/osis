@@ -17,11 +17,11 @@ fn frame(m: Message) -> Vec<u8> {
 }
 
 /// One sealed entry under `l`, readable by `g`'s read secret held at `from`.
-fn entry(net: &mut Net, from: usize, keys: usize, g: Tid, plaintext: Vec<u8>, c: &CommitId, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
-    let body = net.engine(from).bodies(c).unwrap().into_iter().find(|b| !b.parts.is_empty()).unwrap();
-    let body = osis_node::labeling::Body { plaintext, ..body };
-    let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(seed)).unwrap();
+fn entry(net: &mut Net, _from: usize, keys: usize, g: Tid, plaintext: Vec<u8>, _c: &CommitId, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
+    // one section under the label's secret (a per-label copy's shape: the forged things may
+    // have no secret here)
     let secret = net.engine(keys).wrap_secret(&g, None).unwrap().unwrap();
+    let sealed = osis_node::labeling::seal_plain(&plaintext, &secret, osis_label::Class::Durable, &mut SeededRng::from_u64(seed)).unwrap();
     let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     (sealed.id, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None })
 }
@@ -32,19 +32,18 @@ fn push(net: &mut Net, n: usize, host: usize, l: LabelId, e: osis_proto::Event, 
     net.settle(10_000);
 }
 
-/// Every body of commit `c`, each an entry under `l`.
+/// The body of commit `c` as `from` holds it, an entry under `l`.
 #[allow(clippy::too_many_arguments)]
 fn every_body(net: &mut Net, from: usize, keys: usize, g: Tid, n: usize, host: usize, l: LabelId, c: &CommitId, seed: u64) {
     let secret = net.engine(keys).wrap_secret(&g, None).unwrap().unwrap();
-    for (i, body) in net.engine(from).bodies(c).unwrap().into_iter().enumerate() {
-        let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(seed + i as u64)).unwrap();
-        let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
-        push(net, n, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, seed + i as u64);
-    }
+    let Some(body) = net.engine(from).body(c).unwrap() else { return };
+    let sealed = osis_node::labeling::seal_plain(&body.plaintext, &secret, osis_label::Class::Durable, &mut SeededRng::from_u64(seed)).unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
+    push(net, n, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, seed);
 }
 
 fn plain(net: &mut Net, from: usize, c: &CommitId) -> Vec<u8> {
-    net.engine(from).bodies(c).unwrap().into_iter().find(|b| !b.parts.is_empty()).unwrap().plaintext
+    net.engine(from).body(c).unwrap().unwrap().plaintext
 }
 
 fn junk_parts(bytes: &[u8], fill: u8) -> Vec<u8> {
@@ -326,17 +325,16 @@ fn a_name_raised_during_redelivery_is_kept_spec_commits_4() {
     let good_d = plain(&mut x.net, a, &d);
     x.give(junk_parts(&good_d, 1), d, 100);
     x.give(good_d, d, 101);
-    // `e`'s copy of the class of its writes, its slot on `h1` junk
-    let body = x.net.engine(a).bodies(&e).unwrap().into_iter().find(|y| CommitBlob::decode(&y.plaintext).unwrap().parts.iter().any(|p| p.ai < 99 && y.parts.contains(&(p.ai, p.di)) && x.net.engine(a).header(&e).unwrap().aspects[p.ai].ak.as_str() == "t:reg.0")).unwrap();
+    // `e`'s copy with its `t:reg.0` writes, its slot on `h1` junk
+    let body = x.net.engine(a).body(&e).unwrap().unwrap();
     let mut junk_e = CommitBlob::decode(&body.plaintext).unwrap();
     let hdr = junk_e.header.clone();
-    junk_e.parts.retain(|p| hdr.aspects[p.ai].tid == h1);
+    junk_e.parts.retain(|p| hdr.aspects[p.ai].tid == h1 && hdr.aspects[p.ai].ak.as_str() == "t:reg.0");
     for p in &mut junk_e.parts {
         p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![2; 40])]));
     }
-    let junk_e = osis_node::labeling::Body { plaintext: junk_e.encode(), ..body };
-    let sealed = osis_node::labeling::seal_body(&junk_e, &mut SeededRng::from_u64(102)).unwrap();
     let secret = x.net.engine(a).wrap_secret(&x.g, None).unwrap().unwrap();
+    let sealed = osis_node::labeling::seal_plain(&junk_e.encode(), &secret, osis_label::Class::Durable, &mut SeededRng::from_u64(102)).unwrap();
     let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     let (host, l) = (x.host, x.l);
     push(&mut x.net, b, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, 102);
@@ -420,10 +418,12 @@ fn purged_pending_part_leaves_its_blob_spec_commits_5() {
     m.set(h, &REG, &Value::Str("purged".into())).unwrap();
     m.set(h, &crate::common::KEPT, &Value::Str("kept".into())).unwrap();
     let c = x.net.engine(a).commit(m).unwrap().unwrap();
-    // sealed before the purge drops it at its author: the body of `t:reg.0` alone
-    let reg = x.net.engine(a).bodies(&c).unwrap().into_iter().find(|y| CommitBlob::decode(&y.plaintext).unwrap().parts.iter().any(|p| x.net.engine(a).header(&c).unwrap().aspects[p.ai].ak.as_str() == "t:reg.0")).unwrap();
+    // sealed before the purge drops it at its author: the `t:reg.0` part alone
+    let body = x.net.engine(a).body(&c).unwrap().unwrap();
+    let hdr = x.net.engine(a).header(&c).unwrap();
+    let reg = osis_commit::rewrite(&CommitBlob::decode(&body.plaintext).unwrap(), |ai, _| hdr.aspects[ai].ak.as_str() != "t:reg.0");
     assert_eq!(reg.parts.len(), 1);
-    let (id, e) = entry(&mut x.net, a, a, g, reg.plaintext, &c, 100);
+    let (id, e) = entry(&mut x.net, a, a, g, reg.encode(), &c, 100);
     x.net.advance(10);
     let mut m = osis_node::Mutation::new();
     m.set(h, &REG, &Value::Str("public".into())).unwrap();
@@ -472,27 +472,27 @@ fn junk_first_on_a_unit_keeps_out_no_entry_spec_commits_4() {
         m.set(h, &GONE, &Value::Str("v".into())).unwrap();
         m.set(h, &REG, &Value::Str("third".into())).unwrap();
         let c = x.net.engine(a).commit(m).unwrap().unwrap();
-        let bodies: Vec<_> = x.net.engine(a).bodies(&c).unwrap().into_iter().filter(|y| !y.parts.is_empty()).collect();
-        assert_eq!(bodies.len(), 2, "two retention classes");
+        let body = x.net.engine(a).body(&c).unwrap().unwrap();
+        let whole = CommitBlob::decode(&body.plaintext).unwrap();
+        assert_eq!(whole.parts.len(), 2, "two retention classes in one blob");
         let reg_ai = x.net.engine(a).header(&c).unwrap().aspects.iter().position(|y| y.ak.as_str() == "t:reg.0").unwrap();
-        let (on_reg, other): (Vec<_>, Vec<_>) = bodies.into_iter().partition(|y| y.parts.iter().any(|p| p.0 == reg_ai));
-        let (on_reg, other) = (on_reg[0].clone(), other[0].clone());
-        // each as its own body: the clear prefix of an entry is its retention class's
-        let give = |x: &mut Case, body: osis_node::labeling::Body, seed: u64| {
+        // the blob split by hand into one per class (a rewrite's shape, spec/sync.md §5)
+        let on_reg = osis_commit::rewrite(&whole, |ai, _| ai != reg_ai).encode();
+        let other = osis_commit::rewrite(&whole, |ai, _| ai == reg_ai).encode();
+        let give = |x: &mut Case, plaintext: Vec<u8>, seed: u64| {
             let (g, l, host) = (x.g, x.l, x.host);
-            let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(seed)).unwrap();
             let secret = x.net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
+            let sealed = osis_node::labeling::seal_plain(&plaintext, &secret, osis_label::Class::Durable, &mut SeededRng::from_u64(seed)).unwrap();
             let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
             push(&mut x.net, b, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, seed);
         };
         if other_first {
             give(&mut x, other.clone(), 90);
         }
-        let junk = osis_node::labeling::Body { plaintext: junk_parts(&on_reg.plaintext, 7), ..on_reg.clone() };
-        give(&mut x, junk, 100);
+        give(&mut x, junk_parts(&on_reg, 7), 100);
         give(&mut x, on_reg, 101);
         x.give_record(300);
-        let reg_slots = x.net.engine(a).bodies(&c).unwrap().into_iter().find(|y| y.parts.iter().any(|p| p.0 == reg_ai)).unwrap().parts;
+        let reg_slots: Vec<(usize, usize)> = x.net.engine(a).body(&c).unwrap().unwrap().parts.into_iter().filter(|p| p.0 == reg_ai).collect();
         assert!(reg_slots.iter().all(|p| x.net.engine(b).settled_slots(&c).unwrap().contains(p)), "other first {other_first}: the true copy came");
         assert!(x.net.engine(b).take_redeliver().is_empty());
         if other_first {
@@ -621,18 +621,18 @@ fn relay_seed(seed: u64) {
 
     let secret = x.net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     let mut entries: Vec<(osis_base::BlobId, osis_proto::Event)> = Vec::new();
-    let mut seal = |body: osis_node::labeling::Body, at: u64| {
-        let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(at)).unwrap();
+    let mut seal = |_x: &mut Case, _from: usize, plaintext: &[u8], at: u64| {
+        let sealed = osis_node::labeling::seal_plain(plaintext, &secret, osis_label::Class::Durable, &mut SeededRng::from_u64(at)).unwrap();
         let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
         entries.push((sealed.id, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }));
     };
     let mut slots = Vec::new();
     let mut at = seed.wrapping_mul(1000);
     for (from, c) in &sources {
-        for body in x.net.engine(*from).bodies(c).unwrap().into_iter().filter(|y| !y.parts.is_empty()) {
+        if let Some(body) = x.net.engine(*from).body(c).unwrap() {
             slots.extend(body.parts.iter().map(|p| (*c, *p)));
             at += 1;
-            seal(body.clone(), at);
+            seal(&mut x, *from, &body.plaintext, at);
             for _ in 0..rng.below(4) {
                 let mut j = CommitBlob::decode(&body.plaintext).unwrap();
                 match rng.below(3) {
@@ -646,7 +646,7 @@ fn relay_seed(seed: u64) {
                     _ => j.signature = osis_crypto::Signature::from_slice(&[rng.below(250) as u8 + 1; 64]).unwrap(),
                 }
                 at += 1;
-                seal(osis_node::labeling::Body { plaintext: j.encode(), ..body.clone() }, at);
+                seal(&mut x, *from, &j.encode(), at);
             }
         }
     }

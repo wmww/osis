@@ -77,10 +77,10 @@ fn grantee_copy_placed_spec_sync_3() {
     }
     assert_eq!(net.read(b, t), Some(s("for bob")));
     let ids = net.host_ids(host, &home);
-    let copies: Vec<(osis_base::BlobId, EntryKind)> = net.sync(b).entries(&home).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { .. })).collect();
+    let copies: Vec<(osis_base::BlobId, EntryKind)> = net.sync(b).entries(&home).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, osis_node::sync::EntryKind::Commit { .. })).collect();
     let grant: Vec<osis_base::CommitId> = net.engine(b).commit_ids().into_iter().filter(|c| net.engine(b).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "roles.0"))).collect();
-    assert!(copies.iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if grant.contains(commit))), "the grant's copy is under Bob's home label");
-    let label = copies.iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(b).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "label.0"))));
+    assert!(copies.iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if grant.contains(commit))), "the grant's copy is under Bob's home label");
+    let label = copies.iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if net.engine(b).header(commit).is_some_and(|h| h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "label.0"))));
     assert!(label, "the group's label.0 commit is copied too");
     assert_eq!(inbox_at(&mut net, b, host, &home), 1, "the inbox blob stays until it expires");
 }
@@ -291,7 +291,7 @@ fn stranger_inbox_commit_not_copied_nor_dialed_spec_sync_3() {
     }
     assert!(net.sync(b).entries(&home).iter().any(|(x, k)| *x == id && matches!(k, EntryKind::Inbox(Some(_)))), "Bob opened it");
     assert!(net.engine(b).commit_ids().contains(&c), "the commit applied");
-    let copied = net.sync(b).entries(&home).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c));
+    let copied = net.sync(b).entries(&home).into_iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
     assert!(!copied, "no copy of a commit not about Bob");
     assert_eq!(under(&mut net, b, host, &home, t, "created.0"), 0);
     assert!(!net.dialed.iter().any(|(_, x)| x.key == rogue.key), "an unvetted hint is never dialed");
@@ -1041,13 +1041,12 @@ fn junk_copy_keeps_out_no_inbox_blob_spec_commits_4() {
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = *done.commits.iter().find(|i| net_is_role(&mut net, a, i, &g)).unwrap();
-    let body = net.engine(a).bodies(&c).unwrap().into_iter().find(|x| !x.parts.is_empty()).unwrap();
+    let body = net.engine(a).body(&c).unwrap().unwrap();
     let mut junk = osis_commit::CommitBlob::decode(&body.plaintext).unwrap();
     for p in &mut junk.parts {
         p.delta = osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![7; 40])]));
     }
-    let junk = osis_node::labeling::Body { plaintext: junk.encode(), ..body };
-    let sealed = osis_node::labeling::seal_body(&junk, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
+    let sealed = net.engine(a).seal_plaintext(&junk.encode(), osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();
     let secret = net.engine(b).wrap_secret(&bob, None).unwrap().unwrap();
     let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     let conn = net.conn_to(b, host).expect("connected");
@@ -1065,7 +1064,7 @@ fn junk_copy_keeps_out_no_inbox_blob_spec_commits_4() {
     // every label copy of it goes: the inbox blob is the one true copy
     let now = net.now();
     for (_, l) in net.sync(a).labels() {
-        let ids: Vec<_> = net.sync(a).entries(&l.id).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|x| x.0).collect();
+        let ids: Vec<_> = net.sync(a).entries(&l.id).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|x| x.0).collect();
         for id in ids {
             use osis_proto::LabelStore;
             net.hosts[host].hub.store_mut().delete(&l.id, &id, now).unwrap();
@@ -1091,14 +1090,14 @@ fn junk_label_copy_applies_no_declined_invite_spec_sync_3() {
     }
     assert_eq!(requests(&mut net, b), vec![c]);
     assert!(net.sync(b).decline_invite(c).unwrap());
-    let body = net.engine(a).bodies(&c).unwrap().into_iter().find(|x| !x.parts.is_empty()).unwrap();
+    let body = net.engine(a).body(&c).unwrap().unwrap();
     let mut junk = osis_commit::CommitBlob::decode(&body.plaintext).unwrap();
     for p in &mut junk.parts {
         p.delta = osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![7; 40])]));
     }
-    let junk = osis_node::labeling::Body { plaintext: junk.encode(), ..body };
-    let sealed = osis_node::labeling::seal_body(&junk, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
+    // a junk copy as a per-label copy under bob's secret (what reaches his home label)
     let secret = net.engine(b).wrap_secret(&bob, None).unwrap().unwrap();
+    let sealed = osis_node::labeling::seal_plain(&junk.encode(), &secret, osis_label::Class::Durable, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     let conn = net.conn_to(b, host).expect("connected");
     let ev = osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None };
@@ -1257,7 +1256,7 @@ fn copied_grant_gains_a_new_label_spec_sync_3() {
         net.advance(70_000);
     }
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
-    let copies = |net: &mut Net, c: &osis_base::CommitId| net.sync(b).entries(&home).iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c));
+    let copies = |net: &mut Net, c: &osis_base::CommitId| net.sync(b).entries(&home).iter().any(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
     let first = net.engine(b).aspect_commit(&g, "label.0").expect("Bob holds the label").0;
     assert!(copies(&mut net, &first), "the first label's copy under home");
     let old = net.engine(a).labels_of(&g).iter().find(|l| !l.replaced).unwrap().id;

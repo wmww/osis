@@ -13,7 +13,7 @@ use osis_base::format::MAX_MESSAGE;
 use osis_base::{BlobId, LabelId, WallMs};
 use osis_crypto::{Domain, LabelRole, verify_delete};
 use osis_label::auth::delete_digest;
-use osis_label::{Class, OpenOutcome, PathIndex, Prefix, entry_digest, evaluate_open, key_for_level, host_prefix};
+use osis_label::{Class, OpenOutcome, PathIndex, Prefix, entry_digest, evaluate_open, host_prefix, key_for_levels};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -1138,7 +1138,7 @@ impl ServingSession {
             if store.entry(label, &item.blob)?.is_none() {
                 continue;
             }
-            let code = self.delete_auth(store, label, item)?;
+            let code = self.delete_auth(store, label, item, false)?;
             if code != Code::OK {
                 return Ok(code);
             }
@@ -1174,26 +1174,42 @@ impl ServingSession {
     }
 
     /// The signatures of a delete of held entry `item.blob` (spec/sync.md §5): by the head's
-    /// delete key, or by a level's delete key (checked against the blob prefix's commitment at
-    /// that level) with the label key the level needs. The prefix (`blob_prefix`, never the
-    /// whole blob) is read only once the label signature holds.
-    fn delete_auth(&mut self, store: &dyn LabelStore, label: &LabelId, item: &DeleteItem) -> Result<Code, StoreError> {
+    /// delete key, or by delete keys of levels (checked against the blob prefix's commitment
+    /// groups: every group for a Delete, any one for a Replace, `every`) with the label key the
+    /// levels need. The prefix (`blob_prefix`, never the whole blob) is read only once the label
+    /// signature holds.
+    fn delete_auth(&mut self, store: &dyn LabelStore, label: &LabelId, item: &DeleteItem, every: bool) -> Result<Code, StoreError> {
         let Some(k) = head_keys(&mut self.keys, store, label)? else { return Ok(Code::UNKNOWN_LABEL) };
-        let Ok(digest) = delete_digest(label, &item.blob, item.at, item.by.map(|b| b.0)) else { return Ok(Code::MALFORMED) };
-        let (key, by) = match &item.by {
-            None => (StepKey::Delete, None),
-            Some((level, dsig)) => match key_for_level(*level) {
-                Ok(role) => (key_of_role(role), Some((*level, dsig))),
-                Err(_) => return Ok(Code::REFUSED),
-            },
+        let levels = item.levels();
+        let Ok(digest) = delete_digest(label, &item.blob, item.at, &levels) else { return Ok(Code::MALFORMED) };
+        let key = match key_for_levels(&levels) {
+            Ok(LabelRole::Delete) => StepKey::Delete,
+            Ok(role) => key_of_role(role),
+            Err(_) => return Ok(Code::REFUSED),
         };
         let code = check(k, key, Domain::Delete, &digest, &item.sig, &mut self.struck);
-        if let Some((level, dsig)) = by {
+        if !item.by.is_empty() {
             let prefix = match code {
                 Code::REFUSED => None,
                 _ => store.blob_prefix(&item.blob)?.and_then(|b| Prefix::parse(&b).ok()),
             };
-            if !prefix.and_then(|p| p.key_at(level)).is_some_and(|k| verify_delete(&k, &digest, dsig).is_ok()) {
+            let Some(prefix) = prefix else { return Ok(Code::REFUSED) };
+            // the label signature was checked above; the delete-key signatures against the groups
+            let groups = prefix.groups();
+            let mut covered = vec![false; groups.len()];
+            for (level, dsig) in &item.by {
+                let mut any = false;
+                for (gi, c) in covered.iter_mut().enumerate() {
+                    if prefix.key_at(gi, *level).is_some_and(|k| verify_delete(&k, &digest, dsig).is_ok()) {
+                        *c = true;
+                        any = true;
+                    }
+                }
+                if !any {
+                    return Ok(Code::REFUSED);
+                }
+            }
+            if covered.is_empty() || (every && !covered.iter().all(|c| *c)) {
                 return Ok(Code::REFUSED);
             }
         }
@@ -1206,22 +1222,22 @@ impl ServingSession {
         if self.keys(store, label)?.is_none() {
             return Ok(Code::UNKNOWN_LABEL);
         }
-        if delete_digest(label, &item.blob, item.at, item.by.map(|b| b.0)).is_err() {
+        if delete_digest(label, &item.blob, item.at, &item.levels()).is_err() {
             return Ok(Code::MALFORMED);
         }
         let entry = store.entry(label, &item.blob)?;
         if entry.is_none() {
             // a level's signature needs the prefix; the delete key's alone can be checked
-            if item.by.is_some() {
+            if !item.by.is_empty() {
                 return Ok(Code::REFUSED);
             }
-            let code = self.delete_auth(store, label, item)?;
+            let code = self.delete_auth(store, label, item, true)?;
             if code != Code::OK {
                 return Ok(code);
             }
             return Ok(if store.tombstoned(label, &item.blob)? { Code::OK } else { Code::REFUSED });
         }
-        let code = self.delete_auth(store, label, item)?;
+        let code = self.delete_auth(store, label, item, true)?;
         if code != Code::OK {
             return Ok(code);
         }
@@ -1608,7 +1624,7 @@ mod tests {
         let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
         assert!(out.iter().any(|o| matches!(o, ServingOutput::Changed(_))), "uploaded");
         let dk = osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([0x7a; 32]));
-        let mut item = DeleteItem::sign_by(&f.sync, &dk, 2, &[0x7d; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
+        let mut item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
         item.sig = Signature([0; 64]);
         store.blob_reads.set(0);
         let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![item; 64] }.encode())));
@@ -1664,8 +1680,8 @@ mod tests {
         let mut c = ServingSession::new(ServingConfig { static_key: STATIC_KEY, challenge: CHALLENGE });
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Hello::new(0, [2; 32]).encode())));
         c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Upload { id: 1, label: f.label, entries: vec![e] }.encode())));
-        let item = DeleteItem::sign_by(&f.sync, &dk, 2, &[1; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
-        let wrong = DeleteItem::sign_by(&f.sync, &dk, 2, &[2; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
+        let item = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[1; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
+        let wrong = DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[2; 16], &[0x7e; 16], &f.label, blob_id, None).unwrap();
         store.blob_reads.set(0);
         let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![wrong, item] }.encode())));
         let Message::Status { codes, .. } = reply(&out) else { panic!("{out:?}") };

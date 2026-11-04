@@ -108,7 +108,7 @@ fn deletes_and_tombstones() {
     let plain = blob(12);
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(b3.clone()), l.entry(b1.clone()), l.entry(plain.clone())] });
     let k = l.head_keys().clone();
-    let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &dk(t), level, &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
+    let by = |b: &[u8], n: u64, level: u8, t: &osis_crypto::Secret32, signer: &SigningSecret| DeleteItem::sign_by(signer, &[(level, &dk(t))], &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
     let plain_by = |signer: &SigningSecret| DeleteItem::sign(signer, &l.id, osis_label::blob_id(&plain), None).unwrap();
     let ev = w.run(a, Command::Delete { label: l.id, items: vec![by(&b3, 10, 3, &t3, &k.sync), by(&b3, 10, 3, &t1, &k.write), by(&b1, 11, 1, &t1, &k.sync), plain_by(&k.write)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::OK, Code::REFUSED]);

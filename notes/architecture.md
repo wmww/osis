@@ -13,7 +13,7 @@ Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed dire
 | 1 | `osis-transport` | transport, p2p | `Transport`; `InProcess`, QUIC, iroh (`iroh`), LAN announcements (`lan`); `link` sessions (channel pairs with tokio pump tasks) for the node and host drivers |
 | 2 | `osis-schema` | schema | DSL, types, core aspect types, implements `View` |
 | 2 | `osis-store` | store | `Backend`, `MemoryBackend`, `RedbBackend` and `FileRoot`, `RootStorage`, `Store`, `Transaction` |
-| 3 | `osis-commit` | commit | commit header and blob, kinds, retention, delete keys, signatures, builder, verification, projection, chunk trees (the one writer and reader; osis-label re-exports it) and header lists (notes/crdt.md) |
+| 3 | `osis-commit` | commit | commit header and blob, kinds, retention, delete keys, signatures, builder, verification, sections and prefix groups, chunk trees (the one writer and reader; osis-label re-exports it) and header lists (notes/crdt.md) |
 | 3 | `osis-keys` | keys | keysets, epochs, boxes, history boxes, label keys |
 | 4 | `osis-label` | label, large-values | blobs, labels, steps, stamps, blob-backed tree and page sinks/sources, large values |
 | 5 | `osis-proto` | proto | sans-I/O sync protocol engines |

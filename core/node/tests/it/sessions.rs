@@ -573,7 +573,7 @@ fn gap_cover_check(seed: u64) -> Result<(), String> {
         return Err(format!("the dropper's state differs:\n{x:#?}\n{y:#?}"));
     }
     // a commit with no body left goes under no label (none here is a lasting header, §5)
-    let (bodies, headers): (Vec<Package>, Vec<Package>) = packages(&mut lp, 3).into_iter().partition(|pk| !lp.peers[3].engine.bodies(&pk.id).unwrap().is_empty());
+    let (bodies, headers): (Vec<Package>, Vec<Package>) = packages(&mut lp, 3).into_iter().partition(|pk| lp.peers[3].engine.body(&pk.id).unwrap().is_some());
     for pk in &bodies {
         let _ = lp.deliver(4, pk);
     }

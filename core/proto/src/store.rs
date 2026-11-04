@@ -216,14 +216,10 @@ pub trait LabelStore {
     fn entry(&self, label: &LabelId, blob_id: &BlobId) -> Result<Option<EntryMeta>, StoreError>;
     fn tombstoned(&self, label: &LabelId, blob_id: &BlobId) -> Result<bool, StoreError>;
     fn blob(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError>;
-    /// A held blob's first `MAX_PREFIX_LEN` bytes (all of a shorter one): what a delete by
-    /// level checks. Stores that keep blobs on disk keep these apart, so the check reads no
-    /// whole blob.
+    /// A held blob's prefix bytes (`osis_label::prefix_bytes`): what a delete by level checks.
+    /// Stores that keep blobs on disk keep these apart, so the check reads no whole blob.
     fn blob_prefix(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self.blob(blob_id)?.map(|mut b| {
-            b.truncate(osis_label::MAX_PREFIX_LEN);
-            b
-        }))
+        Ok(self.blob(blob_id)?.map(|b| osis_label::prefix_bytes(&b).to_vec()))
     }
     /// Adds an entry; a stamped upload replaces a deposited entry's wrap and stamp, clearing its
     /// flag. Anything else of a held blob changes nothing. Logs an add when something changed.
@@ -477,7 +473,7 @@ impl LabelStore for MemoryLabelStore {
     }
 
     fn blob_prefix(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self.blobs.get(blob_id).map(|(b, _)| b.get(..osis_label::MAX_PREFIX_LEN).unwrap_or(b).to_vec()))
+        Ok(self.blobs.get(blob_id).map(|(b, _)| osis_label::prefix_bytes(b).to_vec()))
     }
 
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError> {

@@ -1,4 +1,4 @@
-//! Builder, header-list links, projection, purge rewrite (spec/commits.md §1, §5; spec/wire.md
+//! Builder, header-list links, sections, purge rewrite (spec/commits.md §1, §5; spec/wire.md
 //! §4, §6; spec/sync.md §3).
 
 use crate::tests::{SESSION, t, ts};
@@ -184,30 +184,95 @@ fn mixed() -> CommitBlob {
     build(b, &mut MemoryBlobs::default()).unwrap().commit
 }
 
-// spec/sync.md §3: one blob per (readable subset, retention class); the projections partition
-// the commit's deltas and each verifies alone with the prefix inputs its class calls for.
+// spec/wire.md §4, spec/sync.md §3: one blob per commit, one section per reader actor; a
+// reader opens its section and nothing else (invariant: a non-reader learns only the `ai`
+// list and the size), the opened parts verify alone, a sealed section is copied verbatim into
+// a fresh encryption and still opens there; the prefix groups are the distinct key sets.
 #[test]
-fn projection_partitions() {
+fn sections_per_reader_actor() {
     let c = mixed();
-    let readers = |ai: usize| ai.is_multiple_of(3);
-    let ps = project(&c, readers).unwrap();
-    let mut all: Vec<(usize, usize)> = ps.iter().flat_map(|p| p.parts.clone()).collect();
-    all.sort();
-    assert_eq!(all, (0..6).map(|i| (i, 0)).collect::<Vec<_>>());
-    assert_eq!(ps.len(), 4);
-    for p in &ps {
-        let blob = CommitBlob::decode(&p.plaintext).unwrap();
-        assert_eq!(blob.id(), c.id());
-        verify_blob(&blob, &key().verifying_key(), &dedup, None).unwrap();
-        assert_eq!(prefix_inputs(&c.header, &p.parts).unwrap(), (p.expires, p.keys.clone()));
-        let levels: Vec<u8> = p.keys.iter().map(|t| t.level).collect();
-        assert!(levels.windows(2).all(|w| w[0] < w[1]), "at most one commitment per level");
-        for (ai, _) in &p.parts {
-            assert_eq!(readers(*ai), p.readers);
-        }
-    }
-    assert!(strict_subset(&ps[0].parts[..0], &ps[0].parts));
-    assert!(!strict_subset(&ps[0].parts, &ps[0].parts));
+    let reader = |ai: usize| u8::from(ai.is_multiple_of(3));
+    let secret = |r: &u8| Secret32::from_bytes([*r + 1; 32]);
+    let mut rng = SeededRng::from_u64(4);
+    let env = seal_commit(&c, reader, |r, _| Some((secret(r), vec![])), &[], &mut rng).unwrap();
+    assert_eq!(env.id(), c.id());
+    assert_eq!(env.sections.len(), 2);
+    assert_eq!(env.sections[0].ais, vec![0, 3]);
+    assert_eq!(env.sections[1].ais, vec![1, 2, 4, 5]);
+    let back = Envelope::decode(&env.encode()).unwrap();
+    assert_eq!(back, env);
+    // reader 1 opens its section alone; reader 0 (the other secret) its own; nobody neither
+    let o1 = env.open(|_| vec![secret(&1)]).unwrap();
+    assert_eq!(o1.commit.parts.iter().map(|p| (p.ai, p.di)).collect::<Vec<_>>(), vec![(0, 0), (3, 0)]);
+    assert_eq!(o1.sealed.len(), 1);
+    verify_blob(&o1.commit, &key().verifying_key(), &dedup, None).unwrap();
+    assert_eq!(CommitBlob::decode(&o1.commit.encode()).unwrap(), o1.commit);
+    let o0 = env.open(|s| if s.ais.contains(&1) { vec![Secret32::from_bytes([9; 32]), secret(&0)] } else { vec![] }).unwrap();
+    assert_eq!(o0.commit.parts.iter().map(|p| p.ai).collect::<Vec<_>>(), vec![1, 2, 4, 5]);
+    let none = env.open(|_| vec![Secret32::from_bytes([9; 32])]).unwrap();
+    assert!(none.commit.parts.is_empty() && none.sealed.len() == 2);
+    // a fresh encryption by reader 1 carries reader 0's section byte for byte
+    let again = seal_commit(&o1.commit, reader, |r, _| Some((secret(r), vec![])), &o1.sealed, &mut rng).unwrap();
+    assert_eq!(again.sections[1], env.sections[1]);
+    assert_ne!(again.sections[0], env.sections[0], "a fresh section key and wrap");
+    let o = again.open(|_| vec![secret(&0), secret(&1)]).unwrap();
+    assert_eq!(o.commit, c);
+    // the section key encrypts one plaintext under the commit's ID only: another commit ID or
+    // a byte of the wrap or ciphertext changed opens nothing
+    let mut other = env.clone();
+    other.header.blind = [0xee; 16];
+    assert!(other.open(|_| vec![secret(&1)]).unwrap().commit.parts.is_empty());
+    let mut bent = env.clone();
+    bent.sections[0].ciphertext[3] ^= 1;
+    assert!(bent.open(|_| vec![secret(&1)]).is_err());
+    let mut bent = env.clone();
+    bent.sections[0].wrap[30] ^= 1;
+    assert!(bent.open(|_| vec![secret(&1)]).unwrap().commit.parts.is_empty());
+    // a section whose list disagrees with its parts is bad input
+    let mut lied = env.clone();
+    lied.sections[0].ais = vec![0];
+    assert!(lied.open(|_| vec![secret(&1)]).is_err());
+    // the prefix groups: the two key sets of `mixed` (alternating retention), by first aspect
+    let groups = prefix_groups(&c.header, env.ais()).unwrap();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups, prefix_groups(&c.header, [0, 1]).unwrap());
+    assert_eq!(prefix_groups(&c.header, [1, 0]).unwrap(), groups);
+    assert!(prefix_groups(&c.header, []).unwrap().is_empty());
+    assert!(prefix_groups(&c.header, [6]).is_err());
+    assert!(strict_subset(&[], &[(0, 0)]));
+    assert!(!strict_subset(&[(0, 0)], &[(0, 0)]));
+}
+
+// spec/wire.md §4: sections sorted by first aspect, no aspect twice, a wrap of its length.
+#[test]
+fn envelope_rejections() {
+    let c = mixed();
+    let mut rng = SeededRng::from_u64(5);
+    let env = seal_commit(&c, |ai| ai % 2, |_, _| Some((Secret32::from_bytes([1; 32]), vec![])), &[], &mut rng).unwrap();
+    let mut swapped = env.clone();
+    swapped.sections.swap(0, 1);
+    assert!(Envelope::decode(&swapped.encode()).is_err());
+    let mut twice = env.clone();
+    twice.sections[1].ais = vec![0, 1];
+    assert!(Envelope::decode(&twice.encode()).is_err());
+    // an owner chain rides in the clear and round-trips; one past MAX_OWNER_DEPTH is bad input
+    let mut chain = env.clone();
+    chain.sections[0].owners = vec![t(7), t(8)];
+    assert_eq!(Envelope::decode(&chain.encode()).unwrap(), chain);
+    chain.sections[0].owners = vec![t(7); osis_base::format::MAX_OWNER_DEPTH + 1];
+    assert!(Envelope::decode(&chain.encode()).is_err());
+    let mut short = env.clone();
+    short.sections[0].wrap.pop();
+    assert!(Envelope::decode(&short.encode()).is_err());
+    // a section whose secret is not held is left out
+    assert!(seal_commit(&c, |_| (), |_, _| None::<(Secret32, Vec<osis_base::Tid>)>, &[], &mut rng).unwrap().sections.is_empty());
+    assert_eq!(seal_commit(&c, |ai| ai % 2, |r, _| (*r == 0).then(|| (Secret32::from_bytes([1; 32]), vec![])), &[], &mut rng).unwrap().ais(), vec![0, 2, 4]);
+    // an extra section on an aspect a sealed part is on is dropped, one clashing with another
+    // extra is bad input
+    let extra = env.sections[1].clone();
+    let one = seal_commit(&c, |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), std::slice::from_ref(&extra), &mut rng).unwrap();
+    assert_eq!(one.sections.len(), 1);
+    assert!(seal_commit(&rewrite(&c, |_, _| true), |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), &[extra.clone(), extra], &mut rng).is_err());
 }
 
 fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
@@ -216,21 +281,23 @@ fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
     encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, 1, 2), None).unwrap()
 }
 
-// spec/sync.md §3: a class above MAX_BLOB splits greedily in aspect-list order; spec/commits.md
-// §1 (delta fits a blob): a delta over MAX_BLOB (a caller's mistake: a value left unchunked) is refused.
+// spec/sync.md §3 (no size split), spec/commits.md §1 (commit fits a blob): the whole commit
+// must fit one blob: two 3 MiB deltas do, four do not; a delta over MAX_BLOB (a caller's
+// mistake: a value left unchunked) is refused.
 #[test]
-fn projection_splits_by_size() {
+fn commit_fits_one_blob() {
     let at = ts(1_000_000);
+    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
+    for i in 0..2u8 {
+        b.aspects.push(AspectWrite::new(t(3), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, big_delta(t(1), at, 3 << 20)));
+    }
+    let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
+    assert!(blob_bound(&c) < MAX_BLOB);
     let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
     for i in 0..4u8 {
         b.aspects.push(AspectWrite::new(t(3), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, big_delta(t(1), at, 3 << 20)));
     }
-    let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
-    let ps = project(&c, |_| ()).unwrap();
-    assert_eq!(ps.iter().map(|p| p.parts.clone()).collect::<Vec<_>>(), vec![vec![(0, 0), (1, 0)], vec![(2, 0), (3, 0)]]);
-    for p in &ps {
-        assert!(p.plaintext.len() < MAX_BLOB);
-    }
+    assert!(matches!(build(b, &mut MemoryBlobs::default()), Err(Error::Build(COMMIT_PAST_BLOB))));
     let mut huge = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
     huge.aspects.push(AspectWrite::new(t(3), Ak::new("app:f.0").unwrap(), 1, 2, big_delta(t(1), at, MAX_BLOB)));
     assert!(matches!(build(huge, &mut MemoryBlobs::default()), Err(Error::Build(_))));
@@ -305,8 +372,8 @@ fn purge_rewrite() {
     assert!(all.parts.is_empty());
     let back = CommitBlob::decode(&all.encode()).unwrap();
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
-    assert_eq!(prefix_inputs(&c.header, &[]).unwrap(), (None, vec![]));
-    assert!(matches!(prefix_inputs(&c.header, &[(4, 0), (5, 0)]), Err(Error::Invalid(_))));
+    assert!(prefix_groups(&c.header, r.parts.iter().map(|p| p.ai)).unwrap().len() == 2);
+    assert!(prefix_groups(&c.header, []).unwrap().is_empty());
 }
 
 // spec/wire.md §4, §5: the chunk list holds, per introduced blob, the indices of its delta's

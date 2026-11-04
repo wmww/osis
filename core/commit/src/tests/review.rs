@@ -90,9 +90,10 @@ fn created_only_in_commits_with_own_writes() {
     assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
 }
 
-// spec/sync.md §3, spec/wire.md §4: a received blob mixing retention classes is bad input.
+// spec/wire.md §5: one prefix group per distinct delete-key set among the blob's aspects, in
+// order of first aspect; an aspect index past the header is bad input.
 #[test]
-fn prefix_inputs_mixed_class_bad_input() {
+fn prefix_groups_by_key_set() {
     use osis_base::{Classified, ErrorClass};
     let mut b = content(2);
     b.aspects[0].tid = t(3);
@@ -100,9 +101,11 @@ fn prefix_inputs_mixed_class_bad_input() {
     b.aspects[1].ak = Ak::new("app:body.0").unwrap();
     b.aspects[0].retention = Retention { by: PurgeBy::Admin, ..Default::default() };
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit;
-    let e = prefix_inputs(&c.header, &[(0, 0), (1, 0)]).unwrap_err();
-    assert_eq!(e.class(), ErrorClass::BadInput);
-    assert_eq!(project(&c, |_| ()).unwrap().len(), 2);
+    let g = prefix_groups(&c.header, [0, 1]).unwrap();
+    assert_eq!(g.len(), 2);
+    assert_ne!(g[0], g[1]);
+    assert_eq!(prefix_groups(&c.header, [1, 1, 0]).unwrap(), g);
+    assert_eq!(prefix_groups(&c.header, [2]).unwrap_err().class(), ErrorClass::BadInput);
 }
 
 // spec/crypto.md §7: delete levels are exactly those the retention calls for, level 1

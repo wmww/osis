@@ -379,7 +379,7 @@ pub(crate) struct NamesHeld<'c> {
 
 impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the name's thing, or, having none
-    /// there, its `keys.0` part (a projection of it, a certificate copy or another label's parts,
+    /// there, its `keys.0` part (a copy of some of it, a certificate copy or another label's parts,
     /// may lack the departure). An expiry's name (no commit) is met: the write that set its
     /// `until` is named beside it.
     fn met(&self, n: &Name) -> bool {

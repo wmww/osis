@@ -48,7 +48,7 @@
 - **Second dot form** (commit ID, index): unlinkable, and collision-free when several devices sign with one key (per-device counters under a shared key let any holder reuse another's dot and knock out its edit). Its cost falls only on such commits: runs do not continue across commits, one 32-byte `Sources` entry per foreign commit, revoke frontiers list commits.
 - **`Sources` lives in the delta**, not the header: a delta is then self-contained (projection, purge rewrite and hashing need no header context) and the order rule is well defined per delta; the header rule "first appearance in the canonical encoding" was circular across several deltas. Cost: a source repeated per delta of a multi-aspect commit.
 - **`Derived` sources stay.** Dropping them (reset-only embedding of a register into text) was examined: an old app's string save concurrent with a newer text edit would then read as the edit alone, the string vanishing until someone writes; with embedded characters it reads as the string plus the edit, placed. The string→text upgrade is rare, but a vanishing value is the kind of wrinkle the design exists to avoid, and the model already tests the edge.
-- **Expiry is per delta** (an aspect of a commit), since retention is; the blob prefix carries the expiry of the retention class it holds (projection by class).
+- **Expiry is per commit** (whole-commits 2a; the header's `expires`); the blob prefix carries it.
 - **Every state element carries its dot**, so un-merge and revoke frontiers are uniform.
 - **No commit DAG**: causality is intra-aspect only, tids may dangle.
 - "Repair via listeners" only works if the repair is a deterministic function of state; otherwise two nodes ping-pong.

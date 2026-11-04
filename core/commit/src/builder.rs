@@ -2,7 +2,7 @@
 
 use crate::blob::{CommitBlob, Part};
 use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, aspect_key, key_value, purge_value};
-use crate::project::check_fits;
+use crate::groups::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use osis_base::format::MAX_LIST_BYTES;
@@ -71,7 +71,7 @@ pub struct CommitBuilder {
 #[derive(Debug)]
 pub struct Built {
     pub commit: CommitBlob,
-    /// Blobs written for linked header lists; they belong to every projection.
+    /// Blobs written for linked header lists; they go wherever the commit's blob goes.
     pub list_blobs: Vec<BlobId>,
 }
 

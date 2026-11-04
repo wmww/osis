@@ -23,6 +23,13 @@ fn card_entries(net: &mut Net, n: usize, host: usize, l: &LabelId, author: Tid, 
     out
 }
 
+/// Whether entry `e`'s blob lists an aspect that must stay (`keys.0`, `created.0`), so a card
+/// part in it goes only with step 4's strip.
+fn with_kept(net: &mut Net, n: usize, l: &osis_base::LabelId, e: &(osis_base::BlobId, osis_base::CommitId)) -> bool {
+    let Some(h) = net.engine(n).header(&e.1) else { return false };
+    net.sync(n).entries(l).into_iter().any(|(id, k)| id == e.0 && matches!(k, EntryKind::Commit { ais, .. } if ais.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "keys.0" | "created.0")))))
+}
+
 fn settle(net: &mut Net) {
     for _ in 0..3 {
         net.advance(31_000);
@@ -75,8 +82,11 @@ fn departed_node_card_deleted_spec_permissions_4() {
     net.actions(a, acts);
     settle(&mut net);
     assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the departed node's reach.0 went");
-    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").is_empty(), "and its node.0");
-    assert!(!card_entries(&mut net, a, host, &l, rt, "keys.0").is_empty(), "its keys.0 stays");
+    let keys = card_entries(&mut net, a, host, &l, rt, "keys.0");
+    assert!(!keys.is_empty(), "its keys.0 stays");
+    // its node.0 too, except where it shares its blob with a kept part (its `keys.0` or
+    // `created.0`: one blob per commit; the part goes with step 4's strip)
+    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").iter().all(|e| keys.contains(e) || with_kept(&mut net, a, &l, e)), "and its node.0");
 }
 
 // spec/permissions.md §4 (a holder node places its card under the labels it reads): a reader
@@ -210,8 +220,11 @@ fn person_removed_node_card_deleted_spec_permissions_4() {
     net.actions(a, acts);
     settle(&mut net);
     assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the departed node's reach.0 went");
-    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").is_empty(), "and its node.0");
-    assert!(!card_entries(&mut net, a, host, &l, rt, "keys.0").is_empty(), "its keys.0 stays");
+    let keys = card_entries(&mut net, a, host, &l, rt, "keys.0");
+    assert!(!keys.is_empty(), "its keys.0 stays");
+    // its node.0 too, except where it shares its blob with a kept part (its `keys.0` or
+    // `created.0`: one blob per commit; the part goes with step 4's strip)
+    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").iter().all(|e| keys.contains(e) || with_kept(&mut net, a, &l, e)), "and its node.0");
 }
 
 // spec/permissions.md §4, spec/sync.md §6: a node whose person's edge passes its `until` leaves
@@ -230,8 +243,11 @@ fn until_expired_node_card_deleted_spec_permissions_4() {
     settle(&mut net);
     settle(&mut net);
     assert!(card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the departed node's reach.0 went");
-    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").is_empty(), "and its node.0");
-    assert!(!card_entries(&mut net, a, host, &l, rt, "keys.0").is_empty(), "its keys.0 stays");
+    let keys = card_entries(&mut net, a, host, &l, rt, "keys.0");
+    assert!(!keys.is_empty(), "its keys.0 stays");
+    // its node.0 too, except where it shares its blob with a kept part (its `keys.0` or
+    // `created.0`: one blob per commit; the part goes with step 4's strip)
+    assert!(card_entries(&mut net, a, host, &l, rt, "node.0").iter().all(|e| keys.contains(e) || with_kept(&mut net, a, &l, e)), "and its node.0");
 }
 
 // spec/permissions.md §4, spec/sync.md §6: when a person is removed, a device of it whose chain

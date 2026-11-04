@@ -1095,7 +1095,7 @@ impl HostStore {
                 if refs == 0 {
                     tx.batch.put_blob(put.blob_id, put.blob.to_vec());
                 }
-                let prefix = put.blob.get(..osis_label::MAX_PREFIX_LEN).unwrap_or(put.blob);
+                let prefix = osis_label::prefix_bytes(put.blob);
                 tx.batch.put(key(b'R', &[&put.blob_id.0]), [&be(refs + 1)[..], prefix].concat());
                 Row { meta: EntryMeta { wrap: put.wrap, stamp: put.stamp, size, add_seq: seq, pending_delete: None }, expiry: put.expiry }
             }
@@ -1620,7 +1620,7 @@ impl LabelStore for HostStore {
 
     fn blob_prefix(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
         if let Some((b, _)) = self.eph.blobs.get(blob_id) {
-            return Ok(Some(b.get(..osis_label::MAX_PREFIX_LEN).unwrap_or(b).to_vec()));
+            return Ok(Some(osis_label::prefix_bytes(b).to_vec()));
         }
         let (refs, prefix) = self.refs(blob_id)?;
         Ok((refs > 0).then_some(prefix))

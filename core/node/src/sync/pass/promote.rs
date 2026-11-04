@@ -77,16 +77,16 @@ impl SyncEngine {
         }
         let mut bodies = Vec::new();
         for (x, p) in &missing {
-            let bs = self.engine.part_bodies(x, p)?;
-            let got: BTreeSet<(usize, usize)> = bs.iter().flat_map(|b| b.parts.iter().copied()).collect();
+            let Some(b) = self.engine.part_body(x, p)? else { return Ok(Some(false)) };
+            let got: BTreeSet<(usize, usize)> = b.parts.iter().copied().collect();
             if !p.is_subset(&got) {
                 return Ok(Some(false));
             }
-            bodies.push((*x, p.clone(), bs));
+            bodies.push((*x, p.clone(), b));
         }
         let mut complete = host.is_none();
-        for (x, p, bs) in bodies {
-            complete &= self.place_copy(g, l, &x, &p, bs)?;
+        for (x, p, b) in bodies {
+            complete &= self.place_copy(g, l, &x, &p, b)?;
         }
         Ok(Some(complete))
     }

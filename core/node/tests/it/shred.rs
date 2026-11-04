@@ -1044,8 +1044,8 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     lp.sync(0, 1).unwrap();
     lp.peers[1].engine.set_syncing(t, true).unwrap();
     lp.advance(5);
-    let mut fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
-    fill.insert(s("k000"), s(&big(marker)));
+    // the marker in every entry, so whichever page stays away the held ones carry it
+    let fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&format!("{marker}{}", "f".repeat(1100))))).collect();
     let mut m = Mutation::new();
     m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
@@ -1130,8 +1130,8 @@ fn part_gone_with_a_page_away_comes_back_when_its_request_fell_spec_commits_5() 
     let t2 = new_thing(&mut lp, 0);
     let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
     lp.peers[1].engine.set_syncing(t2, true).unwrap();
-    let mut fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
-    fill.insert(s("k000"), s(&big(marker)));
+    // the marker in every entry, so whichever page stays away the held ones carry it
+    let fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&format!("{marker}{}", "f".repeat(1100))))).collect();
     let mut m = Mutation::new();
     m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
     m.set(t2, &REG, &s("other")).unwrap();

@@ -244,7 +244,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
     let h = sim.group(a, g, &[s])?;
     let t = sim.item(a, g)?;
     let u = sim.item(a, h)?;
-    // random writes stay within G: a commit spanning G and H shares one projection, and the
+    // random writes stay within G: a commit spanning G and H is one blob under both, and the
     // phone would wait for H's item's creation record (issues/revoke-needs-whole-tree.md)
     sim.groups.retain(|x| x.g != h);
     sim.quiet(40)?;

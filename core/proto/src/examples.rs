@@ -74,7 +74,7 @@ impl Fixture {
     }
 
     pub fn blob_with(n: u8, expiry: Option<u64>, commitments: Vec<[u8; 33]>) -> Vec<u8> {
-        let p = Prefix::new([n; 16], expiry.map(WallMs), commitments).expect("fixed prefix");
+        let p = Prefix::new([n; 16], expiry.map(WallMs), if commitments.is_empty() { vec![] } else { vec![commitments] }).expect("fixed prefix");
         osis_label::frame(&p, &[n; 20], &mut SeededRng::from_seed([n; 32])).expect("small blob").1
     }
 
@@ -185,7 +185,7 @@ pub fn salt(n: u64) -> [u8; 16] {
 /// A blob with a version 1 prefix (salt from `n`, expiry unless 0, commitments), then `size`
 /// body bytes.
 pub fn blob_sized(n: u64, expiry: u64, commitments: Vec<[u8; 33]>, size: usize) -> Vec<u8> {
-    let mut b = Prefix::new(salt(n), (expiry != 0).then_some(WallMs(expiry)), commitments).expect("small prefix").to_bytes();
+    let mut b = Prefix::new(salt(n), (expiry != 0).then_some(WallMs(expiry)), if commitments.is_empty() { vec![] } else { vec![commitments] }).expect("small prefix").to_bytes();
     let h = hash(&n.to_le_bytes());
     b.extend(h.iter().cycle().take(size));
     b
@@ -241,7 +241,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
                 entries: vec![Entry {
                     replaces: vec![
                         DeleteItem::sign(&f.delete, &l, id(0xe2), None).expect("fixed delete"),
-                        DeleteItem::sign_by(&f.write, &dk, 3, &[0x7d; 16], &[0x7e; 16], &l, id(0xe3), None).expect("fixed delete"),
+                        DeleteItem::sign_by(&f.write, &[(3, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xe3), None).expect("fixed delete"),
                     ],
                     ..f.entry(Fixture::blob(4))
                 }],
@@ -250,7 +250,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("status", Message::Status { id: 10, codes: vec![Code::OK, Code::NOT_HEAD] }),
         ("deposit", Message::Deposit { id: 12, label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }),
         ("budget", Message::Budget { id: 12, code: Code::OK, budget: Some((63, 2_064_384)) }),
-        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1), None).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &dk, 2, &[0x7d; 16], &[0x7e; 16], &l, id(0xd2), Some(WallMs(1_700_000_100_000))).expect("fixed delete")] }),
+        ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1), None).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &[(2, &dk)], &[0x7d; 16], &[0x7e; 16], &l, id(0xd2), Some(WallMs(1_700_000_100_000))).expect("fixed delete")] }),
         ("cursor sync", Message::Sync { id: 15, label: l, cursor: Some(cursor), inline_limit: 65_536, max_reply: 16_384, entries: vec![entry], gained: vec![id(0xa1), id(0xa2)] }),
         ("sync without cursor", Message::Sync { id: 16, label: l, cursor: None, inline_limit: 0, max_reply: 16_384, entries: vec![], gained: vec![] }),
         (

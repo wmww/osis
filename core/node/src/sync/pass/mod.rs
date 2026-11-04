@@ -17,7 +17,7 @@ use super::state::{BlobRec, Entry, Kind, HostKey, Touch};
 use super::work::{Inputs, Left, Note, Scope, Work};
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
-use crate::labeling::{Body, BodyCtx, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete, seal_body};
+use crate::labeling::{Body, BodyCtx, Facts, HeadKeys, Hold, Parts, Why, classify, delete_item, may_delete};
 use osis_commit::Kind as CKind;
 use osis_base::format::HEARTBEAT_MIN_INTERVAL_MS;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, WallMs};

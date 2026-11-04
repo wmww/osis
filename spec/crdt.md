@@ -72,7 +72,7 @@ Every other header field (author, actor, retention, purge request, delete keys, 
 
 ## 3. Wire grammar
 
-All deltas and snapshots are osis canonical CBOR (spec/data-model.md §5). A **delta** is `[nonce, Sources, Commits, Fragment]` (§3.2) with a 16-byte random nonce; it is self-contained, so projection and rewriting need no header context. The delta hash covers the whole array.
+All deltas and snapshots are osis canonical CBOR (spec/data-model.md §5). A **delta** is `[nonce, Sources, Commits, Fragment]` (§3.2) with a 16-byte random nonce; it is self-contained, so sealing and rewriting need no header context. The delta hash covers the whole array.
 
 ### 3.1 Encodings
 | id | name | for schema types | read type |
@@ -375,7 +375,7 @@ Rules:
     - Once the delta is held value-less (the expiry rule, a purge) its element reset is at least its creation's own stamp, which ends it (§5.7 Live), so nested writes of other deltas stay in the state but do not show.
     - A value-less copy alone (a snapshot's, the delta not held value-less) sets no reset.
   - **Embedded character** (`Derived` dot, §7): it has no creation write apart from the value, so it goes entirely: creation and content. Position and flag writes of others stay, and a record with none of those is dropped (a node that only ever saw the value-less register has no such record either). Anchors at such a dot: §6.1.
-- **Expiry rule.** Once a node's wall clock reaches T it holds every value-carrying write of the delta value-less, and strips the value from any copy that arrives later (an undelete repeating the content, a stale peer, another projection). It knows T from the commit header, which outlives the body.
+- **Expiry rule.** Once a node's wall clock reaches T it holds every value-carrying write of the delta value-less, and strips the value from any copy that arrives later (an undelete repeating the content, a stale peer, another copy). It knows T from the commit header, which outlives the body.
   - Its non-value writes stay.
   - Its value-carrying writes are dead at T (§4.8) and its body goes (spec/commits.md §6): the node holds the body's **leftover** instead, the same delta with every value-carrying write value-less, a held body like any other (joined, replayed, covering) that uploads nowhere. So a write that superseded it in the state and is later un-merged does not take it along (§4.6). A leftover reveals nothing of a value: stamps, dots, structure, resets, flags and positions only.
   - A node holding a valid purge request treats the value-carrying writes it names the same way from the moment it applies it (spec/commits.md §5).

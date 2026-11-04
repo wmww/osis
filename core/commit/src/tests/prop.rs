@@ -6,6 +6,7 @@ use crate::tests::verify::{TestSecrets, register_delta};
 use crate::*;
 use osis_base::{Ak, BlobId, CommitId, Link, Tid, Value};
 use osis_schema::{Bound, PurgeBy, Retention};
+use osis_crypto::Secret32;
 use proptest::prelude::*;
 
 fn bound() -> impl Strategy<Value = Bound> {
@@ -190,26 +191,44 @@ proptest! {
         prop_assert_eq!(back, h);
     }
 
-    // spec/sync.md §3: projections partition the commit's deltas, hold one class each, and
-    // every projection verifies alone.
+    // spec/wire.md §4, spec/sync.md §3: sections partition the commit's deltas by reader, each
+    // opens under its reader's secret alone and the opened parts verify; a non-reader's copy
+    // carries the others' sections verbatim; the prefix groups are one per key set.
     #[test]
-    fn projections_partition(classes in proptest::collection::vec((0u8..3, 0u8..4), 1..8), exp in any::<bool>(), split in 1usize..4) {
+    fn sections_partition(classes in proptest::collection::vec((0u8..3, 0u8..4), 1..8), exp in any::<bool>(), split in 1usize..4) {
         let c = commit(&classes, exp);
-        let ps = project(&c, |ai| ai % split).unwrap();
-        let mut all: Vec<(usize, usize)> = ps.iter().flat_map(|p| p.parts.clone()).collect();
+        let secret = |r: usize| Secret32::from_bytes([r as u8 + 1; 32]);
+        let mut rng = rng();
+        let env = seal_commit(&c, |ai| ai % split, |r, _| Some((secret(*r), vec![])), &[], &mut rng).unwrap();
+        prop_assert_eq!(Envelope::decode(&env.encode()).unwrap(), env.clone());
+        let mut all: Vec<usize> = env.ais();
         all.sort();
-        prop_assert_eq!(all, (0..classes.len()).map(|i| (i, 0)).collect::<Vec<_>>());
+        prop_assert_eq!(all, (0..classes.len()).collect::<Vec<_>>());
         let s = TestSecrets { admin: true };
         let dedup = |t: &Tid| s.dedup(t);
-        for p in &ps {
-            let blob = CommitBlob::decode(&p.plaintext).unwrap();
-            prop_assert_eq!(blob.id(), c.id());
-            verify_blob(&blob, &key().verifying_key(), &dedup, None).unwrap();
-            prop_assert_eq!(prefix_inputs(&c.header, &p.parts).unwrap(), (p.expires, p.keys.clone()));
-            for (ai, _) in &p.parts {
-                let a = &c.header.aspects[*ai];
-                prop_assert_eq!((a.retention, c.header.expires, ai % split), (p.retention, p.expires, p.readers));
+        let mut sealed_total = 0;
+        for r in 0..split {
+            let o = env.open(|_| vec![secret(r)]).unwrap();
+            prop_assert_eq!(o.commit.id(), c.id());
+            verify_blob(&o.commit, &key().verifying_key(), &dedup, None).unwrap();
+            for p in &o.commit.parts {
+                prop_assert_eq!(p.ai % split, r);
             }
+            sealed_total += o.sealed.len();
+            let again = seal_commit(&o.commit, |ai| ai % split, |x, _| Some((secret(*x), vec![])), &o.sealed, &mut rng).unwrap();
+            prop_assert_eq!(again.open(|_| (0..split).map(secret).collect()).unwrap().commit, c.clone());
+        }
+        prop_assert_eq!(sealed_total, env.sections.len() * (split - 1));
+        let groups = prefix_groups(&c.header, env.ais()).unwrap();
+        let mut sets: Vec<&Vec<usize>> = Vec::new();
+        for a in &c.header.aspects {
+            if !sets.contains(&&a.keys) {
+                sets.push(&a.keys);
+            }
+        }
+        prop_assert_eq!(groups.len(), sets.len());
+        for (g, set) in groups.iter().zip(sets) {
+            prop_assert_eq!(g, &set.iter().map(|i| c.header.keys[*i]).collect::<Vec<_>>());
         }
     }
 }

@@ -159,7 +159,7 @@ def paths_of(text, crate):
 
 HOST_DEPS = {"osis-base", "osis-crypto", "osis-label", "osis-proto", "osis-store", "osis-transport", "tokio"}
 HOST_CRYPTO = {"VerifyingKey", "Signature", "WRAP_LEN", "OsRng", "RngCore", "CryptoRngCore"}
-HOST_LABEL = {"blob_id", "Prefix", "MAX_PREFIX_LEN", "verify_stamp", "step::parse_entry_box", "step::entry_box_bytes", "Address", "address_to_text", "address_from_text", "ClaimSet", "Step", "StepId"}
+HOST_LABEL = {"blob_id", "Prefix", "prefix_bytes", "verify_stamp", "step::parse_entry_box", "step::entry_box_bytes", "Address", "address_to_text", "address_from_text", "ClaimSet", "Step", "StepId"}
 HOST_PROTO_DENY = {"examples"}
 NODE_HOST = {"driver", "Hub", "HostStore", "HostConfig", "HostPolicy", "Admission", "LabelCaps"}
 

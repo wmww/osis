@@ -262,7 +262,7 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     assert_eq!(ret(e0, &snap).at_most, Bound { abs: None, rel: Some(0) }, "passed");
 }
 
-// spec/commits.md §5: a body is one projection class: its deltas share deaths and are dropped
+// spec/commits.md §5: a retention class of a body: its deltas share deaths and are dropped
 // together; while one of them has a live write the class is kept (`AT_MOST_GRACE`); keep at
 // most 0 drops at apply the kill that leaves it none, even when the killing `ts` is ahead of
 // the clock.

@@ -140,7 +140,7 @@ fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
 }
 
 // spec/commits.md §4 (a delta past its keep-at-most bound counts as held): c1's
-// `k` projection and c2 at a node syncing t, c1's at-most-0 body deleted at hosts with no
+// `k` part and c2 at a node syncing t, c1's at-most-0 body deleted at hosts with no
 // carrier: c1 applies; the body, should a copy still come, joins as a late part and drops on
 // arrival, ending as a node that got c1 whole.
 #[test]

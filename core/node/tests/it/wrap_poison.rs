@@ -520,10 +520,10 @@ fn useless_mark_outlives_the_tombstone_lifetime_spec_sync_6() {
 }
 
 // spec/sync.md §6: a superset whose entry at a host is useless holds nothing there: a readable
-// projection beside it is no strict subset. Writer `b`, which never heard of the purge behind the
-// projection, keeps it.
+// rewrite beside it is no strict subset. Writer `b`, which never heard of the purge behind the
+// rewrite, keeps it.
 #[test]
-fn useless_superset_does_not_cost_a_projection_spec_sync_6() {
+fn useless_superset_does_not_cost_a_rewrite_spec_sync_6() {
     let gone = osis_base::Ak::new(osis_schema::AspectKey::ak(&GONE)).unwrap();
     let mut net = Net::new();
     let hosts = vec![net.add_host(), net.add_host()];
@@ -545,26 +545,26 @@ fn useless_superset_does_not_cost_a_projection_spec_sync_6() {
     m.set(t2, &GONE, &s("kept")).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    let p: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
+    let p: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
     assert_eq!(p.len(), 1);
     assert!(net.sync(b).entry_meta(&l, &p[0]).is_some());
     assert!(net.engine(b).get(&t, &gone).unwrap().is_some());
     hostile_put(&mut net, h, r, (g, &l), p[0], [0x13; WRAP_LEN], WRITER);
     net.set_online(h, false);
     net.set_online(b, false);
-    // `a` purges one delta: its projection `q` goes up, at `r` too, and `a` leaves before deleting
+    // `a` purges one delta: its rewrite `q` goes up, at `r` too, and `a` leaves before deleting
     let mut m = osis_node::Mutation::new();
     m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
     m.remove_aspect(t, &GONE).unwrap();
     let pc = net.engine(a).commit(m).unwrap().unwrap();
     net.feed(a, osis_node::sync::Event::Local);
     net.settle(200_000);
-    let mine = |net: &mut Net, c| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect() };
+    let mine = |net: &mut Net, c| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect() };
     let hide = mine(&mut net, pc);
     assert!(!hide.is_empty());
     net.hide_blobs.insert(b, hide.into_iter().collect());
     let q: Vec<BlobId> = mine(&mut net, c).into_iter().filter(|id| !p.contains(id)).collect();
-    assert_eq!(q.len(), 1, "the projection placed");
+    assert_eq!(q.len(), 1, "the rewrite placed");
     net.blocked.remove(&(a, r));
     net.restart(a, 64);
     for _ in 0..1000 {
@@ -585,7 +585,7 @@ fn useless_superset_does_not_cost_a_projection_spec_sync_6() {
         net.advance(60_000);
     }
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("secret")), "b has not applied the purge");
-    assert!(net.host_ids(r, &l).contains(&q[0]), "the readable projection stays");
+    assert!(net.host_ids(r, &l).contains(&q[0]), "the readable rewrite stays");
 }
 
 // spec/sync.md §7: a snapshot whose entry at a host is useless carries nothing there: the compactor,
@@ -651,7 +651,7 @@ fn useless_chain_entry_gets_a_copy_spec_sync_5() {
     hostile_put(&mut net, h, host, (g, &l), id, [0x13; WRAP_LEN], WRITER);
     net.set_online(h, false);
     net.advance(600_000);
-    let copies: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(b, k)| *b != id && matches!(k, EntryKind::Commit { commit: c, .. } if *c == commit)).map(|(b, _)| b).collect();
+    let copies: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(b, k)| *b != id && matches!(k, osis_node::sync::EntryKind::Commit { commit: c, .. } if *c == commit)).map(|(b, _)| b).collect();
     let at = net.host_ids(host, &l);
     assert!(copies.iter().any(|b| at.contains(b)), "a readable copy of the chain's keys.0 at the host");
 }
@@ -686,7 +686,7 @@ fn useless_certificate_copy_gets_another_spec_sync_5() {
     hostile_put(&mut net, h, h1, (g, &l), id, [0x13; WRAP_LEN], WRITER);
     hostile_put(&mut net, h, r, (g, &l), id, [0x13; WRAP_LEN], WRITER);
     net.advance(600_000);
-    let copies = |net: &mut Net| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(b, k)| *b != id && matches!(k, EntryKind::Commit { commit: c, .. } if *c == commit)).map(|(b, _)| b).collect() };
+    let copies = |net: &mut Net| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(b, k)| *b != id && matches!(k, osis_node::sync::EntryKind::Commit { commit: c, .. } if *c == commit)).map(|(b, _)| b).collect() };
     let first = copies(&mut net);
     assert!(!first.is_empty(), "a's copy");
     let at1 = net.host_ids(h1, &l);
@@ -706,11 +706,14 @@ fn useless_certificate_copy_gets_another_spec_sync_5() {
     assert!(good > 0, "a readable copy at r: {first:?}");
 }
 
+type Read = Option<osis_base::Value>;
+
 /// An honest wrap under an epoch the author does not hold yet: the other writer places the author's
 /// blob at the second host, under the new epoch, and the author comes back there alone. `lag`: the
 /// rotation has not reached that host, else it is in that host's log before the wrap. The blob's
-/// entries, the host's entries before the author is back and after all caught up, the reader's read.
-fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Option<osis_base::Value>) {
+/// entries, the host's entries before the author is back and after all caught up, the author's
+/// entries of the blob's commit then, the reader's read.
+fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Read) {
     let mut net = Net::new();
     let hosts = vec![net.add_host(), net.add_host()];
     let (h1, h2) = (hosts[0], hosts[1]);
@@ -776,14 +779,15 @@ fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Option<osis
     net.run();
     let held = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     assert_eq!(held.expose(), new.expose(), "the author caught up");
-    (ids, before, net.host_ids(h2, &l), net.read(f, t))
+    let mine = entries_of(&mut net, a, &l, t);
+    (ids, before, net.host_ids(h2, &l), mine, net.read(f, t))
 }
 
 // spec/sync.md §5: an honest wrap under an epoch not held yet is doubted, not useless: heard with its
 // rotation (or any time before the node acts) the entry stays and no copy is made.
 #[test]
 fn other_epoch_wrap_heard_with_its_rotation_stays_spec_sync_5() {
-    let (ids, before, at, read) = other_epoch(false);
+    let (ids, before, at, _, read) = other_epoch(false);
     assert_eq!(read, Some(s("message")));
     assert!(ids.iter().all(|id| at.contains(id)), "a good entry stays");
     assert!(at.iter().all(|b| before.contains(b)), "no fresh copy");
@@ -794,8 +798,9 @@ fn other_epoch_wrap_heard_with_its_rotation_stays_spec_sync_5() {
 // entry (notes/sync.md).
 #[test]
 fn other_epoch_wrap_heard_before_its_rotation_costs_a_copy_spec_sync_5() {
-    let (ids, before, at, read) = other_epoch(true);
+    let (ids, before, at, mine, read) = other_epoch(true);
     assert_eq!(read, Some(s("message")));
-    let fresh = at.iter().filter(|b| !before.contains(b)).count();
+    // copies of the blob's commit (the admin's own uploads, held back from that host, come too)
+    let fresh = at.iter().filter(|b| !before.contains(b) && mine.contains(b)).count();
     assert!(fresh <= ids.len() * 2, "bounded: {fresh}");
 }

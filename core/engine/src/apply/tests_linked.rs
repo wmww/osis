@@ -1,6 +1,6 @@
 //! Roster snapshot inputs (spec/permissions.md §6, spec/commits.md §4): linked tenure frontiers
 //! recorded once read, never audited as empty, bounded, bad input when unlisted or not a
-//! frontier; holders named twice; certificate projections failing closed.
+//! frontier; holders named twice; certificate copies failing closed.
 
 use crate::local_peer::LocalPeer;
 use crate::{Ingested, Mutation};

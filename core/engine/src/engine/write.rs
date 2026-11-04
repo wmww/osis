@@ -624,9 +624,9 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = match built {
-        // an ephemeral delta past a blob, or past what one unpaged delta may hold, is refused
-        // (spec/commits.md §2): no page carries it
-        Err(osis_commit::Error::Build(osis_commit::DELTA_PAST_BLOB) | osis_commit::Error::Delta(_)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral delta does not fit a blob")),
+        // an ephemeral commit past a blob, or a delta past what one unpaged delta may hold, is
+        // refused (spec/commits.md §2, spec/sync.md §9): no page carries it
+        Err(osis_commit::Error::Build(osis_commit::COMMIT_PAST_BLOB) | osis_commit::Error::Delta(_)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral commit does not fit a blob")),
         b => b?,
     };
     let id = built.commit.id();

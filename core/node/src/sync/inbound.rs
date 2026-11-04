@@ -8,7 +8,6 @@
 use super::state::{BlobRec, Entry, Hint, Kind, HostKey};
 use super::{ConnId, Phase, RELINK_BACKOFF_MAX_MS, RELINK_BACKOFF_MS, SyncEngine};
 use crate::error::Result;
-use crate::labeling::open_commit;
 use crate::Ingested;
 use osis_base::{BlobId, Classified, CommitId, ErrorClass, LabelId, Tid};
 use osis_crypto::{Secret32, VerifyingKey, role_kem};
@@ -575,7 +574,15 @@ impl SyncEngine {
         if std::mem::take(&mut self.start_look) {
             self.name_after_crash();
         }
-        let mut force: BTreeSet<CommitId> = if std::mem::take(&mut self.reread_boxes) { self.contested_boxes()?.into_iter().collect() } else { BTreeSet::new() };
+        let mut force: BTreeSet<CommitId> = if std::mem::take(&mut self.reread_boxes) {
+            let mut f: BTreeSet<CommitId> = self.contested_boxes()?.into_iter().collect();
+            // a section no secret opened may open under a secret learned since (spec/wire.md §4)
+            f.extend(self.state.blobs.values().filter(|r| super::state::sealed(&r.ais, &r.parts)).map(|r| r.commit));
+            f
+        } else {
+            BTreeSet::new()
+        };
+
         let mut todo = self.engine.take_redeliver();
         todo.extend(force.iter().copied());
         if todo.is_empty() {
@@ -609,9 +616,14 @@ impl SyncEngine {
                     continue;
                 }
                 let Some(bytes) = self.engine.blob(&b)? else { continue };
-                let Ok((pt, _)) = open_commit(&bytes, &key) else { continue };
-                self.ingest_again(&c, &pt);
-                held.extend(parts);
+                let g = self.state.labels_of(&b).into_iter().find_map(|l| self.group_of(&l, None));
+                let Ok(o) = self.engine.open_commit(&bytes, &key, g.as_ref()) else { continue };
+                let opened = o.parts();
+                if opened.len() > parts.len() {
+                    self.state.note_opened(&b, &opened, o.copy);
+                }
+                self.ingest_again(&c, &o.plaintext);
+                held.extend(opened);
             }
             for (l, b) in inbox {
                 let Some(bytes) = self.engine.blob(b)? else { continue };
@@ -647,7 +659,7 @@ impl SyncEngine {
     /// junk), and an applied commit with an entry on an aspect it misses (a waiting part's junk slot gone)
     /// or with several deltas on one aspect: `missing` is per aspect and such a commit (a roster snapshot,
     /// spec/permissions.md §5.2) may hold some of them. The index cannot tell, so `redeliver` reads what
-    /// it holds. A projection of first deltas alone is not looked at: the commit's whole body is.
+    /// it holds. A blob of first deltas alone is not looked at: the commit's whole body is.
     fn name_after_crash(&mut self) {
         let ix = &self.engine.core.ix;
         let mut named: Vec<CommitId> = ix.pending.keys().copied().collect();
@@ -723,18 +735,18 @@ impl SyncEngine {
             if !self.engine.core.ix.syncing.contains(&g) {
                 self.engine.set_syncing(g, true)?;
             }
-            match open_commit(&bytes, &key) {
-                Ok((pt, c)) => {
-                    let parts: Vec<(usize, usize)> = c.parts.iter().map(|p| (p.ai, p.di)).collect();
-                    let commit = c.id();
+            match self.engine.open_commit(&bytes, &key, Some(&g)) {
+                Ok(o) => {
+                    let parts = o.parts();
+                    let commit = o.commit.id();
                     if !self.state.blobs.contains_key(&b) {
-                        self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), key, cert: e.cert, memory: e.memory });
+                        self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), ais: o.ais.clone(), key, cert: e.cert || o.copy, memory: e.memory });
                     }
                     let salt = osis_label::Prefix::parse(&bytes).map(|p| *p.salt()).unwrap_or_default();
-                    e.kind = Kind::Commit { commit, parts, salt };
+                    e.kind = Kind::Commit { commit, parts, ais: o.ais, salt };
                     self.state.set_entry(l, b, e);
                     self.state.note_memory_size(l, b, bytes.len());
-                    commits.push(ToIngest { label: l, blob: b, size: bytes.len(), plaintext: pt, commit: c });
+                    commits.push(ToIngest { label: l, blob: b, size: bytes.len(), plaintext: o.plaintext, commit: o.commit });
                 }
                 Err(err) => {
                     // a commit this build cannot interpret is parked, anything else is bad
@@ -932,7 +944,7 @@ impl SyncEngine {
     /// `open_inbox`, with the actor it is sealed to.
     fn open_inbox_as(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(Tid, osis_label::Prefix, osis_label::InboxPayload)> {
         let p = osis_label::Prefix::parse(bytes).ok()?;
-        if p.expiry().is_none() || !p.commitments().is_empty() {
+        if p.expiry().is_none() || !p.groups().is_empty() {
             return None;
         }
         self.stats.inbox_tries += 1;
@@ -1274,8 +1286,9 @@ impl SyncEngine {
         // a copy not held here holds nothing a redelivery could read
         let applied = self.engine.core.ix.commits.contains_key(&r.commit);
         let Some(bytes) = self.engine.blob(b)? else { return Ok(applied) };
-        let Ok((_, copy)) = open_commit(&bytes, &r.key) else { return Ok(applied) };
-        self.engine.spent_copy(&r.commit, &copy)
+        let g = self.state.labels_of(b).into_iter().find_map(|l| self.group_of(&l, None));
+        let Ok(o) = self.engine.open_commit(&bytes, &r.key, g.as_ref()) else { return Ok(applied) };
+        self.engine.spent_copy(&r.commit, &o.commit)
     }
 
     /// The entries of commits with a part missing again (`Changed::undropped`: dropped under a

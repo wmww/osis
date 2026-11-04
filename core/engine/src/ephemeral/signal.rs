@@ -32,7 +32,7 @@ pub struct EphCommit {
 }
 
 /// Relay-only commits delivered, oldest first, with their `ts` (wall ms) and author; per commit
-/// the parts delivered (its projections go as several blobs); per author the floor.
+/// the parts delivered; per author the floor.
 #[derive(Default)]
 pub(super) struct Delivered {
     order: VecDeque<(CommitId, u64, Tid)>,

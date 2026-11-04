@@ -81,7 +81,8 @@ Bound     := {? 0: abs, ? 1: rel}
 DeleteKey := [level, pk]
 Chunk     := [blob_id, [ki*]]
 PurgeItem := [commit_id, tid, ak] | [tid, ak] | [tid, ak, actor]
-CommitBlobPlaintext := [Header, signature, [Part*]]
+CommitBlobPlaintext := [Header, signature, [Section*]]
+Section   := [[ai*], [owner*], wrap, ciphertext]
 Part      := [ai, di, delta, [creation*]]
 ```
 Header fields by position:
@@ -103,7 +104,11 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
 
 - **Inline or link**: `aspects`, `chunks`, `purge`, `keys` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link to one at or below it or above `MAX_LIST_BYTES`; a writer refuses such a commit. A linked frontier's encoding is exactly `{0: set<32-byte commit ID>}`; anything else is bad input. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key under `"osis v1 commit" || commit ID`.
-- **Commit blob** plaintext: `CommitBlobPlaintext`. A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash, then the creation records (§3) carried beside it (spec/commits.md §2), sorted by tid, distinct; empty in a commit without the ephemeral marker, else bad input. Records are outside the header and delta hash: each hashes to its tid. Parts sorted by `(ai, di)`, distinct; zero parts is allowed (every delta purged). The blob's prefix commitments are those of the delete keys its parts' aspects list (§5); its expiry is the header's `expires`.
+- **Commit blob** plaintext: `CommitBlobPlaintext`: one blob carries the whole commit, every part sealed to its thing's readers (spec/sync.md §3).
+  - A `Section` holds the parts of one thing: `[ai*]` the aspect indices of its parts, ascending, distinct, each with a part inside; `[owner*]` the thing's owner chain as the writer knows it, nearest owner first, up to and including the first actor with secrets of its own (empty for such an actor, a key actor or an ownerless thing; at most `MAX_OWNER_DEPTH`); `ciphertext` = XChaCha20-Poly1305 of the canonical `[Part*]` list under a fresh random 32-byte section key, nonce 24 zero bytes (the key encrypts this one plaintext and nothing else), AD = the commit ID; `wrap` = a random 24-byte nonce `||` XChaCha20-Poly1305 of the section key under `kdf("section", read secret of the thing)` (its own, or derived from its owner's by tid, spec/crypto.md §3) at the newest epoch the writer holds (a rotation's section under the epoch it supersedes, spec/crypto.md §5), that nonce, AD = the commit ID: 72 bytes. Sections sorted by their first `ai`; an aspect in two sections is bad input; zero sections is allowed (every delta purged). A per-label copy (spec/sync.md §3) is one section of its parts, with an empty owner chain, under the read secret of the label's group.
+  - A reader tries, per section, the read secrets it holds of the section's thing, those derived by tid through the listed owner chain from the epochs it holds of any member of it (the thing's record may be inside the section; a member given secrets of its own since holds the derived epoch in its history), and the read secret of the group of the label the blob came under, newest first. Parts that open on an aspect the section does not list, or a listed aspect with no part, are bad input. A section no held secret opens is kept as it is: a non-reader learns nothing of it beyond its size, `ai` list and owner chain, and copies it verbatim into a fresh encryption of the commit.
+  - A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash, then the creation records (§3) carried beside it (spec/commits.md §2), sorted by tid, distinct; empty in a commit without the ephemeral marker, else bad input. Records are outside the header and delta hash: each hashes to its tid. Within a section parts sorted by `(ai, di)`, distinct.
+  - The blob's prefix commitment groups are those of the delete keys its sections' aspects list (§5); its expiry is the header's `expires`. The whole commit stays within `MAX_BLOB` (a writer pages its deltas, spec/crdt.md §8, and refuses a commit that still does not fit).
 - A header violating a rule of spec/commits.md §2, §5 or §6 is bad input:
   - an aspect of the wrong class for its kind (`created.0` fits either kind);
   - `created.0` in a kind without own writes or with the ephemeral marker;
@@ -130,14 +135,17 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
 | 1 | 16 | salt, random per encryption |
 | 17 | 8 | expiry `T`: le64 wall ms; 0 means none |
 | 25 | 1 | class: 0 durable, 1 ephemeral, 2 relay-only (spec/sync.md §1); any other value is bad input |
-| 26 | 1 | n: number of commitments, 0..3 |
-| 27 | 33·n | commitments: level byte (1..3) `||` 32-byte blinded delete key (spec/crypto.md §7), levels strictly ascending |
+| 26 | 2 | n: number of commitment groups, le16 |
+| 28 | … | n groups, each: a count byte m (0..3) then 33·m commitments: level byte (1..3) `||` 32-byte blinded delete key (spec/crypto.md §7), levels strictly ascending within a group |
 
-- The ciphertext runs from offset `27 + 33n` to the end: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
+- The ciphertext runs from the end of the groups to the end of the blob: XChaCha20-Poly1305 under the blob key, nonce 24 zero bytes, AD = the prefix bytes, plaintext = the padded plaintext. **Blob ID** = BLAKE3(whole blob).
 - **Padding** (Padmé; Nikitin et al., PURBs): for a plaintext P, let `L = len(P) + 1`, `E = floor(log2 L)`; if `E = 0`, `padme(L) = L`; else with `S` the bit length of `E` and `m = 2^(E - S) - 1`, `padme(L) = (L + m) & ~m`. The padded plaintext is `P || 0x80 || 0x00^(padme(L) - L)`. To unpad: strip trailing `0x00` bytes, then one `0x80`, which MUST be present; the padded length MUST equal `padme(len(P) + 1)`. Anything else is bad input.
 - Plaintext per blob kind: commit blob `CommitBlobPlaintext` (§4); chunk: the raw chunk bytes; tree node and link page: §6; page: §6; inbox blob: §9 (its ciphertext is a sealed box, not the AEAD above).
 - Class: a commit blob's class is that of its header's ephemeral marker (none: durable, 0: ephemeral, 1: relay-only); a mismatch is bad input. Chunks, tree nodes, pages and inbox blobs are durable. A relay-only commit blob's expiry `T` is its header's `ts` (wall ms) plus `MAX_DRIFT` (its header carries no `expires`); any other is bad input.
-- Commitments: a commit blob, chunk, tree node or page carries one commitment per delete key of the deltas it serves (spec/crypto.md §7), blinded by its own salt and the blind of the header listing it (for a chunk, tree node or page: of the header that introduced it): one per level. A chunk or tree node of a linked header list (§4) carries the commitment of the commit's level-2 key only. A header-list chunk's expiry is the greatest `expires` of the commit's aspects when every aspect has one, else none.
+- Commitments, blinded by the blob's own salt and the blind of the header listing it (for a chunk, tree node or page: of the header that introduced it), one per level within a group (spec/crypto.md §7):
+  - a commit blob carries one group per distinct delete-key set among the aspects its sections list (opened or not), each group the keys of that set in header key order, groups in order of their first aspect; a `nobody` aspect's set is empty, so its group is (a Delete by level then never verifies, spec/sync.md §5); a header-only blob carries no group;
+  - a chunk, tree node or page carries one group: the delete keys of the delta that created it;
+  - a chunk or tree node of a linked header list (§4) carries one group holding the commitment of the commit's level-2 key only; its expiry is the commit's `expires`.
 - **Wrap**: XChaCha20-Poly1305 under `kdf("wrap", label read secret)`, nonce = first 24 bytes of the blob ID, empty AD, plaintext `suite (1) || blob key (32) || order (8, little-endian)`: 57 bytes. A filler is 57 random bytes.
 - A node that does not know a blob's framing version stores and relays it as a durable blob with no expiry and no commitments.
 
@@ -238,8 +246,8 @@ Notify    [29, 0, sub_id, payload]
 
 proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3, dialable_pk, sig]
 entry  := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]
-replace := [blob_id, sig] | [blob_id, level, dsig, sig]
-item   := [blob_id, Opt(at), Opt([level, dsig]), sig]
+replace := [blob_id, [[level, dsig]*], sig]
+item   := [blob_id, Opt(at), [[level, dsig]*], sig]
 cursor := [log_id, seq]
 outcome := [0, value] | [1, code, detail*]
 payload := [0, value] | [1] | [2, value]
@@ -262,13 +270,13 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order.
   - A relay-only entry (prefix class 2) is not stored: the receiver admits it (spec/sync.md §5), pushes it to the subscribers of the label on its other connections as a Push of one add event carrying the blob (the Push's cursor the subscription's current position) and answers 0.
   - A repeat of a blob ID it pushed under that label before the blob's expiry is answered 0 and pushed to nobody.
-- **Replace** (an entry's replace list, spec/sync.md §5): each carries the signatures of a Delete item of `blob_id` without `at` (`[blob_id, sig]` without a level, `[blob_id, level, dsig, sig]` with one), checked as for Delete. Status code 1 or 9 for a replacement's signatures refuses its entry.
+- **Replace** (an entry's replace list, spec/sync.md §5): each carries the signatures of a Delete item of `blob_id` without `at`, checked as for Delete except that one commitment group covered suffices. Status code 1 or 9 for a replacement's signatures refuses its entry.
 - **Deposit**: `sig` by the deposit key under `"osis v1 deposit"`, digest as for a stamp. Budget reports what remains of the label's deposit budget after the request, present only when `sig` verified under the head's deposit key (spec/sync.md §5).
-- **Delete**: per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, Opt(at), Opt(level)]`):
-  - without a level, `sig` by the head's delete key;
-  - with one, `dsig` by that level's delete key under the blob prefix's commitment at that level (spec/crypto.md §7) and `sig` by the head's write key for level 3, its sync key for level 1 or 2 (spec/sync.md §5).
+- **Delete**: per item, signatures under `"osis v1 delete"` over digest BLAKE3(canonical `[label_id, blob_id, Opt(at), [level*]]`), the levels those of its `[level, dsig]` pairs, ascending, distinct, within 1..3:
+  - with no pair, `sig` by the head's delete key;
+  - else each `dsig` by that level's delete key, verifying under the commitment at that level of at least one of the blob prefix's groups (spec/crypto.md §7), every group covered by at least one pair, and `sig` by the head's write key when any level is 3, else its sync key (spec/sync.md §5). A pair verifying under no group refuses the item.
   - `at` requests a timed delete; an `at` not after the receiver's clock deletes at once.
-  - An item whose entry is not held: by the delete key, 0 when a tombstone of the blob exists (a repeated delete is idempotent), else 1; with a level, 1 (the prefix to check it against is gone).
+  - An item whose entry is not held: by the delete key, 0 when a tombstone of the blob exists (a repeated delete is idempotent), else 1; with levels, 1 (the prefix to check them against is gone).
 - **Sync** (cursor sync and download, spec/sync.md §6):
   - **`cursor`** is the peer's log position for the label; `log_id` names the log instance.
     - A peer whose log has that `log_id` but was trimmed past `seq` answers Error 15.
@@ -380,4 +388,4 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most `MAX_VALUE_DEPTH` (spec/data-model.md §5); no array or map longer than the bytes that remain.
 - Blob `MAX_BLOB`; frame `MAX_MESSAGE`; a message at most 2^20 CBOR data items in all; AK `MAX_AK_BYTES`; URL 256 bytes.
-- Header: each inline list at most `CHUNK_THRESHOLD` bytes, each linked one at most `MAX_LIST_BYTES`. Prefix: 3 commitments. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `MAX_RUN` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer's delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
+- Header: each inline list at most `CHUNK_THRESHOLD` bytes, each linked one at most `MAX_LIST_BYTES`. Prefix: 65535 groups of at most 3 commitments, within the blob. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `MAX_RUN` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.
