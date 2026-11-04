@@ -1,3 +1,0 @@
-# Section owner chains show other groups' structure to co-readers
-> Summary: A commit blob's sections list each thing's owner chain in the clear (spec/wire.md §4), readable by every holder of the blob key: every reader of every label the commit goes under. A reader of t learns, for a thing p it cannot read, the tids up p's chain to its actor (a private group, a person). The header already shows p's tid; the owners are new identifiers and structure, which spec/requirements.md (a node blind to a group learns no identifiers or structure) does not list. Needs Tess: accept and state it in spec/requirements.md, or carry the chain where only p's readers see it.
-> Tags: security, sync

@@ -62,7 +62,7 @@ Terms:
 - Goal: an untrusted node can limit abuse (storage, rate) without learning identities.
 
 ## Confidentiality between readers
-- A reader learns only what it may read. Sharing one thing reveals nothing of another beyond the fact that one change touched both.
+- A reader learns only what it may read. Sharing one thing does not reveal values from another, and only metadata if both things are part of the same commit.
 - No identifier on the wire is predictable without a read key. Nothing derives from plaintext that could be guessed.
 - Readers of shared data may learn each other's device identities, the chain that authorizes each author, and the sizes of the rosters in that chain, never the entries of rosters they are not part of.
 - Deleting content leaves the fact, time, author and aspect of the edit visible to readers.
@@ -73,7 +73,7 @@ Terms:
 - Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and how long its history is kept (at least: absolute or a while after it is replaced; at most: absolute, or gone once replaced). Defaults per aspect, overridable per change, immutable once written.
 - Honest nodes judge the purge right at the time of the request. Limit: an untrusted node can only check the role the deleter held when the edit was written plus current roles, so a demoted holder can still delete there what its old role allowed, until a co-reader's next sync restores the data.
 - Data may carry an expiry at which every node, untrusted ones included, drops it with nobody online. A change has one expiry, and data nobody may purge shares a change only with such data; a write mixing either is several changes.
-- Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
+- Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged, once the undoing device has seen the purge; an earlier undo is its own change, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Limit: deletion does not reach offline copies, dishonest nodes, memory or swap. A purge made after a removal may stay undone in a copy the removal let the holder keep.
 - Untrusted nodes act on their own only for expiry. Every other retention bound takes effect at them when a right holder next syncs.
 - A body dropped at its keep-at-most bound stays dropped only at nodes that cannot get it back: if the write that replaced it turns out invalid, the value is live and returns from any node that still holds it. Expired and purged content never returns. Exception: an admin's demotion that leaves a purge out of its frontier undoes that purge wherever a copy is left.
