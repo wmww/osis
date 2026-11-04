@@ -2,7 +2,7 @@
 //! held purge request they are held value-less.
 
 use crate::engine::DropFor;
-use super::{T_EXPIRY, drop_part_for, known_purged, make_valueless, suspect};
+use super::{T_EXPIRY, counts_as_purged, drop_part_for, known_purged, make_valueless, suspect};
 use crate::engine::records;
 use crate::engine::Tx;
 use crate::error::{Error, Result};
@@ -117,6 +117,21 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
         b.parts.retain(|p| !(p.ai == ai && gone.contains(&p.di)));
         tx.txn.remove_pending(id, Shred::Yes)?;
         tx.txn.put_pending(id, kind, &b.encode())?;
+    }
+    Ok(())
+}
+
+/// Commit `id` (header `h`) applies without parts `missing`. One a request still counts as held for
+/// (`counts_as_purged`) but does not drop may have gone with a page away, its request falling while the
+/// commit waited (`strip_purged`): a live part, so node-sync fetches it (`Changed::undropped`).
+pub(crate) fn fetch_fallen(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: &BTreeSet<usize>) -> Result<()> {
+    for ai in missing {
+        if !known_purged(tx, h, id, *ai)? && counts_as_purged(tx, h, id, *ai)? {
+            if let Some(ch) = &mut tx.core.changed {
+                ch.undropped.insert(*id);
+            }
+            break;
+        }
     }
     Ok(())
 }

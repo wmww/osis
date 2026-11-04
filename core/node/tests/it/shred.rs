@@ -1133,3 +1133,70 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "by snapshot {by_snapshot}");
     }
 }
+
+// spec/commits.md §5: a part gone with a page away, its request falling before its commit applies, is a
+// live part missing like any other: node-sync is told to fetch it when the commit applies (the flag stays
+// until it comes), and its copy joins. Nothing else names the commit for a fetch.
+#[test]
+fn part_gone_with_a_page_away_comes_back_when_its_request_fell_spec_commits_5() {
+    use osis_base::Role;
+    use osis_node::flows::{Demotion, PreSync};
+    let marker = "PAGE-FELL-7b2c";
+    let a = ak("t:gonemap.0");
+    let mut lp = LocalPeer::of(vec![peer(361), peer(362), peer(363)], 361);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let x = lp.peers[2].engine.tid();
+    lp.peers[0].engine.grant(&t, &x, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    lp.advance(5);
+    // `c` also writes `t2`, whose record node 1 lacks: it waits whole after its part on `t` goes
+    let had: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+    let t2 = new_thing(&mut lp, 0);
+    let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
+    lp.peers[1].engine.set_syncing(t2, true).unwrap();
+    let mut fill: std::collections::BTreeMap<Value, Value> = (0..400).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    fill.insert(s("k000"), s(&big(marker)));
+    let mut m = Mutation::new();
+    m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
+    m.set(t2, &REG, &s("other")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let mut held = whole.blobs.clone();
+    assert!(held.pop().is_some());
+    lp.advance(5);
+    lp.peers[1].engine.ingest(&whole.bytes, held).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("public")).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
+    let p = lp.peers[2].commit(m).unwrap().unwrap();
+    let request = lp.peers[2].engine.package(&p).unwrap().unwrap();
+    lp.deliver(1, &request).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "it went");
+    assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "it waits for t2");
+    // node 0 has not seen the request: its demotion's frontier leaves it out, so it falls
+    lp.advance(5);
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    for id in &done.commits {
+        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+    }
+    lp.peers[1].engine.reexamine().unwrap();
+    lp.peers[1].engine.take_changed();
+    for pk in &rec {
+        lp.deliver(1, pk).unwrap();
+    }
+    lp.peers[1].engine.reexamine().unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.commit_ids().contains(&c), "{:?}", e.pending());
+    assert!(e.take_changed().undropped.contains(&c), "node-sync is told to fetch it");
+    assert_eq!(e.suspects().unwrap().len(), 1, "flagged until it comes");
+    lp.peers[1].engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.suspects().unwrap().is_empty(), "{:?}", e.suspects().unwrap());
+    assert!(e.get(&t, &a).unwrap().is_some_and(|v| format!("{v:?}").contains(marker)), "the live part is back");
+}
