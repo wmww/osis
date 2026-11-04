@@ -217,7 +217,7 @@ impl Fragment {
     /// fragment streamed page by page is judged a page at a time.
     pub fn misstated_in(&self, others: &CopySet, pick: &dyn Fn(&Dot) -> bool, lax: &dyn Fn(&Dot) -> bool) -> BTreeSet<Dot> {
         let mine = self.copies(&|d| others.dots.contains(d) && pick(d));
-        mine.into_iter().filter(|(k, v)| !others.copies.get(k).is_some_and(|t| agrees(&k.1, v, t, lax(&k.2.dot)))).map(|(k, _)| k.2.dot).collect()
+        mine.into_iter().filter(|(k, v)| !(lax(&k.2.dot) && element_end(k)) && !others.copies.get(k).is_some_and(|t| agrees(&k.1, v, t, lax(&k.2.dot)))).map(|(k, _)| k.2.dot).collect()
     }
 
     /// Its writes by owner dot, for `CopyIndex::outside` against many deltas in turn.
@@ -298,6 +298,13 @@ impl Fragment {
 /// value-less (expired or purged there), or `mine` without its value where it may be: a text
 /// element's char, the creation's (deleted: §3.3 rule 5) or an undelete's copy (§5.7), or
 /// anything when `lax`.
+/// Whether the write is an element's reset at its creation's own stamp: what a node holding the
+/// creation's delta value-less carries of it (spec/crdt.md §4.7), a value-less copy as `agrees`
+/// takes one.
+fn element_end(k: &Key) -> bool {
+    matches!(k.1, Kind::Flag(true)) && matches!(k.0.last(), Some(Step::Elem(d)) if *d == k.2.dot)
+}
+
 fn agrees(k: &Kind, mine: &Option<Val>, theirs: &Option<Val>, lax: bool) -> bool {
     theirs.is_none() || mine == theirs || mine.is_none() && (lax || matches!(k, Kind::Created(_) | Kind::Flag(_)))
 }
@@ -399,7 +406,7 @@ impl CopyIndex {
     /// The dots in `ranges` whose writes here a held delta (its writes `own`) holds otherwise
     /// (`Fragment::misstated`; `lax`: the delta expires, so a value-less copy matches).
     pub fn misstated(&self, ranges: &[(Source, u64, u64)], own: &CopySet, lax: bool) -> BTreeSet<Dot> {
-        self.failing(ranges, &|k, v| own.copies.get(k).is_some_and(|x| agrees(&k.1, v, x, lax)))
+        self.failing(ranges, &|k, v| lax && element_end(k) || own.copies.get(k).is_some_and(|x| agrees(&k.1, v, x, lax)))
     }
     /// The dots in `ranges` (source, counters `lo..hi`) whose writes here are not all in
     /// `others` as `Fragment::copies_within` compares them.

@@ -282,7 +282,14 @@ pub fn history(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommi
 
 /// `history` with the given writer sources (commit form: a `Commit` source per writer).
 pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
-    history_from(r, types, sources, rounds, false)
+    history_from(r, types, sources, rounds, false, false)
+}
+
+/// `history` as honest nodes of a non-role-class aspect write it: a clock past every commit seen
+/// (a removal is newer than what it removes), keyless removals (§5.6).
+pub fn history_honest(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommit> {
+    let sources = (0..n).map(|i| crdt_model::stamp::Source::session(i as u8 + 1, 0)).collect();
+    history_from(r, types, sources, rounds, false, true)
 }
 
 /// A value of `ty` large enough to page at small page parameters: long texts, many elements.
@@ -304,13 +311,13 @@ pub fn bulk_value(r: &mut Rng, ty: &Ty, depth: u32) -> crdt_model::value::Value 
 /// `history_with` whose writers each end with a large write (`bulk_value`), so states and
 /// those deltas page at small page parameters.
 pub fn history_bulk(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
-    history_from(r, types, sources, rounds, true)
+    history_from(r, types, sources, rounds, true, false)
 }
 
-fn history_from(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize, bulk: bool) -> Vec<MCommit> {
+fn history_from(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize, bulk: bool, honest: bool) -> Vec<MCommit> {
     let n = sources.len();
     // odd writers remove keyed (role-class aspects), even ones keyless (§5.6)
-    let mut ws: Vec<MWriter> = sources.into_iter().enumerate().map(|(i, s)| MWriter { keyed: i % 2 == 1, ..MWriter::new(s, 1 << 16, 0) }).collect();
+    let mut ws: Vec<MWriter> = sources.into_iter().enumerate().map(|(i, s)| MWriter { keyed: !honest && i % 2 == 1, ..MWriter::new(s, 1 << 16, 0) }).collect();
     let mut states: Vec<Option<m::Frag>> = vec![None; n];
     let mut seen: Vec<usize> = vec![0; n];
     let mut commits: Vec<MCommit> = Vec::new();
@@ -324,6 +331,7 @@ fn history_from(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Sourc
             seen[i] = upto;
             let t = ((round as u64 * 10 + r.below(10) as u64 + 1) << 16) + i as u64;
             let t = t.max(ws[i].ts + 1);
+            let t = if honest { commits[..upto].iter().fold(t, |t, c| t.max(c.w.ts + 1)) } else { t };
             let before = ws[i].clone();
             ws[i].next_commit(t);
             let ty = &types[i % types.len()];

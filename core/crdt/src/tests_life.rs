@@ -985,3 +985,82 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     assert_eq!(over.sweep(&r, &mine), None);
     assert!(!over.holds_write(&Dot::new(y, 1)));
 }
+
+/// `v` with empty collections left out: a sweep's reset is a write, so a collection another writer
+/// reset meanwhile may read empty rather than absent, as under any concurrent removal (§4.3).
+fn shown(v: Value) -> Option<Value> {
+    match v {
+        Value::Map(m) => {
+            let m: std::collections::BTreeMap<_, _> = m.into_iter().filter_map(|(k, v)| Some((k, shown(v)?))).collect();
+            (!m.is_empty()).then_some(Value::Map(m))
+        }
+        Value::List(l) => {
+            let l: Vec<_> = l.into_iter().filter_map(shown).collect();
+            (!l.is_empty()).then_some(Value::List(l))
+        }
+        v => Some(v),
+    }
+}
+
+/// spec/sync.md §7: a sweep from any stale view (a random part of the commits, a random part of the
+/// expiries) changes no read, there or at a node holding everything; it is a valid writer delta;
+/// joined back it finds nothing more, so a compaction does not write forever.
+pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
+    use crate::ops::Writer;
+    let mut r = crate::testutil::rng(seed | 1);
+    let commits = crate::testutil::history_honest(&mut r, std::slice::from_ref(ty), 3, 5);
+    let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
+    let ranges: Vec<Range> = commits.iter().map(|c| (source(&c.w.source), c.w.lo, c.w.hi())).collect();
+    let me = sess(Tid::from_bytes([250; 15]));
+    let w = Writer::new(ts(1 << 40), me.clone(), 1);
+    let stamp = w.delta_stamp();
+    let mut swept = 0;
+    for _ in 0..6 {
+        let expired: Vec<Range> = ranges.iter().filter(|_| r.chance(1, 4)).cloned().collect();
+        let gone: Vec<Range> = expired.iter().filter(|_| r.chance(3, 4)).cloned().collect();
+        let mut view = Fragment::default();
+        for b in bodies.iter().filter(|_| r.chance(2, 3)) {
+            view.join(b.clone());
+        }
+        view.expire(&in_ranges(&gone));
+        let Some(sw) = view.sweep(&stamp, &in_ranges(&gone)) else { continue };
+        swept += 1;
+        let cx = DeltaCtx { ts: ts(1 << 40), own: me.clone(), range: w.range(), kind: DeltaKind::Writer };
+        let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: sw.clone() }, &cx, None).unwrap();
+        assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment, sw, "the wire");
+        let mut after = view.clone();
+        after.join(sw.clone());
+        after.expire(&in_ranges(&gone));
+        assert_eq!(after.read(), view.read(), "the view's read");
+        assert_eq!(after.sweep(&stamp, &in_ranges(&gone)), None, "swept once");
+        let mut all = Fragment::default();
+        for b in &bodies {
+            all.join(b.clone());
+        }
+        all.expire(&in_ranges(&expired));
+        let want = all.read();
+        all.join(sw);
+        all.expire(&in_ranges(&expired));
+        assert_eq!(all.read().and_then(shown), want.and_then(shown), "the read of a node holding everything");
+    }
+    swept
+}
+
+#[test]
+fn sweep_laws_spec_sync_7() {
+    let reg = || Box::new(Ty::Register);
+    let pair = || Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect());
+    let types = [
+        sink_no_seq(),
+        Ty::List(Box::new(pair())),
+        Ty::List(reg()),
+        Ty::Map(reg(), Box::new(pair())),
+        Ty::Map(reg(), Box::new(Ty::List(reg()))),
+        Ty::List(Box::new(Ty::Map(reg(), reg()))),
+        Ty::Struct([(1, Ty::Map(reg(), reg())), (2, Ty::List(Box::new(pair())))].into_iter().collect()),
+    ];
+    for (i, ty) in types.iter().enumerate() {
+        let swept: usize = (0..100).map(|s| sweep_laws(s * 2 + 1, ty)).sum();
+        assert!(swept > 0, "type {i} never swept");
+    }
+}

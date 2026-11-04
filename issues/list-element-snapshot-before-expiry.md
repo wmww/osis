@@ -9,3 +9,5 @@ The same node also shows those writes before T, as a partial receipt (spec/crdt.
 Simplest full fix: make it the map's rule. A value-less mark on the creation, a copy of one write where the valued copy wins (spec/crdt.md §4.1). A snapshot carries it before and after T as a `FlagW true` at the creation's own stamp; a holder of the valued delta reads the element until T. Costs a state bit in `SeqElem` and its model twin, and a reader telling the mark from a reset; a real reset above the creation replaces the mark on the wire (the element is not live either way). Laws follow from the copy order.
 
 Cheaper partial fix: a writer holding a snapshot of the aspect from before T writes a new one at T. Needs a writer online, and a timer.
+
+Review's read: narrow, not urgent. It takes a list element (maps are fine), another writer's edit of it, a snapshot between the edit and T, no snapshot or sweep after T, and a node joining after T. Any compaction after T ends it for everyone. The full fix is also a simplification (`strip` and `expire` become one, no `at_node`), so it fits a branch of its own: touches `SeqElem`, the model, wire decode of the mark, copies and deaths.
