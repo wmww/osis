@@ -762,6 +762,54 @@ fn put_removed(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, k: 
     lp.peers[0].commit(m).unwrap().unwrap()
 }
 
+// spec/crdt.md §4.7 (expiry is a hard bound), spec/commits.md §5: a part whose expiry is also its
+// absolute keep at most (and a later relative one); a write of its body dies before T. The keep-at-most judgment at the death
+// must not take the expiry's timer (one key per time, commit and part): at T the live entry goes.
+#[test]
+fn expiry_at_absolute_bound_survives_a_death_spec_crdt_4_7() {
+    let mut lp = net(1, 59);
+    let t = new_thing(&mut lp, 0);
+    let at = lp.peers[0].engine.now().0 + 5_000;
+    let mut m = Mutation::new();
+    m.retention(t, &BIG, crate::timed_dead::most(Some(at), Some(3_600_000)).unwrap()).unwrap();
+    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
+    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
+    m.expires(t, &BIG, WallMs(at)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(t, &BIG, PathOp { path: vec![], op: Op::Remove(s("a")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(4_000);
+    assert_eq!(big(&mut lp, 0, t), None, "b expired at T");
+}
+
+// spec/commits.md §5 (a live write's carrier goes before its body drops): a body under an
+// absolute and a relative keep at most, past T before any tick; a death arriving then (a
+// removal of one of its two entries) leaves the drop to the timer, which node-sync's carrier
+// precedes (`due_live_drops`), instead of dropping it in the killing transaction.
+#[test]
+fn death_past_absolute_bound_leaves_drop_to_timer_spec_commits_5() {
+    let mut lp = net(1, 60);
+    let t = new_thing(&mut lp, 0);
+    let at = lp.peers[0].engine.now().0 + 5_000;
+    let mut m = Mutation::new();
+    m.retention(t, &BIG, crate::timed_dead::most(Some(at), Some(3_600_000)).unwrap()).unwrap();
+    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
+    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(6_000);
+    let mut m = Mutation::new();
+    m.op(t, &BIG, PathOp { path: vec![], op: Op::Remove(s("a")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.body_not_dropped(&c, &t, &ak("t:big.0")), "held until the timer");
+    assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == c), "its carrier is due first");
+    e.tick().unwrap();
+    assert!(!e.body_not_dropped(&c, &t, &ak("t:big.0")));
+    assert_eq!(e.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map([(s("b"), s("2"))].into())), "the live entry stays");
+}
+
 // spec/crdt.md §4.6, §4.7 (an undo never extends a value's lifetime past its original expiry):
 // undoing the removal of an expiring map entry re-adds it with the entry's expiry, at both
 // nodes
