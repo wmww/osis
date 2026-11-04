@@ -2152,7 +2152,7 @@ fn eph_large(name: &str, single: bool, inflight: bool) {
 }
 
 fn eph_seeds() -> osis_base::testenv::Seeds {
-    osis_base::testenv::Seeds::from_env("OSIS_EPH_START", "OSIS_EPH_SEEDS", 0..200)
+    osis_base::testenv::Seeds::from_env("OSIS_EPH_START", "OSIS_EPH_SEEDS", osis_base::testenv::large(0..200))
 }
 
 fn eph_replay(name: &str, seed: u64) -> String {

@@ -858,7 +858,7 @@ fn parts_replay(s: u64) -> String {
 #[test]
 #[ignore]
 fn parts_differential_large_spec_commits_4() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_PARTS_START", "OSIS_PARTS_SEEDS", 1..151);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_PARTS_START", "OSIS_PARTS_SEEDS", osis_base::testenv::large(1..151));
     let n = seeds.range.end - seeds.range.start;
     let all = seeds.run("parts::parts_differential_large_spec_commits_4", parts_replay, parts_seed);
     let played_n = all.iter().filter(|s| s.played).count() as u64;
@@ -1764,7 +1764,7 @@ fn removed_replay(s: u64) -> String {
 #[test]
 #[ignore]
 fn removed_author_differential_large_spec_commits_4() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_REMOVED_START", "OSIS_REMOVED_SEEDS", 1..61);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_REMOVED_START", "OSIS_REMOVED_SEEDS", osis_base::testenv::large(1..61));
     let n = seeds.range.end - seeds.range.start;
     let all = seeds.run("parts::removed_author_differential_large_spec_commits_4", removed_replay, removed_seed);
     let played_n = all.iter().filter(|s| s.played).count() as u64;

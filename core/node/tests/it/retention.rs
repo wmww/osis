@@ -1268,7 +1268,7 @@ fn deaths_never_early_random_spec_commits_5() {
 #[test]
 #[ignore = "tier 2"]
 fn deaths_never_early_random_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_STRAYS_START", "OSIS_STRAYS_SEEDS", 0..200).run("retention::deaths_never_early_random_large", dating_replay, dating_history);
+    osis_base::testenv::Seeds::from_env("OSIS_STRAYS_START", "OSIS_STRAYS_SEEDS", osis_base::testenv::large(0..200)).run("retention::deaths_never_early_random_large", dating_replay, dating_history);
 }
 
 fn dating_replay(s: u64) -> String {
@@ -1638,7 +1638,7 @@ fn undo_never_outlives_expiry_random_spec_crdt_4_6() {
 #[test]
 #[ignore = "tier 2"]
 fn undo_never_outlives_expiry_random_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_UNDOEXP_START", "OSIS_UNDOEXP_SEEDS", 0..200).run("retention::undo_never_outlives_expiry_random_large", undo_replay, undo_expiry_history);
+    osis_base::testenv::Seeds::from_env("OSIS_UNDOEXP_START", "OSIS_UNDOEXP_SEEDS", osis_base::testenv::large(0..200)).run("retention::undo_never_outlives_expiry_random_large", undo_replay, undo_expiry_history);
 }
 
 fn undo_replay(s: u64) -> String {

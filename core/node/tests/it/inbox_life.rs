@@ -1011,7 +1011,7 @@ fn hint_turns_reach_the_group_spec_sync_3() {
 #[test]
 #[ignore]
 fn hint_turns_reach_the_group_large_spec_sync_3() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_HINTS_START", "OSIS_HINTS_SEEDS", 0..60);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_HINTS_START", "OSIS_HINTS_SEEDS", osis_base::testenv::large(0..60));
     seeds.run("inbox_life::hint_turns_reach_the_group_large_spec_sync_3", hint_turns_replay, hint_turns_seed);
 }
 

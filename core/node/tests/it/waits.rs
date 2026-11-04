@@ -496,7 +496,7 @@ fn gap_snapshots_converge_spec_crdt_8() {
 #[test]
 #[ignore = "tier 2"]
 fn gap_snapshots_converge_large_spec_crdt_8() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", 1000..1300);
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", osis_base::testenv::large(1000..1300));
     gap_snapshot_run("gap_snapshots_converge_large_spec_crdt_8", seeds.range, 30);
 }
 

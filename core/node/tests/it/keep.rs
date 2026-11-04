@@ -1086,7 +1086,7 @@ fn any_order_until_keeps_no_more_spec_perm_3() {
 #[test]
 #[ignore = "tier 2"]
 fn any_order_until_keeps_no_more_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_KEEP_START", "OSIS_KEEP_SEEDS", 0..200).run("keep::any_order_until_keeps_no_more_large", any_order_until_replay, any_order_until_seed);
+    osis_base::testenv::Seeds::from_env("OSIS_KEEP_START", "OSIS_KEEP_SEEDS", osis_base::testenv::large(0..200)).run("keep::any_order_until_keeps_no_more_large", any_order_until_replay, any_order_until_seed);
 }
 
 fn any_order_replay(s: u64) -> String {
@@ -1108,5 +1108,5 @@ fn any_order_keeps_no_more_spec_perm_3() {
 #[test]
 #[ignore = "tier 2"]
 fn any_order_keeps_no_more_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_KEEP_START", "OSIS_KEEP_SEEDS", 0..200).run("keep::any_order_keeps_no_more_large", any_order_replay, any_order_seed);
+    osis_base::testenv::Seeds::from_env("OSIS_KEEP_START", "OSIS_KEEP_SEEDS", osis_base::testenv::large(0..200)).run("keep::any_order_keeps_no_more_large", any_order_replay, any_order_seed);
 }

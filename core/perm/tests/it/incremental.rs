@@ -1188,7 +1188,7 @@ fn append_shapes_equals_from_scratch_spec_permissions_5_1() {
 fn append_shapes_equals_from_scratch_large() {
     let (appended, placed) = sum(sharded(384, 0x5eed_0314, adversarial_shapes));
     eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > 1_000, "{appended} {placed}");
+    assert!(appended > 0 && placed > osis_base::testenv::large_n(1_000) as usize, "{appended} {placed}");
 }
 
 /// §5.1 step 5, §6: a held record replaced under its commit ID by a fuller one (a roster
@@ -1567,7 +1567,7 @@ fn append_corners_equals_from_scratch_spec_permissions_5_1() {
 fn append_corners_equals_from_scratch_large() {
     let (appended, placed) = sum(sharded(1_600, 0x5eed_0316, adversarial_corners));
     eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > 1_000, "{appended} {placed}");
+    assert!(appended > 0 && placed > osis_base::testenv::large_n(1_000) as usize, "{appended} {placed}");
 }
 
 /// §5.1 step 5: the cost guard on re-judging later items in a shadow (`SHADOW_SHARE`) only
@@ -1713,7 +1713,7 @@ fn append_falls_equals_from_scratch_spec_permissions_5_1() {
 fn append_falls_equals_from_scratch_large() {
     let (appended, placed) = sum(sharded(1_600, 0x5eed_031a, adversarial_falls));
     eprintln!("appended {appended} placed {placed}");
-    assert!(appended > 0 && placed > 1_000, "{appended} {placed}");
+    assert!(appended > 0 && placed > osis_base::testenv::large_n(1_000) as usize, "{appended} {placed}");
 }
 
 /// §1, §5.1 step 4: a thing named as a holder by a write that a later fall drops (a node
