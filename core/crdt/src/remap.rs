@@ -1,6 +1,6 @@
-//! Dot mapping: every dot of a fragment (write stamps, element identities, anchors, resets)
-//! mapped by a function; `ts` is kept (tests forge copies with it). `Derived` dots map
-//! through their underlying dot. Also the one read-only walk over a fragment's writes (`walk`).
+//! The one read-only walk over a fragment's writes (`walk`), and dot mapping for tests
+//! (`Fragment::map_dots`: every dot mapped by a function, `ts` kept; `Derived` dots map through
+//! their underlying dot).
 
 use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Meta, Register, Set, Slots, Struct};
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
@@ -269,7 +269,9 @@ impl Fragment {
         w.0
     }
 
-    /// Maps every dot (`f` sees non-`Derived` dots; `None` keeps the dot).
+    /// Maps every dot (`f` sees non-`Derived` dots; `None` keeps the dot). Test support: no
+    /// node path rewrites dots; tests forge copies of honest writes under other dots with it.
+    #[doc(hidden)]
     pub fn map_dots(&mut self, f: &dyn Fn(&Dot) -> Option<Dot>) {
         match self {
             Fragment::Register(r) => register(r, f),

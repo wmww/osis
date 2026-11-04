@@ -1885,6 +1885,45 @@ fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
     assert_eq!(lp.peers[2].engine.get(&t, &reg).unwrap(), Some(s("real")), "{got:?}");
 }
 
+// spec/permissions.md §5.2, spec/commits.md §5: a commit-form commit C's body dropped (covered by
+// the owner's snapshot), a reader's snapshot then carrying an extra element under `Commit(C)`
+// changes nothing: its author could not write the aspect.
+#[test]
+fn snapshot_forging_dropped_commit_dot_changes_nothing_spec_perm_5_2() {
+    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    let mut lp = net(3, 0x5f72);
+    lp.sync_all().unwrap();
+    let r = lp.peers[1].engine.tid();
+    let t = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    let mut m = Mutation::new();
+    m.commit_form();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let tags = ak("t:tags.0");
+    lp.advance(1_000);
+    let honest = lp.peers[0].engine.snapshot(&t, &tags).unwrap().unwrap();
+    for i in 1..3 {
+        sync(&mut lp, 0, i);
+    }
+    assert_eq!(lp.peers[2].engine.covered(&honest, &c, &t, &tags).unwrap(), Some(true));
+    lp.peers[2].engine.drop_body(&c, &t, &tags).unwrap();
+    let before = lp.peers[2].engine.get(&t, &tags).unwrap();
+    let ch = lp.peers[0].engine.header(&c).unwrap();
+    let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
+    let cur = lp.peers[1].engine.state(&t, &tags).unwrap().unwrap().clone();
+    let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (extra, _) = batch.finish().unwrap();
+    let mut f = cur;
+    f.join(extra);
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let forged = forge_snapshot_with(&mut lp, 1, t, &tags, now, f, osis_crdt::Frontiers::default());
+    let got = lp.peers[2].engine.ingest(&forged, Vec::new());
+    assert_eq!(lp.peers[2].engine.get(&t, &tags).unwrap(), before, "{got:?}");
+}
+
 // spec/commits.md §5 (covering copies): an honest snapshot covers a commit writing inside an entry an
 // earlier commit created (the body repeats the entry's record without its creation, which the
 // snapshot holds: that record is no write of the body's), and a body this node holds no delta of.
@@ -2028,6 +2067,60 @@ fn reader_copy_voids_no_valid_carrier_spec_perm_5_2() {
     }
 }
 
+// spec/permissions.md §5.2 (an invalid snapshot gives nothing; a received delta's dots take no
+// copies), §5.1: a writer's snapshot, made after its author's demotion and backdated before it,
+// carries an extra element under a dropped commit-form commit's `Commit(C)`. It never shows,
+// whether the demotion (frontier not listing it) or the snapshot arrived first (was
+// issues/snapshot-copy-residue.md: one held set, two states).
+#[test]
+fn demoted_writer_dropped_dot_copy_alike_spec_perm_5_2() {
+    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    let mut lp = net(4, 0x5f87);
+    lp.sync_all().unwrap();
+    let w = lp.peers[1].engine.tid();
+    let t = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    let mut m = Mutation::new();
+    m.commit_form();
+    m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let tags = ak("t:tags.0");
+    lp.advance(1_000);
+    let honest = lp.peers[0].engine.snapshot(&t, &tags).unwrap().unwrap();
+    for i in 1..4 {
+        sync(&mut lp, 0, i);
+    }
+    for i in 2..4 {
+        assert_eq!(lp.peers[i].engine.covered(&honest, &c, &t, &tags).unwrap(), Some(true));
+        lp.peers[i].engine.drop_body(&c, &t, &tags).unwrap();
+    }
+    let before = lp.peers[2].engine.get(&t, &tags).unwrap();
+    let ch = lp.peers[0].engine.header(&c).unwrap();
+    let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
+    let cur = lp.peers[1].engine.state(&t, &tags).unwrap().unwrap().clone();
+    let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+    batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+    let (extra, _) = batch.finish().unwrap();
+    let mut f = cur;
+    f.join(extra);
+    lp.advance(1_000);
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let forged = forge_snapshot_with(&mut lp, 1, t, &tags, now, f, osis_crdt::Frontiers::default());
+    lp.advance(1_000);
+    let rv = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+    let rv_pk = packages(&mut lp, 0).into_iter().find(|p| p.id == rv).unwrap();
+    // peer 2: the snapshot first (valid then), then the demotion; peer 3: the other way round
+    lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
+    lp.deliver(2, &rv_pk).unwrap();
+    lp.deliver(3, &rv_pk).unwrap();
+    lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+    for i in 2..4 {
+        lp.peers[i].engine.reexamine().unwrap();
+    }
+    assert_eq!(lp.peers[3].engine.get(&t, &tags).unwrap(), before, "demotion first");
+    assert_eq!(lp.peers[2].engine.get(&t, &tags).unwrap(), before, "snapshot first");
+}
+
 // spec/crdt.md §4.6, spec/permissions.md §5.2: Bob's write is carried, without its commit, by
 // Alice's valid snapshot S and a reader's invalid one R. Dropping S's body leaves only R's
 // invalid copy, which voids nothing: the write stays whether R arrived before or after the drop
@@ -2068,6 +2161,83 @@ fn valid_carrier_dropped_alike_either_order_spec_perm_5_2() {
     }
     assert_eq!(got[0], got[1], "invalid copy before the drop, after it");
     assert_eq!(got[0], BTreeSet::from(["bob".to_string()]));
+}
+
+// spec/permissions.md §5.2 (a valid snapshot's copies count whether or not the delta owning
+// their dots was received, held or dropped): a valid writer's snapshot copying a dropped
+// commit-form commit C's writes plus an element under a `Commit(C)` dot C did not use. The extra
+// element shows, whether the snapshot arrived before the drop or after, also after a rebuild of
+// the aspect, an honest snapshot without it and a restart, as at a node that never held C.
+#[test]
+fn forged_copy_under_dropped_delta_alike_spec_perm_5_2() {
+    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    for forged_first in [false, true] {
+        let mut lp = net(3, 0x5f88);
+        lp.sync_all().unwrap();
+        let w = lp.peers[1].engine.tid();
+        let t = new_thing(&mut lp, 0);
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+        let mut m = Mutation::new();
+        m.commit_form();
+        m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("a")) }).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let tags = ak("t:tags.0");
+        lp.advance(1_000);
+        let honest = lp.peers[0].engine.snapshot(&t, &tags).unwrap().unwrap();
+        for i in 1..3 {
+            sync(&mut lp, 0, i);
+        }
+        let before = lp.peers[2].engine.get(&t, &tags).unwrap();
+        assert!(before.is_some());
+        let ch = lp.peers[0].engine.header(&c).unwrap();
+        let hi = ch.aspects.iter().find(|x| x.tid == t && x.ak == tags).unwrap().hi;
+        let cur = lp.peers[1].engine.state(&t, &tags).unwrap().unwrap().clone();
+        let mut batch = Batch::new(&cur, Writer::new(ch.ts, Source::commit(c), hi + 10));
+        batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
+        let (extra, _) = batch.finish().unwrap();
+        let mut f = cur;
+        f.join(extra);
+        lp.advance(1_000);
+        let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+        let forged = forge_snapshot_with(&mut lp, 1, t, &tags, now, f, osis_crdt::Frontiers::default());
+        let with = match &before {
+            Some(Value::Set(v)) => Some(Value::Set(v.iter().cloned().chain([s("evil")]).collect())),
+            other => panic!("{other:?}"),
+        };
+        let before = with;
+        let e = &mut lp.peers[2].engine;
+        if forged_first {
+            e.ingest(&forged, Vec::new()).unwrap();
+            assert_eq!(e.get(&t, &tags).unwrap(), before, "forged first, delta held");
+        }
+        assert_eq!(e.covered(&honest, &c, &t, &tags).unwrap(), Some(true));
+        e.drop_body(&c, &t, &tags).unwrap();
+        if !forged_first {
+            e.ingest(&forged, Vec::new()).unwrap();
+        }
+        e.reexamine().unwrap();
+        assert_eq!(e.get(&t, &tags).unwrap(), before, "forged first: {forged_first}");
+        e.rebuild_state(&t, &tags).unwrap();
+        assert_eq!(e.get(&t, &tags).unwrap(), before, "forged first: {forged_first}, rebuilt");
+        // an honest snapshot after the drop: both count
+        lp.advance(1_000);
+        lp.peers[0].engine.snapshot(&t, &tags).unwrap().unwrap();
+        sync(&mut lp, 0, 2);
+        let e = &mut lp.peers[2].engine;
+        e.rebuild_state(&t, &tags).unwrap();
+        assert_eq!(e.get(&t, &tags).unwrap(), before, "forged first: {forged_first}, honest after the drop");
+        lp.peers[2].restart(0x5f89).unwrap();
+        assert_eq!(lp.peers[2].engine.get(&t, &tags).unwrap(), before, "forged first: {forged_first}, restarted");
+        // a node that never held C, only the snapshots
+        let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| p.id != c).collect();
+        lp.peers.push(osis_node::local_peer::Peer::new(0x5f8b, lp.peers[0].engine.now()).unwrap());
+        for p in &pks {
+            let _ = lp.deliver(3, p);
+        }
+        lp.peers[3].engine.ingest(&forged, Vec::new()).unwrap();
+        lp.peers[3].engine.reexamine().unwrap();
+        assert_eq!(lp.peers[3].engine.get(&t, &tags).unwrap(), before, "forged first: {forged_first}, C never held");
+    }
 }
 
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries; revocation is

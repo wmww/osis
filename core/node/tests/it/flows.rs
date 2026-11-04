@@ -1607,6 +1607,38 @@ fn no_rotation_that_cannot_cover_spec_perm_3() {
     }
 }
 
+// spec/crypto.md §3, §4: a doc without secrets of its own in a team without any either: its
+// own-secrets rotation boxes nobody (the team has no keyset). The writer, who does not read the
+// team, gets its grant before the rotation commit (wrapped under the doc's derived epoch): its
+// history box hands it that epoch's secret (it names its epoch), and once the rotation commit is
+// opened its write epoch is established.
+#[test]
+fn grant_in_derived_owner_spec_crypto_4() {
+    let (mut lp, ps) = people(2, 519);
+    let (pa, pb) = (ps[0], ps[1]);
+    let team = thing_of(&mut lp, 0, pa);
+    let doc = thing_of(&mut lp, 0, team);
+    spread(&mut lp);
+    let before: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    let done = lp.peers[0].engine.grant(&doc, &pb, &edge_of(Role::Write)).unwrap();
+    let new: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
+    let (own, rest): (Vec<CommitId>, Vec<CommitId>) = new.into_iter().partition(|c| {
+        let h = lp.peers[0].engine.header(c).unwrap();
+        h.aspects.iter().any(|a| a.tid == doc && a.ak.as_str() == "keys.0") && !h.aspects.iter().any(|a| a.ak.as_str() == "roles.0")
+    });
+    assert_eq!(own.len(), 1, "the doc's own-secrets rotation");
+    send(&mut lp, 0, 1, &rest);
+    carry(&mut lp, 0, &done);
+    let e = lp.peers[1].engine.epochs(&doc).unwrap();
+    let derived = lp.peers[0].engine.epochs(&doc).unwrap().read.epochs().filter(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)).map(|(k, _)| *k).max_by_key(|k| k.n()).unwrap();
+    let genuine = lp.peers[0].engine.epochs(&doc).unwrap().read.secret(&derived).cloned().unwrap();
+    assert_eq!(e.read.secret(&derived), Some(&genuine), "the grant's history box opens the derived epoch");
+    send(&mut lp, 0, 1, &own);
+    let e = lp.peers[1].engine.epochs(&doc).unwrap();
+    assert_eq!(e.read.secret(&derived), Some(&genuine));
+    assert!(e.write.newest_held().is_some(), "bob holds an established write epoch of the doc");
+}
+
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the host's head at the
 // newest epochs; the removed device has no claim key in it, the remaining one has.
 #[test]
