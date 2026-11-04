@@ -1058,6 +1058,7 @@ fn sweep_laws_spec_sync_7() {
         Ty::Map(reg(), Box::new(Ty::List(reg()))),
         Ty::List(Box::new(Ty::Map(reg(), reg()))),
         Ty::Struct([(1, Ty::Map(reg(), reg())), (2, Ty::List(Box::new(pair())))].into_iter().collect()),
+        Ty::Enum([(0, None), (1, Some(Ty::Map(reg(), reg()))), (2, Some(Ty::List(reg())))].into_iter().collect()),
     ];
     for (i, ty) in types.iter().enumerate() {
         let swept: usize = (0..100).map(|s| sweep_laws(s * 2 + 1, ty)).sum();
