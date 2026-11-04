@@ -1,6 +1,8 @@
 # Names of departures from things below expose member rosters and grow with them
 > Summary: A rotation of A names the departures from every thing below A (members' person actors included) since each one's epoch start, and `placed_with` places each named commit (device removals, person roster snapshots) whole under A's labels and those above. Every reader of A gets each member's device roster and churn (notes/permissions.md avoids exactly that for certificates), and the names grow with member device churn, which person rosters rarely snapshot.
-> Tags: keys, engine, sync, tess-call
+> Tags: keys, engine, sync
+
+Decision (Tess: "whatever is simplest"; chosen): notes/roster-names.md §7 option 2 now: `placed_with` places a named roster snapshot projected to its reset-only delta, so readers of A no longer get members' rosters. Growth stays; build descent (option 1) only if big groups make it matter.
 
 - Placement: `rotation::placed_with` -> `Delivery::First` -> `place_chain` copies `roles.0`/`tenures.0` deltas of things outside the label's closure whole, roster snapshots included (an epoch start is a name). A projection would not meet the name (spec/crypto.md §4: a projection lacking the delta does not count), so projecting is not a drop-in fix.
 - Size: about 75 B per name in every history box of the rotation and in each grant's and re-seal's copy. A person actor's roster is snapshotted only when its recovery key signs (notes/permissions.md), so a group of 1000 persons averaging two device removals each carries about 150 KB of names per role per rotation, and copies it per grant.
