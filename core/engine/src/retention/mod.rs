@@ -274,9 +274,9 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     }
     if t <= tx.now().0 {
         drop_body(tx)
-    } else if a.expires.is_none_or(|e| e > t) {
-        // an expiry at or before it drops the body (every part of a body shares its expiry,
-        // `body_class`) and holds the timer key at its time
+    } else if m.header.expires.is_none_or(|e| e > t) {
+        // an expiry at or before it drops the body (the commit's, spec/commits.md §6) and holds
+        // the timer key at its time
         tx.put_timer(t, c, ai, T_AT_MOST)
     } else {
         Ok(())
@@ -903,7 +903,7 @@ fn abs_timer(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ai: usize) -> Result<()
         return Ok(());
     }
     let Some(t) = header_bound(h, a) else { return Ok(()) };
-    if a.expires.is_some_and(|e| e <= t) {
+    if h.expires.is_some_and(|e| e <= t) {
         return Ok(());
     }
     tx.put_timer(t, id, ai, T_AT_MOST)
