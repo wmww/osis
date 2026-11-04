@@ -373,7 +373,9 @@ impl Engine {
         let key = (*g, index, head.id());
         if let Some(k) = self.core.head_keys.get(&key).cloned() {
             #[cfg(debug_assertions)]
-            debug_assert_eq!(k.public(), self.head_keys_derived(g, index, head)?.public(), "head_keys of {g:?} went stale");
+            if self.recheck(format!("head_keys {g:?} {index} {:?}", head.id())) {
+                assert_eq!(k.public(), self.head_keys_derived(g, index, head)?.public(), "head_keys of {g:?} went stale");
+            }
             return Ok(k);
         }
         let _s = crate::costs::span("head keys: derive");

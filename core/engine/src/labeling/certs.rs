@@ -76,7 +76,10 @@ impl Engine {
     /// delta boxes. Empty for any other commit kind.
     pub fn holders_named(&mut self, c: &CommitId) -> Arc<BTreeMap<usize, BTreeSet<Tid>>> {
         if let Some(n) = self.core.holders_named.get(c).cloned() {
-            debug_assert_eq!(*n, self.holders_named_read(c), "holders_named of {c:?} went stale");
+            #[cfg(debug_assertions)]
+            if self.recheck(format!("holders_named {c:?}")) {
+                assert_eq!(*n, self.holders_named_read(c), "holders_named of {c:?} went stale");
+            }
             return n;
         }
         let _s = crate::costs::span("holders named: read");

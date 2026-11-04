@@ -921,12 +921,16 @@ impl SyncEngine {
         // nothing it reads moved: the engine, the entries or the clock past an expiry
         let (generation, version, now) = (self.engine.core.generation, self.state.version, self.now());
         let quiet = self.vetted.is_some_and(|(g, v, at)| g == generation && v == version && now < at);
+        // debug builds compare the skipped run with a real one, once per point of the store
         #[cfg(debug_assertions)]
-        let before = quiet.then(|| self.state.hints.iter().map(|(l, h)| (*l, format!("{h:?}"))).collect::<Vec<_>>());
+        let check = quiet && self.engine.recheck(format!("vet_inbox_hints {version}"));
         #[cfg(not(debug_assertions))]
-        if quiet {
+        let check = false;
+        if quiet && !check {
             return Ok(());
         }
+        #[cfg(debug_assertions)]
+        let before = check.then(|| self.state.hints.iter().map(|(l, h)| (*l, format!("{h:?}"))).collect::<Vec<_>>());
         let (expires, released) = self.vet_inbox_hints_now()?;
         #[cfg(debug_assertions)]
         if let Some(b) = before {

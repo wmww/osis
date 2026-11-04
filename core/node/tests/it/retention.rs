@@ -140,7 +140,19 @@ fn purge_sets_any_order_spec_perm_8() {
 // demotion the requester had not heard of. Dropped iff the set holds the requester at the
 // request's time; with the demotion last a stale drop falls, the part missing until a copy comes.
 #[test]
-fn purge_rights_any_arrival_order_spec_perm_8() {
+fn purge_rights_both_arrival_orders_spec_perm_8() {
+    // each message before and after each other
+    purge_rights(&[[0, 1, 2], [2, 1, 0]]);
+}
+
+#[test]
+#[ignore = "tier 2: every order of the three"]
+fn purge_rights_any_arrival_order_large_spec_perm_8() {
+    purge_rights(&[[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]);
+}
+
+/// Every purge right against every kind of requester, each arriving in each of `orders` at a fresh node.
+fn purge_rights(orders: &[[usize; 3]]) {
     use osis_schema::{PurgeBy, Retention};
     for by in PurgeBy::ALL {
         // requester: 0 the admin, 1 the author, 2 another writer; demoted: lost write before it asks
@@ -151,8 +163,7 @@ fn purge_rights_any_arrival_order_spec_perm_8() {
                 (2, false) => by.writer(),
                 _ => false,
             };
-            const ORDERS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
-            let mut lp = net(3 + ORDERS.len(), 0x51 + by as u64);
+            let mut lp = net(3 + orders.len(), 0x51 + by as u64);
             lp.sync_all().unwrap();
             let t = new_thing(&mut lp, 0);
             for i in [1, 2] {
@@ -182,7 +193,7 @@ fn purge_rights_any_arrival_order_spec_perm_8() {
             let pc = lp.peers[who].commit(m).unwrap().unwrap();
             late.push(lp.peers[who].engine.package(&pc).unwrap().unwrap());
             let pks = lp.packages(0).unwrap();
-            for (k, order) in ORDERS.iter().enumerate() {
+            for (k, order) in orders.iter().enumerate() {
                 let r = 3 + k;
                 for p in pks.iter().filter(|p| base.contains(&p.id) && p.id != c) {
                     let _ = lp.deliver(r, p);

@@ -83,7 +83,12 @@ unification_check() {
   echo "   $bad offenders"
   [ "$bad" -eq 0 ]
 }
-step() { printf '== %s\n' "$*"; s=$(date +%s); "$@"; printf '   (%ss)\n' $(( $(date +%s) - s )); }
+# Children's CPU seconds so far (user + system); a step prints the difference: under load wall time says little.
+# `times` in the shell itself: a subshell's children start at 0.
+tf=$(mktemp)
+trap 'rm -f "$tf"' EXIT
+cpu() { times > "$tf"; cpu=$(awk 'function s(t) { split(t, a, /[ms]/); return a[1] * 60 + a[2] } NR == 2 { printf "%d", s($1) + s($2) }' "$tf"); }
+step() { printf '== %s\n' "$*"; step_s=$(date +%s); cpu; step_c=$cpu; "$@"; cpu; printf '   (%ss, %s CPU-s)\n' $(( $(date +%s) - step_s )) $(( cpu - step_c )); }
 # The GUI workspace: its own target (kit/target), lock and deny config.
 gui_steps() {
   step python3 tools/policy.py kit
