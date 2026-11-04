@@ -11,3 +11,5 @@ Simplest full fix: make it the map's rule. A value-less mark on the creation, a 
 Cheaper partial fix: a writer holding a snapshot of the aspect from before T writes a new one at T. Needs a writer online, and a timer.
 
 Review's read: narrow, not urgent. It takes a list element (maps are fine), another writer's edit of it, a snapshot between the edit and T, no snapshot or sweep after T, and a node joining after T. Any compaction after T ends it for everyone. The full fix is also a simplification (`strip` and `expire` become one, no `at_node`), so it fits a branch of its own: touches `SeqElem`, the model, wire decode of the mark, copies and deaths.
+
+Parked: branch `crdt-leftovers` on devbox has a value-less mark for this; its review found a gap with validity un-merge: issues/list-mark-lost-on-fall.md. The simplest rule left is value-less as its own state bit, carried on the wire beside any reset.
