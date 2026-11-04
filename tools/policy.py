@@ -59,7 +59,14 @@ for m in members:
     man = load(os.path.join(m, "Cargo.toml"))
     lints = man.get("lints", {})
     is_model = rel.startswith(("core/test/crdt-model", "core/test/roles-model"))
-    if is_model:
+    # app/android: the workspace lints with unsafe_code at deny, for its one `#[unsafe(no_mangle)]`
+    # entry point (NativeActivity finds `android_main` by name; notes/android.md)
+    is_android = rel == "app/android"
+    if is_android:
+        want = {"rust": {"unsafe_code": "deny"}, "clippy": ws["workspace"].get("lints", {}).get("clippy", {})}
+        if lints != want:
+            errs.append(f"{rel}: needs the workspace lints with [lints.rust] unsafe_code = \"deny\"")
+    elif is_model:
         if lints.get("rust", {}).get("unsafe_code") != "forbid":
             errs.append(f"{rel}: model needs [lints.rust] unsafe_code = \"forbid\"")
     elif lints.get("workspace") is not True:
@@ -73,13 +80,20 @@ for m in members:
     for src in glob.glob(os.path.join(m, "**/*.rs"), recursive=True):
         if os.path.relpath(src, m).startswith(("target/", "patches/")):
             continue
+        # a member nested in this one (app/android in app) is checked as itself
+        if any(o != m and src.startswith(o + os.sep) and o.startswith(m + os.sep) for o in members):
+            continue
         srel = os.path.relpath(src, ROOT)
         text = open(src).read()
         for i, line in enumerate(text.splitlines(), 1):
             if UNSAFE.search(line.split("//", 1)[0]):
                 errs.append(f"{srel}:{i}: unsafe code")
+        if is_android and len(re.findall(r"\bunsafe\b", re.sub(r"//[^\n]*", "", text))) != text.count("#[unsafe(no_mangle)]"):
+            errs.append(f"{srel}: unsafe beyond the entry point's #[unsafe(no_mangle)]")
+        if is_android and text.count("#[unsafe(no_mangle)]") > 1:
+            errs.append(f"{srel}: more than one #[unsafe(no_mangle)]")
         root_file = srel.endswith(("/src/lib.rs", "/src/main.rs")) or "/src/bin/" in srel
-        if root_file and not is_model and "#![forbid(unsafe_code)]" not in text:
+        if root_file and not is_model and not is_android and "#![forbid(unsafe_code)]" not in text:
             errs.append(f"{srel}: crate root lacks #![forbid(unsafe_code)]")
 
 for name, where in sorted(external.items()):
