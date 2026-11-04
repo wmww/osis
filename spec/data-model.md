@@ -1,5 +1,5 @@
 # Data model and value encoding
-> Summary: Things and self-certifying tids, aspects and AKs, the type system, values and their canonical CBOR profile, large atomic values (chunk trees and links), hashing, groups, core aspects, schemas.
+> Summary: The data everything else carries: things, tids, aspects, types, canonical value encoding, large values, hashing, groups, core aspects and schemas.
 
 ## 1. Things and tids
 - Every datum is an **aspect** of a **thing**. A thing holds aspects and nothing else.
@@ -8,12 +8,23 @@
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
 - A thing never changes owner; moving it is a copy under a new tid (spec/permissions.md §7).
-- An **ephemeral thing** is one whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner, and travels beside the deltas of ephemeral commits (spec/commits.md §2). The durable set is closed under owner: the first commit with a durable delta on an ephemeral thing (or a durable placement into it, §8) carries `created.0` of it and of every ephemeral thing on its owner chain (spec/commits.md §2), keeping the tids, and makes its ephemeral placements durable (§8). A durable thing never becomes ephemeral. An ephemeral thing never given durable data is gone when no node holds it.
+- An **ephemeral thing** is one whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner, and travels beside the deltas of ephemeral commits (spec/commits.md §2).
+  - The durable set is closed under owner: the first commit with a durable delta on an ephemeral thing (or a durable placement into it, §8) carries `created.0` of it and of every ephemeral thing on its owner chain (spec/commits.md §2), keeping the tids, and makes its ephemeral placements durable (§8).
+  - A durable thing never becomes ephemeral.
+  - An ephemeral thing never given durable data is gone when no node holds it.
 
 ## 2. Aspects
-- An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) "." version ["^"] ["~" / "*"]`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo.1^~`. Anything else, or more than 1024 bytes (spec/wire.md §4), is not an AK.
+- An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) "." version ["^"] ["~" / "*"]`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo.1^~`. Anything else, or longer than the AK limit (spec/wire.md §4), is not an AK.
 - The tid and name segments name the aspect; the **version** is its major version. A key with the same tid and name segments and a higher version is a **successor** of the lower: the form a breaking change takes (spec/versioning.md §4). A node may use the relation without any schema; it implies no conversion.
-- **Markers**: `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2). The **lifetime marker** decides where writes of the AK go, for every AK alike, declared by a schema or not: none, durable commits; `~` **ephemeral**, a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9); `*` **signal**, an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set). A node decides an aspect's storage class from its AK alone (spec/commits.md §2). Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory). Core aspects are durable but `placed.0~` (§8), which is ephemeral.
+- **Markers**:
+  - `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2).
+  - The **lifetime marker** decides where writes of the AK go, for every AK alike, declared by a schema or not:
+    - none: durable commits;
+    - `~` **ephemeral**: a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9);
+    - `*` **signal**: an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set).
+  - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
+  - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
+  - Core aspects are durable but `placed.0~` (§8), which is ephemeral.
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker owns, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
 - A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `ro`, `synthetic`, `guaranteed`, `indexed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry.
@@ -67,12 +78,21 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - Names never go on the wire; struct fields and enum cases are integer IDs. A struct and a `map<int, T>` share an encoding; the schema decides.
 
 ## 6. Large atomic values
-- A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, spec/wire.md §2) MUST be chunked; one at or below it MUST NOT be. Only durable content answers to this. A role-class aspect's values (spec/data-model.md §9) stay inline, whatever their size (a `label.0` claim set, a `secrets.0` history box), except a `tenures.0` frontier above the threshold, which is chunked (spec/permissions.md §6); an ephemeral commit has no chunks (spec/commits.md §2), so its values stay inline within its blob. A durable delta on any other aspect holding such a value unchunked is bad by itself (spec/commits.md §4), judged without its type: a `Str` or `Bytes` in a register value, a set or bag element's whole value, a map key.
-- Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8, giving a tree: leaves are chunks, interior nodes are `[level, [LINK+], [len+]]` (at most 512 links, each with the plaintext length under it, so a reader seeks without fetching what lies before); the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
+- A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, spec/wire.md §2) MUST be chunked; one at or below it MUST NOT be. Only durable content answers to this:
+  - A role-class aspect's values (§9) stay inline, whatever their size (a `label.0` claim set, a `secrets.0` history box), except a `tenures.0` frontier above the threshold, which is chunked (spec/permissions.md §6).
+  - An ephemeral commit has no chunks (spec/commits.md §2), so its values stay inline within its blob.
+  - A durable delta on any other aspect holding such a value unchunked is bad by itself (spec/commits.md §4), judged without its type: a `Str` or `Bytes` in a register value, a set or bag element's whole value, a map key.
+- Chunking: content-defined boundaries over the canonical bytes, same chunker as spec/crdt.md §8, giving a tree: leaves are chunks, interior nodes hold links with the plaintext length under each; the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
 - Every chunk and interior node is a separate blob encrypted under a fresh random key (spec/sync.md §1). A **link** = (keyed content hash of the subtree, blob ID, suite byte || 32-byte blob key), 97 bytes of payload (spec/crypto.md §6); the root's content hash is a function of the value's canonical bytes alone (spec/wire.md §6).
 - Equality of a large value is equality of its keyed content hash, never of its link bytes.
-- A link stands only where the type takes one: a blob, string or `any` position, or a set element or map key (or a position inside one) whose type is not **small**. Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `tid`, counter, max, min, and an enum whose cases carry no payload. A link anywhere else is a type mismatch (spec/versioning.md §5): a typed read reports it without fetching the link. In a core aspect (§9) it is bad input (spec/crdt.md §3.3 rule 7).
-- A read that materializes a link it cannot read (a blob of its tree not held, which includes a blob ID nothing holds, or failing to decrypt or verify under the thing's dedup secret, spec/crypto.md §6) MUST fail only that position: the link reads as absent (its list or set element, its map entry or struct field, and an enum whose payload it is, read as absent; at the aspect root the aspect reads absent), the rest of the value reads, and the node reports a diagnostic. Every read of the value (typed, untyped, per path, watches) applies this rule alike. A read of one commit's body (its history entry) holding such a link reads that body whole as not fetched. When a blob such a read lacked arrives, the node delivers the aspect, or that commit's history entry, to its watches again.
+- A link stands only where the type takes one: a blob, string or `any` position, or a set element or map key (or a position inside one) whose type is not **small**.
+  - Small types can never exceed `CHUNK_THRESHOLD`: `bool`, `int`, `float`, `tid`, counter, max, min, and an enum whose cases carry no payload.
+  - A link anywhere else is a type mismatch (spec/versioning.md §5): a typed read reports it without fetching the link.
+  - In a core aspect (§9) it is bad input (spec/crdt.md §3.3 rule 7).
+- A read that materializes a link it cannot read (a blob of its tree not held, which includes a blob ID nothing holds, or failing to decrypt or verify under the thing's dedup secret, spec/crypto.md §6) MUST fail only that position: the link reads as absent (its list or set element, its map entry or struct field, and an enum whose payload it is, read as absent; at the aspect root the aspect reads absent), the rest of the value reads, and the node reports a diagnostic.
+  - Every read of the value (typed, untyped, per path, watches) applies this rule alike.
+  - A read of one commit's body (its history entry) holding such a link reads that body whole as not fetched.
+  - When a blob such a read lacked arrives, the node delivers the aspect, or that commit's history entry, to its watches again.
 - Every blob is at most `MAX_BLOB` bytes (format constant, spec/wire.md §2); a commit's limit is its header lists' (spec/commits.md §1). A revoke frontier (spec/permissions.md §5) above `CHUNK_THRESHOLD` is chunked the same way and referenced by link.
 
 ## 7. Hashing
@@ -82,39 +102,56 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 8. Groups
 - A **group** is a thing with a `group.0` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are the items of its `group.0` and `placed.0~` plus, transitively, the members of their subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
-- Member, membership and member of a group mean only this placement. Rights come from role grants; their terms (role, holder, role commit, role-class aspect, role timeline) are spec/permissions.md §1.
-- Groups are the sync unit (spec/sync.md §3). Being in a group grants no rights (spec/permissions.md).
+- Member, membership and member of a group mean only this placement, which grants no rights (spec/permissions.md §1). Groups are the sync unit (spec/sync.md §3).
 - `groups.0` (synthetic) on a thing: the locally known groups containing it, directly or transitively, through `group.0` and `placed.0~`.
-- `placed.0~`, of `group.0`'s type, is the one ephemeral core aspect: the ephemeral placements into the group, written by group operations only. Adding or removing an item or subgroup that is ephemeral after the write is a write of the group's `placed.0~`, needing write on the group; any other write of an ephemeral group's `group.0` is ephemeral too and goes to `placed.0~`. Adding a durable item or subgroup is durable and persists the group (§1). When a thing persists, the persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, with that placement's expiry, and the node removes it from `placed.0~`; a placement into a group it may not write stays ephemeral. Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral placements durably (a placement made while it persisted elsewhere, or restored by an undo), and removing a durable item or subgroup also removes it from `placed.0~`. A persisting thing with a `placed.0~` and no `group.0` gets an empty durable `group.0` in that commit.
+- `placed.0~`, of `group.0`'s type, is the one ephemeral core aspect: the ephemeral placements into the group, written by group operations only.
+- **Group writes**:
+  - Adding or removing an item or subgroup that is ephemeral after the write is a write of the group's `placed.0~`, needing write on the group.
+  - Any other write of an ephemeral group's `group.0` is ephemeral too and goes to `placed.0~`.
+  - Adding a durable item or subgroup is durable and persists the group (§1).
+  - Removing a durable item or subgroup also removes it from `placed.0~`.
+- **When a thing persists**:
+  - The persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, with that placement's expiry, and the node removes it from `placed.0~`.
+  - A placement into a group it may not write stays ephemeral.
+  - A persisting thing with a `placed.0~` and no `group.0` gets an empty durable `group.0` in that commit.
+  - Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral placements durably (a placement made while it persisted elsewhere, or restored by an undo).
 
 ## 9. Core schema
-The core aspects form the core schema, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
+The core aspects form the core schema, evolving under spec/versioning.md. The block below (DSL of notes/data-model.md) gives their exact types and flags; `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
 
-| AK | type | notes |
-|---|---|---|
-| `tid.0` | tid | synthetic, guaranteed |
-| `aspects.0` | set<string> | synthetic, guaranteed: AKs present on the thing |
-| `created.0` | struct | guaranteed: the creation record; carried by the thing's first commit, retention `nobody` (spec/commits.md §2, §5) |
-| `roles.0` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<edge_key>, tied: option<tie>, keyset: option<edge_key> }> | role grants (`since` only in roster snapshots, spec/permissions.md §6; `tied`: the placement the edge goes with, spec/permissions.md §2; `until` 0: a removal saying keep, spec/permissions.md §2; `keyset`: a holder actor's edge: the key of its `keys.0` commit the last grant or raise sealed to, kept by every later write of the edge and by roster snapshots, spec/crypto.md §4); read as the role timeline's roster (spec/permissions.md §5) |
-| `keys.0` | struct { read, write, admin: { epoch, kem_key, delete_key, supersedes }, inbox, deposit seed } | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
-| `secrets.0` | struct { boxes: map<(holder, role, epoch), box>, history: map<(role, epoch), history box> } | spec/crypto.md §4 |
-| `tenures.0` | set<struct { holder: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
-| `label.0` | map<label ID, struct { index, steps: map<step ID, step>, hosts, replaced }> | labels of a synced group (spec/sync.md §2) |
-| `moved.0` | tid (register) | the thing this one continued as (spec/permissions.md §7) |
-| `was.0` | tid (register) | the thing this one continues (spec/permissions.md §7) |
-| `node.0` | struct { software version } | on a node thing |
-| `reach.0` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
-| `seen.0` | struct { ts: timestamp, stranded: bool, suspect: set<suspect> } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
-| `host.0^` | struct { listen, admit, labels, replicate, policy, caps } | on a node thing: the node hosts (spec/sync.md §4); absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). `admit` `own`: it takes registrations of the labels of groups its person owns whose hosts name its host address, and of `labels`; a group its person owns: the node or its person (the person it was created or paired for) is on the group's owner chain; no role edge, on the group or an owner above it, held by the node or the person, qualifies; `open`: of any label. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5). `replicate`: peer hosts; `policy`, `caps`: local policy. Never part of the node card (spec/permissions.md §4) |
-| `clients.0^` | map<client actor tid, struct { secret_hash, until }> | on a node thing: the thin clients it serves (spec/sync.md §10). `secret_hash`: BLAKE3 of the client's 32-byte bearer secret; `until`: when its sessions end. The client actor is a thing the node's person owns, with secrets of its own, and what the client may do is that actor's roles. Never part of the node card |
-| `required.0^` | struct { rules: map<string, struct { by, at_least: bound, at_most: bound, expires: option<duration> }>, keep: bool } | `rules`: the retention the thing requires, by AK prefix (spec/commits.md §5); `keep`: a removal from the thing keeps by default (spec/permissions.md §2, §3); fixed retention `nobody`, kept forever; a separate setting per thing, a move carrying only `keep` (spec/permissions.md §7) |
-| `purge.0` | timestamp | when a purge request naming no aspect to reset was made here: the delta such a commit carries (spec/commits.md §5); fixed retention, so no required retention reaches it |
-| `group.0` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
-| `placed.0~` | struct { items: set<tid>, subgroups: set<tid> } | ephemeral: the ephemeral placements, §8 |
-| `groups.0` | set<tid> | synthetic, guaranteed, local |
-| `name.0` | string | what humans call the thing |
-| `body.0` | markdown | freeform content: a note's text, notes on anything |
-| `tag.0` | struct { color: option<string> } | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
+| AK | what it is for |
+|---|---|
+| `tid.0` | the thing's tid |
+| `aspects.0` | AKs present on the thing |
+| `created.0` | the creation record (spec/commits.md §2, §5) |
+| `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `since`: only in roster snapshots (spec/permissions.md §6). `tied`: the placement the edge goes with (spec/permissions.md §2). `until` 0: a removal saying keep (spec/permissions.md §2). `keyset`: a holder actor's edge: the key of its `keys.0` commit the last grant or raise sealed to, kept by every later write of the edge and by roster snapshots (spec/crypto.md §4) |
+| `keys.0` | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
+| `secrets.0` | an actor's boxes and history boxes (spec/crypto.md §4) |
+| `tenures.0` | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
+| `label.0` | labels of a synced group (spec/sync.md §2) |
+| `moved.0` | the thing this one continued as (spec/permissions.md §7) |
+| `was.0` | the thing this one continues (spec/permissions.md §7) |
+| `node.0` | on a node thing: its software version |
+| `reach.0` | on a node thing (spec/sync.md §10); never direct addresses |
+| `seen.0` | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
+| `host.0^` | on a node thing: the node hosts (below) |
+| `clients.0^` | on a node thing: the thin clients it serves (below) |
+| `required.0^` | `rules`: the retention the thing requires, by AK prefix (spec/commits.md §5); `keep`: a removal from the thing keeps by default (spec/permissions.md §2, §3); a separate setting per thing, a move carrying only `keep` (spec/permissions.md §7) |
+| `purge.0` | when a purge request naming no aspect to reset was made here: the delta such a commit carries (spec/commits.md §5) |
+| `group.0` | §8 |
+| `placed.0~` | the ephemeral placements, §8 |
+| `groups.0` | the locally known groups holding the thing, §8 |
+| `name.0` | what humans call the thing |
+| `body.0` | freeform content: a note's text, notes on anything |
+| `tag.0` | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
+
+- **`host.0^`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never part of the node card (spec/permissions.md §4).
+  - `admit` `own`: it takes registrations of the labels of groups its person owns whose hosts name its host address, and of `labels`. A group its person owns: the node or its person (the person it was created or paired for) is on the group's owner chain; no role edge, on the group or an owner above it, held by the node or the person, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
+  - `admit` `open`: it takes registrations of any label.
+  - `replicate`: peer hosts. `policy`, `caps`: local policy.
+- **`clients.0^`**: thin clients by client actor (spec/sync.md §10). Never part of the node card.
+  - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
+  - The client actor is a thing the node's person owns, with secrets of its own, and what the client may do is that actor's roles.
 
 **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`, `tenures.0`, `moved.0`, `was.0`. Their rules: spec/commits.md §2, spec/permissions.md.
 
@@ -142,6 +179,9 @@ type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: li
 type admit = enum { 0 own, 1 open };
 type host_caps = struct { 0 entries: int, 1 bytes: int };
 type client = struct { 0 secret_hash: blob, 1 until: option<timestamp> };
+type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
+type required = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 at_least: bound, 2 at_most: bound, 3 expires: option<duration> };
+type required_rules = struct { 0 rules: map<string, required>, 1 keep: bool };   // rules: by AK prefix
 
 aspect tid.0: tid [synthetic, guaranteed];
 aspect aspects.0: set<string> [synthetic, guaranteed];
@@ -162,7 +202,7 @@ aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret:
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool, 2 suspect: set<suspect> };    // ts: wall ms of the commit's ts
 aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<blob>, 3 replicate: list<address>, 4 policy: map<string, int>, 5 caps: map<blob, host_caps> };   // label IDs: 16 bytes
 aspect clients.0^: map<tid, client>;
-aspect required.0^: map<string, required>;                       // by AK prefix
+aspect required.0^: required_rules;
 aspect purge.0: timestamp;
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
@@ -172,7 +212,7 @@ aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
 - `creation` holds exactly one of fields 0, 1 and 4 and field 3 needs field 0 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
+- Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas
