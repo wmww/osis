@@ -331,7 +331,7 @@ impl Engine {
             let emptied = crate::retention::emptied();
             for p in blob.parts.iter().filter(|p| p.delta != emptied) {
                 let Some(a) = blob.header.aspects.get(p.ai) else { continue };
-                if a.expires.is_some_and(|t| t <= now.0) {
+                if blob.header.expires.is_some_and(|t| t <= now.0) {
                     return Ok(Some(format!("part {} on {:?} {} past its expiry", p.ai, a.tid, a.ak.as_str())));
                 }
                 if tx.core.dedup(&a.tid).is_some() && crate::retention::known_purged(tx, &blob.header, &c, p.ai)? {

@@ -1348,7 +1348,7 @@ fn value_past_end(p: &mut Peer, played: &Played, now: WallMs) -> Option<String> 
     for id in &ids {
         let Some(h) = e.header(id) else { continue };
         for a in &h.aspects {
-            let expired = a.expires.is_some_and(|t| t <= now.0);
+            let expired = h.expires.is_some_and(|t| t <= now.0);
             let purged = requests.iter().find(|pc| e.purge_stands(pc, id, &a.tid, &a.ak));
             if !expired && purged.is_none() {
                 continue;
@@ -1390,7 +1390,7 @@ fn read_differs(p: &mut Peer, o: &Oracle, skip: &dyn Fn(&(String, String)) -> bo
 fn live_write_lost(p: &mut Peer, o: &Oracle, played: &Played, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
     let headers: Vec<osis_commit::Header> = played.packs.iter().filter_map(|pk| osis_commit::CommitBlob::decode_stored(&pk.bytes).ok().map(|b| b.header)).collect();
     let key = |t: &Tid, a: &osis_base::Ak| (format!("{t:?}"), a.as_str().to_string());
-    let expiring: BTreeSet<_> = headers.iter().flat_map(|h| h.aspects.iter().filter(|a| a.expires.is_some()).map(|a| key(&a.tid, &a.ak)).collect::<Vec<_>>()).collect();
+    let expiring: BTreeSet<_> = headers.iter().filter(|h| h.expires.is_some()).flat_map(|h| h.aspects.iter().map(|a| key(&a.tid, &a.ak)).collect::<Vec<_>>()).collect();
     let flagged = expired_pending(&mut p.engine);
     if let Some(k) = flagged.iter().find(|k| !expiring.contains(*k)) {
         return Some(format!("{k:?} flagged for a part gone at its expiry, and nothing writes it with an expiry"));
