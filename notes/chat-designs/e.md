@@ -1,7 +1,7 @@
 # Chat design E: the chat's history is the chat
 > Summary: A chat C is one ownerless thing, actor and label; members hold write on C and every message is one write on a message aspect of C, kept as history by retention `author_or_admin` with keep at least forever (a permanent delta); the sender is the header's actor checked by a display rule until core verifies it, admins and the sender may purge, nobody else may drop or hide a body. No member actor, no member list, no per-message thing. Moderator delete, lasting tombstones and newest-first fetch are built; cheap kicks fall out once the frontier study lands; new: a history-less grant. Citations: `e-evidence.md`; corrections from `e-review.md` applied.
 
-**A chat is a faction** (notes/chat-designs/e-factions.md): an actor with members and a message aspect; servers, teams, channels and roles are the same thing, nested by grants. Nothing below changes for a plain chat.
+**A chat is a realm** (notes/chat-designs/e-realms.md): an actor with members and a message aspect; servers, teams, channels and roles are the same thing, nested by grants. Nothing below changes for a plain chat.
 
 **[unbuilt]** marks a claim resting on core work not yet built: the frontier study (notes/frontier-study.md), the history-less grant.
 
@@ -52,7 +52,7 @@ Message about 0.5 KB on the wire, about 1.2 KB stored at every device for good; 
 
 ## Ownership
 
-Tess: no hard rule that a chat is ownerless; it is the default app's default. A chat may be owned, by a faction or anyone. A chat keeps all messages, so it keeps its member history too, and needs no roster compaction: its own roster never compacting is no loss. Recovery from a vandal writer needs only an admin able to demote, owned or not. An ownerless thing can own things; a chat owned by an ownerless faction can compact, and the faction's admins outrank its own. Roster compaction by an ownerless thing's own admins: "seems maybe fine ... really not a big deal either way", for other uses: not planned.
+Tess: no hard rule that a chat is ownerless; it is the default app's default. A chat may be owned, by a realm or anyone. A chat keeps all messages, so it keeps its member history too, and needs no roster compaction: its own roster never compacting is no loss. Recovery from a vandal writer needs only an admin able to demote, owned or not. An ownerless thing can own things; a chat owned by an ownerless realm can compact, and the realm's admins outrank its own. Roster compaction by an ownerless thing's own admins: "seems maybe fine ... really not a big deal either way", for other uses: not planned.
 
 ## Rules leaned on
 
@@ -60,7 +60,7 @@ Retention bounds and purge rights per edit are promised (requirements Deletion);
 
 ## Core work this depends on
 
-Ownership: built (notes/permissions.md Ownerless things). Kick cost and history: a stated limit, every kept message of a removed device listed (spec/requirements.md Cost; notes/frontier-study.md). Reading: built (newest first), a cap at issues/partial-history-fetch.md. Tombstones: built (spec/commits.md §5). Adding: history-less-grant. Hostile: writer rotating to itself (recovered by `repudiate`, spec/permissions.md §3), fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect (write 2.4 ms before its fsync, kick of 3.7*10^4 messages 4 s, rise 0.6-11 s, open 5 s and 2.6 GiB; a kick past 1.9*10^6 commits needs frontier heads): issues/long-aspect-cost.md. Needed only for large factions, target 10,000 members (Tess; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
+Ownership: built (notes/permissions.md Ownerless things). Kick cost and history: a stated limit, every kept message of a removed device listed (spec/requirements.md Cost; notes/frontier-study.md). Reading: built (newest first), a cap at issues/partial-history-fetch.md. Tombstones: built (spec/commits.md §5). Adding: history-less-grant. Hostile: writer rotating to itself (recovered by `repudiate`, spec/permissions.md §3), fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect (write 2.4 ms before its fsync, kick of 3.7*10^4 messages 4 s, rise 0.6-11 s, open 5 s and 2.6 GiB; a kick past 1.9*10^6 commits needs frontier heads): issues/long-aspect-cost.md. Needed only for large realms, target 10,000 members (Tess; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
 
 ## Accepted by Tess
 

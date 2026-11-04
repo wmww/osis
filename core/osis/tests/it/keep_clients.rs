@@ -522,7 +522,7 @@ fn a_client_with_its_own_edge_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3 (Keep), notes/client-port.md §3: a chat read through a faction Bob stays in, the faction kicked from it: the copy is the person's, so his app reads it; a client that is only a member of the faction, from before the kick or after it, reads the faction and nothing of the chat
+// spec/permissions.md §3 (Keep), notes/client-port.md §3: a chat read through a realm Bob stays in, the realm kicked from it: the copy is the person's, so his app reads it; a client that is only a member of the realm, from before the kick or after it, reads the realm and nothing of the chat
 #[test]
 fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     let mut w = World::new();
@@ -536,7 +536,7 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     b.grant(bob, app, Role::Read, Default::default()).unwrap();
     b.grant(f, before, Role::Read, Default::default()).unwrap();
     w.run();
-    assert_eq!(b.acting_as(before).get(m, text()).unwrap(), Some(s("in the chat")), "live, through the faction");
+    assert_eq!(b.acting_as(before).get(m, text()).unwrap(), Some(s("in the chat")), "live, through the realm");
     sim_kick(&mut w, &a, chat, f, None);
     assert_eq!(b.kept_copies().unwrap(), vec![chat]);
     assert!(b.role_on(f).is_some());
@@ -547,7 +547,7 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     assert_eq!(b.acting_as(app).kept_copies().unwrap(), vec![chat]);
     for c in [before, after] {
         let c = b.acting_as(c);
-        assert_eq!(c.get(in_f, text()).unwrap(), Some(s("hello")), "the faction itself");
+        assert_eq!(c.get(in_f, text()).unwrap(), Some(s("hello")), "the realm itself");
         assert!(!c.knows(m) && !c.knows(chat));
         assert!(c.kept_copies().unwrap().is_empty());
     }
@@ -573,7 +573,7 @@ fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
     assert!(watch.current().is_err(), "it lapses at the next change, not telling what changed");
 }
 
-// spec/permissions.md §3 (Keep), notes/client-port.md §3: through a holder that is itself kept: a chat read through a faction group, Bob kicked from the group: the app reads both, the chain ending at the person; a client on neither reads neither
+// spec/permissions.md §3 (Keep), notes/client-port.md §3: through a holder that is itself kept: a chat read through a realm group, Bob kicked from the group: the app reads both, the chain ending at the person; a client on neither reads neither
 #[test]
 fn a_client_reads_through_a_kept_holder_spec_permissions_3() {
     let mut w = World::new();
@@ -733,7 +733,7 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
     assert_eq!(a.get(thing, e).unwrap(), Some(s("after")));
 }
 
-// spec/permissions.md §3 (Keep): a chat read through a faction Bob stays in: the kick of the faction from the chat leaves a copy beside a label that goes on syncing, through restarts; the label settles, the faction's new items arrive
+// spec/permissions.md §3 (Keep): a chat read through a realm Bob stays in: the kick of the realm from the chat leaves a copy beside a label that goes on syncing, through restarts; the label settles, the realm's new items arrive
 #[test]
 fn a_copy_beside_a_live_holder_spec_permissions_3() {
     let x0 = chat(EdgeOpts::default(), Role::Write);
