@@ -200,7 +200,7 @@ fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
 }
 
 // spec/data-model.md §6, spec/commits.md §4: a value that must be chunked, held unchunked, is bad
-// by itself, judged without its type; a `tenures.0` element may pass the threshold whole.
+// by itself, judged without its type; only durable content answers to this.
 #[test]
 fn unchunked_large_value_is_bad_input_spec_dm_6() {
     use osis_base::format::CHUNK_THRESHOLD;
@@ -235,11 +235,8 @@ fn unchunked_large_value_is_bad_input_spec_dm_6() {
     assert_eq!(osis_base::encode(&at_most).len(), CHUNK_THRESHOLD);
     check(&mut b, &at_most).unwrap();
     check(&mut b, &Value::Str("x".repeat(CHUNK_THRESHOLD - 4))).unwrap_err();
-    assert!(fragment(&Value::Enum(1, Some(Box::new(long.clone())))).holds_unchunked(false));
-    // a map key whole; the tenure exception: a whole set element passes, a large value inside
-    // it does not (these page: judged on the fragment)
-    assert!(fragment(&Value::Map([(wide.clone(), Value::Int(1))].into())).holds_unchunked(false));
-    let elem = Value::Set([wide].into());
-    assert!(fragment(&elem).holds_unchunked(true) && !fragment(&elem).holds_unchunked(false));
-    assert!(fragment(&long).holds_unchunked(false));
+    // positions that page: judged on the fragment
+    assert!(fragment(&Value::Enum(1, Some(Box::new(long.clone())))).holds_unchunked());
+    assert!(fragment(&Value::Map([(wide.clone(), Value::Int(1))].into())).holds_unchunked());
+    assert!(fragment(&Value::Set([wide].into())).holds_unchunked());
 }

@@ -99,9 +99,10 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
 fn check_fragment(h: &Header, ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
     check_entry_keys(ak, f)?;
     check_types(ak, f)?;
-    // a tenure is never chunked whole, its frontier is; an ephemeral commit has no chunks, so its
-    // values stay inline (spec/data-model.md §6)
-    if h.ephemeral.is_none() && f.holds_unchunked(ak != "tenures.0") {
+    // only durable content chunks (spec/data-model.md §6): an ephemeral commit has no chunks and a
+    // role-class value stays inline. Role kinds write only role-class aspects and `created.0`, a
+    // record far below the threshold; content kinds write no role-class one (`Header::validate`).
+    if h.ephemeral.is_none() && !osis_schema::core_types::is_role_class(ak) && f.holds_unchunked() {
         return Err(Error::Malformed("an unchunked value above CHUNK_THRESHOLD"));
     }
     Ok(())

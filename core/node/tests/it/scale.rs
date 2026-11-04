@@ -144,6 +144,70 @@ fn big_map_edit_cost() {
     }
 }
 
+// spec/requirements.md, Scale; spec/data-model.md §6: a real registration for 2100 readers: its
+// claim set, above `CHUNK_THRESHOLD`, stays inline in `label.0` and its role commit applies.
+#[test]
+#[ignore]
+fn registration_of_thousands_of_readers() {
+    let (mut e, _, _) = engine(7);
+    let me = e.tid();
+    let mut m = Mutation::new();
+    let a = e.new_thing(&mut m, me);
+    e.commit(m).unwrap().unwrap();
+    let all = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
+    let own = [Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }];
+    let view = e.epochs(&a).unwrap();
+    let r0 = rotate(&a, &all, &view, &Default::default(), &own, &osis_keys::Names::default(), &mut SeededRng::from_u64(2)).unwrap();
+    let write = |m: &mut Mutation, r: &osis_keys::Rotation| {
+        for (k, b) in &r.secrets.boxes {
+            m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
+        }
+        for (k, h) in &r.secrets.history {
+            m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Set(Value::Bytes(h.clone())) }).unwrap();
+        }
+        for (role, ks) in &r.keys.keysets {
+            let f = match role {
+                Role::Read => 0,
+                Role::Write => 1,
+                Role::Admin => 2,
+            };
+            m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(f)], op: Op::Replace(Some(ks.clone()).to_value()) }).unwrap();
+        }
+    };
+    let mut m = Mutation::new();
+    write(&mut m, &r0);
+    m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(5)], op: Op::Replace(Some([7u8; 32]).to_value()) }).unwrap();
+    e.commit(m).unwrap().unwrap();
+    // holders with a read keyset each, in commits of a hundred
+    let ep = Epoch::new(1, [3; 32]).unwrap();
+    let template = r0.keys.keysets.get(&Role::Read).unwrap().clone();
+    let mut holders = own.to_vec();
+    for batch in 0..21u8 {
+        let mut m = Mutation::new();
+        for i in 0..100u8 {
+            let kem = KeyActorKeys::from_seed(&Secret32::from_bytes([batch, i, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9])).kem.public().clone();
+            let h = e.new_thing(&mut m, me);
+            let ks = ct::Keyset { kem_key: ct::KemKey::X25519MlKem768(kem.as_bytes().to_vec()), ..template.clone() };
+            m.op(h, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Replace(Some(ks).to_value()) }).unwrap();
+            m.op(a, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(h))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None }.to_value()) }).unwrap();
+            holders.push(Recipient { holder: h, role: Role::Read, keys: HolderKeys::Actor { keysets: [(Role::Read, (ep, kem))].into_iter().collect(), own: BTreeMap::new() } });
+        }
+        e.commit_hostile(m).unwrap().unwrap();
+    }
+    let view = e.epochs(&a).unwrap();
+    let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
+    let r = rotate(&a, &BTreeSet::from([Role::Read]), &view, &state, &holders, &osis_keys::Names::default(), &mut SeededRng::from_u64(1)).unwrap();
+    let mut m = Mutation::new();
+    write(&mut m, &r);
+    e.commit_hostile(m).unwrap().unwrap();
+    let t = Instant::now();
+    let (label, _) = e.create_label(&a, &[]).unwrap();
+    let labels = e.get_typed(&a, &ct::LABEL).unwrap().unwrap();
+    let claims = labels.values().flat_map(|l| l.steps.values()).filter_map(|s| s.claims.as_ref()).map(Vec::len).max().unwrap();
+    println!("label {label:?} for 2100 readers: {claims} B of claims in {:?}", t.elapsed());
+    assert!(claims > osis_base::format::CHUNK_THRESHOLD, "{claims}");
+}
+
 // spec/requirements.md, Scale: direct rosters hold thousands of holders; spec/crypto.md §4: a
 // rotation boxes each remaining role secret to each holder. Measures the rotation commit that a
 // removal from a roster of N writers carries (read and write rotated; each person holder gets a
