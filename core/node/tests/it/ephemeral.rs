@@ -376,13 +376,21 @@ fn kept_row_goes_with_the_thing_spec_sync_9() {
         assert_eq!(net.engine(n).ephemeral_kept_on(&u), BTreeSet::new(), "no commit left on it");
     }
     assert_eq!(net.engine(a).ephemeral_kept_on(&w), BTreeSet::from([g]), "the maker's own thing stays until freed");
+    // deleted, the maker keeps its record and tombstones until restart (a holder may have its
+    // writes, issues/ephemeral-delete-comes-back.md), and the row with them
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
     m.free(w);
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
-    assert!(net.engine(a).ephemeral_thing(&w).is_none(), "freed at the maker");
+    assert!(net.engine(a).ephemeral_thing(&w).is_some_and(|t| t.deleted), "deleted, kept at the maker");
+    assert_eq!(net.engine(a).ephemeral_kept_on(&w), BTreeSet::from([g]));
+    net.restart(a, 5);
+    assert!(net.engine(a).ephemeral_thing(&w).is_none(), "gone with the restart");
+    net.run();
+    // its record may come back beside a held placement commit on `g`; no row or deletion does
+    assert!(net.engine(a).ephemeral_thing(&w).is_none_or(|t| !t.deleted));
     assert_eq!(net.engine(a).ephemeral_kept_on(&w), BTreeSet::new());
 }
 
@@ -593,7 +601,6 @@ fn write_before_kept_row_returns_reaches_label_spec_sync_9() {
 
 // notes/ephemeral.md Deletion: a deleted thing does not come back from a holder's copy.
 #[test]
-#[ignore = "issues/ephemeral-delete-comes-back.md"]
 fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
@@ -1758,10 +1765,13 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
     assert_eq!(items(&mut net, b, w), want, "a restarted holder, from the host");
 }
 
-// spec/crdt.md §2.1 (counters never reused within a session): a thing freed here while others
-// hold its writes, received again and written, takes the session's next counters, not 1 again
+// notes/ephemeral.md Deletion (issues/ephemeral-delete-comes-back.md, decided): a thing deleted
+// here while others may hold its writes (a commit on it was kept under a label) is not freed at
+// once: as for a durable delete, its resets go to the holders and its record and tombstones stay
+// until restart, so a holder placing it again brings nothing back; only a holder's later write
+// shows, alone. A thing never kept under a label is freed at once.
 #[test]
-fn freed_thing_received_again_keeps_counters_spec_crdt_2_1() {
+fn deleted_synced_thing_keeps_tombstones_until_restart_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1772,26 +1782,42 @@ fn freed_thing_received_again_keeps_counters_spec_crdt_2_1() {
     note(&mut net, a, w, "k1", "v1");
     net.run();
     assert_eq!(notes(&mut net, b, w), map(&[("k1", "v1")]));
-    // a unplaces and frees it; b still holds its writes and places it again
+    // a deletes it (as `Write::delete` does: resets, unplacing, free); b still holds its writes
+    // and places it again
     let mut m = Mutation::new();
+    m.remove_aspect(w, &eph(STATE)).unwrap();
+    m.remove_aspect(w, &eph(NOTES)).unwrap();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
     m.free(w);
     net.engine(a).write(m).unwrap();
     local(&mut net, a);
     net.run();
-    assert!(net.engine(a).ephemeral_thing(&w).is_none(), "freed at a");
+    assert!(net.engine(a).ephemeral_thing(&w).is_some_and(|t| t.deleted), "deleted, not freed, at a");
+    assert_eq!(notes(&mut net, b, w), map(&[]), "the resets reach the holder");
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
     net.engine(b).write(m).unwrap();
     local(&mut net, b);
     net.run();
-    assert!(net.engine(a).ephemeral_thing(&w).is_some(), "received again at a");
-    note(&mut net, a, w, "k2", "v2");
+    assert_eq!(notes(&mut net, a, w), map(&[]), "placed again: nothing comes back");
+    note(&mut net, b, w, "k2", "v2");
     net.run();
-    let s1 = net.engine(a).ephemeral_session();
-    assert_eq!(session_dots(&mut net, a, w, NOTES), vec![(s1, 2)], "the next counter");
-    assert_eq!(notes(&mut net, b, w), map(&[("k1", "v1"), ("k2", "v2")]));
-    assert_eq!(session_dots(&mut net, b, w, NOTES), vec![(s1, 1), (s1, 2)], "two writes, two dots");
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w), map(&[("k2", "v2")]), "node {n}: a later write shows alone");
+    }
+    // a thing never kept under a label goes at once
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, g);
+    m.set(x, &eph(STATE), &s("x")).unwrap();
+    e.write(m).unwrap();
+    let mut m = Mutation::new();
+    m.free(x);
+    net.engine(a).write(m).unwrap();
+    assert!(net.engine(a).ephemeral_thing(&x).is_none(), "freed at once");
+    net.restart(a, 7);
+    net.run();
+    assert!(net.engine(a).ephemeral_thing(&w).is_none_or(|t| !t.deleted), "the tombstones went with the restart");
 }
 
 // spec/sync.md §9 (what a cover absorbs is deleted at a host once the cover is held there):

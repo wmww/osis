@@ -339,7 +339,10 @@ impl Engine {
         for (t, r) in fresh.iter().filter(|(t, _)| !gone.contains(t)) {
             batch(&mut batches, false, *t, actor, ts).creates.insert(*t, r.clone());
         }
-        let making = log::Making { made: fresh.keys().filter(|t| !gone.contains(t)).copied().collect(), saved: saved.into_iter().collect(), ..Default::default() };
+        // a deleted memory thing not freed at once (kept under a label) is marked deleted like
+        // one unmade by an undo: it reads unknown while its record and tombstones stay
+        let unmade = free.iter().filter(|t| !gone.contains(t) && self.core.ix.held.is_memory(t)).copied().collect();
+        let making = log::Making { made: fresh.keys().filter(|t| !gone.contains(t)).copied().collect(), unmade, saved: saved.into_iter().collect(), ..Default::default() };
         let made_now: BTreeSet<Tid> = fresh.keys().copied().collect();
         // a freed thing's aspects change to absent (their rows go with it)
         let gone_aspects: Vec<(Tid, Ak)> = gone.iter().flat_map(|t| self.core.aspects_of(t).map(|(k, _)| k.clone())).collect();
@@ -462,11 +465,14 @@ impl Engine {
         Some(Written { id, ts, also })
     }
 
-    /// Of `free`, the ephemeral things this node may free at once: held as memory class and in
-    /// no labeled closure once the batch's removals `unplaced` (group, member) apply, with the
-    /// ephemeral things they own, to a fixpoint.
+    /// Of `free`, the ephemeral things this node may free at once: held as memory class, never
+    /// kept under a label here (`MemorySync::kept`: a holder may have its writes, so the resets
+    /// must go and the record and tombstones stay until restart, as a durable delete's do;
+    /// issues/ephemeral-delete-comes-back.md) and in no labeled closure once the batch's
+    /// removals `unplaced` (group, member) apply, with the ephemeral things they own, to a
+    /// fixpoint.
     fn freeable(&self, free: &BTreeSet<Tid>, unplaced: &BTreeSet<(Tid, Tid)>) -> BTreeSet<Tid> {
-        let synced = |t: &Tid| self.core.syncs(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g) && !unplaced.contains(&(*g, *t)));
+        let synced = |t: &Tid| self.core.syncs(t) || self.core.memory.kept.contains_key(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g) && !unplaced.contains(&(*g, *t)));
         let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.core.ix.held.is_memory(t) && !synced(t)).copied().collect();
         loop {
             let more: Vec<Tid> = gone.iter().flat_map(|t| self.core.ix.held.owned(t)).filter(|x| !gone.contains(x) && self.core.ix.held.is_memory(x) && !synced(x)).copied().collect();
