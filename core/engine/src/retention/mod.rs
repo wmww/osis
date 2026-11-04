@@ -39,7 +39,7 @@ pub mod suspect;
 
 pub(crate) use bounds::drop_from;
 use bounds::{live, snapshot_live};
-pub(crate) use pending::{emptied, forget_stripped, is_stripped, pending_drops, pending_expired, stripped_joined, stripped_of};
+pub(crate) use pending::{emptied, fetch_fallen, forget_stripped, is_stripped, pending_drops, pending_expired, stripped_joined, stripped_of};
 use pending::{purge_pending, strip_pending};
 use purge::drop_purged_snapshot;
 pub(crate) use purge::{counts_as_purged, known_purged, lasting, purged_aspects, purged_by, rejudge_purges, requests_resting_on, snapshot_right};
