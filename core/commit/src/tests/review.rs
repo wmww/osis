@@ -209,9 +209,22 @@ fn peak_mib() -> Option<u64> {
 }
 
 // spec/requirements.md, peer input never costs unbounded memory: a list of the wrong shape is refused
-// before its items are built. 8 MiB of one-entry maps peak at 6.5 GB as a whole-value decode (VmHWM: no counting allocator, unsafe is forbidden).
+// before its items are built. 8 MiB of one-entry maps peak at 6.5 GB as a whole-value decode. VmHWM
+// (no counting allocator, unsafe is forbidden) is the process's, and another test beside this one could
+// fail it or hide a rise, so the check runs in a process of its own.
 #[test]
 fn hostile_list_refused_by_shape() {
+    const ALONE: &str = "OSIS_COMMIT_PEAK_ALONE";
+    if std::env::var_os(ALONE).is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::review::hostile_list_refused_by_shape", "--nocapture"])
+            .env(ALONE, "1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && text.contains("1 passed"), "{text}{}", String::from_utf8_lossy(&out.stderr));
+        return;
+    }
     let d = sec(0xd0, &t(2));
     let mut m = MemoryBlobs::default();
     let n = 8 << 20;
@@ -222,13 +235,13 @@ fn hostile_list_refused_by_shape() {
     osis_base::cbor::head(&mut in_set, 6, osis_base::format::TAG_SET);
     in_set.extend(&maps);
     let cases = [(ListField::Aspects, &maps), (ListField::Chunks, &maps), (ListField::Purge, &maps), (ListField::Keys, &maps), (ListField::Origins, &maps), (ListField::Frontier, &maps), (ListField::Frontier, &in_frontier), (ListField::Frontier, &in_set)];
+    let headers: Vec<_> = cases.map(|(f, bytes)| (f, linked_as(f, bytes, &d, &mut m))).into();
     let start = peak_mib();
-    for (f, bytes) in cases {
-        let mut h = linked_as(f, bytes, &d, &mut m);
+    for (f, mut h) in headers {
         assert!(h.resolve(&mut m, &d).is_err(), "{f:?}");
-    }
-    if let (Some(a), Some(b)) = (start, peak_mib()) {
-        assert!(b - a < 1024, "{a} to {b} MiB");
+        if let (Some(a), Some(b)) = (start, peak_mib()) {
+            assert!(b - a < 64, "{f:?}: {a} to {b} MiB");
+        }
     }
 }
 
@@ -333,4 +346,55 @@ fn node_by_shape() {
     assert!(crate::tree::parse_node(&long).is_err());
     let maps = [&[0x83, 1, 0x9a][..], &(1u32 << 20).to_be_bytes(), &[0xa1, 0, 0].repeat(1 << 20)].concat();
     assert!(crate::tree::parse_node(&maps).is_err());
+}
+
+// Forms a read by shape must refuse as `osis_base::decode` does, or the bytes would not be the header's:
+// map keys out of order or repeated, heads not the shortest, indefinite or impossible lengths.
+#[test]
+fn list_forms_refused() {
+    let aspect = |lo: &[u8], bound: &[u8], ak: &[u8]| {
+        let mut b = vec![0x81, 0x88, 0x4f];
+        b.extend([1; 15]);
+        b.extend(ak);
+        b.extend(lo);
+        b.push(2);
+        b.extend([0x83, 0]);
+        b.extend(bound);
+        b.extend([0xa0, 0x80, 0x80, 0x81, 0x58, 32]);
+        b.extend([3; 32]);
+        b
+    };
+    let read = |f: ListField, b: &[u8]| {
+        let mut h = sample_header();
+        h.read_list(f, b, false)
+    };
+    let name: &[u8] = &[0x63, b'a', b'.', b'0'];
+    for bound in [&[0xa0][..], &[0xa1, 0, 5], &[0xa1, 1, 5], &[0xa2, 0, 5, 1, 6]] {
+        read(ListField::Aspects, &aspect(&[1], bound, name)).unwrap();
+    }
+    for bound in [&[0xa2, 1, 6, 0, 5][..], &[0xa2, 0, 5, 0, 6], &[0xa2, 1, 5, 1, 6], &[0xa1, 2, 5], &[0xa1, 0, 0x20], &[0xbf, 0, 5, 0xff]] {
+        assert!(read(ListField::Aspects, &aspect(&[1], bound, name)).is_err(), "{bound:02x?}");
+    }
+    for lo in [&[0x18, 1][..], &[0x19, 0, 1], &[0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], &[0x20]] {
+        assert!(read(ListField::Aspects, &aspect(lo, &[0xa0], name)).is_err(), "{lo:02x?}");
+    }
+    assert!(read(ListField::Aspects, &aspect(&[1], &[0xa0], &[0x63, 0xff, 0xff, 0xff])).is_err());
+    let good = aspect(&[1], &[0xa0], name);
+    let mut trailing = good.clone();
+    trailing.push(0);
+    assert!(read(ListField::Aspects, &trailing).is_err());
+    for count in [&[0x9f][..], &[0x9b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], &[0x9a, 0xff, 0xff, 0xff, 0xff], &[0x98, 1]] {
+        assert!(read(ListField::Aspects, &[count, &good[1..]].concat()).is_err(), "{count:02x?}");
+    }
+
+    let id = [&[0x58, 32][..], &[4; 32]].concat();
+    let tag = |t: Vec<u8>| [&[0xa1, 0][..], &t, &[0x81], &id].concat();
+    let shortest = |t| {
+        let mut b = Vec::new();
+        osis_base::cbor::head(&mut b, 6, t);
+        b
+    };
+    read(ListField::Frontier, &tag(shortest(osis_base::format::TAG_SET))).unwrap();
+    assert!(read(ListField::Frontier, &tag([&[0xdb][..], &osis_base::format::TAG_SET.to_be_bytes()].concat())).is_err());
+    assert!(read(ListField::Frontier, &tag(shortest(osis_base::format::TAG_SET + 1))).is_err());
 }

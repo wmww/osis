@@ -115,7 +115,75 @@ fn commit(classes: &[(u8, u8, bool)]) -> CommitBlob {
     b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit
 }
 
+/// `b` with a few small edits, seeded: bytes, or a head widened to a longer form.
+fn edited(b: &[u8], mut seed: u64) -> Vec<u8> {
+    const HEADS: [u8; 24] = [0, 1, 2, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1f, 0x20, 0x3f, 0x40, 0x4f, 0x58, 0x60, 0x63, 0x80, 0x81, 0x9f, 0xa0, 0xa1, 0xa2, 0xc0, 0xff];
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed as usize
+    };
+    let mut x = b.to_vec();
+    for _ in 0..1 + next() % 3 {
+        let at = next() % (x.len() + 1);
+        let byte = if next() % 2 == 0 { HEADS[next() % HEADS.len()] } else { next() as u8 };
+        match next() % 6 {
+            0 => x.insert(at, byte),
+            1 if at < x.len() => drop(x.remove(at)),
+            2 => x.truncate(at),
+            3 if at < x.len() && x[at] & 31 < 24 => {
+                // the same argument in a head one size up
+                let (ib, arg) = (x[at], x[at] & 31);
+                x.splice(at..=at, [(ib & 0xe0) | 24, arg]);
+            }
+            _ if at < x.len() => x[at] = byte,
+            _ => {}
+        }
+    }
+    x
+}
+
+/// What `read_list` accepts, the general decoder accepts as the same canonical bytes, and the items read
+/// encode back to them.
+fn reader_agrees(h: &Header, f: ListField, bytes: &[u8]) -> Result<(), TestCaseError> {
+    let mut x = h.clone();
+    if x.read_list(f, bytes, false).is_err() {
+        return Ok(());
+    }
+    let v = osis_base::decode(bytes, &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: bytes.len() });
+    prop_assert!(v.is_ok(), "{f:?} {bytes:02x?}: {v:?}");
+    prop_assert_eq!(osis_base::encode(&v.unwrap()), bytes);
+    prop_assert_eq!(osis_base::encode(&x.list_value(f).unwrap()), bytes, "{:?}", f);
+    Ok(())
+}
+
 proptest! {
+    // Differential of `osis_base::Reader` against `osis_base::decode`: valid lists and tree nodes, and
+    // edits of them.
+    #[test]
+    fn reader_accepts_only_what_decode_does(h in header(), ids in proptest::collection::btree_set(any::<[u8; 32]>(), 0..4), kids in proptest::collection::vec((link(), 0u64..1 << 20), 1..4), seed in 1u64..) {
+        let frontier = Value::Map([(Value::Int(0), Value::Set(ids.iter().map(|i| Value::bytes(i)).collect()))].into_iter().collect());
+        let lists: Vec<(ListField, Vec<u8>)> = ListField::ALL.into_iter().map(|f| {
+            let v = if f == ListField::Frontier { frontier.clone() } else { h.list_value(f).unwrap() };
+            (f, osis_base::encode(&v))
+        }).collect();
+        let node = tree::node_plaintext(3, &kids).unwrap();
+        prop_assert_eq!(tree::parse_node(&node).unwrap(), (3, kids));
+        for i in 0..300u64 {
+            let s = seed.wrapping_add(i.wrapping_mul(0x9e37_79b9_7f4a_7c15)) | 1;
+            for (f, b) in &lists {
+                reader_agrees(&h, *f, b)?;
+                reader_agrees(&h, *f, &edited(b, s))?;
+            }
+            let e = edited(&node, s);
+            if let Ok((level, kids)) = tree::parse_node(&e) {
+                prop_assert!(osis_base::decode(&e, &osis_base::Limits { max_depth: 4, max_bytes: e.len() }).is_ok(), "{:02x?}", e);
+                prop_assert_eq!(tree::node_plaintext(level, &kids).unwrap(), e);
+            }
+        }
+    }
+
     // spec/wire.md §4: any header, inline or linked lists, round-trips through its bytes.
     #[test]
     fn header_round_trip_prop(h in header()) {
