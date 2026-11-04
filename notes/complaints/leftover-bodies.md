@@ -8,3 +8,4 @@
 - Engine tests that count cost spans by name (`rejudge: unmerge`, `unmerge: pass`) break on a rename even when the behaviour they guard is intact; they are listed in the issue as rewritten.
 - A mid-task reply was stopped by the safety classifier on ordinary CRDT/store text; nothing lost.
 - Review: the previous reviewer's wip tests did not compile (missing `Tid` import, a private `Meta::aspect`); a reviewer cut off mid-task leaves no note of what it had run. Two real bugs then showed at once (an unshredded leftover overwrite, an expiry deleting the set-aside row it was meant to adopt): the "waiting" vs "set aside" leftover share one row and differ only by the commit being applied.
+- rv3: a shrunk order replay (`OSIS_ORDER_SEED`) took 230 s under load; the failure was "as made", so `check(seed, &h, Cfg { random: 0, subsets: 0, split: 0, clock: 0, sync: true, ..LARGE })` in a probe test reproduced it in 0.2 s.
