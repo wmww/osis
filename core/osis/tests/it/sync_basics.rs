@@ -93,13 +93,13 @@ fn grant_to_ones_own_group_reaches_its_members_at_once_spec_sync_3() {
     let mut w = World::new();
     let h0 = w.add_host();
     let (a, b, bob) = pair(&mut w, &[h0]);
-    let faction = chat(&a, &[]);
-    a.grant(faction, bob, Role::Write, Default::default()).unwrap();
+    let realm = chat(&a, &[]);
+    a.grant(realm, bob, Role::Write, Default::default()).unwrap();
     w.run();
     let g = chat(&a, &[]);
     let m = message(&a, g, "hello");
     w.run();
-    a.grant(g, faction, Role::Read, Default::default()).unwrap();
+    a.grant(g, realm, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(says(&b, m), Some(s("hello")));
 }
