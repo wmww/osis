@@ -271,6 +271,14 @@ impl SyncEngine {
         let Some(lc) = self.lc(conn, &l) else { return Ok(()) };
         let g = lc.group;
         let tried = lc.tries.first().cloned();
+        // the host's word: a hint's sync key (perhaps another thing's) opens only a head of that
+        // key (spec/sync.md §3)
+        if let Some(Try::Sync { step: None, key }) = &tried
+            && key.verifying_key() != head.keys.sync
+        {
+            self.diag("opened head is not under the sync key tried".into());
+            return self.drop_try(conn, l, out);
+        }
         // a static entry: the head's entry box carries the read secret of the registered epoch;
         // a sealed box is unauthenticated, so the head's path is verified first and the secret
         // must derive the head's sync key (`path_steps`, `static_entry_secret`)

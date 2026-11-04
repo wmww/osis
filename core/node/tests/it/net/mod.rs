@@ -568,6 +568,16 @@ impl Net {
         self.queue.extend(self.held_msgs.drain(..));
     }
 
+    /// Delivers what host `s` held back (`held_hosts`), and holds it no more.
+    pub fn release_host(&mut self, s: usize) {
+        self.held_hosts.remove(&s);
+        let conns: BTreeSet<(usize, ConnId)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, _)| *k).collect();
+        let (go, stay) = std::mem::take(&mut self.held_msgs).into_iter().partition(|m| matches!(m, Msg::ToNode(n, _, c, _) if conns.contains(&(*n, *c))));
+        self.held_msgs = stay;
+        let go: Vec<Msg> = go;
+        self.queue.extend(go);
+    }
+
     /// Delivers queued messages until none are left (at most `max`).
     pub fn settle(&mut self, max: usize) {
         let mut i = 0;

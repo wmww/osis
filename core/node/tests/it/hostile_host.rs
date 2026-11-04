@@ -749,6 +749,27 @@ fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
     assert!(!statics.contains(&v2), "another held key actor is never named to the host");
 }
 
+// spec/sync.md §3: a host answering a hinted open by sync key with a head of another key does not
+// open the label under the hinted thing (it would read as that thing's at every host).
+#[test]
+fn hinted_open_needs_a_head_of_its_sync_key_spec_sync_3() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    net.run();
+    let head = foreign_step(0x51);
+    let target = head.label;
+    let addr = net.address(host);
+    let conn = net.conn_to(a, host).expect("connected");
+    let mut se: SyncEngine = net.take(a);
+    let acts = se.follow(g, g, target, vec![addr]);
+    let opens: Vec<Message> = sent(&acts, conn).into_iter().filter(|m| matches!(m, Message::Open { label, .. } if *label == target)).collect();
+    let Some(Message::Open { id, .. }) = opens.first() else { panic!("the hint opens by its sync key") };
+    let acts = se.handle(Event::Bytes { conn, bytes: frame(Message::Opened { id: *id, head, entry_box: None }) });
+    assert!(!sent(&acts, conn).iter().any(|m| matches!(m, Message::Path { label, .. } if *label == target)), "the head is not taken up");
+}
+
 // spec/sync.md §5 (a superseded step's child is verified under its parent; a hinted label has
 // none recorded), spec/requirements.md (hosts: a host cannot link labels or recognise
 // devices): a host answering a hinted label's open with a step of its choosing gets claims

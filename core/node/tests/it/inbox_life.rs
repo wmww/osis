@@ -22,6 +22,12 @@ fn alice_and_bob_at(extra: Vec<osis_label::Address>) -> (Net, usize, usize, usiz
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
+    let (a, b, alice, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, extra);
+    (net, host, a, b, alice, bob, g, home)
+}
+
+/// `alice_and_bob_at` on nodes and a host already made: (a, b, Alice's person, Bob's person, g, home).
+fn alice_and_bob_on(net: &mut Net, host: usize, a: usize, b: usize, extra: Vec<osis_label::Address>) -> (usize, usize, Tid, Tid, Tid, LabelId) {
     let addr = net.address(host);
     let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -43,7 +49,7 @@ fn alice_and_bob_at(extra: Vec<osis_label::Address>) -> (Net, usize, usize, usiz
     net.actions(a, acts);
     net.run();
     let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob.person).unwrap().1.id;
-    (net, host, a, b, alice.person, bob.person, g, home)
+    (a, b, alice.person, bob.person, g, home)
 }
 
 fn grant(net: &mut Net, a: usize, g: Tid, to: Tid) {
@@ -773,7 +779,7 @@ fn hint_first_then_group_grant(hosts: impl Fn(&[ct::Address]) -> Vec<ct::Address
     grant(&mut net, a, t, bob);
     net.advance(61_000);
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    let c = net.engine(a).commit_ids().into_iter().rev().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "secrets.0") && h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "roles.0"))).unwrap();
+    let c = boxing_grant(&mut net, a, t);
     net.set_online(b, false);
     grant(&mut net, a, g, bob);
     net.advance(61_000);
@@ -807,6 +813,141 @@ fn hint_at_a_dead_host_does_not_hold_off_the_group_spec_sync_3() {
         x.key = [0xdd; 32];
         vec![x]
     });
+}
+
+/// The newest commit carrying `t`'s `roles.0` and `secrets.0`: its grant, with the boxes.
+fn boxing_grant(net: &mut Net, a: usize, t: Tid) -> osis_base::CommitId {
+    net.engine(a).commit_ids().into_iter().rev().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "secrets.0") && h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "roles.0"))).unwrap()
+}
+
+/// Everything queued delivered; a message loop panics here, not after minutes.
+fn quiet(net: &mut Net, b: usize) {
+    net.feed(b, osis_node::sync::Event::Local);
+    net.settle(5_000);
+}
+
+// spec/sync.md §3: nor by naming the label at a host of its own that takes the open and never
+// answers, on a connection older than the real host's: what the real host sends reads under the
+// thing that opened there, not the one still opening elsewhere.
+#[test]
+fn hint_at_a_silent_host_does_not_hold_off_the_group_spec_sync_3() {
+    let mut net = Net::new();
+    let silent = net.add_host();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[silent, host]);
+    let (a, b, _, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, Vec::new());
+    let t = persisted_item(&mut net, a, g);
+    grant(&mut net, a, t, bob);
+    net.advance(61_000);
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let c = boxing_grant(&mut net, a, t);
+    net.set_online(b, false);
+    grant(&mut net, a, g, bob);
+    net.advance(61_000);
+    let first = net.host_ids(host, &home).into_iter().min().unwrap();
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: vec![net.address(silent)] }), delete_keys: None };
+    let mut exp = net.now() + INBOX_LIFETIME_MS;
+    while plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing.clone()], exp) > first {
+        exp -= 1;
+    }
+    net.set_online(b, true);
+    net.feed(b, osis_node::sync::Event::Tick);
+    // both connections up, the silent host's the older; nothing it answers from here on
+    for _ in 0..3 {
+        net.round();
+    }
+    assert!(net.conn_to(b, silent).unwrap() < net.conn_to(b, host).unwrap());
+    net.held_hosts.insert(silent);
+    quiet(&mut net, b);
+    quiet(&mut net, b);
+    assert_eq!(net.read(b, t), Some(s("item")), "{:?}", net.sync(b).label_status());
+    assert!(net.sync(b).labels().iter().any(|(x, l)| *x == g && l.id == gl.id), "{:?}", net.sync(b).label_status());
+}
+
+/// One seed of `hint_turns`: blobs naming `g`'s label under other things (some at a wrong index),
+/// at any of the real host, hosts that never answer and hosts without the label, in any order
+/// with the group's own grant, while time passes and the real host's replies lag.
+fn hint_turns_seed(seed: u64) {
+    let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut rng = move |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x >> 8) % n
+    };
+    let mut net = Net::new();
+    let silent: Vec<usize> = (0..rng(3)).map(|_| net.add_host()).collect();
+    let host = net.add_host();
+    let empty: Vec<usize> = (0..rng(3)).map(|_| net.add_host()).collect();
+    let a = net.node(1, &[host]);
+    let at: Vec<usize> = silent.iter().copied().chain([host]).collect();
+    let b = net.node(2, &at);
+    let (a, b, _, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, Vec::new());
+    let things: Vec<Tid> = (0..1 + rng(3)).map(|_| persisted_item(&mut net, a, g)).collect();
+    let mut planted = Vec::new();
+    for t in &things {
+        grant(&mut net, a, *t, bob);
+        net.run();
+        planted.push((*t, boxing_grant(&mut net, a, *t)));
+    }
+    net.advance(61_000);
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    net.set_online(b, false);
+    grant(&mut net, a, g, bob);
+    net.advance(61_000);
+    let named: Vec<usize> = silent.iter().chain(&empty).copied().chain([host]).collect();
+    let mut exp = net.now() + INBOX_LIFETIME_MS;
+    for (t, c) in &planted {
+        for _ in 0..1 + rng(2) {
+            let hosts: Vec<_> = named.iter().filter(|_| rng(2) == 0).map(|h| net.address(*h)).collect();
+            let index = gl.index + rng(2);
+            let thing = osis_label::InboxThing { tid: *t, label: Some(osis_label::InboxLabel { id: gl.id, index, hosts }), delete_keys: None };
+            plant_inbox(&mut net, a, (host, &home), bob, c, vec![thing], exp);
+            exp -= 1;
+        }
+    }
+    net.set_online(b, true);
+    net.feed(b, osis_node::sync::Event::Tick);
+    for _ in 0..3 {
+        net.round();
+    }
+    net.held_hosts.extend(silent.iter().copied());
+    for _ in 0..rng(6) {
+        if rng(2) == 0 {
+            net.held_hosts.insert(host);
+        }
+        net.tick(1_000 * (1 + rng(30)));
+        quiet(&mut net, b);
+        // only the real host's lag ends
+        net.release_host(host);
+        quiet(&mut net, b);
+    }
+    for _ in 0..things.len() as u64 + 4 {
+        net.tick(61_000);
+        quiet(&mut net, b);
+        quiet(&mut net, b);
+    }
+    assert_eq!(net.read(b, things[0]), Some(s("item")), "seed {seed}: {:?}", net.sync(b).label_status());
+    assert!(net.sync(b).labels().iter().any(|(x, l)| *x == g && l.id == gl.id), "seed {seed}: {:?}", net.sync(b).label_status());
+}
+
+fn hint_turns_replay(s: u64) -> String {
+    format!("OSIS_HINTS_START={s} OSIS_HINTS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact inbox_life::hint_turns_reach_the_group_large_spec_sync_3")
+}
+
+// spec/sync.md §3: whatever other things blobs name a label under and whichever hosts they name it
+// at, its own group reads it within a few retries, with no message loop on the way.
+#[test]
+fn hint_turns_reach_the_group_spec_sync_3() {
+    osis_base::testenv::run_seeds("inbox_life::hint_turns_reach_the_group_spec_sync_3", &[0, 1, 2, 3], false, hint_turns_replay, hint_turns_seed);
+}
+
+#[test]
+#[ignore]
+fn hint_turns_reach_the_group_large_spec_sync_3() {
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_HINTS_START", "OSIS_HINTS_SEEDS", 0..60);
+    seeds.run("inbox_life::hint_turns_reach_the_group_large_spec_sync_3", hint_turns_replay, hint_turns_seed);
 }
 
 // spec/wire.md §9: a grant's payload names a thing's own label, or none: never a group's holding it.

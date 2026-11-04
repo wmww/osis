@@ -53,12 +53,12 @@ fn chain_commits(p: &osis_label::InboxPayload) -> Vec<(Vec<u8>, osis_commit::Com
 }
 
 impl SyncEngine {
-    /// The group a label belongs to, as an open connection or the recorded labels know it.
+    /// The group a label belongs to, as a connection (an open one first: a hint's thing may still
+    /// be opening at a host its sender named) or the recorded labels know it.
     pub(crate) fn group_of(&mut self, l: &LabelId) -> Option<Tid> {
-        for c in self.conns.values() {
-            if let Some(x) = c.labels.get(l) {
-                return Some(x.group);
-            }
+        let on: Vec<&super::LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
+        if let Some(x) = on.iter().find(|x| x.phase == super::Phase::Open).or(on.first()) {
+            return Some(x.group);
         }
         if let Some(h) = self.state.hints.get(l) {
             return Some(h.thing);
@@ -1013,6 +1013,8 @@ impl SyncEngine {
         for l in gone {
             self.state.remove_hint(&l);
         }
+        // turns of labels no blob still names are over
+        self.hint_failed.retain(|x| want.contains_key(&x.0));
         for (l, h) in want {
             let old = self.state.hints.get(&l);
             if old.is_some_and(|x| x.via.is_some() || (x.thing, x.index, &x.hosts, x.inbox) == (h.thing, h.index, &h.hosts, h.inbox)) {

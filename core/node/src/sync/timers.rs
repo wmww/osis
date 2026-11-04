@@ -80,11 +80,14 @@ impl SyncEngine {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.reopens.remove(&label);
             }
-            // every thing a hint names this label under gets a new turn
-            let hints = self.hint_failed.len();
-            self.hint_failed.retain(|x| x.0 != label);
-            if self.hint_failed.len() != hints {
-                self.vetted = None;
+            // every thing a hint names this label under gets a new turn; not at a refusal's
+            // retry (its back-off is short, and a host named by a sender could cut every round)
+            if self.lc(conn, &label).is_some_and(|x| x.phase == Phase::Failed) {
+                let hints = self.hint_failed.len();
+                self.hint_failed.retain(|x| x.0 != label);
+                if self.hint_failed.len() != hints {
+                    self.vetted = None;
+                }
             }
             self.start_label(conn, g, label, out)?;
         }

@@ -4633,3 +4633,122 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     let groups = net.engine(b).groups_of(&kept);
     assert!(groups.contains(&g) && !groups.contains(&keep), "{groups:?}");
 }
+
+/// One seed of `ephemeral_reverts_stay_within_rights`: a writer writes, creates and reverts at
+/// random while an admin takes write of a group away. A revert that goes through touched only
+/// what the writer may still write; one refused left the log and what it reads alone. `alike`:
+/// the two nodes also read alike at the end (issues/ephemeral-revert-diverges.md).
+fn revert_rights_run(seed: u64, alike: bool) {
+    let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut rnd = move |n: u64| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x >> 8) % n
+    };
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = net.hosts[host].address.clone();
+    let groups = [net.group(a, &[(b, Role::Write)], &[host]), net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2)];
+    let mut things: Vec<Tid> = groups.iter().map(|g| net.item(a, *g, *g, "t")).collect();
+    net.run();
+    let tb = net.tid(b);
+    let mut ids = Vec::new();
+    let mut lost = [false; 2];
+    for step in 0..30u64 {
+        match rnd(7) {
+            0 | 1 => {
+                let t = things[rnd(things.len() as u64) as usize];
+                if net.engine(b).ephemeral_thing(&t).is_some_and(|x| x.deleted) {
+                    continue;
+                }
+                let mut m = Mutation::new();
+                m.set(t, &eph(STATE), &s(&format!("{step}"))).unwrap();
+                if let Ok(Some(w)) = net.engine(b).write(m) {
+                    ids.push(w.id);
+                }
+            }
+            2 | 3 => {
+                let g = groups[rnd(2) as usize];
+                let e = net.engine(b);
+                let mut m = Mutation::new();
+                let w = e.new_thing(&mut m, g);
+                m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+                m.set(w, &eph(STATE), &s(&format!("{step}"))).unwrap();
+                if let Ok(Some(done)) = e.write(m) {
+                    ids.push(done.id);
+                    things.push(w);
+                }
+            }
+            4 | 5 if !ids.is_empty() => {
+                let id = ids[rnd(ids.len() as u64) as usize];
+                let reads = |net: &mut Net, things: &[Tid]| things.iter().map(|t| net.eph_read(b, *t, STATE)).collect::<Vec<_>>();
+                let (before, logged) = (reads(&mut net, &things), net.engine(b).ephemeral_log().len());
+                match net.engine(b).revert_change(id, tb) {
+                    Ok(osis_node::ephemeral::Reverted::Written(w)) => {
+                        let log = net.engine(b).ephemeral_log();
+                        let touched: Vec<_> = log.iter().filter(|l| l.id == w.id).flat_map(|l| l.aspects.clone()).collect();
+                        for (t, ak) in touched {
+                            assert!(net.engine(b).actor_role(&tb, &t) >= Some(Role::Write), "seed {seed} step {step}: a revert wrote {ak} of {t:?}");
+                        }
+                        ids.push(w.id);
+                    }
+                    Err(_) => {
+                        assert_eq!(before, reads(&mut net, &things), "seed {seed} step {step}: a refused revert");
+                        assert_eq!(logged, net.engine(b).ephemeral_log().len(), "seed {seed} step {step}: a refused revert");
+                    }
+                    Ok(_) => {}
+                }
+            }
+            6 => {
+                let i = rnd(2) as usize;
+                if !lost[i] {
+                    lost[i] = true;
+                    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+                    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), presync: osis_node::flows::PreSync::Synced, keep: None };
+                    let done = net.engine(a).demote(&groups[i], &d).unwrap();
+                    let acts = net.sync(a).carry_out(done).unwrap();
+                    net.actions(a, acts);
+                    net.run();
+                    net.advance(15_000);
+                }
+            }
+            _ => {}
+        }
+        local(&mut net, b);
+        net.run();
+    }
+    if alike {
+        for _ in 0..3 {
+            net.advance(15_000);
+        }
+        for t in &things {
+            assert_eq!(net.eph_read(a, *t, STATE), net.eph_read(b, *t, STATE), "seed {seed}: {t:?}");
+        }
+    }
+}
+
+// spec/crdt.md §4.6: an ephemeral undo or redo needs the rights of a write.
+#[test]
+fn ephemeral_reverts_stay_within_rights_spec_crdt_4_6() {
+    let name = "ephemeral::ephemeral_reverts_stay_within_rights_large_spec_crdt_4_6";
+    osis_base::testenv::run_seeds(name, &[0, 1, 2, 3, 96], false, |seed| eph_replay(name, seed), |seed| revert_rights_run(seed, false));
+}
+
+#[test]
+#[ignore]
+fn ephemeral_reverts_stay_within_rights_large_spec_crdt_4_6() {
+    let name = "ephemeral::ephemeral_reverts_stay_within_rights_large_spec_crdt_4_6";
+    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| revert_rights_run(seed, false));
+}
+
+// issues/ephemeral-revert-diverges.md: seeds 5, 6, 26, 42, 59, 75, 100, 181 read differently at the
+// two nodes, on main's revert code too.
+#[test]
+#[ignore]
+fn repro_ephemeral_revert_diverges() {
+    let name = "ephemeral::repro_ephemeral_revert_diverges";
+    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| revert_rights_run(seed, true));
+}
