@@ -26,7 +26,7 @@ import glob, os, re, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "notes/testing-map.md")
 SOURCES = ["core", "cli"]
-MODELS = ("core/test/crdt-model/", "core/test/roles-model/")
+MODELS = ("core/test/crdt-model/", "core/test/roles-model/", "core/test/held-model/")
 # An anchor is a parenthesis right after the section holding no citation of its own; matched by
 # lookahead so citations inside other parentheses are still found.
 CITE = re.compile(r"(spec/[\w-]+\.md)?\s*§\s*(\d+(?:\.\d+)*)(?=\s*\(([^()§]*)\))?")
