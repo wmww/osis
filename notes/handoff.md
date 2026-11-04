@@ -13,9 +13,6 @@ Written on ostrich with main at the commit that adds this note. Nothing is runni
 |---|---|---|
 | `origin/eph-lane` | eph-unify step C, +1851/-2304, partly reviewed, no verdict; whole-commits 2b waits on it | issues/eph-lane-review.md: fresh reviewer of the last reviewer's fixes, trace churn seed 9130190 (a possible upload/delete storm) first, then merge or discard; delete the branch on origin |
 | `origin/crdt-leftovers` | two attempts at crdt issues, a review said neither is ready | issues/crdt-leftovers-branch.md: probably restart from the issues; keep its list-expiry oracle; delete the branch on origin |
-| `origin/app-review2` | stale: all 10 commits are on main under the same subjects (checked) | `git push origin --delete app-review2` |
-| local `session-25-rv` | stale: its work merged as item 239; the other commit is throwaway review probes | `git branch -D session-25-rv` |
-| local `dogfood-bin`, `periodic-14`, `session-2`, `client-port-read` | fully merged (0 commits ahead) | `git branch -d` |
 
 ## Decided last session (all recorded; build from these)
 - Kick frontiers: commit IDs only, one system; kept-history removal cost is a stated limit (spec/requirements.md Cost). The hash DAG, per-session heads and F4 links are dropped. ID batches are the fallback if costs ever hurt (notes/frontier-study.md §11).
@@ -27,7 +24,7 @@ Written on ostrich with main at the commit that adds this note. Nothing is runni
 - Tests: per-branch oracle sizes are a tenth of full by default, `OSIS_FULL=1` in periodic runs only; no rerun of run ranges; one all-core run per box; a study, not a third patch, after a second seed-found fix in one area (notes/coordination.md, notes/test-value-study.md).
 
 ## Suggested order
-1. Branch cleanup above (minutes), then eph-lane: it blocks whole-commits 2b.
+1. eph-lane (cleanup done; review running under Wren): it blocks whole-commits 2b.
 2. Whole commits steps 2b, 3, 4 (issues/whole-commits.md, notes/whole-commits.md): deletes the cross-thing waits and two requirement exceptions.
 3. issues/drop-rejoin-robust.md item 5 (rebuild check after every transaction in debug builds): cheap, and it will find what the rest of that issue fixes. Then its items 2, 1, 3, 4, 7, with the reference model (6) alongside.
 4. The three simplifications: remove-moves, keep-at-most-relative, roster option 2. Each deletes code and spec; spec/ describes only what is built, so each lands its own spec edit.
