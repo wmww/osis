@@ -208,10 +208,12 @@ fn large_values_of_a_writer_pass_the_reader_spec_dm_6() {
     m.op(t, &ak("t:docs.0"), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s(&big)) }).unwrap();
     m.op(t, &ak("t:docs.0"), PathOp { path: vec![PathSeg::Key(s(&big))], op: Op::Set(s("v")) }).unwrap();
     m.op(t, &ak("t:tags.0"), PathOp { path: Vec::new(), op: Op::Add(s(&big)) }).unwrap();
+    // a large key with a large value at it
+    m.set(t, &BIG, &Value::Map([(s(&big), s(&big))].into_iter().collect())).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     sync(&mut lp, 0, 1);
     assert!(lp.peers[1].engine.pending().is_empty());
-    for a in ["t:text.0", "t:reg.0", "t:docs.0", "t:tags.0"] {
+    for a in ["t:text.0", "t:reg.0", "t:docs.0", "t:tags.0", "t:big.0"] {
         assert!(lp.peers[1].engine.get(&t, &ak(a)).unwrap().is_some(), "{a}");
     }
 }

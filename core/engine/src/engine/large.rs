@@ -97,7 +97,8 @@ fn base_at(state: &Fragment, prefix: &[PathSeg], l: &Large) -> Option<Link> {
 /// `base`: the op's path and the aspect's state, when `v` replaces what the state holds there.
 fn chunk_value(v: &mut Value, schema: &Schema, ty: &Type, base: Option<(&[PathSeg], &Fragment)>, put: &mut Put<'_>) -> Result<()> {
     let mut ls = large_positions(schema, v, ty);
-    ls.sort_by_key(|l| std::cmp::Reverse(l.path.0.len()));
+    // deepest first, a map key after the value at it: its path goes with it
+    ls.sort_by_key(|l| (std::cmp::Reverse(l.path.0.len()), l.map_key));
     for l in &ls {
         let b = base.and_then(|(p, f)| base_at(f, p, l));
         chunk_one(v, l, b.as_ref(), put)?;
