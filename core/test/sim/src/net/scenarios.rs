@@ -647,7 +647,8 @@ pub fn work_sets(seed: u64) -> Res<Report> {
         let x = e.new_thing(&mut m, g);
         m.set(x, &workload::NOTE, &Value::Str(format!("n{k}"))).map_err(|e| sim.fail(e.to_string()))?;
         m.expires(x, &workload::NOTE, WallMs(at)).map_err(|e| sim.fail(e.to_string()))?;
-        sim.commit(n, m)?;
+        // the record and the plain write, then the expiring note (spec/commits.md §6)
+        sim.write(n, m)?;
         sim.run(15)?;
     }
     sim.quiet(40)?;
