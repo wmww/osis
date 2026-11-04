@@ -38,3 +38,11 @@ pub fn take() -> Vec<(&'static str, Duration, u64)> {
     ON.with(|on| on.set(true));
     COSTS.with(|c| std::mem::take(&mut *c.borrow_mut()).into_iter().map(|(k, (d, n))| (k, d, n)).collect())
 }
+
+/// Runs `f` with this thread's recording off (debug checks: their work is not the measured code's).
+pub fn paused<T>(f: impl FnOnce() -> T) -> T {
+    let was = ON.with(|on| on.replace(false));
+    let r = f();
+    ON.with(|on| on.set(was));
+    r
+}

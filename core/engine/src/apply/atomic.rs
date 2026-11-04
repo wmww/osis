@@ -1247,6 +1247,82 @@ fn unmerged_as_rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
+/// Debug builds, at the end of every transaction (issues/drop-rejoin-robust.md, item 5): each
+/// aspect it touched (below) holds what a rebuild from what the
+/// node holds gives (`rebuilt`: spec/crdt.md §4.6 Un-merge), as stored, but for the text chars
+/// §5.7 leaves to the node. Panics with the difference. Death dates are not checked: a node
+/// dates a death at the first superseder it met (spec/commits.md §5), not a function of the held
+/// bodies.
+#[cfg(debug_assertions)]
+pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
+    use crate::engine::state::encode;
+    // aspects a new commit names, sampled unless a part's status (valid, dropped, missing)
+    // changed there too; the rest (such a change, a state written otherwise) always
+    let mut fresh: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut always: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let status = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.missing.contains(&ai));
+    for (id, old) in tx.core.ix.commits.before() {
+        let new = tx.core.ix.commits.get(id);
+        let Some(m) = new.or(old) else { continue };
+        for (ai, a) in m.view.aspects.iter().enumerate() {
+            let k = (a.tid, a.ak.clone());
+            match (old, new) {
+                (None, _) => fresh.insert(k),
+                (Some(o), n) if n.is_none_or(|n| status(n, ai) != status(o, ai)) => always.insert(k),
+                _ => false,
+            };
+        }
+    }
+    // a wrong state stays wrong, so a later sample still sees it: sampled when the held
+    // commits number a power of four (O(1) bodies read per commit; at every commit the check
+    // cost about 40% more tier-1 CPU, at powers of two 20%)
+    let core = &*tx.core;
+    let sampled = |k: &(Tid, Ak)| always.contains(k) || !fresh.contains(k) || core.ix.by_aspect.get(k).is_none_or(|s| s.len().is_power_of_two() && s.len().trailing_zeros() % 2 == 0);
+    let touched: BTreeSet<(Tid, Ak)> = core.written.iter().chain(&fresh).filter(|k| sampled(k)).cloned().chain(always.iter().cloned()).collect();
+    for (tid, ak) in touched {
+        // unseen: the cached state as it was, and no cost recorded
+        let k = (tid, ak.clone());
+        let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
+        let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, &[], &BTreeSet::new())?.0, tx.state(&tid, &ak)?.cloned())) })?;
+        match cached.0 {
+            Some(s) => tx.core.states.insert(k.clone(), s),
+            None => tx.core.states.remove(&k),
+        };
+        match cached.1 {
+            Some(p) => tx.core.pages.insert(k, p),
+            None => tx.core.pages.remove(&k),
+        };
+        // a text char a node may hold or not (spec/crdt.md §5.7) aside
+        let plain = |f: Option<Fragment>| f.map(|mut f| {
+            f.drop_local_chars();
+            f
+        });
+        let (got, want) = (plain(got), plain(want));
+        let same = got.as_ref().map(encode).transpose()? == want.as_ref().map(encode).transpose()?;
+        debug_assert!(same, "state of {tid:?} {ak:?} differs from a rebuild from held bodies:\n{}", text_diff(&format!("{got:#?}"), &format!("{want:#?}")));
+    }
+    Ok(())
+}
+
+/// The lines of `kept` and `rebuilt` the other lacks, `-` kept and `+` rebuilt, each with its
+/// line number.
+#[cfg(debug_assertions)]
+fn text_diff(kept: &str, rebuilt: &str) -> String {
+    let (a, b): (Vec<&str>, Vec<&str>) = (kept.lines().collect(), rebuilt.lines().collect());
+    let (sa, sb): (BTreeSet<&str>, BTreeSet<&str>) = (a.iter().copied().collect(), b.iter().copied().collect());
+    let mut out = String::new();
+    for (i, l) in a.iter().enumerate().filter(|(_, l)| !sb.contains(*l)) {
+        out.push_str(&format!("  - kept {i}: {l}\n"));
+    }
+    for (i, l) in b.iter().enumerate().filter(|(_, l)| !sa.contains(*l)) {
+        out.push_str(&format!("  + rebuilt {i}: {l}\n"));
+    }
+    if out.is_empty() {
+        out = format!("  (same lines, other order or count)\n  kept {kept}\n  rebuilt {rebuilt}\n");
+    }
+    out
+}
+
 /// Rebuilds `(tid, ak)` after validity changed (spec/crdt.md §4.6, spec/permissions.md §5.2):
 /// the join of the current state (a snapshot this node holds), the residues and every held
 /// body, the state, residues and delta bodies first stripped of the writes of the deltas now

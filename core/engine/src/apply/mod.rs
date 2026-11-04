@@ -28,6 +28,8 @@ pub(crate) use gates::{Gate, at_most_bound, gating, still_gated};
 use gates::{class_of, counts_held, held_units, never_whole, waits_whole};
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
+#[cfg(debug_assertions)]
+pub(crate) use atomic::check_rebuilt;
 pub(crate) use atomic::{join_into_state, Unmerge, apply_verified, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, rebuilt, unmerge_fell};
 
 use crate::engine::blobs::TxBlobs;

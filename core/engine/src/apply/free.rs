@@ -390,6 +390,11 @@ mod tests {
         let f = osis_crdt::Fragment::default();
         let rows = e
             .run(|tx| {
+                // a state no body gives (`apply::check_rebuilt` would refuse it)
+                #[cfg(debug_assertions)]
+                {
+                    tx.core.unchecked_tx = true;
+                }
                 tx.set_state(&g, &ak("t:a.0~"), Some(f.clone()), osis_store::Shred::No, false)?;
                 Ok(tx.txn.memory_local_keys(crate::engine::records::ASPECTS))
             })
