@@ -1023,6 +1023,16 @@ fn purge_falls_how(name: &str, seed: u64, churn: bool) -> Res<Report> {
             break;
         }
     }
+    // Fault steps prove no liveness: seed 61000's `b` loses every dial of 600 steps to a tick past
+    // the host's Hello deadline or a cut. With the faults off (`a` still cut) it must arrive.
+    sim.calm = true;
+    for _ in 0..40 {
+        if !sim.engine(b)?.body_not_dropped(&c, &t, &k) {
+            break;
+        }
+        sim.settle()?;
+        sim.advance(61_000)?;
+    }
     if sim.engine(b)?.body_not_dropped(&c, &t, &k) {
         return Err(sim.fail("the purge never reached the writer"));
     }
