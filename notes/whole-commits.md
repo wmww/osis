@@ -89,3 +89,4 @@ Found by the step-1/2 worker; nothing was built. Each needs a call before the sp
 - Flaw 4: accepted. Creating a thing with expiring content takes two commits (the record, then the content); the API splits it. Chat messages are writes on an existing chat thing, so they are one commit.
 - Per-part purge kept: whole-commit-only purge would not be significantly simpler (§9 notes), so Tess's revisit condition is not met.
 - Step 2 is L: split it into 2a (header-level `expires` and the API split by expiry and `nobody`) and 2b (sections, grouped prefix, host Delete/Replace, one body per commit in labeling and node-sync).
+- Order with other work: step 2b waits for Tiller's eph-unify step C (both rework node-sync labeling; C goes first). The kick DAG (notes/kick-dag.md, approved) builds after 2a merges.
