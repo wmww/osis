@@ -1,7 +1,7 @@
 # Rotation, claim steps, re-seal (TLA+)
 > Summary: TLC model of read-role rotation for one actor and its label at one host (spec/crypto.md §3–§5, spec/sync.md §2/§5, spec/permissions.md §3–§4, spec/commits.md §2): epochs established by names (the removals, the departures from the holder actor and its keyset epoch a rotation's rotator held), frozen coverage (an epoch covers exactly the departures it names; boxes to the holder actor carry their writer's names) against the box-inspection covers rule, a removal withheld forever from one admin, a holder actor whose admin device leaves it (the removal's roles and keys parts arriving apart), then forges its keyset or is forked by an admin that has not seen it, granted after a rotation (the grant reaching an admin as its edge alone, a projection), forced and eager rotation, forks, removal carried in its rotation, grants, re-registration after uploading the rotation chain, opens by sync key and claims, claim-set drops, stranded heartbeats (also on a refused claim), deposit-seed refresh, re-seal after a complete pass (by inbox and under the label), rotation by inbox to holders without a box at the epoch before, per-node box knowledge, co-reader peers, planted boxes (reading-only secrets). Written from spec/ alone.
 
-Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings).
+Files: `Rotation.tla` (the model; constants come straight from each `.cfg`), `ASSUMPTIONS.md`, `AMBIGUITIES.md` (the findings). `Depth0.tla` is a separate model of depth-0 sealing (section at the end).
 
 ## Run
 `../run.sh small` (CI-sized instances of both models) or `../run.sh all`; it fetches TLC into `~/.cache/tla/` if missing. By hand, from this directory (Java 11+):
@@ -80,3 +80,31 @@ Since registration waits for the rotation chain to be uploaded, the interleaving
 
 ## Not covered
 Write and admin rotation, holder actors beyond one group with one leaving device (no nested holders, the group's honest keyset changes made outside the model), a grant's edge without its box (one record), the compaction residual of the study (a snapshot of g meeting the name with g forked: `GSnap` with "fork" is in no cfg), epoch starts (roster snapshots) of the rotated actor, forged history entries, invalid rotation commits, demotion and `until`, several hosts or branches of the step tree, steps without rotation, entry boxes and key-actor readers, `label.0` records, `ROLE_KEEP` compaction of steps in `label.0` and of rotation commits (`secrets.0` snapshots, so snapshot-established epochs and the post-compaction residue of notes/sync.md Limits).
+
+## Depth0.tla: depth-0 sealing (notes/keys-requirements-study.md §4)
+Several actors and holder actors, read role only, an actor's keyset = its read epoch; crypto as access (a node's secrets: the closure over boxes and history boxes of the commits it holds; a removed device's: over every box ever written); any delivery order; ignorant forks, unprompted rotations and one forged keyset as one-shot steps; A's own departures by frozen coverage (no establishment, hosts or claims: Rotation.tla's). Constants select the rule variants (`Stale`, `Anchor`, `Merge`, `LeaveOut`, `CycleCheck`, `Rejoin`); instances are defined in `Depth0MC.tla` (a `.cfg` cannot write tuples), so run with module `Depth0MC`:
+```
+java -XX:+UseParallelGC -cp ~/.cache/tla/tla2tools.jar tlc2.TLC -workers 4 \
+  -metadir /tmp/tlc-states -config D0_cyc.cfg Depth0MC
+```
+Properties: `NoLeakDirect`, `NoLeakMember`, `NoLeakMemberAll` (invariants), `Excludes`, `CurrentOpens`, `ReadsAll`, `Settles` (fairness of learning, forced rotation, re-seal). Not in run.sh until the cycle rule is decided (issues/keys-depth0.md). TLC 2.19, 3-4 workers, a shared box at load 40-100 (wall clock).
+
+| cfg | instance | result | states | time |
+|---|---|---|---|---|
+| `D0_member` | A {a1, M}, M {m1, m2, D}; m1 removes D, m2 may fork M, a1 may rotate A; the study's rule | **fails** `NoLeakMember` (history box to an ignorant fork) | 3,756 | 15 s |
+| `D0_member_anchor` | as D0_member, anchored sealing and merge | MEMBER_ANCHOR |
+| `D0_member_forge` | as D0_member_anchor, D forges a keyset of M | MEMBER_FORGE |
+| `D0_cyc_study` | X {x1, D, Y}, Y {y1, X}; x1 removes D, y1 may rotate Y; the study's cycle rule | **fails** `Settles` (ping-pong) | 2,582 | 37 s |
+| `D0_cyc2_study` | X <-> Y, D leaves X and E leaves Y concurrently; the study's rule | **fails** liveness (each left out of the other) | 365 | 7 s |
+| `D0_below_study` | W {w1, D} holds X, X <-> Y; w1 removes D; the study's rule | **fails** `NoLeakMember` (a staleness rotation boxes Y) | 26 | 6 s |
+| `D0_cyc_reach` | as D0_cyc_study; every rotation leaves out, re-seal by reachability over held boxes | **fails** `NoLeakDirect` (a later ignorant re-seal) | 1,646 | 26 s |
+| `D0_cyc` | as D0_cyc_study, Fresh | pass | 2,118 | 24 s |
+| `D0_cyc2` | as D0_cyc2_study, Fresh | pass | 2,368 | 36 s |
+| `D0_cyc3` | 3-cycle X in Y in Z in X, x1 removes D; Fresh | pass | 144 | 25 s |
+| `D0_below` | as D0_below_study, Fresh | pass | 119 | 15 s |
+| `D0_below_eager` | as D0_below, y1 may rotate Y | pass | 15,621 | 360 s |
+| `D0_cyc_2adm_fresh` | as D0_cyc, a second admin y2 of Y may rotate Y; Fresh | **fails** `NoLeakDirect` (y1, not yet knowing, re-seals Y to X's old keyset after x1 sealed into it on y2's re-seal) | 94,984 | 844 s |
+| `D0_cyc_commit` | as D0_cyc; seal only on a box back in the keyset's own commit, rotate to rejoin | **fails** `Settles` (rejoin ping-pong) | 4,384 | 70 s |
+| `D0_cyc3_commit` | as D0_cyc3, the commit rule | **fails** `Settles` (rotations chase round the cycle) | 204 | 18 s |
+
+A 3-cycle under Fresh with unprompted rotations of Y and Z ran 34,914 states without a violation before it was stopped (unfinished).
