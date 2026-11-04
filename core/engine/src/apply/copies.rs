@@ -270,26 +270,37 @@ pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> R
 /// `vouched` of one snapshot's writes, indexed `ix`.
 fn vouched_in(ix: &osis_crdt::CopyIndex, owned: &[Owned], out: &mut Records, erased: &mut BTreeSet<Dot>) {
     for o in owned {
-        let (src, lo, hi) = match o {
-            Owned::Range { src, lo, hi } => (src.clone(), *lo, *hi),
-            Owned::Commit(c) => (osis_crdt::Source::commit(*c), 0, u64::MAX),
-            Owned::Dots { src, ctrs } => (src.clone(), ctrs.first().copied().unwrap_or(0), ctrs.last().map_or(0, |x| x.saturating_add(1))),
-        };
+        let (src, lo, hi) = range_of(o);
         out.extend(ix.records_in(&src, lo, hi).filter(|(d, _)| o.owns(d)).map(|(d, k)| (d.clone(), k.cloned())));
         erased.extend(ix.erased_in(&src, lo, hi).filter(|d| o.owns(d)).cloned());
     }
 }
 
-/// Whether a valid snapshot's piece `f` vouches for a write of the deltas `owned` matches
-/// (`vouched` of it is not empty), a hidden anchor's creation copy included: joined, the aspect
-/// is rebuilt, since what un-merge keeps of those deltas' bodies depends on it.
-/// Invariant: exactly when the rebuild's `Unmerge` would read a vouched record from `f`.
+/// The owner dots `o` may own: a source and a counter range.
+fn range_of(o: &Owned) -> (osis_crdt::Source, u64, u64) {
+    match o {
+        Owned::Range { src, lo, hi } => (src.clone(), *lo, *hi),
+        Owned::Commit(c) => (osis_crdt::Source::commit(*c), 0, u64::MAX),
+        Owned::Dots { src, ctrs } => (src.clone(), ctrs.first().copied().unwrap_or(0), ctrs.last().map_or(0, |x| x.saturating_add(1))),
+    }
+}
+
+/// Whether a valid snapshot's piece `f` joined may differ from the rebuild, so the aspect is
+/// rebuilt: `f` holds a write or record of the deltas `owned` matches that un-merge removes or
+/// changes (`holds_dots`), or one it vouches for (`vouched` of it is not empty), a hidden
+/// anchor's creation copy included, since what un-merge keeps of those deltas' bodies depends on
+/// it (spec/crdt.md §4.6).
 pub(crate) fn vouches_any(f: &Fragment, owned: &[Owned]) -> bool {
     if owned.is_empty() {
         return false;
     }
+    if f.holds_dots(&|d| owned.iter().any(|o| o.owns(d))) {
+        return true;
+    }
+    let mut ranges: Vec<_> = owned.iter().map(range_of).collect();
+    ranges.sort();
     let (mut out, mut erased) = (Records::new(), BTreeSet::new());
-    vouched_in(&f.copy_index(), owned, &mut out, &mut erased);
+    vouched_in(&f.copy_index_in(&ranges), owned, &mut out, &mut erased);
     !out.is_empty() || !erased.is_empty()
 }
 
