@@ -1346,6 +1346,33 @@ fn copies_of_a_linked_aspect_list_settle_spec_commits_4() {
     assert_eq!(e.get(&h, &first).unwrap(), Some(s("v")));
 }
 
+// A false signature from a held author goes before the linked lists are fetched: with them away it is
+// refused, it never waits for them (issues/header-list-decode-memory.md).
+#[test]
+fn false_signature_refused_before_linked_lists() {
+    use crate::common::*;
+    let mut lp = net(2, 71);
+    let h = new_thing(&mut lp, 0);
+    for pk0 in &packages(&mut lp, 0) {
+        lp.deliver(1, pk0).unwrap();
+    }
+    lp.peers[0].clock.advance(10);
+    let mut m = Mutation::new();
+    for i in 0..800 {
+        m.set(h, &osis_base::Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap(), &s("v")).unwrap();
+    }
+    let id = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+    let mut forged = CommitBlob::decode(&pk.bytes).unwrap();
+    assert!(forged.header.links.aspects.is_some(), "the aspect list goes by link");
+    forged.signature = osis_crypto::Signature::from_slice(&[9; 64]).unwrap();
+    assert!(lp.peers[1].engine.ingest(&forged.encode(), Vec::new()).is_err());
+    assert!(lp.peers[1].engine.pending().is_empty());
+    // the true copy waits for them
+    assert!(lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).is_ok());
+    assert!(!lp.peers[1].engine.pending().is_empty());
+}
+
 // Reviewer's differential (spec/permissions.md §6, spec/commits.md §4): a role's standing does not
 // read what a node syncs: one held set, with linked frontiers away and after they come, reads one
 // roster under every sync set, in random shapes and orders, a restart among them.

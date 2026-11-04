@@ -5,8 +5,8 @@
 //! every content hash and length, and seeks by the lengths the nodes carry.
 
 use crate::Error;
-use osis_base::cbor::{Limits, decode, encode};
-use osis_base::format::{CHUNK_MAX, MAX_BLOB, TREE_FANOUT, TREE_MAX_LEVEL};
+use osis_base::cbor::{Reader, encode};
+use osis_base::format::{CHUNK_MAX, TREE_FANOUT, TREE_MAX_LEVEL};
 use osis_base::{BlobId, ChunkParams, Chunker, Link, Value};
 use osis_crypto::{SUITE_1, Secret32, link_hash, link_tree_hash};
 
@@ -35,27 +35,37 @@ pub fn node_plaintext(level: u64, kids: &[Kid]) -> Result<Vec<u8>, Error> {
 /// Parses a tree node: level 1..=48, 1..=512 links, one length per link, the lengths' sum
 /// within u64.
 pub fn parse_node(plaintext: &[u8]) -> Result<(u64, Vec<Kid>), Error> {
-    let v = decode(plaintext, &Limits { max_depth: 4, max_bytes: MAX_BLOB })?;
-    let Value::List(items) = v else { return Err(Error::Malformed("tree node")) };
-    let [Value::Int(level), Value::List(links), Value::List(lens)] = items.as_slice() else { return Err(Error::Malformed("tree node")) };
-    let level = u64::try_from(*level).map_err(|_| Error::Malformed("tree level"))?;
-    if !(1..=TREE_MAX_LEVEL).contains(&level) || links.is_empty() || links.len() > TREE_FANOUT || lens.len() != links.len() {
+    // read by shape: a node's bytes are not hash-checked yet, and a whole-value decode would pay for any bytes
+    let mut r = Reader::new(plaintext);
+    if r.array()? != 3 {
+        return Err(Error::Malformed("tree node"));
+    }
+    let level = r.uint()?;
+    if !(1..=TREE_MAX_LEVEL).contains(&level) {
+        return Err(Error::Malformed("tree node bounds"));
+    }
+    let n = r.array()?;
+    if n == 0 || n > TREE_FANOUT {
+        return Err(Error::Malformed("tree node bounds"));
+    }
+    let links = (0..n).map(|_| r.link()).collect::<Result<Vec<_>, _>>()?;
+    if r.array()? != n {
         return Err(Error::Malformed("tree node bounds"));
     }
     // a child of a level-k node holds at most 512^(k-1) chunks of at most CHUNK_MAX bytes
     let fan = u64::try_from(TREE_FANOUT).unwrap_or(u64::MAX);
     let max = u32::try_from(level - 1).ok().and_then(|e| fan.checked_pow(e)).and_then(|x| x.checked_mul(CHUNK_MAX as u64)).unwrap_or(u64::MAX);
     let mut sum = 0u64;
-    let mut kids = Vec::with_capacity(links.len());
-    for (l, n) in links.iter().zip(lens) {
-        let (Value::Link(l), Value::Int(n)) = (l, n) else { return Err(Error::Malformed("tree node link")) };
-        let n = u64::try_from(*n).map_err(|_| Error::Malformed("tree length"))?;
+    let mut kids = Vec::with_capacity(n);
+    for l in links {
+        let n = r.uint()?;
         if n > max {
             return Err(Error::Malformed("tree length"));
         }
         sum = sum.checked_add(n).ok_or(Error::Malformed("tree length"))?;
-        kids.push((*l, n));
+        kids.push((l, n));
     }
+    r.end()?;
     Ok((level, kids))
 }
 

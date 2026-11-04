@@ -6,6 +6,7 @@ use crate::tests::validate::role_header;
 use crate::tests::verify::{TestSecrets, register_delta, sec};
 use crate::*;
 use osis_base::{Ak, Link};
+use std::mem::size_of;
 use osis_crypto::{link_hash, link_tree_hash};
 use osis_schema::{AspectDefaults, PurgeBy, Retention};
 
@@ -177,4 +178,159 @@ fn one_level_2_key() {
     a2.keys = vec![i, k];
     h.aspects.push(a2);
     assert!(h.validate().unwrap_err().to_string().contains("level-2"));
+}
+
+/// Links `bytes` as list `f` of a header holding nothing else.
+fn linked_as(f: ListField, bytes: &[u8], d: &osis_crypto::Secret32, m: &mut MemoryBlobs) -> Header {
+    let mut salt = 0u64;
+    let link = write_list(bytes, d, m, &mut || {
+        salt += 1;
+        let mut s = [0; 16];
+        s[..8].copy_from_slice(&salt.to_be_bytes());
+        Prefix { salt: s, blind: [0; 16], expiry: None, keys: vec![] }
+    })
+    .unwrap();
+    let mut h = sample_header();
+    (h.aspects, h.chunks, h.purge, h.keys, h.origins, h.frontier) = (vec![], vec![], vec![], vec![], vec![], None);
+    h.links.set(f, Some(link));
+    h
+}
+
+fn array(n: usize, item: impl Fn(usize) -> Vec<u8>) -> Vec<u8> {
+    let mut b = Vec::new();
+    osis_base::cbor::head(&mut b, 4, n as u64);
+    (0..n).for_each(|i| b.extend(item(i)));
+    b
+}
+
+fn peak_mib() -> Option<u64> {
+    let s = std::fs::read_to_string("/proc/self/status").ok()?;
+    s.lines().find(|l| l.starts_with("VmHWM"))?.split_whitespace().nth(1)?.parse::<u64>().ok().map(|k| k / 1024)
+}
+
+// spec/requirements.md, peer input never costs unbounded memory: a list of the wrong shape is refused
+// before its items are built. 8 MiB of one-entry maps peak at 6.5 GB as a whole-value decode (VmHWM: no counting allocator, unsafe is forbidden).
+#[test]
+fn hostile_list_refused_by_shape() {
+    let d = sec(0xd0, &t(2));
+    let mut m = MemoryBlobs::default();
+    let n = 8 << 20;
+    let maps = array(n / 3, |_| vec![0xa1, 0, 0]);
+    let mut in_frontier = vec![0xa1, 0];
+    in_frontier.extend(&maps);
+    let mut in_set = vec![0xa1, 0];
+    osis_base::cbor::head(&mut in_set, 6, osis_base::format::TAG_SET);
+    in_set.extend(&maps);
+    let cases = [(ListField::Aspects, &maps), (ListField::Chunks, &maps), (ListField::Purge, &maps), (ListField::Keys, &maps), (ListField::Origins, &maps), (ListField::Frontier, &maps), (ListField::Frontier, &in_frontier), (ListField::Frontier, &in_set)];
+    let start = peak_mib();
+    for (f, bytes) in cases {
+        let mut h = linked_as(f, bytes, &d, &mut m);
+        assert!(h.resolve(&mut m, &d).is_err(), "{f:?}");
+    }
+    if let (Some(a), Some(b)) = (start, peak_mib()) {
+        assert!(b - a < 1024, "{a} to {b} MiB");
+    }
+}
+
+/// What a resolved header's lists hold on the heap.
+fn held(h: &Header) -> usize {
+    use std::mem::size_of_val as size;
+    let ak = |a: &Ak| a.as_str().len();
+    h.aspects.capacity() * size_of::<AspectEntry>() + h.aspects.iter().map(|a| ak(&a.ak) + size(a.keys.as_slice()) + size(a.hashes.as_slice())).sum::<usize>()
+        + h.chunks.capacity() * size_of::<ChunkEntry>() + h.chunks.iter().map(|c| size(c.keys.as_slice())).sum::<usize>()
+        + h.purge.capacity() * size_of::<PurgeItem>() + h.purge.iter().map(|p| ak(p.ak())).sum::<usize>()
+}
+
+// The same, for lists of the right shape: what an item costs is bounded by what its bytes pay, at the
+// fewest bytes an item can take.
+#[test]
+fn list_items_cost_at_most_their_bytes_times_six() {
+    let d = sec(0xd0, &t(2));
+    let mut m = MemoryBlobs::default();
+    let n = 1 << 18;
+    let tid = |i: usize| {
+        let mut b = vec![0x4f];
+        b.extend(&(i as u64).to_be_bytes());
+        b.extend([0; 7]);
+        b
+    };
+    let id = |i: usize| {
+        let mut b = vec![0x58, 32];
+        b.extend(&(i as u64).to_be_bytes());
+        b.extend([0; 24]);
+        b
+    };
+    let lists = [
+        (ListField::Aspects, array(n / 60, |i| [&[0x88][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0x83, 0, 0xa0, 0xa0, 0x80, 0x80, 0x81], &id(0)].concat())),
+        (ListField::Chunks, array(n / 36, |i| [&[0x82][..], &id(i), &[0x80]].concat())),
+        (ListField::Purge, array(n / 21, |i| [&[0x82][..], &tid(i), &[0x63, b'a', b'.', b'0']].concat())),
+    ];
+    for (f, bytes) in lists {
+        let mut h = linked_as(f, &bytes, &d, &mut m);
+        h.resolve(&mut m, &d).unwrap_or_else(|e| panic!("{f:?}: {e}"));
+        assert!(held(&h) <= 6 * bytes.len(), "{f:?}: {} for {}", held(&h), bytes.len());
+    }
+}
+
+const CHUNK_THRESHOLD_PLUS: usize = osis_base::format::CHUNK_THRESHOLD + 1;
+
+// spec/wire.md §4: a list's items are sorted and distinct, so a chunk link repeated (a small upload
+// for a list of any length) is refused at its first repeat; so is a frontier out of order or of any
+// shape but `{0: set<32-byte ID>}`.
+#[test]
+fn list_items_ascend_and_frontier_shape() {
+    let d = sec(0xd0, &t(2));
+    let mut m = MemoryBlobs::default();
+    let item = |i: usize| {
+        let mut b = vec![0x82, 0x58, 32];
+        b.extend(&(i as u64).to_be_bytes());
+        b.extend([0; 24]);
+        b.push(0x80);
+        b
+    };
+    let n = (CHUNK_THRESHOLD_PLUS + 100) / 36;
+    let ok = array(n, item);
+    let mut h = linked_as(ListField::Chunks, &ok, &d, &mut m);
+    h.resolve(&mut m, &d).unwrap();
+    assert_eq!(h.chunks.len(), n);
+    let again = array(n, |i| item(i.min(n - 2)));
+    let mut h = linked_as(ListField::Chunks, &again, &d, &mut m);
+    assert!(matches!(h.resolve(&mut m, &d), Err(Error::Malformed("list items not sorted and distinct"))));
+
+    let frontier = |n: usize, id: &dyn Fn(usize) -> usize, extra: &[u8]| {
+        let mut b = vec![0xa1 + u8::from(!extra.is_empty()), 0];
+        osis_base::cbor::head(&mut b, 6, osis_base::format::TAG_SET);
+        b.extend(array(n, |i| {
+            let mut x = vec![0x58, 32];
+            x.extend(&(id(i) as u64).to_be_bytes());
+            x.extend([0; 24]);
+            x
+        }));
+        b.extend(extra);
+        b
+    };
+    let n = (CHUNK_THRESHOLD_PLUS + 100) / 34;
+    let good = frontier(n, &|i| i, &[]);
+    let mut h = linked_as(ListField::Frontier, &good, &d, &mut m);
+    h.resolve(&mut m, &d).unwrap();
+    assert_eq!(osis_base::encode(h.frontier.as_ref().unwrap()), good);
+    for bad in [frontier(n, &|i| i.min(n - 2), &[]), frontier(n, &|i| n - i, &[]), frontier(n, &|i| i, &[1, 0])] {
+        let mut h = linked_as(ListField::Frontier, &bad, &d, &mut m);
+        assert!(h.resolve(&mut m, &d).is_err());
+    }
+}
+
+// A read by shape takes exactly what the whole-value decode took: inline lists go by it too, so every
+// list of a built commit passes both ways, and a tree node of another shape is refused.
+#[test]
+fn node_by_shape() {
+    let d = sec(0xd0, &t(2));
+    let ca = Link { hash: link_hash(&d, b"x"), blob: osis_base::BlobId([1; 32]), suite: 1, key: [2; 32] };
+    let good = crate::tree::node_plaintext(1, &[(ca, 1), (ca, 1)]).unwrap();
+    assert_eq!(crate::tree::parse_node(&good).unwrap(), (1, vec![(ca, 1), (ca, 1)]));
+    let mut long = good.clone();
+    long.push(0);
+    assert!(crate::tree::parse_node(&long).is_err());
+    let maps = [&[0x83, 1, 0x9a][..], &(1u32 << 20).to_be_bytes(), &[0xa1, 0, 0].repeat(1 << 20)].concat();
+    assert!(crate::tree::parse_node(&maps).is_err());
 }

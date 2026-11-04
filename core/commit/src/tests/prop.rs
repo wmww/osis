@@ -63,6 +63,28 @@ prop_compose! {
             links: l,
             ephemeral: None,
         };
+        // the lists' rule: sorted and distinct
+        let by_item = |b: Value| osis_base::encode(&b);
+        for a in &mut h.aspects {
+            a.keys.sort();
+            a.keys.dedup();
+            a.hashes.sort();
+            a.hashes.dedup();
+        }
+        h.aspects.sort_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
+        h.aspects.dedup_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
+        for c in &mut h.chunks {
+            c.keys.sort();
+            c.keys.dedup();
+        }
+        h.chunks.sort_by_key(|c| c.blob);
+        h.chunks.dedup_by_key(|c| c.blob);
+        h.purge.sort_by_key(|p| by_item(crate::header::purge_value(p)));
+        h.purge.dedup();
+        h.keys.sort_by_key(|k| by_item(crate::header::key_value(k)));
+        h.keys.dedup();
+        h.origins.sort_by_key(|o| o.commit);
+        h.origins.dedup_by_key(|o| o.commit);
         // a linked list's items are not in the header bytes
         for f in ListField::ALL {
             if h.links.get(f).is_some() {

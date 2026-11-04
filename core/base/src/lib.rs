@@ -20,7 +20,7 @@ mod time;
 mod value;
 
 pub use chain::{ChainStep, Owner, OwnerChain, owner_chain};
-pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, decode, decode_prefix, encode, item_prefix, visit_items};
+pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, Reader, decode, decode_prefix, encode, item_prefix, visit_items};
 pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};
 pub use ids::{Ak, AkError, BlobId, CommitId, CreationRecord, LabelId, Lifetime, Link, PurgeBy, Role, Tid, TidParseError};

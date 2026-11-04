@@ -42,13 +42,6 @@ pub(crate) fn ak(a: &Ak) -> Value {
     Value::Str(a.as_str().to_owned())
 }
 
-pub(crate) fn as_ak(v: &Value) -> Result<Ak, Error> {
-    match v {
-        Value::Str(s) => Ak::new(s.clone()).map_err(|_| Error::Malformed("aspect key")),
-        _ => Err(Error::Malformed("expected an aspect key")),
-    }
-}
-
 pub(crate) fn as_opt(v: &Value) -> Result<Option<&Value>, Error> {
     v.as_opt().ok_or(Error::Malformed("expected an option"))
 }

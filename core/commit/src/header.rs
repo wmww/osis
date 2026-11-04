@@ -2,9 +2,10 @@
 //! spec/commits.md §1, spec/crypto.md §2).
 
 use crate::Error;
-use crate::cbor::{ak, as_ak, as_bytes, as_idx, as_list, as_opt, as_tid, as_uint, tid, uidx, uint};
-use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH};
-use osis_base::{Ak, BlobId, CommitId, Limits, Link, Tid, Ts, Value};
+use crate::cbor::{ak, as_bytes, as_list, as_opt, as_tid, as_uint, tid, uidx, uint};
+use osis_base::cbor::MAJOR_BYTES;
+use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH, TAG_SET, TID_LEN};
+use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey};
 use osis_schema::{Bound, PurgeBy, Retention};
@@ -421,96 +422,172 @@ pub fn verify_signature(id: &CommitId, sig: &Signature, key: &VerifyingKey) -> R
 
 // ---- decode
 
-fn as_bound(v: &Value) -> Result<Bound, Error> {
-    let Value::Map(m) = v else { return Err(Error::Malformed("bound")) };
+// Lists are read by shape, nothing built that the bytes do not pay for. `decode` of hostile bytes
+// costs about 770 B per byte, too much at `MAX_LIST_BYTES` (`Header::resolve`).
+
+// About the fewest bytes an item takes: what a list reserves for by its count, so a count the bytes
+// cannot pay for reserves nothing. A wrong value only costs a reallocation.
+const MIN_ASPECT: usize = 60;
+const MIN_CHUNK: usize = 35;
+const MIN_PURGE: usize = 20;
+const MIN_KEY: usize = 35;
+const MIN_ORIGIN: usize = 2 + 32 + 2 * (1 + TID_LEN) + 2;
+const MIN_ID: usize = 33;
+
+/// An array of items in strictly ascending bytes, a rule every list of a header keeps. So a repeated
+/// chunk of a list ends the read where it starts, and `Vec<usize>` indices cost at most what their
+/// bytes do, whatever the count.
+fn read_items<'a, T>(r: &mut Reader<'a>, min_item: usize, mut item: impl FnMut(&mut Reader<'a>) -> Result<T, Error>) -> Result<Vec<T>, Error> {
+    let n = r.array()?;
+    let mut out = Vec::with_capacity(n.min(r.remaining() / min_item));
+    let mut prev: &[u8] = &[];
+    for _ in 0..n {
+        let start = r.pos();
+        out.push(item(r)?);
+        let raw = r.since(start);
+        if raw <= prev {
+            return Err(Error::Malformed("list items not sorted and distinct"));
+        }
+        prev = raw;
+    }
+    Ok(out)
+}
+
+fn read_tid(r: &mut Reader<'_>) -> Result<Tid, Error> {
+    Ok(Tid::from_bytes(r.fixed::<TID_LEN>()?))
+}
+
+fn read_ak(r: &mut Reader<'_>) -> Result<Ak, Error> {
+    Ak::new(r.text()?).map_err(|_| Error::Malformed("aspect key"))
+}
+
+fn read_opt_uint(r: &mut Reader<'_>) -> Result<Option<u64>, Error> {
+    match r.array()? {
+        0 => Ok(None),
+        1 => Ok(Some(r.uint()?)),
+        _ => Err(Error::Malformed("expected an option")),
+    }
+}
+
+fn read_idxs(r: &mut Reader<'_>) -> Result<Vec<usize>, Error> {
+    read_items(r, 1, |r| usize::try_from(r.uint()?).map_err(|_| Error::Malformed("index too large")))
+}
+
+fn read_bound(r: &mut Reader<'_>) -> Result<Bound, Error> {
     let mut b = Bound::default();
-    for (k, x) in m {
-        match as_uint(k)? {
-            0 => b.abs = Some(as_uint(x)?),
-            1 => b.rel = Some(as_uint(x)?),
+    let mut next = 0;
+    for _ in 0..r.map()? {
+        let k = r.uint()?;
+        let n = r.uint()?;
+        match k {
+            0 if next == 0 => b.abs = Some(n),
+            1 if next <= 1 => b.rel = Some(n),
             _ => return Err(Error::Malformed("bound key")),
         }
+        next = k + 1;
     }
     Ok(b)
 }
 
-pub(crate) fn as_retention(v: &Value) -> Result<Retention, Error> {
-    let [by, least, most] = as_list(v)? else { return Err(Error::Malformed("retention arity")) };
-    let by = PurgeBy::from_id(as_uint(by)?).ok_or(Error::Malformed("purgeable-by class"))?;
-    Ok(Retention { by, at_least: as_bound(least)?, at_most: as_bound(most)? })
+fn read_retention(r: &mut Reader<'_>) -> Result<Retention, Error> {
+    if r.array()? != 3 {
+        return Err(Error::Malformed("retention arity"));
+    }
+    let by = PurgeBy::from_id(r.uint()?).ok_or(Error::Malformed("purgeable-by class"))?;
+    Ok(Retention { by, at_least: read_bound(r)?, at_most: read_bound(r)? })
 }
 
-fn as_aspect(v: &Value) -> Result<AspectEntry, Error> {
-    let [t, a, lo, hi, r, exp, toks, hashes] = as_list(v)? else { return Err(Error::Malformed("aspect arity")) };
-    let hashes = as_list(hashes)?.iter().map(as_bytes::<32>).collect::<Result<Vec<_>, _>>()?;
+fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
+    if r.array()? != 8 {
+        return Err(Error::Malformed("aspect arity"));
+    }
+    let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
+    let (retention, expires, keys) = (read_retention(r)?, read_opt_uint(r)?, read_idxs(r)?);
+    let hashes = read_items(r, MIN_ID, |r| Ok(r.fixed::<32>()?))?;
     if hashes.is_empty() {
         return Err(Error::Malformed("aspect without delta hashes"));
     }
-    Ok(AspectEntry {
-        tid: as_tid(t)?,
-        ak: as_ak(a)?,
-        lo: as_uint(lo)?,
-        hi: as_uint(hi)?,
-        retention: as_retention(r)?,
-        expires: as_opt(exp)?.map(as_uint).transpose()?,
-        keys: as_list(toks)?.iter().map(as_idx).collect::<Result<_, _>>()?,
-        hashes,
-    })
+    Ok(AspectEntry { tid, ak, lo, hi, retention, expires, keys, hashes })
 }
 
-pub(crate) fn as_key(v: &Value) -> Result<DeleteKey, Error> {
-    let key = as_key_unchecked(v)?;
-    key.verifying_key()?;
+fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {
+    if r.array()? != 2 {
+        return Err(Error::Malformed("delete key arity"));
+    }
+    let level = u8::try_from(r.uint()?).ok().filter(|l| (DELETE_ADMIN..=DELETE_WRITER).contains(l)).ok_or(Error::Malformed("delete level"))?;
+    let key = DeleteKey { level, key: r.fixed().map_err(|_| Error::Malformed("delete key"))? };
+    if check {
+        key.verifying_key()?;
+    }
     Ok(key)
 }
 
-/// `as_key` without the point check (a stored header, checked when it arrived).
-fn as_key_unchecked(v: &Value) -> Result<DeleteKey, Error> {
-    let [l, k] = as_list(v)? else { return Err(Error::Malformed("delete key arity")) };
-    let level = u8::try_from(as_uint(l)?).ok().filter(|l| (DELETE_ADMIN..=DELETE_WRITER).contains(l)).ok_or(Error::Malformed("delete level"))?;
-    Ok(DeleteKey { level, key: as_bytes(k)? })
+fn read_chunk(r: &mut Reader<'_>) -> Result<ChunkEntry, Error> {
+    if r.array()? != 2 {
+        return Err(Error::Malformed("chunk arity"));
+    }
+    Ok(ChunkEntry { blob: BlobId(r.fixed()?), keys: read_idxs(r)? })
 }
 
-fn as_chunk(v: &Value) -> Result<ChunkEntry, Error> {
-    let [b, keys] = as_list(v)? else { return Err(Error::Malformed("chunk arity")) };
-    Ok(ChunkEntry { blob: BlobId(as_bytes(b)?), keys: as_list(keys)?.iter().map(as_idx).collect::<Result<_, _>>()? })
-}
-
-fn as_purge(v: &Value) -> Result<PurgeItem, Error> {
-    match as_list(v)? {
-        // the second place tells them apart: a tid, or an aspect key's text
-        [c, t, a] if as_tid(t).is_ok() => Ok(PurgeItem::Commit { commit: CommitId(as_bytes(c)?), tid: as_tid(t)?, ak: as_ak(a)? }),
-        [t, a, actor] => Ok(PurgeItem::Author { tid: as_tid(t)?, ak: as_ak(a)?, actor: as_tid(actor)? }),
-        [t, a] => Ok(PurgeItem::Aspect { tid: as_tid(t)?, ak: as_ak(a)? }),
+fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {
+    match r.array()? {
+        2 => Ok(PurgeItem::Aspect { tid: read_tid(r)?, ak: read_ak(r)? }),
+        3 => {
+            let first = r.bytes()?;
+            // the second place tells them apart: a tid, or an aspect key's text
+            if r.peek_major() == Some(MAJOR_BYTES) {
+                let commit = first.try_into().map(CommitId).map_err(|_| Error::Malformed("purge commit"))?;
+                Ok(PurgeItem::Commit { commit, tid: read_tid(r)?, ak: read_ak(r)? })
+            } else {
+                let tid = first.try_into().map(Tid::from_bytes).map_err(|_| Error::Malformed("purge tid"))?;
+                Ok(PurgeItem::Author { tid, ak: read_ak(r)?, actor: read_tid(r)? })
+            }
+        }
         _ => Err(Error::Malformed("purge item arity")),
     }
+}
+
+fn read_origin(r: &mut Reader<'_>) -> Result<Origin, Error> {
+    if r.array()? != 4 {
+        return Err(Error::Malformed("origin arity"));
+    }
+    Ok(Origin { commit: CommitId(r.fixed()?), author: read_tid(r)?, actor: read_tid(r)?, ts: Ts::from_u64(r.uint()?).ok_or(Error::Malformed("ts out of range"))? })
 }
 
 fn as_ts(v: &Value) -> Result<Ts, Error> {
     Ts::from_u64(as_uint(v)?).ok_or(Error::Malformed("ts out of range"))
 }
 
-fn as_origin(v: &Value) -> Result<Origin, Error> {
-    let [c, au, ac, ts] = as_list(v)? else { return Err(Error::Malformed("origin arity")) };
-    Ok(Origin { commit: CommitId(as_bytes(c)?), author: as_tid(au)?, actor: as_tid(ac)?, ts: as_ts(ts)? })
-}
-
-fn items<T>(v: &Value, f: impl Fn(&Value) -> Result<T, Error>) -> Result<Vec<T>, Error> {
-    as_list(v)?.iter().map(f).collect()
+/// The value of a linked frontier's bytes: exactly `{0: set<32-byte ID>}` (spec/wire.md §4).
+pub fn frontier_value(bytes: &[u8]) -> Result<Value, Error> {
+    let mut r = Reader::new(bytes);
+    if r.map()? != 1 || r.uint()? != 0 {
+        return Err(Error::Malformed("linked frontier"));
+    }
+    r.tag(TAG_SET)?;
+    let ids = read_items(&mut r, MIN_ID, |r| Ok(Value::bytes(&r.fixed::<32>()?)))?;
+    r.end()?;
+    Ok(Value::Map([(uint(0), Value::Set(ids.into_iter().collect()))].into_iter().collect()))
 }
 
 impl Header {
-    /// Fills list `f` from its inline value (also used for a resolved link).
-    pub(crate) fn set_list(&mut self, f: ListField, v: &Value) -> Result<(), Error> {
-        match f {
-            ListField::Aspects => self.aspects = items(v, as_aspect)?,
-            ListField::Chunks => self.chunks = items(v, as_chunk)?,
-            ListField::Purge => self.purge = items(v, as_purge)?,
-            ListField::Keys => self.keys = items(v, as_key)?,
-            ListField::Frontier => self.frontier = Some(v.clone()),
-            ListField::Origins => self.origins = items(v, as_origin)?,
+    /// Fills list `f` from its canonical bytes; `check`: delete keys' points too (not a stored
+    /// header, checked when it arrived).
+    pub(crate) fn read_list(&mut self, f: ListField, bytes: &[u8], check: bool) -> Result<(), Error> {
+        if f == ListField::Frontier {
+            self.frontier = Some(frontier_value(bytes)?);
+            return Ok(());
         }
-        Ok(())
+        let r = &mut Reader::new(bytes);
+        match f {
+            ListField::Aspects => self.aspects = read_items(r, MIN_ASPECT, read_aspect)?,
+            ListField::Chunks => self.chunks = read_items(r, MIN_CHUNK, read_chunk)?,
+            ListField::Purge => self.purge = read_items(r, MIN_PURGE, read_purge)?,
+            ListField::Keys => self.keys = read_items(r, MIN_KEY, |r| read_key(r, check))?,
+            ListField::Origins => self.origins = read_items(r, MIN_ORIGIN, read_origin)?,
+            ListField::Frontier => {}
+        }
+        Ok(r.end()?)
     }
 
     fn take_position(&mut self, f: ListField, v: &Value, stored: bool) -> Result<(), Error> {
@@ -526,15 +603,16 @@ impl Header {
             self.links.set(f, Some(*l));
             return Ok(());
         }
-        if stored {
-            if f == ListField::Keys {
-                self.keys = items(inner, as_key_unchecked)?;
-                return Ok(());
-            }
-        } else if osis_base::encode(inner).len() > CHUNK_THRESHOLD {
+        let bytes = osis_base::encode(inner);
+        if !stored && bytes.len() > CHUNK_THRESHOLD {
             return Err(Error::Malformed("inline list above CHUNK_THRESHOLD"));
         }
-        self.set_list(f, inner)
+        // an inline frontier is judged whole, by its type (`validity::header_frontier`)
+        if f == ListField::Frontier {
+            self.frontier = Some(inner.clone());
+            return Ok(());
+        }
+        self.read_list(f, &bytes, !stored)
     }
 
     /// Reads a header from its value. Linked lists stay unresolved.
