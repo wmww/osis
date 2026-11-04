@@ -7,7 +7,7 @@
 - No `kind` aspect: what a thing is, is defined by its aspects, and a thing may be several kinds (ECS).
 - No directory or folder concept (the tree was always too inflexible) except for interfacing with real filesystems. User-facing organization is **tags**: nestable as a graph, any thing can be in any tag, a bit of optional metadata over the existing group infrastructure. Not every group is a tag; internal application groups carry no tag metadata and are never shown.
 - No user-visible "space". A thing never changes owner, so users must never be expected to move things between containers; a share is per item, through one roster (below).
-- Chat is notes/chat.md: an ownerless actor, not a tag.
+- Chat is notes/chat.md: an ownerless actor, not a tag. Shared permission collections are realms (notes/realms.md): `realm.0` marks an actor as `tag.0` marks a group.
 
 ## Core aspects (spec/data-model.md §9, core.osis)
 ```
