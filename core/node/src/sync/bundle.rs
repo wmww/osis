@@ -16,7 +16,7 @@ impl SyncEngine {
         let mut w = BundleWriter::new(Vec::new())?;
         let mut sent: BTreeSet<BlobId> = BTreeSet::new();
         for l in labels {
-            let Some(g) = self.group_of(l) else { continue };
+            let Some(g) = self.group_of(l, None) else { continue };
             if let Some(gl) = self.group_label(&g, l) {
                 let head = self.state.heads.iter().filter(|((_, x), _)| x == l).map(|(_, h)| h.id()).find(|h| gl.steps.contains_key(h)).or_else(|| gl.tips().into_iter().next());
                 if let Some(head) = head {
@@ -45,7 +45,7 @@ impl SyncEngine {
             for e in evs {
                 match e {
                     ClientEvent::PathSteps { label, steps, .. } => {
-                        if let Some(g) = self.group_of(&label) {
+                        if let Some(g) = self.group_of(&label, None) {
                             self.record_steps(&g, &label, &steps, None)?;
                         }
                     }

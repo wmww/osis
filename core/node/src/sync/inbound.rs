@@ -56,17 +56,25 @@ fn chain_commits(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, osis_commit::Com
 }
 
 impl SyncEngine {
-    /// The group a label belongs to, as a connection (an open one first: a hint's thing may still
-    /// be opening at a host its sender named) or the recorded labels know it.
-    pub(crate) fn group_of(&mut self, l: &LabelId) -> Option<Tid> {
+    /// The group label `l` belongs to as judged on connection `conn`: the group it is opened
+    /// under there. Two connections may hold one label under different groups (a hint names it
+    /// under its sender's thing at a host the sender names, spec/sync.md §3), so whatever came
+    /// from a connection is judged by that connection's group alone. With no connection (or
+    /// one not holding it): the group whose recorded `label.0` names it, else the group of a
+    /// connection holding it (an open one first: a hint's thing may still be opening at a host
+    /// its sender named), else the hint's thing.
+    pub(crate) fn group_of(&mut self, l: &LabelId, conn: Option<ConnId>) -> Option<Tid> {
+        if let Some(x) = conn.and_then(|c| self.lc(c, l)) {
+            return Some(x.group);
+        }
+        if let Some((g, _)) = self.labels().into_iter().find(|(_, gl)| gl.id == *l) {
+            return Some(g);
+        }
         let on: Vec<&super::LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
         if let Some(x) = on.iter().find(|x| x.phase == super::Phase::Open).or(on.first()) {
             return Some(x.group);
         }
-        if let Some(h) = self.state.hints.get(l) {
-            return Some(h.thing);
-        }
-        self.labels().into_iter().find(|(_, gl)| gl.id == *l).map(|(g, _)| g)
+        self.state.hints.get(l).map(|h| h.thing)
     }
 
     /// Re-encrypts the deleted chunks waiting in `relink_pending` (`Engine::relink`), at most
@@ -131,7 +139,7 @@ impl SyncEngine {
         let mut writers: Vec<VerifyingKey> = Vec::new();
         if first_write.is_none() && host.is_some() && events.iter().any(|e| matches!(e, LogEvent::Added { .. })) {
             writers = conn.and_then(|c| self.lc(c, &l)).map(|x| x.writers.clone()).unwrap_or_default();
-            if let Some(g) = self.group_of(&l)
+            if let Some(g) = self.group_of(&l, conn)
                 && let Some(gl) = self.group_label(&g, &l)
             {
                 for (st, _) in gl.steps.values() {
@@ -204,7 +212,7 @@ impl SyncEngine {
                             self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown })
                         }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
-                            if self.take_wrap(host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
+                            if self.take_wrap(conn, host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
                                 e.wrap = wrap;
                                 if stamp.is_some() {
                                     e.stamp = stamp;
@@ -251,7 +259,7 @@ impl SyncEngine {
         // a chunk a live value here links, deleted by a purger that had not seen its reuse:
         // written again re-encrypted, one commit for the batch (spec/sync.md §1); not one a
         // replaced label lost (its content goes, the replacement holds it)
-        let replaced = self.group_of(&l).is_some_and(|g| self.is_replaced(&g, &l));
+        let replaced = self.group_of(&l, conn).is_some_and(|g| self.is_replaced(&g, &l));
         if !lost.is_empty() && !replaced {
             self.relink_pending.extend(lost);
             self.relink_at = 0;
@@ -275,13 +283,13 @@ impl SyncEngine {
         // bodies waiting for a linked blob upload it now it is here (`Left::links`)
         self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
         self.engine.put_blobs(blobs)?;
-        self.open_entries(l, &touched)?;
+        self.open_entries(conn, l, &touched)?;
         if let Some(s) = host {
-            self.drop_unvouched(s, l, &unvouched)?;
+            self.drop_unvouched(conn, s, l, &unvouched)?;
         }
         // commit blobs announced without bytes are fetched now; the rest (chunks) lazily
         if let Some(c) = conn {
-            let g = self.group_of(&l);
+            let g = self.group_of(&l, Some(c));
             let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
             if filling {
                 self.fill_add(c, l, &fetch);
@@ -308,11 +316,11 @@ impl SyncEngine {
     /// `stamped`: under the head's write key; `held_stamped`: the host holds it stamped under any
     /// (a hostile host saying so loses only its own entry here).
     #[allow(clippy::too_many_arguments)]
-    fn take_wrap(&mut self, host: Option<HostKey>, l: LabelId, b: BlobId, e: &mut Entry, wrap: &[u8; osis_crypto::WRAP_LEN], stamped: bool, held_stamped: bool) -> bool {
+    fn take_wrap(&mut self, conn: Option<ConnId>, host: Option<HostKey>, l: LabelId, b: BlobId, e: &mut Entry, wrap: &[u8; osis_crypto::WRAP_LEN], stamped: bool, held_stamped: bool) -> bool {
         if e.wrap == *wrap {
             return true;
         }
-        let secrets = self.group_of(&l).map(|g| self.read_secrets(&g)).unwrap_or_default();
+        let secrets = self.group_of(&l, conn).map(|g| self.read_secrets(&g)).unwrap_or_default();
         let new = osis_label::unwrap_any(secrets.iter(), &b, wrap).map(|(_, k)| k);
         if let Some(k) = self.state.blobs.get(&b).map(|r| r.key.clone()) {
             let opens = new.as_ref().is_some_and(|x| x.expose() == k.expose());
@@ -360,7 +368,7 @@ impl SyncEngine {
         }
         self.state.doubts_at = count;
         for ((s, l, b), wrap) in self.state.doubts.clone() {
-            let secrets = self.group_of(&l).map(|g| self.read_secrets(&g)).unwrap_or_default();
+            let secrets = self.group_of(&l, None).map(|g| self.read_secrets(&g)).unwrap_or_default();
             let Some((_, k)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { continue };
             let own = self.state.blobs.get(&b).map(|r| r.key.clone()).or_else(|| self.state.entries.get(&(l, b)).and_then(|e| osis_label::unwrap_any(secrets.iter(), &b, &e.wrap)).map(|(_, k)| k));
             match own {
@@ -378,11 +386,18 @@ impl SyncEngine {
     /// (spec/requirements.md: peer input never causes unbounded storage; a dropped real entry
     /// comes back stamped once a writer promotes it, or with the next replay). Counted per host:
     /// one host's junk does not crowd out what others announce.
-    fn drop_unvouched(&mut self, host: HostKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
+    ///
+    /// Invariant (no fetch loop, whatever group a label is held under): bytes fetched on a
+    /// connection are judged here under that connection's group (`group_of` with `conn`), the
+    /// group every fetch on it was asked under (`log_events`' wanted entries, `refetch`'s
+    /// `Work::unopened`): an entry fetched because it unwraps is kept, so it is never asked for
+    /// again. Judged under another connection's group, the bytes would be dropped and asked for
+    /// again at every pass.
+    fn drop_unvouched(&mut self, conn: Option<ConnId>, host: HostKey, l: LabelId, ids: &[(BlobId, bool)]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
-        let secrets = self.group_of(&l).map(|g| self.read_secrets(&g)).unwrap_or_default();
+        let secrets = self.group_of(&l, conn).map(|g| self.read_secrets(&g)).unwrap_or_default();
         // pages and chunks a waiting commit lists (a reader's deposited commit) stay
         let mut listed = BTreeSet::new();
         for (c, r) in self.engine.pending() {
@@ -456,17 +471,21 @@ impl SyncEngine {
         self.engine.inbox_actors().get(l).cloned().unwrap_or_default()
     }
 
-    /// Opens entries of `l` not opened yet, ingests what they carry (role commits first), and
-    /// retries every unopened entry while new secrets keep arriving.
-    pub(crate) fn open_entries(&mut self, l: LabelId, ids: &[BlobId]) -> Result<()> {
+    /// Opens entries of `l` not opened yet (from connection `conn`: under its group), ingests
+    /// what they carry (role commits first), and retries every unopened entry while new secrets
+    /// keep arriving.
+    pub(crate) fn open_entries(&mut self, conn: Option<ConnId>, l: LabelId, ids: &[BlobId]) -> Result<()> {
         let mut todo: Vec<(LabelId, BlobId)> = ids.iter().map(|b| (l, *b)).collect();
         let start = self.secrets_count();
+        let mut on = conn;
         for _ in 0..MAX_ROUNDS {
             let before = self.secrets_count();
             let mut commits: Vec<(Vec<u8>, osis_commit::CommitBlob)> = Vec::new();
             for (l, b) in std::mem::take(&mut todo) {
-                self.open_one(l, b, &mut commits)?;
+                self.open_one(on, l, b, &mut commits)?;
             }
+            // the retries are of every label's entries: each under its own group
+            on = None;
             commits.sort_by_key(|(_, c)| (!c.header.kind.is_role(), c.header.ts));
             for (pt, c) in commits {
                 if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
@@ -640,13 +659,13 @@ impl SyncEngine {
         }
     }
 
-    fn open_one(&mut self, l: LabelId, b: BlobId, commits: &mut Vec<(Vec<u8>, osis_commit::CommitBlob)>) -> Result<()> {
+    fn open_one(&mut self, conn: Option<ConnId>, l: LabelId, b: BlobId, commits: &mut Vec<(Vec<u8>, osis_commit::CommitBlob)>) -> Result<()> {
         let Some(mut e) = self.state.entries.get(&(l, b)).cloned() else { return Ok(()) };
         if e.kind != Kind::Unknown {
             return Ok(());
         }
         let Some(bytes) = self.engine.blob(&b)? else { return Ok(()) };
-        let Some(g) = self.group_of(&l) else { return Ok(()) };
+        let Some(g) = self.group_of(&l, conn) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
         if let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &e.wrap) {
             // atomic apply waits for this group's closure (spec/commits.md §4) from the first entry it
@@ -1362,7 +1381,7 @@ impl SyncEngine {
                 self.state.set_present(host, l, b, false);
             }
         }
-        if !lost.is_empty() && !self.group_of(&l).is_some_and(|g| self.is_replaced(&g, &l)) {
+        if !lost.is_empty() && !self.group_of(&l, Some(conn)).is_some_and(|g| self.is_replaced(&g, &l)) {
             self.relink_pending.extend(lost);
             self.relink_at = 0;
             self.relink_lost()?;

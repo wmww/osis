@@ -783,7 +783,7 @@ impl SyncEngine {
         let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
         // bytes here but never opened under the secrets held now
         if !held.is_empty() {
-            self.open_entries(l, &held)?;
+            self.open_entries(Some(conn), l, &held)?;
         }
         self.fetch_on(conn, l, want, out)
     }

@@ -55,8 +55,8 @@ impl SyncEngine {
         }
     }
 
-    fn fill_ranks(&mut self, l: &LabelId) -> (Vec<osis_crypto::Secret32>, bool) {
-        let secrets = self.group_of(l).map(|g| self.read_secrets(&g)).unwrap_or_default();
+    fn fill_ranks(&mut self, conn: ConnId, l: &LabelId) -> (Vec<osis_crypto::Secret32>, bool) {
+        let secrets = self.group_of(l, Some(conn)).map(|g| self.read_secrets(&g)).unwrap_or_default();
         (secrets, self.inbox_label_here(l))
     }
 
@@ -66,7 +66,7 @@ impl SyncEngine {
     pub(crate) fn fill_start(&mut self, conn: ConnId, l: LabelId) {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return };
         self.state.set_filling(host, l, true);
-        let (secrets, inbox) = self.fill_ranks(&l);
+        let (secrets, inbox) = self.fill_ranks(conn, &l);
         let mut queue = BTreeSet::new();
         if self.state.cursors.contains_key(&(host, l)) {
             for b in self.state.of_kind(&l, Kind::TAG_UNKNOWN) {
@@ -88,7 +88,7 @@ impl SyncEngine {
         if ids.is_empty() {
             return;
         }
-        let (secrets, inbox) = self.fill_ranks(&l);
+        let (secrets, inbox) = self.fill_ranks(conn, &l);
         let ranked: Vec<(u64, BlobId)> = ids.iter().filter_map(|b| self.state.entries.get(&(l, *b)).map(|e| (self.rank(&secrets, inbox, b, &e.wrap), *b))).collect();
         if let Some(f) = self.lc_mut(conn, &l).and_then(|x| x.fill.as_mut()) {
             f.queue.extend(ranked);
@@ -142,7 +142,7 @@ impl SyncEngine {
         // secrets came: what did not open may be anywhere in the order
         if f.secrets != secrets_now {
             f.secrets = secrets_now;
-            let (secrets, inbox) = self.fill_ranks(&l);
+            let (secrets, inbox) = self.fill_ranks(conn, &l);
             for (_, b) in f.queue.split_off(&(LAST, BlobId([0; 32]))) {
                 let r = self.state.entries.get(&(l, b)).map(|e| self.rank(&secrets, inbox, &b, &e.wrap));
                 f.queue.extend(r.map(|r| (r, b)));

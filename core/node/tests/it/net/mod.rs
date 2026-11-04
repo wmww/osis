@@ -114,6 +114,9 @@ pub struct Net {
     /// Per node, blobs whose announcements and fetch replies hosts never deliver to it (the
     /// rest of each message is): a node that never hears of one entry.
     pub hide_blobs: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
+    /// Per host, a label and a step it answers every Open of that label by sync key with
+    /// (a hostile host's walk); other opens reach its hub.
+    pub walk_to: BTreeMap<usize, (osis_base::LabelId, osis_label::Step)>,
 }
 
 /// Whether whole frames `b` hold an Opened reply.
@@ -186,7 +189,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new(), walk_to: BTreeMap::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -403,6 +406,15 @@ impl Net {
         if !self.nodes[n].online {
             return;
         }
+        if std::env::var_os("OSIS_SYNC_TRACE").is_some()
+            && let Event::Bytes { conn, bytes } = &ev
+        {
+            let mut d = osis_proto::FrameDecoder::new();
+            d.push(bytes);
+            while let Ok(Some(body)) = d.next_frame() {
+                eprintln!("node {n} conn {conn} recv {}", format!("{:?}", osis_proto::Message::decode(&body)).chars().take(300).collect::<String>());
+            }
+        }
         let t = std::time::Instant::now();
         let mut acts = self.sync(n).handle(ev);
         if self.nodes[n].accepts {
@@ -424,7 +436,15 @@ impl Net {
     pub fn actions(&mut self, n: usize, acts: Vec<Action>) {
         for a in acts {
             if std::env::var_os("OSIS_SYNC_TRACE").is_some() {
-                eprintln!("node {n} action {}", format!("{a:?}").chars().take(120).collect::<String>());
+                if let Action::Send { conn, bytes } = &a {
+                    let mut d = osis_proto::FrameDecoder::new();
+                    d.push(bytes);
+                    while let Ok(Some(body)) = d.next_frame() {
+                        eprintln!("node {n} conn {conn} send {}", format!("{:?}", osis_proto::Message::decode(&body)).chars().take(300).collect::<String>());
+                    }
+                } else {
+                    eprintln!("node {n} action {}", format!("{a:?}").chars().take(120).collect::<String>());
+                }
             }
             if let Action::Dial { address, .. } = &a {
                 self.dialed.push((n, address.clone()));
@@ -499,6 +519,15 @@ impl Net {
                             {
                                 self.gained.entry(n).or_default().push(gained.clone());
                             }
+                            if let osis_proto::Message::Open { id, label, proof: osis_label::Proof::Sync { .. } } = &m
+                                && let Some((s, _)) = self.links.get(&(n, conn))
+                                && let Some((l, step)) = self.walk_to.get(s)
+                                && l == label
+                            {
+                                let r = osis_proto::Message::Step { id: *id, step: step.clone() };
+                                self.queue.push_back(Msg::ToNode(n, self.nodes[n].life, conn, osis_proto::encode_frame(&r.encode())));
+                                continue;
+                            }
                             if self.lose_uploads.contains(&n)
                                 && let osis_proto::Message::Upload { id, .. } = m
                             {
@@ -509,7 +538,7 @@ impl Net {
                         }
                         kept.extend(osis_proto::encode_frame(&body));
                     }
-                    if self.lose_uploads.contains(&n) {
+                    if self.lose_uploads.contains(&n) || !self.walk_to.is_empty() {
                         bytes = kept;
                     }
                     if let Some((s, hc)) = self.links.get(&(n, conn)).copied() {
