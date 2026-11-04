@@ -1210,6 +1210,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         "group.0" => {
             for t in tx.core.ix.groups.set(*tid, group_def(v)) {
                 tx.core.waits.wake_thing(&t);
+                tx.core.memory.closures += 1;
             }
         }
         _ => {}

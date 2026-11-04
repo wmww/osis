@@ -1362,6 +1362,7 @@ impl Engine {
             if on {
                 tx.txn.put_local(&k, &[], Shred::No)?;
                 tx.core.ix.syncing.insert(tid);
+                tx.core.memory.closures += 1;
             } else {
                 tx.txn.remove_local(&k, Shred::No)?;
                 tx.core.ix.syncing.remove(&tid);

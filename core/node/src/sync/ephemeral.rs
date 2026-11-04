@@ -784,6 +784,7 @@ impl SyncEngine {
                 let a = blob.header.aspects.get(ai);
                 let e = LaneEntry { commit: id, blob: s.blob, wrap, stamp, own: true, salt: s.salt, blind: blob.header.blind, tid: a.map_or(g, |a| a.tid), actor: blob.header.actor, keys: p.keys, charge: 0 };
                 self.eph_keep(l, s.id, e);
+                self.engine.ephemeral_kept(g, p.parts.iter().filter_map(|(ai, _)| blob.header.aspects.get(*ai).map(|a| a.tid)));
                 self.eph_spread(l, s.id, None, out)?;
             }
         }
@@ -1245,6 +1246,7 @@ impl SyncEngine {
         let mut e = e;
         e.charge = self.engine.memory_charge(&commit)?.max(size);
         self.eph_keep(l, b, e);
+        self.engine.ephemeral_kept(g, cb.parts.iter().filter_map(|p| h.aspects.get(p.ai).map(|a| a.tid)));
         // unstamped (its stamp is under an earlier write key): a writer stamps it (`eph_upload`)
         self.eph_spread(l, b, host, out)?;
         Ok(())
