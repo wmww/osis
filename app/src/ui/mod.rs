@@ -96,6 +96,9 @@ enum Act {
     Reply(Option<osis_chat::Id>),
     /// Send what the open chat's composer holds.
     Send(Tid),
+    /// Use the clipboard's text (Android: no soft keyboard yet, notes/android.md).
+    #[cfg(target_os = "android")]
+    Paste(chat::PasteTo),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -539,6 +542,11 @@ impl Ui {
                 Ok(())
             }
             Act::Send(c) => self.send(ctx, c),
+            #[cfg(target_os = "android")]
+            Act::Paste(to) => {
+                force = true;
+                self.paste(ctx, to)
+            }
             Act::New => {
                 self.view.creating = !self.view.creating;
                 Ok(())

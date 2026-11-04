@@ -4,9 +4,9 @@
 # for forked low-level crates go here. Core crates come in by path: only osis, osis-schema and osis-chat.
 [workspace]
 resolver = "2"
-members = [".", "../app"]
+members = [".", "../app", "../app/android"]
 # a bare `cargo build` in kit/ builds the app too
-default-members = [".", "../app"]
+default-members = [".", "../app", "../app/android"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,6 +20,7 @@ osis = { path = "../core/osis" }
 osis-schema = { path = "../core/schema" }
 osis-chat = { path = "../core/chat" }
 osis-kit = { path = "." }
+osis-app = { path = "../app" }
 # One pinned Masonry (notes/app.md Toolkit); re-exported as osis_kit::masonry.
 masonry = "=0.4.0"
 masonry_winit = "=0.4.0"

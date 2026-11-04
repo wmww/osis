@@ -1,0 +1,41 @@
+[package]
+name = "osis-android"
+description = "The osis app packaged for Android (experimental; notes/android.md): android_main and the platform layer"
+workspace = "../../kit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# build.sh packs the cdylib for NativeActivity; on other targets the lib is empty.
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+# The workspace's lints, with unsafe_code at deny instead of forbid: `android_main` needs
+# `#[unsafe(no_mangle)]`, allowed on that one item.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+
+[target.'cfg(target_os = "android")'.dependencies]
+osis.workspace = true
+osis-app.workspace = true
+osis-kit.workspace = true
+# android-activity's NativeActivity backend (no Java or Gradle)
+winit = { version = "0.30.12", features = ["android-native-activity"] }
+# the system clipboard (ClipboardManager over JNI); the version android-activity uses
+jni = "0.22"
+log = "0.4"
+# a logcat subscriber, set first: masonry's default writes stderr (lost on Android) and a log
+# file in temp_dir (not writable there)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+android_logger = "0.15"

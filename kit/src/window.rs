@@ -37,8 +37,12 @@ pub struct App {
 
 impl App {
     pub fn new() -> Result<App, EventLoopError> {
-        let event_loop = EventLoop::with_user_event().build()?;
-        Ok(App { event_loop, window: WindowId::next(), wake_id: WidgetId::next() })
+        Ok(App::with_event_loop(EventLoop::with_user_event().build()?))
+    }
+
+    /// Over a loop built elsewhere (Android builds it with its `AndroidApp`).
+    pub fn with_event_loop(event_loop: EventLoop) -> App {
+        App { event_loop, window: WindowId::next(), wake_id: WidgetId::next() }
     }
 
     /// The window's id, for `DriverCtx::render_root`.
