@@ -175,7 +175,7 @@ pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
 /// walked with every edge's time ahead, a role is there. A removal saying its own keep is
 /// written with `until` 0, gone at every clock (spec/permissions.md §2), so it never counts.
-fn lost_by_time(core: &Core, a: &Tid) -> bool {
+pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let (node, ts) = (core.id.tid(), osis_base::Ts::default());
     let role = |x: &Tid| crate::engine::write::role_of(core, x, a, ts).is_some();
     role(&node) || core.key_actors.keys().any(role)
@@ -501,8 +501,9 @@ pub enum LostScope<'a> {
     /// `until` passing alone (`Engine::lost_leaving`: node-sync drops those once placed or
     /// heard out).
     Due,
-    /// Those of the actors a role on one of these reaches (themselves included) this node lost
-    /// read access to.
+    /// Those of these actors this node lost read access to (node-sync's `drop_left`: each
+    /// actor it waits for is listed on its own, so one heard out or placed never takes another
+    /// still waiting with it).
     Only(&'a [Tid]),
     /// The user drops these kept copies (`Engine::kept_copies`).
     Kept(&'a [Tid]),
@@ -526,10 +527,7 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
             rejudge = true;
             tx.core.ix.secrets.keys().copied().collect()
         }
-        LostScope::Only(xs) => {
-            let core = &*tx.core;
-            core.ix.secrets.keys().filter(|a| xs.iter().any(|x| reaches(core, x, a))).copied().collect()
-        }
+        LostScope::Only(xs) => xs.to_vec(),
         LostScope::Kept(_) => Vec::new(),
         LostScope::Due => {
             let due = take_due(tx, tx.now().0)?;

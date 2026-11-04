@@ -601,7 +601,13 @@ fn until_ending_spec_perm_3() {
         assert_eq!(l.recheck_at, Some(at.0 + osis_node::rotation::LOST_HEARD_WAIT_MS));
         reopen(&mut x.lp, 1, seed + 3).unwrap();
         assert_eq!(x.lp.peers[1].engine.lost_leaving().unwrap(), l, "the record survives a restart");
+        // node-sync drops each actor it heard out on its own: `f`, read through `d`, is listed
+        // and heard out by itself, so dropping `d` alone leaves it (its own writes may wait)
+        let f = x.f;
         x.lp.peers[1].engine.forget_lost(LostScope::Only(&[d])).unwrap();
+        assert!(!no_secret(&x.lp, f), "f waits for its own hearing out");
+        assert_eq!(x.lp.peers[1].engine.lost_leaving().unwrap().timed.keys().copied().collect::<Vec<_>>(), vec![f]);
+        x.lp.peers[1].engine.forget_lost(LostScope::Only(&[f])).unwrap();
         assert!(x.lp.peers[1].engine.lost_leaving().unwrap().timed.is_empty());
         if keep {
             assert_kept(&mut x);
@@ -652,6 +658,44 @@ fn a_commit_beside_an_expired_edge_waits_spec_perm_2() {
     let r = x.lp.peers[1].engine.forget_lost(LostScope::Due).unwrap();
     assert!(!r.actors.is_empty() && !r.leaving);
     assert_erased(&mut x);
+}
+
+// spec/crypto.md §4 (the expiry exception), spec/permissions.md §2: an expiry holds this node's uploads
+// back from no epoch only when its own role ended by an `until` alone, by the expiry's time (its own
+// expiry, and a later one of another holder); ended by its self-removal instead, it may have written
+// after that expiry not knowing of it, so the expiry holds its uploads back as any departure does.
+#[test]
+fn an_expiry_after_own_end_holds_nothing_back_spec_crypto_4() {
+    use osis_node::rotation::{departures_placing, expired_after_own_end};
+    let at = osis_base::WallMs(T0.0 + 3_600_000);
+    let later = osis_base::WallMs(at.0 + 3_600_000);
+    let expiries = |x: &mut Kept| -> Vec<bool> {
+        let d = x.d;
+        let deps = x.lp.peers[1].engine.run(|tx| departures_placing(tx, &d)).unwrap();
+        let core = &x.lp.peers[1].engine.core;
+        deps.iter().filter(|(dep, _)| dep.at.is_some_and(|n| n.key.commit == osis_keys::EXPIRY)).map(|(dep, _)| expired_after_own_end(core, &d, dep)).collect()
+    };
+    for own_until in [true, false] {
+        let edge = if own_until { ct::Edge { until: Some(at), ..edge_of(Role::Write) } } else { edge_of(Role::Write) };
+        let mut x = setup(if own_until { 9380 } else { 9385 }, (edge, false));
+        let pa = x.lp.peers[0].engine.owner(&x.d).unwrap();
+        let other = thing_of(&mut x.lp, 0, pa);
+        x.lp.peers[0].engine.grant(&x.d, &other, &ct::Edge { until: Some(later), ..edge_of(Role::Read) }).unwrap();
+        spread(&mut x.lp);
+        if !own_until {
+            let (d, pb) = (x.d, x.pb);
+            x.lp.peers[1].engine.demote(&d, &remove(pb)).unwrap();
+        }
+        for p in &mut x.lp.peers {
+            p.clock.set(osis_base::WallMs(later.0 + 1));
+        }
+        let e = expiries(&mut x);
+        if own_until {
+            assert_eq!(e, vec![true, true], "its own expiry and a later one: both after its own end");
+        } else {
+            assert_eq!(e, vec![false], "ended by its self-removal: the other's expiry holds its uploads back");
+        }
+    }
 }
 
 // spec/permissions.md §3, Keep: an `until` ending reads the default in force at its key: a setting ordered
