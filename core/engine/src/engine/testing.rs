@@ -470,6 +470,10 @@ impl Engine {
             // another build's rules judged differently: every part valid, nothing carried, and
             // the states joined so
             return self.run(|tx| {
+                #[cfg(debug_assertions)]
+                {
+                    tx.core.unchecked_tx = true;
+                }
                 let aspects: Vec<(Tid, osis_base::Ak)> = tx.core.ix.invalid.keys().cloned().chain(tx.core.ix.carried.keys().cloned()).collect();
                 for (tid, ak) in aspects {
                     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();

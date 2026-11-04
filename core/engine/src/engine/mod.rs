@@ -709,6 +709,10 @@ pub struct Core {
     pub(crate) redeliver: BTreeSet<CommitId>,
     /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
     pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
+    /// Tests: the running transaction writes states no held body gives (`Engine::damage_index`:
+    /// another build's rules), so the rebuild check (`apply::check_rebuilt`) skips it.
+    #[cfg(debug_assertions)]
+    pub(crate) unchecked_tx: bool,
     /// The blob `Engine::commit_forged` built (its own node drops the bad part).
     pub(crate) forged: Option<Vec<u8>>,
     /// Tests: `Engine::freeze_pending`.
@@ -1201,6 +1205,8 @@ impl Core {
             history_named: BTreeSet::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
+            #[cfg(debug_assertions)]
+            unchecked_tx: false,
             forged: None,
             frozen_pending: false,
             session,
@@ -2084,6 +2090,10 @@ impl Engine {
         self.core.commit_journal();
         let stale_all = self.core.stale_all;
         self.core.memory_tx = false;
+        #[cfg(debug_assertions)]
+        {
+            self.core.unchecked_tx = false;
+        }
         let r = match self.store.transaction(&mut self.store_rng) {
             Ok(txn) => {
                 let mut tx = Tx { txn, core: &mut self.core, rng: &mut *self.rng };
@@ -2104,6 +2114,10 @@ impl Engine {
                 }
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits);
+                #[cfg(debug_assertions)]
+                if r.is_ok() && !tx.core.unchecked_tx {
+                    r = r.and_then(|v| crate::apply::check_rebuilt(&mut tx).map(|_| v));
+                }
                 let persisted = {
                     let _s = crate::costs::span("tx: persist index");
                     r.and_then(|v| index::persist(&mut tx).map(|_| v))

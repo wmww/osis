@@ -549,6 +549,21 @@ impl Fragment {
         });
     }
 
+    /// Drops what §5.7 leaves to the node: the chars of deleted text elements, and those an
+    /// undelete's copy reads in place of (a node may hold either). Debug checks comparing states.
+    #[doc(hidden)]
+    pub fn drop_local_chars(&mut self) {
+        self.seqs_mut(&mut |s| {
+            for e in s.elems_mut().values_mut() {
+                if let SeqContent::Char(c) = e.content
+                    && (e.deleted.as_ref().is_some_and(|d| d.1) || e.undel == Some(c))
+                {
+                    e.content = SeqContent::None;
+                }
+            }
+        });
+    }
+
     /// Drops every cached placement (checks that must not build or follow one).
     #[cfg(debug_assertions)]
     pub(crate) fn drop_caches(&mut self) {
