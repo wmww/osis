@@ -210,3 +210,16 @@ fn a_finalize_lets_the_guest_hear_out_spec_permissions_2() {
     assert!(r.actors.is_empty() && r.leaving, "heard out first");
     assert!(lp.peers[2].engine.lost_leaving().unwrap().timed.contains_key(&t));
 }
+
+// spec/commits.md §2, spec/permissions.md §2 (Finalize): a writer never writes a removal of
+// another's edge with no frontier unless the edge is past its `until`: that would be a void
+// finalize, a revoke by an admin that cuts off nobody.
+#[test]
+fn a_frontierless_removal_of_an_unended_edge_is_refused_spec_commits_2() {
+    let (mut lp, t, ps, _) = shared(5408, Role::Read);
+    let mut m = Mutation::new();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(ps[2])) }).unwrap();
+    let r = lp.peers[0].engine.commit(m);
+    assert!(matches!(r, Err(osis_node::Error::BadInput(e)) if e.contains("not past its until")), "{r:?}");
+    assert!(holds(&lp, 0, t, ps[2]));
+}

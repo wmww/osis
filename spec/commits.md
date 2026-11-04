@@ -32,6 +32,7 @@ Encoding: spec/wire.md §4. Fields:
     - a single-use link redemption (the grant plus L's self-removal, both on K, spec/permissions.md §8);
     - a removal of several holders' edges on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own edge or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §8), or a finalize of several ended edges (spec/permissions.md §2);
     - a roster snapshot (spec/permissions.md §6).
+  - A removal of another holder's edge with no frontier (a finalize, spec/permissions.md §2) removes only edges past their `until` at its `ts`; an explicit removal always carries a frontier.
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
   - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no edge; all may cover many things.
   - Role commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.

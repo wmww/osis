@@ -5,3 +5,4 @@
 - The judgment vectors embed commit bytes: any change to a harness commit's shape needs `OSIS_WRITE_VECTORS=1 ... judgment_vectors_write`; check the diff changes only hashes.
 - A void role write still resets the CRDT entry: a later removal emitting only `Op::Remove` wrote no `roles.0` delta at all (silently a bare rotation). Removals now also reset every seen entry of the holder.
 - The sim harness's `revoke` (core/test/sim/src/harness.rs) also wrote frontier-less removals; tier 1 passed and only the sim sweep caught it.
+- Review: a frontier-less admin removal of an unended edge was refused only by accident (the missing rotation); the writer now refuses it outright. `Mutation::unchecked` is crate-private, so a writer-rule test for a non-admin needs `commit_hostile`.
