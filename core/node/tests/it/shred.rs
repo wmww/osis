@@ -759,6 +759,49 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     assert!(!recoverable(&mut lp.peers[1], b"SECRET-R5b"));
 }
 
+// spec/commits.md §4, §5, §6, spec/crdt.md §4.7: a commit past its expiry, every part of it (one
+// expiry per commit), given with a true part and a relay's junk (a stripped slot) and without its
+// third part: nothing waits (every part past T counts as held), so it applies at once, no aspect is
+// flagged (no part went while pending), and the true part joins value-less: the older value is
+// superseded, as at a node that held the commit before T.
+#[test]
+fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
+    let mut lp = net2(302);
+    let (t, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("old")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    lp.advance(5);
+    let exp = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("a")).unwrap();
+    m.set(t, &BRIEF, &s("b")).unwrap();
+    m.set(y, &REG, &s("y")).unwrap();
+    for (x, k) in [(t, &REG), (t, &BRIEF), (y, &REG)] {
+        m.expires(x, k, exp).unwrap();
+    }
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.peers[1].clock.advance(120_000);
+    let mut b = osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:reg.0"), false)).unwrap();
+    b.parts.extend(osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:brief.0"), true)).unwrap().parts);
+    b.parts.sort_by_key(|p| (p.ai, p.di));
+    let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
+    assert!(!matches!(r, osis_node::Ingested::Pending(..)), "{r:?}");
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
+    assert!(lp.peers[1].engine.commit_ids().contains(&c));
+    assert!(lp.peers[1].engine.suspects().unwrap().is_empty());
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), None, "the true part joined value-less");
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:brief.0")).unwrap(), None);
+    // the writer past T reads the same
+    lp.peers[0].clock.advance(120_000);
+    lp.peers[0].engine.tick().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
+    assert_eq!(lp.peers[0].engine.state_digest(&t, &ak("t:reg.0")).unwrap(), lp.peers[1].engine.state_digest(&t, &ak("t:reg.0")).unwrap());
+}
+
 /// Of each 5040 orders of `past_expiry_and_purge_alike_in_every_order`, this stride's: 1 runs them all
 /// (with the sync sets and clocks 75600 cases, 670 s on 16 threads at load).
 const ORDER_STRIDE: usize = 389;

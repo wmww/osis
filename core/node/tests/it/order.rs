@@ -3214,17 +3214,17 @@ fn arrival_order_purge_import_large_spec_commits_5() {
 }
 
 // spec/crdt.md §4.6, spec/commits.md §5 (order seed 34000, shrunk): the copy holds two register
-// writes stamped alike under imported origins' dots, B's `v1` (import #27, its dot sorting above)
-// and the owner's `m0` (import #26). The owner's snapshot #22 carries `v1` below B's `v4`; #27 is
+// writes stamped alike under imported origins' dots, the owner's `m0` (import #27, its dot sorting
+// above) and B's `v1` (import #26). The owner's snapshot #22 carries `m0` below B's `v4`; #27 is
 // header-only (its author's earlier request on that origin dropped it at creation) and the held
-// request #28 names it, so both nodes drop #22 and hold `v1` value-less. Where B's `reset` (#30)
-// came valid and superseded `v1` before the drop, then turned invalid (A's demotion of B came valid
-// last), its un-merge has no body or residue to give the value-less `v1` back, and the older `m0`
-// shows (no purged value: nothing names #26); where `v1` was the winner when purged, the state
+// request #28 names it, so both nodes drop #22 and hold `m0` value-less. Where B's `reset` (#30)
+// came valid and superseded `m0` before the drop, then turned invalid (A's demotion of B came valid
+// last), its un-merge has no body or residue to give the value-less `m0` back, and the older `v1`
+// shows (no purged value: nothing names #26); where `m0` was the winner when purged, the state
 // keeps it value-less and reads nothing. Given #22 again (it joins value-less,
-// `both_dropped_flips`), both read nothing.
+// `both_dropped_flips`), both read nothing. Which import's dot sorts above follows the commit IDs:
+// a header format change swaps the two values' roles (item 259 the other way).
 #[test]
-#[ignore = "issues/whole-commits.md: its shape needs B's import dot above the owner's; the header change reordered the commit IDs"]
 fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
     use Step::*;
     let h = vec![Message { by: 0, t: 0, v: 0 }, Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Move { by: 0, t: 0 }, Reimport { by: 0, from: 0, copy: 1 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, Sync { from: 0, to: 2 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Write { by: 1, t: 1, op: 0, k: 0, v: 4 }, Advance { who: Some(2), ms: 1621 }, Compact { by: 0, t: 1, op: 0 }, Demote { by: 2, t: 1, holder: 1, at: 0, to_read: true }, PurgeImport { by: 0, t: 1, back: 0, reset: false }, Reimport { by: 0, from: 0, copy: 1 }, PurgeImport { by: 0, t: 1, back: 0, reset: false }, Demote { by: 2, t: 1, holder: 2, at: 1, to_read: false }, PurgeImport { by: 1, t: 1, back: 0, reset: true }];
@@ -3234,7 +3234,7 @@ fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &order), &played);
     let differs = alike(&want, &got).expect("the reads differ");
-    assert!(differs.contains("reads on") && differs.contains("m0"), "{differs}");
+    assert!(differs.contains("reads on") && differs.contains("v1"), "{differs}");
     assert_eq!(value_past_end(&mut deliver(&played, &order), &played, played.now), None, "the stale value shown is no purged one");
     let copy = format!("{:?}", played.things[1]);
     assert!(flipped(&played, &order, Way::Plain, &copy, "t:reg.0"), "the order flips");

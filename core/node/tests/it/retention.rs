@@ -2829,3 +2829,96 @@ fn write_splits_by_expiry_and_nobody_spec_commits_6() {
     assert_eq!(hs.iter().map(|h| h.expires).collect::<Vec<_>>(), vec![None, Some(at.0)]);
     assert_eq!((e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&t, &ak("t:kept.0")).unwrap()), (Some(s("old")), Some(s("k"))));
 }
+
+// spec/commits.md §6, spec/crdt.md §2.2: the commits of a split write share a `ts` and are on
+// disjoint aspects, so a device given them in any order (the record's commit last included) reads
+// every aspect as the writer does, holds all of them and waits for nothing; the same for the undo
+// commits of a mixed-expiry undo.
+#[test]
+fn split_write_reads_alike_in_every_order_spec_commits_6() {
+    use osis_node::local_peer::Peer;
+    use osis_schema::{PurgeBy, Retention};
+    let orders = |n: usize| -> Vec<Vec<usize>> {
+        let mut out: Vec<Vec<usize>> = vec![Vec::new()];
+        for i in 0..n {
+            out = out.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut o = q.clone(); o.insert(at, i); o })).collect();
+        }
+        out
+    };
+    let mut lp = net(1, 58);
+    let me = lp.peers[0].engine.tid();
+    let nobody = Retention { by: PurgeBy::Nobody, ..Retention::default() };
+    let setup = packages(&mut lp, 0);
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    m.set(t, &KEPT, &s("k")).unwrap();
+    m.set(t, &BRIEF, &s("b")).unwrap();
+    m.expires(t, &BRIEF, WallMs(e.now().0 + 3_600_000)).unwrap();
+    m.set(t, &REG, &s("n")).unwrap();
+    m.retention(t, &REG, nobody).unwrap();
+    let w = e.write(m).unwrap().unwrap();
+    let ids: Vec<osis_base::CommitId> = w.id.commit().into_iter().chain(w.also.iter().copied()).collect();
+    assert_eq!(ids.len(), 3);
+    let aspects = [ak("t:kept.0"), ak("t:brief.0"), ak("t:reg.0")];
+    let check = |lp: &mut LocalPeer, ids: &[osis_base::CommitId], seed: u64| {
+        let packs: Vec<_> = packages(lp, 0).into_iter().filter(|p| ids.contains(&p.id)).collect();
+        assert_eq!(packs.len(), ids.len());
+        let now = lp.peers[0].engine.now();
+        for order in orders(ids.len()) {
+            let mut p = Peer::new(seed, now).unwrap();
+            for pk in &setup {
+                p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+            for i in &order {
+                let _ = p.engine.ingest(&packs[*i].bytes, packs[*i].blobs.clone());
+            }
+            p.engine.reexamine().unwrap();
+            assert!(p.engine.pending().is_empty(), "{order:?}: {:?}", p.engine.pending());
+            assert!(ids.iter().all(|c| p.engine.commit_ids().contains(c)), "{order:?}");
+            for a in &aspects {
+                assert_eq!(p.engine.get(&t, a).unwrap(), lp.peers[0].engine.get(&t, a).unwrap(), "{order:?} {a:?}");
+                assert_eq!(p.engine.state_digest(&t, a).unwrap(), lp.peers[0].engine.state_digest(&t, a).unwrap(), "{order:?} {a:?}");
+            }
+        }
+    };
+    check(&mut lp, &ids, 0x5eed);
+    // an undo copying back an expiring write and a plain one: its two commits alike
+    lp.advance(10);
+    let at = WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let mut m = Mutation::new();
+    m.set(t, &KEPT, &s("k1")).unwrap();
+    m.expires(t, &KEPT, at).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.set(t, &KEPT, &s("k2")).unwrap();
+    m.set(t, &REG, &s("n2")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    let osis_node::ephemeral::Reverted::Written(w) = lp.peers[0].engine.revert_change(osis_node::ChangeId::Commit(c), me).unwrap() else { panic!("reverted") };
+    let undo: Vec<osis_base::CommitId> = w.id.commit().into_iter().chain(w.also.iter().copied()).collect();
+    assert_eq!(undo.len(), 2);
+    let setup = packages(&mut lp, 0).into_iter().filter(|p| !undo.contains(&p.id)).collect::<Vec<_>>();
+    let check_undo = |lp: &mut LocalPeer| {
+        let packs: Vec<_> = packages(lp, 0).into_iter().filter(|p| undo.contains(&p.id)).collect();
+        let now = lp.peers[0].engine.now();
+        for order in orders(2) {
+            let mut p = Peer::new(0x5eee, now).unwrap();
+            for pk in &setup {
+                p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+            for i in &order {
+                p.engine.ingest(&packs[*i].bytes, packs[*i].blobs.clone()).unwrap();
+            }
+            p.engine.reexamine().unwrap();
+            assert!(p.engine.pending().is_empty(), "{order:?}: {:?}", p.engine.pending());
+            for a in &aspects {
+                assert_eq!(p.engine.get(&t, a).unwrap(), lp.peers[0].engine.get(&t, a).unwrap(), "undo {order:?} {a:?}");
+                assert_eq!(p.engine.state_digest(&t, a).unwrap(), lp.peers[0].engine.state_digest(&t, a).unwrap(), "undo {order:?} {a:?}");
+            }
+        }
+    };
+    check_undo(&mut lp);
+    assert_eq!((lp.peers[0].engine.get(&t, &ak("t:kept.0")).unwrap(), lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap()), (Some(s("k1")), Some(s("n"))));
+}
