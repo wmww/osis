@@ -164,6 +164,25 @@ fn invalid_body_reads_marked() {
     assert_eq!(r.actor, ids[1]);
 }
 
+// notes/api.md History, spec/crdt.md §5.6 Live: an edit of a held key reads as written, though
+// alone it holds no creation and a read of the same bytes as a state shows nothing.
+#[test]
+fn edit_of_held_key_reads_as_written_spec_crdt_5_6() {
+    let mut lp = net(1, 404);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:big.0");
+    let put = |lp: &mut LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &BIGMAP, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(s(v)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    put(&mut lp, "a");
+    lp.advance(10);
+    let c = put(&mut lp, "b");
+    let r = lp.peers[0].engine.history_entry(&t, &k, &ChangeId::Commit(c), MAX).unwrap().unwrap();
+    assert_eq!(r.body, RowBody::Held(Some(Value::Map([(s("k"), s("b"))].into()))));
+}
+
 // notes/api.md History, spec/commits.md §5: what is gone reads as what happened to it: purged by
 // the earliest request, or dropped at its expiry (at once past it, before any tick); its entry
 // stays where it was, with its author and time.

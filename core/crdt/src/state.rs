@@ -728,6 +728,39 @@ impl Fragment {
         }
     }
 
+    /// What a delta says alone (a history row): its read, with each entry or list element it
+    /// writes into taken as live. A write into another's entry holds no creation and reads as
+    /// nothing otherwise (§5.6, §5.7 Live).
+    pub fn read_written(&self) -> Option<Value> {
+        fn give_creations(f: &mut Fragment) {
+            match f {
+                Fragment::Slots(s) => s.slots.values_mut().for_each(give_creations),
+                Fragment::Struct(s) => s.fields.values_mut().for_each(give_creations),
+                Fragment::Enum(e) => e.payloads.values_mut().for_each(give_creations),
+                Fragment::Map(m) => {
+                    for e in m.entries.values_mut() {
+                        if let Some(x) = e.frag.as_deref_mut() {
+                            give_creations(x);
+                            e.created = e.created.take().or_else(|| x.written());
+                        }
+                    }
+                }
+                Fragment::Seq(s) => {
+                    for e in s.elems_mut().values_mut() {
+                        if let SeqContent::Frag(x) = &mut e.content {
+                            give_creations(x);
+                            e.created = e.created.take().or_else(|| x.written().map(|w| (w, seq::Anchor::Head)));
+                        }
+                    }
+                }
+                Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => {}
+            }
+        }
+        let mut f = self.clone();
+        give_creations(&mut f);
+        f.read()
+    }
+
     /// The read (§4.4, §5); `None` is absent.
     pub fn read(&self) -> Option<Value> {
         if !self.present() {

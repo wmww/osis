@@ -145,7 +145,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     core.ix.pending.remove(id);
     core.stale_commits.remove(id);
     // its retention timers (memory rows)
-    let timers: Vec<Vec<u8>> = tx.txn.memory_local_keys(records::TIMER).into_iter().filter(|k| records::parse_timer(k.get(records::TIMER.len()..).unwrap_or_default()).is_ok_and(|(_, c, _, _)| c == *id)).collect();
+    let timers: Vec<Vec<u8>> = tx.txn.memory_local_keys(records::TIMER).into_iter().filter(|k| records::parse_timer(k.get(records::TIMER.len()..).unwrap_or_default()).is_ok_and(|(_, c, _)| c == *id)).collect();
     for k in timers {
         tx.txn.remove_local(&k, Shred::No)?;
     }

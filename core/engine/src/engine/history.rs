@@ -136,7 +136,7 @@ fn held_body(tx: &mut Tx<'_>, c: &CommitId, ai: usize, budget: usize) -> Result<
     })?;
     Ok(match out {
         _ if over => RowBody::TooLarge,
-        Some(f) => RowBody::Held(f.read()),
+        Some(f) => RowBody::Held(f.read_written()),
         None => RowBody::NotFetched,
     })
 }

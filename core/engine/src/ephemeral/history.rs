@@ -43,7 +43,7 @@ impl Engine {
 
     /// The entry of own batch `id` on `(tid, ak)` from the undo log.
     pub(crate) fn memory_row(&mut self, tid: &Tid, ak: &Ak, id: &ChangeId, budget: usize) -> Option<HistoryRow> {
-        let read = |f: &osis_crdt::Fragment| if f.approx_bytes() > budget { RowBody::TooLarge } else { RowBody::Held(f.read()) };
+        let read = |f: &osis_crdt::Fragment| if f.approx_bytes() > budget { RowBody::TooLarge } else { RowBody::Held(f.read_written()) };
         let e = self.eph.log.entries.iter().find(|e| e.id == *id)?;
         let deltas: Vec<osis_crdt::Fragment> = e.aspects.iter().filter(|a| a.tid == *tid && a.ak == *ak).map(|a| a.delta.clone()).collect();
         let (ts, actor, received) = (e.ts, e.actor, e.received);
