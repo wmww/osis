@@ -399,8 +399,11 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     for (c, ai) in back {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         if m.stripped.contains(&ai) {
-            // never received until a copy comes; its leftover set aside for a rise before one
-            unstrip(tx, &c, ai, true)?;
+            // never received until a copy comes; a delta's leftover set aside for a rise before
+            // one, a snapshot's forgotten: nothing makes it held value-less again but a copy, and
+            // it keeps the values it copied of other deltas, which no later purge would reach
+            let kept = !m.header.kind.is_compaction();
+            unstrip(tx, &c, ai, kept)?;
             refetch(tx, &c);
         } else if m.missing.contains(&ai) {
             refetch(tx, &c);

@@ -152,16 +152,10 @@ impl Engine {
     pub fn stripped_count(&mut self, id: &osis_base::CommitId) -> Result<usize> {
         let id = *id;
         self.run(|tx| {
-            let h = match tx.core.ix.commits.get(&id) {
-                Some(m) => (*m.header).clone(),
-                None => match tx.txn.get_pending(&id)?.and_then(|(_, b)| osis_commit::CommitBlob::decode_stored(&b).ok()) {
-                    Some(b) => b.header,
-                    None => return Ok(0),
-                },
-            };
+            let Some(b) = tx.txn.get_pending(&id)?.and_then(|(_, b)| osis_commit::CommitBlob::decode_stored(&b).ok()) else { return Ok(0) };
             let mut n = 0;
-            for ai in 0..h.aspects.len() {
-                if crate::retention::waiting_stripped(tx, &h, &id, ai)? {
+            for ai in 0..b.header.aspects.len() {
+                if crate::retention::waiting_stripped(tx, &b, &id, ai)? {
                     n += 1;
                 }
             }
