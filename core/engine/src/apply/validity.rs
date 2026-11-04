@@ -940,6 +940,23 @@ impl<'a> Judge<'a> {
     }
 }
 
+/// When part `ai` of `id`, invalid here, fell (spec/commits.md §5): the `ts` of the demotion that
+/// took it, on its thing or for its author's acting, no earlier than its own; its own with none
+/// (its author held no right when it wrote, or its fault is of the delta alone). Read from what
+/// is held now, and judged again whenever its thing is.
+pub(crate) fn fell_at(core: &Core, h: &Header, id: &CommitId, ai: usize) -> osis_base::Ts {
+    let point = Point { ts: h.ts, node: h.author, commit: *id };
+    let by = |tid: &Tid, role: Role| match core.timelines.get(tid).map(|tl| tl.delta_valid(point, tid, role)) {
+        Some(Validity::Invalid { by: Some(d) }) => d.ts,
+        _ => h.ts,
+    };
+    let Some(a) = h.aspects.get(ai) else { return h.ts };
+    let ak = a.ak.as_str();
+    let role = if h.kind.is_compaction() { crate::engine::write::snapshot_role(ak) } else { core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak)) };
+    let acting = if h.author == h.actor { h.ts } else { by(&h.actor, Role::Write) };
+    h.ts.max(by(&a.tid, role)).max(acting)
+}
+
 /// `part_valid` of a content part on its thing's timeline `tl`.
 fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
     let ak = a.ak.as_str();
@@ -1015,6 +1032,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // verdicts first (the core read only), each held commit once: by thing, a commit under the
     // first re-judged thing among its aspects; then the commits re-judged whole
     let mut news: Vec<(CommitId, Vec<bool>)> = Vec::new();
+    // aspects with a part judged invalid again: the demotion that took it may be another now
+    let mut still: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     {
         let core: &Core = tx.core;
         let mut judge = Judge::new(core);
@@ -1028,6 +1047,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 let v = judge.part(&m.header, id, ai);
                 let old = m.valid_at(ai);
+                if !v && !old && !m.view.memory && m.holds(ai) && crate::retention::falls(&m.header, a) {
+                    still.insert((a.tid, a.ak.clone()));
+                }
                 if v != old {
                     let n = now.get_or_insert_with(|| m.valid.clone());
                     if let Some(x) = n.get_mut(ai) {
@@ -1118,9 +1140,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     for (id, tids) in own_fell {
         tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteInvalid, tids, commit: Some(id), peer: None, detail: "a write of this node turned invalid".into() }, at);
     }
-    // a body dropped for breaking the rule that no longer does: never received from here on
+    // a body dropped while invalid that no longer is: never received from here on
     for (tid, ak) in &rose {
-        crate::retention::unbreak(tx, tid, ak)?;
+        crate::retention::valid_again(tx, tid, ak)?;
     }
     // what was not re-judged has not changed (debug builds: decodes every header)
     #[cfg(debug_assertions)]
@@ -1132,6 +1154,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         tx.core.mark_aspect_changed(tid, ak);
     }
     if rebuild {
+        for (tid, ak) in &still {
+            crate::retention::mark_deaths_due(tx, tid, ak)?;
+        }
         for (tid, ak) in &flipped {
             // a memory aspect's rebuild is memory work, whatever transaction re-judges it
             let memory = tx.txn.is_memory_aspect(tid, ak);
@@ -1156,9 +1181,10 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     let _s = crate::costs::span("rejudge: unmerge");
                     super::atomic::unmerge_fallen(tx, tid, ak, fell.get(&k).map(Vec::as_slice).unwrap_or_default())?;
                 }
-                // a write fell where a body dropped for its keep bounds may have died for it:
-                // its value may be live again here, gone with the body (spec/commits.md §5)
-                if fell.contains_key(&k) {
+                // a write fell where a body dropped for its keep bounds may have died for it, or
+                // rose where one under its record went with its fall: this node may read less than
+                // one that kept the body (spec/commits.md §5)
+                if fell.contains_key(&k) || rose.contains(&k) {
                     let dropped = crate::retention::suspect::keep_dropped(tx.core, tid, ak);
                     crate::retention::suspect::raise(tx, tid, ak, crate::retention::suspect::Why::Flip, &dropped)?;
                 }

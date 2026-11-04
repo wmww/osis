@@ -44,7 +44,7 @@ use pending::{purge_pending, strip_pending};
 use purge::drop_purged_snapshot;
 pub(crate) use purge::{counts_as_purged, known_purged, lasting, purged_aspects, purged_by, rejudge_purges, requests_resting_on, snapshot_right};
 pub(crate) use snapshot::covered;
-pub(crate) use deaths::{any_bounded, load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
+pub(crate) use deaths::{any_bounded, falls, load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
@@ -241,7 +241,7 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     // received, fetched as such), as at a node that judged the body before it was held
     let drop_body = |tx: &mut Tx<'_>| -> Result<()> {
         for x in holders.iter().copied().filter(|x| !m.missing.contains(x)) {
-            drop_part(tx, c, x)?;
+            drop_part_for(tx, c, x, if m.valid_at(x) { DropFor::Other } else { DropFor::Invalid })?;
         }
         Ok(())
     };
@@ -480,16 +480,18 @@ fn note_carried_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
-/// The parts of `(tid, ak)` dropped for breaking the required retention that are valid now are
-/// missing again (spec/permissions.md §8): they give nothing until the body arrives again
-/// (node-sync fetches it, `Changed::undropped`; a holder uploads it, it is must-hold there).
-pub(crate) fn unbreak(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+/// The parts of `(tid, ak)` dropped while invalid (`DropFor::Invalid`) that are valid now are
+/// missing again (spec/commits.md §5, spec/permissions.md §8): they give nothing until the body
+/// arrives again (node-sync fetches it, `Changed::undropped`; a holder uploads it, it is must-hold
+/// there). Until each does this node may read less than one that kept it.
+pub(crate) fn valid_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let core = &*tx.core;
     let back: Vec<(CommitId, usize)> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
         let m = core.ix.commits.get(c)?;
         let ai = m.aspect(tid, ak)?;
-        (m.valid_at(ai) && m.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Broke)).then_some((*c, ai))
+        (m.valid_at(ai) && m.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Invalid)).then_some((*c, ai))
     }).collect();
+    suspect::raise(tx, tid, ak, suspect::Why::Flip, &back)?;
     for (c, ai) in back {
         reopen_to_fetch(tx, &c, ai)?;
     }
@@ -860,8 +862,10 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
 /// (`drop_gone`).
 fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, purged: &mut BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     for ai in ais.iter().copied() {
-        if h.aspects.get(ai).is_none() {
-            continue;
+        let Some(a) = h.aspects.get(ai) else { continue };
+        // invalid on arrival: fallen from then on (no join reports it)
+        if deaths::falls(h, a) && tx.core.ix.commits.get(id).is_some_and(|m| !m.view.memory && m.holds(ai) && !m.valid_at(ai)) {
+            mark_deaths_due(tx, &a.tid, &a.ak)?;
         }
         if let Some(t) = h.expires {
             if t <= tx.now().0 {
@@ -1089,7 +1093,7 @@ impl Engine {
         if !due.is_empty() {
             self.run(|tx| {
                 for (c, ai) in &due {
-                    drop_part_for(tx, c, *ai, DropFor::Broke)?;
+                    drop_part_for(tx, c, *ai, DropFor::Invalid)?;
                 }
                 Ok(())
             })?;

@@ -1,8 +1,8 @@
 //! Suspect aspects (spec/permissions.md §4 heartbeat, spec/commits.md §5): an aspect whose
 //! state this node may have computed from less than another holder, because it dropped data a
-//! validity flip or a late creation record would have needed: a validity flip on an aspect
-//! where it holds a body dropped for its keep bounds (the body joins again if a copy comes,
-//! §5), a body dropped as covered missing again (spec/permissions.md §5.2), a part held pending
+//! validity flip or a late creation record would have needed: a validity flip, either way, on
+//! an aspect where it holds a body dropped for its keep bounds (the body joins again if a copy
+//! comes, §5), a body dropped while invalid that turned valid, a body dropped as covered missing again (spec/permissions.md §5.2), a part held pending
 //! at its expiry (counts as never received). The node reports them in its heartbeats; a writer
 //! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about; an entry
 //! goes as its body comes back (held again: what the aspect lacked for it is in). A Flip or
@@ -27,7 +27,8 @@ use osis_store::Shred;
 /// Why an aspect is suspect (bits of an entry's last byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Why {
-    /// A write fell on an aspect where a body dropped for its keep bounds may have died for it.
+    /// A write flipped on an aspect where a body dropped for its keep bounds may have gone for
+    /// it, or a body dropped while invalid turned valid.
     Flip = 1,
     /// A body dropped as covered is missing again (its cover turned invalid).
     Uncovered = 2,

@@ -1311,7 +1311,7 @@ fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> 
         for (ai, a) in h.aspects.iter().enumerate() {
             let (rel, abs) = (a.retention.at_most.rel, a.retention.at_most.abs);
             let abs_past = abs.is_some_and(|t| t <= later_than(played).0);
-            if !abs_past && (rel.is_none() || e.body_valid(&id, &a.tid, &a.ak) == Some(false)) {
+            if !abs_past && rel.is_none() {
                 continue;
             }
             played.judged[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1323,9 +1323,11 @@ fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> 
             if !abs_past && !dead_long && e.body_live(&id, &a.tid, &a.ak).unwrap() {
                 continue;
             }
-            // no death, so no bound (spec/commits.md §5): not superseded in what this node holds (a
-            // write an un-merge took), or its killers went with bodies dropped before it came
-            if !abs_past && !dead_long && e.deaths(&id, &a.tid, &a.ak).unwrap().is_none() {
+            // no death, so no bound (spec/commits.md §5): its killers went with bodies dropped
+            // before it came. A fall is no such case: a write invalid here, or one an un-merge took
+            // (no write live, an invalid write on the aspect), counts dead from it
+            let fallen = h.kind != osis_commit::Kind::Role && (e.body_valid(&id, &a.tid, &a.ak) == Some(false) || h.kind.has_own_writes() && !e.invalid_writes(&a.tid, &a.ak).is_empty());
+            if !abs_past && !dead_long && !fallen && e.deaths(&id, &a.tid, &a.ak).unwrap().is_none() {
                 let k = (a.tid, a.ak.clone());
                 let dropped = e.core.ix.by_aspect.get(&k).into_iter().flatten().any(|x| e.core.ix.commits.get(&x.1).is_some_and(|m| m.header.aspects.iter().position(|y| y.tid == a.tid && y.ak == a.ak).is_some_and(|i| m.dropped.contains_key(&i))));
                 if dropped || o.deaths.get(&(id, a.tid, a.ak.clone())).copied().flatten().is_none() {
@@ -1381,8 +1383,8 @@ fn read_differs(p: &mut Peer, o: &Oracle, skip: &dyn Fn(&(String, String)) -> bo
 }
 
 /// Check (b), later. A drop leaves live writes in the state, so a node reads as the
-/// keep-everything node with no body given again, on an aspect where nothing fell or was purged
-/// (a flip or purge after a drop: spec/requirements.md Deterministic). Given again every body that
+/// keep-everything node with no body given again, on an aspect where nothing fell, rose from a
+/// fall or was purged (a flip or purge after a drop: spec/requirements.md Deterministic). Given again every body that
 /// node holds, the node reads as it and its state has every write live there. An aspect flagged for
 /// a part gone at its expiry is left out, the part counting as never received (spec/commits.md §5);
 /// such a flag names an aspect some commit writes with an expiry. Leaves the node holding those
@@ -1400,6 +1402,8 @@ fn live_write_lost(p: &mut Peer, o: &Oracle, played: &Played, flips: &dyn Fn(&st
     let (theirs, inv2) = facts_of(&o.facts);
     let mut fell: BTreeSet<(String, String)> = inv.into_keys().chain(inv2.into_keys()).collect();
     fell.extend(mine.iter().chain(theirs.iter()).filter(|(_, f)| !f.valid).map(|(k, _)| (k.1.clone(), k.2.clone())));
+    // dropped from its fall, valid since: missing until given again (spec/commits.md §5)
+    fell.extend(mine.iter().filter(|(_, f)| f.at_most && f.missing).map(|(k, _)| (k.1.clone(), k.2.clone())));
     if let Some(d) = read_differs(p, o, &|k| flagged.contains(k) || o.expired_pending.contains(k) || named.contains(k) || fell.contains(k) || flips(&k.0, &k.1)) {
         return Some(d);
     }
@@ -1635,7 +1639,9 @@ fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
 /// once each is given these again (`alike_exchanged`).
 fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
     let ((wf, inv), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
-    wf.keys().filter(|k| gf.contains_key(*k) && flip(&wf, &gf, &inv, k)).map(|k| k.0.clone()).collect()
+    // or missing at one node: dropped while invalid and valid since, so fetched again (`valid_again`)
+    let refetched = |k: &BodyKey| wf[k].at_most && (wf[k].missing != gf[k].missing || wf[k].missing);
+    wf.keys().filter(|k| gf.contains_key(*k) && (flip(&wf, &gf, &inv, k) || refetched(k))).map(|k| k.0.clone()).collect()
 }
 
 /// Whether two nodes holding the same commits read alike (`None`), else the first difference: reads
@@ -4168,8 +4174,8 @@ fn creation_lost_by_drop_then_flip_given_again_spec_crdt_4_6() {
             panic!("seed {seed}: {e}");
         }
     }
-    // B's later write first, the demotion, the re-grant: only the creation stamp differs, and
-    // only a reachable flip gives the body again
+    // B's later write first, the demotion, the re-grant: its body falls in both orders, so the
+    // two already read alike with nothing given again (spec/commits.md §5)
     let played = play(47289, &h);
     let b = played.base;
     let made: Vec<usize> = (0..played.packs.len()).collect();
@@ -4177,11 +4183,7 @@ fn creation_lost_by_drop_then_flip_given_again_spec_crdt_4_6() {
     order.extend([b, b + 2, b + 1, b + 3]);
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &order), &played);
-    let differs = alike(&want, &got).expect("the creation stamp differs");
-    assert!(differs.contains("reads on") || differs.contains("created: None"), "{differs}");
-    assert!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|_, _| false).is_some(), "no flip, nothing given");
-    assert!(played.things.iter().any(|t| flipped(&played, &order, Way::Plain, &format!("{t:?}"), "t:gonemap.0")), "the order flips");
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|t, a| flipped(&played, &order, Way::Plain, t, a)), None);
+    assert_eq!(alike(&want, &got), None);
 }
 
 // spec/commits.md §5, the shape of seed 2700027 in a map: B's snapshot of a keep-at-most-0 map
