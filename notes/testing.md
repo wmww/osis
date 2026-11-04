@@ -128,7 +128,7 @@ Rule: a seed-ranged harness's tier-1 test runs fixed seeds and reads no environm
 | `walks::open_equals_rebuild_random_histories_moves_large` | osis-node | `OSIS_WALKS_MOVES_*` (0..100), `OSIS_WALKS_MOVES_DOUBLES=0` without hostile second imports | 16 seeds 2.2 s at load 40 |
 | `waits::gap_snapshots_converge_large_spec_crdt_8` | osis-node | `OSIS_ORDER_*` (1000..1300; expiring runs too) | 1000 seeds 33 s |
 | `inbox_life::hint_turns_reach_the_group_large_spec_sync_3` | osis-node | `OSIS_HINTS_START`/`_SEEDS` (0..60) | Blobs naming a label under other things and indexes, at the real, silent and empty hosts, the real host lagging: its group reads it, no message loop. 3000 seeds 160 s at load 25 |
-| `ephemeral::ephemeral_reverts_stay_within_rights_large_spec_crdt_4_6` | osis-node | `OSIS_EPH_*` (0..200) | A writer's reverts while losing write: a revert that goes through touched only what it may write, a refused one changed nothing. 1000 seeds 38 s |
+| `ephemeral::ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6` | osis-node | `OSIS_EPH_*` (0..200) | A writer's reverts while losing write: a revert that goes through touched only what it may write, a refused one changed nothing; in the end both nodes list every thing alike and read it alike (but a thing of a lost group nothing lists). 1000 seeds about 50 s |
 | `retention::deaths_never_early_random_large` | osis-node | `OSIS_STRAYS_*` (0..200) | 16 seeds 0.4 s at load 40 |
 | `retention::undo_never_outlives_expiry_random_large` | osis-node | `OSIS_UNDOEXP_*` (0..200) | 16 seeds 0.7 s at load 40 |
 | `ephemeral::random_window_{converges,inflight,one_capped_host}_large`, `random_churn_converges_large` | osis-node | `OSIS_EPH_*` (0..200) | see Tiers |
