@@ -4,3 +4,4 @@
 - Review: `StaticSchema` hides a parse error (the schema declares nothing, so a probe fails with "not declared by its schema"; `TEST.error()` shows the cause).
 
 - header-list-decode-memory: a failing proptest leaves `core/commit/proptest-regressions/` untracked in the worktree (not gitignored); easy to commit by accident. `unsafe` is forbidden in test binaries too, so an allocation bound has to read VmHWM from /proc, which is coarse.
+- Review: VmHWM is per process, so a peak check in a shared test binary reads other tests' peaks. Re-exec the test binary with `--exact` and an env var (`hostile_list_refused_by_shape`).
