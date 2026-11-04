@@ -1773,7 +1773,7 @@ fn roster_snapshot_learned_late_stays_until_the_rest_comes_spec_commits_4() {
     assert_eq!(first.1, late.1);
 }
 
-// spec/commits.md §4 (the exception's impact): a holder's certificate copy of a roster snapshot,
+// spec/commits.md §4 (the exception's impact, notes/whole-commits.md, Moved from the spec): a holder's certificate copy of a roster snapshot,
 // naming that holder, and the rest away. The node syncing the thing first keeps the earlier roster,
 // its holders' writes and new writes; the one that applied the copy first shows only the holder
 // named, the other's writes gone, old and new. The rest, or a later whole snapshot, ends it.
