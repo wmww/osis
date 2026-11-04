@@ -12,8 +12,3 @@ That does not help data kept forever, which is what chat messages are: those can
 Options: accept and write down the number (a person rarely sends 240,000 messages, a bot might), or build the unbuilt second format (notes/frontier-study.md), which lists one short entry per device instead for data kept forever and meets the requirement.
 Checked (notes/kick-cost.md): a simpler version of the second format works. For data kept forever, a removal lists one short entry per app launch in which the removed device wrote, instead of one per message: a few KB a year per device even for a heavy chatter, and no failed kicks. Writes carry nothing new. About 900 lines, half of it tests. The one-entry-per-device version you picked earlier turns out to need the same per-launch bookkeeping to stay safe against forgery, so it can come later as an optimization.
 Recommendation: build the per-launch version. Plus a backstop: past the size cap, the newest unlisted writes are left out and reported, rather than the kick failing.
-
-## 5. A device offline past a disappearing value's end
-Today: you already said devices may differ when a value ended before a device could apply it, but the requirements don't say so, and the fixes keep adding rules.
-Proposal: write it down. Such a value counts as never received on that device. It may show the value from before until someone next compacts that data. The expired value itself never shows.
-Recommendation: accept. A disappearing edit that replaced something could briefly show the old thing on a device that was offline the whole time.
