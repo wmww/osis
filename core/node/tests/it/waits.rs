@@ -380,12 +380,10 @@ fn gap_snapshot_check(seed: u64, len: u64, expiring: bool) -> Result<(), String>
     for _ in 0..len {
         let by = below(2) as usize;
         lp.peers[by].clock.advance(1 + below(50));
-        let (a, mut key, val) = (below(3) as usize, format!("k{}", below(3)), format!("v{}", below(1 << 20)));
-        // on a key of its own: another's write under its entry is issues/expired-entry-key-kept.md
+        let (a, key, val) = (below(3) as usize, format!("k{}", below(3)), format!("v{}", below(1 << 20)));
+        // an expiring put shares keys with the others: a write under its entry goes with it at T
+        // (spec/crdt.md §5.6 Live)
         let expires = expiring && a > 0 && below(3) == 0;
-        if expires {
-            key = val.clone();
-        }
         let mut m = Mutation::new();
         let op = if a == 0 || expires || below(4) > 0 { osis_crdt::PathOp { path: if a == 0 { vec![] } else { vec![osis_crdt::PathSeg::Key(s(&key))] }, op: osis_crdt::Op::Set(s(&val)) } } else { osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s(&key)) } };
         m.retention(t, &aspects[a], at_most(Some(if a == 2 { 600_000 } else { 0 }), None).unwrap()).unwrap();
@@ -596,11 +594,12 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
     }
 }
 
-// issues/expired-entry-key-kept.md: arrival order decides whether a map entry an expiring delta
-// created stays readable past T under another writer's later write of the same key.
+// spec/crdt.md §4.7, §5.6 Live (was issues/expired-entry-key-kept.md): a map entry an expiring
+// delta created goes at T with another writer's later write of the same key inside it, whatever
+// the arrival order and under keep at most 0 (the expiry and the bound fall due at one instant:
+// two timers, `records::timer_key`).
 #[test]
-#[ignore = "issues/expired-entry-key-kept.md"]
-fn expired_entry_key_alike_repro_spec_crdt_4_7() {
+fn expired_entry_goes_with_nested_write_alike_spec_crdt_4_7() {
     let map = ak("t:gonemap.0");
     let r = at_most(Some(0), None).unwrap();
     let mut lp = net(4, 0x7e09);
@@ -633,6 +632,7 @@ fn expired_entry_key_alike_repro_spec_crdt_4_7() {
         lp.peers[p].engine.tick().unwrap();
     }
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), lp.peers[3].engine.get(&t, &map).unwrap());
+    assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), Some(osis_base::Value::Map(Default::default())), "the key went with its entry");
 }
 
 // spec/commits.md §4: a commit's parts on two things, both records away: kept (a first sync of

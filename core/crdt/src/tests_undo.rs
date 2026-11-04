@@ -501,3 +501,42 @@ fn undo_register_absent_before_skipped_writes_nothing_spec_4_6() {
     let u = Undone { delta: &d, source: &src, range: CounterRange { lo: 1, hi: 2 }, restored: &|_| false };
     assert_eq!(undo(&mut Writer::new(ts(9), src.clone(), 2), &u, &d, &Partial, &crate::view::AnyView).unwrap(), None);
 }
+
+/// §4.6, §5.6 Live: undo of a key removal re-adds the key as a fresh entry holding the undo buffer's value; a
+/// concurrent nested write into the removed entry, newer than the removal, stays hidden under the old dot (an
+/// older one is dropped by the tombstone), in the model and the implementation alike.
+#[test]
+fn undo_of_removal_readds_fresh_entry_spec_5_6() {
+    let vt = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
+    let ty = Ty::Map(Box::new(Ty::Register), Box::new(vt.clone()));
+    let view = TyView(ty.clone());
+    let k = MValue::Str("k".into());
+    let before = MValue::map(vec![(k.clone(), MValue::fields(vec![(1, MValue::Int(0))]))]);
+    let (n1, n2) = (MSource::session(1, 0), MSource::session(2, 0));
+    for t2 in [10, 25] {
+        let mut base = Some(crdt_model::ops::create(&mut MWriter::new(n1.clone(), 1 << 16, 1), &ty, &before));
+        base.as_mut().unwrap().prune(None);
+        let mut w1 = MWriter::new(n1.clone(), 20 << 16, 10);
+        let d1 = crdt_model::ops::map_remove(&mut w1, base.as_ref(), &k).unwrap();
+        let d2 = crdt_model::ops::map_put(&mut MWriter::new(n2.clone(), (t2 << 16) + 2, 1), base.as_ref(), &vt, &k, &MValue::fields(vec![(1, MValue::Int(0)), (2, MValue::Int(5))])).unwrap();
+        let mut state = base.clone();
+        mapply(&mut state, d1.clone());
+        mapply(&mut state, d2);
+        let state = state.unwrap();
+        assert_eq!(mread(&Some(state.clone())), Some(value(&MValue::map(vec![]))), "t2 {t2}: the edit never shows the entry");
+        let (lo, hi) = (w1.lo, w1.hi());
+        let made = |d: &Dot| d.source == n1 && (lo..hi).contains(&d.ctr);
+        let mud = crdt_model::undo::undo(&mut MWriter::new(n1.clone(), 30 << 16, hi), &ty, &d1, &made, &state, base.as_ref(), &|_| false).unwrap();
+        let mut m = Some(state.clone());
+        mapply(&mut m, mud);
+        assert_eq!(mread(&m), Some(value(&before)), "t2 {t2}: the undo re-adds the key with the value before");
+        let src = source(&n1);
+        let u = Undone { delta: &frag(&d1), source: &src, range: CounterRange { lo, hi }, restored: &|_| false };
+        let si = frag(&state);
+        let iud = undo(&mut Writer::new(ts(30 << 16), src.clone(), hi), &u, &si, &frag(base.as_ref().unwrap()), &view).unwrap().unwrap();
+        let mut i = si;
+        i.join(iud);
+        assert_eq!(i.read(), mread(&m), "t2 {t2}");
+        assert_eq!(i, frag(m.as_ref().unwrap()), "t2 {t2}: the same state");
+    }
+}

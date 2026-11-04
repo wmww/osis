@@ -615,10 +615,10 @@ impl Engine {
                     continue;
                 }
                 let mut roots = Vec::new();
+                // the delta's values, not its read: a write into another's entry reads as
+                // nothing alone (spec/crdt.md §5.6 Live)
                 for d in crate::apply::held_parts(tx, &c, ai)? {
-                    if let Some(v) = d.fragment().read() {
-                        links_in(&v, &mut roots);
-                    }
+                    d.fragment().values(&mut |v| links_in(v, &mut roots));
                 }
                 if !tree_hits(tx, &dedup, &roots, &held2)? {
                     continue;

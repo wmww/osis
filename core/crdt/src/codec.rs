@@ -700,7 +700,6 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
         // entry created here (own dot in the range)
         let created = match ci {
             Some(_) if cx.kind() == DeltaKind::Writer => return Err(Error::Malformed("creation commit in a writer's delta")),
-            Some(_) if frag.is_none() => return Err(Error::Malformed("creation commit on a tombstone")),
             Some(ci) => {
                 let c = cx.stamp(ci)?;
                 if c.dot.src != dot.src {

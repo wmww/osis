@@ -1375,7 +1375,7 @@ impl Tx<'_> {
     pub(crate) fn put_timer(&mut self, t: u64, c: &CommitId, ai: usize, kind: u8) -> Result<()> {
         let memory = self.is_memory_commit(c);
         self.core.timer_floor = self.core.timer_floor.min(t);
-        self.in_class(memory, |tx| Ok(tx.txn.put_local(&records::timer_key(t, c, ai), &[kind], Shred::No)?))
+        self.in_class(memory, |tx| Ok(tx.txn.put_local(&records::timer_key(t, c, ai, kind), &[], Shred::No)?))
     }
 
     /// Loads the state of `(tid, ak)` into the cache: a paged state lazily (its skeleton; pages

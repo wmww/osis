@@ -168,7 +168,7 @@ impl Eid {
 }
 
 /// A map entry record (§5.6): its reset, its content, and its creation write's stamp (the
-/// creation's dot is the entry's), kept while it survives pruning and the record holds content.
+/// creation's dot is the entry's), kept while it survives pruning; the record reads only with it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
     pub(crate) reset: Option<Stamp>,
@@ -280,9 +280,11 @@ impl Map {
         let Some(c) = e.created.as_ref().filter(|_| id.key.is_none()) else { return false };
         !it.any(|(_, x)| x.created.as_ref().is_some_and(|y| y >= c))
     }
-    /// Whether keyed record `id` is live: its fragment present and its dot not hidden (§5.6).
+    /// Whether keyed record `id` is live (§5.6): it holds its creation (a removal prunes it, so
+    /// a write newer than the removal never shows the entry again), its fragment is present and
+    /// its dot is not hidden.
     pub(crate) fn is_live(&self, id: &Eid) -> bool {
-        id.key.is_some() && self.entries.get(id).and_then(|e| e.frag.as_deref()).is_some_and(|f| f.present()) && !self.hidden(&id.dot)
+        id.key.is_some() && self.entries.get(id).is_some_and(|e| e.created.is_some() && e.frag.as_deref().is_some_and(|f| f.present())) && !self.hidden(&id.dot)
     }
     /// What record `id` reads as: its fragment, a keyed record's joined with its dot's
     /// key-erased record's (§5.6).

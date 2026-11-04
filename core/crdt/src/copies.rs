@@ -371,7 +371,7 @@ impl CopyIndex {
     /// `lo..hi`, as (dot, key): a map entry creation's copy names its record's key (records of
     /// one dot with different keys are independent, §5.6), any other write `None`; and the
     /// keyed map records of such dots held, a creation's copy or not (one a reset pruned,
-    /// alive by a later write nested in it, §5.6 Resurrection).
+    /// kept by a later write nested in it, hidden, §5.6 Live).
     pub fn records_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = (&Dot, Option<&Value>)> {
         let writes = self.0.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).flat_map(|(d, ws)| {
             ws.iter().map(move |(k, v)| match (&k.1, v) {

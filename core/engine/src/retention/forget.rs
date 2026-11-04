@@ -224,7 +224,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     let hit = |c: &CommitId, ai: usize| out.commits.contains(c) || parts.get(c).is_some_and(|s| s.contains(&ai));
     let mut stale = Vec::new();
     tx.scan(records::TIMER, |k, _| {
-        let (_, c, ai) = records::parse_timer(k)?;
+        let (_, c, ai, _) = records::parse_timer(k)?;
         if hit(&c, ai) {
             stale.push([records::TIMER, k].concat());
         }

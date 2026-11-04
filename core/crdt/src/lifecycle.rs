@@ -28,6 +28,29 @@ impl Fragment {
         !ch.deaths().is_empty()
     }
 
+    /// Whether the fragment holds a value-less write (§4.7) of the commit of stamp `c` (its `ts`
+    /// and source): a register or case write without its value, a key-erased record's creation,
+    /// a text element's creation whose char is gone (a deleted element's tells nothing: snapshots
+    /// never carry it). A list element whose content holds one is not live (§5.7 Live): its
+    /// creation's value, the content its commit wrote, is held value-less.
+    pub(crate) fn valueless_of(&self, c: &Stamp) -> bool {
+        let same = |s: &Stamp| s.ts == c.ts && s.dot.owner().src == c.dot.owner().src;
+        let reg = |r: &Register| r.write.as_ref().is_some_and(|w| w.value.is_none() && same(&w.stamp));
+        match self {
+            Fragment::Slots(Slots { reg: r, slots }) => r.as_ref().is_some_and(reg) || slots.values().any(|f| f.valueless_of(c)),
+            Fragment::Register(r) => reg(r),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).any(|f| f.valueless_of(c)),
+            Fragment::Struct(s) => s.fields.values().any(|f| f.valueless_of(c)),
+            Fragment::Enum(e) => e.case.as_ref().is_some_and(|k| k.case.is_none() && same(&k.stamp)) || e.payloads.values().any(|f| f.valueless_of(c)),
+            Fragment::Map(m) => m.entries.iter().any(|(id, en)| (id.key.is_none() && en.created.as_ref().is_some_and(same)) || en.frag.as_deref().is_some_and(|f| f.valueless_of(c))),
+            Fragment::Seq(s) => s.elems().values().any(|el| match &el.content {
+                SeqContent::Frag(f) => f.valueless_of(c),
+                SeqContent::None => s.text && !el.flag() && el.char().is_none() && el.created.as_ref().is_some_and(|(s, _)| same(s)),
+                SeqContent::Char(_) => false,
+            }),
+        }
+    }
+
     pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
         let exp = |d: &Dot| expired(d.owner());
         let reg = |r: &mut Register| {

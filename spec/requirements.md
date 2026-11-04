@@ -95,7 +95,7 @@ Binds released formats only; until a stable release formats change in place (spe
 ## Data model
 - One canonical serialization, byte-identical everywhere. One hash function. The one exception is the random keys inside a large value: two writes of equal content differ in bytes, so large values compare by content hash.
 - Every datum is an aspect of a thing. Values are typed by the writer's schema. References may dangle.
-- Per-aspect merge with one conflict rule everywhere. A newer write never loses to an older removal: a write into a container concurrent with the container's removal brings the container back holding that write alone. The one exception is an enum: a write into a case's payload concurrent with a switch to another case stays hidden. Removing from a collection drops only what the remover had seen.
+- Per-aspect merge with one conflict rule everywhere: at a position the later write wins, and a removal is final. A write inside a map entry, list element or enum case shows only while that entry, element or case is live (its creation or case write survives); a write never brings back what was removed, expired or switched away from, only a new creation does, so an edit concurrent with the removal of what it is in is lost. A reset of a position (a register, a struct's field, an aspect) against a concurrent newer write there: the write shows. Removing from a collection drops only what the remover had seen.
 - Collaborative text and lists.
 
 ## Permissions

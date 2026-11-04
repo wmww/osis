@@ -845,10 +845,10 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     }
 }
 
-// spec/crdt.md §4.6, §4.7 (random churn seed 79 shrunk): A's `Set` into B's entry at a key
-// shadowing A's own older entry there, both expiring; past both, undoing the `Set` strips B's
-// value from what it restores, which then finds A's, also gone: neither comes back (the `Set`
-// stays, reading alone: nothing before to restore, and a nested register takes no reset)
+// spec/crdt.md §4.6, §4.7, §5.6 Live (random churn seed 79 shrunk): A's `Set` into B's entry at a
+// key shadowing A's own older entry there, both expiring; past both the `Set` is hidden with the
+// entries, and undoing it strips B's value from what it restores, which then finds A's, also
+// gone: nothing comes back
 #[test]
 fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     let mut net = Net::new();
@@ -875,12 +875,15 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
     local(&mut net, a);
     net.run();
     net.advance(t + 1_000 - net.now());
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w), map(&[]), "node {n}: the set went with the entries");
+    }
     let me = net.tid(a);
     let _ = net.engine(a).revert_change(set, me).unwrap();
     local(&mut net, a);
     net.run();
     for n in [a, b] {
-        assert_eq!(notes(&mut net, n, w), map(&[("k", "v3")]), "node {n}: no expired value came back");
+        assert_eq!(notes(&mut net, n, w), map(&[]), "node {n}: no expired value came back");
     }
 }
 
@@ -2770,7 +2773,8 @@ fn superseding_part_expires_spec_sync_9() {
 // spec/sync.md §9 (only a later write expiring no earlier, none of whose writes is into a record
 // it did not create, supersedes): a move expiring sooner than the one before leaves that one
 // held, so it reads again once the sooner one expires; a `Set` into the entry a move created
-// supersedes nothing (it outlives that entry); holders read as the author throughout
+// supersedes nothing and goes with that entry (spec/crdt.md §5.6 Live); holders read as the
+// author throughout
 #[test]
 fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     let mut net = Net::new();
@@ -2799,10 +2803,11 @@ fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     assert_eq!((at(&mut net, a), at(&mut net, b)), (want("long"), want("long")), "the earlier move reads again");
     write(&mut net, Op::Set(s("into")), 60_000);
     assert_eq!((at(&mut net, a), at(&mut net, b)), (want("into"), want("into")));
-    // the entry's creation vanishes at its expiry, the `Set` stays (spec/crdt.md §4.7,
-    // ephemeral data: as if the move had never been applied, its record repeats the key)
+    // the entry's creation vanishes at its expiry and the `Set` into it stops showing: its record
+    // stays, keeping the aspect present (spec/crdt.md §4.7 ephemeral data, §5.6 Live)
     net.advance(30_000);
-    assert_eq!((at(&mut net, a), at(&mut net, b)), (want("into"), want("into")), "the set outlives the entry it wrote into");
+    let empty = Some(Value::Map(Default::default()));
+    assert_eq!((at(&mut net, a), at(&mut net, b)), (empty.clone(), empty), "the set goes with the entry it wrote into");
     net.advance(31_000);
     assert_eq!((at(&mut net, a), at(&mut net, b)), (None, None), "every write gone: the aspect as never written");
 }
@@ -3950,9 +3955,10 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
     assert_eq!(entries(&net), base);
 }
 
-// spec/crdt.md §4.7 (ephemeral data: an expired delta vanishes whole): b's `Set` into a's entry
-// outlives the entry; once the entry expires a and b, which held it, read b's value as c does,
-// restarted after the expiry and never holding the entry (was issues/eph-set-into-dead-entry.md)
+// spec/crdt.md §4.7 (ephemeral data: an expired delta vanishes whole), §5.6 Live: b's `Set` into
+// a's entry goes with the entry; once the entry expires a and b, which held it, read as c does,
+// restarted after the expiry and never holding the entry: an empty map, b's record keeping the
+// aspect present until its own expiry (was issues/eph-set-into-dead-entry.md)
 #[test]
 fn set_into_expired_entry_reads_alike_spec_crdt_4_7() {
     let mut net = Net::new();
@@ -3978,9 +3984,9 @@ fn set_into_expired_entry_reads_alike_spec_crdt_4_7() {
     net.advance(6_000);
     net.restart(c, 77);
     net.advance(10_000);
-    let want = Some(Value::Map([(s("k"), s("s"))].into()));
+    let want = Some(Value::Map(Default::default()));
     let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
-    assert_eq!(reads, vec![want.clone(), want.clone(), want], "b's write reads everywhere");
+    assert_eq!(reads, vec![want.clone(), want.clone(), want], "b's write is hidden everywhere");
     // and goes at its own expiry
     net.advance(600_000);
     let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
