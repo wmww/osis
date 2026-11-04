@@ -170,17 +170,23 @@ impl Engine {
     }
 
     /// Own memory commits applied since the last take that are not held back, for the lane to
-    /// place: those on things in the closure of a group in `busy` (an own upload of its label
-    /// in flight, spec/sync.md §9 coalescing) stay unsent, and later writes join them; of the
+    /// place: those on things in no labeled closure wait until one holds them (`parked`), those
+    /// on things in the closure of a group in `busy` (an own upload of its label in flight,
+    /// spec/sync.md §9 coalescing) stay unsent, and later writes join them; of the
     /// rest, an aspect's two or more unsent plain session-form commits are replaced by one
     /// snapshot of their join (`coalesce`), so an aspect goes up as one entry per round trip
     /// whatever the write rate.
     pub fn take_memory_commits(&mut self, busy: &BTreeSet<Tid>) -> Result<Vec<CommitId>> {
         let whole = self.going_whole();
+        let parked = std::mem::take(&mut self.core.memory.parked);
         let unsent = std::mem::take(&mut self.core.memory.unsent);
         let mut out = Vec::new();
-        for c in unsent {
+        for c in parked.into_iter().chain(unsent) {
             let Some(m) = self.core.ix.commits.get(&c) else { continue };
+            if !m.view.aspects.iter().any(|a| self.ephemeral_synced(&a.tid)) {
+                self.core.memory.parked.push(c);
+                continue;
+            }
             let held_back = m.view.aspects.iter().any(|a| busy.iter().any(|g| self.in_ephemeral_closure(g, &a.tid)));
             if held_back {
                 self.core.memory.unsent.push(c);

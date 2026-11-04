@@ -583,6 +583,9 @@ pub struct MemorySync {
     /// Own memory commits applied and not yet taken by the lane (`Engine::take_memory_commits`),
     /// in apply order.
     pub unsent: Vec<CommitId>,
+    /// Own memory commits taken while none of their things was in a labeled closure: they go
+    /// once one is (spec/sync.md §9). Not `unsent`, so a local-only write leaves nothing to do.
+    pub parked: Vec<CommitId>,
     /// Memory commits forgotten since the last take, with why (`Engine::take_memory_drops`).
     pub dropped: Vec<(CommitId, MemoryDrop)>,
     /// Memory commits applied since the last take, any origin (`Engine::take_memory_applied`).
