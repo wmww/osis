@@ -868,7 +868,8 @@ fn hint_at_a_silent_host_does_not_hold_off_the_group_spec_sync_3() {
 // spec/sync.md §3, §5: nor by naming it at a host of its own that holds the label's real path
 // (a past reader's), answers the hinted open with a step and takes the claim, on a connection
 // older than the real host's: the label is open under the hinted thing there, and what the real
-// host sends still reads under the group that opened it there, with no message loop.
+// host sends still reads under the group that opened it there, with no message loop; once the
+// group's `label.0` is held, the label leaves that connection.
 #[test]
 fn hint_at_a_claiming_host_does_not_hold_off_the_group_spec_sync_3() {
     let mut net = Net::new();
@@ -905,6 +906,9 @@ fn hint_at_a_claiming_host_does_not_hold_off_the_group_spec_sync_3() {
     quiet(&mut net, b);
     assert_eq!(net.read(b, t), Some(s("item")), "{:?}", net.sync(b).label_status());
     assert!(net.sync(b).labels().iter().any(|(x, l)| *x == g && l.id == gl.id), "{:?}", net.sync(b).label_status());
+    // the label left the claiming host's connection once its `label.0` was held: that host
+    // (not one the group names) judges nothing more under the hinted thing
+    assert_eq!(net.sync(b).conn_groups(&gl.id), vec![g]);
 }
 
 /// Host `evil` holds `l`'s path at `host` with its claim sets (a past reader's) and answers
@@ -988,6 +992,9 @@ fn hint_turns_seed(seed: u64) {
     }
     assert_eq!(net.read(b, things[0]), Some(s("item")), "seed {seed}: {:?}", net.sync(b).label_status());
     assert!(net.sync(b).labels().iter().any(|(x, l)| *x == g && l.id == gl.id), "seed {seed}: {:?}", net.sync(b).label_status());
+    // once its `label.0` is held, no connection holds the label under a hint's thing
+    let held = net.sync(b).conn_groups(&gl.id);
+    assert!(held.iter().all(|x| *x == g), "seed {seed}: {held:?}");
 }
 
 fn hint_turns_replay(s: u64) -> String {

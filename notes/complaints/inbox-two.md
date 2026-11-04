@@ -3,3 +3,5 @@
 - Box load 30-55 during the task: each one-test probe of osis-node took 2.5-5 min (relink of the `it` binary dominates), so the issue-2 probing cost about an hour.
 - `OSIS_SYNC_TRACE` printed raw byte arrays for Send actions; the net harness now decodes frames both ways (send and recv), which found the Fetch loop in one run.
 - The unmet-sender "cheap step" brief assumed a sender can see an acceptance; it can't (no channel), found only by probing. A quick "what does the sender observe?" check in the brief would have saved the time.
+- Review: box load 40-50; one-test osis-node probes took 2-4 min each, tier 1 12 min.
+- `net.group` twice from one admin gives both groups one label ID (`sync_review::self_removals_drop_per_group`): a rule keyed on "the group a label belongs to" loops there; found only by tier 1.

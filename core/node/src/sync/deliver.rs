@@ -223,12 +223,7 @@ impl SyncEngine {
                 self.unsubscribe.insert((*id, *l));
             }
             c.labels.retain(|l, _| !gone(l));
-            c.req.sent.retain(|(l, _), _| !gone(l));
-            c.req.deleting.retain(|(l, _), _| !gone(l));
-            c.req.replacing.retain(|(l, _), _| !gone(l));
-            c.req.timed_sent.retain(|(l, _)| !gone(l));
-            c.req.reopens.retain(|l, _| !gone(l));
-            c.req.refusals.retain(|l, _| !gone(l));
+            c.req.forget(gone);
         }
         self.synced.key.0 = u64::MAX;
         self.synced.actors.retain(|l, _| !gone(l));
