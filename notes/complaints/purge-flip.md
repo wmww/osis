@@ -1,0 +1,2 @@
+- `t:gone.0` is at most 0 in the `order`/`common` schema but 1 h in `net`'s schema of the same name: my net test passed a wrong premise until I set the retention by hand.
+- `dump_orders`' re-delivery ignores the failing order's `Way`, and its read trace skips an aspect that leaves `all_aspects`, so the moment a value vanishes does not show.

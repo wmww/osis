@@ -1,7 +1,10 @@
-# After a flip on a dropped body, a writer's compaction may not settle the read
-> Summary: spec/requirements.md Deterministic says nodes may read apart after a flip or purge on a dropped body "until a writer next compacts". About 1 generated history in 100 stays apart after every writer compacted: the writers lack the write, a node that kept it reads it, and only the next write on the aspect ends it.
+# After a flip on a dropped body, a reader may hold what every writer dropped
+> Summary: on keep at most or expiry, a killing write that turns invalid after every writer dropped the body leaves a reader that kept it reading the old value, and the writers reading without it, until the next write on the aspect. spec/requirements.md Deterministic says "until a writer next compacts", which does not hold here: no writer has it. Needs a rule call.
 > Tags: engine, retention, spec
 
-`order::settled` leaves aspects under a keep at most out for this (`Judged::expired_pending` in `alike_exchanged`). Take that out: `arrival_order_settled_large` fails at seed 61840041 (`OSIS_ORDER_START=61840000`, 1 of 60), 1 of 200 from 61850000; `settled(purge_history(..))` at 7150 (1 of 60 from 7100). Always `t:gone.0` (keep at most 0): `Some(Str("v1"))` vs none, plain order. Shrinking removes the compactions, so the cause is read from the history, not traced: a write under at most 0, demotions on that thing, an order that dropped it before the flip.
+Pinned: `flip_after_drop_only_a_reader_holds_it_lasts_to_the_next_write_spec_sync_7` (osis-node `sync_more`). Writer B overwrites A's value under at most 0, every writer takes that write and drops the value, an admin's lowering of B with a frontier leaving the write out then makes it invalid. A reader that took the lowering first never dropped it. Nothing mends it: writers have nothing to snapshot and a reader's relay is refused, the blob ID being tombstoned. A flagged writer's report reaches only other writers.
 
-A rule call: "until a writer holding it compacts, or the next write", or trace it first. Tess accepted "until any writer of that data comes online".
+Options:
+- Reader deposit: a reader that reads a suspect report differing from its own digest deposits a fresh encryption of each body it must hold that the label lacks; a writer takes it as a late part and promotes it (spec/sync.md §5, §7). All read the value again. New rule, no new state; a reader may put back at the host a value a writer deleted, until a writer judges it.
+- State the limit in the requirement: "until a writer holding it next compacts, or the next write".
+- Rejected: a node dropping what a newer snapshot lacks. A snapshot's silence says "dead or never received" (spec/crdt.md §8), so this would drop live late writes, and here the writers hold no state to snapshot at all.

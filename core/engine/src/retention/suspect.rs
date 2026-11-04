@@ -155,14 +155,14 @@ impl Engine {
 
     /// The keyed digest of `(tid, ak)`'s state (spec/permissions.md §4): the first 16 bytes of
     /// `kdf("state", dedup secret of tid, ak || state bytes)`, the state bytes its encoding as a
-    /// snapshot fragment with its pages. `None` while the thing's creation record is unknown or
-    /// the aspect holds no state. Nodes holding the same bodies get the same digest; a host,
-    /// lacking the dedup secret, learns nothing from it.
+    /// snapshot fragment with its pages, none for an aspect holding no state. `None` while the
+    /// thing's creation record is unknown. Nodes holding the same bodies get the same digest; a
+    /// host, lacking the dedup secret, learns nothing from it.
     pub fn state_digest(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<[u8; 16]>> {
         let Some(r) = self.core.created(tid) else { return Ok(None) };
         let d = osis_crypto::dedup_secret(r.nonce());
         let (tid, ak) = (*tid, ak.clone());
-        let Some(bytes) = self.run(|tx| tx.state(&tid, &ak)?.map(crate::engine::state::encode).transpose())? else { return Ok(None) };
+        let bytes = self.run(|tx| tx.state(&tid, &ak)?.map(crate::engine::state::encode).transpose())?.unwrap_or_default();
         Ok(Some(osis_crypto::state_digest(&d, ak.as_str(), &bytes)))
     }
 }

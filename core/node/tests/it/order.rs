@@ -1467,6 +1467,8 @@ struct Judged {
     /// Aspects (as `facts_text` prints them) the node flags suspect for a part it held pending
     /// at its expiry (counts as never received, spec/commits.md §5): not compared.
     expired_pending: BTreeSet<(String, String)>,
+    /// Aspects the node flags suspect for any reason: a writer repairs them (`alike_repaired`).
+    suspect: BTreeSet<(String, String)>,
     /// Delivered in part at an earlier clock (`Clock`).
     early: bool,
 }
@@ -1533,7 +1535,8 @@ fn judged_now(p: &mut Peer, things: &[Tid]) -> Judged {
     let facts = facts_text(e);
     let parts = vec![("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch)];
     let expired_pending = expired_pending(e);
-    Judged { parts, facts, missing_later: None, expired_pending, early: false }
+    let suspect = e.suspects().unwrap().into_iter().map(|(t, a, _, _)| (format!("{t:?}"), a.as_str().to_string())).collect();
+    Judged { parts, facts, missing_later: None, expired_pending, suspect, early: false }
 }
 
 /// Moves the node's clock to `later_than` and adds its reads and states then to `v`.
@@ -1547,6 +1550,7 @@ fn later(v: &mut Judged, p: &mut Peer, played: &Played) {
     v.parts.push(("reads later", l.part("reads").to_string()));
     v.parts.push(("states later", l.part("states").to_string()));
     v.expired_pending.extend(l.expired_pending);
+    v.suspect.extend(l.suspect);
     v.missing_later = Some(p.engine.commit_parts_missing());
 }
 
@@ -1715,18 +1719,7 @@ fn packs_of(played: &Played, ids: &BTreeSet<String>) -> Vec<usize> {
 /// with no exception for the drop.
 fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], way: Way, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
     if played.settled {
-        // reads, as the exceptions say (value-less stamps may stay apart), of the aspects a writer
-        // compacted at the end: on one with no writer left the exceptions have no end. Not under a
-        // keep at most: issues/flip-after-drop-no-writer-holds.md
-        let at = played.now.0.saturating_sub(HOUR);
-        let compacted: BTreeSet<(String, String)> = played.packs.iter().filter_map(|p| osis_commit::CommitBlob::decode_stored(&p.bytes).ok()).filter(|b| b.header.kind.is_compaction() && b.header.ts.wall_ms().0 >= at).flat_map(|b| b.header.aspects.iter().map(|a| (format!("{:?}", a.tid), a.ak.as_str().to_string())).collect::<Vec<_>>()).collect();
-        let bounded: BTreeSet<(String, String)> = played.packs.iter().filter_map(|p| osis_commit::CommitBlob::decode_stored(&p.bytes).ok()).flat_map(|b| b.header.aspects.iter().filter(|a| a.retention.at_most.rel.is_some() || a.retention.at_most.abs.is_some()).map(|a| (format!("{:?}", a.tid), a.ak.as_str().to_string())).collect::<Vec<_>>()).collect();
-        let plain = |j: &Judged| {
-            let parts: Vec<_> = j.parts.iter().filter(|x| !x.0.starts_with("states")).cloned().collect();
-            let others = keyed(j.part("reads")).into_keys().chain(keyed(want.part("reads")).into_keys()).chain(keyed(got.part("reads")).into_keys()).filter(|k| !compacted.contains(k) || bounded.contains(k)).collect();
-            Judged { expired_pending: others, parts, ..j.clone() }
-        };
-        return alike(&plain(want), &plain(got));
+        return alike_repaired(played, want, want_order, got, got_order, way);
     }
     let (rng, clock) = way.parts();
     let fallen = purge_flips(played, want, got);
@@ -1769,6 +1762,46 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
         played.restored.fetch_add(fallen.len() as u64, std::sync::atomic::Ordering::Relaxed);
     }
     diff
+}
+
+/// `alike` in a `settled` history: reads of the aspects a writer compacted at the end (on one with
+/// no writer left the exceptions have no end), value-less stamps may stay apart. That compaction
+/// may reach a node before a flip that its keep bounds or a purge dropped the snapshot for: the
+/// node flags the aspect suspect and a writer snapshots it again (spec/sync.md §7), so here a
+/// flagged aspect's compactions come again, as that snapshot does.
+fn alike_repaired(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], way: Way) -> Option<String> {
+    let at = played.now.0.saturating_sub(HOUR);
+    let compactions: Vec<(usize, BTreeSet<(String, String)>)> = played
+        .packs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| Some((i, osis_commit::CommitBlob::decode_stored(&p.bytes).ok()?.header)))
+        .filter(|(_, h)| h.kind.is_compaction() && h.ts.wall_ms().0 >= at)
+        .map(|(i, h)| (i, h.aspects.iter().map(|a| (format!("{:?}", a.tid), a.ak.as_str().to_string())).collect()))
+        .collect();
+    let compacted: BTreeSet<&(String, String)> = compactions.iter().flat_map(|c| &c.1).collect();
+    let plain = |j: &Judged| {
+        let parts: Vec<_> = j.parts.iter().filter(|x| !x.0.starts_with("states")).cloned().collect();
+        let others = keyed(j.part("reads")).into_keys().chain(keyed(want.part("reads")).into_keys()).chain(keyed(got.part("reads")).into_keys()).filter(|k| !compacted.contains(k)).collect();
+        Judged { expired_pending: others, parts, ..j.clone() }
+    };
+    let again: Vec<usize> = compactions.iter().filter(|c| c.1.iter().any(|k| want.suspect.contains(k) || got.suspect.contains(k))).map(|c| c.0).collect();
+    if again.is_empty() {
+        return alike(&plain(want), &plain(got));
+    }
+    let (mut rng, clock) = way.parts();
+    let mut w = deliver_with(played, want_order, None, None, &mut |_| {});
+    let mut g = deliver_with(played, got_order, rng.as_mut(), clock, &mut |_| {});
+    for p in [&mut w, &mut g] {
+        for &i in &again {
+            let pk = &played.packs[i];
+            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        p.engine.reexamine().unwrap();
+    }
+    let (wj, mut gj) = (judged(&mut w, played), judged(&mut g, played));
+    gj.early = clock.is_some();
+    alike(&plain(&wj), &plain(&gj)).map(|d| format!("after a flagged aspect's compactions came again: {d}"))
 }
 
 /// The commits (as `facts_text` prints them) with a part on an aspect some purge request names
@@ -3292,6 +3325,22 @@ fn arrival_order_settled_small_spec_commits_5() {
 #[ignore = "tier 2"]
 fn arrival_order_settled_large_spec_commits_5() {
     run("arrival_order_settled_large_spec_commits_5", 7000..7060, 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
+}
+
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_settled_purges_large_spec_commits_5() {
+    run("arrival_order_settled_purges_large_spec_commits_5", 7100..7160, 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(purge_history(s, l, c)));
+}
+
+// spec/sync.md §7 (repair): seed 61840041. A writer's last snapshot of a keep-at-most-0 aspect reached
+// a node before the lowering of a later writer did, so the node dropped it and every other body of
+// the value, then flagged the aspect. It reads alike only once a writer's snapshot comes after that.
+#[test]
+fn settled_flagged_aspect_alike_after_repair_spec_sync_7() {
+    let cfg = Cfg { settled: true, sync: true, ..LARGE };
+    let h = settled(history(61840041, 60, cfg));
+    check(61840041, &h, cfg).unwrap();
 }
 
 // The same over more histories, up to 6 commits.

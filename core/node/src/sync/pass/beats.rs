@@ -31,7 +31,8 @@ impl SyncEngine {
                     continue;
                 }
                 let mine = self.engine.state_digest(&s.thing, &ak)?;
-                if mine.is_none() || mine == Some(s.digest) {
+                // holding no state, this writer has nothing to snapshot
+                if mine.is_none() || mine == Some(s.digest) || self.engine.state(&s.thing, &ak)?.is_none() {
                     self.repair_diag(node, s.thing, None, format!("suspect {} {} reported by {node}: same state here", s.thing, s.ak));
                     continue;
                 }
@@ -143,8 +144,8 @@ impl SyncEngine {
 
     /// The aspects of things in a label's `closure` this node flags suspect, with their keyed
     /// state digests (spec/permissions.md §4): the most recently flagged first, at most
-    /// `MAX_HEARTBEAT_SUSPECTS`; an aspect with no digest here (no state, no creation record)
-    /// waits until it has one. Only the label's things: its readers learn nothing of others.
+    /// `MAX_HEARTBEAT_SUSPECTS`; an aspect with no digest here (no creation record) waits until
+    /// it has one. Only the label's things: its readers learn nothing of others.
     pub(super) fn suspects_under(&mut self, closure: &BTreeSet<Tid>) -> Result<BTreeSet<ct::Suspect>> {
         let mut flagged: Vec<(Tid, Ak, u64, u8)> = self.engine.suspects()?.into_iter().filter(|x| closure.contains(&x.0)).collect();
         flagged.sort_by_key(|x| std::cmp::Reverse(x.2));
