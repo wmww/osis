@@ -17,6 +17,7 @@ Terms:
 - Hostile admins are not defended against.
 - Authenticated malicious writers are bounded, not prevented.
 - Malicious readers can only waste storage.
+- Untrusted nodes are trusted for availability only: one can withhold, delay or lose what it holds, and honest nodes still converge through any other route.
 
 ## Decentralization
 - No central or trusted coordinator, consensus or sequencer. Peer-to-peer like git; any node may be offline indefinitely and return.
