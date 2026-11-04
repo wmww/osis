@@ -127,44 +127,31 @@ impl Engine {
     }
 
     /// Whether `tid` is in some labeled closure here: synced itself, or in a group that is, through
-    /// either side of `group.0`, or kept under a synced group's label (`MemorySync::kept`).
+    /// either side of `group.0` (spec/sync.md §3).
     pub fn ephemeral_synced(&self, tid: &Tid) -> bool {
-        self.core.syncs(tid) || self.core.memory.kept.get(tid).is_some_and(|gs| gs.iter().any(|g| self.core.syncs(g))) || self.groups_of(tid).iter().any(|g| self.core.syncs(g))
+        self.core.syncs(tid) || self.groups_of(tid).iter().any(|g| self.core.syncs(g))
     }
 
-    /// Whether `t` is in the ephemeral closure of `g` (spec/sync.md §9): `Engine::closure`, the
-    /// ephemeral things placed in it (transitively through `placed.0~`), and what a commit was
-    /// kept on under its label here, without walking it.
-    ///
-    /// Invariant the kept rows give (`ephemeral_reverts_within_rights_alike_*`): a node that
-    /// holds a commit on `t` under `g`'s label keeps placing its new commits on `t` there, so
-    /// the label's holders go on reading `t` alike whatever stops listing it. Commits held
-    /// before a row or a listing appears do not go (issues/ephemeral-closure-entry-old-state.md).
-    /// Rows widen where a commit goes, never who may read it: `eph_place` still sends only what
-    /// `g`'s actor may read.
-    pub fn in_ephemeral_closure(&self, g: &Tid, t: &Tid) -> bool {
-        t == g || self.core.memory.kept.get(t).is_some_and(|gs| gs.contains(g)) || self.closure(g).contains(t) || self.groups_of(t).contains(g)
-    }
-
-    /// A commit on `things` was kept under `g`'s label here (the lane, at `eph_keep`). A thing
-    /// with no record held (its commit already forgotten) gets no row: nothing would free it.
-    pub fn ephemeral_kept(&mut self, g: Tid, things: impl IntoIterator<Item = Tid>) {
+    /// Node-sync kept a label entry of a memory commit on `things` here (made or received): a
+    /// holder may have their writes from now on, so a delete of one is resets and tombstones
+    /// (`MemorySync::synced`, `freeable`). A thing with no record held gets no row.
+    pub fn note_memory_synced(&mut self, things: impl IntoIterator<Item = Tid>) {
         for t in things {
-            if self.core.created(&t).is_some() && self.core.memory.kept.entry(t).or_default().insert(g) {
-                self.core.memory.closures += 1;
+            if self.core.ix.held.is_memory(&t) {
+                self.core.memory.synced.insert(t);
             }
         }
     }
 
-    /// The groups `t` has a `MemorySync::kept` row under (tests, diagnostics).
-    pub fn ephemeral_kept_on(&self, t: &Tid) -> BTreeSet<Tid> {
-        self.core.memory.kept.get(t).cloned().unwrap_or_default()
+    /// Whether a commit on memory thing `t` was ever a label entry here (tests, diagnostics).
+    pub fn memory_synced(&self, t: &Tid) -> bool {
+        self.core.memory.synced.contains(t)
     }
 
-    /// Whether own memory commits or signals wait to be handed to the ephemeral lane
-    /// (`take_memory_commits`, `take_signals`).
-    pub fn has_unsent(&self) -> bool {
-        !self.core.memory.unsent.is_empty() || !self.eph.signals.is_empty()
+    /// Whether changes wait for node-sync: commits marked changed (memory commits applied,
+    /// `Core::changed`) or signals not sent (`take_signals`).
+    pub fn has_memory_changes(&self) -> bool {
+        self.core.changed.as_ref().is_some_and(|c| !c.is_empty()) || !self.eph.signals.is_empty()
     }
 
     /// The reader actor of thing `t` (`Engine::reader_of`), through the records of ephemeral
@@ -297,13 +284,14 @@ impl Engine {
         let unplaced: BTreeSet<(Tid, Tid)> = eph_ops.iter().filter(|op| op.ak.as_str() == PLACED.ak()).flat_map(|op| op.am.ops.iter().filter_map(|o| place::member_removal(o).map(|x| (op.tid, x)))).chain(m.aspects.iter().filter(|((_, ak), _)| ak.as_str() == GROUP.ak()).flat_map(|((g, _), am)| am.ops.iter().filter_map(|o| place::member_removal(o).map(|x| (*g, x))))).collect();
         let free = std::mem::take(&mut m.free);
         let gone = self.freeable(&free, &unplaced);
-        // one memory commit per thing and expiry class (spec/crdt.md §2.1: plain writes under
-        // this open's session, expiring ones under its second session, so an expired commit
-        // leaves no gap in the plain writes' counters; per thing, so a thing deleted later is
-        // freed with its commits whole, `apply::free`); writes on things freed go with them
-        let mut batches: BTreeMap<(bool, Tid), Mutation> = BTreeMap::new();
-        fn batch(batches: &mut BTreeMap<(bool, Tid), Mutation>, expiring: bool, tid: Tid, actor: Tid, ts: Ts) -> &mut Mutation {
-            batches.entry((expiring, tid)).or_insert_with(|| {
+        // one memory commit per expiry class, as a durable batch is one commit (spec/sync.md §9;
+        // spec/crdt.md §2.1: plain writes under this open's session, expiring ones under its
+        // second session, so an expired commit leaves no gap in the plain writes' counters), so
+        // a deletion's resets ride with the unplacing that takes the thing out of the closure;
+        // writes on things freed go with them (`apply::free` drops a freed thing's parts)
+        let mut batches: BTreeMap<bool, Mutation> = BTreeMap::new();
+        fn batch(batches: &mut BTreeMap<bool, Mutation>, expiring: bool, actor: Tid, ts: Ts) -> &mut Mutation {
+            batches.entry(expiring).or_insert_with(|| {
                 let mut x = Mutation::new();
                 x.act_as(actor);
                 x.ts = Some(ts);
@@ -321,7 +309,7 @@ impl Engine {
             }
             am.expires = expires;
             am.default_expiry = None;
-            let target = batch(&mut batches, expires.is_some(), tid, actor, ts);
+            let target = batch(&mut batches, expires.is_some(), actor, ts);
             match target.aspects.get_mut(&(tid, ak.clone())) {
                 Some(e) => e.ops.extend(am.ops),
                 None => {
@@ -332,12 +320,13 @@ impl Engine {
         // their entries leave every `placed.0~` listing them (a reset that goes with them
         // otherwise, at a group that stays)
         for (g, ops) in self.unplace_freed(&gone) {
-            let e = batch(&mut batches, false, g, actor, ts).aspects.entry((g, place::placed_ak()?)).or_insert_with(|| AspectMut { schema: Some(std::sync::Arc::new(osis_schema::core_schema().clone())), ..AspectMut::default() });
+            let e = batch(&mut batches, false, actor, ts).aspects.entry((g, place::placed_ak()?)).or_insert_with(|| AspectMut { schema: Some(std::sync::Arc::new(osis_schema::core_schema().clone())), ..AspectMut::default() });
             e.ops.extend(ops);
         }
-        // a new thing's record goes with its first write, else alone (known all the same)
+        // a new thing's record goes in the plain commit (first), with its first write when that
+        // is plain, else alone (known all the same)
         for (t, r) in fresh.iter().filter(|(t, _)| !gone.contains(t)) {
-            batch(&mut batches, false, *t, actor, ts).creates.insert(*t, r.clone());
+            batch(&mut batches, false, actor, ts).creates.insert(*t, r.clone());
         }
         // a deleted memory thing not freed at once (kept under a label) is marked deleted like
         // one unmade by an undo: it reads unknown while its record and tombstones stay
@@ -355,19 +344,8 @@ impl Engine {
                 Vec::new()
             };
             let mut memory = Vec::new();
-            // things created first, owners before what they own (a thing's commit is judged
-            // and carries records by its chain as known then), then the rest
-            let depth = |t: &Tid| {
-                let (mut d, mut cur) = (0usize, *t);
-                while let Some(o) = fresh.get(&cur).and_then(CreationRecord::owner).filter(|o| fresh.contains_key(o)) {
-                    d += 1;
-                    cur = o;
-                }
-                d
-            };
-            let mut batches: Vec<Mutation> = batches.into_values().collect();
-            batches.sort_by_key(|x| x.creates.keys().next().map_or((1, 0), |t| (0, depth(t))));
-            for x in batches {
+            // the plain commit (with the records) first, then the expiring one
+            for x in batches.into_values() {
                 // a delta past what one unpaged delta may hold is refused (spec/commits.md §2)
                 let c = tx.in_class(true, |tx| commit_in(tx, x)).map_err(|e| match e {
                     Error::Commit(osis_commit::Error::Delta(_)) => Error::Misuse("an ephemeral delta does not fit a blob"),
@@ -466,13 +444,12 @@ impl Engine {
     }
 
     /// Of `free`, the ephemeral things this node may free at once: held as memory class, never
-    /// kept under a label here (`MemorySync::kept`: a holder may have its writes, so the resets
-    /// must go and the record and tombstones stay until restart, as a durable delete's do;
-    /// issues/ephemeral-delete-comes-back.md) and in no labeled closure once the batch's
-    /// removals `unplaced` (group, member) apply, with the ephemeral things they own, to a
-    /// fixpoint.
+    /// a label entry here (`MemorySync::synced`: a holder may have its writes, so the resets
+    /// must go and the record and tombstones stay until restart, as a durable delete's do) and
+    /// in no labeled closure once the batch's removals `unplaced` (group, member) apply, with the
+    /// ephemeral things they own, to a fixpoint.
     fn freeable(&self, free: &BTreeSet<Tid>, unplaced: &BTreeSet<(Tid, Tid)>) -> BTreeSet<Tid> {
-        let synced = |t: &Tid| self.core.syncs(t) || self.core.memory.kept.contains_key(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g) && !unplaced.contains(&(*g, *t)));
+        let synced = |t: &Tid| self.core.syncs(t) || self.core.memory.synced.contains(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g) && !unplaced.contains(&(*g, *t)));
         let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.core.ix.held.is_memory(t) && !synced(t)).copied().collect();
         loop {
             let more: Vec<Tid> = gone.iter().flat_map(|t| self.core.ix.held.owned(t)).filter(|x| !gone.contains(x) && self.core.ix.held.is_memory(x) && !synced(x)).copied().collect();

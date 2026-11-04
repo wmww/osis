@@ -201,8 +201,8 @@ impl SyncEngine {
                     self.queue_deposit(l, &hosts, d, s.blob.clone(), wrap, None);
                 }
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
-                self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
-                self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt: s.salt } });
+                self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true, memory: false });
+                self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt: s.salt }, memory: false });
             }
             if !placed {
                 continue;
@@ -261,7 +261,7 @@ impl SyncEngine {
         for b in self.engine.linked_blobs(c, parts)? {
             if !self.state.entries.contains_key(&(l, b)) {
                 let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-                self.state.set_entry(l, b, Entry { wrap, stamp: None, cert: true, kind: Kind::Unknown });
+                self.state.set_entry(l, b, Entry { wrap, stamp: None, cert: true, kind: Kind::Unknown, memory: false });
             }
         }
         Ok(())

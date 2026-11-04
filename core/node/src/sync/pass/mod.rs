@@ -129,7 +129,7 @@ struct J {
 }
 
 /// A label's snapshots by aspect (`drop_label_covered`).
-type Snaps = BTreeMap<(Tid, Ak), Vec<CommitId>>;
+pub(crate) type Snaps = BTreeMap<(Tid, Ak), Vec<CommitId>>;
 
 /// A pass's label of group `g` at `host` (`None`: the local pass) and head, with the keys
 /// this node may use there (`usable_keys`).
@@ -304,6 +304,9 @@ impl SyncEngine {
             ctx
         };
         let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(Some(conn), p, ctx, w, scope, full)?;
+        // own memory writes wait while an own upload is in flight, then go coalesced
+        // (spec/sync.md §9)
+        self.coalesce_own(conn, l, ctx, &snaps, &mut bodies, &mut left)?;
         let mut sends: Vec<Out> = self.body_sends(p, &bodies, &snaps, &snapping, &mut left)?;
         // parked commits travel like at a host: stamped entries are relayed (spec/versioning.md §2)
         for id in self.state.of_kind(&l, Kind::TAG_PARKED) {
@@ -417,8 +420,12 @@ impl SyncEngine {
             self.promote(conn, host, &g, l, w, &mut uploads)?;
             self.stamp_inbox(conn, host, l, w, &mut uploads)?;
         }
+        let ids: Vec<BlobId> = uploads.iter().map(|u| osis_label::blob_id(&u.blob)).collect();
+        for b in &ids {
+            self.note_own_upload(conn, l, *b);
+        }
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.req.sent.extend(uploads.iter().map(|u| osis_label::blob_id(&u.blob)).chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), (raw, super::UNTAGGED))));
+            c.req.sent.extend(ids.into_iter().chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), (raw, super::UNTAGGED))));
         }
         if !uploads.is_empty() {
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
@@ -526,7 +533,7 @@ impl SyncEngine {
                 commits.extend(std::mem::take(&mut w.waits.held_back));
             }
             for (t, a) in &moved {
-                commits.extend(self.engine.core.durable_on(&(*t, a.clone())));
+                commits.extend(self.engine.core.held_on(&(*t, a.clone())));
             }
         }
         if full {
@@ -748,6 +755,11 @@ impl SyncEngine {
         };
         let mut dropped: BTreeSet<CommitId> = if opened { self.engine.drop_broken(only)?.into_iter().collect() } else { BTreeSet::new() };
         for ((t, a), ss) in &snaps {
+            // a memory snapshot's covered drops are Core's, at apply (spec/sync.md §9: an own
+            // body drops only under an own snapshot)
+            if !osis_schema::AspectKey::lifetime(a).is_durable() {
+                continue;
+            }
             for s in ss {
                 if !self.engine.core.ix.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {
                     continue;
@@ -779,7 +791,7 @@ impl SyncEngine {
             return Ok(());
         }
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.req.missing.contains(b));
-        let ids: Vec<BlobId> = w.unopened.iter().filter(|b| !self.fetching(b) && !missing(self, b) && self.state.is_present(&host, &l, b)).copied().collect();
+        let ids: Vec<BlobId> = w.unopened.iter().filter(|b| !self.fetching(b) && !missing(self, b) && self.state.is_present(&host, &l, b) && !self.memory_skips(&l, b)).copied().collect();
         let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
         // bytes here but never opened under the secrets held now
         if !held.is_empty() {

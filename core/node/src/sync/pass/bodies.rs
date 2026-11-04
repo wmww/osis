@@ -76,7 +76,7 @@ impl SyncEngine {
                     let fresh = !self.state.entries.contains_key(&(l, cb));
                     if fresh {
                         let wrap = osis_crypto::filler_wrap(&mut *self.rng);
-                        self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, kind: Kind::Unknown });
+                        self.state.set_entry(l, cb, Entry { wrap, stamp: None, cert: false, kind: Kind::Unknown, memory: false });
                     }
                     sends.push(Out { prio, id: cb, fresh, of });
                 }
@@ -250,6 +250,9 @@ impl SyncEngine {
     /// copy's, never one tombstoned there), else a fresh one; wrapped for the label.
     pub(super) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool) -> Result<Option<BlobId>> {
         let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { return Ok(None) };
+        // a memory commit's blobs carry its class and live in memory (spec/sync.md §9)
+        let class = self.engine.header(&b.commit).map_or(osis_label::Class::Durable, |h| osis_label::Class::of_marker(h.ephemeral));
+        let memory = class != osis_label::Class::Durable;
         let reuse = if cert { None } else { self.state.blob_for(&b.commit, &b.parts, |id| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id))) };
         let (id, key) = match reuse.and_then(|id| self.state.blobs.get(&id).map(|r| (id, r.key.clone()))) {
             Some(x) => x,
@@ -258,15 +261,25 @@ impl SyncEngine {
                 if pt.is_empty() {
                     return Ok(None);
                 }
-                let s = seal_body(&Body { plaintext: pt, ..b.clone() }, &mut *self.rng)?;
-                self.engine.put_blobs(vec![(s.id, s.blob)])?;
-                self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert });
+                let s = crate::labeling::seal_body_as(&Body { plaintext: pt, ..b.clone() }, class, &mut *self.rng)?;
+                if memory {
+                    self.engine.put_memory_blobs(vec![(s.id, s.blob)])?;
+                } else {
+                    self.engine.put_blobs(vec![(s.id, s.blob)])?;
+                }
+                self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert, memory });
                 (s.id, s.key)
             }
         };
-        let Some(salt) = self.engine.blob(&id)?.and_then(|x| osis_label::Prefix::parse(&x).ok()).map(|p| *p.salt()) else { return Ok(None) };
+        let Some(bytes) = self.engine.blob(&id)? else { return Ok(None) };
+        let Some(salt) = osis_label::Prefix::parse(&bytes).ok().map(|p| *p.salt()) else { return Ok(None) };
         let wrap = osis_crypto::wrap(&secret, &id, &key, b.order)?;
-        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt } });
+        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt }, memory });
+        self.state.note_memory_size(l, id, bytes.len());
+        if memory && let Some(h) = self.engine.header(&b.commit) {
+            let things: Vec<Tid> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid).collect();
+            self.engine.note_memory_synced(things);
+        }
         Ok(Some(id))
     }
 

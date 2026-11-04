@@ -13,7 +13,6 @@
 mod bundle;
 mod conn;
 mod deliver;
-mod ephemeral;
 mod fill;
 mod host;
 #[cfg(feature = "driver")]
@@ -22,6 +21,7 @@ mod inbound;
 mod io;
 mod local;
 mod marks;
+mod memory;
 mod open;
 mod pass;
 pub mod peers;
@@ -256,8 +256,8 @@ pub struct SyncEngine {
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
     /// header (spec/commits.md §4).
     pub(crate) prefix_checked: BTreeSet<osis_base::BlobId>,
-    /// Ephemeral entries held in memory (`ephemeral`).
-    pub(crate) eph: ephemeral::Lane,
+    /// The memory class's state beside the sync records (`memory`).
+    pub(crate) memory: memory::Memory,
     /// Relay-only uploads served sessions made (spec/sync.md §5, as a host admits them).
     pub(crate) relay_gate: osis_proto::RelayGate,
     /// Labels read for receipts only (`read_receipts`; memory only).
@@ -274,7 +274,7 @@ impl SyncEngine {
     /// Wraps an engine. `clock` is the uncorrected wall clock the engine was built on (Hellos
     /// carry it; the correction goes to the engine).
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
-        // ephemeral writes reach node-sync as unsent memory commits (`Engine::take_memory_commits`), not events
+        // a memory commit marks itself changed like any (`Engine::take_changed`), not by event
         let events = engine.subscribe_durable();
         engine.set_sync_records(&state::Records);
         // keeps the changed commits from now on (`Engine::take_changed`)
@@ -361,7 +361,7 @@ impl SyncEngine {
             holders_moved: false,
             clients_moved: false,
             prefix_checked: BTreeSet::new(),
-            eph: ephemeral::Lane::default(),
+            memory: memory::Memory::default(),
             relay_gate: osis_proto::RelayGate::default(),
             receipts: BTreeMap::new(),
             hosting: host::Hosting::default(),
@@ -586,6 +586,8 @@ impl SyncEngine {
         self.untie_unplaced()?;
         // the step's deaths recomputes before its passes: they mark the bodies whose deaths moved
         self.engine.settle_deaths()?;
+        // memory snapshots written here are changes the passes place (`memory_step` first)
+        self.memory_step(out)?;
         self.engine_events()?;
         self.retire_replaced();
         if std::mem::take(&mut self.holders_moved) {
@@ -602,7 +604,6 @@ impl SyncEngine {
         self.connect(out);
         self.send_inbox()?;
         self.send_outbox(out)?;
-        self.eph_step(out)?;
         self.run_dirty(out)?;
         self.notify_served(out)?;
         Ok(())
@@ -803,19 +804,19 @@ mod tests {
             let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
             let key = s.conns[&conn].host;
             let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
-            s.eph.reconciling.insert((conn, l), BTreeSet::new());
+            s.memory.reconciling.insert((conn, l));
             s.reconciled(conn, l, vec![b], Vec::new(), &mut Vec::new()).unwrap();
-            assert!(s.fetching(&b) && s.eph.reconciled.contains(&(key, l)));
+            assert!(s.fetching(&b) && s.memory.reconciled.contains(&(key, l)));
             match case {
                 "answered" => s.session_event(conn, ClientEvent::Fetched { label: l, items: vec![osis_proto::msg::Fetched { blob_id: b, entry: None }] }, &mut Vec::new()).unwrap(),
                 "refused" => s.session_event(conn, ClientEvent::Refused { label: Some(l), kind: osis_proto::Request::Fetch, code: osis_proto::Code::RATE_LIMITED, fetch: vec![b] }, &mut Vec::new()).unwrap(),
                 _ => {}
             }
-            let left = s.eph.reconcile_fetches.contains_key(&(conn, l));
+            let left = s.memory.reconcile_fetches.contains_key(&(conn, l));
             if case != "refused" {
                 s.handle(Event::Down { conn });
             }
-            assert_eq!(s.eph.reconciled.contains(&(key, l)), case == "answered", "{case}");
+            assert_eq!(s.memory.reconciled.contains(&(key, l)), case == "answered", "{case}");
             assert!(case == "down" || !left, "{case}: answered or refused fetches are not tracked");
         }
     }

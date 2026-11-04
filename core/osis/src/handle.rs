@@ -589,7 +589,7 @@ impl Osis {
     /// sync engine; then status, link upkeep and waiters.
     fn after(&self, l: &mut Locked, handled: bool) {
         // ephemeral writes on things in a labeled closure go out as ephemeral commits
-        let any = self.drain(l) || l.sync.engine().has_unsent();
+        let any = self.drain(l) || l.sync.engine().has_memory_changes();
         if any && !handled {
             let acts = l.sync.handle(SyncEvent::Local);
             self.inner.apply(acts);

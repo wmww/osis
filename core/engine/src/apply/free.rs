@@ -18,8 +18,10 @@ use std::collections::BTreeSet;
 const ASPECT_RECORDS: [&[u8]; 5] = [records::ASPECTS, records::RECEIPT, records::VALUELESS, records::PURGES, records::DEATHS_DUE];
 
 /// Frees the memory things among `things` and those freed before but still in use (`freeing`):
-/// a thing stays (in `freeing`) while a commit on it touches a thing not freed or it owns a held
-/// thing not freed; the others go with their records, aspects and every commit on them.
+/// a thing stays (in `freeing`) while it owns a held thing not freed; the others go with their
+/// records and aspects, every commit on them alone (`unindex_commit`), and their parts of
+/// commits that also touch things not freed (`drop_part`: the commit stays for those, forgotten
+/// once nothing of it is held).
 pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
     let mut freed: BTreeSet<Tid> = things.iter().filter(|t| tx.core.ix.held.is_memory(t)).copied().collect();
     if freed.is_empty() {
@@ -35,16 +37,13 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
             tx.core.ix.freeing.remove(&t);
         }
     }
-    // what stays, to a fixpoint: a thing a commit is on that also touches a thing not freed (or
-    // a durable commit, defensively), and the owner of a held thing not freed (its chain)
+    // what stays, to a fixpoint: a thing a durable commit is on (defensively: a durable commit
+    // persists its things) and the owner of a held thing not freed (its chain)
     loop {
         let core = &*tx.core;
         let stays: Vec<Tid> = freed
             .iter()
-            .filter(|t| {
-                core.ix.held.owned(t).any(|x| !freed.contains(x))
-                    || core.on_thing(t).any(|c| core.ix.commits.get(&c).is_some_and(|m| !m.view.memory || m.view.aspects.iter().any(|a| !freed.contains(&a.tid))))
-            })
+            .filter(|t| core.ix.held.owned(t).any(|x| !freed.contains(x)) || core.on_thing(t).any(|c| core.ix.commits.get(&c).is_some_and(|m| !m.view.memory)))
             .copied()
             .collect();
         if stays.is_empty() {
@@ -67,16 +66,22 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
     }
     let cands: BTreeSet<CommitId> = freed.iter().flat_map(|t| tx.core.on_thing(t)).collect();
     for c in cands {
-        unindex_commit(tx, &c)?;
+        let whole = tx.core.ix.commits.get(&c).is_some_and(|m| m.view.aspects.iter().all(|a| freed.contains(&a.tid)));
+        if whole {
+            unindex_commit(tx, &c)?;
+        } else {
+            drop_freed_parts(tx, &c, &freed)?;
+        }
     }
     for t in &freed {
         tx.core.ix.freeing.remove(t);
         tx.core.ix.held.free(t);
         tx.core.memory.things.remove(t);
-        tx.core.memory.kept.remove(t);
+        tx.core.memory.synced.remove(t);
         tx.core.memory.dirty.retain(|(x, _)| x != t);
         tx.core.memory.weighed.retain(|(x, _), _| x != t);
         tx.core.ix.placed.remove(t);
+        tx.core.placed_gen += 1;
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::No)?;
         let residues = tx.txn.memory_local_keys(&[records::RESIDUE, t.as_bytes()].concat());
         let aks = tx.txn.drop_memory_thing(t, |ak| ASPECT_RECORDS.iter().map(|p| records::aspect_key(p, t, ak)).collect())?;
@@ -104,6 +109,38 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
     Ok(())
 }
 
+/// Drops the parts of memory commit `c` on `freed` things (a batch's commit that also touches
+/// things that stay: spec/sync.md §9) and the index entries those aspects added (the mirror of
+/// `index_commit` for them); the commit is forgotten once nothing of it is held.
+fn drop_freed_parts(tx: &mut Tx<'_>, c: &CommitId, freed: &BTreeSet<Tid>) -> Result<()> {
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
+    for (ai, a) in m.view.aspects.iter().enumerate() {
+        if !freed.contains(&a.tid) {
+            continue;
+        }
+        if m.holds(ai) {
+            crate::retention::drop_part(tx, c, ai)?;
+        }
+        let core = &mut *tx.core;
+        let k = (a.tid, a.ak.clone());
+        core.ix.by_aspect.remove(&k, &(m.view.ts, *c));
+        core.ix.invalid.remove(&k, c);
+        core.ix.by_thing.remove(&(a.tid, m.view.author), c);
+        core.ix.dropped_snapshots.remove(&k, c);
+        if m.view.form.counted() && m.view.kind.has_own_writes() && a.lo < a.hi {
+            core.ix.ranges.remove(&(a.tid, a.ak.clone(), m.view.form.own_source(m.view.author, *c)), &a.lo);
+        }
+        super::atomic::forget_snapshot(core, &a.tid, &a.ak, c);
+    }
+    // the dropped parts' retention timers (memory rows): one left due for good would wake the
+    // node at every step
+    let timers: Vec<Vec<u8>> = tx.txn.memory_local_keys(records::TIMER).into_iter().filter(|k| records::parse_timer(k.get(records::TIMER.len()..).unwrap_or_default()).is_ok_and(|(_, id, ai)| id == *c && m.view.aspects.get(ai).is_some_and(|a| freed.contains(&a.tid)))).collect();
+    for k in timers {
+        tx.txn.remove_local(&k, Shred::No)?;
+    }
+    crate::retention::memory::forget_if_spent(tx, c)
+}
+
 /// Removes commit `id` from every index applying it added to and its records from the store:
 /// the mirror of `index_commit` and the rest of `apply_verified` for a memory commit.
 pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
@@ -117,9 +154,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
             let by: BTreeSet<CommitId> = m.dropped.values().filter(|d| d.why == crate::engine::DropFor::Cover).flat_map(|d| d.covered_by.iter().copied()).collect();
             if by.is_empty() { crate::engine::MemoryDrop::Gone } else { crate::engine::MemoryDrop::Covered { by } }
         });
-        core.memory.dropped.push((*id, why));
-        core.memory.unsent.retain(|c| c != id);
-        core.memory.parked.remove(id);
+        core.memory.dropped.push((*id, m.header.arc(), why));
         core.memory.dirty.extend(v.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         core.memory.unused.extend(v.aspects.iter().map(|a| a.tid));
     }
@@ -159,6 +194,7 @@ fn unindex_aspect(core: &mut Core, tid: &Tid, ak: &Ak) {
     let k = (*tid, ak.clone());
     if ak.as_str() == "placed.0~" {
         core.ix.placed.remove(tid);
+        core.placed_gen += 1;
     }
     core.ix.snapshots.remove(&k);
     core.ix.carried.remove(&k);

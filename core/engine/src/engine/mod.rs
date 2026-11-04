@@ -556,8 +556,18 @@ indexes! {
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author).
 pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
 
-/// Why a memory commit was forgotten (`MemorySync::dropped`): what the ephemeral lane does with
-/// its entries at hosts (notes/ephemeral.md Deletes).
+impl MemoryDrop {
+    /// The commits whose entries carry the dropped one's writes, if any.
+    pub fn by(&self) -> Vec<CommitId> {
+        match self {
+            MemoryDrop::Covered { by } | MemoryDrop::Superseded { by } => by.iter().copied().collect(),
+            MemoryDrop::Gone => Vec::new(),
+        }
+    }
+}
+
+/// Why a memory commit was forgotten (`MemorySync::dropped`): what node-sync does with its
+/// entries at hosts (notes/ephemeral.md Deletes).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MemoryDrop {
     /// Every held body covered by held valid memory snapshots (spec/commits.md §5): a writer
@@ -587,28 +597,13 @@ pub struct MemoryThing {
 /// aborts (`commit`, `rollback`); a reader checks a listed commit is still held before acting.
 #[derive(Default)]
 pub struct MemorySync {
-    /// Own memory commits applied and not yet taken by the lane (`Engine::take_memory_commits`),
-    /// in apply order.
-    pub unsent: Vec<CommitId>,
-    /// Own memory commits taken while none of their things was in a labeled closure: they go
-    /// once one is (spec/sync.md §9). Not `unsent`, so a local-only write leaves nothing to do.
-    pub parked: BTreeSet<CommitId>,
-    /// Counts what can bring a thing into a closure (a group's items, a placement, a group
-    /// synced, a `kept` row): `parked` is walked only when it moved (`walked`, the count at the
-    /// last walk), so a local-only write costs no walk. Bumped when a transaction that later
-    /// aborts changed them too: one walk too many.
-    pub closures: u64,
-    pub walked: u64,
-    /// Per thing, the groups under whose label a commit on it was kept here: it stays in their
-    /// ephemeral closures (`Engine::in_ephemeral_closure`, spec/sync.md §9), whatever lists it
-    /// since. A row goes when the thing is freed, a durable thing's when no memory commit is
-    /// left on it (`Engine::free_unused_memory`), so rows live only beside held parts or own
-    /// ephemeral things.
-    pub kept: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Memory commits forgotten since the last take, with why (`Engine::take_memory_drops`).
-    pub dropped: Vec<(CommitId, MemoryDrop)>,
-    /// Memory commits applied since the last take, any origin (`Engine::take_memory_applied`).
-    pub applied: Vec<CommitId>,
+    /// Memory things a commit on which node-sync kept as a label entry here (made or received,
+    /// `Engine::note_memory_synced`): a holder may have their writes, so a delete of one is
+    /// resets and tombstones, never a free at once (`freeable`). Rows go with the thing.
+    pub synced: BTreeSet<Tid>,
+    /// Memory commits forgotten since the last take, with their header (node-sync deletes
+    /// their entries at hosts by it) and why (`Engine::take_memory_drops`).
+    pub dropped: Vec<(CommitId, Arc<osis_commit::Header>, MemoryDrop)>,
     /// Memory aspects a held memory snapshot turned invalid on since the last take
     /// (`Engine::take_memory_invalidated`).
     pub invalidated: BTreeSet<(Tid, Ak)>,
@@ -624,19 +619,17 @@ pub struct MemorySync {
     /// Things of memory commits forgotten since the last sweep: a received one no commit is on
     /// any more is freed (`Engine::free_unused_memory`), so records do not pile up.
     pub unused: BTreeSet<Tid>,
-    marks: (usize, usize, usize),
+    marks: usize,
 }
 
 impl MemorySync {
     fn commit(&mut self) {
-        self.marks = (self.unsent.len(), self.dropped.len(), self.applied.len());
+        self.marks = self.dropped.len();
         self.reasons.clear();
     }
 
     fn rollback(&mut self) {
-        self.unsent.truncate(self.marks.0);
-        self.dropped.truncate(self.marks.1);
-        self.applied.truncate(self.marks.2);
+        self.dropped.truncate(self.marks);
         self.reasons.clear();
     }
 }
@@ -647,6 +640,10 @@ pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);
 /// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
 /// journaled (`journal`): a failed transaction undoes its own changes to them.
 #[doc(hidden)]
+/// A cached full closure (`Core::full_closures`): the durable closure it was built from, the
+/// `placed_gen` then, and the closure through `placed.0~` too.
+pub(crate) type FullClosure = (Arc<BTreeSet<Tid>>, u64, Arc<BTreeSet<Tid>>);
+
 pub struct Core {
     /// The journaled indexes: a failed transaction undoes its own changes to them.
     pub ix: Indexes,
@@ -800,6 +797,11 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
+    /// Steps at every change of `Indexes::placed` (`Engine::closure` caches by it).
+    pub placed_gen: u64,
+    /// `Engine::closure` per group: the durable closure it was built from, the `placed_gen` it
+    /// was built at, and the closure through `placed.0~` too.
+    pub(crate) full_closures: std::cell::RefCell<HashMap<Tid, FullClosure>>,
     /// Debug builds: the cache hits compared with a fresh read at this point of the store
     /// (`Engine::recheck`).
     #[cfg(debug_assertions)]
@@ -881,6 +883,11 @@ impl Core {
     /// The held durable commits with a delta on `k` (`by_aspect` without memory commits).
     pub fn durable_on<'a>(&'a self, k: &(Tid, Ak)) -> impl Iterator<Item = CommitId> + 'a {
         self.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1).filter(|c| !self.ix.commits.get(c).is_some_and(|m| m.view.memory))
+    }
+
+    /// The held commits of either class with a delta on `k`.
+    pub fn held_on<'a>(&'a self, k: &(Tid, Ak)) -> impl Iterator<Item = CommitId> + 'a {
+        self.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1)
     }
 
     /// The held aspects of `t` and their commits (a range of `by_aspect`).
@@ -1021,11 +1028,9 @@ impl Core {
         });
     }
 
-    /// Marks commit `c` changed for node-sync (`changed`); never a memory commit.
+    /// Marks commit `c` changed for node-sync (`changed`): its labels' passes judge it again
+    /// (a memory commit's too: its bodies travel the same path, spec/sync.md §9).
     pub fn mark_changed(&mut self, c: CommitId) {
-        if self.memory_tx || self.ix.commits.get(&c).is_some_and(|m| m.view.memory) {
-            return;
-        }
         if let Some(s) = &mut self.changed {
             s.commits.insert(c);
         }
@@ -1234,6 +1239,8 @@ impl Core {
             generation: 0,
             memory_generation: 0,
             memory_tx: false,
+            placed_gen: 0,
+            full_closures: Default::default(),
             #[cfg(debug_assertions)]
             rechecked: Default::default(),
             labels: BTreeMap::new(),
@@ -1673,7 +1680,7 @@ impl Tx<'_> {
                 Some(d) => self.core.ix.placed.insert(*tid, d),
                 None => self.core.ix.placed.remove(tid),
             };
-            self.core.memory.closures += 1;
+            self.core.placed_gen += 1;
         }
     }
 

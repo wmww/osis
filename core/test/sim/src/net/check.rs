@@ -414,6 +414,13 @@ fn labels(sim: &mut NetSim) -> Res<()> {
                             // the node's entries of that commit, and what the host says of them
                             let ents: Vec<(BlobId, osis_node::sync::EntryKind)> = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.entries(&l)).unwrap_or_default().into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c)).collect();
                             let st = sim.hub(s).map(|h| h.store());
+                            // an ephemeral body the host's cap keeps out, by its own accounting:
+                            // the defined outcome past a cap (spec/sync.md §5, §9), not a lack
+                            let sizes = sim.nodes.get(n).and_then(|x| x.sync.as_ref()).map(|x| x.ephemeral_held_entries(&l)).unwrap_or_default();
+                            if ents.iter().any(|(b, _)| sizes.iter().any(|(sb, size)| sb == b && st.is_some_and(|x| !x.ephemeral_fits(&l, *size as u64)))) {
+                                sim.note(format!("host {s}: label {l:?} keeps out body {c:?} of node {n} for its ephemeral cap"));
+                                continue;
+                            }
                             let at: Vec<String> = ents.iter().map(|(b, k)| format!("{b:?} {k:?} live {} tombstoned {}", live.contains(b), st.and_then(|x| x.tombstoned(&l, b).ok()).unwrap_or(false))).collect();
                             return Err(sim.fail(format!("host {s}: label {l:?} lacks body {c:?} {parts:?} that writer node {n} judges must-hold; its entries {at:?}")));
                         }

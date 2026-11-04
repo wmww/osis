@@ -239,7 +239,7 @@ impl SyncEngine {
         self.local_dirty = true;
         let mut groups: BTreeSet<Tid> = things.clone();
         for t in things {
-            groups.extend(self.engine.core.ix.groups.of.get(t).into_iter().flatten().copied());
+            groups.extend(self.engine.groups_of(t));
         }
         #[cfg(debug_assertions)]
         for l in self.conns.values().flat_map(|c| c.labels.values()) {

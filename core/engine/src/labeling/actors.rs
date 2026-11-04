@@ -84,10 +84,40 @@ impl Engine {
         self.core.may_read(x, t)
     }
 
-    /// The things of a group's closure: the group and every thing whose `groups.0` holds it.
-    /// The same `Arc` while it does not change (`Groups::closures`).
+    /// The things of a group's closure (spec/sync.md §3): the group and every thing it contains
+    /// through `group.0` and `placed.0~`, transitively through subgroups of either kind. The
+    /// same `Arc` while it does not change (`Groups::closures` for the durable part; the rest
+    /// cached by `Core::placed_gen`), so node-sync reuses what it derived from it.
     pub fn closure(&self, g: &Tid) -> std::sync::Arc<BTreeSet<Tid>> {
-        self.core.ix.groups.closure(g)
+        let durable = self.core.ix.groups.closure(g);
+        if self.core.ix.placed.is_empty() {
+            return durable;
+        }
+        let at = self.core.placed_gen;
+        if let Some((d, n, full)) = self.core.full_closures.borrow().get(g)
+            && std::sync::Arc::ptr_eq(d, &durable)
+            && *n == at
+        {
+            return full.clone();
+        }
+        let mut out: BTreeSet<Tid> = (*durable).clone();
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![*g];
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            for d in [self.core.ix.groups.defs.get(&x), self.core.ix.placed.get(&x)].into_iter().flatten() {
+                out.extend(d.0.iter().copied());
+                stack.extend(d.1.iter().copied());
+            }
+        }
+        if out.len() == durable.len() {
+            return durable;
+        }
+        let full = std::sync::Arc::new(out);
+        self.core.full_closures.borrow_mut().insert(*g, (durable, at, full.clone()));
+        full
     }
 
     /// Things with a `label.0` held.

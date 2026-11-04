@@ -1299,11 +1299,12 @@ fn eph_map_commits(net: &mut crate::net::Net, x: usize, t: Tid, commits: usize, 
     blobs
 }
 
-/// Node `x`'s own memory commits not yet taken by its lane, as blobs (taken here instead).
+/// Node `x`'s own memory commits not placed by its sync engine yet, as blobs (each once).
 fn take_memory(net: &mut crate::net::Net, x: usize) -> Vec<osis_commit::CommitBlob> {
+    thread_local! { static TAKEN: std::cell::RefCell<std::collections::BTreeSet<osis_base::CommitId>> = Default::default(); }
+    let ids = net.sync(x).unplaced_memory_commits();
     let e = net.engine(x);
-    let ids = e.take_memory_commits(&std::collections::BTreeSet::new()).unwrap();
-    ids.into_iter().filter_map(|c| e.memory_blob(&c).unwrap()).collect()
+    ids.into_iter().filter(|c| TAKEN.with(|t| t.borrow_mut().insert(*c))).filter_map(|c| e.memory_blob(&c).unwrap()).collect()
 }
 
 // issues/eph-node-cost-bounds.md (memory), spec/sync.md §9 (caps): RSS a holder gains per

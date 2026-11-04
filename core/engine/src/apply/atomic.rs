@@ -734,12 +734,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         crate::rotation::arm_untils(tx, rosters.iter().copied())?;
     }
     // a memory commit is ephemeral state to watchers (a local one's batch queues its own event,
-    // `Engine::write`) and to the ephemeral lane (`MemorySync`), nothing to the durable sync path
+    // `Engine::write`); node-sync carries its bodies as any commit's (`mark_changed`)
     if h.ephemeral.is_some() {
-        tx.core.memory.applied.push(id);
-        if origin == Origin::Local && h.author == tx.core.id.tid() {
-            tx.core.memory.unsent.push(id);
-        }
         tx.core.memory.dirty.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         if origin != Origin::Local {
             tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals: Vec::new() });
@@ -1211,9 +1207,6 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             let def = group_def(v);
             // any change, not only what moved: a subgroup edge moves no durable closure when the
             // subgroup holds only ephemeral placements, yet brings those in (`groups_of`)
-            if tx.core.ix.groups.defs.get(tid) != def.as_ref() {
-                tx.core.memory.closures += 1;
-            }
             for t in tx.core.ix.groups.set(*tid, def) {
                 tx.core.waits.wake_thing(&t);
             }

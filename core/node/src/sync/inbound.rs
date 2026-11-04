@@ -36,6 +36,17 @@ impl Opened {
 }
 
 /// Rounds of "new secrets opened more entries" per batch.
+/// A commit blob an entry opened to (`open_one`), to ingest: a label entry's with its blob and
+/// size (a memory commit is ingested within its label's room), or an inbox blob's.
+pub(crate) struct ToIngest {
+    pub label: LabelId,
+    pub blob: BlobId,
+    /// Its encoded bytes.
+    pub size: usize,
+    pub plaintext: Vec<u8>,
+    pub commit: osis_commit::CommitBlob,
+}
+
 const MAX_ROUNDS: usize = 16;
 
 /// The chain commits an inbox payload carries (spec/wire.md §9) that decode as commit blobs, each
@@ -121,11 +132,12 @@ impl SyncEngine {
     /// `log_events`, of entries a session this node serves (`served`) uploaded.
     pub(crate) fn log_events_from(&mut self, conn: Option<ConnId>, served: Option<ConnId>, l: LabelId, events: Vec<LogEvent>, cursor: Option<Cursor>, out: &mut Vec<super::Action>) -> Result<()> {
         let from = match served {
-            Some(c) => super::ephemeral::RelayFrom::Served(c),
-            None => super::ephemeral::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).map(|c| c.host)),
+            Some(c) => super::memory::RelayFrom::Served(c),
+            None => super::memory::RelayFrom::Host(conn.and_then(|c| self.conns.get(&c)).map(|c| c.host)),
         };
         let host: Option<HostKey> = conn.and_then(|c| self.conns.get(&c)).map(|c| c.host);
         let mut blobs = Vec::new();
+        let mut memory_blobs = Vec::new();
         let mut touched = Vec::new();
         let mut fetch: Vec<BlobId> = Vec::new();
         let mut announced = false;
@@ -152,32 +164,55 @@ impl SyncEngine {
         // deleted blobs that are no commit blob: chunks a live value may still link
         let mut lost = BTreeSet::new();
         for ev in events {
-            // an ephemeral or relay-only entry is held in memory only (`ephemeral`)
-            let ev = match ev {
-                LogEvent::Added { blob_id, blob: Some(blob), wrap, stamp } if osis_label::Prefix::parse(&blob).is_ok_and(|p| p.class() != osis_label::Class::Durable) => {
-                    let class = osis_label::Prefix::parse(&blob).map(|p| p.class()).unwrap_or_default();
+            // an entry this node deleted or saw deleted, announced again within its tombstone
+            // (a host an upload reached late, a stale push crossing the deletion, a peer echoing
+            // an announcement): not fetched or served on, as a host's tombstone keeps the
+            // identical blob out (spec/sync.md §5); a memory entry whose body is known is
+            // recorded as present there quietly, so the pass deletes it there too
+            if let LogEvent::Added { blob_id, wrap, .. } = &ev
+                && self.state.tombs.contains_key(&(l, *blob_id))
+            {
+                if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
+                    c.req.fetching.remove(blob_id);
+                }
+                if let (Some(s), Some(kind)) = (host, self.state.tomb_kinds.get(&(l, *blob_id)).cloned()) {
+                    if !self.state.entries.get(&(l, *blob_id)).is_some_and(|e| matches!(e.kind, Kind::Commit { .. })) {
+                        self.state.set_entry_quiet(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, kind, memory: true });
+                    }
+                    self.state.set_present(s, l, *blob_id, true);
+                    touched.push(*blob_id);
+                }
+                continue;
+            }
+            // a blob's prefix class routes it (spec/sync.md §9): a relay-only one is delivered
+            // and passed on, held by nobody; an ephemeral one is a memory entry, recorded in
+            // memory only, whatever an announcement without its bytes made the sync records hold
+            let mut memory = false;
+            if let LogEvent::Added { blob_id, blob: Some(blob), wrap, stamp } = &ev
+                && let Ok(class) = osis_label::Prefix::parse(blob).map(|p| p.class())
+                && class != osis_label::Class::Durable
+            {
+                if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
+                    c.req.missing.remove(blob_id);
+                    c.req.fetching.remove(blob_id);
+                }
+                if class == osis_label::Class::Relay {
                     let head = conn.and_then(|c| self.lc(c, &l)).and_then(|x| x.head.as_ref()).map(|h| h.keys.write);
                     // a stamp counts if it verifies under the head's write key (a served peer's
                     // upload was checked by the host engine)
-                    let stamp = stamp.filter(|s| head.as_ref().map_or(conn.is_none(), |w| osis_label::verify_stamp(w, &l, &blob_id, &wrap, s).is_ok()));
-                    if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
-                        c.req.missing.remove(&blob_id);
-                        c.req.fetching.remove(&blob_id);
-                    }
-                    self.eph_added(from, l, blob_id, blob, wrap, stamp, class, out)?;
+                    let stamp = stamp.filter(|s| head.as_ref().map_or(conn.is_none(), |w| osis_label::verify_stamp(w, &l, blob_id, wrap, s).is_ok()));
+                    self.relay_in(from, l, *blob_id, blob.clone(), *wrap, stamp, out)?;
                     continue;
                 }
-                // one that never fits here is not fetched again (`Unfit`)
-                LogEvent::Added { blob_id, blob: None, .. } if self.eph.unfit.contains(l, blob_id) => continue,
-                LogEvent::Added { blob_id, blob: None, .. } if self.eph.entries.contains_key(&(l, blob_id)) => {
-                    if let Some(s) = host {
-                        self.eph.present.insert((s, l, blob_id));
-                    }
-                    continue;
+                memory = true;
+                if self.state.entries.get(&(l, *blob_id)).is_some_and(|e| !e.memory) {
+                    self.state.forget_class(l, *blob_id);
                 }
-                LogEvent::Deleted(b) if self.eph_deleted(host, l, b) => continue,
-                ev => ev,
-            };
+                if !self.state.entries.contains_key(&(l, *blob_id)) {
+                    // recorded before its presence (`State::put_of` goes by the record's class)
+                    self.state.set_entry(l, *blob_id, Entry { wrap: *wrap, stamp: None, cert: false, kind: Kind::Unknown, memory: true });
+                }
+            }
             match ev {
                 LogEvent::Added { blob_id, blob, wrap, stamp } => {
                     let signed_by = |w: &VerifyingKey| stamp.is_some_and(|st| osis_label::verify_stamp(w, &l, &blob_id, &wrap, &st).is_ok());
@@ -209,7 +244,7 @@ impl SyncEngine {
                                 let fresh = blob.is_some() && !self.engine.has_blob(&blob_id);
                                 unvouched.push((blob_id, fresh));
                             }
-                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown })
+                            self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown, memory: false })
                         }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
                             if self.take_wrap(conn, host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
@@ -223,6 +258,15 @@ impl SyncEngine {
                         Some(_) => {}
                     }
                     match blob {
+                        Some(b) if memory => {
+                            self.fetched(&blob_id);
+                            // a host's unstamped junk in the ephemeral class is judged as its
+                            // durable junk is (`drop_unvouched`: opened under nothing, its bytes go)
+                            if host.is_some() && !vouched && stamp.is_none() && !self.engine.has_blob(&blob_id) {
+                                unvouched.push((blob_id, true));
+                            }
+                            memory_blobs.push((blob_id, b));
+                        }
                         Some(b) => {
                             self.fetched(&blob_id);
                             // listed before its bytes: judged as they come (`drop_unvouched`)
@@ -231,8 +275,9 @@ impl SyncEngine {
                             }
                             blobs.push((blob_id, b));
                         }
-                        // nothing to open: only the entry changed
-                        None if !self.engine.has_blob(&blob_id) => {
+                        // nothing to open: only the entry changed (one refused for the node's
+                        // ephemeral cap waits for room, `memory_skips`)
+                        None if !self.engine.has_blob(&blob_id) && !self.memory_skips(&l, &blob_id) => {
                             fetch.push(blob_id);
                             announced = true;
                             continue;
@@ -242,6 +287,7 @@ impl SyncEngine {
                     touched.push(blob_id);
                 }
                 LogEvent::Deleted(b) => {
+                    self.memory_entry_gone(l, b);
                     // gone from every host of the label: a chunk an own commit may link
                     let chunk = !self.state.blobs.contains_key(&b);
                     if self.absent_at(host, l, b)? && chunk {
@@ -283,6 +329,7 @@ impl SyncEngine {
         // bodies waiting for a linked blob upload it now it is here (`Left::links`)
         self.touched.blobs.extend(blobs.iter().map(|(b, _)| *b));
         self.engine.put_blobs(blobs)?;
+        self.engine.put_memory_blobs(memory_blobs)?;
         self.open_entries(conn, l, &touched)?;
         if let Some(s) = host {
             self.drop_unvouched(conn, s, l, &unvouched)?;
@@ -480,16 +527,19 @@ impl SyncEngine {
         let mut on = conn;
         for _ in 0..MAX_ROUNDS {
             let before = self.secrets_count();
-            let mut commits: Vec<(Vec<u8>, osis_commit::CommitBlob)> = Vec::new();
+            let mut commits: Vec<ToIngest> = Vec::new();
             for (l, b) in std::mem::take(&mut todo) {
                 self.open_one(on, l, b, &mut commits)?;
             }
             // the retries are of every label's entries: each under its own group
             on = None;
-            commits.sort_by_key(|(_, c)| (!c.header.kind.is_role(), c.header.ts));
-            for (pt, c) in commits {
-                if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
-                    self.diag(format!("ingest {:?}: {e}", c.id()));
+            commits.sort_by_key(|o| (!o.commit.header.kind.is_role(), o.commit.header.ts));
+            for o in commits {
+                // a memory commit applies within the room the label's cap leaves (spec/sync.md §9)
+                if o.commit.header.ephemeral.is_some() {
+                    self.ingest_memory_entry(o.label, o.blob, o.size, &o.plaintext, &o.commit)?;
+                } else if let Err(e) = self.engine.ingest(&o.plaintext, Vec::new()) {
+                    self.diag(format!("ingest {:?}: {e}", o.commit.id()));
                 }
             }
             if self.secrets_count() == before {
@@ -659,7 +709,7 @@ impl SyncEngine {
         }
     }
 
-    fn open_one(&mut self, conn: Option<ConnId>, l: LabelId, b: BlobId, commits: &mut Vec<(Vec<u8>, osis_commit::CommitBlob)>) -> Result<()> {
+    fn open_one(&mut self, conn: Option<ConnId>, l: LabelId, b: BlobId, commits: &mut Vec<ToIngest>) -> Result<()> {
         let Some(mut e) = self.state.entries.get(&(l, b)).cloned() else { return Ok(()) };
         if e.kind != Kind::Unknown {
             return Ok(());
@@ -678,12 +728,13 @@ impl SyncEngine {
                     let parts: Vec<(usize, usize)> = c.parts.iter().map(|p| (p.ai, p.di)).collect();
                     let commit = c.id();
                     if !self.state.blobs.contains_key(&b) {
-                        self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), key, cert: e.cert });
+                        self.state.add_blob(b, BlobRec { commit, parts: parts.clone(), key, cert: e.cert, memory: e.memory });
                     }
                     let salt = osis_label::Prefix::parse(&bytes).map(|p| *p.salt()).unwrap_or_default();
                     e.kind = Kind::Commit { commit, parts, salt };
                     self.state.set_entry(l, b, e);
-                    commits.push((pt, c));
+                    self.state.note_memory_size(l, b, bytes.len());
+                    commits.push(ToIngest { label: l, blob: b, size: bytes.len(), plaintext: pt, commit: c });
                 }
                 Err(err) => {
                     // a commit this build cannot interpret is parked, anything else is bad
@@ -723,8 +774,8 @@ impl SyncEngine {
             e.kind = Kind::Inbox(Some(id));
             // the author's chain first (spec/wire.md §9): the commit applies with no label of the
             // thing read
-            commits.extend(chain_commits(chain));
-            commits.push((pt, c));
+            commits.extend(chain_commits(chain).into_iter().map(|(plaintext, commit)| ToIngest { label: l, blob: b, size: 0, plaintext, commit }));
+            commits.push(ToIngest { label: l, blob: b, size: 0, plaintext: pt, commit: c });
             // the pass of the inbox's label stamps it, the home label's of the actor it is sealed
             // to or one above it places its copy (`inbox_certificates`); applying starts them only
             // if the commit is new here, and a sender's own deposit under its own inbox is not
@@ -1164,7 +1215,9 @@ impl SyncEngine {
         if let Some(s) = host {
             self.state.set_present(s, l, b, false);
         }
-        if self.state.present_anywhere(&l, &b) {
+        // an upload of it unanswered elsewhere: the entry is kept until that host answers, so a
+        // body forgotten meanwhile is deleted there too (`entry_status`, `memory_lost`)
+        if self.state.present_anywhere(&l, &b) || self.upload_in_flight(&l, &b) {
             return Ok(false);
         }
         self.state.remove_entry(l, b);
@@ -1349,27 +1402,7 @@ impl SyncEngine {
         let Some((host, trimmed)) = self.conns.get_mut(&conn).map(|c| (c.host, c.req.trimmed.remove(&l))) else { return Ok(()) };
         // a reconciliation after a start keeps the cursor: the Sync from it that follows settles
         // the durable entries (Deleted records, or code 10 or 15 and a reconciliation again)
-        let lane = self.eph.reconciling.contains_key(&(conn, l));
-        // held ephemeral entries the reconciled set listed: the peer lacks those in `have` (they
-        // go up), holds the rest; one kept since and not seen there (from another host) goes up
-        // too
-        if let Some(listed) = self.eph.reconciling.get(&(conn, l)) {
-            let lacks: BTreeSet<BlobId> = have.iter().copied().collect();
-            let held: Vec<BlobId> = SyncEngine::eph_entries_of(&self.eph, &l).map(|(b, _)| b).collect();
-            let mut up = Vec::new();
-            let mut holds = Vec::new();
-            for b in held {
-                if lacks.contains(&b) || !(listed.contains(&b) || self.eph.present.contains(&(host, l, b))) {
-                    up.push(b);
-                } else if listed.contains(&b) {
-                    holds.push(b);
-                }
-            }
-            for b in holds {
-                self.eph.present.insert((host, l, b));
-            }
-            self.eph_upload_on(conn, l, &up, out)?;
-        }
+        let restart = self.memory.reconciling.contains(&(conn, l));
         let mut lost = BTreeSet::new();
         for b in have {
             if trimmed && self.state.is_present(&host, &l, &b) {
@@ -1378,7 +1411,7 @@ impl SyncEngine {
                 if self.absent_at(Some(host), l, b)? && chunk {
                     lost.insert(b);
                 }
-            } else if !lane {
+            } else if !restart {
                 self.state.set_present(host, l, b, false);
             }
         }
@@ -1393,14 +1426,14 @@ impl SyncEngine {
                 c.req.missing.remove(b);
             }
         }
-        let need: Vec<BlobId> = need.into_iter().filter(|b| !self.eph.unfit.contains(l, *b)).collect();
-        if self.eph.reconciling.contains_key(&(conn, l)) {
-            self.eph.reconcile_fetches.insert((conn, l), need.iter().copied().collect());
+        let need: Vec<BlobId> = need.into_iter().filter(|b| !self.memory_skips(&l, b)).collect();
+        if restart {
+            self.memory.reconcile_fetches.insert((conn, l), need.iter().copied().collect());
         }
         self.fetch_on(conn, l, need, out)?;
         // a reconciliation after a start: the cursor stays (`sync_label`)
-        if self.eph.reconciling.remove(&(conn, l)).is_some() {
-            self.eph.reconciled.insert((host, l));
+        if self.memory.reconciling.remove(&(conn, l)) {
+            self.memory.reconciled.insert((host, l));
             return self.sync_label(conn, l, out);
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
@@ -1409,21 +1442,50 @@ impl SyncEngine {
         self.command(conn, Command::Sync { label: l, cursor: None, inline_limit: 0, entries: Vec::new(), gained: Vec::new() }, out)
     }
 
+    /// Whether an upload of entry `b` of `l` is unanswered on any connection.
+    pub(crate) fn upload_in_flight(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.conns.values().any(|c| c.req.sent.contains_key(&(*l, *b)) || c.req.replacing.contains_key(&(*l, *b)))
+    }
+
     /// Upload or Sync statuses. Code 9 (signed under a key older than the head's) needs nothing
     /// here: the node uploads only where the label is open, so the new head comes by push or
     /// the next Sync (spec/sync.md §5), and its pass signs again under the new keys.
-    pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>, out: &mut Vec<super::Action>) -> Result<()> {
+    pub(crate) fn entry_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
-        let (ids, codes) = self.eph_status(conn, l, ids, codes, out)?;
-        if ids.is_empty() {
-            return Ok(());
-        }
         let mut grew = false;
         for (b, code) in ids.into_iter().zip(codes) {
+            // an own memory upload taken: the label's own writes held back go (`coalesce_own`)
+            if self.memory.own_uploads.remove(&(conn, l, b)) && code == Code::OK {
+                grew = true;
+            }
+            // a relay-only upload: nothing is held of it
+            if self.relay_status(&b, code) {
+                continue;
+            }
             let replaced = self.conns.get_mut(&conn).and_then(|c| {
                 c.req.sent.remove(&(l, b));
                 c.req.replacing.remove(&(l, b))
             });
+            // a memory entry refused for the host's cap or rate waits its resend time, as if in
+            // flight, before a pass sends it again: room appears by others' expiries and
+            // compactions, not by asking again at once (one refused under an older head, code 9,
+            // goes again as soon as the new head is known, as a durable one); one no host holds
+            // and nothing more is uploading goes (it waited for this answer)
+            if code != Code::OK && self.state.is_memory(&l, &b) {
+                // kept only for this upload: a body forgotten meanwhile, held nowhere
+                let dead = matches!(self.state.entries.get(&(l, b)), Some(Entry { kind: Kind::Commit { commit, .. }, .. }) if !self.engine.holds_memory(commit));
+                if dead && !self.state.present_anywhere(&l, &b) && !self.upload_in_flight(&l, &b) {
+                    self.absent_at(None, l, b)?;
+                } else if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) {
+                    let raw = self.raw_now();
+                    if let Some(c) = self.conns.get_mut(&conn) {
+                        c.req.sent.insert((l, b), (raw, super::UNTAGGED));
+                    }
+                }
+                if code == Code::STORAGE_CAP && !self.capped.contains(&(host, l, b)) {
+                    self.memory_report(&l, "a host's ephemeral cap was reached: an entry stays out there until room appears (sent again later)");
+                }
+            }
             // what it replaced went with it (spec/sync.md §5); else those deletes may go again
             for p in replaced.into_iter().flatten() {
                 if let Some(c) = self.conns.get_mut(&conn) {
@@ -1483,7 +1545,6 @@ impl SyncEngine {
     /// Delete statuses; code 9 as for `entry_status`.
     pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
-        let (ids, codes) = self.eph_delete_status(conn, l, ids, codes);
         for (b, code) in ids.into_iter().zip(codes) {
             // a timed delete is done once the host took it (spec/commits.md §5)
             let timed = self.conns.get_mut(&conn).is_some_and(|c| {

@@ -111,12 +111,13 @@ fn map(kv: &[(&str, &str)]) -> BTreeMap<String, String> {
     kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-/// Node `n`'s own memory commits not yet taken by its lane, with their blobs (what the lane
-/// would place): taken here instead.
+/// Node `n`'s own memory commits not placed by its sync engine yet, with their blobs (what the
+/// passes would place), each returned once.
 fn take_memory(net: &mut Net, n: usize) -> Vec<(osis_base::CommitId, osis_commit::CommitBlob)> {
+    thread_local! { static TAKEN: std::cell::RefCell<BTreeSet<osis_base::CommitId>> = Default::default(); }
+    let ids = net.sync(n).unplaced_memory_commits();
     let e = net.engine(n);
-    let ids = e.take_memory_commits(&BTreeSet::new()).unwrap();
-    ids.into_iter().filter_map(|c| e.memory_blob(&c).unwrap().map(|b| (c, b))).collect()
+    ids.into_iter().filter(|c| TAKEN.with(|t| t.borrow_mut().insert(*c))).filter_map(|c| e.memory_blob(&c).unwrap().map(|b| (c, b))).collect()
 }
 
 /// Node `n` receives memory commit `blob` directly (no room limit).
@@ -220,7 +221,7 @@ fn write_before_placement_goes_after_a_step_spec_sync_9() {
     e.write(m).unwrap();
     local(&mut net, a);
     net.run();
-    assert!(!net.engine(a).has_unsent(), "a local-only write leaves the sync engine nothing to do");
+    assert!(!net.engine(a).has_memory_changes(), "a local-only write leaves the sync engine nothing to do");
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
     net.engine(a).write(m).unwrap();
@@ -229,10 +230,10 @@ fn write_before_placement_goes_after_a_step_spec_sync_9() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("local")));
 }
 
-// spec/sync.md §9 (ephemeral closure): a thing listed nowhere any more stays in the closure of the
-// label a commit on it was kept under, both ways, so its holders read it alike.
+// spec/sync.md §3, §6 (as for a durable thing): a thing listed nowhere any more is in no label's
+// closure, so nothing of it syncs any more and its entries leave the label.
 #[test]
-fn unplaced_thing_keeps_syncing_under_its_label_spec_sync_9() {
+fn unplaced_thing_stops_syncing_spec_sync_3() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -240,8 +241,11 @@ fn unplaced_thing_keeps_syncing_under_its_label_spec_sync_9() {
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
     let w = window(&mut net, a, g, "v");
+    note(&mut net, a, w, "k0", "v0");
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), Some(s("v")));
+    let l = net.label(a);
+    let before = net.sync(a).ephemeral_entries(&l);
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
     net.engine(a).write(m).unwrap();
@@ -249,14 +253,14 @@ fn unplaced_thing_keeps_syncing_under_its_label_spec_sync_9() {
     net.run();
     for n in [a, b] {
         assert!(net.engine(n).groups_of(&w).is_empty());
-        assert_eq!(net.engine(n).ephemeral_kept_on(&w), BTreeSet::from([g]));
     }
+    // the note's entry (on `w` alone) goes; the window's commit stays, placed on `g` too
+    assert!(net.sync(a).ephemeral_entries(&l) < before + 1, "its entries left the label\n{}", net.sync(a).ephemeral_dump(&l));
     note(&mut net, a, w, "k1", "v1");
     note(&mut net, b, w, "k2", "v2");
     net.run();
-    let both = map(&[("k1", "v1"), ("k2", "v2")]);
-    assert_eq!(notes(&mut net, a, w), both);
-    assert_eq!(notes(&mut net, b, w), both);
+    assert_eq!(notes(&mut net, a, w), map(&[("k0", "v0"), ("k1", "v1")]), "nothing of it syncs");
+    assert_eq!(notes(&mut net, b, w), map(&[("k0", "v0"), ("k2", "v2")]));
 }
 
 /// A group of admin `a` (rng `seed`) that may read `x` (a read edge on it) and has `w` placed.
@@ -284,11 +288,10 @@ fn entries_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> BTreeSet<os
     net.sync(n).ephemeral_held_entries(l).into_iter().map(|x| x.0).collect()
 }
 
-// spec/sync.md §3 (entitlement), §9 (ephemeral closure): a thing moved from group A to group B goes
-// on under A's label while A's actor may read it, and not once it may not: nothing new reaches
-// that label, at the writer or the host, and B's goes on.
+// spec/sync.md §3 (closure, retag; as for a durable thing): a thing moved from group A to group
+// B leaves A's label (its entries there are deleted, nothing new reaches it) and goes on under B's.
 #[test]
-fn moved_thing_reaches_old_label_only_while_it_may_read_spec_sync_3() {
+fn moved_thing_leaves_old_label_spec_sync_3() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -305,7 +308,7 @@ fn moved_thing_reaches_old_label_only_while_it_may_read_spec_sync_3() {
     let ga = reading_group(&mut net, a, x, w, &[(c, Role::Read)], host, 2);
     let la = label_of(&mut net, a, ga);
     assert!(!entries_under(&mut net, a, &la).is_empty(), "under A while placed");
-    assert!(net.engine(a).ephemeral_kept_on(&w).contains(&ga));
+    assert_eq!(net.eph_read(c, w, STATE), Some(s("v")));
     // moved from A to B
     let gb = reading_group(&mut net, a, x, w, &[], host, 3);
     let lb = label_of(&mut net, a, gb);
@@ -315,34 +318,20 @@ fn moved_thing_reaches_old_label_only_while_it_may_read_spec_sync_3() {
     local(&mut net, a);
     net.run();
     assert!(!net.engine(a).groups_of(&w).contains(&ga));
-    let (ina, inb) = (entries_under(&mut net, a, &la), entries_under(&mut net, a, &lb));
+    let held: BTreeSet<_> = net.host_ids(host, &la).into_iter().collect();
+    let inb = entries_under(&mut net, a, &lb);
     note(&mut net, a, w, "k1", "v1");
     net.run();
-    assert!(!entries_under(&mut net, a, &la).is_subset(&ina), "goes on under A: it may read");
-    assert!(!entries_under(&mut net, a, &lb).is_subset(&inb), "and under B");
-    // A's actor loses read of the thing
-    let d = osis_node::flows::Demotion { holder: ga, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
-    let done = net.engine(a).demote(&x, &d).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    net.run();
-    net.advance(15_000);
-    assert!(!net.engine(a).may_read(&ga, &x));
-    let held: BTreeSet<_> = net.host_ids(host, &la).into_iter().collect();
-    let (ina, inb) = (entries_under(&mut net, a, &la), entries_under(&mut net, a, &lb));
-    note(&mut net, a, w, "k2", "v2");
-    net.run();
-    assert!(entries_under(&mut net, a, &la).is_subset(&ina), "nothing new under A");
-    assert!(net.host_ids(host, &la).into_iter().all(|b| held.contains(&b)), "nor at the host");
+    assert!(net.host_ids(host, &la).into_iter().all(|b| held.contains(&b)), "nothing new under A at the host");
     assert!(!entries_under(&mut net, a, &lb).is_subset(&inb), "B goes on");
-    assert_eq!(notes(&mut net, c, w).get("k2"), None, "a reader of A alone gets nothing");
+    assert_eq!(notes(&mut net, c, w).get("k1"), None, "a reader of A alone gets nothing");
 }
 
-// spec/sync.md §9 (ephemeral closure, leaves when freed): the kept row goes with the thing: at its
-// maker when freed, at a holder when its commits expire; a durable thing's when none is left on
-// it, so what peers make a node keep is held commits, which the caps count.
+// notes/ephemeral.md Deletion: the mark that a memory thing was a label entry here (what makes
+// its delete resets and tombstones, not a free) goes with the thing: at a holder when its commits
+// expire and the record with them, at the maker with a restart; a deleted maker's thing keeps it.
 #[test]
-fn kept_row_goes_with_the_thing_spec_sync_9() {
+fn synced_mark_goes_with_the_thing_spec_sync_9() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -364,20 +353,17 @@ fn kept_row_goes_with_the_thing_spec_sync_9() {
     net.eph_write_expiring(a, u, &eph(STATE), s("c"), Some(60_000));
     net.run();
     for n in [a, b] {
-        assert_eq!(net.engine(n).ephemeral_kept_on(&w), BTreeSet::from([g]));
-        assert_eq!(net.engine(n).ephemeral_kept_on(&u), BTreeSet::from([g]));
+        assert!(net.engine(n).memory_synced(&w));
+        assert!(!net.engine(n).memory_synced(&u), "a durable thing has no mark");
     }
     for _ in 0..5 {
         net.advance(15_000);
     }
     assert!(net.engine(b).ephemeral_thing(&w).is_none(), "freed at the holder");
-    assert_eq!(net.engine(b).ephemeral_kept_on(&w), BTreeSet::new());
-    for n in [a, b] {
-        assert_eq!(net.engine(n).ephemeral_kept_on(&u), BTreeSet::new(), "no commit left on it");
-    }
-    assert_eq!(net.engine(a).ephemeral_kept_on(&w), BTreeSet::from([g]), "the maker's own thing stays until freed");
+    assert!(!net.engine(b).memory_synced(&w));
+    assert!(net.engine(a).memory_synced(&w), "the maker's own thing stays until freed");
     // deleted, the maker keeps its record and tombstones until restart (a holder may have its
-    // writes, issues/ephemeral-delete-comes-back.md), and the row with them
+    // writes, notes/ephemeral.md Deletion), and the mark with them
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
     m.free(w);
@@ -385,13 +371,12 @@ fn kept_row_goes_with_the_thing_spec_sync_9() {
     local(&mut net, a);
     net.run();
     assert!(net.engine(a).ephemeral_thing(&w).is_some_and(|t| t.deleted), "deleted, kept at the maker");
-    assert_eq!(net.engine(a).ephemeral_kept_on(&w), BTreeSet::from([g]));
+    assert!(net.engine(a).memory_synced(&w));
     net.restart(a, 5);
     assert!(net.engine(a).ephemeral_thing(&w).is_none(), "gone with the restart");
     net.run();
-    // its record may come back beside a held placement commit on `g`; no row or deletion does
+    // its record may come back beside a held placement commit on `g`; no deletion does
     assert!(net.engine(a).ephemeral_thing(&w).is_none_or(|t| !t.deleted));
-    assert_eq!(net.engine(a).ephemeral_kept_on(&w), BTreeSet::new());
 }
 
 // spec/sync.md §9: a commit written in no labeled closure goes once any way brings its thing into
@@ -414,14 +399,8 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     net.run();
     net.eph_write(a, u, &eph(STATE), s("durable placement"));
     net.run();
-    assert!(!net.engine(a).has_unsent());
+    assert!(!net.engine(a).has_memory_changes());
     assert_eq!(net.eph_read(b, u, STATE), None);
-    // a local-only write walks nothing: what is parked is looked at only when a closure may have grown
-    let walked = net.engine(a).core.memory.walked;
-    net.eph_write(a, u, &eph(STATE), s("durable placement"));
-    net.run();
-    assert_eq!(net.engine(a).core.memory.walked, walked, "no walk");
-    assert_eq!(net.engine(a).core.memory.closures, walked, "nothing to walk for");
     let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
     items.items.insert(u);
     let mut m = Mutation::new();
@@ -440,7 +419,7 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     e.write(m).unwrap();
     local(&mut net, a);
     net.run();
-    assert!(net.engine(a).ephemeral_kept_on(&g).contains(&g) && !net.engine(a).ephemeral_synced(&x));
+    assert!(!net.engine(a).ephemeral_synced(&x));
     let mut m = Mutation::new();
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(x)) }).unwrap();
     net.engine(a).write(m).unwrap();
@@ -519,10 +498,10 @@ fn subgroup_edge_brings_parked_writes_spec_sync_9() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("draft")), "parked commit went");
 }
 
-// spec/sync.md §9: what a thing held before it entered a label's closure reaches that label's readers.
+// spec/sync.md §3 (retag), §6: what a thing held before it entered a label's closure reaches that
+// label's readers (a writer holding its bodies places them under the new label).
 #[test]
-#[ignore = "issues/ephemeral-closure-entry-old-state.md"]
-fn second_label_gets_held_state_spec_sync_9() {
+fn second_label_gets_held_state_spec_sync_3() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -543,60 +522,6 @@ fn second_label_gets_held_state_spec_sync_9() {
         net.advance(15_000);
     }
     assert_eq!(net.eph_read(c, w, STATE), Some(s("old")), "the second label's reader gets the state");
-}
-
-// spec/sync.md §9: a node on two labels, restarted, writes before the old label's entries are back:
-// the old label's other holder gets that write too.
-#[test]
-#[ignore = "issues/ephemeral-closure-entry-old-state.md"]
-fn write_before_kept_row_returns_reaches_label_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let y = net.node(1, &[host]);
-    let k = net.node(3, &[host]);
-    let addr = net.hosts[host].address.clone();
-    let x = net.group_seeded(y, &[], vec![addr], 1);
-    net.run();
-    let e = net.engine(y);
-    let mut m = Mutation::new();
-    let w = e.new_thing(&mut m, x);
-    m.set(w, &REG, &s("durable")).unwrap();
-    e.commit(m).unwrap();
-    local(&mut net, y);
-    net.run();
-    // L1: k may write there; w placed, a write held under it by both, then unplaced
-    let g1 = reading_group(&mut net, y, x, w, &[(k, Role::Write)], host, 2);
-    let tk = net.tid(k);
-    let done = net.engine(y).grant(&x, &tk, &crate::common::edge(Role::Write)).unwrap();
-    let acts = net.sync(y).carry_out(done).unwrap();
-    net.actions(y, acts);
-    net.run();
-    note(&mut net, y, w, "first", "1");
-    net.run();
-    assert_eq!(notes(&mut net, k, w), map(&[("first", "1")]));
-    // L2 holds it too; then out of L1
-    let _g2 = reading_group(&mut net, y, x, w, &[], host, 3);
-    let mut items = net.engine(y).get_typed(&g1, &ct::GROUP).unwrap().unwrap();
-    items.items.remove(&w);
-    let mut m = Mutation::new();
-    m.set(g1, &ct::GROUP, &items).unwrap();
-    net.engine(y).commit(m).unwrap();
-    local(&mut net, y);
-    net.run();
-    assert!(!net.engine(y).groups_of(&w).contains(&g1));
-    assert!(net.engine(k).ephemeral_kept_on(&w).contains(&g1));
-    // k off with its copy, the host loses everything, y restarts and comes back through L2 alone
-    net.set_online(k, false);
-    net.restart_host(host);
-    net.restart(y, 77);
-    net.advance(10_000);
-    note(&mut net, y, w, "second", "2");
-    net.run();
-    net.set_online(k, true);
-    for _ in 0..5 {
-        net.advance(15_000);
-    }
-    assert_eq!(notes(&mut net, y, w), notes(&mut net, k, w), "the holders of L1 read alike");
 }
 
 // notes/ephemeral.md Deletion: a deleted thing does not come back from a holder's copy.
@@ -756,9 +681,12 @@ fn bridge_node_carries_between_hosts_spec_sync_6() {
     let w = window(&mut net, a, g, "bridged");
     note(&mut net, a, w, "a", "1");
     net.run();
+    // b relays another node's bodies after its relay wait (spec/sync.md §6)
+    net.advance(31_000);
     assert_eq!(net.eph_read(c, w, STATE), Some(s("bridged")));
     note(&mut net, c, w, "c", "2");
     net.run();
+    net.advance(31_000);
     let want = map(&[("a", "1"), ("c", "2")]);
     assert_eq!(notes(&mut net, a, w), want);
     assert_eq!(notes(&mut net, c, w), want);
@@ -1469,7 +1397,7 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
     net.fetched.insert(b, Vec::new());
     net.advance(5_000);
     assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), None);
-    assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
+    assert!(net.sync(b).ephemeral_bytes(&l) < 1_000, "{}", net.sync(b).ephemeral_dump(&l));
     net.advance(SyncConfig::default().resync_ms + 1_000);
     assert_eq!(net.fetched[&b], Vec::new(), "not fetched again");
 }
@@ -1636,10 +1564,10 @@ fn compacted_write_of_removed_holder_stays_spec_permissions_5_2() {
 // known and X stays valid. Holder a gets C before the removal (drops X as covered, then C
 // turns invalid: X's writes are gone there until a copy arrives again), holder b the removal
 // first (C invalid on arrival, X kept). Both stay connected past the host's ephemeral tombstone
-// and must read alike: a reconciles the label (`Engine::take_memory_invalidated`) and gets X
-// back from the host, which w (no writer any more) never deleted.
+// and end apart: a deleted X at the host once C carried it, so no writer holds X to place it
+// again once C fell (durable's residual, spec/sync.md §9).
 #[test]
-fn snapshot_invalidated_by_self_removal_reads_alike_spec_permissions_5_2() {
+fn snapshot_invalidated_by_self_removal_residual_spec_permissions_5_2() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1681,7 +1609,11 @@ fn snapshot_invalidated_by_self_removal_reads_alike_spec_permissions_5_2() {
     for _ in 0..(osis_base::format::MAX_DRIFT_MS / 60_000 + 5) {
         net.advance(60_000);
     }
-    assert_eq!((notes(&mut net, a, wn), notes(&mut net, b, wn)), (x.clone(), x), "holders of the same commits read alike");
+    // durable's residual (spec/sync.md §9, spec/permissions.md §5.2): a deleted X at the host
+    // under C and dropped it; C fell; w may not write any more and b, a reader, lost its entry
+    // of X with the host's deletion, so no writer holds X to place it again: a stays without X
+    // until its author writes the aspect again
+    assert_eq!((notes(&mut net, a, wn), notes(&mut net, b, wn)), (BTreeMap::new(), x), "nobody can place X again");
 }
 
 // spec/crdt.md §2.1: a write's session names its node, so a node's own writes are its sessions'
@@ -2735,9 +2667,9 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "doc:big.0~"), None, "refused for the cap");
     net.advance(5_000);
     assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), None);
-    assert!(net.sync(b).ephemeral_bytes(&l) < 1_000);
-    net.advance(SyncConfig::default().resync_ms + 1_000);
-    assert_eq!(net.eph_read(b, t, "doc:big.0~"), Some(s(&"b".repeat(40_000))), "fetched again");
+    // the cursor's charge went with it: room, so the refused entry is fetched again
+    net.run();
+    assert_eq!(net.eph_read(b, t, "doc:big.0~"), Some(s(&"b".repeat(40_000))), "fetched again\n{}", net.sync(b).ephemeral_dump(&l));
 }
 
 // spec/sync.md §9 (ephemeral parts on core aspects; security review L3): a writer's ephemeral
@@ -2789,8 +2721,9 @@ fn signals_through_co_reader_peer_spec_sync_5() {
 }
 
 // spec/sync.md §4 (ephemeral entries are held in memory only): an ephemeral entry announced
-// without its bytes (above the inline limit) is fetched and goes to the lane once its prefix
-// shows its class; no sync record of it stays (one did, and a restart then counted it as held)
+// without its bytes (above the inline limit) is fetched and recorded in memory once its prefix
+// shows its class; no stored sync record of it stays (one did, and a restart then counted it as
+// held). Entry, presence and blob rows (`y/e`, `y/p`, `y/b`) are counted before and after.
 #[test]
 fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
     let mut net = Net::new();
@@ -2800,7 +2733,8 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
     let l = net.label(a);
-    let durable: Vec<osis_base::BlobId> = net.sync(b).entries(&l).into_iter().map(|(x, _)| x).collect();
+    let rows = |net: &mut Net| (*b"epb").map(|t| net.sync(b).sync_rows(t));
+    let before = rows(&mut net);
     net.set_online(b, false);
     let w = window(&mut net, a, g, "big");
     note(&mut net, a, w, "k", "v");
@@ -2808,9 +2742,8 @@ fn announced_ephemeral_leaves_no_sync_record_spec_sync_4() {
     net.set_online(b, true);
     net.advance(10_000);
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]));
-    let after: Vec<osis_base::BlobId> = net.sync(b).entries(&l).into_iter().map(|(x, _)| x).filter(|x| !durable.contains(x)).collect();
-    assert!(after.is_empty(), "ephemeral entries left sync records: {after:?}");
     assert!(net.sync(b).ephemeral_entries(&l) >= 2);
+    assert_eq!(rows(&mut net), before, "ephemeral entries left stored sync records");
 }
 
 /// Bytes nodes send to the host while `b` writes 20 notes one by one, after `a` wrote `stuck`
@@ -2991,7 +2924,7 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
             assert_eq!(cursor_of(&mut net, *x, k), Some(s(&format!("{n}@{}", rounds - 1))), "author {n} at {x}");
         }
     }
-    assert_eq!(live(&net), held + authors, "one entry per author");
+    assert_eq!(live(&net), held + authors, "one entry per author\n{}", net.sync(ns[0]).ephemeral_dump(&l));
     assert!(((del2 - del) as u64) < u64::from(deletes), "{} deletes against a limit of {deletes}", del2 - del);
     // at most one commit per author per round trip (two rounds), and one more at the end
     let most = authors * (rounds as usize / 2 + 2);
@@ -3515,12 +3448,11 @@ fn ephemeral_chain_depth_counts_durable_links_spec_permissions_1() {
     assert_eq!(net.eph_read(b, past, STATE), None, "past the cap: invalid at a receiver");
 }
 
-// spec/sync.md §5 (a new sync key ends an open), §6 (a first Sync lists the held ephemeral
-// entries as gained): a Sync refused 8 because a read rotation landed between its Open and it
-// listed nothing to the host, so the Sync after the reopen on the same connection lists them
-// again (it counted the refused list as held there and never uploaded b's offline note).
+// spec/sync.md §5 (a new sync key ends an open), §6: a Sync refused 8 because a read rotation
+// landed between its Open and it: the pass after the reopen on the same connection still
+// uploads b's offline note (once it counted the refused Sync's list as held there and never did).
 #[test]
-fn gained_announced_again_after_refused_sync_spec_sync_5() {
+fn offline_note_uploaded_after_refused_sync_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -3538,7 +3470,6 @@ fn gained_announced_again_after_refused_sync_spec_sync_5() {
     net.set_online(b, true);
     net.advance(10_000);
     let conn = net.conn_to(b, host);
-    assert!(net.gained.get(&b).is_none_or(|v| v.is_empty()), "the first Sync waits behind the held Opened");
     let (at, bt, ct, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
@@ -3547,9 +3478,6 @@ fn gained_announced_again_after_refused_sync_spec_sync_5() {
     net.release();
     net.run();
     assert_eq!(net.conn_to(b, host), conn, "same connection");
-    let sent = &net.gained[&b];
-    assert_eq!(sent.len(), 2, "listed again after the refused Sync: {sent:?}");
-    assert_eq!(sent[0], sent[1]);
     net.advance(60_000);
     assert_eq!(notes(&mut net, c, w).get("b").map(String::as_str), Some("1"), "b's offline note reaches c");
 }
@@ -3662,7 +3590,7 @@ fn cover_across_unread_rotation(subscribe: bool) {
         let e = net.engine(n);
         e.memory_commits().into_iter().filter(|(id, _, _)| e.header(id).is_some_and(|h| h.author == bt && h.aspects.iter().any(|x| x.ak.as_str() == NOTES))).map(|(id, _, _)| e.header(&id).is_some_and(|h| h.kind.is_compaction())).collect::<Vec<bool>>()
     };
-    assert_eq!(held_b(&mut net, c), vec![true], "c holds b's snapshot of the notes alone");
+    assert_eq!(held_b(&mut net, c), vec![true], "c holds b's snapshot of the notes alone\n{:?}\n{}", net.engine(c).memory_commits().into_iter().filter_map(|(id, _, _)| net.engine(c).header(&id).map(|h| (id, h.kind, h.author == bt, h.aspects.iter().map(|x| x.ak.to_string()).collect::<Vec<_>>()))).collect::<Vec<_>>(), net.sync(c).ephemeral_dump(&l));
     assert_eq!(notes(&mut net, c, w).len(), 4);
     let after: BTreeSet<osis_base::BlobId> = net.host_ids(host, &l).into_iter().collect();
     assert!(after.difference(&before).count() >= 1, "the snapshot landed");
@@ -3835,9 +3763,10 @@ fn memory_records_beside_deltas_spec_commits_2() {
     assert_eq!(e.get(&leaf, &crate::common::ak("t:reg.0")).unwrap(), Some(Value::Str("d".into())));
 }
 
-// issues/eph-unify.md step 3: a memory commit is nothing durable to node-sync: no change mark,
-// no generation step, not among `commit_ids` or a thing's durable commits, an `Ephemeral`
-// event (none on a durable subscription), no demotion frontier entry. spec: none (internal)
+// issues/eph-unify.md step 3: a memory commit is nothing durable to node-sync: marked changed
+// (its bodies travel like any commit's, spec/sync.md §9) but no generation step, not among
+// `commit_ids` or a thing's durable commits, an `Ephemeral` event (none on a durable
+// subscription), no demotion frontier entry. spec: none (internal)
 #[test]
 fn memory_commit_not_durable_to_sync() {
     let mut lp = crate::common::net(1, 5);
@@ -3850,7 +3779,9 @@ fn memory_commit_not_durable_to_sync() {
     let mut m = Mutation::new();
     m.set(t, &eph("t:tags.0~"), &Value::Set([Value::Str("x".into())].into())).unwrap();
     let id = e.commit_in_memory(m).unwrap().unwrap();
-    assert!(e.take_changed().is_empty());
+    let changed = e.take_changed();
+    assert_eq!(changed.commits, BTreeSet::from([id]), "marked for the passes, nothing else");
+    assert!(changed.aspects.is_empty() && changed.undropped.is_empty());
     assert_eq!(e.core.generation, generation);
     assert!(e.core.memory_generation > 0);
     assert_eq!(e.commit_ids(), ids);
@@ -5170,6 +5101,11 @@ fn revert_run_with(seed: u64, restarts: bool) {
     for t in &things {
         let (ga, gb) = (net.engine(a).groups_of(t), net.engine(b).groups_of(t));
         assert_eq!(ga, gb, "seed {seed}: {t:?} listed");
+        // a thing no group lists is in no label's closure: nothing of it syncs any more, as
+        // for a durable thing (spec/sync.md §3), so only listed things read alike
+        if ga.is_empty() {
+            continue;
+        }
         assert_eq!(net.eph_read(a, *t, STATE), net.eph_read(b, *t, STATE), "seed {seed}: {t:?}");
     }
 }

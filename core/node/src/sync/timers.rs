@@ -104,13 +104,16 @@ impl SyncEngine {
             }
             if self.needs_sync(conn, &label) {
                 self.sync_label(conn, label, out)?;
-                self.eph_retry_deletes(conn, label, out)?;
-            } else if let Some(l) = self.lc_mut(conn, &label) {
+                continue;
+            }
+            // an upload the host refused for the label's cap goes again once per resync while the
+            // body is held (spec/sync.md §9: room appears there without a word to anyone)
+            let capped = self.conns.get(&conn).is_some_and(|c| self.capped.range((c.host, label, osis_base::BlobId([0; 32]))..=(c.host, label, osis_base::BlobId([0xff; 32]))).next().is_some());
+            if let Some(l) = self.lc_mut(conn, &label) {
                 // subscribed: a pass when something waits for it (`Work::resync_due`: what a pass
                 // left, a heartbeat, a timed bound); unsubscribed, the Sync's end uploads those
                 l.last_sync = now;
-                l.dirty |= l.fill.is_some() || l.work.resync_due(corrected);
-                self.eph_retry(conn, label, out)?;
+                l.dirty |= l.fill.is_some() || l.work.resync_due(corrected) || capped;
             }
         }
         Ok(())
@@ -185,12 +188,12 @@ impl SyncEngine {
     }
 
     /// Whether open label `label` on `conn` needs a Sync to catch up: without a subscription, not
-    /// synced since it opened, or not reconciled since a cap refusal made room (`eph_forget`).
-    /// Otherwise pushes bring what the host gets.
+    /// synced since it opened, or not reconciled since this node started or a memory snapshot
+    /// fell invalid (`memory`). Otherwise pushes bring what the host gets.
     pub(super) fn needs_sync(&self, conn: ConnId, label: &LabelId) -> bool {
         let Some(c) = self.conns.get(&conn) else { return false };
         let Some(l) = c.labels.get(label) else { return false };
-        let unreconciled = !self.eph.reconciled.contains(&(c.host, *label)) && self.state.cursors.contains_key(&(c.host, *label));
+        let unreconciled = !self.memory.reconciled.contains(&(c.host, *label)) && self.state.cursors.contains_key(&(c.host, *label));
         !self.cfg.subscribe || unreconciled || !l.synced
     }
 
@@ -258,29 +261,19 @@ impl SyncEngine {
         l.last_sync = now;
         let cursor = self.state.cursors.get(&(host, label)).copied();
         // the first sync of a label at a host since start reconciles the live sets first: the
-        // ephemeral entries a cursor already passed are back in no memory here (notes/ephemeral.md
-        // Convergence); the cursor stays for what follows
-        // (a replay from no cursor lists everything: nothing to reconcile after it)
+        // memory entries a cursor already passed are in no memory here after a start
+        // (spec/sync.md §9); the cursor stays for what follows (a replay from no cursor lists
+        // everything: nothing to reconcile after it). Marked reconciled when the reply arrives
+        // (`reconciled`): a connection ending first reconciles again on the next one
         if cursor.is_none() {
-            self.eph.reconciled.insert((host, label));
+            self.memory.reconciled.insert((host, label));
         }
-        // marked reconciled when the reply arrives (`reconciled`): a connection ending first
-        // reconciles again on the next one. More ephemeral entries than a Sync's gained list
-        // takes: reconciled too, so only what the peer lacks goes up (`reconciled`)
-        let many = !self.eph.announced.contains(&(conn, label)) && SyncEngine::eph_entries_of(&self.eph, &label).nth(osis_proto::msg::MAX_GAINED).is_some();
-        if many {
-            self.eph.announced.insert((conn, label));
-        }
-        if many || (cursor.is_some() && !self.eph.reconciled.contains(&(host, label))) {
-            if self.eph.reconciling.contains_key(&(conn, label)) {
+        if cursor.is_some() && !self.memory.reconciled.contains(&(host, label)) {
+            if self.memory.reconciling.contains(&(conn, label)) {
                 return Ok(());
             }
-            let listed: BTreeSet<osis_base::BlobId> = SyncEngine::eph_entries_of(&self.eph, &label).map(|(b, _)| b).collect();
-            let mut ids = self.state.present_at(&host, &label);
-            ids.extend(listed.iter().copied());
-            ids.sort();
-            ids.dedup();
-            self.eph.reconciling.insert((conn, label), listed);
+            let ids = self.state.present_at(&host, &label);
+            self.memory.reconciling.insert((conn, label));
             return self.command(conn, Command::Reconcile { label, ids }, out);
         }
         // a replay lists the live entries only: presence starts over from it (a cursor lost in a
@@ -290,9 +283,6 @@ impl SyncEngine {
                 self.state.set_present(host, label, b, false);
             }
         }
-        // the ephemeral entries held, listed once per connection: the host asks for those it
-        // lacks (a restarted host, another host's)
-        let gained = self.eph_gained(conn, label);
         // a first sync lists, then fetches in the wraps' order (`fill`)
         let inline_limit = if cursor.is_none() || self.state.filling.contains(&(host, label)) {
             self.fill_start(conn, label);
@@ -300,6 +290,9 @@ impl SyncEngine {
         } else {
             self.cfg.inline_limit
         };
+        // the memory entries held, listed once per connection: the host asks for those it
+        // lacks (presence of a memory entry is per connection, spec/sync.md §9)
+        let gained = self.memory_gained(conn, label);
         self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained }, out)
     }
 }

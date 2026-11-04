@@ -76,6 +76,19 @@ impl crate::engine::Engine {
         Ok(())
     }
 
+    /// `put_blobs` of blobs of memory commits: kept in the store's memory overlay, never on disk
+    /// (spec/sync.md §9).
+    pub fn put_memory_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<()> {
+        if blobs.is_empty() {
+            return Ok(());
+        }
+        self.run(|tx| {
+            tx.set_memory();
+            tx.store_blobs(blobs)
+        })?;
+        Ok(())
+    }
+
     /// After a transaction that stored a new blob (`Tx::store_blobs`) committed: what reads
     /// noted missing was re-delivered, and a node blob may complete a tree walk that lacked it.
     pub(crate) fn blobs_stored(&mut self) {

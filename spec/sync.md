@@ -315,16 +315,6 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **May-hold bodies**: nobody acts on them except a compactor dropping them once per body (commit and delta set, §7).
   - **Tombstones**: a tombstone only keeps the identical blob out, against stale relays and bundles.
 - A partial node repeats reconciliation until a pass changes nothing, since newly received data may grow its closure.
-- **Ephemeral bodies** (§9) are not judged as above.
-  - **Spreading**: a node holding an ephemeral body under a label uploads it (writer) or relays it (stamped) to each host and peer of the label that lacks it.
-    - Its first Sync of a label on a connection lists the ephemeral entries it holds there as `gained` (when they fit the message), and it sends what the peer wants.
-    - An ephemeral entry received from one host or peer goes to the others it syncs the label with.
-    - So once the connected nodes hold the same valid ephemeral commits and a writer among them holds each, every host of the label holds them.
-  - **Stamping**: a writer stamps every ephemeral entry it uploads under the write key of the head it uploads under (another's verified commit too: a stamp under an earlier key is refused).
-    - One refused as stamped under an earlier key (code 9) is stamped again and sent again once the node holds the head's write key, and dropped from that upload once the node is no longer a writer of the label.
-  - **Held at a host**: an entry is counted as held at a host only as learned on the current connection to it (a Sync's gained list, an arrival from it, an upload answered OK, a reconciliation finding it there). An entry kept apart unverified and verified later is uploaded to every host not so known.
-  - **Deletes**: a delete of an ephemeral entry is signed under the head it is sent under. Refused as signed under an earlier key (code 9) it is signed again and sent again once the node holds a newer key of the label role it needs, and dropped once the node no longer holds the role that key needs (admin for the delete key, writer for a level's).
-  - **After a start**: a node's first sync of a label at a host after it starts reconciles the live sets first and keeps its cursor (the ephemeral entries the cursor passed are in no memory any more). A connection ending before every entry that reconciliation found missing was received reconciles again on the next.
 - Chunk and tree-node blobs of large atomic values may be fetched lazily, by local policy; pages of a delta are fetched before its commit is applied (spec/commits.md §4).
 
 ## 7. Compaction and deletion
@@ -357,17 +347,18 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
 
 ## 9. Ephemeral commits
 - **Sending**: a node's own writes of ephemeral aspects and on ephemeral things (spec/data-model.md §1, §2) are ephemeral commits (spec/commits.md §2) like its durable writes are durable commits.
-  - **Batching**: a batch's ephemeral writes are one session-form commit per expiry (those without `expires` under the node's session, those with one under its second session, spec/crdt.md §2.1), carrying the records of the ephemeral things it writes or its `placed.0~` writes place (spec/commits.md §2).
+  - **Batching**: a batch's ephemeral writes are one session-form commit per expiry (those without `expires` under the node's session, those with one under its second session, spec/crdt.md §2.1), carrying the records of the ephemeral things it writes or its `placed.0~` writes place (spec/commits.md §2), so a deletion's resets ride with the unplacing that takes the thing out of the closure, as a durable batch's do.
   - **Signals**: signal writes go as relay-only commits, each write batch's at once.
-  - **Placement**: every commit the node makes on a thing in a labeled closure here is placed under the labels whose ephemeral closure holds any of its things, with all its parts the label's actor may read (§3), and uploaded on every connection where the label is open.
-  - **Waiting**: while the node has an own ephemeral upload of a label unanswered on every connection the label is open on, its later ephemeral commits on things in that label's closure wait. When the upload is answered (or the connection ends) the node sends what waited, two or more of an aspect's plain (no `expires`) commits replaced by one snapshot of their join (spec/commits.md §2, coalescing; they are then covered here and never go).
   - A commit whose delta does not fit a blob is refused at the writer (spec/commits.md §2).
-  - A node that writes a thing before it is in a labeled closure here (after a restart, before its placement is back) sends those commits once it is.
-  - When else it sends is local policy.
-  - A covered entry a node deletes where it uploaded it, forgotten while that upload is unanswered, is deleted there once the upload is answered OK.
-- **Ephemeral closure**: a label's ephemeral closure here is its closure (§3) plus every thing a part of an ephemeral commit kept under that label here is on, made or received, whatever lists the thing since (so unplacing does not stop its syncing there; Entitlement still decides what goes).
-  - A thing leaves it when freed, a durable thing when no ephemeral commit on it is held here, and when the node restarts.
-  - Only commits made once the thing is in a closure here (or waiting for one, above) go under it: what a node holds from before it entered another label's closure does not, until a snapshot carries it.
+- **As durable bodies**: an ephemeral commit's bodies are judged, placed, uploaded, relayed and deleted exactly as durable bodies are (§3, §5-§7): under the labels of the closures its things are in, must-hold while established uncovered, stamped under the head's write key at each upload (so a refusal under an older key, code 9, is answered by the next pass under the new head), relayed stamped by readers, deleted at a label once a snapshot there carries them, re-placed as a fresh encryption where the old blob is tombstoned.
+  - A thing no closure holds syncs no more (§3): nothing of it goes anywhere, and its bodies under a label it left are deleted there like a durable thing's.
+  - **Storage**: what differs is storage and what follows from it. Every node holds ephemeral commits, their blobs and every record about them (entries, presence, tombstones, carriers) in memory only (Holding).
+  - **Held at a host**: an entry counts as present at a host only as learned on the connection up now (a restarted host lost its ephemeral entries and its durable log says nothing of it). A node's first Sync of a label on a connection lists the ephemeral entries it holds there as `gained` (when they fit the message; §6), the peer asks for those it lacks, and the rest count as present there once the Sync ran through.
+  - **After a start**: a node's first sync of a label at a host after it starts reconciles the live sets first and keeps its cursor (the entries the cursor passed are in no memory any more). A connection ending before every entry that reconciliation found missing was received reconciles again on the next.
+  - **Tombstones**: an ephemeral entry's tombstone lasts `MAX_DRIFT`, at hosts (§5) and at nodes alike, and an announcement of a blob tombstoned here within that time is nothing.
+- **Coalescing**: before a pass sends under a label, two or more of the node's own plain (no `expires`) session-form commits of this session on one aspect not yet placed under it go as one snapshot of their join (spec/commits.md §2; frontier over the session up to the last of their counters): they are then covered here and never go. A body the snapshot does not cover (behind an invalid one of its session) goes as it is, and with a snapshot among them all go as they are.
+  - **Waiting**: while an own ephemeral upload under the label is unanswered on the connection, the node's later own ephemeral commits there wait (judged again once it is answered), so an aspect goes up as about one entry per round trip whatever the write rate.
+  - Expiring writes are never coalesced (superseding thins them, below).
 - **Holding**: every node holds the ephemeral commits it makes or receives, their blobs per label and their records, in memory only, never in its store or a bundle, until it restarts or they go (below).
   - **Verification**: a received one is verified as any commit (spec/commits.md §4) before its blob is kept, served or uploaded anywhere.
     - One whose author's record, a part's thing's record or a chain it needs is not held waits (pending, bounded per label by a share of the node's cap, below; the node keeps its blob apart, neither served nor uploaded).
@@ -375,11 +366,12 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - A session-form one applies atomically and an invalid part is un-merged (spec/crdt.md §4.6).
     - A part past its `expires` vanishes whole at every node (spec/crdt.md §4.7), so one arriving past it is never held.
     - An ephemeral commit more than `MAX_DRIFT` ahead of the corrected clock waits as a durable one does.
-  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered, expired or superseded) and none waits.
+  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered, expired, superseded or its thing freed) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
+    - A freed thing's parts of a commit that also touches things not freed are dropped; the commit stays for those.
     - The record of an ephemeral thing received from another node goes once no held or waiting ephemeral commit is on it and no held ephemeral thing names it as owner (every commit about it carries the record again).
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts (spec/commits.md §2, §5).
-  - **Trigger**: a node writes an ephemeral snapshot of an aspect once the session-form bodies it holds of it without `expires`, two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.
+  - **Trigger**: a node writes an ephemeral snapshot of an aspect of a thing in a labeled closure here once the session-form bodies it holds of it without `expires`, two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.
   - **Dropping covered bodies**: every node drops a held body a held valid ephemeral snapshot covers (spec/commits.md §5) at once, keep bounds aside (ephemeral bodies have none).
     - Exception: a node drops a body it authored only under one of its own snapshots (local policy).
     - A snapshot stamped no later and covered by another goes the same way.
@@ -403,7 +395,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - **At a node**: per label, a node holds at most a configured number of bytes of ephemeral bodies from others, each counted at an estimate of the memory it takes held (decoded, with the records beside it; local policy, at least its encoded size).
     - A commit is decoded only as far as a bound on that estimate made from its bytes (local policy) fits the room left under the cap, and applied only within it; others are not applied there.
     - Waiting commits take at most a share of the cap, counted at that bound.
-    - Once its bytes drop under the cap again it reconciles the label with each host (§6) at its next periodic pass.
+    - An entry refused so is fetched again once the label's held or waiting bytes dropped below what they were at the refusal, one that can never fit (larger than the whole cap) not at all.
   - **At a host**: a host carries a label's ephemeral entries up to its cap (§5). An entry it refuses reaches no holder through it until room appears. The refused node uploads it there again later (local policy; room also appears without a log record, as entries expire).
 - **Relay-only commits**:
   - **Dropped unopened**: a node drops a relay-only blob unopened when one of these holds:
