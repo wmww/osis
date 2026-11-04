@@ -3,11 +3,8 @@
 
 Background for all of these: notes/core-triage.md §2.
 
-## 1. Changes that touch two things: all at once, or per thing?
-Today: when one change touches two things (say, moving an item from one group to another), a device shows all of it or none of it. This already has three written exceptions, and it keeps causing bugs (about 10 fix rounds, 8 open issues).
-Proposal: all of a change's parts on one thing still appear together, but across things each part appears as soon as its thing arrives. An app could briefly see the item in the new group before it leaves the old one.
-Gain: deletes a lot of waiting code and most "which part arrived first" bugs.
-Recommendation: yes, unless you rely on cross-thing all-or-nothing for something.
+## 1. Changes that touch two things (answered in part)
+Tess: keep atomic multi-thing commits; make them whole instead: every label a commit touches carries the whole commit, and purge, expiry and keep-at-most act per commit (or multi-thing commits are not purgeable). Design in progress (notes/whole-commits.md); it comes back for an explicit go before building.
 
 ## 3. Cost of removing someone from a group with long history
 Requirement: removing a member never costs more as history grows. Today a removal lists every write of the removed device that stays valid, 32 bytes each. Old writes a snapshot has replaced need no listing, so compacting first (writing a snapshot of the current state) empties the list for ordinary data.
