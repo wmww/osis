@@ -54,12 +54,22 @@ CONSTANTS Admins,     \* may rotate, register, grant, write content
                       \* box to g at a current epoch it holds), "grant" every
                       \* grant of g it holds (a grant leaving g out is
                       \* refused)
-          Proj        \* a grant of g may reach an admin as its edge alone
+          Proj,       \* a grant of g may reach an admin as its edge alone
                       \* (a projection: the boxes deposited, never received):
                       \* "none" never; "bound" a node holding no box to g
                       \* carrying names then seals g only to the keyset g's
                       \* roster entry names (crypto §4), its box carrying
                       \* none; "free": at its own choice (negative control)
+          Descent,    \* TRUE: keyset descent (notes/roster-names.md): a
+                      \* keyset signs, under the delete key of each superseded
+                      \* epoch whose secret its writer held, that it was
+                      \* written knowing it; rotations name no departure from
+                      \* g unless they leave g out; a boxer of g seals only to
+                      \* a keyset descending from every keyset named for g
+                      \* (its anchors), judged by descent from R_P's keyset
+          Sigs        \* FALSE: negative control under Descent, descent read
+                      \* from the listed epochs alone (d's forgery descends
+                      \* from what it lists)
 
 Nodes == Admins \cup Readers
 Ids == 0..MaxE
@@ -120,9 +130,24 @@ VK(x) == ks[x] \ (IF gd[x] \/ gs[x] THEN {3} ELSE {})
 \* ids follow n, keyset 3 is d's choice of n 3).
 GK(x) == Max(VK(x))
 GSup(k) == CASE k = 0 -> {} [] k = 1 -> {0} [] k = 2 -> {0, 1} [] k = 3 -> fsup [] k = 4 -> {0}
+\* Descent: the epochs keyset k carries a valid descent signature for: those
+\* its writer held the secret of. d, removed at R_P, holds secret of epoch 0 only, so
+\* its forgery 3 descends from 0 whatever it lists (Sigs; without them, from
+\* what it lists); the ignorant fork 4 from 0; 2 from 0 and 1.
+Desc(k) == CASE k = 0 -> {} [] k = 1 -> {0} [] k = 2 -> {0, 1}
+             [] k = 3 -> (IF Sigs THEN {0} ELSE fsup) [] k = 4 -> {0} [] k = 5 -> {}
+\* The keysets k is or descends from, through bodies x holds (a signature
+\* under j's delete key is checked with j's body, or with the key a keyset
+\* name carries: the first hop needs no body).
+Reach(x, k) == {k} \cup Desc(k) \cup UNION {Desc(j) : j \in Desc(k) \cap ks[x]}
+\* Descent, the box judgement by knowledge: a keyset keeps d out when it is or
+\* descends from the keyset d's removal wrote (1), judged from held bodies.
+Keeps(x, k) == 1 \in Reach(x, k)
 \* crypto §4: a keyset name is met by a held valid keyset body writing that
-\* epoch or listing it as superseded ("commit": by that epoch's body alone).
-KMet(x, k) == IF KeysetBy = "epoch" THEN \E b \in VK(x) : b = k \/ k \in GSup(b)
+\* epoch or listing it as superseded ("commit": by that epoch's body alone;
+\* Descent: listing it with a valid descent signature).
+KMet(x, k) == IF Descent THEN \E b \in VK(x) : b = k \/ k \in Desc(b)
+              ELSE IF KeysetBy = "epoch" THEN \E b \in VK(x) : b = k \/ k \in GSup(b)
               ELSE k \in VK(x)
 \* crypto §4: an epoch is established at x when x applied its rotation commit
 \* and, if x holds its secret, its names are met: x holds every removal its
@@ -167,9 +192,14 @@ CoversBox(x, e) == /\ \A m \in dep[x] : m \notin Holders(x, e)
 \* case back, a negative control). A departure inside g counts only while g
 \* is a holder of A as x knows.
 NamedRem(e) == UNION {ep[j].rem : j \in ep[e].nm} \cup ep[e].rem
+\* Descent: d's departure is covered by name (the rotation left g out and
+\* named it) or when every box to g at e x knows names a keyset that keeps d
+\* out, and there is one (no box to g is never "excluded").
 CoversFrozen(x, e) ==
   /\ \A m \in dep[x] : m \in NamedRem(e) \/ (NoBoxCovers /\ m \notin Holders(x, e))
-  /\ gd[x] /\ Groups \cap hld[x] # {} => ep[e].ng
+  /\ gd[x] /\ Groups \cap hld[x] # {} =>
+       \/ ep[e].ng
+       \/ Descent /\ GBoxes(x, e) # {} /\ \A k \in GBoxes(x, e) : Keeps(x, k)
 Covers(x, e) == IF Frozen THEN CoversFrozen(x, e) ELSE CoversBox(x, e)
 \* permissions §3 Left out: x boxes g only at a keyset it judges covering d's
 \* departure, when it knows it (0 and the ignorant fork 4 box d; 3 is d's);
@@ -186,14 +216,26 @@ Covers(x, e) == IF Frozen THEN CoversFrozen(x, e) ELSE CoversBox(x, e)
 Free(x) == \/ \E b \in rd[x] : b.m \in Groups /\ b.fr /\ (b.g \/ b.eps \cap HeldCur(x) # {})
            \/ \E e \in HeldCur(x) \cap kn[x] : ep[e].ob \cap Groups # {} /\ ep[e].fr
 Bound(x) == Proj # "free" /\ Groups \cap hld[x] # {} /\ ~Free(x)
-SealK(x) == IF Bound(x) THEN rk[x] ELSE GK(x)
-BoundOK(x) == Bound(x) => rk[x] \in VK(x) /\ (gd[x] => rk[x] = GK(x))
-GOK(x) == gd[x] => SealK(x) \notin {0, 3, 4}
+\* Descent: x's anchors for g, the keyset names of the current epochs it holds
+\* (a rotation that left g out carried its own anchors forward) and of the
+\* free grant and re-seal boxes to g it read at them; it seals g only to a
+\* held valid keyset that is or descends from every anchor, the newest (5:
+\* none).
+Anchors(x) == UNION {ep[e].nk : e \in HeldCur(x) \cap kn[x]}
+              \cup {b.gk : b \in {c \in rd[x] : c.m \in Groups /\ c.fr
+                                               /\ (c.g \/ c.eps \cap HeldCur(x) # {})}}
+Cand(x) == {k \in VK(x) : \A a \in Anchors(x) : a \in Reach(x, k)}
+SealK(x) == IF Bound(x) THEN rk[x]
+            ELSE IF ~Descent THEN GK(x)
+            ELSE IF Cand(x) = {} THEN 5 ELSE Max(Cand(x))
+BoundOK(x) == Bound(x) => rk[x] \in VK(x) /\ (~Descent /\ gd[x] => rk[x] = GK(x))
+GOK(x) == gd[x] => IF Descent THEN Keeps(x, SealK(x)) ELSE SealK(x) \notin {0, 3, 4}
 GNamesOK(x) == \A b \in rd[x] :
                  (/\ b.m \in Groups /\ b.kd
                   /\ IF GNamesBy = "grant" THEN b.g ELSE b.eps \cap HeldCur(x) # {})
                  => gd[x] \/ gs[x]
-BoxG(x) == GOK(x) /\ (Frozen => GNamesOK(x)) /\ BoundOK(x)
+BoxG(x) == /\ GOK(x) /\ BoundOK(x)
+           /\ IF Descent THEN Bound(x) \/ Cand(x) # {} ELSE Frozen => GNamesOK(x)
 \* crypto §5: a rotation commit is wrapped under the newest epoch it supersedes.
 WrapOf(k) == NewestOf(ep[k].sup)
 Top == steps[Len(steps)]
@@ -248,7 +290,8 @@ ResealWanted(a, m) ==
 Init ==
   /\ ep = [e \in Ids |-> IF e = 0
              THEN [n |-> 0, sup |-> {}, ob |-> Nodes \ Late, hist |-> {}, rem |-> {},
-                   nm |-> {}, nk |-> {}, ng |-> FALSE, gk |-> 0, kd |-> FALSE, fr |-> TRUE]
+                   nm |-> {}, nk |-> IF Descent /\ Groups \cap (Nodes \ Late) # {} THEN {0} ELSE {},
+                   ng |-> FALSE, gk |-> 0, kd |-> FALSE, fr |-> TRUE]
              ELSE [n |-> 0, sup |-> {}, ob |-> {}, hist |-> {}, rem |-> {},
                    nm |-> {}, nk |-> {}, ng |-> FALSE, gk |-> 0, kd |-> FALSE, fr |-> TRUE]]
   /\ made = {0}
@@ -287,8 +330,10 @@ RotateR(a, R) ==
      IN /\ ep' = [ep EXCEPT ![k] = [n |-> 1 + Max({ep[e].n : e \in sup}),
                     sup |-> sup, ob |-> ob, hist |-> Hist(a), rem |-> R,
                     nm |-> IF OwnNames THEN {} ELSE {j \in kn[a] : ep[j].rem # {}},
-                    nk |-> IF KeysetNames /\ ob \cap Groups # {} THEN {SealK(a)} ELSE {},
-                    ng |-> GroupNames /\ (gd[a] \/ gs[a]) /\ Groups \cap hld[a] # {},
+                    nk |-> IF ob \cap Groups # {} THEN (IF KeysetNames THEN {SealK(a)} ELSE {})
+                           ELSE IF Descent THEN Anchors(a) ELSE {},
+                    ng |-> IF Descent THEN gd[a] /\ Groups \cap hld[a] # {} /\ ob \cap Groups = {}
+                           ELSE GroupNames /\ (gd[a] \/ gs[a]) /\ Groups \cap hld[a] # {},
                     gk |-> SealK(a), kd |-> gd[a] /\ ~Bound(a), fr |-> ~Bound(a)]]
         /\ made' = made \cup {k}
         /\ kn' = [kn EXCEPT ![a] = @ \cup {k}]

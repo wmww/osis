@@ -56,7 +56,19 @@ TLC 2.19, 1 worker, on a shared 4-core machine at load ~10 (two compiling agents
 
 Names rerun (issues/epoch-establishment-redesign.md step 4; `Est` was the settled-chain rule: an epoch counted once its rotation commit was held and every epoch it superseded was established). TLC 2.19, 4 workers, load 50-55; table rows above updated where the count changed (`MC_grant_remove` again 6,411,278 states, 60 min at that load). The any-order version of `MC_withhold` grew past 5 million distinct states with a million queued and was stopped: withholding lets a2 finish its passes early, so its re-seals fire in many more interleavings. Negative-control traces: `MC_names_own` (a2 withheld e2, a1's removal of m1; a1 merges e1 and e2 into e3, wrapped under a2's e1; e3 names nothing, so a2 establishes it, sees m1 a holder missing a box there and re-seals e3 to it); `MC_keyset_nonames` (d leaves g; a1 learns keyset 1, rotates to e1 boxing g at 1; a2, never learning it, applies e1, establishes it and rotates to e2 boxing g at 0 with e1 in the history box, which d opens).
 
-`run.sh small` runs `MC_live`, `MC_grant`, `MC_plant`, `MC_safety`, `MC_fork`, `MC_names_own`, `MC_keyset`, `MC_keyset_nonames` and the `MC_keyset_forge*` instances but `_rot`.
+Keyset descent (notes/roster-names.md; constants `Descent`, `Sigs`): a keyset carries a signature under the delete key of each superseded epoch whose secret its writer held (`Desc`: d's forgery 3 descends from 0 only, the ignorant fork 4 from 0, 2 from 0 and 1), rotations name no departure from g unless they leave g out (`ng`, the anchors carried forward in `nk`), and a boxer of g seals only to the newest held valid keyset that is or descends from every anchor (`Anchors`, `Cand`), judged by descent from R_P's keyset (`Keeps`); d's departure is covered where the box to g names such a keyset. TLC 2.19, 2-3 workers, load 35-45:
+
+| cfg | instance | result | states | time |
+|---|---|---|---|---|
+| `MC_desc_keyset.cfg` | as MC_keyset without names of departures from g | pass | 4,310 | 10 s |
+| `MC_desc_forge.cfg` | as MC_keyset_forge without names of departures from g: the forgery lists 1 unsigned | pass | 17,901 | 25 s |
+| `MC_desc_forge_nosig.cfg` | negative control: descent read from the listed epochs alone | **fails** `DevLocked` (expected: a2 rotates boxing g at 3) | 912+ | 10 s |
+| `MC_desc_forge_rot.cfg` | as MC_keyset_forge_rot | pass | 255,665 | 81 s (3 workers) |
+| `MC_desc_c1.cfg` | C1: a2 holds the fork 4 and keyset 1, boxes g at 1 | no violation (unfinished, stopped; queue growing, as MC_c1) | 966,281+ | 18 min (4 workers) |
+| `MC_desc_c1f.cfg` | C1' | no violation (unfinished, stopped) | 887,168+ | 18 min (4 workers) |
+| `MC_desc_c3.cfg` | C3 with the fork and the forgery, grants carrying the keyset name alone | no violation (unfinished, stopped; 2.3M queued, as MC_c3) | 4,224,625+ | 18 min (4 workers) |
+
+`run.sh small` runs `MC_live`, `MC_grant`, `MC_plant`, `MC_safety`, `MC_fork`, `MC_names_own`, `MC_keyset`, `MC_keyset_nonames`, the `MC_keyset_forge*` instances but `_rot`, and `MC_desc_keyset`, `MC_desc_forge` and `MC_desc_forge_nosig`.
 
 Forged holder keysets (AMBIGUITIES.md R17, R18; TLC 2.19, 2 workers, shared box): a removed admin d of holder actor g writes g's keyset where its removal is withheld. Rows above. Traces: `MC_keyset_forge_nogroup` (a1 boxes g at keyset 1 naming it; d writes 3 listing 1; a2, lacking R_P, holds 3 valid, establishes a1's epoch and rotates boxing g at 3 with it in its history box); `MC_keyset_forge_commit` (a1 holds 2, names it; a2 holds 2 and 3, establishes a1's epoch, boxes g at 3). `MC_grant_remove` is over the ~20 min budget on this loaded machine (the label-placed re-seals add their box records to the state; it was 1.76 million states before); it is kept because it is the only instance where a re-seal sits next to a removal.
 

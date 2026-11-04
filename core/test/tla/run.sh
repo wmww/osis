@@ -55,6 +55,13 @@ instances=(
   "rotation Rotation MC_c3_proj_bad.cfg small pass"    # a second edge naming a keyset nobody holds: bound until a free box arrives
   "rotation Rotation MC_c3_lean.cfg all pass"          # MC_c3 without the fork of g
   "rotation Rotation MC_c3_nonames.cfg small fail"     # negative control: grants carry no names
+  "rotation Rotation MC_desc_keyset.cfg small pass"    # keyset descent (notes/roster-names.md), no names below A
+  "rotation Rotation MC_desc_forge.cfg small pass"     # ... the forgery cannot sign under keyset 1
+  "rotation Rotation MC_desc_forge_nosig.cfg small fail"  # negative control: descent without signatures
+  "rotation Rotation MC_desc_forge_rot.cfg all pass"
+  "rotation Rotation MC_desc_c1.cfg all pass"
+  "rotation Rotation MC_desc_c1f.cfg all pass"
+  "rotation Rotation MC_desc_c3.cfg all pass"
   "roles Roles MC_core.cfg small pass"
   "roles Roles MC_multi.cfg small pass"
   "roles Roles MC_group.cfg all pass"
