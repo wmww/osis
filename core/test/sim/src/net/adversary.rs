@@ -52,7 +52,7 @@ pub fn codes(evs: &[ClientEvent]) -> Vec<Code> {
     v
 }
 
-/// A dishonest host (spec/sync.md §6; spec/requirements.md, Out of scope: hosts are trusted
+/// A dishonest host (spec/sync.md §6; spec/requirements.md, Threat model: hosts are trusted
 /// for availability only): of two hosts holding every label, one holds back (reorders within a
 /// stream) and replays its messages. Expected: honest nodes converge through the honest one (the
 /// label invariants judge only it) and survive the protocol violations.
@@ -194,7 +194,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
             return Err(sim.fail(format!("node {n} reads {ts:?}: the removed holder's write after removal is read, or its earlier one lost")));
         }
     }
-    // colluding with the host (spec/requirements.md, Out of scope): every secret M holds opens
+    // colluding with the host (spec/requirements.md, Threat model): every secret M holds opens
     // no body of a commit made after its removal
     let secrets: Vec<osis_crypto::Secret32> = sim.engine(m)?.epochs(&g).map(|e| e.read.held().map(|x| x.1.clone()).collect()).unwrap_or_default();
     let mt = sim.tid(m)?;

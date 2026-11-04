@@ -1193,7 +1193,7 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
     }
 }
 
-// spec/requirements.md, Out of scope ("malicious readers can only waste storage");
+// spec/requirements.md, Threat model ("malicious readers can only waste storage");
 // spec/permissions.md §7: an import into a copy by a node other than its creator (here a writer
 // demoted to reader, unaware) is bad input and changes nothing, whatever origins it lists. It
 // stripped the copy's imported writes (issues/invalid-import-strips-origin.md).

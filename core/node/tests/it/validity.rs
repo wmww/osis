@@ -1721,7 +1721,7 @@ fn valueless_copy_governs_unreported_spec_perm_5_2() {
     assert!(!evs.iter().any(|e| matches!(e, Event::Diagnostic(x) if x.kind == osis_node::DiagnosticKind::Misstated)), "not reported: {evs:?}");
 }
 
-// spec/requirements.md, Out of scope ("malicious readers can only waste storage"), Decentralization;
+// spec/requirements.md, Threat model ("malicious readers can only waste storage"), Decentralization;
 // spec/permissions.md §5.2: a reader's snapshot gives nothing. A reader's snapshot carrying another
 // value under the dot and `ts` of a writer's session-form write changes nothing, whether it arrives
 // after that write's commit (peer 2) or before it (peer 3); a restart keeps it so.
@@ -1791,7 +1791,7 @@ fn snapshot_forging_entry_key_changes_nothing_spec_perm_5_2() {
     assert_eq!(lp.peers[2].engine.state(&t, &m_ak).unwrap(), lp.peers[3].engine.state(&t, &m_ak).unwrap(), "states alike");
 }
 
-// spec/requirements.md, Out of scope; spec/permissions.md §5.2, §7: a reader's snapshot of a copy
+// spec/requirements.md, Threat model; spec/permissions.md §5.2, §7: a reader's snapshot of a copy
 // carrying an extra element under the source `Commit(C)` of a held valid import of C (a counter C
 // never had) changes nothing, whether it arrives after the import (peer 2) or before it (peer 3).
 #[test]
@@ -1942,7 +1942,7 @@ fn forged_snapshot_covers_nothing_spec_commits_5() {
     assert_eq!(e.covered(&honest, &f, &t, &m_ak).unwrap(), Some(true), "the honest snapshot covers the forged one");
 }
 
-// spec/requirements.md, Out of scope ("malicious readers can only waste storage"); spec/permissions.md
+// spec/requirements.md, Threat model ("malicious readers can only waste storage"); spec/permissions.md
 // §5.2: a reader's snapshot carrying the owner's register write under a counter the owner never
 // used, stamped now, changes nothing: its author could not write the aspect.
 #[test]
@@ -2030,7 +2030,7 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &map).unwrap(), Some(true));
 }
 
-// spec/requirements.md, Out of scope; spec/permissions.md §5.2 (a snapshot is valid only if its
+// spec/requirements.md, Threat model; spec/permissions.md §5.2 (a snapshot is valid only if its
 // author could write the aspect at it): a reader's snapshot of the owner's state plus an entry
 // at a counter the owner never used gives nothing, before or after the owner's commit, across a
 // restart, and covers nothing although it copies the commit exactly.
