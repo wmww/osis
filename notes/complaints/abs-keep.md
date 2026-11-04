@@ -5,3 +5,4 @@
 - `Engine::tick` alone drops a live body with no carrier (node-sync writes carriers in `run_engine_timers`); tests calling `net.engine(n).tick()` on a sync node model nothing real. `SyncEngine::expire_due` is the offline-node equivalent.
 - The order harness's random `op` draws feed pinned explicit histories and judgment vectors: changing what an existing op writes silently changes those regressions. New behaviour goes in new op numbers.
 - Oracle set ran at load 60 (other agents' runs): about 3x the testing.md wall times.
+- Review: keep-at-most and expiry timers share one key per (time, commit, part); a death-set keep-at-most timer at T == expiry overwrote the expiry's kind, so an expiring live entry outlived its expiry (now never set there).
