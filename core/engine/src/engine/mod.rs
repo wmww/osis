@@ -599,7 +599,8 @@ pub struct MemoryThing {
 pub struct MemorySync {
     /// Memory things a commit on which node-sync kept as a label entry here (made or received,
     /// `Engine::note_memory_synced`): a holder may have their writes, so a delete of one is
-    /// resets and tombstones, never a free at once (`freeable`). Rows go with the thing.
+    /// resets and tombstones, never a free at once (`freeable`), and its aspects compact only
+    /// while in a closure. Rows go with the thing.
     pub synced: BTreeSet<Tid>,
     /// Memory commits forgotten since the last take, with their header (node-sync deletes
     /// their entries at hosts by it) and why (`Engine::take_memory_drops`).

@@ -181,6 +181,9 @@ impl SyncEngine {
         let mut f = Facts { required: false, closure: true, covered: None, ..Facts::default() };
         if desired.contains(&parts) {
             f.required = true;
+            if e.memory {
+                self.state.memory_in_closure.insert((*l, *id));
+            }
             // the duplicate with the higher blob ID goes (spec/sync.md §7): the same delta set
             // (each encryption has its own salt), only a genuine one (a forged duplicate must not
             // get the real entry deleted); one whose wrap is of no use there counts as no copy,
@@ -259,6 +262,12 @@ impl SyncEngine {
                 // and only once the view is settled (a peer's placement this node cannot
                 // explain yet stays: a receiver keeps what a peer placed, spec/sync.md §3)
                 if !parts.iter().all(|p| held.contains(p)) || !settled {
+                    return Ok(None);
+                }
+                // a memory entry never in this label's closure here: after a start the closure is
+                // what has arrived so far, and the placement may still be on its way (deleting
+                // it here while a holder uploads it again is a storm until that placement comes)
+                if e.memory && !self.state.memory_in_closure.contains(&(*l, *id)) {
                     return Ok(None);
                 }
             }

@@ -217,6 +217,9 @@ pub struct Carriers {
     pub by: Vec<CommitId>,
     /// Corrected wall ms of the last change.
     pub at: u64,
+    /// Of a memory commit (`State::memory_commits` when set): never stored, kept for a memory
+    /// tombstone's lifetime.
+    pub memory: bool,
 }
 
 #[derive(Default)]
@@ -339,6 +342,9 @@ pub struct State {
     /// announcing it again within that time (one an upload reached late) gets it recorded as
     /// present there without a fetch, so the deletion is judged there too (`log_events`).
     pub tomb_kinds: BTreeMap<(LabelId, BlobId), Kind>,
+    /// Memory entries judged or placed while their body was in the label's closure here: only
+    /// those are deleted for leaving it (`pass/delete`, spec/sync.md §9).
+    pub memory_in_closure: BTreeSet<(LabelId, BlobId)>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -505,7 +511,7 @@ impl State {
                 }
                 b"s" => {
                     let at = Rd::new(&v).u64()?;
-                    s.carriers.insert(CommitId(r.arr()?), Carriers { by: decode_commits(v.get(8..).unwrap_or_default())?, at });
+                    s.carriers.insert(CommitId(r.arr()?), Carriers { by: decode_commits(v.get(8..).unwrap_or_default())?, at, memory: false });
                 }
                 b"x" => {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
@@ -590,7 +596,7 @@ impl State {
         s.entries = entries;
         s.present_by = s.present.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.gone_by = s.gone.keys().map(|(host, l, b)| (*l, *b, *host)).collect();
-        s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit, r.parts.clone()), *t))).collect();
+        s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit, r.parts.clone()), t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS)))).collect();
         Ok(s)
     }
 
@@ -818,13 +824,19 @@ impl State {
 
     /// Forgets an entry, tombstoned (`tombs`).
     pub fn remove_entry(&mut self, l: LabelId, b: BlobId) {
-        if let Some(Entry { cert: false, kind: Kind::Commit { commit, parts, .. }, .. }) = self.entries.get(&(l, b)) {
-            self.deleted.insert((l, *commit, parts.clone()), self.now);
+        if let Some(Entry { cert: false, kind: Kind::Commit { commit, parts, .. }, memory, .. }) = self.entries.get(&(l, b)) {
+            let life = if *memory { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
+            self.deleted.insert((l, *commit, parts.clone()), self.now.saturating_add(life));
         }
         if let Some(e) = self.entries.get(&(l, b)).filter(|e| e.memory && matches!(e.kind, Kind::Commit { .. })) {
             self.tomb_kinds.insert((l, b), e.kind.clone());
         }
+        let memory = self.is_memory(&l, &b);
         if self.drop_entry(l, b) {
+            // the class mark stays with the tombstone (`expire_tombs`)
+            if memory {
+                self.memory_entries.insert((l, b));
+            }
             self.put_of(&l, &b, key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
             self.tombs.insert((l, b), self.now);
         }
@@ -839,12 +851,14 @@ impl State {
         self.version += 1;
         self.losses += 1;
         if e.memory {
+            self.memory_entries.remove(&(l, b));
+            self.memory_in_closure.remove(&(l, b));
             self.charge_memory(l, b, None);
             self.charge_pending(l, b, None);
             self.memory_sizes.remove(&(l, b));
             // the class marks go last: `drop_entry` of a memory entry writes nothing
             if let Kind::Commit { commit, .. } = &e.kind
-                && !self.entries.values().any(|o| matches!(&o.kind, Kind::Commit { commit: c, .. } if c == commit))
+                && self.commit_labels.range((*commit, LabelId([0; 16]))..=(*commit, LabelId([0xff; 16]))).next().is_none()
             {
                 self.memory_commits.remove(commit);
             }
@@ -864,7 +878,6 @@ impl State {
             self.set_present(s, l, b, false);
         }
         self.drop_entry(l, b);
-        self.memory_entries.remove(&(l, b));
     }
 
     /// Forgets tombstones, and hosts' tombstoned answers, past their lifetime.
@@ -885,8 +898,7 @@ impl State {
             self.memory_entries.remove(&(l, b));
             self.tomb_kinds.remove(&(l, b));
         }
-        let memory_commits = &self.memory_commits;
-        self.deleted.retain(|(_, c, _), t| t.saturating_add(life(memory_commits.contains(c))) > now);
+        self.deleted.retain(|_, until| *until > now);
     }
 
     pub fn set_reach_secret(&mut self, s: Secret32) {
@@ -1229,12 +1241,13 @@ impl State {
     pub fn set_carrier(&mut self, body: CommitId, snapshot: CommitId) {
         self.touched_commits.insert(body);
         let now = self.now;
-        let c = self.carriers.entry(body).or_insert(Carriers { by: Vec::new(), at: now });
+        let memory = self.memory_commits.contains(&body);
+        let c = self.carriers.entry(body).or_insert(Carriers { by: Vec::new(), at: now, memory });
         if !c.by.contains(&snapshot) {
             c.by.push(snapshot);
         }
         c.at = now;
-        if !self.memory_commits.contains(&body) {
+        if !c.memory {
             let v = [Wr::new().u64(now).take(), encode_commits(&c.by)].concat();
             self.put(key(CARRIER, &[&body.0]), v);
         }
@@ -1249,9 +1262,9 @@ impl State {
     /// past it an entry comes back only by a stale relay or bundle; at 0 a body dropped before
     /// its entries are learned would cost that snapshot, at infinity carriers stay for good.
     pub fn sweep_carriers(&mut self, now: u64) {
-        let lifetime = osis_base::format::TOMBSTONE_LIFETIME_MS;
+        let life = |memory: bool| if memory { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
         let mut keep: BTreeSet<CommitId> = self.by_label_commit.keys().map(|(_, c)| *c).chain(self.deleted.keys().map(|(_, c, _)| *c)).collect();
-        keep.extend(self.carriers.iter().filter(|(_, c)| c.at.saturating_add(lifetime) > now).map(|(b, _)| *b));
+        keep.extend(self.carriers.iter().filter(|(_, c)| c.at.saturating_add(life(c.memory)) > now).map(|(b, _)| *b));
         let mut todo: Vec<CommitId> = keep.iter().copied().collect();
         while let Some(b) = todo.pop() {
             for c in self.carriers.get(&b).map(|c| c.by.clone()).unwrap_or_default() {
@@ -1262,8 +1275,7 @@ impl State {
         }
         let gone: Vec<CommitId> = self.carriers.keys().filter(|b| !keep.contains(b)).copied().collect();
         for b in gone {
-            self.carriers.remove(&b);
-            if !self.memory_commits.contains(&b) {
+            if self.carriers.remove(&b).is_some_and(|c| !c.memory) {
                 self.del(key(CARRIER, &[&b.0]));
             }
         }
@@ -1557,6 +1569,18 @@ impl crate::engine::SyncRecords for Records {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // spec/sync.md §9: a memory entry dropped without a tombstone leaves no class mark (its
+    // records would otherwise be kept for good, one per entry)
+    #[test]
+    fn memory_entry_dropped_leaves_no_mark() {
+        let mut s = State::default();
+        let (l, b) = (LabelId([1; 16]), BlobId([2; 32]));
+        s.set_entry(l, b, Entry { wrap: [0; WRAP_LEN], stamp: None, cert: false, kind: Kind::Unknown, memory: true });
+        assert!(s.is_memory(&l, &b));
+        s.drop_entry(l, b);
+        assert!(!s.is_memory(&l, &b));
+    }
 
     // spec: none (local store format): a commit entry keeps its blob's salt and round trips.
     #[test]

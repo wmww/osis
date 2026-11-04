@@ -276,6 +276,9 @@ impl SyncEngine {
         let wrap = osis_crypto::wrap(&secret, &id, &key, b.order)?;
         self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt }, memory });
         self.state.note_memory_size(l, id, bytes.len());
+        if memory {
+            self.state.memory_in_closure.insert((l, id));
+        }
         if memory && let Some(h) = self.engine.header(&b.commit) {
             let things: Vec<Tid> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid).collect();
             self.engine.note_memory_synced(things);
