@@ -423,7 +423,9 @@ impl SyncEngine {
     /// (spec/permissions.md §3): K and whatever K holds, whatever the link named.
     #[must_use]
     pub fn forget_link(&mut self, k: Tid) -> Vec<Action> {
-        let _ = self.engine.judge_lost(&k);
+        if let Err(e) = self.engine.judge_lost(&k).and_then(|()| self.drop_lost_due()) {
+            self.diag(format!("forgetting a link: {e}"));
+        }
         self.state.remove_link_peer(&k);
         let hinted: Vec<LabelId> = self.state.hints.iter().filter(|(_, h)| h.thing == k && h.via.is_some()).map(|(l, _)| *l).collect();
         for l in hinted {

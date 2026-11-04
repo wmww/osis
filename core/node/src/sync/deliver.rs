@@ -140,8 +140,11 @@ impl SyncEngine {
     /// `Engine::forget_lost`, and the sync state about what it forgot. Returns `Dropped::leaving`.
     fn forget_lost(&mut self, scope: LostScope<'_>) -> Result<bool> {
         self.state.flush(&mut self.engine)?;
-        let Dropped { forgotten: f, leaving, .. } = self.engine.forget_lost(scope)?;
-        if f.things.is_empty() {
+        let Dropped { actors, forgotten: mut f, leaving } = self.engine.forget_lost(scope)?;
+        // a link's label known only by its hint (K's commits not here yet): its session holds what
+        // the head gave, gone with the secrets, so following it again opens it anew
+        f.labels.extend(self.state.hints.iter().filter(|(_, h)| h.via.is_some() && actors.contains(&h.thing)).map(|(l, _)| *l));
+        if f.things.is_empty() && f.labels.is_empty() {
             return Ok(leaving);
         }
         let feed = std::mem::take(&mut self.state.feed);
