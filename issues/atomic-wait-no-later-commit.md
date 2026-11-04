@@ -4,4 +4,6 @@
 
 Repro sketch: c1 = {m (at most 0), k}; c2 = {m with `expires`}. c1's `m` body drops at the kill and is deleted at hosts; at T hosts delete c2. A fresh node gets only c1's `k` blob: nothing on `m` is left to show that c1's part could have gone (`apply::at_most_bound`), so c1 pends and `k` reads old there. Killer stamped earlier: `waits::dead_part_with_earlier_killer_waits_for_next_write_spec_commits_4`.
 
+A commit with no other part is not this issue: its body gone, nothing of it reaches a later node, and only a bare header handed over by hand waits, holding back nothing (`timed_dead::snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4`). A later seed of `sessions::gap_cover_large` that pends on a commit with a body left, killed from before, is this issue.
+
 Closing it needs one of: releasing on the class alone (a live part on its way never waits: rejected, spec/commits.md §4), or a record at hosts or in a header that a body left (a blob or commit per drop, which keep at most 0 exists to avoid).
