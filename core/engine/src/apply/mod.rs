@@ -1112,7 +1112,7 @@ impl Engine {
             };
             let mut gone = false;
             for p in &copy.parts {
-                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai) || m.stripped.contains(&p.ai) && crate::retention::valueless(tx.core, id, p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || crate::retention::waiting_stripped(tx, &h, id, p.ai)? || pending.as_ref().is_some_and(|b| !b.parts.iter().any(|q| q.ai == p.ai)) && crate::retention::known_purged(tx, &h, id, p.ai)?) {
+                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai) || m.stripped.contains(&p.ai) && crate::retention::valueless(tx.core, id, p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || pending.as_ref().map(|b| crate::retention::waiting_stripped(tx, b, id, p.ai)).transpose()?.unwrap_or(false) || pending.as_ref().is_some_and(|b| !b.parts.iter().any(|q| q.ai == p.ai)) && crate::retention::known_purged(tx, &h, id, p.ai)?) {
                     gone = true;
                     continue;
                 }

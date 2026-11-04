@@ -1228,3 +1228,89 @@ fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
         assert!(!x && !y, "peer {i}: purged values recovered from the replaced leftover: x {x}, y {y}");
     }
 }
+
+/// Node 1 holds snapshot `snap` of `t:big.0` carrying `cx` (marker `mx`) and `cy` (`my`), both
+/// by 0; admin 2 purged `cx` (the snapshot held as its leftover), then 0 demoted 2 without having
+/// seen the request: it fell at 1, the snapshot missing.
+struct Fallen {
+    lp: LocalPeer,
+    t: Tid,
+    cy: osis_base::CommitId,
+    my: &'static str,
+}
+
+fn fallen_snapshot_rig(seed: u64) -> Fallen {
+    use osis_base::Role;
+    use osis_node::flows::{Demotion, PreSync};
+    let mut lp = LocalPeer::of(vec![peer(seed), peer(seed + 1), peer(seed + 2)], seed);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let x = lp.peers[2].engine.tid();
+    lp.peers[0].engine.grant(&t, &x, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let k = ak("t:big.0");
+    let (mx, my) = ("ASIDEX-MARK-5e6f", "ASIDEY-MARK-7a8b");
+    let cx = big_put(&mut lp, 0, t, "kx", &big(mx), None);
+    lp.advance(5);
+    let cy = big_put(&mut lp, 0, t, "ky", &big(my), None);
+    lp.advance(5);
+    let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    filler(&mut lp, 1, 6);
+    lp.advance(5);
+    let p1 = big_put(&mut lp, 2, t, "ox", "w", Some(cx));
+    let pk = lp.peers[2].engine.package(&p1).unwrap().unwrap();
+    lp.deliver(1, &pk).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    let sai = lp.peers[1].engine.header(&snap).unwrap().aspects.iter().position(|a| a.tid == t && a.ak == k).unwrap();
+    assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().stripped.contains(&sai), "the snapshot is held as its leftover");
+    lp.advance(5);
+    let done = lp.peers[0].engine.demote(&t, &Demotion { holder: x, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    for id in &done.commits {
+        let pk = lp.peers[0].engine.package(id).unwrap().unwrap();
+        lp.deliver(1, &pk).unwrap();
+    }
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(lp.peers[1].engine.core.ix.commits.get(&snap).unwrap().missing.contains(&sai), "fallen: the snapshot is missing");
+    Fallen { lp, t, cy, my }
+}
+
+/// Node `i` writes `val` at key `key` of `t:big.0`, purging `purge` if given.
+fn big_put(lp: &mut LocalPeer, i: usize, t: Tid, key: &str, val: &str, purge: Option<osis_base::CommitId>) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s(val)) }).unwrap();
+    if let Some(c) = purge {
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:big.0") });
+    }
+    lp.peers[i].commit(m).unwrap().unwrap()
+}
+
+// spec/commits.md §5 (a purge destroys every local copy of the values it names), spec/crdt.md §4.7:
+// a snapshot's leftover keeps the other values it copied; at its purge's fall it goes, shredded
+// (nothing but a copy makes the snapshot held again), so a second request purging one of those
+// leaves no copy behind (was: set aside, the row kept the value, no held snapshot for the second
+// purge to strip, until a copy came, for good if none did).
+#[test]
+fn fallen_snapshot_leftover_gone_for_a_later_purge_spec_commits_5() {
+    let Fallen { mut lp, t, cy, my } = fallen_snapshot_rig(371);
+    filler(&mut lp, 1, 6);
+    lp.advance(5);
+    let p2 = big_put(&mut lp, 0, t, "oy", "w", Some(cy));
+    let pk = lp.peers[0].engine.package(&p2).unwrap().unwrap();
+    lp.deliver(1, &pk).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    filler(&mut lp, 1, 6);
+    assert_eq!(lp.peers[1].engine.get_at(&t, &ak("t:big.0"), &[osis_crdt::PathSeg::Key(s("ky"))]).unwrap(), None);
+    assert!(!recoverable(&mut lp.peers[1], my.as_bytes()), "the second purged value recovered from the fallen snapshot's leftover");
+}
+
+// spec/commits.md §5: a snapshot missing at its purge's fall indexes nothing, as an open rebuilding
+// the index reads it (was: the fall left it indexed; order seed 9230001).
+#[test]
+fn fallen_snapshot_unindexed_seed_9230001() {
+    let Fallen { mut lp, .. } = fallen_snapshot_rig(381);
+    let e = &mut lp.peers[1].engine;
+    let opened = e.index_digest().without_held();
+    e.rebuild_index().unwrap();
+    assert_eq!(opened.first_diff(&e.index_digest().without_held()), None);
+}

@@ -735,9 +735,9 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: Option<&[Owned]>, 
 /// Part `ai` of `c`, held as its leftover, gives it up: the part is missing (counts as never
 /// received), its writes leave the state (`apply::rebuild` without them). For the valued copy
 /// arriving (`takes_late`), whose join brings them back valued; or on its purge's fall
-/// (`rejudge_purges`), the leftover then `kept` aside for a rise before a copy comes (held
+/// (`rejudge_purges`), a delta's leftover then `kept` aside for a rise before a copy comes (held
 /// value-less again, it holds what it left, as at a node that never saw the fall:
-/// `make_leftover` adopts it).
+/// `make_leftover` adopts it; a snapshot's is not kept, nothing but a copy holds it again).
 fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
@@ -753,6 +753,8 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     if let Some(blob) = tx.get_commit(c)? {
         tx.put_commit(c, &blob, &m, Shred::No, None)?;
     }
+    // a snapshot missing indexes nothing, as an open reads it
+    crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.put_meta(*c, m.clone());
     let owned = writes_of(&m.header, c, ai);
     crate::apply::rebuild(tx, &a.tid, &a.ak, &owned, false)
