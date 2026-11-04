@@ -106,8 +106,8 @@ impl Fragment {
                     .filter_map(|(x, e)| {
                         let on = x == eid;
                         let frag = if on { e.frag.as_ref().map(|f| Box::new(f.spine(rest, range))).filter(|f| !f.is_empty()) } else { None };
-                        let created = if on && frag.is_some() { e.created.clone() } else { None };
-                        (e.reset.is_some() || frag.is_some()).then(|| (x.clone(), crate::fragment::Entry { reset: e.reset.clone(), frag, created }))
+                        let created = if on { e.created.clone() } else { None };
+                        (e.reset.is_some() || frag.is_some() || created.is_some()).then(|| (x.clone(), crate::fragment::Entry { reset: e.reset.clone(), frag, created }))
                     })
                     .collect();
                 Fragment::Map(Map::new(m.meta.clone(), entries))
@@ -376,11 +376,9 @@ impl Fragment {
                     .iter()
                     .map(|(id, e)| {
                         let frag = e.frag.as_ref().map(|f| Box::new(below(&Step::Entry(id.clone()), f))).filter(|f| !f.is_empty());
-                        // a record reduced to nothing keeps no creation here: the pages below carry it
-                        let created = if frag.is_some() { e.created.clone() } else { None };
-                        (id.clone(), crate::fragment::Entry { reset: e.reset.clone(), frag, created })
+                        (id.clone(), crate::fragment::Entry { reset: e.reset.clone(), frag, created: e.created.clone() })
                     })
-                    .filter(|(_, e)| e.reset.is_some() || e.frag.is_some())
+                    .filter(|(_, e)| e.reset.is_some() || e.frag.is_some() || e.created.is_some())
                     .collect();
                 Fragment::Map(Map::new(m.meta.clone(), entries))
             }

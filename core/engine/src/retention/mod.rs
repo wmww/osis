@@ -925,10 +925,10 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
     let now = tx.now().0;
     let mut due = Vec::new();
     let mut next = u64::MAX;
-    tx.scan(records::TIMER, |k, v| {
-        let (t, c, ai) = records::parse_timer(k)?;
+    tx.scan(records::TIMER, |k, _| {
+        let (t, c, ai, kind) = records::parse_timer(k)?;
         if t <= now {
-            due.push((k.to_vec(), c, ai, v.first().copied().unwrap_or(0)));
+            due.push((k.to_vec(), c, ai, kind));
         } else {
             next = next.min(t);
         }
@@ -1038,7 +1038,7 @@ impl Engine {
     pub fn next_timer(&mut self) -> Result<Option<u64>> {
         self.run(|tx| {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
-            Ok(first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t))
+            Ok(first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _, _)| t))
         })
     }
 

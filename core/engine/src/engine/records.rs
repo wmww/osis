@@ -117,22 +117,27 @@ pub fn commit_key(id: &CommitId) -> Vec<u8> {
     [COMMIT, &id.0[..]].concat()
 }
 
-pub fn timer_key(t: u64, id: &CommitId, ai: usize) -> Vec<u8> {
+/// A retention timer of part `ai` of `id` at `t` of kind `kind` (`retention::T_EXPIRY`,
+/// `T_AT_MOST`): the kind is in the key, so a bound and an expiry due at one instant are two
+/// timers (one overwrote the other, and the expiry never ran: was issues/expired-entry-key-kept.md).
+pub fn timer_key(t: u64, id: &CommitId, ai: usize, kind: u8) -> Vec<u8> {
     let mut k = TIMER.to_vec();
     k.extend_from_slice(&t.to_be_bytes());
     k.extend_from_slice(&id.0);
     k.extend_from_slice(&(ai as u32).to_be_bytes());
+    k.push(kind);
     k
 }
 
-/// Parses a timer key's tail (after `x/`).
-pub fn parse_timer(k: &[u8]) -> Result<(u64, CommitId, usize)> {
+/// Parses a timer key's tail (after `x/`): (t, commit, aspect index, kind).
+pub fn parse_timer(k: &[u8]) -> Result<(u64, CommitId, usize, u8)> {
     let mut r = Rd::new(k);
     let t = r.u64()?;
     let id = CommitId(r.arr()?);
     let ai = r.u32()? as usize;
+    let kind = r.u8()?;
     r.end()?;
-    Ok((t, id, ai))
+    Ok((t, id, ai, kind))
 }
 
 /// Byte writer for local layouts.

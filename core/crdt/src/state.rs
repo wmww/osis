@@ -240,8 +240,9 @@ fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTr
 }
 
 /// Prunes the records of one dot (§5.6): each under its own reset, the key-erased record also
-/// under every keyed record's, a keyed record also under the key-erased record's; a creation
-/// lives only with content. Records left with neither reset nor content go.
+/// under every keyed record's, a keyed record also under the key-erased record's. A creation is
+/// a write of its own (a record may hold it alone, its content un-merged), and a record reads
+/// only with it (§5.6 Live). Records left with no write go.
 fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) {
     for (_, en) in recs.iter_mut() {
         prune_write(&mut en.reset, e, ch);
@@ -253,11 +254,8 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
         let ee = max_opt(max_opt(e.cloned(), en.reset.clone()), cross);
         prune_opt(&mut en.frag, ee.as_ref(), ch);
         prune_write(&mut en.created, ee.as_ref(), ch);
-        if en.frag.is_none() {
-            en.created = None;
-        }
     }
-    recs.retain(|(_, en)| en.reset.is_some() || en.frag.is_some());
+    recs.retain(|(_, en)| en.reset.is_some() || en.frag.is_some() || en.created.is_some());
 }
 
 /// The deaths the records of one dot imply across each other (§5.6 Live: a keyed record reads
@@ -652,7 +650,7 @@ impl Fragment {
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems_any(elems),
             Fragment::Struct(s) => s.fields.values().any(child),
             Fragment::Enum(s) => s.case.as_ref().is_some_and(|k| k.case.is_some()) || s.payloads.values().any(child),
-            Fragment::Map(m) => m.entries.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(child)),
+            Fragment::Map(m) => m.entries.iter().any(|(id, e)| e.reset.is_some() || (id.key.is_some() && e.created.is_some()) || e.frag.as_deref().is_some_and(child)),
             Fragment::Seq(s) => seq::has_written(s),
         }
     }
@@ -672,7 +670,11 @@ impl Fragment {
                 let k = s.case.as_ref().filter(|k| !valued || k.case.is_some()).map(|k| k.stamp.clone());
                 s.payloads.values().fold(k, |m, f| max_opt(m, child(f)))
             }
-            Fragment::Map(m) => m.entries.values().fold(None, |x, e| max_opt(max_opt(x, e.reset.clone()), e.frag.as_deref().and_then(child))),
+            // a keyed record's creation counts (§4.3); a key-erased record's is value-less
+            Fragment::Map(m) => m.entries.iter().fold(None, |x, (id, e)| {
+                let c = e.created.clone().filter(|_| !valued || id.key.is_some());
+                max_opt(max_opt(max_opt(x, c), e.reset.clone()), e.frag.as_deref().and_then(child))
+            }),
             Fragment::Seq(s) => seq::inner_max(s, valued),
         }
     }

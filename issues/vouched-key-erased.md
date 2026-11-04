@@ -3,4 +3,5 @@
 > Tags: security, engine, crdt
 
 - Misstated copy: an invalid writer's entry whose key expired or was purged; a valid forger's snapshot copies its creation under "evil". The key-erased record keeps others' nested writes, and the live "evil" record reads joined with it (spec/crdt.md §5.6 Live), so they read under "evil". The node cannot tell the copy's key from the erased one; before crdt-leftovers the keyed case behaved the same.
+- Since removal became final (spec/crdt.md §5.6 Live) a keyed record without a creation copy is never live, so the misstated case needs the forger's creation copy under "evil" (it has one); the vouching question itself is unchanged.
 - Clock skew: a snapshot written after the entry's expiry T carries the creation value-less; a node before T holds the keyed record, which that copy does not vouch, so others' nested writes in it go there and stay at nodes past T. The dot is hidden either way (a value-less creation hides it), so reads may agree while states differ.

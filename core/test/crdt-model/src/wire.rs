@@ -916,7 +916,6 @@ fn decode_at(it: &Item, cx: &Ctx, top: bool) -> Result<Frag, Error> {
                 last = Some((d.clone(), key.clone()));
                 let created = match (ci, cx.hi) {
                     (Some(_), Some(_)) => return Err(Error::Bad("creation commit in a writer's delta")),
-                    (Some(_), None) if frag.is_none() => return Err(Error::Bad("creation commit on a tombstone")),
                     (Some(ci), None) => {
                         let (ts, src, _) = cx.commit(ci)?;
                         if ci == 0 || src != d.source {

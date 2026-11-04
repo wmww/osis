@@ -514,3 +514,42 @@ fn creationless_text_char_spec_5_7() {
     assert!(decode_snapshot(&bytes, &cx, &mut Interner::new(), None).is_err());
     all_orders(&[made, bad], Some(Value::Str("a".into())));
 }
+
+/// A keyed record of `d` carrying `f` and no creation: a write into another's entry (§5.6).
+fn nested_rec(d: Dot, k: &Value, f: Fragment) -> Fragment {
+    use crate::fragment::{Eid, Entry, Map};
+    Fragment::Map(Map::new(Meta::default(), BTreeMap::from([(Eid::new(d, Some(k.clone())), Entry { reset: None, frag: Some(Box::new(f)), created: None })])))
+}
+
+/// §5.6 Live, spec/requirements.md Data model (removal is final): a nested write newer than the
+/// entry's removal never shows the entry again, in any order; the stale writer reads its edit
+/// until the removal arrives and then converges; a new entry (a fresh dot) shows the key again.
+/// A record whose creation is not held (a write into an entry before its creation arrives, or a
+/// key under a dot nothing created, kept alive by a `W` alone: issues/purge-keeps-repeated-key.md)
+/// shows nothing.
+#[test]
+fn removed_entry_hides_newer_write_spec_5_6() {
+    let k = Value::Str("k".into());
+    let c = st(1, 1, 1);
+    let rm = st(3, 2, 1);
+    let w = st(5, 3, 1);
+    let map = |kv: &[(&Value, i64)]| Some(Value::Map(kv.iter().map(|(k, v)| ((*k).clone(), Value::Int(*v))).collect()));
+    let created = entry_map(vec![(c.clone(), Some(k.clone()), None, Some(7))]);
+    let removal = entry_map(vec![(c.clone(), None, Some(rm.clone()), None)]);
+    let edit = nested_rec(c.dot.clone(), &k, Fragment::Register(reg(w.clone(), 9)));
+    all_orders(&[created.clone(), removal.clone(), edit.clone()], map(&[]));
+    // the stale writer
+    let mut s = created.clone();
+    s.join(edit.clone());
+    assert_eq!(s.read(), map(&[(&k, 9)]), "read until the removal arrives");
+    s.join(removal.clone());
+    assert_eq!(s.read(), map(&[]));
+    assert!(s.present(), "the map stays present (the removal is a write inside it)");
+    // a fresh entry shows the key again, whatever else is held
+    let again = entry_map(vec![(st(6, 4, 1), Some(k.clone()), None, Some(8))]);
+    all_orders(&[created, removal, edit.clone(), again], map(&[(&k, 8)]));
+    // no creation held: nothing shows
+    all_orders(&[edit], map(&[]));
+    let w_only = Fragment::Struct(crate::fragment::Struct { meta: Meta { reset: None, w: Some(w) }, fields: BTreeMap::new() });
+    all_orders(&[nested_rec(Dot::new(sess(Tid::from_bytes([9; 15])), 1), &Value::Str("secret".into()), w_only)], map(&[]));
+}

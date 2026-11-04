@@ -1163,9 +1163,16 @@ fn reuse_race(expires: Option<u64>) -> (Net, [usize; 3], osis_base::Tid, Ak, Vec
     let t = net.item(a, g, g, "x");
     let doc = Ak::new("u:doc.0").unwrap();
     let k = |s: &str| Value::Str(s.into());
+    // the entries come from a kept commit; the purged one overwrites `big` in place, so the
+    // position stays live past the purge (a write into a purged entry would go with it,
+    // spec/crdt.md §5.6 Live) and the reuser's value is what needs repairing
+    let mut m = Mutation::new();
+    m.set(t, &doc, &Value::Map([(k("big"), Value::Bytes(noise(1 << 20, 10))), (k("note"), k("x"))].into_iter().collect())).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
     let v1 = noise(1 << 20, 11);
     let mut m = Mutation::new();
-    m.set(t, &doc, &Value::Map([(k("big"), Value::Bytes(v1.clone())), (k("note"), k("x"))].into_iter().collect())).unwrap();
+    m.op(t, &doc, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(k("big"))], op: osis_crdt::Op::Set(Value::Bytes(v1.clone())) }).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     net.set_online(b, false);

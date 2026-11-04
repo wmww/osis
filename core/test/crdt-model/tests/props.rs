@@ -515,14 +515,15 @@ fn worked_examples_from_spec() {
 }
 
 #[test]
-fn map_resurrection_and_set_semantics() {
+fn map_removal_is_final_and_set_semantics() {
     let vt = Ty::Struct([(1, Ty::Register)].into_iter().collect());
     let ty = Ty::Map(Box::new(Ty::Register), Box::new(vt.clone()));
     let mut a = Writer::new(Source::session(1, 0), 1 << 16, 1);
     let mut st: Option<Frag> = None;
     apply(&mut st, ops::map_put(&mut a, None, &vt, &Value::Int(1), &Value::fields(vec![(1, Value::Int(10))])).unwrap());
     let base = st.clone().unwrap();
-    // b removes key 1 at t=3; c edits the entry at t=4 (newer) -> entry resurrected with only the newer write
+    // b removes key 1 at t=3; c edits the entry at t=4 (newer): the removal pruned the creation, so the edit
+    // stays hidden and the key is gone in either order (§5.6 Live; spec/requirements.md, Data model)
     let mut b = Writer::new(Source::session(2, 0), 3 << 16, 1);
     let rm = ops::map_remove(&mut b, Some(&base), &Value::Int(1)).unwrap();
     let mut c = Writer::new(Source::session(3, 0), 4 << 16, 1);
@@ -531,7 +532,17 @@ fn map_resurrection_and_set_semantics() {
     s.join(rm.clone());
     assert_eq!(s.read(), Some(Value::map(vec![])));
     s.join(ed.clone());
-    assert_eq!(s.read(), Some(Value::map(vec![(Value::Int(1), Value::fields(vec![(1, Value::Int(11))]))])));
+    assert_eq!(s.read(), Some(Value::map(vec![])), "a newer nested write does not bring the entry back");
+    let mut s3 = base.clone();
+    s3.join(ed.clone());
+    assert_eq!(s3.read(), Some(Value::map(vec![(Value::Int(1), Value::fields(vec![(1, Value::Int(11))]))])), "the stale writer reads its edit until the removal arrives");
+    s3.join(rm.clone());
+    assert_eq!(s3, s, "converges");
+    // a put after seeing the removal creates a new entry (a fresh dot), and the key shows again
+    let mut d = Writer::new(Source::session(5, 0), 5 << 16, 1);
+    let again = ops::map_put(&mut d, Some(&s), &vt, &Value::Int(1), &Value::fields(vec![(1, Value::Int(12))])).unwrap();
+    s.join(again);
+    assert_eq!(s.read(), Some(Value::map(vec![(Value::Int(1), Value::fields(vec![(1, Value::Int(12))]))])));
     // older edit (t=2) loses to the removal
     let mut d = Writer::new(Source::session(4, 0), 2 << 16, 1);
     let old = ops::map_put(&mut d, Some(&base), &vt, &Value::Int(1), &Value::fields(vec![(1, Value::Int(9))])).unwrap();
@@ -862,8 +873,9 @@ proptest! {
 
 #[test]
 fn list_delete_is_an_element_reset() {
-    // §5.7, container resurrection: B deletes element 0 at t=5 while C writes a field into it at t=6; the element comes back
-    // holding only C's field, on every node and after a snapshot bootstrap; an older nested write (t=4) is dropped.
+    // §5.7 Live: B deletes element 0 at t=5 while C writes a field into it at t=6; the element stays deleted (the
+    // reset is above its creation), C's write stays in the state hidden and travels in snapshots, so a bootstrapped
+    // node holds the same; an older nested write (t=4) is dropped.
     let et = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
     let ty = Ty::List(Box::new(et.clone()));
     let mut a = Writer::new(Source::session(1, 0), 1 << 16, 1);
@@ -882,7 +894,12 @@ fn list_delete_is_an_element_reset() {
     s1.join(older.clone());
     assert_eq!(s1.read(), Some(Value::List(vec![])), "older nested write loses to the reset");
     s1.join(newer.clone());
-    assert_eq!(s1.read(), Some(Value::List(vec![Value::fields(vec![(2, Value::Int(9))])])), "newer nested write revives the element alone");
+    assert_eq!(s1.read(), Some(Value::List(vec![])), "a newer nested write does not revive the element");
+    let mut only = base.clone();
+    only.join(newer.clone());
+    assert_eq!(only.read(), Some(Value::List(vec![Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(9))])])), "the stale writer reads its edit until the delete arrives");
+    only.join(del.clone());
+    assert_eq!(only, s1);
     let mut s2 = base.clone();
     s2.join(newer.clone());
     s2.join(older.clone());
@@ -898,13 +915,21 @@ fn list_delete_is_an_element_reset() {
     let mut again = fresh.clone().unwrap();
     again.join(newer);
     assert_eq!(snapshot(&again), snapshot(&s1), "covered: the newer write is already in the snapshot");
-    // a value-less (expired) list creation keeps others' nested writes (§4.7)
-    let mut s3 = base.clone();
+    // an expired list creation takes others' nested writes with it: the element is not live while its content
+    // holds a value-less write of its commit (§4.7, §5.7 Live), in either order of strip and join
     let mut e = Writer::new(Source::session(5, 0), 7 << 16, 1);
     let later = ops::seq_set_elem(&mut e, &base, &et, 0, &Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(3))])).unwrap();
-    s3.join(later);
+    let mut s3 = base.clone();
+    s3.join(later.clone());
+    assert_eq!(s3.read(), Some(Value::List(vec![Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(3))])])));
     s3.strip(&in_ranges(&[range(&a)]));
-    assert_eq!(s3.read(), Some(Value::List(vec![Value::fields(vec![(2, Value::Int(3))])])));
+    assert_eq!(s3.read(), Some(Value::List(vec![])), "the element goes with its creation's expiry");
+    let mut s4 = base.clone();
+    s4.strip(&in_ranges(&[range(&a)]));
+    assert_eq!(s4.read(), Some(Value::List(vec![])));
+    s4.join(later);
+    assert_eq!(s4, s3);
+    assert!(s4.present(), "the list stays present and reads empty");
 }
 
 #[test]

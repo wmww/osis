@@ -31,18 +31,19 @@ pub type Eid = (Dot, Option<Value>);
 pub struct Entry {
     pub reset: Option<Stamp>,
     pub frag: Option<Box<Frag>>,
-    /// The creation write's stamp (dot = the entry's), while it survives pruning and the record
-    /// holds content (§5.6).
+    /// The creation write's stamp (dot = the entry's), while it survives pruning (§5.6); the record reads only
+    /// while it holds it.
     pub created: Option<Stamp>,
 }
 
-/// The records of map `entries` that are live, with what each reads as (§5.6): a keyed record whose fragment is
-/// present, unless its dot's greatest creation is held only by the dot's key-erased record; it reads as its fragment
-/// joined with the key-erased record's.
+/// The records of map `entries` that are live, with what each reads as (§5.6): a keyed record holding its creation
+/// (a removal prunes it, so a write newer than the removal never shows the entry again) whose fragment is present,
+/// unless its dot's greatest creation is held only by the dot's key-erased record; it reads as its fragment joined
+/// with the key-erased record's.
 pub fn live_records(entries: &BTreeMap<Eid, Entry>) -> Vec<(Eid, Frag)> {
     let mut out = Vec::new();
     for ((d, k), en) in entries {
-        let (Some(_), Some(f)) = (k, &en.frag) else { continue };
+        let (Some(_), Some(f), Some(_)) = (k, &en.frag, &en.created) else { continue };
         if !f.present() {
             continue;
         }
@@ -162,13 +163,18 @@ impl SeqElem {
     fn creation_counts(&self) -> bool {
         matches!(self.content, Content::Frag(_)) || self.char().is_some() || self.deleted.as_ref().map_or(false, |d| d.1)
     }
-    /// Text: the deleted flag. List: no present content fragment (reset, value-less or never had one).
+    /// Text: the deleted flag. List: not live (§5.7 Live): no creation held, the creation below the element's
+    /// reset, the creation value-less (its content holds a value-less write of its commit, §4.7), or no present
+    /// content fragment.
     pub fn is_deleted(&self, text: bool) -> bool {
         if text {
-            self.deleted.as_ref().map_or(false, |d| d.1)
-        } else {
-            !matches!(&self.content, Content::Frag(f) if f.present())
+            return self.deleted.as_ref().map_or(false, |d| d.1);
         }
+        let Some((c, _)) = &self.created else { return true };
+        if self.deleted.as_ref().is_some_and(|(r, _)| *c < *r) {
+            return true;
+        }
+        !matches!(&self.content, Content::Frag(f) if f.present() && !f.valueless_of(c))
     }
     fn is_record(&self) -> bool {
         self.created.is_some() || !self.pos.is_empty() || self.deleted.is_some() || matches!(self.content, Content::Frag(_))
@@ -308,7 +314,11 @@ impl Frag {
                 let k = case.as_ref().filter(|k| !valued || k.1.is_some()).map(|k| k.0.clone());
                 payloads.values().fold(k, |m, f| max_opt(m, child(f)))
             }
-            Frag::Map { entries, .. } => entries.values().fold(None, |m, e| max_opt(max_opt(m, e.reset.clone()), e.frag.as_deref().and_then(child))),
+            // a keyed record's creation counts (§4.3); a key-erased record's is value-less
+            Frag::Map { entries, .. } => entries.iter().fold(None, |m, ((_, k), e)| {
+                let c = e.created.clone().filter(|_| !valued || k.is_some());
+                max_opt(max_opt(max_opt(m, c), e.reset.clone()), e.frag.as_deref().and_then(child))
+            }),
             Frag::Seq { elems, .. } => elems.iter().fold(None, |m, (d, e)| {
                 let creation = !valued || e.creation_counts();
                 let m = if creation { max_opt(m, e.created.as_ref().map(|c| c.0.clone())) } else { m };
@@ -592,11 +602,8 @@ impl Frag {
                     if !en.created.as_ref().map_or(true, |c| survives(c, ee.as_ref())) {
                         en.created = None;
                     }
-                    // a creation lives only with content
-                    if en.frag.is_none() {
-                        en.created = None;
-                    }
-                    en.reset.is_some() || en.frag.is_some()
+                    // a creation is a write of its own: it may be left alone (its content un-merged)
+                    en.reset.is_some() || en.frag.is_some() || en.created.is_some()
                 });
             }
             Frag::Slots { .. } => unreachable!(),
@@ -796,16 +803,15 @@ impl Frag {
                 }
                 if bad(d.source.author()) {
                     en.frag = None;
+                    en.created = None;
                 } else if let Some(f) = &mut en.frag {
                     f.unmerge(bad);
                     if f.is_empty() {
                         en.frag = None;
                     }
                 }
-                if en.frag.is_none() {
-                    en.created = None;
-                }
-                en.reset.is_some() || en.frag.is_some()
+                // a creation left alone (its content the un-merged author's) stays: a record reads only with it
+                en.reset.is_some() || en.frag.is_some() || en.created.is_some()
             }),
             Frag::Seq { elems, .. } => {
                 for (d, el) in elems.iter_mut() {
@@ -840,6 +846,29 @@ impl Frag {
         self.strip_values(expired);
         // drop `Derived` records left without a write (their creation was known only from the value)
         self.prune(None);
+    }
+
+    /// Whether the fragment holds a value-less write (§4.7) of the commit of stamp `c` (its `ts` and source): a
+    /// register or case write without its value, a key-erased record's creation, a text element's creation whose
+    /// char is gone (a deleted element's tells nothing: snapshots never carry it). A list element whose content holds
+    /// one is not live (§5.7 Live): its creation's value, the content its commit wrote, is held value-less.
+    pub fn valueless_of(&self, c: &Stamp) -> bool {
+        let same = |s: &Stamp| s.ts == c.ts && owner(&s.dot).source == owner(&c.dot).source;
+        match self {
+            Frag::Slots { reg, slots } => reg.iter().any(|r| r.valueless_of(c)) || slots.values().any(|f| f.valueless_of(c)),
+            Frag::Register { write, .. } => matches!(write, Some((s, None)) if same(s)),
+            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values().filter_map(|e| e.frag.as_ref()).any(|f| f.valueless_of(c)),
+            Frag::Struct { fields, .. } => fields.values().any(|f| f.valueless_of(c)),
+            Frag::Enum { case, payloads, .. } => matches!(case, Some((s, None)) if same(s)) || payloads.values().any(|f| f.valueless_of(c)),
+            Frag::Map { entries, .. } => entries.iter().any(|((_, k), en)| {
+                (k.is_none() && en.created.as_ref().is_some_and(same)) || en.frag.as_ref().is_some_and(|f| f.valueless_of(c))
+            }),
+            Frag::Seq { text, elems, .. } => elems.values().any(|el| match &el.content {
+                Content::Frag(f) => f.valueless_of(c),
+                Content::None => *text && !el.is_deleted(true) && el.created.as_ref().is_some_and(|(s, _)| same(s)) && el.char().is_none(),
+                Content::Char(_) => false,
+            }),
+        }
     }
 
     fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool) {
@@ -886,8 +915,8 @@ impl Frag {
             Frag::Seq { elems, .. } => {
                 for (d, el) in elems.iter_mut() {
                     match &mut el.content {
-                        // a list element loses only the content writes of the expiring delta; others' nested
-                        // writes survive and show (§4.7; spec/requirements.md, Data model)
+                        // a list element loses the content writes of the expiring delta; others' nested writes
+                        // stay, hidden while the element is not live (§4.7, §5.7 Live)
                         Content::Frag(f) => f.strip_values(expired),
                         _ if exp(d) => {
                             el.content = Content::None;

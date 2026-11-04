@@ -968,7 +968,14 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
     if text {
         return e.char().is_some() && !e.flag();
     }
-    matches!(&e.content, SeqContent::Frag(f) if f.read().is_some())
+    // a list element is live while its creation is held, outlives the element's reset and is
+    // valued (its content holds no value-less write of its commit, §4.7), and its content reads
+    // (§5.7 Live): a write newer than the reset never shows the element again
+    let Some((c, _)) = &e.created else { return false };
+    if e.reset().is_some_and(|r| *c < r) {
+        return false;
+    }
+    matches!(&e.content, SeqContent::Frag(f) if f.read().is_some() && !f.valueless_of(c))
 }
 
 /// The read of a present sequence: string or list (§5.7 Read, §6).

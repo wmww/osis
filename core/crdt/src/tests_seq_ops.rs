@@ -1102,8 +1102,9 @@ fn cut_and_paste_keeps_identity_spec_5_7() {
 
 }
 
-/// §5.7: a list delete against a concurrent newer nested write resurrects the element holding
-/// only the newer write, on every node; an older nested write is dropped.
+/// §5.7 Live: a list delete against a concurrent newer nested write: the element stays deleted on
+/// every node and the write stays hidden (the stale writer reads it until the delete arrives); an
+/// older nested write is dropped.
 #[test]
 fn list_delete_vs_concurrent_nested_write_spec_5_7() {
     let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())));
@@ -1122,13 +1123,15 @@ fn list_delete_vs_concurrent_nested_write_spec_5_7() {
     let mut d = Replica::new(4);
     d.state = base.clone();
     let (older, _, _) = d.commit(4, &[field(7)], &view).unwrap();
-    let only = Value::List(vec![Value::Map([(Value::Int(2), Value::Int(9))].into_iter().collect())]);
     let mut s1 = base.clone();
     s1.join(del.clone());
     s1.join(older.clone());
     assert_eq!(s1.read(), Some(Value::List(vec![])), "an older nested write loses to the reset");
     s1.join(newer.clone());
-    assert_eq!(s1.read(), Some(only.clone()));
+    assert_eq!(s1.read(), Some(Value::List(vec![])), "a newer nested write does not revive the element");
+    let mut stale = base.clone();
+    stale.join(newer.clone());
+    assert_eq!(stale.read(), Some(Value::List(vec![item(1, 9)])), "read until the delete arrives");
     let mut s2 = base.clone();
     for x in [&newer, &older, &del] {
         s2.join(x.clone());
@@ -2470,4 +2473,32 @@ proptest! {
         prop_assert_eq!(read_str(&a.state), model.iter().collect::<String>());
         prop_assert_eq!(read_str(&a.state), read_str(&one.state));
     }
+}
+
+/// §5.7 Live, §4.7: a list element whose creating delta expires takes others' nested writes with
+/// it: its content holds a value-less write of the creation's commit, so the element is not live,
+/// whichever of the strip and the nested write comes first; the list stays present and reads empty.
+#[test]
+fn expired_list_element_hides_nested_write_spec_5_7() {
+    let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())));
+    let view = TyView(ty);
+    let item = |a: i64, b: i64| Value::Map([(Value::Int(1), Value::Int(a)), (Value::Int(2), Value::Int(b))].into_iter().collect());
+    let mut a = Replica::new(1);
+    a.commit(1, &[op(Op::Set(Value::List(vec![item(1, 2)])))], &view);
+    let base = a.state.clone();
+    let mut c = Replica::new(3);
+    c.state = base.clone();
+    let (newer, _, _) = c.commit(6, &[PathOp { path: vec![PathSeg::Index(0), PathSeg::Field(2)], op: Op::Set(Value::Int(9)) }], &view).unwrap();
+    let expired = |d: &crate::stamp::Dot| d.src == a.src;
+    let mut s1 = base.clone();
+    s1.join(newer.clone());
+    assert_eq!(s1.read(), Some(Value::List(vec![item(1, 9)])));
+    s1.strip(&expired);
+    assert_eq!(s1.read(), Some(Value::List(vec![])), "the element goes with its creation's expiry");
+    assert!(s1.present());
+    let mut s2 = base.clone();
+    s2.strip(&expired);
+    s2.join(newer);
+    assert_eq!(s2, s1, "strip commutes with the nested write");
+    assert_eq!(rebooted(&s1).read(), Some(Value::List(vec![])), "a snapshot carries it hidden");
 }
