@@ -498,9 +498,10 @@ impl SyncEngine {
         let labels = self.wanted_labels();
         for (conn, host) in conns {
             for (g, l, hosts) in &labels {
-                // failed under another thing (a hint's sender named this label under it): no Open
-                // is in flight, so it starts again under the thing that wants it now
-                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| x.group == *g || !matches!(x.phase, Phase::Failed | Phase::Refused { .. }));
+                // failed under another thing or a hint's other index (a hint's sender named this
+                // label so): no Open is in flight, so it starts again as what wants it now
+                let index = self.state.hints.get(l).filter(|h| h.via.is_none() && h.thing == *g).map(|h| h.index);
+                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| (x.group == *g && index.is_none_or(|i| i == x.index)) || !matches!(x.phase, Phase::Failed | Phase::Refused { .. }));
                 if !known && hosts.contains(&host) {
                     self.start_label(conn, *g, *l, out)?;
                 }
