@@ -832,12 +832,11 @@ pub static TEST: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 version 1;
 aspect t:reg.0: string;
-aspect t:gone.0: string [by: writer, keep_at_most: 1h];
+aspect t:gone.0: string [by: writer, keep_at_most: 0s];
 aspect t:brief.0: string [expires: 1h];
 aspect t:blob.0: blob;
 aspect t:big.0: map<string, string>;
 aspect t:gonemap.0: map<string, string> [by: writer, keep_at_most: 0s];
-aspect t:shortmap.0: map<string, string> [by: writer, keep_at_most: 10m];
 aspect t:gonetext.0: text [by: writer, keep_at_most: 0s];
 aspect t:briefmap.0: map<string, string> [expires: 1h];
 aspect t:seq.0: text;
@@ -851,7 +850,6 @@ pub const BRIEF: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:brief.
 pub const BLOB: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:blob.0", &TEST);
 pub const BIG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:big.0", &TEST);
 pub const GONEMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gonemap.0", &TEST);
-pub const SHORTMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:shortmap.0", &TEST);
 pub const GONETEXT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gonetext.0", &TEST);
 pub const BRIEFMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:briefmap.0", &TEST);
 pub const SEQ: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:seq.0", &TEST);

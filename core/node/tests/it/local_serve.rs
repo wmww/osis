@@ -16,7 +16,7 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
 version 1;
-aspect k:pairs.0: map<string, string> [by: writer, keep_at_most: 1h];
+aspect k:pairs.0: map<string, string> [by: writer, keep_at_most: 0s];
 "#,
 );
 const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:pairs.0", &KEEP);
@@ -113,10 +113,10 @@ fn expired_body_leaves_local_label_spec_sync_5() {
 }
 
 // spec/sync.md §7 (a right holder that must delete a body with live writes and finds no carrier
-// writes a covering snapshot first), spec/commits.md §5 (relative keep-at-most, plus
+// writes a covering snapshot first), spec/commits.md §5 (keep at most 0 after replaced, plus
 // `AT_MOST_GRACE` while the body has a live write): a map body partly replaced, its other key
-// still live, is kept and served past first death plus D with no snapshot, then leaves the
-// label served with no host only with a snapshot carrying that key under it.
+// still live, is kept and served past its first death with no snapshot, then leaves the label
+// served with no host only with a snapshot carrying that key under it.
 #[test]
 fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -139,13 +139,13 @@ fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
         })
     };
     let c1_held = |net: &mut Net| net.sync(a).entries(&l).iter().any(|(id, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c1) && net.sync(a).holds_blob(id));
-    // past first death plus 1 h, before the grace bound
-    for _ in 0..4 {
+    // past first death, before the grace bound
+    for _ in 0..3 {
         net.advance(1_000_000);
     }
     assert!(net.engine(a).body_not_dropped(&c1, &t, &kmap) && c1_held(&mut net), "kept and served before the grace bound");
     assert!(!snap(&mut net), "no carrier before the bound");
-    for _ in 0..4 {
+    for _ in 0..2 {
         net.advance(1_000_000);
     }
     let v = net.engine(a).get(&t, &kmap).unwrap().unwrap();

@@ -134,8 +134,6 @@ pub(crate) struct Requests {
     pub sent: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
     /// Deletes sent, likewise.
     pub deleting: BTreeMap<(LabelId, osis_base::BlobId), (u64, u64)>,
-    /// Timed deletes sent: recorded once the host says OK.
-    pub timed_sent: BTreeSet<(LabelId, osis_base::BlobId)>,
     /// Uploads sent replacing entries (spec/sync.md §5): those are gone once one is answered OK.
     /// A plain upload of the same blob waits meanwhile (two statuses could not be told apart).
     pub replacing: BTreeMap<(LabelId, osis_base::BlobId), Vec<osis_base::BlobId>>,
@@ -159,7 +157,6 @@ impl Requests {
         self.sent.retain(|(l, _), _| !gone(l));
         self.deleting.retain(|(l, _), _| !gone(l));
         self.replacing.retain(|(l, _), _| !gone(l));
-        self.timed_sent.retain(|(l, _)| !gone(l));
         self.reopens.retain(|l, _| !gone(l));
         self.refusals.retain(|l, _| !gone(l));
     }

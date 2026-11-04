@@ -62,7 +62,7 @@ pub struct WriteFlags {
     /// Expire this write at TS (RFC 3339 or ms)
     #[arg(long, value_name = "TS")]
     pub expires_at: Option<String>,
-    /// Retention: by=NAME,at_least=DUR,at_least_abs=TS,at_most=DUR,at_most_abs=TS
+    /// Retention: by=NAME,at_least=DUR,at_least_abs=TS,at_most=0s,at_most_abs=TS
     #[arg(long, value_name = "SPEC")]
     pub retention: Option<String>,
 }

@@ -33,15 +33,12 @@ aspect t:gonemap.0: map<string, string> [by: writer, keep_at_most: 0s];
 aspect t:brief.0: string [expires: 1h];
 aspect t:kept.0: string [by: writer, keep_at_least: 1d];
 aspect t:keptset.0: set<string> [by: writer, keep_at_least: 1d];
-aspect t:short.0: string [by: writer, keep_at_most: 10m];
-aspect t:short2.0: string [by: writer, keep_at_most: 10m];
 aspect t:list.0: list<string>;
 aspect t:listtext.0: list<text>;
 aspect t:text.0: text;
 aspect t:blob.0: blob;
 aspect t:book.0: book;
 aspect t:docs.0: map<string, text>;
-aspect t:shortmap.0: map<string, string> [by: writer, keep_at_most: 10m];
 "#,
 );
 
@@ -60,8 +57,6 @@ pub const GONEMAP: Aspect<Value> = Aspect::new("t:gonemap.0", &TEST);
 pub const BRIEF: Aspect<Value> = Aspect::new("t:brief.0", &TEST);
 pub const KEPT: Aspect<Value> = Aspect::new("t:kept.0", &TEST);
 pub const KEPTSET: Aspect<Value> = Aspect::new("t:keptset.0", &TEST);
-pub const SHORT: Aspect<Value> = Aspect::new("t:short.0", &TEST);
-pub const SHORT2: Aspect<Value> = Aspect::new("t:short2.0", &TEST);
 pub const LIST: Aspect<Value> = Aspect::new("t:list.0", &TEST);
 pub const TEXT: Aspect<Value> = Aspect::new("t:text.0", &TEST);
 pub const BLOB: Aspect<Value> = Aspect::new("t:blob.0", &TEST);
@@ -69,7 +64,6 @@ pub const BOOK: Aspect<Value> = Aspect::new("t:book.0", &TEST);
 pub const DOCS: Aspect<Value> = Aspect::new("t:docs.0", &TEST);
 pub const BIGMAP: Aspect<Value> = Aspect::new("t:big.0", &TEST);
 pub const LISTTEXT: Aspect<Value> = Aspect::new("t:listtext.0", &TEST);
-pub const SHORTMAP: Aspect<Value> = Aspect::new("t:shortmap.0", &TEST);
 
 pub fn ak(s: &str) -> Ak {
     Ak::new(s).unwrap()

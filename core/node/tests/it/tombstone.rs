@@ -175,7 +175,7 @@ fn other_retention_leaves_none_spec_commits_5() {
         ("default", Retention::default()),
         ("relative keep at least", Retention { at_least: Bound { abs: None, rel: Some(1000) }, ..Default::default() }),
         ("a finite absolute keep at least", Retention { at_least: finite, ..Default::default() }),
-        ("forever with a keep at most", Retention { by: PurgeBy::Writer, at_least: forever, at_most: Bound { abs: None, rel: Some(FOREVER) } }),
+        ("forever with a keep at most", Retention { by: PurgeBy::Writer, at_least: forever, at_most: Bound { abs: None, rel: Some(0) } }),
     ];
     for (what, r) in cases {
         let Chat { mut net, host, a, b, n, t, l } = chat();
@@ -886,7 +886,8 @@ fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_7() {
 // left waits), §5 (a lasting commit's header stays under its labels): a request whose one delta is
 // dead stays as a header-only blob; its killer expires, so a new device gets the header from the
 // host with nothing later on the aspect. Both headers wait, and the aspect's next write releases
-// them at the request's bound (issues/atomic-wait-no-later-commit.md).
+// them, the request's bound (its floor, then that write under keep at most 0) passed
+// (issues/atomic-wait-no-later-commit.md).
 #[test]
 fn a_lasting_request_waits_when_its_killer_left_spec_commits_4() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
@@ -934,9 +935,6 @@ fn a_lasting_request_waits_when_its_killer_left_spec_commits_4() {
     net.run();
     net.advance(120_000);
     net.run();
-    assert_eq!(pending(&mut net, n), 2, "a request's delta keeps its floor past that write");
-    net.advance(ROLE_KEEP_MS + 3_600_000);
-    net.run();
-    assert_eq!(pending(&mut net, n), 0);
+    assert_eq!(pending(&mut net, n), 0, "the request's floor passed: released by that write");
     assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), Some(&p));
 }

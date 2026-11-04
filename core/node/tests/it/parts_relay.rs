@@ -468,7 +468,7 @@ fn junk_first_on_a_unit_keeps_out_no_entry_spec_commits_4() {
         let mut x = case();
         let (a, b, h) = (x.a, x.b, x.h);
         let mut m = osis_node::Mutation::new();
-        m.retention(h, &GONE, crate::timed_dead::most(None, Some(3_600_000)).unwrap()).unwrap();
+        m.retention(h, &GONE, crate::timed_dead::most(None, Some(0)).unwrap()).unwrap();
         m.set(h, &GONE, &Value::Str("v".into())).unwrap();
         m.set(h, &REG, &Value::Str("third".into())).unwrap();
         let c = x.net.engine(a).commit(m).unwrap().unwrap();
@@ -597,7 +597,7 @@ fn relay_seed(seed: u64) {
     x.net.advance(10);
     // one thing in two bodies: a junk copy of one holds its true copy out, the other waits for it
     let mut m = osis_node::Mutation::new();
-    m.retention(h2, &GONE, crate::timed_dead::most(None, Some(3_600_000)).unwrap()).unwrap();
+    m.retention(h2, &GONE, crate::timed_dead::most(None, Some(0)).unwrap()).unwrap();
     m.set(h2, &GONE, &Value::Str("gone".into())).unwrap();
     m.set(h2, &REG, &Value::Str("two bodies".into())).unwrap();
     sources.push((a, x.net.engine(a).commit(m).unwrap().unwrap()));

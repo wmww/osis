@@ -349,7 +349,7 @@ fn range_reads_by_index_spec_crdt_5_7() {
         let e = &mut lp.peers[p].engine;
         assert_eq!(e.get_range(&t, &ak("t:text.0"), &[], 6..20).unwrap(), Some(s("world")));
         assert_eq!(e.get_range(&t, &ak("t:reg.0"), &[], 0..2).unwrap(), None);
-        assert_eq!(e.get_range(&t, &ak("t:short.0"), &[], 0..2).unwrap(), None);
+        assert_eq!(e.get_range(&t, &ak("t:gone.0"), &[], 0..2).unwrap(), None);
     }
 }
 

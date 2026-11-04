@@ -1546,20 +1546,11 @@ impl SyncEngine {
     pub(crate) fn delete_status(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, codes: Vec<Code>) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
         for (b, code) in ids.into_iter().zip(codes) {
-            // a timed delete is done once the host took it (spec/commits.md §5)
-            let timed = self.conns.get_mut(&conn).is_some_and(|c| {
+            if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.deleting.remove(&(l, b));
-                c.req.timed_sent.remove(&(l, b))
-            });
+            }
             match code {
                 Code::OK => {
-                    if timed {
-                        self.state.set_timed(host, l, b);
-                        continue;
-                    }
-                    if self.state.timed.contains(&(host, l, b)) {
-                        continue;
-                    }
                     self.absent_at(Some(host), l, b)?;
                 }
                 Code::NOT_HEAD => {}

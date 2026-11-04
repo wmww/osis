@@ -6,7 +6,8 @@
 //! A validity flip or an un-merge marks the aspect (`Core::deaths_due`): the transaction, or
 //! within a node-sync step the next read of deaths, recomputes its deaths from the held bodies
 //! and the state (`replay_all`). A write invalid here, or one an un-merge took, has no superseder
-//! to date it: under a relative keep at most it counts dead from its fall (`falls`, `date_falls`).
+//! to date it: under keep at most 0 after replaced it counts dead from its fall (`falls`,
+//! `date_falls`).
 
 use super::{body_of, bounded, check_at_most, held_part};
 use crate::engine::records::{self, Rd};
@@ -483,8 +484,8 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     Ok(())
 }
 
-/// Whether a fall dates a death on part `a` of a commit (spec/commits.md §5): it answers to a
-/// relative keep at most, and no role commit goes this way. A body with no such bound keeps its
+/// Whether a fall dates a death on part `a` of a commit (spec/commits.md §5): it answers to keep
+/// at most 0 after replaced, and no role commit goes this way. A body with no such bound keeps its
 /// fallen writes.
 pub(crate) fn falls(h: &osis_commit::Header, a: &osis_commit::AspectEntry) -> bool {
     a.retention.at_most.rel.is_some() && h.kind != osis_commit::Kind::Role
@@ -517,7 +518,7 @@ pub(crate) fn fall_moved(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()>
     Ok(())
 }
 
-/// Adds the falls of `(tid, ak)` to `got`: a held body under a relative keep at most counts dead
+/// Adds the falls of `(tid, ak)` to `got`: a held body under keep at most 0 after replaced counts dead
 /// from its own fall if invalid here (`fell_at`), and if valid with no write in the state and no
 /// death from the newest fall on the aspect, no earlier than its own `ts` (an un-merge took its
 /// writes under a record an invalid delta created; which one is not kept, so the date may be late,
@@ -580,7 +581,7 @@ fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: O
     Ok(tx.txn.set_death(tid, ak, &body, d)?)
 }
 
-/// Judges the keep-at-most bounds of the held bodies of `(tid, ak)` under a relative bound
+/// Judges the keep-at-most bounds of the held bodies of `(tid, ak)` under 0 after replaced
 /// again: their deaths or live writes may have changed (spec/commits.md §5).
 fn recheck_at_most(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();

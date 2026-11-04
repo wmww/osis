@@ -31,7 +31,6 @@ const BEAT: &[u8] = b"y/t";
 const GONE: &[u8] = b"y/g";
 const DOUBT: &[u8] = b"y/3";
 const HINT: &[u8] = b"y/i";
-const TIMED: &[u8] = b"y/d";
 const CARRIER: &[u8] = b"y/s";
 const REACH: &[u8] = b"y/r";
 /// The host secret (`SyncEngine::host_secret`).
@@ -268,8 +267,6 @@ pub struct State {
     /// `SyncEngine::secrets_count` when `doubts` were last checked. In memory.
     pub doubts_at: usize,
     pub hints: BTreeMap<LabelId, Hint>,
-    /// Timed deletes a host took (spec/sync.md §5), until the entry leaves that host.
-    pub timed: BTreeSet<(HostKey, LabelId, BlobId)>,
     /// The snapshots carrying a body's live writes once it was dropped, one per aspect at most
     /// (spec/sync.md §7), with when they were last set (`sweep_carriers`).
     pub carriers: BTreeMap<CommitId, Carriers>,
@@ -571,9 +568,6 @@ impl State {
                     let target = x.tid()?;
                     let peers = decode_addrs(&mut x, "link peer")?;
                     s.link_peers.insert(k, LinkPeer { target, peers });
-                }
-                b"d" => {
-                    s.timed.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
                 }
                 b"i" => {
                     let l = LabelId(r.arr()?);
@@ -940,10 +934,6 @@ impl State {
             self.deposited.remove(&(s, l, b));
             self.del_of(&l, &b, k);
             self.drop_doubt(s, l, b);
-            // a timed delete is done once the entry left that host
-            if self.timed.remove(&(s, l, b)) {
-                self.del_of(&l, &b, key(TIMED, &[&s, &l.0, &b.0]));
-            }
         }
     }
 
@@ -1288,13 +1278,6 @@ impl State {
         for (l, c) in gone {
             self.certs.remove(&(l, c));
             self.del(key(CERT, &[&l.0, &c.0]));
-        }
-    }
-
-    pub fn set_timed(&mut self, s: HostKey, l: LabelId, b: BlobId) {
-        if self.timed.insert((s, l, b)) {
-            self.touch(l, b);
-            self.put_of(&l, &b, key(TIMED, &[&s, &l.0, &b.0]), Vec::new());
         }
     }
 
@@ -1695,7 +1678,7 @@ mod tests {
     }
 
     // spec/sync.md §5, §7 (growth, notes/growth.md): a host's tombstoned answer is forgotten
-    // after `TOMBSTONE_LIFETIME`, a timed delete when its entry leaves that host, a dropped
+    // after `TOMBSTONE_LIFETIME`, a dropped
     // body's carriers once no entry of it (or of a body they carry) is left and they are that
     // old, a certificate placement once its commit's parts are all dropped; each round trips
     // until then.
@@ -1709,7 +1692,6 @@ mod tests {
         let mut s = State { now: 1_000, ..State::default() };
         s.set_present(h, l, b, true);
         s.set_doubtful(h, l, b, [3; WRAP_LEN]);
-        s.set_timed(h, l, b);
         // body carried by mid, itself dropped and carried by snap; other's carrier stands alone
         s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: body, parts: vec![(0, 0)], salt: [0; 16] }, memory: false });
         s.set_carrier(body, mid);
@@ -1726,7 +1708,7 @@ mod tests {
         s.sweep_carriers(1_000 + life - 1);
         s.set_present(h, l, b, false);
         s.flush(e).unwrap();
-        assert_eq!((rows(e, GONE), rows(e, TIMED), rows(e, CARRIER)), (1, 0, 3));
+        assert_eq!((rows(e, GONE), rows(e, CARRIER)), (1, 3));
         assert_eq!(rows(e, DOUBT), 0);
         s.expire_tombs(1_000 + life);
         s.sweep_carriers(1_000 + life);
@@ -1740,6 +1722,6 @@ mod tests {
         s.flush(e).unwrap();
         assert_eq!((rows(e, CARRIER), rows(e, CERT)), (0, 0));
         let back = State::load(e).unwrap();
-        assert!(back.gone.is_empty() && back.timed.is_empty() && back.carriers.is_empty() && back.certs.is_empty());
+        assert!(back.gone.is_empty() && back.carriers.is_empty() && back.certs.is_empty());
     }
 }

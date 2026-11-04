@@ -235,8 +235,10 @@ impl Schema {
                 }
             };
             self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
-            if def.retention.at_most.rel.is_some() && def.retention.by != PurgeBy::Writer {
-                bad(&item, "a relative keep_at_most needs by: writer (spec/commits.md §5)".into());
+            match def.retention.at_most.rel {
+                Some(d) if d != 0 => bad(&item, "a relative keep_at_most is only 0s (spec/commits.md §5)".into()),
+                Some(_) if def.retention.by != PurgeBy::Writer => bad(&item, "keep_at_most: 0s needs by: writer (spec/commits.md §5)".into()),
+                _ => {}
             }
             let r = &def.retention;
             if [def.expires, r.at_least.abs, r.at_least.rel, r.at_most.abs, r.at_most.rel].into_iter().any(big) {

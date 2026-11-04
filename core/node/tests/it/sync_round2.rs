@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Regressions from the simulator's phase C (sync bug-fix round 2): unopenable entries, pending
-//! commits and must-hold, wakes, keep-at-most drops, timed deletes, deposits in flight, clock
+//! commits and must-hold, wakes, keep-at-most drops, deletes lost with a connection, deposits in flight, clock
 //! offsets.
 
 use crate::net;
@@ -119,8 +119,8 @@ fn wake_for_expiry_and_after_every_tick_spec_commits_5() {
     assert_eq!(net.engine(a).get(&t, &Ak::new(BRIEF.ak()).unwrap()).unwrap(), None);
 }
 
-// spec/commits.md §5 (keep at most: body and copies gone at the bound): a tick dropping a
-// replaced body also drops its blob and key at the node.
+// spec/commits.md §5 (keep at most: body and copies gone at the bound): dropping a replaced body
+// under keep at most 0 also drops its blob and key at the node.
 // spec/commits.md §5 (keep at most)
 #[test]
 fn keep_at_most_drop_forgets_blob_spec_commits_5() {
@@ -133,26 +133,22 @@ fn keep_at_most_drop_forgets_blob_spec_commits_5() {
     m.set(t, &GONE, &s("one")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
+    let l = net.label(a);
+    let ids = blobs_of(&mut net, a, &l, &c1);
+    assert!(!ids.is_empty());
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("two")).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
-    let l = net.label(a);
-    let ids = blobs_of(&mut net, a, &l, &c1);
-    assert!(!ids.is_empty());
-    net.set_online(a, false);
-    net.clock.advance(2 * 3_600_000);
-    net.sync(a).handle(Event::Tick);
     for id in ids {
         assert!(!net.sync(a).holds_blob(&id), "dropped body's blob kept");
     }
 }
 
-// spec/commits.md §5, spec/sync.md §5 (timed delete): a timed delete lost with its connection
-// goes again on the next one, and the host deletes the replaced body at the bound with the
-// writer offline.
+// spec/commits.md §5, spec/sync.md §7: the delete of a body replaced under keep at most 0, lost
+// with its connection, goes again on the next one.
 #[test]
-fn timed_delete_resent_after_cut_spec_sync_5() {
+fn delete_resent_after_cut_spec_sync_7() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -167,20 +163,16 @@ fn timed_delete_resent_after_cut_spec_sync_5() {
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("two")).unwrap();
     net.engine(a).commit(m).unwrap();
-    // the pass's upload and timed delete are lost with the connection
+    // the pass's upload and delete are lost with the connection
     let lost = net.sync(a).handle(Event::Local);
     assert!(lost.iter().any(|x| matches!(x, Action::Send { .. })));
     net.set_online(a, false);
     net.set_online(a, true);
     // past the redial pause
     net.advance(6_000);
-    net.set_online(a, false);
-    net.clock.advance(2 * 3_600_000);
-    let now = net.now();
-    let out = net.hosts[host].hub.tick(now);
-    drop(out);
+    net.run();
     let at = net.host_ids(host, &l);
-    assert!(first.iter().all(|x| !at.contains(x)), "the host deleted the replaced body at its bound");
+    assert!(first.iter().all(|x| !at.contains(x)), "the delete went again on the next connection");
 }
 
 // spec/sync.md §5 (deposits): deposits not answered yet are not sent again by later passes.

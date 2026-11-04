@@ -641,7 +641,7 @@ pub fn work_sets(seed: u64) -> Res<Report> {
             _ => c,
         };
         let mut m = Mutation::new();
-        m.set(t, &workload::SHORT, &Value::Str(format!("s{k}"))).map_err(|e| sim.fail(e.to_string()))?;
+        m.set(t, &workload::LATEST, &Value::Str(format!("s{k}"))).map_err(|e| sim.fail(e.to_string()))?;
         let e = sim.engine(n)?;
         let at = e.now().0 + (10 + d.below(20)) * 60_000;
         let x = e.new_thing(&mut m, g);
@@ -845,7 +845,8 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
         x => x,
     };
     let half_hour = Bound { rel: Some(1_800_000), abs: None };
-    let keep = Retention { by, at_least: if bound == 1 { half_hour } else { Bound::default() }, at_most: if bound == 2 { half_hour } else { Bound::default() } };
+    let replaced = Bound { rel: Some(0), abs: None };
+    let keep = Retention { by, at_least: if bound == 1 { half_hour } else { Bound::default() }, at_most: if bound == 2 { replaced } else { Bound::default() } };
     let mut sim = sim("snapshot_rights", seed, NetWeights::default());
     let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;

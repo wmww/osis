@@ -503,14 +503,13 @@ impl SyncEngine {
     /// A request about `l` was refused.
     pub(crate) fn refused(&mut self, conn: ConnId, l: Option<LabelId>, kind: Request, code: Code, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(l) = l else { return Ok(()) };
-        // an upload or deposit refused whole goes again at a later pass; a timed delete too
+        // an upload, deposit or delete refused whole goes again at a later pass
         if let Some(c) = self.conns.get_mut(&conn) {
             if matches!(kind, Request::Upload | Request::Deposit) {
                 c.req.sent.retain(|(x, _), _| *x != l);
                 c.req.replacing.retain(|(x, _), _| *x != l);
             }
             if kind == Request::Delete {
-                c.req.timed_sent.retain(|(x, _)| *x != l);
                 c.req.deleting.retain(|(x, _), _| *x != l);
             }
         }

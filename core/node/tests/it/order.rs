@@ -185,8 +185,7 @@ fn aspect_of(op: u8) -> Ak {
         // (bodies drop as they die), a kept set, kept writes into a map (nested, removals), a
         // kept text, a kept text in a map entry
         16 => "t:kept.0",
-        17 => "t:short.0",
-        18 => "t:gone.0",
+        17 | 18 => "t:gone.0",
         19 | 20 => "t:gonemap.0",
         21 => "t:keptset.0",
         22 | 25 => "t:map.0",
@@ -196,26 +195,25 @@ fn aspect_of(op: u8) -> Ak {
         28 => "t:map.0",
         29 => "t:text.0",
         // under an absolute keep at most (`retention_of`): a list insert, a register also under
-        // a relative one
+        // 0 after replaced
         30 => "t:list.0",
-        31 => "t:short.0",
+        31 => "t:gone.0",
         _ => "t:docs.0",
     })
 }
 
-/// The retention of `op`'s writes when not the default: keep at least 30 min, or at most 30
-/// min or 0.
+/// The retention of `op`'s writes when not the default: keep at least 30 min, or at most 0 after
+/// replaced.
 fn keep_of(op: u8) -> Option<Retention> {
     let d = Some(HOUR / 2);
     let at_least = Some(Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
     // an author-only class among them: an admin's compaction drops none of another's bodies
     let author = Some(Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
-    let at_most = |rel| Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(rel) } });
+    let at_most = Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } });
     match op % OPS {
         16 | 21..=23 => at_least,
         24..=26 => author,
-        17 | 31 => at_most(HOUR / 2),
-        18..=20 => at_most(0),
+        17..=20 | 31 => at_most,
         _ => None,
     }
 }
@@ -297,7 +295,6 @@ fn key_of(op: u8) -> &'static osis_schema::Aspect<Value> {
         "t:list.0" => &LIST,
         "t:rec.0" => &REC,
         "t:kept.0" => &KEPT,
-        "t:short.0" => &SHORT,
         "t:gone.0" => &GONE,
         "t:gonemap.0" => &GONEMAP,
         "t:keptset.0" => &KEPTSET,
@@ -1212,8 +1209,8 @@ fn live_writes(e: &mut osis_node::Engine) -> BTreeMap<(Tid, Ak), BTreeSet<osis_c
 }
 
 /// Check (a), at the clock the node was delivered at: no dead body under keep at most 0 is held
-/// (it drops in the killing transaction) and no body under a relative keep at most is gone before
-/// its bound from the earliest superseder any held body gives. A commit carrying a purge request
+/// (it drops in the killing transaction) and no body under it is gone before the earliest
+/// superseder any held body gives. A commit carrying a purge request
 /// keeps its blobs to `ROLE_KEEP` (spec/commits.md §5, Purge request); a drop before a flip or an
 /// aspect flagged for a part gone at its expiry has no bound to judge against.
 fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played) -> Option<String> {
@@ -1228,7 +1225,9 @@ fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played) -> Option<String> {
     for id in ids {
         let Some(h) = e.header(&id) else { continue };
         for (ai, a) in h.aspects.iter().enumerate() {
-            let Some(d) = a.retention.at_most.rel else { continue };
+            if a.retention.at_most.rel.is_none() {
+                continue;
+            }
             let key = (format!("{:?}", a.tid), a.ak.as_str().to_string());
             let missing = e.core.ix.commits.get(&id).is_some_and(|m| m.missing.contains(&ai));
             if missing || o.carried.contains(&(a.tid, a.ak.clone())) || apart.contains(&key) {
@@ -1236,13 +1235,13 @@ fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played) -> Option<String> {
             }
             let what = format!("{id:?} ({:?}) {:?} {}", h.kind, a.tid, a.ak.as_str());
             if e.body_not_dropped(&id, &a.tid, &a.ak) {
-                if d == 0 && h.purge.is_empty() && e.deaths(&id, &a.tid, &a.ak).unwrap().is_some() && !e.body_live(&id, &a.tid, &a.ak).unwrap() {
+                if h.purge.is_empty() && e.deaths(&id, &a.tid, &a.ak).unwrap().is_some() && !e.body_live(&id, &a.tid, &a.ak).unwrap() {
                     return Some(format!("dead body kept under keep at most 0: {what}"));
                 }
             } else {
                 let first = o.deaths.get(&(id, a.tid, a.ak.clone())).copied().flatten();
                 let k = (format!("{id:?}"), key.0, key.1);
-                if h.kind.has_own_writes() && a.retention.at_most.abs.is_none_or(|t| t > now.0) && theirs.get(&k).is_some_and(|f| f.held) && !first.is_some_and(|y| y.0.wall_ms().0.saturating_add(d) <= now.0) {
+                if h.kind.has_own_writes() && a.retention.at_most.abs.is_none_or(|t| t > now.0) && theirs.get(&k).is_some_and(|f| f.held) && !first.is_some_and(|y| y.0.wall_ms().0 <= now.0) {
                     return Some(format!("body dropped before its keep-at-most bound: {what}, earliest superseder {first:?}"));
                 }
             }
@@ -1252,8 +1251,8 @@ fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played) -> Option<String> {
 }
 
 /// Check (a), later (the node ticked): no applied body under a keep at most is held past its
-/// bound (spec/commits.md §5): an absolute one, valid or not; first death plus D plus grace, live
-/// writes or not; and, whatever its deaths say, none under a relative one without a live write.
+/// bound (spec/commits.md §5): an absolute one, valid or not; first death plus grace, live writes
+/// or not; and, whatever its deaths say, none under 0 after replaced without a live write.
 fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> {
     let e = &mut p.engine;
     let mut ids = e.commit_ids();
@@ -1274,7 +1273,7 @@ fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> 
             if missing || !e.body_not_dropped(&id, &a.tid, &a.ak) {
                 continue;
             }
-            let dead_long = rel.zip(e.deaths(&id, &a.tid, &a.ak).unwrap()).is_some_and(|(d, x)| x.0.wall_ms().0 + d + osis_base::format::AT_MOST_GRACE_MS <= later_than(played).0);
+            let dead_long = rel.is_some() && e.deaths(&id, &a.tid, &a.ak).unwrap().is_some_and(|x| x.0.wall_ms().0 + osis_base::format::AT_MOST_GRACE_MS <= later_than(played).0);
             if !abs_past && !dead_long && e.body_live(&id, &a.tid, &a.ak).unwrap() {
                 continue;
             }
@@ -2280,7 +2279,7 @@ struct Seen {
     by_author: u64,
     /// Bodies of a purge that fell after a node applied it, given again and judged alike.
     restored: u64,
-    /// What the per-node checks judged: bodies under a relative keep at most (a), live writes
+    /// What the per-node checks judged: bodies under keep at most 0 after replaced (a), live writes
     /// of the keep-everything node (b), deltas past their expiry or purged (c).
     judged: [u64; 3],
     /// Deliveries at an earlier clock (`Clock`), and those whose move changed a state or a body.
@@ -3872,7 +3871,7 @@ fn invalid_snapshot_owner_late_seed_1042() {
 // spec/commits.md §5 (a body dropped for its keep bounds counts as never received: a copy that
 // arrives again joins): histories the harness found with holders writing keep-at-most ops
 // (shrunk), where a body is dropped at one node and held at another: seeds 1053, 1024 (its
-// killer turned invalid), 1085, 1200 (its own write turned invalid, the op 17 bound passed).
+// killer turned invalid), 1085, 1200 (its own write turned invalid, op 17's bound passed).
 // Given those bodies again, both nodes judge alike with no exception for the drop.
 #[test]
 fn drop_before_flip_joins_again_spec_commits_5() {

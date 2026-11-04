@@ -1,5 +1,5 @@
 # A commit waits for a dropped part when nothing later on its aspect is left
-> Summary: Atomic apply releases a missing part under a relative keep at most only once a later commit on its aspect is held. If the part's killer has itself left with nothing later (it expired or was purged, or was deleted as invalid), a fresh node holds no such commit and the commit waits until the aspect's next write or snapshot: its other parts read old, a lasting header shows no tombstone, and the node's view stays unsettled. Rare and self-healing; accepted for now.
+> Summary: Atomic apply releases a missing part under keep at most 0 after replaced only once a later commit on its aspect is held. If the part's killer has itself left with nothing later (it expired or was purged, or was deleted as invalid), a fresh node holds no such commit and the commit waits until the aspect's next write or snapshot: its other parts read old, a lasting header shows no tombstone, and the node's view stays unsettled. Rare and self-healing; accepted for now.
 > Tags: engine, sync
 
 Repro sketch: c1 = {m (at most 0), k}; c2 = {m with `expires`}. c1's `m` body drops at the kill and is deleted at hosts; at T hosts delete c2. A fresh node gets only c1's `k` blob: nothing on `m` is left to show that c1's part could have gone (`apply::at_most_bound`), so c1 pends and `k` reads old there.

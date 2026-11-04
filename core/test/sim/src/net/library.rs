@@ -759,9 +759,9 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) ->
     Ok(())
 }
 
-/// Keep-at-most races (spec/commits.md §5): two writers overwrite an aspect kept at most 10
-/// minutes after replaced, under a lossy network; an hour later every replaced body is gone from
-/// the host and from honest nodes, the current value stays.
+/// Keep-at-most races (spec/commits.md §5): two writers overwrite an aspect kept at most 0 after
+/// replaced, under a lossy network; an hour later every replaced body is gone from the host and
+/// from honest nodes, the current value stays.
 pub fn keep_at_most(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x4a);
     let mut sim = sim("keep_at_most", seed, NetWeights::default());
@@ -777,7 +777,7 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
     for k in 0..8u32 {
         let n = if d.pct(50) { a } else { b };
         let mut m = Mutation::new();
-        m.set(t, &workload::SHORT, &Value::Str(format!("v{k}"))).map_err(|e| sim.fail(e.to_string()))?;
+        m.set(t, &workload::LATEST, &Value::Str(format!("v{k}"))).map_err(|e| sim.fail(e.to_string()))?;
         written.push(sim.commit(n, m)?.ok_or_else(|| sim.fail("wrote nothing"))?);
         sim.run(20)?;
     }
@@ -786,7 +786,7 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
     sim.advance(HOUR_MS)?;
     sim.run(20)?;
     sim.run_until_quiescent(40)?;
-    let k = super::scenarios::ak(&sim, &workload::SHORT)?;
+    let k = super::scenarios::ak(&sim, &workload::LATEST)?;
     let v = sim.engine(a)?.get(&t, &k).map_err(|e| sim.fail(e.to_string()))?;
     if v.is_none() {
         return Err(sim.fail("the current value of a keep-at-most aspect is gone"));

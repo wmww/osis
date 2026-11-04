@@ -12,11 +12,9 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 version 1;
 aspect k:kept.0: string [by: writer, keep_at_least: 1d];
-aspect k:short.0: string [by: writer, keep_at_most: 10m];
 "#,
 );
 const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:kept.0", &KEEP);
-const SHORT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:short.0", &KEEP);
 
 // spec/commits.md §5 (keep at least): a compaction before the bound neither drops the covered
 // bodies nor deletes them at the host; once the bound has passed (by MAX_DRIFT) it does both.
@@ -132,22 +130,19 @@ fn compaction_across_skew_no_churn_spec_sync_7() {
     }
 }
 
-// spec/commits.md §5 (deaths dated per node), spec/sync.md §6: X < Y < Z on a kept register
-// and on a keep-at-most-10m one; right holder A held Y before Z (X dies at Y), B held Z before Y
-// (X dies at Z, two hours later). Once A's bound has passed it deletes X at the host
-// (kept: covered by its compaction; at most: a timed delete); B, still before its own bound,
-// does not place it again (it has no live write): one deletion, no fresh encryption, and B
-// drops it by its own bound.
+// spec/commits.md §5 (deaths dated per node), spec/sync.md §6: X < Y < Z on a kept register;
+// right holder A held Y before Z (X dies at Y), B held Z before Y (X dies at Z, two hours later).
+// Once A's bound has passed it deletes X at the host (covered by its compaction); B, still before
+// its own bound, does not place it again (it has no live write): one deletion, no fresh
+// encryption, and B drops it by its own bound.
 #[test]
 fn deletion_across_local_dating_no_churn_spec_sync_6() {
-    for at_most in [false, true] {
-        assert_eq!(local_dating_churn(at_most), (1, 1), "at most {at_most}: deletions, blobs of X");
-    }
+    assert_eq!(local_dating_churn(), (1, 1), "deletions, blobs of X");
 }
 
 /// The scenario of `deletion_across_local_dating_no_churn_*`: the host's deletions of X's
 /// blobs and how many blobs of X either node knew.
-fn local_dating_churn(at_most: bool) -> (usize, usize) {
+fn local_dating_churn() -> (usize, usize) {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -155,7 +150,7 @@ fn local_dating_churn(at_most: bool) -> (usize, usize) {
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[host]);
     let t = net.item(a, g, g, "x");
-    let k = if at_most { &SHORT } else { &KEPT };
+    let k = &KEPT;
     let set = |net: &mut Net, n: usize, v: &str| {
         let mut m = Mutation::new();
         m.set(t, k, &s(v)).unwrap();
@@ -196,13 +191,11 @@ fn local_dating_churn(at_most: bool) -> (usize, usize) {
         net.set_online(n, true);
     }
     net.run();
-    if !at_most {
-        let acts = net.sync(a).compact(&t, &ak).unwrap();
-        net.actions(a, acts);
-        net.run();
-    }
-    // 5 min steps from before A's bound (at most: passed offline) to past B's
-    let bound = if at_most { net.now() } else { ty.wall_ms().0 + 86_400_000 + osis_base::format::MAX_DRIFT_MS - 10 * 60_000 };
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    // 5 min steps from before A's bound to past B's
+    let bound = ty.wall_ms().0 + 86_400_000 + osis_base::format::MAX_DRIFT_MS - 10 * 60_000;
     net.advance(bound.saturating_sub(net.now()));
     for _ in 0..30 {
         look(&mut net, &mut seen);

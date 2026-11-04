@@ -152,10 +152,10 @@ impl World {
                 if what == 2 {
                     m.set(t, &aks[3], &Value::Int(g as i64)).unwrap();
                 }
-                // a relative bound: deaths are tracked; 0 drops dead bodies at once
+                // a relative bound: deaths are tracked; at most 0 drops dead bodies at once
                 match r.below(3) {
                     0 => {
-                        m.retention(t, &aks[asp], Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(3_600_000) } }).unwrap();
+                        m.retention(t, &aks[asp], bounded()).unwrap();
                     }
                     1 => {
                         m.retention(t, &aks[asp], Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } }).unwrap();
@@ -379,8 +379,9 @@ fn packages(w: &mut World, from: usize, ids: &[CommitId]) -> Vec<Package> {
     ids.iter().map(|id| w.lp.peers[from].engine.package(id).unwrap().unwrap()).collect()
 }
 
+/// A relative keep at least: deaths are tracked, no body drops for them.
 fn bounded() -> Retention {
-    Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(3_600_000) } }
+    Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(3_600_000) }, at_most: Bound::default() }
 }
 
 /// Node 3 holds a paged map (its own fill, so its deltas carry bounded retention); node 0

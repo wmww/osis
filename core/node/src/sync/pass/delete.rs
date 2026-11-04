@@ -1,7 +1,6 @@
 //! A pass's deletion judgment (spec/sync.md §5-§7): which entries under the label are
 //! must-not-hold and may go now (`judge`, `deletable`), carriers first, by the label delete key
-//! or a delete key, timed deletes for relative keep-at-most, chunks of dropped deltas; at a
-//! host (`deletions`) and in this node's own served state (`local_deletions`).
+//! or a delete key, chunks of dropped deltas; at a host (`deletions`) and in this node's own served state (`local_deletions`).
 
 use super::*;
 use crate::engine::MemoryDrop;
@@ -123,33 +122,13 @@ impl SyncEngine {
             note.waits.extend(aspects);
             return Ok(Fate::Wait);
         }
-        Ok(match self.delete_for(at.keys, &at.l, id, e, None)? {
+        Ok(match self.delete_for(at.keys, &at.l, id, e)? {
             Some(item) => Fate::Delete(why, item, via),
             None => {
                 note.keyless = true;
                 Fate::Wait
             }
         })
-    }
-
-    /// A body under a relative keep-at-most with a known bound and no live write, held by entry
-    /// `id` under `l` (spec/commits.md §5): its entry and bound, for a timed delete. A body with
-    /// a live write gets none: it goes at the next compaction or its bound, carried then
-    /// (`deletable`), so an edit erasing part of it does not re-snapshot the aspect. `None`: not
-    /// under a relative keep-at-most; else what the body waits on and, when due, entry and bound.
-    fn keep_at_most_due(&mut self, l: &LabelId, b: &Body, id: &BlobId) -> Result<Option<(AtMost, TimedDue)>> {
-        let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
-        let Some(a) = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)) else { return Ok(None) };
-        if a.retention.at_most.rel.is_none() {
-            return Ok(None);
-        }
-        let (tid, ak) = (a.tid, a.ak.clone());
-        // deaths and bound first: liveness costs a look through the state (cached per aspect)
-        let Some(t) = self.engine.body_keep(&b.commit, &tid, &ak)?.at_most else { return Ok(Some((AtMost::Live(tid, ak), None))) };
-        if self.engine.body_live(&b.commit, &tid, &ak).unwrap_or(true) {
-            return Ok(Some((AtMost::Dead(tid, ak), None)));
-        }
-        Ok(Some((AtMost::Dead(tid, ak), self.state.entries.get(&(*l, *id)).cloned().map(|e| (e, t)))))
     }
 
     /// Facts about an entry under the label (spec/sync.md §6): `None` when this node cannot
@@ -373,8 +352,7 @@ impl SyncEngine {
     }
 
     /// Deletes must-not-hold entries present at the host, carriers first (spec/sync.md §6,
-    /// §7); timed deletes for bodies under a relative keep-at-most (spec/commits.md §5). Judges
-    /// the entries and bodies of `scope`; what waits goes into `left`.
+    /// §7). Judges the entries and bodies of `scope`; what waits goes into `left`.
     pub(super) fn deletions(&mut self, conn: ConnId, at: &At, bodies: &[Body], scope: &Scope, left: &mut Left, out: &mut Vec<crate::sync::Action>) -> Result<()> {
         let (g, l, keys, settled) = (&at.g, at.l, at.keys, at.settled);
         let Some(host) = at.host else { return Ok(()) };
@@ -479,38 +457,6 @@ impl SyncEngine {
                 if let Some(item) = delete_item(keys, &l, b, None, None, &[]) {
                     send(self, b);
                     items.push(item);
-                }
-            }
-        }
-        // timed deletes: bodies under a relative keep-at-most with a known bound
-        for b in bodies {
-            let Some(id) = self.entry_for(Some(&host), &l, b) else { continue };
-            if !self.state.is_present(&host, &l, &id) || self.state.timed.contains(&(host, l, id)) {
-                continue;
-            }
-            if self.conns.get(&conn).is_some_and(|c| c.req.timed_sent.contains(&(l, id))) {
-                left.commits.insert(b.commit);
-                continue;
-            }
-            let Some((a, due)) = self.keep_at_most_due(&l, b, &id)? else { continue };
-            let Some((e, t)) = due else {
-                // judged again when its bound or liveness changes (`AtMost`)
-                match a {
-                    AtMost::Live(t, k) => left.wait_at_most(t, k, b.commit),
-                    AtMost::Dead(t, k) => left.wait(t, k, b.commit),
-                }
-                continue;
-            };
-            match self.delete_for(keys, &l, &id, &e, Some(WallMs(t)))? {
-                Some(item) => {
-                    left.commits.insert(b.commit);
-                    if let Some(c) = self.conns.get_mut(&conn) {
-                        c.req.timed_sent.insert((l, id));
-                    }
-                    items.push(item);
-                }
-                None => {
-                    left.waits.keyless.insert(b.commit);
                 }
             }
         }
@@ -781,9 +727,9 @@ impl SyncEngine {
     }
 
     /// A delete item for an entry: the label delete key, else a delete key this node holds.
-    fn delete_for(&mut self, keys: &HeadKeys, l: &LabelId, id: &BlobId, e: &Entry, at: Option<WallMs>) -> Result<Option<osis_label::DeleteItem>> {
+    fn delete_for(&mut self, keys: &HeadKeys, l: &LabelId, id: &BlobId, e: &Entry) -> Result<Option<osis_label::DeleteItem>> {
         if keys.delete.is_some() {
-            return Ok(delete_item(keys, l, *id, at, None, &[]));
+            return Ok(delete_item(keys, l, *id, None, None, &[]));
         }
         Ok(match &e.kind {
             Kind::Commit { commit, parts, salt } => {
@@ -797,7 +743,7 @@ impl SyncEngine {
                     }
                     None => (self.engine.delete_secrets_of(commit, parts), self.engine.header(commit).map(|h| h.blind)),
                 };
-                delete_item(keys, l, *id, at, hb.as_ref().map(|hb| (salt, hb)), &dks)
+                delete_item(keys, l, *id, None, hb.as_ref().map(|hb| (salt, hb)), &dks)
             }
             _ => None,
         })
