@@ -650,7 +650,7 @@ fn gap_cover_spec_commits_5() {
 #[test]
 #[ignore = "tier 2"]
 fn gap_cover_large_spec_commits_5() {
-    osis_base::testenv::Seeds::from_env("OSIS_GAPCOVER_START", "OSIS_GAPCOVER_SEEDS", 0..100).run("sessions::gap_cover_large_spec_commits_5", gap_cover_replay, |seed| gap_cover_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
+    osis_base::testenv::Seeds::from_env("OSIS_GAPCOVER_START", "OSIS_GAPCOVER_SEEDS", osis_base::testenv::large(0..100)).run("sessions::gap_cover_large_spec_commits_5", gap_cover_replay, |seed| gap_cover_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
 }
 
 fn pruned_replay(seed: u64) -> String {
@@ -668,7 +668,7 @@ fn pruned_sessions_converge_spec_crdt_8() {
 #[test]
 #[ignore = "tier 2"]
 fn pruned_sessions_converge_large_spec_crdt_8() {
-    osis_base::testenv::Seeds::from_env("OSIS_SESSIONS_START", "OSIS_SESSIONS_SEEDS", 0..200).run("sessions::pruned_sessions_converge_large_spec_crdt_8", pruned_replay, |seed| pruned_sessions_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
+    osis_base::testenv::Seeds::from_env("OSIS_SESSIONS_START", "OSIS_SESSIONS_SEEDS", osis_base::testenv::large(0..200)).run("sessions::pruned_sessions_converge_large_spec_crdt_8", pruned_replay, |seed| pruned_sessions_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
 }
 
 // spec/commits.md §4, §5: Z1 (earlier) and Z2 (after c, no trace of c's session) hold the same. Z2

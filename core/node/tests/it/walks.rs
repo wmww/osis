@@ -506,7 +506,7 @@ fn open_equals_rebuild_random_secrets_compactions() {
 #[test]
 #[ignore = "tier 2"]
 fn open_equals_rebuild_random_secrets_compactions_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_WALKS_SECRETS_START", "OSIS_WALKS_SECRETS_SEEDS", 0..200).run("walks::open_equals_rebuild_random_secrets_compactions_large", secrets_replay, secrets_history);
+    osis_base::testenv::Seeds::from_env("OSIS_WALKS_SECRETS_START", "OSIS_WALKS_SECRETS_SEEDS", osis_base::testenv::large(0..200)).run("walks::open_equals_rebuild_random_secrets_compactions_large", secrets_replay, secrets_history);
 }
 
 fn secrets_replay(s: u64) -> String {
@@ -783,7 +783,7 @@ fn open_equals_rebuild_random_histories() {
 #[test]
 #[ignore = "tier 2"]
 fn open_equals_rebuild_random_histories_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_WALKS_START", "OSIS_WALKS_SEEDS", 0..200).run("walks::open_equals_rebuild_random_histories_large", walks_replay, |seed| random_history(seed, 1, false, false));
+    osis_base::testenv::Seeds::from_env("OSIS_WALKS_START", "OSIS_WALKS_SEEDS", osis_base::testenv::large(0..200)).run("walks::open_equals_rebuild_random_histories_large", walks_replay, |seed| random_history(seed, 1, false, false));
 }
 
 fn walks_replay(s: u64) -> String {
@@ -835,7 +835,7 @@ fn open_equals_rebuild_random_histories_forged() {
 #[test]
 #[ignore = "tier 2"]
 fn open_equals_rebuild_random_histories_forged_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_WALKS_FORGED_START", "OSIS_WALKS_FORGED_SEEDS", 0..200).run("walks::open_equals_rebuild_random_histories_forged_large", forged_replay, |seed| random_history(seed, 1, false, true));
+    osis_base::testenv::Seeds::from_env("OSIS_WALKS_FORGED_START", "OSIS_WALKS_FORGED_SEEDS", osis_base::testenv::large(0..200)).run("walks::open_equals_rebuild_random_histories_forged_large", forged_replay, |seed| random_history(seed, 1, false, true));
 }
 
 fn forged_replay(s: u64) -> String {
@@ -870,7 +870,7 @@ fn open_equals_rebuild_random_histories_moves() {
 #[ignore = "tier 2"]
 fn open_equals_rebuild_random_histories_moves_large() {
     let doubles = osis_base::testenv::u64_var("OSIS_WALKS_MOVES_DOUBLES") != Some(0);
-    let s = osis_base::testenv::Seeds::from_env("OSIS_WALKS_MOVES_START", "OSIS_WALKS_MOVES_SEEDS", 0..100);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_WALKS_MOVES_START", "OSIS_WALKS_MOVES_SEEDS", osis_base::testenv::large(0..100));
     s.run("walks::open_equals_rebuild_random_histories_moves_large", |seed| moves_replay(seed, doubles), |seed| random_history(seed, 3, doubles, false));
 }
 

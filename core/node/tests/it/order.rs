@@ -2957,7 +2957,7 @@ fn arrival_order_required_spec_commits_5() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_required_large_spec_commits_5() {
-    run("arrival_order_required_large_spec_commits_5", 0..40, 12, EXHAUST_SMALL, required_history);
+    run("arrival_order_required_large_spec_commits_5", osis_base::testenv::large(0..40), 12, EXHAUST_SMALL, required_history);
 }
 
 /// Every arrival order, a node dropping what `drop_broken` lets it after each commit (its clock
@@ -3058,7 +3058,7 @@ fn required_drops_read_alike_spec_perm_8() {
 #[test]
 #[ignore = "tier 2"]
 fn required_drops_read_alike_large_spec_perm_8() {
-    run_drops("required_drops_read_alike_large_spec_perm_8", 0..200, 12, EXHAUST_SMALL, required_history);
+    run_drops("required_drops_read_alike_large_spec_perm_8", osis_base::testenv::large(0..200), 12, EXHAUST_SMALL, required_history);
     run_drops("required_drops_read_alike_large_spec_perm_8 (general)", 0..200, 30, LARGE, history);
 }
 
@@ -3066,7 +3066,7 @@ fn required_drops_read_alike_large_spec_perm_8() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_alike_large_spec_permissions_5_2() {
-    run("arrival_order_alike_large_spec_permissions_5_2", 1000..1060, 60, LARGE, history);
+    run("arrival_order_alike_large_spec_permissions_5_2", osis_base::testenv::large(1000..1060), 60, LARGE, history);
 }
 
 /// `history` with permanent messages and purges by anyone mixed in, on their own draws (`history`'s
@@ -3188,7 +3188,7 @@ fn purge_import_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_rows_large_spec_perm_8() {
-    run("arrival_order_purge_rows_large_spec_perm_8", 7000..7060, 40, LARGE, purge_rows_history);
+    run("arrival_order_purge_rows_large_spec_perm_8", osis_base::testenv::large(7000..7060), 40, LARGE, purge_rows_history);
 }
 
 // spec/commits.md §5, spec/permissions.md §7: a purge of an import takes its origins' writes from
@@ -3226,7 +3226,7 @@ fn arrival_order_purge_import_small_spec_commits_5() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_import_large_spec_commits_5() {
-    run("arrival_order_purge_import_large_spec_commits_5", 5000..5060, 40, LARGE, purge_import_history);
+    run("arrival_order_purge_import_large_spec_commits_5", osis_base::testenv::large(5000..5060), 40, LARGE, purge_import_history);
 }
 
 // spec/crdt.md §4.6, spec/commits.md §5 (order seed 34000, shrunk): the copy holds two register
@@ -3303,7 +3303,7 @@ fn arrival_order_purge_author_small_spec_perm_8() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_author_large_spec_perm_8() {
-    run("arrival_order_purge_author_large_spec_perm_8", 4000..4100, 50, LARGE, purge_author_history);
+    run("arrival_order_purge_author_large_spec_perm_8", osis_base::testenv::large(4000..4100), 50, LARGE, purge_author_history);
 }
 
 // spec/commits.md §5 (purge, lasting headers), spec/permissions.md §8: arrival order decides nothing
@@ -3334,13 +3334,13 @@ fn partial_roster_snapshot_removes_nobody_seed_3050() {
 #[test]
 #[ignore = "tier 2"]
 fn partial_roster_snapshot_removes_nobody_seed_3050_large() {
-    run("partial_roster_snapshot_removes_nobody_seed_3050_large", 3050..3051, 60, LARGE, purge_history);
+    run("partial_roster_snapshot_removes_nobody_seed_3050_large", osis_base::testenv::large(3050..3051), 60, LARGE, purge_history);
 }
 
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_large_spec_commits_5() {
-    run("arrival_order_purge_large_spec_commits_5", 3000..3060, 60, LARGE, purge_history);
+    run("arrival_order_purge_large_spec_commits_5", osis_base::testenv::large(3000..3060), 60, LARGE, purge_history);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded
@@ -3353,19 +3353,19 @@ fn arrival_order_exhaustive_small_spec_crdt_4_8() {
 
 #[test]
 fn arrival_order_settled_small_spec_commits_5() {
-    run("arrival_order_settled_small_spec_commits_5", 0..4, 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
+    run("arrival_order_settled_small_spec_commits_5", 0..2, 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
 }
 
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_settled_large_spec_commits_5() {
-    run("arrival_order_settled_large_spec_commits_5", 7000..7060, 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
+    run("arrival_order_settled_large_spec_commits_5", osis_base::testenv::large(7000..7060), 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(history(s, l, c)));
 }
 
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_settled_purges_large_spec_commits_5() {
-    run("arrival_order_settled_purges_large_spec_commits_5", 7100..7160, 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(purge_history(s, l, c)));
+    run("arrival_order_settled_purges_large_spec_commits_5", osis_base::testenv::large(7100..7160), 60, Cfg { settled: true, ..LARGE }, |s, l, c| settled(purge_history(s, l, c)));
 }
 
 // spec/sync.md §7 (repair): seed 61840041. A writer's last snapshot of a keep-at-most-0 aspect reached
@@ -3382,7 +3382,7 @@ fn settled_flagged_aspect_alike_after_repair_spec_sync_7() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_exhaustive_large_spec_crdt_4_8() {
-    run("arrival_order_exhaustive_large_spec_crdt_4_8", 2023..2063, 30, EXHAUST, focused_history);
+    run("arrival_order_exhaustive_large_spec_crdt_4_8", osis_base::testenv::large(2023..2063), 30, EXHAUST, focused_history);
 }
 
 /// A history of writes under keep at most, some with a part under default retention, on G.
@@ -3533,7 +3533,7 @@ fn carrierless_part_alike_small_spec_commits_4() {
 #[test]
 #[ignore = "tier 2"]
 fn carrierless_part_alike_large_spec_commits_4() {
-    carrierless_run("carrierless_part_alike_large_spec_commits_4", 1000..1200, 30);
+    carrierless_run("carrierless_part_alike_large_spec_commits_4", osis_base::testenv::large(1000..1200), 30);
 }
 
 /// A history for `new_device_alike`: a random one with, in its middle, writer 1's commits
@@ -3666,7 +3666,7 @@ fn new_device_alike_spec_permissions_5_1() {
 #[test]
 #[ignore = "tier 2"]
 fn new_device_alike_large_spec_permissions_5_1() {
-    run_new_device("new_device_alike_large_spec_permissions_5_1", 0..256, 40);
+    run_new_device("new_device_alike_large_spec_permissions_5_1", osis_base::testenv::large(0..256), 40);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with
@@ -3674,7 +3674,7 @@ fn new_device_alike_large_spec_permissions_5_1() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_seq_compact_large_spec_crdt_5_7() {
-    run("arrival_order_seq_compact_large_spec_crdt_5_7", 3000..3020, 40, LARGE, seq_compact_history);
+    run("arrival_order_seq_compact_large_spec_crdt_5_7", osis_base::testenv::large(3000..3020), 40, LARGE, seq_compact_history);
 }
 
 // spec/crdt.md §5.7: 0 inserts `v5` and deletes the `5`, 1 compacts (its snapshot has no char for

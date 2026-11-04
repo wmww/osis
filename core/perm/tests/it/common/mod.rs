@@ -570,7 +570,7 @@ pub fn shard_seed(seed: u64, i: u64) -> u64 {
 /// `shard_seed(seed, i)`; returns their results in shard order. A panicking shard panics the
 /// run (its message is printed by the shard's thread).
 pub fn sharded<T: Send>(samples: u64, seed: u64, run: impl Fn(u64, u64) -> T + Sync) -> Vec<T> {
-    let per = (samples / SHARDS).max(1);
+    let per = (osis_base::testenv::large_n(samples) / SHARDS).max(1);
     let run = &run;
     std::thread::scope(|s| {
         let hs: Vec<_> = (0..SHARDS)

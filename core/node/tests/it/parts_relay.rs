@@ -705,7 +705,7 @@ fn relay_differential_spec_commits_4() {
 #[test]
 #[ignore]
 fn relay_differential_large_spec_commits_4() {
-    osis_base::testenv::Seeds::from_env("OSIS_RELAY_START", "OSIS_RELAY_SEEDS", 1..151).run("parts_relay::relay_differential_large_spec_commits_4", relay_replay, relay_seed);
+    osis_base::testenv::Seeds::from_env("OSIS_RELAY_START", "OSIS_RELAY_SEEDS", osis_base::testenv::large(1..151)).run("parts_relay::relay_differential_large_spec_commits_4", relay_replay, relay_seed);
 }
 
 fn relay_replay(s: u64) -> String {

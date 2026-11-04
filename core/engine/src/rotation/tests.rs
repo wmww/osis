@@ -814,7 +814,7 @@ fn cycle_removals_leak_nothing_random() {
 #[test]
 #[ignore = "tier 2"]
 fn cycle_removals_leak_nothing_random_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_CYCLE_START", "OSIS_CYCLE_SEEDS", 1_000..1_200);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_CYCLE_START", "OSIS_CYCLE_SEEDS", osis_base::testenv::large(1_000..1_200));
     cycle_stats(s.run("rotation::tests::cycle_removals_leak_nothing_random_large", cycle_replay, cycle_removals));
 }
 
@@ -1033,7 +1033,7 @@ fn rotator_lacking_write_resealed_spec_permissions_3() {
 #[test]
 #[ignore = "tier 2"]
 fn rotator_lacking_write_resealed_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_LACKING_START", "OSIS_LACKING_SEEDS", 955..975);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_LACKING_START", "OSIS_LACKING_SEEDS", osis_base::testenv::large(955..975));
     let replay = |s: u64| format!("OSIS_LACKING_START={s} OSIS_LACKING_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::rotator_lacking_write_resealed_large -- --ignored --exact");
     s.run("rotation::tests::rotator_lacking_write_resealed_large", replay, lacking_write_resealed);
 }
@@ -1188,7 +1188,7 @@ fn forked_reseals_settle_issue_seeds_spec_permissions_3() {
 #[test]
 #[ignore = "tier 2"]
 fn forked_reseals_settle_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_FORKS_START", "OSIS_FORKS_SEEDS", 0..100);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_FORKS_START", "OSIS_FORKS_SEEDS", osis_base::testenv::large(0..100));
     forked_stats(s.run("rotation::tests::forked_reseals_settle_large", forked_replay, forked_reseals));
 }
 
@@ -1637,7 +1637,7 @@ fn rotator_beside_forged_rotation_spec_crypto_4() {
 #[test]
 #[ignore = "tier 2"]
 fn regrants_after_invalid_rotation_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", 0..100);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", osis_base::testenv::large(0..100));
     let replay = |s: u64| format!("OSIS_DEPART_START={s} OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::regrants_after_invalid_rotation_large -- --ignored --exact");
     s.run("rotation::tests::regrants_after_invalid_rotation_large", replay, regrants_after_invalid_rotation);
 }
@@ -1703,7 +1703,7 @@ fn regrants_after_invalid_rotation(seed: u64) {
 #[test]
 #[ignore = "tier 2"]
 fn forks_with_departures_settle_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", 0..100);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", osis_base::testenv::large(0..100));
     let replay = |s: u64| format!("OSIS_DEPART_START={s} OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::forks_with_departures_settle_large -- --ignored --exact");
     s.run("rotation::tests::forks_with_departures_settle_large", replay, |seed| forks_with_departures(seed, true));
 }
@@ -1908,7 +1908,7 @@ fn holder_actor_keyset_named_spec_crypto_4() {
 #[test]
 #[ignore = "tier 2"]
 fn withheld_departures_leak_nothing_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_WITHHELD_START", "OSIS_WITHHELD_SEEDS", 0..100);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_WITHHELD_START", "OSIS_WITHHELD_SEEDS", osis_base::testenv::large(0..100));
     let replay = |s: u64| format!("OSIS_WITHHELD_START={s} OSIS_WITHHELD_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::withheld_departures_leak_nothing_large -- --ignored --exact");
     s.run("rotation::tests::withheld_departures_leak_nothing_large", replay, |seed| {
         withheld_departures(seed, false);

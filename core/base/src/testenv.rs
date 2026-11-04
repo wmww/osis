@@ -58,6 +58,18 @@ pub struct Seeds {
     vars: String,
 }
 
+/// The per-branch share of a `_large` test's full size (notes/testing.md, Tiers): a tenth, at
+/// least 1; the full size under `OSIS_FULL=1` (periodic checks). Breadth belongs to periodic runs:
+/// per-branch runs at full size found few bugs for their cost (notes/test-value-study.md).
+pub fn large_n(full: u64) -> u64 {
+    if u64_var("OSIS_FULL") == Some(1) { full } else { (full / 10).max(1) }
+}
+
+/// [`large_n`] for a default seed range: the same start, a tenth of the seeds unless `OSIS_FULL=1`.
+pub fn large(full: Range<u64>) -> Range<u64> {
+    full.start..full.start + large_n(full.end.saturating_sub(full.start))
+}
+
 impl Seeds {
     pub fn from_env(start_var: &str, seeds_var: &str, default: Range<u64>) -> Seeds {
         let (start, n) = (u64_var(start_var), u64_var(seeds_var));
