@@ -17,8 +17,9 @@ fn c(level: u8, b: u8) -> [u8; 33] {
     x
 }
 
+/// Groups as `;`-separated lists of `,`-separated commitments.
 fn commitments(p: &Prefix) -> String {
-    p.commitments().iter().map(|c| hex(c)).collect::<Vec<_>>().join(",")
+    p.groups().iter().map(|g| g.iter().map(|c| hex(c)).collect::<Vec<_>>().join(",")).collect::<Vec<_>>().join(";")
 }
 
 fn prefix_case(name: &str, p: &Prefix) -> Record {
@@ -26,7 +27,7 @@ fn prefix_case(name: &str, p: &Prefix) -> Record {
         .with("salt", hex(p.salt()))
         .with("expiry", p.expiry().map_or("none".to_string(), |t| t.0.to_string()))
         .with("class", (p.class() as u8).to_string())
-        .with("commitments", commitments(p))
+        .with("groups", commitments(p))
         .with("prefix", hex(&p.to_bytes()))
 }
 
@@ -36,7 +37,7 @@ fn reject(name: &str, bytes: &[u8], rule: &str) -> Record {
         "framing" => Error::UnknownFraming(bytes[0]),
         "prefix-order" => Error::Malformed("commitment levels not strictly ascending"),
         "prefix-level" => Error::Malformed("commitment level"),
-        "prefix-count" => Error::Malformed("more than 3 commitments"),
+        "prefix-count" => Error::Malformed("more than 3 commitments in a group"),
         "prefix-short" => Error::Malformed("short prefix"),
         "prefix-class" => Error::Malformed("blob class"),
         _ => panic!("unknown rule {rule}"),
@@ -49,7 +50,8 @@ fn reject(name: &str, bytes: &[u8], rule: &str) -> Record {
 pub fn prefixes() -> VecFile {
     let salt = [0x21; 16];
     let mut cases = vec![prefix_case("no commitments, no expiry", &Prefix::new(salt, None, vec![]).unwrap())];
-    cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![c(2, 0x22)]).unwrap()));
+    cases.push(prefix_case("one commitment, expiry", &Prefix::new(salt, Some(WallMs(1_700_000_000_000)), vec![vec![c(2, 0x22)]]).unwrap()));
+    cases.push(prefix_case("two groups, one empty (a `nobody` delta's)", &Prefix::new(salt, None, vec![vec![c(2, 0x22), c(3, 0x27)], vec![]]).unwrap()));
     cases.push(prefix_case("ephemeral class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Ephemeral)));
     cases.push(prefix_case("relay-only class", &Prefix::new(salt, None, vec![]).unwrap().with_class(osis_label::Class::Relay)));
     // Commitments derived from (level, delete key) pairs under the prefix salt.
@@ -59,30 +61,33 @@ pub fn prefixes() -> VecFile {
     let pairs: Vec<String> = keys.iter().map(|(l, k)| format!("{l}:{}", hex(&k.to_bytes()))).collect();
     cases.push(prefix_case("three commitments from delete keys", &p).with("keys", pairs.join(",")).with("header-blind", hex(&hb)));
 
-    let base = Prefix::new(salt, None, vec![c(1, 1), c(2, 2)]).unwrap().to_bytes();
+    let base = Prefix::new(salt, None, vec![vec![c(1, 1), c(2, 2)]]).unwrap().to_bytes();
     let mut b = base.clone();
-    b[27..60].copy_from_slice(&c(2, 2));
-    b[60..93].copy_from_slice(&c(1, 1));
+    b[29..62].copy_from_slice(&c(2, 2));
+    b[62..95].copy_from_slice(&c(1, 1));
     cases.push(reject("commitments unsorted", &b, "prefix-order"));
     let mut b = base.clone();
-    b[60..93].copy_from_slice(&c(1, 2));
+    b[62..95].copy_from_slice(&c(1, 2));
     cases.push(reject("two commitments at one level", &b, "prefix-order"));
     let mut b = base.clone();
-    b[27] = 0;
+    b[29] = 0;
     cases.push(reject("commitment level 0", &b, "prefix-level"));
     let mut b = base.clone();
-    b[60] = 4;
+    b[62] = 4;
     cases.push(reject("commitment level 4", &b, "prefix-level"));
     let mut b = base.clone();
     b[25] = 3;
     cases.push(reject("class 3", &b, "prefix-class"));
-    let mut b = Prefix::new(salt, None, vec![]).unwrap().to_bytes();
-    b[26] = 4;
+    let mut b = Prefix::new(salt, None, vec![vec![]]).unwrap().to_bytes();
+    b[28] = 4;
     for i in 1..=4u8 {
         b.extend(c(i.min(3), i));
     }
-    cases.push(reject("four commitments", &b, "prefix-count"));
+    cases.push(reject("four commitments in a group", &b, "prefix-count"));
     cases.push(reject("truncated", &base[..80], "prefix-short"));
+    let mut b = Prefix::new(salt, None, vec![]).unwrap().to_bytes();
+    b[26] = 2;
+    cases.push(reject("groups past the bytes", &b, "prefix-short"));
     let mut b = base;
     b[0] = 2;
     cases.push(reject("unknown framing version", &b, "framing"));

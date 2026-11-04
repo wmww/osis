@@ -780,7 +780,7 @@ pub struct Core {
     /// when the commit's record is written (late parts, drops), when a thing it touches gets
     /// its creation record, and all when an actor gets secrets of its own (reader actors move);
     /// only commits whose things' owner chains are known are kept.
-    pub bodies: BTreeMap<CommitId, Vec<crate::labeling::Body>>,
+    pub bodies: BTreeMap<CommitId, Option<crate::labeling::Body>>,
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<CommitId, BTreeMap<(Tid, Ak), bool>>,

@@ -7,7 +7,7 @@ use crate::cbor::{get_bytes, get_key, get_opt, get_uint, uint};
 use crate::step::{Step, StepId};
 use crate::Error;
 use osis_base::cbor::encode;
-use osis_base::format::{DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER};
+use osis_base::format::{DELETE_ADMIN, DELETE_WRITER};
 use osis_base::{BlobId, LabelId, Value, WallMs};
 use osis_crypto::{DeleteSecret, Domain, LabelRole, Signature, SigningSecret, VerifyingKey, open_digest, sign_open, static_entry, verify_delete, verify_open};
 use osis_schema::core_types::SecretBox;
@@ -153,93 +153,121 @@ pub fn sign_deposit(deposit: &SigningSecret, label: &LabelId, blob: &BlobId, wra
     deposit.sign(Domain::Deposit, &entry_digest(label, blob, wrap))
 }
 
-/// The label key a delete by a level's delete key needs beside it (spec/sync.md §5): the write
-/// key for level 3, the sync key for level 1 or 2.
-pub fn key_for_level(level: Level) -> Result<LabelRole, Error> {
-    match level {
-        DELETE_WRITER => Ok(LabelRole::Write),
-        DELETE_ADMIN | DELETE_AUTHOR => Ok(LabelRole::Sync),
-        _ => Err(Error::Malformed("delete level")),
+/// The label key a delete by delete keys at `levels` needs beside them (spec/sync.md §5): the
+/// write key when any is level 3, else the sync key; the delete key with no level.
+pub fn key_for_levels(levels: &[Level]) -> Result<LabelRole, Error> {
+    if levels.iter().any(|l| !(DELETE_ADMIN..=DELETE_WRITER).contains(l)) {
+        return Err(Error::Malformed("delete level"));
     }
+    Ok(if levels.is_empty() {
+        LabelRole::Delete
+    } else if levels.contains(&DELETE_WRITER) {
+        LabelRole::Write
+    } else {
+        LabelRole::Sync
+    })
 }
 
-/// A delete item `[blob_id, Opt(at), Opt([level, dsig]), sig]` (spec/wire.md §11.2).
+/// A delete item `[blob_id, Opt(at), [[level, dsig]*], sig]` (spec/wire.md §11.2).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteItem {
     pub blob: BlobId,
     /// A timed delete.
     pub at: Option<WallMs>,
-    /// A signature by the delete key of a level, under the blob's blinded key at that level
-    /// (spec/crypto.md §7).
-    pub by: Option<(Level, Signature)>,
+    /// Signatures by delete keys, each under the blob's blinded key at its level in a commitment
+    /// group (spec/crypto.md §7); levels ascending, distinct. Empty: by the label delete key.
+    pub by: Vec<(Level, Signature)>,
     pub sig: Signature,
 }
 
-/// Digest of a delete: BLAKE3 of canonical `[label_id, blob_id, Opt(at), Opt(level)]`.
-pub fn delete_digest(label: &LabelId, blob: &BlobId, at: Option<WallMs>, level: Option<Level>) -> Result<[u8; 32], Error> {
+/// Digest of a delete: BLAKE3 of canonical `[label_id, blob_id, Opt(at), [level*]]`.
+pub fn delete_digest(label: &LabelId, blob: &BlobId, at: Option<WallMs>, levels: &[Level]) -> Result<[u8; 32], Error> {
     let at = at.map(|t| uint(t.0)).transpose()?;
-    let v = Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::opt(at), Value::opt(level.map(|l| Value::Int(i64::from(l))))]);
+    let v = Value::List(vec![Value::bytes(&label.0), Value::bytes(&blob.0), Value::opt(at), Value::List(levels.iter().map(|l| Value::Int(i64::from(*l))).collect())]);
     Ok(osis_base::hash::hash(&encode(&v)))
 }
 
 impl DeleteItem {
     /// Signed by the head's delete key alone.
     pub fn sign(delete: &SigningSecret, label: &LabelId, blob: BlobId, at: Option<WallMs>) -> Result<DeleteItem, Error> {
-        let sig = delete.sign(Domain::Delete, &delete_digest(label, &blob, at, None)?);
-        Ok(DeleteItem { blob, at, by: None, sig })
+        let sig = delete.sign(Domain::Delete, &delete_digest(label, &blob, at, &[])?);
+        Ok(DeleteItem { blob, at, by: Vec::new(), sig })
     }
 
-    /// Signed by the delete key of `level` under the blob's prefix `salt` and its header's blind
-    /// `hb`, and by the label key `key_for_level` names.
+    /// Signed by the delete keys `dks` (one per level used, levels distinct) under the blob's
+    /// prefix `salt` and its header's blind `hb`, and by the label key `key_for_levels` names.
     #[allow(clippy::too_many_arguments)]
-    pub fn sign_by(key: &SigningSecret, dk: &DeleteSecret, level: Level, salt: &[u8; 16], hb: &[u8; 16], label: &LabelId, blob: BlobId, at: Option<WallMs>) -> Result<DeleteItem, Error> {
-        let d = delete_digest(label, &blob, at, Some(level))?;
-        Ok(DeleteItem { blob, at, by: Some((level, dk.sign(salt, hb, &d))), sig: key.sign(Domain::Delete, &d) })
+    pub fn sign_by(key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16], label: &LabelId, blob: BlobId, at: Option<WallMs>) -> Result<DeleteItem, Error> {
+        let mut dks: Vec<(Level, &DeleteSecret)> = dks.to_vec();
+        dks.sort_by_key(|(l, _)| *l);
+        let levels: Vec<Level> = dks.iter().map(|(l, _)| *l).collect();
+        if !levels.is_sorted_by(|a, b| a < b) || levels.is_empty() {
+            return Err(Error::Malformed("delete levels"));
+        }
+        let d = delete_digest(label, &blob, at, &levels)?;
+        let by = dks.iter().map(|(l, dk)| (*l, dk.sign(salt, hb, &d))).collect();
+        Ok(DeleteItem { blob, at, by, sig: key.sign(Domain::Delete, &d) })
+    }
+
+    /// The levels signed, ascending.
+    pub fn levels(&self) -> Vec<Level> {
+        self.by.iter().map(|(l, _)| *l).collect()
     }
 
     /// The same delete signed again by label key `key` (a later head's, the delete-key
-    /// signature kept: it does not depend on the head).
+    /// signatures kept: they do not depend on the head).
     pub fn resign(&self, key: &SigningSecret, label: &LabelId) -> Result<DeleteItem, Error> {
-        let d = delete_digest(label, &self.blob, self.at, self.by.map(|b| b.0))?;
+        let d = delete_digest(label, &self.blob, self.at, &self.levels())?;
         Ok(DeleteItem { sig: key.sign(Domain::Delete, &d), ..self.clone() })
     }
 
     /// Host check against its head and the entry's blob prefix (none: unknown framing, no
-    /// commitments): without a level the delete key; with one, the delete-key signature under
-    /// the prefix's commitment at that level and the label key the level needs.
-    pub fn verify(&self, head: &Step, prefix: Option<&Prefix>) -> Result<(), Error> {
-        let d = delete_digest(&head.label, &self.blob, self.at, self.by.map(|b| b.0))?;
-        let role = match &self.by {
-            None => LabelRole::Delete,
-            Some((level, dsig)) => {
-                let key = prefix.and_then(|p| p.key_at(*level)).ok_or(Error::Verify("no commitment at the level"))?;
-                verify_delete(&key, &d, dsig).map_err(|_| Error::Verify("delete-key signature"))?;
-                key_for_level(*level)?
+    /// commitments): without levels the delete key; with them, each delete-key signature under
+    /// a group's commitment at its level, every group covered by one (`every`: a Delete) or at
+    /// least one group (a Replace), and the label key the levels need (spec/sync.md §5).
+    pub fn verify(&self, head: &Step, prefix: Option<&Prefix>, every: bool) -> Result<(), Error> {
+        let levels = self.levels();
+        let d = delete_digest(&head.label, &self.blob, self.at, &levels)?;
+        let role = key_for_levels(&levels)?;
+        if !self.by.is_empty() {
+            if !levels.is_sorted_by(|a, b| a < b) {
+                return Err(Error::Malformed("delete levels"));
             }
-        };
+            let prefix = prefix.ok_or(Error::Verify("no commitments"))?;
+            let groups = prefix.groups();
+            let mut covered = vec![false; groups.len()];
+            for (level, dsig) in &self.by {
+                let mut any = false;
+                for (gi, c) in covered.iter_mut().enumerate() {
+                    if prefix.key_at(gi, *level).is_some_and(|k| verify_delete(&k, &d, dsig).is_ok()) {
+                        *c = true;
+                        any = true;
+                    }
+                }
+                if !any {
+                    return Err(Error::Verify("delete-key signature"));
+                }
+            }
+            if every && !covered.iter().all(|c| *c) {
+                return Err(Error::Verify("a commitment group without a signature"));
+            }
+            if covered.is_empty() {
+                return Err(Error::Verify("no commitment group"));
+            }
+        }
         head.keys.get(role).verify(Domain::Delete, &d, &self.sig).map_err(|_| Error::Verify("delete signature"))
     }
 
     pub fn to_value(&self) -> Result<Value, Error> {
         let at = self.at.map(|t| uint(t.0)).transpose()?;
-        let by = self.by.map(|(l, s)| Value::List(vec![Value::Int(i64::from(l)), Value::bytes(&s.0)]));
-        Ok(Value::List(vec![Value::bytes(&self.blob.0), Value::opt(at), Value::opt(by), Value::bytes(&self.sig.0)]))
+        let by = Value::List(self.by.iter().map(|(l, s)| Value::List(vec![Value::Int(i64::from(*l)), Value::bytes(&s.0)])).collect());
+        Ok(Value::List(vec![Value::bytes(&self.blob.0), Value::opt(at), by, Value::bytes(&self.sig.0)]))
     }
 
     pub fn from_value(v: &Value) -> Result<DeleteItem, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("delete item")) };
         let [blob, at, by, sig] = items.as_slice() else { return Err(Error::Malformed("delete item")) };
-        let by = match get_opt(by, "delete level")? {
-            None => None,
-            Some(Value::List(x)) => match x.as_slice() {
-                [l, s] => {
-                    let l = u8::try_from(get_uint(l, "delete level")?).ok().filter(|l| (DELETE_ADMIN..=DELETE_WRITER).contains(l)).ok_or(Error::Malformed("delete level"))?;
-                    Some((l, Signature(get_bytes(s, "delete-key signature")?)))
-                }
-                _ => return Err(Error::Malformed("delete level")),
-            },
-            Some(_) => return Err(Error::Malformed("delete level")),
-        };
+        let by = by_from_value(by)?;
         Ok(DeleteItem {
             blob: BlobId(get_bytes(blob, "delete blob")?),
             at: get_opt(at, "delete at")?.map(|t| get_uint(t, "delete at").map(WallMs)).transpose()?,
@@ -247,6 +275,22 @@ impl DeleteItem {
             sig: Signature(get_bytes(sig, "delete signature")?),
         })
     }
+}
+
+/// `[[level, dsig]*]`: levels ascending and distinct, within 1..=3.
+pub fn by_from_value(v: &Value) -> Result<Vec<(Level, Signature)>, Error> {
+    let Value::List(xs) = v else { return Err(Error::Malformed("delete levels")) };
+    let mut out: Vec<(Level, Signature)> = Vec::with_capacity(xs.len());
+    for x in xs {
+        let Value::List(p) = x else { return Err(Error::Malformed("delete level")) };
+        let [l, s] = p.as_slice() else { return Err(Error::Malformed("delete level")) };
+        let l = u8::try_from(get_uint(l, "delete level")?).ok().filter(|l| (DELETE_ADMIN..=DELETE_WRITER).contains(l)).ok_or(Error::Malformed("delete level"))?;
+        if out.last().is_some_and(|(p, _)| *p >= l) {
+            return Err(Error::Malformed("delete levels not ascending"));
+        }
+        out.push((l, Signature(get_bytes(s, "delete-key signature")?)));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -355,33 +399,59 @@ mod tests {
         let hb = [7u8; 16];
         let prefix = Prefix::for_keys(salt, &hb, None, &[(2, d2.verifying_key()), (3, d3.verifying_key())]).unwrap();
         let b = BlobId([9; 32]);
-        DeleteItem::sign(&g.delete(0), &l, b, None).unwrap().verify(&s0, None).unwrap();
-        DeleteItem::sign_by(&sync, &d2, 2, &salt, &hb, &l, b, Some(WallMs(5))).unwrap().verify(&s0, Some(&prefix)).unwrap();
-        DeleteItem::sign_by(&write, &d3, 3, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).unwrap();
-        // level 3 needs the write key, level 2 the sync key
-        assert!(DeleteItem::sign_by(&sync, &d3, 3, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign_by(&write, &d2, 2, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
+        let by = |key: &SigningSecret, dks: &[(Level, &DeleteSecret)], salt: &[u8; 16], hb: &[u8; 16], at: Option<WallMs>| DeleteItem::sign_by(key, dks, salt, hb, &l, b, at).unwrap();
+        DeleteItem::sign(&g.delete(0), &l, b, None).unwrap().verify(&s0, None, true).unwrap();
+        by(&sync, &[(2, &d2)], &salt, &hb, Some(WallMs(5))).verify(&s0, Some(&prefix), true).unwrap();
+        by(&write, &[(3, &d3)], &salt, &hb, None).verify(&s0, Some(&prefix), true).unwrap();
+        // level 3 needs the write key, level 2 the sync key; both levels at once the write key
+        assert!(by(&sync, &[(3, &d3)], &salt, &hb, None).verify(&s0, Some(&prefix), true).is_err());
+        assert!(by(&write, &[(2, &d2)], &salt, &hb, None).verify(&s0, Some(&prefix), true).is_err());
+        by(&write, &[(2, &d2), (3, &d3)], &salt, &hb, None).verify(&s0, Some(&prefix), true).unwrap();
+        assert!(by(&sync, &[(2, &d2), (3, &d3)], &salt, &hb, None).verify(&s0, Some(&prefix), true).is_err());
         // a key at another level, a forged key, another salt, no prefix
-        assert!(DeleteItem::sign_by(&sync, &d3, 2, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign_by(&sync, &d2, 1, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
+        assert!(by(&sync, &[(2, &d3)], &salt, &hb, None).verify(&s0, Some(&prefix), true).is_err());
+        assert!(by(&sync, &[(1, &d2)], &salt, &hb, None).verify(&s0, Some(&prefix), true).is_err());
         let forged = DeleteSecret::derive(&Secret32::from_bytes([3; 32]));
-        assert!(DeleteItem::sign_by(&sync, &forged, 2, &salt, &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign_by(&sync, &d2, 2, &[6; 16], &hb, &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign_by(&sync, &d2, 2, &salt, &[9; 16], &l, b, None).unwrap().verify(&s0, Some(&prefix)).is_err(), "another header's blind");
-        assert!(DeleteItem::sign_by(&sync, &d2, 2, &salt, &hb, &l, b, None).unwrap().verify(&s0, None).is_err());
-        // the label-key signature binds the level: moved to level 3 it fails
-        let mut moved = DeleteItem::sign_by(&sync, &d2, 2, &salt, &hb, &l, b, None).unwrap();
-        moved.by = moved.by.map(|(_, s)| (3, s));
-        assert!(moved.verify(&s0, Some(&prefix)).is_err());
-        assert!(DeleteItem::sign(&sync, &l, b, None).unwrap().verify(&s0, None).is_err());
-        let item = DeleteItem::sign_by(&sync, &d2, 2, &salt, &hb, &l, b, Some(WallMs(5))).unwrap();
+        assert!(by(&sync, &[(2, &forged)], &salt, &hb, None).verify(&s0, Some(&prefix), true).is_err());
+        assert!(by(&sync, &[(2, &d2)], &[6; 16], &hb, None).verify(&s0, Some(&prefix), true).is_err());
+        assert!(by(&sync, &[(2, &d2)], &salt, &[9; 16], None).verify(&s0, Some(&prefix), true).is_err(), "another header's blind");
+        assert!(by(&sync, &[(2, &d2)], &salt, &hb, None).verify(&s0, None, true).is_err());
+        // a signature that verifies under no group, beside one that does, refuses the item
+        let mut extra = by(&sync, &[(2, &d2)], &salt, &hb, None);
+        extra.by.push((3, forged.sign(&salt, &hb, &[0; 32])));
+        assert!(extra.verify(&s0, Some(&prefix), true).is_err());
+        // the label-key signature binds the levels: moved to level 3 it fails
+        let mut moved = by(&sync, &[(2, &d2)], &salt, &hb, None);
+        moved.by = moved.by.iter().map(|(_, s)| (3, *s)).collect();
+        assert!(moved.verify(&s0, Some(&prefix), true).is_err());
+        assert!(DeleteItem::sign(&sync, &l, b, None).unwrap().verify(&s0, None, true).is_err());
+        // groups (spec/sync.md §5): a Delete needs a signature under every group, a Replace one
+        // under any; an empty group blocks a Delete by level; the author key shared by both
+        // groups covers both with one signature
+        let d1 = DeleteSecret::derive(&Secret32::from_bytes([4; 32]));
+        let two = Prefix::for_groups(salt, &hb, None, &[vec![(2, d2.verifying_key()), (3, d3.verifying_key())], vec![(1, d1.verifying_key()), (2, d2.verifying_key())]]).unwrap();
+        assert!(by(&write, &[(3, &d3)], &salt, &hb, None).verify(&s0, Some(&two), true).is_err());
+        by(&write, &[(3, &d3)], &salt, &hb, None).verify(&s0, Some(&two), false).unwrap();
+        by(&write, &[(1, &d1), (3, &d3)], &salt, &hb, None).verify(&s0, Some(&two), true).unwrap();
+        by(&sync, &[(2, &d2)], &salt, &hb, None).verify(&s0, Some(&two), true).unwrap();
+        let nobody = Prefix::for_groups(salt, &hb, None, &[vec![(2, d2.verifying_key())], vec![]]).unwrap();
+        assert!(by(&sync, &[(2, &d2)], &salt, &hb, None).verify(&s0, Some(&nobody), true).is_err());
+        by(&sync, &[(2, &d2)], &salt, &hb, None).verify(&s0, Some(&nobody), false).unwrap();
+        let none = Prefix::new(salt, None, vec![]).unwrap();
+        assert!(by(&sync, &[(2, &d2)], &salt, &hb, None).verify(&s0, Some(&none), false).is_err());
+        let item = by(&sync, &[(2, &d2)], &salt, &hb, Some(WallMs(5)));
         assert_eq!(DeleteItem::from_value(&item.to_value().unwrap()).unwrap(), item);
         let mut v = item.to_value().unwrap();
         if let Value::List(x) = &mut v {
-            x[2] = Value::opt(Some(Value::List(vec![Value::Int(4), Value::bytes(&[0; 64])])));
+            x[2] = Value::List(vec![Value::List(vec![Value::Int(4), Value::bytes(&[0; 64])])]);
         }
         assert!(DeleteItem::from_value(&v).is_err());
-        assert!(key_for_level(0).is_err());
+        let mut v = item.to_value().unwrap();
+        if let Value::List(x) = &mut v {
+            x[2] = Value::List(vec![Value::List(vec![Value::Int(3), Value::bytes(&[0; 64])]), Value::List(vec![Value::Int(2), Value::bytes(&[0; 64])])]);
+        }
+        assert!(DeleteItem::from_value(&v).is_err(), "levels not ascending");
+        assert!(key_for_levels(&[0]).is_err());
     }
 
     proptest! {

@@ -379,7 +379,7 @@ impl SyncEngine {
             }
         }
         let Some(h) = self.engine.header(c) else { return Ok(true) };
-        let bodies = self.engine.bodies(c)?;
+        let Some(body) = self.engine.body(c)? else { return Ok(true) };
         for (g, gl) in self.labels() {
             if gl.replaced || !self.under_own_label(&g, c) {
                 continue;
@@ -388,16 +388,14 @@ impl SyncEngine {
             if local && self.own_reach().is_none() {
                 continue;
             }
-            let closure = self.engine.closure(&g);
-            let x = self.engine.group_actor(&g);
-            for b in &bodies {
-                let inside = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| closure.contains(&a.tid));
-                if !inside || !self.engine.may_read(&x, &b.reader) {
-                    continue;
-                }
-                if !self.held_at(&gl.id, c, Some(&b.parts), !local) && !self.parts_covered_at(&gl.id, c, &h, &b.parts)? {
-                    return Ok(false);
-                }
+            let ctx = self.engine.body_ctx(&g);
+            let inside: Vec<(usize, usize)> = body.parts.iter().filter(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| ctx.closure.contains(&a.tid))).copied().collect();
+            let parts = self.engine.readable_parts(&ctx, c, &inside);
+            if parts.is_empty() {
+                continue;
+            }
+            if !self.held_at(&gl.id, c, Some(&parts), !local) && !self.parts_covered_at(&gl.id, c, &h, &parts)? {
+                return Ok(false);
             }
         }
         Ok(true)

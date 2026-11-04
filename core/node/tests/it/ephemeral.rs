@@ -21,11 +21,10 @@ pub(crate) fn write_key(net: &mut Net, n: usize, g: Tid) -> osis_crypto::Signing
 /// Seals ephemeral commit `c` under `g`'s label as node `w` would, stamped with `stamp` when
 /// given: (blob ID, the log event a host pushes).
 pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlob, stamp: Option<&osis_crypto::SigningSecret>, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
-    let p = osis_commit::project(c, |_| ()).unwrap().remove(0);
     let class = osis_label::Class::of_marker(c.header.ephemeral);
-    let body = osis_node::labeling::Body { commit: c.id(), reader: g, parts: p.parts, expires: p.expires, keys: p.keys, blind: c.header.blind, plaintext: p.plaintext, role_commit: false, order: 1 };
-    let s = osis_node::labeling::seal_body_as(&body, class, &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
     let secret = net.engine(w).wrap_secret(&g, None).unwrap().unwrap();
+    // one section under the label's secret, as a per-label copy (the things may be unknown here)
+    let s = osis_node::labeling::seal_plain(&c.encode(), &secret, class, &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
     let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
     let l = net.label(w);
     let stamp = stamp.map(|k| osis_label::sign_stamp(k, &l, &s.id, &wrap));
@@ -1024,10 +1023,10 @@ fn signal_once_to_connected_devices_spec_sync_5() {
     assert!(fired(&rb).is_empty(), "a restarted node does not see it again");
 }
 
-// spec/sync.md §5 (a signal is delivered once): a relay-only commit whose parts go as several
-// blobs (projections for different readers) delivers every blob's signals, each once
+// spec/sync.md §5 (a signal is delivered once): a relay-only commit with parts on two things
+// (two sections, spec/wire.md §4) delivers every part's signals, each once
 #[test]
-fn signal_commit_in_several_blobs_all_delivered_spec_sync_5() {
+fn signal_commit_in_two_sections_all_delivered_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);

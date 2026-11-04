@@ -109,7 +109,7 @@ def spec_sections():
 # (file, section, anchor, a substring of the rule's sentence). Every MUST sentence matches one;
 # the others are refusal rules ("cannot", "refused", "only") checked by negative tests.
 RULES = [
-    ("spec/commits.md", "1", "delta fits a blob", "Paging and chunking keep every delta and page within a blob"),
+    ("spec/commits.md", "1", "commit fits a blob", "fits `MAX_BLOB` (spec/data-model.md §6), or the writer refuses it"),
     ("spec/commits.md", "2", "role commit no expires", "Role commits MUST NOT carry `expires`"),
     ("spec/commits.md", "2", "created one minting", "`created.0` part MUST be exactly one minting of the record"),
     ("spec/commits.md", "2", "class from the key", "a writer MUST NOT write one (a durable write on an ephemeral thing"),
@@ -154,7 +154,7 @@ RULES = [
     ("spec/sync.md", "5", "claim set hash", "it MUST hash to the step's"),
     ("spec/sync.md", "5", "upload refusals", "Refused: a bad stamp"),
     ("spec/sync.md", "5", "deposit refusals", "Refused like an upload, when the label's deposit budget is full"),
-    ("spec/sync.md", "5", "delete keys", "a delete signature that verifies under the blob prefix's commitment"),
+    ("spec/sync.md", "5", "delete keys", "one delete signature per commitment group of the blob's prefix"),
     ("spec/sync.md", "5", "download needs open", "only for labels opened on the connection"),
     ("spec/sync.md", "6", "flow control", "MUST NOT close a connection over unwritten bytes below"),
     ("spec/sync.md", "5", "co-reader peer", "A co-reader peer serving a label applies the same rule"),

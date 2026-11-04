@@ -10,7 +10,7 @@
 //! `purge`: purge requests. `pending`: parts held while their commit waits. `snapshot`: compaction.
 //! `bounds`: a body's keep bounds and liveness. `deaths`: dating them. `leftover`: the rows.
 //!
-//! A body here is one projection class of a commit (`body_class`): its deaths are kept per part,
+//! A body here is one retention class of a commit (`body_class`): its deaths are kept per part,
 //! read over the class, and a part drops with the rest of its class. The class depends on what is
 //! held (`reader`), so nothing kept may be keyed by it.
 
@@ -165,8 +165,8 @@ fn reader(core: &Core, tid: &Tid) -> Tid {
     }
 }
 
-/// The body holding aspect `ai` of a commit (spec/commits.md §5: one projection class, readable
-/// subset and retention class) and the aspects it holds. The ID (of the commit, not the class) keys
+/// The retention class holding aspect `ai` of a commit (spec/commits.md §5: reader actor and
+/// retention class) and the aspects it holds. The ID (of the commit, not the class) keys
 /// a part's death record with its aspect: a class moves as records and keys arrive (`reader`), a
 /// death record must not.
 pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (BlobId, Vec<usize>) {

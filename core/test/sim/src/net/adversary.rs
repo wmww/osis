@@ -165,12 +165,13 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
         }
     }
     // the post-removal commit, deposited under the old wrap secret and deposit key
-    let bodies = sim.engine(m)?.bodies(&evil_c).map_err(|e| sim.fail(e.to_string()))?;
-    for body in bodies {
+    let body = sim.engine(m)?.body(&evil_c).map_err(|e| sim.fail(e.to_string()))?;
+    if let Some(body) = body
+        && let Some(read) = old.read.clone()
+    {
         let mut rng = SeededRng::from_u64(sim.dice.u64());
-        let sealed = osis_node::labeling::seal_body(&body, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
+        let sealed = sim.engine(m)?.seal(&body, osis_label::Class::Durable, &[], &mut rng).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no secret to seal under"))?;
         let (id, blob, key) = (sealed.id, sealed.blob, sealed.key);
-        let Some(read) = old.read.clone() else { break };
         let wrap = osis_crypto::wrap(&read, &id, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
         if let Some(dk) = &old.deposit {
             let sig = osis_label::sign_deposit(dk, &old.label, &id, &wrap);
@@ -286,12 +287,17 @@ pub fn malformed_blobs(seed: u64) -> Res<Report> {
     let (id, blob, key) = seal(&mut sim, &pt)?;
     entries.push(stamped(&sim, &k, &id, blob, &key)?);
     // a real commit under a prefix without its commitments (disagrees with the header)
-    let bodies = sim.engine(m)?.bodies(&c).map_err(|e| sim.fail(e.to_string()))?;
-    if let Some(body) = bodies.first() {
-        let (id, blob, key) = seal(&mut sim, &body.plaintext)?;
+    let body = sim.engine(m)?.body(&c).map_err(|e| sim.fail(e.to_string()))?;
+    if let Some(body) = body
+        && let Some(read) = k.read.clone()
+    {
+        let cb = osis_commit::CommitBlob::decode(&body.plaintext).map_err(|e| sim.fail(e.to_string()))?;
+        let mut rng = SeededRng::from_u64(sim.dice.u64());
+        let env = osis_commit::seal_commit(&cb, |_| (), |_, _| Some((read.clone(), vec![])), &[], &mut rng).map_err(|e| sim.fail(e.to_string()))?;
+        let (id, blob, key) = seal(&mut sim, &env.encode())?;
         entries.push(stamped(&sim, &k, &id, blob, &key)?);
         // and the same commit wrapped with another blob's key
-        let (id2, blob2, _) = seal(&mut sim, &body.plaintext)?;
+        let (id2, blob2, _) = seal(&mut sim, &env.encode())?;
         entries.push(stamped(&sim, &k, &id2, blob2, &key)?);
     }
     // a blob whose framing version the host does not know is kept (spec/wire.md §5)
@@ -336,7 +342,7 @@ pub fn deposit_flood(seed: u64) -> Res<Report> {
     let mut refused = 0u64;
     let mut budget = None;
     for i in 0..400u64 {
-        let sealed = osis_node::labeling::seal_body(&body, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
+        let sealed = sim.engine(f)?.seal(&body, osis_label::Class::Durable, &[], &mut rng).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no secret to seal under"))?;
         let (id, blob, key) = (sealed.id, sealed.blob, sealed.key);
         let wrap = osis_crypto::wrap(&read, &id, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
         let sig = osis_label::sign_deposit(&dk, &k.label, &id, &wrap);
@@ -445,13 +451,11 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let key = sim.engine(b)?.identity().keys().signing.clone();
     let built = cb.build(&key, &Dedup(rec), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(sim.dice.u64())).map_err(|e| sim.fail(e.to_string()))?;
     let c2 = built.commit.id();
-    let ps = osis_commit::project(&built.commit, |_| ()).map_err(|e| sim.fail(e.to_string()))?;
     let k = sim.label_keys(b, s, &g)?;
-    let mut entries = Vec::new();
-    for p in ps {
-        let (id, blob, bk) = seal(&mut sim, &p.plaintext)?;
-        entries.push(stamped(&sim, &k, &id, blob, &bk)?);
-    }
+    let read = k.read.clone().ok_or_else(|| sim.fail("no read secret held"))?;
+    let mut rng = SeededRng::from_u64(sim.dice.u64());
+    let sealed = osis_node::labeling::seal_plain(&built.commit.encode(), &read, osis_label::Class::Durable, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
+    let entries = vec![stamped(&sim, &k, &sealed.id, sealed.blob, &sealed.key)?];
     sim.equivocation(c2);
     let mut r = sim.rogue(s)?;
     let up = sim.rogue_do(&mut r, Command::Upload { label: k.label, entries })?;

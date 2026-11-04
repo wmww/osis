@@ -1,6 +1,6 @@
-//! Labeling (spec/sync.md §1-§3, §6-§7): which blobs go under which label
-//! (closure, entitlement, projection by retention class), wraps, stamps and deposits, the keys a
-//! host's head calls for, delete keys, certificate blobs, and the convergence rule.
+//! Labeling (spec/sync.md §1-§3, §6-§7): which blobs go under which label (closure,
+//! entitlement), sections per reader actor, wraps, stamps and deposits, the keys a host's head
+//! calls for, delete keys, certificate blobs, and the convergence rule.
 //! Synchronous functions over the `Engine`; `sync` acts on them.
 
 mod actors;
@@ -9,7 +9,7 @@ mod certs;
 pub mod converge;
 
 pub use actors::GroupLabel;
-pub use blobs::{Body, HeadKeys, Sealed, delete_item, delete_item_by_level, delete_key, fetch_order, open_commit, seal_body, seal_body_as};
+pub use blobs::{Body, HeadKeys, OpenedBlob, Sealed, delete_item, delete_item_by_level, delete_key, fetch_order, frame_envelope, seal_plain};
 pub use blobs::BodyCtx;
 pub use converge::{Facts, Hold, Why, classify, may_delete};
 pub use certs::Parts;

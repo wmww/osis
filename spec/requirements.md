@@ -51,8 +51,8 @@ Terms:
 
 ## Untrusted (blind) nodes
 - Untrusted nodes are a first-class feature; one node may be blind to some groups and read others.
-- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap, counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion class and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, device identities, or structure beyond that.
-- Nothing stored or relayed links different groups of one owner beyond their overlap. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
+- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap (one change's blob may sit under labels that share no thing), counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion classes and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, device identities, or structure beyond that.
+- Nothing stored or relayed links different groups of one owner beyond their overlap and the changes that span them. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
 - An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
 - An untrusted node knows no role holders and never waits on their liveness.

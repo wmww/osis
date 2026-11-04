@@ -6,7 +6,6 @@
 use super::state::{Entry, Kind, HostKey};
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
-use crate::labeling::seal_body;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Ts};
 use osis_label::{Address, InboxLabel, InboxPayload, InboxThing};
 use osis_perm::At;
@@ -182,31 +181,24 @@ impl SyncEngine {
             let parts: BTreeSet<(usize, usize)> = want.difference(&mine).copied().collect();
             let deposit = seed.as_ref().map(|s| osis_crypto::deposit_key(s, &l));
             // nothing to place once its parts are dropped here (`State::sweep_certs`)
-            let bodies = self.engine.part_bodies(c, &parts)?;
-            if bodies.is_empty() {
+            let Some(b) = self.engine.part_body(c, &parts)? else { continue };
+            // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
+            // holders take it as the body's entry
+            let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else {
+                unwrapped = true;
                 continue;
-            }
-            let mut placed = false;
-            for b in bodies {
-                // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
-                // holders take it as the body's entry
-                let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else {
-                    unwrapped = true;
-                    continue;
-                };
-                placed = true;
-                let s = seal_body(&b, &mut *self.rng)?;
-                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
-                if let Some(d) = &deposit {
-                    self.queue_deposit(l, &hosts, d, s.blob.clone(), wrap, None);
-                }
-                self.engine.put_blobs(vec![(s.id, s.blob)])?;
-                self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true, memory: false });
-                self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt: s.salt }, memory: false });
-            }
-            if !placed {
+            };
+            let Some(s) = self.engine.seal_to(&b, osis_label::Class::Durable, &secret, &mut *self.rng)? else {
+                unwrapped = true;
                 continue;
+            };
+            let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
+            if let Some(d) = &deposit {
+                self.queue_deposit(l, &hosts, d, s.blob.clone(), wrap, None);
             }
+            self.engine.put_blobs(vec![(s.id, s.blob)])?;
+            self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), ais: s.ais.clone(), key: s.key.clone(), cert: true, memory: false });
+            self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), ais: s.ais, salt: s.salt }, memory: false });
             self.place_linked(l, c, &parts)?;
             if let Some(d) = &deposit {
                 for id in self.engine.linked_blobs(c, &parts)? {

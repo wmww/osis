@@ -138,7 +138,7 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
 }
 
 /// spec/requirements.md (convergence) over up nodes that may hold different parts of a commit
-/// (projections): two nodes holding the same deltas of an aspect read it the same (removed
+/// (sections): two nodes holding the same deltas of an aspect read it the same (removed
 /// holders excused).
 fn convergence(sim: &mut NetSim) -> Res<()> {
     let mut views: Vec<(usize, AspectView)> = Vec::new();
@@ -190,7 +190,7 @@ fn pending(sim: &mut NetSim) -> Res<()> {
             let mut bodies = Vec::new();
             for m in 0..sim.nodes.len() {
                 let Some((c, s)) = c0.zip(sim.nodes.get_mut(m).and_then(|x| x.sync.as_mut())) else { continue };
-                let b: Vec<String> = s.engine_mut().bodies(&c).unwrap_or_default().iter().map(|b| format!("{:?} reader {}", b.parts, b.reader)).collect();
+                let b: Vec<String> = s.engine_mut().body(&c).unwrap_or_default().iter().map(|b| format!("{:?}", b.parts)).collect();
                 let ls: Vec<LabelId> = s.labels().into_iter().map(|x| x.1.id).collect();
                 let mut v = Vec::new();
                 for (i, k) in keys.iter().enumerate() {

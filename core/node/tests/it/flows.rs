@@ -2197,12 +2197,12 @@ fn roster_snapshot_certificate_projected_spec_perm_6() {
     let h = lp.peers[0].engine.header(&s).unwrap();
     let holders_ai = h.aspects.iter().position(|a| a.ak.as_str() == "roles.0").unwrap();
     assert_eq!(parts.iter().filter(|(ai, _)| *ai == holders_ai).count(), 2, "the reset and one edge: {parts:?}");
-    let bodies = lp.peers[0].engine.part_bodies(&s, parts).unwrap();
-    let carried: BTreeSet<(usize, usize)> = bodies.iter().flat_map(|b| b.parts.iter().copied()).collect();
+    let copy = lp.peers[0].engine.part_body(&s, parts).unwrap().unwrap();
+    let carried: BTreeSet<(usize, usize)> = copy.parts.iter().copied().collect();
     assert_eq!(&carried, parts);
     // the copy names this device only
     let me = lp.peers[0].engine.tid();
-    let copy = bodies.iter().find(|b| b.parts.iter().any(|(ai, _)| *ai == holders_ai)).unwrap();
+    assert!(copy.parts.iter().any(|(ai, _)| *ai == holders_ai));
     assert!(contains(&copy.plaintext, me.as_bytes()) && !contains(&copy.plaintext, n1.as_bytes()));
 }
 

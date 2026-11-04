@@ -136,7 +136,7 @@ impl SyncEngine {
         let Some(c) = self.heartbeat_commit(false, suspect)? else { return Ok(()) };
         let ais = BTreeSet::from([0usize]);
         let mut placed = false;
-        for b in self.engine.partial_bodies(&c, &ais)? {
+        if let Some(b) = self.engine.partial_body(&c, &ais)? {
             placed |= self.place(g, l, &b, true)?.is_some();
         }
         if placed {
@@ -206,8 +206,9 @@ impl SyncEngine {
         }
         let Some(secret) = self.engine.stranded_secret(&g) else { return Ok(()) };
         let Some(c) = self.heartbeat_commit(true, BTreeSet::new())? else { return Ok(()) };
-        for b in self.engine.partial_bodies(&c, &BTreeSet::from([0usize]))? {
-            let s = seal_body(&b, &mut *self.rng)?;
+        if let Some(b) = self.engine.partial_body(&c, &BTreeSet::from([0usize]))?
+            && let Some(s) = self.engine.seal_to(&b, osis_label::Class::Durable, &secret, &mut *self.rng)?
+        {
             let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
             let sig = osis_label::sign_deposit(&d, &l, &s.id, &wrap);
             self.command(conn, Command::Deposit { label: l, blob: s.blob, wrap, sig }, out)?;

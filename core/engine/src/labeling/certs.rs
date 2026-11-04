@@ -457,32 +457,34 @@ impl Engine {
         (out, own)
     }
 
-    /// The bodies of commit `c` restricted to aspects `ais` (one per retention class): a
-    /// certificate copy.
-    pub fn partial_bodies(&mut self, c: &CommitId, ais: &BTreeSet<usize>) -> Result<Vec<Body>> {
+    /// The body of commit `c` restricted to aspects `ais`: a certificate copy.
+    pub fn partial_body(&mut self, c: &CommitId, ais: &BTreeSet<usize>) -> Result<Option<Body>> {
         let id = *c;
-        let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
+        let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(None) };
         let parts: Parts = blob.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| (p.ai, p.di)).collect();
-        self.part_bodies(c, &parts)
+        self.part_body(c, &parts)
     }
 
-    /// The bodies of commit `c` restricted to `parts` (one per retention class): a certificate
-    /// copy.
-    pub fn part_bodies(&mut self, c: &CommitId, parts: &Parts) -> Result<Vec<Body>> {
+    /// The body of commit `c` restricted to `parts` (its plaintext holds those alone): a
+    /// certificate copy. `None`: none of them held.
+    pub fn part_body(&mut self, c: &CommitId, parts: &Parts) -> Result<Option<Body>> {
         let id = *c;
-        let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
+        let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(None) };
         let cut = osis_commit::rewrite(&blob, |ai, di| !parts.contains(&(ai, di)));
         if cut.parts.is_empty() {
-            return Ok(Vec::new());
+            return Ok(None);
         }
-        let role_commit = cut.header.kind.is_role();
-        let resolved = match self.core.ix.commits.get(&id) {
-            Some(m) if !cut.header.is_resolved() => m.header.arc(),
-            _ => std::sync::Arc::new(cut.header.clone()),
-        };
-        let order = super::fetch_order(&resolved);
-        let ps = osis_commit::project_resolved(&cut, &resolved, |_| ())?;
-        Ok(ps.into_iter().map(|p| Body { commit: id, reader: self.tid(), parts: p.parts, expires: p.expires, keys: p.keys, blind: cut.header.blind, plaintext: p.plaintext, role_commit, order }).collect())
+        let resolved = self.resolved_header(&cut);
+        Ok(Some(Body {
+            commit: id,
+            parts: cut.parts.iter().map(|p| (p.ai, p.di)).collect(),
+            expires: osis_commit::blob_expiry(&resolved),
+            blind: cut.header.blind,
+            plaintext: cut.encode(),
+            role_commit: cut.header.kind.is_role(),
+            order: super::fetch_order(&resolved),
+            to_label: false,
+        }))
     }
 
     /// Blobs a certificate copy of `parts` of commit `c` needs beside its body (spec/sync.md

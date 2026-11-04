@@ -105,7 +105,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - Every history box of one rotation carries the same names.
 - The rotator places every named commit under each label it places the rotation commit under (spec/sync.md §5).
 - **Met**: the names of a history box entry are met at a node when all of these hold:
-  - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a projection of the commit lacking it does not), or its key is ordered before the node's epoch start (spec/permissions.md §6) of the name's thing. An expiry name is met wherever the names are read.
+  - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a copy of the commit lacking it does not), or its key is ordered before the node's epoch start (spec/permissions.md §6) of the name's thing. An expiry name is met wherever the names are read.
   - each keyset name (M, r, f) is **held**: some valid `keys.0` body of M the node holds (a role commit's delta or a compaction snapshot; a dropped one counts) writes f as M's keyset of r or lists f in that keyset's supersedes (no epoch start stands in).
   - its departs mark, if any, is met: the node holds that commit (by those two) or its epoch start of A is ordered after them.
 
@@ -166,6 +166,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 ## 5. Blobs, wraps, inbox blobs
 - **Blob encryption**: a fresh random 32-byte key per encryption; nothing encrypts a blob under a caller-chosen key. Framing, padding, AD and blob ID: spec/wire.md §5; spec/sync.md §1.
 - **Wrap** (per label, per blob): carries the blob's suite byte, blob key and order under the label read key `kdf("wrap", label read secret)`. Deterministic. Bytes: spec/wire.md §5.
+- **Section** (per thing, inside a commit blob): its parts under a fresh random section key used once; the key under `kdf("section", read secret of the thing)` (own or derived, §3; the owner chain it derives through is in the clear beside it) with a fresh random nonce, AD = the commit ID. Bytes: spec/wire.md §4. The epoch is chosen as for a wrap (below, the rotation exception included); a per-label copy's one section goes under the label group's read secret as its wrap does.
 - **Order**: 0 for a commit with a purge request or a part on a role-class aspect, `created.0`, `required.0^` or `group.0`, else the commit's `ts` (a header-only blob too). It is read only to order a node's first sync (spec/sync.md §6), and a wrong one changes nothing else.
 - A wrap names no epoch: a reader tries the read secrets it holds, newest first.
 - **Who wraps under what**:
@@ -206,10 +207,10 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Commitment** in a blob prefix = level byte || A' = h·A, h = `kdf("delete blind", A, prefix salt || blind)` read as 64 XOF bytes, little-endian, mod ℓ (the order of B).
   - A is taken as its 32-byte encoding.
   - `blind` is the 16 random bytes of the header that lists A, or for a chunk, tree node or page of the header that introduced it.
-  - A blob commits to the delete keys of the deltas it serves (spec/wire.md §5).
+  - A blob commits to the delete keys of the deltas it serves, in groups, one per distinct delete-key set (spec/wire.md §5).
 - **Delete signature** for a blob: Ed25519 (RFC 8032 signing) over `"osis v1 delete" || digest` (§2, spec/wire.md §11.2) with secret scalar h·a mod ℓ, nonce prefix `kdf("delete nonce", seed, prefix salt || blind)` (seed: the delete key's RFC 8032 seed), and public key A'.
   - It verifies strictly under A' (§1).
-  - A host checks it against the blob prefix's commitment at its level and requires the label signature that level calls for (spec/sync.md §5).
+  - A host checks it against the blob prefix's commitment at its level in a group, one per group for a Delete, and requires the label signature the levels call for (spec/sync.md §5).
 - A holder tries every epoch it holds of the level's secret along the delete base's owner chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists.
 
 ## 8. Agility

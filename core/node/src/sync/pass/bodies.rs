@@ -27,16 +27,16 @@ impl SyncEngine {
             }
             let Some(needed) = needed else { continue };
             let entry = self.entry_for(host, &l, b);
-            // another blob of the commit holding every needed delta holds it (a projection a
+            // another blob of the commit holding every needed delta holds it (a rewrite a
             // right holder dropped covered deltas from, a superset), unless it is must-not-hold
             // (`holds_nothing`, spec/sync.md §6)
             let here = entry.is_some_and(|id| host.is_none_or(|s| self.state.is_present(s, &l, &id)));
-            if !here && self.carried_by(host, g, &l, &b.commit, &needed) {
+            if !here && self.carried_by(host, &l, &b.commit, &needed) {
                 continue;
             }
             // a right holder deleted it here: its keep bounds, dated by its own deaths, passed
             // there (spec/commits.md §5); not placed again while its live writes are carried
-            if !here && self.delete_stands(l, b, &needed, snaps, &mut note)? {
+            if !here && self.delete_stands(host, l, b, &needed, snaps, &mut note)? {
                 continue;
             }
             // another node's commit not at this host: its author (or a co-writer) first
@@ -85,27 +85,27 @@ impl SyncEngine {
         Ok(sends)
     }
 
-    /// Must-hold for a closure body (spec/sync.md §6): before its keep-at-least bound, under
-    /// `nobody` while kept, or established uncovered by the label's snapshots. Must-hold: the parts a blob of the commit
-    /// must hold to hold the body (all of them before keep-at-least or under `nobody`, else those of the aspects
-    /// no snapshot covers).
+    /// Must-hold for a closure body (spec/sync.md §6), judged per part the label's actor reads
+    /// (`b.parts`): a part before its keep-at-least bound, under `nobody` while kept, or
+    /// established uncovered by the label's snapshots. Must-hold: the parts a blob of the
+    /// commit must hold to hold the body (those before keep-at-least or under `nobody`, and
+    /// those of the aspects no snapshot covers).
     pub(super) fn must_hold(&mut self, b: &Body, snaps: &Snaps, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let now = self.now();
         let mut before = false;
-        if let Some((t, a)) = aspects.first() {
-            let at_least = self.engine.body_keep(&b.commit, t, a)?.at_least;
-            // no right holder will ever drop a `nobody` body: must-hold while kept, covered or not
-            let nobody = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).is_some_and(|x| x.retention.by == osis_base::PurgeBy::Nobody);
-            before = nobody || at_least > now;
-            if at_least > now {
-                note.at(at_least);
-            }
-        }
         let mut covered = !aspects.is_empty();
         let mut needed = Vec::new();
         for (p, (t, a)) in b.parts.iter().zip(&aspects) {
+            let at_least = self.engine.body_keep(&b.commit, t, a)?.at_least;
+            // no right holder will ever drop a `nobody` part: must-hold while kept, covered or not
+            let nobody = h.aspects.get(p.0).is_some_and(|x| x.retention.by == osis_base::PurgeBy::Nobody);
+            let kept = nobody || at_least > now;
+            if at_least > now {
+                note.at(at_least);
+            }
+            before |= kept;
             let mut c = false;
             for s in snaps.get(&(*t, a.clone())).into_iter().flatten() {
                 if *s != b.commit && self.covered_noted(s, &b.commit, t, a, note)? == Some(true) {
@@ -118,7 +118,7 @@ impl SyncEngine {
                 }
             }
             covered &= c;
-            if before || !c {
+            if kept || !c {
                 needed.push(*p);
             }
         }
@@ -129,17 +129,18 @@ impl SyncEngine {
     }
 
     /// Whether a delete took body `b` from `l` and it stays out: its live writes are carried there
-    /// and no purge that fell may have been what took it (spec/sync.md §6).
-    pub(super) fn delete_stands(&mut self, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        Ok(self.state.body_deleted(l, b.commit, &b.parts) && self.live_carried(b, parts, snaps, note)? && !self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
+    /// (at `host`) and no purge that fell may have been what took it (spec/sync.md §6).
+    pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+        Ok(self.state.body_deleted(l, b.commit, &b.parts) && self.live_carried(host, l, b, parts, snaps, note)? && !self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
     }
 
-    /// Whether each of `parts` of body `b` has no live write or a snapshot under the label
-    /// (`snaps`) covering it.
-    pub(super) fn live_carried(&mut self, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+    /// Whether each of `parts` of body `b` has no live write, or a carrier under `l` at `host`:
+    /// another blob of the commit holding it (a rewrite, spec/sync.md §7) or a snapshot under
+    /// the label (`snaps`) covering it.
+    fn live_carried(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
         for p in parts {
-            if self.part_live(&h, &b.commit, p) && !self.parts_covered(snaps, &b.commit, &h, &[*p], note)? {
+            if self.part_live(&h, &b.commit, p) && !self.carried_by(host, &l, &b.commit, &[*p]) && !self.parts_covered(snaps, &b.commit, &h, &[*p], note)? {
                 return Ok(false);
             }
         }
@@ -188,19 +189,54 @@ impl SyncEngine {
     /// Whether an entry of commit `c` holding `parts` is present at `host` under `l` (any
     /// entry when `None`: this node's own served state), checked genuine: a forged blob listing
     /// the parts holds nothing, nor a must-not-hold one (`holds_nothing`).
-    pub(super) fn carried_by(&mut self, host: Option<&HostKey>, g: &Tid, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
-        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(g, c, p)) && host.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
+    pub(super) fn carried_by(&mut self, host: Option<&HostKey>, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(c, p)) && host.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
         ids.into_iter().any(|id| self.genuine(&id))
     }
 
-    /// Whether a blob of commit `c` with delta set `parts` under a label of `g` is must-not-hold
+    /// Whether a blob of commit `c` holding `parts` (those this node opened) is must-not-hold
     /// whatever its siblings: it holds a delta this node dropped (purge, expiry, keep-at-most,
-    /// compaction) or one the label's actor may not read (outside the required set). It holds
-    /// no body and makes no other blob a strict subset (spec/sync.md §6).
-    pub(super) fn holds_nothing(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    /// compaction). It holds no body and makes no other blob a strict subset (spec/sync.md §6).
+    pub(super) fn holds_nothing(&self, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(m) = self.engine.core.ix.commits.get(c) else { return false };
-        let x = self.engine.group_actor(g);
-        parts.iter().any(|p| m.body_gone(p.0) || m.header.aspects.get(p.0).is_some_and(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid))))
+        parts.iter().any(|p| m.body_gone(p.0))
+    }
+
+    /// The parts of an entry of commit `c` under a label of `g` that `g`'s actor may read
+    /// (`Engine::readable_parts`): what judgments compare with the label's bodies, so every
+    /// node syncing the label judges alike whatever else it holds secrets for.
+    pub(super) fn readable(&mut self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> Vec<(usize, usize)> {
+        let ctx = self.engine.body_ctx(g);
+        self.engine.readable_parts(&ctx, c, parts)
+    }
+
+    /// `readable` of what entry `b` under `l` (of `g`) opened; empty for no commit entry.
+    pub(super) fn others_readable(&mut self, g: &Tid, l: &LabelId, b: &BlobId) -> Vec<(usize, usize)> {
+        let Some(Entry { kind: Kind::Commit { commit, parts, .. }, .. }) = self.state.entries.get(&(*l, *b)).cloned() else { return Vec::new() };
+        self.readable(g, &commit, &parts)
+    }
+
+    /// The sections of commit `c` this node could not open, from the genuine blobs of it held
+    /// here (any: every copy carries the same sealed sections, or a rewrite's subset), to copy
+    /// verbatim into a fresh encryption (spec/wire.md §4).
+    pub(super) fn sealed_sections(&mut self, c: &CommitId) -> Result<Vec<osis_commit::Section>> {
+        let ids: Vec<BlobId> = self.state.by_commit.get(c).into_iter().flatten().copied().filter(|b| self.state.blobs.get(b).is_some_and(|r| !r.cert && crate::sync::state::sealed(&r.ais, &r.parts))).collect();
+        let mut out: Vec<osis_commit::Section> = Vec::new();
+        for id in ids {
+            if !self.genuine(&id) {
+                continue;
+            }
+            let Some(key) = self.state.blobs.get(&id).map(|r| r.key.clone()) else { continue };
+            let Some(bytes) = self.engine.blob(&id)? else { continue };
+            let g = self.state.labels_of(&id).into_iter().find_map(|l| self.group_of(&l, None));
+            let Ok(o) = self.engine.open_commit(&bytes, &key, g.as_ref()) else { continue };
+            for s in o.sealed {
+                if !out.iter().any(|x| x.ais == s.ais) {
+                    out.push(s);
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The genuine entry under `l` holding exactly this body, not tombstoned at `host`, whoever
@@ -209,7 +245,9 @@ impl SyncEngine {
     /// uploading another encryption (this node's own, whose upload was lost) would only add a
     /// duplicate for the tiebreak of §7 to delete. `None`: any entry (this node's served state).
     pub(super) fn entry_for(&mut self, host: Option<&HostKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
-        let mut ids: Vec<BlobId> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { parts, .. } if *parts == b.parts) && host.is_none_or(|s| !self.state.is_gone_at(s, l, id))).map(|(id, _)| id).collect();
+        let g = self.group_of(l, None)?;
+        let cands: Vec<(BlobId, Vec<(usize, usize)>)> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { .. }) && host.is_none_or(|s| !self.state.is_gone_at(s, l, id))).filter_map(|(id, e)| if let Kind::Commit { parts, .. } = &e.kind { Some((id, parts.clone())) } else { None }).collect();
+        let mut ids: Vec<BlobId> = cands.into_iter().filter(|(_, parts)| self.readable(&g, &b.commit, parts) == b.parts).map(|(id, _)| id).collect();
         if let Some(host) = host {
             ids.sort_by_key(|id| !self.state.is_present(host, l, id));
         }
@@ -227,8 +265,9 @@ impl SyncEngine {
         }
         let Some(key) = self.state.blobs.get(id).map(|r| r.key.clone()) else { return false };
         let Ok(Some(bytes)) = self.engine.blob(id) else { return false };
-        let verdict = match crate::labeling::open_commit(&bytes, &key) {
-            Ok((_, c)) => self.engine.parts_genuine(&c),
+        let g = self.state.labels_of(id).into_iter().find_map(|l| self.group_of(&l, None));
+        let verdict = match self.engine.open_commit(&bytes, &key, g.as_ref()) {
+            Ok(o) => self.engine.parts_genuine(&o.commit),
             Err(_) => Some(false),
         };
         let Some(v) = verdict else { return false };
@@ -247,34 +286,46 @@ impl SyncEngine {
     }
 
     /// Places a body under `l`: an encryption of it this node holds (never a certificate
-    /// copy's, never one tombstoned there), else a fresh one; wrapped for the label.
+    /// copy's, never one tombstoned there), else a fresh one (`Engine::seal`: every held part
+    /// in sections, the sections this node could not open copied verbatim); wrapped for the
+    /// label.
     pub(super) fn place(&mut self, g: &Tid, l: LabelId, b: &Body, cert: bool) -> Result<Option<BlobId>> {
         let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { return Ok(None) };
         // a memory commit's blobs carry its class and live in memory (spec/sync.md §9)
         let class = self.engine.header(&b.commit).map_or(osis_label::Class::Durable, |h| osis_label::Class::of_marker(h.ephemeral));
         let memory = class != osis_label::Class::Durable;
-        let reuse = if cert { None } else { self.state.blob_for(&b.commit, &b.parts, |id| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id))) };
-        let (id, key) = match reuse.and_then(|id| self.state.blobs.get(&id).map(|r| (id, r.key.clone()))) {
+        // what the blob carries: every held part (a copy: the body's own)
+        // a per-label copy (a certificate, a cross-published `label.0`) is sealed in one section
+        // under the label's wrap secret and shared with no other label (spec/sync.md §3)
+        let own = cert || b.to_label;
+        let held: Vec<(usize, usize)> = if own { b.parts.clone() } else { self.engine.body(&b.commit)?.map(|x| x.parts).unwrap_or_default() };
+        // a held encryption carrying the body's parts and nothing not held any more (the
+        // fullest; one sealed here may lack parts this node holds no secret for)
+        let reuse = if own { None } else { self.state.blob_for(&b.commit, &b.parts, &held, |id| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id))) };
+        let (id, key, parts, ais) = match reuse.and_then(|id| self.state.blobs.get(&id).map(|r| (id, r.key.clone(), r.parts.clone(), r.ais.clone()))) {
             Some(x) => x,
             None => {
-                let pt = self.engine.body_plaintext(b)?;
-                if pt.is_empty() {
-                    return Ok(None);
-                }
-                let s = crate::labeling::seal_body_as(&Body { plaintext: pt, ..b.clone() }, class, &mut *self.rng)?;
+                let sealed = if own {
+                    self.engine.seal_to(b, class, &secret, &mut *self.rng)?
+                } else {
+                    let extra = self.sealed_sections(&b.commit)?;
+                    self.engine.seal(b, class, &extra, &mut *self.rng)?
+                };
+                let Some(s) = sealed else { return Ok(None) };
                 if memory {
                     self.engine.put_memory_blobs(vec![(s.id, s.blob)])?;
                 } else {
                     self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 }
-                self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert, memory });
-                (s.id, s.key)
+                // a per-label copy is recorded as one: never reused under another label
+                self.state.add_blob(s.id, BlobRec { commit: b.commit, parts: s.parts.clone(), ais: s.ais.clone(), key: s.key.clone(), cert: own, memory });
+                (s.id, s.key, s.parts, s.ais)
             }
         };
         let Some(bytes) = self.engine.blob(&id)? else { return Ok(None) };
         let Some(salt) = osis_label::Prefix::parse(&bytes).ok().map(|p| *p.salt()) else { return Ok(None) };
         let wrap = osis_crypto::wrap(&secret, &id, &key, b.order)?;
-        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt }, memory });
+        self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, kind: Kind::Commit { commit: b.commit, parts, ais, salt }, memory });
         self.state.note_memory_size(l, id, bytes.len());
         if memory {
             self.state.memory_in_closure.insert((l, id));
@@ -349,7 +400,7 @@ impl SyncEngine {
         for b in &bodies {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
                 // not placed again (`body_sends`)
-                if self.delete_stands(*l, b, &needed, &snaps, &mut note)? {
+                if self.delete_stands(Some(host), *l, b, &needed, &snaps, &mut note)? {
                     continue;
                 }
                 v.must_hold.push((b.commit, needed));
@@ -384,7 +435,7 @@ impl SyncEngine {
     /// checked once the applied header is resolved, before the entry counts as holding its
     /// body; a disagreeing blob is bad input (`Kind::Bad`) and the body is judged missing there.
     pub(super) fn check_linked_prefixes(&mut self, l: LabelId, scope: &Scope) -> Result<()> {
-        type Parts = Vec<(usize, usize)>;
+        type Parts = Vec<usize>;
         let commits: Vec<CommitId> = match scope {
             Scope::All => self.state.label_commits(&l).collect(),
             Scope::Some { commits, .. } => commits.iter().copied().collect(),
@@ -395,20 +446,20 @@ impl SyncEngine {
                 continue;
             }
             for (b, e) in self.state.entries_of(&l, &c) {
-                if let Kind::Commit { parts, .. } = &e.kind
+                if let Kind::Commit { ais, .. } = &e.kind
                     && !self.prefix_checked.contains(&b)
                 {
-                    todo.push((b, c, parts.clone()));
+                    todo.push((b, c, ais.clone()));
                 }
             }
         }
         todo.sort_by_key(|x| x.0);
-        for (b, c, parts) in todo {
+        for (b, c, ais) in todo {
             let Some(bytes) = self.engine.blob(&b)? else { continue };
             let Some(h) = self.engine.header(&c) else { continue };
             self.prefix_checked.insert(b);
-            let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_inputs(&h, &parts)) {
-                (Ok(p), Ok((expiry, keys))) => p.agrees(expiry.map(WallMs), &h.blind, &keys, osis_label::Class::Durable),
+            let agrees = match (osis_label::Prefix::parse(&bytes), osis_commit::prefix_groups(&h, ais)) {
+                (Ok(p), Ok(groups)) => p.agrees(osis_commit::blob_expiry(&h).map(WallMs), &h.blind, &groups, osis_label::Class::Durable),
                 _ => false,
             };
             if !agrees {

@@ -1135,9 +1135,11 @@ fn setting_before_its_grant_comes_back_spec_perm_7() {
     let st = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     assert!(net.engine(d).core.ix.commits.get(&grant).is_none());
-    assert!(net.engine(d).core.ix.commits.get(&st).is_some());
-    assert!(!net.engine(d).body_not_dropped(&st, &t, &ra), "not a possible admin here: goes");
-    assert_eq!(net.host_ids(h2, &l).len(), at_host, "and from the host");
+    // the grant gave `t` secrets of its own: the setting's section is under them, so the admin
+    // on the other host cannot read the setting before the grant reaches it (spec/wire.md §4);
+    // it holds the blob sealed and judges nothing
+    assert!(net.engine(d).body_valid(&st, &t, &ra).is_none(), "unreadable before the grant");
+    assert!(net.host_ids(h2, &l).len() >= at_host, "nothing deleted from the host");
     net.set_online(a, true);
     for _ in 0..10 {
         net.advance(1_000);

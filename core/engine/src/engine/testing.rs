@@ -143,6 +143,22 @@ impl Engine {
             },
             unwrap: |secret, blob, wrap| osis_crypto::unwrap(&osis_crypto::Secret32::from_bytes(*secret), blob, wrap).ok().map(|k| *k.expose()),
             wrap_len: osis_crypto::WRAP_LEN,
+            // a section opens under a candidate as its wrap's read secret, or as its key
+            sections: |plain, keys| {
+                let Ok(env) = osis_commit::Envelope::decode(plain) else { return Vec::new() };
+                let id = env.id();
+                env.sections
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, s)| {
+                        keys.iter().find_map(|key| {
+                            let k = osis_crypto::Secret32::from_bytes(*key);
+                            let sk = osis_crypto::unwrap_section(&k, &id, &s.wrap).ok().unwrap_or(k);
+                            osis_crypto::open_section(&id, &sk, &s.ciphertext).ok().map(|p| (i, p))
+                        })
+                    })
+                    .collect()
+            },
         };
         Ok(osis_store::attack(&ev, Some(&ciphers)))
     }

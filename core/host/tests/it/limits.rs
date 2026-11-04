@@ -84,11 +84,11 @@ fn delete_key_deletes_only_its_own_body() {
     let plain = blob(12);
     w.run(c, Command::Upload { label: l.id, entries: vec![l.entry(mine.clone()), l.entry(other.clone()), l.entry(plain.clone())] });
     let k = l.head_keys().clone();
-    let item = |b: &[u8], n: u64, level: u8| DeleteItem::sign_by(&k.sync, &dk, level, &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
+    let item = |b: &[u8], n: u64, level: u8| DeleteItem::sign_by(&k.sync, &[(level, &dk)], &salt(n), &HB, &l.id, osis_label::blob_id(b), None).unwrap();
     // hostile deletes: a forged delete key; the right key under the write label key (level 1
     // needs the sync key); the right key at another level; another blob's salt
-    let forged = DeleteItem::sign_by(&k.sync, &osis_crypto::DeleteSecret::derive(&s32(2)), 1, &salt(10), &HB, &l.id, osis_label::blob_id(&mine), None).unwrap();
-    let wrong_label_key = DeleteItem::sign_by(&k.write, &dk, 1, &salt(10), &HB, &l.id, osis_label::blob_id(&mine), None).unwrap();
+    let forged = DeleteItem::sign_by(&k.sync, &[(1, &osis_crypto::DeleteSecret::derive(&s32(2)))], &salt(10), &HB, &l.id, osis_label::blob_id(&mine), None).unwrap();
+    let wrong_label_key = DeleteItem::sign_by(&k.write, &[(1, &dk)], &salt(10), &HB, &l.id, osis_label::blob_id(&mine), None).unwrap();
     let ev = w.run(c, Command::Delete { label: l.id, items: vec![forged, wrong_label_key, item(&other, 11, 1), item(&plain, 12, 1), item(&mine, 10, 2), item(&mine, 11, 1), item(&mine, 10, 1)] });
     assert_eq!(statuses(&ev), vec![Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::REFUSED, Code::OK]);
     // a delete for a body no longer held is refused (it cannot be checked, nor a tombstone revealed)

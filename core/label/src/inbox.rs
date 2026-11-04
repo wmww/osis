@@ -160,7 +160,7 @@ mod tests {
         let (p, got) = open_inbox_blob(&b, &r, &kem).unwrap();
         assert_eq!(got, payload());
         assert_eq!(p.expiry(), Some(WallMs(1000 + INBOX_LIFETIME_MS)));
-        assert!(p.commitments().is_empty());
+        assert_eq!(p.commitments().count(), 0);
         assert!(open_inbox_blob(&b, &Tid::from_bytes([6; 15]), &kem).is_err());
         let other = KemSecret::derive(&Secret32::from_bytes([8; 32]));
         assert!(open_inbox_blob(&b, &r, &other).is_err());

@@ -35,7 +35,7 @@ impl GroupLabel {
 }
 
 impl Core {
-    /// The reader actor of `t`, the projection key of its deltas: `t` with secrets of its own,
+    /// The reader actor of `t`, whose read role reads its deltas: `t` with secrets of its own,
     /// else the nearest owner-chain actor that has them (a key actor is its own).
     pub fn reader_of(&self, t: &Tid) -> Tid {
         // the actor whose secrets `t`'s derive from, up the owner chain

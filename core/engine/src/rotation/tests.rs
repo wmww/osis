@@ -2148,7 +2148,7 @@ fn boxed_by_invalid(lp: &mut LocalPeer, i: usize, g: Tid, holder: Tid, r: Role, 
 
 // spec/crypto.md §4 (a name is met when its commit is applied: its edge write on the name's
 // thing held): owner A (0) removes reader M (2) (R_s), then rotates read to e (naming R_s). X
-// (3, an admin) holds R_s without its `roles.0` delta on G (a projection: a certificate copy or
+// (3, an admin) holds R_s without its `roles.0` delta on G (a copy of some parts: a certificate copy or
 // another label's parts), so it still sees M as a reader: e must not be established there.
 // Once R_s arrives whole, e is.
 #[test]
@@ -2711,13 +2711,13 @@ fn newest_event_names_departure_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (a grant's names; study C3 with the grant held only as a projection): as
+// spec/crypto.md §4 (a grant's names; study C3 with the grant held only as a partial copy): as
 // `grant_names_before_boxing_holder_spec_crypto_4`, but a host gives X the grant's `roles.0`
 // part without its `secrets.0` part on A. X sees N a current holder and holds no box to it
 // carrying names; bound to the keyset N's edge names (C_N's), which it does not hold, it leaves
 // N out: D's keyset is never sealed to.
 #[test]
-fn grant_projection_names_unheld_spec_crypto_4() {
+fn grant_copy_names_unheld_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = LocalPeer::new(4, 4_137, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
@@ -2765,7 +2765,7 @@ fn grant_projection_names_unheld_spec_crypto_4() {
 }
 
 // spec/crypto.md §4, spec/permissions.md §6 (the keyset binding under a roster snapshot): as
-// `grant_projection_names_unheld_spec_crypto_4`, but G writes a roster snapshot of A after the
+// `grant_copy_names_unheld_spec_crypto_4`, but G writes a roster snapshot of A after the
 // grant. At X the snapshot is A's epoch start and the grant's edge write is ignored; the
 // snapshot's entry for N carries the edge's `keyset`, so X is bound by it all the same and
 // leaves N out: D's keyset is never sealed to.
@@ -2840,7 +2840,7 @@ fn send_cut(lp: &mut LocalPeer, from: usize, to: usize, ids: &BTreeSet<osis_base
 /// `keys.0` part, as N's chain certificate carries it): it knows no departure from N and N's
 /// newest keyset at X is the fork or the forgery. X rotates A. Returns the peers, A, N, X's
 /// epoch, D's epochs of N, and the grant's commits.
-fn projection_world(seed: u64, fork: bool) -> (LocalPeer, Tid, Tid, osis_crypto::Epoch, osis_keys::ActorEpochs, BTreeSet<osis_base::CommitId>) {
+fn partial_copy_world(seed: u64, fork: bool) -> (LocalPeer, Tid, Tid, osis_crypto::Epoch, osis_keys::ActorEpochs, BTreeSet<osis_base::CommitId>) {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = LocalPeer::new(5, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
@@ -2900,7 +2900,7 @@ fn projection_world(seed: u64, fork: bool) -> (LocalPeer, Tid, Tid, osis_crypto:
     (lp, a, n, x_e, d_n, grant)
 }
 
-// spec/crypto.md §4 (a grant's names; C1 and C1' under a projection): X holds the grant of N
+// spec/crypto.md §4 (a grant's names; C1 and C1' under a partial copy): X holds the grant of N
 // without its boxes, so it is bound to the keyset the grant's edge names (f): neither D's forged
 // keyset nor Z's honest fork boxing D (each N's newest keys.0 at X) is sealed to; N's holders of
 // f open X's epoch.
@@ -2910,7 +2910,7 @@ fn projection_world(seed: u64, fork: bool) -> (LocalPeer, Tid, Tid, osis_crypto:
 // without its `roles.0` part, so it knows no departure from N: bound to C1, sealing N write at
 // C1's w1 would let W open A's write epoch; X boxes N read only.
 #[test]
-fn grant_projection_binds_read_only_spec_crypto_4() {
+fn grant_copy_binds_read_only_spec_crypto_4() {
     let rw = BTreeSet::from([Role::Read, Role::Write]);
     let mut lp = LocalPeer::new(4, 4_151, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
@@ -2951,9 +2951,9 @@ fn grant_projection_binds_read_only_spec_crypto_4() {
 }
 
 #[test]
-fn grant_projection_seals_named_keyset_spec_crypto_4() {
+fn grant_copy_seals_named_keyset_spec_crypto_4() {
     for (seed, fork) in [(4_141, false), (4_143, true)] {
-        let (mut lp, a, n, x_e, d_n, _) = projection_world(seed, fork);
+        let (mut lp, a, n, x_e, d_n, _) = partial_copy_world(seed, fork);
         assert!(opens_through(&mut lp, 3, a, n, &d_n).read.reading_secret(&x_e).is_none(), "fork {fork}: D opens X's epoch");
         let n_n = lp.peers[1].engine.epochs(&n).unwrap();
         assert!(opens_through(&mut lp, 3, a, n, &n_n).read.reading_secret(&x_e).is_some(), "fork {fork}: N left out of X's epoch");
@@ -2965,14 +2965,14 @@ fn grant_projection_seals_named_keyset_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4 (a binding ends): X, bound in `projection_world` (the grant's boxes never
+// spec/crypto.md §4 (a binding ends): X, bound in `partial_copy_world` (the grant's boxes never
 // reach it), learns C_N's departure and N's next keyset f2; bound to C_N's keyset, no longer N's
 // newest, it leaves N out of its rotation. G, holding the grant's boxes, rotates A: its box to N
 // carries G's names, which X now meets, so X seals free again and boxes N at f2.
 #[test]
 fn lost_grant_part_binding_ends_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
-    let (mut lp, a, n, _, _, grant) = projection_world(4_161, false);
+    let (mut lp, a, n, _, _, grant) = partial_copy_world(4_161, false);
     // N rotates again (no departure); X gets it, and C_N whole
     lp.peers[1].clock.advance(60_000);
     rotate_leaving_out(&mut lp, 1, n, &read, &[]);
@@ -3008,7 +3008,7 @@ fn lost_grant_part_binding_ends_spec_crypto_4() {
 fn conflicting_grant_keyset_recovers_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     for regrant in [false, true] {
-        let (mut lp, a, n, _, _, grant) = projection_world(4_163, false);
+        let (mut lp, a, n, _, _, grant) = partial_copy_world(4_163, false);
         send_skipping(&mut lp, 1, 3, &BTreeSet::new());
         assert!(!lp.peers[3].engine.departures(&a).unwrap().is_empty(), "X knows D left N");
         // an admin's raw edge write of N naming a keyset commit nobody holds (no boxes)
@@ -3045,12 +3045,12 @@ fn conflicting_grant_keyset_recovers_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (a put whose boxes this node lacks is an earlier sealer): X, bound in
-// `projection_world` (the grant's boxes never reach it), removes N and re-grants it. Were the
+// `partial_copy_world` (the grant's boxes never reach it), removes N and re-grants it. Were the
 // re-grant free (no edge), X would seal N at its newest keyset at X, D's forgery (C3 again); it
 // is bound by the grant it lacks the boxes of: N's holders of f open, D does not.
 #[test]
-fn projection_holder_regrant_stays_bound_spec_crypto_4() {
-    let (mut lp, a, n, _, d_n, _) = projection_world(4_171, false);
+fn copy_holder_regrant_stays_bound_spec_crypto_4() {
+    let (mut lp, a, n, _, d_n, _) = partial_copy_world(4_171, false);
     lp.peers[3].clock.advance(1_000);
     lp.peers[3].engine.demote(&a, &Demotion { holder: n, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     lp.peers[3].clock.advance(1_000);
@@ -3066,12 +3066,12 @@ fn projection_holder_regrant_stays_bound_spec_crypto_4() {
 // spec/crypto.md §4 (only valid parts of applied puts carry a sealer's names): Z, a reader of
 // A and an admin of N, writes a grant-shaped commit of N on A: a rewrite of N's edge unchanged
 // (a self-removal through N, which applies) and a box to N at X's current epoch carrying empty
-// names (a `secrets.0` write a reader may not make: invalid). X, bound in `projection_world`,
+// names (a `secrets.0` write a reader may not make: invalid). X, bound in `partial_copy_world`,
 // holds it whole. Its box frees nobody: X stays bound and seals N at f, not at D's forgery.
 #[test]
 fn invalid_grant_box_frees_nobody_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
-    let (mut lp, a, n, x_e, d_n, _) = projection_world(4_173, false);
+    let (mut lp, a, n, x_e, d_n, _) = partial_copy_world(4_173, false);
     let z = lp.peers[4].engine.tid();
     // X (knowing no departure, so rotating nothing) grants Z read: Z holds X's epoch current
     lp.peers[3].engine.grant(&a, &z, &edge(Role::Read)).unwrap();
@@ -3121,7 +3121,7 @@ fn invalid_grant_box_frees_nobody_spec_crypto_4() {
 #[test]
 fn self_removal_cannot_move_keyset_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
-    let (mut lp, a, n, x_e, d_n, _) = projection_world(4_175, false);
+    let (mut lp, a, n, x_e, d_n, _) = partial_copy_world(4_175, false);
     let x_d = d_n.read.newest_held().unwrap().0;
     let forged = lp.peers[3].engine.core.ix.epoch_intro.get(&(n, Role::Read, x_d)).map(|x| x.1).expect("D's forgery introduced x_d at X");
     let v = lp.peers[3].engine.core.ix.commits.get(&forged).unwrap().view.clone();

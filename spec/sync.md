@@ -9,10 +9,10 @@
 - Hosts cannot tell them apart except as §4 states.
 - **Layout**: **clear prefix** || ciphertext. The prefix holds a salt, an optional expiry `T`, the blob's **class** and the delete-key commitments, one per level (spec/crypto.md §7). Ciphertext: spec/crypto.md §5. Bytes, padding, **Blob ID** and the `MAX_BLOB` bound: spec/wire.md §5.
 - **Class**: durable, ephemeral or relay-only, set as spec/wire.md §5 states. Hosts hold ephemeral entries in memory only and relay-only ones not at all (§4, §5).
-- **Several blobs of one commit**: one commit may travel as several blobs (projections, purge rewrites, certificate copies, concurrent re-encryptions): same header and commit ID, each with its own key, salt and ID.
-- **Prefix of a commit encryption**: every encryption of a commit computes its prefix from the header:
+- **Several blobs of one commit**: one commit may travel as several blobs (purge rewrites, certificate copies, concurrent re-encryptions): same header and commit ID, each with its own key, salt and ID.
+- **Prefix of a commit encryption**: every encryption of a commit computes its prefix from the header and the aspects its sections list (spec/wire.md §4):
   - expiry = the commit's `expires`;
-  - commitments to the delete keys its deltas list, blinded by the new salt (spec/crypto.md §7);
+  - one commitment group per distinct delete-key set among those aspects, blinded by the new salt (spec/crypto.md §7; spec/wire.md §5);
   - a header-only blob (spec/commits.md §5) has neither.
 - **Chunk reuse**: a chunk reused by a later delta keeps its blob and prefix, unless it must be re-encrypted.
   - It is re-encrypted when one of these holds:
@@ -81,15 +81,15 @@
 ## 3. What goes under a label
 - **Closure**: the blobs of group G are the commits touching any thing in G's transitive closure (through `group.0` and `placed.0~`, spec/data-model.md §8: an ephemeral placement brings its item's ephemeral commits), plus the chunk, tree-node and page blobs they reference (every blob their values link, whether or not the linking commit's chunk list names it).
   - Each node tags commits with their things' `groups.0` and retags when group membership changes.
-- **Entitlement**: a blob belongs under the label of a group G iff G's actor may read every delta in the blob. G's actor is the group thing if it has secrets of its own, else its owner.
+- **Entitlement**: a thing's **reader actor** is the thing if it has secrets of its own, else the nearest actor up its owner chain that has them (a key actor is its own). G's actor is the group thing if it has secrets of its own, else its owner. G's actor may read a thing iff the thing's secrets derive from its own or it holds read or above on the thing's reader actor. A commit's blob belongs under G's label iff G's actor may read a part of it on a thing of the closure (or published there, §2).
   - Only a writer of G stamps entries (§5).
   - A node that is not one deposits what it must place there (its chain certificates and node card, its invite grant or self-removal, its heartbeats, and the revokes and roster snapshots it must place by spec/permissions.md §4) and relays stamped entries it holds.
-- **Projection**: a commit is uploaded as one blob per distinct (readable subset, retention class) of its deltas.
-  - The retention class is the retention (spec/commits.md §5) and the delete keys it lists (spec/crypto.md §7).
-  - Each blob holds the deltas of that class and the commitments and expiry they call for, all with the same header and commit ID.
-  - A class whose blob would exceed `MAX_BLOB` is split into several blobs of that class holding disjoint delta sets, greedily in part order (`(ai, di)`, spec/wire.md §4): each blob takes the next part while the whole blob it makes (prefix with the class's commitments, padded ciphertext, spec/wire.md §5) stays within `MAX_BLOB`, so every encryption of the class splits alike.
+- **One blob per commit**: a commit is uploaded as one blob holding every part of it the uploader holds and can seal, each part in the section of its thing under the thing's read secret (spec/wire.md §4; a part of a thing whose read secret the uploader lacks, a key actor's own record or card, travels as a certificate copy). Every label of every thing the commit touches carries the one blob under its label's wrap; hosts and nodes syncing several of those labels dedup it by blob ID. No size split: a commit stays within `MAX_BLOB` by paging its deltas (spec/crdt.md §8), largest first, or is refused at the writer.
+  - A node judges a blob by the parts the label's actor may read (§6); a section it cannot open it copies verbatim when it encrypts the commit again (a tombstoned entry, a purge rewrite).
+  - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the owner chain the section lists from an owner it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through a label carrying it (§2 Route).
+  - **Per-label copies**: besides certificate copies (below), a label whose readers could not open a part's section in the shared blob gets a fresh blob of the parts its actor may read, one section under the read secret of the label's group, never shared with another label; judged like any body of the commit. Exactly two cases: a role commit with such a part on a thing other than the label's actor (its boxes are what give the readers that thing's secrets: a rotation, a grant, a cross-published `label.0`, §2); a part on a thing whose read secret derives from neither the label's actor nor an actor in its closure (a cross-published `created.0`, §2; a thing placed from another actor's tree, read by role on a reader actor whose rotations the label does not carry). A blob a node opens only under the label group's secret for a section on another thing is such a copy: its sections are not copied into another encryption.
 - **Retag**: when a thing joins a group, any writer of the label that holds the thing's live blobs adds them under it; when it leaves, delete-key holders delete them under the old label as they see the change (§7).
-- **Certificate blobs**: chain certificates, node cards, heartbeats, revokes and roster snapshots (spec/permissions.md §4).
+- **Certificate blobs**: chain certificates, node cards, heartbeats, revokes and roster snapshots (spec/permissions.md §4): copies of the parts of a role commit about one actor.
   - They go under a label as a fresh encryption per label, never as a blob shared with another label.
   - The chunk and tree-node blobs of a linked frontier or header list go under it too, as the same blobs (a link names them) with a filler wrap.
   - A roster snapshot copied as a certificate carries the edge and ledger deltas the chain needs.
@@ -188,7 +188,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - above `MAX_RELAY_BLOB` (code 3);
     - past the label's relay rate (code 4).
   - A host pushes a blob ID once per label until its expiry (a repeat is answered OK and pushed to nobody), remembering a bounded number of them (past it the earliest-expiring is forgotten).
-- **Replace**: an uploaded entry may name entries it replaces (spec/wire.md §11.2), each with the signatures a Delete of it (without a time) would carry.
+- **Replace**: an uploaded entry may name entries it replaces (spec/wire.md §11.2), each with the signatures a Delete of it (without a time) would carry, except that one commitment group signed for suffices (a rewrite by a right holder of one of its things).
   - The host checks every one it holds first (named entries it does not hold are skipped unchecked): a refused signature refuses the entry (codes 1, 9) and changes nothing.
   - The entry is admitted as an upload is, counting toward its caps the room the replaced entries it holds would free (an entry's room counts toward the cap of its own kind: durable or ephemeral).
   - Admitted, it is logged first, then each replaced entry it holds is removed as a Delete removes it. Refused, nothing is removed.
@@ -225,8 +225,8 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - Past either bound it deletes them at each pass, in this order:
     1. all but opened invite requests (§3) with a prefix expiry within that bound, those with no expiry or a later one before the rest, then earliest to expire first;
     2. then those requests, earliest to expire first.
-- **Placed**: a commit a node made is placed when each label it syncs of the things the commit touches holds every body of the commit it must hold (§6) in an entry present at one of its hosts, not counting as lacking there (above), or covered by a snapshot there (a label with no host: in an entry the node serves; skipped when the node has no `reach.0`). Projections of it elsewhere (certificate copies, inbox blobs) do not wait for it (spec/commits.md §4).
-- **Delete**: by the delete key, or of one entry by a level's delete key: a delete signature that verifies under the blob prefix's commitment at that level (spec/crypto.md §7), plus a signature under the head's write key for level 3 (thing write secret) or its sync key for level 1 or 2; any other is refused.
+- **Placed**: a commit a node made is placed when each label it syncs of the things the commit touches holds the parts of it the label's actor reads that it must hold (§6) in an entry present at one of its hosts, not counting as lacking there (above), or covered by a snapshot there (a label with no host: in an entry the node serves; skipped when the node has no `reach.0`). Copies of it elsewhere (certificate copies, inbox blobs) do not wait for it (spec/commits.md §4).
+- **Delete**: by the delete key, or of one entry by delete keys of levels: one delete signature per commitment group of the blob's prefix, each verifying under that group's commitment at its level (spec/crypto.md §7; one signature may cover several groups committing to the same key), plus a signature under the head's write key when any level is 3 (thing write secret), else its sync key; any other is refused. An empty group (a `nobody` delta's) is never covered: such a blob goes by the delete key, at its expiry, or by Replace.
   - Optionally **timed**: the entry is removed at the given time instead of now (one pending time per entry, the earliest request wins).
   - Removal leaves a tombstone for `TOMBSTONE_LIFETIME`.
 - **Expiry**: at the prefix's `T` the host deletes the entry outright: no tombstone.
@@ -299,7 +299,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - past keep-at-most;
     - dropped without a right (spec/permissions.md §7);
     - outside the required set;
-    - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold;
+    - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas hold a live write no snapshot under the label covers;
     - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
     - another node's node-card commit, for `node.0` and `reach.0`, once that node reads the label's actor no more after an applied edge write on its way to the actor ended an edge (removed it, or its `until` passed).
   - **may-hold**: the rest: covered, between bounds, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
@@ -308,7 +308,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Writer**: uploads every must-hold body the label lacks, as a fresh encryption if the old blob ID is tombstoned or its entry counts as lacking there (§5). A blob of the commit that is not must-not-hold and holds every delta of the body that no snapshot under the label covers holds it.
   - **Reader**: relays the stamped must-hold entries it holds that the label lacks.
   - **Neither** uploads nor relays a body a delete removed from the label (an entry of it that is not a certificate copy, within `TOMBSTONE_LIFETIME`) while both of these hold:
-    - each of its live writes is carried there (it has none, or a snapshot under the label covers it);
+    - each of its live writes is carried there (it has none, or a carrier of §7 holds it);
     - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §7).
   - **Delete-key holders** delete must-not-hold bodies.
   - **Dropped bodies**: a node that dropped a body keeps knowing its entries (not its key or wrap). When the body counts as never received again (spec/permissions.md §5.2) it fetches them again where present, and otherwise takes the body from a holder's upload (it is must-hold there: no valid snapshot covers it).

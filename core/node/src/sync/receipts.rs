@@ -9,7 +9,6 @@
 use super::state::HostKey;
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::Result;
-use crate::labeling::open_commit;
 use osis_base::{BlobId, LabelId, Tid};
 use osis_proto::{ClientEvent, Command, Event as LogEvent};
 use std::collections::{BTreeMap, BTreeSet};
@@ -257,16 +256,17 @@ impl SyncEngine {
             }
             return Ok(());
         };
-        match open_commit(bytes, &key) {
+        match self.engine.open_commit(bytes, &key, Some(&group)) {
             // the group's role commits apply: their `secrets.0` open the rest of the label
             // (a group with secrets of its own seals them only there); applying records them
-            Ok((pt, c)) if c.header.kind.is_role() => {
-                if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
-                    self.diag(format!("ingest {:?}: {e}", c.id()));
+            Ok(o) if o.commit.header.kind.is_role() => {
+                if let Err(e) = self.engine.ingest(&o.plaintext, Vec::new()) {
+                    self.diag(format!("ingest {:?}: {e}", o.commit.id()));
                 }
                 self.engine.reexamine()?;
             }
-            Ok((_, c)) => {
+            Ok(o) => {
+                let c = o.commit;
                 if !self.engine.record_header(&c)? {
                     self.diag(format!("label {l:?}: header of {:?} not verifiable here: no receipt", c.id()));
                 }

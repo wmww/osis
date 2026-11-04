@@ -84,27 +84,18 @@ impl Entry {
     }
 }
 
-/// `replace := [blob_id, sig] | [blob_id, level, dsig, sig]`: an entry an upload replaces, by
-/// the signatures a Delete of it without `at` carries (`at` is always `None`).
+/// `replace := [blob_id, [[level, dsig]*], sig]`: an entry an upload replaces, by the
+/// signatures a Delete of it without `at` carries (`at` is always `None`).
 fn replace_value(d: &DeleteItem) -> Value {
-    match d {
-        DeleteItem { blob, by: None, sig, .. } => Value::List(vec![Value::bytes(&blob.0), Value::bytes(&sig.0)]),
-        DeleteItem { blob, by: Some((level, dsig)), sig, .. } => Value::List(vec![Value::bytes(&blob.0), Value::uint(u64::from(*level)), Value::bytes(&dsig.0), Value::bytes(&sig.0)]),
-    }
+    let by = Value::List(d.by.iter().map(|(l, s)| Value::List(vec![Value::uint(u64::from(*l)), Value::bytes(&s.0)])).collect());
+    Value::List(vec![Value::bytes(&d.blob.0), by, Value::bytes(&d.sig.0)])
 }
 
 fn replace_from_value(v: Value) -> Result<DeleteItem, Error> {
-    let mut f = Fields::range(v, 2, 4, "replace")?;
+    let mut f = Fields::exact(v, 3, "replace")?;
     let blob = BlobId(f.fixed()?);
-    let r = match f.remaining() {
-        1 => DeleteItem { blob, at: None, by: None, sig: Signature(f.fixed()?) },
-        3 => {
-            let level = u8::try_from(f.uint()?).ok().filter(|l| (osis_base::format::DELETE_ADMIN..=osis_base::format::DELETE_WRITER).contains(l)).ok_or(Error::Malformed("replace level"))?;
-            let dsig = Signature(f.fixed()?);
-            DeleteItem { blob, at: None, by: Some((level, dsig)), sig: Signature(f.fixed()?) }
-        }
-        _ => return Err(Error::Malformed("replace")),
-    };
+    let by = osis_label::by_from_value(&f.next()?).map_err(|_| Error::Malformed("replace levels"))?;
+    let r = DeleteItem { blob, at: None, by, sig: Signature(f.fixed()?) };
     f.end()?;
     Ok(r)
 }

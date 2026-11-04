@@ -399,7 +399,7 @@ fn label_replacement_spec_sync_2() {
 // reader of G only, holds the snapshot as an epoch start with an empty roster, as perm's
 // certificate closure projects it, and never sees T's holder.
 #[test]
-fn nested_chain_empty_projection_spec_perm_6() {
+fn nested_chain_empty_copy_spec_perm_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -972,13 +972,14 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
     let (cc, ais) = chain_commit(&mut net, w, g, wt, "node.0");
     let secret = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
     let mut forged = Vec::new();
-    for b in net.engine(w).part_bodies(&cc, &ais).unwrap() {
+    if let Some(b) = net.engine(w).part_body(&cc, &ais).unwrap() {
         let mut blob = osis_commit::CommitBlob::decode(&b.plaintext).unwrap();
         for p in &mut blob.parts {
-            p.delta.push(0);
+            p.delta = osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![9; 40])]));
         }
+        // a certificate copy: one section under the label's secret (`seal_to`)
         let fake = osis_node::labeling::Body { plaintext: blob.encode(), ..b };
-        let s = osis_node::labeling::seal_body(&fake, &mut osis_crypto::SeededRng::from_u64(7)).unwrap();
+        let s = net.engine(w).seal_to(&fake, osis_label::Class::Durable, &secret, &mut osis_crypto::SeededRng::from_u64(7)).unwrap().unwrap();
         let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
         let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
         osis_proto::LabelStore::put(net.hosts[host].hub.store_mut(), &l, put).unwrap();
@@ -987,7 +988,9 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
     net.set_online(w, true);
     net.run();
     let entries = net.sync(w).entries(&l);
-    assert!(forged.iter().all(|f| entries.iter().any(|(id, k)| id == f && *k == EntryKind::Bad)), "the forged copies are bad input");
+    // bad input at the writer, or already cleared from the host as a junk deposit by the admin
+    let at_host = net.host_ids(host, &l);
+    assert!(forged.iter().all(|f| entries.iter().any(|(id, k)| id == f && *k == EntryKind::Bad) || !at_host.contains(f)), "the forged copies are bad input");
     assert!(entries_of(&mut net, w, host, &l, &cc).iter().any(|(id, _)| !forged.contains(id)), "the writer placed its own card");
 }
 
@@ -1009,7 +1012,7 @@ fn deleted_copy_placed_again_spec_permissions_4() {
     let at = net.tid(a);
     let (cc, _) = chain_commit(&mut net, r, g, at, "node.0");
     let before = entries_of(&mut net, r, host, &l, &cc);
-    assert_eq!(before.len(), 2, "the admin's copy only (two retention classes): {before:?}");
+    assert_eq!(before.len(), 1, "the admin's copy only (one blob, two retention classes): {before:?}");
     net.set_online(r, false);
     for (id, _) in &before {
         let now = net.now();
@@ -1876,3 +1879,4 @@ fn card_and_beat_wait_for_a_wrap_spec_permissions_4() {
     assert!(under.iter().any(|(_, au, aks)| *au == tc && aks.contains("node.0")), "c's card: {under:?}");
     assert!(net.engine(a).get_typed(&tc, &ct::SEEN).unwrap().is_some(), "c's heartbeat");
 }
+

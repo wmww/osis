@@ -43,10 +43,10 @@ impl Framing {
         };
         let salt = prefix.salt();
         let mine: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l != DELETE_AUTHOR).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
-        let theirs: BTreeSet<[u8; 33]> = prefix.commitments().iter().filter(|c| c[0] != DELETE_AUTHOR).copied().collect();
+        let theirs: BTreeSet<[u8; 33]> = prefix.commitments().filter(|c| c[0] != DELETE_AUTHOR).copied().collect();
         let author: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l == DELETE_AUTHOR).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
         let shared = self.keys.iter().any(|(l, _)| *l == DELETE_AUTHOR) && self.keys.iter().any(|(l, _)| *l != DELETE_AUTHOR);
-        let author_ok = shared || author.is_ok_and(|a| prefix.commitments().iter().filter(|c| c[0] == DELETE_AUTHOR).all(|c| a.contains(c)));
+        let author_ok = shared || author.is_ok_and(|a| prefix.commitments().filter(|c| c[0] == DELETE_AUTHOR).all(|c| a.contains(c)));
         expiry_ok && author_ok && mine.is_ok_and(|m| m == theirs)
     }
 }
@@ -369,8 +369,8 @@ mod tests {
         for wr in &written {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
             assert_eq!(p.expiry(), Some(WallMs(99)));
-            assert_eq!(p.commitments().len(), 2);
-            assert_eq!(p.key_at(3), Some(osis_crypto::blind(&f.keys[1].1, p.salt(), &f.blind).to_bytes()));
+            assert_eq!(p.commitments().count(), 2);
+            assert_eq!(p.key_at(0, 3), Some(osis_crypto::blind(&f.keys[1].1, p.salt(), &f.blind).to_bytes()));
         }
         let dedup = f.dedup.clone();
         let mut r = BlobReader::new(&dedup, &mut store);
@@ -454,7 +454,7 @@ mod tests {
         assert!(written.len() > 3);
         for wr in &written {
             let p = Prefix::parse(&store.0[&wr.id]).unwrap();
-            assert_eq!((p.expiry(), p.commitments().len()), (f.expiry, 2));
+            assert_eq!((p.expiry(), p.commitments().count()), (f.expiry, 2));
         }
         let mut r = BlobReader::new(&f.dedup, &mut store).with_page_params(params);
         assert_eq!(decode_snapshot(&bytes, &cx, &mut Interner::new(), Some(&mut r)).unwrap().fragment, snap.fragment);

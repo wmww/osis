@@ -103,7 +103,7 @@ fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Ret
     m.set(t, &REG, &s("k")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 2, "two bodies: two retention classes");
+    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "one blob, two retention classes");
     net.advance(1_000);
     let mut m = Mutation::new();
     if let Some(r) = r2 {
@@ -195,7 +195,7 @@ fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {
     let want = net.engine(a).get(&t, &gone).unwrap();
     assert_eq!(net.engine(late).get(&t, &gone).unwrap(), want);
     let pk = net.engine(a).package(&snap).unwrap().unwrap();
-    assert!(net.engine(a).bodies(&snap).unwrap().is_empty());
+    assert!(net.engine(a).body(&snap).unwrap().is_none());
     net.engine(late).ingest(&pk.bytes, pk.blobs).unwrap();
     assert_eq!(net.engine(late).pending(), vec![(snap, osis_node::Reason::WaitDeltas)]);
     assert_eq!(net.engine(late).get(&t, &gone).unwrap(), want);
@@ -396,7 +396,7 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     m.set(t, &REG, &s("k")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 2, "two bodies: two retention classes");
+    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "one blob, two retention classes");
     let h = net.engine(a).header(&c1).unwrap();
     let ai = h.aspects.iter().position(|x| x.ak == gone).unwrap();
     let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c1 && parts.iter().any(|p| p.0 == ai))).map(|(id, _)| id).collect();
@@ -404,9 +404,10 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     net.hide_blobs.insert(b, hide);
     net.set_online(b, true);
     net.run();
-    assert_eq!(net.engine(b).get(&t, &reg).unwrap(), Some(s("x")), "c1's REG part waits");
+    // one blob per commit: hidden whole, nothing of c1 is received (spec/sync.md §3, §6)
+    assert_eq!(net.engine(b).get(&t, &reg).unwrap(), Some(s("x")), "c1's REG part never came");
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
-    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::WaitDeltas)]);
+    assert!(net.engine(b).pending().is_empty());
     // the body comes (the host's cursor has passed it: by another way)
     let pk = net.engine(a).package(&c1).unwrap().unwrap();
     net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
@@ -415,42 +416,49 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
 }
 
 // spec/sync.md §6 (must-hold: established uncovered by held snapshots; a pending commit that is
-// no snapshot covers nothing): writer b holds a's commit pending (its body on `t:gone.0` hidden),
-// which also writes `t:reg.0`, and writes `t:reg.0` itself: b's body goes to the host all the
-// same (was issues/sync-unsettled-deadlock.md: two writers' pending commits, each waiting for
-// the other's body, stopped each other's uploads).
+// no snapshot covers nothing): writer b holds a's commit pending (it also writes thing `u`, whose
+// creating commit is hidden from b), which writes `t:reg.0`, and writes `t:reg.0` itself: b's
+// body goes to the host all the same (was issues/sync-unsettled-deadlock.md: two writers'
+// pending commits, each waiting for the other's body, stopped each other's uploads). One blob
+// per commit: a commit waits on a missing record, not on a hidden part.
 #[test]
 fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
     use osis_base::Role;
-    let gone = osis_base::Ak::new("t:gone.0").unwrap();
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(74, &[host]);
     let b = net.node(75, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.set_online(b, false);
     let t = net.item(a, g, g, "x");
     net.run();
-    let l = net.label(a);
+    net.set_online(b, false);
+    let e = net.engine(a);
     let mut m = Mutation::new();
-    m.retention(t, &GONE, most(None, Some(0)).unwrap()).unwrap();
-    m.set(t, &GONE, &s("v1")).unwrap();
-    m.set(t, &REG, &s("k")).unwrap();
-    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    let u = e.new_thing(&mut m, g);
+    let mut items = e.get_typed(&g, &osis_schema::core_types::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(u);
+    m.set(g, &osis_schema::core_types::GROUP, &items).unwrap();
+    let made = e.commit(m).unwrap().unwrap();
     net.run();
-    let h = net.engine(a).header(&c1).unwrap();
-    let ai = h.aspects.iter().position(|x| x.ak == gone).unwrap();
-    let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c1 && parts.iter().any(|p| p.0 == ai))).map(|(id, _)| id).collect();
+    let l = net.label(a);
+    let hide: std::collections::BTreeSet<_> = at_host(&mut net, a, host, &l, &made).into_iter().collect();
     assert_eq!(hide.len(), 1);
     net.hide_blobs.insert(b, hide);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("k")).unwrap();
+    m.set(u, &REG, &s("k")).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
     net.set_online(b, true);
     net.run();
-    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::WaitDeltas)]);
+    net.advance(30_000);
+    net.run();
+    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::UnknownCreated(u))]);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("mine")).unwrap();
     let c2 = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::WaitDeltas)], "still pending");
+    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::UnknownCreated(u))], "still pending");
     assert!(!at_host(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a pending commit");
 }
 
@@ -483,6 +491,8 @@ fn first_sync_waits_across_things_spec_commits_4() {
     net.hide_blobs.insert(b, hide);
     net.set_online(b, true);
     net.run();
-    assert_eq!(net.engine(b).get(&u, &reg).unwrap(), Some(s("u")), "the part on the other thing waits");
-    assert_eq!(net.engine(b).pending(), vec![(c, osis_node::Reason::WaitDeltas)]);
+    // one blob per commit: hidden whole, nothing of it is received (spec/sync.md §3, §6)
+    assert_eq!(net.engine(b).get(&u, &reg).unwrap(), Some(s("u")), "the part on the other thing never came");
+    assert!(net.engine(b).pending().is_empty());
+    assert!(net.engine(b).header(&c).is_none());
 }

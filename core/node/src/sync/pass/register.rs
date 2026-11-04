@@ -74,11 +74,15 @@ impl SyncEngine {
         let core = &self.engine.core;
         let ids: Vec<CommitId> = core.on_thing(&a).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())).collect();
         let mut uploads = Vec::new();
+        let ctx = self.engine.body_ctx(&g);
         for id in ids {
-            for b in self.engine.bodies(&id)? {
-                if b.reader != a && !self.engine.core.may_read(&a, &b.reader) {
-                    continue;
-                }
+            let Some(mut b) = self.engine.body(&id)? else { continue };
+            b.parts = self.engine.readable_parts(&ctx, &id, &b.parts);
+            b.plaintext = Vec::new();
+            if b.parts.is_empty() {
+                continue;
+            }
+            {
                 let bid = match self.entry_for(Some(&host), &l, &b) {
                     Some(x) => x,
                     None => match self.place(&g, l, &b, false)? {

@@ -9,7 +9,6 @@ use crate::order::{Played, Step, play};
 use osis_base::{CommitId, Role, Tid, WallMs};
 use osis_crypto::{Epoch, LabelRole, Secret32, SeededRng, label_role_key};
 use osis_label::{BundleReader, BundleWriter, Importer, Parent, Record, StepKeys, genesis_label, register, sign_stamp};
-use osis_node::labeling::{Body, open_commit, seal_body};
 use osis_node::local_peer::Peer;
 use osis_vectors::file::{Record as Rec, VecFile};
 use std::collections::{BTreeMap, BTreeSet};
@@ -90,10 +89,10 @@ struct Laid {
 /// secrets read `0a`, write `0b`, admin `09`, deposit seed `0c`), then per commit the blobs it
 /// references, each under a filler wrap (left out where the case needs no bytes of them: the
 /// chunks of `t:blob.0`, which nothing waits for, and a demotion's linked frontier), and its
-/// bodies (`osis_commit::project`, one per label
-/// and class) sealed and stamped, each blob before its entry. With `second`, every thing but G
-/// is under a second label (read `1a`, write `1b`, admin `19`, deposit seed `1c`), its path
-/// before its first entry.
+/// one blob (sections per label, each under that label's read secret, spec/wire.md §4) sealed
+/// and stamped under every label with a part of it, each blob before its entry. With `second`,
+/// every thing but G is under a second label (read `1a`, write `1b`, admin `19`, deposit seed
+/// `1c`), its path before its first entry.
 fn bundle(played: &Played, second: bool) -> Laid {
     let mut rng = SeededRng::from_u64(0x0b0d1e);
     let first = label(0x0a, &mut rng);
@@ -107,32 +106,41 @@ fn bundle(played: &Played, second: bool) -> Laid {
         let cb = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
         // bare headers name no list by link in these histories: the aspects are at hand
         let under = |ai: usize| second && cb.header.aspects[ai].tid != played.things[0] && played.things.contains(&cb.header.aspects[ai].tid);
-        for p in osis_commit::project(&cb, under).unwrap() {
-            if p.readers && other.is_none() {
-                let l = label(0x1a, &mut rng);
-                recs.push(l.path.clone());
-                other = Some(l);
-            }
-            let lab = if p.readers { other.as_ref().unwrap() } else { &first };
-            if !cb.header.aspects.iter().any(|a| a.ak.as_str() == "t:blob.0") && cb.header.links.frontier.is_none() {
-                for (id, b) in &pk.blobs {
-                    if seen.insert(*id) {
-                        let wrap = osis_crypto::filler_wrap(&mut rng);
-                        let stamp = sign_stamp(&lab.stamp, &lab.id, id, &wrap);
-                        recs.push(Record::Blob(b.clone()));
-                        recs.push(Record::Entry { label: lab.id, blob: *id, wrap, stamp: Some(stamp) });
-                        refs.insert(of.len());
-                        of.push(ci);
-                    }
+        let readers: Vec<bool> = cb.parts.iter().map(|p| under(p.ai)).collect::<BTreeSet<_>>().into_iter().collect();
+        if readers.contains(&true) && other.is_none() {
+            let l = label(0x1a, &mut rng);
+            recs.push(l.path.clone());
+            other = Some(l);
+        }
+        let lab_of = |second: bool| if second { other.as_ref().unwrap() } else { &first };
+        // the referenced blobs under the first label the commit has a part under
+        if let Some(r0) = readers.first().copied()
+            && !cb.header.aspects.iter().any(|a| a.ak.as_str() == "t:blob.0")
+            && cb.header.links.frontier.is_none()
+        {
+            let lab = lab_of(r0);
+            for (id, b) in &pk.blobs {
+                if seen.insert(*id) {
+                    let wrap = osis_crypto::filler_wrap(&mut rng);
+                    let stamp = sign_stamp(&lab.stamp, &lab.id, id, &wrap);
+                    recs.push(Record::Blob(b.clone()));
+                    recs.push(Record::Entry { label: lab.id, blob: *id, wrap, stamp: Some(stamp) });
+                    refs.insert(of.len());
+                    of.push(ci);
                 }
             }
-            let body = Body { commit: pk.id, reader: Tid::from_bytes([0; 15]), parts: p.parts, expires: p.expires, keys: p.keys, blind: cb.header.blind, plaintext: p.plaintext, role_commit: cb.header.kind.is_role(), order: 1 };
-            let sealed = seal_body(&body, &mut rng).unwrap();
-            let wrap = osis_crypto::wrap(&lab.read, &sealed.id, &sealed.key, 1).unwrap();
-            let stamp = sign_stamp(&lab.stamp, &lab.id, &sealed.id, &wrap);
+        }
+        if !cb.parts.is_empty() {
+            let env = osis_commit::seal_commit(&cb, under, |r, _| Some((lab_of(*r).read.clone(), vec![])), &[], &mut rng).unwrap();
+            let sealed = osis_node::labeling::frame_envelope(&env, &cb.header, osis_label::Class::Durable, &mut rng, &cb).unwrap();
             recs.push(Record::Blob(sealed.blob));
-            recs.push(Record::Entry { label: lab.id, blob: sealed.id, wrap, stamp: Some(stamp) });
-            of.push(ci);
+            for r in readers {
+                let lab = lab_of(r);
+                let wrap = osis_crypto::wrap(&lab.read, &sealed.id, &sealed.key, 1).unwrap();
+                let stamp = sign_stamp(&lab.stamp, &lab.id, &sealed.id, &wrap);
+                recs.push(Record::Entry { label: lab.id, blob: sealed.id, wrap, stamp: Some(stamp) });
+                of.push(ci);
+            }
         }
         if ci < played.base {
             setup = recs.len();
@@ -197,9 +205,16 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
     let mut p = Peer::new(FRESH, now).unwrap();
     let mut ids = BTreeSet::new();
     // a filler wrap opens under no read secret (spec/crypto.md §5)
+    // an entry delivers its label's section: the one sealed under the read secret its wrap
+    // opened with (a node holding one label's secret reads that label's parts)
     let open = |i: usize| {
         let (id, wrap, blob) = &ents[i];
-        osis_label::unwrap_any(reads, id, wrap).map(|(_, key)| open_commit(blob, &key).unwrap())
+        osis_label::unwrap_any(reads, id, wrap).map(|(ri, key)| {
+            let (_, pt) = osis_label::open(blob, &key).unwrap();
+            let env = osis_commit::Envelope::decode(&pt).unwrap();
+            let o = env.open(|_| vec![reads[ri].clone()]).unwrap();
+            (o.commit.encode(), o.commit)
+        })
     };
     for t in order {
         match *t {

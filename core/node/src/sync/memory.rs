@@ -16,7 +16,7 @@ use super::{Action, ConnId, Phase, SyncEngine};
 use crate::engine::MemoryDrop;
 use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind};
-use crate::labeling::{Body, BodyCtx, HeadKeys, open_commit, seal_body_as};
+use crate::labeling::{Body, BodyCtx, HeadKeys};
 use crate::Ingested;
 use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_commit::{CommitBlob, EphClass, Form};
@@ -700,35 +700,40 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Places a relay-only commit built here (`blob`: its header and parts) under every synced
-    /// label whose closure holds its things, one blob per projection the label's actor may read
-    /// (spec/sync.md §3), and sends each on every connection where the label is open.
+    /// Places a relay-only commit built here (`blob`: its header and parts) as one blob
+    /// (spec/sync.md §3, §9) under every synced label whose closure holds a thing of it the
+    /// label's actor may read, and sends it on every connection where the label is open.
     fn place_relay(&mut self, id: CommitId, blob: CommitBlob, out: &mut Vec<Action>) -> Result<()> {
+        let body = Body {
+            commit: id,
+            parts: blob.parts.iter().map(|p| (p.ai, p.di)).collect(),
+            expires: osis_commit::blob_expiry(&blob.header),
+            blind: blob.header.blind,
+            plaintext: blob.encode(),
+            role_commit: false,
+            order: crate::labeling::fetch_order(&blob.header),
+            to_label: false,
+        };
+        let mut sealed: Option<crate::labeling::Sealed> = None;
         for (g, gl) in self.labels() {
             if gl.replaced {
                 continue;
             }
             let l = gl.id;
             let closure = self.engine.closure(&g);
-            if !blob.header.aspects.iter().any(|a| a.tid == g || closure.contains(&a.tid)) {
+            let actor = self.engine.group_actor(&g);
+            if !blob.header.aspects.iter().any(|a| (a.tid == g || closure.contains(&a.tid)) && self.engine.may_read(&actor, &self.engine.ephemeral_reader(&a.tid))) {
                 continue;
             }
-            let readers: Vec<Option<Tid>> = blob.header.aspects.iter().map(|a| Some(self.engine.ephemeral_reader(&a.tid))).collect();
-            let actor = self.engine.group_actor(&g);
             let Some(secret) = self.engine.wrap_secret(&g, None)? else { continue };
-            let projections = osis_commit::project(&blob, |ai| readers.get(ai).copied().flatten())?;
-            let stamp_key = self.relay_stamp_key(&g, &l);
-            for p in projections {
-                let Some(reader) = p.readers else { continue };
-                if reader != actor && !self.engine.may_read(&actor, &reader) {
-                    continue;
-                }
-                let body = Body { commit: id, reader, parts: p.parts.clone(), expires: p.expires, keys: p.keys.clone(), blind: blob.header.blind, plaintext: p.plaintext, role_commit: false, order: crate::labeling::fetch_order(&blob.header) };
-                let s = seal_body_as(&body, Class::Relay, &mut *self.rng)?;
-                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, body.order)?;
-                let stamp = stamp_key.as_ref().map(|w| osis_label::sign_stamp(w, &l, &s.id, &wrap));
-                self.send_relay(l, s.blob, wrap, stamp, out)?;
+            if sealed.is_none() {
+                sealed = self.engine.seal(&body, Class::Relay, &[], &mut *self.rng)?;
             }
+            let Some(s) = &sealed else { break };
+            let stamp_key = self.relay_stamp_key(&g, &l);
+            let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, body.order)?;
+            let stamp = stamp_key.as_ref().map(|w| osis_label::sign_stamp(w, &l, &s.id, &wrap));
+            self.send_relay(l, s.blob.clone(), wrap, stamp, out)?;
         }
         Ok(())
     }
@@ -800,8 +805,8 @@ impl SyncEngine {
         let Some(g) = self.group_of(&l, None) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
         let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { return Ok(()) };
-        let (_, cb) = match open_commit(&blob, &key) {
-            Ok(x) => x,
+        let cb = match self.engine.open_commit(&blob, &key, Some(&g)) {
+            Ok(o) => o.commit,
             Err(e) => {
                 self.diag(format!("relay-only blob {b:?}: {e}"));
                 return Ok(());

@@ -895,7 +895,7 @@ fn author_only_not_the_admins_spec_perm_7() {
 
     // its author, the admin away
     net.set_online(a, false);
-    assert!(net.engine(b).delete_secrets_of(&c, &[(h.aspects.iter().position(|x| x.ak == k).unwrap(), 0)]).iter().any(|(l, _)| *l == 2));
+    assert!(net.engine(b).delete_secrets_of(&c, &[h.aspects.iter().position(|x| x.ak == k).unwrap()]).iter().flatten().any(|(l, _)| *l == 2));
     purge_commit(&mut net, b, t, c);
     net.run();
     assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "the author's purge drops it");

@@ -14,17 +14,16 @@ Encoding: spec/wire.md §4. Fields:
 - A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
 - Demotions only: the frontier (spec/permissions.md §5), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
 - Optional ephemeral marker: an ephemeral commit or a relay-only one (§2).
-- The aspect, chunk, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and belong to every projection of it (spec/sync.md §3).
+- The aspect, chunk, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and go under every label the commit's blob goes under (spec/sync.md §3).
 - Signature (spec/crypto.md §2).
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
 - **Delta** bytes: spec/crdt.md §3. **Delta hash** = `kdf("delta", dedup secret of tid, delta bytes)` (spec/crypto.md §6).
 - A commit may touch things of any owners and reader sets.
-- A commit has no size limit but its header's:
-  - a delta pages (spec/crdt.md §8), but an ephemeral commit's deltas never page and each must fit a blob (§2);
+- A commit's size is bounded by its one blob (spec/sync.md §3):
+  - a delta pages (spec/crdt.md §8), but an ephemeral commit's deltas never page;
   - the header's lists go by link, each at most `MAX_LIST_BYTES`;
-  - a projection splits by size (spec/sync.md §3);
-  - only blobs are bounded (`MAX_BLOB`, spec/data-model.md §6). Paging and chunking keep every delta and page within a blob.
+  - the whole commit, its paged deltas' roots included, fits `MAX_BLOB` (spec/data-model.md §6), or the writer refuses it. Paging and chunking keep every page within a blob.
 
 ## 2. Kinds
 - **Content**: deltas on aspects that are not role-class.
@@ -123,7 +122,7 @@ Encoding: spec/wire.md §4. Fields:
   - **Author lowered**: the node holds one of the following on the delta's thing or a thing up its owner chain, signed by a possible admin of that thing, with a frontier that does not list the delta's commit, whatever follows them:
     - a role commit with a frontier, of any validity, by another actor, whose edge write on that thing removes the edge of the delta's author or its header's actor or sets it below the role the delta needs;
     - a roster snapshot's ledger entry, in a snapshot whose held parts show at least one roster edge, with a frontier, of the delta's author or its header's actor with that role or above, that no roster edge or later-ending entry of that role or above in the snapshot starts at the end of.
-  - **Role commit**: it is a delta of a role commit (not a snapshot) and the node holds any delta of that commit (it may hold only a projection: a certificate copy or an inbox blob, spec/sync.md §3). The commit applies without the missing ones and each joins if it arrives later.
+  - **Role commit**: it is a delta of a role commit (not a snapshot) and the node holds any delta of that commit (it may hold only a copy of some parts: a certificate copy or an inbox blob, spec/sync.md §3). The commit applies without the missing ones and each joins if it arrives later.
   - **Wrong storage class**: it is on a key of another storage class than its commit's (§2).
 - A delta of an already applied commit that arrives later (the node began syncing its label after applying, the delta counted as held, or its body counts as never received, §5) is joined on arrival, a live one past its keep at most included.
 - Role commits are applied before content.
@@ -159,7 +158,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - **Keep at least** and **keep at most**: each optional. Keep at least is an absolute time, a duration after the body is replaced, or both (the later counts). Keep at most is an absolute time T, **0 after replaced** (a relative bound of 0; no other duration), or both (the earlier counts); 0 after replaced exists only under `writer`. Where the two bounds disagree, keep at most wins.
 
 ### Bodies and deaths
-- A **body** is one blob of a commit (a projection, spec/sync.md §3, holds the deltas of one retention class).
+- A **body** is a blob of a commit (spec/sync.md §3): its held deltas, each in the section of its thing's reader actor; a rewrite holds fewer. Keep bounds and deaths are read per retention class (retention and delete keys) of its deltas.
 - A write **dies** when a later write supersedes it or at its delta's expiry (spec/crdt.md §4.8). A body is **replaced** as its writes die.
 - Each node dates deaths for itself, per body the first and last so far:
   - a superseded write's death at the `ts` of the first superseder the node held, never earlier than the death;

@@ -95,7 +95,7 @@ mod tests {
             ("purged before keep-at-least", Facts { dropped: true, before_at_least: true, ..c }, Hold::MustNot(Why::Dropped)),
             ("expired", Facts { expired: true, before_at_least: true, ..c }, Hold::MustNot(Why::Expired)),
             ("outside the required set", Facts { required: false, before_at_least: true, ..c }, Hold::MustNot(Why::Outside)),
-            ("strict subset projection", Facts { strict_subset: true, covered: Some(false), ..c }, Hold::MustNot(Why::StrictSubset)),
+            ("strict subset blob", Facts { strict_subset: true, covered: Some(false), ..c }, Hold::MustNot(Why::StrictSubset)),
             ("duplicate with the higher blob ID", Facts { duplicate_higher: true, before_at_least: true, ..c }, Hold::MustNot(Why::Duplicate)),
             ("certificate", Facts { required: true, ..Facts::default() }, Hold::Must),
             ("sole certificate", Facts { required: true, sole_certificate: true, ..Facts::default() }, Hold::May),
