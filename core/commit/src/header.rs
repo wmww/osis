@@ -424,7 +424,7 @@ pub fn verify_signature(id: &CommitId, sig: &Signature, key: &VerifyingKey) -> R
 
 // About the fewest bytes an item takes: what a list reserves for by its count, so a count the bytes
 // cannot pay for reserves nothing. A wrong value only costs a reallocation.
-const MIN_ASPECT: usize = 60;
+const MIN_ASPECT: usize = 59;
 const MIN_CHUNK: usize = 35;
 const MIN_PURGE: usize = 20;
 const MIN_KEY: usize = 35;

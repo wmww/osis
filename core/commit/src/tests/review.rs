@@ -274,7 +274,7 @@ fn list_items_cost_at_most_their_bytes_times_six() {
         b
     };
     let lists = [
-        (ListField::Aspects, array(n / 60, |i| [&[0x88][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0x83, 0, 0xa0, 0xa0, 0x80, 0x80, 0x81], &id(0)].concat())),
+        (ListField::Aspects, array(n / 59, |i| [&[0x87][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0x83, 0, 0xa0, 0xa0, 0x80, 0x81], &id(0)].concat())),
         (ListField::Chunks, array(n / 36, |i| [&[0x82][..], &id(i), &[0x80]].concat())),
         (ListField::Purge, array(n / 21, |i| [&[0x82][..], &tid(i), &[0x63, b'a', b'.', b'0']].concat())),
     ];
@@ -353,14 +353,14 @@ fn node_by_shape() {
 #[test]
 fn list_forms_refused() {
     let aspect = |lo: &[u8], bound: &[u8], ak: &[u8]| {
-        let mut b = vec![0x81, 0x88, 0x4f];
+        let mut b = vec![0x81, 0x87, 0x4f];
         b.extend([1; 15]);
         b.extend(ak);
         b.extend(lo);
         b.push(2);
         b.extend([0x83, 0]);
         b.extend(bound);
-        b.extend([0xa0, 0x80, 0x80, 0x81, 0x58, 32]);
+        b.extend([0xa0, 0x80, 0x81, 0x58, 32]);
         b.extend([3; 32]);
         b
     };
