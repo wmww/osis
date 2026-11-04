@@ -589,14 +589,14 @@ impl Engine {
             }
         }
         let (a, p) = opened.ok_or(Error::Misuse("no held read secret opens this inbox blob"))?;
-        let bytes = osis_base::encode(&p.commit);
+        let (bytes, things, _) = p.split();
         let id = CommitBlob::decode(&bytes)?.id();
         self.ingest(&bytes, Vec::new())?;
-        self.note_delete_hints(id, &p.things)?;
+        self.note_delete_hints(id, &things)?;
         let mut done = Done::default();
         if self.core.ix.commits.contains_key(&id) {
             done.deliveries.push(self.run(|tx| super::owe(tx, Delivery::Certificate { commits: vec![id], under: a }))?);
         }
-        Ok((p.things, done))
+        Ok((things, done))
     }
 }

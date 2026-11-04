@@ -349,7 +349,7 @@ fn set_element_is_a_register_spec_3_2() {
     let e = decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap_err();
     assert_eq!(e.class(), ErrorClass::BadInput);
     // a link at a struct, list, set or counter position is refused
-    let link = Value::Link(osis_base::Link { hash: [1; 32], blob: osis_base::BlobId([2; 32]), suite: 1, key: [0; 32] });
+    let link = Value::link(osis_base::Link { hash: [1; 32], blob: osis_base::BlobId([2; 32]), suite: 1, key: [0; 32] });
     for ty in [pair, Ty::List(Box::new(Ty::Register)), Ty::Set(Box::new(Ty::Register)), Ty::Counter] {
         assert!(create(&mut writer(&mw), &TyView(ty), &link).is_err());
     }
@@ -550,7 +550,7 @@ fn links_compare_by_bytes_spec_3_3() {
     use crate::fragment::{Eid, Entry, Fragment, Key, Map, Meta, RegWrite, Register};
     use crate::stamp::{Dot, Stamp};
     use std::cmp::Ordering;
-    let link = |blob: u8| Value::Link(osis_base::Link { hash: [1; 32], blob: osis_base::BlobId([blob; 32]), suite: 1, key: [0; 32] });
+    let link = |blob: u8| Value::link(osis_base::Link { hash: [1; 32], blob: osis_base::BlobId([blob; 32]), suite: 1, key: [0; 32] });
     // `Value` order puts [l3, 3] first (equal hashes, then 3 < 5); bytes put [l2, 5] first
     let (a, b) = (l(vec![link(2), i(5)]), l(vec![link(3), i(3)]));
     assert_eq!(a.cmp(&b), Ordering::Greater);

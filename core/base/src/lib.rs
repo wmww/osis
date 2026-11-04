@@ -17,6 +17,7 @@ pub mod hex;
 pub mod testenv;
 mod ids;
 mod time;
+mod sorted;
 mod value;
 
 pub use chain::{ChainStep, Owner, OwnerChain, owner_chain};
@@ -25,4 +26,5 @@ pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};
 pub use ids::{Ak, AkError, BlobId, CommitId, CreationRecord, LabelId, Lifetime, Link, PurgeBy, Role, Tid, TidParseError};
 pub use time::{Clock, ManualClock, SystemClock, Ts, WallMs};
+pub use sorted::{ValueMap, ValueSet};
 pub use value::{Float, Unknown, Value, is_known_tag};

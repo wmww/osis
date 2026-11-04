@@ -782,7 +782,7 @@ fn creation_record_alone_keeps_the_wait_spec_commits_4() {
 // synced or not.
 #[test]
 fn pages_away_hold_the_things_other_part_spec_commits_4() {
-    let map: std::collections::BTreeMap<Value, Value> = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
+    let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     for (seed, synced) in [(92, false), (93, true)] {
         let mut lp = net(2, seed);
         let t = new_thing(&mut lp, 0);

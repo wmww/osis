@@ -122,7 +122,7 @@ fn defaults_typed_by_field_type() {
     assert_eq!(st.fields[&2].default, Some(Value::Enum(1, Some(Box::new(Value::Int(4))))));
     assert_eq!(st.fields[&5].default, Some(Value::Bytes(vec![0, 255])));
     let Some(Value::Map(h)) = &st.fields[&7].default else { panic!() };
-    assert_eq!(h[&Value::Int(1)], Value::Enum(0, None));
+    assert_eq!(h.get(&Value::Int(1)), Some(&Value::Enum(0, None)));
 }
 
 #[test]

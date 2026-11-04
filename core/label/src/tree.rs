@@ -408,7 +408,7 @@ mod tests {
         assert!(parse_node(&node_plaintext(1, &[]).unwrap()).is_err());
         assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Int(0)]), Value::List(vec![Value::Int(0)])]))).is_err());
         // The old two-item layout does not parse.
-        assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(root)])]))).is_err());
+        assert!(parse_node(&encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::link(root)])]))).is_err());
     }
 
     // spec/crdt.md §8, spec/wire.md §6: pages go through PageSink/PageSource as blobs with
@@ -441,7 +441,7 @@ mod tests {
         let params = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
         let ts = Ts::from_u64(1 << 40).unwrap();
         let own = Source::session(osis_crdt::Session { node: Tid::from_bytes([5; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
-        let elems: std::collections::BTreeSet<Value> = (0..500).map(|i| Value::Str(format!("element {i}"))).collect();
+        let elems: osis_base::ValueSet = (0..500).map(|i| Value::Str(format!("element {i}"))).collect();
         let fragment = create(&mut Writer::new(ts, own.clone(), 1), &AnyView, &Value::Set(elems)).unwrap();
         let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment, frontiers: Frontiers::default() };
         let cx = DeltaCtx { ts, own: Source::session(osis_crdt::Session { node: Tid::from_bytes([250; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };

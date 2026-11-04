@@ -139,7 +139,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     f.insert(Value::Int(0), Value::Tid(tid(1)));
     assert_eq!(CREATED.decode(&Value::Map(f)).unwrap_err().class(), ErrorClass::BadInput);
     // Reader defaults: an keys.0 written with only some fields reads with none for the rest.
-    let k = KEYS.decode(&Value::Map(BTreeMap::new())).unwrap();
+    let k = KEYS.decode(&Value::Map(osis_base::ValueMap::new())).unwrap();
     assert_eq!(k, Keys::default());
 }
 

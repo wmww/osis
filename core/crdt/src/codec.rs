@@ -150,7 +150,7 @@ impl Pager {
         let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
         let items = std::mem::take(&mut self.items);
         let page = self.whole(items);
-        self.links.push(Value::Link(sink.put(&osis_base::encode(&page))?));
+        self.links.push(Value::link(sink.put(&osis_base::encode(&page))?));
         Ok(())
     }
 
@@ -197,7 +197,7 @@ impl Pager {
         let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
         let mut groups = Vec::new();
         for g in link_groups(&links, self.params.fanout) {
-            groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
+            groups.push(Value::link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
         }
         let top = Value::List(groups);
         if osis_base::encode(&top).len() > self.params.target {
@@ -491,7 +491,7 @@ pub(crate) fn links(items: &[Value]) -> Result<Option<Vec<osis_base::Link>>, Err
     if n != items.len() {
         return Err(Error::Malformed("links mixed with elements"));
     }
-    Ok(Some(items.iter().filter_map(|i| if let Value::Link(l) = i { Some(*l) } else { None }).collect()))
+    Ok(Some(items.iter().filter_map(|i| if let Value::Link(l) = i { Some(**l) } else { None }).collect()))
 }
 
 /// Pages of one paged position (plaintext, link) in the order the encoder puts them: leaf pages,
@@ -1011,11 +1011,11 @@ pub mod oracle {
             page.push(item);
             cutter.feed(bytes);
             if cutter.end_element() {
-                links.push(Value::Link(sink.put(&osis_base::encode(&whole(std::mem::take(&mut page))))?));
+                links.push(Value::link(sink.put(&osis_base::encode(&whole(std::mem::take(&mut page))))?));
             }
         }
         if !page.is_empty() {
-            links.push(Value::Link(sink.put(&osis_base::encode(&whole(page)))?));
+            links.push(Value::link(sink.put(&osis_base::encode(&whole(page)))?));
         }
         let list = Value::List(links);
         if osis_base::encode(&list).len() <= params.target {
@@ -1024,7 +1024,7 @@ pub mod oracle {
         let Value::List(links) = list else { return Err(Error::Mismatch("links")) };
         let mut groups = Vec::new();
         for g in link_groups(&links, params.fanout) {
-            groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
+            groups.push(Value::link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
         }
         let top = Value::List(groups);
         if osis_base::encode(&top).len() > params.target {
@@ -1151,11 +1151,11 @@ pub const BYTE_BYTES: usize = 3;
 /// values, so every value-tree node counts that many times.
 const KEY_COPIES: usize = 3;
 
-/// `decoded_bound`'s extra charge per CBOR map head: a one-entry `Value::Map` or struct field map
-/// is a whole B-tree node (`Value` pairs, the biggest slot), in each copy of a key.
+/// `decoded_bound`'s extra charge per CBOR map head: a one-field struct's field map is a whole
+/// B-tree node, and a `Value::Map` its entries, in each copy of a key.
 const MAP_HEAD: usize = KEY_COPIES * crate::access::nodes(1, 2 * size_of::<Value>());
 
-/// `decoded_bound`'s extra charge per set tag (a `Value::Set`'s node), as `MAP_HEAD`.
+/// `decoded_bound`'s extra charge per set tag (a set fragment's node), as `MAP_HEAD`.
 const SET_HEAD: usize = KEY_COPIES * crate::access::nodes(1, size_of::<Value>());
 
 /// An upper bound on the `Fragment::approx_bytes` of what `decode_delta` or `decode_snapshot`

@@ -752,7 +752,9 @@ pub(crate) fn secrets_value(v: &Value) -> Option<Secrets> {
     let mut v = v.clone();
     if let Value::Map(m) = &mut v {
         for f in [0, 1] {
-            m.entry(Value::Int(f)).or_insert_with(|| Value::Map(Default::default()));
+            if !m.contains_key(&Value::Int(f)) {
+                m.insert(Value::Int(f), Value::Map(Default::default()));
+            }
         }
     }
     osis_schema::core_types::SECRETS.decode(&v).ok()

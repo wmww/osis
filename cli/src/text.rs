@@ -5,7 +5,6 @@
 use osis::{Schema, Step, Tid, Value};
 use osis_schema::osis_base::{CanonicalBytes, Unknown, base64url, hex};
 use osis_schema::{EnumType, StructType, Type};
-use std::collections::{BTreeMap, BTreeSet};
 
 /// A type in a schema, or nothing (numbered forms).
 pub type Ty<'a> = Option<(&'a Schema, &'a Type)>;
@@ -650,7 +649,7 @@ impl<'a> Parser<'a> {
             self.expect(',')?;
             let c = self.value(None)?;
             self.expect(')')?;
-            return Unknown::new(n, CanonicalBytes::from_value(&c)).map(Value::Unknown).ok_or_else(|| self.err("tag known to this build: use its own form"));
+            return Unknown::new(n, CanonicalBytes::from_value(&c)).map(Value::unknown).ok_or_else(|| self.err("tag known to this build: use its own form"));
         }
         match c {
             '[' => {
@@ -703,7 +702,7 @@ impl<'a> Parser<'a> {
                     };
                     let items = self.items('}', |p| p.value(et))?;
                     let n = items.len();
-                    let set: BTreeSet<Value> = items.into_iter().collect();
+                    let set: osis::ValueSet = items.into_iter().collect();
                     if set.len() != n {
                         return Err(self.err("duplicate set element"));
                     }
@@ -755,7 +754,7 @@ impl<'a> Parser<'a> {
 
     fn unique(&self, m: Vec<(Value, Value)>) -> Result<Value, String> {
         let n = m.len();
-        let map: BTreeMap<Value, Value> = m.into_iter().collect();
+        let map: osis::ValueMap = m.into_iter().collect();
         if map.len() != n {
             return Err(self.err("duplicate map key"));
         }

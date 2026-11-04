@@ -19,7 +19,7 @@ fn sample_value() -> Value {
         };
         m.insert(Value::Int(i), v);
     }
-    Value::Map(m)
+    Value::Map(m.into_iter().collect())
 }
 
 fn main() {

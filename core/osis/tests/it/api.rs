@@ -117,7 +117,7 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
             tx.send(d).unwrap();
         }
     });
-    let bogus = Value::Link(osis::schema::osis_base::Link { hash: [3; 32], blob: osis::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let bogus = Value::link(osis::schema::osis_base::Link { hash: [3; 32], blob: osis::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
     db.write_with(|w| w.at(n, ak("note:pinned.0")).set(&Value::Map([(bogus, Value::Int(1))].into_iter().collect()))).unwrap();
     assert_eq!(db.get(n, notes::PINNED).unwrap(), None, "absent, not an error");
     assert_eq!(recv(&diags).tids, vec![n]);
@@ -149,7 +149,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     assert_eq!(recv(&changes), Ok(Some(tasks.clone())));
     let Some(Value::List(mut raw)) = db.at(n, ak("note:tasks.0")).get_value().unwrap() else { panic!() };
     let Value::Map(first) = &mut raw[0] else { panic!() };
-    let bogus = Value::Link(Link { hash: [3; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let bogus = Value::link(Link { hash: [3; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
     // and a held blob of another thing's large value: under that thing's dedup secret
     let m = db.write_with(|w| w.create(db.me())).unwrap();
     db.write_with(|w| w.at(m, ak("t:big.0")).set(&s(&"x".repeat(200 << 10)))).unwrap();
@@ -170,7 +170,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     assert_eq!(watch.current(), Ok(Some(want)));
     // at the aspect root: the aspect reads absent, not an error
     let k = ak("t:x.0");
-    db.write_with(|w| w.at(n, k.clone()).set(&Value::Link(Link { hash: [6; 32], blob: BlobId([7; 32]), suite: 1, key: [8; 32] }))).unwrap();
+    db.write_with(|w| w.at(n, k.clone()).set(&Value::link(Link { hash: [6; 32], blob: BlobId([7; 32]), suite: 1, key: [8; 32] }))).unwrap();
     assert_eq!(db.at(n, k).get_value().unwrap(), None);
 }
 
@@ -229,8 +229,8 @@ fn registered_schema_key_spec_api_keys() {
     let mut t = BTreeMap::new();
     t.insert(Value::Int(1), s("a"));
     t.insert(Value::Int(2), Value::Bool(false));
-    t.insert(Value::Int(3), Value::Set(BTreeSet::new()));
-    w.at(n, ak("note:tasks.0")).set(&Value::List(vec![Value::Map(t)])).unwrap();
+    t.insert(Value::Int(3), Value::Set(osis_base::ValueSet::new()));
+    w.at(n, ak("note:tasks.0")).set(&Value::List(vec![Value::Map(t.into_iter().collect())])).unwrap();
     w.commit().unwrap();
     let tasks = db.key("note:tasks.0").unwrap();
     let v = db.at(n, tasks).path(p![0, task::WEIGHT]).get_value().unwrap();
@@ -281,8 +281,8 @@ fn write_ops_spec_api_writes() {
         w.at(t, c.clone()).replace(&s("two"))
     })
     .unwrap();
-    assert_eq!(db.get(t, m.clone()).unwrap(), Some(Value::Map(BTreeMap::from([(s("b"), Value::Int(5))]))));
-    assert_eq!(db.get(t, st.clone()).unwrap(), Some(Value::Set(BTreeSet::from([s("y")]))));
+    assert_eq!(db.get(t, m.clone()).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("b"), Value::Int(5))]))));
+    assert_eq!(db.get(t, st.clone()).unwrap(), Some(Value::Set(osis_base::ValueSet::from([s("y")]))));
     assert_eq!(titles(&db, t), ["z", "a", "b", "c"]);
     assert_eq!(db.get(t, c.clone()).unwrap(), Some(s("two")));
     db.write_with(|w| {
@@ -293,7 +293,7 @@ fn write_ops_spec_api_writes() {
     db.write_with(|w| w.at(t, notes::TASKS).path(p![]).move_range(0..1, 1)).unwrap();
     assert_eq!(titles(&db, t), ["b", "a"]);
     db.write_with(|w| w.at(t, m.clone()).path(p!["b"]).remove()).unwrap();
-    assert_eq!(db.get(t, m.clone()).unwrap(), Some(Value::Map(BTreeMap::new())));
+    assert_eq!(db.get(t, m.clone()).unwrap(), Some(Value::Map(osis_base::ValueMap::new())));
     // counter, max, enum case, text splice through typed keys
     db.write_with(|w| {
         w.at(t, notes::VIEWS).inc(&2i64)?;
@@ -332,7 +332,7 @@ fn write_ops_spec_api_writes() {
 fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
     let db = db(1);
     let k = ak("t:form.0");
-    let form = |a: &str, b: &str| Value::Map(BTreeMap::from([(Value::Int(0), s(a)), (Value::Int(1), s(b))]));
+    let form = |a: &str, b: &str| Value::Map(osis_base::ValueMap::from([(Value::Int(0), s(a)), (Value::Int(1), s(b))]));
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     w.at(t, k.clone()).set(&form("a", "b")).unwrap();
@@ -365,7 +365,7 @@ fn materialization_bound_spec_data_model_6() {
     let mid = Value::Bytes(vec![1u8; 100 * 1024]);
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
-    w.at(t, k.clone()).set(&Value::Map(BTreeMap::from([(Value::Int(0), big), (Value::Int(1), s("small")), (Value::Int(2), mid)]))).unwrap();
+    w.at(t, k.clone()).set(&Value::Map(osis_base::ValueMap::from([(Value::Int(0), big), (Value::Int(1), s("small")), (Value::Int(2), mid)]))).unwrap();
     w.commit().unwrap();
     assert_eq!(db.get(t, k.clone()), Err(Error::TooLarge { limit: 64 * 1024 }));
     assert_eq!(db.at(t, k.clone()).path(p![osis::FieldId(1)]).get::<String>().unwrap().as_deref(), Some("small"));
@@ -920,7 +920,7 @@ fn values_past_limits(string: usize, map: i64) {
     let huge = Value::Str("x".repeat(string));
     db.write_with(|w| w.at(t, ak("t:huge.0")).set(&huge)).unwrap();
     assert_eq!(db.get(t, ak("t:huge.0")).unwrap(), Some(huge));
-    let big: BTreeMap<Value, Value> = (0..map).map(|i| (Value::Int(i), Value::Int(i))).collect();
+    let big: osis_base::ValueMap = (0..map).map(|i| (Value::Int(i), Value::Int(i))).collect();
     let _ = db.write_with(|w| w.at(t, ak("t:map.0")).set(&Value::Map(big)));
     // still working
     db.write_with(|w| w.at(t, ak("t:x.0")).set(&Value::Int(1))).unwrap();
@@ -1099,7 +1099,7 @@ fn path_op_into_absent_key_spec_crdt_5_6() {
     b.write_with(|w| w.at(t, r.clone()).path(p!["m1"]).add(&s("y"))).unwrap();
     deliver(&a, &b);
     deliver(&b, &a);
-    let want = Value::Map(BTreeMap::from([(s("m1"), Value::Set(BTreeSet::from([s("x"), s("y")])))]));
+    let want = Value::Map(osis_base::ValueMap::from([(s("m1"), Value::Set(osis_base::ValueSet::from([s("x"), s("y")])))]));
     assert_eq!(a.get(t, r.clone()).unwrap(), Some(want.clone()));
     assert_eq!(b.get(t, r).unwrap(), Some(want));
 }

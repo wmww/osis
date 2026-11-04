@@ -324,7 +324,7 @@ fn absent_key_typed_spec_5_6() {
 fn large_values_equal_by_hash_spec_5_5() {
     use osis_base::{BlobId, Link};
     let view = AnyView;
-    let link = |blob: u8| Value::Link(Link { hash: [9; 32], blob: BlobId([blob; 32]), suite: 1, key: [blob; 32] });
+    let link = |blob: u8| Value::link(Link { hash: [9; 32], blob: BlobId([blob; 32]), suite: 1, key: [blob; 32] });
     let a = sess(Tid::from_bytes([1; 15]));
     let b = sess(Tid::from_bytes([2; 15]));
     // Set: concurrent adds of one content read once; an add of it again writes nothing.

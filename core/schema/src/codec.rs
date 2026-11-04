@@ -233,12 +233,12 @@ impl<T: Codec> Codec for Chunked<T> {
     fn to_value(&self) -> Value {
         match self {
             Chunked::Inline(t) => t.to_value(),
-            Chunked::Link(l) => Value::Link(*l),
+            Chunked::Link(l) => Value::link(*l),
         }
     }
     fn from_value(v: &Value) -> Result<Chunked<T>, PathError> {
         match v {
-            Value::Link(l) => Ok(Chunked::Link(*l)),
+            Value::Link(l) => Ok(Chunked::Link(**l)),
             _ => T::from_value(v).map(Chunked::Inline),
         }
     }
@@ -253,13 +253,13 @@ pub mod rt {
     pub fn struct_value(fields: Vec<(u64, Value)>) -> Value {
         Value::Map(fields.into_iter().map(|(id, v)| (id.to_value(), v)).collect())
     }
-    pub fn struct_map(v: &Value) -> Result<&BTreeMap<Value, Value>, PathError> {
+    pub fn struct_map(v: &Value) -> Result<&osis_base::ValueMap, PathError> {
         match v {
             Value::Map(m) => Ok(m),
             _ => Err(mismatch("struct")),
         }
     }
-    pub fn field<T: Codec>(m: &BTreeMap<Value, Value>, id: u64) -> Result<T, PathError> {
+    pub fn field<T: Codec>(m: &osis_base::ValueMap, id: u64) -> Result<T, PathError> {
         let x = m.get(&id.to_value()).ok_or_else(|| PathError::new(crate::Path::root(), PathErrorKind::MissingField(id)))?;
         T::from_value(x).map_err(|e| e.within(Step::Field(id)))
     }

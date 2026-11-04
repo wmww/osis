@@ -78,12 +78,12 @@ fn generated_types_round_trip_through_keys_spec_versioning_5() {
     assert_eq!(notes::TASKS.schema().unwrap().version, 4);
     assert_eq!(notes::LAST_OPENED.defaults().expires, Some(30 * 86_400_000));
     // Reader defaults apply through TryFrom: an old task without fields 3..8.
-    let old = Value::Map(BTreeMap::from([(Value::Int(1), Value::Str("x".into())), (Value::Int(2), Value::Bool(true))]));
+    let old = Value::Map(osis_base::ValueMap::from([(Value::Int(1), Value::Str("x".into())), (Value::Int(2), Value::Bool(true))]));
     let t = notes::Task::try_from(&old).unwrap_err();
     assert_eq!(t.kind, PathErrorKind::MissingField(3), "tags has no default");
     let mut old = old;
     if let Value::Map(m) = &mut old {
-        m.insert(Value::Int(3), Value::Set(BTreeSet::new()));
+        m.insert(Value::Int(3), Value::Set(osis_base::ValueSet::new()));
     }
     let t = notes::Task::try_from(&old).unwrap();
     assert_eq!((t.priority, t.status, t.weight), (None, None, Float::new(1.0)));

@@ -89,7 +89,7 @@ fn segs(l: &Large) -> Option<Vec<PathSeg>> {
 fn base_at(state: &Fragment, prefix: &[PathSeg], l: &Large) -> Option<Link> {
     let path = [prefix.to_vec(), segs(l)?].concat();
     match state.at(&path).filter(Fragment::present)?.read()? {
-        Value::Link(k) => Some(k),
+        Value::Link(k) => Some(*k),
         _ => None,
     }
 }
@@ -195,7 +195,7 @@ pub(crate) fn list_edits(ops: &[PathOp], schema: Option<&Schema>, ak: &str, dedu
 
 /// `v` with every link reduced to its content hash.
 fn hash_only(v: &Value) -> Value {
-    map_links(v, &|l| Value::Link(Link { hash: l.hash, blob: BlobId([0; 32]), suite: 0, key: [0; 32] }))
+    map_links(v, &|l| Value::link(Link { hash: l.hash, blob: BlobId([0; 32]), suite: 0, key: [0; 32] }))
 }
 
 /// `v` with every link replaced by `f`'s value for it.
@@ -284,7 +284,7 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
                 None => held_links(state, path),
             };
             chunk_value(base, s, &ty, None, &mut |v, _| match hash(v)? {
-                Value::Link(l) => Ok(Value::Link(held.get(&l.hash).copied().unwrap_or(l))),
+                Value::Link(l) => Ok(Value::link(held.get(&l.hash).copied().unwrap_or(*l))),
                 small => Ok(small),
             })?;
             // the common items outside the window as base's (what the list there lends, or the
@@ -311,7 +311,7 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
             let mut made: HashMap<[u8; 32], Value> = HashMap::new();
             chunk_value(new, s, &ty, None, &mut |v, _| match hash(v)? {
                 Value::Link(l) => match held.get(&l.hash) {
-                    Some(x) => Ok(Value::Link(*x)),
+                    Some(x) => Ok(Value::link(*x)),
                     None => {
                         if let Some(x) = made.get(&l.hash) {
                             return Ok(x.clone());
@@ -402,7 +402,7 @@ pub(crate) fn chunk_frontiers(tx: &mut Tx<'_>, ops: &mut [PathOp], framing: &Fra
     let frontier_field = Value::Int(4);
     for op in ops.iter_mut() {
         let (Op::Set(Value::Set(s)) | Op::Replace(Value::Set(s))) = &mut op.op else { continue };
-        let mut out = std::collections::BTreeSet::new();
+        let mut out = osis_base::ValueSet::new();
         for t in std::mem::take(s) {
             let Value::Map(mut m) = t else {
                 out.insert(t);
@@ -440,7 +440,7 @@ fn delta_roots(delta: &[u8]) -> Vec<Link> {
 /// Every link inside `v` (the root links of its large values).
 pub(crate) fn links_in(v: &Value, out: &mut Vec<Link>) {
     match v {
-        Value::Link(l) => out.push(*l),
+        Value::Link(l) => out.push(**l),
         Value::List(l) => l.iter().for_each(|x| links_in(x, out)),
         Value::Set(s) => s.iter().for_each(|x| links_in(x, out)),
         Value::Map(m) => m.iter().for_each(|(k, x)| {

@@ -7,7 +7,6 @@ use osis_base::{Limits, Tid, Value};
 use osis_crdt::{Encoding, View};
 use osis_schema::*;
 use proptest::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
 
 fn schema(rev: u64, body: &str) -> Schema {
     parse("t.osis", &format!("version {rev};\n{body}")).unwrap()
@@ -83,14 +82,14 @@ fn typed_read_errors_carry_paths_spec_versioning_5() {
     let e = typed_read(&v1, &Value::List(vec![st(&[(1, s("x"))])]), &tasks(&v1)).unwrap_err();
     assert_eq!((e.path, e.kind), (p![0], PathErrorKind::MissingField(2)));
     // Unknown tags fail typed reads only.
-    let unknown = Value::Unknown(osis_base::Unknown::new(4000, osis_base::CanonicalBytes::from_value(&Value::Int(1))).unwrap());
+    let unknown = Value::unknown(osis_base::Unknown::new(4000, osis_base::CanonicalBytes::from_value(&Value::Int(1))).unwrap());
     let e = typed_read(&v1, &unknown, &Type::String).unwrap_err();
     assert_eq!(e.kind, PathErrorKind::UnknownTag(4000));
     assert_eq!(typed_read(&v1, &unknown, &Type::Any).unwrap(), unknown);
     // Missing payload; struct with non-int keys.
     let s2 = schema(1, "type e = enum { 0 a(int) };");
     assert_eq!(typed_read(&s2, &Value::Enum(0, None), &Type::named("e")).unwrap_err().kind, PathErrorKind::MissingPayload(0));
-    let m = Value::Map(BTreeMap::from([(s("k"), Value::Int(1))]));
+    let m = Value::Map(osis_base::ValueMap::from([(s("k"), Value::Int(1))]));
     assert!(matches!(typed_read(&v1, &m, &Type::named("task")).unwrap_err().kind, PathErrorKind::Mismatch { .. }));
 }
 
@@ -170,8 +169,8 @@ fn large_atomic_positions_spec_data_model_6() {
     let v = st(&[
         (0, Value::Bytes(bigb.clone())),
         (1, s(&big)),
-        (2, Value::Set(BTreeSet::from([s(&big), s("small")]))),
-        (3, Value::Map(BTreeMap::from([(Value::Bytes(bigb.clone()), s(&big))]))),
+        (2, Value::Set(osis_base::ValueSet::from([s(&big), s("small")]))),
+        (3, Value::Map(osis_base::ValueMap::from([(Value::Bytes(bigb.clone()), s(&big))]))),
         (4, s(&big)),
     ]);
     let ty = &sc.aspects["n:a.0"].ty;
@@ -210,9 +209,9 @@ fn arb(schema: &Schema, ty: &Type, depth: u32) -> BoxedStrategy<Value> {
     match t {
         Type::Counter(i) | Type::Max(i) | Type::Min(i) => arb(schema, &i, depth),
         Type::List(e) => proptest::collection::vec(arb(schema, &e, depth.saturating_sub(1)), n).prop_map(Value::List).boxed(),
-        Type::Set(e) => proptest::collection::btree_set(arb(schema, &e, depth.saturating_sub(1)), n).prop_map(Value::Set).boxed(),
+        Type::Set(e) => proptest::collection::btree_set(arb(schema, &e, depth.saturating_sub(1)), n).prop_map(|s| Value::Set(s.into_iter().collect())).boxed(),
         Type::Map(k, v) => proptest::collection::btree_map(arb(schema, &k, 0), arb(schema, &v, depth.saturating_sub(1)), n)
-            .prop_map(Value::Map)
+            .prop_map(|m| Value::Map(m.into_iter().collect()))
             .boxed(),
         Type::Struct(stt) => {
             let parts: Vec<BoxedStrategy<(Value, Value)>> = stt
@@ -289,7 +288,7 @@ type pair = struct { 0 who: tid, 1 note: string };
 aspect n:a.0: struct { 0 tids: set<tid>, 1 ints: set<int>, 2 roles: set<role>, 3 strs: set<string>, 4 pairs: set<pair>, 5 by: map<tid, string>, 6 named: map<string, int>, 7 one: tid, 8 text: string };",
     );
     let ty = sc.aspects["n:a.0"].ty.clone();
-    let link = Value::Link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let link = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
     let set = |v: Value| Value::Set([v].into_iter().collect());
     let map = |k: Value, v: Value| Value::Map([(k, v)].into_iter().collect());
     let cases = [
@@ -354,4 +353,20 @@ aspect n:a.0: struct { 0 tids: set<tid>, 1 r: role, 2 free: any, 3 n: counter<in
     let ov = Schema::view(&other, "n:a.0").unwrap();
     assert!(!create(&mut w(), &ov, &st(&[(0, Value::List(vec![tid]))])).unwrap().fits(&view), "a list where the set is");
     assert!(!create(&mut w(), &ov, &st(&[(1, Value::Int(0))])).unwrap().fits(&view), "a register int where the enum is");
+}
+
+// Dropping unknown fields can reorder a set or map and make elements equal; what is read stays
+// sorted and unique, the first of equal set elements kept and the later of equal map keys' values.
+#[test]
+fn projection_reorders_and_merges_spec_versioning_5() {
+    let sc = schema(1, "type e = struct { 1 a: int };\naspect n:s.0: set<e>;\naspect n:m.0: map<e, int>;");
+    let e = |a: i64| st(&[(1, Value::Int(a))]);
+    let more = |a: i64| st(&[(1, Value::Int(a)), (2, Value::Int(0))]);
+    // by length first: 1, 3 then 0, 2, 3
+    let items = [e(1), e(3), more(0), more(2), more(3)];
+    let set = Value::Set(items.iter().cloned().collect());
+    assert_eq!(typed_read(&sc, &set, &sc.aspects["n:s.0"].ty).unwrap(), Value::Set([0, 1, 2, 3].map(e).into_iter().collect()));
+    let map = Value::Map(items.iter().cloned().zip((0..).map(Value::Int)).collect());
+    let want = [(0, 2), (1, 0), (2, 3), (3, 4)].map(|(k, v)| (e(k), Value::Int(v)));
+    assert_eq!(typed_read(&sc, &map, &sc.aspects["n:m.0"].ty).unwrap(), Value::Map(want.into_iter().collect()));
 }

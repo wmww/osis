@@ -781,7 +781,7 @@ fn expired_removal_vanishes_everywhere_spec_crdt_4_7() {
     net.engine(b).write(m).unwrap();
     local(&mut net, b);
     net.run();
-    let none = Some(Value::Map(BTreeMap::new()));
+    let none = Some(Value::Map(osis_base::ValueMap::new()));
     assert_eq!((net.eph_read(a, w, NOTES), net.eph_read(b, w, NOTES)), (none.clone(), none), "removed until its expiry");
     net.advance(6_000);
     assert_eq!((net.eph_read(a, w, NOTES), net.eph_read(b, w, NOTES)), (v.clone(), v.clone()), "the removal vanished with its expiry");
@@ -1332,7 +1332,7 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
         local(net, n);
     };
     let items = |net: &mut Net, n: usize, w: Tid| match net.eph_read(n, w, ITEMS) {
-        Some(Value::List(l)) => l.into_iter().collect::<BTreeSet<Value>>(),
+        Some(Value::List(l)) => l.into_iter().collect::<std::collections::BTreeSet<Value>>(),
         x => panic!("node {n}: {x:?}"),
     };
     let mut net = Net::new();
@@ -2232,7 +2232,7 @@ fn replayed_covered_entry_dropped_spec_sync_9() {
     let l = net.label(a);
     let wk = write_key(&mut net, a, g);
     let ak = osis_base::Ak::new(NOTES).unwrap();
-    let old = forge_memory(&mut net, a, w, &ak, Value::Map(BTreeMap::from([(s("k"), s("old"))])));
+    let old = forge_memory(&mut net, a, w, &ak, Value::Map(osis_base::ValueMap::from([(s("k"), s("old"))])));
     let (id, ev) = sealed(&mut net, a, g, &old.blob, Some(&wk), 1);
     let acts = push(&mut net, b, host, l, vec![ev.clone()]);
     net.actions(b, acts);
@@ -2266,7 +2266,7 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     let w = window(&mut net, a, g, "w");
     net.run();
     let ak = osis_base::Ak::new(NOTES).unwrap();
-    let junk = forge_memory(&mut net, r, w, &ak, Value::Map(BTreeMap::from([(s("r"), s("junk"))])));
+    let junk = forge_memory(&mut net, r, w, &ak, Value::Map(osis_base::ValueMap::from([(s("r"), s("junk"))])));
     deliver(&mut net, d, &junk.blob);
     assert_eq!(notes(&mut net, d, w).get("r"), None, "a reader's write: not joined");
     net.set_online(d, false);
@@ -2279,7 +2279,7 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     let rs = recipients_of(e, &[(at, Role::Admin), (rt, Role::Write), (dt, Role::Write)]);
     rotation(e, g, &rs, 7, false);
     net.run();
-    let ok = forge_memory(&mut net, r, w, &ak, Value::Map(BTreeMap::from([(s("r"), s("ok"))])));
+    let ok = forge_memory(&mut net, r, w, &ak, Value::Map(osis_base::ValueMap::from([(s("r"), s("ok"))])));
     deliver(&mut net, d, &ok.blob);
     assert_eq!(notes(&mut net, d, w).get("r"), None, "promotion not seen here yet");
     net.set_online(d, true);
@@ -2664,7 +2664,7 @@ fn superseded_stays_gone_when_newer_removed_spec_sync_9() {
     net.engine(b).write(m).unwrap();
     local(&mut net, b);
     net.run();
-    let gone = Some(Value::Map(BTreeMap::new()));
+    let gone = Some(Value::Map(osis_base::ValueMap::new()));
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (gone.clone(), gone));
 }
 
@@ -3876,7 +3876,7 @@ fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
     }
     for i in 0..3 {
         let v = lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap();
-        assert!(v.as_ref().is_none_or(|v| *v == Value::Map(BTreeMap::new())), "{i}: {v:?}");
+        assert!(v.as_ref().is_none_or(|v| *v == Value::Map(osis_base::ValueMap::new())), "{i}: {v:?}");
     }
 }
 
@@ -4169,7 +4169,7 @@ fn memory_partly_expired_commit_superseded_alike_spec_sync_9() {
     let rm = memory_op(&mut lp, 2, d, "t:big.0~", Vec::new(), Op::Remove(k), None);
     memory_deliver(&mut lp, 0, &rm);
     for i in [0, 2] {
-        assert_eq!(lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap(), Some(Value::Map(BTreeMap::new())), "{i}");
+        assert_eq!(lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap(), Some(Value::Map(osis_base::ValueMap::new())), "{i}");
     }
 }
 

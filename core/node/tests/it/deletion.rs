@@ -344,7 +344,7 @@ fn kept_record(net: &mut Net, a: usize, g: osis_base::Tid, asp: &osis_schema::As
     let mut v: std::collections::BTreeMap<osis_base::Value, osis_base::Value> = (0..RECORD_KEYS).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     v.insert(s("secret"), s(marker));
     let mut m = Mutation::new();
-    m.set(t, asp, &osis_base::Value::Map(v)).unwrap();
+    m.set(t, asp, &osis_base::Value::Map(v.into_iter().collect())).unwrap();
     let c0 = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let ak = Ak::new(asp.ak()).unwrap();
@@ -723,7 +723,7 @@ fn purge_resnapshot_by_writer_without_schema_spec_commits_5() {
     let ak = Ak::new(SHORTMAP.ak()).unwrap();
     let v: std::collections::BTreeMap<osis_base::Value, osis_base::Value> = (0..4).map(|i| (s(&format!("k{i}")), s("f"))).collect();
     let mut m = Mutation::new();
-    m.set(t, &SHORTMAP, &osis_base::Value::Map(v)).unwrap();
+    m.set(t, &SHORTMAP, &osis_base::Value::Map(v.into_iter().collect())).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     let mut m = Mutation::new();
     m.op(t, &SHORTMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("secret"))], op: Op::Put(s("PURGED-51d2")) }).unwrap();

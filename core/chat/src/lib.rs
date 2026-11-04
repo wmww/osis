@@ -113,7 +113,7 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
 }
 
 fn settings_value(name: &str, edit: EditMode) -> Value {
-    Value::Map(BTreeMap::from([(Value::Int(0), Value::Str(name.into())), (Value::Int(1), Value::Str(edit.name().into()))]))
+    Value::Map(osis::ValueMap::from([(Value::Int(0), Value::Str(name.into())), (Value::Int(1), Value::Str(edit.name().into()))]))
 }
 
 /// A chat's settings, as this node reads them.
@@ -319,7 +319,7 @@ impl Draft {
 
 fn body_value(d: &Draft, r: Option<&Replaces>) -> Result<Value> {
     let bad = || Error::Invalid("a message id without a commit".into());
-    let mut m = BTreeMap::from([(Value::Int(0), Value::Str(d.text.clone()))]);
+    let mut m = osis::ValueMap::from([(Value::Int(0), Value::Str(d.text.clone()))]);
     if let Some(n) = &d.name {
         m.insert(Value::Int(3), Value::Str(n.clone()));
     }

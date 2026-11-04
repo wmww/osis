@@ -47,7 +47,7 @@ fn write_and_read_spec_crdt_4_5() {
     m.set(t, &a, &Value::Str("hello".into())).unwrap();
     let mut map = BTreeMap::new();
     map.insert(Value::Str("x".into()), Value::Int(1));
-    m.set(t, &ak("app:map.0"), &Value::Map(map)).unwrap();
+    m.set(t, &ak("app:map.0"), &Value::Map(map.into_iter().collect())).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     assert_eq!(p.engine.get(&t, &a).unwrap(), Some(Value::Str("hello".into())));
     let ev = p.drain_events();
@@ -171,8 +171,8 @@ fn paged_state_edits_and_restart() {
     let t = p.engine.new_thing(&mut m, me);
     let (am, aset) = (ak("app:big.0"), ak("app:bigset.0"));
     let pad = "x".repeat(40);
-    let mut model: BTreeMap<Value, Value> = (0..3000i64).map(|i| (Value::Int(i), Value::Str(format!("{pad}{i}")))).collect();
-    let mut smodel: std::collections::BTreeSet<Value> = (0..3000i64).map(|i| Value::Str(format!("{pad}{i}"))).collect();
+    let mut model: osis_base::ValueMap = (0..3000i64).map(|i| (Value::Int(i), Value::Str(format!("{pad}{i}")))).collect();
+    let mut smodel: osis_base::ValueSet = (0..3000i64).map(|i| Value::Str(format!("{pad}{i}"))).collect();
     m.set(t, &am, &Value::Map(model.clone())).unwrap();
     m.set(t, &aset, &Value::Set(smodel.clone())).unwrap();
     p.commit(m).unwrap().unwrap();
@@ -543,7 +543,7 @@ fn large_values_by_value_spec_crdt_5_5() {
         let a = ak("app:set.0");
         let mut m = Mutation::new();
         let t = p.engine.new_thing(&mut m, me);
-        let mut v: std::collections::BTreeSet<Value> = (0..n).map(|i| Value::Str(format!("e{i}"))).collect();
+        let mut v: osis_base::ValueSet = (0..n).map(|i| Value::Str(format!("e{i}"))).collect();
         v.insert(large("L"));
         m.set(t, &a, &Value::Set(v)).unwrap();
         p.commit(m).unwrap().unwrap();
@@ -560,7 +560,7 @@ fn large_values_by_value_spec_crdt_5_5() {
         // a map with a large key
         let a = ak("app:map.0");
         let mut m = Mutation::new();
-        let mut kv: BTreeMap<Value, Value> = (0..n).map(|i| (Value::Int(i), Value::Int(i))).collect();
+        let mut kv: osis_base::ValueMap = (0..n).map(|i| (Value::Int(i), Value::Int(i))).collect();
         kv.insert(large("K"), Value::Int(-1));
         m.set(t, &a, &Value::Map(kv)).unwrap();
         p.commit(m).unwrap().unwrap();

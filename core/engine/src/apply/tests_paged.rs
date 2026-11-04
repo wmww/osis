@@ -81,7 +81,7 @@ fn big_map(r: &mut Rng, g: u64) -> Value {
 fn fill_value(asp: usize, r: &mut Rng, g: u64) -> Value {
     match asp {
         0 => big_map(r, g),
-        1 => Value::Map(BTreeMap::from([(Value::Str("big".into()), big_map(r, g)), (Value::Str("x".into()), Value::Int(g as i64))])),
+        1 => Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), big_map(r, g)), (Value::Str("x".into()), Value::Int(g as i64))])),
         2 => Value::Set((0..1500 + r.below(2500)).map(|i| s(i + r.below(3), g)).collect()),
         _ => Value::Int(g as i64),
     }
@@ -441,7 +441,7 @@ fn entry_creation_after_its_paged_content_spec_crdt_5_6() {
             let mut m = Mutation::new();
             if replace {
                 let small = Value::Map((0..10).map(|i| (Value::Int(i), s(i as u64, 0))).collect());
-                m.replace(t, &a, &Value::Map(BTreeMap::from([(Value::Str("big".into()), small), (Value::Str("x".into()), Value::Int(0))]))).unwrap();
+                m.replace(t, &a, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), small), (Value::Str("x".into()), Value::Int(0))]))).unwrap();
             } else {
                 m.set(t, &a, &fill_value(1, &mut r, 0)).unwrap();
             }
@@ -539,7 +539,7 @@ fn forged_map(ts: osis_base::Ts, n: u64, src: u8) -> osis_crdt::Fragment {
 /// One entry `k` by a made-up node `src` stamped `ts`.
 fn one_entry(ts: osis_base::Ts, src: u8, k: i64) -> osis_crdt::Fragment {
     let mut w = osis_crdt::Writer::new(ts, made_up(src), 1 << 41);
-    osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(BTreeMap::from([(Value::Int(k), Value::Str("late".into()))]))).unwrap()
+    osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(osis_base::ValueMap::from([(Value::Int(k), Value::Str("late".into()))]))).unwrap()
 }
 
 /// A keyed removal of a made-up entry (malformed outside role-class aspects).
@@ -934,7 +934,7 @@ fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
         let (t, mix) = (w.t, aks()[1].clone());
         let mut r = Rng(121);
         let mut m = Mutation::new();
-        m.set(t, &mix, &Value::Map(BTreeMap::from([(Value::Str("big".into()), big_map(&mut r, 0))]))).unwrap();
+        m.set(t, &mix, &Value::Map(osis_base::ValueMap::from([(Value::Str("big".into()), big_map(&mut r, 0))]))).unwrap();
         let fill = w.lp.peers[1].commit(m).unwrap().unwrap();
         let mut m = Mutation::new();
         m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();

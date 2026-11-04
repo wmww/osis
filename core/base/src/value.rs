@@ -1,16 +1,17 @@
 //! Values (spec/data-model.md §4, §5). `Eq`, `Ord` and `Hash` compare a link by its keyed content
 //! hash alone (spec/data-model.md §4, §6: two writes of one large value are equal); otherwise they
 //! are those of the canonical encoding. For values without links `Ord` equals bytewise comparison
-//! of `cbor::encode` (tested), so maps and sets (`BTreeMap`, `BTreeSet`) iterate in canonical order
+//! of `cbor::encode` (tested), so maps and sets (`ValueMap`, `ValueSet`) iterate in canonical order
 //! with unique keys by construction. With links the orders can differ (`[LA, 3]` < `[LB, 5]` while
 //! LA's bytes sort after LB's), so the encoder sorts the encodings of a set or map holding a link.
 
 use crate::cbor::CanonicalBytes;
 use crate::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_TID};
 use crate::ids::{Link, Tid};
+use crate::sorted::{ValueMap, ValueSet};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
 
+/// The large variants are boxed: every item of a decoded value costs this enum's size (`cbor::decode`).
 #[derive(Clone, Debug)]
 pub enum Value {
     Int(i64),
@@ -22,12 +23,12 @@ pub enum Value {
     /// Case ID (a CBOR uint, so up to u64; schema case IDs are small) and optional payload.
     Enum(u64, Option<Box<Value>>),
     /// Also the struct representation (int keys).
-    Map(BTreeMap<Value, Value>),
+    Map(ValueMap),
     List(Vec<Value>),
-    Set(BTreeSet<Value>),
-    Link(Link),
+    Set(ValueSet),
+    Link(Box<Link>),
     /// A tag this build does not know, with its content as received.
-    Unknown(Unknown),
+    Unknown(Box<Unknown>),
 }
 
 /// An f64 by bit pattern; NaN is always the canonical positive quiet NaN.
@@ -80,6 +81,13 @@ impl Unknown {
 }
 
 impl Value {
+    pub fn link(l: Link) -> Value {
+        Value::Link(Box::new(l))
+    }
+    pub fn unknown(u: Unknown) -> Value {
+        Value::Unknown(Box::new(u))
+    }
+
     /// Whether the canonical encoding exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
     pub fn above_chunk_threshold(&self) -> bool {
         use crate::format::CHUNK_THRESHOLD;

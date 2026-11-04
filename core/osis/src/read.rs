@@ -105,13 +105,14 @@ fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mu
         Value::List(l) => Value::List(l.into_iter().filter_map(|x| m(x).transpose()).collect::<Result<_>>()?),
         Value::Set(s) => Value::Set(s.into_iter().filter_map(|x| m(x).transpose()).collect::<Result<_>>()?),
         Value::Map(map) => {
-            let mut out = BTreeMap::new();
+            // `collect`: a link's content sorts elsewhere than the link, so an insert per key is O(n)
+            let mut out = Vec::with_capacity(map.len());
             for (k, x) in map {
                 if let (Some(k), Some(x)) = (m(k)?, m(x)?) {
-                    out.insert(k, x);
+                    out.push((k, x));
                 }
             }
-            Value::Map(out)
+            Value::Map(out.into_iter().collect())
         }
         Value::Enum(c, Some(p)) => match m(*p)? {
             Some(p) => Value::Enum(c, Some(Box::new(p))),

@@ -1539,3 +1539,72 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     assert_eq!(held.iter().filter(|x| !after.contains(x)).count(), 0, "the readers' deposits stay");
     assert_eq!(junk.iter().filter(|x| after.contains(x)).count(), osis_base::format::INBOX_WAITING, "the rule ran");
 }
+
+// Requirements: peer input never costs unbounded memory; spec/sync.md §3. A stranger needs only
+// the public `keys.0` to deposit a blob a node opens and decodes, before admission or any
+// signature (issues/value-decode-memory.md): a blob of `{0:0}` costs its reader under
+// `INBOX_PEAK_MAX` per byte in all (blob copies, the payload's decode and the commit's). In a child
+// process, as the peak is process-wide.
+#[cfg(target_os = "linux")]
+#[test]
+fn hostile_inbox_blob_peak_is_bounded_spec_sync_3() {
+    const CHILD: &str = "OSIS_INBOX_PEAK_CHILD";
+    /// Blob size: enough that the decode dwarfs the rest of what a sync pass touches.
+    const SIZE: usize = 4 << 20;
+    /// `osis_base::decode`'s bound for this shape (38), plus what the path adds on top of one
+    /// decode: the blob's copies and the plaintext. Two decoded copies held at once would exceed it.
+    const INBOX_PEAK_MAX: usize = 64;
+    if std::env::var(CHILD).is_err() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "inbox_life::hostile_inbox_blob_peak_is_bounded_spec_sync_3", "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{text}{}", String::from_utf8_lossy(&out.stderr));
+        let kib: usize = text.lines().find_map(|l| l.split("peak_kib=").nth(1)).unwrap_or_else(|| panic!("{text}")).trim().parse().unwrap();
+        println!("{} B per byte", kib * 1024 / SIZE);
+        assert!(kib * 1024 <= INBOX_PEAK_MAX * SIZE, "{} B per byte", kib * 1024 / SIZE);
+        return;
+    }
+    let status = |field: &str| -> usize {
+        let s = std::fs::read_to_string("/proc/self/status").unwrap();
+        s.lines().find(|l| l.starts_with(field)).unwrap().split_whitespace().nth(1).unwrap().parse().unwrap()
+    };
+    let (mut net, host, a, b, _, bob, _, home) = alice_and_bob();
+    let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
+    let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
+    let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
+    // `InboxPayload := [commit, things, chain]`, by hand: values built here would leave freed
+    // memory for the decode to reuse, and the peak would not see it
+    let mut plain = Vec::with_capacity(SIZE + 32);
+    plain.extend([0x83]);
+    osis_base::cbor::head(&mut plain, osis_base::cbor::MAJOR_ARRAY, (SIZE / 3) as u64);
+    for _ in 0..SIZE / 3 {
+        plain.extend([0xa1, 0, 0]);
+    }
+    plain.extend([0x80, 0x80]);
+    let now = osis_base::WallMs(net.now());
+    let mut rng = osis_crypto::SeededRng::from_u64(5);
+    let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), Some(now.saturating_add(INBOX_LIFETIME_MS)), vec![]).unwrap();
+    let blob = osis_crypto::seal_inbox(&prefix.to_bytes(), &bob, &kem, &plain, &mut rng).unwrap();
+    drop(plain);
+    let id = osis_label::blob_id(&blob);
+    net.set_online(b, false);
+    // the label's host lists it with a stamp nobody signed: an honest host's deposit budget would
+    // stop a stranger at about 2 MiB (spec/sync.md §5), the host of an inbox label has no such limit
+    let stamp = Some(osis_crypto::Signature([0; 64]));
+    let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp, expiry: Some(now.0 + osis_base::format::INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
+    assert_eq!(osis_proto::LabelStore::put(net.hosts[host].hub.store_mut(), &home, put).unwrap(), osis_proto::Code::OK);
+    drop(blob);
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+    let rss0 = status("VmRSS");
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let peak = status("VmHWM").saturating_sub(rss0);
+    // opened and its commit refused as undecodable: the decodes ran, and nothing else came of it
+    assert!(net.sync(b).entries(&home).iter().any(|(x, k)| *x == id && matches!(k, EntryKind::Inbox(None))), "Bob opened it: {:?}", net.sync(b).entries(&home));
+    println!("peak_kib={peak}");
+}

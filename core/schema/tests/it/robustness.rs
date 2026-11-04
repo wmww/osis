@@ -111,7 +111,7 @@ fn exponential_instances_bounded() {
 fn negative_keys_are_not_fields() {
     let s = parse("t.osis", &src("aspect x:y.0: struct { 3 b: blob };")).unwrap();
     let big = Value::Bytes(vec![1; CHUNK_THRESHOLD]);
-    let v = Value::Map(BTreeMap::from([(Value::Int(-3), big.clone())]));
+    let v = Value::Map(osis_base::ValueMap::from([(Value::Int(-3), big.clone())]));
     let got = large_positions(&s, &v, &s.aspects["x:y.0"].ty);
     assert_eq!(got, vec![Large { path: Path(vec![Step::Key(Value::Int(-3))]), map_key: false }]);
 }

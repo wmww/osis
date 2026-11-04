@@ -268,7 +268,7 @@ mod direct {
         s.join(fields(Meta { reset: Some(st(2, 1)), w: None }, vec![(2, reg(st(2, 1), Value::Int(2)))]));
         assert_eq!(s.read(), Some(Value::Map([(Value::Int(2), Value::Int(2))].into_iter().collect())));
         s.join(fields(Meta { reset: Some(st(3, 1)), w: Some(st(3, 1)) }, vec![]));
-        assert_eq!(s.read(), Some(Value::Map(BTreeMap::new())));
+        assert_eq!(s.read(), Some(Value::Map(osis_base::ValueMap::new())));
     }
 
     /// §5.4: the case register picks the payload; a payload written for another case stays hidden

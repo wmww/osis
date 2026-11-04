@@ -346,7 +346,7 @@ fn watch_spec_none() {
 /// Every link in `v`.
 fn links(v: &Value, out: &mut Vec<osis::schema::osis_base::Link>) {
     match v {
-        Value::Link(l) => out.push(*l),
+        Value::Link(l) => out.push(**l),
         Value::Enum(_, Some(p)) => links(p, out),
         Value::Map(m) => m.iter().for_each(|(k, v)| {
             links(k, out);

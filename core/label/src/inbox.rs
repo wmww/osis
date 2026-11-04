@@ -64,14 +64,21 @@ impl InboxPayload {
         Ok(Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone())]))
     }
 
-    pub fn from_value(v: &Value) -> Result<InboxPayload, Error> {
+    /// The commit's plaintext, its decoded form freed first so that decoding the plaintext again
+    /// does not hold two decoded copies of a stranger's blob; and the rest.
+    pub fn split(self) -> (Vec<u8>, Vec<InboxThing>, Vec<Value>) {
+        (encode(&self.commit), self.things, self.chain)
+    }
+
+    /// Takes `v` apart without copying: it is a blob from anyone (`open_inbox_blob`).
+    pub fn from_value(v: Value) -> Result<InboxPayload, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("inbox payload")) };
-        let [commit @ Value::List(_), Value::List(things), Value::List(chain)] = items.as_slice() else { return Err(Error::Malformed("inbox payload")) };
+        let Ok::<[Value; 3], _>([commit @ Value::List(_), Value::List(things), Value::List(chain)]) = items.try_into() else { return Err(Error::Malformed("inbox payload")) };
         if !chain.iter().all(|c| matches!(c, Value::List(_))) {
             return Err(Error::Malformed("inbox chain"));
         }
         let mut out: Vec<InboxThing> = Vec::with_capacity(things.len());
-        for t in things {
+        for t in &things {
             let Value::List(f) = t else { return Err(Error::Malformed("inbox thing")) };
             let [tid, label, keys] = f.as_slice() else { return Err(Error::Malformed("inbox thing")) };
             let label = match get_opt(label, "inbox label")? {
@@ -98,7 +105,7 @@ impl InboxPayload {
             }
             out.push(InboxThing { tid, label, delete_keys });
         }
-        Ok(InboxPayload { commit: commit.clone(), things: out, chain: chain.clone() })
+        Ok(InboxPayload { commit, things: out, chain })
     }
 }
 
@@ -118,7 +125,7 @@ pub fn open_inbox_blob(blob: &[u8], recipient: &Tid, kem: &KemSecret) -> Result<
     crate::blob::check_size(blob)?;
     let prefix = Prefix::parse(blob)?;
     let pt = open_inbox(blob, prefix.len(), recipient, kem)?;
-    Ok((prefix, InboxPayload::from_value(&decode(&pt, &OBJECT_LIMITS)?)?))
+    Ok((prefix, InboxPayload::from_value(decode(&pt, &OBJECT_LIMITS)?)?))
 }
 
 #[cfg(test)]
@@ -164,11 +171,11 @@ mod tests {
     fn rejections() {
         let mut p = payload();
         p.things.reverse();
-        assert!(InboxPayload::from_value(&p.to_value().unwrap()).is_err());
+        assert!(InboxPayload::from_value(p.to_value().unwrap()).is_err());
         let mut p = payload();
         p.things[1].tid = p.things[0].tid;
-        assert!(InboxPayload::from_value(&p.to_value().unwrap()).is_err());
-        assert!(InboxPayload::from_value(&Value::List(vec![Value::Int(0), Value::List(vec![])])).is_err());
-        assert_eq!(InboxPayload::from_value(&payload().to_value().unwrap()).unwrap(), payload());
+        assert!(InboxPayload::from_value(p.to_value().unwrap()).is_err());
+        assert!(InboxPayload::from_value(Value::List(vec![Value::Int(0), Value::List(vec![])])).is_err());
+        assert_eq!(InboxPayload::from_value(payload().to_value().unwrap()).unwrap(), payload());
     }
 }

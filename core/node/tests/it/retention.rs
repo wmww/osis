@@ -864,7 +864,7 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
 fn undo_in_lazily_loaded_pages_spec_commits_7() {
     let mut lp = net(1, 58);
     let t = new_thing(&mut lp, 0);
-    let fill: std::collections::BTreeMap<Value, Value> = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"v".repeat(300)))).collect();
+    let fill: osis_base::ValueMap = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"v".repeat(300)))).collect();
     let mut m = Mutation::new();
     m.set(t, &BIG, &Value::Map(fill)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -901,7 +901,6 @@ fn undo_in_lazily_loaded_pages_spec_commits_7() {
 // both), exactly as with the whole state loaded.
 #[test]
 fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
-    use std::collections::BTreeMap;
     let run = |whole: bool| {
         let mut lp = net(2, 61);
         let t = new_thing(&mut lp, 0);
@@ -915,10 +914,10 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
             lp.peers[i].commit(m).unwrap().unwrap()
         };
         let mut m = Mutation::new();
-        m.set(t, &big, &Value::Map(BTreeMap::new())).unwrap();
+        m.set(t, &big, &Value::Map(osis_base::ValueMap::new())).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
-        put(&mut lp, 1, vec![key("n")], Value::Map(BTreeMap::from([(s("b"), s("1"))])));
+        put(&mut lp, 1, vec![key("n")], Value::Map(osis_base::ValueMap::from([(s("b"), s("1"))])));
         let fill = |lp: &mut osis_node::local_peer::LocalPeer, r: std::ops::Range<usize>| {
             let mut m = Mutation::new();
             for i in r {
@@ -927,12 +926,12 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
             lp.peers[0].commit(m).unwrap().unwrap();
         };
         fill(&mut lp, 0..150);
-        put(&mut lp, 0, vec![key("n")], Value::Map(BTreeMap::from([(s("a"), s("0"))])));
+        put(&mut lp, 0, vec![key("n")], Value::Map(osis_base::ValueMap::from([(s("a"), s("0"))])));
         fill(&mut lp, 150..300);
         lp.advance(5);
         let e = put(&mut lp, 0, vec![key("n"), key("a")], s("5"));
         lp.sync_all().unwrap();
-        assert_eq!(lp.peers[0].engine.get_at(&t, &big, &[key("n")]).unwrap(), Some(Value::Map(BTreeMap::from([(s("a"), s("5")), (s("b"), s("1"))]))));
+        assert_eq!(lp.peers[0].engine.get_at(&t, &big, &[key("n")]).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("a"), s("5")), (s("b"), s("1"))]))));
         lp.peers[0].restart(61).unwrap();
         if whole {
             lp.peers[0].engine.get(&t, &big).unwrap();
@@ -940,7 +939,7 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
         lp.advance(5);
         lp.peers[0].engine.revert(&e).unwrap().unwrap();
         let n = lp.peers[0].engine.get_at(&t, &big, &[key("n")]).unwrap();
-        assert_eq!(n, Some(Value::Map(BTreeMap::from([(s("a"), s("0")), (s("b"), s("1"))]))));
+        assert_eq!(n, Some(Value::Map(osis_base::ValueMap::from([(s("a"), s("0")), (s("b"), s("1"))]))));
         lp.peers[0].restart(62).unwrap();
         lp.peers[0].engine.state(&t, &big).unwrap()
     };
