@@ -255,6 +255,8 @@ pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Ve
                 "missing"
             } else if d.dropped.contains(&ai) {
                 "dropped"
+            } else if d.stripped.contains(&ai) {
+                "stripped"
             } else {
                 "held"
             };

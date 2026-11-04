@@ -1,16 +1,15 @@
 //! Parts held while their commit waits (spec/commits.md §5): past their expiry they go, named by a
-//! held purge request they are held value-less.
+//! held purge request they are held value-less, what was stripped of them kept as the part's
+//! leftover (`leftover`) until it joins.
 
-use crate::engine::DropFor;
-use super::{T_EXPIRY, counts_as_purged, drop_part_for, known_purged, make_valueless, suspect};
-use crate::engine::records;
+use super::{T_EXPIRY, counts_as_purged, known_purged, leftover, make_leftover, suspect, writes_of};
 use crate::engine::Tx;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
 use osis_commit::{Decoded, Header};
 use osis_crdt::Fragment;
 use osis_store::Shred;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 /// Whether part `ai` of a commit (header `h`), held while it waits, is past its expiry: it goes
 /// from the node (spec/commits.md §5).
@@ -59,9 +58,10 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 /// The parts of aspect `ai` of pending commit `id` (in `blob`, header `h`) that a held purge
 /// request names: held value-less from now on (spec/commits.md §5). Each is checked and decoded
 /// as `apply::examine` would, its value-carrying writes stripped (spec/crdt.md §4.7) and the
-/// result kept (`records::STRIPPED`); its slot in `blob` and the stored copy holds an empty delta
-/// (`emptied`). `examine` joins the kept delta in its place, and `stripped_joined` drops it once
-/// joined, as a purge drops an applied part. One with a page away cannot be stripped: it goes, and
+/// result joined into the part's leftover (`records::LEFTOVER`); its slot in `blob` and the
+/// stored copy holds an empty delta (`emptied`). `examine` joins the leftover in its place, and
+/// `stripped_joined` holds the part as it once joined, as a purge holds an applied part. One with
+/// a page away cannot be stripped: it goes, and
 /// its aspect is flagged, its non-value writes joining only through a copy or a snapshot, as those
 /// of a part missing when purged. One with its thing's record away cannot occur: no right can stand
 /// without it (`holds_right`), spec/commits.md §5 states the limit. A bad one is `examine`'s. A snapshot has
@@ -74,6 +74,7 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Ok(()) };
     let (mut done, mut gone) = (BTreeSet::new(), BTreeSet::new());
+    let mut kept: Option<Fragment> = leftover::get(tx, &a.tid, &a.ak, id, ai)?.map(|l| l.fragment);
     for p in blob.parts.iter_mut().filter(|p| p.ai == ai && p.delta != emptied()) {
         let mut interner = osis_crdt::Interner::new();
         let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
@@ -89,13 +90,15 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
             _ => continue,
         };
         d.fragment.strip(&|x| o.iter().any(|y| y.owns(x)));
-        let v = [&d.nonce[..], &crate::engine::state::encode(&d.fragment)?].concat();
-        tx.txn.put_local(&records::stripped_key(id, ai, p.di), &v, Shred::No)?;
+        kept.get_or_insert_default().join(d.fragment);
         p.delta = emptied();
         done.insert(p.di);
     }
     if done.is_empty() && gone.is_empty() {
         return Ok(());
+    }
+    if let Some(f) = kept.filter(|_| !done.is_empty()) {
+        leftover::put(tx, &a.tid, &a.ak, id, ai, &leftover::Leftover { fragment: f, gives: None })?;
     }
     blob.parts.retain(|p| !(p.ai == ai && gone.contains(&p.di)));
     if !gone.is_empty() {
@@ -153,54 +156,63 @@ pub(crate) fn emptied() -> Vec<u8> {
     osis_base::encode(&osis_base::Value::List(Vec::new()))
 }
 
-/// The stripped deltas kept for pending commit `id` (`strip_purged`), by slot.
-pub(crate) fn stripped_of(tx: &mut Tx<'_>, id: &CommitId) -> Result<BTreeMap<(usize, usize), Decoded>> {
-    let mut out = BTreeMap::new();
-    tx.scan(&[records::STRIPPED, &id.0[..]].concat(), |k, v| {
-        let (Some(ai), Some(di)) = (k.get(..4), k.get(4..8)) else { return Err(Error::Corrupt("stripped key")) };
-        let (Some(n), Some(f)) = (v.get(..osis_crdt::NONCE_LEN), v.get(osis_crdt::NONCE_LEN..)) else { return Err(Error::Corrupt("stripped delta")) };
-        let d = osis_crdt::Delta { nonce: n.try_into().map_err(|_| Error::Corrupt("stripped delta"))?, fragment: crate::engine::state::decode(f)? };
-        let slot = |b: &[u8]| b.try_into().map(|x| u32::from_be_bytes(x) as usize).map_err(|_| Error::Corrupt("stripped key"));
-        out.insert((slot(ai)?, slot(di)?), Decoded::Delta(d));
-        Ok(())
-    })?;
-    Ok(out)
+/// Whether part `ai` of pending commit `id` (header `h`) is held value-less while it waits
+/// (`strip_purged`): its leftover is kept and the part has not joined (`Meta::stripped`).
+pub(crate) fn waiting_stripped(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<bool> {
+    if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped.contains(&ai)) {
+        return Ok(false);
+    }
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    leftover::has(tx, &a.tid, &a.ak, id, ai)
 }
 
-/// Whether slot `(ai, di)` of pending commit `id` is held value-less (`strip_purged`).
-pub(crate) fn is_stripped(tx: &mut Tx<'_>, id: &CommitId, ai: usize, di: usize) -> Result<bool> {
-    Ok(tx.txn.get_local(&records::stripped_key(id, ai, di))?.is_some())
+/// Forgets the leftover kept for waiting part `ai` of commit `id` (header `h`), if it has not
+/// joined (an applied part's leftover is its body).
+fn forget_waiting_leftover(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<()> {
+    if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped.contains(&ai)) {
+        return Ok(());
+    }
+    let Some(a) = h.aspects.get(ai) else { return Ok(()) };
+    leftover::remove(tx, &a.tid, &a.ak, id, ai)
 }
 
-/// Forgets the stripped deltas kept for aspect `ai` of `id` (every aspect: `None`).
-pub(crate) fn forget_stripped(tx: &mut Tx<'_>, id: &CommitId, ai: Option<usize>) -> Result<()> {
-    let prefix = [records::STRIPPED, &id.0[..], &ai.map(|x| (x as u32).to_be_bytes().to_vec()).unwrap_or_default()].concat();
-    let mut keys = Vec::new();
-    tx.scan(&prefix, |k, _| {
-        keys.push([&prefix[..], k].concat());
-        Ok(())
-    })?;
-    for k in keys {
-        tx.txn.remove_local(&k, Shred::Yes)?;
+/// Forgets the leftovers kept for parts `ais` of commit `id` (header `h`) that just joined whole
+/// (`forget_waiting_leftover`: a waiting part's, or one set aside at its purge's fall).
+pub(crate) fn forget_joined_leftovers(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ais: &BTreeSet<usize>) -> Result<()> {
+    for ai in ais {
+        forget_waiting_leftover(tx, h, id, *ai)?;
     }
     Ok(())
 }
 
-/// The parts of commit `id` just joined from stripped deltas (`strip_purged`: aspect, fragment):
-/// held value-less and dropped, as a purge leaves an applied part, the stripped deltas their
-/// residue; their kept records go. A purge that fell while they waited is judged again next
-/// (`rejudge_purges`).
+/// Forgets every leftover kept for the waiting parts of commit `id` (`forget_waiting_leftover`).
+pub(crate) fn forget_waiting_leftovers(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let h = match tx.core.ix.commits.get(id) {
+        Some(m) => (*m.header).clone(),
+        None => match tx.txn.get_pending(id)?.and_then(|(_, b)| osis_commit::CommitBlob::decode_stored(&b).ok()) {
+            Some(b) => b.header,
+            None => return Ok(()),
+        },
+    };
+    for ai in 0..h.aspects.len() {
+        forget_waiting_leftover(tx, &h, id, ai)?;
+    }
+    Ok(())
+}
+
+/// The parts of commit `id` just joined from their leftovers (`strip_purged`: aspect, fragment):
+/// held value-less as a purge leaves an applied part, the leftover their body. A purge that fell
+/// while they waited is judged again next (`rejudge_purges`).
 pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, Fragment)], changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let ais: BTreeSet<usize> = joined.iter().map(|x| x.0).collect();
     for ai in ais {
         let kept: Vec<Fragment> = joined.iter().filter(|x| x.0 == ai).map(|x| x.1.clone()).collect();
-        if let Some(k) = make_valueless(tx, id, ai, &kept)? {
+        let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { continue };
+        let own = writes_of(&h, id, ai);
+        if let Some(k) = make_leftover(tx, id, ai, Some(&own), &kept)? {
             changed.insert(k);
         }
-        drop_part_for(tx, id, ai, DropFor::Purge)?;
-        forget_stripped(tx, id, Some(ai))?;
-        if let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone())
-            && let Some(a) = h.aspects.get(ai)
+        if let Some(a) = h.aspects.get(ai)
             && !known_purged(tx, &h, id, ai)?
         {
             tx.core.stale_things.insert(a.tid);
@@ -214,12 +226,15 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
 /// (`mark_changed`).
 pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize, flag: bool) -> Result<()> {
     // also of a commit no longer pending: `apply::pend_aside` judges its parts after `unpend`
-    forget_stripped(tx, c, Some(ai))?;
+    if let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) {
+        forget_waiting_leftover(tx, &h, c, ai)?;
+    }
     if !tx.core.ix.pending.contains_key(c) {
         return Ok(());
     }
     let Some((kind, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
     let Ok(mut blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(()) };
+    forget_waiting_leftover(tx, &blob.header, c, ai)?;
     let n = blob.parts.len();
     blob.parts.retain(|p| p.ai != ai);
     if blob.parts.len() == n {

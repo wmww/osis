@@ -190,14 +190,14 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - A node judges an absolute bound from the header (T, or the purge floor below) and its corrected clock alone, deaths aside, and drops a body applied at or past it only after its apply, so that a carrier can go first (below). A held part of a waiting commit keeps its body until its commit applies.
   - **Carrier**: a node that may write the aspect and holds no snapshot covering a body with live writes writes one before dropping the body (it is held and uploaded like any must-hold body). A body with live writes is deleted at a label only while another entry under it carries them (spec/sync.md §7).
   - A body with no live write needs no carrier: under 0 after replaced, the node applying the kill that leaves it none drops it in that transaction and deletes it at hosts in the same sync.
-- **Never received**: a body dropped for its keep bounds (at its bound or as its writes died) or for carrying a purged value counts as never received from then on, as a missing delta counted as held does (§4).
+- **Never received**: a body dropped for its keep bounds (at its bound or as its writes died) counts as never received from then on, as a missing delta counted as held does (§4).
   - Its live writes stay in the state.
   - The node does not fetch it on its own, but for a part dropped while invalid that turns valid: it is missing again and fetched, and until it arrives the node may read less, the aspect suspect.
   - A copy that arrives again joins as a late part and is judged again (dropped at once past its bound or purged; held when a write that killed it, or one of its own, has turned invalid or valid).
   - Its holders upload it while it is must-hold (spec/sync.md §6), so nodes holding the same bodies read alike.
 - **A waiting part past its expiry**: a part that waits (§4) when its expiry passes goes from the node at T, and one arriving past T goes if it waits or its commit would wait without it. Either counts as never received: its non-value writes join only through snapshots. Every local copy goes with it. That node may read what came before the part until a writer next compacts (spec/sync.md §7); a commit such a part applied before T stays applied.
 - **A waiting part under a purge**: a waiting part that a held purge request names whose author may purge it (judged once the node holds the request and the commit's header) is held value-less from then on.
-  - The node keeps it with its value-carrying writes stripped (spec/crdt.md §4.7) and no other local copy of it; it waits and applies as that copy, then drops as an applied part the request names does, so nodes holding the same commits read alike.
+  - The node keeps it as its leftover (spec/crdt.md §4.7) and no other local copy of it; it waits and applies as that, so nodes holding the same commits read alike.
   - With a page of it not held it cannot be stripped: it goes at once with every local copy, as a part missing when purged.
   - If the request no longer drops it when its commit applies, it is fetched again like any missing delta.
   - While its thing's record is unknown no right can be judged, so such a part keeps its values in the pending copy, for good if the record never comes; a request on that thing waits with it.
@@ -225,7 +225,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 ### Purge
 - **Purge request**: a header field naming earlier deltas (of commits with a smaller `ts`; a later one is not named) by commit, by a whole aspect history, or by author on an aspect (spec/wire.md §4). It MUST NOT name role-class deltas.
   - A later-arriving delta a held request names falls under it as one held does.
-  - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §7): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and drops every body carrying their values, snapshots included, whatever the order the request, the named delta's commit and the snapshot arrive in. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
+  - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §7): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and holds every body carrying their values, snapshots included, as its leftover (the body with those values value-less), whatever the order the request, the named delta's commit and the snapshot arrive in. A snapshot a request names itself has no values of its own: its body is dropped, and comes back with a fall. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
   - A writer that, after applying it, holds no covering snapshot of the aspect under a label it writes re-snapshots there (duplicates are harmless, spec/sync.md §7).
   - A request SHOULD name dead writes; the writer resets live content in the same commit.
   - A commit carrying a request has a delta (it is what places the commit under the thing's labels): where no reset is wanted, a write of `purge.0` (spec/data-model.md §9).
@@ -240,9 +240,9 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - its purge request has dropped a permanent delta on t at this node (spec/permissions.md §7: its author held the right, as the node then judged; a request that falls stays lasting there).
 
   A device coming later, with no snapshot of the aspect stamped after its commit, counts a purged delta as held only by a held request (§4). A lasting commit's header is never forgotten, and every label of a group with t in its closure, whose actor may read t, holds a blob of the commit for good (spec/sync.md §6): a body of it, else a header-only blob. A purge of any other delta leaves nothing at a label. The commit reads as a held commit without that delta's body: its author, actor, `ts` and retention stay, and whether to show it is the reader's choice.
-- **Dropping a body** means destroying every local copy (undo buffers and pre-reset snapshots included), its delta nonce and every local index entry derived from it.
+- **Dropping a body** means destroying every local copy (undo buffers and pre-reset snapshots included), its delta nonce and every local index entry derived from it. Holding one as its leftover destroys every copy of its values the same way; the leftover is a local body (never uploaded, deleted at hosts as a dropped one).
   - What the part was judged stays: its validity, the role its writes needed, and for a `secrets.0` or `keys.0` delta the epochs it boxed or keyed, whose introducing commit spec/crypto.md §4 asks for, and the sealed names of its boxes to the holders its edge writes put, a grant's.
-  - Exception: a compaction snapshot's part dropped other than as covered (for its keep bounds, expiry or a purge) still counts for atomic apply (§4) and suspect flags (spec/permissions.md §4) from its header alone; a part dropped as covered need not (its coverer is valid and stamped no earlier).
+  - Exception: a compaction snapshot's part dropped other than as covered (for its keep bounds) still counts for atomic apply (§4) and suspect flags (spec/permissions.md §4) from its header alone; a part dropped as covered need not (its coverer is valid and stamped no earlier). One held as its leftover is held.
 - A dropped body cannot be undone (§7); under at most 0 others' resets beat undo.
 
 ### Fixed retention
@@ -264,8 +264,8 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - The schema may give a default per AK as a duration from the write.
 - The blob prefix carries the commit's T (spec/sync.md §1, §3).
 - A writer splits a write whose deltas want different expiries, or that mixes `nobody` deltas with others (§5), into commits, one per expiry and class, under one `ts` (spec/crdt.md §2.2), the one carrying the things' records first. `required.0^` goes in the commit holding its thing's other deltas of the write.
-- At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less and drops the body, whatever the delta's keep-at-least bound.
-- A delta never received stays never received: a copy arriving after T joins value-less, and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
+- At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less, the body as its leftover, whatever the delta's keep-at-least bound.
+- A delta never received stays never received: a copy arriving after T joins value-less (held as its leftover from then on), and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
 - Hosts delete the blob at T unattended (spec/sync.md §5).
 
 ## 7. Undo

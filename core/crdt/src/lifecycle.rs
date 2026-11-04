@@ -22,19 +22,10 @@ impl Fragment {
     /// Holds the writes `expired` owns value-less at this node (§4.7): `strip`, and a list
     /// element they created gets its creation's own stamp as its reset (§5.7 Live). Commutes
     /// with join; a node past a delta's `T`, or holding a purge of it, applies it after every
-    /// join.
+    /// join and rebuild.
     pub fn expire(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.expire_merging(expired);
-    }
-
-    /// `expire`, telling whether moving an entry's records to its key-erased record (§4.7, §5.6)
-    /// joined a write beaten by another of the dot's records: a death the join may not have
-    /// dated (spec/commits.md §5).
-    pub fn expire_merging(&mut self, expired: &dyn Fn(&Dot) -> bool) -> bool {
-        let mut ch = Changes::new();
-        self.strip_values(expired, true, &mut ch);
+        self.strip_values(expired, true, &mut Changes::new());
         self.prune(None, &mut Changes::new());
-        !ch.deaths().is_empty()
     }
 
     pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, at_node: bool, ch: &mut Changes) {

@@ -1262,7 +1262,7 @@ impl SyncEngine {
     fn dropped(&mut self, b: &BlobId, r: &BlobRec) -> Result<bool> {
         let pending = self.engine.core.ix.pending.contains_key(&r.commit);
         if let Some(m) = self.engine.core.ix.commits.get(&r.commit) {
-            if !r.parts.iter().any(|p| m.dropped.contains_key(&p.0)) {
+            if !r.parts.iter().any(|p| m.body_gone(p.0)) {
                 return Ok(false);
             }
             if !pending && !self.engine.redeliver_named(&r.commit) {
@@ -1328,8 +1328,8 @@ impl SyncEngine {
         }
         // chunks of dropped deltas no label entry names (never uploaded, or deleted everywhere)
         let listed: BTreeSet<BlobId> = match commits {
-            None => self.engine.core.ix.commits.values().filter(|m| !m.dropped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
-            Some(cs) => cs.iter().filter_map(|c| self.engine.core.ix.commits.get(c)).filter(|m| !m.dropped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
+            None => self.engine.core.ix.commits.values().filter(|m| !m.dropped.is_empty() || !m.stripped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
+            Some(cs) => cs.iter().filter_map(|c| self.engine.core.ix.commits.get(c)).filter(|m| !m.dropped.is_empty() || !m.stripped.is_empty()).flat_map(|m| m.view.chunks.iter().copied()).collect(),
         };
         let held: BTreeSet<BlobId> = listed.into_iter().filter(|b| !self.state.blobs.contains_key(b) && !self.state.named(b) && self.engine.has_blob(b)).collect();
         if held.is_empty() {

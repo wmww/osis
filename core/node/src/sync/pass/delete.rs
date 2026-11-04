@@ -148,7 +148,7 @@ impl SyncEngine {
             note.at(t);
         }
         let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        if parts.iter().any(|p| m.dropped.contains_key(&p.0)) {
+        if parts.iter().any(|p| m.body_gone(p.0)) {
             // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`)
             let live = parts.iter().any(|p| self.part_live(&h, commit, p));
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
@@ -540,7 +540,7 @@ impl SyncEngine {
             if !self.engine.core.may_read(&x, &self.engine.core.reader_of(&t)) || !self.part_live(&m.header, commit, p) {
                 continue;
             }
-            let dropped = m.dropped.contains_key(&p.0);
+            let dropped = m.body_gone(p.0);
             if !dropped && self.carried_by(host, g, l, commit, &[*p]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
@@ -675,7 +675,7 @@ impl SyncEngine {
                     let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.keys == ch.keys).map(|(ai, _)| ai).collect();
                     let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
                     let parts = parts_of(h, |i| ais.contains(&i));
-                    let dropped = !parts.is_empty() && parts.iter().all(|p| m.dropped.contains_key(&p.0));
+                    let dropped = !parts.is_empty() && parts.iter().all(|p| m.body_gone(p.0));
                     if dropped {
                         first.get_or_insert((id, ch.clone()));
                     } else {

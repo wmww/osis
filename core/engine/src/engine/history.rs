@@ -97,9 +97,10 @@ where
 fn commit_row(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, budget: usize) -> Result<Option<HistoryRow>> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
     let Some(ai) = m.aspect(tid, ak) else { return Ok(None) };
-    let (holds, valid, received, kind, actor, node, ts) = (m.holds(ai), m.valid_at(ai), m.received, m.view.kind, m.view.actor, m.view.author, m.view.ts);
+    // a leftover (expired, purged) shows as what took its values, not as its read
+    let (holds, valid, received, kind, actor, node, ts) = (m.holds(ai) && !m.stripped.contains(&ai), m.valid_at(ai), m.received, m.view.kind, m.view.actor, m.view.author, m.view.ts);
     let header = m.header.clone();
-    let dropped = m.dropped.contains_key(&ai);
+    let dropped = m.body_gone(ai);
     let body = if holds {
         // past its expiry the next tick drops it: no read shows it until then
         if header.aspects.get(ai).and(header.expires).is_some_and(|t| t <= tx.now().0) {

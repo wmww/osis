@@ -337,19 +337,19 @@ Below a map key, the undo buffer's value at a path is that of the join of the ke
 
 Redo likewise restores the read before the undo.
 
-**Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body and value-less residue (§4.7) the node holds for the aspect, with the writes of invalid deltas removed.
+**Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, leftovers (§4.7) included, with the writes of invalid deltas removed.
 - **Own state.** The node's own current state counts as a snapshot it holds, so live writes of bodies dropped under keep-at-most survive.
-- **Removed.** The writes of invalid deltas are removed from each delta body, the state and the residues, the records they created and others' writes nested in them included. A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.
+- **Removed.** The writes of invalid deltas are removed from each delta body and the state, the records they created and others' writes nested in them included. A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.
 - **A valid snapshot's copies** of those writes stay (spec/permissions.md §5.2), so the state holds the snapshot's copy alone, with whatever payload it carries, and from the snapshot's body only what sits under such a dot without a write of the snapshot's there goes.
 - **Records a valid snapshot holds.** A record a valid snapshot holds, by its creation's copy or by the record alone, stays with the valid writes nested in it, whichever body carries them (the record is in the state, so writes into it count).
   - A map record is held by its dot and key (§5.6), also one whose creation a reset pruned there, kept by a later nested write though not live.
   - A copy under another key keeps only its own record.
   - A key-erased record (§4.7) keeps every record of its dot.
-- **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived, but for a body the node dropped for its keep bounds or, a snapshot's, for carrying purged values (spec/commits.md §5):
+- **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived, but for a body the node dropped for its keep bounds (spec/commits.md §5):
   - What of it the state alone held and an un-merge leaves out (its writes, the records they created, a creation's stamp, value-less copies), whether the un-merged delta is the body's own or another (one whose writes alone kept the body's record, one that superseded the body's write in the state), comes back only with a copy of the body.
   - So until one arrives a node that judged a delta invalid on the way may hold less of the body than one that did not (an entry whose creation went this way is not live there, §5.6, whatever is written into it).
 - **Seq elements** created by an invalid delta keep their record and creation write (anchor) as a content-less hidden anchor, placed where it was (`Derived` records with no remaining write go, §4.7).
-- **In place.** Removing the author's writes from the state in place is permitted only where it gives that join. A register or position whose winner or top-2 (§5.7) the author held needs the retained bodies.
+- **In place.** Removing the author's writes from the state in place is permitted only where it gives that join. A register or position whose winner or top-2 (§5.7) the author held needs the retained bodies. (This implementation never does: every validity flip, drop, leftover and re-arrival rebuilds the aspect from the held bodies.)
 
 **Un-merge of an ephemeral commit** (revoked author, spec/sync.md §9): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (writes anchored at them are hidden, §6.1).
 
@@ -377,8 +377,7 @@ Rules:
   - **Embedded character** (`Derived` dot, §7): it has no creation write apart from the value, so it goes entirely: creation and content. Position and flag writes of others stay, and a record with none of those is dropped (a node that only ever saw the value-less register has no such record either). Anchors at such a dot: §6.1.
 - **Expiry rule.** Once a node's wall clock reaches T it holds every value-carrying write of the delta value-less, and strips the value from any copy that arrives later (an undelete repeating the content, a stale peer, another projection). It knows T from the commit header, which outlives the body.
   - Its non-value writes stay.
-  - Its value-carrying writes are dead at T (§4.8) and its body is dropped (spec/commits.md §6).
-  - The node keeps the body's **value-less residue** (its writes, every value-carrying one value-less) for un-merge (§4.6), so a write that superseded the residue in the state and is later un-merged does not take it along.
+  - Its value-carrying writes are dead at T (§4.8) and its body goes (spec/commits.md §6): the node holds the body's **leftover** instead, the same delta with every value-carrying write value-less, a held body like any other (joined, replayed, covering) that uploads nowhere. So a write that superseded it in the state and is later un-merged does not take it along (§4.6). A leftover reveals nothing of a value: stamps, dots, structure, resets, flags and positions only.
   - A node holding a valid purge request treats the value-carrying writes it names the same way from the moment it applies it (spec/commits.md §5).
 - **Writes into an expiring element.** A delta writing inside an element created by an expiring delta (a reaction to a disappearing message) repeats its key or anchors to it, and stops showing with the element at T (Live, §5.6, §5.7); the writer SHOULD give it an expiry no later than T, so its body goes too.
 - **Snapshots** carry the delta's value-carrying writes value-less (§8; its entries' records key-erased), before and after T, and never cover it.

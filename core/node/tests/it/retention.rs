@@ -1748,7 +1748,7 @@ fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
 // entry's records to its key-erased record with nothing beaten across them, so the aspect's
 // deaths are not recomputed (each such expiry recomputing cost O(bodies) per tick).
 #[test]
-fn expiry_merging_records_without_death_recomputes_nothing_spec_commits_5() {
+fn expiry_merging_records_recomputes_once_spec_commits_5() {
     let mut lp = net(1, 57);
     let t = new_thing(&mut lp, 0);
     let now = lp.peers[0].engine.now();
@@ -1769,8 +1769,9 @@ fn expiry_merging_records_without_death_recomputes_nothing_spec_commits_5() {
         lp.advance(1000);
         lp.peers[0].engine.tick().unwrap();
     }
+    // each expiry rebuilds the aspect and dates its deaths from the bodies again
     let recomputes = osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
-    assert_eq!(recomputes, 0);
+    assert_eq!(recomputes, 2, "one per expiry");
     // the entries' creations expired: value-less, they hide the entries (spec/crdt.md §5.6)
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(Default::default())));
 }
@@ -1836,7 +1837,7 @@ fn register_rebuild_stops_at_the_winner_spec_crdt_4_6() {
     assert!(n <= 4, "{n} bodies read for the rise");
 }
 
-// spec/crdt.md §4.6: many deltas falling at once un-merge an unpaged state in one pass.
+// spec/crdt.md §4.6: many deltas falling at once rebuild the aspect once.
 #[test]
 fn fall_of_many_one_pass_spec_crdt_4_6() {
     let mut lp = net(2, 95);
@@ -1851,14 +1852,14 @@ fn fall_of_many_one_pass_spec_crdt_4_6() {
     sync(&mut lp, 1, 0);
     lp.advance(10);
     set(&mut lp, 0, t, &REG, "winner");
-    let passes = || osis_node::costs::take().iter().find(|x| x.0 == "unmerge: pass").map_or(0, |x| x.2);
+    let passes = || osis_node::costs::take().iter().find(|x| x.0 == "rebuild").map_or(0, |x| x.2);
     passes();
     lp.advance(10);
     set_edge(&mut lp.peers[0].engine, t, p1, None, Some(osis_schema::core_types::Frontier::default().to_value()));
     let n = passes();
     assert_eq!(lp.peers[0].engine.invalid_writes(&t, &ak("t:reg.0")).len(), 50);
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("winner")));
-    assert_eq!(n, 1, "un-merge passes");
+    assert_eq!(n, 1, "rebuilds");
 }
 
 // spec/crdt.md §2.2, §4.6: writes tied on `ts`: a rebuild reads every tied body, so whichever
@@ -2807,11 +2808,11 @@ fn frontier_bytes_per_launch_probe() {
 }
 
 // spec/crdt.md §4.7, spec/commits.md §5: a second request on a delta dropped as covered keeps the
-// residue the first took from its coverers, when a coverer not carrying it is left (was: replaced
+// leftover the first took from its coverers, when a coverer not carrying it is left (was: replaced
 // by nothing, so the older write came back once a later write fell, where a node that held the body
 // read as ever).
 #[test]
-fn second_request_keeps_covered_residue_spec_crdt_4_7() {
+fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
     use std::collections::{BTreeMap, BTreeSet};
     let mut lp = net(3, 0x77);
     lp.sync_all().unwrap();

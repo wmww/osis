@@ -200,7 +200,7 @@ impl SyncEngine {
     pub(super) fn holds_nothing(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(m) = self.engine.core.ix.commits.get(c) else { return false };
         let x = self.engine.group_actor(g);
-        parts.iter().any(|p| m.dropped.contains_key(&p.0) || m.header.aspects.get(p.0).is_some_and(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid))))
+        parts.iter().any(|p| m.body_gone(p.0) || m.header.aspects.get(p.0).is_some_and(|a| !self.engine.core.may_read(&x, &self.engine.core.reader_of(&a.tid))))
     }
 
     /// The genuine entry under `l` holding exactly this body, not tombstoned at `host`, whoever

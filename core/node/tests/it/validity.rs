@@ -1447,7 +1447,7 @@ fn unmerge_paged(seed: u64) {
         lp.deliver(0, &pk).unwrap();
         let costs = osis_node::costs::take();
         let n = |k: &str| costs.iter().find(|c| c.0 == k).map_or(0, |c| c.2);
-        assert_eq!((n("rejudge: unmerge"), n("rejudge: rebuild")), (5, 0), "seed {seed}: validity only fell");
+        assert_eq!(n("rejudge: rebuild"), 5, "seed {seed}: one rebuild per flipped aspect");
         // the fresh node: B's writes last
         let pks = packages(&mut lp, 0);
         let is_b = |lp: &LocalPeer, id: &osis_base::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.author == b && !is_role(&lp.peers[0].engine, id));

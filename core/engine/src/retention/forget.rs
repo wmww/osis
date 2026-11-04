@@ -11,7 +11,7 @@
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
 //! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),
-//! receipts, value-less lists, purge lists and what they dropped, timers, `secrets.0` waits, the sync records of the
+//! receipts, value-less lists, leftovers, purge lists and what they dropped, timers, `secrets.0` waits, the sync records of the
 //! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!
@@ -199,7 +199,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         }
         let rest = osis_commit::rewrite(&blob, |ai, _| ais.contains(&ai));
         for ai in &ais {
-            super::forget_stripped(tx, &id, Some(*ai))?;
+            if let Some(a) = blob.header.aspects.get(*ai) {
+                super::leftover::remove(tx, &a.tid, &a.ak, &id, *ai)?;
+            }
         }
         tx.txn.remove_pending(&id, Shred::Yes)?;
         if !rest.parts.is_empty() {
@@ -212,15 +214,15 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         for p in [records::ASPECTS, records::RECEIPT, records::VALUELESS, records::PURGES, records::SUSPECT] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
-        let mut residues = Vec::new();
-        for p in [records::RESIDUE, records::PURGES_NAMED] {
+        let mut rows = Vec::new();
+        for p in [records::LEFTOVER, records::PURGES_NAMED] {
             let prefix = records::aspect_key(p, t, ak);
             tx.scan(&prefix, |k, _| {
-                residues.push([prefix.as_slice(), k].concat());
+                rows.push([prefix.as_slice(), k].concat());
                 Ok(())
             })?;
         }
-        for k in residues {
+        for k in rows {
             tx.txn.remove_local(&k, Shred::Yes)?;
         }
     }

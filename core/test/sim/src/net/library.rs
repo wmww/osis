@@ -998,7 +998,7 @@ fn purge_falls_how(name: &str, seed: u64, churn: bool) -> Res<Report> {
     sim.run_until_quiescent(40)?;
     for n in [a, b] {
         let en = sim.engine(n)?;
-        let back = en.core.ix.commits.get(&c).is_some_and(|m| m.missing.is_empty() && m.dropped.is_empty());
+        let back = en.core.ix.commits.get(&c).is_some_and(|m| m.missing.is_empty() && m.dropped.is_empty() && m.stripped.is_empty());
         let shown = en.purged_on(&t, &k).map_err(|e| sim.fail(e.to_string()))?;
         if !back || !shown.is_empty() {
             return Err(sim.fail(format!("node {n}: the body back {back}, purges shown {shown:?}")));

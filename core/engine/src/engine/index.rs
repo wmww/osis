@@ -52,7 +52,7 @@ pub(super) const WALKS: &[u8] = b"node/walks";
 pub(crate) const WALK_CACHE_MIN: usize = 64;
 
 /// A record key or value of the persisted index.
-pub(super) trait Rec: Sized {
+pub(crate) trait Rec: Sized {
     fn to(&self) -> Value;
     fn from(v: &Value) -> Option<Self>;
 }
@@ -463,6 +463,7 @@ pub(crate) struct RecordHead {
     pub received: WallMs,
     pub origin: Origin,
     pub dropped: BTreeMap<usize, super::Dropped>,
+    pub stripped: BTreeSet<usize>,
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
@@ -478,7 +479,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | u8::from(d.live) << 1 | role << 2 | u8::from(d.overreach) << 4 | u8::from(d.why == super::DropFor::Invalid) << 5 | u8::from(d.why == super::DropFor::Purge) << 6).u32(d.covered_by.len() as u32);
+        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | u8::from(d.live) << 1 | role << 2 | u8::from(d.overreach) << 4 | u8::from(d.why == super::DropFor::Invalid) << 5).u32(d.covered_by.len() as u32);
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
@@ -494,6 +495,10 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             w = w.raw(k.as_bytes()).u8(*role as u8).u64(e.n()).raw(e.nonce()).bytes(sealed);
         }
         w = w.u8(u8::from(d.stands_in));
+    }
+    w = w.u32(m.stripped.len() as u32);
+    for a in &m.stripped {
+        w = w.u32(*a as u32);
     }
     w.take()
 }
@@ -624,9 +629,13 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         }
         let stands_in = r.u8()? != 0;
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else if flags & 64 != 0 { super::DropFor::Purge } else { super::DropFor::Other }, live: flags & 2 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, names });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, live: flags & 2 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, names });
     }
-    Ok((RecordHead { received, origin, dropped }, r.rest()))
+    let mut stripped = BTreeSet::new();
+    for _ in 0..r.u32()? {
+        stripped.insert(r.u32()? as usize);
+    }
+    Ok((RecordHead { received, origin, dropped, stripped }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -819,7 +828,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, missing });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }

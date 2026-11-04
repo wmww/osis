@@ -30,7 +30,7 @@ pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
 pub(crate) use atomic::check_rebuilt;
-pub(crate) use atomic::{join_into_state, Unmerge, apply_verified, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, rebuilt, unmerge_fell};
+pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, invalid_of, rebuild, rebuilt, strip_valueless};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
@@ -339,10 +339,20 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         return Ok(Exam::Pending(Reason::Drift, Vec::new()));
     }
     // the slots a held purge request emptied while they waited (`retention::strip_purged`; perhaps just
-    // now, before the commit is first stored): their stripped deltas, checked when kept, join in their place
+    // now, before the commit is first stored): the part's leftover, checked when kept, joins in
+    // their place, once per aspect
     let emptied = crate::retention::emptied();
-    let stripped = if blob.parts.iter().any(|p| p.delta == emptied) { crate::retention::stripped_of(tx, id)? } else { BTreeMap::new() };
-    let kept = |p: &osis_commit::Part| p.delta == emptied && stripped.contains_key(&(p.ai, p.di));
+    let mut stripped: BTreeMap<usize, Decoded> = BTreeMap::new();
+    for p in blob.parts.iter().filter(|p| p.delta == emptied) {
+        if let Some(a) = h.aspects.get(p.ai)
+            && !stripped.contains_key(&p.ai)
+            && let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, p.ai)?
+        {
+            stripped.insert(p.ai, Decoded::Delta(osis_crdt::Delta { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment }));
+        }
+    }
+    let stripped_ais: BTreeSet<usize> = stripped.keys().copied().collect();
+    let kept = |p: &osis_commit::Part| p.delta == emptied && stripped_ais.contains(&p.ai);
     // a part that does not hash to its header entry is no part of this commit, and one on an aspect
     // of the wrong storage class (core keys are unmarked but `placed.0~`) is never applied: dropped
     // alone, before anything reads what is held (spec/commits.md §4)
@@ -447,9 +457,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             continue;
         }
         let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part index"))?;
-        if let Some(d) = stripped.get(&(p.ai, p.di)).filter(|_| kept(p)) {
-            out.whole.push((p.ai, p.di, d.clone()));
-            out.stripped.push(p.ai);
+        if kept(p) {
+            if let Some(d) = stripped.remove(&p.ai) {
+                out.whole.push((p.ai, p.di, d));
+                out.stripped.push(p.ai);
+            }
             continue;
         }
         let dedup = record(&a.tid).map(|r| dedup_secret(r.nonce())).ok_or(Error::UnknownThing(a.tid))?;
@@ -527,8 +539,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             out.waiting = Some(Waiting { parts, reason, others: aside.others });
         }
     }
-    // what joins of an emptied slot is its stripped delta: no stored copy holds it
-    blob.parts.retain(|p| !kept(p));
+    // what joins of an emptied slot is the part's leftover: no stored copy holds it
+    blob.parts.retain(|p| p.delta != emptied || !h.aspects.get(p.ai).is_some_and(|_| out.stripped.contains(&p.ai)));
     Ok(Exam::Ready(out))
 }
 
@@ -869,8 +881,8 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 }
 
 /// A delta of an already applied commit, arriving later, is joined on arrival (spec/commits.md
-/// §4); dropped parts stay dropped, but for one held value-less without its writes
-/// (`retention::takes_late`), which joins value-less and drops again. Late deltas that wait
+/// §4); dropped and stripped parts stay so, but for those a copy may replace
+/// (`retention::takes_late`). Late deltas that wait
 /// (their thing's `created.0`, chain or pages) are kept pending under the commit's ID and
 /// joined once they apply.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
@@ -878,7 +890,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     blob = with_pending(tx, id, blob)?;
     blob.parts.retain(|p| !skip.contains(&(p.ai, p.di)));
     if blob.parts.is_empty() {
-        crate::retention::forget_stripped(tx, id, None)?;
+        crate::retention::forget_waiting_leftovers(tx, id)?;
         unpend(tx, id)?;
         return Ok(Ingested::Duplicate(*id));
     }
@@ -941,7 +953,7 @@ fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet
     let mut held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
     let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
-    for ai in meta.dropped.keys() {
+    for ai in meta.dropped.keys().chain(meta.stripped.iter()) {
         if !crate::retention::takes_late(tx, id, *ai)? {
             skip.extend((0..meta.header.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(|di| (*ai, di)));
         }
@@ -1079,8 +1091,9 @@ impl Engine {
     }
 
     /// Whether copy `copy` of commit `id` holds a part that went from the node (spec/commits.md §5:
-    /// dropped from the applied commit, held pending past its expiry, or held pending value-less or
-    /// gone for a request, `retention::strip_purged`) and nothing a copy may still be needed for (`SyncEngine::redeliver`):
+    /// dropped from the applied commit or held as its leftover while value-less, held pending past
+    /// its expiry, or held pending value-less or gone for a request, `retention::strip_purged`)
+    /// and nothing a copy may still be needed for (`SyncEngine::redeliver`):
     /// its every other part went too, is applied, or, where parts of it wait, is in the pending copy
     /// alike or provably does not hash to its header entry. Node-sync then forgets the copy's blob and
     /// key; one that may hold the only true copy of a part a junk copy holds the slot of stays until
@@ -1099,7 +1112,7 @@ impl Engine {
             };
             let mut gone = false;
             for p in &copy.parts {
-                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || crate::retention::is_stripped(tx, id, p.ai, p.di)? || pending.as_ref().is_some_and(|b| !b.parts.iter().any(|q| q.ai == p.ai)) && crate::retention::known_purged(tx, &h, id, p.ai)?) {
+                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai) || m.stripped.contains(&p.ai) && crate::retention::valueless(tx.core, id, p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || crate::retention::waiting_stripped(tx, &h, id, p.ai)? || pending.as_ref().is_some_and(|b| !b.parts.iter().any(|q| q.ai == p.ai)) && crate::retention::known_purged(tx, &h, id, p.ai)?) {
                     gone = true;
                     continue;
                 }
@@ -1258,7 +1271,7 @@ impl Engine {
                         Ok(_) => {}
                         Err(e) if e.class() == ErrorClass::BadInput => {
                             tx.txn.remove_pending(&id, Shred::Yes)?;
-                            crate::retention::forget_stripped(tx, &id, None)?;
+                            crate::retention::forget_waiting_leftovers(tx, &id)?;
                             tx.core.ix.pending.remove(&id);
                             tx.core.waits.unpended(&id);
                             keys::forget_unchecked(tx, &id)?;
@@ -1460,7 +1473,7 @@ impl Engine {
 
 /// Rebuilds `(tid, ak)` from its held bodies under the current judgments, and what it derives.
 pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak) -> Result<()> {
-    atomic::rebuild(tx, tid, ak)?;
+    atomic::rebuild(tx, tid, ak, &[], false)?;
     atomic::observe_state(tx, tid, ak)
 }
 
@@ -1592,7 +1605,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let id = blob.id();
             let h = Arc::new(blob.header.clone());
             let valid = vec![true; h.aspects.len()];
-            let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.contains_key(ai)).collect();
+            let missing = (0..h.aspects.len()).filter(|ai| !blob.parts.iter().any(|p| p.ai == *ai) && !head.dropped.contains_key(ai) && !head.stripped.contains(ai)).collect();
             let m = Meta::new(h.clone(), valid, head, missing);
             // what a dropped part judged, kept in its record (`Dropped::role`)
             for (ai, d) in &m.dropped {
@@ -1792,12 +1805,22 @@ pub(crate) fn held_fragments(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Resul
 /// Streams the held parts of commit `id` on aspect `ai`, in part order, a piece at a time
 /// (`atomic::stream_stored`: the skeleton, then its pages; joining the pieces is joining the
 /// part): what reads a part element by element holds about one page of it. Per part streamed,
-/// a snapshot's frontiers and `Absorbed`.
+/// a snapshot's frontiers and `Absorbed`. A stripped part (`Meta::stripped`) is its leftover,
+/// one piece (`retention::leftover`).
 pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Fragment) -> Result<()>) -> Result<Vec<Option<crate::engine::Gives>>> {
-    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(Vec::new()) };
+    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(Vec::new()) };
+    let h = m.header.clone();
+    let Some(a) = h.aspects.get(ai) else { return Ok(Vec::new()) };
+    if m.stripped.contains(&ai) {
+        let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };
+        f(tx, l.fragment)?;
+        return Ok(vec![l.gives]);
+    }
     let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
     blob.parts.retain(|p| p.ai == ai);
-    let Some(a) = h.aspects.get(ai).filter(|_| !blob.parts.is_empty()) else { return Ok(Vec::new()) };
+    if blob.parts.is_empty() {
+        return Ok(Vec::new());
+    }
     let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
     let mut out = Vec::new();
     for p in &blob.parts {
@@ -1806,19 +1829,34 @@ pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut
     Ok(out)
 }
 
-/// Whether commit `id`'s stored blob holds a part on aspect `ai` (what `each_held_piece` reads).
+/// Whether commit `id` holds a body on aspect `ai` to read (what `each_held_piece` reads): a
+/// part in its stored blob, or its leftover.
 pub(crate) fn stores_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<bool> {
+    if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped.contains(&ai)) {
+        return Ok(true);
+    }
     Ok(tx.get_commit(id)?.is_some_and(|b| b.parts.iter().any(|p| p.ai == ai)))
 }
 
-/// Decoded parts of a held commit on the aspects `keep` selects, with their indexes.
+/// Decoded parts of a held commit on the aspects `keep` selects, with their indexes (a
+/// stripped part as its leftover, at delta index 0).
 pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, usize, Decoded)>> {
     let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
-    if let Some(m) = tx.core.ix.commits.get(id) {
-        blob.header = (*m.header).clone();
-    }
+    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(Vec::new()) };
+    blob.header = (*m.header).clone();
     blob.parts.retain(|p| keep(p.ai));
-    examine_stored(tx, &blob, id)
+    let mut out = examine_stored(tx, &blob, id)?;
+    for ai in m.stripped.iter().copied().filter(|ai| keep(*ai)) {
+        let Some(a) = m.header.aspects.get(ai) else { continue };
+        let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };
+        let d = match l.gives {
+            None => Decoded::Delta(osis_crdt::Delta { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment }),
+            Some((frontiers, absorbed)) => Decoded::Snapshot(osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment, frontiers, absorbed: absorbed.into_iter().collect() }),
+        };
+        let at = out.partition_point(|x| (x.0, x.1) < (ai, 0));
+        out.insert(at, (ai, 0, d));
+    }
+    Ok(out)
 }
 
 /// A commit as a thing's time (`Engine::creation`, `Engine::changed`).

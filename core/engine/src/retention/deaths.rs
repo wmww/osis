@@ -18,9 +18,10 @@ use osis_crdt::{Changes, Death, Fragment, Stamp, Stamps, TextDeletes};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The aspect index of `(tid, ak)` in `c` if that part is held and has a relative bound.
+/// The aspect index of `(tid, ak)` in `c` if that part is held whole and has a relative bound (a
+/// leftover has no values to keep, so no deaths).
 fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
-    held_part(core, c, tid, ak).filter(|ai| core.ix.commits.get(c).and_then(|m| m.header.aspects.get(*ai)).is_some_and(bounded))
+    held_part(core, c, tid, ak).filter(|ai| core.ix.commits.get(c).is_some_and(|m| !m.stripped.contains(ai) && m.header.aspects.get(*ai).is_some_and(bounded)))
 }
 
 /// Whether a held body of `(tid, ak)` has a relative bound (debug builds: checked against a walk
@@ -394,7 +395,7 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<(Death, T
 
 /// Each write dies at the first superseding write among the held bodies joined in `(ts, ID)`
 /// order (valid writes only; a snapshot's copies of writes whose own commit is held valid
-/// removed, so they play at their own commit), a body dropped value-less (expired, purged) as its residue, then the state (live
+/// removed, so they play at their own commit; a leftover as any held body), then the state (live
 /// writes of bodies dropped otherwise); every held body with a relative bound gets the first and
 /// last of its writes' deaths. Only the invalid deltas' own writes are left out: a valid write
 /// nested in a record they created is un-merged from the state (spec/crdt.md §4.6) but dies
@@ -409,7 +410,7 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<(Death, T
 /// valid snapshot vouches for it, and that snapshot's body plays first: a body after it dates at
 /// its own `ts`, later), so a valid superseder
 /// arriving later never shows a date earlier than the earliest valid one. Cost: the aspect's held
-/// bodies, residues and whole state.
+/// bodies and whole state.
 fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let un = crate::apply::Unmerge::of(tx, tid, ak)?;
@@ -418,17 +419,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let mut dead = BTreeSet::new();
     let mut dels = TextDeletes::default();
     for c in &held {
-        let Some(ai) = held_part(tx.core, c, tid, ak) else {
-            // a body dropped value-less (expired, purged) plays as its residue: its writes
-            // supersede like any held (spec/crdt.md §4.7)
-            if let Some(mut f) = residue_of(tx, c, tid, ak)? {
-                f.remove_writes(&|d| un.bad(d));
-                // a write a vouched copy killed dies no earlier than the body's `ts`, as below
-                let ts = tx.core.ix.commits.get(c).map(|m| m.header.ts);
-                join(&mut st, f, false, &mut deaths, &mut dead, Some(&mut dels), |d| if un.bad(d.by.owner()) { ts.map_or(d.at, |ts| d.at.max(ts)) } else { d.at });
-            }
-            continue;
-        };
+        let Some(ai) = held_part(tx.core, c, tid, ak) else { continue };
         if crate::apply::copies::invalid_snapshot(tx.core, c, tid, ak) {
             continue;
         }
@@ -493,7 +484,7 @@ pub(crate) fn falls(h: &osis_commit::Header, a: &osis_commit::AspectEntry) -> bo
 
 /// `(tid, ak, fall)` of part `ai` of `c` if it is held, invalid here and a fall dates it (`falls`).
 fn fallen(core: &Core, c: &CommitId, ai: usize) -> Option<(Tid, Ak, Ts)> {
-    let m = core.ix.commits.get(c).filter(|m| !m.view.memory && m.holds(ai) && !m.valid_at(ai))?;
+    let m = core.ix.commits.get(c).filter(|m| !m.view.memory && m.holds(ai) && !m.stripped.contains(&ai) && !m.valid_at(ai))?;
     let a = m.header.aspects.get(ai).filter(|a| falls(&m.header, a))?;
     Some((a.tid, a.ak.clone(), crate::apply::validity::fell_at(core, &m.header, c, ai)))
 }
@@ -559,13 +550,6 @@ fn date_falls(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: &[CommitId], got: &mut 
         *e = (e.0.min(at), e.1.max(at));
     }
     Ok(())
-}
-
-/// The value-less residue of `c`'s part on `(tid, ak)` (`retention::make_valueless`), if any.
-fn residue_of(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-    let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)).filter(|ai| super::valueless(tx.core, c, *ai)) else { return Ok(None) };
-    let Some(v) = tx.txn.get_local(&records::residue_key(tid, ak, c, ai))? else { return Ok(None) };
-    Ok(Some(crate::engine::state::decode(&v)?))
 }
 
 fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: Option<(Ts, Ts)>) -> Result<()> {

@@ -1166,21 +1166,18 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 // vouches for it, spec/permissions.md §5.2; other valid carriers give theirs back),
                 // and with it its vouching
                 let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction())).map(|x| x.0).collect();
-                if rose.contains(&k) || !snaps.is_empty() {
-                    let _s = crate::costs::span("rejudge: rebuild");
-                    let mut gone: Vec<Owned> = Vec::new();
-                    for s in &snaps {
-                        gone.extend(super::copies::given_by(tx, tid, ak, s)?);
-                    }
-                    // parts dropped under its cover alone are missing again, their writes gone
-                    if !snaps.is_empty() {
-                        gone.extend(crate::retention::uncover(tx, tid, ak)?);
-                    }
-                    super::atomic::rebuild_without(tx, tid, ak, &gone)?;
-                } else {
-                    let _s = crate::costs::span("rejudge: unmerge");
-                    super::atomic::unmerge_fallen(tx, tid, ak, fell.get(&k).map(Vec::as_slice).unwrap_or_default())?;
+                let _s = crate::costs::span("rejudge: rebuild");
+                let mut gone: Vec<Owned> = Vec::new();
+                for s in &snaps {
+                    gone.extend(super::copies::given_by(tx, tid, ak, s)?);
                 }
+                // parts dropped under its cover alone are missing again, their writes gone
+                if !snaps.is_empty() {
+                    gone.extend(crate::retention::uncover(tx, tid, ak)?);
+                }
+                // the one path (issues/drop-rejoin-robust.md item 1): the aspect rebuilt from
+                // what is held
+                super::atomic::rebuild(tx, tid, ak, &gone, false)?;
                 // a write fell where a body dropped for its keep bounds may have died for it, or
                 // rose where one under its record went with its fall: this node may read less than
                 // one that kept the body (spec/commits.md §5)
@@ -1188,7 +1185,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     let dropped = crate::retention::suspect::keep_dropped(tx.core, tid, ak);
                     crate::retention::suspect::raise(tx, tid, ak, crate::retention::suspect::Why::Flip, &dropped)?;
                 }
-                crate::retention::mark_deaths_due(tx, tid, ak)
+                Ok(())
             })?;
         }
         // memory parts turned valid may supersede held ones (spec/sync.md §9)

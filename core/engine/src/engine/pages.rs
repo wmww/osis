@@ -468,28 +468,6 @@ fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut P
     Ok(())
 }
 
-/// Removes the index rows of the map entries and set elements `bodies` hold that the state no
-/// longer holds under that key or value (shredded: a dropped body leaves no local entry derived
-/// from it, spec/commits.md §5). The pages holding the bodies' dots are loaded.
-pub fn unindex(txn: &mut Transaction<'_>, idx: &PageIndex, tid: &Tid, ak: &Ak, f: &Fragment, bodies: &[Fragment]) -> Result<()> {
-    let Some(kt) = txn.table(tid, ak, KEY_TABLE)? else { return Ok(()) };
-    for (p, set) in idx.sets.iter().filter(|(_, s)| is_keyed(s)) {
-        let c = f.at_steps(p);
-        for b in bodies {
-            let Some(bc) = b.at_steps(p).filter(|x| x.encoding() == set.enc) else { continue };
-            for d in bc.elem_dots(None, None) {
-                let now = c.map(|c| indexed(c, set.enc, &d)).unwrap_or_default();
-                for k in indexed(bc, set.enc, &d) {
-                    if !now.contains(&k) {
-                        txn.table_remove(kt, &key_row(set, &k, Some(&d)), Shred::Yes)?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// The dots of key `k`'s entries in the paged map `set`, or of value `k`'s elements in the paged
 /// set `set` (a superset: the index is never pruned).
 fn key_dots(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, set: &PageSet, k: &Value) -> Result<Vec<Dot>> {
@@ -1502,46 +1480,6 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
     Ok((unit.len() <= PAGE_TARGET).then_some(Some(unit)))
 }
 
-/// Holds value-less, in the paged state `f`, the writes `pred` names, which lie in the pages
-/// `touches` say (those of the deltas owning them, loaded by `ensure_touch`): strips them in
-/// memory, rewrites those pages shredded and drops the index rows of map entries left without
-/// their key and set elements without their value (an index entry derived from a dropped write,
-/// spec/commits.md §5).
-/// `Ok(None)`: it does not fit the pages (strip and write whole); else `Fragment::expire_merging`'s
-/// answer.
-pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &mut Fragment, touches: &[PagedTouch], pred: &dyn Fn(&Dot) -> bool) -> Result<Option<bool>> {
-    let mut before: Vec<(Vec<Step>, Dot, Value)> = Vec::new();
-    for t in touches {
-        for (p, dots) in &t.elems {
-            if let Some(set) = idx.sets.get(p)
-                && let Some(c) = f.at_steps(p)
-            {
-                before.extend(dots.iter().flat_map(|d| indexed(c, set.enc, d).into_iter().map(|k| (p.clone(), d.clone(), k))));
-            }
-        }
-    }
-    // a map record whose key goes (spec/crdt.md §4.7) moves to its dot's key-erased record: a
-    // paged collection below it changes path, so the caller strips the whole state
-    if idx.sets.keys().any(|p| p.iter().any(|s| matches!(s, Step::Entry(id) if id.key.is_some() && pred(id.dot.owner())))) {
-        return Ok(None);
-    }
-    let merged = f.expire_merging(pred);
-    for t in touches {
-        if write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
-            return Ok(None);
-        }
-    }
-    if let Some(kt) = txn.table(tid, ak, KEY_TABLE)? {
-        for (p, d, k) in before {
-            let (Some(set), Some(c)) = (idx.sets.get(&p), f.at_steps(&p)) else { continue };
-            if !indexed(c, set.enc, &d).contains(&k) {
-                txn.table_remove(kt, &key_row(set, &k, Some(&d)), Shred::Yes)?;
-            }
-        }
-    }
-    Ok(Some(merged))
-}
-
 /// Drops the loaded pages of the paged state `f` (written already: the store holds them),
 /// keeping its skeleton, so a delta joined a page at a time holds about one page of its state
 /// (issues/durable-decode-bound.md). Not while it pages a sequence: those stay loaded for their
@@ -1714,11 +1652,6 @@ pub fn stale_in_pages(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &PageI
     Ok(n)
 }
 
-/// The unit state of the paged state `f` (its skeleton and sets).
-pub fn skeleton_unit(f: &Fragment, idx: &PageIndex) -> Result<Vec<u8>> {
-    unit_state(&f.reduced(&idx.paths), idx)
-}
-
 /// The paths of the ops of a mutation if each addresses map keys, fields or set values only (a
 /// write there reads only what it addresses; an add or remove by value addresses its value as
 /// a key step); `None` when one needs the whole position (a write of a whole collection, a
@@ -1803,54 +1736,14 @@ mod tests {
         f.join(d);
         let set = idx.sets.values().next().unwrap().clone();
         let k5 = key_row(&set, &Value::Int(5), None);
-        assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().len(), 1, "a superset until the body goes");
-        unindex(&mut txn, &idx, &tid, &ak, &f, std::slice::from_ref(&body)).unwrap();
+        assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().len(), 1, "a superset until the state is rewritten whole");
+        write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
         assert_eq!(rows(&mut txn), 5999);
         assert!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().is_empty());
         assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(6)).unwrap().len(), 1);
         let other = PageSet { salt: [8; 32], ..set };
         assert!(key_dots(&mut txn, &tid, &ak, &other, &Value::Int(6)).unwrap().is_empty(), "keyed");
         assert_ne!(k5, key_row(&other, &Value::Int(5), None));
-    }
-
-    // spec/commits.md §5 (a dropped write leaves no local index entry derived from it): stripping
-    // the writes of a delta that created a paged map inside a map entry, and other keys of a
-    // nested map besides: the entries' keys go (spec/crdt.md §4.7), so the paged maps change
-    // path and the state is rewritten whole, its key index as a from-scratch rebuild's.
-    #[test]
-    fn strip_touched_nested_rows_spec_commits_5() {
-        let mut rng = osis_crypto::SeededRng::from_u64(82);
-        let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
-        let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:nest.0").unwrap());
-        let a = sess(1);
-        let b = sess(2);
-        let outer = |n: i64| Value::Map([(Value::Str("x".into()), ints(n, 1)), (Value::Str("y".into()), ints(n, 2))].into_iter().collect());
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), a.clone(), 1);
-        let mut st = create(&mut w, &AnyView, &outer(3000)).unwrap();
-        // b adds keys inside "y"
-        let mut bw = Batch::new(&st, Writer::new(Ts::from_u64(2 << 16).unwrap(), b, 1));
-        for i in 5000..5100 {
-            bw.apply(&PathOp { path: vec![PathSeg::Key(Value::Str("y".into())), PathSeg::Key(Value::Int(i))], op: Op::Set(Value::Int(0)) }, &AnyView).unwrap();
-        }
-        let (bd, _) = bw.finish().unwrap();
-        st.join(bd);
-        let body = create(&mut Writer::new(Ts::from_u64(1 << 16).unwrap(), a.clone(), 1), &AnyView, &outer(3000)).unwrap();
-        let mut txn = store.transaction(&mut rng).unwrap();
-        let (unit, idx) = write_full(&mut txn, &tid, &ak, Some(&st), false, &SALT).unwrap();
-        assert!(idx.unwrap().sets.len() >= 2, "both inner maps paged");
-        let rows = |txn: &mut Transaction<'_>| txn.table(&tid, &ak, KEY_TABLE).unwrap().map_or(0, |t| txn.table_range(t, &[], None, 100_000).unwrap().len());
-        let before = rows(&mut txn);
-        let (mut f, mut idx) = open(&unit, &SALT).unwrap();
-        let pred = move |d: &Dot| d.owner().src == a;
-        let t = touch_of(&body, Some(&idx)).unwrap();
-        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-        let done = strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap().is_some();
-        assert!(!done, "a paged map under an erased key moves");
-        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-        f.expire(&pred);
-        let (_, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
-        assert!(i.unwrap().sets.keys().all(|p| p.iter().all(|s| !matches!(s, Step::Entry(id) if id.key.is_some()))), "paged below the key-erased records");
-        assert_eq!((before, rows(&mut txn)), (6100, 100));
     }
 
     // spec/crdt.md §5.5 (add and remove by value), spec/data-model.md §6 (links compare by
@@ -1886,7 +1779,7 @@ mod tests {
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
         f.join(d);
         let set = idx.sets.values().next().unwrap().clone();
-        unindex(&mut txn, &idx, &tid, &ak, &f, std::slice::from_ref(&body)).unwrap();
+        write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
         assert_eq!(rows(&mut txn), 5999);
         assert!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().is_empty());
         assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(6)).unwrap().len(), 1);
@@ -2236,7 +2129,7 @@ mod tests {
         let mut orng = osis_crypto::SeededRng::from_u64(183);
         let mut r = |n: u64| osis_crypto::RngCore::next_u64(&mut orng) % n.max(1);
         let mut old = st.clone();
-        // writer 1's deltas, for strips and shreds of their bodies
+        // writer 1's deltas, for strips of their bodies
         let mut received: Vec<(Fragment, osis_crdt::CounterRange)> = Vec::new();
         let (mut in_place, mut kept, mut fresh_item, mut rebuilt, mut cold, mut kept_placement) = (0, 0, n, 0, 0, 0);
         let idx_of = |unit: &[u8]| open(unit, &SALT).unwrap().1;
@@ -2253,36 +2146,32 @@ mod tests {
             };
             let kind = r(12);
             if kind >= 8 && !received.is_empty() || kind >= 10 {
-                let k = ((kind - 8) as usize).min(2);
+                let k = match kind {
+                    8 => 0,
+                    9 | 10 => 1,
+                    _ => 2,
+                };
                 kinds[k] += 1;
                 match k {
-                    // an expiry or purge of a received body: its writes held value-less
-                    0 | 1 => {
-                        let (body, range) = received[r(received.len() as u64) as usize].clone();
+                    // an expiry or purge of a received body: its writes held value-less, the
+                    // whole state written again (a rebuild)
+                    0 => {
+                        let (_, range) = received[r(received.len() as u64) as usize].clone();
                         let pred = move |d: &Dot| d.owner().src == sess(2) && (range.lo..range.hi).contains(&d.owner().ctr);
-                        let touch = touch_of(&body, Some(&idx));
-                        let t = touch.clone().unwrap();
-                        assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-                        let done = if k == 0 {
-                            strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap().is_some()
-                        } else {
-                            // a dropped body: the same content, pages rewritten shredded
-                            write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::Yes).unwrap().is_some()
-                        };
-                        if k == 0 {
-                            st.expire(&pred);
+                        st.expire(&pred);
+                        load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
+                        f.expire(&pred);
+                        let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
+                        unit = u;
+                        idx = i.unwrap();
+                    }
+                    // a write the stored placement cannot follow (`write_touched`): invalidated,
+                    // the next read by index lays it out anew (`Ranged::Damaged`)
+                    1 => {
+                        if let Some(set) = idx.sets.values_mut().find(|s| is_seq(s)) {
+                            invalidate_placement(&mut txn, &tid, &ak, set, Shred::No).unwrap();
                         }
-                        if !done {
-                            load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-                            if k == 0 {
-                                f.expire(&pred);
-                            }
-                            let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
-                            unit = u;
-                            idx = i.unwrap();
-                        } else if let Some(u) = (k == 0).then(|| skeleton_unit(&f, &idx).unwrap()) {
-                            unit = u;
-                        }
+                        unit = unit_state(&f.reduced(&idx.paths), &idx).unwrap();
                     }
                     // a validity rebuild: the whole state written again
                     _ => {
@@ -2418,7 +2307,7 @@ mod tests {
         assert!(kept >= 4, "{kept} steps in a running session");
         assert!(rebuilt >= 4, "{rebuilt} placements rebuilt");
         assert!(cold >= 4 && kept_placement >= 20, "{cold} edits through the stored placement, {kept_placement} writes kept it");
-        assert!(kinds.iter().all(|k| *k >= 1), "strip, shred, validity rebuild: {kinds:?}");
+        assert!(kinds.iter().all(|k| *k >= 1), "strip, placement invalidated, validity rebuild: {kinds:?}");
     }
 
     /// The placement of the sequence (field 1) of `f` by a whole pass of a fresh copy.
