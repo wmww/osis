@@ -580,7 +580,7 @@ impl SyncEngine {
                 }
             }
         }
-        // links expired or used: a removal of the link key (spec/permissions.md §9)
+        // links expired or used: a removal of the link key (spec/permissions.md §8)
         self.finalize_links()?;
         // tied edges whose placement is gone (spec/permissions.md §2)
         self.untie_unplaced()?;

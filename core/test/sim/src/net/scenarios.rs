@@ -433,7 +433,7 @@ pub fn grant_to_group(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Disk loss and recovery from the card (spec/permissions.md §9): one of a person's two devices
+/// Disk loss and recovery from the card (spec/permissions.md §8): one of a person's two devices
 /// loses its disk; a fresh device holding the card follows the home label, recovers (grants
 /// itself admin, removes the lost device with the person's rotation) and converges with the
 /// remaining device.
@@ -827,7 +827,7 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §8):
+/// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §7):
 /// the seed picks a purge set, a keep bound and a mix of compacters among an admin and two plain
 /// writers, under faults. A body stays at the host and reaches a device coming fresh unless a
 /// compacter holding the right over it wrote a snapshot after it; such a body leaves the host

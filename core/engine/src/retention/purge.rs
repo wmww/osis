@@ -1,4 +1,4 @@
-//! Purge requests (spec/commits.md §5, spec/permissions.md §8). Every question about one comes down
+//! Purge requests (spec/commits.md §5, spec/permissions.md §7). Every question about one comes down
 //! to two: does it name a delta (`names`), and does it have the right? The right has two readings:
 //! `holds_right` by the role timeline, which what a request drops follows (`stands`,
 //! `rejudge_purges`), and `signers_could`, by roles of any validity at any time, for what must not
@@ -34,7 +34,7 @@ fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
-/// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §8): its author
+/// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §7): its author
 /// does, and the actor it acts for, neither by a role a demotion's frontier took from this commit.
 /// The actor holds a client to its own rights in any arrival order: its node's would reach a delta
 /// of the person it acts for that the node did not hold yet. A function of the role timeline, the
@@ -88,7 +88,7 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 
 /// Whether held commit `id` keeps a blob under a label whose things `on` says, for good (spec/commits.md
 /// §5, a lasting header): a permanent delta of it on such a thing is dropped (a broken one is no
-/// tombstone: spec/permissions.md §8), or its purge request
+/// tombstone: spec/permissions.md §7), or its purge request
 /// dropped one there (`purge_one` notes it: a new device needs the request to count the missing
 /// delta as held). Noted, not walked: a writer's aspect-wide request naming nothing it may purge
 /// would walk the aspect on every pass.
@@ -303,7 +303,7 @@ impl AspectRequests {
     }
 }
 
-/// Judges the held purge requests on `(tid, ak)` again (spec/permissions.md §8): a part one now
+/// Judges the held purge requests on `(tid, ak)` again (spec/permissions.md §7): a part one now
 /// drops is purged as on arrival, and a part dropped for a purge that none drops any more counts
 /// as never received from here on: out of the value-less list, its residue and writes gone until a
 /// copy comes (node-sync fetches it, `Changed::undropped`; a holder uploads it). A snapshot dropped
@@ -521,7 +521,7 @@ impl Engine {
     }
 
     /// Whether request `pc` drops delta `(tid, ak)` of `c` as the node now judges it (spec/permissions.md
-    /// §8), held or not.
+    /// §7), held or not.
     pub fn purge_stands(&self, pc: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let core = &self.core;
         let (Some(p), Some(m)) = (core.ix.commits.get(pc), core.ix.commits.get(c)) else { return false };

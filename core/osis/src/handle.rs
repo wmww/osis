@@ -123,7 +123,7 @@ impl Config {
     }
 }
 
-/// A share link this node made: K and L (spec/permissions.md §9).
+/// A share link this node made: K and L (spec/permissions.md §8).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MadeLink {
     pub l: Tid,

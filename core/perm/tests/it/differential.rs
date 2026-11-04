@@ -259,14 +259,14 @@ fn edges_run(samples: u64, seed: u64) {
     model_run(samples, seed, edges::random_hist, edges_diff, |_| {});
 }
 
-/// spec/permissions.md §2, §5.1, §9: `until`, invite power, self-removal and links agree with
+/// spec/permissions.md §2, §5.1, §8: `until`, invite power, self-removal and links agree with
 /// core/test/roles-model `edges`, projections included.
 #[test]
 fn edges_model_agrees() {
     edges_run(300, 0x5eed_0003);
 }
 
-/// spec/permissions.md §2, §5.1, §9: as above, more samples (tier 2).
+/// spec/permissions.md §2, §5.1, §8: as above, more samples (tier 2).
 #[test]
 #[ignore]
 fn edges_model_agrees_large() {

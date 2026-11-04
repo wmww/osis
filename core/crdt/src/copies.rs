@@ -46,7 +46,7 @@ type Key = (Vec<Step>, Kind, Stamp);
 type Writes = Vec<(Key, Option<Val>)>;
 
 /// Collects the writes whose owner dot `keep` accepts, by position, kind and stamp. `Derived`
-/// writes and the copies of a register's write inside its embeddings (§7) are skipped: they
+/// writes and the copies of a register's write inside its embeddings (spec/crdt.md §7) are skipped: they
 /// repeat the register's.
 struct Copies<'a> {
     keep: &'a dyn Fn(&Dot) -> bool,

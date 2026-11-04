@@ -285,7 +285,7 @@ fn same_stamp_copies_converge_spec_4_1() {
     assert_eq!(x.read(), Some(Value::Str("xbc".into())), "per element: the greater char");
 }
 
-/// spec/permissions.md §5.2, §7: an un-merge at a `Slots` position whose register is older than
+/// spec/permissions.md §5.2, spec/crdt.md §7: an un-merge at a `Slots` position whose register is older than
 /// a map slot's entry creation keeps that creation for the join (the slot is not judged below
 /// the register's embedding while it holds a creation another body's content needs).
 #[test]

@@ -941,7 +941,7 @@ aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=9ebbd38bc2dd0f79bf5666dad188f1b43141f
 aspect 7loH6i_G7GA9WPnGkkf7 t:reg.0: state=564808894119289a18010fdeb8e4e1aacac682cf6421087ce07095c4e4c60d3c read=e812913d334930050ec0ad1139344ab06db428c6d2b144f4e6f020a8f7222ec0
 
 case: invite grant unseen by the invite's removal, as made
-spec: spec/permissions.md §5.1, §9
+spec: spec/permissions.md §5.1, §8
 source: hand-picked: 1 (invite write) grants 2 write, unseen by 0; 0 removes 1 with its frontier: the grant goes to D
 read-secret: 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
 now: 1700000002000
@@ -959,7 +959,7 @@ aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=4cc5da91d59d4b52fb211be444ed2eb40e07d
 aspect 7loH6i_G7GA9WPnGkkf7 t:reg.0: state=564808894119289a18010fdeb8e4e1aacac682cf6421087ce07095c4e4c60d3c read=e812913d334930050ec0ad1139344ab06db428c6d2b144f4e6f020a8f7222ec0
 
 case: invite grant unseen by the invite's removal, reversed
-spec: spec/permissions.md §5.1, §9
+spec: spec/permissions.md §5.1, §8
 source: hand-picked: 1 (invite write) grants 2 write, unseen by 0; 0 removes 1 with its frontier: the grant goes to D
 read-secret: 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
 now: 1700000002000
@@ -977,7 +977,7 @@ aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=4cc5da91d59d4b52fb211be444ed2eb40e07d
 aspect 7loH6i_G7GA9WPnGkkf7 t:reg.0: state=564808894119289a18010fdeb8e4e1aacac682cf6421087ce07095c4e4c60d3c read=e812913d334930050ec0ad1139344ab06db428c6d2b144f4e6f020a8f7222ec0
 
 case: invite grant seen by the invite's removal, as made
-spec: spec/permissions.md §5.1, §9
+spec: spec/permissions.md §5.1, §8
 source: hand-picked: 1 (invite write) grants 2 write and 0 receives it; 0 removes 1 with its frontier: the grant stands
 read-secret: 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
 now: 1700000002000
@@ -994,7 +994,7 @@ aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=a59a213e4315453b8972f8bca5d75fa73cd18
 aspect 7loH6i_G7GA9WPnGkkf7 t:reg.0: state=564808894119289a18010fdeb8e4e1aacac682cf6421087ce07095c4e4c60d3c read=e812913d334930050ec0ad1139344ab06db428c6d2b144f4e6f020a8f7222ec0
 
 case: invite grant seen by the invite's removal, reversed
-spec: spec/permissions.md §5.1, §9
+spec: spec/permissions.md §5.1, §8
 source: hand-picked: 1 (invite write) grants 2 write and 0 receives it; 0 removes 1 with its frontier: the grant stands
 read-secret: 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
 now: 1700000002000

@@ -86,10 +86,10 @@ fn pairing_spec_permissions_1() {
     assert_eq!(x(&db, after), None, "the removed device reads nothing new");
 }
 
-// spec/permissions.md §9 (recovery card), notes/api.md Handle (restore): a fresh device with
+// spec/permissions.md §8 (recovery card), notes/api.md Handle (restore): a fresh device with
 // the card claims the home label by the recovery key, downloads it and becomes an admin.
 #[test]
-fn restore_from_card_spec_permissions_9() {
+fn restore_from_card_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (da, card) = w.person(1, &[host]);
@@ -223,12 +223,12 @@ fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
     (alice, others, ids)
 }
 
-// spec/permissions.md §9 (links): Bob redeems a single-use write link to Alice's group and
+// spec/permissions.md §8 (links): Bob redeems a single-use write link to Alice's group and
 // reads what was there before; his redemption removes the link key (the link's `flags`,
 // spec/wire.md §10); Alice's device finalizes it when it sees that (K rotates), Bob stays a holder and
 // a second redeemer is told the link ended.
 #[test]
-fn link_redeem_spec_permissions_9() {
+fn link_redeem_spec_permissions_8() {
     let mut w = World::new();
     let (alice, others, _) = people(&mut w, 1);
     let bob = &others[0];
@@ -259,11 +259,11 @@ fn link_redeem_spec_permissions_9() {
     assert_eq!(carol.engine(|e| e.held_key_actors()), 0, "the link key is forgotten");
 }
 
-// spec/permissions.md §9, spec/sync.md §5: a used single-use link refuses a second redeemer
+// spec/permissions.md §8, spec/sync.md §5: a used single-use link refuses a second redeemer
 // at once and later (0, 10, 20 s after the first redemption settled): the sharer registers a
 // step without L as soon as L's departure is covered, whoever rotated K.
 #[test]
-fn used_link_refused_at_once_spec_permissions_9() {
+fn used_link_refused_at_once_spec_permissions_8() {
     let mut w = World::new();
     let (alice, others, _) = people(&mut w, 1);
     let bob = &others[0];
@@ -285,12 +285,12 @@ fn used_link_refused_at_once_spec_permissions_9() {
     }
 }
 
-// spec/permissions.md §9, §5.1: with the sharer offline, a second redeemer of a used
+// spec/permissions.md §8, §5.1: with the sharer offline, a second redeemer of a used
 // single-use link whose view still lists L (the first redemption not applied there: the
 // joiner's rotation of K pends its chain) is not told it joined: refused, or admitted only
 // once the first redemption is applied in its view (then its grant is void).
 #[test]
-fn used_link_with_sharer_offline_spec_permissions_9() {
+fn used_link_with_sharer_offline_spec_permissions_8() {
     let mut w = World::new();
     let (alice, others, _) = people(&mut w, 1);
     let bob = &others[0];
@@ -339,11 +339,11 @@ fn finalized(db: &Osis, k: Tid, l: Tid) -> bool {
     db.engine(|e| e.held_links().unwrap().iter().any(|x| (x.k, x.l) == (k, l)) && e.links_due().unwrap().is_empty())
 }
 
-// spec/permissions.md §9 (link finalized): `until` finalized by a sharer device's removal of L; with Alice's
+// spec/permissions.md §8 (link finalized): `until` finalized by a sharer device's removal of L; with Alice's
 // device offline when the link expires, her other device (which holds the seed thing, not the
 // link record) removes L at expiry; back online, Alice's device writes nothing more; Bob stays.
 #[test]
-fn until_link_finalized_by_other_device_spec_permissions_9() {
+fn until_link_finalized_by_other_device_spec_permissions_8() {
     let mut w = World::new();
     let (alice, bob, g, k, l) = until_link(&mut w);
     let join = Osis::pair(w.cfg(9, &[0]), &alice.pair_offer().unwrap()).unwrap();
@@ -367,10 +367,10 @@ fn until_link_finalized_by_other_device_spec_permissions_9() {
     assert!(alice.roster(k).contains_key(&bob.me()) && bob.role_on(g).is_some(), "the joiner stays");
 }
 
-// spec/permissions.md §9 (link finalized): Alice's only device is offline when the link expires; it removes L
+// spec/permissions.md §8 (link finalized): Alice's only device is offline when the link expires; it removes L
 // once it is back and synced K's label; Bob stays.
 #[test]
-fn until_link_finalized_when_sharer_returns_spec_permissions_9() {
+fn until_link_finalized_when_sharer_returns_spec_permissions_8() {
     let mut w = World::new();
     let (alice, bob, g, k, l) = until_link(&mut w);
     w.set_online(&alice, false);
@@ -402,12 +402,12 @@ fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
     (w, alice, bob, carol, g, k, l)
 }
 
-// spec/permissions.md §9 (a joiner is revoked together with the link key), notes/api.md
+// spec/permissions.md §8 (a joiner is revoked together with the link key), notes/api.md
 // Sharing (`holder_path`, `demote`): a link joiner reaches the target through K; removing it on
 // the target removes it and L from K in one commit, so a failed pre-sync leaves both in place
 // and a retry completes; a second removal writes nothing; a joiner's role cannot be lowered.
 #[test]
-fn demote_link_joiner_spec_permissions_9() {
+fn demote_link_joiner_spec_permissions_8() {
     let (mut w, alice, bob, carol, g, k, l) = joined_by_link();
     assert_eq!(alice.holder_path(g, bob.me()), vec![(g, k), (k, bob.me())]);
     // offline, the required pre-sync fails: nothing changed
@@ -428,13 +428,13 @@ fn demote_link_joiner_spec_permissions_9() {
     assert!(matches!(w.until(alice.demote(g, carol.me(), Lower::To(Role::Read), skip), 1000, 10), Err(osis::Error::Invalid(_))));
 }
 
-// spec/permissions.md §9, notes/api.md Sharing (`demote`): after a joiner's removal the other
+// spec/permissions.md §8, notes/api.md Sharing (`demote`): after a joiner's removal the other
 // joiner reads new content and the removed one does not; another device of the sharer can do the
 // removal, holding the link's seed thing, and syncs it to rest (spec/permissions.md §3: it once rotated the target without end,
 // since a late part of a joiner's redemption was judged without its `roles.0` part and the
 // rotation of K that removal made never established there).
 #[test]
-fn demote_link_joiner_content_spec_permissions_9() {
+fn demote_link_joiner_content_spec_permissions_8() {
     let (mut w, alice, bob, carol, g, _, _) = joined_by_link();
     let join = Osis::pair(w.cfg(9, &[0]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
@@ -1214,7 +1214,7 @@ fn a_thing_in_a_synced_group_shared_with_an_outsider() {
     assert!(!bob.knows(g), "G's label stays closed to him");
 }
 
-// spec/sync.md §2, spec/permissions.md §9: a link to a thing placed nowhere resolves: the link syncs the thing (K reads its label alone), redeem returns and the thing reads
+// spec/sync.md §2, spec/permissions.md §8: a link to a thing placed nowhere resolves: the link syncs the thing (K reads its label alone), redeem returns and the thing reads
 #[test]
 fn a_link_to_a_plain_item_resolves() {
     let mut w = World::new();
@@ -1784,7 +1784,7 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3, Keep; §9: a kick of a link's joiner fills from the target's default as the
+// spec/permissions.md §3, Keep; §8: a kick of a link's joiner fills from the target's default as the
 // link was made, and says for itself too; the two ways round.
 #[test]
 fn a_joiners_removal_overrides_the_default_spec_permissions_3() {

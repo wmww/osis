@@ -487,11 +487,11 @@ fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
     assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty());
 }
 
-// spec/permissions.md §8, spec/commits.md §5: an admin's purge falls when its demotion stamped earlier
+// spec/permissions.md §7, spec/commits.md §5: an admin's purge falls when its demotion stamped earlier
 // arrives. Nodes that had dropped the body take it again from the holder that kept it, no purge is
 // shown, and a new device reads the message; nobody deletes it again, no upload and delete for good.
 #[test]
-fn a_fallen_purge_shows_no_tombstone_spec_perm_8() {
+fn a_fallen_purge_shows_no_tombstone_spec_perm_7() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, b, c2, n) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(3, &[host]));
@@ -726,7 +726,7 @@ fn known_entries(net: &mut Net, n: usize, host: usize) -> usize {
     net.labels_at(host).into_iter().map(|l| net.sync(n).entries(&l).len()).sum()
 }
 
-// spec/sync.md §6, spec/permissions.md §8: a holder that held the demotion first comes back to find
+// spec/sync.md §6, spec/permissions.md §7: a holder that held the demotion first comes back to find
 // the purge's delete at the host: the message has no live write (a later write killed it), so a
 // delete would keep it out; but the request falls there, so the holder places it again and the
 // writer that dropped it takes it.
@@ -767,7 +767,7 @@ fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
     }
 }
 
-// spec/sync.md §6, spec/permissions.md §8: a purge that fell after every holder dropped the body: it
+// spec/sync.md §6, spec/permissions.md §7: a purge that fell after every holder dropped the body: it
 // is gone for good (no holder), the part missing at each, no purge shown. The header-only blobs up
 // by then stay, judged lasting by nobody: no upload and delete for good.
 #[test]
@@ -824,12 +824,12 @@ fn a_slow_clock_purges_a_message_stamped_ahead_spec_commits_5() {
     }
 }
 
-// spec/permissions.md §5.1, §8: a fresh device demotes an admin whose old purge it never held. Non
+// spec/permissions.md §5.1, §7: a fresh device demotes an admin whose old purge it never held. Non
 // permanent: the request went with compaction, so the frontier cannot list it. The purge falls where
 // it is held, but no node holds the body and the host has none: nothing comes back. Permanent: the
 // request lasts as a header, the fresh device lists it, and the tombstone stays.
 #[test]
-fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_8() {
+fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_7() {
     for lasting in [false, true] {
         let mut net = Net::new();
         let host = net.add_host();

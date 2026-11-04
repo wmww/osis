@@ -95,15 +95,15 @@ pub enum Lower {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
     /// The link expires: a device of this person removes the link key once it passed and K's
-    /// label synced (spec/permissions.md §9). An expiring link closes when one of your devices
+    /// label synced (spec/permissions.md §8). An expiring link closes when one of your devices
     /// next syncs after `until`: until then anyone holding the link can still join.
     pub until: Option<WallMs>,
     /// The first redemption ends the link: the link says so (`flags`, spec/wire.md §10), the
     /// redeemer removes the link key in its redemption, and a device of this person finalizes
-    /// the link when it sees that (spec/permissions.md §9).
+    /// the link when it sees that (spec/permissions.md §8).
     pub single_use: bool,
     /// Opt-in: the link text carries this device's dialable key and relays (never its lan
-    /// secret; spec/permissions.md §9), so a redeemer that shares no host with it reaches it
+    /// secret; spec/permissions.md §8), so a redeemer that shares no host with it reaches it
     /// directly while it is online. Anyone holding the link can dial this device until the link
     /// ends by revocation or expiry, when the key rotates (a single-use link's redemption keeps
     /// it: the redeemer keeps the direct path). Needs this device reachable (a runtime, `Config.peers`); a
@@ -768,7 +768,7 @@ impl Osis {
     /// A removal follows every way the holder reaches `target` (`holder_path`) until none is
     /// left; removing a holder that reaches it no more writes nothing. A holder that joined by
     /// a link made on this device is removed from the link's actor K together with the link key
-    /// in one commit (`revoke_joiner`; the joiner may keep the seed, spec/permissions.md §9): the
+    /// in one commit (`revoke_joiner`; the joiner may keep the seed, spec/permissions.md §8): the
     /// link stops working for anyone who has not redeemed it, K's other joiners stay. A link
     /// joiner's role cannot be lowered (it could act as the link key), only removed. A holder
     /// reaching `target` through another actor (a team, or a link made on another device) is
@@ -872,7 +872,7 @@ impl Osis {
         Ok(())
     }
 
-    /// Makes a share link to `target` with `role` (spec/permissions.md §9): its actor K and key L
+    /// Makes a share link to `target` with `role` (spec/permissions.md §8): its actor K and key L
     /// on this database's hosts. Anyone holding the link can redeem it until `until` or
     /// `revoke_link`. A composite like `share`: it syncs `target` when it has no label of its own,
     /// the only place K can read it.
@@ -897,14 +897,14 @@ impl Osis {
             let label = !l.engine().labeled(&target);
             let made = l.engine().create_link(&me, &flows::LinkSpec { target, role, until: opts.until, hosts: hosts.clone(), peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin)?;
             // K is on it before the label's first pass: this device's `reach.0` never goes under
-            // it, and nothing rotates (spec/permissions.md §4, §9)
+            // it, and nothing rotates (spec/permissions.md §4, §8)
             if label {
                 self.make_label(l, target, hosts)?;
             }
             Ok::<_, Error>(made)
         })?;
         // the seed thing in the home group: every device of this person holds it and may
-        // finalize the link (spec/permissions.md §9)
+        // finalize the link (spec/permissions.md §8)
         let home = self.home();
         self.write_with(|w| w.place(keep, home))?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
@@ -916,7 +916,7 @@ impl Osis {
         // spec/permissions.md §4): the link carries the key it listens with after that
         self.carry(done)?;
         if opts.direct {
-            // only the dialable key and relays, never the lan secret (spec/permissions.md §9)
+            // only the dialable key and relays, never the lan secret (spec/permissions.md §8)
             let r = self.locked(|x| x.sync.own_reach()).ok_or(Error::Invalid("this device's reach is gone".into()))?;
             link.peers = vec![osis_label::Peer { dialable: r.dialable, relays: r.relays }];
             if let Some(until) = opts.until {
@@ -933,7 +933,7 @@ impl Osis {
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 
-    /// Redeems a link (spec/permissions.md §9): reaches its label by the link key, waits until K's
+    /// Redeems a link (spec/permissions.md §8): reaches its label by the link key, waits until K's
     /// edge on the target is here, joins K as this person (removing the link key in the same
     /// commit when the link is single use). Returns the target. A link known to have ended (used,
     /// revoked, expired, its hosts no longer listing its key, K off the target) fails `Invalid` at
@@ -1007,7 +1007,7 @@ impl Osis {
     }
 
     /// Holds a link's key and follows K's label at its hosts and at the sharer's device when
-    /// the link names it (first contact, spec/permissions.md §9: dialed at the link's dialable
+    /// the link names it (first contact, spec/permissions.md §8: dialed at the link's dialable
     /// key and relays like a co-reader, for K and the target only, `follow_link_peer`); the key
     /// goes with the guard, and with it the follow unless the redemption went through.
     fn follow_link(&self, link: &osis_label::ShareLink) -> Result<KeyGuard> {
@@ -1061,7 +1061,7 @@ impl Osis {
         self.held_links().iter().find(|h| h.k == id).map(|h| h.l).ok_or(Error::Invalid(format!("no link {id} of this person")))
     }
 
-    /// Ends a link (spec/permissions.md §9): removes its key from K (joiners stay holders of K;
+    /// Ends a link (spec/permissions.md §8): removes its key from K (joiners stay holders of K;
     /// one that kept the seed is revoked only with a new link for the others).
     pub async fn revoke_link(&self, id: Tid, d: Demotion) -> Result<()> {
         if self.is_attached() {
@@ -1073,7 +1073,7 @@ impl Osis {
     }
 
     /// Removes `joiner` from link `id`'s actor K and ends the link in the same commit, under one
-    /// rotation (spec/permissions.md §9: a joiner may keep the seed); the other joiners stay
+    /// rotation (spec/permissions.md §8: a joiner may keep the seed); the other joiners stay
     /// holders of K and need a new link to invite anyone. After the pre-sync `demote` does.
     pub async fn revoke_joiner(&self, id: Tid, joiner: Tid, d: Demotion) -> Result<()> {
         if self.is_attached() {
@@ -1096,12 +1096,12 @@ impl Osis {
     }
 
     /// Rotates this device's dialable key when a direct link it made ended (spec/permissions.md
-    /// §9): after every change, at open and at the link's expiry. Finalizing links is
+    /// §8): after every change, at open and at the link's expiry. Finalizing links is
     /// node-sync's (`SyncEngine::finalize_links`). `ended` is persisted.
     pub(crate) fn upkeep_links(&self, l: &mut Locked) {
         let mut any = false;
         // a direct link that ended (its key left K, or its edge expired) gave out this device's
-        // dialable key: rotate it (spec/permissions.md §9), unless a single-use link ended by its
+        // dialable key: rotate it (spec/permissions.md §8), unless a single-use link ended by its
         // redemption (the one who could use it is now a holder and keeps the direct path)
         let now = l.engine().now();
         let direct: Vec<(Tid, MadeLink)> = l.links.iter().filter(|(_, m)| m.direct && !m.ended).map(|(k, m)| (*k, *m)).collect();
@@ -1328,7 +1328,7 @@ impl Osis {
     /// Removes a device from the person (a lost or stolen one: `Demotion { sync: Skip, .. }` or a
     /// backdate; spec/permissions.md §5.3). Returns the person's links still working: the device
     /// keeps their seeds, so whoever holds it can read and join through each until `revoke_link`
-    /// (spec/permissions.md §9). Those are links shared in advance too: ending them is the
+    /// (spec/permissions.md §8). Those are links shared in advance too: ending them is the
     /// caller's choice. None when `node` was no device.
     pub async fn remove_device(&self, node: Tid, d: Demotion) -> Result<Vec<LinkInfo>> {
         let me = self.me();

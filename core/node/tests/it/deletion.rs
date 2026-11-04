@@ -894,12 +894,12 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: osis_base::Commi
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect()
 }
 
-// spec/commits.md §5, spec/permissions.md §8, spec/crypto.md §7: an `author` delta lists level 2
+// spec/commits.md §5, spec/permissions.md §7, spec/crypto.md §7: an `author` delta lists level 2
 // alone; an admin's compaction and purge request drop none of it, at the admin or anywhere, and
 // its author's purge request drops it and deletes it at the host by the level-2 key, with no
 // admin online. The admin's own `admin` delta is the mirror: its author, a writer, cannot.
 #[test]
-fn author_only_not_the_admins_spec_perm_8() {
+fn author_only_not_the_admins_spec_perm_7() {
     use osis_schema::{Bound, PurgeBy, Retention};
     let mut net = Net::new();
     let host = net.add_host();

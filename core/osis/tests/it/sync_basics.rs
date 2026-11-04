@@ -334,9 +334,9 @@ fn removal_arriving_later_ends_the_wait_spec_commits_4() {
     assert_eq!(says(&c, u), Some(s("by bob")), "pending {:?}", c.engine(|e| e.pending()));
 }
 
-// notes/std.md (profile: everyone holding the card keeps receiving changes), spec/permissions.md §3, §9 (Bearer use): a person adding a client or device changes their roles: a contact keeps reading their profile and hears no loss; the link ended, it goes
+// notes/std.md (profile: everyone holding the card keeps receiving changes), spec/permissions.md §3, §8 (Bearer use): a person adding a client or device changes their roles: a contact keeps reading their profile and hears no loss; the link ended, it goes
 #[test]
-fn contact_outlives_the_persons_role_changes_spec_permissions_9() {
+fn contact_outlives_the_persons_role_changes_spec_permissions_8() {
     let mut w = World::new();
     let h0 = w.add_host();
     let store = MemStore::new();

@@ -1,5 +1,5 @@
 //! Named scenarios of notes/permissions.md and core/test/roles-model, layer 1 (spec/permissions.md
-//! §2, §5.1, §6, §9). Receipt times give each demoter's frontier.
+//! §2, §5.1, §6, §8). Receipt times give each demoter's frontier.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -228,7 +228,7 @@ fn link(l_edge: Option<Edge>) -> (World, Vec<Tid>, Tid) {
     (w, n, k)
 }
 
-/// §9 `until` finalization: a backdated join after expiry stands until the sharer's plain
+/// §8 `until` finalization: a backdated join after expiry stands until the sharer's plain
 /// removal of L drops it; the honest join stays.
 #[test]
 fn link_until_backdated_join_finalized() {
@@ -244,7 +244,7 @@ fn link_until_backdated_join_finalized() {
     assert_eq!((r.get(&j).map(|e| e.role), r.get(&z), r.get(&l)), (Some(Write), None, None));
 }
 
-/// §9 single use: a forged earlier redemption burns the link until the sharer's removal of L
+/// §8 single use: a forged earlier redemption burns the link until the sharer's removal of L
 /// drops it with its self-removal; then the honest redemption applies.
 #[test]
 fn single_use_second_redemption_finalized() {

@@ -248,7 +248,7 @@ impl SyncEngine {
             for (k, (a, _)) in self.peer_addresses() {
                 m.entry(k).or_insert((a, true));
             }
-            // a link's sharer node (first contact, spec/permissions.md §9) is dialed as a co-reader
+            // a link's sharer node (first contact, spec/permissions.md §8) is dialed as a co-reader
             for (k, (a, _)) in self.link_routes() {
                 m.entry(k).or_insert((a, true));
             }

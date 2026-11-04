@@ -2,7 +2,7 @@
 > Summary: A thing never changes owner and nothing moves it (Tess). What could be built if an app needs one, simplest first, with the removed import design as reference.
 
 1. **Plain copy** (recommended if ever needed): the mover creates thing M under the new owner and writes the current values of T as ordinary writes of its own; T stays with its owner. Loses original authorship, edit history and others' purge rights over the copied values; needs nothing new in the protocol (an app can do it today).
-2. **Copy with imported history** (built once, then removed; full text in git history of spec/permissions.md §7, `git log -S 'Import commit' -- spec/permissions.md`). Cost: imported writes interact with purge, retention, validity and arrival order; 29 merged items, two open issues and an order oracle were spent on it, while nothing first-party moved.
+2. **Copy with imported history** (built once, then removed; full text in git history: the section "Moving a thing" of spec/permissions.md, `git log -S 'Import commit' -- spec/permissions.md`). Cost: imported writes interact with purge, retention, validity and arrival order; 29 merged items, two open issues and an order oracle were spent on it, while nothing first-party moved.
 
 ## The removed design, in short
 - **Copy**: a node with rights on new owner X creates M (owner X, fresh nonce, and a `creator` field in the creation record naming that node, the only one whose imports M takes). Roles on M are X's to grant; the mover writes T's `keep` default on M when T's says keep.

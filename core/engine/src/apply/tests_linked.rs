@@ -359,7 +359,7 @@ fn tenure_with_frontier_under_threshold_spec_perm_6() {
     assert_eq!(tags(&mut lp, 1, t), Some(Value::Set([Value::Str("by x".into())].into())), "judged by the inline frontier");
 }
 
-// spec/commits.md §2, spec/permissions.md §9: a redemption's grant and self-removal are both on
+// spec/commits.md §2, spec/permissions.md §8: a redemption's grant and self-removal are both on
 // K; the writer refuses a self-removal on one thing plus a grant on another (two edges).
 #[test]
 fn redemption_on_two_targets_refused_spec_commits_2() {

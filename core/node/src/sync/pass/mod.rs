@@ -545,7 +545,7 @@ impl SyncEngine {
 
     /// Local passes over the labels this node syncs with nobody (no host in their `label.0`):
     /// this node is their host, so a peer that dials it (a direct link's redeemer,
-    /// spec/permissions.md §9) finds a complete state (spec/sync.md §5, co-reader peer). Passes
+    /// spec/permissions.md §8) finds a complete state (spec/sync.md §5, co-reader peer). Passes
     /// otherwise run only per dialed connection, and a node serves only the entries they placed.
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
@@ -746,7 +746,7 @@ impl SyncEngine {
     /// `scope` names. Dropped bodies join `scope`. Returns the label's snapshots by aspect.
     pub(super) fn drop_label_covered(&mut self, entries: &BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>, scope: &mut Scope, opened: bool, left: &mut Left) -> Result<Snaps> {
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = entries.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
-        // what goes without a right (spec/permissions.md §8), once every entry is open: what a
+        // what goes without a right (spec/permissions.md §7), once every entry is open: what a
         // setting broke may stand again with a role commit still to come (judged again when
         // settled, `deletions`)
         let only = match &*scope {

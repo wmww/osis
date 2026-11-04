@@ -1,4 +1,4 @@
-//! Person actors (spec/permissions.md §1, §9): a recovery key owns the person actor and this
+//! Person actors (spec/permissions.md §1, §8): a recovery key owns the person actor and this
 //! node is its admin; pairing a device (a direct grant, or a re-seal of a device already a
 //! holder, plus the commits it needs); recovery from a card on a fresh device.
 
@@ -109,7 +109,7 @@ impl Engine {
         Ok(Done { deliveries: vec![d], ..Done::default() })
     }
 
-    /// Recovery from a card on this (fresh) device (spec/permissions.md §9), once the home label
+    /// Recovery from a card on this (fresh) device (spec/permissions.md §8), once the home label
     /// was claimed by the key's static entry and downloaded (node-sync; `hold_key_actor` with
     /// the card's seed came first so the key's boxes open): signing as the recovery key, grants
     /// this node admin on the person, then removes each `lost` device (an explicit demotion by

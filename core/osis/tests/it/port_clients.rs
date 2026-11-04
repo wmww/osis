@@ -265,11 +265,11 @@ fn split_write_comes_back_whole_spec_commits_6() {
     assert_eq!((c.get(x.t, name).unwrap(), c.get(x.t, brief).unwrap()), (Some(Value::Int(1)), Some(Value::Int(2))));
 }
 
-// spec/permissions.md §8, notes/client-port.md §3 (Acting as the actor): a purge acting for a
+// spec/permissions.md §7, notes/client-port.md §3 (Acting as the actor): a purge acting for a
 // client drops what its node and the client both have the right to: a client admin drops no
 // `author` delta of its person, though the node alone may; a write client drops its own
 #[test]
-fn client_purge_is_judged_by_the_actor_spec_perm_8() {
+fn client_purge_is_judged_by_the_actor_spec_perm_7() {
     let x = node();
     let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Admin);

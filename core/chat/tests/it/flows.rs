@@ -199,9 +199,9 @@ fn delete_for_everyone_spec_commits_5() {
     assert_eq!(by(&b2, &his), Some(bob), "on a new device too");
 }
 
-// spec/permissions.md §8: purge sets: author only keeps a moderator out; nobody is a permanent chat; admin only keeps an author out
+// spec/permissions.md §7: purge sets: author only keeps a moderator out; nobody is a permanent chat; admin only keeps an author out
 #[test]
-fn purge_sets_spec_perm_8() {
+fn purge_sets_spec_perm_7() {
     for (by, author, admin) in [(PurgeBy::Author, true, false), (PurgeBy::Admin, false, true), (PurgeBy::Nobody, false, false)] {
         let Room { mut w, a, b, c, .. } = room(Options { purge: by, ..Options::default() });
         post(&b, c, "x").unwrap();
@@ -678,9 +678,9 @@ fn late_post_comes_after_a_cursor_spec_none() {
     assert_eq!(rest.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [late]);
 }
 
-// spec/permissions.md §9, §3: a link joiner leaves: its edge is on the link's key, so `leave` goes there; it writes no more, keeps its copy, the link's other joiner stays
+// spec/permissions.md §8, §3: a link joiner leaves: its edge is on the link's key, so `leave` goes there; it writes no more, keeps its copy, the link's other joiner stays
 #[test]
-fn link_joiner_leaves_spec_perm_9() {
+fn link_joiner_leaves_spec_perm_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (a, _) = w.person(1, &[host]);
@@ -705,9 +705,9 @@ fn link_joiner_leaves_spec_perm_9() {
     assert!(!texts(&b, c).contains(&"still here".to_string()));
 }
 
-// spec/permissions.md §9, spec/sync.md §2: a link shared in advance keeps working: someone joins by it and leaves, the next person joins by it, reads, posts; a leaver comes back by it; a kick ends it, says so, and a new link works
+// spec/permissions.md §8, spec/sync.md §2: a link shared in advance keeps working: someone joins by it and leaves, the next person joins by it, reads, posts; a leaver comes back by it; a kick ends it, says so, and a new link works
 #[test]
-fn link_after_leave_and_kick_spec_perm_9() {
+fn link_after_leave_and_kick_spec_perm_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (a, _) = w.person(1, &[host]);
@@ -754,9 +754,9 @@ fn link_after_leave_and_kick_spec_perm_9() {
     assert!(t.contains(&"by the new link".to_string()) && t.contains(&"still here".to_string()), "{t:?}");
 }
 
-// spec/permissions.md §9: a link past its `until` is shown as none
+// spec/permissions.md §8: a link past its `until` is shown as none
 #[test]
-fn expired_link_not_shown_spec_perm_9() {
+fn expired_link_not_shown_spec_perm_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (a, _) = w.person(1, &[host]);
@@ -769,9 +769,9 @@ fn expired_link_not_shown_spec_perm_9() {
     assert!(member_links(&a, c).is_empty());
 }
 
-// spec/permissions.md §9: `members` lists the people who joined by a link, not its actor; a direct member learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a member
+// spec/permissions.md §8: `members` lists the people who joined by a link, not its actor; a direct member learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a member
 #[test]
-fn link_joiners_are_members_spec_perm_9() {
+fn link_joiners_are_members_spec_perm_8() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     let (d, _) = w.person(3, &[0]);
     let (e, _) = w.person(4, &[0]);
@@ -815,9 +815,9 @@ fn link_joiners_are_members_spec_perm_9() {
     }
 }
 
-// spec/permissions.md §9, §5.2: joining by link on a store in use: the joiner is its own verified sender, its name and reply come through; a cursor gives what is new, an edit of an older message as that message; kicking a joiner leaves the link's other joiners
+// spec/permissions.md §8, §5.2: joining by link on a store in use: the joiner is its own verified sender, its name and reply come through; a cursor gives what is new, an edit of an older message as that message; kicking a joiner leaves the link's other joiners
 #[test]
-fn link_join_name_reply_cursor_spec_perm_9() {
+fn link_join_name_reply_cursor_spec_perm_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (a, _) = w.person(1, &[host]);

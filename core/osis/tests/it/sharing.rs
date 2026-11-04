@@ -82,10 +82,10 @@ fn change_edge_and_leave_spec_permissions_2() {
     assert_eq!(bob.role_on(g), None);
 }
 
-// notes/api.md Sharing (revoke_link), spec/permissions.md §9: revoking a multi-use link removes
+// notes/api.md Sharing (revoke_link), spec/permissions.md §8: revoking a multi-use link removes
 // its key; `links` no longer lists it.
 #[test]
-fn revoke_link_spec_permissions_9() {
+fn revoke_link_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -182,9 +182,9 @@ fn redeem_link_after_a_rotation_and_a_late_host_spec_permissions_4() {
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
 }
 
-// spec/permissions.md §9, §4: a link made before its person's recovery still works, and one made after
+// spec/permissions.md §8, §4: a link made before its person's recovery still works, and one made after
 #[test]
-fn links_around_a_recovery_spec_permissions_9() {
+fn links_around_a_recovery_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, card) = w.person(1, &[host]);
@@ -229,9 +229,9 @@ fn new_device_gets_k_keyset_before_its_box_spec_permissions_4() {
     assert!(dev.engine(|e| e.epochs(&k).is_some_and(|x| x.read.held().next().is_some() && x.admin.held().next().is_some())), "the device holds K's secrets");
 }
 
-// spec/permissions.md §9, spec/sync.md §2 (entry boxes): a link works after a joiner left and K rotated; its new joiner reads what was there, is a holder and writes
+// spec/permissions.md §8, spec/sync.md §2 (entry boxes): a link works after a joiner left and K rotated; its new joiner reads what was there, is a holder and writes
 #[test]
-fn redeem_after_a_joiner_left_spec_permissions_9() {
+fn redeem_after_a_joiner_left_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -273,9 +273,9 @@ fn redeem_after_a_joiner_left_spec_permissions_9() {
     assert_eq!(x(&bob, v), Some(s("from dave")));
 }
 
-// spec/permissions.md §9: a revoked link tells its redeemer so, at once (`Invalid`, not a wait's `Network`), before and after K's new step reached the host, and shows nowhere; so does a kicked joiner's and one past `until`
+// spec/permissions.md §8: a revoked link tells its redeemer so, at once (`Invalid`, not a wait's `Network`), before and after K's new step reached the host, and shows nowhere; so does a kicked joiner's and one past `until`
 #[test]
-fn ended_link_fails_clearly_spec_permissions_9() {
+fn ended_link_fails_clearly_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -310,9 +310,9 @@ fn ended_link_fails_clearly_spec_permissions_9() {
     assert_eq!(w.until(carol.redeem(&fresh), 1000, 30).unwrap(), g);
 }
 
-// spec/permissions.md §9, §3: a read link too: its joiner rotates nothing on leaving, the sharer does; the link goes on
+// spec/permissions.md §8, §3: a read link too: its joiner rotates nothing on leaving, the sharer does; the link goes on
 #[test]
-fn redeem_after_a_read_joiner_left_spec_permissions_9() {
+fn redeem_after_a_read_joiner_left_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -339,9 +339,9 @@ fn redeem_after_a_read_joiner_left_spec_permissions_9() {
     assert_eq!((x(&carol, t), x(&carol, v)), (Some(s("from alice")), Some(s("after the leave"))));
 }
 
-// spec/permissions.md §9, §3: a device removal rotates K (a departure inside its owner): a link no one used yet still works, a read link as well
+// spec/permissions.md §8, §3: a device removal rotates K (a departure inside its owner): a link no one used yet still works, a read link as well
 #[test]
-fn redeem_after_a_device_removal_spec_permissions_9() {
+fn redeem_after_a_device_removal_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -360,9 +360,9 @@ fn redeem_after_a_device_removal_spec_permissions_9() {
     assert_eq!(x(&carol, t), Some(s("from alice")));
 }
 
-// spec/permissions.md §9: the common race: a link passed on before its label reached the host is no ended link: the redeemer waits for it
+// spec/permissions.md §8: the common race: a link passed on before its label reached the host is no ended link: the redeemer waits for it
 #[test]
-fn redeem_waits_for_a_link_still_uploading_spec_permissions_9() {
+fn redeem_waits_for_a_link_still_uploading_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -392,9 +392,9 @@ fn naming(link: &osis::ShareLink, target: Tid) -> osis::ShareLink {
     l.to_text().unwrap().parse().unwrap()
 }
 
-// spec/permissions.md §9 (Redeem): a link naming a thing its K holds no edge on joins nothing and fails plainly, whether the redeemer holds the named thing or has never heard of it
+// spec/permissions.md §8 (Redeem): a link naming a thing its K holds no edge on joins nothing and fails plainly, whether the redeemer holds the named thing or has never heard of it
 #[test]
-fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_9() {
+fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -428,9 +428,9 @@ fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_9() {
     assert_eq!(x(&dave, t), Some(s("in the other group")));
 }
 
-// spec/permissions.md §9 (Redeem): an honest link works for a target this node already knows, K's edge reaching it by K's label; a redeemer who still holds the role it had gets the link's on top
+// spec/permissions.md §8 (Redeem): an honest link works for a target this node already knows, K's edge reaching it by K's label; a redeemer who still holds the role it had gets the link's on top
 #[test]
-fn redeem_of_a_target_already_known_spec_permissions_9() {
+fn redeem_of_a_target_already_known_spec_permissions_8() {
     let mut w = World::new();
     let (alice, carol, g) = alice_bob(&mut w, Role::Read);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
@@ -441,9 +441,9 @@ fn redeem_of_a_target_already_known_spec_permissions_9() {
     assert_eq!(carol.role_on(g), Some(Role::Write));
 }
 
-// spec/permissions.md §9 (Redeem), spec/sync.md §3 (certificate copy): K's edge on the target outlives the delivery that first carried it, so a link redeemed after its inbox blob expired works, target unknown
+// spec/permissions.md §8 (Redeem), spec/sync.md §3 (certificate copy): K's edge on the target outlives the delivery that first carried it, so a link redeemed after its inbox blob expired works, target unknown
 #[test]
-fn redeem_after_the_delivery_expired_spec_permissions_9() {
+fn redeem_after_the_delivery_expired_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -459,9 +459,9 @@ fn redeem_after_the_delivery_expired_spec_permissions_9() {
     assert_eq!(carol.role_on(g), Some(Role::Read));
 }
 
-// spec/permissions.md §9 (Redeem): K taken off the target ends the link: a redeemer is told at once and does not join K
+// spec/permissions.md §8 (Redeem): K taken off the target ends the link: a redeemer is told at once and does not join K
 #[test]
-fn redeem_after_k_left_the_target_spec_permissions_9() {
+fn redeem_after_k_left_the_target_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -477,9 +477,9 @@ fn redeem_after_k_left_the_target_spec_permissions_9() {
     assert!(!alice.roster(k).contains_key(&carol.me()));
 }
 
-// spec/permissions.md §9 (Bearer use), spec/sync.md §3 (invite requests): a contact card naming a thing its K holds no edge on makes nobody a contact: its owner would count as connected on the word of the card's text
+// spec/permissions.md §8 (Bearer use), spec/sync.md §3 (invite requests): a contact card naming a thing its K holds no edge on makes nobody a contact: its owner would count as connected on the word of the card's text
 #[test]
-fn contact_card_with_a_mismatched_target_spec_permissions_9() {
+fn contact_card_with_a_mismatched_target_spec_permissions_8() {
     let mut w = World::new();
     let (alice, carol, g) = alice_bob(&mut w, Role::Read);
     let eve = w.person(5, &[0]).0;
@@ -506,9 +506,9 @@ fn step_until_l_is_here(w: &mut World, db: &Osis, redeem: &mut std::pin::Pin<&mu
     panic!("L never here");
 }
 
-// spec/permissions.md §9 (Redeem): no edge seen by a node cut off before the end of K's label says nothing of the link: `Network`, not `Invalid`, which an app takes for a dead link
+// spec/permissions.md §8 (Redeem): no edge seen by a node cut off before the end of K's label says nothing of the link: `Network`, not `Invalid`, which an app takes for a dead link
 #[test]
-fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_9() {
+fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -528,9 +528,9 @@ fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_9() {
     assert!(!alice.roster(k).contains_key(&carol.me()));
 }
 
-// spec/permissions.md §9 (Redeem), §3: a link read while its maker's upload stalled, K's head there and K's commits not: the failed redemption drops what the head gave, and a retry opens K's label anew and joins (the steps stop the upload at points inside that stretch)
+// spec/permissions.md §8 (Redeem), §3: a link read while its maker's upload stalled, K's head there and K's commits not: the failed redemption drops what the head gave, and a retry opens K's label anew and joins (the steps stop the upload at points inside that stretch)
 #[test]
-fn retry_after_a_stalled_upload_spec_permissions_9() {
+fn retry_after_a_stalled_upload_spec_permissions_8() {
     for cut in [14, 20, 26] {
         let mut w = World::new();
         let host = w.add_host();
@@ -552,9 +552,9 @@ fn retry_after_a_stalled_upload_spec_permissions_9() {
     }
 }
 
-// spec/permissions.md §9 (Redeem), §6: a maker who is not the target's owner, a roster snapshot of the target since, its authors off: K's edge still reaches a new redeemer
+// spec/permissions.md §8 (Redeem), §6: a maker who is not the target's owner, a roster snapshot of the target since, its authors off: K's edge still reaches a new redeemer
 #[test]
-fn redeem_of_a_target_someone_else_owns_after_a_snapshot_spec_permissions_9() {
+fn redeem_of_a_target_someone_else_owns_after_a_snapshot_spec_permissions_8() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Admin);
     let (carol, _) = w.person(3, &[0]);
@@ -577,7 +577,7 @@ fn redeem_of_a_target_someone_else_owns_after_a_snapshot_spec_permissions_9() {
     assert_eq!(w.until(dave.redeem(&link2), 1000, 30).unwrap(), g);
 }
 
-// spec/permissions.md §3, §9: a failed redemption drops only what only the key read: not what a sibling device's redemption gave, a joiner's role, a kept copy or a contact's profile
+// spec/permissions.md §3, §8: a failed redemption drops only what only the key read: not what a sibling device's redemption gave, a joiner's role, a kept copy or a contact's profile
 #[test]
 fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     let mut w = World::new();
@@ -636,9 +636,9 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     assert_eq!(x(&bob, after), None);
 }
 
-// spec/permissions.md §9: one host refusing L's entry (here a child step taken without its claim set, past its cap) is no end of the link while another of its hosts has not answered; every host refusing is
+// spec/permissions.md §8: one host refusing L's entry (here a child step taken without its claim set, past its cap) is no end of the link while another of its hosts has not answered; every host refusing is
 #[test]
-fn one_host_refusing_is_no_end_spec_permissions_9() {
+fn one_host_refusing_is_no_end_spec_permissions_8() {
     let mut w = World::new();
     let (capped, other, own) = (w.add_host(), w.add_host(), w.add_host());
     let (alice, _) = w.person(1, &[capped, other]);
@@ -739,7 +739,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
     assert!(recv(&stranded).contains(&home));
 }
 
-// spec/permissions.md §4 (stranded heartbeat), §9: the sharer's other device opens a link's
+// spec/permissions.md §4 (stranded heartbeat), §8: the sharer's other device opens a link's
 // K label as soon as it is registered, before K's own secrets reach the host (it sees K as
 // deriving from the person then); it deposits no heartbeat under a key the head does not
 // register, and reads K once they arrive (they are boxed to the person).
@@ -935,10 +935,10 @@ fn contact_invite_goes_through_spec_sync_3() {
     assert_eq!(x(&bob, t), Some(s("hi")));
 }
 
-// spec/permissions.md §9 (removed device's links): a removed device keeps the seeds of the person's links, so
+// spec/permissions.md §8 (removed device's links): a removed device keeps the seeds of the person's links, so
 // `remove_device` lists them, a link made on that device too; the device left can revoke it.
 #[test]
-fn removing_a_device_lists_its_links_spec_permissions_9() {
+fn removing_a_device_lists_its_links_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (da, _) = w.person(1, &[host]);
@@ -988,11 +988,11 @@ fn pair_device(w: &mut World, da: &Osis, seed: u64) -> Osis {
     db
 }
 
-// spec/permissions.md §9, spec/sync.md §2: a link's text names its hosts, so a working link's K
+// spec/permissions.md §8, spec/sync.md §2: a link's text names its hosts, so a working link's K
 // label stays on them whichever device of the person moves hosts: redeemed there, it reaches
 // the sharer and reads the target on its new hosts.
 #[test]
-fn moving_hosts_keeps_a_link_made_on_another_device_spec_permissions_9() {
+fn moving_hosts_keeps_a_link_made_on_another_device_spec_permissions_8() {
     for by_maker in [true, false] {
         let mut w = World::new();
         let (h0, h1) = (w.add_host(), w.add_host());
@@ -1021,11 +1021,11 @@ fn moving_hosts_keeps_a_link_made_on_another_device_spec_permissions_9() {
     }
 }
 
-// spec/permissions.md §9, spec/sync.md §2: a revoked link has no holder but the person's on K, yet
+// spec/permissions.md §8, spec/sync.md §2: a revoked link has no holder but the person's on K, yet
 // K's label stays too, on either device: cut off from the link's host, the device revokes and
 // moves hosts, and the revocation still reaches a redeemer there.
 #[test]
-fn moving_hosts_after_a_revoke_keeps_the_links_label_spec_permissions_9() {
+fn moving_hosts_after_a_revoke_keeps_the_links_label_spec_permissions_8() {
     for by_maker in [true, false] {
         let mut w = World::new();
         let (h0, h1) = (w.add_host(), w.add_host());
@@ -1053,11 +1053,11 @@ fn moving_hosts_after_a_revoke_keeps_the_links_label_spec_permissions_9() {
     }
 }
 
-// spec/permissions.md §9, §3: a removed device's revocation of a link does not stand, written
+// spec/permissions.md §8, §3: a removed device's revocation of a link does not stand, written
 // before it hears of the removal (its commit is past the removal's frontier) or after (it lists
 // nothing and is refused); the link goes on working
 #[test]
-fn removed_device_revokes_no_link_spec_permissions_9() {
+fn removed_device_revokes_no_link_spec_permissions_8() {
     for aware in [false, true] {
         let mut w = World::new();
         let host = w.add_host();
@@ -1087,11 +1087,11 @@ fn removed_device_revokes_no_link_spec_permissions_9() {
     }
 }
 
-// spec/permissions.md §9: both devices act on K, each not having heard the other: they agree on
+// spec/permissions.md §8: both devices act on K, each not having heard the other: they agree on
 // K's roster and the links, whatever the order. A revocation that has not seen a redemption
 // judges it as any other device's would (spec/permissions.md §3: `Skip`).
 #[test]
-fn two_devices_act_on_a_link_spec_permissions_9() {
+fn two_devices_act_on_a_link_spec_permissions_8() {
     for order in 0..4 {
         let mut w = World::new();
         let host = w.add_host();
@@ -1152,10 +1152,10 @@ fn two_devices_act_on_a_link_spec_permissions_9() {
     }
 }
 
-// spec/permissions.md §9: every device of the person lists its links, a restored one too, to a
+// spec/permissions.md §8: every device of the person lists its links, a restored one too, to a
 // thing without a label of its own before the link as well, and revokes them
 #[test]
-fn links_listed_on_every_device_and_after_restore_spec_permissions_9() {
+fn links_listed_on_every_device_and_after_restore_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (da, card) = w.person(1, &[host]);

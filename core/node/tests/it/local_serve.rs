@@ -544,12 +544,12 @@ fn deposit_chain_completed_on_local_label_spec_sync_5() {
     assert!(!cards.is_empty() && cards.iter().all(|x| x.3), "the card was promoted: {run:?}");
 }
 
-// spec/permissions.md §9 (link finalized: when K's labels have no host, at once by the node
+// spec/permissions.md §8 (link finalized: when K's labels have no host, at once by the node
 // that wrote the seed thing), spec/sync.md §5 (a label listing `peer://` nodes only is served by
 // this node, never dialed from `label.0`): an expired link whose K label lists no host, or
 // only a `peer://` node, is finalized by its maker once it expires.
 #[test]
-fn expired_link_at_no_host_finalized_spec_permissions_9() {
+fn expired_link_at_no_host_finalized_spec_permissions_8() {
     for hosts in [Vec::new(), vec![osis_label::Address { url: "peer://".into(), key: [0x99; 32] }]] {
         let mut net = Net::new();
         let a = net.node(1, &[]);

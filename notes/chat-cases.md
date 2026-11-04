@@ -306,7 +306,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 28. E: the header-only blob of a purged permanent delta is kept forever and reaches new devices, with its purge commit (spec/commits.md §5); E1 keeps the tid and time forever by design.
 29. E: per-year things owned by the chat, each synced under its own label.
 30. E: nothing is compacted; messages keep at least forever.
-31. E: a required retention on every aspect makes `nobody` junk invalid, dropped without a right (spec/permissions.md §8); junk under the required retention is what purge by author erases; a member from before a change can still backdate below it.
+31. E: a required retention on every aspect makes `nobody` junk invalid, dropped without a right (spec/permissions.md §7); junk under the required retention is what purge by author erases; a member from before a change can still backdate below it.
 32. E: the frontier is a few heads (frontier study), but un-merging a kicked member's deltas re-reads the year's aspect (about 70 s at 10^6, extrapolated, e-review §6); not measured in any design.
 33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. Works in every design, no core change; Tess's primary path is core n.
 34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and hosts live under its own label.

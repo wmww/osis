@@ -1,4 +1,4 @@
-//! The person across devices (spec/permissions.md §1, §9; notes/api.md Handle and lifecycle):
+//! The person across devices (spec/permissions.md §1, §8; notes/api.md Handle and lifecycle):
 //! restoring from a recovery card on a fresh device, and pairing a new device. Pairing is
 //! transport-agnostic: the app carries two messages between the devices (QR, clipboard, a local
 //! socket): the new device's request (its node card) and the existing device's reply (the grant
@@ -188,7 +188,7 @@ impl Joining {
 }
 
 impl Osis {
-    /// Restores the person of a recovery card on this fresh device (spec/permissions.md §9):
+    /// Restores the person of a recovery card on this fresh device (spec/permissions.md §8):
     /// claims the home label by the card's key, downloads it, then (signing as the recovery key)
     /// makes this node an admin of the person. Needs a runtime; the card's hosts are added
     /// to `Config.hosts`. Fails `Network` after `Config::wait_timeout`; on any failure (or a

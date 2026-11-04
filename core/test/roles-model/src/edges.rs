@@ -1,5 +1,5 @@
 //! One-level model of edges with `until`, invite power and self-removal (spec/permissions.md
-//! §2, §5.1, §9). One thing T; node 0 is T's owner (admin, unremovable); every other node is a
+//! §2, §5.1, §8). One thing T; node 0 is T's owner (admin, unremovable); every other node is a
 //! key actor (admin of itself, so effective invite = its edge's invite). An edge is (role,
 //! until, invite ≤ role). A commit (normally one op; a redemption has two) is ordered by (t,
 //! author, commit ID) and each op is judged on its own with the author's authority just before

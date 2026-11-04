@@ -64,7 +64,7 @@ const RECEIPTS_ONLY: &[u8] = b"y/w";
 /// (`owe_tx`, `SyncEngine::take_done`).
 const OWED: &[u8] = b"y/y";
 
-/// A followed link's sharer node (spec/permissions.md §9): dialed at the link's `peer://`
+/// A followed link's sharer node (spec/permissions.md §8): dialed at the link's `peer://`
 /// addresses for K's labels and the target's, nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkPeer {

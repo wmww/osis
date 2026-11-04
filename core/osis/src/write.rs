@@ -686,7 +686,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     }
 
     /// Drops the aspect's whole history wherever the author may purge it (spec/commits.md §5,
-    /// spec/permissions.md §8) and removes the aspect, in this commit.
+    /// spec/permissions.md §7) and removes the aspect, in this commit.
     pub fn purge(&mut self) -> Result<()> {
         if !self.key.lifetime().is_durable() {
             return Err(Error::Invalid("purge applies to durable aspects only".into()));
@@ -698,7 +698,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     }
 
     /// Drops this commit's delta on the aspect wherever the author may purge it (spec/commits.md §5,
-    /// spec/permissions.md §8): delete for everyone. Its entry stays in the history as purged. If
+    /// spec/permissions.md §7): delete for everyone. Its entry stays in the history as purged. If
     /// its write is the aspect's live one the read goes with it: `set` in the same batch to keep
     /// a value. Carries a `purge.0` write, so `Permission` without write on the thing (no purgeable-by
     /// class gives the right without it); whose right decides is judged per delta, as for every purge.

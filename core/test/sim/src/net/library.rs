@@ -300,7 +300,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A person on node `n` follows a link's label and redeems it (spec/permissions.md §9), as the
+/// A person on node `n` follows a link's label and redeems it (spec/permissions.md §8), as the
 /// osis crate does: hold L, follow K's label, wait, redeem, drop L. Err when the redemption is
 /// refused (a used single-use link).
 fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid) -> Res<Result<(), String>> {
@@ -319,7 +319,7 @@ fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid)
     }
 }
 
-/// Link redemption race and single use (spec/permissions.md §9, §5.1): two strangers redeem one
+/// Link redemption race and single use (spec/permissions.md §8, §5.1): two strangers redeem one
 /// single-use link concurrently; the sharer and the winner agree on exactly one joiner (the
 /// first by the timeline's order; the loser, rotated out of K, may not learn it); the sharer
 /// finalizes; a third redeemer is refused.
@@ -327,7 +327,7 @@ pub fn link_race(seed: u64) -> Res<Report> {
     links("link_race", seed, true)
 }
 
-/// Concurrent redemptions of a multi-use link (spec/permissions.md §9): both strangers join and
+/// Concurrent redemptions of a multi-use link (spec/permissions.md §8): both strangers join and
 /// read the target; the sharer then revokes the link (removes L); a later redeemer is refused.
 pub fn link_redeem(seed: u64) -> Res<Report> {
     links("link_redeem", seed, false)
@@ -911,7 +911,7 @@ pub fn purge_tombstones(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A purge that falls through a host (spec/permissions.md §8): admin `a` is cut off holding a
+/// A purge that falls through a host (spec/permissions.md §7): admin `a` is cut off holding a
 /// permanent message and removes admin `x`; `x`, not knowing, purges it (the seed: stamped before or
 /// after the removal); the others drop the body and it goes from the host. `a` comes back: every
 /// node left takes the body again and shows no purge, and nobody deletes it again (`sim.finish`

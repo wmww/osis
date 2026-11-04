@@ -396,7 +396,7 @@ impl Engine {
         self.core.key_actors.len()
     }
 
-    /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §9).
+    /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §8).
     pub fn drop_key_actor(&mut self, tid: &Tid) {
         self.core.key_actors.remove(tid);
         self.core.role_changed();

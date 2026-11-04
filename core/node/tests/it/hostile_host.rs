@@ -896,7 +896,7 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     }
 }
 
-// spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §8: a thing's admin who is no admin of
+// spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §7: a thing's admin who is no admin of
 // its group deletes a write-only holder's blobs at a host by the level-1 delete key the writer
 // listed from the thing's published `keys.0` (the gap hashed tokens left), after a
 // rotation of the thing too (it holds the old epoch); the writer's own keys delete none of the
