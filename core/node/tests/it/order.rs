@@ -1324,13 +1324,14 @@ fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> 
                 continue;
             }
             // no death, so no bound (spec/commits.md §5): its killers went with bodies dropped
-            // before it came. A fall is no such case: a write invalid here, or one an un-merge took
-            // (no write live, an invalid write on the aspect), counts dead from it
-            let fallen = h.kind != osis_commit::Kind::Role && (e.body_valid(&id, &a.tid, &a.ak) == Some(false) || h.kind.has_own_writes() && !e.invalid_writes(&a.tid, &a.ak).is_empty());
-            if !abs_past && !dead_long && !fallen && e.deaths(&id, &a.tid, &a.ak).unwrap().is_none() {
+            // before it came. A fall is no such case: a write invalid here counts dead from it, as
+            // does one an un-merge took (no write live, an invalid write on the aspect, nothing dropped)
+            if !abs_past && !dead_long && e.deaths(&id, &a.tid, &a.ak).unwrap().is_none() {
                 let k = (a.tid, a.ak.clone());
                 let dropped = e.core.ix.by_aspect.get(&k).into_iter().flatten().any(|x| e.core.ix.commits.get(&x.1).is_some_and(|m| m.header.aspects.iter().position(|y| y.tid == a.tid && y.ak == a.ak).is_some_and(|i| m.dropped.contains_key(&i))));
-                if dropped || o.deaths.get(&(id, a.tid, a.ak.clone())).copied().flatten().is_none() {
+                let invalid = e.body_valid(&id, &a.tid, &a.ak) == Some(false);
+                let fallen = h.kind != osis_commit::Kind::Role && (invalid || !dropped && h.kind.has_own_writes() && !e.invalid_writes(&a.tid, &a.ak).is_empty());
+                if !fallen && (dropped || o.deaths.get(&(id, a.tid, a.ak.clone())).copied().flatten().is_none()) {
                     continue;
                 }
             }

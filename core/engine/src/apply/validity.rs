@@ -1032,8 +1032,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // verdicts first (the core read only), each held commit once: by thing, a commit under the
     // first re-judged thing among its aspects; then the commits re-judged whole
     let mut news: Vec<(CommitId, Vec<bool>)> = Vec::new();
-    // aspects with a part judged invalid again: the demotion that took it may be another now
-    let mut still: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // parts judged invalid again: the demotion that took one may be another now
+    let mut still: Vec<(CommitId, usize)> = Vec::new();
     {
         let core: &Core = tx.core;
         let mut judge = Judge::new(core);
@@ -1048,7 +1048,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 let v = judge.part(&m.header, id, ai);
                 let old = m.valid_at(ai);
                 if !v && !old && !m.view.memory && m.holds(ai) && crate::retention::falls(&m.header, a) {
-                    still.insert((a.tid, a.ak.clone()));
+                    still.push((*id, ai));
                 }
                 if v != old {
                     let n = now.get_or_insert_with(|| m.valid.clone());
@@ -1154,8 +1154,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         tx.core.mark_aspect_changed(tid, ak);
     }
     if rebuild {
-        for (tid, ak) in &still {
-            crate::retention::mark_deaths_due(tx, tid, ak)?;
+        for (c, ai) in &still {
+            crate::retention::fall_moved(tx, c, *ai)?;
         }
         for (tid, ak) in &flipped {
             // a memory aspect's rebuild is memory work, whatever transaction re-judges it

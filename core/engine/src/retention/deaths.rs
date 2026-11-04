@@ -502,13 +502,41 @@ pub(crate) fn falls(h: &osis_commit::Header, a: &osis_commit::AspectEntry) -> bo
     a.retention.at_most.rel.is_some() && h.kind != osis_commit::Kind::Role
 }
 
+/// `(tid, ak, fall)` of part `ai` of `c` if it is held, invalid here and a fall dates it (`falls`).
+fn fallen(core: &Core, c: &CommitId, ai: usize) -> Option<(Tid, Ak, Ts)> {
+    let m = core.ix.commits.get(c).filter(|m| !m.view.memory && m.holds(ai) && !m.valid_at(ai))?;
+    let a = m.header.aspects.get(ai).filter(|a| falls(&m.header, a))?;
+    Some((a.tid, a.ak.clone(), crate::apply::validity::fell_at(core, &m.header, c, ai)))
+}
+
+/// Part `ai` of `c` arrived: if invalid here, its fall dated and its bound judged, this part alone,
+/// so a forged write costs no walk of the aspect (no join reports it; a write it un-merged marks
+/// the aspect by itself, `mark_if_bounded`).
+pub(crate) fn date_arrival(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    let Some((tid, ak, at)) = fallen(tx.core, c, ai) else { return Ok(()) };
+    add_death(tx, &tid, &ak, c, ai, at)?;
+    check_at_most(tx, c, ai)
+}
+
+/// Part `ai` of `c` judged invalid again: its aspect's deaths recomputed only if the demotion that
+/// took it is another now, so what moves no date (a forged role commit) costs no walk of the aspect.
+pub(crate) fn fall_moved(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    let Some((tid, ak, at)) = fallen(tx.core, c, ai) else { return Ok(()) };
+    let Some(body) = body_of(tx.core, c, ai) else { return Ok(()) };
+    if tx.txn.death(&tid, &ak, &body)?.is_none_or(|d| d.first != at && d.last != at) {
+        mark_deaths_due(tx, &tid, &ak)?;
+    }
+    Ok(())
+}
+
 /// Adds the falls of `(tid, ak)` to `got`: a held body under a relative keep at most counts dead
 /// from its own fall if invalid here (`fell_at`), and if valid with no write in the state and no
 /// death from the newest fall on the aspect, no earlier than its own `ts` (an un-merge took its
 /// writes under a record an invalid delta created; which one is not kept, so the date may be late,
 /// never early). Only a decided judgment counts: a commit waiting is not applied, and a demotion
-/// waiting moves no timeline. A flip, or a judgment again of an invalid part, dates them again (`mark_deaths_due`). Cost: per held body
-/// with no death, on an aspect holding an invalid part, its liveness.
+/// waiting moves no timeline. A flip, an un-merge or a fall that moved dates them again
+/// (`mark_deaths_due`, `fall_moved`). Cost: per held body with no death, on an aspect holding an
+/// invalid part, its liveness.
 fn date_falls(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: &[CommitId], got: &mut BTreeMap<(CommitId, usize), (Ts, Ts)>) -> Result<()> {
     let core = &*tx.core;
     let fell_at = |c: &CommitId, m: &crate::engine::Meta, ai: usize| crate::apply::validity::fell_at(core, &m.header, c, ai);
