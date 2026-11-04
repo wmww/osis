@@ -1903,7 +1903,7 @@ impl SyncPlan {
 /// the start with probability one half and half of the commits with parts on several aspects
 /// held in part for good (`Syncs::Early`); or things synced at varying points, with such parts
 /// withheld too (`Syncs::Late`).
-fn with_syncs(mut played: Played, seed: u64) -> Played {
+fn with_syncs(mut played: Played, seed: u64, settled: bool) -> Played {
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
     let mut half = |ts: &[Tid]| ts.iter().copied().filter(|_| rng.below(2) == 0).collect::<Vec<_>>();
     let things = played.things.clone();
@@ -1915,7 +1915,9 @@ fn with_syncs(mut played: Played, seed: u64) -> Played {
             for i in played.base..played.packs.len() {
                 let mut b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
                 let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-                if ais.len() > 1 && rng.below(2) == 0 {
+                // not when settled: a part held by a writer and never here is no settled history,
+                // the node reads as if it never had it until it arrives (seed 96410020)
+                if ais.len() > 1 && rng.below(2) == 0 && !settled {
                     let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
                     b.parts.retain(|x| x.ai == keep);
                     played.packs[i].bytes = b.encode();
@@ -2394,7 +2396,7 @@ fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
 
 fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let played = play(seed, steps);
-    let played = if cfg.sync { with_syncs(played, seed) } else { played };
+    let played = if cfg.sync { with_syncs(played, seed, cfg.settled) } else { played };
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
     let mut full: Option<Judged> = None;
@@ -3234,7 +3236,7 @@ fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
 fn second_import_misstated_by_snapshot_seed_86144_spec_permissions_5_2() {
     use Step::*;
     let h = vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Move { by: 0, t: 0 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, Reimport { by: 0, from: 0, copy: 1 }, Sync { from: 1, to: 2 }, PurgeImport { by: 2, t: 1, back: 1, reset: false }, PurgeImport { by: 1, t: 1, back: 0, reset: false }, Message { by: 0, t: 0, v: 3 }, Message { by: 0, t: 0, v: 1 }, Write { by: 2, t: 1, op: 0, k: 0, v: 9 }, Message { by: 0, t: 0, v: 7 }, Compact { by: 2, t: 1, op: 0 }, PurgeImport { by: 2, t: 1, back: 0, reset: false }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Compact { by: 2, t: 1, op: 0 }, Demote { by: 1, t: 1, holder: 2, at: 2, to_read: true }, Demote { by: 1, t: 1, holder: 2, at: 2, to_read: false }, Sync { from: 1, to: 2 }, Compact { by: 1, t: 1, op: 0 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }];
-    let played = with_syncs(play(86144, &h), 86144);
+    let played = with_syncs(play(86144, &h), 86144, false);
     let (copy, reg) = (played.things[1], ak("t:reg.0"));
     let held = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 19, 20, 21, 24, 26, 27, 28, 29, 30];
     let rev: Vec<usize> = held.iter().rev().copied().collect();
@@ -4693,7 +4695,7 @@ fn class_drop_leaves_missing_part_missing_seed_106342_spec_commits_5() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(New { by: 0, parent: 4, write: false }), Forged { by: 0, a: 1, b: 3, how: 0, op: 16, k: 2, v: 2 }, aim(Breaking { by: 0, t: 1, op: 28, v: 9, fits: false }), aim(Compact { by: 0, t: 4, op: 5 }), aim(Nested { by: 2, other: 0, t: 6, k: 1, text: true, compact: true, also: true }), aim(Typed { by: 2, t: 3, op: 18, k: 1, v: 5 }), aim(Require { by: 0, t: 0, op: 3, rule: 1 }), aim(Edge { by: 2, t: 7, holder: 2, role: Some(Role::Write) }), aim(Edge { by: 2, t: 5, holder: 1, role: Some(Role::Write) }), aim(Typed { by: 2, t: 1, op: 29, k: 2, v: 2 }), aim(Roster { by: 0, t: 2 }), aim(Require { by: 0, t: 0, op: 17, rule: 3 }), Forged { by: 0, a: 5, b: 4, how: 2, op: 3, k: 0, v: 6 }, aim(Leave { by: 1, t: 6 }), aim(Edge { by: 2, t: 5, holder: 1, role: Some(Role::Read) }), aim(Nested { by: 0, other: 2, t: 5, k: 1, text: true, compact: false, also: true }), aim(Write { by: 1, t: 0, op: 27, k: 1, v: 6 }), aim(Nested { by: 0, other: 2, t: 7, k: 0, text: false, compact: true, also: true }), Advance { who: None, ms: 6502368 }, aim(Typed { by: 2, t: 5, op: 19, k: 1, v: 7 })];
-    let played = with_syncs(play(106342, &h), 106342);
+    let played = with_syncs(play(106342, &h), 106342, false);
     let digest = |order: &[usize]| {
         let mut p = deliver(&played, order);
         let pk = &played.packs[26];
@@ -4715,7 +4717,7 @@ fn snapshot_purged_fell_purged_stands_in_seed_32032_spec_perm_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, aim(Demote { by: 1, t: 0, holder: 2, at: 1, to_read: false }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 4 }), aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 3 }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 1 }), aim(PurgeNamed { by: 2, t: 0, of: 2, back: 2, v: 9 }), aim(PurgeNamed { by: 2, t: 0, of: 1, back: 1, v: 3 }), aim(Compact { by: 1, t: 0, op: 0 }), Edge { by: 1, t: 0, holder: 0, role: Some(Role::Admin) }, aim(Compact { by: 1, t: 0, op: 0 }), aim(Message { by: 2, t: 0, v: 0 }), Edge { by: 1, t: 0, holder: 2, role: Some(Role::Write) }, aim(PurgeNamed { by: 0, t: 0, of: 2, back: 2, v: 7 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 6 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }];
-    let played = with_syncs(play(32032, &h), 32032);
+    let played = with_syncs(play(32032, &h), 32032, false);
     let digest = |order: &[usize]| {
         let mut p = deliver(&played, order);
         let _ = judged(&mut p, &played);
@@ -4800,7 +4802,7 @@ fn nested_write_dies_under_unmerged_record_seed_52040_spec_crdt_4_8() {
     use Step::*;
     let a = |s: Step| Aim(Box::new(s));
     let h = vec![a(Typed { by: 2, t: 3, op: 20, k: 1, v: 9 }), a(Typed { by: 0, t: 5, op: 15, k: 0, v: 0 }), Send { from: 0, to: 2, back: 2 }, a(Demote { by: 0, t: 0, holder: 1, at: 4, to_read: true }), a(Undo { by: 0, back: 2 }), a(Compact { by: 0, t: 4, op: 19 }), a(Nested { by: 1, other: 0, t: 1, k: 0, text: true, compact: true, also: false }), a(Typed { by: 0, t: 1, op: 14, k: 2, v: 7 }), Send { from: 2, to: 0, back: 1 }, a(Demote { by: 0, t: 1, holder: 1, at: 3, to_read: false }), a(Typed { by: 1, t: 6, op: 19, k: 2, v: 1 }), Forged { by: 1, a: 7, b: 7, how: 2, op: 29, k: 2, v: 8 }, Sync { from: 0, to: 1 }, a(Breaking { by: 2, t: 0, op: 11, v: 2, fits: false }), a(Breaking { by: 2, t: 1, op: 2, v: 5, fits: false }), Forged { by: 0, a: 2, b: 5, how: 2, op: 15, k: 1, v: 6 }, Sync { from: 2, to: 0 }, Advance { who: Some(0), ms: 1697 }, Send { from: 1, to: 0, back: 2 }, a(Write { by: 2, t: 0, op: 6, k: 1, v: 8 }), a(Write { by: 2, t: 6, op: 0, k: 1, v: 1 }), Forged { by: 2, a: 6, b: 3, how: 0, op: 6, k: 1, v: 1 }, a(Typed { by: 2, t: 2, op: 17, k: 1, v: 0 }), a(Typed { by: 1, t: 6, op: 26, k: 1, v: 6 }), a(Nested { by: 0, other: 1, t: 7, k: 2, text: true, compact: true, also: true }), a(Demote { by: 2, t: 3, holder: 1, at: 4, to_read: false }), a(Compact { by: 1, t: 3, op: 17 }), a(Breaking { by: 0, t: 2, op: 14, v: 1, fits: false }), Advance { who: Some(0), ms: 6 }, Advance { who: Some(0), ms: 83 }, a(Nested { by: 0, other: 1, t: 4, k: 1, text: true, compact: true, also: false }), Sync { from: 1, to: 2 }, a(Typed { by: 0, t: 3, op: 7, k: 2, v: 8 }), a(Typed { by: 1, t: 2, op: 22, k: 1, v: 6 }), a(NestedItem { by: 0, other: 1, t: 7, k: 0, compact: true, also: true }), a(Breaking { by: 2, t: 0, op: 4, v: 6, fits: false }), a(Require { by: 0, t: 0, op: 15, rule: 1 }), a(Require { by: 0, t: 1, op: 19, rule: 1 }), Forged { by: 2, a: 1, b: 0, how: 0, op: 7, k: 1, v: 1 }, a(Edge { by: 2, t: 1, holder: 1, role: Some(Role::Read) }), a(Breaking { by: 1, t: 0, op: 28, v: 1, fits: true }), Advance { who: None, ms: 5662678 }, a(Typed { by: 1, t: 7, op: 26, k: 0, v: 5 }), a(Typed { by: 0, t: 4, op: 14, k: 2, v: 2 }), a(Typed { by: 2, t: 5, op: 9, k: 2, v: 8 }), a(Nested { by: 0, other: 1, t: 6, k: 0, text: false, compact: false, also: false }), a(Typed { by: 0, t: 6, op: 3, k: 0, v: 1 }), a(Typed { by: 1, t: 1, op: 4, k: 2, v: 6 }), Send { from: 1, to: 2, back: 2 }, a(Typed { by: 0, t: 0, op: 11, k: 1, v: 4 }), a(Edge { by: 2, t: 2, holder: 2, role: Some(Role::Write) }), a(Edge { by: 0, t: 5, holder: 2, role: Some(Role::Write) }), a(Compact { by: 0, t: 7, op: 1 }), Sync { from: 1, to: 0 }, a(Write { by: 0, t: 6, op: 19, k: 2, v: 0 }), a(Leave { by: 2, t: 2 }), a(Require { by: 0, t: 2, op: 12, rule: 0 }), a(Breaking { by: 1, t: 0, op: 14, v: 9, fits: false }), a(Breaking { by: 1, t: 2, op: 19, v: 4, fits: false }), a(Typed { by: 1, t: 6, op: 20, k: 2, v: 4 }), a(Demote { by: 2, t: 5, holder: 1, at: 3, to_read: false }), Forged { by: 2, a: 1, b: 7, how: 4, op: 13, k: 0, v: 3 }, Advance { who: None, ms: 7162431 }, a(Write { by: 2, t: 3, op: 27, k: 0, v: 6 }), a(Typed { by: 2, t: 7, op: 26, k: 2, v: 6 }), a(Compact { by: 2, t: 6, op: 20 }), a(NestedItem { by: 0, other: 1, t: 2, k: 1, compact: false, also: false }), a(New { by: 2, parent: 7, write: true }), Advance { who: None, ms: 3964782 }, a(Typed { by: 1, t: 0, op: 14, k: 2, v: 0 })];
-    let played = with_syncs(play(52040, &h), 52040);
+    let played = with_syncs(play(52040, &h), 52040, false);
     let held = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 19, 20, 23, 24, 25, 27, 28, 30, 31, 32, 33, 34, 35, 39, 40, 42, 43, 44, 46, 47, 49, 50, 51, 52, 54, 55, 57];
     let rev: Vec<usize> = held.iter().rev().copied().collect();
     let o = oracle(&played, &held);
