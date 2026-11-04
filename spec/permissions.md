@@ -1,5 +1,5 @@
 # Permissions
-> Summary: The rules of actors, role grants and ownership, role secrets and rotation, certificates, validity (role timeline and content), roster snapshots, moving a thing, purge rights and links.
+> Summary: The rules of actors, role grants and ownership, role secrets and rotation, certificates, validity (role timeline and content), roster snapshots, purge rights and links.
 
 ## 1. Concepts
 - **Terms**:
@@ -20,7 +20,7 @@
   - **Record edge**: its record gives the first admin an admin edge on it from before every edge write (the walk's initial state, §5.1; not an edge write: it applies by the tid alone and audits nothing). Edge writes change or remove it like any edge.
   - Nobody holds owner-chain authority on it: its admins are edges only, all equal, and may remove each other.
   - On a thing below it by ownership, owner-chain authority comes from being an admin of an actor on the chain, the ownerless thing included.
-  - It has no roster snapshot (§6) and never moves (§7: a copy has an owner).
+  - It has no roster snapshot (§6).
   - With no admin left, its edges, secrets and keys change no more (holders keep reading and writing as granted) and nothing recovers it.
   - Its **creation commit** carries its `created.0`, its first secrets (§3) and its `keys.0`, written as the first admin's write (an author with admin on that actor, or the actor itself), and puts the first admin's edge in `roles.0` (an entry for removals to reset, spec/crdt.md §5.6).
 - **Role grant**: an edge (holder actor, target, role), stored in the target's `roles.0`. On an actor it grants the role on everything the actor owns; on a plain thing, on that thing only.
@@ -194,7 +194,7 @@
 Validity is a deterministic function of the commits a node holds.
 
 ### 5.1 Layer 1: role timeline
-The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. Every other role-class write (`secrets.0`, `keys.0`, `label.0`, `moved.0`, `was.0`) is judged like content (§5.2) by the role its aspect requires (§1, §3).
+The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. Every other role-class write (`secrets.0`, `keys.0`, `label.0`) is judged like content (§5.2) by the role its aspect requires (§1, §3).
 1. Order all held edge writes, over every thing, by (`ts`, author node, commit ID). For each thing, start at its epoch start (§6) if it has one, ignoring its edge writes other than snapshots ordered before it; else at its first held write, an ownerless thing with its record edge in force (§1).
 2. Walk the writes, skipping the drop set D (initially empty). A write applies iff its author has the required authority at that point:
    - admin on the thing;
@@ -239,12 +239,10 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - Otherwise it is valid iff the frontier of X's newest valid explicit demotion below write on N (ledger entries included) lists its commit.
 - A delta of an **admin-only** aspect (AK marker `^`, spec/data-model.md §2) is judged by the two rules above with admin in place of write: X held admin on N, demotions below admin. A writer that does not hold admin on N MUST NOT write one; every node judges it alike from the AK alone, also on an ephemeral commit's part and a compaction snapshot's delta.
 - A delta breaking the required retention in force at its key (spec/commits.md §5) is invalid, whatever the rules above say. A `required.0^` delta is judged by those rules as an admin-only delta; where it turns invalid or valid, every later delta on its thing is judged again.
-- **Compaction snapshot**: a snapshot S's delta of an aspect is judged as its author's delta of that aspect by the rules above, at S's key, needing the strictest role a write it could carry needs (admin for `label.0`, `moved.0`, `was.0`, `keys.0`, `secrets.0` and admin-only aspects, else write). `created.0` is always valid.
-  - An invalid S gives nothing: its body joins nothing, covers nothing (spec/commits.md §5), its writes are no import origin (§7).
+- **Compaction snapshot**: a snapshot S's delta of an aspect is judged as its author's delta of that aspect by the rules above, at S's key, needing the strictest role a write it could carry needs (admin for `label.0`, `keys.0`, `secrets.0` and admin-only aspects, else write). `created.0` is always valid.
+  - An invalid S gives nothing: its body joins nothing, covers nothing (spec/commits.md §5).
   - A valid S vouches for every write it carries: no carried write is judged as its claimed author's.
-- **A write's own commit** is the one holding it on that aspect:
-  - for a session-form write, the commit whose range holds its dot;
-  - for a `Commit(C)` source on thing N, C if it is a commit-form commit with a delta of that aspect, else an import on N with a delta of that aspect listing C among its origins (§7; C itself, on the moved thing, owns nothing on N).
+- **A write's own commit** is the one holding it on that aspect: for a session-form write, the commit whose range holds its dot; for a commit-form one (source `Commit(C)`), C.
 - **Copies**: a held valid snapshot's copies count wherever held, also where the receiver received the write's own delta (a node attributes a write's author and time only to a commit it holds and verified).
 - **Misstates**: a snapshot misstates a delta when it carries a write under one of the delta's dots that the delta does not hold at the same position with the same stamp and payload. These count as misstating:
   - a dot the delta does not use;
@@ -270,7 +268,6 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - An actor holding the required role in the timeline's final state, every edge with an `until` counted as removed, is re-granted: each of its writes ordered at or after the first point it held that role is valid again, including those in the gap. Edge writes in the gap stay dropped.
 - **Acting**: a commit whose header actor (spec/wire.md §4) is not its author is invalid, every delta and ephemeral part of it but `created.0` (whose record holds by its tid), unless a delta of its author on that actor needing write, at the commit's key, would be valid by the rules above (its demotions, frontiers and re-grant alike).
   - Role commits and roster snapshots act for their author, so the role timeline never depends on this.
-  - An import's origins name their actors as its importer states them (§7).
 - One dot names one write: two commits of one session with overlapping ranges on one aspect are both invalid (spec/commits.md §4).
 - A delta that becomes invalid is un-merged (spec/crdt.md §4.6).
 - **Ephemeral parts**: a part of an ephemeral commit (spec/commits.md §2) is judged as the durable part of its kind would be, at the commit's key, needing the aspect's role (§1; on an ephemeral thing, through its nearest durable owner):
@@ -328,48 +325,10 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - A certificate copy of S carries the edge and ledger deltas the verifier needs and the reset-only deltas (spec/sync.md §3); its signed header still shows a co-reader the roster's and ledger's sizes (one delta hash per edge and entry) and the number of linked frontier chunks.
 - S replaces N's earlier `roles.0` and `tenures.0` deltas (their writes die at S's `ts`); their retention keeps them at least `ROLE_KEEP` after that (spec/commits.md §5).
 
-## 7. Moving a thing
-- A thing never changes owner. Moving thing T to a new owner X is a **copy**: a node with rights on X creates a thing M (owner X, fresh nonce, creator the node, spec/wire.md §3) and imports T's history into it.
-- Roles on M are X's to grant; nothing carries over by itself. A client moving T writes T's `keep` default on M (§3), no retention rules with it, when T's says keep.
-- `was.0` on M (register, tid): the thing M continues. `moved.0` on T (register, tid): the thing T continued as. Both are role-class, written by the thing's admins.
-- **Import commit**: a content commit on M with the import marker, every delta on M (an import with deltas on several things is bad input). It carries no own writes (empty counter ranges).
-  - **Origin commits**: its deltas carry writes taken from commits of other things:
-    - ordinary commits, whose own-source writes are imported;
-    - snapshots, whose carried writes are imported;
-    - imports, whose writes under their origins' sources are imported.
-  - **Re-sourcing**: a write of origin commit C gets the dot (`Commit(C)`, k) and keeps its `ts`; an import carrying a stamp whose `ts` is above its own is bad input. Dots the imported writes reference (anchors, reset stamps, sibling keys) are mapped the same way.
-    - For an own-source write, k is its counter in C.
-    - Else k is its rank (from 1) by (source, counter) among the dots of the writes C carried on that aspect (stamps and element identities; a `Derived` dot as its underlying dot; for an import, only those under its origins' sources).
-  - Every stamp an import's delta holds is under the `Commit` source of an origin it lists, except a sibling key and an anchor's creation (a sequence element's creation write, also as its position write, on a record without content); one holding another is bad input. Dots (element and entry identities, anchors) may be any.
-  - **Origin choice**: a write is imported from one origin:
-    - a valid snapshot (§5.2) that covers it (its frontier holds the write's counter; a commit-form write: it carries writes of that commit) and carries it, where the importer holds one;
-    - else its own commit (§5.2: for a write the moved thing holds under an import's origin, the first such import by (`ts`, ID), so a write several imports hold is imported once) where the importer holds it valid and not dropped;
-    - else the snapshot carrying it.
-    - A snapshot copying a write of a delta the importer holds otherwise than that delta holds it (§5.2) is no origin.
-  - Native writes never use another commit's ID as a source. Importing C twice yields the same dots.
-  - The header's **origins** table gives, per origin commit, its ID, author node, actor and `ts`.
-  - The import may be split into several import commits, one per origin commit, written in one local transaction.
-  - Each delta carries its origin delta's retention.
-  - Writes with an expiry, writes purged at the importer, and writes invalid at the importer are not imported. An import with `expires` is bad input.
-  - Of a sequence, an import carries only the writes on the elements the importer's state shows and on those their creation and position writes anchor at, transitively (spec/crdt.md §6), the latter without content (as a snapshot carries deleted elements, spec/crdt.md §3.3 rule 5).
-- An import on a thing whose creation record does not name the import's author as its creator is bad input; a receiver judges this once it holds that record, whether or not it holds or syncs the import's deltas (spec/commits.md §4).
-- An import on M listing as origin a commit with a delta on M is **void** from when a receiver holds both, whichever arrived first: invalid, its deltas join nothing (writes of theirs already joined go: the aspect is rebuilt, the origin's own deltas giving its writes again) and own no write of an origin that owns its dots on M (§5.2). A writer refuses such an import.
-- An import is valid iff it is valid as the importer's content write on M (§5.2); its elements are the importer's writes on M (re-sourced dots) and are judged by the import's validity alone.
-- For §8 and delete keys (spec/crypto.md §7) the author of an imported delta is its origin commit's author (the first listed, when an import lists several).
-- A move is one import by one node; a client MUST NOT import t while it holds a thing with `was.0 = t` (two imports from different held sets duplicate elements).
-- A receiver holding several imports on thing N that list one origin C (all by N's creator, which so alone decides what C's writes on N are: an invalid one strips them from every body, as its overlapping counters would void its own commits, spec/commits.md §4) keeps them all: each owns C's writes on its own aspects (§5.2), and a purge of one takes those writes from all (spec/commits.md §5).
-- **Resolution** (read-time; stored values are never rewritten): a tid t held in a value of thing R resolves to:
-  - the held thing M with `was.0 = t` in which R's owner chain holds rights (owns M, or holds an edge on M or on an actor that owns M), if exactly one;
-  - else the tid t's `moved.0` names, if the node holds t and it names one;
-  - else t.
-  - Resolution repeats from the result, at most `RESOLUTION_HOPS` times in all.
-  - A commit names things by the tid its writer resolved; an app pins a reference by writing it.
-- Moving a thing between actors of one tree needs no copy: rights are edges (§1), only the owner is fixed.
-
 ## 8. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:
   - **admin**: the thing's current admins;
-  - **author**: the actor the commit's header names (an import's delta: its first origin's, §7) while it holds write on the thing, acting through any node with write on it;
+  - **author**: the actor the commit's header names while it holds write on the thing, acting through any node with write on it;
   - **writer**: any current writer of the thing.
   - An admin not acting for that actor holds no right under `author`, and an author that lost write on the thing holds none until it regains it.
 - A role counts toward the right only as it would for a delta needing that role at the request's key (§5.1): a demotion whose frontier does not list the request takes the right however early its `ts`; one that lists it leaves the purge standing.
@@ -377,7 +336,6 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - **Judgment** follows the role timeline the node holds, in any arrival order:
   - A named delta a request comes to drop is dropped then.
   - A delta dropped for a request when no held request drops it any more counts as never received (spec/commits.md §5): its residue goes and it is no longer held value-less, the node fetches it again where present and takes it from a holder's upload (spec/sync.md §6).
-  - An import's writes (its origins' dots, spec/commits.md §5) leave the value-less hold when no held request drops an import listing that origin. An import comes back when none of its writes is so held, so one listing several origins with another still so held gives the fallen origin nothing until then.
   - A held snapshot body dropped for carrying a purged value counts so too with any such fall, and is judged again when a copy arrives.
   - A body no node holds stays gone; the delta then reads as never received.
   - Held value-less again before a copy comes, it leaves what it left, as at a node that never saw the fall; a snapshot's part so dropped stands in again (spec/commits.md §4) with no copy.

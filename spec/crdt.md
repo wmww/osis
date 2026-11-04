@@ -37,7 +37,7 @@ A **dot** is `(source, counter)`, counter ≥ 1. A dot identifies one write fore
 - `ts` is one unsigned integer: `wall_ms * 2^16 + logical`, `wall_ms < 2^47`.
 - **HLC rules.** A node's clock is `max(wall clock, last ts seen)`, where wall clock is the node's corrected clock (spec/sync.md §6), with `logical` incremented on equal `wall_ms`. On receiving a commit the clock advances to the commit's ts. The node tiebreak lives in the dot, not in `ts`.
 - **Parking.** A commit with `wall_ms(ts)` more than `MAX_DRIFT` ahead of the receiver's wall clock is **parked**: kept unjoined and counted as not received (frontiers, §8) until local wall time catches up, then joined normally.
-- **Next stamp.** Every stamp a node holds has a `ts` at most that of a commit it applied (a carried write is stamped no later than the snapshot or import carrying it, §8, spec/permissions.md §7). So a node's next commit stamps above every stamp it holds, but those of the other commits of its own write:
+- **Next stamp.** Every stamp a node holds has a `ts` at most that of a commit it applied (a carried write is stamped no later than the snapshot carrying it, §8). So a node's next commit stamps above every stamp it holds, but those of the other commits of its own write:
   - a write split by expiry or class is several commits under one `ts`, on disjoint aspects (spec/commits.md §6);
   - so are a batch's durable and ephemeral commits (spec/sync.md §9).
 - A **stamp** is `(ts, dot)`. One commit has one `ts`; every write in it has that `ts`. A creation or position write has its own counter, so these are ordered by counter inside a commit; commit-level writes share `lo` (§2.3).
@@ -65,14 +65,14 @@ A role commit may carry several deltas for one aspect sharing one range (spec/co
 - `ts` of the commit.
 - Per aspect: `(tid, ak, counter range [lo, hi), delta hashes)` as in §2.3. Encoding IDs and the sources table are inside the delta (§3.2), not in the header. A content commit carries one delta per `(tid, ak)`; a roster snapshot (spec/permissions.md §6) carries one `roles.0` delta per edge, and the aspect's delta is the join of all of them that the node holds.
 - Dot form (commit, or session with its nonce).
-- Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges). Import marker (spec/permissions.md §7): likewise, with re-sourced foreign stamps.
+- Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges).
 - `expires: T` (wall ms), optional, one per commit (§4.7).
 - `undoes: commit id` for undo commits (§4.6).
 Every other header field (author, actor, retention, purge request, delete keys, signature) is outside merge.
 
 ## 3. Wire grammar
 
-All deltas and snapshots are osis canonical CBOR (spec/data-model.md §5). A **delta** is `[nonce, Sources, Commits, Fragment]` (§3.2) with a 16-byte random nonce; it is self-contained, so projection, rewriting and import need no header context. The delta hash covers the whole array.
+All deltas and snapshots are osis canonical CBOR (spec/data-model.md §5). A **delta** is `[nonce, Sources, Commits, Fragment]` (§3.2) with a 16-byte random nonce; it is self-contained, so projection and rewriting need no header context. The delta hash covers the whole array.
 
 ### 3.1 Encodings
 | id | name | for schema types | read type |
@@ -133,11 +133,11 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
   - `base`: the smallest counter among that commit's stamps in this delta, creation stamps named by segments and entry `Ci`s included.
 - **Index 0.** Commit index 0 is this commit `(header ts, own, lo)`.
 - **Bare stamp.** A stamp encodes as its commit index alone when its counter equals the commit's base, which is every commit-level write (§2.3) and the first creation.
-- **Who fills it.** A writer's write stamps are all its own (anchors are dots, not stamps), so its table lists only the commits its sibling keys name (§5.7). The table is populated in snapshots and imports (§8, spec/permissions.md §7).
+- **Who fills it.** A writer's write stamps are all its own (anchors are dots, not stamps), so its table lists only the commits its sibling keys name (§5.7). The table is populated in snapshots (§8).
 
 **Run** semantics: a run describes elements `e_i` with dot `(first.source, first.ctr + i)`, `0 <= i < n`.
 - **With a `Creation`** the run **creates** them. Segment `[Ci, k]` gives the next `k` elements the creation stamp `(ts(Ci), first.source, first.ctr + i)`. `e_0` anchors at `Anchor`, `e_i` (i > 0) at `e_{i-1}`.
-- **Without a `Creation`** the run carries writes on elements that exist elsewhere, or, with nothing else, bare anchors (records whose writes were all pruned, §5.7; a snapshot or import emits them as `[Dot, n, [], [], [], []]`).
+- **Without a `Creation`** the run carries writes on elements that exist elsewhere, or, with nothing else, bare anchors (records whose writes were all pruned, §5.7; a snapshot emits them as `[Dot, n, [], [], [], []]`).
 - **`Content`** lists, in order, the content of the run's elements that **carry content**:
   - text: the creation's char (one Unicode scalar value) of each element not deleted after the run's `FlagW` are applied (an undelete's copy rides its `FlagW`);
   - list: one fragment per element whose fragment is non-empty (§4.2 Emptiness) after the run's `FlagW` (element resets, §5.7) are applied. A list run is uniform in this (rule 3), so a list `Content` is empty or has exactly `n` fragments;
@@ -147,7 +147,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
 
 **Creation stamps.** A map entry's **creation** is a write with stamp `(ts, entry dot)` (§5.6).
 - A record carrying it names its commit by `Ci` right after the dot, except when that is this commit (a writer's own creation: an own-source dot in `[lo, hi)` with a fragment, whose `ts` is the header's).
-- So snapshots and imports carry the creation `ts` of every entry they hold whose creation survives, and a writer never writes a `Ci` there.
+- So snapshots carry the creation `ts` of every entry they hold whose creation survives, and a writer never writes a `Ci` there.
 - A sequence element's creation `ts` is its run segment's commit (§3.2 `Creation`).
 - A set or bag element's creation `ts` is its value register's stamp, written only by its creation (§5.5).
 
@@ -208,13 +208,12 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
    - **`Derived` sources**
      - a creation run of a `Derived` source in a writer's delta (only snapshots carry embedded characters, §7);
      - a write stamped with a `Derived` source other than a text element's creation and that creation as a position write (§7).
-   - **Writer's and import deltas**
+   - **Writer's deltas**
      - a bare-anchor run (no `Creation`, `Content`, `PosW` or `FlagW`) in a writer's delta;
-     - in a writer's or import delta, runs with empty `Content` of more than `MAX_DELTA_BARE` elements in all, pages included.
+     - in a writer's delta, runs with empty `Content` of more than `MAX_DELTA_BARE` elements in all, pages included.
        - A delete or move of more elements is split across commits; `replace` and `remove_aspect` clear any length with one reset.
-       - An import carries only the elements the importer's state shows and, content-less, those they anchor at (spec/permissions.md §7); a move needing more fails.
      - in a writer's delta, a commit-level write (§2.3: register value, reset, `W`, case, element reset, `FlagW`) whose stamp is not the delta stamp;
-     - foreign stamps other than sibling keys in a delta that is neither a snapshot nor an import (spec/permissions.md §7).
+     - foreign stamps other than sibling keys in a delta that is not a snapshot.
    - **Map entries**
      - an entry `Ci` in a writer's delta, naming this commit, or naming a commit of another source than the entry's dot;
      - outside a role-class aspect, a keyed map entry record with a reset (§5.6; any delta kind).
@@ -254,7 +253,7 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
   - The element's own `R` survives iff `>= E_parent`; its content is pruned with `E_elem = max(E_parent, R_elem)`.
   - A set, bag or map element record whose content is entirely pruned and whose own `R` is dropped is removed from the state.
   - One whose content is pruned but whose `R` survives is a **tombstone** (dot plus reset stamp, nothing else).
-  - **Seq element records are never removed by prune**: a record whose writes are all pruned is a **bare anchor** (dot only), placed at END (§6.2) and emitted only in snapshots and imports (§5.7), so writes anchored to it stay placeable. The exceptions:
+  - **Seq element records are never removed by prune**: a record whose writes are all pruned is a **bare anchor** (dot only), placed at END (§6.2) and emitted only in snapshots (§5.7), so writes anchored to it stay placeable. The exceptions:
     - a `Derived`-source record (§7), which exists only while it carries a write (§4.7, §6.1);
     - a record of a dot whose copies an invalid snapshot gave (spec/permissions.md §5.2) left with no write when they go (a node that never joined the snapshot has no such record).
 - **Emptiness.** A fragment is empty iff it holds no surviving write and no record at any depth. Record existence is grow-only, so a struct field, map entry or list element whose only remaining content is a sequence of bare anchors is kept.
@@ -309,7 +308,7 @@ Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen pe
   - A register below a present composite is not written (a nested register carries no reset, §3.3).
   - When the condition fails, the rules above apply.
   - **Skipped** by:
-    - a node that does not hold the state before the undone commit completely (it is not in its undo buffer and a body or part of the aspect ordered before the commit by `(ts, ID)` was dropped or is missing, or a held snapshot or import of the aspect is ordered after it);
+    - a node that does not hold the state before the undone commit completely (it is not in its undo buffer and a body or part of the aspect ordered before the commit by `(ts, ID)` was dropped or is missing, or a held snapshot of the aspect is ordered after it);
     - every undo of `placed.0~`: it has no presence of its own (spec/data-model.md §8), so empty is not absent, and an undo changes only the members the undone commit changed.
 - **Undoing a creation.** For each thing whose `created.0` the undone commit validly carries, the undo deletes the thing, in place of the rules above for that thing's aspects:
   - a reset of each aspect of it the node holds (`remove_aspect`, not `created.0` or role-class aspects);
@@ -346,7 +345,7 @@ Redo likewise restores the read before the undo.
   - A map record is held by its dot and key (§5.6), also one whose creation a reset pruned there, kept by a later nested write though not live.
   - A copy under another key keeps only its own record.
   - A key-erased record (§4.7) keeps every record of its dot.
-- **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived, but for a body the node dropped for its keep bounds or, a snapshot's, for carrying purged values (spec/commits.md §5; an import so dropped keeps its residue):
+- **Function of the held set.** The result is a function of the held set, never of the order in which the commits and the revocation arrived, but for a body the node dropped for its keep bounds or, a snapshot's, for carrying purged values (spec/commits.md §5):
   - What of it the state alone held and an un-merge leaves out (its writes, the records they created, a creation's stamp, value-less copies), whether the un-merged delta is the body's own or another (one whose writes alone kept the body's record, one that superseded the body's write in the state), comes back only with a copy of the body.
   - So until one arrives a node that judged a delta invalid on the way may hold less of the body than one that did not (an entry whose creation went this way is not live there, §5.6, whatever is written into it).
 - **Seq elements** created by an invalid delta keep their record and creation write (anchor) as a content-less hidden anchor, placed where it was (`Derived` records with no remaining write go, §4.7).
@@ -497,7 +496,7 @@ Text is `list<char>` with run compression and immutable element content; list el
 - **Live**:
   - A list element is live iff `created` is held and above `R_elem` and its content fragment is present (at `R_elem`: its value is gone, §4.7). A list element is **deleted** iff it is not live.
   - A text element is live iff it has a char and `deleted` is false.
-- Element existence: a record is never dropped (§4.2, its exceptions aside). A record with no surviving write is a **bare anchor**: not read, emitted only in snapshots and imports (spec/permissions.md §7), placed at END (§6.2), and a valid anchor for later writes. Text content lives and dies with the creation write: an undelete newer than a reset that pruned the creation revives the flag, not the content. `Derived` records are the exception and go with their last write (§4.7).
+- Element existence: a record is never dropped (§4.2, its exceptions aside). A record with no surviving write is a **bare anchor**: not read, emitted only in snapshots (§8), placed at END (§6.2), and a valid anchor for later writes. Text content lives and dies with the creation write: an undelete newer than a reset that pruned the creation revives the flag, not the content. `Derived` records are the exception and go with their last write (§4.7).
 
 **Join**: union by dot; per element as below; then prune:
 - `created`: one write per dot, so copies under different stamps are copies of it: the greater stamp wins whole (anchor and char) and the lesser is dropped, as a position write too. Between equal stamps, the greater anchor and the greater char (§4.1 copy order).
@@ -593,7 +592,6 @@ Principle: deltas, state and snapshots are the same grammar, so any fragment's e
   - `ctr` ≥ 0 is the largest counter such that the writer has applied all of that source's writes in this aspect up to it (0: none; parked commits are not applied, §2.2; nor is a delta its commit applied without, spec/commits.md §4, until it joins, unless it has an expiry). The fragment reflects every write in those ranges.
   - Bad input: an entry missing, repeated, out of order, or naming a source of another kind; a snapshot carrying a stamp whose `ts` is above the snapshot's own `ts`.
   - `Commit` sources have no frontier. `Absorbed` (commit ID, then the author node as a TID-tagged value, spec/data-model.md §5), sorted by commit ID, lists every commit-form commit whose writes in this aspect the writer had applied and whose source occurs in the fragment.
-  - An import has no own source (its writes sit under its origins' `Commit` sources, spec/permissions.md §7), so it is in neither table.
   - **Absence.** A session or commit-form commit the tables do not name left no write in the fragment: a reader takes its absence for that, never for "not received". An entry of 0 says the writer applied none of the source's writes contiguously, though some of them are in the fragment.
   - Frontiers and `Absorbed` are no receipts (spec/permissions.md §5.1): they serve covering (spec/commits.md §5).
   - **Atomic apply** (spec/commits.md §4): a commit's delta counts as dropped, and held, when the node holds a snapshot of the aspect, of any validity, stamped after the commit, signed by a possible holder of the role it needs (spec/commits.md §4; held, or dropped other than as covered).

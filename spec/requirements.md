@@ -123,7 +123,7 @@ Binds released formats only; until a stable release formats change in place.
 - Collaborative text and lists.
 
 ## Permissions
-- Three concepts only: actor, role, ownership. Every thing has exactly one owner, fixed at creation. Moving a thing to another owner is a copy with imported history, and rare; the old owner keeps power only over the original. Sharing never changes a thing's identity.
+- Three concepts only: actor, role, ownership. Every thing has exactly one owner, fixed at creation; a thing never changes owner. Sharing never changes a thing's identity.
 - Grouping for sync grants no rights. A placement may be written together with a grant tied to it, which ends when the placement does.
 - Readers only read: posting into a shared space needs write on its actor.
 - Every write is attributable to a signing key actor (normally a device) and verifiable. Hiding authorship is a deliberate choice, never the default.

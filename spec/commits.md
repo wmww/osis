@@ -5,7 +5,7 @@
 Encoding: spec/wire.md §4. Fields:
 - Format version (spec/versioning.md §1).
 - Author node tid and the actor tid it acts for (checked: spec/permissions.md §5.2).
-- Kind: content or role (§2); compaction-snapshot marker; import marker (content only, with the origins table, spec/permissions.md §7); roster-snapshot marker (role only).
+- Kind: content or role (§2); compaction-snapshot marker; roster-snapshot marker (role only).
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5) and the delta hashes of its deltas. A content commit has one delta per aspect; a role commit may have several (§2), all sharing the aspect's range.
@@ -14,7 +14,7 @@ Encoding: spec/wire.md §4. Fields:
 - A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
 - Demotions only: the frontier (spec/permissions.md §5), inline or as a link to a chunk tree when it exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
 - Optional ephemeral marker: an ephemeral commit or a relay-only one (§2).
-- The aspect, chunk, purge, delete-key and origin lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and belong to every projection of it (spec/sync.md §3).
+- The aspect, chunk, purge and delete-key lists are each inline, or a link to a chunk tree of the list's canonical bytes when it exceeds `CHUNK_THRESHOLD`; those blobs carry the commit's level-2 commitment (spec/wire.md §5) and belong to every projection of it (spec/sync.md §3).
 - Signature (spec/crypto.md §2).
 
 - **Commit ID** = BLAKE3 of the canonical header without the signature. The signature is over the commit ID (spec/crypto.md §2).
@@ -38,7 +38,7 @@ Encoding: spec/wire.md §4. Fields:
   - Role commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
   - A role commit MAY carry several deltas for one `(tid, ak)` (a roster snapshot one per edge or ledger entry, plus one per aspect carrying the reset alone): they share the aspect's counter range, their commit-level writes share the stamp `(ts, source, lo)`, and their creations use distinct counters; the aspect's delta is their join.
 - **`created.0`** is carried by the thing's first durable commit, of either kind.
-  - A compaction snapshot, import or ephemeral commit never carries it (§5). A compaction snapshot or import carrying `required.0^` is bad input likewise.
+  - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required.0^` is bad input likewise.
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
   - The first content commit with a durable delta on an ephemeral thing (spec/data-model.md §1) also carries `created.0` of each ephemeral thing on that thing's owner chain and the durable adds of its ephemeral placements (spec/data-model.md §8).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
@@ -65,15 +65,14 @@ Encoding: spec/wire.md §4. Fields:
   - an AK with `~` or `*` in a durable commit.
 
   For such a part: a writer MUST NOT write one (a durable write on an ephemeral thing is a durable commit persisting it, spec/data-model.md §1), and a receiver drops it alone, as a part not matching its header entry (§4).
-- **Import**: content kind with the import marker; deltas of writes re-sourced from origin commits, all on one thing, no own writes, empty counter ranges (spec/permissions.md §7).
 - A commit spanning several kinds is invalid.
 
 ## 3. Dot forms
 - **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any content commit but an ephemeral one may use it.
-  - A key actor whose key is used from more than one device (link key, recovery key) MUST use it, and every role commit (roster snapshots included), every compaction snapshot and every import MUST use it.
+  - A key actor whose key is used from more than one device (link key, recovery key) MUST use it, and every role commit (roster snapshots included) and every compaction snapshot MUST use it.
 - **Session form**: dots `(Session(author node, nonce), counter)` (spec/crdt.md §2.1), counters per (aspect, session), contiguous from 1; the header carries the 16-byte nonce.
   - Content commits (§2) with own writes otherwise use it, durable and ephemeral alike; an ephemeral content commit MUST use it.
-  - Session form on any other kind (§2: role, compaction snapshot, import) is bad input.
+  - Session form on any other kind (§2: role, compaction snapshot) is bad input.
 
 ## 4. Verification and application
 - A commit's signature MUST verify; receivers dedup by commit ID.
@@ -82,7 +81,6 @@ Encoding: spec/wire.md §4. Fields:
 - A commit is **pending**, not applied and counted as not received, while any of these holds:
   - it is parked (spec/versioning.md §2);
   - the author's `created.0` record is unknown;
-  - the `created.0` record of an import's thing is unknown;
   - its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2);
   - a header list or frontier given by link (spec/wire.md §4) is not resolved;
   - atomic apply waits;
@@ -176,7 +174,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 ### Covered
 - A body is **covered** by a valid snapshot the node holds (spec/permissions.md §5.2) when joining each of its deltas into the snapshot's fragment of that aspect leaves its canonical bytes unchanged (spec/crdt.md §3.3): every live write of the body is in the snapshot, and canonical form carries no dead content. A held body is judged by this join whatever the snapshot's tables say.
   - A snapshot body is covered only if it is stamped no later than the covering snapshot.
-  - Every write the covering snapshot holds under a dot the body holds a write of (or, for a body that is not a snapshot, under one of its own dots: its counter range, its commit ID, an import's origins) MUST be the body's write at the same position with the same `ts` and value (a value-less copy matches); a valid snapshot body's copies all count (spec/permissions.md §5.2); an invalid one's copies of writes whose own delta the node received and judges valid are left out of the join.
+  - Every write the covering snapshot holds under a dot the body holds a write of (or, for a body that is not a snapshot, under one of its own dots: its counter range, its commit ID) MUST be the body's write at the same position with the same `ts` and value (a value-less copy matches); a valid snapshot body's copies all count (spec/permissions.md §5.2); an invalid one's copies of writes whose own delta the node received and judges valid are left out of the join.
   - A body the node cannot join, a snapshot whose pages the node has not fetched, or a snapshot body it has not received (a late part, or one counting as never received again, spec/permissions.md §5.2) establishes nothing: the body is neither covered nor uncovered for it (spec/sync.md §6).
   - A body holding no delta is covered (a lasting header is must-hold all the same, spec/sync.md §6), unless it is session-form and the snapshot's frontier has an entry for its session short of its counters (no entry: the snapshot holds no write of the session, spec/crdt.md §8).
   - A delta with an expiry is never covered (spec/crdt.md §8).
@@ -205,7 +203,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - With a page of it not held it cannot be stripped: it goes at once with every local copy, as a part missing when purged.
   - If the request no longer drops it when its commit applies, it is fetched again like any missing delta.
   - While its thing's record is unknown no right can be judged, so such a part keeps its values in the pending copy, for good if the record never comes; a request on that thing waits with it.
-  - A snapshot part has no values of its own: it waits whole and drops once applied, as does an import part a request reaches only through another import of its origin (below).
+  - A snapshot part has no values of its own: it waits whole and drops once applied.
 - For any dropped delta (here or below), a received blob holding it that may also hold the only true copy of a waiting part of the same commit (one whose slot a copy not yet checkable holds, §4 Copies) is kept until that copy is judged.
 - Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).
 - **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §8). A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
@@ -230,8 +228,6 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - **Purge request**: a header field naming earlier deltas (of commits with a smaller `ts`; a later one is not named) by commit, by a whole aspect history, or by author on an aspect (spec/wire.md §4). It MUST NOT name role-class deltas.
   - A later-arriving delta a held request names falls under it as one held does.
   - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §8): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and drops every body carrying their values, snapshots included, whatever the order the request, the named delta's commit and the snapshot arrive in. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
-  - An import's writes are its origins' dots on the aspect (its other stamps carry no value, spec/permissions.md §7). Dropping it takes every write under them on that aspect, so the bodies carrying them include every import listing such an origin, which drop as they arrive, a delta of one missing counting as held (§4). The right is judged on the named import alone.
-  - An origin that owns its dots on the thing (the import is void, spec/permissions.md §7) keeps them, whichever arrives first. A snapshot or import a node dropped for carrying them before it held the origin stays dropped there, counting as never received, so that node may read less until a copy arrives again.
   - A writer that, after applying it, holds no covering snapshot of the aspect under a label it writes re-snapshots there (duplicates are harmless, spec/sync.md §7).
   - A request SHOULD name dead writes; the writer resets live content in the same commit.
   - A commit carrying a request has a delta (it is what places the commit under the thing's labels): where no reset is wanted, a write of `purge.0` (spec/data-model.md §9).
@@ -261,9 +257,8 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - Other compaction-snapshot deltas are `writer` (a receiver checks this; the bounds below are the writer's, from what it holds), with bounds from the **own deltas** of the writes the snapshot carries live (live as for keep at most):
   - keep at least: the longest relative bound among them, with no absolute one;
   - keep at most: the strictest per component, the shortest relative bound and the earliest absolute bound later than the snapshot's `wall_ms(ts)`, an absolute bound at or before it counting as 0 after replaced.
-- A write's own deltas are its own commits' deltas on the aspect (spec/permissions.md §5.2; every applied import listing its origin). For writes whose own commit's header the node does not hold, every held snapshot body of the aspect carrying one of them stands in, and if some such write no held snapshot body carries, every compaction snapshot of the aspect the node applied.
+- A write's own deltas are its own commits' deltas on the aspect (spec/permissions.md §5.2). For writes whose own commit's header the node does not hold, every held snapshot body of the aspect carrying one of them stands in, and if some such write no held snapshot body carries, every compaction snapshot of the aspect the node applied.
 - No schema enters the bounds; a snapshot names the schema of the last applied delta of the aspect in `(ts, ID)` order that names one, else none.
-- Import deltas carry their origin delta's (spec/permissions.md §7).
 
 ## 6. Expiry
 - `expires: T` (wall ms, `T > wall_ms(ts)`, else invalid), one per commit: every delta of it expires at T. A commit carrying a fixed-retention aspect (§5) carries none.

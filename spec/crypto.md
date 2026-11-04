@@ -194,7 +194,6 @@ Terms in this section depend on each other; each is defined once, under its bold
   | 3, writer | `writer` | the write secret of its thing |
   | none | `nobody` | none |
 
-  - Level 2 is omitted for an imported delta: its origin author purges at honest nodes by request and a holder of the label's delete key executes that at hosts (spec/permissions.md §7).
 - **Delete base**: a thing or actor without secrets of its own (§3) uses those of its owner, up its owner chain to the first actor with secrets of its own or a key actor (its delete base). An ownerless thing is its own, its creation commit's deltas on it at the epochs that commit makes.
 - **Delete key** of a role secret s: the Ed25519 key with seed `kdf("delete key", s)` (secret scalar a, public key A = a·B, RFC 8032).
   - Each keyset in `keys.0` publishes its epoch's (§3).

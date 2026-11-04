@@ -7,7 +7,7 @@
 - Creation record of an ordinary thing: (owner actor tid, 32-byte random nonce). Of a **key actor** (node, recovery key, link key), which owns itself: (algorithm-tagged signing public key, 32-byte nonce). Of an **ownerless thing** (spec/permissions.md §1): (first admin's tid, 32-byte random nonce). A link key's or recovery key's nonce derives from its seed (spec/crypto.md §3).
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
-- A thing never changes owner; moving it is a copy under a new tid (spec/permissions.md §7).
+- A thing never changes owner.
 - An **ephemeral thing** is one whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner, and travels beside the deltas of ephemeral commits (spec/commits.md §2).
   - The durable set is closed under owner: the first commit with a durable delta on an ephemeral thing (or a durable placement into it, §8) carries `created.0` of it and of every ephemeral thing on its owner chain (spec/commits.md §2), keeping the tids, and makes its ephemeral placements durable (§8).
   - A durable thing never becomes ephemeral.
@@ -129,14 +129,12 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `secrets.0` | an actor's boxes and history boxes (spec/crypto.md §4) |
 | `tenures.0` | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
 | `label.0` | labels of a synced group (spec/sync.md §2) |
-| `moved.0` | the thing this one continued as (spec/permissions.md §7) |
-| `was.0` | the thing this one continues (spec/permissions.md §7) |
 | `node.0` | on a node thing: its software version |
 | `reach.0` | on a node thing (spec/sync.md §10); never direct addresses |
 | `seen.0` | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `host.0^` | on a node thing: the node hosts (below) |
 | `clients.0^` | on a node thing: the thin clients it serves (below) |
-| `required.0^` | `rules`: the retention the thing requires, by AK prefix (spec/commits.md §5); `keep`: a removal from the thing keeps by default (spec/permissions.md §2, §3); a separate setting per thing, a move carrying only `keep` (spec/permissions.md §7) |
+| `required.0^` | `rules`: the retention the thing requires, by AK prefix (spec/commits.md §5); `keep`: a removal from the thing keeps by default (spec/permissions.md §2, §3); a separate setting per thing |
 | `purge.0` | when a purge request naming no aspect to reset was made here: the delta such a commit carries (spec/commits.md §5) |
 | `group.0` | §8 |
 | `placed.0~` | the ephemeral placements, §8 |
@@ -153,7 +151,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is a thing the node's person owns, with secrets of its own, and what the client may do is that actor's roles.
 
-**Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`, `tenures.0`, `moved.0`, `was.0`. Their rules: spec/commits.md §2, spec/permissions.md.
+**Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`, `tenures.0`. Their rules: spec/commits.md §2, spec/permissions.md.
 
 ```
 type role = enum { 0 read, 1 write, 2 admin };
@@ -195,8 +193,6 @@ aspect keys.0: struct {
 aspect secrets.0: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> };
 aspect tenures.0: set<tenure>;
 aspect label.0: map<blob, label>;                                // label ID -> label
-aspect moved.0: tid;
-aspect was.0: tid;
 aspect node.0: struct { 0 software: string };
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool, 2 suspect: set<suspect> };    // ts: wall ms of the commit's ts
@@ -211,7 +207,7 @@ aspect name.0: string;
 aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
-- `creation` holds exactly one of fields 0, 1 and 4 and field 3 needs field 0 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
+- `creation` holds exactly one of fields 0, 1 and 3 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 - Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
