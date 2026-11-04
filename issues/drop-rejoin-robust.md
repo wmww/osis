@@ -1,0 +1,17 @@
+# Dropped bodies coming back: make it simple and robust
+> Summary: Tess's decision: keep the rule (a drop a later validity flip undoes counts as never received; the body rejoins from any copy; none left means gone alike) and build it better, spending download and CPU freely in this rare case. Six changes: one rebuild path, leftovers as ordinary bodies, holders re-upload, brute-force refetch, a debug rebuild check after every transaction, a reference model. Plus revoker snapshots for copy finding.
+> Tags: engine, node-sync, tests
+
+Why: most of the arrival-order bug stream (notes/test-value-study.md, notes/convergence-study.md) is not the rule but its implementation: a dropped body leaves a stripped leftover (values gone, stamps and removal effects kept), and bringing the body back must leave every derived structure (map entries, text chars, snapshots carrying it, indexes, death dates) exactly as if never dropped; finding a copy is unreliable (keep at most 0 deletes at hosts in the same sync; the revoker may not hold it; a node without the revocation deletes a re-upload again); other drops stack (expiry, covers turning invalid, imports); "nobody has it" looks like "not yet", so repair backstops can loop (seed 5288: a re-snapshot every 6 h).
+
+Considered and rejected (Tess): making deletions final against later revocation (a removed or stolen device keeps delete power forever), keeping history so drops can roll back (no prompt permanent deletion), a writer's compaction vouching for a deletion (still diverges when every writer saw the revocation first).
+
+Changes, each its own task, cost no object:
+1. **One path.** Any validity flip, drop or re-arrival on an aspect marks it dirty; the aspect is rebuilt from held bodies. No incremental repair paths beside the rebuild (un-merge already rebuilds; remove the side state patched around it).
+2. **Leftovers are bodies.** A purged or expired body is stored as the same delta with its values replaced by a marker, joined like any body; rejoin replaces it with the full body and rebuilds. No third "held value-less" state threaded through apply, indexes and sync.
+3. **The holder uploads.** A node that receives a purge request (or a kill under keep at most 0) it judges invalid makes sure the targeted body is at the label's hosts: exactly the node that still has it.
+4. **Brute-force refetch.** A body counting as never received is asked for by ID on every sync, from every host and peer, until it arrives (rate-limited, idempotent). No reliance on others' must-hold rules.
+5. **Rebuild check.** In debug builds, after every transaction, compare the engine's derived state for touched aspects with a fresh rebuild from held bodies (like `Engine::recheck` for caches). Catches wrong derived state in tier 1 and the sim, on the first small test that hits it, with no second arrival order.
+6. **Reference model** (notes/test-value-study.md recommendation 1): from spec/ alone, what a node holding body set H reads; oracles compare each node with it after exchange.
+7. **Revoker snapshot** (issues/session-sources.md step 3): the revoker compacts the aspects the demoted device wrote before stamping; its snapshot carries the content it never saw deleted, so a node that wrongly dropped it gets the copy with the revocation. Shrinks the frontier only for data whose history may be dropped.
+Order: 5 first (cheap, finds the rest's bugs), then 2 and 1, then 3, 4, 7; 6 alongside.
