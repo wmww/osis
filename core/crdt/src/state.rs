@@ -255,7 +255,56 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
         prune_opt(&mut en.frag, ee.as_ref(), ch);
         prune_write(&mut en.created, ee.as_ref(), ch);
     }
+    bare_to_erased(recs, ch);
     recs.retain(|(_, en)| en.reset.is_some() || en.frag.is_some() || en.created.is_some());
+}
+
+/// §5.6 Bare anchors. Invariant (security: no key outlives its entry's content, so no snapshot
+/// of a removed or reset entry repeats its key): a keyed record holds only its writes and the
+/// records on their paths; every record of the dot holding no write at or below it (a removed
+/// text's bare anchors) is in the key-erased record, which drops one a keyed record holds. A
+/// function of the dot's records and their writes, so the same in any arrival order.
+fn bare_to_erased(recs: &mut Vec<(Eid, Entry)>, ch: &mut Changes) {
+    let mut bare: Option<Fragment> = None;
+    for (_, en) in recs.iter_mut().filter(|(id, _)| id.key.is_some()) {
+        let Some(f) = en.frag.as_deref_mut() else { continue };
+        if let Some(b) = f.take_bare() {
+            match &mut bare {
+                Some(x) => x.join_into(b, None, ch),
+                None => bare = Some(b),
+            }
+        }
+        if f.is_empty() {
+            en.frag = None;
+        }
+    }
+    if let Some(b) = bare
+        && let Some((id, _)) = recs.first()
+    {
+        if id.key.is_some() {
+            let id = Eid::erased(id.dot.clone());
+            recs.insert(0, (id, Entry::default()));
+        }
+        if let Some((_, er)) = recs.first_mut() {
+            match &mut er.frag {
+                Some(x) => x.join_into(b, None, ch),
+                None => er.frag = Some(Box::new(b)),
+            }
+        }
+    }
+    let Some(((id, er), keyed)) = recs.split_first_mut() else { return };
+    if id.key.is_some() {
+        return;
+    }
+    let Some(f) = er.frag.as_deref_mut() else { return };
+    for (_, en) in keyed.iter() {
+        if let Some(g) = en.frag.as_deref() {
+            f.drop_held(g);
+        }
+    }
+    if f.is_empty() {
+        er.frag = None;
+    }
 }
 
 /// The deaths the records of one dot imply across each other (§5.6 Live: a keyed record reads
@@ -343,7 +392,7 @@ fn join_entries(m: &mut Map, d: BTreeMap<Eid, Entry>, e: Option<&Stamp>, ch: &mu
 }
 
 /// Splits a position into its register slot and non-register slots (§7).
-fn parts(f: Fragment) -> (Option<Register>, BTreeMap<Encoding, Fragment>) {
+pub(crate) fn parts(f: Fragment) -> (Option<Register>, BTreeMap<Encoding, Fragment>) {
     match f {
         Fragment::Slots(s) => (s.reg, s.slots),
         Fragment::Register(r) => (Some(r), BTreeMap::new()),

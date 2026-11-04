@@ -143,6 +143,15 @@ proptest! {
         laws(&states(seed, &[sink_no_seq()]));
     }
 
+    /// §5.6 Bare anchors: maps of texts and lists, their bare anchors moving between a dot's
+    /// records, and their forged copies.
+    #[test]
+    fn join_laws_map_of_text_spec_5_6(seed in any::<u64>()) {
+        let types = crate::tests_seq::map_of_text();
+        laws(&states(seed, &types));
+        forged_laws(seed, &types);
+    }
+
     /// §7: across encodings at one position (slots and embeddings).
     #[test]
     fn join_laws_across_encodings_spec_7(seed in any::<u64>()) {

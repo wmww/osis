@@ -256,7 +256,7 @@ Every fragment has an **effective reset** `E = max(E_parent, own R)`, with `E_ro
   - **Seq element records are never removed by prune**: a record whose writes are all pruned is a **bare anchor** (dot only), placed at END (§6.2) and emitted only in snapshots (§5.7), so writes anchored to it stay placeable. The exceptions:
     - a `Derived`-source record (§7), which exists only while it carries a write (§4.7, §6.1);
     - a record of a dot whose copies an invalid snapshot gave (spec/permissions.md §5.2) left with no write when they go (a node that never joined the snapshot has no such record).
-- **Emptiness.** A fragment is empty iff it holds no surviving write and no record at any depth. Record existence is grow-only, so a struct field, map entry or list element whose only remaining content is a sequence of bare anchors is kept.
+- **Emptiness.** A fragment is empty iff it holds no surviving write and no record at any depth. Record existence is grow-only, so a struct field, map entry or list element whose only remaining content is a sequence of bare anchors is kept (a map entry's in its dot's key-erased record, §5.6 Bare anchors).
 - `Slots` positions (§7) have one effective reset `E = max(E_parent, greatest slot reset)`; every slot is pruned under it, so a slot's own reset below it goes.
 - A delta, after pruning against the state it joins, may contribute nothing.
 
@@ -459,11 +459,12 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 ### 5.6 Map (7)
 - State: `R`, `written`, entry records `{(dot, key): (R_rec, creation, fragment)}`, plus a local index `key -> live records` (not part of the lattice).
   - A record's key is part of its identity: records of one dot with different keys are independent, and a record acts only on itself (a removal record of key k resets only `(dot, k)`).
-  - A dot's **key-erased** record `(dot, -)` holds what value-less writes left of its keyed records (§4.7).
+  - A dot's **key-erased** record `(dot, -)` holds what value-less writes left of its keyed records (§4.7) and the dot's bare structure (Bare anchors, below).
 - Join: union by `(dot, key)`; per record `R` max, fragment join, creation by stamp; then prune:
   - a keyed record under `max(E_parent, R_rec, R_erased)`, the key-erased record under `max(E_parent, R_erased, every R_rec of the dot)` (each its `E_rec`);
   - the creation `(ts, dot)` is a write of its own, pruned like any other (under `E_rec`), and a record holding only it (its content un-merged, §4.6) stays, on the wire as `[Dot, Ci, R, key, []]`;
   - tombstone = a record left with only its `R_rec`; a record with no write goes.
+  - **Bare anchors**: a keyed record holds only its writes and the records on their paths. Every record inside a keyed record holding no write at or below it (a sequence's bare anchors, §5.7, with the field, case, entry and element records around them) is held, at the same path, by the dot's key-erased record instead; the key-erased record drops such a record when a keyed record of the dot holds it (a nested map's records of one dot count as one entry). This holds after every join and prune, nested maps first, and makes no record of the dot hold a key without a write: no key outlives its entry's content, after a removal, a map reset or a nested reset alike.
 - **Removal**:
   - In a role-class aspect (spec/data-model.md §9, keys are public ids) a removal of record `(dot, k)` is `(dot, k, R)`, acting on that record only.
   - In every other aspect it is `(dot, -, R)`, resetting every record of the dot, so a key never outlives its entry's content in a removal or tombstone. A keyed record with a reset outside a role-class aspect is malformed (§3.3 rule 7).
@@ -523,7 +524,7 @@ Text is `list<char>` with run compression and immutable element content; list el
     3. root j>1 to the last element, in placement order, of root j-1's moved subtree (its subtree minus the `outside` subtrees).
   - Interior elements of the range are never rewritten.
 - List element edits: `set_field`/nested ops on element i → record `[dot, 1, [], [nested fragment], [], []]`.
-- `replace(items)`: fragment reset `D`, then a creation run. Old elements lose every write below `D` and stay as bare anchors. `remove_aspect` is the same without the creation run: the aspect reads absent, the anchors remain.
+- `replace(items)`: fragment reset `D`, then a creation run. Old elements lose every write below `D` and stay as bare anchors (inside a map entry, in its dot's key-erased record, §5.6). `remove_aspect` is the same without the creation run: the aspect reads absent, the anchors remain.
 
 **Undo**: insert → text delete flag, list element reset; text delete → undelete with content; list delete → re-insert with a fresh dot; move → position write back to the pre-move anchor with the pre-move sibling key if the undone write is still `cur`, or as §4.6 steps back. Delete and move resolve independently: a moved-and-deleted element is a hidden anchor at its new place.
 

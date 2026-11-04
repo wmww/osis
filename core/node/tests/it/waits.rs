@@ -1338,24 +1338,26 @@ fn partial_receipt_survives_compaction_spec_sync_7() {
 }
 
 
-// issues/removed-text-entry-keeps-key.md, spec/crdt.md §5.6: a removal leaves a text's bare anchors
-// in the record that repeats the key, so a snapshot carries the removed key.
+// spec/crdt.md §5.6 Bare anchors: a removed or reset text's bare anchors are in the dot's key-erased
+// record, so a snapshot never carries the removed key (a removal, a map `replace`, `remove_aspect`).
 #[test]
-#[ignore = "issues/removed-text-entry-keeps-key.md"]
-fn removed_text_entry_key_goes_repro_spec_crdt_5_6() {
-    let k = ak("t:docs.0");
-    let mut lp = net(1, 0x7a18);
-    let t = new_thing(&mut lp, 0);
-    let mut m = Mutation::new();
-    m.op(t, &DOCS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("SECRETKEY"))], op: osis_crdt::Op::Set(s("hello")) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(10);
-    let mut m = Mutation::new();
-    m.op(t, &DOCS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s("SECRETKEY")) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let c = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
-    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
-    assert!(!std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(9).any(|x| x == b"SECRETKEY")));
+fn removed_text_entry_key_goes_spec_crdt_5_6() {
+    for reset in [None, Some(osis_crdt::Op::Replace(Value::Map(Default::default()))), Some(osis_crdt::Op::RemoveAspect)] {
+        let k = ak("t:docs.0");
+        let mut lp = net(1, 0x7a18);
+        let t = new_thing(&mut lp, 0);
+        let mut m = Mutation::new();
+        m.op(t, &DOCS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("SECRETKEY"))], op: osis_crdt::Op::Set(s("hello")) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        let op = reset.clone().unwrap_or_else(|| osis_crdt::Op::Remove(s("SECRETKEY")));
+        m.op(t, &DOCS, osis_crdt::PathOp { path: vec![], op }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let c = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        assert!(!std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(9).any(|x| x == b"SECRETKEY")), "{reset:?}");
+    }
 }
 
 // issues/list-element-snapshot-before-expiry.md, spec/crdt.md §5.7 Live: a snapshot written before T

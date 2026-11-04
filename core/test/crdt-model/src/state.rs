@@ -604,6 +604,35 @@ impl Frag {
                     // a creation is a write of its own: it may be left alone (its content un-merged)
                     en.reset.is_some() || en.frag.is_some() || en.created.is_some()
                 });
+                // a keyed record's records holding no write go to the dot's key-erased record (§5.6 Bare anchors)
+                let dots: std::collections::BTreeSet<Dot> = entries.keys().map(|(d, _)| d.clone()).collect();
+                for d in dots {
+                    let keyed: Vec<Eid> = entries.keys().filter(|(x, k)| *x == d && k.is_some()).cloned().collect();
+                    let mut bare: Option<Box<Frag>> = None;
+                    for id in &keyed {
+                        let en = entries.get_mut(id).unwrap();
+                        if let Some(f) = en.frag.take() {
+                            let (a, b) = crate::bare::split(*f);
+                            en.frag = (!a.is_empty()).then(|| Box::new(a));
+                            if !b.is_empty() {
+                                bare = jopt_any(bare, Some(Box::new(b)));
+                            }
+                        }
+                    }
+                    if bare.is_some() {
+                        let er = entries.entry((d.clone(), None)).or_insert(Entry { reset: None, frag: None, created: None });
+                        er.frag = jopt_any(er.frag.take(), bare);
+                    }
+                    if let Some(mut f) = entries.get_mut(&(d.clone(), None)).and_then(|er| er.frag.take()) {
+                        for id in &keyed {
+                            if let Some(g) = entries[id].frag.as_deref() {
+                                *f = crate::bare::drop_held(*f, g);
+                            }
+                        }
+                        entries.get_mut(&(d.clone(), None)).unwrap().frag = (!f.is_empty()).then_some(f);
+                    }
+                    entries.retain(|(x, _), en| *x != d || en.reset.is_some() || en.frag.is_some() || en.created.is_some());
+                }
             }
             Frag::Slots { .. } => unreachable!(),
             Frag::Seq { c, elems, text } => {
@@ -969,7 +998,7 @@ pub fn drop_deleted_chars(f: &mut Frag) {
 }
 
 /// Split a fragment into its register slot and non-register slots.
-fn parts(f: Frag) -> (Option<Frag>, BTreeMap<u8, Frag>) {
+pub(crate) fn parts(f: Frag) -> (Option<Frag>, BTreeMap<u8, Frag>) {
     match f {
         Frag::Slots { reg, slots } => (reg.map(|r| *r), slots),
         Frag::Register { .. } => (Some(f), BTreeMap::new()),
@@ -982,7 +1011,7 @@ fn parts(f: Frag) -> (Option<Frag>, BTreeMap<u8, Frag>) {
 }
 
 /// Canonical position from its slots: a lone slot stands alone, nothing is an empty register.
-fn assemble(reg: Option<Frag>, mut slots: BTreeMap<u8, Frag>) -> Frag {
+pub(crate) fn assemble(reg: Option<Frag>, mut slots: BTreeMap<u8, Frag>) -> Frag {
     let reg = reg.filter(|r| !r.is_empty());
     // a slot that adds nothing to the register's embedding is not kept (§7 Canonical form)
     slots.retain(|_, f| !f.is_empty() && !reg.as_ref().map_or(false, |r| below_embedding(f, r)));
