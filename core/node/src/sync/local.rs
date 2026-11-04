@@ -384,7 +384,7 @@ impl SyncEngine {
         if let Some(k) = o.delivery {
             return !self.state.sent_inbox.contains_key(&k);
         }
-        self.group_of(l).is_some_and(|g| self.is_replaced(&g, l))
+        self.group_of(l, None).is_some_and(|g| self.is_replaced(&g, l))
     }
 
     /// Signs queued deposit `(host, l, b)` again with the label's current deposit key (an
@@ -397,7 +397,7 @@ impl SyncEngine {
                 let owner = self.inbox_owner(&holder, l)?.unwrap_or(holder);
                 self.engine.get_typed(&owner, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(osis_crypto::Secret32::from_bytes)
             }
-            None => match self.group_of(l) {
+            None => match self.group_of(l, None) {
                 Some(g) => self.engine.deposit_seed(&g)?,
                 None => None,
             },

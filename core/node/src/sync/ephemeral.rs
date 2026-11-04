@@ -534,7 +534,7 @@ impl SyncEngine {
                 self.eph.restamp.remove(&(conn, l, b));
                 continue;
             }
-            if !self.eph_writes(&l) {
+            if !self.eph_writes(conn, &l) {
                 self.eph.restamp.remove(&(conn, l, b));
                 if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own) {
                     lost.insert(l);
@@ -554,19 +554,19 @@ impl SyncEngine {
 
     /// Whether this node still has the role `item` is signed for under `l` (admin for the head
     /// delete key, else writer): a key it lacks for now may come back.
-    fn eph_may_delete(&mut self, l: &LabelId, item: &osis_label::DeleteItem) -> bool {
+    fn eph_may_delete(&mut self, conn: ConnId, l: &LabelId, item: &osis_label::DeleteItem) -> bool {
         let need = if item.by.is_none() { osis_base::Role::Admin } else { osis_base::Role::Write };
-        self.group_of(l).is_some_and(|g| self.engine.role_on(&g) >= Some(need))
+        self.group_of(l, Some(conn)).is_some_and(|g| self.engine.role_on(&g) >= Some(need))
     }
 
     fn redelete_may(&mut self, conn: ConnId, l: LabelId, b: BlobId) -> bool {
         let Some(item) = self.eph.redelete.get(&(conn, l, b)).map(|x| x.0.clone()) else { return false };
-        self.eph_may_delete(&l, &item)
+        self.eph_may_delete(conn, &l, &item)
     }
 
-    /// Whether this node writes label `l` (its group's role).
-    fn eph_writes(&mut self, l: &LabelId) -> bool {
-        self.group_of(l).is_some_and(|g| self.engine.role_on(&g) >= Some(osis_base::Role::Write))
+    /// Whether this node writes label `l` (its group's role on `conn`).
+    fn eph_writes(&mut self, conn: ConnId, l: &LabelId) -> bool {
+        self.group_of(l, Some(conn)).is_some_and(|g| self.engine.role_on(&g) >= Some(osis_base::Role::Write))
     }
 
     /// Whether an entry of commit `c` under `l` is held at host `s`.
@@ -644,7 +644,7 @@ impl SyncEngine {
         self.eph.redelete.remove(&(conn, l, b));
         let Some((item, key)) = self.eph_resign(conn, l, item.clone()) else {
             let keyed = self.lc(conn, &l).and_then(|lc| delete_key(&lc.keys, &item).map(|k| k.verifying_key()));
-            if keyed.is_some() || self.eph_may_delete(&l, &item) {
+            if keyed.is_some() || self.eph_may_delete(conn, &l, &item) {
                 self.eph.redelete.insert((conn, l, b), (item, Redo::Head(keyed)));
             }
             return Ok(());
@@ -742,7 +742,7 @@ impl SyncEngine {
 
     fn eph_report(&mut self, l: &LabelId, detail: &str) {
         let now = self.engine.now();
-        let tids = self.group_of(l).into_iter().collect();
+        let tids = self.group_of(l, None).into_iter().collect();
         self.engine.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::EphemeralRefused, tids, commit: None, peer: None, detail: detail.into() }, now);
         self.engine.core.events.flush();
     }
@@ -880,7 +880,7 @@ impl SyncEngine {
             // entry with no write key there waits for one (`eph_restamp`), unless this node does
             // not write the label (a thing also under a group it only reads): never sent there
             if (own || !stamped) && keys.write.is_none() {
-                if self.eph_writes(&l) {
+                if self.eph_writes(conn, &l) {
                     self.eph.restamp.insert((conn, l, *b), None);
                 }
                 continue;
@@ -1129,7 +1129,7 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        let Some(g) = self.group_of(&l) else { return Ok(()) };
+        let Some(g) = self.group_of(&l, None) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
         let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else {
             self.eph_trace(&l, &b, None, || "dropped: no secret unwraps it".into());
@@ -1267,7 +1267,7 @@ impl SyncEngine {
         if t <= now || t > now.saturating_add(2 * osis_base::format::MAX_DRIFT_MS) || !self.eph.relays.fresh(l, b, t, now) {
             return Ok(());
         }
-        let Some(g) = self.group_of(&l) else { return Ok(()) };
+        let Some(g) = self.group_of(&l, None) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
         let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { return Ok(()) };
         let (_, cb) = match open_commit(&blob, &key) {

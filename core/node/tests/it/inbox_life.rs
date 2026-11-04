@@ -865,9 +865,63 @@ fn hint_at_a_silent_host_does_not_hold_off_the_group_spec_sync_3() {
     assert!(net.sync(b).labels().iter().any(|(x, l)| *x == g && l.id == gl.id), "{:?}", net.sync(b).label_status());
 }
 
+// spec/sync.md §3, §5: nor by naming it at a host of its own that holds the label's real path
+// (a past reader's), answers the hinted open with a step and takes the claim, on a connection
+// older than the real host's: the label is open under the hinted thing there, and what the real
+// host sends still reads under the group that opened it there, with no message loop.
+#[test]
+fn hint_at_a_claiming_host_does_not_hold_off_the_group_spec_sync_3() {
+    let mut net = Net::new();
+    let evil = net.add_host();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[evil, host]);
+    let (a, b, _, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, Vec::new());
+    let t = persisted_item(&mut net, a, g);
+    grant(&mut net, a, t, bob);
+    net.advance(61_000);
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let c = boxing_grant(&mut net, a, t);
+    net.set_online(b, false);
+    grant(&mut net, a, g, bob);
+    net.advance(61_000);
+    claiming_host(&mut net, evil, host, &gl.id);
+    let first = net.host_ids(host, &home).into_iter().min().unwrap();
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: vec![net.address(evil)] }), delete_keys: None };
+    let mut exp = net.now() + INBOX_LIFETIME_MS;
+    while plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing.clone()], exp) > first {
+        exp -= 1;
+    }
+    net.set_online(b, true);
+    net.feed(b, osis_node::sync::Event::Tick);
+    for _ in 0..3 {
+        net.round();
+    }
+    assert!(net.conn_to(b, evil).unwrap() < net.conn_to(b, host).unwrap());
+    for _ in 0..3 {
+        quiet(&mut net, b);
+        net.tick(61_000);
+    }
+    quiet(&mut net, b);
+    assert_eq!(net.read(b, t), Some(s("item")), "{:?}", net.sync(b).label_status());
+    assert!(net.sync(b).labels().iter().any(|(x, l)| *x == g && l.id == gl.id), "{:?}", net.sync(b).label_status());
+}
+
+/// Host `evil` holds `l`'s path at `host` with its claim sets (a past reader's) and answers
+/// every open of `l` by sync key with the head, so a hinted open walks there and claims.
+fn claiming_host(net: &mut Net, evil: usize, host: usize, l: &LabelId) {
+    let path = net.host_path(host, l);
+    for st in &path {
+        let set = osis_proto::LabelStore::claim_set(net.hosts[host].hub.store_mut(), l, &st.id()).unwrap().map(|x| (*x).clone());
+        osis_proto::LabelStore::push_step(net.hosts[evil].hub.store_mut(), l, st.clone(), set).unwrap();
+    }
+    net.walk_to.insert(evil, (*l, path.last().unwrap().clone()));
+}
+
 /// One seed of `hint_turns`: blobs naming `g`'s label under other things (some at a wrong index),
-/// at any of the real host, hosts that never answer and hosts without the label, in any order
-/// with the group's own grant, while time passes and the real host's replies lag.
+/// at any of the real host, hosts that never answer, hosts that hold its real path, walk a hinted
+/// open to its head and take the claim, and hosts without the label, in any order with the
+/// group's own grant, while time passes and the real host's replies lag.
 fn hint_turns_seed(seed: u64) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rng = move |n: u64| {
@@ -878,10 +932,11 @@ fn hint_turns_seed(seed: u64) {
     };
     let mut net = Net::new();
     let silent: Vec<usize> = (0..rng(3)).map(|_| net.add_host()).collect();
+    let claiming: Vec<usize> = (0..rng(3)).map(|_| net.add_host()).collect();
     let host = net.add_host();
     let empty: Vec<usize> = (0..rng(3)).map(|_| net.add_host()).collect();
     let a = net.node(1, &[host]);
-    let at: Vec<usize> = silent.iter().copied().chain([host]).collect();
+    let at: Vec<usize> = silent.iter().chain(&claiming).copied().chain([host]).collect();
     let b = net.node(2, &at);
     let (a, b, _, bob, g, home) = alice_and_bob_on(&mut net, host, a, b, Vec::new());
     let things: Vec<Tid> = (0..1 + rng(3)).map(|_| persisted_item(&mut net, a, g)).collect();
@@ -896,7 +951,10 @@ fn hint_turns_seed(seed: u64) {
     net.set_online(b, false);
     grant(&mut net, a, g, bob);
     net.advance(61_000);
-    let named: Vec<usize> = silent.iter().chain(&empty).copied().chain([host]).collect();
+    for e in &claiming {
+        claiming_host(&mut net, *e, host, &gl.id);
+    }
+    let named: Vec<usize> = silent.iter().chain(&claiming).chain(&empty).copied().chain([host]).collect();
     let mut exp = net.now() + INBOX_LIFETIME_MS;
     for (t, c) in &planted {
         for _ in 0..1 + rng(2) {

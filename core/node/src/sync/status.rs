@@ -82,7 +82,7 @@ impl SyncEngine {
         for (l, d) in queued {
             out.push(match d {
                 Some(k) => self.state.sent_inbox.get(&k).map(|s| s.things.clone()).unwrap_or_default(),
-                None => self.group_of(&l).into_iter().collect(),
+                None => self.group_of(&l, None).into_iter().collect(),
             });
         }
         out
