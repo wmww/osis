@@ -245,6 +245,27 @@ fn writes_are_the_actors() {
     assert!(matches!(c.write_with(|w| w.at(node_thing, ct::CLIENTS).remove()), Err(Error::UnknownThing { .. })));
 }
 
+// spec/commits.md §6, notes/client-port.md: a client's write that splits by expiry comes back
+// with its other commits (`Committed::also` crosses the port), the plain one first.
+#[test]
+fn split_write_comes_back_whole_spec_commits_6() {
+    let x = node();
+    let (name, brief) = (ak("t:name.0"), ak("t:brief.0"));
+    let (a, _s, c) = x.client(Role::Read);
+    x.n.change_edge(x.g, a, Role::Write, Default::default()).unwrap();
+    let mut w = c.write();
+    w.at(x.t, name.clone()).set(&Value::Int(1)).unwrap();
+    w.at(x.t, brief.clone()).expires_in(Duration::from_secs(3600)).set(&Value::Int(2)).unwrap();
+    let done = w.commit().unwrap().unwrap();
+    let first = done.id.commit().expect("a commit");
+    let [other] = done.also.as_slice() else { panic!("one more commit: {:?}", done.also) };
+    let h = |id| x.n.engine(|e| e.header(&id)).unwrap();
+    assert_eq!(h(first).ts, h(*other).ts, "one ts");
+    assert_eq!((h(first).expires, h(*other).expires), (None, Some(h(first).ts.wall_ms().0 + 3_600_000)));
+    assert_eq!(h(*other).aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), vec!["t:brief.0"]);
+    assert_eq!((c.get(x.t, name).unwrap(), c.get(x.t, brief).unwrap()), (Some(Value::Int(1)), Some(Value::Int(2))));
+}
+
 // spec/permissions.md §8, notes/client-port.md §3 (Acting as the actor): a purge acting for a
 // client drops what its node and the client both have the right to: a client admin drops no
 // `author` delta of its person, though the node alone may; a write client drops its own
