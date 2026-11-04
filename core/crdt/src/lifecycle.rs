@@ -103,9 +103,11 @@ impl Fragment {
                     } else if id.key.is_some() || en.frag.is_some() || en.reset.is_some() {
                         let recs = || m.of_dot(&id.dot);
                         let hid = gone(id.dot.owner()) || recs().any(|(_, x)| x.reset.is_some());
-                        // a key a record repeats goes with any write; a key-erased record has
-                        // bytes to lose only in a valued one
-                        let holds = recs().any(|(i, x)| x.frag.as_deref().is_some_and(|f| i.key.is_some() || f.written().is_some()));
+                        // a key a record repeats goes with any write, a value-less one too; a
+                        // key-erased record has bytes to lose only in a valued one. A sequence's
+                        // bare anchors are no write: no reset takes them, so swept they would
+                        // come up at every compaction
+                        let holds = recs().any(|(i, x)| x.frag.as_deref().is_some_and(|f| if i.key.is_some() { f.all_max().is_some() } else { f.written().is_some() }));
                         if hid && holds && !recs().any(|(i, _)| m.is_live(i)) {
                             entries.insert(Eid::erased(id.dot.clone()), Entry::tomb(r));
                         }

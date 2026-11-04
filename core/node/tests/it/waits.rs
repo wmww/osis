@@ -1053,6 +1053,33 @@ fn list_element_overwritten_goes_at_expiry_spec_crdt_5_7() {
     assert_eq!(late.engine.get(&t, &k).unwrap(), Some(Value::List(vec![])), "a late node");
 }
 
+// spec/permissions.md §5.2, spec/crdt.md §4.7: the element's end a snapshot from past T carries is a
+// value-less copy of an expiring creation, no misstatement at a node still holding the body.
+#[test]
+fn list_element_end_is_no_misstatement_spec_perm_5_2() {
+    let k = ak("t:list.0");
+    let mut lp = net(3, 0x7a16);
+    let t = new_thing(&mut lp, 0);
+    writer(&mut lp, t, 1);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[1].clock.advance(3_600_000 + 1_000);
+    lp.peers[2].clock.advance(3_600_000 - 1_000);
+    lp.peers[1].engine.tick().unwrap();
+    let c = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
+    let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+    lp.peers[2].drain_events();
+    let _ = lp.deliver(2, &pk);
+    lp.peers[2].engine.reexamine().unwrap();
+    let evs = lp.peers[2].drain_events();
+    assert!(!evs.iter().any(|e| matches!(e, osis_node::Event::Diagnostic(x) if x.kind == osis_node::DiagnosticKind::Misstated)), "{evs:?}");
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])));
+}
+
 // spec/crdt.md §5.7 Live, §4.7: the end of an expiring list element is a function of the commits held:
 // its edit arriving first or last, before or after T, reads and holds alike.
 #[test]
@@ -1195,6 +1222,43 @@ fn hidden_write_in_expired_or_purged_goes_at_compaction_spec_sync_7() {
     assert!(!carries(&mut lp, &gk, b"KEYTWO"), "the key after a purge of the edit");
 }
 
+// spec/sync.md §7: a removed entry of text keeps bare anchors no reset takes, so a sweep comes once
+// for an edit hidden in it and not at all for the removal alone: a compaction does not write forever.
+#[test]
+fn sweep_of_removed_text_entry_ends_spec_sync_7() {
+    let k = ak("t:docs.0");
+    let mut lp = net(2, 0x7a17);
+    let t = new_thing(&mut lp, 0);
+    writer(&mut lp, t, 1);
+    lp.sync_all().unwrap();
+    let key = || vec![osis_crdt::PathSeg::Key(s("k"))];
+    let op = |lp: &mut LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, op: osis_crdt::Op| {
+        let mut m = Mutation::new();
+        m.op(t, &DOCS, osis_crdt::PathOp { path, op }).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap();
+    };
+    op(&mut lp, 0, key(), osis_crdt::Op::Set(s("hello")));
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    let grew = |lp: &mut LocalPeer, i: usize| {
+        let n = lp.peers[i].engine.commit_ids().len();
+        lp.peers[i].engine.snapshot(&t, &k).unwrap().unwrap();
+        lp.peers[i].engine.commit_ids().len() - n
+    };
+    op(&mut lp, 0, vec![], osis_crdt::Op::Remove(s("k")));
+    assert_eq!(grew(&mut lp, 0), 1, "the removal alone: the snapshot, no sweep");
+    lp.advance(10);
+    op(&mut lp, 1, key(), osis_crdt::Op::Set(s("hello there")));
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    assert_eq!(grew(&mut lp, 0), 2, "a sweep and the snapshot");
+    lp.sync_all().unwrap();
+    for i in [0, 1, 0] {
+        lp.advance(10);
+        assert_eq!(grew(&mut lp, i), 1, "swept: the snapshot alone");
+    }
+}
+
 // spec/sync.md §7: a record merely lacking its creation is no hidden one: a snapshot before the
 // creation arrives leaves it, and the entry reads with the edit in it once it does.
 #[test]
@@ -1224,6 +1288,26 @@ fn partial_receipt_survives_compaction_spec_sync_7() {
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::Map([(s("k"), s("edited"))].into_iter().collect())));
 }
 
+
+// issues/removed-text-entry-keeps-key.md, spec/crdt.md §5.6: a removal leaves a text's bare anchors
+// in the record that repeats the key, so a snapshot carries the removed key.
+#[test]
+#[ignore = "issues/removed-text-entry-keeps-key.md"]
+fn removed_text_entry_key_goes_repro_spec_crdt_5_6() {
+    let k = ak("t:docs.0");
+    let mut lp = net(1, 0x7a18);
+    let t = new_thing(&mut lp, 0);
+    let mut m = Mutation::new();
+    m.op(t, &DOCS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("SECRETKEY"))], op: osis_crdt::Op::Set(s("hello")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &DOCS, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s("SECRETKEY")) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let c = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    assert!(!std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(9).any(|x| x == b"SECRETKEY")));
+}
 
 // issues/list-element-snapshot-before-expiry.md, spec/crdt.md §5.7 Live: a snapshot written before T
 // cannot carry the element's end (a valued copy must beat it), so a node holding only it, past T and
