@@ -11,13 +11,13 @@ Options (notes/roster-names.md):
 3. Leave it.
 Recommendation: 2 now (small, closes most of the leak), 1 later if big groups make the growth matter.
 
-## 10. Keep-at-most: keep only 0
-Today: keep at most is "0 after replaced" (purge on replace: the replacing node drops the old body at once and deletes it at hosts), "D after replaced", or an absolute time T (spec/commits.md §5). The D and T forms need each node to date deaths and drop on its own date, and host deletes timed at the bound: part of the arrival-order bug stream (notes/order-study.md option 5: closes 3-4 of its 22 issues). With no keep bounds, compaction already may drop covered old versions whenever it runs, so D and T add little: recovery windows are keep at least D, storage cleanup is the default, a value with an end date is expiry. Chat uses none of them.
+## 10. Keep-at-most D after replaced, and at time T
+Today: keep at most is "0 after replaced" (purge on replace, prompt), "D after replaced", or an absolute time T (spec/commits.md §5). Keep at most 0 stays either way (values that must never have history). D and T are the only way to say "old versions kept a while, then surely gone" (moderation copies erased after 30 days, location history gone within a day, legal retention limits); with no keep bounds compaction may drop old versions but never must. Making D act only through compaction would make it pointless (that is the default), so the choice is keep or drop.
 Options:
-1. Keep at most only as 0 after replaced; drop D and T. Keep at least (relative included: it only delays drops) unchanged.
-2. Leave it.
-Also: keep at most 0 is allowed only under `writer`, so chat edits purge explicitly instead (notes/chat-designs/e-evidence.md); allowing it under `author` would let chat use it.
-Recommendation: 1.
+1. Keep D and T as guarantees. Cost: each node dates deaths and drops on its own date, plus host deletes timed at the bound (notes/order-study.md option 5: 3-4 of its 22 issues). Most of the arrival-order class comes from keep at most 0 and expiry, which stay either way.
+2. Drop D and T; apps build "kept a while, then gone" from keep at most 0 on the value plus an expiring history copy written with each edit.
+Also: keep at most is allowed only under `writer` purge rights, so chat edits purge explicitly instead (notes/chat-designs/e-evidence.md); allowing keep at most 0 under `author` would let chat use it.
+No recommendation: close call; depends on how many apps want "kept a while, then gone".
 
 ## 11. Moving a thing without its history
 Today: moving a thing to another owner copies it with imported history (spec/permissions.md §7): imported writes keep their original authors, purge rights and retention. 29 merged items touched imports (purge-imports took two reviews; import-own-source and import-body-never-live are open), and a whole order oracle (`purge_import`) exists for them. Requirements call moving rare; chat never moves.
@@ -26,9 +26,9 @@ Options:
 2. Leave it.
 Recommendation: 1 unless an app needs original authorship or undo history across a move.
 
-## 12. Kick cost on never-compacted data
-Today: "Removing a holder costs ... one entry per aspect it wrote, never to content or history" (spec/requirements.md Cost) is not met: frontier-clobbers-history and frontier-certificate-cost need a second frontier format (notes/frontier-study.md F3/F4, unbuilt).
+## 12. Kick frontiers: one system or two
+Today (built, F2): a kick lists commit IDs, leaving out what the demoter's compaction could drop now. On keep-forever data (chat messages) that lists every kept commit of the device: 32 B each, about 3 MB at 10^5 messages per label it is re-encrypted under, refused past about 1.9e6 (`MAX_LIST_BYTES`). Approved earlier: the per-aspect hash DAG (notes/kick-dag.md), for permanent data only, so two systems. Tess (later): does not love two systems; maybe IDs in every case unless the DAG is quite simple (about 1800 lines, half tests, 35 B on every permanent write).
 Options:
-1. State the limit: a removal costs about 32 bytes per uncompacted commit the removed device wrote on keep-forever data; the remover compacts first when it can. Do not build F3/F4.
-2. Build F3/F4.
-Recommendation: 1 (notes/core-triage.md §2.3).
+1. IDs only. State the kick-cost requirement (spec/requirements.md Cost) as a limit with the numbers above; delete kick-dag, kick-cost and frontier-study F3/F4 plans; keep ID batches (notes/frontier-study.md §11) as the fallback if costs ever hurt (additive, one system).
+2. Build the kick DAG as approved.
+Recommendation: 1; batches if measured costs need it.
