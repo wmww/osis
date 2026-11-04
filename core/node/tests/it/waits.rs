@@ -1081,6 +1081,50 @@ fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
     }
 }
 
+// spec/crdt.md §4.7, §5.7 Live: a purge of a list element's creation ends the element whichever of
+// the request, the creation and another writer's edit in it arrives first.
+#[test]
+fn purged_list_element_ends_in_any_order_spec_crdt_4_7() {
+    let k = ak("t:list.0");
+    let mut lp = net(3, 0x7a1b);
+    let t = new_thing(&mut lp, 0);
+    let w = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Index(0)], op: osis_crdt::Op::Set(s("edited")) }).unwrap();
+    let e = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.set(t, &REG, &s("beside")).unwrap();
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let body = lp.peers[1].engine.package(&c).unwrap().unwrap();
+    let edit = lp.peers[0].engine.package(&e).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    let rest: Vec<_> = packages(&mut lp, 0).into_iter().filter(|q| ![c, e, p].contains(&q.id)).collect();
+    let mut digests = Vec::new();
+    for order in [[&body, &edit, &request], [&request, &edit, &body], [&request, &body, &edit], [&edit, &request, &body]] {
+        let mut q = osis_node::local_peer::Peer::new(0x7a1c, lp.peers[0].engine.now()).unwrap();
+        q.engine.set_syncing(t, true).unwrap();
+        for x in &rest {
+            let _ = q.engine.ingest(&x.bytes, x.blobs.clone());
+        }
+        for x in order {
+            let _ = q.engine.ingest(&x.bytes, x.blobs.clone());
+        }
+        assert_eq!(q.engine.get(&t, &k).unwrap(), Some(Value::List(vec![])));
+        digests.push(q.engine.state_digest(&t, &k).unwrap());
+    }
+    assert!(digests.iter().all(|d| *d == digests[0]), "{digests:?}");
+}
+
 // spec/crdt.md §4.6, §5.7 Live: an un-merge past T rebuilds the state from the residue: the element
 // stays ended, a third writer's edit in it hidden.
 #[test]
