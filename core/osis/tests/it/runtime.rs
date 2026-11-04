@@ -646,7 +646,7 @@ fn driver_panic_fails_waiters() {
     let far = Duration::from_secs(600);
     let (tx, rx) = std::sync::mpsc::channel();
     let d2 = db.clone();
-    std::thread::spawn(move || {
+    let waiter = std::thread::spawn(move || {
         let _ = tx.send(common::block_on(d2.wait_synced(SyncScope::All, far)));
     });
     let t0 = std::time::Instant::now();
@@ -656,6 +656,8 @@ fn driver_panic_fails_waiters() {
     }
     db.panic_driver();
     let r = rx.recv_timeout(GUARD).expect("a wait hung on a dead driver");
+    // its handle goes with the thread: `close` below refuses while one is open
+    waiter.join().unwrap();
     let died = |r: osis::Result<()>| match r {
         Err(osis::Error::Network(m)) => assert!(m.contains("sync driver panicked: test: the sync driver panics"), "{m}"),
         r => panic!("{r:?}"),

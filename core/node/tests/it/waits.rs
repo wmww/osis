@@ -1053,6 +1053,73 @@ fn list_element_overwritten_goes_at_expiry_spec_crdt_5_7() {
     assert_eq!(late.engine.get(&t, &k).unwrap(), Some(Value::List(vec![])), "a late node");
 }
 
+// spec/crdt.md §4.7: a snapshot written before T carries no end of the element: a holder of the body
+// reads it until T, whichever came first.
+#[test]
+fn list_element_stays_beside_snapshot_before_expiry_spec_crdt_4_7() {
+    let k = ak("t:list.0");
+    let mut lp = net(3, 0x7a19);
+    let t = new_thing(&mut lp, 0);
+    writer(&mut lp, t, 1);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let shown = Some(Value::List(vec![s("hello")]));
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), shown, "peer {i}");
+    }
+    lp.advance(2 * 3_600_000);
+    for i in 0..3 {
+        lp.peers[i].engine.tick().unwrap();
+        assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])), "peer {i} past T");
+    }
+}
+
+// spec/crdt.md §4.6, §5.7 Live: an un-merge past T rebuilds the state from the residue: the element
+// stays ended, a third writer's edit in it hidden.
+#[test]
+fn list_element_end_survives_unmerge_spec_crdt_4_6() {
+    let k = ak("t:list.0");
+    let mut lp = net(3, 0x7a1a);
+    let t = new_thing(&mut lp, 0);
+    writer(&mut lp, t, 1);
+    writer(&mut lp, t, 2);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello"), s("kept")] } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Index(0)], op: osis_crdt::Op::Set(s("edited")) }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    // a writer about to go, not told it has: its write is un-merged past T
+    let x = lp.peers[2].engine.tid();
+    let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("late")] } }).unwrap();
+    let bad = lp.peers[2].commit(m).unwrap().unwrap();
+    let pk = lp.peers[2].engine.package(&bad).unwrap().unwrap();
+    let _ = lp.deliver(1, &pk);
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late"), s("edited"), s("kept")])));
+    lp.advance(2 * 3_600_000);
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("late")])));
+    let pk = lp.peers[0].engine.package(&d).unwrap().unwrap();
+    let _ = lp.deliver(1, &pk);
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])), "un-merged");
+}
+
 // spec/permissions.md §5.2, spec/crdt.md §4.7: the element's end a snapshot from past T carries is a
 // value-less copy of an expiring creation, no misstatement at a node still holding the body.
 #[test]
