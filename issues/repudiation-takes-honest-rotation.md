@@ -1,5 +1,0 @@
-# Lockout recovery can repudiate an honest rotation
-> Summary: `Engine::demote_repudiating` leaves out every rotation by a demoted node to a current epoch this node cannot open. A device that merely lacks its box (stranded, or its holder actor left out) then discards an honest rotation; content other members wrote under that epoch stays readable only where its secret is already held, never for later joiners. Found in the lockout review; not run.
-> Tags: security, permissions, engine
-
-The plain demotion's error points at `--repudiate` in exactly that state too. The rotation's box keys show who it boxed, but refusing when it boxed a remaining holder is no fix: a vandal boxes an inactive member, or sends garbage boxes, and recovery is blocked. Options: refuse while another current holder of the locked epoch is known to be active (heartbeats), a re-seal request first and repudiation only after a wait, or a confirmation listing the epochs and how much content is under them. Today only the API doc warns.
