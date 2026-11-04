@@ -8,7 +8,9 @@ default is the most recently modified one. Per agent: wall time, model time (gap
 result and the next call: thinking and editing), time in cargo commands, in `claudewait`, in other
 shell commands; calls moved to the background at the harness's 180 s subagent cap, calls that hit
 their timeout, shell wait loops (until/while + sleep, pgrep), and the longest calls (--long N,
-default 3). --since HH:MM is the last such local time (yesterday if later than now); an ISO
+default 3). --by-command adds a table of time per kind of command (gate, tier 1, filtered tests,
+tier-2 oracles, builds, clippy, sim-sweep), counting a `claudewait` under the background command it
+waited for. --since HH:MM is the last such local time (yesterday if later than now); an ISO
 date-time must carry its UTC offset, so a date or DST change cannot drop agents. The watchdog (notes/coordination.md) reads this first.
 """
 import datetime as dt, glob, json, os, re, sys
@@ -44,6 +46,29 @@ def ts(o):
     return dt.datetime.fromisoformat(t.replace("Z", "+00:00")) if t else None
 
 
+def kind(cmd):
+    """What a shell command is, for --by-command."""
+    if "gate.sh" in cmd:
+        return "gate"
+    if "sim-sweep" in cmd:
+        return "sim-sweep"
+    if re.search(r"cargo (\+\S+ )?clippy", cmd):
+        return "clippy"
+    if re.search(r"cargo (\+\S+ )?test", cmd):
+        if "--ignored" in cmd or "--include-ignored" in cmd or "_large" in cmd:
+            return "test: tier-2 oracle"
+        if "--no-run" in cmd:
+            return "build"
+        if re.search(r"cargo test( -q)? --workspace( --locked)?( --no-fail-fast)?\s*($|[;&|>)])", cmd):
+            return "test: tier 1 whole"
+        return "test: filtered"
+    if re.search(r"cargo (\+\S+ )?(build|check|run)", cmd):
+        return "build/run"
+    if re.search(r"\bcargo\b", cmd):
+        return "cargo other"
+    return "shell"
+
+
 def analyze(path):
     uses, order, res, title = {}, [], {}, None
     for line in open(path):
@@ -72,6 +97,8 @@ def analyze(path):
     end = max((res[i][0] for i in order if i in res), default=t0)
     wall = (end - t0).total_seconds()
     cat = {"cargo": 0.0, "claudewait": 0.0, "shell": 0.0, "tools": 0.0}
+    kinds = {}  # kind -> [seconds, count]; claudewait time goes to the command it waits for
+    bg = {}  # background task id -> command
     moved = timeouts = loops = 0
     model = 0.0
     last_res = None
@@ -90,6 +117,19 @@ def analyze(path):
         prev_end = last_res = res[i][0]
         r = res[i][1]
         cmd = inp.get("command", "") if isinstance(inp, dict) else ""
+        m = re.search(r"running in background with ID: (\w+)", r) or re.search(r"moved to the background.*?ID: (\w+)", r)
+        if name == "Bash" and m:
+            bg[m.group(1)] = cmd
+        if name == "Bash":
+            if "claudewait" in cmd:
+                ids = re.findall(r"claudewait\s+([\w ]+)", cmd)
+                ids = ids[0].split() if ids else []
+                k = kind(bg.get(ids[0], "")) if ids and ids[0] in bg else "wait: unknown"
+            else:
+                k = kind(cmd)
+            e = kinds.setdefault(k, [0.0, 0])
+            e[0] += d
+            e[1] += 0 if "claudewait" in cmd else 1
         if name != "Bash":
             cat["tools"] += d
         elif "claudewait" in cmd:
@@ -107,7 +147,7 @@ def analyze(path):
         longest.append((d, name, (cmd or inp.get("description", "") or "")[:90].replace("\n", " ")))
     longest.sort(reverse=True)
     return dict(title=title or os.path.basename(path), start=t0.astimezone().strftime("%H:%M"), wall=wall, model=model,
-                cat=cat, moved=moved, timeouts=timeouts, loops=loops, longest=longest[:long_n], calls=len(order))
+                cat=cat, kinds=kinds, moved=moved, timeouts=timeouts, loops=loops, longest=longest[:long_n], calls=len(order))
 
 
 rows = [a for a in (analyze(p) for p in sorted(glob.glob(os.path.join(tasks, "a*.output")), key=os.path.getmtime)) if a]
@@ -119,6 +159,16 @@ for a in rows:
     for d, name, cmd in a["longest"]:
         if d >= 120:
             print(f"      {d/60:5.1f} min  {name:6s} {cmd}")
+if rows and "by-command" in opts:
+    tot = {}
+    for a in rows:
+        for k, (sec, n) in a["kinds"].items():
+            e = tot.setdefault(k, [0.0, 0])
+            e[0] += sec
+            e[1] += n
+    print(f"\n{'command kind':22s} {'minutes':>8s} {'runs':>5s} {'min/run':>8s}   (claudewait counted under what it waited for)")
+    for k, (sec, n) in sorted(tot.items(), key=lambda kv: -kv[1][0]):
+        print(f"{k:22s} {sec/60:8.0f} {n:5d} {sec/60/max(n,1):8.1f}")
 if rows:
     W = sum(a["wall"] for a in rows); M = sum(a["model"] for a in rows)
     print(f"\n{len(rows)} agents, {W/60:.0f} agent-minutes, model {100*M/W:.0f}%, "
