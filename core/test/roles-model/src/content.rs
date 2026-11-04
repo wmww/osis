@@ -76,7 +76,8 @@ impl World {
         }
     }
 
-    /// Snapshots vouch for nothing (§5.2): the delta is judged on its own whatever snapshots
+    /// A snapshot changes no delta's validity (§5.2; it vouches for the writes it carries, which
+    /// no model here checks, nor misstatement): the delta is judged on its own whatever snapshots
     /// carry it. (The rejected "stands iff X was authorized at the snapshot's ts" rule was
     /// `snaps.iter().any(|s| s.carries.contains(&c) && self.authorized(thing, s.t)) || own`.)
     pub fn valid(&self, c: usize, thing: usize, snaps: &[&Snap]) -> bool {
@@ -145,7 +146,7 @@ mod tests {
         assert!(!w.per_commit_valid(0, &[0, 1]));
     }
 
-    /// Snapshots vouch for nothing: X's edit at t=3, A revokes at t=5 without having received
+    /// A snapshot changes no delta's validity: X's edit at t=3, A revokes at t=5 without having received
     /// it. A snapshot by W1 at t=4 or t=6 carrying it changes nothing: invalid everywhere.
     #[test]
     fn snapshots_vouch_for_nothing() {

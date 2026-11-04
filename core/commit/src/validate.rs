@@ -2,7 +2,7 @@
 
 use crate::cbor::strictly_ascending;
 use crate::header::{FOREVER, Header, Kind, aspect_key, key_value, purge_value};
-use crate::retention::{CREATED, REQUIRED, check_retention, delete_levels, fixed_retention};
+use crate::retention::{CREATED, EPHEMERAL_RETENTION, REQUIRED, check_retention, delete_levels, fixed_retention};
 use crate::Error;
 use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
 use osis_schema::PurgeBy;
@@ -167,6 +167,9 @@ impl Header {
             }
             if !self.chunks.is_empty() || !self.purge.is_empty() || self.undoes.is_some() || self.links != crate::header::Links::default() {
                 return Err(Error::Invalid("ephemeral commit with chunks, a purge, an undo or linked lists"));
+            }
+            if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
+                return Err(Error::Invalid("ephemeral commit with a retention other than writer, no bounds"));
             }
             if c != crate::header::EphClass::Plain && self.aspects.iter().any(|a| a.expires.is_some()) {
                 return Err(Error::Invalid("relay-only commit with an expiry"));

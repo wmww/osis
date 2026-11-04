@@ -80,6 +80,18 @@ impl Unknown {
 }
 
 impl Value {
+    /// Whether the canonical encoding exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
+    pub fn above_chunk_threshold(&self) -> bool {
+        use crate::format::CHUNK_THRESHOLD;
+        let head_at_most = 9;
+        match self {
+            Value::Str(s) if s.len() + head_at_most <= CHUNK_THRESHOLD => false,
+            Value::Bytes(b) if b.len() + head_at_most <= CHUNK_THRESHOLD => false,
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Tid(_) | Value::Link(_) => false,
+            v => crate::encode(v).len() > CHUNK_THRESHOLD,
+        }
+    }
+
     pub fn float(f: f64) -> Value {
         Value::Float(Float::new(f))
     }

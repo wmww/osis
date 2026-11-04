@@ -107,9 +107,9 @@ fn list_overflow_links() {
     let mut back = CommitBlob::decode(&bytes).unwrap();
     assert!(!back.header.is_resolved());
     assert!(matches!(back.header.validate(), Err(Error::Missing)));
-    assert!(matches!(back.header.resolve(&mut MemoryBlobs::default(), &sec(0xd0, &t(2)), MAX_LIST_BYTES), Err(Error::Missing)));
-    assert!(matches!(back.header.resolve(&mut sink, &sec(0xd0, &t(9)), MAX_LIST_BYTES), Err(Error::Corrupt)));
-    back.header.resolve(&mut sink, &sec(0xd0, &t(2)), MAX_LIST_BYTES).unwrap();
+    assert!(matches!(back.header.resolve(&mut MemoryBlobs::default(), &sec(0xd0, &t(2))), Err(Error::Missing)));
+    assert!(matches!(back.header.resolve(&mut sink, &sec(0xd0, &t(9))), Err(Error::Corrupt)));
+    back.header.resolve(&mut sink, &sec(0xd0, &t(2))).unwrap();
     assert_eq!(&back, &built.commit);
     assert_eq!(back.id(), built.commit.id());
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
@@ -137,6 +137,16 @@ fn list_over_the_bound_refused_at_the_author() {
     let mut over = b;
     over.frontier = Some(of(room + 1));
     assert!(matches!(build(over, &mut sink), Err(Error::TooLarge("header list"))));
+    // a hand-built commit past the bound is bad input at every receiver, not a local refusal
+    let d = sec(0xd0, &t(1));
+    let mut prefix = || crate::keys::Prefix { salt: [7; 16], blind: [0; 16], expiry: None, keys: Vec::new() };
+    let big = write_list(&osis_base::encode(&of(room + 1)), &d, &mut sink, &mut prefix).unwrap();
+    let mut h = built.commit.header.clone();
+    h.frontier = None;
+    h.links.frontier = Some(big);
+    let e = h.resolve(&mut sink, &d).unwrap_err();
+    assert!(matches!(e, Error::Invalid(_)), "{e:?}");
+    assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput);
 }
 
 // spec/wire.md §4: a linked list at or below the threshold is rejected.
@@ -157,7 +167,7 @@ fn small_linked_list_rejected() {
     h.links.aspects = Some(link);
     let mut back = Header::decode(&h.encode()).unwrap();
     assert!(back.aspects.is_empty());
-    assert!(matches!(back.resolve(&mut sink, &d, MAX_LIST_BYTES), Err(Error::Malformed(_))));
+    assert!(matches!(back.resolve(&mut sink, &d), Err(Error::Malformed(_))));
 }
 
 fn mixed() -> CommitBlob {

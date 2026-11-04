@@ -455,6 +455,20 @@ fn rules() -> Vec<Scenario> {
     let tick = Advance { who: None, ms: 1000 };
     vec![
         Scenario {
+            name: "keys.0: a writer writes the write keyset field",
+            spec: "spec/permissions.md §3",
+            source: "hand-built: 1 (write on G) writes only field 1 of G's keys.0: needs write, valid",
+            steps: vec![HostileKeys { by: 1, t: 0, field: 1 }],
+            orders: None,
+        },
+        Scenario {
+            name: "keys.0: a writer writes the deposit seed",
+            spec: "spec/permissions.md §3",
+            source: "hand-built: 1 (write on G) writes field 5 of G's keys.0: needs admin, invalid",
+            steps: vec![HostileKeys { by: 1, t: 0, field: 5 }],
+            orders: None,
+        },
+        Scenario {
             name: "frontier coverage: two writes before the demotion, one received",
             spec: "spec/permissions.md §5.1, §5.2",
             source: "hand-picked: W1 by 1 reaches 0, W2 by 1 does not; 0 removes 1 with its frontier (W1 valid, W2 invalid)",
@@ -643,11 +657,27 @@ fn invites() -> Vec<Scenario> {
             steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, Sync { from: 1, to: 2 }, tick.clone(), w2.clone()]),
             orders: None,
         },
+        // §2: an edge value with `invite` above its role is bad by itself, whoever writes it and
+        // however it is carried: the delta applies nothing, its resets included
         Scenario {
-            name: "invite grant with an invite above the invite",
-            spec: "spec/permissions.md §2, §5.1",
-            source: "hand-built: 1 (invite read) grants 2 read with invite write: not applied",
+            name: "edge with an invite above its role, by an invite holder",
+            spec: "spec/permissions.md §2, spec/commits.md §4",
+            source: "hand-built: 1 (invite read) grants 2 read with invite write: the commit is bad input",
             steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Read), invite: Some(Role::Write) }]),
+            orders: None,
+        },
+        Scenario {
+            name: "edge with an invite above its role, by an admin",
+            spec: "spec/permissions.md §2, spec/commits.md §4",
+            source: "hand-built: 0 rewrites 2's write edge to read with invite write: the commit is bad input, 2's edge stands and 2's later write is valid",
+            steps: vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }, Sync { from: 0, to: 2 }, tick.clone(), Hostile { by: 0, t: 0, holder: 2, role: Some(Role::Read), invite: Some(Role::Write) }, tick.clone(), w2.clone()],
+            orders: None,
+        },
+        Scenario {
+            name: "roster snapshot holding an edge with an invite above its role",
+            spec: "spec/permissions.md §2, §6, spec/commits.md §4",
+            source: "hand-built: 0's roster snapshot of a thing of its own holds 2 at read with invite write: that delta is bad input, the snapshot's other parts stand",
+            steps: vec![New { by: 0, parent: 0, write: false }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Write) }, tick.clone(), OverInviteRoster { by: 0, t: 1, holder: 2, role: Role::Read, invite: Role::Write }],
             orders: None,
         },
         Scenario {

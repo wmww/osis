@@ -194,6 +194,28 @@ fn ill_typed_core_element_refused_spec_crdt_3_3() {
     }
 }
 
+// spec/data-model.md §6, spec/commits.md §4: the reader's untyped check of what must be chunked
+// (`Fragment::holds_unchunked`) passes what a writer writes, in every position: text is not
+// chunked, a register's string, a set element and a map key are.
+#[test]
+fn large_values_of_a_writer_pass_the_reader_spec_dm_6() {
+    let mut lp = net(2, 22);
+    let t = new_thing(&mut lp, 0);
+    let big = "z".repeat(osis_base::format::CHUNK_THRESHOLD + 1);
+    let mut m = Mutation::new();
+    m.set(t, &TEXT, &s(&big)).unwrap();
+    m.set(t, &ak("t:reg.0"), &s(&big)).unwrap();
+    m.op(t, &ak("t:docs.0"), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s(&big)) }).unwrap();
+    m.op(t, &ak("t:docs.0"), PathOp { path: vec![PathSeg::Key(s(&big))], op: Op::Set(s("v")) }).unwrap();
+    m.op(t, &ak("t:tags.0"), PathOp { path: Vec::new(), op: Op::Add(s(&big)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    assert!(lp.peers[1].engine.pending().is_empty());
+    for a in ["t:text.0", "t:reg.0", "t:docs.0", "t:tags.0"] {
+        assert!(lp.peers[1].engine.get(&t, &ak(a)).unwrap().is_some(), "{a}");
+    }
+}
+
 // spec/crdt.md §4.1, §8; notes/local-store.md, Units; spec/requirements.md, Scale: a large map in a field of a struct
 // aspect is paged too (the struct's other fields in the unit's skeleton). Path edits into the
 // map, edits of the other field, a restart, and a second writer's concurrent edits: reads and

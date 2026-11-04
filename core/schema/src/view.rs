@@ -6,7 +6,6 @@ use crate::schema::Schema;
 use crate::typed::typed_read_at;
 use crate::types::Type;
 use osis_base::Value;
-use osis_base::format::CHUNK_THRESHOLD;
 use osis_crdt::{Encoding, View};
 use std::borrow::Cow;
 
@@ -117,21 +116,9 @@ pub fn link_positions(schema: &Schema, v: &Value, ty: &Type) -> Vec<Large> {
     out
 }
 
-fn too_big(v: &Value) -> bool {
-    let quick = match v {
-        Value::Str(s) => Some(s.len()),
-        Value::Bytes(b) => Some(b.len()),
-        _ => None,
-    };
-    match quick {
-        Some(n) if n + 9 <= CHUNK_THRESHOLD => false,
-        _ => osis_base::encode(v).len() > CHUNK_THRESHOLD,
-    }
-}
-
 /// `links`: find positions holding a link instead of raw values above the threshold.
 fn large(schema: &Schema, v: &Value, ty: Option<&Type>, path: &mut Vec<Step>, out: &mut Vec<Large>, links: bool) {
-    let too_big = |v: &Value| if links { matches!(v, Value::Link(_)) } else { too_big(v) };
+    let too_big = |v: &Value| if links { matches!(v, Value::Link(_)) } else { v.above_chunk_threshold() };
     let t = ty.and_then(|t| schema.expand(t).ok());
     let t = t.as_deref();
     let at = |s: Step, x: &Value, ty: Option<&Type>, path: &mut Vec<Step>, out: &mut Vec<Large>| {

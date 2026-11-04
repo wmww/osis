@@ -241,6 +241,30 @@ fn at_most_grace_spec_commits_5() {
     }
 }
 
+// spec/commits.md §2, spec/wire.md §4: an ephemeral commit's retention is `writer` with no bounds,
+// in session form and as a commit-form snapshot alike.
+#[test]
+fn ephemeral_retention_writer_no_bounds_spec_commits_2() {
+    let mut session = sample_header();
+    session.undoes = None;
+    session.ephemeral = Some(EphClass::Plain);
+    session.keys.push(dkey(3, 3));
+    session.aspects[0].keys = vec![0, 1, 2];
+    session.aspects[0].retention = crate::retention::EPHEMERAL_RETENTION;
+    let mut snapshot = session.clone();
+    snapshot.form = Form::Commit;
+    snapshot.kind = Kind::ContentSnapshot;
+    (snapshot.aspects[0].lo, snapshot.aspects[0].hi) = (0, 0);
+    for h in [session, snapshot] {
+        h.validate().unwrap();
+        for f in [|r: &mut Retention| r.at_least.rel = Some(5), |r: &mut Retention| r.at_least.abs = Some(5), |r: &mut Retention| r.at_most.rel = Some(5), |r: &mut Retention| r.at_most.abs = Some(5)] {
+            let mut x = h.clone();
+            f(&mut x.aspects[0].retention);
+            assert!(invalid(&x).to_string().contains("retention"), "{:?}", x.aspects[0].retention);
+        }
+    }
+}
+
 // spec/commits.md §3 (session form), spec/wire.md §4: session form `[1, nonce]` round-trips, only on an
 // ephemeral content commit; an ephemeral commit is a commit-form content snapshot or a
 // session-form content commit.
@@ -254,6 +278,10 @@ fn session_form_spec_commits_3() {
     // a durable content commit in session form, and an ephemeral one
     h.validate().unwrap();
     h.ephemeral = Some(EphClass::Plain);
+    assert!(invalid(&h).to_string().contains("retention"), "the durable commit's retention");
+    h.aspects[0].retention = crate::retention::EPHEMERAL_RETENTION;
+    h.keys.push(dkey(3, 3));
+    h.aspects[0].keys = vec![0, 1, 2];
     h.validate().unwrap();
     let mut x = h.clone();
     x.form = Form::Commit;

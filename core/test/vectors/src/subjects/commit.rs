@@ -296,7 +296,7 @@ fn more_accepted() -> Vec<Record> {
     let c = bl.commit;
     assert!(c.header.links.aspects.is_some());
     let mut back = CommitBlob::decode(&c.encode()).unwrap();
-    back.header.resolve(&mut sink, &s32(0x30), MAX_LIST_BYTES).unwrap();
+    back.header.resolve(&mut sink, &s32(0x30)).unwrap();
     assert_eq!(back, c);
     let mut r = case("linked aspect list", "spec/wire.md §4, §5, §6")
         .with("signing-seed", hex(s32(0x35).expose()))
@@ -383,7 +383,13 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = e.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });
     out.push(reject("ephemeral commit with a purge request", "spec/commits.md §2", &x, "ephemeral"));
+    let mut x = e.clone();
+    x.aspects[0].retention.at_least.rel = Some(5);
+    out.push(reject("ephemeral snapshot with a keep bound", "spec/commits.md §2", &x, "ephemeral"));
     let s = session_commit().header;
+    let mut x = s.clone();
+    x.aspects[0].retention.at_most.abs = Some(x.ts.wall_ms().0 + 5);
+    out.push(reject("session-form ephemeral commit with a keep bound", "spec/commits.md §2", &x, "ephemeral"));
     let mut v = s.to_value();
     if let Value::List(items) = &mut v {
         items[5] = Value::List(vec![Value::Int(2), Value::Bytes(vec![0x28; 16])]);

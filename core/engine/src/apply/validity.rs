@@ -21,10 +21,14 @@ fn typed(v: &Value, name: &str) -> Option<Value> {
     typed_read(osis_schema::core_schema(), v, &Type::Named(name.into(), Vec::new())).ok()
 }
 
+/// The edge a `roles.0` value reads as: `None` when it is not one, or its `invite` is above its
+/// `role` (spec/permissions.md §2), which makes the delta bad by itself (`check_holders_parts`).
 pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
     let e = ct::Edge::from_value(&typed(v, "edge")?).ok()?;
-    let edge = Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of), tied: e.tied.map(crate::flows::tied::tie_perm), keyset: e.keyset.map(point_of) };
-    edge.well_formed().then_some(edge)
+    if e.invite.is_some_and(|i| i > e.role) {
+        return None;
+    }
+    Some(Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of), tied: e.tied.map(crate::flows::tied::tie_perm), keyset: e.keyset.map(point_of) })
 }
 
 fn point_of(k: ct::EdgeKey) -> Point {
@@ -59,9 +63,9 @@ fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
 }
 
 /// A `roles.0` entry as perm's adaptation reads it: dot, the holder its key names (`None`: a
-/// key that is no tid), and the edge its fragment reads (`None`: no fragment, an entry reset;
-/// `Some(None)`: a fragment reading no well-formed edge).
-pub(crate) type Entry = (Dot, Option<Tid>, Option<Option<Edge>>);
+/// key that is no tid), and the edge its fragment reads (`None`: no fragment, an entry reset; a
+/// fragment reading no edge is bad input, `check_holders_parts`).
+pub(crate) type Entry = (Dot, Option<Tid>, Option<Edge>);
 
 /// One held `roles.0` or `tenures.0` part of a role commit as perm's adaptation reads it.
 #[derive(Clone, Debug, PartialEq)]
@@ -91,12 +95,16 @@ impl EdgeParts {
                             // a removal record keyed by no tid acts on no holder's entry
                             // (spec/crdt.md §5.6)
                             .filter(|(_, k, x)| x.is_some() || k.as_ref().is_none_or(|k| matches!(k, Value::Tid(_))))
-                            .map(|(d, k, x)| {
+                            .filter_map(|(d, k, x)| {
                                 let m = match k {
                                     Some(Value::Tid(m)) => Some(m),
                                     _ => None,
                                 };
-                                (d, m, x.map(|x| x.read().as_ref().and_then(edge_of)))
+                                let edge = match x {
+                                    Some(x) => Some(x.read().as_ref().and_then(edge_of)?),
+                                    None => None,
+                                };
+                                Some((d, m, edge))
                             })
                             .collect(),
                     ),
@@ -156,11 +164,9 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Ve
     for (d, k, v) in es {
         let created = own.is_some_and(|o| o.owns(d.owner()));
         match (k, v) {
-            (Some(m), Some(v)) if created => {
-                if let Some(e) = v {
-                    per.insert(*m, Some(*e));
-                    set.insert(*m);
-                }
+            (Some(m), Some(e)) if created => {
+                per.insert(*m, Some(*e));
+                set.insert(*m);
             }
             // a nested write into another's entry is no edge write (bad input on receipt)
             (_, Some(_)) => {}
@@ -238,17 +244,25 @@ pub(crate) fn names_twice(v: &View, parts: &EdgeParts) -> BTreeSet<Tid> {
     out
 }
 
-/// A `roles.0` delta writing inside an entry it did not create is bad input: an edge change is
-/// remove + put (spec/permissions.md §2), judged from the delta and its header alone.
+/// A `roles.0` delta writing inside an entry it did not create is bad input (an edge change is
+/// remove + put, spec/permissions.md §2), and so is one, of a role commit or a roster snapshot,
+/// holding a value that is no well-formed edge (§2): judged from the delta and its header alone,
+/// the one judgment of an edge's shape; perm never sees another.
 pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != "roles.0" || !h.kind.has_own_writes() {
+        if a.ak.as_str() != "roles.0" {
             continue;
         }
-        let own = Owned::of(h, id, *ai);
-        if entries(d.fragment()).iter().any(|(dot, _, f)| f.is_some() && !own.as_ref().is_some_and(|o| o.owns(dot.owner()))) {
-            return Err(Error::BadInput("a roles.0 write inside an entry the delta did not create"));
+        let es = entries(d.fragment());
+        if es.iter().any(|(_, _, f)| f.as_ref().is_some_and(|f| f.read().as_ref().and_then(edge_of).is_none())) {
+            return Err(Error::BadInput("a roles.0 value that is no well-formed edge"));
+        }
+        if h.kind.has_own_writes() {
+            let own = Owned::of(h, id, *ai);
+            if es.iter().any(|(dot, _, f)| f.is_some() && !own.as_ref().is_some_and(|o| o.owns(dot.owner()))) {
+                return Err(Error::BadInput("a roles.0 write inside an entry the delta did not create"));
+            }
         }
     }
     Ok(())
@@ -484,7 +498,7 @@ fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgePart
                 match p {
                     EdgePart::Holders(es) => {
                         for (_, k, v) in es {
-                            if let (Some(m), Some(Some(edge))) = (k, v) {
+                            if let (Some(m), Some(edge)) = (k, v) {
                                 e.0.insert(*m, *edge);
                             }
                         }

@@ -16,6 +16,9 @@ pub const ROLE_RETENTION: Retention =
 pub const CREATED_RETENTION: Retention =
     Retention { by: PurgeBy::Nobody, at_least: Bound { abs: Some(FOREVER), rel: None }, at_most: Bound { abs: None, rel: None } };
 
+/// The retention of every delta of an ephemeral commit: `writer`, no bounds (spec/commits.md §2).
+pub const EPHEMERAL_RETENTION: Retention = Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: None }, at_most: Bound { abs: None, rel: None } };
+
 /// The AK of the creation record.
 pub const CREATED: &str = "created.0";
 

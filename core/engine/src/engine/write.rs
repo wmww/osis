@@ -394,7 +394,7 @@ pub(crate) fn draw_blind(rng: &mut dyn osis_crypto::CryptoRngCore) -> [u8; 16] {
 /// §6; spec/crypto.md §7).
 /// `published`: [`super::secrets::published_keys`] of the commit's things.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, ak: &Ak, schema: Option<&Schema>, mut r: Option<Retention>, mut e: Option<u64>) -> Result<(Retention, Option<u64>, Framing)> {
+pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, ak: &Ak, schema: Option<&Schema>, mut r: Option<Retention>, mut e: Option<u64>) -> Result<(Retention, Option<u64>, Framing)> {
     let mut defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     // the thing's required retention fills what the writer did not, and refuses what breaks it
     // (spec/commits.md §5); a hostile test writer writes what it is told
@@ -407,9 +407,8 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
         e = want;
         defaults = None;
     }
-    let retention = if ak.lifetime() == osis_schema::Lifetime::Ephemeral {
-        // an ephemeral delta's retention is `writer` with no bounds (spec/commits.md §2)
-        Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() }
+    let retention = if memory || ak.lifetime() == osis_schema::Lifetime::Ephemeral {
+        osis_commit::retention::EPHEMERAL_RETENTION
     } else {
         match plan.kind {
             // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults
@@ -448,7 +447,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     let published = super::secrets::published_keys(tx, &plan.creates, deltas.iter().map(|d| d.tid))?;
     let mut writes = Vec::with_capacity(deltas.len());
     for d in deltas {
-        let (retention, expires, framing) = framing_for(tx.core, &plan, &published, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
+        let (retention, expires, framing) = framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
         if expires.is_some() && !plan.purge.is_empty() {
             return Err(Error::Misuse("a commit with a purge request cannot carry expires (spec/commits.md §5)"));
         }
@@ -686,7 +685,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             }
         }
         let framing = match kind {
-            Kind::Content => Some(framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?.2),
+            Kind::Content => Some(framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?.2),
             _ => None,
         };
         // what the ops address (map keys, fields, set values: a large one by its link, as the
@@ -707,7 +706,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         } else if let Some(framing) = &framing {
             chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), framing, &m.fresh)?;
         } else if kind == Kind::RosterSnapshot && ak.as_str() == "tenures.0" {
-            let (_, _, framing) = framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+            let (_, _, framing) = framing_for(tx.core, tx.txn.is_memory(), &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
         }
         let lo = match form {
