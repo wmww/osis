@@ -25,8 +25,19 @@ A removal's frontier lists the removed person's writes it had seen, and each lis
 - A: keep it, and have clients leave out of a frontier the writes made before the person first held the role. Recommended (receivers unchanged).
 - B: receivers also require the role "as restored" at the write (more rules in validity).
 
+## 8. Q2 follow-up: the model check changed the picture (please re-confirm)
+The short model check you asked for before building Q2 A (a group never looks inside its member actors) found two things. Details: notes/keys-requirements-study.md §4.
+- **The downside is bigger than I told you.** In the rare cases (an out-of-date device of Alice makes her new key including the removed tablet, or the stolen tablet forges one while the removal news is held back), the tablet can read the group's messages written *since the removal*, not only messages written after that moment. Today the same cases lock Alice out instead. Two small extra rules (Team only accepts an Alice key that builds on the ones it already used; Alice's devices fix any of her keys that misses a removal they know of) close the simple version of this, and the model found no leak with them.
+- **Cycles have no simple rule.** When two groups each hold a role on the other (X in Y and Y in X), every simple rule the model tried either leaks to a removed device, keeps re-keying back and forth forever, or locks one group out of the other for good. Today's design handles cycles only through the machinery Q2 A deletes.
+Options for cycles:
+- **A (recommended): no key cycles.** A role that would let X read Y while Y can already read X (directly or through others) gives no key access; the earlier grant in the agreed order wins. Plain data check over grants, no key machinery; realms nest and overlap without cycles. Changes the requirement "groupings may be cyclic" for reading through each other.
+- **B:** keep today's machinery for cycle members only (most of the 2k lines stay).
+- **C:** accept that in a cycle a removed device may keep reading until the next knowing re-key (a further stated limit).
+- **D:** go back to Q2 B (keep today's design everywhere).
+With A, I'd build Q2 A with the two extra rules. If the bigger downside above changes your mind on Q2 itself, say D.
+
 ## Decided (Tess), to build
 - Q1: option A, any writer finalizes an ended timed share (role no higher than its own) with an explicit removal that rotates; self-removal stays a departure; admin-only finalize is an accepted fallback if any-writer hits trouble. notes/keys-requirements-study.md §2.5.
-- Q2: option A, a group never looks inside its member actors (seals to a member's current keyset, rotates when it is superseded). notes/keys-requirements-study.md. Needs a short model check before building.
+- Q2: option A, a group never looks inside its member actors. Model check done: reopened as question 8 (bigger downside, cycles).
 - Q3: Tess's wording in spec/requirements.md (no values of another thing; only metadata, and only when one commit touches both); the exact metadata (thing ID, `ai` list, owner chain, size) is stated in spec/wire.md §4 and changes there deliberately, without her sign-off. Built as is (whole-2b).
 - Q4: option A, written into spec/requirements.md Deletion (an undo made before the device saw the purge is its own change). Nothing to build.
