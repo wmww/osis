@@ -1680,13 +1680,9 @@ fn keyed(text: &str) -> BTreeMap<(String, String), String> {
 /// that flipped on the way (`flips`): what the state alone held of such a body and lost to an
 /// un-merge comes back only with a copy (spec/crdt.md §4.6), which joins as a late part or, purged,
 /// value-less (spec/commits.md §5), so both are given them again (`alike_exchanged`).
-fn both_dropped_flips(played: &Played, want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> BTreeSet<String> {
+fn both_dropped_flips(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> BTreeSet<String> {
     let ((wf, _), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
-    let headers: Vec<(String, osis_commit::Header)> = played.packs.iter().filter_map(|p| Some((format!("{:?}", p.id), osis_commit::CommitBlob::decode_stored(&p.bytes).ok()?.header))).collect();
-    let named: BTreeSet<(String, String)> = headers.iter().flat_map(|(_, h)| h.purge.iter().map(|i| (format!("{:?}", i.tid()), i.ak().as_str().to_string()))).collect();
-    let snapshots: BTreeSet<&str> = headers.iter().filter(|(_, h)| h.kind.is_compaction()).map(|(id, _)| id.as_str()).collect();
-    let purged_snapshot = |k: &BodyKey| snapshots.contains(k.0.as_str()) && named.contains(&(k.1.clone(), k.2.clone()));
-    let dropped = |k: &BodyKey, f: &Fact| (f.at_most || purged_snapshot(k)) && !f.held && gf.get(k).is_some_and(|g| !g.held);
+    let dropped = |k: &BodyKey, f: &Fact| f.at_most && !f.held && gf.get(k).is_some_and(|g| !g.held);
     let mut apart: BTreeSet<(String, String)> = BTreeSet::new();
     for name in ["reads", "states"] {
         let (a, b) = (keyed(want.part(name)), keyed(got.part(name)));
@@ -1716,7 +1712,7 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
     let fallen = purge_flips(played, want, got);
     let mut apart = drop_flips(want, got);
     apart.extend(fallen.iter().cloned());
-    apart.extend(both_dropped_flips(played, want, got, flips));
+    apart.extend(both_dropped_flips(want, got, flips));
     if apart.is_empty() {
         return alike(want, got);
     }
@@ -3094,7 +3090,7 @@ fn purge_author_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
 }
 
 /// Short histories on one register: requests stand, fall and rise over deltas that also expire, with
-/// compactions, so a residue row left by a fall meets each. By seed, requests by name or wide. Keep at
+/// compactions, so a leftover set aside by a fall meets each. By seed, requests by name or wide. Keep at
 /// most or a required retention in this mix still differs: issues/wide-purge-order.md.
 fn purge_rows_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0xc2b2_ae3d_27d4_eb4f) | 1);
@@ -3121,7 +3117,7 @@ fn purge_rows_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     out
 }
 
-// spec/permissions.md §7, spec/crdt.md §4.7: a residue left by a fall, value-less again by expiry or a
+// spec/permissions.md §7, spec/crdt.md §4.7: a leftover set aside by a fall, value-less again by expiry or a
 // purge, and reopened.
 #[test]
 #[ignore = "tier 2"]
@@ -3701,7 +3697,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // entry a valid snapshot vouches for, the entry removed later: the live join dated the body
     // at the removal (the copy it is live by died), the recompute never (it left the copy out
     // as "held elsewhere" though its own delta is un-merged); and a superseder expired since
-    // dated nothing in the recompute (its residue did not play)
+    // dated nothing in the recompute (its leftover did not play)
     let h = vec![Nested { by: 2, other: 0, t: 6, k: 0, text: true, compact: true, also: true }, Typed { by: 2, t: 7, op: 22, k: 1, v: 7 }, Write { by: 2, t: 2, op: 1, k: 2, v: 8 }, Nested { by: 2, other: 0, t: 3, k: 2, text: false, compact: true, also: true }];
     let mut h: Vec<Step> = h.into_iter().map(|s| Aim(Box::new(s))).collect();
     h.push(Send { from: 2, to: 0, back: 2 });
@@ -3776,7 +3772,7 @@ fn live_write_outlives_its_body_at_the_bound_spec_commits_5() {
     check(1, &[w(0, 0), w(0, 1)], LARGE).unwrap();
 }
 
-// spec/crdt.md §4.7-4.8: a purged register write stays in the state value-less (its residue), so
+// spec/crdt.md §4.7-4.8: a purged register write stays in the state value-less (its leftover), so
 // it still kills the write before it, in the replay too.
 #[test]
 fn register_deaths_purged_killer_spec_crdt_4_8() {
@@ -4186,9 +4182,9 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
 // 24111: A writes v5, B writes v1, B's undo of v1 writes v5 back expiring; past its expiry its
 // body goes, leaving a value-less write that beats v1. A's later undo superseded it in the state,
 // then B's backdated demotion of A un-merges that undo: the value-less write must win again (was
-// v1 as made, absent in reverse: the residue lived in the state alone).
+// v1 as made, absent in reverse: the leftover lived in the state alone).
 #[test]
-fn expired_residue_survives_unmerge_spec_crdt_4_6() {
+fn expired_leftover_survives_unmerge_spec_crdt_4_6() {
     use Step::*;
     let h = vec![Write { by: 1, t: 7, op: 12, k: 2, v: 5 }, Write { by: 1, t: 5, op: 0, k: 2, v: 4 }, New { by: 0, parent: 3, write: false }, Write { by: 0, t: 0, op: 12, k: 2, v: 1 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, Undo { by: 1, back: 0 }, Undo { by: 0, back: 1 }, Advance { who: None, ms: 7126221 }, Undo { by: 1, back: 2 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }];
     let played = play(24111, &h);
@@ -4217,13 +4213,13 @@ fn valueless_list_order_independent_spec_crdt_4_7() {
     check(50036, &h, Cfg { sync: false, ..LARGE }).unwrap();
 }
 
-// spec/crdt.md §4.6 Un-merge, §4.7 (residue), spec/commits.md §5 (purge): a purged delta whose
-// body was dropped as covered keeps its residue from the coverer's copies, which the purge drops
+// spec/crdt.md §4.6 Un-merge, §4.7 (leftovers), spec/commits.md §5 (purge): a purged delta whose
+// body was dropped as covered keeps its leftover from the coverer's copies, which the purge strips
 // next; a later write that superseded it in the state and is un-merged does not take it along
 // (was: made order "old" came back, demotion first absent). The purger's re-snapshot would hide
 // it once it reaches the node.
 #[test]
-fn purged_covered_residue_survives_unmerge_spec_crdt_4_6() {
+fn purged_covered_leftover_survives_unmerge_spec_crdt_4_6() {
     let mut lp = LocalPeer::new(3, 24112, T0).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
@@ -4300,13 +4296,12 @@ fn purged_covered_residue_survives_unmerge_spec_crdt_4_6() {
     assert_eq!(got, vec![None, None]);
 }
 
-// spec/permissions.md §5.2 (a part dropped as covered that no coverer carries any more gives
-// nothing, as at a node that never held it), spec/crdt.md §4.7 (residue): a purged delta whose
-// body was dropped as covered takes its residue from the coverer's copies; when the coverer turns
-// invalid the delta is missing again and its residue goes with it, so a rebuild or a restart
-// reads as the state just after (was: the residue joined back, hiding "old" again).
+// spec/crdt.md §4.7 (leftovers), spec/permissions.md §5.2: a purged delta whose body was dropped
+// as covered takes its leftover from the coverer's copies and is held again from then on; when
+// the coverer turns invalid the leftover stays (a held body, no longer the cover's), so the
+// value-less winner hides "old" alike at once, after a rebuild and after a restart.
 #[test]
-fn cover_residue_goes_with_cover_spec_perm_5_2() {
+fn cover_leftover_outlives_its_cover_spec_perm_5_2() {
     let mut lp = LocalPeer::new(3, 24114, T0).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
@@ -4364,7 +4359,7 @@ fn cover_residue_goes_with_cover_spec_perm_5_2() {
     assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), after, "rebuilt");
     p.restart(FRESH + 1).unwrap();
     assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), after, "restarted");
-    assert_eq!(after, Some(s("old")), "the purged write is missing again");
+    assert_eq!(after, None, "the leftover from the cover's copies stays: the value-less winner");
 }
 
 // spec/crdt.md §4.7 (a copy arriving after T is stripped and joined): a part of an expired
@@ -4530,8 +4525,8 @@ fn snapshot_purged_fell_purged_reads_alike_seed_3265() {
 // no copy left: the part leaves what it left, so a value-less winner stays the winner (seed 872030).
 #[test]
 #[ignore = "tier 2"]
-fn purged_fell_purged_leaves_its_residue_seed_872030() {
-    run("purged_fell_purged_leaves_its_residue_seed_872030", 872030..872031, 50, LARGE, purge_author_history);
+fn purged_fell_purged_leaves_its_leftover_seed_872030() {
+    run("purged_fell_purged_leaves_its_leftover_seed_872030", 872030..872031, 50, LARGE, purge_author_history);
 }
 
 // spec/commits.md §5: a text creation arriving under an undelete whose delete's body

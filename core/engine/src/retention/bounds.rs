@@ -190,11 +190,12 @@ impl Engine {
         })
     }
 
-    /// Whether `c` is known with an aspect `(tid, ak)` whose body is not dropped: true for a
-    /// missing part too (`Engine::aspect_dump` shows which).
+    /// Whether `c` is known with an aspect `(tid, ak)` whose body is neither dropped nor held as
+    /// its leftover (`Meta::body_gone`): true for a missing part too (`Engine::aspect_dump` shows
+    /// which).
     pub fn body_not_dropped(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let Some(m) = self.core.ix.commits.get(c) else { return false };
-        m.aspect(tid, ak).is_some_and(|ai| !m.dropped.contains_key(&ai))
+        m.aspect(tid, ak).is_some_and(|ai| !m.body_gone(ai))
     }
 
     /// The snapshots that covered `c`'s part on `(tid, ak)` when it dropped, and those that

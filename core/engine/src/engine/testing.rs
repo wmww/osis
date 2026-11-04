@@ -147,11 +147,58 @@ impl Engine {
         Ok(osis_store::attack(&ev, Some(&ciphers)))
     }
 
-    /// How many stripped deltas are kept for commit `id` (`retention::strip_purged`).
+    /// How many parts of commit `id` are held value-less while they wait (`retention::strip_purged`).
     #[doc(hidden)]
     pub fn stripped_count(&mut self, id: &osis_base::CommitId) -> Result<usize> {
         let id = *id;
-        self.run(|tx| Ok(crate::retention::stripped_of(tx, &id)?.len()))
+        self.run(|tx| {
+            let h = match tx.core.ix.commits.get(&id) {
+                Some(m) => (*m.header).clone(),
+                None => match tx.txn.get_pending(&id)?.and_then(|(_, b)| osis_commit::CommitBlob::decode_stored(&b).ok()) {
+                    Some(b) => b.header,
+                    None => return Ok(0),
+                },
+            };
+            let mut n = 0;
+            for ai in 0..h.aspects.len() {
+                if crate::retention::waiting_stripped(tx, &h, &id, ai)? {
+                    n += 1;
+                }
+            }
+            Ok(n)
+        })
+    }
+
+    /// The state of `(tid, ak)` as the join of its held bodies alone, leftovers included (the
+    /// writes of invalid deltas removed, the value-less list applied), without the own state:
+    /// tests compare it with `state` for the leftover invariant (`retention::make_leftover`).
+    #[doc(hidden)]
+    pub fn bodies_alone_state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<osis_crdt::Fragment>> {
+        let (tid, ak) = (*tid, ak.clone());
+        self.run(|tx| {
+            let held: Vec<osis_base::CommitId> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+            let un = crate::apply::Unmerge::of(tx, &tid, &ak)?;
+            let mut st = osis_crdt::Fragment::default();
+            for c in held {
+                let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+                let Some(ai) = m.aspect(&tid, &ak).filter(|ai| m.holds(*ai)) else { continue };
+                let snap = m.view.kind.is_compaction();
+                if snap && !m.valid_at(ai) {
+                    continue;
+                }
+                crate::apply::each_held_piece(tx, &c, ai, &mut |_, mut f| {
+                    if snap {
+                        f.remove_dots(&|d| un.unvouched(d));
+                    } else {
+                        un.strip(&mut f);
+                    }
+                    st.join(f);
+                    Ok(())
+                })?;
+            }
+            crate::apply::strip_valueless(tx.core, &tid, &ak, &mut st);
+            Ok((!st.is_empty()).then_some(st))
+        })
     }
 
     /// How many purge requests' dropped-a-permanent-delta notes are kept (`retention::lasting`).
@@ -409,7 +456,7 @@ impl Engine {
         let commits = ix.commits.iter().map(|(id, m)| {
             let stands_in = m.dropped.iter().filter(|(_, d)| d.stands_in).map(|(ai, _)| *ai).collect();
             let rest = format!("{:?} {:?} {:?}", m.received, m.origin, m.view);
-            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, missing: m.missing.clone(), rest })
+            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, stripped: m.stripped.clone(), missing: m.missing.clone(), rest })
         }).collect();
         let held = osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
@@ -680,7 +727,7 @@ impl Engine {
     /// flip does (tests: equals the state kept incrementally).
     #[doc(hidden)]
     pub fn rebuild_state(&mut self, tid: &Tid, ak: &Ak) -> Result<()> {
-        self.run(|tx| crate::apply::rebuild(tx, tid, ak))
+        self.run(|tx| crate::apply::rebuild(tx, tid, ak, &[], false))
     }
 
     /// Rebuilds the in-memory indexes from the commit records (and the persisted index), as a
@@ -722,6 +769,8 @@ pub struct CommitDigest {
     /// (`Dropped::stands_in`).
     pub dropped: std::collections::BTreeSet<usize>,
     pub stands_in: std::collections::BTreeSet<usize>,
+    /// Aspects held as their leftover (`Meta::stripped`).
+    pub stripped: std::collections::BTreeSet<usize>,
     pub missing: std::collections::BTreeSet<usize>,
     /// Received time, origin and view, as text.
     pub rest: String,

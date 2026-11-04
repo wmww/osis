@@ -25,8 +25,7 @@ pub(crate) fn vanish(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<
     let (tid, ak) = (a.tid, a.ak.clone());
     let gone: Vec<Owned> = Owned::of(&m.header, c, ai).into_iter().collect();
     super::drop_part(tx, c, ai)?;
-    crate::apply::rebuild_without(tx, &tid, &ak, &gone)?;
-    super::mark_deaths_due(tx, &tid, &ak)?;
+    crate::apply::rebuild(tx, &tid, &ak, &gone, true)?;
     Ok(Some((tid, ak)))
 }
 

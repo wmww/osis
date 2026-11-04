@@ -114,9 +114,9 @@ fn dormant(core: &Core, e: &Entry) -> bool {
     e.2 & Why::PendingExpiry as u8 == 0 && core.ix.commits.get(&e.0).is_some_and(|m| crate::apply::receipt::settled(core, &m.header, usize::from(e.1)))
 }
 
-/// The parts of `(tid, ak)` dropped other than as covered, at expiry or by a purge: their
-/// writes are in the state alone (or nowhere), so an un-merge there may differ from a node
-/// that kept the body.
+/// The parts of `(tid, ak)` dropped for their keep bounds: their writes are in the state alone
+/// (or nowhere), so an un-merge there may differ from a node that kept the body (a leftover
+/// is a held body).
 pub(crate) fn keep_dropped(core: &Core, tid: &Tid, ak: &Ak) -> Vec<(CommitId, usize)> {
     core.ix
         .by_aspect
@@ -126,7 +126,7 @@ pub(crate) fn keep_dropped(core: &Core, tid: &Tid, ak: &Ak) -> Vec<(CommitId, us
         .filter_map(|(_, c)| {
             let m = core.ix.commits.get(c)?;
             let ai = m.aspect(tid, ak)?;
-            (!m.view.memory && m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Purge)) && !super::valueless(core, c, ai)).then_some((*c, ai))
+            (!m.view.memory && m.dropped.get(&ai).is_some_and(|d| d.why == DropFor::Other) && !super::valueless(core, c, ai)).then_some((*c, ai))
         })
         .collect()
 }

@@ -809,9 +809,8 @@ fn reset_drops_dead_paged_collection_spec_crdt_8() {
 }
 
 /// The rogue fills a paged set alone; node 3 gets the fill, then node 0's removal of the rogue:
-/// the un-merge in place empties every page (each loaded for the fill's dots), so the state is
-/// absent, as a rebuild leaves it (seed 262094: kept as an empty set while the set was not
-/// noted loaded whole).
+/// the rebuild leaves the state absent, page by page as whole (seed 262094: the old in-place
+/// un-merge kept an empty set while the set was not noted loaded whole).
 #[test]
 fn unmerge_emptying_every_page_leaves_none_spec_perm_5_2() {
     let (c, _) = both(14, |w| {
@@ -825,7 +824,7 @@ fn unmerge_emptying_every_page_leaves_none_spec_perm_5_2() {
         pks.extend(packages(w, 0, &[demote]));
         pks
     });
-    assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
+    assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");
 }
 
 /// The rogue fills a paged map; node 1 rewrites it (its writes nested under the rogue's
@@ -885,7 +884,7 @@ fn unmerge_leaving_empty_first_page_leaves_none_spec_perm_5_2() {
         p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::engine::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
         packages(w, 0, &[dy])
     });
-    assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
+    assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");
 }
 
 /// The rogue fills a map holding a paged map (its `big` entry), node 1 adds to the paged map
@@ -923,7 +922,7 @@ fn unmerge_takes_paged_collection_below_invalid_entry_spec_perm_5_2() {
         pks.extend(packages(w, 0, &[demote]));
         pks
     });
-    assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
+    assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");
 }
 
 /// Node 1 puts a paged map under key `big` (the skeleton then holds nothing of it), the rogue
@@ -951,15 +950,15 @@ fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
         p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::engine::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
         packages(w, 0, &[demote])
     });
-    assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
+    assert!(c.get("rejudge: rebuild").is_some_and(|n| *n > 0), "{c:?}");
 }
 
 /// Retention reads a paged body a piece at a time (issues/durable-decode-bound.md step 4): node
 /// 3 holds a fill of a map in a map entry (its creation in the skeleton, its writes in pages)
 /// and node 0's snapshot of it, drops the fill as covered, then gets node 0's purge of it: the
-/// snapshot carrying purged values drops, and the fill's residue comes from the coverer's
+/// snapshot carrying purged values is stripped, and the fill's leftover comes from the coverer's
 /// pieces. By pieces and whole alike, the streamed readers checked against the whole ones on
-/// the way (`retention::oracle`: `covered`, `body_live`, the residue).
+/// the way (`retention::oracle`: `covered`, `body_live`).
 #[test]
 fn covered_paged_fill_purged_spec_commits_5() {
     let a = aks()[1].clone();

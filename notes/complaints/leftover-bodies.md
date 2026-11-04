@@ -1,0 +1,9 @@
+# leftover-bodies
+> Summary: items 1+2 of drop-rejoin-robust built together; what cost time.
+
+- First pass read the brief as item 2 alone and found the 28-caller `each_held_piece` blast radius before Wren redirected to 1+2 together: half a session of reading was the right spend, the standalone design section was not.
+- A new local record prefix (`l/`) collided with `rotation::lost::LOST_DUE` (also `l/`): the prefixes live in two files with no shared table; the only symptom was `Corrupt("lost-access work list")` on a restart in one test. A one-line census of all `b"x/"` prefixes before picking one would have saved a run. Used the freed `w/`.
+- "The leftover stays through a purge's fall" read well in the design and failed in the first seed that had a node never receive the body: the never-received node reads the older value, the stripped one the value-less winner, and no copy need ever come. Tess's "counts as never received" was the rule for a reason; the leftover row set aside for a rise is the one piece of the old residue design that had to come back.
+- `cargo test --workspace` (no `--no-fail-fast`) stops at the first failing binary: the first "37 binaries" baseline run hid 40 node failures behind 6 osis ones. Use `--no-fail-fast` for the first run after a wide change.
+- Engine tests that count cost spans by name (`rejudge: unmerge`, `unmerge: pass`) break on a rename even when the behaviour they guard is intact; they are listed in the issue as rewritten.
+- A mid-task reply was stopped by the safety classifier on ordinary CRDT/store text; nothing lost.

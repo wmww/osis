@@ -335,10 +335,10 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - **A purge request** drops a named delta iff its author held that right at the request's time and, when it acts for another actor (its header actor), so did that actor. Each delta of a request by whole aspect or by author is judged alone, so the class of one never widens the others (an admin's request by author leaves that author's `author` and `nobody` deltas).
 - **Judgment** follows the role timeline the node holds, in any arrival order:
   - A named delta a request comes to drop is dropped then.
-  - A delta dropped for a request when no held request drops it any more counts as never received (spec/commits.md §5): its residue goes and it is no longer held value-less, the node fetches it again where present and takes it from a holder's upload (spec/sync.md §6).
-  - A held snapshot body dropped for carrying a purged value counts so too with any such fall, and is judged again when a copy arrives.
+  - A delta held as its leftover for a request when no held request drops it any more counts as never received (spec/commits.md §5): its leftover is set aside and it is no longer held value-less, the node fetches it again where present and takes it from a holder's upload (spec/sync.md §6).
+  - A held snapshot body stripped for carrying a purged value is asked for again with any such fall, and stripped again on arrival if it carries another's.
   - A body no node holds stays gone; the delta then reads as never received.
-  - Held value-less again before a copy comes, it leaves what it left, as at a node that never saw the fall; a snapshot's part so dropped stands in again (spec/commits.md §4) with no copy.
+  - Held value-less again before a copy comes, it holds the leftover it set aside, as at a node that never saw the fall; a snapshot's part dropped as named stands in again (spec/commits.md §4) with no copy.
 - **Who may undo a purge so**: the author of a demotion, whose frontier omits the request. A frontier may list a message and omit its purge, and the message is back wherever a copy is left. A memory delta vanished stays gone.
 - A node deletes at hosts on its judgment after syncing, with no waiting time.
 - The same right decides whether a compaction snapshot may drop a body it covers (spec/commits.md §5); a body a right holder dropped under a snapshot whose right later falls stays dropped.

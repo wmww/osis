@@ -19,16 +19,12 @@ pub const ASPECTS: &[u8] = b"a/";
 pub const RECEIPT: &[u8] = b"r/";
 /// Value-less deltas per aspect (expired, purged): `v/` + aspect key.
 pub const VALUELESS: &[u8] = b"v/";
-/// What a delta held value-less (expired, purged) leaves once its body goes: its body's writes
-/// with every value stripped (spec/crdt.md §4.7), one row per delta: `w/` + aspect key + commit
-/// ID + aspect index (4 bytes). Read only while the value-less list names a write of the delta
-/// (`retention::writes_of`): a purge that fell leaves the row, for a rise with no
-/// body left (`retention::make_valueless`).
-pub const RESIDUE: &[u8] = b"w/";
-/// A waiting part a held purge request names, held value-less (`retention::strip_purged`): `j/` +
-/// commit ID + aspect index + delta index (4 bytes each), the delta's nonce and its stripped
-/// fragment. Its pending copy's slot holds an empty delta (`retention::emptied`) while this is kept.
-pub const STRIPPED: &[u8] = b"j/";
+/// The leftover of a part whose values went (expired, purged; `Meta::stripped`): its body with
+/// every value-carrying write value-less (spec/crdt.md §4.7), read as the held body
+/// (`apply::each_held_piece`): `w/` + aspect key + commit ID + aspect index (4 bytes). A waiting
+/// part a held purge request names keeps what was stripped of it here too, its pending copy's
+/// slot holding an empty delta (`retention::emptied`) until it joins (`retention::leftover`).
+pub const LEFTOVER: &[u8] = b"w/";
 /// Purge requests with an item on a whole aspect or an author's deltas on it, which any delta
 /// arriving may fall under: `p/` + aspect key.
 pub const PURGES: &[u8] = b"p/";
@@ -97,12 +93,8 @@ pub fn purges_named_key(tid: &Tid, ak: &Ak, id: &CommitId) -> Vec<u8> {
     [aspect_key(PURGES_NAMED, tid, ak).as_slice(), &id.0[..]].concat()
 }
 
-pub fn residue_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {
-    [aspect_key(RESIDUE, tid, ak), id.0.to_vec(), (ai as u32).to_be_bytes().to_vec()].concat()
-}
-
-pub fn stripped_key(id: &CommitId, ai: usize, di: usize) -> Vec<u8> {
-    [STRIPPED, &id.0[..], &(ai as u32).to_be_bytes(), &(di as u32).to_be_bytes()].concat()
+pub fn leftover_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {
+    [aspect_key(LEFTOVER, tid, ak), id.0.to_vec(), (ai as u32).to_be_bytes().to_vec()].concat()
 }
 
 pub fn named_permanent_key(id: &CommitId, tid: &Tid) -> Vec<u8> {

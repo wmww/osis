@@ -1327,8 +1327,8 @@ bundle: 000001f282025901ed018f82e9ff5a71a8b17c5e2c58e3276b0be86be5cf8b0100000002
 order: 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14
 body 71636c8ec2a9d35d0ab1a9bc8f3c0aeb620d516ca3c2450a7c7ab65559c5b8ff 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 body 11a48838f3861b808caa8f24406b12b7637150571c4ffda4f80839a7068c4b91 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
-body b4d2b8a7ecb92fc53ca2209b3fe2aa0b52c3c5156f86221deba5b3c97d2a2f28 7loH6i_G7GA9WPnGkkf7 t:map.0: valid dropped
-body 85a23707bd89c86b8ab994f223047c779e77f55ff049cfc46b2dfa788123abe4 7loH6i_G7GA9WPnGkkf7 t:map.0: valid dropped
+body b4d2b8a7ecb92fc53ca2209b3fe2aa0b52c3c5156f86221deba5b3c97d2a2f28 7loH6i_G7GA9WPnGkkf7 t:map.0: valid stripped
+body 85a23707bd89c86b8ab994f223047c779e77f55ff049cfc46b2dfa788123abe4 7loH6i_G7GA9WPnGkkf7 t:map.0: valid stripped
 thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
 aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=339e02f550fc568eadd9d31b42c2da97ba10026fc5b4f2cfa9e7603d1bf8001e read=bf1b7297cff4a984a10ee0d3361a58ae0b5a721fadfe8683b452fdd90dcb72c6
 aspect 7loH6i_G7GA9WPnGkkf7 t:map.0: state=3eb0bdd3a4cd4a457afdebdb071dfa279ad037df6a9eb71533ecffecf900e9aa read=absent
@@ -1343,8 +1343,8 @@ bundle: as in order seed 50036, as made
 order: 0,1,2,3,4,5,6,7,8,9,10,11,12,14,13
 body 71636c8ec2a9d35d0ab1a9bc8f3c0aeb620d516ca3c2450a7c7ab65559c5b8ff 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 body 11a48838f3861b808caa8f24406b12b7637150571c4ffda4f80839a7068c4b91 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
-body b4d2b8a7ecb92fc53ca2209b3fe2aa0b52c3c5156f86221deba5b3c97d2a2f28 7loH6i_G7GA9WPnGkkf7 t:map.0: valid dropped
-body 85a23707bd89c86b8ab994f223047c779e77f55ff049cfc46b2dfa788123abe4 7loH6i_G7GA9WPnGkkf7 t:map.0: valid dropped
+body b4d2b8a7ecb92fc53ca2209b3fe2aa0b52c3c5156f86221deba5b3c97d2a2f28 7loH6i_G7GA9WPnGkkf7 t:map.0: valid stripped
+body 85a23707bd89c86b8ab994f223047c779e77f55ff049cfc46b2dfa788123abe4 7loH6i_G7GA9WPnGkkf7 t:map.0: valid stripped
 thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
 aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=339e02f550fc568eadd9d31b42c2da97ba10026fc5b4f2cfa9e7603d1bf8001e read=bf1b7297cff4a984a10ee0d3361a58ae0b5a721fadfe8683b452fdd90dcb72c6
 aspect 7loH6i_G7GA9WPnGkkf7 t:map.0: state=3eb0bdd3a4cd4a457afdebdb071dfa279ad037df6a9eb71533ecffecf900e9aa read=absent

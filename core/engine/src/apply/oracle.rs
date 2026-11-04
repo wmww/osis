@@ -4,7 +4,7 @@
 //! and rewriting the whole state. `tests_paged` requires both to leave the same.
 
 use super::Parts;
-use super::atomic::{Joins, Unmerge, invalid_of, note_snapshot, strip_valueless, unmerge_fell};
+use super::atomic::{Joins, Unmerge, invalid_of, note_snapshot, strip_valueless};
 use super::{copies, validity};
 use crate::engine::{Gives, Tx};
 use crate::error::Result;
@@ -30,12 +30,13 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         if let Some(fr) = fr {
             let v = valid.get(ai).copied().unwrap_or(false);
             if note_snapshot_part(tx, a, h.ts, id, &f, fr, v) || v && misstates_held(tx, &a.tid, &a.ak, &f)? {
-                j.vouching.insert((a.tid, a.ak.clone()));
+                j.rebuild.insert((a.tid, a.ak.clone()));
             }
         }
         if !valid.get(ai).copied().unwrap_or(false) {
-            if !snap {
-                arrived_invalid(tx, &a.tid, &a.ak, f, j)?;
+            // an invalid delta joins nothing: rebuilt once stored (`atomic::join_part`)
+            if !snap && !validity::perm_ak(a.ak.as_str()) {
+                j.rebuild.insert((a.tid, a.ak.clone()));
             }
             continue;
         }
@@ -72,19 +73,6 @@ fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<b
     let core = &*tx.core;
     let Some(Some(st)) = core.states.get(&(*tid, ak.clone())) else { return Ok(false) };
     Ok(!f.misstated(&[st], &|d| copies::owner_held(core, tid, ak, d), &|d| copies::owner_expires(core, tid, ak, d)).is_empty())
-}
-
-fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Fragment, j: &mut Joins) -> Result<()> {
-    if validity::perm_ak(ak.as_str()) {
-        return Ok(());
-    }
-    join_into_state(tx, tid, ak, f.clone(), false)?;
-    unmerge_fell(tx, tid, ak, Some(f))?;
-    crate::retention::mark_if_bounded(tx, tid, ak)?;
-    tx.core.mark_aspect_changed(tid, ak);
-    j.changed.insert((*tid, ak.clone()));
-    j.touched.whole(tid, ak);
-    Ok(())
 }
 
 fn held_deaths(ch: Changes, before: Option<&Option<Fragment>>) -> Vec<osis_crdt::Death> {

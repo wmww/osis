@@ -88,8 +88,8 @@ pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &Commit
     }
 }
 
-/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta is held, was never
-/// received here (missing, or expired or purged while missing: `retention::never_received`), or
+/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta is held (whole or as its
+/// leftover), was never received here (missing), or
 /// was dropped as covered with every coverer still giving its writes from a
 /// held body: they go from the state when it turns invalid (spec/permissions.md §5.2), all of
 /// them, also those another held valid snapshot carries (its body gives its own copy back in the
@@ -118,16 +118,16 @@ pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> 
 }
 
 /// Whether the writes under dot `d` on `(tid, ak)` come back from held bodies alone (`given_by`):
-/// some owning delta held; else every owner not given back by a held body was never received
-/// (missing, or expired or purged while missing: `retention::never_received`) or dropped as
-/// covered where no coverer is a snapshot body dropped other than as covered (its writes live
-/// only in the state). Invariant: a turned-
+/// some owning delta held (whole or as its leftover); else every owner not given back by a held
+/// body was never received (missing, or expired or purged while missing:
+/// `retention::never_received`) or dropped as covered where no coverer is a snapshot body
+/// dropped other than as covered (its writes live only in the state). Invariant: a turned-
 /// invalid snapshot's copy stays in the state only where nothing held gives the write back, so
 /// the rebuild equals the join of what is held whether the snapshot was ever valid here. `memo`:
 /// `never_received` per dropped part (a store read).
 fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(CommitId, usize), bool>) -> Result<bool> {
     let core = &*tx.core;
-    let residue = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover()));
+    let state_only = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover()));
     // the owner parts dropped other than as covered; any other owner not giving decides `false`
     let (dropped, refused) = (std::cell::RefCell::new(Vec::new()), std::cell::Cell::new(false));
     let given = !owner_received(core, tid, ak, d)
@@ -136,7 +136,7 @@ fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(Co
                 && match m.dropped.get(&ai) {
                     None => true,
                     Some(x) if x.as_cover() => {
-                        let gives = !crate::retention::coverers(core, c, ai).iter().any(residue);
+                        let gives = !crate::retention::coverers(core, c, ai).iter().any(state_only);
                         refused.set(refused.get() || !gives);
                         gives
                     }

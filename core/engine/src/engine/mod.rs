@@ -75,9 +75,13 @@ pub struct Meta {
     pub origin: Origin,
     /// Validity per aspect (spec/permissions.md §5.2).
     pub valid: Vec<bool>,
-    /// Aspects whose deltas were all dropped (purge, expiry, keep at most, compaction), with
+    /// Aspects whose deltas were all dropped (keep at most, compaction, while invalid), with
     /// what each keeps: they count as held.
     pub dropped: BTreeMap<usize, Dropped>,
+    /// Aspects held as their leftover (expired, purged, a snapshot carrying purged values:
+    /// `retention::make_leftover`): read from `records::LEFTOVER` as the body, every value gone.
+    /// Held for the engine, no body for node-sync (`body_gone`).
+    pub stripped: BTreeSet<usize>,
     /// Aspects none of whose deltas is held here (neither held nor dropped): a part that may
     /// still arrive late, or never, or one dropped under a cover since turned invalid
     /// (`retention::uncover`) (spec/permissions.md §5.2: a snapshot's copies of their writes
@@ -98,10 +102,6 @@ pub enum DropFor {
     /// keep-at-most bound dated from its fall (`retention::deaths`). It comes back as missing when
     /// it turns valid.
     Invalid,
-    /// For a purge request (`retention::rejudge_purges`): it comes back as missing when no held
-    /// request drops it any more. A delta with writes (`retention::writes_of`) is also in the
-    /// value-less list, and that decides for it.
-    Purge,
 }
 
 /// What a dropped part keeps in its commit record (spec/commits.md §5).
@@ -153,7 +153,7 @@ pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, missing }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -163,9 +163,14 @@ impl Meta {
     pub(crate) fn valid_at(&self, ai: usize) -> bool {
         self.valid.get(ai).copied().unwrap_or(false)
     }
-    /// Whether part `ai` is held: neither dropped nor missing.
+    /// Whether part `ai` is held: neither dropped nor missing (a stripped one is, as its leftover).
     pub(crate) fn holds(&self, ai: usize) -> bool {
         !self.dropped.contains_key(&ai) && !self.missing.contains(&ai)
+    }
+    /// Whether part `ai` has no body to upload or keep at hosts: dropped, or held as its leftover
+    /// (spec/commits.md §5: purged, expired).
+    pub fn body_gone(&self, ai: usize) -> bool {
+        self.dropped.contains_key(&ai) || self.stripped.contains(&ai)
     }
 }
 
@@ -1277,7 +1282,7 @@ impl Core {
         if !self.history_watched {
             return;
         }
-        let state = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.missing.contains(&ai));
+        let state = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.stripped.contains(&ai), m.missing.contains(&ai));
         let mut out = std::mem::take(&mut self.history_named);
         for (id, old) in self.ix.commits.before() {
             let new = self.ix.commits.get(id);
@@ -1308,7 +1313,8 @@ impl Core {
 
     fn count_bounded(&mut self, m: &Meta, add: bool) {
         for (ai, a) in m.view.aspects.iter().enumerate() {
-            if !a.bounded || !m.holds(ai) {
+            // a leftover has no values to keep: no bound to judge (`deaths::bounded_part`)
+            if !a.bounded || !m.holds(ai) || m.stripped.contains(&ai) {
                 continue;
             }
             let k = (a.tid, a.ak.clone());
@@ -1708,85 +1714,6 @@ impl Tx<'_> {
         self.set_state(tid, ak, f, shred, false)
     }
 
-    /// Rewrites shredded what of the state of `(tid, ak)` may hold copies of a dropped body's
-    /// writes (`bodies`: its deltas), and clears the undo buffer (spec/commits.md §5: dropping a
-    /// body destroys every local copy; the state's content is unchanged). A paged state rewrites
-    /// the pages holding the bodies' dots and its skeleton; anything else is rewritten whole.
-    pub fn shred_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment]) -> Result<()> {
-        let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| {
-            for t in touches {
-                if pages::write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
-                    return Ok(false);
-                }
-            }
-            pages::unindex(txn, idx, tid, ak, f, bodies)?;
-            Ok(true)
-        })?;
-        if !done {
-            self.load(tid, ak)?;
-            let st = self.take_cached(tid, ak);
-            self.set_state(tid, ak, st, Shred::Yes, true)?;
-        }
-        Ok(())
-    }
-
-    /// Holds value-less the writes of `(tid, ak)` that `owned` owns (a delta expired or
-    /// purged, spec/crdt.md §4.7), shredding every copy of their values; `bodies` are the deltas
-    /// owning them (where they lie). A paged state strips and rewrites only their pages and
-    /// its skeleton; anything else is rewritten whole. `true`: an entry's records merged into
-    /// its key-erased record with a death between them (`Fragment::expire_merging`).
-    pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &[crate::engine::Owned]) -> Result<bool> {
-        let pred = |d: &osis_crdt::Dot| owned.iter().any(|o| o.owns(d));
-        let mut merged = false;
-        let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| {
-            let r = pages::strip_touched(txn, idx, tid, ak, f, touches, &pred)?;
-            merged |= r == Some(true);
-            Ok(r.is_some())
-        })?;
-        if !done {
-            self.load(tid, ak)?;
-            if let Some(mut st) = self.take_cached(tid, ak) {
-                merged |= st.expire_merging(&pred);
-                self.set_state(tid, ak, Some(st), Shred::Yes, true)?;
-            }
-        }
-        Ok(merged)
-    }
-
-    /// For a paged state: loads the pages `bodies` touch, runs `rewrite` on them, then writes
-    /// the skeleton with the undo buffer cleared, all shredded. `false`: not paged, or `rewrite`
-    /// found it does not fit the pages (the caller writes whole).
-    fn rewrite_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], rewrite: impl FnOnce(&mut Transaction<'_>, &mut pages::PageIndex, &mut Fragment, &[osis_crdt::PagedTouch]) -> Result<bool>) -> Result<bool> {
-        self.load_lazy(tid, ak)?;
-        let k = (*tid, ak.clone());
-        let touches: Option<Vec<osis_crdt::PagedTouch>> = match self.core.pages.get(&k) {
-            Some(idx) => bodies.iter().map(|d| pages::touch_of(d, Some(idx))).collect(),
-            None => None,
-        };
-        let Some(touches) = touches else { return Ok(false) };
-        for t in &touches {
-            self.ensure_touch(tid, ak, &Some(t.clone()))?;
-        }
-        self.core.touch();
-        self.core.wrote(k);
-        let done = self.with_pages(tid, ak, |txn, idx, f| {
-            if !rewrite(txn, idx, f, &touches)? {
-                return Ok(false);
-            }
-            let mut unit = txn.get_aspect(tid, ak)?.unwrap_or_default();
-            unit.state = pages::skeleton_unit(f, idx)?;
-            unit.undo.clear();
-            txn.put_aspect(tid, ak, &unit, Shred::Yes)?;
-            Ok(true)
-        })?;
-        Ok(done == Some(true))
-    }
-
-    /// Takes the cached state of `(tid, ak)` out of the cache, to be written back (`set_state`
-    /// notes it written first, so a failure evicts it).
-    fn take_cached(&mut self, tid: &Tid, ak: &Ak) -> Option<Fragment> {
-        self.core.states.get_mut(&(*tid, ak.clone())).and_then(Option::take)
-    }
 
     pub fn unit(&mut self, tid: &Tid, ak: &Ak) -> Result<AspectUnit> {
         Ok(self.txn.get_aspect(tid, ak)?.unwrap_or_default())

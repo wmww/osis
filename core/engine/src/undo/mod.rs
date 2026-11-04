@@ -416,7 +416,7 @@ impl Engine {
                     .iter()
                     .enumerate()
                     .filter(|(ai, a)| m.valid_at(*ai) && keep.as_ref().is_none_or(|k| k.contains(&(a.tid, a.ak.clone()))))
-                    .map(|(ai, a)| (a.tid, a.ak.clone(), m.holds(ai)))
+                    .map(|(ai, a)| (a.tid, a.ak.clone(), !m.body_gone(ai)))
                     .collect();
                 (!aspects.is_empty()).then_some(HeldCommit { id, header, received: m.received, aspects })
             })
