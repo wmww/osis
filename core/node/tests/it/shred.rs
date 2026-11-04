@@ -1058,3 +1058,78 @@ fn request_is_judged_again_when_the_named_delta_arrives_spec_sync_6() {
     assert!(e.commit_ids().contains(&c));
     assert!(e.take_changed().commits.contains(&pc));
 }
+
+/// Node 0's paged map on `t` over an older value node 1 holds, by commit `c` (`whole`: its package), and a
+/// request naming it that resets nothing; node 1 holds `c` with its last page away, then the request.
+fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::CommitId, osis_node::local_peer::Package) {
+    let a = ak("t:gonemap.0");
+    let t = new_thing(lp, 0);
+    let mut m = Mutation::new();
+    m.set(t, &GONEMAP, &Value::Map(std::collections::BTreeMap::from([(s("older"), s("kept"))]))).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    lp.advance(5);
+    let mut fill: std::collections::BTreeMap<Value, Value> = (0..400).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    fill.insert(s("k000"), s(&big(marker)));
+    let mut m = Mutation::new();
+    m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    assert!(whole.blobs.len() > 1, "paged: {} blobs, {} bytes", whole.blobs.len(), whole.bytes.len());
+    let mut held = whole.blobs.clone();
+    held.pop();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("public")).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a });
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    lp.peers[1].engine.ingest(&whole.bytes, held).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "it waits for its page");
+    assert!(recoverable(&mut lp.peers[1], marker.as_bytes()), "held so far");
+    lp.deliver(1, &request).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    (t, c, whole)
+}
+
+// spec/commits.md §5: a waiting part a held request names goes at once while a page of it is away (the
+// part's bytes cannot be stripped), the pages it holds readable no more; its commit then applies and the
+// aspect is flagged, its non-value writes missing.
+#[test]
+fn purged_with_a_page_away_goes_at_once_spec_commits_5() {
+    let marker = "PAGE-AWAY-4c8e";
+    let mut lp = net2(341);
+    let (t, c, _) = purged_page_away(&mut lp, marker);
+    let e = &mut lp.peers[1].engine;
+    assert!(e.pending().is_empty() && e.commit_ids().contains(&c), "{:?}", e.pending());
+    assert_eq!(e.suspects().unwrap().into_iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), vec![(t, ak("t:gonemap.0"))]);
+    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "recovered with a page away");
+}
+
+// spec/commits.md §5: the older value a part gone with a page away leaves showing, flagged, goes with a
+// snapshot by a writer or a copy arriving again, and neither brings back the purged value.
+#[test]
+fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
+    for by_snapshot in [true, false] {
+        let marker = "PAGE-REPAIR-5d1a";
+        let mut lp = net2(351);
+        let a = ak("t:gonemap.0");
+        let (t, _, whole) = purged_page_away(&mut lp, marker);
+        assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Map(std::collections::BTreeMap::from([(s("older"), s("kept"))]))), "by snapshot {by_snapshot}");
+        assert_eq!(lp.peers[1].engine.suspects().unwrap().len(), 1);
+        if by_snapshot {
+            lp.advance(5);
+            let sc = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+            let pk = lp.peers[0].engine.package(&sc).unwrap().unwrap();
+            lp.deliver(1, &pk).unwrap();
+        } else {
+            lp.peers[1].engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
+        }
+        lp.peers[1].engine.reexamine().unwrap();
+        assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), lp.peers[0].engine.get(&t, &a).unwrap(), "by snapshot {by_snapshot}");
+        assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "by snapshot {by_snapshot}");
+        assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "by snapshot {by_snapshot}");
+    }
+}
