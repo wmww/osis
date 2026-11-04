@@ -78,10 +78,14 @@ pub struct Meta {
     /// Aspects whose deltas were all dropped (keep at most, compaction, while invalid), with
     /// what each keeps: they count as held.
     pub dropped: BTreeMap<usize, Dropped>,
-    /// Aspects held as their leftover (expired, purged, a snapshot carrying purged values:
-    /// `retention::make_leftover`): read from `records::LEFTOVER` as the body, every value gone.
-    /// Held for the engine, no body for node-sync (`body_gone`).
+    /// Aspects held as their leftover (expired, purged, a body carrying a copy of such a value:
+    /// `retention::make_leftover`, `retention::strip_carried`): read from `records::LEFTOVER` as
+    /// the body. Held for the engine, no body for node-sync (`body_gone`).
     pub stripped: BTreeSet<usize>,
+    /// Those of `stripped` still holding values of their own writes: a delta stripped only of the
+    /// copies it carries. Such a leftover is a body like a whole one for keep bounds and deaths
+    /// (`bare`).
+    pub valued: BTreeSet<usize>,
     /// Aspects none of whose deltas is held here (neither held nor dropped): a part that may
     /// still arrive late, or never, or one dropped under a cover since turned invalid
     /// (`retention::uncover`) (spec/permissions.md §5.2: a snapshot's copies of their writes
@@ -153,7 +157,7 @@ pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
 impl Meta {
     /// A commit's meta from its decoded header.
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
-        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, missing }
+        Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing }
     }
     /// The index of aspect `(tid, ak)` in the commit.
     pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
@@ -166,6 +170,11 @@ impl Meta {
     /// Whether part `ai` is held: neither dropped nor missing (a stripped one is, as its leftover).
     pub(crate) fn holds(&self, ai: usize) -> bool {
         !self.dropped.contains_key(&ai) && !self.missing.contains(&ai)
+    }
+    /// Whether part `ai` is held as a leftover with no value of its own writes: no values to keep,
+    /// so no keep bounds and no deaths.
+    pub(crate) fn bare(&self, ai: usize) -> bool {
+        self.stripped.contains(&ai) && !self.valued.contains(&ai)
     }
     /// Whether part `ai` has no body to upload or keep at hosts: dropped, or held as its leftover
     /// (spec/commits.md §5: purged, expired).
@@ -1313,8 +1322,8 @@ impl Core {
 
     fn count_bounded(&mut self, m: &Meta, add: bool) {
         for (ai, a) in m.view.aspects.iter().enumerate() {
-            // a leftover has no values to keep: no bound to judge (`deaths::bounded_part`)
-            if !a.bounded || !m.holds(ai) || m.stripped.contains(&ai) {
+            // a bare leftover has no values to keep: no bound to judge (`deaths::bounded_part`)
+            if !a.bounded || !m.holds(ai) || m.bare(ai) {
                 continue;
             }
             let k = (a.tid, a.ak.clone());

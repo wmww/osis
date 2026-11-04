@@ -1761,14 +1761,19 @@ fn expiry_merging_records_recomputes_once_spec_commits_5() {
         let mut m = Mutation::new();
         m.retention(t, &BIG, keep).unwrap();
         m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("new")) }).unwrap();
+        // a writer predating the copy-expiry rule (spec/crdt.md §4.7): the put repeating the key
+        // does not expire
+        lp.peers[0].engine.core.skip_writer_rules = true;
         lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.core.skip_writer_rules = false;
     }
     osis_node::costs::take();
     for _ in 0..2 {
         lp.advance(1000);
         lp.peers[0].engine.tick().unwrap();
     }
-    // each expiry rebuilds the aspect and dates its deaths from the bodies again
+    // each expiry rebuilds the aspect and dates its deaths from the bodies again (the puts
+    // repeating the keys lose only the copied keys: spec/crdt.md §4.7 Copies)
     let recomputes = osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
     assert_eq!(recomputes, 2, "one per expiry");
     // the entries' creations expired: value-less, they hide the entries (spec/crdt.md §5.6)

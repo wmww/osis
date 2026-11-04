@@ -464,6 +464,7 @@ pub(crate) struct RecordHead {
     pub origin: Origin,
     pub dropped: BTreeMap<usize, super::Dropped>,
     pub stripped: BTreeSet<usize>,
+    pub valued: BTreeSet<usize>,
 }
 
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
@@ -498,7 +499,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     }
     w = w.u32(m.stripped.len() as u32);
     for a in &m.stripped {
-        w = w.u32(*a as u32);
+        w = w.u32(*a as u32).u8(u8::from(m.valued.contains(a)));
     }
     w.take()
 }
@@ -631,11 +632,15 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
         dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, live: flags & 2 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, names });
     }
-    let mut stripped = BTreeSet::new();
+    let (mut stripped, mut valued) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {
-        stripped.insert(r.u32()? as usize);
+        let a = r.u32()? as usize;
+        stripped.insert(a);
+        if r.u8()? != 0 {
+            valued.insert(a);
+        }
     }
-    Ok((RecordHead { received, origin, dropped, stripped }, r.rest()))
+    Ok((RecordHead { received, origin, dropped, stripped, valued }, r.rest()))
 }
 
 /// Writes the given changes (`all`: everything) of the indexes to the persisted index.
@@ -828,7 +833,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, missing });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, stripped: head.stripped, valued: head.valued, missing });
         crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }

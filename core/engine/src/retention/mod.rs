@@ -42,7 +42,6 @@ pub(crate) use bounds::drop_from;
 use bounds::{live, snapshot_live};
 pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
 use pending::{purge_pending, strip_pending};
-use purge::drop_purged_snapshot;
 pub(crate) use purge::{counts_as_purged, known_purged, lasting, purged_aspects, purged_by, rejudge_purges, requests_resting_on, snapshot_right};
 pub(crate) use snapshot::covered;
 pub(crate) use deaths::{any_bounded, fall_moved, falls, load_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
@@ -132,27 +131,6 @@ fn snapshots_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
     core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| core.ix.commits.get(s).is_some_and(|m| m.view.kind.is_compaction())).collect()
 }
 
-/// Strips held snapshot part `(s, sai)` of the values of writes of `owned` (purged,
-/// spec/commits.md §5) if it carries any: kept as its leftover (`make_leftover`).
-fn drop_carrying(tx: &mut Tx<'_>, s: &CommitId, sai: usize, owned: &[Owned], changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    if owned.is_empty() {
-        return Ok(());
-    }
-    let mut carries = false;
-    crate::apply::each_held_piece(tx, s, sai, &mut |_, f| {
-        if !carries {
-            let mut g = f.clone();
-            g.strip(&|x| owned.iter().any(|o| o.owns(x)));
-            carries = g != f;
-        }
-        Ok(())
-    })?;
-    if carries && let Some(k) = make_leftover(tx, s, sai, Some(owned), &[])? {
-        changed.insert(k);
-    }
-    Ok(())
-}
-
 /// The actor whose readers a delta's thing has (spec/sync.md §3 entitlement): the thing if it
 /// has secrets of its own, else its owner.
 fn reader(core: &Core, tid: &Tid) -> Tid {
@@ -237,8 +215,8 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
-    // a leftover has no values to keep or drop: it stays for un-merge (spec/crdt.md §4.6)
-    if m.stripped.contains(&ai) {
+    // a bare leftover has no values to keep or drop: it stays for un-merge (spec/crdt.md §4.6)
+    if m.bare(ai) {
         return Ok(());
     }
     let (body, holders) = body_class(tx.core, &m.header, c, ai);
@@ -291,7 +269,8 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
 /// Drops the delta of aspect `ai` of `c` from its body (spec/commits.md §5): the commit is kept
 /// without it (same header), the body's death records for it shredded, the aspect rebuilt
 /// shredded with its undo buffer cleared (node-sync deletes it at hosts, judged from
-/// `Meta::body_gone`). A leftover is never dropped: it stays for un-merge (spec/crdt.md §4.6).
+/// `Meta::body_gone`). A bare leftover is never dropped: it stays for un-merge (spec/crdt.md
+/// §4.6); one holding values (`Meta::valued`) is, as a whole body.
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     drop_part_for(tx, c, ai, DropFor::Other)
 }
@@ -301,10 +280,14 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
-    if a.hashes.is_empty() || m.dropped.contains_key(&ai) || m.stripped.contains(&ai) {
+    if a.hashes.is_empty() || m.dropped.contains_key(&ai) || m.bare(ai) {
         return Ok(());
     }
     let k = (a.tid, a.ak.clone());
+    if m.stripped.remove(&ai) {
+        m.valued.remove(&ai);
+        leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
+    }
     let snapshot = m.header.kind.is_compaction();
     // what a snapshot carried goes with its body: whether it was live is kept (`snapshot_live`)
     let live = snapshot && snapshot_live(tx, &m.header, c, &[ai])?;
@@ -624,10 +607,11 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
     Ok(())
 }
 
-/// Holds part `ai` of `c` as its leftover from now on (spec/crdt.md §4.7): the values of the
-/// writes `o` owns (its own, `writes_of`; a snapshot's, the purged writes it carries; `None`: every
-/// value it carries, a snapshot a request names) go from its body and the aspect's state,
-/// shredded; `o` goes on the value-less list.
+/// Holds delta `ai` of `c` as its leftover from now on (spec/crdt.md §4.7): its own writes `o`
+/// (`writes_of`) go on the value-less list, and their values and those of every listed write it
+/// carries a copy of (an undelete's char, a key its entry's record repeats) go from its body and
+/// the aspect's state, shredded (`strip_leftover`). A copy of a write listed later goes then
+/// (`apply::rebuild`).
 ///
 /// The leftover is the body as held (whole, or a leftover already), `extra` (what a waiting part
 /// was stripped to, `pending::strip_purged`) or, dropped as covered, its held valid coverers'
@@ -641,21 +625,16 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 /// from the bodies), so an un-merge of a later write that superseded it gives it back
 /// (`apply::rebuilt`), whatever order the expiry, that write and its revocation came in.
 /// The aspect, when anything changed.
-fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: Option<&[Owned]>, extra: &[Fragment]) -> Result<Option<(Tid, Ak)>> {
+fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &[Fragment]) -> Result<Option<(Tid, Ak)>> {
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(None) };
-    if o.is_some_and(|o| o.is_empty()) {
+    if o.is_empty() {
         return Ok(None);
     }
     tx.core.touch();
     let k = (a.tid, a.ak.clone());
-    if let Some(o) = o {
-        list_valueless(tx, &a.tid, &a.ak, o);
-    }
-    // stripped of all its own writes, whichever go now: a leftover outlives the body, so a later
-    // purge of the rest has no copy here to reach
+    list_valueless(tx, &a.tid, &a.ak, o);
     let all = writes_of(&m.header, c, ai);
-    let gone = |d: &osis_crdt::Dot| o.is_none_or(|o| o.iter().any(|x| x.owns(d))) || all.iter().any(|x| x.owns(d));
     let mut body: Option<Fragment> = None;
     let mut gives: Option<crate::engine::Gives> = None;
     let held = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
@@ -706,30 +685,85 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: Option<&[Owned]>, 
         }
         return Ok(Some(k));
     };
-    body.strip(&gone);
+    strip_leftover(tx.core, &m.header, c, ai, &mut body);
+    put_leftover(tx, c, ai, m, body, gives)?;
+    // the one path (item 1): the state from the held bodies, the leftover among them, stripped
+    // by the list, shredded, its undo buffer cleared (every local copy of the values goes)
+    crate::apply::rebuild(tx, &a.tid, &a.ak, &[], true)?;
+    Ok(Some(k))
+}
+
+/// Held part `ai` of `c` carries a copy of a value of a write on its aspect's value-less list
+/// (spec/crdt.md §4.7 Copies, spec/commits.md §5: an undelete's char, a key its entry's record
+/// repeats, a snapshot's copy): held as its leftover from now on, those copies value-less, its own
+/// writes keeping their values. Store only: the caller rebuilds the aspect.
+pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
+    let mut body: Option<Fragment> = None;
+    let held = crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+        body.get_or_insert_default().join(f);
+        Ok(())
+    })?;
+    let Some(mut body) = body else { return Ok(()) };
+    tx.core.touch();
+    strip_leftover(tx.core, &m.header, c, ai, &mut body);
+    put_leftover(tx, c, ai, m, body, held.into_iter().flatten().next())
+}
+
+/// The leftover of `body`, held part `ai` of `c` (spec/crdt.md §4.7), the one strip of purge,
+/// expiry and arrival. Invariant: no held body holds the value of a write the node holds value-less
+/// (purged, expired), its own or a copy under the original's dot; no body loses a value of a write
+/// not held value-less. So its own writes lose their values only when listed (`Fragment::strip`),
+/// and every copy it carries of another listed write is held value-less as the node holds those
+/// (`Fragment::expire`), so a rebuild reads the same with it.
+fn strip_leftover(core: &Core, h: &Header, c: &CommitId, ai: usize, body: &mut Fragment) {
+    let Some(list) = h.aspects.get(ai).and_then(|a| core.ix.valueless.get(&(a.tid, a.ak.clone()))) else { return };
+    let listed = |d: &osis_crdt::Dot| list.iter().any(|x| x.owns(d));
+    let own = writes_of(h, c, ai);
+    let mine = |d: &osis_crdt::Dot| own.iter().any(|x| x.owns(d));
+    body.strip(&|d| mine(d) && listed(d));
+    body.expire(&|d| !mine(d) && listed(d));
+}
+
+/// Stores `body` as the leftover of part `ai` of `c` (meta `m`): a part held whole loses its body
+/// (the blob without the slot, shredded); one dropped as covered is held again, as its leftover.
+/// It holds values while its own writes are off the value-less list (`Meta::valued`): a body for
+/// keep bounds and deaths; bare, its death records go.
+fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::Meta, body: Fragment, gives: Option<crate::engine::Gives>) -> Result<()> {
+    let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
+    let k = (a.tid, a.ak.clone());
     leftover::put(tx, &a.tid, &a.ak, c, ai, &leftover::Leftover { fragment: body, gives })?;
-    if !m.stripped.contains(&ai) {
-        // its body goes: the blob without the slot, shredded; its death records; a part dropped
-        // as covered is held again, as its leftover
+    let valued = !writes_of(&m.header, c, ai).is_empty() && gone_of(tx.core, &m.header, c, ai).is_empty();
+    if m.stripped.contains(&ai) && m.valued.contains(&ai) == valued {
+        return Ok(());
+    }
+    let whole = m.stripped.insert(ai);
+    if valued {
+        m.valued.insert(ai);
+    } else {
+        m.valued.remove(&ai);
+    }
+    if whole {
         m.dropped.remove(&ai);
         m.missing.remove(&ai);
-        m.stripped.insert(ai);
-        if let Some(blob) = tx.get_commit(c)? {
-            let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
-            tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
-        }
-        let (body_id, _) = body_class(tx.core, &m.header, c, ai);
-        tx.core.put_meta(*c, m);
+    }
+    if let Some(blob) = tx.get_commit(c)? {
+        // its body goes: the blob without the slot, shredded
+        let (rest, shred) = if whole { (osis_commit::rewrite(&blob, |x, _| x == ai), Shred::Yes) } else { (blob, Shred::No) };
+        tx.put_commit(c, &rest, &m, shred, None)?;
+    }
+    let (body_id, _) = body_class(tx.core, &m.header, c, ai);
+    tx.core.put_meta(*c, m);
+    if !valued {
         tx.txn.drop_body(&body_id, std::slice::from_ref(&k))?;
+    }
+    if whole {
         tx.core.mark_changed(*c);
         if let Some(ch) = &mut tx.core.changed {
             ch.undropped.remove(c);
         }
     }
-    // the one path (item 1): the state from the held bodies, the leftover among them, stripped
-    // by the list, shredded, its undo buffer cleared (every local copy of the values goes)
-    crate::apply::rebuild(tx, &a.tid, &a.ak, &[], true)?;
-    Ok(Some(k))
+    Ok(())
 }
 
 /// Part `ai` of `c`, held as its leftover, gives it up: the part is missing (counts as never
@@ -744,6 +778,7 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     if !m.stripped.remove(&ai) {
         return Ok(());
     }
+    m.valued.remove(&ai);
     tx.core.touch();
     if !kept {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
@@ -780,29 +815,38 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     }
     let own = writes_of(&m.header, c, ai);
     // a snapshot a request names has no values of its own: it is dropped (the values it carries
-    // of the named deltas go with theirs, `drop_carrying`) and comes back with a fall
+    // of the named deltas go with theirs, `strip_carried`) and comes back with a fall
     if purged && own.is_empty() && m.header.kind.is_compaction() {
         if let Some(a) = m.header.aspects.get(ai) {
             changed.insert((a.tid, a.ak.clone()));
         }
         return drop_part_for(tx, c, ai, DropFor::Other);
     }
-    if let Some(k) = make_leftover(tx, c, ai, Some(&own), &[])? {
+    if let Some(k) = make_leftover(tx, c, ai, &own, &[])? {
         changed.insert(k);
     }
     Ok(())
 }
 
-/// Part `ai` of `c` holding writes the value-less list names (a late copy of an expired or purged
-/// delta, joined stripped): held as its leftover.
+/// Part `ai` of `c` just joined, carrying a value of a write the value-less list names (spec/crdt.md
+/// §4.7: joined stripped): a late copy of an expired or purged delta is held as its leftover
+/// (`make_leftover`); so is a body carrying a copy of such a value (a snapshot, an undelete's char,
+/// a key an entry's record repeats; `strip_carried`).
 fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).filter(|m| m.holds(ai) && !m.stripped.contains(&ai)) else { return Ok(()) };
     let gone = gone_of(tx.core, &m.header, c, ai);
     if gone.is_empty() {
+        let Some(k) = m.header.aspects.get(ai).map(|a| (a.tid, a.ak.clone())) else { return Ok(()) };
+        let Some(list) = tx.core.ix.valueless.get(&k).filter(|l| !l.is_empty()).cloned() else { return Ok(()) };
+        if crate::apply::carries_any(tx, c, ai, &list)? {
+            strip_carried(tx, c, ai)?;
+            crate::apply::rebuild(tx, &k.0, &k.1, &[], true)?;
+            changed.insert(k);
+        }
         return Ok(());
     }
     strip_pending(tx, c, ai, true)?;
-    if let Some(k) = make_leftover(tx, c, ai, Some(&gone), &[])? {
+    if let Some(k) = make_leftover(tx, c, ai, &gone, &[])? {
         changed.insert(k);
     }
     Ok(())
@@ -870,7 +914,6 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         }
         abs_timer(tx, id, h, ai)?;
         purge::purge_arrived(tx, id, h, ai, purged)?;
-        drop_purged_snapshot(tx, id, ai, purged)?;
         drop_gone(tx, id, ai, purged)?;
         deaths::date_arrival(tx, id, ai)?;
     }

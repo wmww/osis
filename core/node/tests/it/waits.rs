@@ -611,7 +611,11 @@ fn expired_entry_goes_with_nested_write_alike_spec_crdt_4_7() {
     let mut m = Mutation::new();
     m.retention(t, &map, r).unwrap();
     m.op(t, &map, put("b")).unwrap();
+    // a writer predating the copy-expiry rule (spec/crdt.md §4.7): the put repeating the key does
+    // not expire
+    lp.peers[1].engine.core.skip_writer_rules = true;
     let c2 = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = false;
     let p2 = packages(&mut lp, 1).into_iter().find(|p| p.id == c2).unwrap();
     lp.deliver(2, &p1).unwrap();
     lp.deliver(2, &p2).unwrap();
@@ -622,6 +626,7 @@ fn expired_entry_goes_with_nested_write_alike_spec_crdt_4_7() {
         lp.peers[p].engine.tick().unwrap();
     }
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), lp.peers[3].engine.get(&t, &map).unwrap());
+    // the put repeating the key loses only the key (spec/crdt.md §4.7 Copies)
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), Some(osis_base::Value::Map(Default::default())), "the key went with its entry");
 }
 
@@ -1239,7 +1244,11 @@ fn hidden_write_in_expired_or_purged_goes_at_compaction_spec_sync_7() {
     let mut m = Mutation::new();
     m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("KEYONE"))], op: osis_crdt::Op::Set(s("MAPEDIT")) }).unwrap();
     m.op(t, &LIST, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Index(0)], op: osis_crdt::Op::Set(s("LISTEDIT")) }).unwrap();
+    // a writer predating the copy-expiry rule (spec/crdt.md §4.7): the edit repeating the key does
+    // not expire
+    lp.peers[1].engine.core.skip_writer_rules = true;
     lp.peers[1].commit(m).unwrap().unwrap();
+    lp.peers[1].engine.core.skip_writer_rules = false;
     lp.sync_all().unwrap();
     lp.advance(2 * 3_600_000);
     lp.peers[0].engine.tick().unwrap();

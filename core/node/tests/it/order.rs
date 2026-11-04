@@ -100,6 +100,9 @@ pub(crate) enum Step {
     /// The step, its author and thing first pointed at what it can write at play time (`aim`),
     /// so that most drawn steps make a commit.
     Aim(Box<Step>),
+    /// The step by a writer predating the copy-expiry rule (spec/crdt.md §4.7: a write copying
+    /// an expiring value expires no later): played with `skip_writer_rules`.
+    Old(Box<Step>),
     /// `Write` with the aspect's schema, its sequence offsets fitted to the writer's view
     /// (`fit`). `Write` is untyped: it cannot write sequences or counters and its puts hold a
     /// map encoding beside a field write's struct encoding (a `Slots` position).
@@ -606,6 +609,13 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     // the blobs of `BadPart`, with what their authors' own copies dropped
     let mut forged: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
     for st in steps {
+        let (old, st) = match st {
+            Step::Old(x) => (true, &**x),
+            x => (false, x),
+        };
+        for p in &mut lp.peers {
+            p.engine.core.skip_writer_rules = old;
+        }
         let aimed;
         let st = match st {
             Step::Aim(x) => {
@@ -625,7 +635,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
         // why this step made no commit, when refused
         let mut no: Option<String> = None;
         let acted = match st_ {
-            Step::Aim(_) | Step::Typed { .. } | Step::NestedItem { .. } => unreachable!("aimed and twinned above"),
+            Step::Aim(_) | Step::Old(_) | Step::Typed { .. } | Step::NestedItem { .. } => unreachable!("aimed and twinned above"),
             Step::Write { by, t, op, k, v } => {
                 let mut m = Mutation::new();
                 write_op(&mut m, &mut lp.peers[by].engine, th(t), op, k, v, typed);
@@ -3515,7 +3525,11 @@ fn new_device_alike_large_spec_permissions_5_1() {
 // and after T carrying their marks, removals by writers who may fall.
 fn list_expiry_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    (0..len)
+    // a write or undo in four by a writer predating the copy expiry rule (spec/crdt.md §4.7), so
+    // readers meet carriers of an expiring value that do not expire with it; drawn from a stream
+    // of its own, so the steps stay those of the seed
+    let mut old = Rng(seed.wrapping_mul(0xd6e8_feb8_6659_fd93) | 1);
+    let steps: Vec<Step> = (0..len)
         .map(|_| {
             let by = rng.below(3) as usize;
             let to = (by + 1 + rng.below(2) as usize) % 3;
@@ -3531,7 +3545,8 @@ fn list_expiry_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
                 _ => Step::Sync { from: by, to },
             }
         })
-        .collect()
+        .collect();
+    steps.into_iter().map(|x| if matches!(&x, Step::Aim(a) if matches!(**a, Step::Typed { .. } | Step::Undo { .. })) && old.below(4) == 0 { Step::Old(Box::new(x)) } else { x }).collect()
 }
 
 #[test]
@@ -3559,6 +3574,39 @@ fn snapshot_anchor_vouch_reads_alike_seed_9200020() {
     use Step::*;
     let h = vec![Aim(Box::new(Typed { by: 1, t: 0, op: 32, k: 0, v: 3 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 1, at: 1, to_read: false })), Sync { from: 1, to: 0 }, Compact { by: 0, t: 0, op: 32 }];
     check(9200020, &h, Cfg { sync: true, ..LARGE }).unwrap();
+}
+
+// spec/crdt.md §4.7: an undo undeleting an expiring element's chars carries them under the
+// creator's dots; once both expired no held body holds them (was: the undo's leftover kept them).
+#[test]
+fn undelete_copy_expires_seed_9220029_spec_crdt_4_7() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Typed { by: 2, t: 0, op: 32, k: 0, v: 8 })), Aim(Box::new(Typed { by: 2, t: 0, op: 33, k: 0, v: 9 })), Aim(Box::new(Undo { by: 2, back: 2 }))];
+    check(9220029, &h, Cfg { sync: true, ..LARGE }).unwrap();
+}
+
+// The same with the undo undeleting chars of an earlier text set (also seed 9250009 below).
+#[test]
+fn undelete_copy_expires_seed_7520036_spec_crdt_4_7() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Typed { by: 2, t: 0, op: 32, k: 0, v: 3 })), Aim(Box::new(Typed { by: 2, t: 0, op: 33, k: 0, v: 0 })), Aim(Box::new(Typed { by: 2, t: 0, op: 33, k: 0, v: 3 })), Aim(Box::new(Undo { by: 2, back: 1 }))];
+    check(7520036, &h, Cfg { sync: true, ..LARGE }).unwrap();
+}
+
+#[test]
+fn undelete_copy_expires_seed_9250009_spec_crdt_4_7() {
+    use Step::*;
+    let h = vec![
+        Aim(Box::new(Demote { by: 2, t: 0, holder: 1, at: 2, to_read: false })),
+        Sync { from: 2, to: 1 },
+        Aim(Box::new(Typed { by: 1, t: 0, op: 32, k: 0, v: 5 })),
+        Aim(Box::new(Typed { by: 1, t: 0, op: 32, k: 0, v: 4 })),
+        Aim(Box::new(Typed { by: 2, t: 0, op: 33, k: 0, v: 9 })),
+        Aim(Box::new(Typed { by: 1, t: 0, op: 34, k: 0, v: 8 })),
+        Aim(Box::new(Typed { by: 2, t: 0, op: 32, k: 0, v: 6 })),
+        Aim(Box::new(Undo { by: 2, back: 2 })),
+    ];
+    check(9250009, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with
@@ -4450,7 +4498,8 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
 #[test]
 fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
     use Step::*;
-    let h = vec![Demote { by: 0, t: 0, holder: 2, at: 3, to_read: true }, Demote { by: 2, t: 3, holder: 2, at: 0, to_read: false }, Write { by: 1, t: 3, op: 28, k: 1, v: 0 }, Sync { from: 1, to: 0 }, Nested { by: 0, other: 1, t: 0, k: 1, text: false, compact: true, also: true }, Compact { by: 1, t: 4, op: 5 }, Write { by: 0, t: 2, op: 7, k: 1, v: 9 }, Nested { by: 0, other: 2, t: 7, k: 2, text: false, compact: true, also: true }, Roster { by: 0, t: 6 }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Write { by: 0, t: 3, op: 1, k: 0, v: 4 }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 0, t: 7, op: 5, k: 2, v: 3 }, Edge { by: 0, t: 0, holder: 1, role: None }];
+    let old = |x: Step| Old(Box::new(x));
+    let h = vec![Demote { by: 0, t: 0, holder: 2, at: 3, to_read: true }, Demote { by: 2, t: 3, holder: 2, at: 0, to_read: false }, Write { by: 1, t: 3, op: 28, k: 1, v: 0 }, Sync { from: 1, to: 0 }, old(Nested { by: 0, other: 1, t: 0, k: 1, text: false, compact: true, also: true }), Compact { by: 1, t: 4, op: 5 }, old(Write { by: 0, t: 2, op: 7, k: 1, v: 9 }), old(Nested { by: 0, other: 2, t: 7, k: 2, text: false, compact: true, also: true }), Roster { by: 0, t: 6 }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, old(Write { by: 0, t: 3, op: 1, k: 0, v: 4 }), Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, old(Write { by: 0, t: 7, op: 5, k: 2, v: 3 }), Edge { by: 0, t: 0, holder: 1, role: None }];
     let played = play(27039, &h);
     // the held set `check` failed on: neither the put (11) nor its author's nested write (13)
     let held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 15, 16, 17, 19, 21, 23];
@@ -4732,8 +4781,8 @@ fn tid_of(played: &Played, ak: &str) -> Tid {
 // spec/crdt.md §4.6, §4.7: 2 puts k0 expiring in a second, 1 writes inside it, 0 passes the
 // expiry and compacts (its copy of 2's record key-erased), then demotes 2 below the put. A node
 // that held all of it before the expiry and one given it after read alike once both are past
-// it: the key-erased copy keeps 1's write whether or not the node holds 2's put value-less yet
-// (no rebuild runs when it goes value-less).
+// it. 1's write (by a writer predating the copy-expiry rule) repeats the key: only the key goes
+// with the put, 1's value stays (spec/crdt.md §4.7 Copies).
 #[test]
 fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
     use Step::*;
@@ -4741,7 +4790,7 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
         Write { by: 2, t: 0, op: 28, k: 0, v: 0 },
         Sync { from: 2, to: 0 },
         Sync { from: 2, to: 1 },
-        Write { by: 1, t: 0, op: 4, k: 0, v: 5 },
+        Old(Box::new(Write { by: 1, t: 0, op: 4, k: 0, v: 5 })),
         Advance { who: Some(0), ms: 2000 },
         Compact { by: 0, t: 0, op: 3 },
         Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false },

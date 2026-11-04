@@ -460,6 +460,12 @@ impl OwnedSet {
     fn is_empty(&self) -> bool {
         self.commits.is_empty() && self.ranges.is_empty()
     }
+    /// Whether `f` carries a value of a write of theirs (`Fragment::strip` would change it).
+    fn valued_in(&self, f: &Fragment) -> bool {
+        let mut g = f.clone();
+        g.strip(&|d| self.owns(d));
+        g != *f
+    }
     /// `Owned::owns` of any of them.
     fn owns(&self, d: &osis_crdt::Dot) -> bool {
         if let osis_crdt::SourceKind::Commit(c) = d.src.kind()
@@ -526,6 +532,17 @@ impl Unmerge {
             f.remove_dots_keeping(&|d| self.bad(d), &|d, k| self.vouches(d, k));
         }
     }
+}
+
+/// Whether held part `ai` of `c` carries a value of a write of `owned` (`rebuild`'s invariant).
+pub(crate) fn carries_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owned: &[Owned]) -> Result<bool> {
+    let set = OwnedSet::of(owned);
+    let mut carries = false;
+    super::each_held_piece(tx, c, ai, &mut |_, f| {
+        carries = carries || set.valued_in(&f);
+        Ok(())
+    })?;
+    Ok(carries)
 }
 
 /// The owners of writes of the held deltas on `(tid, ak)` that are invalid here.
@@ -647,7 +664,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let uncarried = copies::uncarry(tx.core, &id, &h, &|ai| parts.has(ai));
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
-    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), stripped: BTreeSet::new(), missing };
+    let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), stripped: BTreeSet::new(), valued: BTreeSet::new(), missing };
     crate::retention::fetch_fallen(tx, &h, &id, &meta.missing)?;
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
@@ -1182,22 +1199,22 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
     for (tid, ak) in touched {
         // unseen: the cached state as it was, and no cost recorded
         let k = (tid, ak.clone());
-        // the value-less list is a cache of the parts' statuses: a part held as its leftover has
-        // its own writes on it, one held whole none
+        // the value-less list is a cache of the parts' statuses: a part held as a bare leftover
+        // has its own writes on it, one held whole or as a leftover holding values none
         let list = tx.core.ix.valueless.get(&k).cloned().unwrap_or_default();
         for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
             let Some(m) = tx.core.ix.commits.get(&c) else { continue };
             let Some(ai) = m.aspect(&tid, &ak) else { continue };
             let own = crate::retention::writes_of(&m.header, &c, ai);
             let on = own.iter().filter(|o| list.binary_search(o).is_ok()).count();
-            if m.stripped.contains(&ai) {
-                debug_assert_eq!(on, own.len(), "{c:?} on {tid:?} {ak:?}: held as its leftover, its writes not all value-less");
+            if m.bare(ai) {
+                debug_assert_eq!(on, own.len(), "{c:?} on {tid:?} {ak:?}: held as a bare leftover, its writes not all value-less");
             } else if m.holds(ai) {
-                debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held whole, its writes value-less");
+                debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held with values, its writes value-less");
             }
         }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
-        let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, &[], &BTreeSet::new())?.0, tx.state(&tid, &ak)?.cloned())) })?;
+        let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, &[], &BTreeSet::new(), None)?.0, tx.state(&tid, &ak)?.cloned())) })?;
         match cached.0 {
             Some(s) => tx.core.states.insert(k.clone(), s),
             None => tx.core.states.remove(&k),
@@ -1251,9 +1268,25 @@ fn text_diff(kept: &str, rebuilt: &str) -> String {
 /// every local copy of it goes (spec/commits.md §5). Its deaths are recomputed and what waits
 /// on its state judged again (deaths count only for bodies with a relative bound). Reports each
 /// valid snapshot misstating a held delta.
+///
+/// Invariant (spec/crdt.md §4.7, spec/commits.md §5; `retention::strip_leftover`): no held body
+/// carries the value of a write this node holds value-less (expired, purged), its own or a copy
+/// under the original's dot (a snapshot's, an undelete's char, a key an entry's record repeats),
+/// and none loses a value of a write not so held. Kept where it can break: while the aspect's
+/// value-less list changed in this transaction, this walk reads every held body and holds each
+/// one carrying a listed value as its leftover (`retention::strip_carried`, which lists nothing);
+/// a body arriving later is judged on its join (`retention::drop_gone`).
 pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear_undo: bool) -> Result<()> {
     let _s = crate::costs::span("rebuild");
-    let (st, misstating) = rebuilt(tx, tid, ak, gone, &BTreeSet::new())?;
+    let k = (*tid, ak.clone());
+    let listed = tx.core.valueless_dirty.contains(&k).then(|| tx.core.ix.valueless.get(&k).cloned()).flatten().filter(|l| !l.is_empty());
+    let mut carriers = Vec::new();
+    let (st, misstating) = rebuilt(tx, tid, ak, gone, &BTreeSet::new(), listed.as_deref().map(|l| (l, &mut carriers)))?;
+    for (c, ai) in &carriers {
+        crate::retention::strip_carried(tx, c, *ai)?;
+    }
+    // a local copy of a stripped value goes too
+    let clear_undo = clear_undo || !carriers.is_empty();
     let now = tx.now();
     for s in misstating {
         let peer = tx.core.ix.commits.get(&s).map(|m| m.view.author);
@@ -1266,14 +1299,19 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
     Ok(())
 }
 
+/// `rebuilt`'s request for the held parts carrying a value of a write the list names, and where
+/// they go.
+pub(crate) type Carrying<'a> = (&'a [Owned], &'a mut Vec<(CommitId, usize)>);
+
 /// What `rebuild` writes, and the valid snapshots misstating a held delta other than by
 /// value-less copies. A held
 /// delta's writes under a dot a held valid snapshot misstates (`copies::misstated_in`) count
 /// for nothing: the snapshots' copies govern, joined by the copy order (spec/permissions.md
 /// §5.2). Under a dot any held snapshot misstates the current state's writes go first, so the
 /// held bodies give them again. The held bodies of `skip` are left out (their writes must be in
-/// `gone`).
-pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip: &BTreeSet<CommitId>) -> Result<(Option<Fragment>, BTreeSet<CommitId>)> {
+/// `gone`). `carrying`: every held body is read, and those carrying a value of a write the list
+/// given names go in the vector, invalid ones included (`rebuild`'s invariant).
+pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip: &BTreeSet<CommitId>, mut carrying: Option<Carrying<'_>>) -> Result<(Option<Fragment>, BTreeSet<CommitId>)> {
     // newest first (a join does not depend on the order), for `Fragment::settled_above`
     let held: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().copied().collect()).unwrap_or_default();
     // snapshots held: their copies are judged against the deltas, read whole below
@@ -1353,8 +1391,9 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
     // the bodies a piece at a time, until none can change a settled state (debug builds: all of
     // them, checking that)
     let mut settled = None;
+    let listed = carrying.as_ref().map(|(l, _)| OwnedSet::of(l));
     for (ts, c) in &held {
-        if !copies && settled.is_none() && st.settled_above(*ts) {
+        if !copies && listed.is_none() && settled.is_none() && st.settled_above(*ts) {
             if !cfg!(debug_assertions) {
                 break;
             }
@@ -1363,11 +1402,22 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
         let _s = settled.is_none().then(|| crate::costs::span("rebuild: body"));
         let Some((ai, snap, valid)) = joining(tx, c)? else { continue };
         debug_assert!(copies || !snap, "snapshot {c:?} of {tid:?} {ak:?} held and stored, not in `ix.snapshots`");
-        if snap && !valid {
+        // an invalid snapshot joins nothing, but its body is held
+        let joins = !snap || valid;
+        if !joins && listed.is_none() {
             continue;
         }
         let own = strip_own.get(c);
+        let mut carries = false;
         super::each_held_piece(tx, c, ai, &mut |_, mut f| {
+            if let Some(l) = &listed
+                && !carries
+            {
+                carries = l.valued_in(&f);
+            }
+            if !joins {
+                return Ok(());
+            }
             if let Some(dots) = own {
                 f.strip_forged(&|d| dots.contains(d));
             }
@@ -1379,6 +1429,9 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
             st.join_into(f, None, &mut ch);
             Ok(())
         })?;
+        if carries && let Some((_, out)) = &mut carrying {
+            out.push((*c, ai));
+        }
     }
     debug_assert!(settled.as_ref().is_none_or(|x| *x == st), "a rebuild of {tid:?} {ak:?} stopped early: {settled:?}, all bodies {st:?}");
     strip_valueless(tx.core, tid, ak, &mut st);

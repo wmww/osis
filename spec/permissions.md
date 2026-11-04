@@ -336,7 +336,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - **Judgment** follows the role timeline the node holds, in any arrival order:
   - A named delta a request comes to drop is dropped then.
   - A delta held as its leftover for a request when no held request drops it any more counts as never received (spec/commits.md §5): its leftover is set aside and it is no longer held value-less, the node fetches it again where present and takes it from a holder's upload (spec/sync.md §6).
-  - A held snapshot body stripped for carrying a purged value is asked for again with any such fall, and stripped again on arrival if it carries another's.
+  - A held body stripped for carrying a purged value (a snapshot, a delta carrying a copy, spec/crdt.md §4.7) is asked for again with any such fall, and stripped again on arrival if it carries another's.
   - A body no node holds stays gone; the delta then reads as never received.
   - Held value-less again before a copy comes, it holds the leftover it set aside, as at a node that never saw the fall; a snapshot's part dropped as named stands in again (spec/commits.md §4) with no copy.
 - **Who may undo a purge so**: the author of a demotion, whose frontier omits the request. A frontier may list a message and omit its purge, and the message is back wherever a copy is left. A memory delta vanished stays gone.

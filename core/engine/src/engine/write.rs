@@ -750,11 +750,32 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Vec<CommitId
             check_authority(tx.core, node, &base.creates, &tid, ak.as_str(), ts)?;
         }
         let (r, e) = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
+        // a write copying an expiring value expires no later (spec/crdt.md §4.7): split off into a
+        // delta of its own per such expiry, the rest keeping theirs; a required expiry
+        // (spec/commits.md §5) stands
+        let mut copies: BTreeMap<u64, Vec<PathOp>> = BTreeMap::new();
+        if kind == Kind::Content && !memory && !tx.core.skip_writer_rules && crate::apply::validity::required_now(tx.core, &tid, &ak, node, ts).is_none() {
+            let form = if m.commit_form { Form::Commit } else { Form::Session(tx.core.session.nonce) };
+            let ts_of = copy_expiry(tx, &tid, &ak, &am, form, node, ts)?;
+            let mut rest = Vec::with_capacity(am.ops.len());
+            for (op, t) in std::mem::take(&mut am.ops).into_iter().zip(ts_of) {
+                match t.filter(|t| e.is_none_or(|e| *t < e)) {
+                    Some(t) => copies.entry(t).or_default().push(op),
+                    None => rest.push(op),
+                }
+            }
+            am.ops = rest;
+        }
+        for (t, ops) in copies {
+            let (r, e) = settle(tx.core, memory, kind, ts, node, &tid, &ak, am.schema.as_deref(), Some(r), Some(t))?;
+            aspects.push(((tid, ak.clone()), AspectMut { ops, schema: am.schema.clone(), retention: Some(r), expires: e, default_expiry: am.default_expiry }, false));
+        }
+        // the dead resets and sweep (below) go with the rest, however few ops it keeps
         (am.retention, am.expires) = (Some(r), e);
-        aspects.push(((tid, ak), am));
+        aspects.push(((tid, ak), am, true));
     }
     // one commit per expiry and `nobody` class (spec/commits.md §5, §6)
-    let entries: Vec<(Tid, &Ak, Class)> = aspects.iter().map(|((t, ak), am)| (*t, ak, class_of(ak, &am.retention.unwrap_or_default(), am.expires))).collect();
+    let entries: Vec<(Tid, &Ak, Class)> = aspects.iter().map(|((t, ak), am, _)| (*t, ak, class_of(ak, &am.retention.unwrap_or_default(), am.expires))).collect();
     let (commits, of) = split(&entries, !base.purge.is_empty())?;
     // role commits use commit form: a later commit by the same node can never void them by
     // reusing their counters; content commits write under this open's session unless asked
@@ -774,7 +795,12 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Vec<CommitId
     let mut next_ctr = vec![1u64; plans.len()];
     let mut deltas: Vec<Vec<Resolved>> = plans.iter().map(|_| Vec::new()).collect();
     let published = super::secrets::published_keys(tx, &base.creates, aspects.iter().map(|k| k.0.0))?;
-    for (((tid, ak), mut am), g) in aspects.into_iter().zip(of) {
+    // resolved in commit order: deltas of one aspect in several commits take a session's counters
+    // in the order the commits are built
+    let mut aspects: Vec<_> = aspects.into_iter().zip(of).collect();
+    aspects.sort_by_key(|x| x.1);
+    let mut session_next: BTreeMap<(Tid, Ak), u64> = BTreeMap::new();
+    for (((tid, ak), mut am, rest), g) in aspects {
         let plan = plans.get(g).ok_or(Error::Misuse("split"))?;
         let form = plan.form;
         // what a `required.0^` delta says is judged from that delta alone: it writes the whole value
@@ -827,7 +853,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Vec<CommitId
         let lo = match form {
             Form::Commit => next_ctr.get(g).copied().unwrap_or(1),
             // a session's counters: memory rows, gone with the session
-            Form::Session(n) => tx.txn.counter(&tid, &ak, &n)?,
+            Form::Session(n) => match session_next.get(&(tid, ak.clone())) {
+                Some(x) => *x,
+                None => tx.txn.counter(&tid, &ak, &n)?,
+            },
         };
         let empty = Fragment::default();
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
@@ -843,7 +872,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Vec<CommitId
         };
         let out = tx.run_attached(&tid, &ak, attached, run)??;
         let w2 = Writer::new(ts, own_source(form, node), lo).keyed_removals(keyed);
-        let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| !d.is_empty())) {
+        let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| rest && !d.is_empty())) {
             (o, None) => o,
             (Some((mut f, r)), Some(ds)) => {
                 f.join(osis_crdt::reset_entries(&w2, ds));
@@ -851,12 +880,15 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Vec<CommitId
             }
             (None, Some(ds)) => Some((osis_crdt::reset_entries(&w2, ds), w2.range())),
         };
-        let out = if m.sweeps.contains(&(tid, ak.clone())) { sweep_of(tx, &tid, &ak, &w2.delta_stamp())?.map(|f| (f, w2.range())) } else { out };
+        let out = if rest && m.sweeps.contains(&(tid, ak.clone())) { sweep_of(tx, &tid, &ak, &w2.delta_stamp())?.map(|f| (f, w2.range())) } else { out };
         let Some((fragment, range)) = out else { continue };
         if form == Form::Commit
             && let Some(n) = next_ctr.get_mut(g)
         {
             *n = range.hi;
+        }
+        if matches!(form, Form::Session(_)) {
+            session_next.insert((tid, ak.clone()), range.hi);
         }
         if let Some(s) = &am.schema {
             keep_schema(tx, s, false)?;
@@ -892,6 +924,61 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Vec<CommitId
     }
     check_synced(tx.core, &m.synced)?;
     Ok(ids)
+}
+
+/// Per op of `am` on `(tid, ak)`, the earliest expiry still ahead among the writes whose values
+/// it would carry a copy of under their dots (a key its entry's record repeats, an undelete's char;
+/// spec/crdt.md §4.7). Each op is resolved alone against the whole state, only where a held delta
+/// of the aspect has an expiry ahead; when one does not resolve alone (it builds on an earlier op
+/// of the write), the earliest over the whole delta for every op.
+fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, form: Form, node: Tid, ts: Ts) -> Result<Vec<Option<u64>>> {
+    let now = tx.now().0;
+    let k = (*tid, ak.clone());
+    let expiring = tx.core.ix.by_aspect.get(&k).into_iter().flatten().any(|(_, c)| tx.core.ix.commits.get(c).is_some_and(|m| m.header.expires.is_some_and(|t| t > now)));
+    if !expiring {
+        return Ok(vec![None; am.ops.len()]);
+    }
+    let lo = match form {
+        Form::Commit => 1,
+        Form::Session(n) => tx.txn.counter(tid, ak, &n)?,
+    };
+    let state = tx.state(tid, ak)?.cloned().unwrap_or_default();
+    let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
+    let run = |ops: &[PathOp]| {
+        let w = Writer::new(ts, own_source(form, node), lo).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
+        match &view {
+            Some(v) => run_ops(&state, w, ops, v),
+            None => run_ops(&state, w, ops, &AnyView),
+        }
+    };
+    let earliest = |tx: &Tx<'_>, f: &Fragment| {
+        let mut owners = BTreeSet::new();
+        f.owner_dots(&mut owners);
+        let mut first: Option<u64> = None;
+        for d in owners {
+            let Some(Some(t)) = tx.core.write_expiry(tid, ak, &d) else { continue };
+            if t <= now || first.is_some_and(|x| x <= t) {
+                continue;
+            }
+            let mut g = f.clone();
+            g.strip(&|x| *x == d);
+            if g != *f {
+                first = Some(t);
+            }
+        }
+        first
+    };
+    let mut out = Vec::with_capacity(am.ops.len());
+    for op in &am.ops {
+        match run(std::slice::from_ref(op)) {
+            Ok(r) => out.push(r.and_then(|(f, _)| earliest(tx, &f))),
+            Err(_) => {
+                let whole = run(&am.ops)?.and_then(|(f, _)| earliest(tx, &f));
+                return Ok(vec![whole; am.ops.len()]);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The one commit of `ids`, if any; `Misuse` for several (a write that splits).

@@ -219,7 +219,7 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
         let kept: Vec<Fragment> = joined.iter().filter(|x| x.0 == ai).map(|x| x.1.clone()).collect();
         let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { continue };
         let own = writes_of(&h, id, ai);
-        if let Some(k) = make_leftover(tx, id, ai, Some(&own), &kept)? {
+        if let Some(k) = make_leftover(tx, id, ai, &own, &kept)? {
             changed.insert(k);
         }
         if let Some(a) = h.aspects.get(ai)
