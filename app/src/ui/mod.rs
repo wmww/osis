@@ -21,7 +21,7 @@ use osis::core::{BODY, NAME};
 use osis::{Path, Splice, Subscription, TextSession, Tid};
 use osis_kit::marshal::{Inbox, Mailbox};
 use osis_kit::masonry::core::{ErasedAction, NewWidget, Widget, WidgetId, WidgetTag};
-use osis_kit::masonry::widgets::{Label, SizedBox, TextAction, TextArea};
+use osis_kit::masonry::widgets::{Prose, SizedBox, TextAction, TextArea};
 use osis_kit::masonry_winit::app::{AppDriver, DriverCtx, WindowId};
 use osis_kit::theme::{Look, Mode, Theme, parse};
 use osis_kit::widgets::{Blur, ChipPress, IconButton, Press, Reorder, Root};
@@ -352,7 +352,7 @@ impl Ui {
         if root.get_widget_with_tag(STATUS).is_some() {
             root.edit_widget_with_tag(STATUS, |mut b| {
                 if let Some(mut l) = SizedBox::child_mut(&mut b) {
-                    Label::set_text(&mut l.downcast(), s);
+                    TextArea::reset_text(&mut Prose::text_mut(&mut l.downcast()), &s);
                 }
             });
         }

@@ -172,11 +172,11 @@ impl Ui {
         if l.edited {
             head.push_str(" · edited");
         }
-        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(4.0))).with_child(style::label(&look, &head, Text::Small));
+        let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(4.0))).with_child(style::prose(&look, &head, Text::Small));
         if let Some((_, to)) = &l.reply_to {
-            col = col.with_child(style::wrapped(&look, &format!("↩ {to}"), Text::Muted));
+            col = col.with_child(style::prose(&look, &format!("↩ {to}"), Text::Muted));
         }
-        col = col.with_child(style::wrapped(&look, &l.text, Text::Body));
+        col = col.with_child(style::prose(&look, &l.text, Text::Body));
         let reply = NewWidget::new(osis_kit::widgets::Chip::new("Reply", None, osis_kit::widgets::ChipMark::Icon(Icon::Back), look.clone()).flat(true));
         let row = Flex::row().with_flex_spacer(1.0).with_child(self.act(reply, Act::Reply(Some(l.id))));
         col = col.with_child(NewWidget::new(row));

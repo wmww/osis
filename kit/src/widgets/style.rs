@@ -6,7 +6,7 @@ use masonry::core::{NewWidget, Properties, StyleProperty};
 use masonry::parley::FontWeight;
 use masonry::peniko::Color;
 use masonry::properties::{Background, BorderWidth, CaretColor, ContentColor, Padding, PlaceholderColor, SelectionColor, UnfocusedSelectionColor};
-use masonry::widgets::{InsertNewline, Label, TextArea, TextInput};
+use masonry::widgets::{InsertNewline, Label, Prose, TextArea, TextInput};
 
 /// What a piece of text is, for its size, weight and colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,11 +55,16 @@ pub fn label(look: &Look, text: &str, t: Text) -> NewWidget<Label> {
     NewWidget::new_with_props(l, Properties::new().with(ContentColor::new(color)).with(Padding::all(0.0)))
 }
 
-/// `label` broken at word boundaries to its width (running text).
-pub fn wrapped(look: &Look, text: &str, t: Text) -> NewWidget<Label> {
-    let mut l = label(look, text, t);
-    l.properties.insert(masonry::properties::LineBreaking::WordWrap);
-    l
+/// Read-only text in a text role that can be selected and copied (click, then Ctrl+C), broken at
+/// word boundaries. It takes all the width it is offered: not for a non-flex child of a row.
+pub fn prose(look: &Look, text: &str, t: Text) -> NewWidget<Prose> {
+    let (size, weight, color) = role(look, t);
+    let area = TextArea::new_immutable(text).with_style(StyleProperty::FontSize(size)).with_style(StyleProperty::FontWeight(FontWeight::new(weight))).with_style(font_stack(look));
+    let props = Properties::new()
+        .with(ContentColor::new(color))
+        .with(SelectionColor { color: look.selection })
+        .with(UnfocusedSelectionColor(SelectionColor { color: crate::theme::fade(look.selection, 0.5) }));
+    NewWidget::new(Prose::from_text_area(NewWidget::new_with_props(area, props)))
 }
 
 /// The accent's mark above a screen's title: a rule in the main colour (rule), a bar (bar), an

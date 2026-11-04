@@ -331,7 +331,7 @@ impl Ui {
         let mut col = Flex::column().cross_axis_alignment(CrossAxisAlignment::Fill).with_gap(Length::px(look.sp(8.0)));
         for b in &c.blocks {
             match b {
-                Block::Line(s) => col = col.with_child(style::label(&look, s, Text::Muted)),
+                Block::Line(s) => col = col.with_child(style::prose(&look, s, Text::Muted)),
                 Block::Label(s) => col = col.with_child(style::label(&look, s, Text::Section)),
                 Block::Tiles { tiles, grid, new, favorites } => {
                     if tiles.is_empty() && !new {
