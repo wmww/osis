@@ -376,7 +376,6 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
             if !un.in_place() {
                 rebuild(tx, &tid, &ak)?;
             }
-            unmerged_as_rebuilt(tx, &tid, &ak)?;
             unmerged(tx, &tid, &ak, j)?;
         }
         return Ok(());
@@ -1166,9 +1165,7 @@ pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid
 /// Whether the state may have changed.
 pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fragment>) -> Result<bool> {
     let un = Unmerge::of(tx, tid, ak)?;
-    let changed = unmerge_part(tx, tid, ak, &un, fell)?;
-    unmerged_as_rebuilt(tx, tid, ak)?;
-    Ok(changed)
+    unmerge_part(tx, tid, ak, &un, fell)
 }
 
 /// `unmerge_fell` of the held deltas `parts` that turned invalid on `(tid, ak)`: a paged state a
@@ -1193,11 +1190,11 @@ pub(crate) fn unmerge_fallen(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, parts: &[(Comm
     if whole {
         unmerge_part(tx, tid, ak, &un, None)?;
     }
-    unmerged_as_rebuilt(tx, tid, ak)
+    Ok(())
 }
 
-/// `unmerge_fell` without its check: an invalid delta streamed a piece at a time un-merges after
-/// each piece's join, and only once its last piece joined is the state what a rebuild gives
+/// `unmerge_fell`'s pass: an invalid delta streamed a piece at a time un-merges after each
+/// piece's join, and only once its last piece joined is the state what a rebuild gives
 /// (the rebuild drops at once every write under the delta's creations, those in pages a later
 /// piece loads too). Rebuilds where removing in place cannot give the join (`Unmerge::in_place`,
 /// or one of the writes superseded another in the state).
@@ -1230,23 +1227,6 @@ fn unmerge_part(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, un: &Unmerge, fell: Option<
     Ok(in_place == Some(true))
 }
 
-/// Debug builds: the state of `(tid, ak)` after an un-merge in place is what rebuilding gives,
-/// as stored: a reopen forgets a deleted text element's char (spec/crdt.md §5.7, its creation's
-/// body gives it back on a rebuild, and only a fallen delete needs it: that rebuilds), so a state
-/// reopened and one kept in memory differ there and read alike.
-fn unmerged_as_rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    #[cfg(debug_assertions)]
-    {
-        use crate::engine::state::encode;
-        let want = rebuilt(tx, tid, ak, &[], &BTreeSet::new())?.0;
-        let got = tx.state(tid, ak)?;
-        debug_assert!(got.map(encode).transpose()? == want.as_ref().map(encode).transpose()?, "in-place un-merge of {tid:?} {ak:?} differs from a rebuild:\n  in place {got:?}\n  rebuilt  {want:?}");
-    }
-    #[cfg(not(debug_assertions))]
-    let _ = (tx, tid, ak);
-    Ok(())
-}
-
 /// Debug builds, at the end of every transaction (issues/drop-rejoin-robust.md, item 5): each
 /// aspect it touched (below) holds what a rebuild from what the
 /// node holds gives (`rebuilt`: spec/crdt.md §4.6 Un-merge), as stored, but for the text chars
@@ -1256,9 +1236,10 @@ fn unmerged_as_rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 #[cfg(debug_assertions)]
 pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
     use crate::engine::state::encode;
-    // aspects a new commit names, sampled unless a part's status (valid, dropped, missing)
-    // changed there too; the rest (such a change, a state written otherwise) always
-    let mut fresh: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    // per aspect, the new commits joining it whole and valid (`fresh`: sampled below), and
+    // whether some other change touched it (a part's status, valid, dropped or missing, changed
+    // or arrived otherwise; a state written otherwise: always checked)
+    let mut fresh: BTreeMap<(Tid, Ak), usize> = BTreeMap::new();
     let mut always: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let status = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.missing.contains(&ai));
     for (id, old) in tx.core.ix.commits.before() {
@@ -1267,18 +1248,27 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
             match (old, new) {
-                (None, _) => fresh.insert(k),
-                (Some(o), n) if n.is_none_or(|n| status(n, ai) != status(o, ai)) => always.insert(k),
-                _ => false,
-            };
+                (None, Some(n)) if status(n, ai) == (true, false, false) => *fresh.entry(k).or_default() += 1,
+                (Some(o), Some(n)) if status(n, ai) == status(o, ai) => {}
+                _ => {
+                    always.insert(k);
+                }
+            }
         }
     }
-    // a wrong state stays wrong, so a later sample still sees it: sampled when the held
-    // commits number a power of four (O(1) bodies read per commit; at every commit the check
-    // cost about 40% more tier-1 CPU, at powers of two 20%)
+    // a wrong state stays wrong, so a later sample still sees it: an aspect only new commits
+    // joined is checked when its held commits passed a power of four (O(1) bodies read per
+    // commit; at every commit the check cost about 40% more tier-1 CPU, at powers of two 20%)
     let core = &*tx.core;
-    let sampled = |k: &(Tid, Ak)| always.contains(k) || !fresh.contains(k) || core.ix.by_aspect.get(k).is_none_or(|s| s.len().is_power_of_two() && s.len().trailing_zeros() % 2 == 0);
-    let touched: BTreeSet<(Tid, Ak)> = core.written.iter().chain(&fresh).filter(|k| sampled(k)).cloned().chain(always.iter().cloned()).collect();
+    let quarters = |n: usize| if n == 0 { 0 } else { n.ilog2() / 2 + 1 };
+    let sampled = |k: &(Tid, Ak)| match fresh.get(k) {
+        Some(added) if !always.contains(k) => {
+            let n = core.ix.by_aspect.get(k).map_or(0, |s| s.len());
+            quarters(n) != quarters(n.saturating_sub(*added))
+        }
+        _ => true,
+    };
+    let touched: BTreeSet<(Tid, Ak)> = core.written.iter().chain(fresh.keys()).chain(&always).filter(|k| sampled(k)).cloned().collect();
     for (tid, ak) in touched {
         // unseen: the cached state as it was, and no cost recorded
         let k = (tid, ak.clone());
