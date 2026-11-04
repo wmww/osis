@@ -594,8 +594,9 @@ fn ephemeral_placement_lists_without_commit_spec_data_model_8() {
 }
 
 // notes/ephemeral.md Persistence, Ephemeral placements: persisting a placed ephemeral thing
-// writes its `created.0` and the durable `group.0` add (with the placement's expiry) in one
-// commit, and the ephemeral element goes. spec/data-model.md §8, spec/commits.md §2, §6
+// writes its `created.0` and the durable `group.0` adds, an expiring one in a commit of its own
+// (one expiry per commit), and the ephemeral element goes. spec/data-model.md §8, spec/commits.md
+// §2, §6
 #[test]
 fn persisting_makes_placements_durable_spec_data_model_8() {
     let (db, _c) = setup(31);
@@ -611,14 +612,18 @@ fn persisting_makes_placements_durable_spec_data_model_8() {
     db.write_with(|w| w.place(t, home)).unwrap();
     db.write_with(|w| w.place_expiring(t, g, Some(Duration::from_secs(3600)))).unwrap();
     let n = db.engine(|e| e.commit_ids().len());
-    db.write_with(|w| w.at(t, saved.clone()).set(&s("x"))).unwrap();
-    assert_eq!(db.engine(|e| e.commit_ids().len()), n + 1, "one commit");
+    let done = commit_with(&db, |w| w.at(t, saved.clone()).set(&s("x")));
+    assert_eq!(db.engine(|e| e.commit_ids().len()), n + 2, "two commits");
     let c = db.created(t).unwrap().commit.expect("persisted");
+    assert_eq!(done.id.commit(), Some(c), "the creating commit first");
     let h = db.engine(|e| e.header(&c)).unwrap();
     let entry = |tid: osis::Tid, a: &str| h.aspects.iter().find(|x| x.tid == tid && x.ak.as_str() == a).cloned();
-    assert!(entry(t, "created.0").is_some());
-    assert_eq!(entry(home, "group.0").expect("home add").expires, None);
-    assert_eq!(entry(g, "group.0").expect("g add").expires, Some(T0 + 3_600_000));
+    assert!(entry(t, "created.0").is_some() && entry(home, "group.0").is_some() && entry(g, "group.0").is_none());
+    assert_eq!(h.expires, None);
+    let [x] = done.also.as_slice() else { panic!("one more commit") };
+    let hx = db.engine(|e| e.header(x)).unwrap();
+    assert!(hx.aspects.iter().all(|a| a.tid == g && a.ak.as_str() == "group.0"));
+    assert_eq!(hx.expires, Some(T0 + 3_600_000));
     assert!(durable_items(&db, home).contains(&t) && durable_items(&db, g).contains(&t));
     // the ephemeral side no longer names it: removing the durable element removes it
     db.write_with(|w| w.unplace(t, home)).unwrap();

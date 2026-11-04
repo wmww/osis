@@ -369,7 +369,7 @@ impl Engine {
             .filter_map(|(_, c)| {
                 let m = self.core.ix.commits.get(c).filter(|m| m.view.memory && !m.view.kind.is_compaction())?;
                 let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
-                m.header.aspects.get(ai).filter(|a| a.expires.is_none())?;
+                m.header.aspects.get(ai).filter(|_| m.header.expires.is_none())?;
                 Some((*c, ai))
             })
             .collect();
@@ -383,7 +383,7 @@ impl Engine {
             // session (a hole its frontier cannot pass) is held until that body turns valid,
             // and must not make the trigger fire on every step
             let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
-            let left_out = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).and_then(|ai| m.header.aspects.get(ai)).is_some_and(|a| a.expires.is_some()));
+            let left_out = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some() && m.header.expires.is_some());
             let (_, reflected) = crate::retention::frontiers_now(tx, &tid, &ak, true, &valid_on, &left_out);
             let (mut sum, mut largest) = (0usize, 0usize);
             for (c, ai) in ids.iter().filter(|(c, _)| reflected.contains(c)) {

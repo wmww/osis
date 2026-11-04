@@ -169,7 +169,7 @@ fn reader(core: &Core, tid: &Tid) -> Tid {
 /// a part's death record with its aspect: a class moves as records and keys arrive (`reader`), a
 /// death record must not.
 pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (BlobId, Vec<usize>) {
-    let key = |a: &osis_commit::AspectEntry| (reader(core, &a.tid), a.retention, a.expires, a.keys.clone());
+    let key = |a: &osis_commit::AspectEntry| (reader(core, &a.tid), a.retention, a.keys.clone());
     let Some(me) = h.aspects.get(ai) else { return (BlobId(c.0), vec![ai]) };
     let k = key(me);
     let holders: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();
@@ -860,8 +860,10 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
 /// (`drop_gone`).
 fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, purged: &mut BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     for ai in ais.iter().copied() {
-        let Some(a) = h.aspects.get(ai) else { continue };
-        if let Some(t) = a.expires {
+        if h.aspects.get(ai).is_none() {
+            continue;
+        }
+        if let Some(t) = h.expires {
             if t <= tx.now().0 {
                 hold_valueless(tx, id, ai, false, purged)?;
             } else {

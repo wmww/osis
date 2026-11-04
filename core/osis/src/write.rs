@@ -1,5 +1,6 @@
 //! Writes (notes/api.md Writes): a `Write` batch becomes one atomic commit over every touched
-//! thing, of any size. `set` makes a value equal (structural diff, spec/crdt.md §9), `edit`
+//! thing, of any size, or one per expiry and per `nobody` or other purgeable-by among its writes
+//! (spec/commits.md §5, §6), the creating one first. `set` makes a value equal (structural diff, spec/crdt.md §9), `edit`
 //! writes only what changed between what the app showed and what the user produced, `replace`
 //! resets then writes, path ops change one position. Rights are checked locally before signing.
 //!
@@ -23,10 +24,15 @@ use std::time::Duration;
 
 /// A written batch: its commit, or its ephemeral batch when it had no durable half
 /// (notes/ephemeral.md).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Committed {
+    /// The first commit (it carries the records of the things the batch creates).
     pub id: ChangeId,
     pub ts: Ts,
+    /// The batch's other commits: its durable writes go as one commit per expiry and per
+    /// `nobody` or other purgeable-by (spec/commits.md §5, §6). Each is a change of its own:
+    /// history lists it, `revert` takes it alone.
+    pub also: Vec<osis_base::CommitId>,
 }
 
 /// One API op of a batch in wire-ready form: tids resolved, aspects by index into the batch's
@@ -251,9 +257,10 @@ impl<'d> Write<'d> {
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
         self.place_expiring(tid, g, None)
     }
-    /// `place` whose placement expires after `expires` (`None`: never). Expiry is per aspect
-    /// write, so every group call on `g` in this batch must ask for the same expiry (else
-    /// `Invalid`).
+    /// `place` whose placement expires after `expires` (`None`: never). Expiry is per commit,
+    /// and a batch's writes of one aspect are one delta, so every group call on `g` in this batch
+    /// must ask for the same expiry (else `Invalid`); a placement expiring otherwise than the
+    /// batch's other writes goes in a commit of its own (`Committed::also`).
     pub fn place_expiring(&mut self, tid: Tid, g: Tid, expires: Option<Duration>) -> Result<()> {
         self.group(g, true, tid, true, expires)
     }
@@ -310,7 +317,8 @@ impl<'d> Write<'d> {
         self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { owner, .. }) = o { Some(*owner) } else { None }).filter(|t| !self.created.contains(t)).collect()
     }
 
-    /// Writes every op: the durable ones as one atomic commit, the ephemeral ones in memory;
+    /// Writes every op: the durable ones as one atomic commit per expiry and `nobody` class
+    /// (`Committed::also`), the ephemeral ones in memory;
     /// `None` when nothing changes. Fails before anything applies with `Permission`,
     /// `UnknownThing` or `Invalid`; `OutcomeUnknown`, only through another node, may have applied:
     /// read before repeating it (crate::port::client).
@@ -349,7 +357,7 @@ impl<'d> Write<'d> {
                     if w.id.commit().is_some() {
                         not_synced(e, &placed, sharing);
                     }
-                    Some(Committed { id: w.id, ts: w.ts })
+                    Some(Committed { id: w.id, ts: w.ts, also: w.also })
                 }
                 None => None,
             };
@@ -727,7 +735,9 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         Ok(())
     }
 
-    /// This write's delta expires at `t` (spec/commits.md §6); default from the key.
+    /// This write's delta expires at `t` (spec/commits.md §6); default from the key. Writes of
+    /// one batch with different expiries go as different commits (`Committed::also`): creating
+    /// a thing with expiring content takes two, its record first.
     /// Fails the following op with `Invalid` when `t` is not in the future.
     pub fn expires_at(mut self, t: WallMs) -> Self {
         if let Ok(key) = self.ix {

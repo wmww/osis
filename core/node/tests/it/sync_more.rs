@@ -1148,7 +1148,7 @@ fn purged_chunk_reused_concurrently_is_reencrypted_spec_sync_1() {
 fn own_writes(net: &mut Net, n: usize, t: osis_base::Tid, ak: &Ak) -> Vec<Option<u64>> {
     let me = net.tid(n);
     let ids = net.engine(n).commit_ids();
-    ids.iter().filter_map(|c| net.engine(n).header(c)).filter(|h| h.author == me).filter_map(|h| h.aspects.iter().find(|a| a.tid == t && a.ak == *ak).map(|a| a.expires)).collect()
+    ids.iter().filter_map(|c| net.engine(n).header(c)).filter(|h| h.author == me).filter_map(|h| h.aspects.iter().find(|a| a.tid == t && a.ak == *ak).map(|_| h.expires)).collect()
 }
 
 /// A writer `b` edits an untyped `{big, note}` value offline, reusing v1's chunks, while the

@@ -43,15 +43,15 @@ fn fixed_len(c: &CommitBlob) -> usize {
 }
 
 /// The prefix inputs any blob of `h` holding `parts` must carry: the expiry and the delete keys
-/// of their one retention class (spec/wire.md §4, spec/sync.md §3). Parts of different classes
-/// (retention, expiry or key set) in one blob are bad input. Zero parts: none.
+/// of their one retention class (spec/wire.md §4, spec/sync.md §3): the commit's expiry. Parts of
+/// different classes (retention or key set) in one blob are bad input. Zero parts: none.
 pub fn prefix_inputs(h: &Header, parts: &[(usize, usize)]) -> Result<(Option<u64>, Vec<DeleteKey>), Error> {
     let mut class: Option<&AspectEntry> = None;
     for (ai, _) in parts {
         let a = h.aspects.get(*ai).ok_or(Error::Malformed("part aspect index out of range"))?;
         match class {
             None => class = Some(a),
-            Some(c) if (c.retention, c.expires, &c.keys) != (a.retention, a.expires, &a.keys) => {
+            Some(c) if (c.retention, &c.keys) != (a.retention, &a.keys) => {
                 return Err(Error::Invalid("one blob holding deltas of several retention classes"));
             }
             Some(_) => {}
@@ -59,16 +59,15 @@ pub fn prefix_inputs(h: &Header, parts: &[(usize, usize)]) -> Result<(Option<u64
     }
     let Some(c) = class else { return Ok((None, Vec::new())) };
     let keys = c.keys.iter().map(|i| h.keys.get(*i).copied().ok_or(Error::Malformed("delete key index out of range"))).collect::<Result<Vec<_>, _>>()?;
-    Ok((blob_expiry(h, c), keys))
+    Ok((blob_expiry(h), keys))
 }
 
-/// The prefix expiry of a blob holding aspect `a` of `h`: the aspect's `expires`; for a
-/// relay-only commit (which has none) `ts + MAX_DRIFT`, the end of its replay window
-/// (spec/wire.md §5, spec/sync.md §9).
-pub fn blob_expiry(h: &Header, a: &AspectEntry) -> Option<u64> {
+/// The prefix expiry of a blob of `h`: the commit's `expires`; for a relay-only commit (which
+/// has none) `ts + MAX_DRIFT`, the end of its replay window (spec/wire.md §5, spec/sync.md §9).
+pub fn blob_expiry(h: &Header) -> Option<u64> {
     match h.ephemeral {
         Some(crate::EphClass::Relay) => Some(h.ts.wall_ms().0.saturating_add(MAX_DRIFT_MS)),
-        _ => a.expires,
+        _ => h.expires,
     }
 }
 
@@ -89,7 +88,7 @@ pub(crate) fn check_fits(c: &CommitBlob, max: usize) -> Result<(), Error> {
 }
 
 /// Projects a commit into blobs: one per distinct (readable subset, retention class) of its
-/// deltas, the class being retention, expiry and delete key set; a class above `MAX_BLOB` splits
+/// deltas, the class being retention and delete key set; a class above `MAX_BLOB` splits
 /// greedily in part order, measuring the whole blob (spec/sync.md §3, Projection).
 /// `readers(ai)` is the reader-set key of aspect `ai`'s thing. Ordered by class key, then split
 /// order.
@@ -100,17 +99,18 @@ pub fn project<K: Ord + Clone>(c: &CommitBlob, readers: impl Fn(usize) -> K) -> 
 /// [`project`] of a commit whose header lists go by link, classed by `resolved` (its header
 /// with the lists read, spec/commits.md §1); the blobs carry the header as signed.
 pub fn project_resolved<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, readers: impl Fn(usize) -> K) -> Result<Vec<Projection<K>>, Error> {
-    type Class<K> = (K, Vec<u8>, Option<u64>, Vec<usize>);
+    type Class<K> = (K, Vec<u8>, Vec<usize>);
     let mut classes: BTreeMap<Class<K>, Vec<&Part>> = BTreeMap::new();
     for p in &c.parts {
         let a = resolved.aspects.get(p.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
-        let key = (readers(p.ai), osis_base::encode(&retention_value(&a.retention)), blob_expiry(resolved, a), a.keys.clone());
+        let key = (readers(p.ai), osis_base::encode(&retention_value(&a.retention)), a.keys.clone());
         classes.entry(key).or_default().push(p);
     }
     let header = c.header.encode();
     let fixed = fixed_len(c);
     let mut out = Vec::new();
-    for ((k, _, expires, _), parts) in classes {
+    let expires = blob_expiry(resolved);
+    for ((k, _, _), parts) in classes {
         let ai = parts.first().map_or(0, |p| p.ai);
         let retention = resolved.aspects.get(ai).map(|a| a.retention).unwrap_or_default();
         let (_, keys) = prefix_inputs(resolved, &[(ai, 0)])?;

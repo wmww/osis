@@ -218,7 +218,7 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
-            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), permanent: a.permanent() && h.ephemeral.is_none() }).collect(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), permanent: h.permanent(a) }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
             undoes: h.undoes,
@@ -322,7 +322,8 @@ fn fallback_header(v: &View) -> Header {
         kind: v.kind,
         ts: v.ts,
         form: v.form,
-        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), expires: None, keys: Vec::new(), hashes: Vec::new() }).collect(),
+        expires: None,
+        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hashes: Vec::new() }).collect(),
         chunks: Vec::new(),
         purge: Vec::new(),
         undoes: None,
@@ -1346,7 +1347,7 @@ impl Core {
     /// the body; spec/crdt.md §4.7): `None` if that commit is not known.
     pub fn write_expiry(&self, tid: &Tid, ak: &Ak, d: &Dot) -> Option<Option<u64>> {
         let m = self.ix.commits.get(&self.commit_of(tid, ak, d)?)?;
-        m.header.aspects.iter().find(|x| x.tid == *tid && x.ak == *ak).map(|x| x.expires)
+        m.header.aspects.iter().find(|x| x.tid == *tid && x.ak == *ak).map(|_| m.header.expires)
     }
 }
 
@@ -2338,12 +2339,13 @@ mod tests {
         let keep0 = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
         let now = lp.peers[0].engine.now();
         let two = failing(&mut lp.peers[0], &mut failed, |e| {
-            // two aspects: received a part at a time below; one expires
+            // two aspects: received a part at a time below; both expire (one expiry per commit)
             let mut m = Mutation::new();
             m.retention(g, &kept, keep0).unwrap();
             m.set(g, &kept, &Value::Str("w".into())).unwrap();
             write(&mut m, g, "w");
             m.expires(g, &reg, WallMs(now.0 + 60_000)).unwrap();
+            m.expires(g, &kept, WallMs(now.0 + 60_000)).unwrap();
             e.commit(m).map(Option::unwrap)
         });
         lp.advance(10);

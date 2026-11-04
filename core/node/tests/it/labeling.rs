@@ -39,7 +39,7 @@ fn shared_folder_entitlement_spec_sync_3() {
 }
 
 // spec/sync.md §1, §3: one blob per (reader actor, retention class); each blob's prefix carries
-// the expiry and the delete-key commitments of its class, and opens against its header.
+// the commit's expiry and the delete-key commitments of its class, and opens against its header.
 #[test]
 fn projection_by_retention_class_spec_sync_3() {
     let mut net = Net::new();
@@ -48,14 +48,15 @@ fn projection_by_retention_class_spec_sync_3() {
     let g = net.group(a, &[(b, Role::Write)], &[]);
     let t = net.item(a, g, g, "x");
     let mut m = Mutation::new();
-    m.set(t, &REG, &s("kept")).unwrap();
-    m.set(t, &BRIEF, &s("brief")).unwrap();
-    m.set(t, &GONE, &s("gone")).unwrap();
+    let at = WallMs(net.engine(a).now().0 + 3_600_000);
+    for (k, v) in [(&REG, "plain"), (&crate::common::KEPT, "kept"), (&GONE, "gone")] {
+        m.set(t, k, &s(v)).unwrap();
+        m.expires(t, k, at).unwrap();
+    }
     let c = net.engine(a).commit(m).unwrap().unwrap();
     let bodies = net.engine(a).bodies(&c).unwrap();
     assert_eq!(bodies.len(), 3, "three retention classes, one reader");
-    let expiring: Vec<_> = bodies.iter().filter(|b| b.expires.is_some()).collect();
-    assert_eq!(expiring.len(), 1);
+    assert!(bodies.iter().all(|b| b.expires == Some(at.0)), "the commit's expiry");
     let mut rng = SeededRng::from_u64(5);
     for body in &bodies {
         let sealed = seal_body(body, &mut rng).unwrap();

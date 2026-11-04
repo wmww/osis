@@ -746,9 +746,10 @@ pub fn disappearing(seed: u64) -> Res<Report> {
         let t = e.new_thing(&mut m, g);
         m.set(t, &workload::NOTE, &Value::Str(format!("m{k}"))).map_err(|e| sim.fail(e.to_string()))?;
         m.expires(t, &workload::NOTE, WallMs(at)).map_err(|e| sim.fail(e.to_string()))?;
-        // a crash mid-write loses the message, which is fine
-        if let Some(c) = sim.commit(n, m)? {
-            notes.push((t, c));
+        // a crash mid-write loses the message, which is fine; the record and the expiring note
+        // are two commits (spec/commits.md §6)
+        if let Some(c) = sim.write(n, m)?.last() {
+            notes.push((t, *c));
         }
         sim.run(25)?;
     }

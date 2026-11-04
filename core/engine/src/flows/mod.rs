@@ -405,6 +405,6 @@ impl Engine {
 
     /// Commits `m` in a running transaction.
     pub(crate) fn commit_tx(tx: &mut Tx<'_>, m: Mutation) -> Result<Option<CommitId>> {
-        crate::engine::write::commit_in(tx, m)
+        crate::engine::write::one(crate::engine::write::commit_in(tx, m)?)
     }
 }

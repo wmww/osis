@@ -40,7 +40,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
     let [snap] = snap.as_slice() else { return Ok(None) };
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    if m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some()) {
+    if m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) {
         return Ok(Some(false));
     }
     if held.is_empty() {

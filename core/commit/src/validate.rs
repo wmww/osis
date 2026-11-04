@@ -47,7 +47,7 @@ impl Header {
             let ak = a.ak.as_str();
             // indices and ranges
             ord(!a.hashes.is_empty(), "aspect without delta hashes")?;
-            let nums = [Some(a.lo), Some(a.hi), a.expires, a.retention.at_least.abs, a.retention.at_least.rel, a.retention.at_most.abs, a.retention.at_most.rel];
+            let nums = [Some(a.lo), Some(a.hi), a.retention.at_least.abs, a.retention.at_least.rel, a.retention.at_most.abs, a.retention.at_most.rel];
             ord(nums.iter().flatten().all(|n| *n <= FOREVER), "integer above 2^63 - 1")?;
             ord(strictly_ascending(&a.keys, |i| *i), "aspect delete keys not ascending")?;
             let mut levels = Vec::with_capacity(a.keys.len());
@@ -99,24 +99,34 @@ impl Header {
             if levels != delete_levels(&a.retention, kind) {
                 return Err(Error::Invalid("delete levels do not match the retention"));
             }
-            // expiry
-            if let Some(t) = a.expires {
-                if fixed_retention(ak).is_some() {
-                    return Err(Error::Invalid("expires on a fixed-retention aspect"));
-                }
-                if kind.is_role() {
-                    return Err(Error::Invalid("expires on a role commit"));
-                }
-                if !self.purge.is_empty() {
-                    return Err(Error::Invalid("expires on a commit with a purge request"));
-                }
-                if kind == Kind::Import {
-                    return Err(Error::Invalid("expires on an import"));
-                }
-                if t <= wall {
-                    return Err(Error::Invalid("expires not after the commit's ts"));
-                }
+        }
+        // expiry: one per commit, on deltas that may expire (spec/commits.md §6)
+        if let Some(t) = self.expires {
+            ord(t <= FOREVER, "integer above 2^63 - 1")?;
+            if kind.is_role() {
+                return Err(Error::Invalid("expires on a role commit"));
             }
+            if !self.purge.is_empty() {
+                return Err(Error::Invalid("expires on a commit with a purge request"));
+            }
+            if kind == Kind::Import {
+                return Err(Error::Invalid("expires on an import"));
+            }
+            if self.aspects.iter().any(|a| fixed_retention(a.ak.as_str()).is_some()) {
+                return Err(Error::Invalid("expires on a commit with a fixed-retention aspect"));
+            }
+            if t <= wall {
+                return Err(Error::Invalid("expires not after the commit's ts"));
+            }
+        }
+        // a `nobody` delta shares a commit only with `nobody` deltas, a thing's record and
+        // `required.0^` aside (spec/commits.md §5)
+        let free = |a: &&crate::header::AspectEntry| a.ak.as_str() != CREATED && a.ak.as_str() != REQUIRED;
+        let mut classes = self.aspects.iter().filter(free).map(|a| a.retention.by == PurgeBy::Nobody);
+        if let Some(first) = classes.next()
+            && classes.any(|n| n != first)
+        {
+            return Err(Error::Invalid("a nobody delta beside a delta of another purgeable-by"));
         }
         if kind == Kind::RosterSnapshot && self.aspects.windows(2).any(|w| matches!(w, [x, y] if x.tid != y.tid)) {
             return Err(Error::Invalid("roster snapshot of several things"));
@@ -171,7 +181,7 @@ impl Header {
             if self.aspects.iter().any(|a| a.retention != EPHEMERAL_RETENTION) {
                 return Err(Error::Invalid("ephemeral commit with a retention other than writer, no bounds"));
             }
-            if c != crate::header::EphClass::Plain && self.aspects.iter().any(|a| a.expires.is_some()) {
+            if c != crate::header::EphClass::Plain && self.expires.is_some() {
                 return Err(Error::Invalid("relay-only commit with an expiry"));
             }
         }

@@ -871,66 +871,6 @@ fn parts_differential_large_spec_commits_4() {
     assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).map(|x| x.as_str()).collect::<Vec<_>>().join("\n"));
 }
 
-// spec/commits.md §4, §5: a part past its expiry decides nothing about its commit. X's part arrives past
-// T, Y's record is away. With X's record held the part could join, with it away the part goes; either
-// way, in every order, the commit waits on Y as if the part never came, and applies when Y's record does
-// (`parts_differential` seeds 121019, 934068, 936047, 936059: as made it applied, X's part joined).
-#[test]
-fn part_past_expiry_decides_nothing_spec_commits_4() {
-    use crate::common::*;
-    let mut lp = net(2, 67);
-    let setup = packages(&mut lp, 0);
-    let new_of = |lp: &mut osis_node::local_peer::LocalPeer, known: &[osis_node::local_peer::Package]| -> Vec<osis_node::local_peer::Package> { packages(lp, 0).into_iter().filter(|p| !known.iter().any(|k| k.id == p.id)).collect() };
-    let x = new_thing(&mut lp, 0);
-    let rec_x = new_of(&mut lp, &setup);
-    let known: Vec<_> = setup.iter().chain(&rec_x).cloned().collect();
-    let y = new_thing(&mut lp, 0);
-    let rec_y = new_of(&mut lp, &known);
-    let t = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_000);
-    let mut m = Mutation::new();
-    m.set(x, &BRIEF, &s("brief")).unwrap();
-    m.expires(x, &BRIEF, t).unwrap();
-    m.set(y, &REG, &s("stays")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
-    lp.peers[0].clock.advance(2_000);
-    let now = lp.peers[0].engine.now();
-    let ids: std::collections::BTreeSet<_> = packages(&mut lp, 0).iter().map(|p| p.id).collect();
-    let (whole, on_x, on_y) = (pk.bytes.clone(), on(&pk, x), on(&pk, y));
-    let rec = rec_x[0].bytes.clone();
-    let orders: Vec<Vec<&[u8]>> = vec![vec![&rec, &whole], vec![&whole, &rec], vec![&on_y, &on_x, &rec], vec![&on_x, &on_y, &rec], vec![&rec, &on_x, &on_y], vec![&rec, &on_y, &on_x], vec![&on_x, &rec, &on_y]];
-    for syncs in [vec![], vec![x]] {
-        let mut want: Option<Vec<(String, String)>> = None;
-        for (n, order) in orders.iter().enumerate() {
-            let mut p = Peer::new(FRESH, now).unwrap();
-            for t in &syncs {
-                p.engine.set_syncing(*t, true).unwrap();
-            }
-            for pk in &setup {
-                let _ = p.engine.ingest(&pk.bytes, Vec::new());
-            }
-            for b in order {
-                let _ = p.engine.ingest(b, Vec::new());
-            }
-            p.engine.reexamine().unwrap();
-            assert!(!p.engine.commit_ids().contains(&c), "syncs {}, order {n}: applied on the expired part", syncs.len());
-            assert_eq!(p.engine.pending(), vec![(c, Reason::UnknownCreated(y))], "syncs {}, order {n}", syncs.len());
-            assert!(p.engine.suspects().unwrap().iter().any(|f| f.0 == x && f.1 == ak("t:brief.0")), "syncs {}, order {n}: the part went, flagged", syncs.len());
-            for pk in &rec_y {
-                let _ = p.engine.ingest(&pk.bytes, Vec::new());
-            }
-            p.engine.reexamine().unwrap();
-            assert!(p.engine.commit_ids().contains(&c) && p.engine.pending().is_empty(), "syncs {}, order {n}: {:?}", syncs.len(), p.engine.pending());
-            assert_eq!(p.engine.get(&y, &ak("t:reg.0")).unwrap(), Some(s("stays")));
-            assert_eq!(p.engine.get(&x, &ak("t:brief.0")).unwrap(), None);
-            let got = observe(&mut p.engine, &ids);
-            let w = want.get_or_insert_with(|| got.clone());
-            let first = got.iter().zip(w.iter()).find(|(a, b)| a != b);
-            assert!(got == *w, "syncs {}, order {n}: {first:?}", syncs.len());
-        }
-    }
-}
-
 // spec/commits.md §4: a relay's junk part on a thing whose record is away cannot be hash-checked; it
 // keeps out no true part, which is taken when the record comes.
 #[test]
@@ -970,6 +910,8 @@ fn counted_as_held_part_order_spec_commits_4() {
             m.set(g, &REG, &s("small")).unwrap();
             m.set(h, &BIG, &big).unwrap();
             m.expires(h, &BIG, osis_base::WallMs(1_700_000_001_000)).unwrap();
+            // one expiry per commit (spec/commits.md §6)
+            m.expires(g, &REG, osis_base::WallMs(1_700_000_001_000)).unwrap();
         });
         assert!(!pk.blobs.is_empty(), "paged");
         lp.peers[1].clock.advance(10_000_000);
@@ -1490,7 +1432,8 @@ enum Made {
     Parked,
 }
 
-/// Peer 0's signed commit of `parts` (thing, key, what, expiry in ms from now), as no writer here makes it.
+/// Peer 0's signed commit of `parts` (thing, key, what, expiry in ms from now: one per commit,
+/// spec/commits.md §6), as no writer here makes it.
 fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
@@ -1514,9 +1457,8 @@ fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob 
             Made::Bad => osis_base::encode(&Value::List(vec![Value::Int(1)])),
             Made::Parked => osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])])),
         };
-        let mut a = AspectWrite::new(*t, ak(k), r.lo, r.hi, d);
-        a.expires = exp.map(|x| now + x);
-        cb.aspects.push(a);
+        cb.expires = cb.expires.or(exp.map(|x| now + x));
+        cb.aspects.push(AspectWrite::new(*t, ak(k), r.lo, r.hi, d));
     }
     cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit
 }
@@ -1529,39 +1471,10 @@ fn cut(b: &CommitBlob, things: &[Tid]) -> Vec<u8> {
     x.encode()
 }
 
-// spec/commits.md §4: a part past its expiry decides nothing, and a bad part still answers its delta's
-// wait beside one: whole or split, in either order, the commit applies with the bad part on a thing the
-// node syncs, and waits for it on one it does not.
-#[test]
-fn bad_part_beside_a_part_past_expiry_spec_commits_4() {
-    use crate::common::*;
-    for synced in [true, false] {
-        let mut f = forge_setup(81);
-        let (x, y) = (f.x, f.y);
-        let b = forge(&mut f, &[(x, "t:brief.0", Made::Good, Some(1000)), (y, "t:reg.0", Made::Bad, None)]);
-        let now = osis_base::WallMs(f.lp.peers[0].engine.now().0 + 5000);
-        for order in [vec![b.encode()], vec![cut(&b, &[x]), cut(&b, &[y])], vec![cut(&b, &[y]), cut(&b, &[x])]] {
-            let mut p = Peer::new(FRESH, now).unwrap();
-            if synced {
-                p.engine.set_syncing(y, true).unwrap();
-            }
-            for pk in &f.setup {
-                let _ = p.engine.ingest(&pk.bytes, Vec::new());
-            }
-            for o in &order {
-                let _ = p.engine.ingest(o, Vec::new());
-            }
-            p.engine.reexamine().unwrap();
-            assert_eq!(p.engine.commit_ids().contains(&b.id()), synced, "synced {synced}, {} deliveries", order.len());
-            assert_eq!(p.engine.pending().is_empty(), synced, "synced {synced}, {} deliveries", order.len());
-            assert_eq!(p.engine.get(&x, &ak("t:brief.0")).unwrap(), None);
-        }
-    }
-}
-
 // spec/versioning.md §2, spec/commits.md §5: a part this build cannot read goes at its expiry like any
 // other pending part, whatever its copy waits as: T passing under a parked copy, then what the node syncs
-// changing (it recursed for ever, its copy merged back each time). The rest goes on waiting.
+// changing (it recursed for ever, its copy merged back each time). Its commit's other parts expire with
+// it (one expiry per commit): nothing is left to wait for.
 #[test]
 fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let mut f = forge_setup(82);
@@ -1586,7 +1499,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     assert!(!copy_held(&mut p), "no copy past T");
     assert!(p.engine.suspects().unwrap().iter().any(|f| f.0 == x), "flagged");
     p.engine.set_syncing(z, true).unwrap();
-    assert_eq!(p.engine.pending(), vec![(b.id(), Reason::WaitDeltas)]);
+    assert_eq!(p.engine.pending(), vec![], "every part past T counts as held");
     // parked alone before T, past it the sync set changes
     let mut p = new(live, &[]);
     assert!(matches!(p.engine.ingest(&cut(&b, &[x]), Vec::new()), Ok(Ingested::Parked(_))));
@@ -1594,7 +1507,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     p.clock.advance(5000);
     p.engine.set_syncing(z, true).unwrap();
     assert!(!copy_held(&mut p), "no copy past T");
-    assert_eq!(p.engine.pending(), vec![(b.id(), Reason::WaitDeltas)]);
+    assert_eq!(p.engine.pending(), vec![], "every part past T counts as held");
     // parked whole before T, by its synced thing; its timer takes it
     let mut p = new(live, &[x]);
     assert!(matches!(p.engine.ingest(&cut(&b, &[x, y]), Vec::new()), Ok(Ingested::Parked(_))));
@@ -1602,88 +1515,14 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     p.clock.advance(5000);
     p.engine.tick().unwrap();
     assert!(!copy_held(&mut p), "no copy past T");
-    assert_eq!(p.engine.pending(), vec![(b.id(), Reason::WaitDeltas)]);
+    assert_eq!(p.engine.pending(), vec![], "every part past T counts as held");
     // the same with the clock alone, no tick: judged at the next look
     let mut p = new(live, &[x]);
     let _ = p.engine.ingest(&cut(&b, &[x, y]), Vec::new());
     p.clock.advance(5000);
     p.engine.reexamine().unwrap();
     assert!(!copy_held(&mut p), "no copy past T");
-    assert_eq!(p.engine.pending(), vec![(b.id(), Reason::WaitDeltas)]);
-}
-
-// spec/commits.md §4, §5, spec/sync.md §7: an honest commit overwriting a value with a short expiry on X
-// beside a write on Y, a stale copy of X's part reaching a node that syncs only X past T. It reads as if
-// the part never came: the older value stands, the aspect is flagged and the commit waits for Y. A writer's
-// snapshot listing it repairs the aspect (the flag stays: never dormant); or Y's part applies the commit, and another
-// copy of X's part joins value-less, as it would have joined had Y's part come first.
-#[test]
-fn stale_copy_beside_a_thing_not_synced_reads_as_never_received_spec_commits_5() {
-    use crate::common::*;
-    let mut lp = net(2, 80);
-    let (x, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let mut m = Mutation::new();
-    m.set(x, &BRIEF, &s("older")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let setup = packages(&mut lp, 0);
-    let t = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_000);
-    let mut m = Mutation::new();
-    m.set(x, &BRIEF, &s("short")).unwrap();
-    m.expires(x, &BRIEF, t).unwrap();
-    m.set(y, &REG, &s("elsewhere")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
-    lp.peers[0].clock.advance(2_000);
-    let now = lp.peers[0].engine.now();
-    let brief = ak("t:brief.0");
-    let new = || {
-        let mut p = Peer::new(FRESH, now).unwrap();
-        p.engine.set_syncing(x, true).unwrap();
-        for pk in &setup {
-            let _ = p.engine.ingest(&pk.bytes, Vec::new());
-        }
-        p
-    };
-    let flagged = |p: &mut Peer| p.engine.suspects().unwrap().iter().any(|f| f.0 == x && f.1 == brief);
-    let mut p = new();
-    let _ = p.engine.ingest(&on(&pk, x), Vec::new());
-    assert!(!p.engine.commit_ids().contains(&c));
-    assert_eq!(p.engine.pending(), vec![(c, Reason::WaitDeltas)]);
-    assert_eq!(p.engine.get(&x, &brief).unwrap(), Some(s("older")));
-    assert!(flagged(&mut p));
-    // another copy changes nothing while the commit waits
-    let _ = p.engine.ingest(&on(&pk, x), Vec::new());
-    assert_eq!(p.engine.pending(), vec![(c, Reason::WaitDeltas)]);
-    assert_eq!(p.engine.get(&x, &brief).unwrap(), Some(s("older")));
-    // a writer's snapshot: its value-less copy supersedes the older value; the flag stays, the
-    // digests agree
-    let mut r = new();
-    let _ = r.engine.ingest(&on(&pk, x), Vec::new());
-    lp.peers[0].clock.advance(1);
-    let snap = lp.peers[0].engine.snapshot(&x, &brief).unwrap().expect("a snapshot");
-    let snap = packages(&mut lp, 0).into_iter().find(|p| p.id == snap).unwrap();
-    let _ = r.engine.ingest(&snap.bytes, snap.blobs.clone());
-    r.engine.reexamine().unwrap();
-    assert_eq!(r.engine.get(&x, &brief).unwrap(), None, "repaired");
-    assert!(flagged(&mut r), "a pending-expiry flag is never dormant");
-    lp.peers[0].engine.tick().unwrap();
-    assert_eq!(r.engine.state_digest(&x, &brief).unwrap(), lp.peers[0].engine.state_digest(&x, &brief).unwrap());
-    // Y's part: the commit applies; the dropped part stays out until a copy comes, then it joins
-    let _ = p.engine.ingest(&on(&pk, y), Vec::new());
-    p.engine.reexamine().unwrap();
-    assert!(p.engine.commit_ids().contains(&c) && p.engine.pending().is_empty(), "{:?}", p.engine.pending());
-    assert_eq!(p.engine.get(&x, &brief).unwrap(), Some(s("older")), "counts as never received");
-    assert!(flagged(&mut p));
-    let _ = p.engine.ingest(&on(&pk, x), Vec::new());
-    p.engine.reexamine().unwrap();
-    assert_eq!(p.engine.get(&x, &brief).unwrap(), None, "joined value-less");
-    assert!(!flagged(&mut p), "the body is back");
-    let mut q = new();
-    let _ = q.engine.ingest(&on(&pk, y), Vec::new());
-    let _ = q.engine.ingest(&on(&pk, x), Vec::new());
-    q.engine.reexamine().unwrap();
-    assert_eq!(q.engine.state_digest(&x, &brief).unwrap(), p.engine.state_digest(&x, &brief).unwrap(), "as from the other order");
-    assert_eq!(q.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap());
+    assert_eq!(p.engine.pending(), vec![], "every part past T counts as held");
 }
 
 // spec/commits.md §4, §5: beside a part past its expiry, a part bad by itself or parked and a true one,

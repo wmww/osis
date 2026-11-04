@@ -203,13 +203,13 @@ pub fn headers() -> VecFile {
     x.kind = Kind::Role;
     cases.push(reject("content aspect in a role commit", "spec/commits.md §2", &x, "aspect-class"));
     let mut x = role_commit().header;
-    x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
+    x.expires = Some(x.ts.wall_ms().0 + 1);
     cases.push(reject("expires on a role commit", "spec/commits.md §2", &x, "role-commit-expires"));
     let mut x = h.clone();
-    x.aspects[0].expires = Some(x.ts.wall_ms().0);
+    x.expires = Some(x.ts.wall_ms().0);
     cases.push(reject("expires not after ts", "spec/commits.md §6", &x, "expires-ts"));
     let mut x = h.clone();
-    x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
+    x.expires = Some(x.ts.wall_ms().0 + 1);
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:body.0").unwrap() });
     cases.push(reject("expires with a purge request", "spec/commits.md §5", &x, "purge-expires"));
     let mut x = h.clone();
@@ -253,7 +253,7 @@ fn more_accepted() -> Vec<Record> {
     let at = ts(1_700_000_004_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Content, at, 1, Value::Str("typed".into()), 6));
-    a.expires = Some(at.wall_ms().0 + 86_400_000);
+    b.expires = Some(at.wall_ms().0 + 86_400_000);
     a.retention = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(1_800_000_000_000), rel: None }, at_most: Bound { abs: Some(1_900_000_000_000), rel: Some(1000) } };
     a.chunks = vec![BlobId([0x28; 32]), BlobId([0x2a; 32])];
     b.aspects.push(a);
@@ -359,8 +359,16 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.aspects[0].keys.clear();
     x.keys.clear();
     x.validate().unwrap();
-    x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
+    x.expires = Some(x.ts.wall_ms().0 + 1);
     out.push(reject("created.0 with expires", "spec/commits.md §5, §6", &x, "fixed-expires"));
+    let mut x = content.clone();
+    let mut n = x.aspects[0].clone();
+    n.ak = Ak::new("app:n.0").unwrap();
+    n.retention = Retention { by: PurgeBy::Nobody, ..Default::default() };
+    n.keys.clear();
+    // canonical order: the shorter AK of one thing first
+    x.aspects.insert(0, n);
+    out.push(reject("a nobody delta beside another class", "spec/commits.md §5", &x, "nobody-mix"));
     let mut x = content.clone();
     x.keys.push(DeleteKey::new(3, &osis_crypto::DeleteSecret::derive(&s32(0x37)).verifying_key()));
     out.push(reject("delete key no aspect lists", "spec/wire.md §4", &x, "unused-key"));
@@ -398,7 +406,7 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     assert!(Header::decode(&bytes).is_err());
     out.push(case("unknown dot form", "spec/wire.md §4").with("header", hex(&bytes)).with("reject", "form"));
     let mut x = ephemeral(osis_commit::EphClass::Relay).header;
-    x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
+    x.expires = Some(x.ts.wall_ms().0 + 1);
     out.push(reject("relay-only commit with an expiry", "spec/commits.md §2", &x, "ephemeral"));
     let mut v = e.to_value();
     if let Value::List(items) = &mut v

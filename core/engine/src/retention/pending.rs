@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Whether part `ai` of a commit (header `h`), held while it waits, is past its expiry: it goes
 /// from the node (spec/commits.md §5).
 pub(crate) fn pending_expired(tx: &Tx<'_>, h: &Header, ai: usize) -> bool {
-    h.aspects.get(ai).is_some_and(|a| a.expires.is_some_and(|t| t <= tx.now().0))
+    h.aspects.get(ai).and(h.expires).is_some_and(|t| t <= tx.now().0)
 }
 
 /// Parts of commit `id` held pending (stored as `blob`, header `h`) whose expiry has passed count
@@ -39,7 +39,7 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
             suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*id, ai)])?;
             continue;
         }
-        if let Some(t) = a.expires {
+        if let Some(t) = h.expires {
             tx.put_timer(t, id, ai, T_EXPIRY)?;
         }
         if !known_purged(tx, h, id, ai)? {

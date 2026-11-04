@@ -75,13 +75,13 @@ fn build_role_commit_and_refusals() {
     assert_eq!(built.commit.header.keys.len(), 1);
     verify_blob(&built.commit, &key().verifying_key(), &dedup, None).unwrap();
     let mut bad = b.clone();
-    bad.aspects[0].expires = Some(at.wall_ms().0 + 10);
+    bad.expires = Some(at.wall_ms().0 + 10);
     assert!(matches!(build(bad, &mut sink), Err(Error::Build(_))));
     let mut p = content(1);
-    p.aspects[0].expires = Some(at.wall_ms().0 + 10);
+    p.expires = Some(at.wall_ms().0 + 10);
     p.purge.push(PurgeItem::Aspect { tid: t(9), ak: Ak::new("app:title.0").unwrap() });
     assert!(matches!(build(p.clone(), &mut sink), Err(Error::Build(_))));
-    p.aspects[0].expires = None;
+    p.expires = None;
     let built = build(p, &mut sink).unwrap();
     assert_eq!(retention::purge_keep_until(&built.commit.header), Some(at.wall_ms().0 + osis_base::format::ROLE_KEEP_MS));
 }
@@ -179,10 +179,8 @@ fn mixed() -> CommitBlob {
         if i % 2 == 1 {
             a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
         }
-        if i == 5 {
-            a.expires = Some(9_000_000_000);
-        }
     }
+    b.expires = Some(9_000_000_000);
     build(b, &mut MemoryBlobs::default()).unwrap().commit
 }
 
@@ -196,7 +194,7 @@ fn projection_partitions() {
     let mut all: Vec<(usize, usize)> = ps.iter().flat_map(|p| p.parts.clone()).collect();
     all.sort();
     assert_eq!(all, (0..6).map(|i| (i, 0)).collect::<Vec<_>>());
-    assert_eq!(ps.len(), 5);
+    assert_eq!(ps.len(), 4);
     for p in &ps {
         let blob = CommitBlob::decode(&p.plaintext).unwrap();
         assert_eq!(blob.id(), c.id());

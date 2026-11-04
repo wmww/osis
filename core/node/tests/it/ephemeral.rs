@@ -2344,7 +2344,7 @@ fn random_churn_run(seed: u64) {
             // a demoted writer that knows it is refused
             let r = net.engine(n).write(m);
             log.push(format!("{n} {what} step {step} expiring {exp:?}: {}", if r.is_ok() { "ok" } else { "refused" }));
-            if let Ok(Some(wr)) = r {
+            if let Ok(Some(wr)) = &r {
                 last.insert(n, wr.id);
             }
             if let (Ok(_), Some(e)) = (&r, exp) {
@@ -3019,7 +3019,7 @@ fn superseded_unsent_moves_one_commit_spec_sync_9() {
     }
     let cs = take_memory(&mut net, a);
     assert_eq!(cs.len(), 1, "one commit for five moves");
-    assert_eq!(cs[0].1.header.aspects.iter().map(|x| x.expires).collect::<Vec<_>>(), vec![Some(last)], "the last move's");
+    assert_eq!((cs[0].1.header.aspects.len(), cs[0].1.header.expires), (1, Some(last)), "the last move's");
 }
 
 // spec/sync.md §9 (a superseded commit's writes are held value-less at every node, its author
@@ -4530,44 +4530,6 @@ fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
             assert!(reads.iter().all(|r| *r == reads[0]), "seed {seed} round {round}: {reads:?}\n{}", log.join("\n"));
             lp.advance(1 + rnd(800));
         }
-    }
-}
-
-// spec/sync.md §9 (Superseded expiring writes, judged again when a part of the superseded commit
-// expires): 1's commit c moves its cursor entry (expiring late) and adds a tag (expiring soon);
-// its later move supersedes only the first part. 0 holds both before the tag expires, 2 gets
-// them after: both drop c (at 0 once the tag part vanished), so 2's removal of the entry it saw
-// leaves nothing at either (review eph-unify-a: 0 kept c's move and read it again)
-#[test]
-fn memory_partly_expired_commit_superseded_alike_spec_sync_9() {
-    let (mut lp, d) = memory_trio(47);
-    let k = s("k");
-    let mk = |lp: &mut osis_node::local_peer::LocalPeer, ops: Vec<(&str, Vec<PathSeg>, Op, u64)>| {
-        let e = &mut lp.peers[1].engine;
-        let mut m = Mutation::new();
-        for (ak, path, op, ms) in ops {
-            m.op(d, &eph(ak), PathOp { path, op }).unwrap();
-            m.expires(d, &eph(ak), osis_base::WallMs(e.now().0 + ms)).unwrap();
-        }
-        let id = e.commit_in_memory(m).unwrap().unwrap();
-        (id, e.package(&id).unwrap().unwrap().bytes)
-    };
-    let c = mk(&mut lp, vec![("t:big.0~", vec![PathSeg::Key(k.clone())], Op::Put(s("a")), 10_000), ("t:tags.0~", Vec::new(), Op::Add(s("y")), 1_000)]);
-    lp.advance(10);
-    let q = mk(&mut lp, vec![("t:big.0~", vec![PathSeg::Key(k.clone())], Op::Put(s("b")), 10_000)]);
-    memory_deliver(&mut lp, 0, &c);
-    memory_deliver(&mut lp, 0, &q);
-    lp.advance(2000);
-    for i in 0..3 {
-        lp.peers[i].engine.tick().unwrap();
-    }
-    memory_deliver(&mut lp, 2, &q);
-    memory_deliver(&mut lp, 2, &c);
-    assert!(!holds_commit(&lp, 0, &c.0) && !holds_commit(&lp, 2, &c.0));
-    let rm = memory_op(&mut lp, 2, d, "t:big.0~", Vec::new(), Op::Remove(k), None);
-    memory_deliver(&mut lp, 0, &rm);
-    for i in [0, 2] {
-        assert_eq!(lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap(), Some(Value::Map(osis_base::ValueMap::new())), "{i}");
     }
 }
 

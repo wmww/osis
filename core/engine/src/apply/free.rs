@@ -291,7 +291,7 @@ mod tests {
         m.expires(g, &ak("t:m.0"), WallMs(e.now().0 + 5_000)).unwrap();
         let c = e.commit(m).unwrap().unwrap();
         let h = e.header(&c).unwrap();
-        assert_eq!(h.aspects.iter().find_map(|a| a.expires), Some(h.ts.wall_ms().0 + 1));
+        assert_eq!(h.expires, Some(h.ts.wall_ms().0 + 1));
         assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), Some(Value::Str("typing".into())));
         lp.advance(60_002);
         let e = &mut lp.peers[0].engine;

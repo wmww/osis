@@ -84,7 +84,7 @@ impl Engine {
                 let mut nonce = [0u8; osis_crdt::NONCE_LEN];
                 tx.rng.fill_bytes(&mut nonce);
                 let bytes = osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: BTreeMap::new() }, &cx, Some(&mut Unpaged))?;
-                writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, deltas: vec![bytes], retention: osis_commit::retention::EPHEMERAL_RETENTION, expires: None, chunks: Vec::new(), records });
+                writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, deltas: vec![bytes], retention: osis_commit::retention::EPHEMERAL_RETENTION, chunks: Vec::new(), records });
             }
             let things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
             let published = published_keys(tx, &creates, things)?;

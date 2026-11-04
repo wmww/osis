@@ -632,8 +632,8 @@ impl Engine {
             Ok((newest, false))
         })?;
         let (Some((c, ai)), true) = found else { return Ok(None) };
-        let Some(a) = self.core.ix.commits.get(&c).and_then(|m| m.header.aspects.get(ai).cloned()) else { return Ok(None) };
-        if a.expires.is_some_and(|t| t <= now) {
+        let Some((a, expires)) = self.core.ix.commits.get(&c).and_then(|m| Some((m.header.aspects.get(ai).cloned()?, m.header.expires))) else { return Ok(None) };
+        if expires.is_some_and(|t| t <= now) {
             return Ok(None);
         }
         // the local schema of the AK, if any (none writes back untyped)
@@ -664,7 +664,7 @@ impl Engine {
         if ops.is_empty() {
             return Ok(None);
         }
-        Ok(Some(super::write::AspectMut { ops, schema, retention: Some(a.retention), expires: a.expires, ..Default::default() }))
+        Ok(Some(super::write::AspectMut { ops, schema, retention: Some(a.retention), expires, ..Default::default() }))
     }
 
     /// The blobs the deltas of a body (`plaintext`: its commit blob plaintext) link, through
