@@ -315,7 +315,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 37. D as written: the chain seed's box is in the recording, sealed to a key the device keeps, so a thief rebuilds every hour key (review4).
 38. E: default yes; author-only purge (admins cannot delete) is a chat setting (core q, built).
 39. E: the header's actor is checked by validity (spec/permissions.md §5.2: the signing device holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the device's write only when its path runs through the actor.
-40. E: with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 2.5x10^5 messages.
+40. E: with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
 41. The removal and the top faction's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each host; until then the removed member reads ciphertext and can upload.
 42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top faction (100 boxes), then children; estimated, and only with issues/keyset-names-placement-rosters.md fixed.
 43. All three roles rotate on every faction the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.

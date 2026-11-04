@@ -30,8 +30,8 @@ pub const CHUNK_THRESHOLD: usize = 128 * KIB;
 /// Canonical bytes of one linked header list (spec/wire.md §2, §4): a resolved header lives in
 /// memory at every node. Resource bound; past it a writer refuses and a receiver refuses the
 /// commit as bad input; 0 would leave lists inline-only, infinity a hostile header unbounded
-/// memory. fixed.
-pub const MAX_LIST_BYTES: usize = 64 * CHUNK_THRESHOLD;
+/// memory. Tess's choice; about 140 GB of chunks in one commit, 1.9e6 frontier IDs. fixed.
+pub const MAX_LIST_BYTES: usize = 64 * MIB;
 /// A fragment's links are grouped into link pages above this (spec/wire.md §2, §6). fixed.
 pub const PAGE_TARGET: usize = 64 * KIB;
 /// Sequence elements in runs without `Content` per writer or import delta, pages included: bounds

@@ -39,7 +39,7 @@ Companion edits: §3 names the lockout recovery (remove or demote the rotator wi
 - **Header**: `prev` on the first delta of a session per aspect: 33 B per (aspect, session), nothing on other commits.
 - **Storage**: permanent deltas' headers were already kept with their bodies; new is the purge residue (header-only blob, about 300 B) of a purged permanent delta, kept forever.
 - **CPU**: building the frontier is one droppability check per held non-permanent commit of X in scope (the `drop_covered` predicate) and one scan of X's sessions per permanent aspect; judging a write on a permanent aspect walks the session chain once per (aspect, device, frontier), cached as session -> bound, O(sessions) header lookups; by ID one set lookup.
-- **Caps**: with heads, frontiers stop growing with history, so `MAX_LIST_BYTES` (8 MiB) and `MAX_LINKED_FRONTIERS` (64 MiB) stay resource bounds that honest use does not approach; no change. Issues/frontier-certificate-cost.md shrinks to the non-permanent tails and may close after a measurement.
+- **Caps**: with heads, frontiers stop growing with history, so `MAX_LIST_BYTES` (64 MiB) and `MAX_LINKED_FRONTIERS` (64 MiB) stay resource bounds that honest use does not approach; no change. Issues/frontier-certificate-cost.md shrinks to the non-permanent tails and may close after a measurement.
 
 ## 6. Rejected candidates
 - **Per-session chain, one across all aspects** (devbox): a session spans every thing the device writes; a verifier under label L sees only headers touching L's closure, so the chain from the head back to a commit passes commits it cannot see. Unwalkable regardless of forgetting.
