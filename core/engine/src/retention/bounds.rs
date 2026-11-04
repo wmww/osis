@@ -1,9 +1,9 @@
 //! A held body's keep bounds and whether it holds a live write (spec/commits.md §5).
 
-use super::{aspect_index, body_class, deaths_of, known_part};
+use super::{aspect_index, body_class, deaths_of, gone_of, known_part, writes_of};
 #[cfg(test)]
 use super::oracle;
-use crate::engine::{Engine, Owned, Tx};
+use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::Header;
@@ -63,8 +63,9 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     }
     for x in holders {
         let Some(a) = h.aspects.get(x) else { continue };
-        let Some(o) = Owned::of(&h, c, x) else { return Ok(true) };
-        let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| o.owns_range(src, lo, hi));
+        // an import's writes are under its origins' dots (`writes_of`)
+        let own = writes_of(tx.core, &h, c, x);
+        let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)));
         // per piece of each delta of the body, the state's part it meets (all of it when none
         // is held)
         let mut live = false;
@@ -152,7 +153,7 @@ impl Engine {
     }
 
     /// Whether a write of the body holding aspect `ak` of `c` is still in this node's state (a
-    /// dot its deltas own survives there; unknown counts as live). A body without one needs no
+    /// dot its deltas own, an import's origins' dots, survives there; unknown counts as live). A body without one needs no
     /// carrier before it leaves a label (spec/sync.md §7); one with one gets `AT_MOST_GRACE`
     /// (spec/commits.md §5). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
@@ -165,6 +166,14 @@ impl Engine {
         }
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| body_live(tx, &c, &tid, &ak))
+    }
+
+    /// Whether delta `ai` of `c` holds writes of its own and is held value-less for all of them: a
+    /// purge took them, so it has no live write to carry (spec/commits.md §5). An import with a
+    /// purged origin and another standing is not: its other writes count (`body_live`).
+    pub fn part_valueless(&self, h: &Header, c: &CommitId, ai: usize) -> bool {
+        let own = writes_of(&self.core, h, c, ai);
+        !own.is_empty() && gone_of(&self.core, h, c, ai).len() == own.len()
     }
 
     /// The lowest `ts` among the writes the held body of aspect `ak` of `c` carries (`None`: not

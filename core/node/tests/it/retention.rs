@@ -2589,3 +2589,53 @@ fn second_request_keeps_covered_residue_spec_crdt_4_7() {
     assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), fresh.engine.get(&t, &k).unwrap(), "the older write stays superseded");
     assert_eq!(lp.peers[0].engine.state_digest(&t, &k).unwrap(), fresh.engine.state_digest(&t, &k).unwrap());
 }
+
+// spec/commits.md §5 (keep at most: any write of its deltas the state holds by dot), spec/permissions.md
+// §7: an import holds its origin's dots. Under at most 0 one of its writes dying leaves it live:
+// it keeps its grace, and a later device given what this node holds reads the other write.
+#[test]
+fn import_with_a_live_write_keeps_its_grace_spec_commits_5() {
+    use osis_crdt::PathSeg;
+    let mut lp = net(1, 91);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:gonemap.0");
+    let mut m = Mutation::new();
+    for key in ["a", "b"] {
+        m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("old")) }).unwrap();
+    }
+    let origin = lp.peers[0].commit(m).unwrap().unwrap();
+    assert!(matches!(lp.peers[0].engine.header(&origin).unwrap().form, osis_commit::Form::Session(_)));
+    let reg = set(&mut lp, 0, t, &GONE, "old");
+    lp.advance(10);
+    let me = lp.peers[0].engine.tid();
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
+    let e = &lp.peers[0].engine;
+    let i = *imports.iter().find(|i| e.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == origin))).unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(copy, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(s("new")) }).unwrap();
+    let kill = lp.peers[0].commit(m).unwrap().unwrap();
+    let died = lp.peers[0].engine.header(&kill).unwrap().ts.wall_ms().0;
+    let e = &mut lp.peers[0].engine;
+    assert!(e.body_live(&i, &copy, &k).unwrap(), "key b is the import's write");
+    assert!(e.body_not_dropped(&i, &copy, &k), "not dropped at its first death");
+    assert_eq!(e.body_keep(&i, &copy, &k).unwrap().at_most, Some(died + osis_base::format::AT_MOST_GRACE_MS));
+    let at = |e: &mut osis_node::Engine, key: &str| e.get_at(&copy, &k, &[PathSeg::Key(s(key))]).unwrap();
+    assert_eq!(at(e, "b"), Some(s("old")));
+    let packs = packages(&mut lp, 0);
+    let now = lp.peers[0].engine.now();
+    let mut later = osis_node::local_peer::Peer::new(92, now).unwrap();
+    for p in &packs {
+        later.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
+    }
+    assert_eq!(at(&mut later.engine, "b"), Some(s("old")), "a later device reads it");
+    assert_eq!(at(&mut later.engine, "a"), Some(s("new")));
+    // an import whose one write dies has no live write left: it goes at the kill
+    let g = ak("t:gone.0");
+    let i = *imports.iter().find(|i| lp.peers[0].engine.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == reg))).unwrap();
+    assert!(lp.peers[0].engine.body_live(&i, &copy, &g).unwrap());
+    lp.advance(10);
+    set(&mut lp, 0, copy, &GONE, "new");
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.body_live(&i, &copy, &g).unwrap() && !e.body_not_dropped(&i, &copy, &g));
+}

@@ -737,6 +737,71 @@ fn pair_device(w: &mut World, da: &Osis, seed: u64) -> Osis {
     db
 }
 
+// spec/permissions.md §9, spec/sync.md §2: a link's text names its hosts, so a working link's K
+// label stays on them whichever device of the person moves hosts: redeemed there, it reaches
+// the sharer and reads the target on its new hosts.
+#[test]
+fn moving_hosts_keeps_a_link_made_on_another_device_spec_permissions_9() {
+    for by_maker in [true, false] {
+        let mut w = World::new();
+        let (h0, h1) = (w.add_host(), w.add_host());
+        let (da, _) = w.person(1, &[h0]);
+        let (bob, _) = w.person(2, &[h1]);
+        let g = group(&da);
+        let t = item(&da, g, g, "shared");
+        let db = pair_device(&mut w, &da, 4);
+        let link = da.make_link(g, Role::Read, Default::default()).unwrap();
+        w.run();
+        let k = db.links(g)[0].id;
+        let mover = if by_maker { &da } else { &db };
+        mover.add_host(&w.addr(h1).unwrap()).unwrap();
+        w.run();
+        mover.remove_host(&w.addr(h0).unwrap()).unwrap();
+        w.run();
+        let hosts = mover.engine(|e| e.group_labels(&k).unwrap().iter().flat_map(|l| l.hosts.iter().map(|a| a.url.clone()).collect::<Vec<_>>()).collect::<Vec<_>>());
+        assert_eq!(hosts, ["quic://host0:1"], "by maker {by_maker}");
+        assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+        for _ in 0..3 {
+            w.advance(60_000);
+            w.run();
+        }
+        assert_eq!(x(&bob, t), Some(s("shared")), "by maker {by_maker}");
+        assert!(da.roster(k).contains_key(&bob.me()), "the redemption reached the sharer");
+    }
+}
+
+// spec/permissions.md §9, spec/sync.md §2: a revoked link has no holder but the person's on K, yet
+// K's label stays too, on either device: cut off from the link's host, the device revokes and
+// moves hosts, and the revocation still reaches a redeemer there.
+#[test]
+fn moving_hosts_after_a_revoke_keeps_the_links_label_spec_permissions_9() {
+    for by_maker in [true, false] {
+        let mut w = World::new();
+        let (h0, h1) = (w.add_host(), w.add_host());
+        let (da, _) = w.person(1, &[h0]);
+        let (carol, _) = w.person(3, &[h1]);
+        let g = group(&da);
+        let db = pair_device(&mut w, &da, 4);
+        let link = da.make_link(g, Role::Read, Default::default()).unwrap();
+        w.run();
+        let k = db.links(g)[0].id;
+        let mover = if by_maker { &da } else { &db };
+        w.set_reachable(mover, h0, false);
+        w.until(mover.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+        mover.add_host(&w.addr(h1).unwrap()).unwrap();
+        mover.remove_host(&w.addr(h0).unwrap()).unwrap();
+        w.run();
+        let hosts = mover.engine(|e| e.group_labels(&k).unwrap().iter().flat_map(|l| l.hosts.iter().map(|a| a.url.clone()).collect::<Vec<_>>()).collect::<Vec<_>>());
+        assert_eq!(hosts, ["quic://host0:1"], "by maker {by_maker}");
+        w.set_reachable(mover, h0, true);
+        for _ in 0..3 {
+            w.advance(60_000);
+            w.run();
+        }
+        assert!(w.until(carol.redeem(&link), 1000, 30).is_err(), "by maker {by_maker}: the revocation reached the link's host");
+    }
+}
+
 // spec/permissions.md §9, §3: a removed device's revocation of a link does not stand, written
 // before it hears of the removal (its commit is past the removal's frontier) or after (it lists
 // nothing and is refused); the link goes on working

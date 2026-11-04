@@ -82,8 +82,8 @@ pub(crate) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     }
     for x in holders {
         let Some(a) = h.aspects.get(x) else { continue };
-        let Some(o) = Owned::of(&h, c, x) else { return Ok(true) };
-        if tx.state(&a.tid, &a.ak)?.is_some_and(|st| st.holds_owned_write(&|src, lo, hi| o.owns_range(src, lo, hi))) {
+        let own = super::writes_of(tx.core, &h, c, x);
+        if tx.state(&a.tid, &a.ak)?.is_some_and(|st| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)))) {
             return Ok(true);
         }
     }

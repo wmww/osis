@@ -524,8 +524,7 @@ impl SyncEngine {
     /// dropped body keeps its live writes there (spec/crdt.md §4.6); a purged one holds none.
     pub(super) fn part_live(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize)) -> bool {
         let Some(a) = h.aspects.get(p.0) else { return false };
-        let o = crate::engine::Owned::of(h, c, p.0);
-        if self.engine.core.ix.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| o.as_ref().is_some_and(|o| v.contains(o))) {
+        if self.engine.part_valueless(h, c, p.0) {
             return false;
         }
         self.engine.body_live(c, &a.tid, &a.ak).unwrap_or(true)
