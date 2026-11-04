@@ -819,7 +819,7 @@ fn open_equals_rebuild_random_histories_unheld_part_dies() {
     }
 }
 
-// spec/requirements.md, Decentralization and Out of scope ("malicious readers can only waste
+// spec/requirements.md, Decentralization and Threat model ("malicious readers can only waste
 // storage"); spec/permissions.md §5.2: as above, with nodes taking hostile snapshots that copy a
 // held tag's dot and `ts` with another value, sent on like any commit, and compactors dropping
 // what they cover: open equals rebuild, and once every node holds everything the tags agree

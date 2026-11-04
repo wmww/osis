@@ -52,7 +52,7 @@ pub fn codes(evs: &[ClientEvent]) -> Vec<Code> {
     v
 }
 
-/// A dishonest host (spec/sync.md §6; spec/requirements.md, Threat model: hosts are trusted
+/// A dishonest host (spec/sync.md §6; spec/requirements.md, Untrusted (blind) nodes: hosts are trusted
 /// for availability only): of two hosts holding every label, one holds back (reorders within a
 /// stream) and replays its messages. Expected: honest nodes converge through the honest one (the
 /// label invariants judge only it) and survive the protocol violations.
