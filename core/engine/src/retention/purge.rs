@@ -354,7 +354,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         let Some(ai) = m.aspect(tid, ak) else { continue };
         let Some(a) = m.header.aspects.get(ai) else { continue };
         // past its expiry it goes whatever the requests say
-        if a.expires.is_some_and(|t| t <= now) {
+        if m.header.expires.is_some_and(|t| t <= now) {
             continue;
         }
         let by = requests.standing(core, a, &m.header, &c);

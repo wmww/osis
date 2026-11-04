@@ -300,7 +300,7 @@ fn aspects(h: &Header, missing: &[super::Gate]) -> BTreeSet<(Tid, Ak)> {
 /// The earliest time after `now` a delta of `missing` of commit `id` counts as held by the clock:
 /// its expiry or its keep-at-most bound (`at_most_bound`, lowered by a commit `Waits::wake` tells of).
 fn next_expiry(core: &Core, h: &Header, id: &CommitId, missing: &[super::Gate], now: u64) -> Option<u64> {
-    missing.iter().filter_map(|((ai, _), _)| h.aspects.get(*ai)).flat_map(|a| [a.expires, super::at_most_bound(core, h, id, a)]).flatten().filter(|e| *e > now).min()
+    missing.iter().filter_map(|((ai, _), _)| h.aspects.get(*ai)).flat_map(|a| [h.expires, super::at_most_bound(core, h, id, a)]).flatten().filter(|e| *e > now).min()
 }
 
 /// Notes what examining pending commit `id` (`blob`, after `examine`, with `skip`) read, if it can

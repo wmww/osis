@@ -47,10 +47,10 @@ fn created_rejects_expires() {
     a.ak = Ak::new("created.0").unwrap();
     a.retention = retention::CREATED_RETENTION;
     a.keys.clear();
-    a.expires = None;
+    h.expires = None;
     h.keys.clear();
     h.validate().unwrap();
-    h.aspects[0].expires = Some(h.ts.wall_ms().0 + 1);
+    h.expires = Some(h.ts.wall_ms().0 + 1);
     assert!(h.validate().unwrap_err().to_string().contains("fixed-retention"));
 }
 
@@ -63,9 +63,9 @@ fn required_setting_kinds_spec_commits_5() {
     a.ak = Ak::new("required.0^").unwrap();
     a.retention = retention::CREATED_RETENTION;
     a.keys.clear();
-    a.expires = None;
     a.lo = 0;
     a.hi = 0;
+    h.expires = None;
     h.keys.clear();
     for k in [Kind::ContentSnapshot, Kind::Import] {
         let mut x = h.clone();
@@ -84,9 +84,9 @@ fn created_only_in_commits_with_own_writes() {
     a.ak = Ak::new("created.0").unwrap();
     a.retention = retention::CREATED_RETENTION;
     a.keys.clear();
-    a.expires = None;
     a.lo = 0;
     a.hi = 0;
+    h.expires = None;
     h.keys.clear();
     for k in [Kind::ContentSnapshot, Kind::Import] {
         let mut x = h.clone();
@@ -159,7 +159,7 @@ fn expiry_range() {
     assert!(retention::write_expires("app:x.0", ts(10), Some(&d), None).is_err());
     assert!(retention::write_expires("app:x.0", ts(10), None, Some(FOREVER + 1)).is_err());
     let mut h = sample_header();
-    h.aspects[0].expires = Some(FOREVER + 1);
+    h.expires = Some(FOREVER + 1);
     assert!(h.validate().is_err());
 }
 

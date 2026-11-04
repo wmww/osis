@@ -21,8 +21,8 @@ fn tid() -> impl Strategy<Value = Tid> {
 }
 
 fn aspect() -> impl Strategy<Value = AspectEntry> {
-    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::option::of(0u64..1 << 50), proptest::collection::vec(0usize..8, 0..3), proptest::collection::vec(any::<[u8; 32]>(), 1..3))
-        .prop_map(|(tid, ak, lo, hi, retention, expires, keys, hashes)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, expires, keys, hashes })
+    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::collection::vec(0usize..8, 0..3), proptest::collection::vec(any::<[u8; 32]>(), 1..3))
+        .prop_map(|(tid, ak, lo, hi, retention, keys, hashes)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, keys, hashes })
 }
 
 fn link() -> impl Strategy<Value = Link> {
@@ -31,7 +31,7 @@ fn link() -> impl Strategy<Value = Link> {
 
 prop_compose! {
     fn header()(
-        author in tid(), actor in tid(), kind in 0u64..6, wall in 0u64..1 << 46, form in any::<bool>(),
+        author in tid(), actor in tid(), kind in 0u64..6, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
         aspects in proptest::collection::vec(aspect(), 0..4),
         chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec(0usize..5, 0..3)), 0..3),
         purge in proptest::collection::vec((proptest::option::of(any::<[u8; 32]>()), tid()), 0..3),
@@ -49,6 +49,7 @@ prop_compose! {
         let mut h = Header {
             version: 1, author, actor, kind: Kind::from_id(kind).unwrap(), ts: ts(wall).max(ts(0)),
             form: if form { Form::Commit } else { SESSION },
+            expires,
             aspects,
             chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), keys }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {
@@ -102,14 +103,17 @@ prop_compose! {
     }
 }
 
-/// A content commit over `n` aspects of three things with mixed retention and expiry.
-fn commit(classes: &[(u8, u8, bool)]) -> CommitBlob {
+/// A content commit over `n` aspects of three things with mixed retention (`nobody` or not
+/// throughout: a commit mixes no other class with it), expiring or not.
+fn commit(classes: &[(u8, u8)], exp: bool) -> CommitBlob {
     let at = ts(1_000_000);
     let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
-    for (i, (thing, by, exp)) in classes.iter().enumerate() {
+    b.expires = exp.then_some(5_000_000);
+    let nobody = classes.first().is_some_and(|c| c.1 == 0);
+    for (i, (thing, by)) in classes.iter().enumerate() {
+        let by = if nobody { 0 } else { (*by).max(1) };
         let mut a = AspectWrite::new(t(10 + thing), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, register_delta(t(1), at, 1, &format!("{i}")));
-        a.retention = Retention { by: PurgeBy::from_id(u64::from(*by)).unwrap(), ..Default::default() };
-        a.expires = exp.then_some(5_000_000);
+        a.retention = Retention { by: PurgeBy::from_id(u64::from(by)).unwrap(), ..Default::default() };
         b.aspects.push(a);
     }
     b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit
@@ -194,8 +198,8 @@ proptest! {
     // spec/sync.md §3: projections partition the commit's deltas, hold one class each, and
     // every projection verifies alone.
     #[test]
-    fn projections_partition(classes in proptest::collection::vec((0u8..3, 0u8..4, any::<bool>()), 1..8), split in 1usize..4) {
-        let c = commit(&classes);
+    fn projections_partition(classes in proptest::collection::vec((0u8..3, 0u8..4), 1..8), exp in any::<bool>(), split in 1usize..4) {
+        let c = commit(&classes, exp);
         let ps = project(&c, |ai| ai % split).unwrap();
         let mut all: Vec<(usize, usize)> = ps.iter().flat_map(|p| p.parts.clone()).collect();
         all.sort();
@@ -209,7 +213,7 @@ proptest! {
             prop_assert_eq!(prefix_inputs(&c.header, &p.parts).unwrap(), (p.expires, p.keys.clone()));
             for (ai, _) in &p.parts {
                 let a = &c.header.aspects[*ai];
-                prop_assert_eq!((a.retention, a.expires, ai % split), (p.retention, p.expires, p.readers));
+                prop_assert_eq!((a.retention, c.header.expires, ai % split), (p.retention, p.expires, p.readers));
             }
         }
     }

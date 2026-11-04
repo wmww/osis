@@ -418,7 +418,7 @@ fn purged_pending_part_leaves_its_blob_spec_commits_5() {
     x.give_record(90);
     let mut m = osis_node::Mutation::new();
     m.set(h, &REG, &Value::Str("purged".into())).unwrap();
-    m.set(h, &BRIEF, &Value::Str("brief".into())).unwrap();
+    m.set(h, &crate::common::KEPT, &Value::Str("kept".into())).unwrap();
     let c = x.net.engine(a).commit(m).unwrap().unwrap();
     // sealed before the purge drops it at its author: the body of `t:reg.0` alone
     let reg = x.net.engine(a).bodies(&c).unwrap().into_iter().find(|y| CommitBlob::decode(&y.plaintext).unwrap().parts.iter().any(|p| x.net.engine(a).header(&c).unwrap().aspects[p.ai].ak.as_str() == "t:reg.0")).unwrap();

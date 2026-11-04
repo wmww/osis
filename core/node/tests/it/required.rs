@@ -402,7 +402,8 @@ fn a_broken_permanent_delta_is_no_tombstone_spec_commits_5() {
     lp.sync_all().unwrap();
     let bad = hostile(&mut lp, 1, d, "t:bad.0", Retention { by: PurgeBy::Writer, ..permanent() }, "bad");
     lp.sync_all().unwrap();
-    assert!(lp.peers[0].engine.header(&bad).unwrap().aspects.iter().any(|a| a.permanent()));
+    let h = lp.peers[0].engine.header(&bad).unwrap();
+    assert!(h.aspects.iter().any(|a| h.permanent(a)));
     assert_eq!(lp.peers[0].engine.drop_broken(Some(&BTreeSet::from([bad]))).unwrap(), vec![bad]);
     assert!(!lp.peers[0].engine.body_not_dropped(&bad, &d, &ak("t:bad.0")));
     assert!(!lp.peers[0].engine.label_bodies_meta(&d).unwrap().iter().any(|b| b.commit == bad), "a lasting header of a broken delta");
@@ -689,14 +690,18 @@ fn broken_delta_falls_alone_spec_commits_5() {
         let st = net.engine(setter).commit(m).unwrap().unwrap();
         settle(&mut net);
         let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
+        // a `nobody` delta shares a commit only with `nobody` ones (spec/commits.md §5): in
+        // another blob, the broken delta is `writer`
         let mut m = Mutation::new();
         m.set(t, &bad, &s("bad")).unwrap();
-        m.retention(t, &bad, junk()).unwrap();
         m.set(t, &good, &s("good")).unwrap();
         m.set(u, &good, &s("other")).unwrap();
         if same_class {
+            m.retention(t, &bad, junk()).unwrap();
             m.retention(t, &good, junk()).unwrap();
             m.retention(u, &good, junk()).unwrap();
+        } else {
+            m.retention(t, &bad, Retention { by: PurgeBy::Writer, ..Retention::default() }).unwrap();
         }
         let cm = net.engine(b).commit(m).unwrap().unwrap();
         net.advance(1_000);
@@ -749,6 +754,8 @@ fn missing_broken_part_reads_alike_spec_commits_4() {
     m.set(d, &bad, &s("bad")).unwrap();
     m.retention(d, &bad, junk()).unwrap();
     m.set(d, &good, &s("good")).unwrap();
+    // `nobody` beside `nobody` only (spec/commits.md §5)
+    m.retention(d, &good, junk()).unwrap();
     let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
     lp.advance(1_000);
     let setting = pack(&mut lp.peers[2], &s1);
@@ -965,6 +972,8 @@ fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
     m.set(d, &bad, &s("bad")).unwrap();
     m.retention(d, &bad, junk()).unwrap();
     m.set(d, &good, &s("good")).unwrap();
+    // `nobody` beside `nobody` only (spec/commits.md §5)
+    m.retention(d, &good, junk()).unwrap();
     let c = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     lp.advance(1_000);
     let dem = demote_to_write(&mut lp, d, carol, &[]);
@@ -1062,6 +1071,8 @@ fn dropped_setting_reads_as_never_seen_spec_commits_4() {
     m.set(d, &bad, &s("bad")).unwrap();
     m.retention(d, &bad, junk()).unwrap();
     m.set(d, &good, &s("good")).unwrap();
+    // `nobody` beside `nobody` only (spec/commits.md §5)
+    m.retention(d, &good, junk()).unwrap();
     let c = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
     lp.advance(1_000);
     let dem = demote_to_write(&mut lp, d, ids[2], &[]);

@@ -38,12 +38,13 @@ impl Checker {
         let limit = received.0.saturating_add(MAX_DRIFT_MS);
         match origin {
             // spec/crdt.md §2.2: max(wall, last seen) with last seen within MAX_DRIFT; +1 ms for
-            // a writer that exhausted `logical`
+            // a writer that exhausted `logical`; the commits of one split write share a `ts`
+            // (spec/commits.md §6)
             Origin::Local => {
                 if let Some(prev) = self.last_own.get(&i)
-                    && ts <= prev
+                    && ts < prev
                 {
-                    return Err(format!("node {i}: own ts {ts:?} not above previous {prev:?} (HLC monotone)"));
+                    return Err(format!("node {i}: own ts {ts:?} below previous {prev:?} (HLC monotone)"));
                 }
                 self.last_own.insert(i, *ts);
                 if ts.wall_ms().0 > limit.saturating_add(1) {

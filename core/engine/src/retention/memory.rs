@@ -162,7 +162,7 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>
     let mut by = BTreeSet::new();
     for ai in held {
         let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
-        if a.expires.is_none() {
+        if m.header.expires.is_none() {
             return Ok(None);
         }
         let others: Vec<(CommitId, usize, Option<u64>)> = tx
@@ -175,7 +175,8 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>
             .filter_map(|(_, x)| {
                 let xm = tx.core.ix.commits.get(x).filter(|xm| *x != *c && plain_memory(xm) && xm.view.author == m.view.author)?;
                 let xai = xm.aspect(&a.tid, &a.ak).filter(|xai| xm.holds(*xai) && xm.valid_at(*xai))?;
-                Some((*x, xai, xm.header.aspects.get(xai)?.expires))
+                xm.header.aspects.get(xai)?;
+                Some((*x, xai, xm.header.expires))
             })
             .collect();
         if others.is_empty() {
@@ -184,7 +185,7 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>
         let p = joined(tx, c, ai)?;
         let mut any = None;
         for (x, xai, x_exp) in others {
-            if supersedes(&joined(tx, &x, xai)?, x_exp, &p, a.expires) {
+            if supersedes(&joined(tx, &x, xai)?, x_exp, &p, m.header.expires) {
                 any = Some(x);
                 break;
             }

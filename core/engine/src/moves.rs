@@ -10,7 +10,7 @@
 //! snapshot does not carry is imported from its commit while the current state holds it.
 //! Resolution of moved tids in reads lives in `engine/read.rs`.
 
-use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
+use crate::engine::write::{CommitPlan, Resolved, build_split};
 use crate::engine::{Core, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::Mutation;
@@ -109,7 +109,7 @@ fn excluded(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     for (_, c) in tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = tx.core.ix.commits.get(c) else { continue };
         let Some(ai) = m.aspect(tid, ak) else { continue };
-        if m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some())
+        if m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some())
             && let Some(o) = Owned::of(&m.header, c, ai)
         {
             out.push(o);
@@ -118,16 +118,16 @@ fn excluded(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     out
 }
 
-/// One import commit of origin `c` into `m`, its deltas on `aspects` (`None` when nothing of it
-/// is importable).
+/// The import commits of origin `c` into `m` (one per `nobody` class, `build_split`; none when
+/// nothing of it is importable).
 #[allow(clippy::too_many_arguments)]
-fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeMap<Ak, Carrier>, owners: &Owners, live: &mut BTreeMap<Ak, BTreeSet<Dot>>, shown: &mut BTreeMap<Ak, Option<Shown>>) -> Result<Option<CommitId>> {
-    let Some(meta) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeMap<Ak, Carrier>, owners: &Owners, live: &mut BTreeMap<Ak, BTreeSet<Dot>>, shown: &mut BTreeMap<Ak, Option<Shown>>) -> Result<Vec<CommitId>> {
+    let Some(meta) = tx.core.ix.commits.get(c).cloned() else { return Ok(Vec::new()) };
     let h = meta.header.clone();
     let snapshot = h.kind == Kind::ContentSnapshot;
     let import = h.kind == Kind::Import;
     if h.kind != Kind::Content && !snapshot && !import {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     // origins are commits of other things (spec/permissions.md §7); a hostile test writer
     // (`Engine::reimport`) imports them too
@@ -137,7 +137,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     let own = h.form.own_source(h.author, *c);
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if a.tid != *t || osis_commit::retention::fixed_retention(a.ak.as_str()).is_some() || a.expires.is_some() || !meta.valid_at(ai) || meta.dropped.contains_key(&ai) {
+        if a.tid != *t || osis_commit::retention::fixed_retention(a.ak.as_str()).is_some() || h.expires.is_some() || !meta.valid_at(ai) || meta.dropped.contains_key(&ai) {
             continue;
         }
         let carrier = carriers.get(&a.ak);
@@ -217,7 +217,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
         deltas.push(Resolved { tid: *m, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
     }
     if deltas.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let node = tx.core.id.tid();
     let ts = tx.core.hlc.next();
@@ -225,8 +225,8 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     for d in deltas.iter().filter(|_| !tx.core.skip_writer_rules) {
         crate::engine::write::check_authority(tx.core, tx.core.id.tid(), &Default::default(), &d.tid, d.ak.as_str(), ts)?;
     }
-    let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
-    build_and_apply(tx, plan, deltas).map(Some)
+    let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
+    build_split(tx, plan, deltas)
 }
 
 /// Each held import on `t` valid and not dropped, per aspect, by its writes (`Owners`).
@@ -344,9 +344,7 @@ fn import_all(tx: &mut Tx<'_>, t: &Tid, copy: &Tid) -> Result<Vec<CommitId>> {
     origins.dedup();
     let mut out = Vec::new();
     for (_, c) in origins {
-        if let Some(id) = import_one(tx, t, copy, &c, &carriers, &owners, &mut live, &mut shown)? {
-            out.push(id);
-        }
+        out.extend(import_one(tx, t, copy, &c, &carriers, &owners, &mut live, &mut shown)?);
     }
     Ok(out)
 }
@@ -354,6 +352,7 @@ fn import_all(tx: &mut Tx<'_>, t: &Tid, copy: &Tid) -> Result<Vec<CommitId>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::write::build_and_apply;
     use crate::local_peer::LocalPeer;
     use crate::Ingested;
     use osis_base::{Role, Value, WallMs};
@@ -374,7 +373,7 @@ mod tests {
                 f.map_dots(&|x| (x.src == Source::commit(d)).then(|| Dot::new(Source::commit(c), x.ctr)));
                 let node = tx.core.id.tid();
                 let ts = tx.core.hlc.next();
-                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: c, author: ch.author, actor: ch.actor, ts: ch.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: c, author: ch.author, actor: ch.actor, ts: ch.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
                 let r = Resolved { tid: copy, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() };
                 build_and_apply(tx, plan, vec![r])
             })
@@ -468,7 +467,7 @@ mod tests {
                 let origins = listed.iter().map(|c| { let h = tx.core.ix.commits.get(c).unwrap().header.clone(); Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts } }).collect();
                 let node = tx.core.id.tid();
                 let ts = tx.core.hlc.next();
-                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
                 let r = Resolved { tid: copy, ak: body.clone(), fragment: out, lo: 0, hi: 0, schema: None, retention, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() };
                 build_and_apply(tx, plan, vec![r])
             })

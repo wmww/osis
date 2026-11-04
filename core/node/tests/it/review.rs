@@ -61,16 +61,20 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     }
 }
 
-// spec/commits.md §4: a missing delta whose expiry has passed counts as held.
+// spec/commits.md §4: a missing delta whose expiry has passed counts as held (the commit's
+// expiry: its held part goes too).
 #[test]
 fn expired_missing_delta_counts_as_held_spec_commits_4() {
     let mut lp = net(2, 72);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     lp.peers[1].engine.set_syncing(t, true).unwrap();
+    let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("gone soon")).unwrap();
-    m.set(t, &REG, &s("stays")).unwrap();
+    m.set(t, &REG, &s("held")).unwrap();
+    m.expires(t, &BRIEF, at).unwrap();
+    m.expires(t, &REG, at).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
@@ -78,7 +82,10 @@ fn expired_missing_delta_counts_as_held_spec_commits_4() {
     assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitDeltas)));
     lp.advance(3_600_001);
     lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("stays")));
+    assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
+    assert!(lp.peers[1].engine.commit_ids().contains(&id));
+    // the expired write vanished: the earlier one shows (spec/crdt.md §4.7)
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
 }
 
 // spec/commits.md §4: a part that does not hash to its header entry is dropped alone; the

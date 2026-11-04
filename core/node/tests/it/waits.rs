@@ -279,6 +279,8 @@ fn later_commit_without_part_wakes_wait_spec_commits_4() {
         m.set(t, &GONE, &s("y")).unwrap();
         m.expires(t, &GONE, WallMs(t_exp)).unwrap();
         m.set(t, &REG, &s("2")).unwrap();
+        // one expiry per commit (spec/commits.md §6)
+        m.expires(t, &REG, WallMs(t_exp)).unwrap();
     });
     let (mut lp, t, c) = carrierless(0x7c07, vec![mixed("x", Some("1"), at_most(Some(0), None)), expiring]);
     lp.peers[1].clock.set(WallMs(t_exp + 1));
@@ -288,7 +290,8 @@ fn later_commit_without_part_wakes_wait_spec_commits_4() {
     lp.peers[1].engine.ingest(&reg_only(&c[1]), Vec::new()).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("2")));
+    // the later write expired with its commit, value-less, the winner (spec/crdt.md §4.7)
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
 // spec/crdt.md §8 (a frontier reaches only writes the fragment reflects), spec/commits.md §4: a
@@ -561,6 +564,10 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
             m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(s("v")) }).unwrap();
             if reg {
                 m.set(t, &REG, &s("1")).unwrap();
+                // one expiry per commit (spec/commits.md §6)
+                if exp {
+                    m.expires(t, &REG, WallMs(far)).unwrap();
+                }
             }
         })
     };
@@ -871,67 +878,6 @@ fn listed_thing_never_read_holds_a_commit_across_it_spec_commits_4() {
     assert!(e.pending().is_empty(), "{:?}", e.pending());
 }
 
-// spec/commits.md §4: a commit no part of which is held (a pending part went at its expiry) waits
-// for its other deltas synced or not: whether it is recorded applied reads no sync set.
-#[test]
-fn partless_commit_waits_for_its_deltas_unsynced_spec_commits_4() {
-    for (seed, synced) in [(95, true), (96, false)] {
-        let mut lp = net(2, seed);
-        let t = new_thing(&mut lp, 0);
-        sync(&mut lp, 0, 1);
-        let now = lp.peers[0].engine.now().0;
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s("r")).unwrap();
-        m.expires(t, &REG, WallMs(now + 1_000)).unwrap();
-        m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
-        let id = lp.peers[0].commit(m).unwrap().unwrap();
-        let h = lp.peers[0].engine.header(&id).unwrap();
-        let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-        let e = &mut lp.peers[1].engine;
-        if synced {
-            e.set_syncing(t, true).unwrap();
-        }
-        let r = e.ingest(&only(&pk.bytes, &h, |_, a| a == "t:reg.0"), Vec::new()).unwrap();
-        assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
-        lp.peers[1].clock.advance(2_000);
-        let e = &mut lp.peers[1].engine;
-        e.tick().unwrap();
-        assert_eq!(e.pending(), vec![(id, Reason::WaitDeltas)], "synced {synced}");
-        assert!(!e.commit_ids().contains(&id), "synced {synced}");
-    }
-}
-
-// spec/commits.md §4: two things of a commit, each with a part held and a part away: one thing's
-// part coming to count as held frees that thing's content though the other's still waits.
-#[test]
-fn one_things_wait_ending_frees_it_alone_spec_commits_4() {
-    let mut lp = net(2, 97);
-    let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    sync(&mut lp, 0, 1);
-    let now = lp.peers[0].engine.now().0;
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("t")).unwrap();
-    m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
-    m.expires(t, &TAGS, WallMs(now + 1_000)).unwrap();
-    m.set(u, &REG, &s("u")).unwrap();
-    m.set(u, &TAGS, &Value::Set([s("b")].into_iter().collect())).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-    let e = &mut lp.peers[1].engine;
-    let r = e.ingest(&only(&pk.bytes, &h, |_, a| a == "t:reg.0"), Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
-    lp.peers[1].clock.advance(2_000);
-    let e = &mut lp.peers[1].engine;
-    e.tick().unwrap();
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")));
-    assert_ne!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("u")));
-    assert_eq!(e.pending(), vec![(id, Reason::WaitDeltas)]);
-    e.ingest(&pk.bytes, Vec::new()).unwrap();
-    assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("u")));
-    assert!(e.pending().is_empty(), "{:?}", e.pending());
-}
-
 // spec/commits.md §4, apply/waits.rs: a part of an applied commit waiting for a delta is left out of
 // `reexamine` as a whole commit's wait is: its wait ends with the delta's expiry, not by being
 // examined each time anything applies.
@@ -939,12 +885,20 @@ fn one_things_wait_ending_frees_it_alone_spec_commits_4() {
 fn applied_commits_delta_wait_is_kept_spec_commits_4() {
     let mut lp = net(2, 98);
     let now = lp.peers[0].engine.now().0;
+    // the records first: an expiring commit carries none (spec/commits.md §6); `u`'s part
+    // applies the commit while `t`'s content waits
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.tid();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
+    let u = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
     m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
-    m.expires(t, &TAGS, WallMs(now + 1_000)).unwrap();
+    m.set(u, &REG, &s("u")).unwrap();
+    for (x, k) in [(t, &REG), (t, &TAGS), (u, &REG)] {
+        m.expires(x, k, WallMs(now + 1_000)).unwrap();
+    }
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pks = packages(&mut lp, 0);
     for pk in pks.iter().filter(|p| p.id != c) {
@@ -960,8 +914,9 @@ fn applied_commits_delta_wait_is_kept_spec_commits_4() {
     lp.peers[1].clock.advance(2_000);
     let e = &mut lp.peers[1].engine;
     e.tick().unwrap();
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")), "the delta counts as held");
+    // its wait ended at the delta's expiry, the commit's: its own part went value-less with it
     assert!(e.pending().is_empty(), "{:?}", e.pending());
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
 // spec/commits.md §4: what a node syncs is a function of the `group.0` it holds, so with a thing

@@ -351,7 +351,7 @@ pub(crate) fn misstated_in(tx: &mut Tx<'_>, ix: &osis_crdt::CopyIndex, h: &Heade
     if !ix.any_in(&ranges) {
         return Ok(BTreeSet::new());
     }
-    let lax = h.aspects.get(ai).is_some_and(|a| a.expires.is_some());
+    let lax = h.aspects.get(ai).is_some_and(|_| h.expires.is_some());
     Ok(ix.misstated(&ranges, held_copies(tx, id, ai, own)?, lax))
 }
 
@@ -372,7 +372,7 @@ pub(crate) fn held_copies<'o>(tx: &mut Tx<'_>, id: &CommitId, ai: usize, own: &'
 /// Whether the delta owning dot `d` on `(tid, ak)` expires: snapshots carry its writes
 /// value-less (spec/crdt.md §4.7), no misstatement.
 pub(crate) fn owner_expires(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_owner(core, tid, ak, d, &|_, m, ai| m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()))
+    any_owner(core, tid, ak, d, &|_, m, ai| m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))
 }
 
 /// The dots under which held snapshot `s` of `(tid, ak)` carries copies of held deltas' writes

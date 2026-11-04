@@ -196,8 +196,11 @@ fn linked_blobs_of_gone_copy_leave_local_label_spec_sync_5() {
     // a thing outside the label's closure, written with an aspect list that goes by link
     let me = net.tid(a);
     let e = net.engine(a);
+    // the record first: an expiring commit carries none (spec/commits.md §6)
     let mut m = osis_node::Mutation::new();
     let u = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    let mut m = osis_node::Mutation::new();
     let at = WallMs(e.now().0 + 5_000);
     // few aspects with long keys: the list just above `CHUNK_THRESHOLD`
     for i in 0..160 {
@@ -207,7 +210,7 @@ fn linked_blobs_of_gone_copy_leave_local_label_spec_sync_5() {
     }
     let c = e.commit(m).unwrap().unwrap();
     assert!(net.engine(a).header(&c).unwrap().links.aspects.is_some(), "the aspect list goes by link");
-    let ai = net.engine(a).header(&c).unwrap().aspects.iter().position(|x| x.expires.is_some()).unwrap();
+    let ai = net.engine(a).header(&c).unwrap().aspects.iter().position(|x| x.tid == u).unwrap();
     let acts = net.sync(a).place_certificate(&g, &c, &[ai].into()).unwrap();
     net.actions(a, acts);
     net.run();
@@ -326,6 +329,8 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     let e = net.engine(a);
     let mut m = osis_node::Mutation::new();
     let v = e.new_thing(&mut m, me);
+    e.commit(m).unwrap();
+    let mut m = osis_node::Mutation::new();
     let at = WallMs(e.now().0 + 40_000);
     for i in 0..160 {
         let ak = Ak::new(format!("u:{}{i:05}.0", "a".repeat(900))).unwrap();
@@ -333,7 +338,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
         m.expires(v, &ak, at).unwrap();
     }
     let cc = e.commit(m).unwrap().unwrap();
-    let ai = net.engine(a).header(&cc).unwrap().aspects.iter().position(|x| x.expires.is_some()).unwrap();
+    let ai = net.engine(a).header(&cc).unwrap().aspects.iter().position(|x| x.tid == v).unwrap();
     let acts = net.sync(a).place_certificate(&g, &cc, &[ai].into()).unwrap();
     net.actions(a, acts);
     step(&mut net);

@@ -286,7 +286,8 @@ impl Engine {
                 .filter_map(|(_, c)| {
                     let m = self.core.ix.commits.get(c)?;
                     let ai = m.aspect(&g, &pak)?;
-                    let t = m.header.aspects.get(ai)?.expires?;
+                    m.header.aspects.get(ai)?;
+                    let t = m.header.expires?;
                     Some((t, Owned::of(&m.header, c, ai)?))
                 })
                 .collect();

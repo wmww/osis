@@ -219,7 +219,7 @@ fn heartbeats_carry_only_seen() {
         let ts = h.ts.wall_ms().0;
         for x in &h.aspects {
             assert_eq!((x.ak.as_str(), x.tid), ("seen.0", h.author), "a heartbeat carried more than seen.0");
-            let exp = x.expires.unwrap();
+            let exp = h.expires.unwrap();
             assert!(exp >= ts + osis_base::format::HEARTBEAT_MIN_LIFETIME_MS && exp <= ts + osis_base::format::HEARTBEAT_MAX_LIFETIME_MS);
         }
     }

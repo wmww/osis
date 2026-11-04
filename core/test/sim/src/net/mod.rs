@@ -1636,6 +1636,24 @@ impl NetSim {
         Ok(id)
     }
 
+    /// `commit` through `Engine::write`: one commit per expiry and `nobody` class
+    /// (spec/commits.md §5, §6), the one carrying new things' records first; none after a crash.
+    pub fn write(&mut self, n: usize, m: Mutation) -> Res<Vec<CommitId>> {
+        let r = self.engine(n)?.write(m);
+        let w = match r {
+            Ok(w) => w,
+            Err(_) if self.nodes.get(n).is_some_and(|x| x.faults.crashed()) => {
+                self.report.crashes = self.report.crashes.saturating_add(1);
+                self.note(format!("node {n} crashed during a scenario write"));
+                self.node_down(n)?;
+                return Ok(Vec::new());
+            }
+            Err(e) => return Err(self.fail(format!("node {n} write: {e}"))),
+        };
+        self.feed(n, Event::Local)?;
+        Ok(w.map(|w| w.id.commit().into_iter().chain(w.also).collect()).unwrap_or_default())
+    }
+
     /// Records what every up node knows of commit blobs under its labels.
     pub fn observe(&mut self) -> Res<()> {
         for n in 0..self.nodes.len() {

@@ -127,20 +127,9 @@ pub struct AspectEntry {
     pub lo: u64,
     pub hi: u64,
     pub retention: Retention,
-    /// Expiry, wall ms.
-    pub expires: Option<u64>,
     /// Ascending indices into the header's delete keys.
     pub keys: Vec<usize>,
     pub hashes: Vec<[u8; 32]>,
-}
-
-impl AspectEntry {
-    /// A permanent delta (spec/commits.md §5): keep at least forever, no keep at most, no expiry, on
-    /// an aspect with no fixed retention. It leaves by purge request, and leaves its header behind
-    /// for good.
-    pub fn permanent(&self) -> bool {
-        self.retention.at_least.abs == Some(FOREVER) && self.retention.at_most == osis_schema::Bound::default() && self.expires.is_none() && crate::retention::fixed_retention(self.ak.as_str()).is_none()
-    }
 }
 
 /// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded.
@@ -261,6 +250,8 @@ pub struct Header {
     pub kind: Kind,
     pub ts: Ts,
     pub form: Form,
+    /// The commit's expiry T, wall ms (spec/commits.md §6): every delta of it expires then.
+    pub expires: Option<u64>,
     pub aspects: Vec<AspectEntry>,
     pub chunks: Vec<ChunkEntry>,
     pub purge: Vec<PurgeItem>,
@@ -300,7 +291,6 @@ fn aspect_value(a: &AspectEntry) -> Value {
         uint(a.lo),
         uint(a.hi),
         retention_value(&a.retention),
-        Value::opt(a.expires.map(uint)),
         Value::List(a.keys.iter().map(|i| uidx(*i)).collect()),
         Value::List(a.hashes.iter().map(|h| Value::bytes(h)).collect()),
     ])
@@ -332,6 +322,13 @@ pub(crate) fn aspect_key(t: &Tid, a: &Ak) -> Vec<u8> {
 }
 
 impl Header {
+    /// Whether aspect `a` of this header is a permanent delta (spec/commits.md §5): keep at least
+    /// forever, no keep at most, no expiry, on an aspect with no fixed retention, in a durable
+    /// commit. It leaves by purge request, and leaves its header behind for good.
+    pub fn permanent(&self, a: &AspectEntry) -> bool {
+        self.ephemeral.is_none() && self.expires.is_none() && a.retention.at_least.abs == Some(FOREVER) && a.retention.at_most == osis_schema::Bound::default() && crate::retention::fixed_retention(a.ak.as_str()).is_none()
+    }
+
     /// The actor holding the author right over this commit's deltas (spec/permissions.md §7,
     /// §8): the actor it acted for; an import's: its first origin commit's.
     pub fn purge_actor(&self) -> Tid {
@@ -370,6 +367,7 @@ impl Header {
             uint(self.kind.id()),
             uint(self.ts.to_u64()),
             self.form.value(),
+            Value::opt(self.expires.map(uint)),
             self.position(ListField::Aspects),
             self.position(ListField::Chunks),
             self.position(ListField::Purge),
@@ -460,14 +458,6 @@ fn read_ak(r: &mut Reader<'_>) -> Result<Ak, Error> {
     Ak::new(r.text()?).map_err(|_| Error::Malformed("aspect key"))
 }
 
-fn read_opt_uint(r: &mut Reader<'_>) -> Result<Option<u64>, Error> {
-    match r.array()? {
-        0 => Ok(None),
-        1 => Ok(Some(r.uint()?)),
-        _ => Err(Error::Malformed("expected an option")),
-    }
-}
-
 fn read_idxs(r: &mut Reader<'_>) -> Result<Vec<usize>, Error> {
     read_items(r, 1, |r| usize::try_from(r.uint()?).map_err(|_| Error::Malformed("index too large")))
 }
@@ -497,16 +487,16 @@ fn read_retention(r: &mut Reader<'_>) -> Result<Retention, Error> {
 }
 
 fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
-    if r.array()? != 8 {
+    if r.array()? != 7 {
         return Err(Error::Malformed("aspect arity"));
     }
     let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
-    let (retention, expires, keys) = (read_retention(r)?, read_opt_uint(r)?, read_idxs(r)?);
+    let (retention, keys) = (read_retention(r)?, read_idxs(r)?);
     let hashes = read_items(r, MIN_ID, |r| Ok(r.fixed::<32>()?))?;
     if hashes.is_empty() {
         return Err(Error::Malformed("aspect without delta hashes"));
     }
-    Ok(AspectEntry { tid, ak, lo, hi, retention, expires, keys, hashes })
+    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hashes })
 }
 
 fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {
@@ -634,7 +624,7 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let [_, author, actor, kind, ts, form, aspects, chunks, purge, undoes, blind, keys, frontier, origins, ephemeral] = items else {
+        let [_, author, actor, kind, ts, form, expires, aspects, chunks, purge, undoes, blind, keys, frontier, origins, ephemeral] = items else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
@@ -644,6 +634,7 @@ impl Header {
             kind: Kind::from_id(as_uint(kind)?).ok_or(Error::Malformed("kind"))?,
             ts: as_ts(ts)?,
             form: Form::from_value(form)?,
+            expires: as_opt(expires)?.map(as_uint).transpose()?,
             aspects: Vec::new(),
             chunks: Vec::new(),
             purge: Vec::new(),

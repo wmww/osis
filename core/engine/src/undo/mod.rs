@@ -5,7 +5,7 @@
 //! whenever a body of the aspect is dropped).
 
 use crate::engine::records::{Rd, Wr};
-use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
+use crate::engine::write::{CommitPlan, Resolved, build_split};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Kind};
@@ -138,10 +138,11 @@ pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mu
     Ok(out.map(|f| (f, w.range(), expires)))
 }
 
-/// Builds and applies the undo commit of `target` (spec/crdt.md §4.6); of the things it
+/// Builds and applies the undo commit of `target` (spec/crdt.md §4.6), one per expiry its deltas
+/// copy back (`build_split`, each naming `target`); of the things it
 /// created, `keep` (drafts it saved) are not deleted. `confined`: every write it makes is held to
 /// `actor`'s rights (`Engine::revert_as`).
-pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, keep: &BTreeSet<Tid>, confined: bool) -> Result<CommitId> {
+pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, keep: &BTreeSet<Tid>, confined: bool) -> Result<Vec<CommitId>> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
     if !matches!(h.kind, Kind::Content) {
@@ -243,8 +244,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     if confined {
         crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
-    build_and_apply(tx, plan, deltas)
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
+    build_split(tx, plan, deltas)
 }
 
 /// The things content commit `m` created: those whose `created.0` it validly carries (a
@@ -381,13 +382,14 @@ pub struct HeldCommit {
 
 impl Engine {
     /// Reverts `target` (any held content commit; spec/crdt.md §4.6: an undo commit). `None` if
-    /// there is nothing to write.
+    /// there is nothing to write; `Misuse` if the undo needs several commits (`revert_change`
+    /// writes them).
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
         let t = *target;
         let me = self.tid();
-        match self.run(|tx| undo_in(tx, t, me, None, &BTreeSet::new(), false)) {
+        match self.run(|tx| crate::engine::write::one(undo_in(tx, t, me, None, &BTreeSet::new(), false)?)) {
             Err(Error::Misuse("nothing to undo")) => Ok(None),
-            r => r.map(Some),
+            r => r,
         }
     }
 

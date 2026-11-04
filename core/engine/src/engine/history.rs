@@ -102,7 +102,7 @@ fn commit_row(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, budget: usize) 
     let dropped = m.dropped.contains_key(&ai);
     let body = if holds {
         // past its expiry the next tick drops it: no read shows it until then
-        if header.aspects.get(ai).and_then(|a| a.expires).is_some_and(|t| t <= tx.now().0) {
+        if header.aspects.get(ai).and(header.expires).is_some_and(|t| t <= tx.now().0) {
             RowBody::Dropped
         } else {
             held_body(tx, c, ai, budget)?

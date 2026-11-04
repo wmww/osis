@@ -27,8 +27,6 @@ pub struct AspectWrite {
     /// Resolved retention ([`crate::retention`] helpers: fixed, override, schema default,
     /// untyped default; snapshot; an import's origin delta's).
     pub retention: Retention,
-    /// Expiry T, wall ms ([`crate::retention::write_expires`]).
-    pub expires: Option<u64>,
     /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
     /// keys, [`delete_keys`]).
     pub chunks: Vec<BlobId>,
@@ -39,7 +37,7 @@ pub struct AspectWrite {
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, deltas: vec![delta], retention: Retention::default(), expires: None, chunks: Vec::new(), records: Vec::new() }
+        AspectWrite { tid, ak, lo, hi, deltas: vec![delta], retention: Retention::default(), chunks: Vec::new(), records: Vec::new() }
     }
 }
 
@@ -53,6 +51,8 @@ pub struct CommitBuilder {
     /// The actor it acts for.
     pub actor: Tid,
     pub form: Form,
+    /// Expiry T, wall ms, of every delta ([`crate::retention::write_expires`]).
+    pub expires: Option<u64>,
     pub aspects: Vec<AspectWrite>,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
@@ -85,7 +85,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, origins: Vec::new(), ephemeral: None, max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, author, actor, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, origins: Vec::new(), ephemeral: None, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -121,7 +121,6 @@ impl CommitBuilder {
                     lo,
                     hi,
                     retention: a.retention,
-                    expires: a.expires,
                     keys: Vec::new(),
                     hashes: hd.iter().map(|x| x.0).collect(),
                 },
@@ -152,8 +151,6 @@ impl CommitBuilder {
         let mut origins = std::mem::take(&mut self.origins);
         origins.sort_by_key(|o| o.commit);
 
-        let all_expire = entries.iter().all(|(e, _)| e.expires.is_some());
-        let list_expiry = if all_expire { entries.iter().filter_map(|(e, _)| e.expires).max() } else { None };
         let mut header = Header {
             version: FORMAT_VERSION,
             author: self.author,
@@ -161,6 +158,7 @@ impl CommitBuilder {
             kind,
             ts: self.ts,
             form: self.form,
+            expires: self.expires,
             aspects: entries.into_iter().map(|e| e.0).collect(),
             chunks,
             purge,
@@ -193,7 +191,7 @@ impl CommitBuilder {
             let mut prefix = || {
                 let mut salt = [0u8; 16];
                 rng.fill_bytes(&mut salt);
-                Prefix { salt, blind, expiry: list_expiry, keys: list_keys.clone() }
+                Prefix { salt, blind, expiry: header.expires, keys: list_keys.clone() }
             };
             let mut rec = Recording { sink: &mut *sink, written: &mut written };
             let link = write_list(&bytes, &dedup, &mut rec, &mut prefix)?;

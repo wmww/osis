@@ -691,7 +691,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     let inline = blob.header.is_resolved();
     let _s = crate::costs::span("examine");
     // what `waits_without_expired` judges: `examine` takes bad parts and those waiting out of `blob`
-    let held = (!inline || blob.header.aspects.iter().any(|a| a.expires.is_some())).then(|| blob.parts.clone());
+    let held = (!inline || blob.header.expires.is_some()).then(|| blob.parts.clone());
     let exam = examine(tx, &mut blob, &id, &BTreeSet::new())?;
     if let (Exam::Ready(parts), Some(mut held)) = (&exam, held) {
         // a relay's junk is no part that went: no flag for it
@@ -1095,7 +1095,7 @@ impl Engine {
                 out.extend(b.parts.iter().map(|p| (p.ai, p.di)));
             }
             if let Some(m) = tx.core.ix.commits.get(&id) {
-                let ais: Vec<usize> = (0..m.header.aspects.len()).filter(|ai| m.dropped.contains_key(ai) || m.header.aspects.get(*ai).is_some_and(|a| a.expires.is_some_and(|t| t <= now))).collect();
+                let ais: Vec<usize> = (0..m.header.aspects.len()).filter(|ai| m.dropped.contains_key(ai) || m.header.aspects.get(*ai).and(m.header.expires).is_some_and(|t| t <= now)).collect();
                 for ai in ais {
                     out.extend(out_of(&m.header, ai));
                 }

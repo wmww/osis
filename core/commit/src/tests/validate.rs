@@ -63,7 +63,7 @@ fn validate_kinds() {
     x.keys.remove(1);
     x.aspects[0].keys = vec![0];
     assert!(invalid(&x).to_string().contains("expires on an import"), "spec/permissions.md §7");
-    x.aspects[0].expires = None;
+    x.expires = None;
     assert!(invalid(&x).to_string().contains("origins"));
     x.origins.push(Origin { commit: CommitId([1; 32]), author: t(1), actor: t(2), ts: ts(5) });
     x.validate().unwrap();
@@ -82,9 +82,9 @@ pub(crate) fn role_header(ak: &str) -> Header {
     let a = &mut h.aspects[0];
     a.ak = Ak::new(ak).unwrap();
     a.retention = retention::ROLE_RETENTION;
-    a.expires = None;
     a.keys = vec![0];
     a.hashes = vec![[1; 32], [2; 32]];
+    h.expires = None;
     h.keys.truncate(1);
     h
 }
@@ -111,7 +111,7 @@ fn validate_role_commit() {
         assert!(invalid(&x).to_string().contains("acting for another actor"));
     }
     let mut x = h.clone();
-    x.aspects[0].expires = Some(9_999_999_999);
+    x.expires = Some(9_999_999_999);
     assert!(invalid(&x).to_string().contains("expires"));
     let mut x = h.clone();
     x.aspects[0].retention.by = PurgeBy::Writer;
@@ -148,6 +148,40 @@ fn validate_role_commit() {
     assert!(invalid(&x).to_string().contains("roles.0"));
 }
 
+// spec/commits.md §5 (nobody shares a commit only with nobody), §6 (one expiry per commit): a
+// `nobody` delta beside another class is bad input, a record or `required.0^` beside either is
+// not; an expiring commit carries no fixed-retention aspect.
+#[test]
+fn validate_nobody_and_commit_expiry() {
+    let sort = |x: &mut Header| x.aspects.sort_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
+    let mut h = sample_header();
+    h.expires = None;
+    let mut b = h.aspects[0].clone();
+    b.ak = Ak::new("app:z.0").unwrap();
+    b.retention = Retention { by: PurgeBy::Nobody, ..b.retention };
+    b.keys.clear();
+    let mut x = h.clone();
+    x.aspects.push(b.clone());
+    sort(&mut x);
+    assert!(invalid(&x).to_string().contains("nobody"), "{}", invalid(&x));
+    let mut rec = b.clone();
+    rec.ak = Ak::new("created.0").unwrap();
+    rec.retention = retention::CREATED_RETENTION;
+    rec.tid = t(2);
+    let mut x = h.clone();
+    x.aspects.insert(0, rec.clone());
+    sort(&mut x);
+    x.validate().unwrap();
+    let mut x = h.clone();
+    x.aspects[0] = b.clone();
+    x.aspects.insert(0, rec.clone());
+    sort(&mut x);
+    x.keys.clear();
+    x.validate().unwrap();
+    x.expires = Some(h.ts.wall_ms().0 + 1);
+    assert!(invalid(&x).to_string().contains("fixed-retention"));
+}
+
 // spec/commits.md §5, §6: expires after ts; no expires with a purge request; purge never names
 // role-class deltas; relative keep at most only under writer.
 // spec/commits.md §5 (purge not role-class), §5 (purge no expires)
@@ -155,12 +189,12 @@ fn validate_role_commit() {
 fn validate_expiry_purge_retention() {
     let h = sample_header();
     let mut x = h.clone();
-    x.aspects[0].expires = Some(h.ts.wall_ms().0);
+    x.expires = Some(h.ts.wall_ms().0);
     assert!(invalid(&x).to_string().contains("expires"));
     let mut x = h.clone();
     x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
     assert!(invalid(&x).to_string().contains("purge request"));
-    x.aspects[0].expires = None;
+    x.expires = None;
     x.validate().unwrap();
     x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("roles.0").unwrap() });
     x.purge.sort_by_key(|p| osis_base::encode(&crate::header::purge_value(p)));

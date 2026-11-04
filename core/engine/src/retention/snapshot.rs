@@ -27,7 +27,8 @@ pub(crate) fn memory_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option
         .filter_map(|(_, c)| {
             let m = tx.core.ix.commits.get(c)?;
             let ai = m.aspect(tid, ak)?;
-            m.header.aspects.get(ai)?.expires?;
+            m.header.aspects.get(ai)?;
+            m.header.expires?;
             Some((*c, Owned::of(&m.header, c, ai)?))
         })
         .collect();
@@ -216,7 +217,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     // a snapshot never carries an expiring delta's values, so it never covers one
     // (spec/crdt.md §8), held, dropped at its expiry or still to come
-    if m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some()) {
+    if m.header.aspects.get(cai).is_some_and(|_| m.header.expires.is_some()) {
         return Ok(Some(false));
     }
     // a memory body the snapshot's frontier (indexed) does not reach: judged before either
@@ -373,7 +374,8 @@ impl Engine {
                 .filter_map(|(_, c)| {
                     let m = tx.core.ix.commits.get(c)?;
                     let ai = m.aspect(&tid, &ak)?;
-                    m.header.aspects.get(ai)?.expires?;
+                    m.header.aspects.get(ai)?;
+                    m.header.expires?;
                     Some((*c, Owned::of(&m.header, c, ai)?))
                 })
                 .collect();
@@ -392,7 +394,7 @@ impl Engine {
             }
             // a part still missing gives this state nothing (applied without it, spec/commits.md
             // §4): an expiring one's writes would go value-less here anyway
-            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()))));
+            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))));
             let left_out = |c: &CommitId| memory && expiring.iter().any(|x| x.0 == *c);
             // frontiers cover only counters whose writes this state reflects: applied, valid
             // (and for memory, not expiring), of the sessions that occur in it (spec/crdt.md §8:
@@ -433,7 +435,7 @@ impl Engine {
             } else {
                 Vec::new()
             };
-            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
@@ -458,7 +460,7 @@ impl Engine {
             for c in &ids {
                 let Some(m) = tx.core.ix.commits.get(c).cloned() else { continue };
                 let Some(ai) = m.aspect(&tid, &ak).filter(|ai| m.holds(*ai)) else { continue };
-                if m.header.form != Form::Session(tx.core.session.nonce) || m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()) {
+                if m.header.form != Form::Session(tx.core.session.nonce) || m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()) {
                     return Err(Error::Misuse("coalescing takes this session's plain commits"));
                 }
                 hi = hi.max(m.header.aspects.get(ai).map_or(0, |a| a.hi));
@@ -477,7 +479,7 @@ impl Engine {
             let retention = osis_commit::retention::EPHEMERAL_RETENTION;
             let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
             let records = crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter());
-            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new(), split: false, records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })

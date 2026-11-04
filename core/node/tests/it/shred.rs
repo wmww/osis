@@ -422,9 +422,13 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     let t = new_thing(&mut lp, 0);
     lp.sync(0, 1).unwrap();
     let marker = "LATEEXP-MARK-3e9f";
+    let at = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s(&big(marker))).unwrap();
     m.set(t, &REG, &s("plain")).unwrap();
+    // one expiry per commit (spec/commits.md §6)
+    m.expires(t, &BRIEF, at).unwrap();
+    m.expires(t, &REG, at).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
     let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
@@ -653,59 +657,6 @@ fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
     }
 }
 
-// spec/commits.md §4, §5: beside a part past its expiry that goes, because the commit would wait without
-// it, a waiting part a held purge request names is held value-less, and joins so when the commit applies:
-// the node holds its aspect as the author does, no value left, only the expired part's aspect flagged.
-// Its thing synced the commit waits whole (`examine` says so itself), not synced `waits_without_expired` does.
-#[test]
-fn purged_part_waits_beside_a_part_past_expiry_spec_commits_5() {
-    for synced in [false, true] {
-        let mut lp = net2(142);
-        let (t, t2, t3) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-        lp.sync(0, 1).unwrap();
-        lp.peers[1].engine.set_syncing(t, synced).unwrap();
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s("SECRET-R4e2")).unwrap();
-        m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
-        m.set(t2, &BRIEF, &s("BRIEF-R4e2")).unwrap();
-        m.expires(t2, &BRIEF, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
-        let c = lp.peers[0].commit(m).unwrap().unwrap();
-        let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.set(t3, &REG, &s("other3")).unwrap();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
-        let p = lp.peers[0].commit(m).unwrap().unwrap();
-        let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
-        let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
-        let list = part.header.aspects.iter().position(|a| a.tid == t && a.ak == ak("t:list.0")).unwrap();
-        let mut rest = part.clone();
-        part.parts.retain(|q| q.ai != list);
-        rest.parts.retain(|q| q.ai == list);
-        lp.advance(120_000);
-        lp.peers[0].engine.tick().unwrap();
-        lp.deliver(1, &request).unwrap();
-        let r = lp.peers[1].engine.ingest(&part.encode(), Vec::new()).unwrap();
-        assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitDeltas)), "{r:?}");
-        let [secret, brief] = recovered(&mut lp.peers[1], [b"SECRET-R4e2", b"BRIEF-R4e2"]);
-        assert!(!secret, "held value-less");
-        assert!(!brief, "gone");
-        let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().unwrap().into_iter().map(|x| (x.0, x.1)).collect::<Vec<_>>();
-        assert_eq!(flagged(&mut lp), vec![(t2, ak("t:brief.0"))]);
-        lp.peers[1].engine.ingest(&rest.encode(), Vec::new()).unwrap();
-        lp.peers[1].engine.reexamine().unwrap();
-        let e = &mut lp.peers[1].engine;
-        assert!(e.pending().is_empty() && e.commit_ids().contains(&c), "{:?}", e.pending());
-        for a in [ak("t:reg.0"), ak("t:list.0")] {
-            let author = lp.peers[0].engine.state_digest(&t, &a).unwrap();
-            assert_eq!(lp.peers[1].engine.state_digest(&t, &a).unwrap(), author, "{a:?} as its author holds it");
-        }
-        assert!(!recoverable(&mut lp.peers[1], b"SECRET-R4e2"));
-        assert_eq!(flagged(&mut lp), vec![(t2, ak("t:brief.0"))], "the expired part's alone");
-    }
-}
-
 // spec/commits.md §5: a waiting part a held purge request names, its value large (chunks) or its delta
 // paged (a map of many big entries), keeps no purged value while it waits or once applied
 #[test]
@@ -785,6 +736,9 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     m.expires(t, &REG, exp).unwrap();
     m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
     m.set(y, &REG, &s("y")).unwrap();
+    // one expiry per commit (spec/commits.md §6)
+    m.expires(t, &LIST, exp).unwrap();
+    m.expires(y, &REG, exp).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
     lp.advance(5);
@@ -803,33 +757,6 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     let _ = lp.peers[1].engine.ingest(&part_on(&pk, t, &ak("t:reg.0"), true), Vec::new());
     assert!(lp.peers[1].engine.pending().is_empty());
     assert!(!recoverable(&mut lp.peers[1], b"SECRET-R5b"));
-}
-
-// spec/commits.md §4, §5: a relay's junk beside a true part past its expiry is no part that went: only
-// the true part's aspect is flagged.
-#[test]
-fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
-    let mut lp = net2(302);
-    let (t, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    lp.sync(0, 1).unwrap();
-    lp.advance(5);
-    let exp = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("a")).unwrap();
-    m.expires(t, &REG, exp).unwrap();
-    m.set(t, &BRIEF, &s("b")).unwrap();
-    m.expires(t, &BRIEF, exp).unwrap();
-    m.set(y, &REG, &s("y")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
-    lp.peers[1].clock.advance(120_000);
-    let mut b = osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:reg.0"), false)).unwrap();
-    b.parts.extend(osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:brief.0"), true)).unwrap().parts);
-    b.parts.sort_by_key(|p| (p.ai, p.di));
-    let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
-    assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitDeltas)), "{r:?}");
-    let flagged: Vec<_> = lp.peers[1].engine.suspects().unwrap().into_iter().map(|x| x.1).collect();
-    assert_eq!(flagged, vec![ak("t:reg.0")]);
 }
 
 /// Of each 5040 orders of `past_expiry_and_purge_alike_in_every_order`, this stride's: 1 runs them all
@@ -855,7 +782,10 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
     m.set(t, &REG, &s("SECRET-R5c")).unwrap();
     m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
     m.set(t2, &BRIEF, &s("BRIEF-R5c")).unwrap();
-    m.expires(t2, &BRIEF, exp).unwrap();
+    // one expiry per commit (spec/commits.md §6)
+    for (x, k) in [(t, &REG), (t, &LIST), (t2, &BRIEF)] {
+        m.expires(x, k, exp).unwrap();
+    }
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
     lp.advance(5);
@@ -951,7 +881,8 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
     let out = outcomes.into_inner().unwrap();
     assert_eq!(out.len(), 1, "{out:#?}");
     let (only, _) = out.iter().next().unwrap();
-    assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads None Some(List([Str(\"a\")])) None"), "{only}");
+    // every part expires with the commit (spec/commits.md §6): the list's element too
+    assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads None Some(List([])) None"), "{only}");
 }
 
 // spec/commits.md §4, §5: a purged permanent delta reads alike whatever came first and whatever the

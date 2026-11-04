@@ -802,7 +802,7 @@ pub(crate) fn never_could_set(core: &Core, h: &Header, a: &osis_commit::AspectEn
 
 /// Whether a delta carries exactly the retention and expiry `q` requires.
 pub(super) fn meets(q: &ct::Required, h: &Header, a: &osis_commit::AspectEntry) -> bool {
-    a.retention == q.retention() && q.expires_at(h.ts.wall_ms().0) == Some(a.expires)
+    a.retention == q.retention() && q.expires_at(h.ts.wall_ms().0) == Some(h.expires)
 }
 
 /// `part_valid` over many parts: what is per thing (owner depth, timeline) looked up once per

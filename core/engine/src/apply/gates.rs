@@ -50,7 +50,7 @@ pub(super) fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize)
     if a.ak.lifetime() != class_of(h) {
         return Ok(true);
     }
-    Ok(a.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::counts_as_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, ai) || removed_author(tx.core, h, id, a) || breaks_a_held_setting(tx.core, h, id, a))
+    Ok(h.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::counts_as_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, ai) || removed_author(tx.core, h, id, a) || breaks_a_held_setting(tx.core, h, id, a))
 }
 
 /// Whether commit `id` waits whole for nothing. A role commit any part of which is held: it may be
@@ -71,7 +71,7 @@ pub(super) fn never_whole(core: &crate::engine::Core, h: &Header, id: &CommitId,
 /// here, for what is on its synced things, and no more than a held part's commit does. The delta
 /// itself still gates until a held request counts it as held.
 pub(super) fn waits_whole(core: &crate::engine::Core, h: &Header, blob: &CommitBlob, never: bool) -> bool {
-    let stands = h.ephemeral.is_none() && (h.aspects.iter().any(|a| a.permanent() && core.syncs(&a.tid)) || h.purge.iter().any(|i| core.syncs(i.tid())));
+    let stands = h.ephemeral.is_none() && (h.aspects.iter().any(|a| h.permanent(a) && core.syncs(&a.tid)) || h.purge.iter().any(|i| core.syncs(i.tid())));
     blob.parts.is_empty() && !never && !stands
 }
 

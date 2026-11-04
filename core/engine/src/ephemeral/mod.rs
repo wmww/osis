@@ -69,10 +69,15 @@ pub struct Eph {
 }
 
 /// A batch written by `Engine::write`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
+    /// Its first commit (the one carrying the records of the things it creates), else its
+    /// ephemeral batch.
     pub id: ChangeId,
     pub ts: Ts,
+    /// Its other commits, when its durable writes need several: one per expiry and `nobody`
+    /// class (spec/commits.md §5, §6). Each is a change of its own to history and revert.
+    pub also: Vec<CommitId>,
 }
 
 /// One ephemeral aspect write of a batch, before resolution.
@@ -247,9 +252,10 @@ impl Engine {
         let durable = !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.dead_resets.is_empty() && m.undoes.is_none());
         if eph_ops.is_empty() && fresh.is_empty() && m.free.is_empty() && refused.is_empty() && saved.is_empty() {
             // the common durable write: no ephemeral half
-            let Some(id) = self.commit(m)? else { return Ok(None) };
-            let ts = self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default();
-            return Ok(Some(Written { id: ChangeId::Commit(id), ts }));
+            let ids = self.run(|tx| commit_in(tx, m))?;
+            let Some((id, also)) = ids.split_first() else { return Ok(None) };
+            let ts = self.core.ix.commits.get(id).map(|c| c.view.ts).unwrap_or_default();
+            return Ok(Some(Written { id: ChangeId::Commit(*id), ts, also: also.to_vec() }));
         }
         let ts = self.core.hlc.next();
         let now = self.now();
@@ -343,7 +349,7 @@ impl Engine {
                 m.ts = Some(ts);
                 commit_in(tx, m)?
             } else {
-                None
+                Vec::new()
             };
             let mut memory = Vec::new();
             // things created first, owners before what they own (a thing's commit is judged
@@ -380,7 +386,7 @@ impl Engine {
             self.eph.drafts.remove(t);
         }
         for (item, group) in refused {
-            self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit: batch.0, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
+            self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit: batch.0.first().copied(), peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
         }
         Ok(self.finish_batch(batch, signals, making, &gone, gone_aspects, ts, actor, None))
     }
@@ -389,7 +395,7 @@ impl Engine {
     /// marks, the undo log, the history and change events. Its id: the commit when it had a
     /// durable half, else a fresh `EphemeralId`; `None` when nothing changed.
     #[allow(clippy::too_many_arguments)]
-    fn finish_batch(&mut self, (commit, memory, mut logged): (Option<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, gone_aspects: Vec<(Tid, Ak)>, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
+    fn finish_batch(&mut self, (commit, memory, mut logged): (Vec<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, gone_aspects: Vec<(Tid, Ak)>, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
         let node = self.tid();
         let now = self.now();
         let mut changed: Vec<(Tid, Ak)> = logged.iter().map(|a| (a.tid, a.ak.clone())).collect();
@@ -433,7 +439,11 @@ impl Engine {
         making.unmade.retain(|t| !gone.contains(t));
         changed.sort();
         changed.dedup();
-        let id = match commit {
+        let (first, also) = match commit.split_first() {
+            Some((c, rest)) => (Some(*c), rest.to_vec()),
+            None => (None, Vec::new()),
+        };
+        let id = match first {
             Some(c) => ChangeId::Commit(c),
             None if memory.is_empty() && signals.is_empty() && making.is_empty() && gone.is_empty() => return None,
             None => {
@@ -449,7 +459,7 @@ impl Engine {
             self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed, signals });
             self.core.events.flush();
         }
-        Some(Written { id, ts })
+        Some(Written { id, ts, also })
     }
 
     /// Of `free`, the ephemeral things this node may free at once: held as memory class and in
@@ -507,7 +517,7 @@ impl Engine {
         let actor = m.actor.unwrap_or(self.tid());
         let id = self.run(|tx| {
             tx.set_memory();
-            commit_in(tx, m)
+            crate::engine::write::one(commit_in(tx, m)?)
         })?;
         if let Some(c) = id
             && let Some(h) = self.header(&c)
