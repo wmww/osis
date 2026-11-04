@@ -3540,6 +3540,27 @@ fn arrival_order_list_expiry_large_spec_crdt_4_7() {
     run("arrival_order_list_expiry_large_spec_crdt_4_7", 3000..3040, 40, LARGE, list_expiry_history);
 }
 
+// spec/crdt.md §4.6 (records a valid snapshot holds), spec/permissions.md §5.2: 1's snapshot,
+// taken after 2's expiring insert turned invalid, holds the element as a hidden anchor with its
+// creation's copy, which vouches for the record: the delta's chars stay in it as hidden anchors.
+// Was: the join took a vouch only where `remove_dots` would change the piece, so with the
+// snapshot after the delta nothing rebuilt and the state lacked them (the debug rebuild check).
+#[test]
+fn snapshot_anchor_vouches_invalid_insert_seed_9220021() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Typed { by: 2, t: 0, op: 32, k: 0, v: 8 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 2, at: 0, to_read: true })), Sync { from: 2, to: 1 }, Send { from: 0, to: 1, back: 0 }, Compact { by: 1, t: 0, op: 32 }];
+    check(9220021, &h, Cfg { sync: true, ..LARGE }).unwrap();
+}
+
+// The same, read: without the vouch the list read absent in one arrival order and empty in
+// another (also seeds 9200037, 7520035).
+#[test]
+fn snapshot_anchor_vouch_reads_alike_seed_9200020() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Typed { by: 1, t: 0, op: 32, k: 0, v: 3 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 1, at: 1, to_read: false })), Sync { from: 1, to: 0 }, Compact { by: 0, t: 0, op: 32 }];
+    check(9200020, &h, Cfg { sync: true, ..LARGE }).unwrap();
+}
+
 // spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with
 // nothing fallen (no role change, no hostile commit): several writers, undo, partial holders.
 #[test]

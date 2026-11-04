@@ -62,7 +62,7 @@ fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &
         return false;
     }
     let owned = invalid_of(tx.core, &a.tid, &a.ak);
-    !owned.is_empty() && f.holds_dots(&|d| owned.iter().any(|o| o.owns(d)))
+    copies::vouches_any(f, &owned)
 }
 
 fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<bool> {

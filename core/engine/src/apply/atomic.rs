@@ -352,7 +352,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
             for (src, ctrs) in copies::carried_of(tx.core, &tid, &ak, &f) {
                 carried.entry(src).or_default().extend(ctrs);
             }
-            vouch |= !owned.is_empty() && f.holds_dots(&|d| owned.iter().any(|o| o.owns(d)));
+            vouch |= copies::vouches_any(&f, &owned);
             if !vouch && let Some(cs) = &copies {
                 let core = &*tx.core;
                 vouch = !f.misstated_in(cs, &|d| copies::owner_held(core, &tid, &ak, d), &|d| copies::owner_expires(core, &tid, &ak, d)).is_empty();
@@ -399,7 +399,7 @@ fn copies_before(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, 
     }
     let mut holds = false;
     each_piece(tx, h, id, blob, part, &mut |tx, f| {
-        *vouch |= !owned.is_empty() && f.holds_dots(&|d| owned.iter().any(|o| o.owns(d)));
+        *vouch |= copies::vouches_any(&f, owned);
         holds |= f.holds_owned(&|src, lo, hi| core_holds_owner(tx.core, tid, ak, src, lo, hi));
         Ok(())
     })?;
