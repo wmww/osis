@@ -30,6 +30,7 @@ pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
                 ours.join(frag(&c.delta));
                 crate::testutil::check_lin(&ours);
                 assert_eq!(ours, ostate(&model), "state after joining commit {k}");
+                assert!(ours.keys_hold_writes(), "a keyed record holds a bare anchor after commit {k} (§5.6)");
                 assert_eq!(ours.read(), model.as_ref().and_then(|m| m.read()).map(|v| value(&v)), "read after commit {k}");
             }
         }
@@ -107,7 +108,7 @@ fn model_order_independent(seeds: u64) {
     let b = Ty::Struct([(1, Ty::Max), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect());
     let set = Ty::Set(Box::new(Ty::Register));
     let map = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
-    let mixes = [vec![a, b], vec![Ty::Register, Ty::Counter, set, Ty::Max, map, Ty::Min], vec![sink_no_seq(), Ty::Register, Ty::Counter]];
+    let mixes = [vec![a, b], vec![Ty::Register, Ty::Counter, set, Ty::Max, map, Ty::Min], vec![sink_no_seq(), Ty::Register, Ty::Counter], crate::tests_seq::map_of_text()];
     for (mi, types) in mixes.iter().enumerate() {
         for seed in (1..seeds).step_by(2) {
             let mut r = crate::testutil::rng(seed);

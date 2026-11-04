@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod access;
+mod bare;
 mod batch;
 mod changes;
 mod codec;

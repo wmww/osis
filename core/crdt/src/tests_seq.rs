@@ -27,6 +27,13 @@ fn inner() -> Ty {
     Ty::Struct([(1, Ty::Register), (2, Ty::Set(Box::new(Ty::Register)))].into_iter().collect())
 }
 
+/// Maps whose entries hold texts and lists, directly, in a struct and in a nested map.
+pub(crate) fn map_of_text() -> Vec<Ty> {
+    let rec = Ty::Struct([(1, Ty::Text), (2, Ty::List(Box::new(Ty::Text)))].into_iter().collect());
+    let m = |v: Ty| Ty::Map(Box::new(Ty::Register), Box::new(v));
+    vec![Ty::Struct([(1, m(Ty::Text)), (2, m(rec)), (3, m(m(Ty::Text)))].into_iter().collect())]
+}
+
 proptest! {
     /// §5.7, §6: text join and read equal the model's under random delivery and duplication.
     #[test]
@@ -51,6 +58,14 @@ proptest! {
     #[test]
     fn kitchen_sink_matches_model_spec_5_7(seed in any::<u64>()) {
         lockstep(seed, &[kitchen_sink()], 2, 4);
+    }
+
+    /// §5.6 Bare anchors: map entries holding texts and lists, removed and reset under edits;
+    /// a removed entry's bare anchors go to its key-erased record (`lockstep` checks no keyed
+    /// record holds one).
+    #[test]
+    fn map_of_text_matches_model_spec_5_6(seed in any::<u64>()) {
+        lockstep(seed, &map_of_text(), 3, 6);
     }
 
     /// §7: register and text at one position (embedded characters, Derived anchors).

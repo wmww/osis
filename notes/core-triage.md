@@ -15,14 +15,12 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 
 | # | Issue | Cat | Size | Why here |
 |---|---|---|---|---|
-| 1 | removed-text-entry-keeps-key | A | M | Honest flow, no concurrency: removing any `map<k, text>` entry leaves the key in snapshots. Ignored repro exists; crdt-leftovers commit 1 tried it, not ready. Fix with #8 (same records). |
 | 2 | order-seed-91730013-expired-in-snapshot | A? | M | Undiagnosed: as made, a snapshot still holds an expired write's value two hours past T. If real, expired content kept. Replay first (unverified). Likely the same bug as #3's 7520036. |
 | 3 | list-expiry-harness-seeds | A?/C | M | Seed 7520036: a value past its expiry in a body (as #2); 7520035: reads differ by order after a demoted writer's list delete. Undiagnosed. |
 | 4 | purge-no-reset-older-value | A?/C | S to diagnose | A purge without a reset reads `None` at the admin and an older value at a new device. Check whether content the user believes gone shows, or whether it is the accepted 2B limit. |
 | 5 | pending-unbounded | A | M | A reader or inbox sender grows what a node keeps pending, for good. Needs Tess's bound. **WC**: step 3 shrinks pending to parts on unheld things; re-check then. |
 | 6 | purged-values-in-waiting-copies | A | M | Purged values sit in waiting copies (part and request both waiting for the record; a blob kept for a junk-held slot; an unnamed waiting snapshot). **WC**, with #5. |
 | 7 | keyset-names-placement-rosters | A | L | Readers of A receive members' device rosters (Confidentiality breach). **Q2**: option A makes it moot; else build roster option 2 (decided). |
-| 8 | map-reset-keeps-text-keys | A/C | M | `replace` of a `map<k, text>` keeps old keys in snapshots; state differs by order (reads equal). Sweep fix; with #1. |
 | 9 | epoch-establishment-redesign | A | M | Frozen coverage built; its review and three open cases remain. **Q2**: mostly moot under A. |
 | 10 | hidden-writes-not-swept | A | M | Two honest flows (edit after a parent reset, payload edit of a non-current enum case) keep hidden bytes; needs a concurrent edit; reads never show them. |
 | 11 | fork-held-by-non-rotators | B | M | A current epoch only a demoted writer holds stays unreadable to everyone else. Rare honest shape; stays under Q2 either way. |
@@ -94,7 +92,7 @@ About 29 items, three security reviews, one redesign; where the cost went: notes
 41 items before the unification; B2 (255) and C (269) put ephemeral on Core and the durable sync path. Open: eph-churn-delete-upload-loop (main's snapshot storm, not ephemeral-only), ephemeral-restart-reverts-diverge (1/3000), eph-unpaged-cover, eph-node-cost-bounds; D and E are features.
 
 ### 2.8 Removal is final: no key or value outlives its entry
-Rounds: d70 delete-sticks, d75 delete-holes, the parked crdt-leftovers branch. Open: removed-text-entry-keeps-key and map-reset-keeps-text-keys (bare anchors keep keys), hidden-writes-not-swept, list-mark-lost-on-fall, list-element-snapshot-before-expiry. Both list issues point to one rule (value-less as its own state bit, the map's rule); both text issues to one sweep. The requirement looks fine; the CRDT's anchor and mark records are where it leaks.
+Rounds: d70 delete-sticks, d75 delete-holes, the parked crdt-leftovers branch. Done: bare anchors keep no key (removed-keys: a dot's bare structure lives in its key-erased record, spec/crdt.md §5.6 Bare anchors). Open: hidden-writes-not-swept, list-mark-lost-on-fall, list-element-snapshot-before-expiry. Both list issues point to one rule (value-less as its own state bit, the map's rule). The requirement looks fine; the CRDT's anchor and mark records are where it leaks.
 
 ### 2.9 Overall
 - Atomic apply and kick cost are decided and (for atomic) being built; keys waits on Tess's Q1/Q2.

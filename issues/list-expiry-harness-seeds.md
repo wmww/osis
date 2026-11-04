@@ -5,3 +5,5 @@
 Repro: `OSIS_ORDER_SEED=<seed> OSIS_ORDER_LEN=40 cargo test -p osis-node --test it -- --ignored --exact order::arrival_order_list_expiry_large_spec_crdt_4_7`. Checked against the base by overlaying its `core/crdt`, `core/engine` and `core/test/crdt-model` under this test file. Not investigated further.
 
 Also seen at the base, unrelated: sim `purge_falls` and `purge_falls_churn` seed 7410503, "the purge never reached the writer".
+
+Also at the base (offset 9200000, plain run: 3 of 40 seeds): 9200001, 9200020 and 9200037 fail the debug rebuild check (item 271): `t:listtext.0`'s state differs from a rebuild from held bodies (`apply/atomic.rs` `check_rebuilt`). Possibly drop-rejoin-robust's ground (leftover bodies).
