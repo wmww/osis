@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The osis app on Android (notes/android.md): NativeActivity loads libosis_android.so; no Java. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="net.osis.app" android:versionCode="1" android:versionName="0.1.0">
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="36" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="osis" android:hasCode="false" android:debuggable="true" android:extractNativeLibs="true">
+        <activity android:name="android.app.NativeActivity" android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="android.app.lib_name" android:value="osis_android" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

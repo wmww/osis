@@ -88,7 +88,7 @@ Tess: a new coordinator runs the buildout. Goal: something Tess can play with an
 
 ## Prototype order
 1. Linux desktop: a Thing view with the facet-selection logic, the Tags lens, view state in osis from day one.
-2. An Android build (Tess: not for now; stay on Linux desktop).
+2. An Android build: experimental, notes/android.md (app/android; Tess asked for a prototype APK).
 3. Time and People lenses, search, the schema fallback view.
 4. iOS shell, web, durable view-state spec.
 

@@ -24,6 +24,16 @@ const SHOWN: usize = 200;
 /// The open chat's scrolling timeline.
 const CHAT_SCROLL: WidgetTag<Portal<Flex>> = WidgetTag::new("chat-scroll");
 
+/// What the clipboard's text is for (Android, `Act::Paste`).
+#[cfg(target_os = "android")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PasteTo {
+    Host,
+    Join,
+    Name,
+    Send(Tid),
+}
+
 /// A chat text input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Input {
@@ -94,7 +104,58 @@ impl Ui {
             .with_child(self.chat_input(Input::Join, &join, "Paste an osis:// chat link, Enter joins"))
             .with_child(style::label(&look, "Your name in chats", Text::Small))
             .with_child(self.chat_input(Input::Name, &name, "Your name, Enter saves"));
+        #[cfg(target_os = "android")]
+        let col = self.android_join(col);
         NewWidget::new(col).erased()
+    }
+
+    /// Android's additions to the join section. A phone has no Ctrl+V, and winit 0.30 has no
+    /// soft keyboard text on Android (notes/android.md), so the clipboard stands in for typing:
+    /// the host (the store starts without one), the link, the name.
+    #[cfg(target_os = "android")]
+    fn android_join(&mut self, col: Flex) -> Flex {
+        let look = self.look.clone();
+        let col = match self.data.db.hosts().first() {
+            Some(h) => col.with_child(style::label(&look, &format!("Host: {h}"), Text::Small)),
+            None => col.with_child(style::label(&look, "No host yet: copy its quic:// address first", Text::Small)).with_child(self.paste_chip("Paste host address", PasteTo::Host)),
+        };
+        let row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_child(self.paste_chip("Paste link and join", PasteTo::Join)).with_child(self.paste_chip("Paste name", PasteTo::Name));
+        col.with_child(NewWidget::new(row))
+    }
+
+    #[cfg(target_os = "android")]
+    fn paste_chip(&mut self, label: &str, to: PasteTo) -> NewWidget<dyn Widget> {
+        let chip = NewWidget::new(osis_kit::widgets::Chip::new(label, None, osis_kit::widgets::ChipMark::Icon(Icon::Plus), self.look.clone()));
+        self.act(chip, Act::Paste(to))
+    }
+
+    /// Uses the clipboard's text as `to` says (Android).
+    #[cfg(target_os = "android")]
+    pub(super) fn paste(&mut self, ctx: &mut DriverCtx<'_, '_>, to: PasteTo) -> osis::Result<()> {
+        let text = crate::platform::clipboard().unwrap_or_default().trim().to_string();
+        if text.is_empty() {
+            return Err(osis::Error::Invalid("the clipboard holds no text".into()));
+        }
+        match to {
+            PasteTo::Host => {
+                let h: osis::HostAddr = text.parse().map_err(|e| osis::Error::Invalid(format!("not a host address: {e}")))?;
+                self.data.db.add_host(&h)?;
+                self.status(ctx, format!("host {h} added"));
+            }
+            PasteTo::Join => {
+                self.compose.join = text;
+                self.start_join(ctx);
+            }
+            PasteTo::Name => {
+                self.compose.name = Some(text);
+                self.save_name()?;
+            }
+            PasteTo::Send(c) => {
+                self.compose.text = text;
+                self.send(ctx, c)?;
+            }
+        }
+        Ok(())
     }
 
     /// An open chat: back, its name, the timeline, the composer.
@@ -121,6 +182,8 @@ impl Ui {
             .with_gap(Length::px(sp(8.0)))
             .with_flex_child(self.chat_input(Input::Text, &text, "Message, Enter sends"), 1.0)
             .with_child(self.act(send, Act::Send(c)));
+        #[cfg(target_os = "android")]
+        let bottom = bottom.with_child(self.paste_chip("Paste and send", PasteTo::Send(c)));
         let composer = Flex::column()
             .cross_axis_alignment(CrossAxisAlignment::Fill)
             .with_gap(Length::px(sp(8.0)))
