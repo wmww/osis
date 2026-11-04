@@ -11,13 +11,13 @@ Options (notes/roster-names.md):
 3. Leave it.
 Recommendation: 2 now (small, closes most of the leak), 1 later if big groups make the growth matter.
 
-## 10. Keep-at-most limits only through compaction
-Today: a replaced value with a keep-at-most limit is dropped by each node on its own, on a date it works out itself. That kind of drop, plus a later revocation, is where most of the arrival-order bug stream came from (notes/convergence-study.md, notes/test-value-study.md): death dating (`retention/deaths.rs`, `bounds.rs`), held-body counting, rejoining dropped bodies (R1), and a requirement limit. Chat uses no keep-at-most limit and no "after it is replaced" limit at all (`core/chat/src/lib.rs` `Retention`).
+## 10. Keep-at-most: keep only 0
+Today: keep at most is "0 after replaced" (purge on replace: the replacing node drops the old body at once and deletes it at hosts), "D after replaced", or an absolute time T (spec/commits.md §5). The D and T forms need each node to date deaths and drop on its own date, and host deletes timed at the bound: part of the arrival-order bug stream (notes/order-study.md option 5: closes 3-4 of its 22 issues). With no keep bounds, compaction already may drop covered old versions whenever it runs, so D and T add little: recovery windows are keep at least D, storage cleanup is the default, a value with an end date is expiry. Chat uses none of them.
 Options:
-1. Old values under a keep-at-most limit go only when a writer compacts: a snapshot covers them, so every node drops them for the same reason. "Keep at most D" means "gone at the first compaction after D". Prompt deletion stays available through purge and expiry. Deletes the per-node drop, death dates and their tests; the keep-at-most half of the Deterministic limit goes.
-2. Also drop "after it is replaced" bounds (absolute times only).
-3. Leave it.
-Recommendation: 1, and 2 if nothing needs relative bounds.
+1. Keep at most only as 0 after replaced; drop D and T. Keep at least (relative included: it only delays drops) unchanged.
+2. Leave it.
+Also: keep at most 0 is allowed only under `writer`, so chat edits purge explicitly instead (notes/chat-designs/e-evidence.md); allowing it under `author` would let chat use it.
+Recommendation: 1.
 
 ## 11. Moving a thing without its history
 Today: moving a thing to another owner copies it with imported history (spec/permissions.md §7): imported writes keep their original authors, purge rights and retention. 29 merged items touched imports (purge-imports took two reviews; import-own-source and import-body-never-live are open), and a whole order oracle (`purge_import`) exists for them. Requirements call moving rare; chat never moves.
