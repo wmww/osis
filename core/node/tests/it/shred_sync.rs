@@ -115,3 +115,110 @@ fn purged_synced_body_crash_safe_spec_commits_5() {
         }
     }
 }
+
+/// Admin `a` (forensic), writer `b`, new device `n` (forensic, offline from the start) of a group
+/// on one host, and an item `t` of it.
+fn carrier_chat() -> (Net, usize, usize, usize, osis_base::Tid) {
+    let f = Faults::new();
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.forensic_node(1, &[host], &f);
+    let b = net.node(2, &[host]);
+    let n = net.forensic_node(3, &[host], &f);
+    let g = net.group(a, &[(b, Role::Write), (n, Role::Read)], &[host]);
+    net.set_online(n, false);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    (net, a, b, n, t)
+}
+
+/// `a` reacts to entry `key` and posts entry `m2` in one write (one delta: a carrier of `key`),
+/// then edits `m2`: the carrier's own values.
+fn react_and_post(net: &mut Net, a: usize, t: osis_base::Tid, key: &str) {
+    use crate::common::{MAP, item};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key)), PathSeg::Field(1)], op: Op::Set(osis_base::Value::Int(2)) }).unwrap();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(osis_base::Value::Int(9)) }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+}
+
+/// Every node reads `m2` whole and nothing at `key`; no forensic node recovers `key`.
+fn carrier_kept_copy_gone(net: &mut Net, nodes: &[usize], forensic: &[usize], t: osis_base::Tid, key: &str) {
+    use crate::common::{MAP, item};
+    use osis_crdt::PathSeg;
+    let k = Ak::new(MAP.ak()).unwrap();
+    for &x in nodes {
+        assert_eq!(net.engine(x).get_at(&t, &k, &[PathSeg::Key(s(key))]).unwrap(), None, "node {x}: the gone entry reads");
+        assert_eq!(net.engine(x).get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "node {x}: the carrier's own values");
+    }
+    for &x in forensic {
+        let found = net.forensic(x, key.as_bytes());
+        assert!(found.is_empty(), "node {x}: the gone key recovered from {found:?}");
+    }
+}
+
+// spec/crdt.md §4.7 Copies, spec/commits.md §5, spec/sync.md §7: `b` purges its entry; `a`'s
+// carrier (its reaction and its own message in one delta) loses only the copied key, at `a`, at
+// `b` and at a new device fetching after the purge (the carrier's body deleted at the host,
+// a snapshot carrying its own values).
+#[test]
+fn purge_carrier_through_hosts_spec_crdt_4_7() {
+    use crate::common::{MAP, item};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let (mut net, a, b, n, t) = carrier_chat();
+    let key = "PURGED-KEY-MARK-5e17";
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item("e", 1)) }).unwrap();
+    let e = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(5);
+    react_and_post(&mut net, a, t, key);
+    net.run();
+    assert!(!net.forensic(a, key.as_bytes()).is_empty(), "the attack finds the live key");
+    net.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("other"))], op: Op::Set(item("w", 3)) }).unwrap();
+    m.purge(PurgeItem::Commit { commit: e, tid: t, ak: Ak::new(MAP.ak()).unwrap() });
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    net.set_online(n, true);
+    net.run();
+    carrier_kept_copy_gone(&mut net, &[a, b, n], &[a, n], t, key);
+    for x in [a, n] {
+        net.restart(x, 600 + x as u64);
+    }
+    net.run();
+    carrier_kept_copy_gone(&mut net, &[a, b, n], &[a, n], t, key);
+}
+
+// spec/crdt.md §4.7 Copies: as above for an expiring entry and a writer predating the copy expiry
+// rule (its carrier lasts): past T the carrier keeps its own values at every node, a new device
+// fetching after T included, and no node keeps the key.
+#[test]
+fn expiry_carrier_through_hosts_spec_crdt_4_7() {
+    use crate::common::{MAP, item};
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let (mut net, a, b, n, t) = carrier_chat();
+    let key = "EXPIRED-KEY-MARK-2c90";
+    let t_end = net.now() + 60_000;
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(item("e", 1)) }).unwrap();
+    m.expires(t, &MAP, osis_base::WallMs(t_end)).unwrap();
+    net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(5);
+    net.engine(a).core.skip_writer_rules = true;
+    react_and_post(&mut net, a, t, key);
+    net.engine(a).core.skip_writer_rules = false;
+    net.run();
+    net.advance(60_001);
+    net.run();
+    net.set_online(n, true);
+    net.run();
+    carrier_kept_copy_gone(&mut net, &[a, b, n], &[a, n], t, key);
+}
