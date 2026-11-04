@@ -190,7 +190,7 @@ fn raw_id(bytes: &[u8]) -> Result<CommitId> {
     Ok(CommitId(osis_base::hash::hash(&osis_base::encode(h))))
 }
 
-fn is_missing_page(e: &osis_commit::Error) -> bool {
+pub(crate) fn is_missing_page(e: &osis_commit::Error) -> bool {
     matches!(e, osis_commit::Error::Delta(osis_crdt::Error::Page(osis_crdt::PageError::Missing)) | osis_commit::Error::Missing)
 }
 
@@ -1096,8 +1096,8 @@ impl Engine {
     }
 
     /// Whether copy `copy` of commit `id` holds a part that went from the node (spec/commits.md §5:
-    /// dropped from the applied commit, held pending past its expiry, or held pending value-less,
-    /// `retention::strip_purged`) and nothing a copy may still be needed for (`SyncEngine::redeliver`):
+    /// dropped from the applied commit, held pending past its expiry, or held pending value-less or
+    /// gone for a request, `retention::strip_purged`) and nothing a copy may still be needed for (`SyncEngine::redeliver`):
     /// its every other part went too, is applied, or, where parts of it wait, is in the pending copy
     /// alike or provably does not hash to its header entry. Node-sync then forgets the copy's blob and
     /// key; one that may hold the only true copy of a part a junk copy holds the slot of stays until
@@ -1116,7 +1116,7 @@ impl Engine {
             };
             let mut gone = false;
             for p in &copy.parts {
-                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || crate::retention::is_stripped(tx, id, p.ai, p.di)?) {
+                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || crate::retention::is_stripped(tx, id, p.ai, p.di)? || pending.as_ref().is_some_and(|b| !b.parts.iter().any(|q| q.ai == p.ai)) && crate::retention::known_purged(tx, &h, id, p.ai)?) {
                     gone = true;
                     continue;
                 }
