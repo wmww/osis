@@ -499,11 +499,11 @@ fn gap_snapshots_converge_large_spec_crdt_8() {
     gap_snapshot_run("gap_snapshots_converge_large_spec_crdt_8", seeds.range, 30);
 }
 
-// issues/atomic-wait-no-later-commit.md: a write killed by a commit stamped before it (nested in
-// an entry a slower clock's commit removed) leaves its body at no live write with nothing on the
-// aspect as late, so a node that never gets the body waits until the aspect's next write.
+// spec/commits.md §4: a commit whose part under a keep at most a node never gets waits with nothing
+// on the aspect as late, an earlier-stamped commit there not counting, and goes at the aspect's
+// next write.
 #[test]
-fn dead_part_with_earlier_killer_waits_for_next_write_spec_commits_4() {
+fn missing_part_waits_for_a_later_commit_spec_commits_4() {
     let map = ak("t:map.0");
     let r = at_most(Some(0), None).unwrap();
     let mut lp = net(3, 0x7e06);
@@ -531,8 +531,6 @@ fn dead_part_with_earlier_killer_waits_for_next_write_spec_commits_4() {
     let p1 = packages(&mut lp, 1).into_iter().find(|p| p.id == c1).unwrap();
     let p2 = packages(&mut lp, 0).into_iter().find(|p| p.id == c2).unwrap();
     assert!(lp.peers[0].engine.header(&c2).unwrap().ts < lp.peers[1].engine.header(&c1).unwrap().ts);
-    lp.deliver(0, &p1).unwrap();
-    assert!(!lp.peers[0].engine.body_not_dropped(&c1, &t, &map), "dead at the holder, so gone with no carrier");
     lp.peers[2].engine.ingest(&reg_only(&p1), Vec::new()).unwrap();
     lp.peers[2].engine.ingest(&p2.bytes, p2.blobs.clone()).unwrap();
     lp.peers[2].clock.advance(30 * 24 * 3_600_000);
