@@ -102,7 +102,7 @@ One line per external crate; adding a dependency means adding its line. No serde
 - Planned, added with a line here when needed: arbitrary (fuzz only). The cli needs no tokio of its own (it polls the API's futures on its thread and syncs on `Runtime::Own`, `serve` included).
 
 ## 6. Conventions
-- Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml.
+- Every crate root: a doc comment naming its contents, layer and plan, then `#![forbid(unsafe_code)]`, and `[lints] workspace = true` in its Cargo.toml. Exception: app/android, whose one `#[unsafe(no_mangle)]` entry point needs `unsafe_code = "deny"` (notes/testing.md, Policy checks).
 - Every test cites the spec section it checks (comment above it; form in notes/testing.md, Conventions), so grep and notes/testing-map.md answer "what checks §X".
 - Wire choices the spec leaves open sit behind one constant or one function marked `provisional` (grep `provisional`). spec/wire.md fixes everything core holds; `format` constants are marked `fixed` with their spec section.
 - Prose, comments, errors and commit messages compact; no formatting tools.

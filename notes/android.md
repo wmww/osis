@@ -6,7 +6,7 @@
 - Platform layer: `osis_app::platform` (cfg android) holds a clipboard reader the crate sets; the reader calls `ClipboardManager` over JNI from `ActivityThread.currentApplication()` (safe `jni` calls, `JavaVM::singleton` set by android-activity).
 - App side, all `cfg(target_os = "android")`: `Act::Paste(PasteTo)` chips on home ("Paste host address" while the store has none, "Paste link and join", "Paste name") and in the chat composer ("Paste and send").
 - Logging: `android_logger` to logcat (tag `osis`), a panic hook, and a tracing-subscriber `fmt` writer to logcat installed before masonry's default (whose debug log file in `temp_dir` panics on Android: /data/local/tmp is not writable).
-- Manifest: app/android/AndroidManifest.xml (NativeActivity, `lib_name` osis_android, INTERNET, minSdk 28, targetSdk 36, adjustResize, config changes kept in-process). No icon.
+- Manifest: app/android/AndroidManifest.xml (NativeActivity, `lib_name` osis_android, INTERNET, minSdk 28, targetSdk 36, adjustResize, config changes kept in-process, `allowBackup="false"` so the store and its keys never go to cloud or device-transfer backups, not debuggable so `run-as` cannot read them; add `android:debuggable="true"` locally to inspect the store). No icon.
 
 ## Build recipe
 - One-time, no root: Android command-line tools unzipped to `~/android/sdk/cmdline-tools/latest`; `sdkmanager --sdk_root=$HOME/android/sdk "platform-tools" "build-tools;37.0.0" "platforms;android-36" "ndk;29.0.14206865"` (plus `emulator` and `system-images;android-36;google_apis;x86_64` for an emulator); `rustup target add aarch64-linux-android x86_64-linux-android`. Java 21 (system) runs sdkmanager, keytool and apksigner.
@@ -24,3 +24,4 @@
 - Rendering unverified (emulator above). If a phone shows the same device loss, the next step is wgpu/Vello on that GPU, not the app.
 - No safe-area insets: the status bar and gesture bar overlap the window's edges.
 - Store dir in app-private storage: uninstalling deletes the store (and its keys).
+- Logs at info to logcat: no app code logs links, keys or messages; errors carry the store path. Dependencies (masonry, wgpu, quinn) log far more at debug/trace, unaudited: keep the cap at info.
