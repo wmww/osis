@@ -5,7 +5,7 @@ Written on ostrich with main at the commit that adds this note. Nothing is runni
 
 ## Working without Tess
 - Tess will not answer for a while. A question that needs her goes into notes/questions-for-tess.md (plain words, options, a recommendation), and you move on to other work; do not stop. Where the work cannot wait and the choice is cheap to reverse, take the recommended option and say so in the question.
-- The osis chat channel between the boxes is stopped (notes/dogfood.md); Tess will have a new one set up. Until then, if devbox's coordinator is also active (see `git log` authors and the d-numbered items in notes/mvp-progress.md), claim an issue with a commit to main adding a `Claimed: <name> (<box>, <branch>)` line to it before `wt claim`, and pull before every push.
+- devbox is spun down (Tess): ostrich is the only box working, so this coordinator owns every issue area, devbox's included (cli, api, schema, tests and the rest of its list in notes/coordination.md), and runs every periodic check. No claims or channel posts are needed. The osis chat channel is stopped (notes/dogfood.md); Tess will set up a new one on a newer osis.
 - Standing priorities (Tess): security, data loss and the core first; simple and verifiable beats fast; refactors complete; rare hostile shapes inside data the writer may write are very low priority (notes/core-triage.md §1 D).
 
 ## Branches
