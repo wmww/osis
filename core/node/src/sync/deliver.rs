@@ -4,6 +4,7 @@
 //! certificate copies under a home label, deposits; commits that travel by inbox only are never
 //! placed under a label (spec/permissions.md §3, re-seal).
 
+use super::conn::Phase;
 use super::{Action, HostKey, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
@@ -11,7 +12,7 @@ use crate::rotation::{Dropped, Leaving, LostScope};
 use crate::local_peer::Package;
 use osis_base::{CommitId, LabelId, Tid};
 use osis_schema::core_types as ct;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What `drop_left` last found, and when.
 #[derive(Default)]
@@ -21,10 +22,13 @@ pub(crate) struct LeftCheck {
     /// Sync state version placement was last checked at.
     version: Option<u64>,
     leaving: Leaving,
+    /// Per actor of `leaving.timed`: the labels to hear out (those whose closure holds a thing
+    /// its drop would forget), with whether each has a host.
+    timed_labels: BTreeMap<Tid, Vec<(LabelId, bool)>>,
 }
 
 impl LeftCheck {
-    /// When a pending grant keeping a leaver's actor ages out.
+    /// When a pending grant keeping a leaver's actor ages out, or a timed loss's wait ends.
     pub(crate) fn recheck_at(&self) -> Option<u64> {
         self.leaving.recheck_at
     }
@@ -56,13 +60,16 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Drops what this node lost read access to through its own self-removals, each lost actor
-    /// once the self-removals behind it are placed (spec/permissions.md §3: the removal goes up
-    /// before the leaver forgets the labels it would go under); the trigger leaves those
-    /// (`LostScope::Due`). Run while `left` is set: what was lost is recomputed after the engine
-    /// changed (or a pending grant keeping a leaver's actor ages out), placement rechecked after
-    /// the sync state changed. Both derive from stored state: a crash between a self-removal and
-    /// its drop leaves nothing behind (`left` is set at start).
+    /// Drops what this node lost read access to and the trigger left to it (`LostScope::Due`):
+    /// an actor lost through its own self-removals once the self-removals behind it are placed
+    /// (spec/permissions.md §3: the removal goes up before the leaver forgets the labels it
+    /// would go under); one an `until` ended with nothing else received once its labels are
+    /// heard out (`heard`, spec/permissions.md §2: its own writes from before the `until` went
+    /// up, a renewal on its way arrived), or `LOST_HEARD_WAIT_MS` after it was first judged.
+    /// Run while `left` is set: what was lost is recomputed after the engine changed (or a
+    /// wake came due), placement rechecked after the sync state changed, hearing out every
+    /// step. All derive from stored state: a crash in between leaves nothing behind (`left` is
+    /// set at start).
     pub(crate) fn drop_left(&mut self) -> Result<()> {
         let (generation, now, version) = (self.engine.core.generation, self.now(), self.state.version);
         let Some(l) = self.left.as_mut() else { return Ok(()) };
@@ -70,26 +77,43 @@ impl SyncEngine {
             l.leaving = self.engine.lost_leaving()?;
             l.generation = Some(generation);
             l.version = None;
+            l.timed_labels.clear();
         }
-        if l.leaving.actors.is_empty() {
+        if l.leaving.actors.is_empty() && l.leaving.timed.is_empty() {
             if l.leaving.recheck_at.is_none() {
                 self.left = None;
             }
             return Ok(());
         }
-        if l.version == Some(version) {
-            return Ok(());
-        }
-        l.version = Some(version);
-        let waiting = l.leaving.actors.clone();
         let mut ready = Vec::new();
-        for (a, own) in &waiting {
-            let mut placed = true;
-            for c in own {
-                placed &= self.placed(c)?;
+        let timed = l.leaving.timed.clone();
+        let mut timed_labels = std::mem::take(&mut l.timed_labels);
+        if !timed.is_empty() {
+            let labels = self.labels();
+            for (a, since) in &timed {
+                let affected = timed_labels.entry(*a).or_insert_with(|| {
+                    let lost = BTreeSet::from([*a]);
+                    let forgets = |t: &Tid| self.engine.would_forget(&lost, t);
+                    labels.iter().filter(|(g, gl)| !gl.replaced && (forgets(g) || self.engine.closure(g).iter().any(forgets))).map(|(_, gl)| (gl.id, !super::peers::hostless(&gl.hosts))).collect()
+                });
+                if now >= since.saturating_add(crate::rotation::LOST_HEARD_WAIT_MS) || affected.iter().all(|(id, hosted)| !hosted || self.heard(id)) {
+                    ready.push(*a);
+                }
             }
-            if placed {
-                ready.push(*a);
+        }
+        let Some(l) = self.left.as_mut() else { return Ok(()) };
+        l.timed_labels = timed_labels;
+        if l.version != Some(version) {
+            l.version = Some(version);
+            let waiting = l.leaving.actors.clone();
+            for (a, own) in &waiting {
+                let mut placed = true;
+                for c in own {
+                    placed &= self.placed(c)?;
+                }
+                if placed {
+                    ready.push(*a);
+                }
             }
         }
         if ready.is_empty() {
@@ -98,6 +122,28 @@ impl SyncEngine {
         // a failure retries on the next change; success changes the engine, so what is left
         // is recomputed
         self.forget_lost(LostScope::Only(&ready)).map(|_| ())
+    }
+
+    /// Whether label `l` (one with a host) is heard out: open somewhere, and everywhere open a
+    /// pass ended with nothing outstanding (what the hosts have for this node has come, its own
+    /// writes went); or some host refuses it (stranded: every key this node holds refused; or
+    /// not admitted for now), so nothing of this node's can go there.
+    fn heard(&self, l: &LabelId) -> bool {
+        let (mut open, mut idle, mut refused) = (0, 0, false);
+        for c in self.conns.values() {
+            let Some(x) = c.labels.get(l) else { continue };
+            match x.phase {
+                Phase::Failed | Phase::Refused { .. } => refused = true,
+                Phase::Open => {
+                    open += 1;
+                    if x.idle() && c.session.outstanding() == 0 {
+                        idle += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        refused || (open > 0 && idle == open)
     }
 
     /// Lost actors waiting for this node's own self-removals to be placed (`drop_left`), as last

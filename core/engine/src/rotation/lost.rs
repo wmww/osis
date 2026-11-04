@@ -14,11 +14,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The lost-access trigger's work list (spec/permissions.md §3, "a node that learns it lost
 /// read access"): `l/` + tid, a roster target of an applied received role commit, or an
-/// aspect's thing of a dropped pending one, due now (empty value); or an actor a plausible
-/// pending grant kept, due when that grant ages out (`PENDING_GRANT_WAIT_MS`; value: engine ms,
-/// u64 BE). The held actors a role on it reaches are re-evaluated once due, in a transaction of
-/// their own (node-sync, every step, with a wake for the next due time).
+/// aspect's thing of a dropped pending one, due now (empty value); or a roster target with an
+/// edge's `until` ahead, due then; or an actor a plausible pending grant kept, due when that
+/// grant ages out (`PENDING_GRANT_WAIT_MS`; value: engine ms, u64 BE). The held actors a role
+/// on it reaches are re-evaluated once due, in a transaction of their own (node-sync, every
+/// step, with a wake for the next due time). A target with an `until` ahead stays listed until
+/// then, so the list may hold every timed edge of the node's things; a step asks by time
+/// (`ix.lost_due_at`), not by scanning it.
 pub(crate) const LOST_DUE: &[u8] = b"l/";
+
+/// Actors lost by an `until` passing alone (`lost_by_time`), left to node-sync to hear their
+/// labels out first (spec/permissions.md §2): `T/` + actor; value: when first judged (engine
+/// ms, u64 BE), from which `LOST_HEARD_WAIT_MS` runs. Goes with the actor's drop, or when it
+/// reads the actor again.
+const TIMED_LOST: &[u8] = b"T/";
 
 /// Kept copies (spec/permissions.md §3, Keep): `K/` + lost actor; value: the tids of the holders
 /// its copy hangs on, concatenated. Not derived: a later roster snapshot may have taken the edge
@@ -28,11 +37,19 @@ const KEPT_COPY: &[u8] = b"K/";
 /// The link keys this node keeps reading as (`Engine::keep_bearer`): `B/` + tid, no value.
 const BEARERS: &[u8] = b"B/";
 
+/// Sets `t`'s entry in the work list's two indexes.
+fn set_due(ix: &mut crate::engine::Indexes, t: Tid, at: u64) {
+    if let Some(old) = ix.lost_due.insert(t, at) {
+        ix.lost_due_at.remove(&(old, t));
+    }
+    ix.lost_due_at.insert((at, t));
+}
+
 /// Adds `tids` to the work list, due now.
 pub(crate) fn mark_lost_due(tx: &mut Tx<'_>, tids: impl IntoIterator<Item = Tid>) -> Result<()> {
     for t in tids {
         tx.txn.put_local(&[LOST_DUE, t.as_bytes()].concat(), &[], osis_store::Shred::No)?;
-        tx.core.ix.lost_due.insert(t, 0);
+        set_due(&mut tx.core.ix, t, 0);
     }
     Ok(())
 }
@@ -43,7 +60,27 @@ fn arm_lost_due(tx: &mut Tx<'_>, t: Tid, at: u64) -> Result<()> {
         return Ok(());
     }
     tx.txn.put_local(&[LOST_DUE, t.as_bytes()].concat(), &at.to_be_bytes(), osis_store::Shred::No)?;
-    tx.core.ix.lost_due.insert(t, at);
+    set_due(&mut tx.core.ix, t, at);
+    Ok(())
+}
+
+/// The earliest `until` ahead among the edges alive now on `t`: when the clock alone next ends
+/// a role there.
+fn next_until(core: &Core, t: &Tid) -> Option<u64> {
+    let now = core.now().0;
+    core.timelines.get(t)?.roster(t, At::now(now_ts(core))).values().filter_map(|e| e.until).map(|u| u.0).filter(|u| *u > now).min()
+}
+
+/// Lists each of `targets` due at its next `until` ahead, if any: an `until` passing is a loss
+/// with no role commit behind it (spec/permissions.md §2), judged then. Called for every
+/// applied role commit's targets (local ones too: a self-demotion with an `until`) and for the
+/// entries a trigger run takes.
+pub(crate) fn arm_untils(tx: &mut Tx<'_>, targets: impl IntoIterator<Item = Tid>) -> Result<()> {
+    for t in targets {
+        if let Some(at) = next_until(tx.core, &t) {
+            arm_lost_due(tx, t, at)?;
+        }
+    }
     Ok(())
 }
 
@@ -59,13 +96,44 @@ pub(crate) fn load_lost_due(tx: &mut Tx<'_>) -> Result<()> {
         v.push((Tid::from_bytes(k.try_into().map_err(|_| bad())?), at));
         Ok(())
     })?;
-    tx.core.ix.lost_due.extend(v);
+    for (t, at) in v {
+        set_due(&mut tx.core.ix, t, at);
+    }
+    let mut v = Vec::new();
+    tx.scan(TIMED_LOST, |k, val| {
+        let bad = || Error::Corrupt("timed-loss record");
+        v.push((Tid::from_bytes(k.try_into().map_err(|_| bad())?), u64::from_be_bytes(val.try_into().map_err(|_| bad())?)));
+        Ok(())
+    })?;
+    tx.core.ix.timed_lost.extend(v);
     let mut b = Vec::new();
     tx.scan(BEARERS, |k, _| {
         b.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("bearer record"))?));
         Ok(())
     })?;
     tx.core.ix.bearers.extend(b);
+    Ok(())
+}
+
+/// When `a`, lost by the time alone, was first judged so: the record, or a new one at now.
+fn timed_since(tx: &mut Tx<'_>, a: Tid) -> Result<u64> {
+    if let Some(at) = tx.core.ix.timed_lost.get(&a) {
+        return Ok(*at);
+    }
+    let now = tx.now().0;
+    tx.txn.put_local(&[TIMED_LOST, a.as_bytes()].concat(), &now.to_be_bytes(), osis_store::Shred::No)?;
+    tx.core.ix.timed_lost.insert(a, now);
+    Ok(now)
+}
+
+/// Drops the timed-loss records of actors read again or no longer held.
+fn prune_timed(tx: &mut Tx<'_>) -> Result<()> {
+    let core = &*tx.core;
+    let gone: Vec<Tid> = core.ix.timed_lost.keys().filter(|a| !core.ix.secrets.get(a).is_some_and(ActorEpochs::holds_any) || readable(core, a)).copied().collect();
+    for a in gone {
+        tx.txn.remove_local(&[TIMED_LOST, a.as_bytes()].concat(), osis_store::Shred::No)?;
+        tx.core.ix.timed_lost.remove(&a);
+    }
     Ok(())
 }
 
@@ -82,23 +150,45 @@ pub(crate) fn load_kept(tx: &mut Tx<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Takes the work list's entries due now (`all`: every entry), returning them.
-fn take_due(tx: &mut Tx<'_>, all: bool) -> Result<BTreeSet<Tid>> {
-    let now = tx.now().0;
-    let due: BTreeSet<Tid> = tx.core.ix.lost_due.iter().filter(|(_, at)| all || **at <= now).map(|(t, _)| *t).collect();
-    for t in &due {
-        tx.core.ix.lost_due.remove(t);
+/// Takes the work list's entries due by `by`, returning them; each taken target is listed again
+/// at its next `until` ahead.
+fn take_due(tx: &mut Tx<'_>, by: u64) -> Result<BTreeSet<Tid>> {
+    let due: Vec<(u64, Tid)> = tx.core.ix.lost_due_at.iter().take_while(|(at, _)| *at <= by).copied().collect();
+    let mut out = BTreeSet::new();
+    for (at, t) in due {
+        tx.core.ix.lost_due_at.remove(&(at, t));
+        tx.core.ix.lost_due.remove(&t);
         tx.txn.remove_local(&[LOST_DUE, t.as_bytes()].concat(), osis_store::Shred::No)?;
+        out.insert(t);
     }
-    Ok(due)
+    arm_untils(tx, out.iter().copied())?;
+    Ok(out)
 }
 
 /// Whether the node, a held key actor or a link key it keeps reading as has a role on `a` now
 /// (any path, `until` honoured).
-fn readable(core: &Core, a: &Tid) -> bool {
+pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
     let node = core.id.tid();
     core.role_now(&node, a).is_some() || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.role_now(k, a).is_some())
 }
+
+/// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
+/// walked with every edge's time ahead, a role is there. A removal saying its own keep is
+/// written with `until` 0, gone at every clock (spec/permissions.md §2), so it never counts.
+fn lost_by_time(core: &Core, a: &Tid) -> bool {
+    let (node, ts) = (core.id.tid(), osis_base::Ts::default());
+    let role = |x: &Tid| crate::engine::write::role_of(core, x, a, ts).is_some();
+    role(&node) || core.key_actors.keys().any(role)
+}
+
+/// How long an actor lost by the time alone waits for node-sync to hear its labels out before
+/// it is dropped anyway (spec/permissions.md §2): a host dead or hostile for good holds no
+/// erasure off beyond it. `ROLE_KEEP_MS`, past which a node offline does not sync cleanly
+/// anyway. Minor consequence: a node out of reach that long loses its unsent writes on what a
+/// renewal it has not heard would have kept, and comes back by a re-seal; a later erase before
+/// it. At 0 every offline holder loses those; at infinity one dead host keeps every expired
+/// share on the node for good.
+pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 
 /// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
@@ -407,10 +497,12 @@ pub enum LostScope<'a> {
     All,
     /// The trigger: takes the work list's due entries and drops the held actors a role on one
     /// of their things reaches that this node lost read access to (idempotent: the entries go
-    /// in the same transaction), except those lost through its own self-removal
-    /// (`Engine::lost_leaving`).
+    /// in the same transaction), except those lost through its own self-removal or by an
+    /// `until` passing alone (`Engine::lost_leaving`: node-sync drops those once placed or
+    /// heard out).
     Due,
-    /// Those of these actors this node lost read access to.
+    /// Those of the actors a role on one of these reaches (themselves included) this node lost
+    /// read access to.
     Only(&'a [Tid]),
     /// The user drops these kept copies (`Engine::kept_copies`).
     Kept(&'a [Tid]),
@@ -421,7 +513,8 @@ pub enum LostScope<'a> {
 pub struct Dropped {
     pub actors: Vec<Tid>,
     pub forgotten: Forgotten,
-    /// `LostScope::Due` left a lost actor to its own self-removal's placement.
+    /// `LostScope::Due` left a lost actor to node-sync: its own self-removal's placement, or
+    /// hearing out the labels of what an `until` ended.
     pub leaving: bool,
 }
 
@@ -429,14 +522,17 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
     let mut rejudge = false;
     let cands: Vec<Tid> = match scope {
         LostScope::All => {
-            take_due(tx, true)?;
+            take_due(tx, u64::MAX)?;
             rejudge = true;
             tx.core.ix.secrets.keys().copied().collect()
         }
-        LostScope::Only(xs) => xs.to_vec(),
+        LostScope::Only(xs) => {
+            let core = &*tx.core;
+            core.ix.secrets.keys().filter(|a| xs.iter().any(|x| reaches(core, x, a))).copied().collect()
+        }
         LostScope::Kept(_) => Vec::new(),
         LostScope::Due => {
-            let due = take_due(tx, false)?;
+            let due = take_due(tx, tx.now().0)?;
             let core = &*tx.core;
             rejudge = core.ix.kept.iter().any(|(a, via)| due.iter().any(|t| via.contains(t) || reaches(core, t, a)));
             // a box opened late may have given a copy a secret: judged again, it goes
@@ -454,11 +550,15 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
         LostScope::Due => {
             let (mut lost, mut leaving) = (Vec::new(), false);
             for a in judged {
-                // its removal goes up first (spec/permissions.md §3): node-sync's `drop_left`
-                if own_leaving(tx, &a)?.is_empty() {
-                    lost.push(a);
-                } else {
+                // its removal goes up first (spec/permissions.md §3), or its labels are heard
+                // out (§2): node-sync's `drop_left`
+                if !own_leaving(tx, &a)?.is_empty() {
                     leaving = true;
+                } else if lost_by_time(tx.core, &a) {
+                    timed_since(tx, a)?;
+                    leaving = true;
+                } else {
+                    lost.push(a);
                 }
             }
             (lost, leaving)
@@ -472,16 +572,22 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
     if !actors.is_empty() {
         drop_ended_bearers(tx)?;
     }
+    prune_timed(tx)?;
     Ok(Dropped { actors, forgotten, leaving })
 }
 
-/// What this node lost read access to through its own self-removals (`Engine::lost_leaving`).
+/// What this node lost read access to and leaves to node-sync (`Engine::lost_leaving`): through
+/// its own self-removals, or by an `until` passing alone.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Leaving {
-    /// Each such lost actor and the self-removals behind it.
+    /// Each actor lost through own self-removals, and the self-removals behind it.
     pub actors: BTreeMap<Tid, BTreeSet<osis_base::CommitId>>,
-    /// When an actor with a self-removal behind it, kept now by a pending grant, may become
-    /// lost as that grant ages out (engine ms).
+    /// Each actor lost by the time alone (`lost_by_time`, no self-removal behind it) and when it
+    /// was first judged so (engine ms): dropped once node-sync has heard its labels out, or
+    /// `LOST_HEARD_WAIT_MS` after that time.
+    pub timed: BTreeMap<Tid, u64>,
+    /// When to look again (engine ms): an actor with a self-removal behind it, kept now by a
+    /// pending grant, may become lost as that grant ages out; a timed one's wait ends.
     pub recheck_at: Option<u64>,
 }
 
@@ -502,17 +608,23 @@ impl Engine {
             let all: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
             let (lost, kept) = judge(tx, all)?;
             let mut out = Leaving::default();
+            let again = |out: &mut Leaving, t: u64| out.recheck_at = Some(out.recheck_at.map_or(t, |x| x.min(t)));
             for a in lost {
                 let own = own_leaving(tx, &a)?;
                 if !own.is_empty() {
                     out.actors.insert(a, own);
+                } else if lost_by_time(tx.core, &a) {
+                    let since = timed_since(tx, a)?;
+                    out.timed.insert(a, since);
+                    again(&mut out, since.saturating_add(LOST_HEARD_WAIT_MS));
                 }
             }
             for (a, t) in kept {
                 if !own_leaving(tx, &a)?.is_empty() {
-                    out.recheck_at = Some(out.recheck_at.map_or(t, |x| x.min(t)));
+                    again(&mut out, t);
                 }
             }
+            prune_timed(tx)?;
             Ok(out)
         })
     }
@@ -536,24 +648,27 @@ impl Engine {
 
     /// Whether the lost-access trigger has work due now (`drop_lost_due`).
     pub fn lost_due(&self) -> bool {
+        debug_assert_eq!(self.core.ix.lost_due.len(), self.core.ix.lost_due_at.len());
         let now = self.now().0;
-        self.core.ix.lost_due.values().any(|at| *at <= now)
+        self.core.ix.lost_due_at.first().is_some_and(|(at, _)| *at <= now)
     }
 
-    /// When the lost-access trigger's next entry not due now comes due (engine ms): a plausible
-    /// pending grant keeping an actor ages out. Every scope arms these (a judged actor a
-    /// plausible grant keeps), so the trigger drops it then if the grant never applied.
+    /// When the lost-access trigger's next entry not due now comes due (engine ms): an edge's
+    /// `until` on a listed target passes, or a plausible pending grant keeping an actor ages
+    /// out. Every scope arms these, so the trigger judges then with no other role commit
+    /// arriving.
     pub fn next_lost_due(&self) -> Option<u64> {
         let now = self.now().0;
-        self.core.ix.lost_due.values().filter(|at| **at > now).min().copied()
+        self.core.ix.lost_due_at.iter().map(|(at, _)| *at).find(|at| *at > now)
     }
 
     /// The lost-access trigger (spec/permissions.md §3): after received role commits
-    /// applied, drops the secrets of the actors they touched that this node lost read access to
-    /// by every path, unless a held pending grant reaches them or its own self-removal is
-    /// behind the loss (`lost_leaving`), and forgets what only those read. node-sync runs it
-    /// every step and wakes at `next_lost_due`; an app driving the engine alone calls it after
-    /// ingesting and when `next_lost_due` passes. Returns the actors dropped.
+    /// applied, or an `until` passed, drops the secrets of the actors they touched that this
+    /// node lost read access to by every path, unless a held pending grant reaches them, or its
+    /// own self-removal or an `until` passing alone is behind the loss (`lost_leaving`), and
+    /// forgets what only those read. node-sync runs it every step and wakes at
+    /// `next_lost_due`; an app driving the engine alone calls it after ingesting and when
+    /// `next_lost_due` passes. Returns the actors dropped.
     pub fn drop_lost_due(&mut self) -> Result<Vec<Tid>> {
         Ok(self.forget_lost(LostScope::Due)?.actors)
     }
@@ -562,6 +677,13 @@ impl Engine {
     /// sync, no write; `get` and the rest still read what it held. `drop_kept`-able.
     pub fn kept_copies(&self) -> Vec<Tid> {
         self.core.ix.kept.keys().copied().collect()
+    }
+
+    /// Whether dropping the secrets of `lost` would forget `t` (erase it or keep a copy):
+    /// node-sync hears out the labels whose closure holds such a thing before it drops an actor
+    /// an `until` ended (`Leaving::timed`).
+    pub fn would_forget(&self, lost: &BTreeSet<Tid>, t: &Tid) -> bool {
+        crate::retention::forget::would_forget(&self.core, lost, t)
     }
 
     /// Whether a client of this node, `actor`, reads `t` as a kept copy (notes/client-port.md §3):

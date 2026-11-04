@@ -529,6 +529,11 @@ indexes! {
     /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`): tid -> when due
     /// (engine ms; 0: now).
     pub lost_due: JMap<Tid, u64>,
+    /// The same, by time (a step asks for what is due without a scan).
+    pub lost_due_at: JSet<(u64, Tid)>,
+    /// Actors lost by an `until` passing alone, waiting for node-sync to hear their labels out
+    /// (`rotation::lost::TIMED_LOST`): actor -> when first judged (engine ms).
+    pub timed_lost: JMap<Tid, u64>,
     /// Kept copies (`rotation::lost`): each lost actor kept and the holders it hangs on.
     pub kept: JMap<Tid, BTreeSet<Tid>>,
     /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
