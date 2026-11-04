@@ -764,6 +764,51 @@ fn hint_under_another_thing_gives_way_to_the_group_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("item")));
 }
 
+/// Bob's inbox holds a blob naming `g`'s label under item `t` (a thing the sender boxes to him),
+/// sorted first, and the group's own grant: he reaches `g` at the next tries, long before the
+/// blob expires. `hosts`: where the blob says the label is.
+fn hint_first_then_group_grant(hosts: impl Fn(&[ct::Address]) -> Vec<ct::Address>) {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
+    let t = persisted_item(&mut net, a, g);
+    grant(&mut net, a, t, bob);
+    net.advance(61_000);
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let c = net.engine(a).commit_ids().into_iter().rev().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "secrets.0") && h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "roles.0"))).unwrap();
+    net.set_online(b, false);
+    grant(&mut net, a, g, bob);
+    net.advance(61_000);
+    let first = net.host_ids(host, &home).into_iter().min().unwrap();
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: hosts(&gl.hosts) }), delete_keys: None };
+    let mut exp = net.now() + INBOX_LIFETIME_MS;
+    while plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing.clone()], exp) > first {
+        exp -= 1;
+    }
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(61_000);
+    }
+    assert!(settled(&mut net, b, g), "{:?}", net.sync(b).label_status());
+    assert_eq!(net.read(b, t), Some(s("item")));
+}
+
+// spec/sync.md §3: blobs naming one label under different things: each thing is tried in turn, so
+// a connected sender's word delays the label's own group by a few tries at most.
+#[test]
+fn hint_under_another_thing_does_not_hold_off_the_group_spec_sync_3() {
+    hint_first_then_group_grant(|h| h.to_vec());
+}
+
+// spec/sync.md §3: nor by naming the label at a host that never answers: the label is tried at the
+// hosts every blob names.
+#[test]
+fn hint_at_a_dead_host_does_not_hold_off_the_group_spec_sync_3() {
+    hint_first_then_group_grant(|h| {
+        let mut x = h[0].clone();
+        x.key = [0xdd; 32];
+        vec![x]
+    });
+}
+
 // spec/wire.md §9: a grant's payload names a thing's own label, or none: never a group's holding it.
 #[test]
 fn grant_payload_names_only_the_things_own_label_spec_wire_9() {

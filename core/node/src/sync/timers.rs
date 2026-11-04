@@ -18,8 +18,8 @@ impl SyncEngine {
 
     /// Runs passes for open, synced labels marked dirty.
     pub(super) fn run_dirty(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        self.add_new_labels(out)?;
         self.vet_inbox_hints()?;
+        self.add_new_labels(out)?;
         // a hint is done once the thing's `label.0` names the label
         let hints: Vec<(LabelId, Tid)> = self.state.hints.iter().map(|(l, h)| (*l, h.thing)).collect();
         for (l, t) in hints {
@@ -79,6 +79,12 @@ impl SyncEngine {
         for (conn, label, g) in reopen {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.reopens.remove(&label);
+            }
+            // every thing a hint names this label under gets a new turn
+            let hints = self.hint_failed.len();
+            self.hint_failed.retain(|x| x.0 != label);
+            if self.hint_failed.len() != hints {
+                self.vetted = None;
             }
             self.start_label(conn, g, label, out)?;
         }

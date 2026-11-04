@@ -132,6 +132,9 @@ pub struct SyncEngine {
     /// What `vet_inbox_hints` last ran on: the engine, the entries, and when an inbox blob it
     /// counted expires.
     pub(crate) vetted: Option<(u64, u64, u64)>,
+    /// (label, thing, index) a hinted label failed under since its last retry
+    /// (`vet_inbox_hints`); at most one per inbox blob, and a restart forgets them: tried again.
+    pub(crate) hint_failed: BTreeSet<(LabelId, Tid, u64)>,
     pub(crate) inbox_copied: work::InboxCopied,
     /// `secrets_count` at this engine generation (both).
     pub(crate) secrets_counted: std::cell::Cell<Option<((u64, u64), usize)>>,
@@ -303,6 +306,7 @@ impl SyncEngine {
             body_links: BTreeMap::new(),
             inbox_opened: BTreeMap::new(),
             vetted: None,
+            hint_failed: BTreeSet::new(),
             inbox_copied: work::InboxCopied::default(),
             secrets_counted: std::cell::Cell::new(None),
             unsettled_memo: None,

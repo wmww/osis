@@ -108,8 +108,8 @@ impl Engine {
     /// Reverts change `id` for `actor`, held to its rights: on everything the change touched,
     /// whether or not the revert still writes it (the answer tells nothing of what it may not
     /// read), and on every write the revert really makes (`undo_in`, `revert_inner`). An error
-    /// names only what it reads. One bit stays: a deleted thing placed in a group the actor may
-    /// not write is refused (issues/revert-tells-hidden-placement.md).
+    /// names only what it reads. A deleted thing's placement in a group the actor may not write
+    /// stays, as for `Write::delete`: the answer tells nothing of it.
     pub fn revert_as(&mut self, id: ChangeId, actor: Tid) -> Result<Reverted> {
         let mut touched: BTreeSet<(Tid, Ak)> = self.ephemeral_log().into_iter().filter(|l| l.id == id).flat_map(|l| l.aspects).collect();
         if let ChangeId::Commit(c) = id

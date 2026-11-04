@@ -4561,3 +4561,75 @@ fn window_in_an_item_group_is_synced_spec_sync_4() {
     assert!(net.engine(a).core.syncs(&u));
     assert!(net.engine(a).ephemeral_synced(&w));
 }
+
+// spec/crdt.md §4.6 (the undoing node must hold write): a node that lost write reverts no ephemeral write of the thing and no ephemeral creation: nothing applies, nothing is logged. A placement in a group it lost is left when it reverts a creation it may still undo.
+#[test]
+fn ephemeral_revert_needs_write_spec_crdt_4_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let addr = net.hosts[host].address.clone();
+    let keep = net.group_seeded(a, &[(b, Role::Write)], vec![addr], 2);
+    let t = net.item(a, g, g, "t");
+    net.run();
+    let tb = net.tid(b);
+    let made = |net: &mut Net, owner: Tid| {
+        let e = net.engine(b);
+        let mut m = Mutation::new();
+        let w = e.new_thing(&mut m, owner);
+        m.op(owner, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+        m.set(w, &eph(STATE), &s("v")).unwrap();
+        let id = e.write(m).unwrap().unwrap().id;
+        local(net, b);
+        (w, id)
+    };
+    let mut m = Mutation::new();
+    m.set(t, &eph(FLAG), &s("f")).unwrap();
+    let wrote = net.engine(b).write(m).unwrap().unwrap().id;
+    local(&mut net, b);
+    let (lost, unmake) = made(&mut net, g);
+    let (kept, unmake_kept) = made(&mut net, keep);
+    // a thing with no write to undo, and one whose undo is itself reverted
+    let bare = |net: &mut Net| {
+        let e = net.engine(b);
+        let mut m = Mutation::new();
+        let w = e.new_thing(&mut m, g);
+        let id = e.write(m).unwrap().unwrap().id;
+        (w, id)
+    };
+    let (empty, unmake_empty) = bare(&mut net);
+    let (back, unmake_back) = bare(&mut net);
+    let osis_node::ephemeral::Reverted::Written(w) = net.engine(b).revert_change(unmake_back, tb).unwrap() else { panic!("the undo") };
+    let remake = w.id;
+    assert!(net.engine(b).ephemeral_thing(&back).unwrap().deleted);
+    net.run();
+    // another's placement of b's thing, in a group b is about to lose
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(kept)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(net.engine(b).groups_of(&kept).contains(&g));
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let d = osis_node::flows::Demotion { holder: tb, new: Some(edge), presync: osis_node::flows::PreSync::Synced, keep: None };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(15_000);
+    let logged = net.engine(b).ephemeral_log().len();
+    for id in [wrote, unmake, unmake_empty, remake] {
+        let r = net.engine(b).revert_change(id, tb);
+        assert!(matches!(r, Err(osis_node::Error::Permission { .. })), "{r:?}");
+    }
+    for x in [lost, empty] {
+        assert!(!net.engine(b).ephemeral_thing(&x).unwrap().deleted, "the thing stays");
+    }
+    assert!(net.engine(b).ephemeral_thing(&back).unwrap().deleted, "it stays undone");
+    assert_eq!(net.engine(b).ephemeral_log().len(), logged);
+    net.engine(b).revert_change(unmake_kept, tb).unwrap();
+    let groups = net.engine(b).groups_of(&kept);
+    assert!(groups.contains(&g) && !groups.contains(&keep), "{groups:?}");
+}

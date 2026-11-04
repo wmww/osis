@@ -913,7 +913,10 @@ impl SyncEngine {
     /// a node to dial (`peer://`); a label a key actor's entry is followed for (`via`) is left
     /// to that follow. A label a group here records is that group's, whether synced now or not:
     /// never a hint (it would take the label's place on the connection under the wrong thing's
-    /// secrets). Other inbox hints are dropped.
+    /// secrets). Blobs naming one label under different things are tried in turn (`hint_failed`:
+    /// the first thing that has not failed since the last retry) at the hosts all of them name,
+    /// so no sender's word holds a label from the thing it belongs to: a wrong thing fails at the
+    /// label's real host. Other inbox hints are dropped.
     pub(crate) fn vet_inbox_hints(&mut self) -> Result<()> {
         // nothing it reads moved: the engine, the entries or the clock past an expiry
         let (generation, version, now) = (self.engine.core.generation, self.state.version, self.now());
@@ -982,18 +985,23 @@ impl SyncEngine {
                 let hosts = at.hosts.iter().filter(|a| !super::peers::is_peer(a)).cloned();
                 let src = super::state::InboxSource { label: l, blob: b, until: o.until };
                 match want.get_mut(&at.id) {
-                    // two blobs naming one label: both hosts, the later expiry
-                    Some(h) if h.thing == t.tid && h.index == at.index => {
+                    // two blobs naming one label: both hosts; of one thing the later expiry, of
+                    // another its turn once this one failed
+                    Some(h) => {
                         for a in hosts {
                             if !h.hosts.contains(&a) {
                                 h.hosts.push(a);
                             }
                         }
-                        if h.inbox.is_some_and(|i| i.until < o.until) {
-                            h.inbox = Some(src);
+                        let failed = |thing, index| self.hint_failed.contains(&(at.id, thing, index));
+                        if (h.thing, h.index) == (t.tid, at.index) {
+                            if h.inbox.is_some_and(|i| i.until < o.until) {
+                                h.inbox = Some(src);
+                            }
+                        } else if failed(h.thing, h.index) && !failed(t.tid, at.index) {
+                            (h.thing, h.index, h.inbox) = (t.tid, at.index, Some(src));
                         }
                     }
-                    Some(_) => {}
                     None => {
                         want.insert(at.id, Hint { thing: t.tid, index: at.index, hosts: hosts.collect(), via: None, inbox: Some(src) });
                     }
