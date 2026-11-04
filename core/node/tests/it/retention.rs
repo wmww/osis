@@ -2279,6 +2279,70 @@ fn undecided_write_keeps_its_body_spec_commits_5() {
     assert!(e.body_not_dropped(&c, &t, &a));
 }
 
+// spec/commits.md §5, spec/permissions.md §5.2: a node holding the removal and not yet the re-grant
+// judges the writer's newer write invalid, not undecided: under at most 0 its body goes, it reads
+// as before, and the re-grant arriving fetches it again from the node holding it.
+#[test]
+fn write_under_a_regrant_not_yet_held_returns_spec_commits_5() {
+    let mut lp = net(3, 988);
+    lp.sync_all().unwrap();
+    let (t, w) = with_writer(&mut lp);
+    sync(&mut lp, 0, 2);
+    remove_all(&mut lp, t, w);
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    let g = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let a = ak("t:gone.0");
+    let c = set(&mut lp, 1, t, &GONE, "honest");
+    assert_eq!(lp.peers[1].engine.body_valid(&c, &t, &a), Some(true));
+    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
+    lp.deliver(2, &pk).unwrap();
+    let e = &mut lp.peers[2].engine;
+    assert_eq!(e.body_valid(&c, &t, &a), Some(false));
+    assert!(!e.body_not_dropped(&c, &t, &a));
+    let pk = osis_node::local_peer::Package { id: g, bytes: lp.peers[0].engine.commit_bytes(&g).unwrap().unwrap(), blobs: Vec::new() };
+    lp.deliver(2, &pk).unwrap();
+    let e = &mut lp.peers[2].engine;
+    assert_eq!(e.body_valid(&c, &t, &a), Some(true));
+    assert!(e.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == a), "flagged until it is back");
+    sync(&mut lp, 1, 2);
+    let e = &mut lp.peers[2].engine;
+    assert_eq!(e.get(&t, &a).unwrap(), Some(s("honest")));
+    assert!(e.suspects().unwrap().is_empty());
+}
+
+// spec/commits.md §5: a snapshot invalid here dates itself alone: its arrival walks no body of the
+// aspect, nor does a role change that moves no fall.
+#[test]
+fn invalid_snapshot_recomputes_no_deaths_spec_commits_5() {
+    let mut lp = net(3, 990);
+    lp.sync_all().unwrap();
+    let (t, w) = with_writer(&mut lp);
+    let a = ak("t:short.0");
+    set(&mut lp, 1, t, &SHORT, "mine");
+    sync(&mut lp, 1, 0);
+    lp.advance(10);
+    remove_all(&mut lp, t, w);
+    lp.advance(10);
+    // the writer has not seen its removal
+    let c = lp.peers[1].engine.snapshot(&t, &a).unwrap().unwrap();
+    let ts = lp.peers[1].engine.header(&c).unwrap().ts;
+    let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
+    let recomputes = || osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
+    osis_node::costs::take();
+    lp.deliver(0, &pk).unwrap();
+    assert_eq!(recomputes(), 0, "the arrival");
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.body_valid(&c, &t, &a), Some(false));
+    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((ts, ts)));
+    let x = lp.peers[2].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Read)), None);
+    assert!(osis_node::costs::take().iter().all(|x| x.0 != "deaths: join bodies"), "a role change moving no fall");
+}
+
 /// Peers 0 (owner), `x` (1, admin) and `w` (2, writer) of a new thing; `w`'s message `c` and `x`'s
 /// request naming it, its own delta on another aspect if `beside`, all synced.
 fn rightful(seed: u64, beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {

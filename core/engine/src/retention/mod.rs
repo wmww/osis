@@ -44,7 +44,7 @@ use pending::{purge_pending, strip_pending};
 use purge::drop_purged_snapshot;
 pub(crate) use purge::{counts_as_purged, known_purged, lasting, purged_aspects, purged_by, rejudge_purges, requests_resting_on, snapshot_right};
 pub(crate) use snapshot::covered;
-pub(crate) use deaths::{any_bounded, falls, load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
+pub(crate) use deaths::{any_bounded, fall_moved, falls, load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
 /// A body a due timer drops with a live write: its commit and every aspect of it.
 pub(crate) type LiveDrop = (CommitId, Vec<(Tid, Ak)>);
@@ -862,10 +862,8 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
 /// (`drop_gone`).
 fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, purged: &mut BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     for ai in ais.iter().copied() {
-        let Some(a) = h.aspects.get(ai) else { continue };
-        // invalid on arrival: fallen from then on (no join reports it)
-        if deaths::falls(h, a) && tx.core.ix.commits.get(id).is_some_and(|m| !m.view.memory && m.holds(ai) && !m.valid_at(ai)) {
-            mark_deaths_due(tx, &a.tid, &a.ak)?;
+        if h.aspects.get(ai).is_none() {
+            continue;
         }
         if let Some(t) = h.expires {
             if t <= tx.now().0 {
@@ -878,6 +876,7 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         purge::purge_arrived(tx, id, h, ai, purged)?;
         drop_purged_snapshot(tx, id, ai)?;
         drop_gone(tx, id, ai, purged)?;
+        deaths::date_arrival(tx, id, ai)?;
     }
     if h.ephemeral.is_some() {
         let aspects = ais.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
