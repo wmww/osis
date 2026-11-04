@@ -1,0 +1,1 @@
+- issues/set-hosts-other-devices-links.md misread the guard: a working link's K never moved, on any device (`follow_labels`'s holder check, L has no owner). What moved was a revoked link's K. Check what a stated bug's mechanism does before building the brief's test around it.

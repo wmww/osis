@@ -1319,3 +1319,97 @@ fn gap_covers_nothing_kept_spec_commits_5() {
         assert_eq!(net.engine(f).get_typed(&t, &REG).unwrap(), net.engine(a).get_typed(&t, &REG).unwrap());
     }
 }
+
+// spec/commits.md §5 (a body with live writes is deleted at a label only while another entry
+// carries them), spec/permissions.md §7: an import under at most 0, its writes partly dead, past
+// its grace: a reader joining then reads the imported write that stayed.
+#[test]
+fn import_live_write_reaches_a_later_reader_spec_commits_5() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(3, &[host]);
+    net.blocked.insert((c, host));
+    let g = net.group(a, &[(c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    let k = Ak::new(GONEMAP.ak()).unwrap();
+    let put = |net: &mut Net, t, key: &str, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s(v)) }).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap()
+    };
+    let mut m = Mutation::new();
+    for key in ["a", "b"] {
+        m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("old")) }).unwrap();
+    }
+    let origin = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let (copy, imports) = net.engine(a).move_thing(&t, g).unwrap();
+    let i = *imports.iter().find(|i| net.engine(a).header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == origin))).unwrap();
+    let mut grp = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap();
+    grp.items.insert(copy);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &grp).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    let l = net.label(a);
+    let at_host: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, e)| matches!(e, EntryKind::Commit { commit, .. } if *commit == i)).map(|(id, _)| id).collect();
+    assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)));
+    net.advance(10);
+    put(&mut net, copy, "a", "new");
+    net.run();
+    assert!(net.engine(a).body_not_dropped(&i, &copy, &k), "kept to its grace");
+    net.advance(osis_base::format::AT_MOST_GRACE_MS + 10_000);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&i, &copy, &k), "gone at its bound");
+    let ids = net.host_ids(host, &l);
+    assert!(at_host.iter().all(|b| !ids.contains(b)), "and at the host, its live write carried");
+    net.blocked.clear();
+    net.advance(10_000);
+    net.run();
+    let ec = net.engine(c);
+    assert_eq!(ec.get_at(&copy, &k, &[PathSeg::Key(s("b"))]).unwrap(), Some(s("old")), "the reader joining later reads it");
+    assert_eq!(ec.get_at(&copy, &k, &[PathSeg::Key(s("a"))]).unwrap(), Some(s("new")));
+}
+
+// spec/commits.md §5, spec/sync.md §7: a purged import has no live write, though the state holds
+// its writes value-less by dot: its blobs go at hosts, with no carrier asked for.
+#[test]
+fn purged_import_needs_no_carrier_spec_commits_5() {
+    use osis_commit::PurgeItem;
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "x");
+    let k = Ak::new(GONEMAP.ak()).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(s("old")) }).unwrap();
+    let origin = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let (copy, imports) = net.engine(a).move_thing(&t, g).unwrap();
+    let i = *imports.iter().find(|i| net.engine(a).header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == origin))).unwrap();
+    let mut grp = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap();
+    grp.items.insert(copy);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &grp).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    let l = net.label(a);
+    let at_host: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, e)| matches!(e, EntryKind::Commit { commit, .. } if *commit == i)).map(|(id, _)| id).collect();
+    assert!(!at_host.is_empty() && at_host.iter().all(|b| net.host_ids(host, &l).contains(b)));
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    let now = net.engine(a).now();
+    m.set(copy, &ct::PURGE, &now).unwrap();
+    m.purge(PurgeItem::Commit { commit: i, tid: copy, ak: k.clone() });
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&i, &copy, &k));
+    let ids = net.host_ids(host, &l);
+    assert!(at_host.iter().all(|b| !ids.contains(b)), "gone at the host");
+    assert!(snapshots(&mut net, a, &copy, &k).is_empty(), "nothing asked for a carrier");
+    assert_eq!(net.engine(a).get(&copy, &k).unwrap(), None);
+}

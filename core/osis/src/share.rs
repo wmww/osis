@@ -1049,10 +1049,7 @@ impl Osis {
     /// seed thing in a shared group: it names no link of ours).
     fn held_links(&self) -> Vec<flows::HeldLink> {
         let me = self.me();
-        self.engine(|e| {
-            let held = e.held_links().map(|h| h.to_vec()).unwrap_or_default();
-            held.into_iter().filter(|h| h.owner == me && e.owner(&h.k) == Some(me)).collect()
-        })
+        self.engine(|e| person_links(e, me))
     }
 
     /// Link `id`'s key L (`held_links`).
@@ -1380,10 +1377,11 @@ impl Osis {
         self.locked(|x| -> Result<()> {
             let old: BTreeSet<osis_label::Address> = x.sync.config().hosts.iter().cloned().collect();
             let new: Vec<osis_label::Address> = v.iter().map(|s| s.0.clone()).collect();
-            // links and the contact card name their label's hosts in their text: they stay
-            // a routed group too: nothing written here leaves, and a stale list would move it on the
-            // way home
-            let mut fixed: BTreeSet<Tid> = x.links.keys().copied().chain(x.routes.keys().copied()).collect();
+            // links, whichever device made them, and the contact card name their label's hosts in
+            // their text: they stay; a routed group too: nothing written here leaves, and a stale
+            // list would move it on the way home
+            let links = person_links(x.engine(), me);
+            let mut fixed: BTreeSet<Tid> = links.iter().map(|h| h.k).chain(x.routes.keys().copied()).collect();
             if let Some(card) = x.engine().app_record(CONTACT)?
                 && let Ok(l) = ContactCard(String::from_utf8_lossy(&card).into_owned()).parse()
             {
@@ -1691,6 +1689,12 @@ fn persist_in(e: &mut osis_node::Engine, me: Tid, tids: &[Tid]) -> Result<()> {
     Ok(())
 }
 
+/// `Osis::held_links`, on this engine.
+fn person_links(e: &mut osis_node::Engine, me: Tid) -> Vec<flows::HeldLink> {
+    let held = e.held_links().map(|h| h.to_vec()).unwrap_or_default();
+    held.into_iter().filter(|h| h.owner == me && e.owner(&h.k) == Some(me)).collect()
+}
+
 fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> bool {
     s.iter().cloned().collect::<BTreeSet<_>>() == *old
 }
@@ -1698,8 +1702,8 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
 /// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync.md §2 `label.0`
 /// hosts; the sync engine registers a label's path at a host that does not know it): the
 /// home label and the labels of groups in the person's own owner tree this node administers,
-/// except `fixed` ones (links, the contact card) and link actors made elsewhere (a key-actor
-/// holder that is no device of the person). A group with holders besides the person and its
+/// except `fixed` ones (links, the contact card) and groups with a holder of no owner here (a
+/// person, a link's key actor). A group with holders besides the person and its
 /// devices never loses its last host.
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
