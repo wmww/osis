@@ -9,6 +9,7 @@ Written from `spec/` alone, depending on no osis crate, so it is an independent 
 - `things`: `Thing { id, owner }`; the owner node has admin by owner chain.
 - `commits`: `Commit { id, author, ts, expires, kind, parts, purge, frontier }`. The header is held; each `Part { thing, aspect, retention, body }` has `Body::Held(Delta)`, `Body::Missing` or `Body::Dropped`.
   - `kind`: `Content`; `Role` (each part a `Delta::Edge(EdgeWrite { holder, role })` on `Aspect::ROLES`, `role` None removes); `Snapshot` (writes are copies under their original stamps).
+  - `stripped`: owners whose values `act` stripped from the body (it holds its leftover).
   - Content and snapshot parts carry `Delta::Writes(Vec<Write>)`; a `Write` is a `Stamp { ts, dot: Dot { commit, ctr } }` and an `Op`: `Set`, `Reset`, `Create`, `SetIn`, `Remove`, `Insert`, `Delete`, `Anchor`. Value fields are `Option`: `None` is held value-less.
   - `Aspect { name, kind, admin_only }`: `kind` is Register, Map or Text; `admin_only` is the `^` marker.
   - `Retention { by, least_abs, least_rel, most_abs, most_zero }`; `purge: Vec<PurgeItem>` (by commit, aspect, or author on an aspect); `frontier` on demotions.
@@ -17,7 +18,7 @@ Written from `spec/` alone, depending on no osis crate, so it is an independent 
 ## Output (`src/model.rs`, `evaluate(&Held) -> Outcome`)
 - `parked`, `applied`, `valid` (per part of an applied commit), `purged` (part to request).
 - `reads` per `(thing, aspect)`: `Read::{Absent, Reg, Map, Text}`; `states`: canonical writes.
-- `fates` per held body: `Keep(why)`, `Leftover(why)` (strip values), `MayDrop(why)`, `MustDrop(why)`, `NeverReceived`; `keep_in_state`: the live writes a keep-at-most drop leaves in the state; `deaths`: first and last death.
+- `fates` per held body: `Keep(why)`, `Leftover(why)` (strip values), `MayDrop(why)` (covered), `MustDrop(why)` (keep at most from its bound, a purged snapshot), `NeverReceived`; `keep_in_state`: the live writes a keep-at-most drop leaves in the state; `deaths`: first and last death.
 - `valueless`: deltas held value-less (expired, purged); `forbidden`: every value of theirs still held, with where (body or own state). An engine holding the same set must hold none of them once it has acted.
 
 `act(&Held, &Outcome, may)` carries out the forced fates (and one optional drop) and returns the next held set; `gen::history(seed, n)` builds a random history, `gen::shuffle` reorders one.

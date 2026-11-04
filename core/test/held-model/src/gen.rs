@@ -105,7 +105,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let frontier = (role != Some(Role::Admin))
                 .then(|| commits.iter().filter(|c| c.author == holder && r.chance(60)).map(|c| c.id).collect());
             let body = Body::Held(Delta::Edge(EdgeWrite { holder, role }));
-            Commit { kind: CommitKind::Role, frontier, parts: vec![Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body }], ..base }
+            Commit { kind: CommitKind::Role, frontier, parts: vec![Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body, stripped: Default::default() }], ..base }
         } else if roll < 25 && !commits.is_empty() {
             let aspect = r.pick(&ASPECTS);
             let prefix = Held { now: w, me: author, things: THINGS.to_vec(), commits: commits.clone(), own_state: vec![] };
@@ -117,7 +117,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             }
             let retention = if r.chance(15) { Retention { least_rel: Some(HOUR), most_zero: true, ..Retention::WRITER } } else { Retention::WRITER };
             let body = Body::Held(Delta::Writes(ws));
-            Commit { kind: CommitKind::Snapshot, parts: vec![Part { thing, aspect, retention, body }], ..base }
+            Commit { kind: CommitKind::Snapshot, parts: vec![Part { thing, aspect, retention, body, stripped: Default::default() }], ..base }
         } else if roll < 35 && !commits.is_empty() {
             let target = commits[r.below(commits.len() as u64) as usize].clone();
             let tp = target.parts[0].clone();
@@ -127,7 +127,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                 _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.author },
             };
             let ws = vec![Write { stamp: stamp(ts, id, 1), op: Op::Set { value: Some(r.below(5) as Val) } }];
-            let part = Part { thing: tp.thing, aspect: PURGE, retention: Retention::PLAIN, body: Body::Held(Delta::Writes(ws)) };
+            let part = Part { thing: tp.thing, aspect: PURGE, retention: Retention::PLAIN, body: Body::Held(Delta::Writes(ws)), stripped: Default::default() };
             Commit { purge: vec![item], parts: vec![part], ..base }
         } else {
             let aspect = r.pick(&ASPECTS);
@@ -143,7 +143,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let ws = content_writes(&mut r, aspect.kind, ts, id, &prior);
             let retention = r.pick(&retentions(w));
             let expires = (r.chance(15) && retention.least_abs.is_none()).then(|| w + (1 + r.below(4)) * HOUR);
-            Commit { expires, parts: vec![Part { thing, aspect, retention, body: Body::Held(Delta::Writes(ws)) }], ..base }
+            Commit { expires, parts: vec![Part { thing, aspect, retention, body: Body::Held(Delta::Writes(ws)), stripped: Default::default() }], ..base }
         };
         commits.push(c);
     }

@@ -236,6 +236,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 
 ### 5.2 Layer 2: content
 - A delta by actor X on thing N is valid if X held write or above on N just before the commit's key (§6; edges' `until` judged at its `ts`) and no valid explicit demotion of X below write on N is ordered after it (a ledger entry with a frontier counts as an explicit demotion at its key, §6).
+  - An **explicit demotion of X below write on N** is an applied explicit write (§5.1 step 2) by another author, or a ledger entry with a frontier, that demotes X on N (§5.1 step 4) and takes X's role on N, with the edge as restored, from write or above to below write.
 - Otherwise it is valid iff the frontier of X's newest valid explicit demotion below write on N (ledger entries included) lists its commit.
 - A delta of an **admin-only** aspect (AK marker `^`, spec/data-model.md §2) is judged by the two rules above with admin in place of write: X held admin on N, demotions below admin. A writer that does not hold admin on N MUST NOT write one; every node judges it alike from the AK alone, also on an ephemeral commit's part and a compaction snapshot's delta.
 - A delta breaking the required retention in force at its key (spec/commits.md §5) is invalid, whatever the rules above say. A `required.0^` delta is judged by those rules as an admin-only delta; where it turns invalid or valid, every later delta on its thing is judged again.
@@ -265,7 +266,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
     - if a delta, its own writes go from the state (exactly those writes; the held valid snapshots give their copies again);
     - if a snapshot, gives nothing;
     - joins as a late part (spec/commits.md §4) when it arrives again.
-- An actor holding the required role in the timeline's final state, every edge with an `until` counted as removed, is re-granted: each of its writes ordered at or after the first point it held that role is valid again, including those in the gap. Edge writes in the gap stay dropped.
+- An actor holding the required role in the timeline's final state, every edge with an `until` counted as removed, is re-granted: each of its writes ordered at or after the first point it ever held that role is valid again, including those in the gap and those a demotion's frontier left out. Edge writes in the gap stay dropped.
 - **Acting**: a commit whose header actor (spec/wire.md §4) is not its author is invalid, every delta and ephemeral part of it but `created.0` (whose record holds by its tid), unless a delta of its author on that actor needing write, at the commit's key, would be valid by the rules above (its demotions, frontiers and re-grant alike).
   - Role commits and roster snapshots act for their author, so the role timeline never depends on this.
 - One dot names one write: two commits of one session with overlapping ranges on one aspect are both invalid (spec/commits.md §4).
@@ -336,7 +337,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - **Judgment** follows the role timeline the node holds, in any arrival order:
   - A named delta a request comes to drop is dropped then.
   - A delta held as its leftover for a request when no held request drops it any more counts as never received (spec/commits.md §5): its leftover is set aside and it is no longer held value-less, the node fetches it again where present and takes it from a holder's upload (spec/sync.md §6).
-  - A held body stripped for carrying a purged value (a snapshot, a delta carrying a copy, spec/crdt.md §4.7) is asked for again with any such fall, and stripped again on arrival if it carries another's.
+  - A held body stripped for carrying a purged value (a snapshot, a delta carrying a copy, spec/crdt.md §4.7) counts as never received with any such fall (its stripped copy no longer joins) and is asked for again, and stripped again on arrival if it carries another's.
   - A body no node holds stays gone; the delta then reads as never received.
   - Held value-less again before a copy comes, it holds the leftover it set aside, as at a node that never saw the fall; a snapshot's part dropped as named stands in again (spec/commits.md §4) with no copy.
 - **Who may undo a purge so**: the author of a demotion, whose frontier omits the request. A frontier may list a message and omit its purge, and the message is back wherever a copy is left. A memory delta vanished stays gone.

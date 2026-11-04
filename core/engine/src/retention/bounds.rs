@@ -157,7 +157,7 @@ impl Engine {
     /// gets `AT_MOST_GRACE` (spec/commits.md §5). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
     /// are stripped from the state; they count live again once a validity flip or a redo puts
-    /// them back). Any write counts: resets, tombstones and value-less writes too. Kept per body
+    /// them back). Any write counts: resets (a tombstone's, for its remover) and value-less writes too. Kept per body
     /// until its aspect's state changes (`Core::live_bodies`).
     pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
         if let Some(v) = self.core.live_bodies.get(c).and_then(|m| m.get(&(*tid, ak.clone()))) {

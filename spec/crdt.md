@@ -338,7 +338,7 @@ Below a map key, the undo buffer's value at a path is that of the join of the ke
 Redo likewise restores the read before the undo.
 
 **Un-merge** (revocation, spec/permissions.md §5): the state after un-merging is the join of every body the node holds for the aspect, leftovers (§4.7) included, with the writes of invalid deltas removed.
-- **Own state.** The node's own current state counts as a snapshot it holds, so live writes of bodies dropped under keep-at-most survive.
+- **Own state.** The node's own current state counts as a body it holds, so live writes of bodies dropped under keep-at-most survive. It vouches for nothing: the writes of invalid deltas are removed from it as from a delta body.
 - **Removed.** The writes of invalid deltas are removed from each delta body and the state, the records they created and others' writes nested in them included. A write belongs to a delta as in §4.7, `Derived` dots to the delta of the underlying dot.
 - **A valid snapshot's copies** of those writes stay (spec/permissions.md §5.2), so the state holds the snapshot's copy alone, with whatever payload it carries, and from the snapshot's body only what sits under such a dot without a write of the snapshot's there goes.
 - **Records a valid snapshot holds.** A record a valid snapshot holds, by its creation's copy or by the record alone, stays with the valid writes nested in it, whichever body carries them (the record is in the state, so writes into it count).
@@ -383,6 +383,7 @@ Rules:
 - **Writes into an expiring element.** A delta writing inside an element created by an expiring delta (a reaction to a disappearing message) repeats its key or anchors to it, and stops showing with the element at T (Live, §5.6, §5.7).
   - A write carrying a copy of an expiring value (the entry's key its record repeats, an undelete's char) MUST expire no later than T, unless its thing's required retention fixes its expiry (spec/commits.md §5): the writer puts those writes in a delta of that expiry, the write's others keeping theirs (split by expiry, spec/commits.md §6). An undo takes the earliest T it copies (§4.6).
   - One only anchoring to it SHOULD, so its body goes too.
+  - A composite holding only such hidden writes stays present and reads empty (§4.3).
 - **Snapshots** carry the delta's value-carrying writes value-less (§8; its entries' records key-erased), before and after T, and never cover it.
   - One written once the delta is held value-less carries the list elements' resets too, as a `FlagW true` of a foreign stamp.
   - Before T a node holding the snapshot but not yet the delta reads those writes as absent, like any partial receipt.
@@ -399,7 +400,7 @@ A write is **dead** at a node once the join has superseded it:
 - its element deleted or tombstoned;
 - its value gone by expiry (§4.7).
 
-**When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it, or at T.
+**When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it, or at T by expiry (which dates no body, spec/commits.md §5).
 - Each is judged against the write alone, so the order of arrival does not matter.
 - A write's `ts` is its own commit's, also when a snapshot carries it, but for a valid snapshot's copy of a write whose own delta is held invalid: the snapshot's.
 

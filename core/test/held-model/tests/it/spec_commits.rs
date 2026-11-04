@@ -136,8 +136,7 @@ fn keep_at_most_zero_drops_after_first_death_spec_commits_5() {
     let cs = vec![reg(10, OWNER, 1, REG, zero, 1), reg(11, OWNER, 2, REG, Retention::PLAIN, 2)];
     assert_eq!(fate(&held(1, cs.clone()), 10), Fate::Keep(KeepWhy::Plain));
     let none = DropWhy::AtMost { carrier: false };
-    assert_eq!(fate(&held(2, cs.clone()), 10), Fate::MayDrop(none));
-    assert_eq!(fate(&held(3, cs), 10), Fate::MustDrop(none));
+    assert_eq!(fate(&held(2, cs), 10), Fate::MustDrop(none));
 }
 
 // spec/commits.md §5 (Keep at most, Carrier): live writes stay in the state
@@ -234,10 +233,9 @@ fn valueless_body_without_reason_is_never_received_spec_commits_5() {
 fn invalid_write_dies_at_its_fall_spec_commits_5() {
     let zero = Retention { most_zero: true, ..Retention::WRITER };
     let cs = vec![edge(5, OWNER, 0, 1, Some(Role::Write), None), reg(10, 1, 1, REG, zero, 1), edge(20, OWNER, 3, 1, None, Some(vec![]))];
-    let o = evaluate(&held(3, cs.clone()));
+    let o = evaluate(&held(3, cs));
     assert_eq!(o.deaths[&(10, 0)], (Some(at(3)), Some(at(3))));
-    assert_eq!(o.fates[&(10, 0)], Fate::MayDrop(DropWhy::AtMost { carrier: false }));
-    assert_eq!(fate(&held(4, cs), 10), Fate::MustDrop(DropWhy::AtMost { carrier: false }));
+    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::AtMost { carrier: false }));
 }
 
 // spec/crdt.md §2.2 (Parking)
@@ -268,4 +266,30 @@ fn invalid_text_body_dropped_at_its_fall_keeps_its_anchors_spec_commits_5() {
     assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::AtMost { carrier: true }));
     let h2 = act(&h, &o, None);
     assert_eq!(read(&h2, TEXT), Read::Text(vec![2]));
+}
+
+// spec/commits.md §5 (Dropping a body): a body held as its leftover only for a copy it carries
+// keeps its keep bounds; it drops at keep at most like a whole one
+#[test]
+fn copy_leftover_drops_at_its_bound_spec_commits_5() {
+    let r = Retention { most_abs: Some(at(3)), ..Retention::WRITER };
+    let cs = vec![
+        reg(10, OWNER, 1, REG, Retention::PLAIN, 7),
+        snap(15, OWNER, 2, REG, r, vec![set(1, 10, 7)]),
+        purge(20, OWNER, 2, PurgeItem::Commit(10)),
+    ];
+    assert_eq!(fate(&held(2, cs.clone()), 15), Fate::Leftover(LeftoverWhy::Copy));
+    assert!(matches!(fate(&held(3, cs), 15), Fate::MustDrop(DropWhy::AtMost { .. })));
+}
+
+// spec/permissions.md §7: a body stripped for a purge that no longer stands counts as never
+// received; its stripped copy no longer joins
+#[test]
+fn stripped_copy_of_a_fallen_purge_is_never_received_spec_permissions_7() {
+    let mut s = snap(15, OWNER, 2, REG, Retention::WRITER, vec![Write { stamp: st(1, 10, 1), op: Op::Set { value: None } }]);
+    s.parts[0].stripped.insert(10);
+    let h = held(3, vec![missing(reg(10, OWNER, 1, REG, Retention::PLAIN, 7), 0), s]);
+    assert_eq!(fate(&h, 15), Fate::NeverReceived);
+    assert_eq!(read(&h, REG), Read::Absent);
+    assert_eq!(act(&h, &evaluate(&h), None).commits[1].parts[0].body, Body::Missing);
 }

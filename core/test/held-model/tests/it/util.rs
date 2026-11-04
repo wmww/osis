@@ -24,7 +24,7 @@ pub fn reset(h: u64, c: CommitId) -> Write {
     Write { stamp: st(h, c, 1), op: Op::Reset }
 }
 pub fn part(aspect: Aspect, retention: Retention, ws: Vec<Write>) -> Part {
-    Part { thing: T, aspect, retention, body: Body::Held(Delta::Writes(ws)) }
+    Part { thing: T, aspect, retention, body: Body::Held(Delta::Writes(ws)), stripped: Default::default() }
 }
 pub fn content(id: CommitId, author: NodeId, h: u64, parts: Vec<Part>) -> Commit {
     Commit { id, author, ts: ts(h), expires: None, kind: CommitKind::Content, parts, purge: vec![], frontier: None }
@@ -41,7 +41,7 @@ pub fn edge(id: CommitId, author: NodeId, h: u64, holder: NodeId, role: Option<R
         ts: ts(h),
         expires: None,
         kind: CommitKind::Role,
-        parts: vec![Part { thing: T, aspect: Aspect::ROLES, retention: Retention::ROLE, body }],
+        parts: vec![Part { thing: T, aspect: Aspect::ROLES, retention: Retention::ROLE, body, stripped: Default::default() }],
         purge: vec![],
         frontier,
     }
