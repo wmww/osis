@@ -10,34 +10,26 @@ use osis_base::Value;
 use std::collections::BTreeMap;
 
 impl Fragment {
-    /// The value-less copy of the writes `expired` owns (§4.7): what a snapshot carries of an
-    /// expiring delta, a residue. It says nothing of whether they expired here: a valued copy
-    /// joined with it reads valued. `expired` is asked about owner dots (never `Derived`).
+    /// Holds the writes `expired` owns value-less (§4.7): what a node past a delta's `T` or holding
+    /// a purge of it does after every join, what a snapshot carries of an expiring delta, a
+    /// residue. A valued copy joined with it reads valued. `expired` is asked about owner dots
+    /// (never `Derived`).
     pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.strip_values(expired, false, &mut Changes::new());
-        // drops `Derived` records left without a write
-        self.prune(None, &mut Changes::new());
+        self.strip_merging(expired);
     }
 
-    /// Holds the writes `expired` owns value-less at this node (§4.7): `strip`, and a list
-    /// element they created gets its creation's own stamp as its reset (§5.7 Live). Commutes
-    /// with join; a node past a delta's `T`, or holding a purge of it, applies it after every
-    /// join.
-    pub fn expire(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.expire_merging(expired);
-    }
-
-    /// `expire`, telling whether moving an entry's records to its key-erased record (§4.7, §5.6)
+    /// `strip`, telling whether moving an entry's records to its key-erased record (§4.7, §5.6)
     /// joined a write beaten by another of the dot's records: a death the join may not have
     /// dated (spec/commits.md §5).
-    pub fn expire_merging(&mut self, expired: &dyn Fn(&Dot) -> bool) -> bool {
+    pub fn strip_merging(&mut self, expired: &dyn Fn(&Dot) -> bool) -> bool {
         let mut ch = Changes::new();
-        self.strip_values(expired, true, &mut ch);
+        self.strip_values(expired, &mut ch);
+        // drops `Derived` records left without a write
         self.prune(None, &mut Changes::new());
         !ch.deaths().is_empty()
     }
 
-    pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, at_node: bool, ch: &mut Changes) {
+    pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
         let exp = |d: &Dot| expired(d.owner());
         let reg = |r: &mut Register| {
             if let Some(w) = &mut r.write
@@ -49,29 +41,29 @@ impl Fragment {
         match self {
             Fragment::Slots(Slots { reg: r, slots }) => {
                 r.iter_mut().for_each(reg);
-                slots.values_mut().for_each(|f| f.strip_values(expired, at_node, ch));
+                slots.values_mut().for_each(|f| f.strip_values(expired, ch));
             }
             Fragment::Register(r) => reg(r),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => {
-                elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, at_node, ch))
+                elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, ch))
             }
-            Fragment::Struct(s) => s.fields.values_mut().for_each(|f| f.strip_values(expired, at_node, ch)),
+            Fragment::Struct(s) => s.fields.values_mut().for_each(|f| f.strip_values(expired, ch)),
             Fragment::Enum(e) => {
                 if let Some(c) = &mut e.case
                     && exp(&c.stamp.dot)
                 {
                     c.case = None;
                 }
-                e.payloads.values_mut().for_each(|f| f.strip_values(expired, at_node, ch));
+                e.payloads.values_mut().for_each(|f| f.strip_values(expired, ch));
             }
             Fragment::Map(m) => {
                 // the key is the creation's value, wherever a record of the entry repeats it
                 m.erase_keys(&exp, ch);
                 for f in m.entries.values_mut().filter_map(|en| en.frag.as_mut()) {
-                    f.strip_values(expired, at_node, ch);
+                    f.strip_values(expired, ch);
                 }
             }
-            Fragment::Seq(s) => seq::strip_values(s, expired, at_node, ch),
+            Fragment::Seq(s) => seq::strip_values(s, expired, ch),
         }
     }
 
@@ -122,7 +114,7 @@ impl Fragment {
                         if let Some(inner) = f.sweep(r, gone) {
                             out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(inner)), ..SeqElem::bare() });
                         }
-                    } else if f.written().is_some() && (el.reset().is_some() || gone(d.owner())) {
+                    } else if f.written().is_some() && (el.elem_reset().is_some() || gone(d.owner())) {
                         out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
                     }
                 }

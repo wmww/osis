@@ -1507,7 +1507,7 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
 /// memory, rewrites those pages shredded and drops the index rows of map entries left without
 /// their key and set elements without their value (an index entry derived from a dropped write,
 /// spec/commits.md §5).
-/// `Ok(None)`: it does not fit the pages (strip and write whole); else `Fragment::expire_merging`'s
+/// `Ok(None)`: it does not fit the pages (strip and write whole); else `Fragment::strip_merging`'s
 /// answer.
 pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &mut Fragment, touches: &[PagedTouch], pred: &dyn Fn(&Dot) -> bool) -> Result<Option<bool>> {
     let mut before: Vec<(Vec<Step>, Dot, Value)> = Vec::new();
@@ -1525,7 +1525,7 @@ pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
     if idx.sets.keys().any(|p| p.iter().any(|s| matches!(s, Step::Entry(id) if id.key.is_some() && pred(id.dot.owner())))) {
         return Ok(None);
     }
-    let merged = f.expire_merging(pred);
+    let merged = f.strip_merging(pred);
     for t in touches {
         if write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
             return Ok(None);
@@ -1847,7 +1847,7 @@ mod tests {
         let done = strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap().is_some();
         assert!(!done, "a paged map under an erased key moves");
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
-        f.expire(&pred);
+        f.strip(&pred);
         let (_, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
         assert!(i.unwrap().sets.keys().all(|p| p.iter().all(|s| !matches!(s, Step::Entry(id) if id.key.is_some()))), "paged below the key-erased records");
         assert_eq!((before, rows(&mut txn)), (6100, 100));
@@ -2270,12 +2270,12 @@ mod tests {
                             write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::Yes).unwrap().is_some()
                         };
                         if k == 0 {
-                            st.expire(&pred);
+                            st.strip(&pred);
                         }
                         if !done {
                             load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
                             if k == 0 {
-                                f.expire(&pred);
+                                f.strip(&pred);
                             }
                             let (u, i) = write_full(&mut txn, &tid, &ak, Some(&f), true, &SALT).unwrap();
                             unit = u;

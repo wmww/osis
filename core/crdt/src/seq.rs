@@ -221,16 +221,25 @@ impl SeqElem {
     fn keeps(&self, d: &Dot) -> bool {
         !d.src.is_derived() || self.is_record()
     }
-    /// The flag write's stamp (a list element's reset, `E_elem` input).
+    /// The flag write's stamp: a list element's reset, or its mark.
     pub(crate) fn reset(&self) -> Option<Stamp> {
         self.deleted.as_ref().map(|d| d.0.clone())
+    }
+    /// A list element's flag is at its creation's own stamp: the creation is held value-less, and
+    /// no reset (§4.7, §5.7): a valued copy beats it, and it prunes nothing.
+    fn marked(&self) -> bool {
+        matches!((&self.created, &self.deleted), (Some((c, _)), Some((f, _))) if c == f)
+    }
+    /// The element's reset, not its mark (`E_elem` input; a record a reset ended, §5.7).
+    pub(crate) fn elem_reset(&self) -> Option<Stamp> {
+        self.reset().filter(|_| !self.marked())
     }
 }
 
 /// Prunes one record's writes under `e` (§4.2, §5.7); `false` if the record goes.
 fn prune_elem(d: &Dot, el: &mut SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) -> bool {
     prune_fields(d, el, e, ch);
-    let ee = if text { e.cloned() } else { max_opt(e.cloned(), el.reset()) };
+    let ee = if text { e.cloned() } else { max_opt(e.cloned(), el.elem_reset()) };
     if let SeqContent::Frag(f) = &mut el.content {
         f.prune(ee.as_ref(), ch);
         if f.is_empty() {
@@ -308,6 +317,16 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
     let mut de = de;
     // a text char without a creation is no one's payload (§5.7)
     content_rule(&mut de, text);
+    // of a creation's copies the valued one wins: the other's mark goes (§4.1, §4.7)
+    if !text {
+        if de.created.is_some() && !de.marked() && se.deleted.as_ref().zip(de.created.as_ref()).is_some_and(|(f, c)| f.0 == c.0) {
+            se.deleted = None;
+            ch.touch();
+        }
+        if se.created.is_some() && !se.marked() && de.deleted.as_ref().zip(se.created.as_ref()).is_some_and(|(f, c)| f.0 == c.0) {
+            de.deleted = None;
+        }
+    }
     // one creation per dot: copies under other stamps are one write, the greater stamp wins
     // whole (anchor and char) and the lesser goes, as a position write too (§5.7 Join); of two
     // copies of one stamp the greater anchor and the greater char (§4.1 copy order)
@@ -362,7 +381,7 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
             ch.undatable();
         }
     }
-    let ee = max_opt(e.cloned(), se.reset());
+    let ee = max_opt(e.cloned(), se.elem_reset());
     if raised
         && !text
         && let SeqContent::Frag(x) = &mut se.content
@@ -988,7 +1007,7 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
     }
     // a list element is live while its creation is held and above the element's reset, and its
     // content reads (§5.7 Live): a write newer than the reset never shows the element again; a
-    // creation expired or purged here has its own stamp as the reset
+    // value-less creation has its own stamp as the flag
     let Some((c, _)) = &e.created else { return false };
     if e.reset().is_some_and(|r| *c <= r) {
         return false;
@@ -1026,14 +1045,13 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
     })
 }
 
-/// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets owner dots.
-/// `at_node`: they expired here, so a list element they created gets its creation's own stamp as
-/// its reset, which ends it whatever else was written into it (§5.7 Live) and prunes nothing a
-/// later write holds (a nested write is newer than the creation).
-pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, at_node: bool, ch: &mut Changes) {
+/// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets owner dots. A
+/// list element they created gets the mark, a flag at its creation's own stamp: it ends the element
+/// whatever else is written in it (§5.7 Live) until a valued copy beats it (§4.1).
+pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
     let text = s.text;
     for (d, el) in s.elems_mut().iter_mut() {
-        if at_node && !text && expired(d.owner())
+        if !text && expired(d.owner())
             && let Some((c, _)) = &el.created
             && el.deleted.as_ref().is_none_or(|x| x.0 < *c)
         {
@@ -1041,7 +1059,7 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, at_node:
         }
         match &mut el.content {
             // a list element loses only the content writes of the expiring delta (§4.7)
-            SeqContent::Frag(f) => f.strip_values(expired, at_node, ch),
+            SeqContent::Frag(f) => f.strip_values(expired, ch),
             // a text element's char, the undelete's copy included (§4.7)
             _ if expired(d.owner()) => {
                 el.content = SeqContent::None;

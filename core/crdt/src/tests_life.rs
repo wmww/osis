@@ -179,18 +179,6 @@ pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
         assert_eq!(strip(o), frag(&ms), "strip equals the model");
     }
     let (a, b) = (&s[0], &s[1]);
-    let expire = |f: &Fragment| {
-        let mut g = f.clone();
-        g.expire(&in_ranges(&expired));
-        g
-    };
-    for (o, mo) in s.iter().zip(&m) {
-        let mut ms = mo.clone();
-        ms.expire(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
-        assert_eq!(expire(o), frag(&ms), "expire equals the model");
-    }
-    assert_eq!(expire(&join(a, b)), join(&expire(a), &expire(b)), "expire commutes with join");
-    assert_eq!(expire(&expire(a)), expire(a), "expire idempotent");
     assert_eq!(strip(&join(a, b)), join(&strip(a), &strip(b)), "strip commutes with join");
     assert_eq!(strip(&strip(a)), strip(a), "idempotent");
     // a stripped map record moves to its dot's key-erased record (§4.7), which the valued
@@ -964,10 +952,10 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     let mut stripped = expired.clone();
     stripped.strip(&mine);
     assert_eq!(stripped.sweep(&r, &none), None, "a value-less copy alone: a valued one may still arrive");
-    expired.expire(&mine);
+    expired.strip(&mine);
     assert!(expired.sweep(&r, &mine).is_some(), "expired here, an edit inside");
     let mut own = put.clone();
-    own.expire(&mine);
+    own.strip(&mine);
     assert_eq!(own.sweep(&r, &mine), None, "expired, nothing else in it");
     // a list element, nested in a live one
     let ty = crate::testutil::TyView(Ty::List(Box::new(Ty::Register)));
@@ -977,7 +965,7 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     let mut over = list.clone();
     over.join(new);
     assert_eq!(over.sweep(&r, &none), None, "a live element, edited");
-    over.expire(&mine);
+    over.strip(&mine);
     assert_eq!(over.read(), Some(Value::List(Vec::new())));
     let sweep = over.sweep(&r, &mine).expect("its edit hidden");
     over.join(sweep);
@@ -1128,6 +1116,87 @@ fn bare_anchors_go_with_the_creation_random_spec_crdt_4_2() {
     assert!(dropped > 0, "never a record under a reset");
 }
 
+/// spec/crdt.md §4.7, §5.7: a list element's mark ends it for a holder of the value-less copy alone,
+/// whatever else is written in it; the valued copy beats the mark in either order and it prunes
+/// nothing, so holding both copies reads as holding the valued one.
+#[test]
+fn value_less_mark_loses_to_the_valued_copy_spec_crdt_5_7() {
+    use crate::ops::{Writer, create};
+    let (x, y) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
+    let ty = crate::testutil::TyView(Ty::List(Box::new(Ty::Register)));
+    let list = |v: i64| Value::List(vec![Value::Int(v)]);
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &list(1)).unwrap();
+    let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ty, &list(2)).unwrap().unwrap();
+    let mine = |d: &crate::Dot| d.src == x;
+    let mut mark = put.clone();
+    mark.strip(&mine);
+    assert_eq!(mark.read(), Some(Value::List(Vec::new())), "the mark alone");
+    let mut hidden = mark.clone();
+    hidden.join(edit.clone());
+    assert_eq!(hidden.read(), Some(Value::List(Vec::new())), "an edit does not show it");
+    assert_eq!(hidden.sweep(&Writer::new(ts(20), y.clone(), 5).delta_stamp(), &|_| false), None, "a valued copy may still arrive");
+    let mut whole = put.clone();
+    whole.join(edit.clone());
+    let want = whole.read();
+    assert_eq!(want, Some(list(2)));
+    let mut a = hidden.clone();
+    a.join(put.clone());
+    let mut b = whole.clone();
+    b.join(mark.clone());
+    assert_eq!(a, b, "either order");
+    assert_eq!(a, whole, "the valued copy wins");
+    let mut c = whole.clone();
+    c.strip(&mine);
+    assert_eq!(c.read(), Some(Value::List(Vec::new())), "held value-less at last");
+    let mut h = hidden.clone();
+    h.strip(&mine);
+    assert_eq!(c, h, "strip commutes with join");
+    // a stale valued copy arriving past T is stripped again by the node (§4.7)
+    let mut late = c.clone();
+    late.join(put.clone());
+    late.strip(&mine);
+    assert_eq!(late, c);
+    // a real reset above the mark holds against the valued copy too
+    let del = crate::diff(&mut Writer::new(ts(12), y.clone(), 3), Some(&whole), &ty, &Value::List(Vec::new())).unwrap().unwrap();
+    let (mut p, mut q) = (mark.clone(), whole.clone());
+    p.join(del.clone());
+    p.join(put.clone());
+    q.join(del);
+    assert_eq!(p.read(), q.read(), "a reset ends it in any order");
+    assert_eq!(p.read(), Some(Value::List(Vec::new())));
+}
+
+/// `join(a, strip(a))` is `a` for lists (§4.1, §4.7), and `strip` commutes with join, on random histories.
+#[test]
+fn valued_copy_beats_its_mark_random_spec_crdt_4_7() {
+    let reg = || Box::new(Ty::Register);
+    let pair = || Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect());
+    for ty in [Ty::List(reg()), Ty::List(Box::new(pair())), Ty::List(Box::new(Ty::List(reg())))] {
+        for seed in 0..80u64 {
+            let mut r = crate::testutil::rng(seed * 2 + 1);
+            let commits = crate::testutil::history_honest(&mut r, std::slice::from_ref(&ty), 3, 5);
+            let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
+            let ranges: Vec<Range> = commits.iter().map(|c| (source(&c.w.source), c.w.lo, c.w.hi())).filter(|_| r.chance(1, 2)).collect();
+            let mut a = Fragment::default();
+            bodies.iter().for_each(|b| {
+                a.join(b.clone());
+            });
+            let mut s = a.clone();
+            s.strip(&in_ranges(&ranges));
+            let mut j = a.clone();
+            j.join(s.clone());
+            assert_eq!(j, a, "the valued copy wins");
+            let mut k = Fragment::default();
+            for b in &bodies {
+                let mut x = b.clone();
+                x.strip(&in_ranges(&ranges));
+                k.join(x);
+            }
+            assert_eq!(k, s, "strip commutes with join");
+        }
+    }
+}
+
 /// `v` with empty collections left out: a sweep's reset is a write, so a collection another writer
 /// reset meanwhile may read empty rather than absent, as under any concurrent removal (§4.3).
 fn shown(v: Value) -> Option<Value> {
@@ -1164,7 +1233,7 @@ pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
         for b in bodies.iter().filter(|_| r.chance(2, 3)) {
             view.join(b.clone());
         }
-        view.expire(&in_ranges(&gone));
+        view.strip(&in_ranges(&gone));
         let Some(sw) = view.sweep(&stamp, &in_ranges(&gone)) else { continue };
         swept += 1;
         let cx = DeltaCtx { ts: ts(1 << 40), own: me.clone(), range: w.range(), kind: DeltaKind::Writer };
@@ -1172,17 +1241,17 @@ pub(crate) fn sweep_laws(seed: u64, ty: &Ty) -> usize {
         assert_eq!(decode_delta(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment, sw, "the wire");
         let mut after = view.clone();
         after.join(sw.clone());
-        after.expire(&in_ranges(&gone));
+        after.strip(&in_ranges(&gone));
         assert_eq!(after.read(), view.read(), "the view's read");
         assert_eq!(after.sweep(&stamp, &in_ranges(&gone)), None, "swept once");
         let mut all = Fragment::default();
         for b in &bodies {
             all.join(b.clone());
         }
-        all.expire(&in_ranges(&expired));
+        all.strip(&in_ranges(&expired));
         let want = all.read();
         all.join(sw);
-        all.expire(&in_ranges(&expired));
+        all.strip(&in_ranges(&expired));
         assert_eq!(all.read().and_then(shown), want.and_then(shown), "the read of a node holding everything");
     }
     swept

@@ -1143,6 +1143,10 @@ fn list_element_end_is_no_misstatement_spec_perm_5_2() {
     lp.peers[2].engine.reexamine().unwrap();
     let evs = lp.peers[2].drain_events();
     assert!(!evs.iter().any(|e| matches!(e, osis_node::Event::Diagnostic(x) if x.kind == osis_node::DiagnosticKind::Misstated)), "{evs:?}");
+    // its valued copy beats the snapshot's mark until its own clock reaches T
+    assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("hello")])));
+    lp.peers[2].clock.advance(2_000);
+    lp.peers[2].engine.tick().unwrap();
     assert_eq!(lp.peers[2].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])));
 }
 
@@ -1374,12 +1378,11 @@ fn removed_text_entry_key_goes_spec_crdt_5_6() {
     assert!(!std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(9).any(|x| x == b"SECRETKEY")));
 }
 
-// issues/list-element-snapshot-before-expiry.md, spec/crdt.md §5.7 Live: a snapshot written before T
-// cannot carry the element's end (a valued copy must beat it), so a node holding only it, past T and
-// with no way to get the expired commit, shows others' writes in the element until a later snapshot.
+// spec/crdt.md §4.7, §5.7 Live: a snapshot written before T carries the element's value-less mark, so a
+// node holding only it, past T and with no way to get the expired commit, does not show others'
+// writes in the element.
 #[test]
-#[ignore = "issues/list-element-snapshot-before-expiry.md"]
-fn list_element_in_snapshot_before_expiry_goes_repro_spec_crdt_5_7() {
+fn list_element_in_snapshot_before_expiry_goes_spec_crdt_5_7() {
     let k = ak("t:listtext.0");
     let mut lp = net(3, 0x7a15);
     let t = new_thing(&mut lp, 0);

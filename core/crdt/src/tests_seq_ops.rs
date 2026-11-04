@@ -2494,11 +2494,11 @@ fn expired_list_element_hides_nested_write_spec_5_7() {
     let mut s1 = base.clone();
     s1.join(newer.clone());
     assert_eq!(s1.read(), Some(Value::List(vec![item(1, 9)])));
-    s1.expire(&expired);
+    s1.strip(&expired);
     assert_eq!(s1.read(), Some(Value::List(vec![])), "the element goes with its creation's expiry");
     assert!(s1.present());
     let mut s2 = base.clone();
-    s2.expire(&expired);
+    s2.strip(&expired);
     s2.join(newer);
     assert_eq!(s2, s1, "expiry commutes with the nested write");
     assert_eq!(rebooted(&s1).read(), Some(Value::List(vec![])), "a snapshot carries it hidden");

@@ -130,7 +130,7 @@ pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mu
         if gone.len() == before {
             break;
         }
-        pre.state.expire(&|d| gone.contains(d));
+        pre.state.strip(&|d| gone.contains(d));
         w = start.clone();
         out = run(&mut w, &pre)?;
     }

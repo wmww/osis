@@ -559,7 +559,7 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
     if let Some(v) = core.ix.valueless.get(&(*tid, ak.clone()))
         && !v.is_empty()
     {
-        st.expire(&|d| v.iter().any(|o| o.owns(d)));
+        st.strip(&|d| v.iter().any(|o| o.owns(d)));
     }
 }
 

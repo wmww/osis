@@ -298,9 +298,8 @@ impl Fragment {
 /// value-less (expired or purged there), or `mine` without its value where it may be: a text
 /// element's char, the creation's (deleted: §3.3 rule 5) or an undelete's copy (§5.7), or
 /// anything when `lax`.
-/// Whether the write is an element's reset at its creation's own stamp: what a node holding the
-/// creation's delta value-less carries of it (spec/crdt.md §4.7), a value-less copy as `agrees`
-/// takes one.
+/// Whether the write is an element's mark, a flag at its creation's own stamp (spec/crdt.md §4.7):
+/// a value-less copy as `agrees` takes one.
 fn element_end(k: &Key) -> bool {
     matches!(k.1, Kind::Flag(true)) && matches!(k.0.last(), Some(Step::Elem(d)) if *d == k.2.dot)
 }
