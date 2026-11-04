@@ -10,9 +10,10 @@ Gain: deletes a lot of waiting code and most "which part arrived first" bugs.
 Recommendation: yes, unless you rely on cross-thing all-or-nothing for something.
 
 ## 3. Cost of removing someone from a group with long history
-Requirement: removing a member never costs more as history grows. Removal works correctly; meeting the cost goal needs a second, more complex format.
-Proposal: the removing admin compacts first, and the removal carries 32 bytes per message the removed device wrote that nobody has compacted yet. For data nobody ever compacts, that grows (3 MB at 100,000 messages), and removal fails past about 240,000 until someone compacts.
-Recommendation: accept, with the number written down.
+Requirement: removing a member never costs more as history grows. Today a removal lists every write of the removed device that stays valid, 32 bytes each. Old writes a snapshot has replaced need no listing, so compacting first (writing a snapshot of the current state) empties the list for ordinary data.
+That does not help data kept forever, which is what chat messages are: those can never be replaced by a snapshot, so they are always listed. Kicking someone who sent 100,000 messages carries 3 MB, and past about 240,000 messages the kick fails, for good until something changes.
+Options: accept and write down the number (a person rarely sends 240,000 messages, a bot might), or build the unbuilt second format (notes/frontier-study.md), which lists one short entry per device instead for data kept forever and meets the requirement.
+Recommendation: open; Tiller and Lodestar are checking the cost of the second format.
 
 ## 4. A hostile writer's own map key surviving a purge
 A hostile writer can make one of their own map keys (for example a field named "secret") still show up, empty, after their data is purged. Honest writers never cause this. Removing that writer, or deleting the entry or the map, still clears it.
