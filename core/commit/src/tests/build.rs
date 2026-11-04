@@ -392,3 +392,24 @@ fn chunk_list() {
         assert_eq!(keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![1, 2, 3]);
     }
 }
+
+// spec/commits.md §1 (the whole commit fits `MAX_BLOB`, or the writer refuses it): the
+// writer's bound counts a section per thing and a commitment group per key set, not per
+// aspect: 2500 things of three writes each build, and seal well within it.
+#[test]
+fn many_writes_per_thing_fit_one_blob() {
+    let mut b = content(7500);
+    for (i, a) in b.aspects.iter_mut().enumerate() {
+        a.tid = Tid::from_bytes([(i / 3 % 251) as u8, (i / 3 / 251) as u8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]);
+        a.ak = Ak::new(format!("app:f{}.0", i % 3)).unwrap();
+    }
+    let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
+    assert!(blob_bound(&c) <= MAX_BLOB);
+    let things: Vec<Tid> = c.header.aspects.iter().map(|a| a.tid).collect();
+    let mut rng = SeededRng::from_u64(6);
+    let env = seal_commit(&c, |ai| things[ai], |_, _| Some((Secret32::from_bytes([1; 32]), vec![t(9); osis_base::format::MAX_OWNER_DEPTH])), &[], &mut rng).unwrap();
+    assert_eq!(env.sections.len(), 2500);
+    let groups = prefix_groups(&c.header, env.ais()).unwrap();
+    let prefix = osis_base::format::PREFIX_FIXED_LEN + groups.iter().map(|g| 1 + g.len() * osis_base::format::COMMITMENT_LEN).sum::<usize>();
+    assert!(osis_crypto::blob_len(prefix, env.encode().len()) <= blob_bound(&c), "the bound bounds");
+}
