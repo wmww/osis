@@ -183,9 +183,10 @@ pub struct SyncEngine {
     /// Suspect entries of heartbeats already judged for repair (`repair_suspects`): (heartbeat
     /// commit, thing, aspect). In memory: after a restart each is judged once more.
     pub(crate) repaired: BTreeSet<(osis_base::CommitId, Tid, osis_base::Ak)>,
-    /// Per aspect a repair snapshotted, this node's state digest just after: the same state does
-    /// not snapshot again however often a report differs. In memory: a restart may write one more.
-    pub(crate) repair_state: BTreeMap<(Tid, osis_base::Ak), [u8; 16]>,
+    /// Per (node reporting, thing, aspect) a repair snapshotted, this node's state digest just after:
+    /// the same state does not snapshot again for that node however often its report differs. In
+    /// memory: a restart may write one more.
+    pub(crate) repair_state: BTreeMap<(Tid, Tid, osis_base::Ak), [u8; 16]>,
     /// Links whose finalization failed in this run (`finalize_links`): not tried again.
     pub(crate) links_failed: BTreeSet<Tid>,
     /// Tied edges to remove (`untie_unplaced`): what changed since they were last derived

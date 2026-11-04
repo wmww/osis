@@ -9,7 +9,8 @@ impl SyncEngine {
     /// state digest here differs from the reported one: a snapshot of it from this node's whole
     /// state, an ordinary compaction snapshot (it joins with the others', never resurrects
     /// expired or purged values). Once per reported entry (heartbeat commit, aspect): each node
-    /// beats at most once per `HEARTBEAT_MIN_INTERVAL` per label. Every entry acted on is a
+    /// beats at most once per `HEARTBEAT_MIN_INTERVAL` per label; and once per state per node
+    /// reporting (`repair_state`). Every entry acted on is a
     /// diagnostic, so silent repairs hide nothing.
     pub(super) fn repair_suspects(&mut self, w: &mut Work) -> Result<()> {
         let seen_ak = Ak::new("seen.0").map_err(|_| crate::Error::Misuse("ak"))?;
@@ -31,20 +32,22 @@ impl SyncEngine {
                     continue;
                 }
                 let mine = self.engine.state_digest(&s.thing, &ak)?;
-                // holding no state, this writer has nothing to snapshot
-                if mine.is_none() || mine == Some(s.digest) || self.engine.state(&s.thing, &ak)?.is_none() {
+                if mine.is_none() || mine == Some(s.digest) {
                     self.repair_diag(node, s.thing, None, format!("suspect {} {} reported by {node}: same state here", s.thing, s.ak));
                     continue;
                 }
                 // a report no snapshot can settle: another from this same state repairs nothing more
-                if self.repair_state.get(&(s.thing, ak.clone())) == mine.as_ref() {
+                // for this node; another node may have dropped that snapshot before its own flip
+                if self.repair_state.get(&(node, s.thing, ak.clone())) == mine.as_ref() {
                     self.repair_diag(node, s.thing, None, format!("suspect {} {} reported by {node}: already snapshotted from this state", s.thing, s.ak));
                     continue;
                 }
                 match self.engine.snapshot(&s.thing, &ak) {
+                    // holding no state, this writer has nothing to snapshot
+                    Ok(None) => self.repair_diag(node, s.thing, None, format!("suspect {} {} reported by {node}: no state here", s.thing, s.ak)),
                     Ok(snap) => {
                         if let Some(d) = self.engine.state_digest(&s.thing, &ak)? {
-                            self.repair_state.insert((s.thing, ak.clone()), d);
+                            self.repair_state.insert((node, s.thing, ak.clone()), d);
                         }
                         self.repair_diag(node, s.thing, snap, format!("suspect {} {} reported by {node}: re-snapshotted", s.thing, s.ak));
                     }
