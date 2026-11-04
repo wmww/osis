@@ -4,7 +4,7 @@
 use crate::common;
 use common::*;
 use osis_commit::{Kind, PurgeItem};
-use osis_base::{Role, Value, WallMs};
+use osis_base::{Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp};
 use osis_node::local_peer::LocalPeer;
 use osis_node::{Cause, Event, Mutation};
@@ -1743,10 +1743,9 @@ fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:text.0")).unwrap(), Some(s("b")));
 }
 
-// spec/commits.md §5 (deaths dated from the bodies only where the state cannot date them): an
-// expiring put into a map kept at least a while after replaced, overwritten by a put, expires; the expiry moves the
-// entry's records to its key-erased record with nothing beaten across them, so the aspect's
-// deaths are not recomputed (each such expiry recomputing cost O(bodies) per tick).
+// spec/commits.md §5, §6: an expiring put into a map kept at least a while after replaced,
+// overwritten by a put, expires; the expiry rebuilds the aspect from its bodies (the one path),
+// dating its deaths once per expiry, no more.
 #[test]
 fn expiry_merging_records_recomputes_once_spec_commits_5() {
     let mut lp = net(1, 57);
@@ -3027,4 +3026,107 @@ fn split_write_reads_alike_in_every_order_spec_commits_6() {
     };
     check_undo(&mut lp);
     assert_eq!((lp.peers[0].engine.get(&t, &ak("t:kept.0")).unwrap(), lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap()), (Some(s("k1")), Some(s("n"))));
+}
+
+/// Peers 4 and 5 over a register: writer 3 wrote `older` then `c` (expiring at `expires`, when
+/// given), admin 2 purged `c`, admin 1 demoted 2 unseen by 0, whose demotion of 1 leaves it out
+/// (the purge falls where 1's demotion is held). Packages of each, the base delivered to 4 and 5.
+fn fall_rig(seed: u64, expires: Option<u64>) -> (LocalPeer, Tid, [osis_node::local_peer::Package; 5]) {
+    let mut lp = net(6, seed);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:reg.0");
+    let (m1, x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, m1, Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let older = set(&mut lp, 3, t, &REG, "older");
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("kept")).unwrap();
+    if let Some(ms) = expires {
+        m.expires(t, &REG, osis_base::WallMs(lp.peers[3].engine.now().0 + ms)).unwrap();
+    }
+    let c = lp.peers[3].commit(m).unwrap().unwrap();
+    sync(&mut lp, 3, 2);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+    let p = lp.peers[2].commit(m).unwrap().unwrap();
+    lp.advance(5);
+    let dx = set_edge(&mut lp.peers[1].engine, t, x, None, None);
+    lp.advance(5);
+    let dm = set_edge(&mut lp.peers[0].engine, t, m1, None, None);
+    let by = |lp: &mut LocalPeer, id, n: usize| lp.peers[n].engine.package(id).unwrap().unwrap();
+    let pks = [by(&mut lp, &older, 3), by(&mut lp, &c, 3), by(&mut lp, &p, 2), by(&mut lp, &dx, 1), by(&mut lp, &dm, 0)];
+    let base = lp.packages(0).unwrap();
+    for pk in base.iter().filter(|pk| ![dm, older, c, p, dx].contains(&pk.id)) {
+        lp.deliver(4, pk).unwrap();
+        lp.deliver(5, pk).unwrap();
+    }
+    (lp, t, pks)
+}
+
+/// Peers 4 and 5 hold the same bodies: the same state, bodies-alone state and read, `want`.
+fn alike_4_5(lp: &mut LocalPeer, t: Tid, want: Option<Value>, what: &str) {
+    let k = ak("t:reg.0");
+    let of = |p: &mut osis_node::local_peer::Peer| (p.engine.state(&t, &k).unwrap(), p.engine.bodies_alone_state(&t, &k).unwrap(), p.engine.get(&t, &k).unwrap());
+    let (a, b) = (of(&mut lp.peers[4]), of(&mut lp.peers[5]));
+    assert_eq!(a.2, want, "{what}: peer 4 reads");
+    assert_eq!(b.2, want, "{what}: peer 5 reads");
+    assert_eq!(a.0, b.0, "{what}: states differ");
+    assert_eq!(a.1, b.1, "{what}: bodies-alone states differ");
+    assert_eq!(a.0, a.1, "{what}: peer 4's state is not the join of its bodies");
+}
+
+// spec/permissions.md §7 (held value-less again before a copy comes, it holds the leftover it set
+// aside), spec/crdt.md §4.7: peer 4 holds `c` whole, sees its purge stand (held as its leftover),
+// fall (set aside, the part missing, no copy comes) and rise; peer 5 never sees the fall. Both hold
+// the leftover: the same state bytes, and the value-less winner hides "older" at both.
+#[test]
+fn stripped_part_fallen_and_risen_holds_its_leftover_spec_perm_7() {
+    let (mut lp, t, [po, pc, pp, pdx, pdm]) = fall_rig(0x7e1, None);
+    for pk in [&po, &pc, &pp] {
+        lp.deliver(4, pk).unwrap();
+    }
+    assert_eq!(lp.peers[4].engine.get(&t, &ak("t:reg.0")).unwrap(), None, "purged");
+    lp.deliver(4, &pdx).unwrap();
+    assert_eq!(lp.peers[4].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("older")), "fallen: never received until a copy comes");
+    lp.deliver(4, &pdm).unwrap();
+    for pk in [&po, &pc, &pp, &pdm, &pdx] {
+        lp.deliver(5, pk).unwrap();
+    }
+    alike_4_5(&mut lp, t, None, "risen");
+    lp.peers[4].restart(0x7e2).unwrap();
+    lp.peers[4].engine.rebuild_index().unwrap();
+    alike_4_5(&mut lp, t, None, "risen, restarted");
+}
+
+// spec/permissions.md §7, spec/commits.md §6: as above, but the purge stays fallen and `c` expires
+// at both: peer 4 adopts the leftover it set aside (the body missing, no copy came), peer 5 makes
+// its from the body. The same state bytes; "older" hidden at both.
+#[test]
+fn stripped_part_fallen_then_expired_holds_its_leftover_spec_commits_6() {
+    let (mut lp, t, [po, pc, pp, pdx, pdm]) = fall_rig(0x7e3, Some(600_000));
+    for pk in [&po, &pc, &pp, &pdx] {
+        lp.deliver(4, pk).unwrap();
+    }
+    assert_eq!(lp.peers[4].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("older")), "fallen: never received until a copy comes");
+    // 5 holds x's demotion first: the purge never stands there, `c` stays whole
+    for pk in [&po, &pc, &pdx, &pp] {
+        lp.deliver(5, pk).unwrap();
+    }
+    assert_eq!(lp.peers[5].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("kept")));
+    assert!(lp.peers[5].engine.purged_on(&t, &ak("t:reg.0")).unwrap().is_empty());
+    drop(pdm);
+    lp.advance(600_001);
+    for i in [4, 5] {
+        lp.peers[i].engine.tick().unwrap();
+    }
+    alike_4_5(&mut lp, t, None, "expired");
+    lp.peers[4].restart(0x7e4).unwrap();
+    alike_4_5(&mut lp, t, None, "expired, restarted");
 }

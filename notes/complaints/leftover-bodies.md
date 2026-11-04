@@ -7,3 +7,4 @@
 - `cargo test --workspace` (no `--no-fail-fast`) stops at the first failing binary: the first "37 binaries" baseline run hid 40 node failures behind 6 osis ones. Use `--no-fail-fast` for the first run after a wide change.
 - Engine tests that count cost spans by name (`rejudge: unmerge`, `unmerge: pass`) break on a rename even when the behaviour they guard is intact; they are listed in the issue as rewritten.
 - A mid-task reply was stopped by the safety classifier on ordinary CRDT/store text; nothing lost.
+- Review: the previous reviewer's wip tests did not compile (missing `Tid` import, a private `Meta::aspect`); a reviewer cut off mid-task leaves no note of what it had run. Two real bugs then showed at once (an unshredded leftover overwrite, an expiry deleting the set-aside row it was meant to adopt): the "waiting" vs "set aside" leftover share one row and differ only by the commit being applied.

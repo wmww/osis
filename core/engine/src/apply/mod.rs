@@ -1634,7 +1634,9 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         // (a part a piece at a time)
         for blob in snaps {
             let id = blob.id();
-            let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
+            // a part held as its leftover has no slot in the blob (`retention::leftover`)
+            let stripped = tx.core.ix.commits.get(&id).map(|m| m.stripped.clone()).unwrap_or_default();
+            let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).chain(stripped).collect();
             for ai in ais {
                 let Some(a) = blob.header.aspects.get(ai) else { continue };
                 let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();

@@ -1174,3 +1174,57 @@ fn part_gone_with_a_page_away_comes_back_when_its_request_fell_spec_commits_5() 
     assert!(e.suspects().unwrap().is_empty(), "{:?}", e.suspects().unwrap());
     assert!(e.get(&t, &a).unwrap().is_some_and(|v| format!("{v:?}").contains(marker)), "the live part is back");
 }
+
+// spec/commits.md §5 (holding a body as its leftover destroys every copy of its values), spec/crdt.md
+// §4.7: a snapshot stripped for one purged delta still carries the other values it copied; a second
+// request purging one of those replaces the leftover, and the old leftover row's bytes must go with
+// it (was: the row was overwritten unshredded, so the old page kept the value).
+#[test]
+fn snapshot_leftover_stripped_again_unrecoverable_spec_commits_5() {
+    let mut lp = net2(81);
+    let t = new_thing(&mut lp, 0);
+    lp.sync(0, 1).unwrap();
+    let k = ak("t:big.0");
+    let (mx, my) = ("SNAPX-MARK-1a2b", "SNAPY-MARK-3c4d");
+    let put = |lp: &mut LocalPeer, key: &str, val: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s(val)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let cx = put(&mut lp, "kx", &big(mx));
+    lp.advance(5);
+    let cy = put(&mut lp, "ky", &big(my));
+    lp.advance(5);
+    let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    lp.sync(0, 1).unwrap();
+    filler(&mut lp, 0, 6);
+    filler(&mut lp, 1, 6);
+    lp.advance(5);
+    let purge = |lp: &mut LocalPeer, c, key: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s("w")) }).unwrap();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        lp.peers[0].commit(m).unwrap().unwrap();
+    };
+    purge(&mut lp, cx, "ox");
+    lp.sync(0, 1).unwrap();
+    for i in [0, 1] {
+        let e = &mut lp.peers[i].engine;
+        let sai = e.header(&snap).unwrap().aspects.iter().position(|a| a.tid == t && a.ak == k).unwrap();
+        let m = e.core.ix.commits.get(&snap).unwrap();
+        assert!(m.stripped.contains(&sai), "peer {i}: the snapshot carrying the purged value is held as its leftover");
+        assert!(!recoverable(&mut lp.peers[i], mx.as_bytes()), "peer {i}: the first purged value recovered");
+    }
+    filler(&mut lp, 0, 6);
+    filler(&mut lp, 1, 6);
+    lp.advance(5);
+    purge(&mut lp, cy, "oy");
+    lp.sync(0, 1).unwrap();
+    filler(&mut lp, 0, 6);
+    filler(&mut lp, 1, 6);
+    for i in [0, 1] {
+        assert_eq!(lp.peers[i].engine.get_at(&t, &k, &[osis_crdt::PathSeg::Key(s("ky"))]).unwrap(), None, "peer {i}");
+        let [x, y] = recovered(&mut lp.peers[i], [mx.as_bytes(), my.as_bytes()]);
+        assert!(!x && !y, "peer {i}: purged values recovered from the replaced leftover: x {x}, y {y}");
+    }
+}

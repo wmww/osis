@@ -3125,6 +3125,16 @@ fn arrival_order_purge_rows_large_spec_perm_7() {
     run("arrival_order_purge_rows_large_spec_perm_7", osis_base::testenv::large(7000..7060), 40, LARGE, purge_rows_history);
 }
 
+// spec/commits.md §5 (a snapshot carrying a purged value is held as its leftover), spec/crdt.md
+// §4.7: an open rebuilding the index lists the stripped snapshot as the incremental path does
+// (was: its slot gone from the blob, the rebuild left it out of the snapshots index).
+#[test]
+fn stripped_snapshot_indexed_on_rebuild_seed_9210005() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Demote { by: 0, t: 0, holder: 1, at: 1, to_read: true })), Sync { from: 0, to: 1 }, Aim(Box::new(Compact { by: 1, t: 0, op: 0 })), Aim(Box::new(Purge { by: 2, t: 0, of: 1, back: 0, v: 3 }))];
+    check(9210005, &h, Cfg { sync: true, ..LARGE }).unwrap();
+}
+
 // spec/permissions.md §7, spec/wire.md §4: arrival order decides nothing with purges by author,
 // whichever deltas and demotions come after them.
 #[test]
