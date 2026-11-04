@@ -3,10 +3,24 @@
 
 Background for all of these: notes/core-triage.md §2. The two below: notes/keys-requirements-study.md.
 
-## 1. Should timed shares and self-removals count as key departures?
-Today, when a timed share ("until") passes or someone leaves on their own, the next writer of the group must rotate its keys before writing, judged by its own clock. It is the one place keys depend on wall time; it needs a drift guard on re-seals and two exceptions, and the requirement already says such a removal "cuts off nothing by itself".
-- **A (recommended):** they are not key departures. Reading of new content ends when a device of a sharer or admin writes an explicit removal after the expiry (links already do this; plain timed edges get the same finalizer). Loss: a timed guest keeps reading new content until that device is online after the expiry.
-- **B:** keep as is.
+## 1. Timed shares: who ends them, and when do keys change?
+Words used: a **timed share** gives someone access "until" a time. A **writer** is anyone in the group who may write. **Rotating** means making new group keys that only the remaining members get. **Clock drift** is how far a device's clock may be off; we allow a fixed amount.
+
+Example: Alice shares a group with Bob "until Friday". Carol is a writer in the group.
+
+Today, after Friday, each writer's device checks its own clock before writing and rotates the keys if Friday has passed. This is the only place keys depend on clocks, and it costs special cases.
+
+You already agreed: Friday passing should not by itself change keys; an explicit removal should.
+
+Your two points, checked:
+- **Leaving on your own is not clock-based.** When Bob leaves by himself, he writes a normal "I left" change. Any writer who sees it rotates before their next write. No clock involved. It stays as it is.
+- **Your rule for timed shares works.** When Carol is about to write and her clock says Friday has passed, she first writes "remove Bob" (in the same change). That removal rotates the keys like any removal. Carol needs no admin rights for this, but only for a share that has already ended, and only for shares no higher than her own role (ending a timed admin share still needs an admin). Other devices check it the normal way: the removal's own timestamp must be after Friday. A removal of a share that has not ended does nothing. Someone faking an early time can end Bob's access at most the allowed clock drift early, which a fast clock can do today anyway.
+
+What stays exposed: if Carol's clock is slow, she may write a little after Friday under keys Bob still has (same as today). A device that ignores the rule can do that, but it could also just leak the content. A group where nobody writes after Friday has no new content for Bob to read. Bob's own changes after Friday already do not count.
+
+- **A (recommended):** this rule. Keys stop reading clocks; Bob's leaving on his own stays as today; shared links keep their current ending. It is sound as checked above; its one new piece is the permission for a writer to remove an already-ended share.
+- **B (fallback, which you said is fine):** only an admin or the sharer writes the removal and new keys, as links do today. No new permission, but Bob keeps reading new content until an admin's device is online after Friday, while Carol keeps writing under the old keys.
+- **C:** keep as is.
 
 ## 2. How far should a group's keys look inside its member actors?
 Today, when a device leaves a person, every group the person reads must learn of that exact departure (names in history boxes and on grant boxes, bound seals, placed revokes) before any writer uses the group's keys. It is the largest machinery in the system, its review has not happened, and it is what leaks member rosters to every reader (the open privacy issue).
