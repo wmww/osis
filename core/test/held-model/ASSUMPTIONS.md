@@ -5,10 +5,11 @@
 - One node's view, no network: no sync scope (every thing counts as synced), labels, hosts, must-hold, lasting headers, header-only blobs, delete keys, uploads or carrier writing. A carrier is reported as needed (`DropWhy::AtMost { carrier }`), never written.
 - A body is one part (one delta), not a blob of a commit's deltas per reader section and retention class.
 - `Body::Dropped` does not record why (keep bounds or covered), so a covering snapshot turning invalid does not bring the body back as never received. No suspect flags.
-- Leftovers are terminal (AMBIGUITIES.md 9). Role-class bodies are always kept (no roster snapshots to replace them).
+- A leftover holding no value of its own is terminal (AMBIGUITIES.md 9): a purge's fall makes its body never received, a lost read access is not modeled. Role-class bodies are always kept (no roster snapshots to replace them).
 - Commit IDs are unique in the input; duplicates and copies of a delta (spec/commits.md §4 Copies) are not modeled.
 
 **Clock and stamps**
+- Deaths are dated at the earliest held superseder (no arrival order): an engine dating at the first superseder it held may date later, never earlier (AMBIGUITIES.md 5).
 - `ts = wall_ms * 2^16 + logical`; `now` is the node's corrected wall clock. Commit-form dots only: no sessions, frontier tables or `Absorbed`.
 - Parking is the only clock wait. Unknown encodings, links, pages and chunks do not exist.
 

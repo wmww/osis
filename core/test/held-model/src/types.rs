@@ -258,6 +258,9 @@ pub struct Part {
     pub aspect: Aspect,
     pub retention: Retention,
     pub body: Body,
+    /// Owners whose values this node stripped from the held body (it holds its leftover); one
+    /// no longer held value-less makes the body count as never received (spec/permissions.md §7).
+    pub stripped: std::collections::BTreeSet<CommitId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

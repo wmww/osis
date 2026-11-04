@@ -15,6 +15,16 @@ A realm is an actor marked `realm.0` (plus `name.0`), as `tag.0` marks a group; 
 8. Host admission for realms: left to the host admission work (recommended).
 Say "realms as recommended" to build, or change any.
 
+## 6. Re-granting someone brings back writes a removal left out on purpose
+Today when a removed person gets their role back, every write they made since they first had the role becomes valid again, including writes the removing admin left out on purpose (spec/permissions.md §5.2; notes/permissions.md "Re-grant validates the gap"). Leaving writes out on purpose is how an admin undoes a writer's lockout (bad key rotations) or takes back their purges. So re-adding that writer later quietly undoes the recovery.
+- A: keep it (simple, one rule; the app warns an admin re-adding someone whose removal left writes out on purpose). Recommended.
+- B: a re-grant only restores writes from the start of the current grant plus the gap, never ones a removal left out on purpose (needs the timeline to remember deliberate omissions).
+
+## 7. A removal can make writes valid that were never allowed
+A removal's frontier lists the removed person's writes it had seen, and each listed write is valid, whether or not the person had the role when writing (spec/permissions.md §5.2). Writes made after an `until` expiry rely on this, as intended. Side effect: a write made before the person was ever granted (an outsider's write the admin happened to receive) becomes valid when that person is later granted and removed. Rare, needs a hostile writer.
+- A: keep it, and have clients leave out of a frontier the writes made before the person first held the role. Recommended (receivers unchanged).
+- B: receivers also require the role "as restored" at the write (more rules in validity).
+
 ## Decided (Tess), to build
 - Q1: option A, any writer finalizes an ended timed share (role no higher than its own) with an explicit removal that rotates; self-removal stays a departure; admin-only finalize is an accepted fallback if any-writer hits trouble. notes/keys-requirements-study.md §2.5.
 - Q2: option A, a group never looks inside its member actors (seals to a member's current keyset, rotates when it is superseded). notes/keys-requirements-study.md. Needs a short model check before building.
