@@ -1,7 +1,7 @@
 //! Labels as role writes (spec/sync.md §2, §5): a group's genesis step and `label.0`
 //! record, registration steps an admin issues after rotations (at each host when it next
 //! syncs there, after uploading the role commits it registers: node-sync orders that),
-//! the claim set's readers.
+//! the claim set's readers, the deposit seed's refresh.
 
 use super::{Done, ak, own_label};
 use crate::rotation;
@@ -176,6 +176,22 @@ pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
 }
 
 impl Engine {
+    /// Refreshes `actor`'s deposit seed (spec/crypto.md §3, a MAY: a departed holder can then no
+    /// longer deposit under its labels, nor can a holder that has not read the new `keys.0`).
+    pub fn refresh_deposit_seed(&mut self, actor: &Tid) -> Result<Done> {
+        let a = *actor;
+        let mut done = Done::default();
+        let c = self.run(|tx| {
+            let mut seed = [0u8; 32];
+            tx.rng.fill_bytes(&mut seed);
+            let mut m = Mutation::new();
+            m.op(a, &ct::KEYS, PathOp { path: vec![PathSeg::Field(5)], op: Op::Set(Some(seed).to_value()) })?;
+            Engine::commit_tx(tx, m)
+        })?;
+        done.add(c);
+        Ok(done)
+    }
+
     /// Gives `group` a label (its home label, for an actor) on `hosts`: genesis step at its
     /// newest epochs, recorded in `label.0` (spec/sync.md §2). node-sync registers it. The
     /// thing's first live label is a route for the holders of roles on it: the write goes to

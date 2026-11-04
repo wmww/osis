@@ -27,7 +27,7 @@ Each target asserts no panic plus the parser's round-trip or consistency propert
 | `chunker` | chunker bounds, incremental = one-shot | osis-base | live |
 | `blob_prefix` | blob prefix, unpad | osis-label, osis-crypto | live |
 | `commit_header` | commit header, commit blob plaintext | osis-commit | live |
-| `delta` | delta and snapshot decoders (writer, snapshot, import forms), read and join of what decodes | osis-crdt | live |
+| `delta` | delta and snapshot decoders (writer and snapshot forms), read and join of what decodes | osis-crdt | live |
 | `seq_follow` | text writer deltas joined into a fixed text with range records; the cached placement's read equals a whole pass's (snapshot round trip) | osis-crdt | live |
 | `seq_ops` | `arbitrary` op scripts on three replicas of a text or list (local ops, several per commit, skewed clocks; model commits; undos; joins in any order with duplicates; snapshot round trips and bootstraps) replayed by `osis_crdt::fuzzing::replay`: against crdt-model (state, read, delta bytes), a plain sequence, one-by-one commits, the wire, placements held in part, the crate's debug comparisons; no committed corpus | osis-crdt (`--cfg fuzzing`) | live |
 | `join` | `arbitrary` states, join laws | osis-crdt | planned |

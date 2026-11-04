@@ -34,7 +34,7 @@ pub const CHUNK_THRESHOLD: usize = 128 * KIB;
 pub const MAX_LIST_BYTES: usize = 64 * MIB;
 /// A fragment's links are grouped into link pages above this (spec/wire.md §2, §6). fixed.
 pub const PAGE_TARGET: usize = 64 * KIB;
-/// Sequence elements in runs without `Content` per writer or import delta, pages included: bounds
+/// Sequence elements in runs without `Content` per writer's delta, pages included: bounds
 /// the records a small delta can create (spec/crdt.md §3.3 rule 7, spec/wire.md §2). fixed.
 pub const MAX_DELTA_BARE: u64 = 1 << 18;
 /// Most items in a durable delta's root fragment or one of its pages: one per CBOR head, one
@@ -107,8 +107,6 @@ pub const HEARTBEAT_MIN_INTERVAL_MS: u64 = 6 * HOUR_MS;
 /// Most suspect aspects one heartbeat reports (spec/wire.md §2, spec/permissions.md §4); the
 /// rest wait for those to clear. fixed.
 pub const MAX_HEARTBEAT_SUSPECTS: usize = 32;
-/// Most import resolution hops (spec/wire.md §2, spec/permissions.md §7). fixed.
-pub const RESOLUTION_HOPS: usize = 8;
 /// Most owner links from a thing up to its key actor (spec/wire.md §2, spec/permissions.md
 /// §1). fixed.
 pub const MAX_OWNER_DEPTH: usize = 64;

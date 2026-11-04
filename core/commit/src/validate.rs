@@ -13,7 +13,7 @@ const ROSTER_AKS: [&str; 2] = ["roles.0", "tenures.0"];
 impl Header {
     /// Checks every layout rule and every rule of spec/commits.md §2 a header shows: sort orders,
     /// indices, ranges, kinds and aspect classes, fixed retention, expiry, purge, frontier,
-    /// origins, delete levels. Linked lists must be resolved first.
+    /// delete levels. Linked lists must be resolved first.
     pub fn validate(&self) -> Result<(), Error> {
         if !self.is_resolved() {
             return Err(Error::Missing);
@@ -27,12 +27,11 @@ impl Header {
         ord(strictly_ascending(&self.chunks, |c| c.blob), "chunks not sorted and distinct")?;
         ord(strictly_ascending(&self.purge, |p| osis_base::encode(&purge_value(p))), "purge not sorted and distinct")?;
         ord(strictly_ascending(&self.keys, |t| osis_base::encode(&key_value(t))), "delete keys not sorted and distinct")?;
-        ord(strictly_ascending(&self.origins, |o| o.commit), "origins not sorted and distinct")?;
 
         let kind = self.kind;
         use crate::header::Form;
         // session form belongs to content commits: role writes are commit form, so no later commit
-        // can void them, and a snapshot or import has no own writes (spec/commits.md §3)
+        // can void them, and a snapshot has no own writes (spec/commits.md §3)
         if matches!(self.form, Form::Session(_)) && kind != Kind::Content {
             return Err(Error::Invalid("session form outside a content commit"));
         }
@@ -72,14 +71,13 @@ impl Header {
             if ak != CREATED && is_role_class(ak) != kind.is_role() {
                 return Err(Error::Invalid("aspect of the wrong class for the commit kind"));
             }
-            // `created.0` is kept forever, so a snapshot or import never carries it: each part is
+            // `created.0` is kept forever, so a snapshot never carries it: each part is
             // its own commit's one minting; an ephemeral commit carries records beside its
             // deltas instead (spec/commits.md §2)
             if ak == CREATED && (!kind.has_own_writes() || self.ephemeral.is_some()) {
                 return Err(Error::Invalid("created.0 in a commit without own writes or an ephemeral one"));
             }
             // kept forever and judged by its own deltas (spec/commits.md §5): never snapshotted
-            // or imported
             if ak == REQUIRED && !kind.has_own_writes() {
                 return Err(Error::Invalid("required.0^ in a commit without own writes"));
             }
@@ -96,7 +94,7 @@ impl Header {
             }
             // levels as listed (ascending, since keys sort by level first): exactly those the
             // retention calls for
-            if levels != delete_levels(&a.retention, kind) {
+            if levels != delete_levels(&a.retention) {
                 return Err(Error::Invalid("delete levels do not match the retention"));
             }
         }
@@ -108,9 +106,6 @@ impl Header {
             }
             if !self.purge.is_empty() {
                 return Err(Error::Invalid("expires on a commit with a purge request"));
-            }
-            if kind == Kind::Import {
-                return Err(Error::Invalid("expires on an import"));
             }
             if self.aspects.iter().any(|a| fixed_retention(a.ak.as_str()).is_some()) {
                 return Err(Error::Invalid("expires on a commit with a fixed-retention aspect"));
@@ -130,10 +125,6 @@ impl Header {
         }
         if kind == Kind::RosterSnapshot && self.aspects.windows(2).any(|w| matches!(w, [x, y] if x.tid != y.tid)) {
             return Err(Error::Invalid("roster snapshot of several things"));
-        }
-        // an import is judged by its one thing's creation record (spec/permissions.md §7)
-        if kind == Kind::Import && self.aspects.windows(2).any(|w| matches!(w, [x, y] if x.tid != y.tid)) {
-            return Err(Error::Invalid("import on several things"));
         }
         // one author chain: at most one level-2 key (header-list blobs commit to it alone)
         if self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).count() > 1 {
@@ -161,9 +152,6 @@ impl Header {
         }
         if self.frontier.is_some() && kind != Kind::Role {
             return Err(Error::Invalid("frontier outside a role commit"));
-        }
-        if self.origins.is_empty() == (kind == Kind::Import) {
-            return Err(Error::Invalid("origins present iff import"));
         }
         // an ephemeral commit is a commit-form content snapshot or a session-form content commit
         // and carries nothing a stored commit is for (spec/commits.md §2, §3)

@@ -65,10 +65,9 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 /// its aspect is flagged, its non-value writes joining only through a copy or a snapshot, as those
 /// of a part missing when purged. One with its thing's record away cannot occur: no right can stand
 /// without it (`holds_right`), spec/commits.md §5 states the limit. A bad one is `examine`'s. A snapshot has
-/// no values of its own: kept whole, dropped once applied (`purge_one`), as is an import a request
-/// reaches only through another import of its origin (`drop_gone`).
+/// no values of its own: kept whole, dropped once applied (`purge_one`).
 fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
-    let o = super::writes_of(tx.core, h, id, ai);
+    let o = super::writes_of(h, id, ai);
     if o.is_empty() {
         return Ok(());
     }

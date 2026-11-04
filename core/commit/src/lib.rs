@@ -27,6 +27,6 @@ pub use project::{DELTA_PAST_BLOB, Projection, blob_expiry, prefix_inputs, proje
 pub use lists::{BlobSink, BlobSource, MemoryBlobs, read_list, write_list};
 pub use osis_base::format::MAX_LIST_BYTES;
 pub use error::Error;
-pub use header::{AspectEntry, ChunkEntry, DeleteKey, EphClass, FOREVER, Form, Header, Kind, Links, ListField, Origin, PurgeItem, frontier_value, verify_signature};
+pub use header::{AspectEntry, ChunkEntry, DeleteKey, EphClass, FOREVER, Form, Header, Kind, Links, ListField, PurgeItem, frontier_value, verify_signature};
 pub use keys::{Prefix, Secrets, delete_keys};
 pub use verify::{Decoded, check_entry_keys, delta_ctx, stream_part, verify_blob, verify_part, writer_ctx};

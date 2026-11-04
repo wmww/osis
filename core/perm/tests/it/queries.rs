@@ -8,7 +8,7 @@ use common::*;
 use roles_model::{edges, joint, Rng};
 use osis_base::Role::{Admin, Read, Write};
 use osis_base::{Role, Tid};
-use osis_perm::{verify, At, Edge, HeldSet, MoveIndex, Point, PurgeBy, Timeline, WriteId};
+use osis_perm::{verify, At, Edge, HeldSet, Point, PurgeBy, Timeline, WriteId};
 use std::collections::BTreeMap;
 
 /// §4: a stolen device's grant verifies from certificates until the removal that drops it is
@@ -470,48 +470,6 @@ fn rotation_rights() {
     assert_eq!(tl.may_rotate(&n[1], &x, At::END), vec![Read, Write, Admin]);
     assert_eq!(tl.may_rotate(&n[2], &x, At::END), vec![Read, Write]);
     assert_eq!(tl.may_rotate(&n[3], &x, At::END), Vec::<Role>::new());
-}
-
-struct Moves {
-    was: BTreeMap<Tid, Vec<Tid>>,
-    moved: BTreeMap<Tid, Tid>,
-}
-
-impl MoveIndex for Moves {
-    fn continued_by(&self, t: &Tid) -> Vec<Tid> {
-        self.was.get(t).cloned().unwrap_or_default()
-    }
-    fn moved(&self, t: &Tid) -> Option<Tid> {
-        self.moved.get(t).copied()
-    }
-}
-
-/// §7: a `was.0` claim with standing wins, else `moved.0`, else the tid itself; two claims with
-/// standing fall back to `moved.0`; hops are bounded.
-#[test]
-fn move_resolution() {
-    let mut w = World::new();
-    let n = w.nodes(3);
-    let (x, y, z) = (n[0], n[1], n[2]);
-    let r = w.thing(x); // the referencing thing, owned by X
-    let t = w.thing(y); // the moved thing, owned by Y
-    let m = w.thing(x); // X's copy
-    let f = w.thing(z); // a fake claim by Z
-    let g = w.thing(z); // a fake Z granted X an edge on
-    w.set(z, g, x, edge(Read), 1, &[]);
-    let tl = Timeline::evaluate(&w.held());
-    let now = At::now(ts(5));
-    assert!(tl.has_standing(&r, &m, now) && !tl.has_standing(&r, &f, now) && tl.has_standing(&r, &g, now));
-    let idx = Moves { was: BTreeMap::from([(t, vec![m, f])]), moved: BTreeMap::new() };
-    assert_eq!(tl.resolve(&idx, &r, &t, now), m);
-    let idx = Moves { was: BTreeMap::from([(t, vec![f])]), moved: BTreeMap::from([(t, m)]) };
-    assert_eq!(tl.resolve(&idx, &r, &t, now), m);
-    let idx = Moves { was: BTreeMap::from([(t, vec![m, g])]), moved: BTreeMap::from([(t, f)]) };
-    assert_eq!(tl.resolve(&idx, &r, &t, now), f, "two claims with standing: moved.0");
-    let idx = Moves { was: BTreeMap::new(), moved: BTreeMap::new() };
-    assert_eq!(tl.resolve(&idx, &r, &t, now), t);
-    let idx = Moves { was: BTreeMap::new(), moved: BTreeMap::from([(t, m), (m, t)]) };
-    assert_eq!(tl.resolve(&idx, &r, &t, now), t, "a cycle stops after RESOLUTION_HOPS (even)");
 }
 
 /// `Timeline::demotion_scope` of `author` setting `holder`'s edge on `target` to `new` at `t`,

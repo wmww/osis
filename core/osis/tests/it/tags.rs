@@ -1,5 +1,5 @@
 //! Tags (notes/tags.md): sharing a tag per item through one roster, sub-tags, only what you may
-//! share, tag-owned things, ownership transfer. Tier 1 (the slower cases tier 2).
+//! share, tag-owned things. Tier 1 (the slower cases tier 2).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::scenario as common;
@@ -213,28 +213,4 @@ fn invite_holder_shares_on() {
     w.run();
     assert_eq!(text(&guest, spec).unwrap().as_deref(), Some("v1"));
     assert_eq!(alice.roster(team).get(&g).map(|e| e.role), Some(Role::Read));
-}
-
-// spec/permissions.md §7 (moving is a copy with imported history), notes/tags.md (the only copy
-// is an ownership transfer): the copy has a new tid and owner, the tag keeps the original, and
-// the tag's holders do not read the copy.
-#[test]
-fn ownership_transfer_is_a_copy() {
-    let mut w = World::new();
-    let host = w.add_host();
-    let alice = person(&mut w, 1, host);
-    let bob = person(&mut w, 2, host);
-    let team = new_tag(&alice, "Shared").unwrap();
-    let f = new_card(&alice, team, "private now").unwrap();
-    place(&alice, team, f).unwrap();
-    let b = introduce(&mut w, &alice, &bob);
-    share(&alice, team, b, Role::Read, None).unwrap();
-    w.run();
-    assert_eq!(text(&bob, f).unwrap().as_deref(), Some("private now"));
-    let mine = alice.move_thing(f, alice.me(), &[alice.home()]).unwrap();
-    assert_ne!(mine, f);
-    assert!(alice.same_thing(mine, f));
-    w.run();
-    assert_eq!(text(&alice, mine).unwrap().as_deref(), Some("private now"));
-    assert_eq!(text(&bob, mine).unwrap(), None, "the copy is the person's own");
 }

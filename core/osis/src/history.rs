@@ -123,17 +123,16 @@ impl Osis {
         let limit = limit.min(HISTORY_PAGE);
         self.locked(|l| {
             let mut r = Reader { e: l.engine(), limit: mat, actor };
-            let t = r.resolve(tid);
-            if r.hidden(t) {
+            if r.hidden(tid) {
                 return Ok(HistoryPage { entries: Vec::new(), more: false, complete: true });
             }
-            let (rows, mut more) = r.e.history(&t, ak, from, limit, budget)?;
+            let (rows, mut more) = r.e.history(&tid, ak, from, limit, budget)?;
             more |= cut && rows.len() == limit;
             let (n, mut used) = (rows.len(), 0usize);
             let mut entries = Vec::with_capacity(n);
             // links count once materialized: a page fits what a reply carries
             for (i, row) in rows.into_iter().enumerate() {
-                let e = entry_of(&mut r, &t, ak, row, budget)?;
+                let e = entry_of(&mut r, &tid, ak, row, budget)?;
                 if let HistoryBody::Held(Some(v)) = &e.body {
                     used = used.saturating_add(osis_base::cbor::encode(v).len());
                 }
@@ -143,7 +142,7 @@ impl Osis {
                     break;
                 }
             }
-            let complete = crate::share::fetched(l, t);
+            let complete = crate::share::fetched(l, tid);
             Ok(HistoryPage { entries, more, complete })
         })
     }
@@ -153,12 +152,11 @@ impl Osis {
         let (mat, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
             let mut r = Reader { e: l.engine(), limit: mat, actor };
-            let t = r.resolve(tid);
-            if r.hidden(t) {
+            if r.hidden(tid) {
                 return Ok(None);
             }
-            let Some(row) = r.e.history_entry(&t, ak, id, mat)? else { return Ok(None) };
-            entry_of(&mut r, &t, ak, row, mat).map(Some)
+            let Some(row) = r.e.history_entry(&tid, ak, id, mat)? else { return Ok(None) };
+            entry_of(&mut r, &tid, ak, row, mat).map(Some)
         })
     }
 }
@@ -166,7 +164,7 @@ impl Osis {
 impl<K: AspectKey> AspectRef<'_, K> {
     /// A page of the aspect's history here: at most `limit` entries (`HISTORY_PAGE` at most) from
     /// `from`, in its direction, fewer past the materialization bound. No walk: a page costs its
-    /// entries. Follows moves. An unknown thing, or one the caller may not read, has none.
+    /// entries. An unknown thing, or one the caller may not read, has none.
     pub fn history(&self, from: HistoryFrom, limit: usize) -> Result<HistoryPage<K::T>> {
         let ak = ak_of(&self.key)?;
         let page = match self.db.route(self.tid) {
@@ -182,7 +180,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` for each commit whose entry in the aspect's history reads otherwise, one call per
     /// commit, with the entry as it reads then: no recompute of the aspect, no re-read of a page.
     /// Subscribe first, then read pages: nothing after the subscription is missed, and an event
-    /// repeating what a page showed is harmless. Follows moves.
+    /// repeating what a page showed is harmless.
     pub fn on_history(&self, mut f: impl FnMut(&Osis, HistoryEvent<K::T>) + Send + 'static) -> Result<Subscription> {
         let ak = ak_of(&self.key)?;
         let key = self.key.clone();
@@ -197,7 +195,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
         if let Source::Remote(r) = self.db.route(self.tid) {
             return self.db.remote_on_history(&r, self.tid, ak, Box::new(deliver));
         }
-        let t = self.db.read_local(|r| r.resolve(self.tid));
+        let t = self.tid;
         // the dispatcher's handle acts for no one: read as this one does
         let acting = self.db.acting;
         Ok(self.db.subscribe(Filter::History(t, ak.clone()), false, move |_| {

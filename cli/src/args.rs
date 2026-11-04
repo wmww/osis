@@ -255,7 +255,7 @@ pub enum Cmd {
         /// By this actor (repeatable)
         #[arg(long, value_name = "A")]
         actor: Vec<String>,
-        /// change, revert, role, snapshot or import (repeatable)
+        /// change, revert, role, snapshot or ephemeral (repeatable)
         #[arg(long, value_name = "KIND")]
         kind: Vec<String>,
         /// Reverts of commit C
@@ -394,15 +394,6 @@ pub enum Cmd {
     /// Group chat (notes/chat.md)
     #[command(subcommand)]
     Chat(ChatCmd),
-    /// Move T to a new owner (prints the new tid)
-    Move {
-        t: String,
-        owner: String,
-        #[command(flatten)]
-        place: PlaceArgs,
-    },
-    /// Whether two tids name one thing (exit 3 if not)
-    Same { a: String, b: String },
     /// Create an ownerless thing, ADMIN its first admin (prints its tid)
     Ownerless { admin: String },
     /// Connectivity and per-group sync state

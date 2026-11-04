@@ -601,19 +601,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let a = wait(ctx, db.import_contact(&c))?;
             ctx.emit(&[a.to_uri()], J::obj([("actor", J::tid(a))]))
         }
-        Cmd::Move { t, owner, place } => {
-            let p = write::place(ctx, &place)?;
-            let n = db.move_thing(ctx.tid(&t)?, ctx.tid(&owner)?, &p)?;
-            ctx.emit(&[n.to_uri()], J::obj([("tid", J::tid(n))]))
-        }
         Cmd::Ownerless { admin } => {
             let t = db.create_ownerless(ctx.tid(&admin)?)?;
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
-        }
-        Cmd::Same { a, b } => {
-            let s = db.same_thing(ctx.tid(&a)?, ctx.tid(&b)?);
-            ctx.emit(&[s.to_string()], J::obj([("same", J::Bool(s))]))?;
-            if s { Ok(()) } else { Err(exit(3, "")) }
         }
         Cmd::Status { watch: false } => status(ctx),
         Cmd::Status { watch: true } => {
@@ -966,11 +956,11 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
     stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c), !matches!(c.source, Source::Initial)))
 }
 
-const KINDS: [(&str, CommitKind); 6] =
-    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot), ("import", CommitKind::Import), ("ephemeral", CommitKind::Ephemeral)];
+const KINDS: [(&str, CommitKind); 5] =
+    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot), ("ephemeral", CommitKind::Ephemeral)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
-    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, role, snapshot or import")))
+    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, role, snapshot or ephemeral")))
 }
 
 fn kind_text(k: CommitKind) -> &'static str {
@@ -1204,7 +1194,6 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     match i {
         InspectCmd::Thing { t } => {
             let t = ctx.tid(&t)?;
-            let t = db.read(|r| r.resolve(t))?;
             lines.push(format!("tid {} known={} role={}", t.to_uri(), db.knows(t), db.role_on(t).map_or("none", role_text)));
             let aks = db.aspects(t)?;
             for ak in aks {

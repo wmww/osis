@@ -16,7 +16,6 @@ pub(crate) mod links;
 mod ownerless;
 pub(crate) mod person;
 pub(crate) mod roster;
-mod moving;
 pub mod tied;
 
 pub use roster::ROSTER_SNAPSHOT_AFTER;

@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn owner_link_of_each_record() {
         let nonce = [7; 32];
-        assert_eq!(CreationRecord::Thing { owner: tid(1), nonce, creator: None }.owner_link(), Owner::Actor(tid(1)));
+        assert_eq!(CreationRecord::Thing { owner: tid(1), nonce }.owner_link(), Owner::Actor(tid(1)));
         assert_eq!(CreationRecord::KeyActor { alg: 1, public_key: vec![0; 32], nonce }.owner_link(), Owner::Key);
         assert_eq!(CreationRecord::Ownerless { admin: tid(2), nonce }.owner_link(), Owner::Ownerless(tid(2)));
     }

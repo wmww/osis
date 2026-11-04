@@ -171,7 +171,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
             Some(b) if !b.is_empty() => Before { state: crate::engine::state::decode(&b)?, complete: true },
             Some(_) => Before { state: Fragment::default(), complete: true },
             // not a recent local commit: the join of the held bodies ordered before it, whole
-            // unless a body or part before it is gone or a later snapshot or import may stand
+            // unless a body or part before it is gone or a later snapshot may stand
             // for bodies no longer listed
             None => {
                 let held: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().copied().collect();
@@ -181,7 +181,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
                     let Some(m) = tx.core.ix.commits.get(&c) else { continue };
                     let Some(ci) = m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak) else { continue };
                     if (cts, c) > (h.ts, target) {
-                        complete &= !matches!(m.header.kind, Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot | Kind::Import);
+                        complete &= !matches!(m.header.kind, Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot);
                         continue;
                     }
                     if c == target {
@@ -244,7 +244,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     if confined {
         crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
     build_split(tx, plan, deltas)
 }
 

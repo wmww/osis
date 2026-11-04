@@ -339,24 +339,6 @@ fn drop_waits_for_call_in_flight() {
     assert_eq!(*done.lock().unwrap(), 1);
 }
 
-// spec/permissions.md §7, notes/api.md Tids and moves: a watch registered under t fires for
-// changes of the thing t moved to.
-#[test]
-fn watch_follows_move() {
-    let db = db(1);
-    let k = ak("t:x.0");
-    let t = thing(&db);
-    let owner2 = thing(&db);
-    let (tx, rx) = channel();
-    let _s = db.at(t, k.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
-    assert_eq!(recv(&rx).source, Source::Initial);
-    let m = db.move_thing(t, owner2, &[]).unwrap();
-    db.write_with(|w| w.at(m, k.clone()).set(&Value::Int(3))).unwrap();
-    db.settle();
-    let last = rx.try_iter().last().unwrap();
-    assert_eq!((last.tid, last.value), (m, Ok(Some(Value::Int(3)))));
-}
-
 // notes/api.md Typed reads: a watch and an `on_change` of a typed key read a stored value of
 // another type as absent (the untyped value stays readable).
 #[test]

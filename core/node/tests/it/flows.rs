@@ -1607,39 +1607,6 @@ fn no_rotation_that_cannot_cover_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §7, spec/crypto.md §3, §4: a doc moved into a team without secrets of
-// its own: the copy's own-secrets rotation boxes nobody (the team has no keyset). The writer,
-// who does not read the team, gets the re-grant before the rotation commit (wrapped under the
-// copy's derived epoch): its history box hands it that epoch's secret (it names its epoch), and
-// once the rotation commit is opened its write epoch is established.
-#[test]
-fn move_into_derived_owner_spec_perm_7() {
-    let (mut lp, ps) = people(2, 519);
-    let (pa, pb) = (ps[0], ps[1]);
-    let team = thing_of(&mut lp, 0, pa);
-    let doc = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&doc, &pb, &edge_of(Role::Write)).unwrap();
-    spread(&mut lp);
-    let before: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
-    let (copy, done) = lp.peers[0].engine.move_to(&doc, &team).unwrap();
-    let new: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
-    let (own, rest): (Vec<CommitId>, Vec<CommitId>) = new.into_iter().partition(|c| {
-        let h = lp.peers[0].engine.header(c).unwrap();
-        h.aspects.iter().any(|a| a.tid == copy && a.ak.as_str() == "keys.0") && !h.aspects.iter().any(|a| a.ak.as_str() == "roles.0")
-    });
-    assert_eq!(own.len(), 1, "the copy's own-secrets rotation");
-    send(&mut lp, 0, 1, &rest);
-    carry(&mut lp, 0, &done);
-    let e = lp.peers[1].engine.epochs(&copy).unwrap();
-    let derived = lp.peers[0].engine.epochs(&copy).unwrap().read.epochs().filter(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)).map(|(k, _)| *k).max_by_key(|k| k.n()).unwrap();
-    let genuine = lp.peers[0].engine.epochs(&copy).unwrap().read.secret(&derived).cloned().unwrap();
-    assert_eq!(e.read.secret(&derived), Some(&genuine), "the grant's history box opens the derived epoch");
-    send(&mut lp, 0, 1, &own);
-    let e = lp.peers[1].engine.epochs(&copy).unwrap();
-    assert_eq!(e.read.secret(&derived), Some(&genuine));
-    assert!(e.write.newest_held().is_some(), "bob holds an established write epoch of the copy");
-}
-
 // spec/sync.md §2, §5: after a rotation an admin issues a child of the host's head at the
 // newest epochs; the removed device has no claim key in it, the remaining one has.
 #[test]
@@ -1838,30 +1805,6 @@ fn roster_copy_reads_at_each_node_spec_commits_4() {
         assert_eq!(holders(&lp), both);
         assert_eq!(tags(&mut lp, 3, t), all);
     }
-}
-
-// spec/permissions.md §7: moving a doc to another owner copies it with its history, re-grants
-// its holders on the copy and points the old thing at it; a second move is refused.
-// spec/permissions.md §7 (one import)
-#[test]
-fn move_regrants_spec_perm_7() {
-    let (mut lp, ps) = people(2, 516);
-    let (pa, pb) = (ps[0], ps[1]);
-    let team = thing_of(&mut lp, 0, pa);
-    let d = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
-    spread(&mut lp);
-    add_tag(&mut lp, 1, d, "bob");
-    spread(&mut lp);
-    let (copy, done) = lp.peers[0].engine.move_to(&d, &team).unwrap();
-    assert!(done.deliveries.iter().any(|x| matches!(x, Delivery::Inbox { to, .. } if *to == pb)));
-    assert!(lp.peers[0].engine.move_to(&d, &team).is_err());
-    spread(&mut lp);
-    for i in [0, 1] {
-        assert_eq!(tags(&mut lp, i, copy), BTreeSet::from(["bob".to_string()]), "peer {i}");
-        assert_eq!(lp.peers[i].engine.get_typed(&d, &ct::MOVED).unwrap(), Some(copy));
-    }
-    assert_eq!(lp.peers[1].engine.role_on(&copy), Some(Role::Write));
 }
 
 // spec/crypto.md §4 (forks): two admins removing different holders concurrently fork the read
@@ -2097,32 +2040,6 @@ fn backdated_revoke_lists_certs_as_of_cutoff_spec_perm_5_1() {
     for i in [1, 2] {
         assert!(!lp.peers[i].engine.edge_applied(&p, &forged[0]), "peer {i}");
     }
-}
-
-// spec/permissions.md §7, spec/sync.md §2: a labeled doc's copy gets a label of its own at the
-// doc's hosts before its holders are re-granted, so they sync and write it whatever else of
-// the new owner they read.
-#[test]
-fn move_labels_copy_spec_perm_7() {
-    let (mut lp, ps) = people(2, 518);
-    let (pa, pb) = (ps[0], ps[1]);
-    let team = thing_of(&mut lp, 0, pa);
-    let d = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Write)).unwrap();
-    lp.peers[0].engine.create_label(&d, &hosts()).unwrap();
-    spread(&mut lp);
-    let (copy, _) = lp.peers[0].engine.move_to(&d, &team).unwrap();
-    spread(&mut lp);
-    for i in [0, 1] {
-        let ls = lp.peers[i].engine.group_labels(&copy).unwrap();
-        assert_eq!(ls.len(), 1, "peer {i}");
-        assert_eq!(ls[0].hosts, hosts());
-    }
-    assert_eq!(lp.peers[1].engine.role_on(&copy), Some(Role::Write));
-    // an unlabeled doc's copy gets none
-    let e = thing_of(&mut lp, 0, pa);
-    let (copy, _) = lp.peers[0].engine.move_to(&e, &team).unwrap();
-    assert!(lp.peers[0].engine.group_labels(&copy).unwrap().is_empty());
 }
 
 // spec/crypto.md §4 (covers by names; a departure past its `until` is named by its expiry). A

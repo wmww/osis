@@ -1,10 +1,10 @@
-//! Who owns a dot (spec/permissions.md §5.2, §7), what held snapshots carry of writes, and where a
+//! Who owns a dot (spec/permissions.md §5.2), what held snapshots carry of writes, and where a
 //! copy differs from its delta.
 
 use crate::engine::{Core, Meta, Owned, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Value};
-use osis_commit::{Form, Header, Kind};
+use osis_commit::{Form, Header};
 use osis_crdt::{Dot, Fragment};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -35,21 +35,13 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTree
 
 /// Whether some held commit owning dot `d` on `(tid, ak)` (spec/permissions.md §5.2) has its
 /// delta of that aspect as `f` judges it: the session-form commit whose range holds it; for
-/// `Commit(c)`, `c` itself as a commit-form commit with the aspect, else any held import of `c`
-/// with it (§7, `Core::imports`; `c` on the moved thing owns nothing there).
+/// `Commit(c)`, `c` itself as a commit-form commit with the aspect.
 pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&CommitId, &Meta, usize) -> bool) -> bool {
     let at = |m: &Meta| m.aspect(tid, ak);
     let d = d.owner();
     match d.src.kind() {
         osis_crdt::SourceKind::Session(_) => core.commit_of(tid, ak, d).is_some_and(|c| core.ix.commits.get(&c).is_some_and(|m| at(m).is_some_and(|ai| f(&c, m, ai)))),
-        osis_crdt::SourceKind::Commit(c) => {
-            if let Some(m) = core.ix.commits.get(c).filter(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes())
-                && let Some(ai) = at(m)
-            {
-                return f(c, m, ai);
-            }
-            core.ix.imports.get(&(*tid, *c)).is_some_and(|s| s.iter().any(|i| core.ix.commits.get(i).is_some_and(|m| at(m).is_some_and(|ai| f(i, m, ai)))))
-        }
+        osis_crdt::SourceKind::Commit(c) => core.ix.commits.get(c).filter(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes()).is_some_and(|m| at(m).is_some_and(|ai| f(c, m, ai))),
         osis_crdt::SourceKind::Derived(_) => false,
     }
 }
@@ -74,43 +66,6 @@ pub(crate) fn snapshot_valid(core: &Core, snap: &CommitId, tid: &Tid, ak: &Ak) -
 /// body gives nothing (not joined, replayed or covering).
 pub(crate) fn invalid_snapshot(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction()) && !snapshot_valid(core, c, tid, ak)
-}
-
-/// Whether held commit `c` owns its `Commit(c)` dots on `(tid, ak)`: a commit-form commit with
-/// own writes and a delta of that aspect (spec/permissions.md §5.2), as `any_owner` prefers it.
-pub(crate) fn owns_commit_dots(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-    core.ix.commits.get(c).is_some_and(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes() && m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak))
-}
-
-/// The imports that commit `id` (header `h`, being applied) makes void: itself if it is an
-/// import naming as origin a held commit with a delta on its thing, else the held imports on its
-/// things naming it (spec/permissions.md §7: origins are commits of other things).
-pub(crate) fn self_origin_imports(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
-    let mut out = BTreeSet::new();
-    if h.kind == Kind::Import {
-        if h.origins.iter().any(|o| core.ix.commits.get(&o.commit).is_some_and(|m| m.view.aspects.iter().any(|x| h.aspects.iter().any(|a| a.tid == x.tid)))) {
-            out.insert(*id);
-        }
-        return out;
-    }
-    let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
-    for t in things {
-        out.extend(core.ix.imports.get(&(t, *id)).into_iter().flatten().copied());
-    }
-    out
-}
-
-/// Records the held imports per (thing, origin) (`Core::imports`: which delta owns a `Commit`
-/// source's writes on a thing, spec/permissions.md §7). `examine` refused carried writes stamped
-/// after their commit.
-pub(crate) fn note_imports(core: &mut Core, id: &CommitId, h: &Header) {
-    if h.kind == Kind::Import {
-        for a in &h.aspects {
-            for o in &h.origins {
-                core.ix.imports.insert((a.tid, o.commit), *id);
-            }
-        }
-    }
 }
 
 /// Records the writes snapshot `snap` of `(tid, ak)` carries whose owning delta was never
@@ -215,22 +170,19 @@ fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(Co
 }
 
 /// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`):
-/// its counters (session form), its whole source (commit form), its origins' sources (an import).
+/// its counters (session form), its whole source (commit form).
 /// Returns, per such aspect, the snapshots whose copies it dropped: they are compared with the
 /// delta (`differing_copies`).
 pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(usize) -> bool) -> Vec<(Tid, Ak, BTreeSet<CommitId>)> {
-    let mut srcs: Vec<osis_crdt::Source> = h.origins.iter().filter(|_| h.kind == Kind::Import).map(|o| osis_crdt::Source::commit(o.commit)).collect();
-    if h.kind.has_own_writes() && h.form == Form::Commit {
-        srcs.push(osis_crdt::Source::commit(*id));
-    }
+    let whole = (h.kind.has_own_writes() && h.form == Form::Commit).then(|| osis_crdt::Source::commit(*id));
     let counted = (h.kind.has_own_writes() && h.form.counted()).then(|| h.form.own_source(h.author, *id));
     let mut out = Vec::new();
-    if srcs.is_empty() && counted.is_none() {
+    if whole.is_none() && counted.is_none() {
         return out;
     }
     for (_, a) in h.aspects.iter().enumerate().filter(|(ai, _)| held(*ai)) {
         let k = (a.tid, a.ak.clone());
-        let owns = |src: &osis_crdt::Source, x: u64| srcs.contains(src) || (counted.as_ref() == Some(src) && a.lo <= x && x < a.hi);
+        let owns = |src: &osis_crdt::Source, x: u64| whole.as_ref() == Some(src) || (counted.as_ref() == Some(src) && a.lo <= x && x < a.hi);
         if !core.ix.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(&c.src, *x)))) {
             continue;
         }
@@ -259,11 +211,8 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(
 const COPY_CACHE_MAX: usize = 1 << 20;
 
 /// The owner dots of commit `id`'s delta `ai` (header `h`) as (source, counters `lo..hi`):
-/// its counter range, its source in commit form, an import's origins' sources.
+/// its counter range, or its source in commit form.
 pub(crate) fn owned_ranges(h: &Header, id: &CommitId, ai: usize) -> Vec<(osis_crdt::Source, u64, u64)> {
-    if h.kind == Kind::Import {
-        return h.origins.iter().map(|o| (osis_crdt::Source::commit(o.commit), 1, u64::MAX)).collect();
-    }
     match (h.form, h.aspects.get(ai)) {
         (_, None) => Vec::new(),
         (_, Some(_)) if !h.kind.has_own_writes() => Vec::new(),

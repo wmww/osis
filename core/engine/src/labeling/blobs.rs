@@ -3,7 +3,7 @@
 
 use crate::engine::Engine;
 use crate::error::{Error, Result};
-use osis_commit::{CommitBlob, DeleteKey, Kind};
+use osis_commit::{CommitBlob, DeleteKey};
 use osis_base::{BlobId, CommitId, LabelId, Role, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, DeleteSecret, Epoch, LabelRole, Secret32, SigningSecret, deposit_key, label_role_key};
 use osis_keys::{ActorEpochs, WrapEpoch};
@@ -437,7 +437,7 @@ impl Engine {
     /// The delete secrets for header `h`'s delete keys at indices `idx`, for a delta on `tid`.
     fn delete_secrets(&self, h: &osis_commit::Header, tid: &Tid, idx: &[usize]) -> Vec<(u8, DeleteSecret)> {
         let thing = self.core.delete_chain(tid);
-        let author = if h.kind == Kind::Import { Vec::new() } else { self.core.delete_chain(&h.actor) };
+        let author = self.core.delete_chain(&h.actor);
         idx.iter().filter_map(|i| h.keys.get(*i)).filter_map(|k| crate::engine::Core::delete_secret(k.level, &k.key, &thing, &author).map(|d| (k.level, d))).collect()
     }
 }

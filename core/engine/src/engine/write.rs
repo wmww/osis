@@ -244,11 +244,11 @@ impl Mutation {
 }
 
 /// The role a write of `ak` needs (spec/permissions.md §1, §3, §5.2): admin for edges,
-/// `label.0`, `moved.0`, `was.0`, `tenures.0` and admin-only (`^`) aspects; write for rotations
+/// `label.0`, `tenures.0` and admin-only (`^`) aspects; write for rotations
 /// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
-        "roles.0" | "label.0" | "moved.0" | "was.0" | "tenures.0" => Role::Admin,
+        "roles.0" | "label.0" | "tenures.0" => Role::Admin,
         _ if Ak::markers_of(ak).0 => Role::Admin,
         _ => Role::Write,
     }
@@ -384,7 +384,6 @@ pub(crate) struct CommitPlan {
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
     pub frontier: Option<Value>,
-    pub origins: Vec<osis_commit::Origin>,
     /// The signing key actor: the node, or a key actor it holds.
     pub signer: Tid,
     /// The header's blind: chunks and pages are framed under it before the header exists
@@ -438,7 +437,7 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid,
 /// the retention calls for. `published`: [`super::secrets::published_keys`] of the commit's things.
 pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, retention: &Retention) -> Result<Framing> {
     let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, first: &plan.first, published };
-    let keys = osis_commit::delete_keys(&secrets, tid, retention, plan.kind)?;
+    let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
     Ok(Framing { dedup, expiry: plan.expires.map(WallMs), blind: plan.blind, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
 }
@@ -489,8 +488,7 @@ fn split(entries: &[(Tid, &Ak, Class)], purge: bool) -> Result<(Vec<Option<u64>>
     Ok((classes.into_iter().map(|c| c.0).collect(), of))
 }
 
-/// `build_and_apply` of deltas a write resolved, split into commits by `split` (an undo, an
-/// import): each with `plan`'s inputs (its `ts` too: the deltas are stamped with it) and a fresh
+/// `build_and_apply` of deltas a write resolved, split into commits by `split` (an undo): each with `plan`'s inputs (its `ts` too: the deltas are stamped with it) and a fresh
 /// blind, the first with its purge request.
 pub(crate) fn build_split(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<Vec<CommitId>> {
     let mut settled = Vec::with_capacity(deltas.len());
@@ -613,7 +611,6 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.undoes = plan.undoes;
     b.frontier = plan.frontier;
     b.blind = Some(plan.blind);
-    b.origins = plan.origins;
     // a commit built in a memory transaction is a memory commit (spec/commits.md §2, §3)
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
     let built = {
@@ -650,13 +647,7 @@ impl Engine {
 
     /// The creation record of a new thing owned by `owner` (`Mutation::create` writes it).
     pub fn thing_record(&mut self, owner: Tid) -> CreationRecord {
-        crate::identity::thing_record(owner, None, &mut *self.rng)
-    }
-
-    /// A new copy owned by `owner` that this node creates and imports into (spec/permissions.md §7).
-    pub(crate) fn new_copy(&mut self, m: &mut Mutation, owner: Tid) -> Tid {
-        let me = self.core.id.tid();
-        m.create(crate::identity::thing_record(owner, Some(me), &mut *self.rng))
+        crate::identity::thing_record(owner, &mut *self.rng)
     }
 
     /// Commits `m` as one commit; `None` when it changes nothing. `Misuse` when its deltas need
@@ -746,7 +737,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Vec<CommitId
             e => Err(e),
         });
     }
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), first: std::mem::take(&mut m.first), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: draw_blind(&mut *tx.rng), expires: None };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), first: std::mem::take(&mut m.first), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: draw_blind(&mut *tx.rng), expires: None };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }

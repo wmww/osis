@@ -74,9 +74,8 @@ impl crate::Classified for TidParseError {
 /// A thing's creation record (spec/wire.md §3): the `creation` struct of the core schema.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CreationRecord {
-    /// Ordinary thing: owner actor and a 32-byte random nonce; a copy (spec/permissions.md §7)
-    /// also names the node that created it, the only one whose imports it takes.
-    Thing { owner: Tid, nonce: [u8; 32], creator: Option<Tid> },
+    /// Ordinary thing: owner actor and a 32-byte random nonce.
+    Thing { owner: Tid, nonce: [u8; 32] },
     /// Key actor (owns itself): `signing_key` enum case and key bytes, and a 32-byte nonce. Only
     /// `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a later
     /// suite) but `from_value` refuses them.
@@ -86,12 +85,11 @@ pub enum CreationRecord {
     Ownerless { admin: Tid, nonce: [u8; 32] },
 }
 
-// spec/wire.md §3: `creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob, 3 creator: tid, 4 admin: tid }`.
+// spec/wire.md §3: `creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob, 3 admin: tid }`.
 const REC_OWNER: i64 = 0;
 const REC_KEY: i64 = 1;
 const REC_NONCE: i64 = 2;
-const REC_CREATOR: i64 = 3;
-const REC_ADMIN: i64 = 4;
+const REC_ADMIN: i64 = 3;
 /// `signing_key` case ed25519 (spec/wire.md §3).
 pub const SIGNING_KEY_ED25519: u64 = 1;
 
@@ -100,12 +98,9 @@ impl CreationRecord {
     pub fn to_value(&self) -> Value {
         let mut m = crate::ValueMap::new();
         match self {
-            CreationRecord::Thing { owner, nonce, creator } => {
+            CreationRecord::Thing { owner, nonce } => {
                 m.insert(Value::Int(REC_OWNER), Value::Tid(*owner));
                 m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
-                if let Some(c) = creator {
-                    m.insert(Value::Int(REC_CREATOR), Value::Tid(*c));
-                }
             }
             CreationRecord::KeyActor { alg, public_key, nonce } => {
                 let key = Value::Enum(*alg, Some(Box::new(Value::Bytes(public_key.clone()))));
@@ -119,8 +114,7 @@ impl CreationRecord {
         }
         Value::Map(m)
     }
-    /// Reads a record: exactly one of owner, key and admin, a 32-byte nonce, a creator only with
-    /// an owner, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input
+    /// Reads a record: exactly one of owner, key and admin, a 32-byte nonce, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input
     /// (an unknown key case included: callers that must park it check the enum case themselves).
     pub fn from_value(v: &Value) -> Option<CreationRecord> {
         let Value::Map(m) = v else { return None };
@@ -128,13 +122,8 @@ impl CreationRecord {
             Some(Value::Bytes(b)) => b.as_slice().try_into().ok()?,
             _ => return None,
         };
-        let creator = match m.get(&Value::Int(REC_CREATOR)) {
-            Some(Value::Tid(c)) => Some(*c),
-            Some(_) => return None,
-            None => None,
-        };
         match (m.get(&Value::Int(REC_OWNER)), m.get(&Value::Int(REC_KEY)), m.get(&Value::Int(REC_ADMIN)), m.len()) {
-            (Some(Value::Tid(owner)), None, None, n) if n == 2 + usize::from(creator.is_some()) => Some(CreationRecord::Thing { owner: *owner, nonce, creator }),
+            (Some(Value::Tid(owner)), None, None, 2) => Some(CreationRecord::Thing { owner: *owner, nonce }),
             (None, None, Some(Value::Tid(admin)), 2) => Some(CreationRecord::Ownerless { admin: *admin, nonce }),
             (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), None, 2) => match p.as_ref() {
                 Value::Bytes(pk) if pk.len() == 32 => {
@@ -481,17 +470,17 @@ mod tests {
         crate::hex::decode(s).unwrap()
     }
 
-    // spec/wire.md §3: frozen layout of both record forms; tid = first 15 bytes of BLAKE3 of
+    // spec/wire.md §3: frozen layout of the record forms; tid = first 15 bytes of BLAKE3 of
     // exactly these bytes.
     #[test]
     fn creation_record_bytes() {
-        let r = CreationRecord::Thing { owner: Tid::from_bytes([7; 15]), nonce: [1; 32], creator: None };
+        let r = CreationRecord::Thing { owner: Tid::from_bytes([7; 15]), nonce: [1; 32] };
         let rb = hex(&format!("a2 00 d90650 4f{} 02 5820{}", "07".repeat(15), "01".repeat(32)));
-        let c = CreationRecord::Thing { owner: Tid::from_bytes([7; 15]), nonce: [1; 32], creator: Some(Tid::from_bytes([8; 15])) };
-        let cb = hex(&format!("a3 00 d90650 4f{} 02 5820{} 03 d90650 4f{}", "07".repeat(15), "01".repeat(32), "08".repeat(15)));
+        let o = CreationRecord::Ownerless { admin: Tid::from_bytes([8; 15]), nonce: [1; 32] };
+        let ob = hex(&format!("a2 02 5820{} 03 d90650 4f{}", "01".repeat(32), "08".repeat(15)));
         let k = CreationRecord::KeyActor { alg: 1, public_key: vec![9; 32], nonce: [1; 32] };
         let kb = hex(&format!("a2 01 d90651 82 01 5820{} 02 5820{}", "09".repeat(32), "01".repeat(32)));
-        for (rec, bytes) in [(r, rb), (c, cb), (k, kb)] {
+        for (rec, bytes) in [(r, rb), (o, ob), (k, kb)] {
             assert_eq!(encode(&rec.to_value()), bytes);
             assert_eq!(rec.tid().as_bytes()[..], blake3::hash(&bytes).as_bytes()[..15]);
             assert_eq!(CreationRecord::from_value(&rec.to_value()), Some(rec));
@@ -499,13 +488,12 @@ mod tests {
     }
 
     // spec/wire.md §3: exactly one of owner and key, a 32-byte nonce, ed25519 keys of 32 bytes,
-    // a creator (a tid) only with an owner.
+    // no other field.
     #[test]
     fn creation_record_rejects() {
         let owner = Tid::from_bytes([7; 15]);
-        let r = CreationRecord::Thing { owner, nonce: [1; 32], creator: None };
-        assert_ne!(r.tid(), CreationRecord::Thing { owner, nonce: [2; 32], creator: None }.tid());
-        assert_ne!(r.tid(), CreationRecord::Thing { owner, nonce: [1; 32], creator: Some(owner) }.tid());
+        let r = CreationRecord::Thing { owner, nonce: [1; 32] };
+        assert_ne!(r.tid(), CreationRecord::Thing { owner, nonce: [2; 32] }.tid());
         assert_eq!(CreationRecord::from_value(&Value::Int(0)), None);
         let Value::Map(m) = r.to_value() else { unreachable!() };
         let key = |alg, len| Value::Enum(alg, Some(Box::new(Value::Bytes(vec![9; len]))));
@@ -522,9 +510,8 @@ mod tests {
             assert_eq!(with(&|m| { m.remove(&Value::Int(0)); m.insert(Value::Int(1), key(alg, len)); }), None, "{alg} {len}");
         }
         assert!(with(&|m| { m.remove(&Value::Int(0)); m.insert(Value::Int(1), key(1, 32)); }).is_some());
-        assert!(with(&|m| { m.insert(Value::Int(3), Value::Tid(owner)); }).is_some());
-        assert_eq!(with(&|m| { m.remove(&Value::Int(0)); m.insert(Value::Int(1), key(1, 32)); m.insert(Value::Int(3), Value::Tid(owner)); }), None);
-        assert_eq!(with(&|m| { m.insert(Value::Int(3), Value::Tid(owner)); m.insert(Value::Int(4), Value::Int(0)); }), None);
+        assert_eq!(with(&|m| { m.insert(Value::Int(3), Value::Tid(owner)); }), None); // both owner and admin
+        assert_eq!(with(&|m| { m.insert(Value::Int(4), Value::Int(0)); }), None);
     }
 
     // spec/data-model.md §2: the AK grammar and its accessors.

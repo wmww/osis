@@ -331,7 +331,6 @@ fn fallback_header(v: &View) -> Header {
         blind: [0; 16],
         keys: Vec::new(),
         frontier: None,
-        origins: Vec::new(),
         links: Default::default(),
         ephemeral: None,
     }
@@ -449,9 +448,6 @@ indexes! {
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
     /// `retention::any_bounded` without walking the aspect.
     pub bounded_held: JMap<(Tid, Ak), u64>,
-    /// Held imports per thing and origin: (thing, origin) -> import: the deltas owning the
-    /// origin's writes there (spec/permissions.md §7).
-    pub imports: JSetMap<(Tid, CommitId), CommitId>,
     /// Compaction snapshots held per aspect, with their frontiers and `Absorbed`: the bodies
     /// carrying a write besides its own (deaths, spec/commits.md §5); what stands in for missing
     /// deltas in atomic apply (`receipt::listed`).
@@ -497,11 +493,6 @@ indexes! {
     /// listed until their `keys.0` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
     /// a commit that applied valid, by an admin of the thing, touching it; the first kept.
     pub delete_hints: JMap<Tid, osis_base::Value>,
-    /// `was.0` index: t -> things whose `was.0` reads t.
-    pub was: JSetMap<Tid, Tid>,
-    /// The `was.0` each thing reads.
-    pub was_of: JMap<Tid, Tid>,
-    pub moved: JMap<Tid, Tid>,
     /// `group.0` definitions and `groups.0` (thing -> groups containing it, transitively).
     pub groups: groups::Groups,
     /// Each `placed.0~` state as read: a group's ephemeral placements (`Engine::groups_of` reads

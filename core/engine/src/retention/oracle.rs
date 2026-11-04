@@ -31,7 +31,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         let untraced = match (h.form.counted() && h.kind.has_own_writes(), super::snapshot::by_id(h.kind, h.form)) {
             (true, _) => !sn.frontiers.lists(&h.form.own_source(h.author, *c)),
             (_, true) => !sn.absorbed.contains_key(c),
-            _ => h.kind == osis_commit::Kind::Import,
+            _ => false,
         };
         if untraced && m.missing.contains(&cai) {
             return Ok(None);
@@ -82,7 +82,7 @@ pub(crate) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     }
     for x in holders {
         let Some(a) = h.aspects.get(x) else { continue };
-        let own = super::writes_of(tx.core, &h, c, x);
+        let own = super::writes_of(&h, c, x);
         if tx.state(&a.tid, &a.ak)?.is_some_and(|st| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)))) {
             return Ok(true);
         }

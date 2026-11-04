@@ -479,11 +479,11 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
     assert_eq!(bob.role_on(e), Some(Role::Write));
 }
 
-// notes/ephemeral.md Persistence: a role operation or a move on an ephemeral thing first
-// persists it (and a move's ephemeral new owner) by its own commit; a durable reference to an
-// ephemeral tid persists nothing (it may dangle). spec/data-model.md §1
+// notes/ephemeral.md Persistence: a role operation on an ephemeral thing first persists it by its
+// own commit; a durable reference to an ephemeral tid persists nothing (it may dangle).
+// spec/data-model.md §1
 #[test]
-fn roles_and_move_persist_first_spec_data_model_1() {
+fn roles_persist_first_spec_data_model_1() {
     let (_w, alice, bob, g) = shared(Role::Read);
     let e = alice.write_with(|w| w.create(g)).unwrap();
     alice.grant(e, bob.me(), Role::Write, Default::default()).unwrap();
@@ -499,12 +499,7 @@ fn roles_and_move_persist_first_spec_data_model_1() {
         })
         .unwrap();
     assert_eq!(db.created(e).unwrap().commit, None, "a reference persists nothing");
-    let o = db.write_with(|w| w.create(db.me())).unwrap();
-    let copy = db.move_thing(d, o, &[]).unwrap();
-    assert!(db.created(o).unwrap().commit.is_some());
-    assert_eq!(db.owner_of(copy), Some(o));
-    let copy = db.move_thing(e, o, &[]).unwrap();
-    assert!(db.created(copy).unwrap().commit.is_some());
+    assert!(db.created(d).unwrap().commit.is_some());
 }
 
 // notes/ephemeral.md API delta (Writes): an ephemeral op that fails when it resolves (a list

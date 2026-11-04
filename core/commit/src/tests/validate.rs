@@ -2,7 +2,7 @@
 
 use crate::tests::{dkey, sample_header, t, ts};
 use crate::*;
-use osis_base::{Ak, CommitId, Value};
+use osis_base::{Ak, Value};
 use osis_schema::{Bound, PurgeBy, Retention};
 
 fn invalid(h: &Header) -> Error {
@@ -32,7 +32,7 @@ fn validate_layout() {
     assert!(invalid(&x).to_string().contains("counter range"));
 }
 
-// spec/commits.md §2: kinds and aspect classes; snapshots and imports have empty ranges;
+// spec/commits.md §2: kinds and aspect classes; snapshots have empty ranges;
 // one delta per aspect except role and roster snapshots.
 #[test]
 fn validate_kinds() {
@@ -54,24 +54,6 @@ fn validate_kinds() {
     x.keys.push(dkey(3, 3));
     x.aspects[0].keys = vec![0, 1, 2];
     x.validate().unwrap();
-    let mut x = h.clone();
-    x.kind = Kind::Import;
-    x.form = Form::Commit;
-    x.aspects[0].lo = 0;
-    x.aspects[0].hi = 0;
-    assert!(invalid(&x).to_string().contains("delete levels"), "imports carry no level-2 key");
-    x.keys.remove(1);
-    x.aspects[0].keys = vec![0];
-    assert!(invalid(&x).to_string().contains("expires on an import"), "spec/permissions.md §7");
-    x.expires = None;
-    assert!(invalid(&x).to_string().contains("origins"));
-    x.origins.push(Origin { commit: CommitId([1; 32]), author: t(1), actor: t(2), ts: ts(5) });
-    x.validate().unwrap();
-    // spec/permissions.md §7: an import is on one thing
-    let mut y = x.aspects[0].clone();
-    y.tid = t(9);
-    x.aspects.push(y);
-    assert!(invalid(&x).to_string().contains("several things"));
 }
 
 pub(crate) fn role_header(ak: &str) -> Header {

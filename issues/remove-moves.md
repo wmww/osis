@@ -1,6 +1,0 @@
-# Remove moving a thing to another owner
-> Summary: Tess: get rid of moves between owners for now; keep a note of what could be built (notes/moves.md). Delete the import commit (marker, origins table), imported history, imported purge rights and `move_thing`, with their spec, tests and oracles.
-> Tags: engine, api, spec, permissions
-
-Why: 29 merged items touched imports (purge-imports two reviews, double-import, invalid-import, import-dots, import-live), issues import-own-source and import-body-never-live are open, and an order oracle (`purge_import`) exists only for them; nothing first-party moves (chat never does).
-Work: spec/requirements.md Permissions ("Moving a thing to another owner is a copy with imported history, and rare" becomes "A thing never changes owner"), spec/permissions.md §7 and its references (§5.2 import sources, origins, §8 purge of imports), spec/commits.md (import marker, kinds), spec/wire.md (import marker, `origins`), spec/crdt.md mentions; osis `move_thing` (core/osis/src/share.rs), engine `moves.rs`, apply/copies.rs, import handling in retention, header origins; tests (walks, history, review, order purge_import, validity, retention, deletion, synthetic) and vectors; close issues/import-own-source.md and issues/import-body-never-live.md. Before deleting spec/permissions.md §7, copy what notes/moves.md needs from it.

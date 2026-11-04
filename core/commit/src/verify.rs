@@ -58,7 +58,7 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     let cx = delta_ctx(h, id, part.ai, interner)?;
     let d = match cx.kind {
         DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, interner, pages)?),
-        DeltaKind::Writer | DeltaKind::Import => Decoded::Delta(decode_delta(&part.delta, &cx, interner, pages)?),
+        DeltaKind::Writer => Decoded::Delta(decode_delta(&part.delta, &cx, interner, pages)?),
     };
     check_fragment(h, a.ak.as_str(), d.fragment())?;
     Ok(d)
@@ -89,7 +89,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     };
     let out = match cx.kind {
         DeltaKind::Snapshot => stream_snapshot(&part.delta, &cx, interner, pages, &mut each).map(Some)?,
-        DeltaKind::Writer | DeltaKind::Import => stream_delta(&part.delta, &cx, interner, pages, &mut each).map(|_| None)?,
+        DeltaKind::Writer => stream_delta(&part.delta, &cx, interner, pages, &mut each).map(|_| None)?,
     };
     keyed?;
     Ok(out)

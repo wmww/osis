@@ -39,8 +39,7 @@ pub(crate) fn memory_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option
 
 /// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
 /// (spec/commits.md §5): each write's own delta (spec/permissions.md §5.2: the session-form delta
-/// whose counter range holds it, the commit-form commit it names, the imports listing that commit
-/// as an origin); for writes whose own delta's header is not held, the held snapshot bodies of
+/// whose counter range holds it, the commit-form commit it names); for writes whose own delta's header is not held, the held snapshot bodies of
 /// the aspect carrying them, and for any of those none carries, every snapshot of the aspect
 /// applied here. Cost: a lookup and a header per live write; the aspect's headers (and its held
 /// snapshot bodies) only when some write's own commit is not found directly.
@@ -51,14 +50,13 @@ fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<
     let entry = |h: &Header| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| a.retention);
     let mut own: BTreeSet<CommitId> = BTreeSet::new();
     let mut out = Vec::new();
-    // live writes whose own commit is not a held commit with its own writes on the aspect, with
-    // the commit their dot names (an import's origin), if any
-    let mut rest: Vec<(osis_crdt::Dot, Option<CommitId>)> = Vec::new();
+    // live writes whose own commit is not a held commit with its own writes on the aspect
+    let mut unknown: BTreeSet<osis_crdt::Dot> = BTreeSet::new();
     for (d, _) in st.live_writes() {
         let c = tx.core.commit_of(tid, ak, &d);
         let found = c.and_then(|c| {
             let h = &tx.core.ix.commits.get(&c)?.header;
-            (!h.kind.is_compaction() && h.kind != Kind::Import).then_some(())?;
+            (!h.kind.is_compaction()).then_some(())?;
             entry(h)
         });
         match (found, c) {
@@ -67,35 +65,20 @@ fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<
                     out.push(r);
                 }
             }
-            _ => rest.push((d, c)),
-        }
-    }
-    if rest.is_empty() {
-        return Ok(out);
-    }
-    let commits: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|(_, c)| *c).collect();
-    let mut imports: std::collections::BTreeMap<CommitId, Vec<osis_schema::Retention>> = Default::default();
-    let mut snapshots = Vec::new();
-    for c in &commits {
-        let Some(h) = tx.core.ix.commits.get(c).map(|m| &m.header) else { continue };
-        let Some(r) = entry(h) else { continue };
-        if h.kind == Kind::Import {
-            for o in &h.origins {
-                imports.entry(o.commit).or_default().push(r);
-            }
-        } else if h.kind.is_compaction() {
-            snapshots.push((*c, r));
-        }
-    }
-    let mut unknown: BTreeSet<osis_crdt::Dot> = BTreeSet::new();
-    for (d, c) in rest {
-        match c.and_then(|c| imports.get(&c)) {
-            Some(rs) => out.extend(rs.iter().copied()),
-            None => _ = unknown.insert(d),
+            _ => _ = unknown.insert(d),
         }
     }
     if unknown.is_empty() {
         return Ok(out);
+    }
+    let commits: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|(_, c)| *c).collect();
+    let mut snapshots = Vec::new();
+    for c in &commits {
+        let Some(h) = tx.core.ix.commits.get(c).map(|m| &m.header) else { continue };
+        let Some(r) = entry(h) else { continue };
+        if h.kind.is_compaction() {
+            snapshots.push((*c, r));
+        }
     }
     let mut carried = BTreeSet::new();
     for (c, r) in &snapshots {
@@ -180,8 +163,7 @@ pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid
 }
 
 /// Whether a commit's own writes are judged by its ID (commit form: a snapshot lists those whose
-/// writes it holds as absorbed) rather than by counters under a frontier. An import has no writes
-/// of its own (they sit under its origins' sources) and is in neither table.
+/// writes it holds as absorbed) rather than by counters under a frontier.
 pub(super) fn by_id(kind: Kind, form: Form) -> bool {
     form == Form::Commit && kind.has_own_writes()
 }
@@ -277,12 +259,11 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         }
         // the snapshot holds nothing of the body's session or commit (spec/crdt.md §8): its
         // writes are dead where the body is held and joins unchanged (below); a body not held
-        // here establishes nothing, as the writer may never have applied it. An import is in
-        // no table, so its tables never say the writer applied it.
+        // here establishes nothing, as the writer may never have applied it.
         let untraced = match (h.form.counted() && h.kind.has_own_writes(), by_id(h.kind, h.form)) {
             (true, _) => !fr.lists(&h.form.own_source(h.author, *c)),
             (_, true) => !abs.iter().any(|x| x.0 == *c),
-            _ => h.kind == Kind::Import,
+            _ => false,
         };
         if untraced && m.missing.contains(&cai) {
             return Ok(None);
@@ -403,8 +384,7 @@ impl Engine {
             // frontiers count as reflected (their writes are joined), and own ranges continue
             // from them
             let (mut frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on, &left_out);
-            // commit-form commits whose valid writes the state reflects (an import's sit under
-            // its origins' sources: it has no entry)
+            // commit-form commits whose valid writes the state reflects
             let mut absorbed = std::collections::BTreeMap::new();
             for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
@@ -435,7 +415,7 @@ impl Engine {
             } else {
                 Vec::new()
             };
-            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
+            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
@@ -479,7 +459,7 @@ impl Engine {
             let retention = osis_commit::retention::EPHEMERAL_RETENTION;
             let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
             let records = crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter());
-            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
+            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new(), split: false, records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })

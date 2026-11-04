@@ -91,14 +91,6 @@ pub(crate) enum Step {
     /// `by` purges `t`'s register by author: `of`'s deltas (spec/permissions.md §8), as the API does:
     /// no write on the register, a `purge.0` one.
     PurgeAuthor { by: usize, t: usize, of: usize },
-    /// `by` moves `t` to a copy it owns (spec/permissions.md §7), the copy a new thing.
-    Move { by: usize, t: usize },
-    /// `by` imports `from` into copy `copy` again (`Engine::reimport`): imports listing origins
-    /// other imports list.
-    Reimport { by: usize, from: usize, copy: usize },
-    /// `by` purges one of its last imports on `t` by name, its register only: with a write there
-    /// (`reset`), or with a `purge.0` one.
-    PurgeImport { by: usize, t: usize, back: u8, reset: bool },
     /// Every commit `from` holds to `to`.
     Sync { from: usize, to: usize },
     /// One of `from`'s last commits to `to`.
@@ -791,43 +783,6 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
                 m.purge(osis_commit::PurgeItem::Author { tid: t, ak: ak("t:reg.0"), actor });
                 no = why(&lp.peers[by].commit(m));
-                Some(by)
-            }
-            Step::Move { by, t } => {
-                let r = lp.peers[by].engine.move_thing(&th(t), ids[by]);
-                no = why(&r);
-                if let Ok((copy, _)) = r {
-                    things.push(copy);
-                }
-                Some(by)
-            }
-            Step::Reimport { by, from, copy } => {
-                // a shrink that drops the move leaves no copy: `th` would wrap onto the source
-                no = if things.len() <= from.max(copy) { Some("no copy".into()) } else { why(&lp.peers[by].engine.reimport(&th(from), &th(copy))) };
-                Some(by)
-            }
-            Step::PurgeImport { by, t, back, reset } => {
-                let (t, k) = (th(t), ak("t:reg.0"));
-                let e = &lp.peers[by].engine;
-                // any node's: a request by another admin may fall where the owner's stands
-                let mut imports: Vec<(osis_base::Ts, CommitId)> = e.commit_ids().into_iter().filter_map(|c| e.header(&c).filter(|h| h.kind == osis_commit::Kind::Import && h.aspects.iter().any(|a| a.tid == t && a.ak == k)).map(|h| (h.ts, c))).collect();
-                imports.sort();
-                match imports.iter().rev().nth(back as usize % imports.len().max(1)).map(|x| &x.1) {
-                    Some(commit) => {
-                        let mut m = Mutation::new();
-                        m.purge(osis_commit::PurgeItem::Commit { commit: *commit, tid: t, ak: k });
-                        if reset {
-                            m.set(t, &REG, &s("reset")).unwrap();
-                        } else {
-                            // a new value, or no delta to carry the request
-                            lp.peers[by].clock.advance(1);
-                            let now = lp.peers[by].engine.now();
-                            m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
-                        }
-                        no = why(&lp.peers[by].commit(m));
-                    }
-                    None => no = Some("no import".into()),
-                }
                 Some(by)
             }
             Step::Sync { from, to } => {
@@ -1586,7 +1541,7 @@ struct Fact {
     held: bool,
     valid: bool,
     ts: u64,
-    /// A snapshot or import body (copies): its carried writes die for it at its `ts` when
+    /// A snapshot body (copies): its carried writes die for it at its `ts` when
     /// killed by a lower-stamped write (spec/commits.md §5).
     copies: bool,
     /// Held there, a copies body's lowest carried write `ts` (a killer is stamped after it).
@@ -1624,7 +1579,7 @@ type Invalid = BTreeMap<(String, String), Vec<(String, u64)>>;
 /// The drop-before-flip difference on body `k` between nodes with facts `w` and `g`: held at
 /// one node only, under keep at most, with its own write invalid (its delta, or a write it
 /// carries) or an invalid write of its aspect that may have killed it: stamped at or after it,
-/// or for a snapshot or import at or after the lowest write it carries (a lower-stamped kill of
+/// or for a snapshot at or after the lowest write it carries (a lower-stamped kill of
 /// a carried write kills it at its own `ts`; the node holding it reads that bound).
 fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
     let (w, g) = (&w[k], &g[k]);
@@ -1714,7 +1669,7 @@ fn keyed(text: &str) -> BTreeMap<(String, String), String> {
 
 /// The commits (as `facts_text` prints them) of the bodies dropped at both nodes, under keep at
 /// most or snapshots on an aspect a purge request names (dropped for carrying purged writes, seed
-/// 34000; an import so dropped keeps its residue), on an aspect whose reads or states differ and
+/// 34000), on an aspect whose reads or states differ and
 /// that flipped on the way (`flips`): what the state alone held of such a body and lost to an
 /// un-merge comes back only with a copy (spec/crdt.md §4.6), which joins as a late part or, purged,
 /// value-less (spec/commits.md §5), so both are given them again (`alike_exchanged`).
@@ -3159,138 +3114,12 @@ fn purge_rows_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     out
 }
 
-/// A move of a thing, writes on both sides, compactions of the copy, repeat imports, purges of
-/// imports by name by the owner and two admins, who demote each other (requests fall and rise, the
-/// owner's stand; `value_past_end` judges each node).
-fn purge_import_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
-    let mut rng = Rng(seed.wrapping_mul(0xa24b_aed4_963e_e407) | 1);
-    let mut out = vec![Step::Message { by: 0, t: 0, v: 0 }, Step::Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Step::Sync { from: 1, to: 0 }, Step::Move { by: 0, t: 0 }, Step::Reimport { by: 0, from: 0, copy: 1 }, Step::Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Step::Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Step::Sync { from: 0, to: 1 }, Step::Sync { from: 0, to: 2 }];
-    while out.len() < len {
-        let (by, v) = (rng.below(3) as usize, rng.below(10) as u8);
-        let (holder, to) = (1 + rng.below(2) as usize, (by + 1 + rng.below(2) as usize) % 3);
-        out.push(match rng.below(15) {
-            0 | 1 => Step::Write { by, t: 1, op: 0, k: 0, v },
-            2 => Step::Message { by: 0, t: 0, v },
-            3 | 4 => Step::Compact { by, t: 1, op: 0 },
-            5 => Step::Reimport { by: 0, from: 0, copy: 1 },
-            6..=8 => Step::PurgeImport { by, t: 1, back: rng.below(3) as u8, reset: rng.below(4) == 0 },
-            9 => Step::Advance { who: Some(by), ms: 1 + rng.below(2_000) },
-            10 | 11 => Step::Demote { by: rng.below(3) as usize, t: 1, holder, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
-            12 => Step::Edge { by: 0, t: 1, holder, role: Some(Role::Admin) },
-            _ => Step::Sync { from: by, to },
-        });
-    }
-    out
-}
-
 // spec/permissions.md §8, spec/crdt.md §4.7: a residue left by a fall, value-less again by expiry or a
 // purge, and reopened.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_rows_large_spec_perm_8() {
     run("arrival_order_purge_rows_large_spec_perm_8", osis_base::testenv::large(7000..7060), 40, LARGE, purge_rows_history);
-}
-
-// spec/commits.md §5, spec/permissions.md §7: a purge of an import takes its origins' writes from
-// every body and the state in any arrival order, a snapshot written concurrently (stamped after
-// the request, carrying them) and an import of the same origin included.
-#[test]
-fn arrival_order_purge_import_pinned_spec_commits_5() {
-    use Step::*;
-    let h = vec![
-        Write { by: 1, t: 0, op: 0, k: 0, v: 1 },
-        Sync { from: 1, to: 0 },
-        Move { by: 0, t: 0 },
-        Edge { by: 0, t: 1, holder: 1, role: Some(Role::Write) },
-        Reimport { by: 0, from: 0, copy: 1 },
-        Sync { from: 0, to: 1 },
-        PurgeImport { by: 0, t: 1, back: 0, reset: false },
-        Advance { who: Some(1), ms: 5_000 },
-        Compact { by: 1, t: 1, op: 0 },
-    ];
-    let played = play(9, &h);
-    let n = played.packs.len();
-    assert!(played.tally.kinds.get("PurgeImport").is_some_and(|x| x.1 == 1) && played.tally.kinds.get("Compact").is_some_and(|x| x.1 == 1), "{:?}", played.tally.kinds);
-    let mut p = deliver(&played, &(0..n).collect::<Vec<_>>());
-    assert_eq!(p.engine.get(&played.things[1], &ak("t:reg.0")).unwrap(), None, "the purged value stays out");
-    check(9, &h, EXHAUST_SMALL).unwrap();
-}
-
-// spec/commits.md §5, spec/requirements.md Purge, spec/permissions.md §7: arrival order decides
-// nothing with purges of imports, and no node holds their values whatever came first.
-#[test]
-fn arrival_order_purge_import_small_spec_commits_5() {
-    run("arrival_order_purge_import_small_spec_commits_5", 0..4, 16, SMALL, purge_import_history);
-}
-
-#[test]
-#[ignore = "tier 2"]
-fn arrival_order_purge_import_large_spec_commits_5() {
-    run("arrival_order_purge_import_large_spec_commits_5", osis_base::testenv::large(5000..5060), 40, LARGE, purge_import_history);
-}
-
-// spec/crdt.md §4.6, spec/commits.md §5 (order seed 34000, shrunk): the copy holds two register
-// writes stamped alike under imported origins' dots, the owner's `m0` (import #27, its dot sorting
-// above) and B's `v1` (import #26). The owner's snapshot #22 carries `m0` below B's `v4`; #27 is
-// header-only (its author's earlier request on that origin dropped it at creation) and the held
-// request #28 names it, so both nodes drop #22 and hold `m0` value-less. Where B's `reset` (#30)
-// came valid and superseded `m0` before the drop, then turned invalid (A's demotion of B came valid
-// last), its un-merge has no body or residue to give the value-less `m0` back, and the older `v1`
-// shows (no purged value: nothing names #26); where `m0` was the winner when purged, the state
-// keeps it value-less and reads nothing. Given #22 again (it joins value-less,
-// `both_dropped_flips`), both read nothing. Which import's dot sorts above follows the commit IDs:
-// a header format change swaps the two values' roles (item 259 the other way).
-#[test]
-fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
-    use Step::*;
-    let h = vec![Message { by: 0, t: 0, v: 0 }, Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Move { by: 0, t: 0 }, Reimport { by: 0, from: 0, copy: 1 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, Sync { from: 0, to: 2 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Write { by: 1, t: 1, op: 0, k: 0, v: 4 }, Advance { who: Some(2), ms: 1621 }, Compact { by: 0, t: 1, op: 0 }, Demote { by: 2, t: 1, holder: 1, at: 0, to_read: true }, PurgeImport { by: 0, t: 1, back: 0, reset: false }, Reimport { by: 0, from: 0, copy: 1 }, PurgeImport { by: 0, t: 1, back: 0, reset: false }, Demote { by: 2, t: 1, holder: 2, at: 1, to_read: false }, PurgeImport { by: 1, t: 1, back: 0, reset: true }];
-    let played = play(34000, &h);
-    let made = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30];
-    let order = vec![3, 28, 1, 8, 5, 25, 11, 18, 22, 23, 30, 24, 4, 0, 21, 20, 2, 29, 7, 27, 6, 26, 19];
-    let want = judged(&mut deliver(&played, &made), &played);
-    let got = judged(&mut deliver(&played, &order), &played);
-    let differs = alike(&want, &got).expect("the reads differ");
-    assert!(differs.contains("reads on") && differs.contains("v1"), "{differs}");
-    assert_eq!(value_past_end(&mut deliver(&played, &order), &played, played.now), None, "the stale value shown is no purged one");
-    let copy = format!("{:?}", played.things[1]);
-    assert!(flipped(&played, &order, Way::Plain, &copy, "t:reg.0"), "the order flips");
-    assert!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|_, _| false).is_some(), "no flip, nothing given");
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|t, a| flipped(&played, &order, Way::Plain, t, a)), None);
-}
-
-// spec/permissions.md §5.2, §7 (order seed 86144, shrunk): 1's snapshot #29 copies the moved
-// origin's write `v1` value-less (1 had purged its import by a request not held here), so it
-// misstates the held imports #12 and #16 of that origin and its copy governs: the register reads
-// nothing. Delivered as made, 2's request #24 purged both imports and then fell (1 demoted 2),
-// leaving them missing; given again after #29, the first is compared with it (its dots were
-// carried) but the second was not (the first had received them) and joined its value: a purged
-// value shown, and an in-place un-merge keeping what a rebuild strips.
-#[test]
-fn second_import_misstated_by_snapshot_seed_86144_spec_permissions_5_2() {
-    use Step::*;
-    let h = vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Move { by: 0, t: 0 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, Reimport { by: 0, from: 0, copy: 1 }, Sync { from: 1, to: 2 }, PurgeImport { by: 2, t: 1, back: 1, reset: false }, PurgeImport { by: 1, t: 1, back: 0, reset: false }, Message { by: 0, t: 0, v: 3 }, Message { by: 0, t: 0, v: 1 }, Write { by: 2, t: 1, op: 0, k: 0, v: 9 }, Message { by: 0, t: 0, v: 7 }, Compact { by: 2, t: 1, op: 0 }, PurgeImport { by: 2, t: 1, back: 0, reset: false }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Compact { by: 2, t: 1, op: 0 }, Demote { by: 1, t: 1, holder: 2, at: 2, to_read: true }, Demote { by: 1, t: 1, holder: 2, at: 2, to_read: false }, Sync { from: 1, to: 2 }, Compact { by: 1, t: 1, op: 0 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }];
-    let played = with_syncs(play(86144, &h), 86144, false);
-    let (copy, reg) = (played.things[1], ak("t:reg.0"));
-    let held = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 19, 20, 21, 24, 26, 27, 28, 29, 30];
-    let rev: Vec<usize> = held.iter().rev().copied().collect();
-    let mut w = deliver(&played, &held);
-    let want = judged(&mut w, &played);
-    let mut g = deliver(&played, &rev);
-    let got = judged(&mut g, &played);
-    assert_eq!(g.engine.get(&copy, &reg).unwrap(), None);
-    assert_eq!(w.engine.get(&copy, &reg).unwrap(), None);
-    // the imports, missing since the fall, given again in either order: each compared with the
-    // snapshot, whichever finds the carried entry
-    let mut w2 = deliver(&played, &held);
-    for (w, again) in [(&mut w2, [16usize, 12]), (&mut w, [12, 16])] {
-        for i in again {
-            let pk = &played.packs[i];
-            w.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-            assert_eq!(w.engine.get(&copy, &reg).unwrap(), None, "import #{i} given again ({again:?})");
-        }
-    }
-    let flips = |t: &str, a: &str| flipped(&played, &held, Way::Plain, t, a) || flipped(&played, &rev, Way::Plain, t, a);
-    assert_eq!(alike_exchanged(&played, &want, &held, &got, &rev, Way::Plain, &flips), None);
 }
 
 // spec/permissions.md §8, spec/wire.md §4: arrival order decides nothing with purges by author,

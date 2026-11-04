@@ -21,8 +21,8 @@ pub const RECEIPT: &[u8] = b"r/";
 pub const VALUELESS: &[u8] = b"v/";
 /// What a delta held value-less (expired, purged) leaves once its body goes: its body's writes
 /// with every value stripped (spec/crdt.md §4.7), one row per delta: `w/` + aspect key + commit
-/// ID + aspect index (4 bytes). Read only while the value-less list names a write of the delta (an
-/// import: an origin, `retention::writes_of`): a purge that fell leaves the row, for a rise with no
+/// ID + aspect index (4 bytes). Read only while the value-less list names a write of the delta
+/// (`retention::writes_of`): a purge that fell leaves the row, for a rise with no
 /// body left (`retention::make_valueless`).
 pub const RESIDUE: &[u8] = b"w/";
 /// A waiting part a held purge request names, held value-less (`retention::strip_purged`): `j/` +

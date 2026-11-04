@@ -21,7 +21,7 @@ pub struct Ctx {
     /// Start of the own counter range (header).
     pub lo: u64,
     /// End of the own counter range for a writer's delta: enables the range checks and the writer-only rules of
-    /// §2.3 and §3.3 rule 7. `None` for snapshot and import deltas.
+    /// §2.3 and §3.3 rule 7. `None` for snapshot deltas.
     pub hi: Option<u64>,
     /// `Sources` of the delta: wire index i is `sources[i-1]`, 0 is `own`.
     pub sources: Vec<Source>,
@@ -649,7 +649,7 @@ pub fn encode(f: &Frag, cx: &Ctx) -> Item {
                 .into_iter()
                 .map(|((d, key), e)| {
                     let mut a = vec![enc_dot(d, cx)];
-                    // a foreign creation carries its commit (snapshots, imports); this commit's own
+                    // a foreign creation carries its commit (snapshots); this commit's own
                     // is implied
                     if let Some(c) = e.created.as_ref().filter(|c| !(c.ts == cx.ts && c.dot.source == cx.own)) {
                         a.push(u(cx.commit_index(c.ts, &d.source).expect("commit table collected").0));

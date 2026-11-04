@@ -18,7 +18,7 @@ use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Core, DropFor, Dropped, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event};
-use osis_commit::{Form, Header, Kind};
+use osis_commit::Header;
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crdt::Fragment;
 use osis_schema::core_types::is_role_class;
@@ -451,7 +451,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
             let key = records::residue_key(&a.tid, &a.ak, &c, ai);
             tx.txn.remove_local(&key, Shred::Yes)?;
         }
-        owned.extend(writes_of(tx.core, &m.header, &c, ai));
+        owned.extend(writes_of(&m.header, &c, ai));
     }
     if any && ak.as_str() == "keys.0" {
         crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*tid]))?;
@@ -570,50 +570,17 @@ pub(crate) fn valueless(core: &Core, c: &CommitId, ai: usize) -> bool {
     core.ix.commits.get(c).is_some_and(|m| !gone_of(core, &m.header, c, ai).is_empty())
 }
 
-/// The owners of the writes delta `ai` of `id` holds as its own: its counters or commit ID, an
-/// import's origins' dots on its aspect (it holds them under `Commit(origin)`, spec/permissions.md
-/// §7; `Owned::of` names only its empty range), a snapshot's none (it copies). What invalidity,
-/// expiry and purge of the delta take (an import has no expiry).
-///
-/// Invariant (security, spec/requirements.md Purge): an import going value-less takes every
-/// write under these dots on the aspect, in every body and while a request on an import listing the
-/// origin stands (`rejudge_purges`), whichever of the request, the import, another import listing
-/// the origin and a snapshot came first: a function of the held set, since `Owned::Commit(origin)`
-/// on the value-less list strips every later join (`strip_valueless`). It never takes what the
-/// import does not hold by right: an origin with a delta on the thing owns its dots there (the
-/// import is void, §7), judged here when the origin arrived first and by `origin_arrived` when it
-/// comes later.
-/// Complete for an import's values: a held import holds no stamp outside its origins' sources
-/// but anchors' creations and sibling keys (refused as bad input, `apply::judge_part`).
-pub(crate) fn writes_of(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Vec<Owned> {
-    let Some(a) = h.aspects.get(ai) else { return Vec::new() };
-    if h.kind == Kind::Import {
-        return h.origins.iter().filter(|o| !crate::apply::copies::owns_commit_dots(core, &o.commit, &a.tid, &a.ak)).map(|o| Owned::Commit(o.commit)).collect();
-    }
-    if h.kind.has_own_writes() { Owned::of(h, id, ai).into_iter().collect() } else { Vec::new() }
+/// The owners of the writes delta `ai` of `id` holds as its own: its counters or commit ID, a
+/// snapshot's none (it copies). What invalidity, expiry and purge of the delta take.
+pub(crate) fn writes_of(h: &Header, id: &CommitId, ai: usize) -> Vec<Owned> {
+    if h.aspects.get(ai).is_some() && h.kind.has_own_writes() { Owned::of(h, id, ai).into_iter().collect() } else { Vec::new() }
 }
 
 /// `writes_of` the value-less list of the aspect names.
 pub(crate) fn gone_of(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Vec<Owned> {
     let Some(v) = h.aspects.get(ai).and_then(|a| core.ix.valueless.get(&(a.tid, a.ak.clone()))) else { return Vec::new() };
     // sorted (`make_valueless`)
-    writes_of(core, h, id, ai).into_iter().filter(|o| v.binary_search(o).is_ok()).collect()
-}
-
-/// Commit-form commit `id` (header `h`) first held: its `Commit(id)` dots on its aspects are its
-/// own (spec/permissions.md §5.2). Any the value-less lists name there came from an import
-/// listing it, now void (§7): off the lists, as if the origin had come first (`writes_of`), and
-/// `apply::unjoin_void` rebuilds the aspect from what is held. A snapshot or import already
-/// dropped for carrying them stays dropped: a limit (spec/commits.md §5), a hostile creator's only.
-pub(crate) fn origin_arrived(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
-    if h.form != Form::Commit || !h.kind.has_own_writes() {
-        return Ok(());
-    }
-    let o = Owned::Commit(*id);
-    for a in &h.aspects {
-        off_valueless(tx, &a.tid, &a.ak, std::slice::from_ref(&o));
-    }
-    Ok(())
+    writes_of(h, id, ai).into_iter().filter(|o| v.binary_search(o).is_ok()).collect()
 }
 
 /// Takes `gone` off the value-less list of `(tid, ak)`.
@@ -632,13 +599,6 @@ fn off_valueless(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) {
     tx.core.valueless_dirty.insert(k);
 }
 
-/// The held imports listing an origin of import `h` on its aspect `ai`, `h`'s own included once
-/// held; none for any other kind.
-fn sharing(core: &Core, h: &Header, ai: usize) -> BTreeSet<CommitId> {
-    let Some(a) = h.aspects.get(ai).filter(|_| h.kind == Kind::Import) else { return BTreeSet::new() };
-    h.origins.iter().flat_map(|o| core.ix.imports.get(&(a.tid, o.commit)).into_iter().flatten().copied()).collect()
-}
-
 /// Reopens the dropped parts among `ais` of `c` (`takes_late`) for their late copies to join.
 pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) -> Result<()> {
     for ai in ais {
@@ -654,7 +614,7 @@ pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) 
 /// holds, `stripped_joined`), or for a body dropped as covered from its held valid coverers'
 /// copies. A part dropped otherwise or still missing has none (`takes_late`).
 fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: &[Fragment]) -> Result<Option<(Tid, Ak)>> {
-    let o = tx.core.ix.commits.get(c).map(|m| writes_of(tx.core, &m.header, c, ai)).unwrap_or_default();
+    let o = tx.core.ix.commits.get(c).map(|m| writes_of(&m.header, c, ai)).unwrap_or_default();
     valueless_as(tx, c, ai, &o, kept)
 }
 
@@ -682,12 +642,12 @@ fn valueless_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], kept: &[F
     // its body, stripped there (stripping commutes with join, spec/crdt.md §4.7) and its residue
     // joined
     #[cfg(test)]
-    let whole = oracle::residue(tx, &m, c, ai, o, &writes_of(tx.core, &m.header, c, ai), kept)?;
+    let whole = oracle::residue(tx, &m, c, ai, o, &writes_of(&m.header, c, ai), kept)?;
     let mut residue: Option<Fragment> = None;
     let mut merged = false;
     // value-less for all its writes, not only those going now: a residue outlives the body, so a
     // later purge of the others has no copy here to reach
-    let all = writes_of(tx.core, &m.header, c, ai);
+    let all = writes_of(&m.header, c, ai);
     let mut strip = |tx: &mut Tx<'_>, f: Fragment| -> Result<()> {
         let mut r = f.clone();
         r.strip(&|d| all.iter().any(|x| x.owns(d)));
@@ -739,14 +699,6 @@ fn valueless_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], kept: &[F
     } else if !new.is_empty() {
         rejoin_residue(tx, &a.tid, &a.ak, c, ai)?;
     }
-    // so do the rows of the other imports of an origin back on the list
-    let origins = new.iter().filter_map(|x| if let Owned::Commit(o) = x { Some(*o) } else { None });
-    let others: BTreeSet<CommitId> = origins.flat_map(|o| tx.core.ix.imports.get(&(a.tid, o)).into_iter().flatten().copied()).filter(|i| i != c).collect();
-    for i in others {
-        if let Some(iai) = aspect_index(tx.core, &i, &a.tid, &a.ak) {
-            rejoin_residue(tx, &a.tid, &a.ak, &i, iai)?;
-        }
-    }
     Ok(Some(k))
 }
 
@@ -783,21 +735,11 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     if let Some(k) = make_valueless(tx, c, ai, &[])? {
         changed.insert(k);
     }
-    drop_part_for(tx, c, ai, if purged { DropFor::Purge } else { DropFor::Other })?;
-    // the other imports listing its origins hold those writes too (spec/permissions.md §7)
-    let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
-    let Some(a) = h.aspects.get(ai) else { return Ok(()) };
-    for i in sharing(tx.core, &h, ai) {
-        if let Some(iai) = aspect_index(tx.core, &i, &a.tid, &a.ak) {
-            drop_gone(tx, &i, iai, changed)?;
-        }
-    }
-    Ok(())
+    drop_part_for(tx, c, ai, if purged { DropFor::Purge } else { DropFor::Other })
 }
 
 /// Part `ai` of `c` holding writes the value-less list names, a part not dropped yet (a late copy
-/// held value-less, an import listing a purged origin): held value-less for those writes alone,
-/// and dropped.
+/// held value-less): held value-less and dropped.
 fn drop_gone(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(m) = tx.core.ix.commits.get(c).filter(|m| !m.dropped.contains_key(&ai)) else { return Ok(()) };
     let gone = gone_of(tx.core, &m.header, c, ai);
@@ -858,8 +800,7 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
 /// them, held snapshots' parts carrying purged values, and on a memory commit what it supersedes
 /// or covers. One held value-less (reopened by `takes_late`, or missing again after `uncover`)
 /// drops again, now keeping its residue: the list holds only what is past its expiry or a standing
-/// purge drops (`rejudge_purges` takes the rest out); so does an import listing a purged origin
-/// (`drop_gone`).
+/// purge drops (`rejudge_purges` takes the rest out; `drop_gone`).
 fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, purged: &mut BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     for ai in ais.iter().copied() {
         if h.aspects.get(ai).is_none() {

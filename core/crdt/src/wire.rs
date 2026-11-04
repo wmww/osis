@@ -28,8 +28,6 @@ pub enum DeltaKind {
     Writer,
     /// A snapshot (§8): foreign writes only, no counters.
     Snapshot,
-    /// An import (spec/permissions.md §7): re-sourced foreign writes, no counters.
-    Import,
 }
 
 /// The commit header facts a delta is read against (§2.4).
@@ -149,7 +147,7 @@ pub struct Snapshot {
     pub nonce: [u8; NONCE_LEN],
     pub fragment: Fragment,
     pub frontiers: Frontiers,
-    /// Commits judged by commit ID (commit form, imports) whose writes in this aspect the
+    /// Commit-form commits whose writes in this aspect the
     /// writer had applied, with their author nodes (§8).
     pub absorbed: BTreeMap<CommitId, Tid>,
 }
@@ -434,7 +432,7 @@ impl<'p> Enc<'p> {
     }
 
     /// Counts `n` elements of a run without `Content`: more than `MAX_DELTA_BARE` in a writer's
-    /// or an import delta is refused (§3.3 rule 7).
+    /// delta is refused (§3.3 rule 7).
     pub(crate) fn note_bare(&mut self, n: u64) -> Result<(), Error> {
         if self.collecting || self.kind == DeltaKind::Snapshot {
             return Ok(());
@@ -782,7 +780,7 @@ impl<'a> Dec<'a> {
     fn commit(&self, ci: u64) -> Result<(Ts, Source, u64), Error> {
         if ci == 0 {
             if self.kind != DeltaKind::Writer {
-                return Err(Error::Malformed("own write in a snapshot or import"));
+                return Err(Error::Malformed("own write in a snapshot"));
             }
             return Ok((self.ts, self.own.clone(), self.range.lo));
         }

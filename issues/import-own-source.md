@@ -1,9 +1,0 @@
-# Imports could have one origin and dots of their own source kind
-> Summary: Two simplifications left undone, as they change the format. Imported dots share `Commit(C)` with a commit-form C's own dots, which is the whole reason for void imports and `retention::origin_arrived`; a multi-origin import exists only in hostile input, yet every rule must handle it.
-> Tags: engine, permissions
-
-A source kind of its own for imported writes makes a colliding import impossible: the void rule, its filter in `retention::writes_of` and the rebuild on a late origin go. It also closes a stated limit (spec/commits.md §5): a snapshot dropped for carrying `Commit(C)` before a colliding C arrives stays dropped at that node, and if C's body was compacted the node reads less than one that got C first (seen: an older value) until a copy of the snapshot arrives again. A right holder syncing inside the window may delete it at hosts. A hostile creator's shape only.
-
-One origin per import (the honest writer already makes one per origin; spec/permissions.md §7 allows several, "first listed" for §8): `Owned::of` would name it directly, and `purge_actor`, `drop_gone`'s partial case and `rejudge_purges`'s partial fall go. That last one is a stated limit (spec/permissions.md §8): an import of C and D whose purge of C fell while D's stands stays dropped, so where it alone gave C the node reads less until D's falls or another copy of C comes.
-
-A hostile creator's two imports of one origin can differ in retention. Named under `writer`, the first takes the origin's writes from a `nobody` one too (by the spec: the creator alone decides what they are). Hosts keep the `nobody` body. A first import that is not permanent leaves its request not lasting, so a device coming later has a permanent second import, its body gone, waiting for good: that commit alone.

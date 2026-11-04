@@ -41,7 +41,6 @@ const DELETE_HINTS: &[u8] = b"node/delete hints";
 const REQUIRED: &[u8] = b"node/required";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
-const IMPORTS: &[u8] = b"node/imports";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` and `tenures.0`
 /// parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
@@ -667,7 +666,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, REQUIRED, &c.ix.required, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_aspect_map(txn, CARRIED, &c.ix.carried, all)?;
-    put_setmap(txn, IMPORTS, &c.ix.imports, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -846,9 +844,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED)? {
         tx.core.ix.carried.insert(k, dec(&v)?);
-    }
-    for ((k, x), _) in scan::<((Tid, CommitId), CommitId)>(tx, IMPORTS)? {
-        tx.core.ix.imports.insert(k, x);
     }
     Ok(())
 }

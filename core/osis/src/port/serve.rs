@@ -565,7 +565,6 @@ impl Worker {
             method::OWNER_OF => c::opt(db.owner_of(a.tid()?), Value::Tid),
             method::CREATED => c::opt(db.created(a.tid()?), |s| c::stamp_v(&s)),
             method::CHANGED => c::opt(db.changed(a.tid()?), |s| c::stamp_v(&s)),
-            method::SAME_THING => b(db.same_thing(a.tid()?, a.tid()?)),
             method::WRITE => {
                 let nonce = a.uint()?;
                 let rest = a.rest();
@@ -704,10 +703,6 @@ impl Worker {
                 db.rotate_reach()?;
                 nothing()
             }
-            method::MOVE_THING => {
-                let (t, owner, groups) = (a.tid()?, a.tid()?, c::tids(a.next()?)?);
-                Value::Tid(db.move_thing(t, owner, &groups)?)
-            }
             method::EXPORT_BUNDLE => {
                 let mut b = Vec::new();
                 db.export_bundle(&c::tids(a.next()?)?, &mut b)?;
@@ -770,7 +765,7 @@ impl Worker {
             if !db.is_local(t) {
                 return Err(unsupported("a watch of a group this node reads at another node"));
             }
-            Ok(db.read_local(|r| r.resolve(t)))
+            Ok(t)
         };
         let (kind, filter) = match a.uint()? {
             // the sharing and sync flows take no actor (`method::for_client`)

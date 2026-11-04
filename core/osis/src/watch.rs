@@ -27,7 +27,7 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The commit behind a change, as its signed header says: a snapshot or import applied is
+/// The commit behind a change, as its signed header says: a snapshot applied is
 /// reported as itself, never as the writes it carries (notes/api.md Attribution).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitInfo {
@@ -322,9 +322,8 @@ enum Pre {
     Ready(Delivery),
 }
 
-/// Which subscriptions a message reaches. Aspect and thing watches follow moves: a watch
-/// registered under `t` fires for changes of the thing `t` resolves to (spec/permissions.md §7).
-fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
+/// Which subscriptions a message reaches.
+fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     if let Msg::Initial(id) = m {
         return lock(&sh.registry).subs.get(id).map(|s| (s.clone(), Pre::Ready(Delivery::Initial))).into_iter().collect();
     }
@@ -334,7 +333,6 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     let live: Vec<Arc<Sub>> = lock(&sh.registry).subs.values().filter(|s| s.since <= seq).cloned().collect();
     let to = |f: &dyn Fn(&Filter) -> bool, d: Delivery| live.iter().filter(|s| f(&s.filter)).map(|s| (s.clone(), Pre::Ready(d.clone()))).collect();
     if let Some((changed, source)) = aspect_event(m) {
-        let mut resolved: BTreeMap<Tid, Tid> = BTreeMap::new();
         let mut out = Vec::new();
         let fired: &[(Tid, Ak, Value)] = match m {
             Msg::Event(Event::Ephemeral { signals, .. }) => signals,
@@ -345,9 +343,8 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                 Filter::Aspect(t, _) | Filter::Thing(t) => *t,
                 _ => continue,
             };
-            let rt = *resolved.entry(ft).or_insert_with(|| db.read_local(|r| r.resolve(ft)));
             for (t, ak) in changed {
-                let hit = (ft == *t || rt == *t)
+                let hit = ft == *t
                     && match &s.filter {
                         Filter::Aspect(_, fak) => fak == ak,
                         _ => true,
@@ -357,7 +354,7 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                 }
             }
             for (t, ak, value) in fired {
-                let hit = (ft == *t || rt == *t)
+                let hit = ft == *t
                     && match &s.filter {
                         Filter::Aspect(_, fak) => fak == ak,
                         _ => true,
@@ -373,8 +370,7 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         let mut out = Vec::new();
         for s in &live {
             let Filter::History(ft, fak) = &s.filter else { continue };
-            let rt = db.read_local(|r| r.resolve(*ft));
-            for (t, ak, id) in changes.iter().filter(|(t, ak, _)| (t == ft || *t == rt) && ak == fak) {
+            for (t, ak, id) in changes.iter().filter(|(t, ak, _)| t == ft && ak == fak) {
                 debug_assert_eq!(ak, fak);
                 out.push((s.clone(), Pre::Ready(Delivery::History { tid: *t, id: *id })));
             }
@@ -420,7 +416,7 @@ impl Pump {
         let Some(inner) = db.upgrade() else { return true };
         let db = Osis::internal(inner);
         self.covered.retain(|_, c| *c >= seq);
-        for (s, pre) in targets(&db, sh, seq, &m) {
+        for (s, pre) in targets(sh, seq, &m) {
             let d = match pre {
                 Pre::Ready(d) => d,
                 Pre::Aspect { tid, ak, mut source } => {

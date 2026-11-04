@@ -40,23 +40,20 @@ pub(crate) fn register_delta(author: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
     encode_delta(&d, &writer_ctx(SESSION, Kind::Content, at, author, lo, lo + 1), None).unwrap()
 }
 
-// spec/crypto.md §7: delete keys by retention level; level 2 omitted for imports; a missing
+// spec/crypto.md §7: delete keys by retention level; a missing
 // key is an error, level 1 included.
 #[test]
 fn delete_levels_by_retention() {
     let s = TestSecrets { admin: true };
-    let lv = |by, kind| delete_keys(&s, &t(3), &Retention { by, ..Default::default() }, kind).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
-    assert_eq!(lv(PurgeBy::Nobody, Kind::Content), Vec::<u8>::new());
-    assert_eq!(lv(PurgeBy::Admin, Kind::Content), vec![1]);
-    assert_eq!(lv(PurgeBy::Author, Kind::Content), vec![2]);
-    assert_eq!(lv(PurgeBy::Author, Kind::Import), Vec::<u8>::new());
-    assert_eq!(lv(PurgeBy::AuthorOrAdmin, Kind::Content), vec![1, 2]);
-    assert_eq!(lv(PurgeBy::AuthorOrAdmin, Kind::Import), vec![1]);
-    assert_eq!(lv(PurgeBy::Writer, Kind::Content), vec![1, 2, 3]);
-    assert_eq!(lv(PurgeBy::Writer, Kind::Import), vec![1, 3]);
-    assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention::default(), Kind::Content).is_err());
+    let lv = |by| delete_keys(&s, &t(3), &Retention { by, ..Default::default() }).unwrap().iter().map(|x| x.level).collect::<Vec<_>>();
+    assert_eq!(lv(PurgeBy::Nobody), Vec::<u8>::new());
+    assert_eq!(lv(PurgeBy::Admin), vec![1]);
+    assert_eq!(lv(PurgeBy::Author), vec![2]);
+    assert_eq!(lv(PurgeBy::AuthorOrAdmin), vec![1, 2]);
+    assert_eq!(lv(PurgeBy::Writer), vec![1, 2, 3]);
+    assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention::default()).is_err());
     // an author-only delta needs no admin key: a writer without one writes it
-    assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention { by: PurgeBy::Author, ..Default::default() }, Kind::Content).is_ok());
+    assert!(delete_keys(&TestSecrets { admin: false }, &t(3), &Retention { by: PurgeBy::Author, ..Default::default() }).is_ok());
 }
 
 /// A valid one-aspect content commit over a register delta, its blob and author key.
@@ -89,7 +86,7 @@ fn commit_blob_round_trip() {
 // parts carry none.
 #[test]
 fn records_beside_deltas_spec_commits_2() {
-    let rec = |n: u8| osis_base::CreationRecord::Thing { owner: t(9), nonce: [n; 32], creator: None };
+    let rec = |n: u8| osis_base::CreationRecord::Thing { owner: t(9), nonce: [n; 32] };
     let (mut b, key) = one_commit();
     let mut durable = b.clone();
     durable.parts[0].records = vec![rec(1)];

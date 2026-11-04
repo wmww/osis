@@ -145,9 +145,9 @@ fn reached_matches_plan_inside() {
 fn perm_graph() {
     let mut held = MemoryHeldSet::new();
     let d = held.create(CreationRecord::KeyActor { alg: 1, public_key: vec![7; 32], nonce: [1; 32] });
-    let p = held.create(CreationRecord::Thing { owner: d, nonce: [2; 32], creator: None });
-    let t = held.create(CreationRecord::Thing { owner: p, nonce: [3; 32], creator: None });
-    let a2 = held.create(CreationRecord::Thing { owner: d, nonce: [4; 32], creator: None });
+    let p = held.create(CreationRecord::Thing { owner: d, nonce: [2; 32] });
+    let t = held.create(CreationRecord::Thing { owner: p, nonce: [3; 32] });
+    let a2 = held.create(CreationRecord::Thing { owner: d, nonce: [4; 32] });
     held.add_commit(RoleCommit {
         id: CommitId([9; 32]),
         ts: Ts::make(osis_base::WallMs(1000), 0).unwrap(),

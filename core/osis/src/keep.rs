@@ -99,7 +99,7 @@ impl Osis {
         let value = value.to_value();
         check(&key, &path, &value)?;
         let key = crate::Key { ak: ak_of(&key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
-        let mut k = Kept { tid: self.read_local(|r| r.resolve(tid)), key, path, value, writes: 0 };
+        let mut k = Kept { tid, key, path, value, writes: 0 };
         write(self, &mut k)?;
         let st = Arc::new(Mutex::new(k));
         let every = Duration::from_millis((exp / u64::from(REFRESH_DIVISOR)).max(1));

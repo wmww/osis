@@ -54,7 +54,7 @@ fn created_rejects_expires() {
     assert!(h.validate().unwrap_err().to_string().contains("fixed-retention"));
 }
 
-// spec/commits.md §2, §5: a snapshot or import never carries `required.0^`, kept forever and read
+// spec/commits.md §2, §5: a snapshot never carries `required.0^`, kept forever and read
 // a delta at a time; its retention is fixed, as `created.0`'s.
 #[test]
 fn required_setting_kinds_spec_commits_5() {
@@ -67,16 +67,13 @@ fn required_setting_kinds_spec_commits_5() {
     a.hi = 0;
     h.expires = None;
     h.keys.clear();
-    for k in [Kind::ContentSnapshot, Kind::Import] {
-        let mut x = h.clone();
-        x.kind = k;
-        x.form = crate::header::Form::Commit;
-        assert!(x.validate().unwrap_err().to_string().contains("without own writes"), "{k:?}");
-    }
+    h.kind = Kind::ContentSnapshot;
+    h.form = crate::header::Form::Commit;
+    assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
     assert_eq!(retention::fixed_retention("required.0^"), Some(retention::CREATED_RETENTION));
 }
 
-// spec/commits.md §2 (created one minting): a durable snapshot or import never carries `created.0`.
+// spec/commits.md §2 (created one minting): a durable snapshot never carries `created.0`.
 #[test]
 fn created_only_in_commits_with_own_writes() {
     let mut h = sample_header();
@@ -88,12 +85,9 @@ fn created_only_in_commits_with_own_writes() {
     a.hi = 0;
     h.expires = None;
     h.keys.clear();
-    for k in [Kind::ContentSnapshot, Kind::Import] {
-        let mut x = h.clone();
-        x.kind = k;
-        x.form = Form::Commit;
-        assert!(x.validate().unwrap_err().to_string().contains("without own writes"), "{k:?}");
-    }
+    h.kind = Kind::ContentSnapshot;
+    h.form = Form::Commit;
+    assert!(h.validate().unwrap_err().to_string().contains("without own writes"));
 }
 
 // spec/sync.md §3, spec/wire.md §4: a received blob mixing retention classes is bad input.
@@ -112,7 +106,7 @@ fn prefix_inputs_mixed_class_bad_input() {
 }
 
 // spec/crypto.md §7: delete levels are exactly those the retention calls for, level 1
-// included, on content and role commits alike; level 2 only drops for imports.
+// included, on content and role commits alike.
 #[test]
 fn delete_levels_strict() {
     let mut h = sample_header();
@@ -191,7 +185,7 @@ fn linked_as(f: ListField, bytes: &[u8], d: &osis_crypto::Secret32, m: &mut Memo
     })
     .unwrap();
     let mut h = sample_header();
-    (h.aspects, h.chunks, h.purge, h.keys, h.origins, h.frontier) = (vec![], vec![], vec![], vec![], vec![], None);
+    (h.aspects, h.chunks, h.purge, h.keys, h.frontier) = (vec![], vec![], vec![], vec![], None);
     h.links.set(f, Some(link));
     h
 }
@@ -234,7 +228,7 @@ fn hostile_list_refused_by_shape() {
     let mut in_set = vec![0xa1, 0];
     osis_base::cbor::head(&mut in_set, 6, osis_base::format::TAG_SET);
     in_set.extend(&maps);
-    let cases = [(ListField::Aspects, &maps), (ListField::Chunks, &maps), (ListField::Purge, &maps), (ListField::Keys, &maps), (ListField::Origins, &maps), (ListField::Frontier, &maps), (ListField::Frontier, &in_frontier), (ListField::Frontier, &in_set)];
+    let cases = [(ListField::Aspects, &maps), (ListField::Chunks, &maps), (ListField::Purge, &maps), (ListField::Keys, &maps), (ListField::Frontier, &maps), (ListField::Frontier, &in_frontier), (ListField::Frontier, &in_set)];
     let headers: Vec<_> = cases.map(|(f, bytes)| (f, linked_as(f, bytes, &d, &mut m))).into();
     let start = peak_mib();
     for (f, mut h) in headers {

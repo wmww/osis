@@ -11,7 +11,7 @@ use osis_base::{CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs}
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const ROLE_CLASS: [&str; 7] = ["roles.0", "secrets.0", "keys.0", "label.0", "tenures.0", "moved.0", "was.0"];
+pub const ROLE_CLASS: [&str; 5] = ["roles.0", "secrets.0", "keys.0", "label.0", "tenures.0"];
 
 pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
@@ -358,8 +358,6 @@ pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
 pub const TENURES: Aspect<Tenures> = Aspect::new("tenures.0", &CORE);
 pub const LABEL: Aspect<Labels> = Aspect::new("label.0", &CORE);
-pub const MOVED: Aspect<Tid> = Aspect::new("moved.0", &CORE);
-pub const WAS: Aspect<Tid> = Aspect::new("was.0", &CORE);
 pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
 pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);

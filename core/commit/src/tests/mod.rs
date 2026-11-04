@@ -52,7 +52,6 @@ pub(crate) fn sample_header() -> Header {
         blind: [5; 16],
         keys: vec![dkey(1, 1), dkey(2, 2)],
         frontier: None,
-        origins: vec![],
         links: Links::default(),
         ephemeral: None,
     }

@@ -503,7 +503,7 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let sec = Forged(rec);
     let author = w.lp.peers[by].engine.tid();
     let retention = osis_commit::retention::snapshot_retention(ak.as_str(), [], 0);
-    let keys = osis_commit::delete_keys(&sec, &t, &retention, Kind::ContentSnapshot).unwrap();
+    let keys = osis_commit::delete_keys(&sec, &t, &retention).unwrap();
     let blind = [9u8; 16];
     let framing = osis_label::Framing { dedup: osis_commit::Secrets::dedup(&sec, &t).unwrap(), expiry: None, keys: keys.iter().map(|k| (k.level, k.verifying_key().unwrap())).collect(), blind };
     let mut blobs = osis_label::MemoryBlobs::default();

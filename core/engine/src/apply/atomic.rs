@@ -285,8 +285,7 @@ pub(super) struct Joins {
     pub joined: Vec<(Tid, Ak, bool, Vec<osis_crdt::Death>)>,
 }
 
-/// Joins every part of commit `id` (`valid`: per aspect; `void`: a void import's body joins
-/// nothing), in part order, a piece at a time (tests under `Core::whole_apply`: `oracle::joins`).
+/// Joins every part of commit `id` (`valid`: per aspect), in part order, a piece at a time (tests under `Core::whole_apply`: `oracle::joins`).
 ///
 /// Invariant (the differential `tests_paged` checks it against `oracle::joins`, which decodes
 /// and joins every part whole): joining a delta a piece at a time, each piece's state pages
@@ -295,15 +294,15 @@ pub(super) struct Joins {
 /// split a delta by element (§8), and what is judged of a whole delta is judged of its pieces:
 /// carried writes, un-merging and holding value-less per write, misstatements per write against
 /// the state before the part (`copies_before`), deaths per join.
-fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &Parts, valid: &[bool], void: bool) -> Result<Joins> {
+fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &Parts, valid: &[bool]) -> Result<Joins> {
     let mut j = Joins::default();
     #[cfg(test)]
     if tx.core.whole_apply {
-        super::oracle::joins(tx, h, id, parts, valid, void, &mut j)?;
+        super::oracle::joins(tx, h, id, parts, valid, &mut j)?;
         return Ok(j);
     }
     for (ai, part) in in_order(parts) {
-        join_part(tx, h, id, blob, ai, part, valid.get(ai).copied().unwrap_or(false), void, &mut j)?;
+        join_part(tx, h, id, blob, ai, part, valid.get(ai).copied().unwrap_or(false), &mut j)?;
     }
     Ok(j)
 }
@@ -311,18 +310,17 @@ fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &
 /// Joins one part (`joins`): every held snapshot notes its frontiers and carried writes,
 /// whatever its validity; a valid part joins; an invalid delta joins and un-merges (its sequence
 /// records stay as hidden anchors, spec/crdt.md §4.6); an invalid snapshot gives nothing (its
-/// copies never join, spec/permissions.md §5.2), nor does a void import's body (its copies may
-/// sit under an origin's own dots).
+/// copies never join, spec/permissions.md §5.2).
 #[allow(clippy::too_many_arguments)]
-fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: usize, part: PartRef<'_>, v: bool, void: bool, j: &mut Joins) -> Result<()> {
+fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: usize, part: PartRef<'_>, v: bool, j: &mut Joins) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let (tid, ak) = (a.tid, a.ak.clone());
     let gives = part.gives();
     let snap = gives.is_some();
     // edge and creation aspects reach perm instead
     let perm = validity::perm_ak(ak.as_str());
-    if !v && !snap && (void || perm) {
-        return if perm { Ok(()) } else { arrived_invalid(tx, &tid, &ak, j) };
+    if !v && !snap && perm {
+        return Ok(());
     }
     if let Some(fr) = gives {
         note_snapshot(tx.core, &tid, &ak, h.ts, id, fr);
@@ -550,7 +548,7 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
         if m.valid_at(ai) {
             continue;
         }
-        out.extend(crate::retention::writes_of(core, &m.header, c, ai));
+        out.extend(crate::retention::writes_of(&m.header, c, ai));
     }
     out
 }
@@ -628,7 +626,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
 
     // creation records first: perm and dedup secrets need them
     let mut held_changed = note_created(tx, &h, blob, &parts.whole)?;
-    copies::note_imports(tx.core, &id, &h);
     let view = Arc::new(crate::engine::View::of(&h));
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &parts.whole);
@@ -656,17 +653,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
             now,
         );
     }
-    // an import naming an origin on its own thing is void, judged once both are held
-    // (spec/permissions.md §7): this one, or held ones naming this commit
-    let voided = copies::self_origin_imports(tx.core, &id, &h);
-    let void_self = voided.contains(&id);
-    for c in &voided {
-        held_changed = true;
-        tx.core.ix.void.insert(*c);
-        tx.core.stale_commits.insert(*c);
-        tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
-    }
-    crate::retention::origin_arrived(tx, &id, &h)?;
     index_commit(tx.core, &id, &view);
     // copies snapshots held here took of its writes: compared with its deltas once stored
     let uncarried = copies::uncarry(tx.core, &id, &h, &|ai| parts.has(ai));
@@ -695,7 +681,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         }
     }
     let pend = super::keys::before_join(tx, &h, &parts.whole, &valid)?;
-    let mut j = joins(tx, &h, &id, blob, &parts, &valid, void_self)?;
+    let mut j = joins(tx, &h, &id, blob, &parts, &valid)?;
     // an invalid aspect whose part is not held: others' writes under its creations go too (the
     // part may never come, or come late)
     for (ai, a) in h.aspects.iter().enumerate() {
@@ -708,7 +694,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     }
     note_held_rules(tx, &h, &id, &parts)?;
-    after_store(tx, &h, &id, &uncarried, &voided, &mut j)?;
+    after_store(tx, &h, &id, &uncarried, &mut j)?;
     {
         let _s = crate::costs::span("apply: retention");
         crate::retention::stripped_joined(tx, &id, &parts.stripped_joined(), &mut j.changed)?;
@@ -800,15 +786,14 @@ pub(super) fn core_holds_owner(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt:
 }
 
 /// Once commit `id` (header `h`) is stored, so its own bodies join too: the rebuilds its joins
-/// call for (`vouching`, `refill`, `unjoin_void`), then the deaths its valid parts reported.
-fn after_store(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTreeSet<CommitId>)], voided: &BTreeSet<CommitId>, j: &mut Joins) -> Result<()> {
+/// call for (`vouching`, `refill`), then the deaths its valid parts reported.
+fn after_store(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTreeSet<CommitId>)], j: &mut Joins) -> Result<()> {
     for (tid, ak) in std::mem::take(&mut j.vouching) {
         // counted: tests read whether a snapshot vouched
         let _s = crate::costs::span("apply: vouched rebuild");
         rebuild_changed(tx, &tid, &ak, &[], j)?;
     }
     refill(tx, h, id, uncarried, j)?;
-    unjoin_void(tx, h, id, voided, j)?;
     for (tid, ak, snap, deaths) in &j.joined {
         crate::retention::note_deaths(tx, tid, ak, deaths)?;
         if *snap {
@@ -833,48 +818,19 @@ fn rebuild_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], j: &mut 
 /// copied otherwise than its deltas hold them (`uncarried`, `copies::differing_copies`): the
 /// snapshots' copies govern (spec/permissions.md §5.2), so the delta's writes under those dots go.
 /// Invariant: every held delta a held valid snapshot misstates has been compared with it, on
-/// whichever arrived second (`copies_before` for the snapshot), so the state is `rebuilt`'s. A
-/// carried entry names only the first owner of a dot to arrive: an import's dots may be received
-/// already through another import of its origin (spec/permissions.md §7), so an import's held
-/// parts are compared with every held valid snapshot of the aspect.
+/// whichever arrived second (`copies_before` for the snapshot), so the state is `rebuilt`'s.
 fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTreeSet<CommitId>)], j: &mut Joins) -> Result<()> {
-    let mut per: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = uncarried.iter().map(|(t, a, s)| ((*t, a.clone()), s.clone())).collect();
-    if h.kind == osis_commit::Kind::Import
-        && let Some(m) = tx.core.ix.commits.get(id)
-    {
-        for a in h.aspects.iter().enumerate().filter(|(ai, _)| m.holds(*ai)).map(|x| x.1) {
-            let k = (a.tid, a.ak.clone());
-            per.entry(k.clone()).or_default().extend(tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|s| s.1));
-        }
-    }
-    for ((tid, ak), snaps) in per {
-        let Some(ai) = h.aspects.iter().position(|a| a.tid == tid && a.ak == ak) else { continue };
+    for (tid, ak, snaps) in uncarried {
+        let Some(ai) = h.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
         // an invalid snapshot's copies never joined
-        let snaps: BTreeSet<CommitId> = snaps.into_iter().filter(|s| copies::snapshot_valid(tx.core, s, &tid, &ak)).collect();
+        let snaps: BTreeSet<CommitId> = snaps.iter().filter(|s| copies::snapshot_valid(tx.core, s, tid, ak)).copied().collect();
         if snaps.is_empty() {
             continue;
         }
         if copies::differing_copies(tx, h, id, ai, &snaps)?.is_empty() {
             continue;
         }
-        rebuild_changed(tx, &tid, &ak, &[], j)?;
-    }
-    Ok(())
-}
-
-/// Rebuilds the aspects where held imports turned void by commit `id` (header `h`), an origin
-/// on their own thing, joined copies under `id`'s own dots: those go from the state and `id`'s
-/// deltas give the writes again (spec/permissions.md §7).
-fn unjoin_void(tx: &mut Tx<'_>, h: &Header, id: &CommitId, voided: &BTreeSet<CommitId>, j: &mut Joins) -> Result<()> {
-    let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
-    for c in voided.iter().filter(|c| *c != id) {
-        let Some(m) = tx.core.ix.commits.get(c) else { continue };
-        aspects.extend(m.header.aspects.iter().filter(|a| h.aspects.iter().any(|x| x.tid == a.tid && x.ak == a.ak)).map(|a| (a.tid, a.ak.clone())));
-    }
-    for (tid, ak) in aspects {
-        if copies::owns_commit_dots(tx.core, id, &tid, &ak) {
-            rebuild_changed(tx, &tid, &ak, &[Owned::Commit(*id)], j)?;
-        }
+        rebuild_changed(tx, tid, ak, &[], j)?;
     }
     Ok(())
 }
@@ -918,7 +874,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let late = parts.ais();
     wake_listed(tx.core, &h, &late);
     let mut held_changed = note_created(tx, &h, merged, &parts.whole)?;
-    copies::note_imports(tx.core, id, &h);
     let away = away_of(tx, &h, id, &parts);
     let edges = h.kind.is_role() && (!away.is_empty() || late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str()))));
     if h.kind.is_role() {
@@ -926,13 +881,12 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     let with_keys = with_keys(tx, &h, id, &parts)?;
     let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
-    let void_import = h.kind == osis_commit::Kind::Import && tx.core.ix.void.contains(id);
-    let mut j = joins(tx, &h, id, merged, &parts, &meta.valid, void_import)?;
+    let mut j = joins(tx, &h, id, merged, &parts, &meta.valid)?;
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_role() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
     note_held_rules(tx, &h, id, &parts)?;
-    after_store(tx, &h, id, &uncarried, &BTreeSet::new(), &mut j)?;
+    after_store(tx, &h, id, &uncarried, &mut j)?;
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
     crate::retention::on_late(tx, id, &late, &mut j.changed)?;
@@ -1146,9 +1100,9 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
 }
 
 /// Keeps the indexes derived from states current: secrets opened from `secrets.0`, delete keys
-/// and keyset epochs from `keys.0`, the `was.0` and `moved.0` indexes, group definitions.
+/// and keyset epochs from `keys.0`, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "was.0" | "moved.0" | "group.0" | "placed.0~") {
+    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0" | "placed.0~") {
         return Ok(());
     }
     // `placed.0~` follows every state write (`Tx::placed_from`)
@@ -1184,23 +1138,6 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
                 }
             }
         }
-        "was.0" => {
-            if let Some(old) = tx.core.ix.was_of.remove(tid) {
-                tx.core.ix.was.remove(&old, tid);
-            }
-            if let Some(Value::Tid(t)) = v {
-                tx.core.ix.was.insert(t, *tid);
-                tx.core.ix.was_of.insert(*tid, t);
-            }
-        }
-        "moved.0" => match v {
-            Some(Value::Tid(t)) => {
-                tx.core.ix.moved.insert(*tid, t);
-            }
-            _ => {
-                tx.core.ix.moved.remove(tid);
-            }
-        },
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
         // (what a thing's groups are decides what the node syncs: its waits are examined again)
         "group.0" => {
@@ -1334,8 +1271,8 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
     tx.set_state(tid, ak, st, Shred::Yes, false)
 }
 
-/// The residues of `(tid, ak)` (`records::RESIDUE`), not a void import's (its body joins
-/// nothing either). Invariant: every non-value write and value-less stamp of a delta held
+/// The residues of `(tid, ak)` (`records::RESIDUE`), not a void commit's (overlapping counters:
+/// invalid). Invariant: every non-value write and value-less stamp of a delta held
 /// value-less is in a body or a residue the node holds, never in the state alone, so a rebuild
 /// (an un-merge) gives it back after a later write that superseded it in the state goes: the
 /// state stays the join of what is held, whatever the order the expiry, that write and its
@@ -1371,8 +1308,8 @@ fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
 pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip: &BTreeSet<CommitId>) -> Result<(Option<Fragment>, BTreeSet<CommitId>)> {
     // newest first (a join does not depend on the order), for `Fragment::settled_above`
     let held: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().copied().collect()).unwrap_or_default();
-    // snapshots or imports held: their copies are judged against the deltas, read whole below
-    let copies = tx.core.ix.snapshots.get(&(*tid, ak.clone())).is_some_and(|v| !v.is_empty()) || tx.core.ix.imports.range((*tid, CommitId([0; 32]))..).next().is_some_and(|((t, _), _)| t == tid);
+    // snapshots held: their copies are judged against the deltas, read whole below
+    let copies = tx.core.ix.snapshots.get(&(*tid, ak.clone())).is_some_and(|v| !v.is_empty());
     // the part of `c` that may join, with whether it is a snapshot's and valid
     let joining = |tx: &mut Tx<'_>, c: &CommitId| -> Result<Option<(usize, bool, bool)>> {
         if skip.contains(c) {
@@ -1384,10 +1321,6 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
             return Ok(None);
         }
         let Some(m) = tx.core.ix.commits.get(c) else { return Ok(None) };
-        // nor does a void import's (spec/permissions.md §7)
-        if m.header.kind == osis_commit::Kind::Import && tx.core.ix.void.contains(c) {
-            return Ok(None);
-        }
         Ok(Some((ai, m.header.kind.is_compaction(), m.valid_at(ai))))
     };
     // the held snapshots (valid or not: an invalid one joins nothing, spec/permissions.md §5.2)

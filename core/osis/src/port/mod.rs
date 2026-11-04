@@ -33,138 +33,134 @@ pub(crate) mod method {
     /// `[tid]` -> Opt(stamp)
     pub const CREATED: u64 = 8;
     pub const CHANGED: u64 = 9;
-    /// `[a, b]` -> bool
-    pub const SAME_THING: u64 = 10;
     /// `[nonce, actor, [ak*], [op*]]` -> Opt(committed)
-    pub const WRITE: u64 = 11;
+    pub const WRITE: u64 = 10;
     /// `[query]` -> `[entry*]`
-    pub const COMMITS: u64 = 12;
+    pub const COMMITS: u64 = 11;
     /// `[nonce, scope]` -> Opt(committed)
-    pub const UNDO: u64 = 13;
-    pub const REDO: u64 = 14;
+    pub const UNDO: u64 = 12;
+    pub const REDO: u64 = 13;
     /// `[nonce, change]` -> committed
-    pub const REVERT: u64 = 15;
+    pub const REVERT: u64 = 14;
     /// `[]` -> status
-    pub const STATUS: u64 = 16;
+    pub const STATUS: u64 = 15;
     /// `[file, source]` -> `[]` (registered on the node: Owner only)
-    pub const REGISTER_SCHEMA: u64 = 17;
+    pub const REGISTER_SCHEMA: u64 = 16;
     /// `[tid, ak, path]` -> Opt(len)
-    pub const LEN: u64 = 18;
+    pub const LEN: u64 = 17;
     /// `[tid, ak, path, offset, n]` -> bytes (`n` at most `STREAM_CHUNK`)
-    pub const STREAM_READ: u64 = 19;
+    pub const STREAM_READ: u64 = 18;
     /// `[]` -> `[]` once every Notify for changes before it went (`Osis::settle`). The worker
     /// runs the node's `settle`, waiting for its dispatcher: a callback in the node's process
     /// that waits on the port worker (an attached handle of its own node) deadlocks it.
-    pub const SETTLE: u64 = 20;
+    pub const SETTLE: u64 = 19;
     /// `[]` -> wall ms
-    pub const NOW: u64 = 21;
+    pub const NOW: u64 = 20;
     /// `[]` -> `[host addr text*]`
-    pub const HOSTS: u64 = 22;
+    pub const HOSTS: u64 = 21;
     /// `[]` -> `[]` (`Osis::sync_now`: pokes the driver, waits for nothing)
-    pub const SYNC_NOW: u64 = 23;
+    pub const SYNC_NOW: u64 = 22;
     /// `[group, [host addr text*]]` -> `[]`
-    pub const SYNC: u64 = 24;
+    pub const SYNC: u64 = 23;
     /// `[group]` -> `[]`
-    pub const UNSYNC: u64 = 25;
+    pub const UNSYNC: u64 = 24;
     /// `[target, holder, role, edge opts]` -> `[]`
-    pub const GRANT: u64 = 26;
-    pub const CHANGE_EDGE: u64 = 27;
+    pub const GRANT: u64 = 25;
+    pub const CHANGE_EDGE: u64 = 26;
     /// `[tid, group, role, subgroup, place_anyway]` -> share
-    pub const SHARE_INTO: u64 = 28;
+    pub const SHARE_INTO: u64 = 27;
     /// `[group, target]` -> `[]`
-    pub const REMOVE_EDGE_OF: u64 = 29;
+    pub const REMOVE_EDGE_OF: u64 = 28;
     /// `[target]` -> `[]`
-    pub const LEAVE: u64 = 30;
+    pub const LEAVE: u64 = 29;
     /// `[target, role, Opt(until), single_use, direct]` -> link text
-    pub const MAKE_LINK: u64 = 31;
+    pub const MAKE_LINK: u64 = 30;
     /// `[tid]` -> `[[group, placed, share]*]`
-    pub const REACH: u64 = 32;
+    pub const REACH: u64 = 31;
     /// `[target, actor]` -> `[[thing, holder]*]`
-    pub const HOLDER_PATH: u64 = 33;
+    pub const HOLDER_PATH: u64 = 32;
     /// `[target]` -> `[[id, target, role, Opt(until), single_use]*]`
-    pub const LINKS: u64 = 34;
+    pub const LINKS: u64 = 33;
     /// `[]` -> `[[id, target, role, Opt(until), single_use]*]`
-    pub const ALL_LINKS: u64 = 70;
+    pub const ALL_LINKS: u64 = 68;
     /// `[Opt(until)]` -> `[actor, secret]` (`Osis::add_client`)
-    pub const ADD_CLIENT: u64 = 35;
+    pub const ADD_CLIENT: u64 = 34;
     /// `[]` -> `[[actor, Opt(until)]*]`
-    pub const CLIENTS: u64 = 36;
+    pub const CLIENTS: u64 = 35;
     /// `[actor]` -> bool
-    pub const REMOVE_CLIENT: u64 = 37;
+    pub const REMOVE_CLIENT: u64 = 36;
     /// `[actor]` -> secret
-    pub const ROTATE_CLIENT_SECRET: u64 = 38;
+    pub const ROTATE_CLIENT_SECRET: u64 = 37;
     /// `[]` -> `[node addr text*]`
-    pub const ROTATE_CLIENT_KEY: u64 = 39;
+    pub const ROTATE_CLIENT_KEY: u64 = 38;
     /// `[]` -> `[actor*]`
-    pub const KEPT: u64 = 40;
+    pub const KEPT: u64 = 39;
     /// `[actor]` -> `[]`
-    pub const DROP_KEPT: u64 = 41;
+    pub const DROP_KEPT: u64 = 40;
     /// `[tid, ak, from, limit, max bytes]` -> `[[entry*], more, complete]`
-    pub const HISTORY: u64 = 42;
+    pub const HISTORY: u64 = 41;
     /// `[target, holder, role, edge opts]` -> `[]` (`Osis::share`: `sync` when the holder has
     /// no route, then `grant`)
-    pub const SHARE: u64 = 43;
+    pub const SHARE: u64 = 42;
     /// `[admin]` -> tid (`Osis::create_ownerless`)
-    pub const CREATE_OWNERLESS: u64 = 44;
+    pub const CREATE_OWNERLESS: u64 = 43;
     /// `[]` -> `[[node, role]*]`
-    pub const DEVICES: u64 = 45;
+    pub const DEVICES: u64 = 44;
     /// `[host addr text]` -> `[]`
-    pub const ADD_HOST: u64 = 46;
-    pub const REMOVE_HOST: u64 = 47;
+    pub const ADD_HOST: u64 = 45;
+    pub const REMOVE_HOST: u64 = 46;
     /// `[]` -> Opt(key bytes)
-    pub const HOST_KEY: u64 = 48;
+    pub const HOST_KEY: u64 = 47;
     /// `[]` -> offer text
-    pub const PAIR_OFFER: u64 = 49;
+    pub const PAIR_OFFER: u64 = 48;
     /// `[request text]` -> `[node, reply text]`
-    pub const PAIR_ACCEPT: u64 = 50;
+    pub const PAIR_ACCEPT: u64 = 49;
     /// `[]` -> card text
-    pub const CONTACT_CARD: u64 = 51;
+    pub const CONTACT_CARD: u64 = 50;
     /// `[person]` -> Opt(tid)
-    pub const PROFILE_OF: u64 = 52;
+    pub const PROFILE_OF: u64 = 51;
     /// `[]` -> `[invite id bytes*]`
-    pub const INVITE_REQUESTS: u64 = 53;
+    pub const INVITE_REQUESTS: u64 = 52;
     /// `[invite id bytes]` -> `[]`
-    pub const ACCEPT_INVITE: u64 = 54;
-    pub const DECLINE_INVITE: u64 = 55;
+    pub const ACCEPT_INVITE: u64 = 53;
+    pub const DECLINE_INVITE: u64 = 54;
     /// `[group]` -> `[Opt(publish_reach), receipts_only]`
-    pub const GROUP_POLICY: u64 = 56;
+    pub const GROUP_POLICY: u64 = 55;
     /// `[group, Opt(publish_reach), receipts_only]` -> `[]`
-    pub const SYNC_POLICY: u64 = 57;
+    pub const SYNC_POLICY: u64 = 56;
     /// `[]` -> `[]`
-    pub const ROTATE_REACH: u64 = 58;
-    /// `[tid, owner, [group*]]` -> tid
-    pub const MOVE_THING: u64 = 59;
+    pub const ROTATE_REACH: u64 = 57;
     /// `[[group*]]` -> length: the bundle waits on this connection for `BUNDLE_READ`, replacing one
     /// waiting there, until its last page was read. A bundle does not fit a frame; held per
     /// connection, it goes with it.
-    pub const EXPORT_BUNDLE: u64 = 60;
+    pub const EXPORT_BUNDLE: u64 = 58;
     /// `[offset, n]` -> bytes of the waiting bundle (`n` at most `STREAM_CHUNK`)
-    pub const BUNDLE_READ: u64 = 61;
+    pub const BUNDLE_READ: u64 = 59;
     /// `[bytes]` -> `[]`: appended to the bundle coming on this connection for `IMPORT_BUNDLE`
-    pub const BUNDLE_WRITE: u64 = 62;
+    pub const BUNDLE_WRITE: u64 = 60;
     /// `[length]` -> `[]`: imports the waiting bundle, which must have that length (a reconnect
     /// between pages loses what was sent on the old connection)
-    pub const IMPORT_BUNDLE: u64 = 63;
+    pub const IMPORT_BUNDLE: u64 = 61;
 
     // Rows that wait on other nodes: a `[5, method, [arg*]]` subscription, never a Call (`filter`).
     /// `[sync scope, timeout ms]` -> `[]`
-    pub const WAIT_SYNCED: u64 = 64;
+    pub const WAIT_SYNCED: u64 = 62;
     /// `[link text]` -> tid
-    pub const REDEEM: u64 = 65;
+    pub const REDEEM: u64 = 63;
     /// `[target, holder, Opt(role), demotion]` -> `[]` (no role: removed)
-    pub const DEMOTE: u64 = 66;
+    pub const DEMOTE: u64 = 64;
     /// `[link id, demotion]` -> `[]`
-    pub const REVOKE_LINK: u64 = 67;
+    pub const REVOKE_LINK: u64 = 65;
     /// `[link id, joiner, demotion]` -> `[]`
-    pub const REVOKE_JOINER: u64 = 68;
+    pub const REVOKE_JOINER: u64 = 66;
     /// `[card text]` -> person
-    pub const IMPORT_CONTACT: u64 = 69;
+    pub const IMPORT_CONTACT: u64 = 67;
 
     /// The rows a thin client's session may call, each running on a handle acting as its actor.
     /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this
     /// node's authority and take no actor (they would be a confused deputy).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | SAME_THING | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
+        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
     }
 }
 

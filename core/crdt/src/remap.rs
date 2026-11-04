@@ -1,5 +1,5 @@
-//! Re-sourcing for imports (spec/permissions.md §7): every dot of a fragment (write stamps,
-//! element identities, anchors, resets) mapped by a function; `ts` is kept. `Derived` dots map
+//! Dot mapping: every dot of a fragment (write stamps, element identities, anchors, resets)
+//! mapped by a function; `ts` is kept (tests forge copies with it). `Derived` dots map
 //! through their underlying dot. Also the one read-only walk over a fragment's writes (`walk`).
 
 use crate::fragment::{Bag, Eid, Elem, Entry, Enum, Fragment, Meta, Register, Set, Slots, Struct};
@@ -62,8 +62,7 @@ fn anchor(a: &mut Anchor, f: DotFn<'_>) {
 
 fn seq(s: &mut Seq, f: DotFn<'_>) {
     meta(&mut s.meta, f);
-    // per element: consecutive dots may map to different commits (imports remap deltas, which
-    // the format bounds)
+    // per element: consecutive dots may map to different sources
     *s.elems_mut() = crate::seq_span::expand(std::mem::take(s.elems_mut()))
         .into_iter()
         .map(|(d, mut e): (Dot, SeqElem)| {
@@ -233,44 +232,12 @@ impl Visit for Any<'_> {
     }
 }
 
-/// `Fragment::stamps_outside`: stops at the first write whose owner's source `ok` refuses.
-struct Outside<'a>(&'a dyn Fn(&Source) -> bool);
-
-impl Visit for Outside<'_> {
-    fn stamp(&mut self, s: &Stamp) -> bool {
-        !(self.0)(&s.dot.owner().src)
-    }
-    fn rec(&mut self, r: Rec<'_>) -> Next {
-        let hit = match r {
-            Rec::Elem(..) => false,
-            Rec::Entry(_, e) => e.created.as_ref().is_some_and(|c| self.stamp(c)),
-            // sibling keys name writes, they are none; a creation on a record without content
-            // is an anchor (spec/crdt.md §5.7: an import carries them for what it places, from
-            // whichever commit made them), also as its position write
-            Rec::Seq(_, e) => {
-                let anchor = e.created.as_ref().filter(|_| matches!(e.content, SeqContent::None));
-                let pos = e.pos.iter().filter(|p| !anchor.is_some_and(|c| crate::seq::is_creation(p, c)));
-                e.created.iter().filter(|_| anchor.is_none()).map(|x| &x.0).chain(pos.map(|x| &x.0)).chain(e.deleted.iter().map(|x| &x.0)).any(|s| self.stamp(s))
-            }
-        };
-        if hit { Next::Stop } else { Next::On }
-    }
-}
-
 impl Fragment {
     /// Whether some write's owner dot (as `writes` lists them) lies in a range `owned(src, lo,
     /// hi)` accepts (any counter in `lo..hi` owned); stops at the first, and never expands range
     /// records.
     pub fn holds_owned(&self, owned: &dyn Fn(&Source, u64, u64) -> bool) -> bool {
         walk(&mut Any(owned, false), self)
-    }
-
-    /// Whether the fragment holds a stamp other than a sibling key or an anchor (a sequence
-    /// element's creation on a record without content) whose owner dot's source `ok` refuses: an
-    /// import's writes outside its origins (spec/permissions.md §7). Every value is the payload
-    /// of such a stamp, map keys aside (issues/purge-keeps-repeated-key.md).
-    pub fn stamps_outside(&self, ok: &dyn Fn(&Source) -> bool) -> bool {
-        walk(&mut Outside(ok), self)
     }
 
     /// `holds_owned` of the writes the fragment holds (spec/commits.md §5, live writes): an
@@ -286,7 +253,7 @@ impl Fragment {
     /// creations (map entries, set and bag elements, sequence elements) with their creation's
     /// `ts` where the record carries it (a map entry's creation, a set or bag element's value
     /// register, a sequence element's creation stamp), else without (tombstones, bare anchors). For judging a snapshot's writes as their
-    /// authors' (spec/permissions.md §5.2) and ranking them (§7).
+    /// authors' (spec/permissions.md §5.2).
     pub fn writes(&self) -> Vec<(Dot, Option<osis_base::Ts>)> {
         let mut w = Writes(Vec::new(), false);
         walk(&mut w, self);
