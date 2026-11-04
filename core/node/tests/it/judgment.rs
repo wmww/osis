@@ -940,7 +940,7 @@ fn found() -> Vec<Scenario> {
         Scenario {
             name: "order seed 1200",
             spec: "spec/commits.md §5",
-            source: "order harness seed 1200 (order.rs), played with seed 1038: keep at most 30 min, the bound passed: a body whose own write turns invalid dropped or held by arrival order, final",
+            source: "order harness seed 1200 (order.rs), played with seed 1038: keep at most 0 after replaced (found under 30 min), the bound passed: a body whose own write turns invalid dropped or held by arrival order, final",
             steps: vec![Demote { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }],
             orders: None,
         },
