@@ -18,7 +18,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | format version | 1 |
 | `MAX_BLOB` | 8 MiB (8 388 608 bytes), whole blob (prefix and ciphertext) |
 | `CHUNK_THRESHOLD` | 128 KiB (131 072 bytes) |
-| `MAX_LIST_BYTES` | 8 MiB (8 388 608 bytes), one linked header list's canonical encoding (§4) |
+| `MAX_LIST_BYTES` | 64 MiB (67 108 864 bytes), one linked header list's canonical encoding (§4) |
 | `PAGE_TARGET` | 64 KiB (65 536 bytes) |
 | chunker | `CHUNK_MIN` 16 KiB, `CHUNK_MAX` 256 KiB, gear table and boundary rule §6 |
 | tree fan-out | at most 512 links per interior node or link page (§6) |

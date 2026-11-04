@@ -41,7 +41,7 @@ Fallback, no core change: **segments**. The app's chat is a chain of osis chats;
 ## Core changes needed
 
 - **History read API**: built (notes/api.md History).
-- **Frontier study** (heads for permanent deltas). Without it a kick costs 34 B per message ever sent, caps near 2.5×10^5 messages, and any snapshot hides a kicked member's past.
+- **Frontier study** (heads for permanent deltas). Without it a kick costs 34 B per message ever sent, caps near 1.9×10^6 messages, and any snapshot hides a kicked member's past.
 - **Purge by author**, **verified actor**, **newest-first fetch**: built. **History-less grant**. As before: sender card, wake relay. Not needed: add-only member list, entry API, delegated purge, a burned-owner helper.
 
 ## Costs
@@ -60,7 +60,7 @@ Retention bounds and purge rights per edit are promised (requirements Deletion);
 
 ## Core work this depends on
 
-Ownership: built (notes/permissions.md Ownerless things). Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Reading: built (newest first), a cap at issues/partial-history-fetch.md. Tombstones: built (spec/commits.md §5). Adding: history-less-grant. Hostile: writer rotating to itself (recovered by `repudiate`, spec/permissions.md §3), fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect (write 2.4 ms before its fsync, kick of 3.7*10^4 messages 4 s, rise 0.6-11 s, open 5 s and 2.6 GiB; a kick past 2.4*10^5 commits needs frontier heads): issues/long-aspect-cost.md. Needed only for large factions, target 10,000 members (Tess; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
+Ownership: built (notes/permissions.md Ownerless things). Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Reading: built (newest first), a cap at issues/partial-history-fetch.md. Tombstones: built (spec/commits.md §5). Adding: history-less-grant. Hostile: writer rotating to itself (recovered by `repudiate`, spec/permissions.md §3), fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect (write 2.4 ms before its fsync, kick of 3.7*10^4 messages 4 s, rise 0.6-11 s, open 5 s and 2.6 GiB; a kick past 1.9*10^6 commits needs frontier heads): issues/long-aspect-cost.md. Needed only for large factions, target 10,000 members (Tess; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
 
 ## Accepted by Tess
 

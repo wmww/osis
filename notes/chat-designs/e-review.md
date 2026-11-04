@@ -73,7 +73,7 @@ Read only, nothing run. Numbers marked "extrapolated" scale measured figures lin
 - A lost pre-kick post is a small problem. Only the kicked member's own posts are at risk, in the gap between pre-sync and stamp. `Required` fails after `PRESYNC_WAIT` (30 s) rather than stamping. `Skip` or `Try` lose everything since the last sync.
 - **The frontier is commit IDs today**, not 10 B ranges (permissions §5.1, data-model §9 `frontier`, core/engine/src/apply/receipt.rs:163). That is about 34 B per commit, reactions included.
   - 10^5 messages: 3.4 MB of linked blobs, plus 2.7 KB per remaining member. At 200 members about 3.9 MB per kick and about 780 MB of host egress. Today's claim was 540 KB.
-  - Hard limit: the header's frontier resolves under `MAX_LIST_BYTES` of 8 MiB (core/commit/src/lists.rs:87, apply/mod.rs:280), about 2.5×10^5 commits. Past that, receivers cannot resolve the kick. I did not trace the error path.
+  - Hard limit: the header's frontier resolves under `MAX_LIST_BYTES` of 64 MiB (core/commit/src/lists.rs, `Header::resolve`), about 1.9×10^6 commits. Past that, receivers cannot resolve the kick. I did not trace the error path.
 - **The one-value snapshot is REFUTED as a remedy, and is itself a hazard.** It drops nothing, but `covered_here` leaves covered commits out of the frontier (receipt.rs:80-98), and an unlisted commit is invalid (§5.2). A snapshot carries only the register's winner, so everything superseded goes invalid.
   - Result: after any snapshot, a kick hides the kicked member's entire earlier history.
   - Any member can write that snapshot just before a kick. So a member can cause another's messages to vanish, given an admin's kick. Re-adding revives them.
@@ -100,7 +100,7 @@ Read only, nothing run. Numbers marked "extrapolated" scale measured figures lin
 - **Hostile 10^7 messages.**
   - About 5 GB at every member, and host caps refuse uploads, so the chat stalls.
   - Kicking does not free it (must-hold).
-  - Admin purge: about 75 B per item, at most 8 MiB per list, so about 1.1×10^5 items per commit, about 90 commits, 750 MB, kept 90 days. `[tid, ak]` would wipe everyone.
+  - Admin purge: about 75 B per item, at most 64 MiB per list, so about 8.9×10^5 items per commit, about 11 commits, 750 MB, kept 90 days. `[tid, ak]` would wipe everyone.
   - Afterwards each old device keeps 33 B per delta for good (330 MB), plus headers until forgetting ships. Open is slow until then.
   - `nobody` cannot be erased without the new rule. No per-member rate limit exists.
   - **Suggest a purge item by (aspect, author).** Without it a hostile member can make every member's node slow for a long time.
@@ -161,7 +161,7 @@ E is not clearly better until the frontier is settled.
 1. e.md, e-evidence §3 and §6: `actor` is not verified. Add the sender display rule, and make it part of the history API.
 2. e.md Costs and evidence §6: the frontier is commit IDs today, about 34 B per commit, never "10 B per aspect and device".
 3. Remove the "occasional one-value snapshot". Change permissions §5.1 and `covered_here` to list commits before keep-at-least, and refuse or ignore snapshots on these aspects in the frontier.
-4. Add device removal to the cost section, and the 8 MiB frontier limit (or raise it).
+4. Add device removal to the cost section, and the 64 MiB frontier limit.
 5. Per-year names bound re-merge only. Say so.
 6. Tombstone: only on devices that applied the message. Decide whether markers are the default.
 7. Add a purge item by (aspect, author), wider than "purge of invalid bodies".
@@ -173,4 +173,4 @@ E is not clearly better until the frontier is settled.
 
 ## Verdict
 
-The crux holds: at honest nodes no non-admin can destroy another's body, by snapshot, purge, reset, `ts` or delete key. E2 over E1 stands, and so does the topology. But E is not ready to choose as written. Sender identity is unverified today, though one cheap rule fixes that. The real problem is structural: validity after any demotion needs one 32-byte ID per surviving message, because history is not carried by snapshots. That makes kicks, and especially routine device removal, O(all messages ever sent), caps them at about 2.5×10^5 commits today, and turns any snapshot into a way to hide a kicked member's past. Fix that first (the frontier rule now, per-session chains or an accepted cost next). If it is solved, E is the simpler and stronger design for rights and moderation, at the price of slow open and sync past about 10^5 messages and no compaction. If it is not, design C scales better and E only wins on moderator delete.
+The crux holds: at honest nodes no non-admin can destroy another's body, by snapshot, purge, reset, `ts` or delete key. E2 over E1 stands, and so does the topology. But E is not ready to choose as written. Sender identity is unverified today, though one cheap rule fixes that. The real problem is structural: validity after any demotion needs one 32-byte ID per surviving message, because history is not carried by snapshots. That makes kicks, and especially routine device removal, O(all messages ever sent), caps them at about 1.9×10^6 commits today, and turns any snapshot into a way to hide a kicked member's past. Fix that first (the frontier rule now, per-session chains or an accepted cost next). If it is solved, E is the simpler and stronger design for rights and moderation, at the price of slow open and sync past about 10^5 messages and no compaction. If it is not, design C scales better and E only wins on moderator delete.
