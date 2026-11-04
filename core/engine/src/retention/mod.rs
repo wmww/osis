@@ -230,7 +230,9 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
     let (body, holders) = body_class(tx.core, &m.header, c, ai);
     // deaths awaiting a recompute may be early: the recompute judges the body (`settle_due`);
     // tests may keep every body (`Engine::keep_bodies`)
-    if tx.core.keep_bodies || holders.iter().filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
+    // (an absolute bound alone reads no deaths)
+    let dated = a.retention.at_most.rel.is_some();
+    if tx.core.keep_bodies || dated && holders.iter().filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
         return Ok(());
     }
     let d = class_deaths(tx, &m.header, &body, &holders)?;
@@ -841,6 +843,7 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
                 tx.put_timer(t, id, ai, T_EXPIRY)?;
             }
         }
+        abs_timer(tx, id, h, ai)?;
         purge::purge_arrived(tx, id, h, ai, purged)?;
         drop_purged_snapshot(tx, id, ai)?;
         drop_gone(tx, id, ai, purged)?;
@@ -851,6 +854,25 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         memory::drop_covered(tx, &aspects, Some(id))?;
     }
     Ok(())
+}
+
+/// A held part under an absolute keep at most (spec/commits.md §5): judged by a timer at its
+/// bound (`check_at_most`), one already past included, never here: node-sync writes the carrier
+/// of a live write before a due timer drops it (`due_live_drops`), and a body made or applied past
+/// its bound is not yet up anywhere. The bound is the header's (T, or the purge floor), so alike
+/// everywhere; deaths do not move it. A bound with an expiry at or before it sets none: the
+/// expiry drops the body (and the two would share a timer key). One timer per held part, gone when
+/// it fires (or with its part, `forget`), as an expiry's.
+fn abs_timer(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ai: usize) -> Result<()> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(()) };
+    if a.retention.at_most.abs.is_none() || tx.is_memory_commit(id) || !tx.core.ix.commits.get(id).is_some_and(|m| m.holds(ai)) {
+        return Ok(());
+    }
+    let Some(t) = osis_commit::retention::body_keep(h, &a.retention, None, None, false).at_most else { return Ok(()) };
+    if a.expires.is_some_and(|e| e <= t) {
+        return Ok(());
+    }
+    tx.put_timer(t, id, ai, T_AT_MOST)
 }
 
 fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) {
@@ -906,6 +928,8 @@ impl Engine {
 
     /// Runs what is due by the corrected clock: expiries, keep-at-most drops, and commits
     /// parked for drift. The commits whose timers fired are marked changed (`Core::changed`).
+    /// A keep-at-most drop takes a live write's body without a carrier: node-sync writes those
+    /// first (`due_live_drops`), so only it ticks outside tests.
     pub fn tick(&mut self) -> Result<()> {
         self.settle_deaths()?;
         let r = self.run(|tx| {

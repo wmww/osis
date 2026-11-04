@@ -168,7 +168,7 @@ pub(crate) enum Step {
     LinkedDemote { by: usize, t: usize, holder: usize },
 }
 
-const OPS: u8 = 30;
+const OPS: u8 = 32;
 
 fn aspect_of(op: u8) -> Ak {
     ak(match op % OPS {
@@ -196,6 +196,10 @@ fn aspect_of(op: u8) -> Ak {
         27 => "t:reg.0",
         28 => "t:map.0",
         29 => "t:text.0",
+        // under an absolute keep at most (`retention_of`): a list insert, a register also under
+        // a relative one
+        30 => "t:list.0",
+        31 => "t:short.0",
         _ => "t:docs.0",
     })
 }
@@ -211,9 +215,23 @@ fn keep_of(op: u8) -> Option<Retention> {
     match op % OPS {
         16 | 21..=23 => at_least,
         24..=26 => author,
-        17 => at_most(HOUR / 2),
+        17 | 31 => at_most(HOUR / 2),
         18..=20 => at_most(0),
         _ => None,
+    }
+}
+
+/// `keep_of(op)`, with an absolute keep at most for ops 30 and 31 (spec/commits.md §5): a second
+/// (a peer's own clock steps pass it) or half an hour after `now`, by `v`.
+fn retention_of(op: u8, v: u8, now: WallMs) -> Option<Retention> {
+    let abs = (op % OPS >= 30).then(|| now.0 + if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 });
+    match (keep_of(op), abs) {
+        (r, None) => r,
+        (r, Some(t)) => {
+            let mut r = r.unwrap_or_default();
+            r.at_most.abs = Some(t);
+            Some(r)
+        }
     }
 }
 
@@ -257,6 +275,7 @@ fn content_op(op: u8, k: u8, v: u8) -> (Ak, PathOp) {
         // kept twins of text inserts and deletes, map removals, text in a map entry
         23..=26 => return content_op([10, 11, 5, 8][(op % OPS - 23) as usize], k, v),
         27..=29 => return content_op([0, 3, 10][(op % OPS - 27) as usize], k, v),
+        30 => return content_op(14, k, v),
         _ => PathOp { path: vec![], op: Op::Set(s(&val)) },
     };
     (aspect_of(op), po)
@@ -432,7 +451,7 @@ fn op_on(m: &mut Mutation, e: &mut osis_node::Engine, t: Tid, op: u8, po: PathOp
 /// `op`'s write on `t` (`Write`), with its retention, expiry and second aspect.
 fn write_op(m: &mut Mutation, e: &mut osis_node::Engine, t: Tid, op: u8, k: u8, v: u8, typed: bool) {
     let a = aspect_of(op);
-    if let Some(r) = keep_of(op) {
+    if let Some(r) = retention_of(op, v, e.now()) {
         m.retention(t, &a, r).unwrap();
     }
     if let Some(ms) = expiry_of(op, v) {
@@ -606,7 +625,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 let (a, po) = content_op(op, k, v);
                 let (a2, po2) = content_op(15, k, v);
                 let mut m = Mutation::new();
-                if let Some(r) = keep_of(op) {
+                if let Some(r) = retention_of(op, v, lp.peers[by].engine.now()) {
                     let _ = m.retention(th(t), &a, r);
                 }
                 let _ = m.op(th(t), &a2, po2);
@@ -1282,7 +1301,7 @@ fn register_deaths(e: &mut osis_node::Engine, deaths: &Deaths, skip: &BTreeSet<(
 /// else the first violation: a held body with its own writes has a death iff the oracle's has,
 /// never earlier, first or last; a held snapshot or import has a last death no earlier than the
 /// oracle's; a body dropped here under a relative keep at most D that the oracle holds died by
-/// the oracle at least D before now (never early); a body under keep at most 0 with a death and
+/// the oracle at least D before now (never early), or its absolute bound passed; a body under keep at most 0 with a death and
 /// no live write is dropped (prompt) unless its commit carries a purge request. Aspects the
 /// drop-before-flip difference reaches are skipped (`alike`), and those with carried writes whose
 /// own commit the oracle does not hold (it would date them late, `Oracle::carried`).
@@ -1328,6 +1347,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
                 }
             } else if let Some(d) = r.at_most.rel
                 && !copies
+                && r.at_most.abs.is_none_or(|t| t > now.0)
                 && theirs.get(&(format!("{id:?}"), format!("{:?}", a.tid), a.ak.as_str().to_string())).is_some_and(|f| f.held)
                 && !y.is_some_and(|y| y.0.wall_ms().0.saturating_add(d) <= now.0)
             {
@@ -2024,6 +2044,10 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
         let _ = p.engine.reexamine();
         each(&mut p);
     }
+    // what is due runs, as node-sync runs it before every read (`SyncEngine::expire_due`): an
+    // absolute keep at most passed at apply drops the body by its timer (spec/commits.md §5)
+    p.engine.tick().unwrap();
+    each(&mut p);
     p
 }
 
@@ -2655,7 +2679,7 @@ fn required_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0xa076_1d64_78bd_642f) | 1);
     // two bounded aspects per history, so writes, compactions and undos meet
-    const BOUNDED: [u8; 10] = [16, 17, 18, 19, 20, 21, 22, 23, 24, 26];
+    const BOUNDED: [u8; 12] = [16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 30, 31];
     let ops = [rng.pick(&BOUNDED), rng.pick(&BOUNDED)];
     let steps: Vec<Step> = (0..len)
         .map(|_| {
@@ -2665,7 +2689,7 @@ fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
             match rng.below(22) {
                 // a hostile commit among the rest: its parts wait, or judge invalid, in every order
                 20 | 21 => Step::Forged { by, a: t, b: rng.below(2) as usize, how: rng.below(5) as u8, op, k: rng.below(2) as u8, v: rng.below(10) as u8 },
-                0..=6 => Step::Aim(Box::new(Step::Typed { by: if (17..=20).contains(&op) || rng.below(3) == 0 { 0 } else { 1 + rng.below(2) as usize }, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
+                0..=6 => Step::Aim(Box::new(Step::Typed { by: if (17..=20).contains(&op) || op == 31 || rng.below(3) == 0 { 0 } else { 1 + rng.below(2) as usize }, t, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
                 7 | 8 => Step::Aim(Box::new(Step::Compact { by: rng.pick(&[0, 0, by]), t, op })),
                 9 | 10 => Step::Aim(Box::new(Step::Undo { by: rng.pick(&[0, by]), back: rng.below(3) as u8 })),
                 11 | 12 => Step::Aim(Box::new(Step::Demote { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), at: rng.below(4) as u8, to_read: rng.below(3) == 0 })),
@@ -3329,7 +3353,7 @@ fn carrierless_history(seed: u64, len: usize) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut steps = vec![Step::Sync { from: 0, to: 1 }];
     for _ in 0..len {
-        let (by, op, k, v) = (rng.below(2) as usize, rng.pick(&[17, 18, 19, 19, 20]), rng.below(3) as u8, rng.below(10) as u8);
+        let (by, op, k, v) = (rng.below(2) as usize, rng.pick(&[17, 18, 19, 19, 20, 30, 31]), rng.below(3) as u8, rng.below(10) as u8);
         steps.push(match rng.below(8) {
             0..=2 => Step::Mixed { by, t: 0, op, k, v },
             3..=5 => Step::Write { by, t: 0, op, k, v },
@@ -3380,7 +3404,7 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
     let (mut gone, mut last) = (BTreeSet::new(), Vec::new());
     for (i, h) in headers.iter().enumerate().skip(played.base) {
         for (ai, a) in h.aspects.iter().enumerate() {
-            if a.retention.at_most.rel.is_none() {
+            if a.retention.at_most.rel.is_none() && a.retention.at_most.abs.is_none() {
                 continue;
             }
             if !full.engine.body_not_dropped(&played.packs[i].id, &a.tid, &a.ak) && !full.engine.body_live(&played.packs[i].id, &a.tid, &a.ak).unwrap() {
