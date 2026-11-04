@@ -1611,6 +1611,36 @@ fn suspect_aspect_repaired_by_writer_snapshot_spec_permissions_4() {
     assert_eq!(net.read(c, t), net.read(b, t));
 }
 
+// spec/sync.md §7 (repair, one snapshot per state): a report no snapshot can settle (order seed
+// 5288: a reader's digest that never agrees) costs a writer one snapshot, not one per heartbeat.
+#[test]
+fn unsettled_suspect_report_snapshots_once_spec_sync_7() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "v1");
+    net.run();
+    let reg = Ak::new(REG.ak()).unwrap();
+    // c's heartbeat commit, written by hand just before one is due: its next pass places it (a
+    // commit within the interval is reused, `heartbeat_commit`)
+    for _ in 0..3 {
+        net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS - 60_000);
+        let me = net.engine(c).tid();
+        let ts = osis_base::WallMs(net.now());
+        let mut m = Mutation::new();
+        let suspect = [ct::Suspect { thing: t, ak: reg.as_str().to_string(), digest: [9; 16] }].into();
+        m.replace(me, &ct::SEEN, &ct::Seen { ts, stranded: false, suspect }).unwrap();
+        net.engine(c).commit(m).unwrap().unwrap();
+        net.advance(120_000);
+    }
+    let diags = net.diagnostics(b);
+    assert_eq!(diags.iter().filter(|d| d.contains("re-snapshotted")).count(), 1, "{diags:?}");
+    assert!(diags.iter().any(|d| d.contains("already snapshotted")), "{diags:?}");
+}
+
 // spec/permissions.md §4: a pass with no current read secret places nothing and marks nothing:
 // `c` learns of a rotation it has no box for before its first pass; once re-sealed, its node card
 // and heartbeat land under the label.

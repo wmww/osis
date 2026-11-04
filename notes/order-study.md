@@ -1,6 +1,6 @@
 # Order-independence meets retention: converging or endless?
 
-> Summary: study of the arrival-order bug stream: reads alike is converging, agreement on which bodies and death dates nodes hold is endless and never required. Recommends narrowing the oracle and commits.md §5, a stated expiry exception, one nesting rule. Tess accepted: on data with a time limit or keep at most, after a validity flip or purge following a drop, devices may differ until a writer's next snapshot. Goes into spec/requirements.md with the oracle narrowing; questions 5 and 6 of notes/questions-for-tess.md are open.
+> Summary: study of the arrival-order bug stream: reads alike is converging, agreement on which bodies and death dates nodes hold is endless and never required. Recommends narrowing the oracle and commits.md §5, a stated expiry exception, one nesting rule. Done: the oracle and commits.md §5 are narrowed, spec/requirements.md states the flip-after-drop and expiry-before-apply exceptions; question 6 of notes/questions-for-tess.md is open.
 
 Read-only study for the coordinator. Figures from `git log` on main at 71d0b293 (2026-11-03). Project age six weeks (first commit f67de08c, 2026-09-22); the node-level order harness is twelve days old (a94345bf, 2026-10-23).
 

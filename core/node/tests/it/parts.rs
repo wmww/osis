@@ -366,57 +366,6 @@ fn chainless_part_under_at_most_any_order_spec_commits_4() {
     }
 }
 
-// issues/body-class-moves.md: one body under keep at most 0 on G and H, H's record away, a later
-// commit killing G's write. With the record first G's body stays (H's write is live); with it last
-// G's part was a body alone with no live write, so it dropped.
-#[test]
-#[ignore = "known hole: issues/body-class-moves.md"]
-fn repro_body_class_move_drops_spec_commits_5() {
-    use crate::common::*;
-    let mut lp = net(2, 63);
-    let g = new_thing(&mut lp, 0);
-    let setup = packages(&mut lp, 0);
-    let h = new_thing(&mut lp, 0);
-    let made = packages(&mut lp, 0);
-    let record: Vec<_> = made.into_iter().filter(|p| !setup.iter().any(|x| x.id == p.id)).collect();
-    lp.peers[0].clock.advance(10);
-    let mut m = Mutation::new();
-    m.set(g, &GONE, &s("x")).unwrap();
-    m.set(h, &GONE, &s("x")).unwrap();
-    let c1 = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].clock.advance(10);
-    let mut m = Mutation::new();
-    m.set(g, &GONE, &s("y")).unwrap();
-    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
-    let all = packages(&mut lp, 0);
-    let (p1, p2) = (all.iter().find(|p| p.id == c1).unwrap(), all.iter().find(|p| p.id == c2).unwrap());
-    let now = lp.peers[0].engine.now();
-    let ids: std::collections::BTreeSet<_> = all.iter().map(|p| p.id).collect();
-    let mut want = None;
-    for record_first in [true, false] {
-        let mut p = Peer::new(FRESH, now).unwrap();
-        for x in &setup {
-            let _ = p.engine.ingest(&x.bytes, Vec::new());
-        }
-        let rec = |p: &mut Peer| {
-            for x in &record {
-                let _ = p.engine.ingest(&x.bytes, Vec::new());
-            }
-        };
-        if record_first {
-            rec(&mut p);
-        }
-        let _ = p.engine.ingest(&p1.bytes, Vec::new());
-        let _ = p.engine.ingest(&p2.bytes, Vec::new());
-        rec(&mut p);
-        p.engine.reexamine().unwrap();
-        let got = observe(&mut p.engine, &ids);
-        let w = want.get_or_insert_with(|| got.clone());
-        let first = got.iter().zip(w.iter()).find(|(a, b)| a != b);
-        assert!(got == *w, "record first {record_first}: {first:?}");
-    }
-}
-
 fn permutations(n: usize) -> Vec<Vec<usize>> {
     let mut out = vec![vec![]];
     for i in 0..n {
