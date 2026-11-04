@@ -343,6 +343,14 @@ impl Engine {
             if memory {
                 tx.set_memory();
             }
+            // what a removal or expiry hid goes first, by an ordinary commit: its bodies die and
+            // the snapshot does not carry it (spec/sync.md §7)
+            let probe = osis_crdt::Stamp::new(Default::default(), osis_crdt::Source::commit(CommitId([0; 32])), 1);
+            if !memory && !osis_schema::core_types::is_role_class(ak.as_str()) && crate::engine::write::sweep_of(tx, &tid, &ak, &probe)?.is_some() {
+                let mut m = crate::engine::write::Mutation::new();
+                m.sweep(tid, ak.clone(), tx.core.schemas.get(ak.as_str()).cloned());
+                crate::engine::write::commit_in(tx, m)?;
+            }
             let node = tx.core.id.tid();
             let ts = tx.core.hlc.next();
             // a snapshot needs the strictest role a write it carries could need (tests may write

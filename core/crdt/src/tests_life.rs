@@ -179,6 +179,18 @@ pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
         assert_eq!(strip(o), frag(&ms), "strip equals the model");
     }
     let (a, b) = (&s[0], &s[1]);
+    let expire = |f: &Fragment| {
+        let mut g = f.clone();
+        g.expire(&in_ranges(&expired));
+        g
+    };
+    for (o, mo) in s.iter().zip(&m) {
+        let mut ms = mo.clone();
+        ms.expire(&|d| mexpired.iter().any(|(src, lo, hi)| d.source == *src && (*lo..*hi).contains(&d.ctr)));
+        assert_eq!(expire(o), frag(&ms), "expire equals the model");
+    }
+    assert_eq!(expire(&join(a, b)), join(&expire(a), &expire(b)), "expire commutes with join");
+    assert_eq!(expire(&expire(a)), expire(a), "expire idempotent");
     assert_eq!(strip(&join(a, b)), join(&strip(a), &strip(b)), "strip commutes with join");
     assert_eq!(strip(&strip(a)), strip(a), "idempotent");
     // a stripped map record moves to its dot's key-erased record (§4.7), which the valued
@@ -913,4 +925,63 @@ fn death_across_key_erased_record_spec_5_6() {
         assert_eq!(dead[0].at, ts(8));
         assert!(st.holds_stamp(&old), "each record keeps its write");
     }
+}
+
+/// spec/sync.md §7: a sweep resets what a removal or an expiry here hid, once, so the join leaves no
+/// repeated key; never a record merely lacking its creation, a live one or an empty tombstone.
+#[test]
+fn sweep_takes_only_what_is_hidden_spec_sync_7() {
+    use crate::ops::{Writer, create};
+    use crate::view::AnyView;
+    use std::collections::BTreeMap;
+    let (x, y) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
+    let map = |v: &str| Value::Map(BTreeMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
+    let none = |_: &crate::Dot| false;
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
+    let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
+    let w = Writer::new(ts(20), y.clone(), 5);
+    let r = w.delta_stamp();
+    assert_eq!(put.sweep(&r, &none), None, "a live entry");
+    assert_eq!(edit.sweep(&r, &none), None, "the creation not held: it may still arrive");
+    let dot = Dot::new(x.clone(), 1);
+    let removal = crate::reset_entries(&Writer::new(ts(7), x.clone(), 3), &[(dot.clone(), Value::Str("k".into()))]);
+    let mut gone = put.clone();
+    gone.join(removal.clone());
+    assert_eq!(gone.sweep(&r, &none), None, "a tombstone holds nothing");
+    let mut hid = gone.clone();
+    hid.join(edit.clone());
+    assert_eq!(hid.read(), Some(Value::Map(BTreeMap::new())));
+    let sweep = hid.sweep(&r, &none).expect("a removal hid the edit");
+    let mut after = hid.clone();
+    after.join(sweep.clone());
+    assert_eq!(after.sweep(&r, &none), None, "once");
+    assert!(!after.holds_write(&Dot::new(y.clone(), 1)), "the edit is dead");
+    let Fragment::Map(m) = &after else { panic!("a map") };
+    assert!(m.entries.keys().all(|id| id.key.is_none()), "the key is gone");
+    let mut expired = put.clone();
+    expired.join(edit.clone());
+    assert_eq!(expired.sweep(&r, &none), None, "live until it expires here");
+    let mine = |d: &crate::Dot| d.src == x;
+    let mut stripped = expired.clone();
+    stripped.strip(&mine);
+    assert_eq!(stripped.sweep(&r, &none), None, "a value-less copy alone: a valued one may still arrive");
+    expired.expire(&mine);
+    assert!(expired.sweep(&r, &mine).is_some(), "expired here, an edit inside");
+    let mut own = put.clone();
+    own.expire(&mine);
+    assert_eq!(own.sweep(&r, &mine), None, "expired, nothing else in it");
+    // a list element, nested in a live one
+    let ty = crate::testutil::TyView(Ty::List(Box::new(Ty::Register)));
+    let list = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &Value::List(vec![Value::Int(1)])).unwrap();
+    let new = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&list), &ty, &Value::List(vec![Value::Int(2)])).unwrap().unwrap();
+    assert_eq!(list.sweep(&r, &none), None, "a live element");
+    let mut over = list.clone();
+    over.join(new);
+    assert_eq!(over.sweep(&r, &none), None, "a live element, edited");
+    over.expire(&mine);
+    assert_eq!(over.read(), Some(Value::List(Vec::new())));
+    let sweep = over.sweep(&r, &mine).expect("its edit hidden");
+    over.join(sweep);
+    assert_eq!(over.sweep(&r, &mine), None);
+    assert!(!over.holds_write(&Dot::new(y, 1)));
 }

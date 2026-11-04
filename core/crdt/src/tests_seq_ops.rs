@@ -2476,8 +2476,9 @@ proptest! {
 }
 
 /// §5.7 Live, §4.7: a list element whose creating delta expires takes others' nested writes with
-/// it: its content holds a value-less write of the creation's commit, so the element is not live,
-/// whichever of the strip and the nested write comes first; the list stays present and reads empty.
+/// it: its reset is its creation's own stamp, whichever of the expiry and the nested write comes
+/// first; the list stays present and reads empty. A value-less copy (a snapshot's before T) ends
+/// nothing and loses to the valued one.
 #[test]
 fn expired_list_element_hides_nested_write_spec_5_7() {
     let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())));
@@ -2493,12 +2494,22 @@ fn expired_list_element_hides_nested_write_spec_5_7() {
     let mut s1 = base.clone();
     s1.join(newer.clone());
     assert_eq!(s1.read(), Some(Value::List(vec![item(1, 9)])));
-    s1.strip(&expired);
+    s1.expire(&expired);
     assert_eq!(s1.read(), Some(Value::List(vec![])), "the element goes with its creation's expiry");
     assert!(s1.present());
     let mut s2 = base.clone();
-    s2.strip(&expired);
+    s2.expire(&expired);
     s2.join(newer);
-    assert_eq!(s2, s1, "strip commutes with the nested write");
+    assert_eq!(s2, s1, "expiry commutes with the nested write");
     assert_eq!(rebooted(&s1).read(), Some(Value::List(vec![])), "a snapshot carries it hidden");
+    let mut copy = base.clone();
+    copy.strip(&expired);
+    let mut s3 = base.clone();
+    s3.join(copy);
+    assert_eq!(s3.read(), base.read(), "a value-less copy before T");
+    // un-merging its creator takes the reset with the creation's other writes
+    let mut s4 = s1.clone();
+    s4.remove_dots(&expired);
+    let Fragment::Seq(q) = &s4 else { panic!("a list") };
+    assert!(q.elems().values().all(|el| el.reset().is_none()));
 }

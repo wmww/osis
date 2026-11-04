@@ -327,6 +327,45 @@ fn fallen_purge_comes_back_spec_perm_8() {
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")));
 }
 
+// spec/permissions.md §8, spec/crdt.md §5.7 Live: a purge of a list element that falls lifts the
+// element's end: a copy shows it again.
+#[test]
+fn fallen_purge_of_list_element_comes_back_spec_perm_8() {
+    let mut lp = net(4, 0x6a2);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let k = ak("t:list.0");
+    let mut m = Mutation::new();
+    m.op(t, &LIST, PathOp { path: vec![], op: Op::Insert { at: 0, items: vec![s("kept")] } }).unwrap();
+    let c = lp.peers[2].commit(m).unwrap().unwrap();
+    sync(&mut lp, 2, 1);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.set(t, &REG, &s("beside")).unwrap();
+    let p = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(5);
+    let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
+    let body = lp.peers[2].engine.package(&c).unwrap().unwrap();
+    let request = lp.peers[1].engine.package(&p).unwrap().unwrap();
+    let demotion = lp.peers[0].engine.package(&d).unwrap().unwrap();
+    let pks = lp.packages(0).unwrap();
+    for q in pks.iter().filter(|q| ![c, p, d].contains(&q.id)) {
+        let _ = lp.deliver(3, q);
+    }
+    let _ = lp.deliver(3, &body);
+    let _ = lp.deliver(3, &request);
+    assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])), "purged");
+    let _ = lp.deliver(3, &demotion);
+    let _ = lp.deliver(3, &body);
+    assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("kept")])), "the purge fell");
+}
+
 // spec/permissions.md §8: a demotion that itself falls gives the request its right back: the body
 // drops, in either order.
 #[test]

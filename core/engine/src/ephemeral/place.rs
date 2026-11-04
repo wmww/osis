@@ -305,7 +305,7 @@ impl Engine {
                 let mut f = st.clone();
                 let mut exp = Some(None);
                 for (time, owned) in &by_time {
-                    f.strip(&|d| owned.iter().any(|o| o.owns(d)));
+                    f.expire(&|d| owned.iter().any(|o| o.owns(d)));
                     if !holds(&f, field, &t) {
                         exp = (*time > now).then_some(Some(*time));
                         break;
