@@ -224,6 +224,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
         let expiry = |d: &Dot| core.write_expiry(&a.tid, &a.ak, d).flatten();
         if let Some((f, r, expires)) = undo_expiring(w, &undone, state, pre, schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)? {
+            // tests: a writer predating the copy expiry rule (spec/crdt.md §4.7)
+            let expires = expires.filter(|_| !tx.core.skip_writer_rules);
             deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
             // joined into the delta just pushed, so its counters stay the last allocated
             if let Some(ops) = unmade.remove(&(a.tid, a.ak.clone())) {

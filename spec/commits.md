@@ -224,7 +224,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 ### Purge
 - **Purge request**: a header field naming earlier deltas (of commits with a smaller `ts`; a later one is not named) by commit, by a whole aspect history, or by author on an aspect (spec/wire.md §4). It MUST NOT name role-class deltas.
   - A later-arriving delta a held request names falls under it as one held does.
-  - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §7): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and holds every body carrying their values, snapshots included, as its leftover (the body with those values value-less), whatever the order the request, the named delta's commit and the snapshot arrive in. A snapshot a request names itself has no values of its own: its body is dropped, and comes back with a fall. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
+  - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §7): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and holds every body carrying their values as its leftover (spec/crdt.md §4.7 Copies: snapshots, and deltas carrying a copy under the named delta's dots, an undelete's char or an entry's key a later write repeats), whatever the order the request, the named delta's commit and the carrying body arrive in. A snapshot a request names itself has no values of its own: its body is dropped, and comes back with a fall. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
   - A writer that, after applying it, holds no covering snapshot of the aspect under a label it writes re-snapshots there (duplicates are harmless, spec/sync.md §7).
   - A request SHOULD name dead writes; the writer resets live content in the same commit.
   - A commit carrying a request has a delta (it is what places the commit under the thing's labels): where no reset is wanted, a write of `purge.0` (spec/data-model.md §9).
@@ -263,7 +263,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - The schema may give a default per AK as a duration from the write.
 - The blob prefix carries the commit's T (spec/sync.md §1, §3).
 - A writer splits a write whose deltas want different expiries, or that mixes `nobody` deltas with others (§5), into commits, one per expiry and class, under one `ts` (spec/crdt.md §2.2), the one carrying the things' records first. `required.0^` goes in the commit holding its thing's other deltas of the write.
-- At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less, the body as its leftover, whatever the delta's keep-at-least bound.
+- At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less, the body and every held body carrying a copy of their values as its leftover, whatever the delta's keep-at-least bound.
 - A delta never received stays never received: a copy arriving after T joins value-less (held as its leftover from then on), and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
 - Hosts delete the blob at T unattended (spec/sync.md §5).
 

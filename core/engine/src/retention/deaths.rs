@@ -18,10 +18,10 @@ use osis_crdt::{Changes, Death, Fragment, Stamp, Stamps, TextDeletes};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The aspect index of `(tid, ak)` in `c` if that part is held whole and has a relative bound (a
-/// leftover has no values to keep, so no deaths).
+/// The aspect index of `(tid, ak)` in `c` if that part is held with values and has a relative bound
+/// (a bare leftover has no values to keep, so no deaths: `Meta::bare`).
 fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
-    held_part(core, c, tid, ak).filter(|ai| core.ix.commits.get(c).is_some_and(|m| !m.stripped.contains(ai) && m.header.aspects.get(*ai).is_some_and(bounded)))
+    held_part(core, c, tid, ak).filter(|ai| core.ix.commits.get(c).is_some_and(|m| !m.bare(*ai) && m.header.aspects.get(*ai).is_some_and(bounded)))
 }
 
 /// Whether a held body of `(tid, ak)` has a relative bound (debug builds: checked against a walk
@@ -484,7 +484,7 @@ pub(crate) fn falls(h: &osis_commit::Header, a: &osis_commit::AspectEntry) -> bo
 
 /// `(tid, ak, fall)` of part `ai` of `c` if it is held, invalid here and a fall dates it (`falls`).
 fn fallen(core: &Core, c: &CommitId, ai: usize) -> Option<(Tid, Ak, Ts)> {
-    let m = core.ix.commits.get(c).filter(|m| !m.view.memory && m.holds(ai) && !m.stripped.contains(&ai) && !m.valid_at(ai))?;
+    let m = core.ix.commits.get(c).filter(|m| !m.view.memory && m.holds(ai) && !m.bare(ai) && !m.valid_at(ai))?;
     let a = m.header.aspects.get(ai).filter(|a| falls(&m.header, a))?;
     Some((a.tid, a.ak.clone(), crate::apply::validity::fell_at(core, &m.header, c, ai)))
 }

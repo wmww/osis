@@ -34,7 +34,7 @@ pub(crate) fn memory_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option
         .collect();
     let gone: Vec<Owned> = expiring.iter().map(|x| x.1.clone()).collect();
     let skip: BTreeSet<CommitId> = expiring.iter().map(|x| x.0).collect();
-    Ok(crate::apply::rebuilt(tx, tid, ak, &gone, &skip)?.0)
+    Ok(crate::apply::rebuilt(tx, tid, ak, &gone, &skip, None)?.0)
 }
 
 /// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live

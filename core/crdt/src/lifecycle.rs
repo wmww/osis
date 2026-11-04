@@ -276,7 +276,7 @@ impl Fragment {
     }
 
     /// Adds the owner dot of every write and live record here to `out` (a range record's first).
-    pub(crate) fn owner_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
+    pub fn owner_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
         walk(&mut OwnerDots(out), self);
     }
 

@@ -342,27 +342,11 @@ impl Engine {
     pub fn value_held_of(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<String>> {
         let Some((h, ai)) = self.core.ix.commits.get(c).and_then(|m| Some((m.header.clone(), m.aspect(tid, ak)?))) else { return Ok(None) };
         let owned = crate::retention::writes_of(&h, c, ai);
-        // values alone: a later write nested in an expired entry may still name its key
-        // (issues/expired-entry-key-kept.md)
-        let keyless = |f: &osis_crdt::Fragment| {
-            let s = format!("{f:?}");
-            let (mut out, mut rest) = (String::new(), s.as_str());
-            while let Some(i) = rest.find("key: Some(") {
-                out.push_str(&rest[..i]);
-                let mut depth = 0;
-                let close = rest[i..].char_indices().find(|(_, c)| {
-                    depth += i32::from(*c == '(') - i32::from(*c == ')');
-                    *c == ')' && depth == 0
-                });
-                rest = close.map_or("", |(j, _)| &rest[i + j + 1..]);
-                out.push_str("key: None");
-            }
-            out + rest
-        };
+        // a key an entry's record repeats is its creation's value too (spec/crdt.md §4.7)
         let carries = |f: &osis_crdt::Fragment| {
             let mut g = f.clone();
             g.strip(&|d| owned.iter().any(|o| o.owns(d)));
-            keyless(&g) != keyless(f)
+            g != *f
         };
         if self.state(tid, ak)?.is_some_and(|f| carries(&f)) {
             return Ok(Some("the state".into()));
@@ -466,7 +450,7 @@ impl Engine {
         let commits = ix.commits.iter().map(|(id, m)| {
             let stands_in = m.dropped.iter().filter(|(_, d)| d.stands_in).map(|(ai, _)| *ai).collect();
             let rest = format!("{:?} {:?} {:?}", m.received, m.origin, m.view);
-            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, stripped: m.stripped.clone(), missing: m.missing.clone(), rest })
+            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, stripped: m.stripped.clone(), valued: m.valued.clone(), missing: m.missing.clone(), rest })
         }).collect();
         let held = osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
@@ -779,8 +763,9 @@ pub struct CommitDigest {
     /// (`Dropped::stands_in`).
     pub dropped: std::collections::BTreeSet<usize>,
     pub stands_in: std::collections::BTreeSet<usize>,
-    /// Aspects held as their leftover (`Meta::stripped`).
+    /// Aspects held as their leftover (`Meta::stripped`), those holding values (`Meta::valued`).
     pub stripped: std::collections::BTreeSet<usize>,
+    pub valued: std::collections::BTreeSet<usize>,
     pub missing: std::collections::BTreeSet<usize>,
     /// Received time, origin and view, as text.
     pub rest: String,

@@ -4,7 +4,7 @@
 //! `rejudge_purges`), and `signers_could`, by roles of any validity at any time, for what must not
 //! turn on arrival (`could_stand`). A header never names role-class deltas (`Header::validate`).
 
-use super::{aspect_index, drop_carrying, gone_of, hold_valueless, note_carried_again, off_valueless, purged_changed, refetch, reopen_to_fetch, snapshots_of, suspect, uncover, unstrip, writes_of};
+use super::{gone_of, hold_valueless, note_carried_again, off_valueless, purged_changed, refetch, reopen_to_fetch, snapshots_of, suspect, uncover, unstrip, writes_of};
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, DropFor, Engine, LazyHeader, Tx};
 use crate::error::{Error, Result};
@@ -308,8 +308,8 @@ impl AspectRequests {
 /// counts as never received from here on: off the value-less list, its leftover set aside
 /// (`unstrip`) and its writes gone from the state until a copy comes (node-sync fetches it,
 /// `Changed::undropped`; a holder uploads it). A snapshot dropped as named by a fallen request is
-/// missing again; every stripped snapshot is asked for again with a fall, stripped again on
-/// arrival if it carries another's values. Cost: the aspect's requests and
+/// missing again; every body stripped for carrying others' values is asked for again with a fall,
+/// stripped again on arrival if it carries a value still held value-less. Cost: the aspect's requests and
 /// what they name, its snapshots' views, and with an aspect-wide request a walk of its parts, as
 /// `validity::rejudge_once` walks them (`scale::purge_rejudge_cost`). A memory delta purged has
 /// vanished whole and stays gone.
@@ -382,27 +382,29 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     if leaving.is_empty() && !fell && back.is_empty() {
         return Ok(());
     }
-    off_valueless(tx, tid, ak, &leaving);
-    // every stripped snapshot is asked for again with a fall (which values it lost is not kept)
+    // every body stripped for carrying others' values (a snapshot; a delta whose own writes are not
+    // held value-less) is asked for again with a fall (which values it carried is not kept), and is
+    // stripped again on arrival if it carries a value still held value-less
+    let mut carriers = BTreeSet::new();
     if fell || !leaving.is_empty() || !back.is_empty() {
-        for s in snapshots_of(tx.core, tid, ak) {
-            if let Some(sai) = aspect_index(tx.core, &s, tid, ak)
-                && tx.core.ix.commits.get(&s).is_some_and(|m| m.stripped.contains(&sai))
-                && !back.contains(&(s, sai))
-            {
-                back.push((s, sai));
+        let core = &*tx.core;
+        for (_, c) in core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
+            let Some(m) = core.ix.commits.get(c) else { continue };
+            if let Some(ai) = m.aspect(tid, ak).filter(|ai| m.stripped.contains(ai) && !back.contains(&(*c, *ai)) && gone_of(core, &m.header, c, *ai).is_empty()) {
+                carriers.insert((*c, ai));
             }
         }
+        back.extend(carriers.iter().copied());
     }
+    off_valueless(tx, tid, ak, &leaving);
     // until each comes back, this node may read less than one that kept it
     suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
     for (c, ai) in back {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         if m.stripped.contains(&ai) {
             // never received until a copy comes; a delta's leftover set aside for a rise before
-            // one, a snapshot's forgotten: nothing makes it held value-less again but a copy, and
-            // it keeps the values it copied of other deltas, which no later purge would reach
-            let kept = !m.header.kind.is_compaction();
+            // one, a carrier's forgotten: nothing makes it held value-less again but a copy
+            let kept = !carriers.contains(&(c, ai));
             unstrip(tx, &c, ai, kept)?;
             refetch(tx, &c);
         } else if m.missing.contains(&ai) {
@@ -425,7 +427,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
 }
 
 /// Applies request `pc` to held delta `(c, ai)` if it stands: its values go value-less, its body and
-/// every snapshot body carrying them are held as their leftovers (node-sync re-snapshots where no
+/// every held body carrying them are held as their leftovers (node-sync re-snapshots where no
 /// covering snapshot is left, spec/commits.md §5).
 pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let (Some(p), Some(m)) = (tx.core.ix.commits.get(pc), tx.core.ix.commits.get(c)) else { return Ok(()) };
@@ -442,46 +444,9 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
         tx.txn.put_local(&records::named_permanent_key(pc, &a.tid), &[], Shred::No)?;
         tx.core.mark_changed(*pc);
     }
-    hold_valueless(tx, c, ai, true, changed)?;
-    // snapshots carrying the purged values (spec/commits.md §5)
-    let o = writes_of(&m.header, c, ai);
-    // the held ones (no walk of the aspect: a delete for everyone costs the same at any length)
-    let held: Vec<CommitId> = tx.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    for s in held {
-        if let Some(sai) = aspect_index(tx.core, &s, &a.tid, &a.ak) {
-            drop_carrying(tx, &s, sai, &o, changed)?;
-        }
-    }
-    Ok(())
-}
-
-/// Strips held snapshot part `(s, sai)` if it carries a value of a delta a held purge request
-/// purges (spec/commits.md §5): `purge_one` judges the snapshots held when the request or the
-/// named delta arrives; this one a snapshot part arriving after both.
-pub(super) fn drop_purged_snapshot(tx: &mut Tx<'_>, s: &CommitId, sai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    // runs for every applied delta: the kind first, nothing cloned
-    let Some(sm) = tx.core.ix.commits.get(s) else { return Ok(()) };
-    if !sm.header.kind.is_compaction() {
-        return Ok(());
-    }
-    let Some((tid, ak)) = sm.header.aspects.get(sai).map(|a| (a.tid, a.ak.clone())) else { return Ok(()) };
-    let mut requests = AspectRequests::load(tx, &tid, &ak)?;
-    if requests.is_empty() {
-        return Ok(());
-    }
-    let core = &*tx.core;
-    let mut owned = Vec::new();
-    for c in requests.may_name(core, &tid, &ak).iter().filter(|c| *c != s) {
-        let Some((m, ai)) = core.ix.commits.get(c).and_then(|m| Some((m, m.aspect(&tid, &ak)?))) else { continue };
-        let Some(a) = m.header.aspects.get(ai) else { continue };
-        if requests.standing(core, a, &m.header, c).is_some() {
-            owned.extend(writes_of(&m.header, c, ai));
-        }
-    }
-    if owned.is_empty() {
-        return Ok(());
-    }
-    drop_carrying(tx, s, sai, &owned, changed)
+    // every held body carrying the purged values, snapshots included, is stripped of them by the
+    // rebuild this runs (`apply::rebuild`, spec/commits.md §5)
+    hold_valueless(tx, c, ai, true, changed)
 }
 
 /// Request `id` (header `h`) just applied: against the held deltas it names, then on the lists later
