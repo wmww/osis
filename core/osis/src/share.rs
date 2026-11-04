@@ -951,10 +951,10 @@ impl Osis {
     /// edge on the target is here, joins K as this person (removing the link key in the same
     /// commit when the link is single use). Returns the target. A link known to have ended (used,
     /// revoked, expired, its hosts no longer listing its key, K off the target) fails `Invalid` at
-    /// once; so does, at `Config::wait_timeout`, one whose K never shows an edge on the target (the
-    /// target is the link text's word: such a link joins nothing). Other waits fail `Network`
-    /// then, nobody having answered in time. The link key is forgotten on every outcome, a
-    /// dropped future included.
+    /// once; so does, at `Config::wait_timeout`, one whose K's label, read to its end, shows no
+    /// edge on the target (the target is the link text's word: such a link joins nothing). Other
+    /// waits fail `Network` then, nobody having answered in time. The link key is forgotten on
+    /// every outcome, a dropped future included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if self.is_attached() {
             link.parse()?;
@@ -997,7 +997,11 @@ impl Osis {
             if e.edge_gone(&target, &k) {
                 return Some(Err(link_ended()));
             }
-            late.then(|| Err(Error::Invalid("this link gives no access to what it names: ask for a new one".into())))
+            if !late || pending_on(e, &target) || !s.complete_pass(&k) {
+                return None;
+            }
+            // K's label read to its end: a cut-off node or a commit still waiting says nothing
+            Some(Err(Error::Invalid("this link gives no access to what it names: ask for a new one".into())))
         }))
         .await?;
         let me = self.me();

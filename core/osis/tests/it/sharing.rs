@@ -453,6 +453,7 @@ fn redeem_after_the_delivery_expired_spec_permissions_9() {
     w.run();
     w.advance(osis_base::format::INBOX_LIFETIME_MS + 3 * osis_base::format::MAX_DRIFT_MS);
     w.run();
+    w.set_online(&alice, false);
     assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
     assert_eq!(carol.role_on(g), Some(Role::Read));
@@ -490,6 +491,149 @@ fn contact_card_with_a_mismatched_target_spec_permissions_9() {
     assert!(matches!(w.until(carol.import_contact(&bad), 1000, 200), Err(Error::Network(_))));
     assert!(carol.profile_of(alice.me()).unwrap().is_none());
     assert_eq!(w.until(carol.import_contact(&card), 1000, 30).unwrap(), eve.me());
+}
+
+/// Steps `redeem` until L shows on K here, K's label not read to its end.
+fn step_until_l_is_here(w: &mut World, db: &Osis, redeem: &mut std::pin::Pin<&mut impl Future>, k: Tid, l: Tid) {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    for _ in 0..1000 {
+        assert!(redeem.as_mut().poll(&mut cx).is_pending());
+        if db.engine(|e| e.roster(&k).contains_key(&l)) {
+            return;
+        }
+        w.step(None);
+    }
+    panic!("L never here");
+}
+
+// spec/permissions.md §9 (Redeem): no edge seen by a node cut off before the end of K's label says nothing of the link: `Network`, not `Invalid`, which an app takes for a dead link
+#[test]
+fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let g = group(&alice);
+    let other = group(&alice);
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    let k = alice.links(g)[0].id;
+    let l = alice.engine(|e| e.held_links().unwrap().iter().find(|h| h.k == k).unwrap().l);
+    w.run();
+    let bad = naming(&link, other);
+    let mut redeem = std::pin::pin!(carol.redeem(&bad));
+    step_until_l_is_here(&mut w, &carol, &mut redeem, k, l);
+    assert!(!carol.sync_engine(|e| e.complete_pass(&k)));
+    w.set_reachable(&carol, host, false);
+    assert!(matches!(w.until(redeem, 1000, 200), Err(Error::Network(_))));
+    assert!(!alice.roster(k).contains_key(&carol.me()));
+}
+
+// spec/permissions.md §9 (Redeem), §3: a link read while its maker's upload stalled, K's head there and K's commits not: the failed redemption drops what the head gave, and a retry opens K's label anew and joins (the steps stop the upload at points inside that stretch)
+#[test]
+fn retry_after_a_stalled_upload_spec_permissions_9() {
+    for cut in [14, 20, 26] {
+        let mut w = World::new();
+        let host = w.add_host();
+        let (alice, _) = w.person(1, &[host]);
+        let (carol, _) = w.person(3, &[host]);
+        let g = group(&alice);
+        w.run();
+        let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+        for _ in 0..cut {
+            w.step(None);
+        }
+        w.set_reachable(&alice, host, false);
+        assert!(matches!(w.until(carol.redeem(&link), 1000, 200), Err(Error::Network(_))), "cut {cut}");
+        w.set_reachable(&alice, host, true);
+        w.run();
+        assert_eq!(w.until(carol.redeem(&link), 1000, 200).unwrap(), g, "cut {cut}");
+        w.run();
+        assert_eq!(carol.role_on(g), Some(Role::Read), "cut {cut}");
+    }
+}
+
+// spec/permissions.md §9 (Redeem), §6: a maker who is not the target's owner, a roster snapshot of the target since, its authors off: K's edge still reaches a new redeemer
+#[test]
+fn redeem_of_a_target_someone_else_owns_after_a_snapshot_spec_permissions_9() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Admin);
+    let (carol, _) = w.person(3, &[0]);
+    let t = item(&alice, g, g, "x");
+    w.run();
+    let link = bob.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    alice.engine(|e| e.roster_snapshot(&g, None)).unwrap();
+    w.run();
+    w.advance(1000);
+    item(&bob, g, g, "by bob");
+    let link2 = bob.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.set_online(&alice, false);
+    w.set_online(&bob, false);
+    assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    assert_eq!(x(&carol, t), Some(s("x")));
+    let (dave, _) = w.person(4, &[0]);
+    assert_eq!(w.until(dave.redeem(&link2), 1000, 30).unwrap(), g);
+}
+
+// spec/permissions.md §3, §9: a failed redemption drops only what only the key read: not what a sibling device's redemption gave, a joiner's role, a kept copy or a contact's profile
+#[test]
+fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let (carol, _) = w.person(3, &[0]);
+    let t = item(&alice, g, g, "x");
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    let k = alice.links(g)[0].id;
+    let one = alice.make_link(g, Role::Read, osis::LinkOpts { single_use: true, ..Default::default() }).unwrap();
+    let k1 = alice.links(g).into_iter().map(|l| l.id).find(|x| *x != k).unwrap();
+    let card = alice.contact_card().unwrap();
+    w.run();
+    // a sibling's: the used-up link fails on the other device, the role through the person stays
+    let c2 = pair_device(&mut w, &carol, 13);
+    assert_eq!(w.until(carol.redeem(&one), 1000, 30).unwrap(), g);
+    w.run();
+    assert!(matches!(w.until(c2.redeem(&one), 1000, 200), Err(Error::Invalid(_))));
+    w.run();
+    assert_eq!(c2.role_on(k1), Some(Role::Read));
+    w.advance(120_000); // the new device's re-seal
+    w.run();
+    assert_eq!(x(&c2, t), Some(s("x")));
+    // a contact: the card's key kept as a bearer, the same key again with a wrong target
+    assert_eq!(w.until(carol.import_contact(&card), 1000, 30).unwrap(), alice.me());
+    w.run();
+    let mut bad = osis_label::ShareLink::from_text(&card.to_string()).unwrap();
+    bad.target = carol.home();
+    let bad: osis::ContactCard = bad.to_text().unwrap().parse().unwrap();
+    assert!(w.until(carol.import_contact(&bad), 1000, 200).is_err());
+    w.run();
+    assert!(carol.profile_of(alice.me()).unwrap().is_some());
+    let mine = group(&carol);
+    carol.grant(mine, alice.me(), Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(alice.role_on(mine), Some(Role::Read), "still a contact, its keys here");
+    // a kept copy: after a wrong target, then the link's own key revoked; a joiner's role likewise
+    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: Some(true) };
+    w.until(alice.demote(g, bob.me(), Lower::Remove, d), 1000, 10).unwrap();
+    w.run();
+    assert_eq!(bob.kept_copies().unwrap(), vec![g]);
+    assert!(w.until(bob.redeem(&naming(&link, alice.me())), 1000, 200).is_err());
+    w.run();
+    assert_eq!((bob.kept_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a wrong target");
+    assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    w.until(alice.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    assert!(matches!(w.until(bob.redeem(&link), 1000, 200), Err(Error::Invalid(_))));
+    w.run();
+    assert_eq!((bob.kept_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a revoked link");
+    assert!(matches!(w.until(carol.redeem(&link), 1000, 200), Err(Error::Invalid(_))));
+    w.run();
+    let after = item(&alice, g, g, "after");
+    w.run();
+    assert_eq!(x(&carol, after), Some(s("after")));
+    assert_eq!(x(&bob, after), None);
 }
 
 // spec/permissions.md §9: one host refusing L's entry (here a child step taken without its claim set, past its cap) is no end of the link while another of its hosts has not answered; every host refusing is
