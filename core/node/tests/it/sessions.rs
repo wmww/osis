@@ -589,6 +589,12 @@ fn gap_cover_check(seed: u64) -> Result<(), String> {
         let _ = lp.deliver(4, pk);
     }
     lp.peers[4].engine.reexamine().map_err(|e| e.to_string())?;
+    // only a part under the keep at most waits: a body gone as covered has its coverer
+    for (c, _) in lp.peers[4].engine.pending() {
+        if !lp.peers[3].engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.ak == aspects[2])) {
+            return Err(format!("the fresh node pends on a bare header with no part under a keep at most: {c:?}"));
+        }
+    }
     if reads(&mut lp, 4) != want {
         return Err(format!("the fresh node differs after the bare headers: {want:?} vs {:?}", reads(&mut lp, 4)));
     }

@@ -880,3 +880,62 @@ fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_8() {
         assert_eq!(!at.is_empty(), lasting, "its header alone, while it lasts");
     }
 }
+
+// spec/commits.md §4 (a delta that left with no carrier when every commit on its aspect as late has
+// left waits), §5 (a lasting commit's header stays under its labels): a request whose one delta is
+// dead stays as a header-only blob; its killer expires, so a new device gets the header from the
+// host with nothing later on the aspect. Both headers wait, and the aspect's next write releases
+// them at the request's bound (issues/atomic-wait-no-later-commit.md).
+#[test]
+fn a_lasting_request_waits_when_its_killer_left_spec_commits_4() {
+    let Chat { mut net, host, a, b, n, t, l } = chat();
+    let c = msg(&mut net, b, t, "SECRET", permanent());
+    net.run();
+    net.advance(120_000);
+    net.run();
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k() });
+    m.set(t, &GONE, &s("g1")).unwrap();
+    let p = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(120_000);
+    net.run();
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("g2")).unwrap();
+    m.expires(t, &GONE, osis_base::WallMs(net.now() + ROLE_KEEP_MS + 7_200_000)).unwrap();
+    let killer = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(ROLE_KEEP_MS + 3_600_000);
+    net.run();
+    net.advance(7_200_000);
+    net.run();
+    for _ in 0..4 {
+        net.advance(120_000);
+        net.run();
+    }
+    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::new()], "its header alone at the host");
+    assert!(at_host(&mut net, a, host, &l, killer).is_empty(), "the killer expired");
+    net.set_online(n, true);
+    net.run();
+    net.advance(120_000);
+    net.run();
+    let mut want = vec![(p, osis_node::Reason::WaitDeltas), (c, osis_node::Reason::WaitDeltas)];
+    want.sort_by_key(|x| x.0);
+    let mut got = net.engine(n).pending();
+    got.sort_by_key(|x| x.0);
+    assert_eq!(got, want);
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("g3")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(120_000);
+    net.run();
+    assert_eq!(pending(&mut net, n), 2, "a request's delta keeps its floor past that write");
+    net.advance(ROLE_KEEP_MS + 3_600_000);
+    net.run();
+    assert_eq!(pending(&mut net, n), 0);
+    assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), Some(&p));
+}
