@@ -46,7 +46,7 @@ Terms:
 - Round trips: a small constant in the common incremental case, logarithmic at worst; a holder that missed k key rotations may need k.
 - Nothing a node already holds is sent again. A thing in many groups is stored and transferred once per node.
 - Compaction and deletion cost proportional to what changed, not to group size or history.
-- Removing a holder costs proportional to the rosters of the actors and things it could read, plus one entry per aspect it wrote, never to content or history.
+- Removing a holder costs proportional to the rosters of the actors and things it could read, plus its writes that compaction may not drop yet. Limit: on data whose history is kept, that is every kept write of the removed device (about 32 B each); a removal listing more than one header list holds (about 1.9 million writes) fails.
 - Connected nodes see each other's changes promptly, pushed, not polled.
 
 ## Untrusted (blind) nodes

@@ -2430,7 +2430,7 @@ fn backdated_revoke_before_own_grant_received_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §5.1 Frontier, §5.2 Acting; issues/frontier-clobbers-history.md (a kick
+// spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/frontier-study.md (a kick
 // never scales with history): device 1 writes doc X many times as its person P, compacted, and
 // once as P on its own thing Y. Removing it from P lists only what no snapshot covers: Y's write
 // (it would go invalid unlisted, though the device's own right on Y never fell), not every

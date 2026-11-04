@@ -25,10 +25,3 @@ Options:
 1. A move copies the current values as new writes by the mover; the original stays with its owner. No import marker, origins or imported purge rights.
 2. Leave it.
 Recommendation: 1 unless an app needs original authorship or undo history across a move.
-
-## 12. Kick frontiers: one system or two
-Today (built, F2): a kick lists commit IDs, leaving out what the demoter's compaction could drop now. On keep-forever data (chat messages) that lists every kept commit of the device: 32 B each, about 3 MB at 10^5 messages per label it is re-encrypted under, refused past about 1.9e6 (`MAX_LIST_BYTES`). Approved earlier: the per-aspect hash DAG (notes/kick-dag.md), for permanent data only, so two systems. Tess (later): does not love two systems; maybe IDs in every case unless the DAG is quite simple (about 1800 lines, half tests, 35 B on every permanent write).
-Options:
-1. IDs only. State the kick-cost requirement (spec/requirements.md Cost) as a limit with the numbers above; delete kick-dag, kick-cost and frontier-study F3/F4 plans; keep ID batches (notes/frontier-study.md §11) as the fallback if costs ever hurt (additive, one system).
-2. Build the kick DAG as approved.
-Recommendation: 1; batches if measured costs need it.

@@ -3381,7 +3381,7 @@ fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
 }
 
 // spec/permissions.md §5.1 (a frontier leaves out only what the demoter's compaction could drop
-// now), issues/frontier-clobbers-history.md: Bob writes a kept register twice and Carol, any
+// now), notes/frontier-study.md: Bob writes a kept register twice and Carol, any
 // writer, snapshots it just before Alice removes Bob. The snapshot keeps only "two"; Bob's
 // superseded "one" is inside its keep-at-least window, so Alice lists it and it stays valid where
 // held; a new device never given it reads alike. The live "two", covered, is left out (the
