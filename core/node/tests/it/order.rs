@@ -1656,7 +1656,9 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
     // one given it after holds it pending (spec/requirements.md Deterministic): with an
     // early clock, a commit with a part on such an aspect applied at one node only has its pending
     // line left out
-    let known = |f: &Facts, c: &str| f.keys().any(|x| x.0 == c && !on_expired(x));
+    // known by any body of it: with one expiry per commit (spec/commits.md §6) every part of such
+    // a commit may be on an expired aspect
+    let known = |f: &Facts, c: &str| f.keys().any(|x| x.0 == c);
     let parted: BTreeSet<String> = if want.early || got.early {
         wf.keys().chain(gf.keys()).filter(|k| on_expired(k) && known(&wf, &k.0) != known(&gf, &k.0)).map(|k| k.0.clone()).collect()
     } else {
