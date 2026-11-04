@@ -319,6 +319,29 @@ impl Engine {
         Ok(None)
     }
 
+    /// A part of waiting commit `c` whose stored copy still holds a value past its expiry at `now`,
+    /// or that a held purge request drops, its thing's record held so it could be stripped (tests:
+    /// `order::value_past_end`; spec/commits.md §5).
+    #[doc(hidden)]
+    pub fn pending_value_past_end(&mut self, c: &CommitId, now: osis_base::WallMs) -> Result<Option<String>> {
+        let c = *c;
+        self.run(|tx| {
+            let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(None) };
+            let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
+            let emptied = crate::retention::emptied();
+            for p in blob.parts.iter().filter(|p| p.delta != emptied) {
+                let Some(a) = blob.header.aspects.get(p.ai) else { continue };
+                if a.expires.is_some_and(|t| t <= now.0) {
+                    return Ok(Some(format!("part {} on {:?} {} past its expiry", p.ai, a.tid, a.ak.as_str())));
+                }
+                if tx.core.dedup(&a.tid).is_some() && crate::retention::known_purged(tx, &blob.header, &c, p.ai)? {
+                    return Ok(Some(format!("part {} on {:?} {} purged", p.ai, a.tid, a.ak.as_str())));
+                }
+            }
+            Ok(None)
+        })
+    }
+
     /// Writes the stored pages of `(tid, ak)` hold that their skeleton prunes
     /// (`pages::stale_in_pages`; 0 unpaged). Tests: a join that skipped a page write.
     #[cfg(test)]
