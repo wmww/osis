@@ -9,7 +9,7 @@
 //! - `single`: §5.1 on one actor, the adopted demoter-frontier rule and rejected variants.
 //! - `joint`: §5.1 steps 1-5 over several actors (owner chains, actor holders, mutual
 //!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`.
-//! - `edges`: §2 (`until`, invite power, self-removal) and §9 (links) on one target, with
+//! - `edges`: §2 (`until`, invite power, self-removal) and §8 (links) on one target, with
 //!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
 //! - `snapshot`: §6 roster snapshots, epoch starts and the tenure ledger on two levels.
 //! - `content`: §5.2 per-delta content validity.

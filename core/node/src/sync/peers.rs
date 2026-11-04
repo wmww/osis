@@ -401,7 +401,7 @@ impl SyncEngine {
     }
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
-    /// the link text only; spec/permissions.md §9). It is dialed like a co-reader (ephemeral key,
+    /// the link text only; spec/permissions.md §8). It is dialed like a co-reader (ephemeral key,
     /// no co-reader proof) for K's labels and the target's, and nothing else, until `forget_link`.
     /// This node shows the sharer its IP, never its dialable key.
     pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {

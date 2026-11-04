@@ -128,7 +128,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
 /// signing), with the grantee's boxes for every granted role at each current epoch
 /// (spec/crypto.md §4). An admin's grant, or an invite grant (spec/permissions.md §2) where
 /// `who`'s effective invite allows it and the holder has no current edge. `leave`: the signer's
-/// own edge removed in the same commit (a single-use redemption, spec/permissions.md §9).
+/// own edge removed in the same commit (a single-use redemption, spec/permissions.md §8).
 pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     if edge.invite.is_some_and(|i| i > edge.role) {

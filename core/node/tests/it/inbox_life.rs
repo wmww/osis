@@ -228,7 +228,7 @@ fn removed_holder_gets_no_resent_grant_spec_sync_3() {
     assert_eq!(fresh, 1, "only the removal notice is sent again");
 }
 
-// spec/sync.md §3 (an inbox blob's label hints are the sender's word), spec/permissions.md §9
+// spec/sync.md §3 (an inbox blob's label hints are the sender's word), spec/permissions.md §8
 // (only a followed link names a node to dial): a `peer://` address in a granted label's host
 // list is never dialed by the grantee, neither from the inbox hint nor from the `label.0`.
 #[test]

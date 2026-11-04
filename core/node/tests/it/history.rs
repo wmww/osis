@@ -1,5 +1,5 @@
 //! An aspect's history (notes/api.md History) and purge by author (spec/wire.md §4,
-//! spec/commits.md §5, spec/permissions.md §8), at the engine: what an entry reads, which change
+//! spec/commits.md §5, spec/permissions.md §7), at the engine: what an entry reads, which change
 //! each commit makes known, and order independence.
 
 use crate::common::*;
@@ -405,13 +405,13 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
     out
 }
 
-// spec/permissions.md §8, spec/commits.md §5: a purge by author drops exactly the author's deltas
+// spec/permissions.md §7, spec/commits.md §5: a purge by author drops exactly the author's deltas
 // stamped before it, each only if the request holds the right over that delta at its own key: no
 // override under `author` or `nobody`. The same in every arrival order of the delta, the setting
 // requiring its retention, the author's demotion and the request, a delta arriving after the
 // request falling under it; what another wrote and what the author writes later stay.
 #[test]
-fn purge_by_author_any_order_spec_perm_8() {
+fn purge_by_author_any_order_spec_perm_7() {
     for by in PurgeBy::ALL {
         // requester: 0 the owner, 2 an admin, 1 the author itself, 3 another writer
         for who in [0, 1, 3] {
@@ -472,10 +472,10 @@ fn purge_by_author_any_order_spec_perm_8() {
     }
 }
 
-// spec/permissions.md §8: a request by author reaches the deltas stamped before it only: what the
+// spec/permissions.md §7: a request by author reaches the deltas stamped before it only: what the
 // author writes later stays, whichever arrives first.
 #[test]
-fn purge_by_author_spares_later_writes_spec_perm_8() {
+fn purge_by_author_spares_later_writes_spec_perm_7() {
     let (mut lp, d, ids) = setup(420);
     let r = Retention::default();
     let before = write(&mut lp, 1, d, r, "before");

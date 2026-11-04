@@ -1,4 +1,4 @@
-//! Share links (spec/permissions.md §9, spec/wire.md §10): K an actor owned by the sharer with
+//! Share links (spec/permissions.md §8, spec/wire.md §10): K an actor owned by the sharer with
 //! secrets of its own, a holder of the target with the link's role; L a key actor from the
 //! link's seed with (r, invite r) on K, listed in K's label steps by static entry. Redeem (an
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
@@ -48,7 +48,7 @@ pub struct LinkSpec {
     pub until: Option<WallMs>,
     pub hosts: Vec<Address>,
     pub peers: Vec<osis_label::Peer>,
-    /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §9).
+    /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §8).
     pub single_use: bool,
 }
 
@@ -92,14 +92,14 @@ impl Engine {
     }
 
     /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
-    /// past `until` (spec/permissions.md §9). A holder not seen yet says nothing: its edge may be
+    /// past `until` (spec/permissions.md §8). A holder not seen yet says nothing: its edge may be
     /// on its way.
     pub fn edge_gone(&mut self, thing: &Tid, holder: &Tid) -> bool {
         let ts = super::now_ts(&self.core);
         self.core.timelines.get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
     }
 
-    /// Finalizes a link (spec/permissions.md §9): a sharer device's plain removal of L from K,
+    /// Finalizes a link (spec/permissions.md §8): a sharer device's plain removal of L from K,
     /// an explicit demotion with the sharer's frontier, after `until` passed, after a single-use
     /// redemption (L's edge already gone: its entry is reset again, spec/permissions.md §2), or
     /// to revoke the link. K rotates before its next encryption (L's departure).
@@ -136,7 +136,7 @@ impl Engine {
         Ok(out)
     }
 
-    /// The links this node should finalize now (spec/permissions.md §9): it holds the seed and
+    /// The links this node should finalize now (spec/permissions.md §8): it holds the seed and
     /// admin on K, and L's edge on K expired (`until`, given) or was removed by a single-use
     /// redemption, with no explicit write on it since. The caller finalizes each after a
     /// complete pass of K's labels, so the frontier covers the grants made while the link
@@ -182,7 +182,7 @@ impl Engine {
         Ok(next)
     }
 
-    /// Revokes one joiner of a link (spec/permissions.md §9): removes the joiner and L (the
+    /// Revokes one joiner of a link (spec/permissions.md §8): removes the joiner and L (the
     /// joiner may still hold the seed) in one commit under one rotation of K (spec/commits.md
     /// §2); the remaining joiners need a new link. L already gone (a used single-use link):
     /// the joiner alone.
@@ -192,7 +192,7 @@ impl Engine {
         self.remove_signed(None, k, &d, if with_l { std::slice::from_ref(l) } else { &[] }, false)
     }
 
-    /// Bearer use (spec/permissions.md §9): act as L without writing anything; reads open
+    /// Bearer use (spec/permissions.md §8): act as L without writing anything; reads open
     /// through L's boxes once K's label is downloaded. Returns L.
     pub fn bear(&mut self, link: &ShareLink) -> Result<Tid> {
         self.hold_key_actor(link.seed.clone())

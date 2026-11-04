@@ -65,21 +65,21 @@ fn demotion_receipts() {
     ok("demotion_receipts", 1);
 }
 
-// spec/permissions.md §9: two concurrent redemptions of a multi-use link; then revoked.
+// spec/permissions.md §8: two concurrent redemptions of a multi-use link; then revoked.
 #[test]
 #[ignore = "tier 2"]
 fn link_redeem() {
     ok("link_redeem", 1);
 }
 
-// spec/permissions.md §9, §5.1: two concurrent redemptions of a single-use link: one joiner.
+// spec/permissions.md §8, §5.1: two concurrent redemptions of a single-use link: one joiner.
 #[test]
 #[ignore = "tier 2"]
 fn link_race() {
     ok("link_race", 1);
 }
 
-// spec/permissions.md §3, §9: sweep seed 6, the race's winner misses the loser's rotation of K;
+// spec/permissions.md §3, §8: sweep seed 6, the race's winner misses the loser's rotation of K;
 // the sharer's next rotation reaches it by inbox.
 #[test]
 #[ignore = "tier 2"]
@@ -87,28 +87,28 @@ fn link_race_seed_6() {
     ok("link_race", 6);
 }
 
-// spec/permissions.md §9, spec/sync.md §7: sweep seed 91, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+// spec/permissions.md §8, spec/sync.md §7: sweep seed 91, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_91() {
     ok("link_race", 91);
 }
 
-// spec/permissions.md §9, spec/sync.md §7: sweep seed 119, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+// spec/permissions.md §8, spec/sync.md §7: sweep seed 119, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_119() {
     ok("link_race", 119);
 }
 
-// spec/permissions.md §9, spec/sync.md §7: sweep seed 164, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+// spec/permissions.md §8, spec/sync.md §7: sweep seed 164, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_164() {
     ok("link_race", 164);
 }
 
-// spec/permissions.md §9, spec/sync.md §7: sweep seed 191, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
+// spec/permissions.md §8, spec/sync.md §7: sweep seed 191, two nodes' certificate copies of one commit churned (one deleted as a strict subset, re-placed each pass).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_191() {
@@ -347,7 +347,7 @@ fn purge_tombstones() {
     ok("purge_tombstones", 1);
 }
 
-// spec/permissions.md §8: a purge falling through a host: the body comes back, no upload and delete
+// spec/permissions.md §7: a purge falling through a host: the body comes back, no upload and delete
 // loop. Both seeds of the stamp.
 #[test]
 fn purge_falls() {

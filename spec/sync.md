@@ -137,7 +137,7 @@
   - Nothing else an inbox blob carries is placed.
   - A node runs this whenever it opens an inbox blob, its commit held or not.
 - **Inbox blob order**: a sender still opening or registering a label an inbox blob names at a host it is connected to, open at none of them, deposits the blob after that ends. A node told a label is unknown at a host, with no step of it to register, opens it again after a back-off of `retry_ms` doubling per refusal up to `resync_ms` (local policy).
-- **Contact card**: a link (spec/permissions.md §9) with read role to a person's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the person's `created.0` and `keys.0` commits.
+- **Contact card**: a link (spec/permissions.md §8) with read role to a person's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the person's `created.0` and `keys.0` commits.
 - **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied; then §6 decides.
 
 ## 4. Host state
@@ -297,7 +297,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - purged;
     - expired;
     - past keep-at-most;
-    - dropped without a right (spec/permissions.md §8);
+    - dropped without a right (spec/permissions.md §7);
     - outside the required set;
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold;
     - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
@@ -309,7 +309,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Reader**: relays the stamped must-hold entries it holds that the label lacks.
   - **Neither** uploads nor relays a body a delete removed from the label (an entry of it that is not a certificate copy, within `TOMBSTONE_LIFETIME`) while both of these hold:
     - each of its live writes is carried there (it has none, or a snapshot under the label covers it);
-    - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §8).
+    - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §7).
   - **Delete-key holders** delete must-not-hold bodies.
   - **Dropped bodies**: a node that dropped a body keeps knowing its entries (not its key or wrap). When the body counts as never received again (spec/permissions.md §5.2) it fetches them again where present, and otherwise takes the body from a holder's upload (it is must-hold there: no valid snapshot covers it).
   - **May-hold bodies**: nobody acts on them except a compactor dropping them once per body (commit and delta set, §7).

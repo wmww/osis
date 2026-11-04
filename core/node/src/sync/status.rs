@@ -47,7 +47,7 @@ impl SyncEngine {
 
     /// Whether a host answered that the head of `l` does not list this node's static entry and
     /// every other route of `l` failed too: the key actor is no reader there, for a link's key one
-    /// it no longer holds K (spec/sync.md §5, spec/permissions.md §9). A route not answering (not
+    /// it no longer holds K (spec/sync.md §5, spec/permissions.md §8). A route not answering (not
     /// connected yet, or down) says nothing: one host's word is no end while another may serve it.
     pub fn static_entry_refused(&mut self, l: &LabelId) -> bool {
         let routes = self.wanted_labels().into_iter().find(|(_, x, _)| x == l).map_or(Vec::new(), |(_, _, r)| r);

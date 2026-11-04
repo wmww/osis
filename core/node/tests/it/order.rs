@@ -88,7 +88,7 @@ pub(crate) enum Step {
     /// `by` purges `t`'s register, with a write there: one of `of`'s last commits by name, or (no
     /// such commit) the whole aspect.
     Purge { by: usize, t: usize, of: usize, back: u8, v: u8 },
-    /// `by` purges `t`'s register by author: `of`'s deltas (spec/permissions.md §8), as the API does:
+    /// `by` purges `t`'s register by author: `of`'s deltas (spec/permissions.md §7), as the API does:
     /// no write on the register, a `purge.0` one.
     PurgeAuthor { by: usize, t: usize, of: usize },
     /// Every commit `from` holds to `to`.
@@ -1794,7 +1794,7 @@ fn alike_repaired(played: &Played, want: &Judged, want_order: &[usize], got: &Ju
 /// The commits (as `facts_text` prints them) with a part on an aspect some purge request names
 /// that is missing at one node and not at the other, when judged or later (an expiry by
 /// then drops it at both): the purge fell after one applied it, and the part counts as never
-/// received there (spec/permissions.md §8), as `drop_flips` for keep bounds.
+/// received there (spec/permissions.md §7), as `drop_flips` for keep bounds.
 fn purge_flips(played: &Played, want: &Judged, got: &Judged) -> BTreeSet<String> {
     let (Some(w), Some(g)) = (&want.missing_later, &got.missing_later) else { return BTreeSet::new() };
     // packages the harness made: no delete-key point checks (`decode_stored`)
@@ -2330,7 +2330,7 @@ impl Seen {
         assert!(!self.tally.kinds.contains_key("PurgeAuthor") || self.by_author > 0, "order::{name}: no delta purged by author: {self:?}");
         // a history with no role change or hostile commit (`seq_compact_history`) has none to reach
         assert!(!self.tally.kinds.contains_key("Purge") || self.tombstones > 0, "order::{name}: no permanent delta purged: {self:?}");
-        // a purge whose right fell after a node applied it (spec/permissions.md §8)
+        // a purge whose right fell after a node applied it (spec/permissions.md §7)
         assert!(!self.tally.kinds.contains_key("Purge") || self.restored > 0 || name.contains("settled"), "order::{name}: no fallen purge restored: {self:?}");
         let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
         assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
@@ -2917,7 +2917,7 @@ fn arrival_order_required_large_spec_commits_5() {
 
 /// Every arrival order, a node dropping what `drop_broken` lets it after each commit (its clock
 /// moving, so a body may arrive before or after the setting it breaks) and then receiving every
-/// body again: reads as a node with that order that dropped nothing (spec/permissions.md §8: only
+/// body again: reads as a node with that order that dropped nothing (spec/permissions.md §7: only
 /// the body held differs, and only until a holder uploads it). The reads are compared twice: after
 /// the bodies come again and after dropping again.
 fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
@@ -3001,20 +3001,20 @@ fn run_drops(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, gene
     assert!(seeds.len() < 20 || seen.broken > 0, "no delta broke a required retention");
 }
 
-// spec/permissions.md §8: what a node may drop without a right changes nothing it reads once the
+// spec/permissions.md §7: what a node may drop without a right changes nothing it reads once the
 // body is held again, whichever arrived first. Seeds 2..4 (3 breaks a required retention); more
 // in `_large`.
 #[test]
-fn required_drops_read_alike_spec_perm_8() {
-    run_drops("required_drops_read_alike_spec_perm_8", 2..4, 12, EXHAUST_SMALL, required_history);
+fn required_drops_read_alike_spec_perm_7() {
+    run_drops("required_drops_read_alike_spec_perm_7", 2..4, 12, EXHAUST_SMALL, required_history);
 }
 
 // The same over the general histories.
 #[test]
 #[ignore = "tier 2"]
-fn required_drops_read_alike_large_spec_perm_8() {
-    run_drops("required_drops_read_alike_large_spec_perm_8", osis_base::testenv::large(0..200), 12, EXHAUST_SMALL, required_history);
-    run_drops("required_drops_read_alike_large_spec_perm_8 (general)", 0..200, 30, LARGE, history);
+fn required_drops_read_alike_large_spec_perm_7() {
+    run_drops("required_drops_read_alike_large_spec_perm_7", osis_base::testenv::large(0..200), 12, EXHAUST_SMALL, required_history);
+    run_drops("required_drops_read_alike_large_spec_perm_7 (general)", 0..200, 30, LARGE, history);
 }
 
 // The same at size: long histories, random orders.
@@ -3026,7 +3026,7 @@ fn arrival_order_alike_large_spec_permissions_5_2() {
 
 /// `history` with permanent messages and purges by anyone mixed in, on their own draws (`history`'s
 /// seeds replay as they were). A purge whose right falls after it applied counts as never received
-/// (spec/permissions.md §8): `alike_exchanged` gives both nodes its bodies again.
+/// (spec/permissions.md §7): `alike_exchanged` gives both nodes its bodies again.
 /// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
 /// may write: spec/requirements.md Deterministic's expiry exception lasts "until a writer next
 /// compacts", so all orders read alike with no body given again and no flag excused.
@@ -3114,35 +3114,35 @@ fn purge_rows_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     out
 }
 
-// spec/permissions.md §8, spec/crdt.md §4.7: a residue left by a fall, value-less again by expiry or a
+// spec/permissions.md §7, spec/crdt.md §4.7: a residue left by a fall, value-less again by expiry or a
 // purge, and reopened.
 #[test]
 #[ignore = "tier 2"]
-fn arrival_order_purge_rows_large_spec_perm_8() {
-    run("arrival_order_purge_rows_large_spec_perm_8", osis_base::testenv::large(7000..7060), 40, LARGE, purge_rows_history);
+fn arrival_order_purge_rows_large_spec_perm_7() {
+    run("arrival_order_purge_rows_large_spec_perm_7", osis_base::testenv::large(7000..7060), 40, LARGE, purge_rows_history);
 }
 
-// spec/permissions.md §8, spec/wire.md §4: arrival order decides nothing with purges by author,
+// spec/permissions.md §7, spec/wire.md §4: arrival order decides nothing with purges by author,
 // whichever deltas and demotions come after them.
 #[test]
-fn arrival_order_purge_author_small_spec_perm_8() {
-    run("arrival_order_purge_author_small_spec_perm_8", 0..3, 24, SMALL, purge_author_history);
+fn arrival_order_purge_author_small_spec_perm_7() {
+    run("arrival_order_purge_author_small_spec_perm_7", 0..3, 24, SMALL, purge_author_history);
 }
 
 #[test]
 #[ignore = "tier 2"]
-fn arrival_order_purge_author_large_spec_perm_8() {
-    run("arrival_order_purge_author_large_spec_perm_8", osis_base::testenv::large(4000..4100), 50, LARGE, purge_author_history);
+fn arrival_order_purge_author_large_spec_perm_7() {
+    run("arrival_order_purge_author_large_spec_perm_7", osis_base::testenv::large(4000..4100), 50, LARGE, purge_author_history);
 }
 
-// spec/commits.md §5 (purge, lasting headers), spec/permissions.md §8: arrival order decides nothing
+// spec/commits.md §5 (purge, lasting headers), spec/permissions.md §7: arrival order decides nothing
 // with purges in the history either.
 #[test]
 fn arrival_order_purge_small_spec_commits_5() {
     run("arrival_order_purge_small_spec_commits_5", 0..4, 8, SMALL, purge_history);
 }
 
-// spec/permissions.md §8: a waiting commit's part stripped for a purge that falls before it applies
+// spec/permissions.md §7: a waiting commit's part stripped for a purge that falls before it applies
 // comes back from a copy given after it applied.
 #[test]
 #[ignore = "tier 2"]
@@ -4482,7 +4482,7 @@ fn late_creation_death_hides_no_reset_death_seed_8413015_spec_crdt_4_8() {
     check(8413015, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// spec/permissions.md §8: a snapshot purged, the purge falling, then purged again with no copy reads
+// spec/permissions.md §7: a snapshot purged, the purge falling, then purged again with no copy reads
 // alike; what it gives then differs, a stated limit (`alike`) (seed 3265).
 #[test]
 #[ignore = "tier 2"]
@@ -4490,7 +4490,7 @@ fn snapshot_purged_fell_purged_reads_alike_seed_3265() {
     run("snapshot_purged_fell_purged_reads_alike_seed_3265", 3265..3266, 60, LARGE, purge_history);
 }
 
-// spec/permissions.md §8: a by-author request standing, falling and another rising over a part with
+// spec/permissions.md §7: a by-author request standing, falling and another rising over a part with
 // no copy left: the part leaves what it left, so a value-less winner stays the winner (seed 872030).
 #[test]
 #[ignore = "tier 2"]
@@ -4521,11 +4521,11 @@ fn records_of_a_dropped_body_after_a_flip_seed_733028_spec_crdt_4_6() {
     check(733028, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// spec/permissions.md §8: a part a fallen purge took counts as never received until a copy comes;
+// spec/permissions.md §7: a part a fallen purge took counts as never received until a copy comes;
 // an expiry later drops it at every node, so the harness tells the fall by its missing part
 // when judged (`purge_flips`) (seed 29617 of the purge-rows mix, shrunk).
 #[test]
-fn fallen_purge_part_missing_before_its_expiry_seed_29617_spec_perm_8() {
+fn fallen_purge_part_missing_before_its_expiry_seed_29617_spec_perm_7() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, Sync { from: 2, to: 1 }, Edge { by: 2, t: 0, holder: 0, role: Some(Role::Write) }, aim(Message { by: 1, t: 0, v: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 7 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, aim(Purge { by: 0, t: 0, of: 2, back: 2, v: 0 }), aim(Typed { by: 1, t: 0, op: 27, k: 1, v: 0 }), aim(Message { by: 0, t: 0, v: 4 }), aim(Typed { by: 2, t: 0, op: 27, k: 2, v: 2 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 1 }), aim(Typed { by: 0, t: 0, op: 27, k: 1, v: 9 }), Send { from: 2, to: 1, back: 0 }, aim(Typed { by: 1, t: 0, op: 27, k: 1, v: 4 }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 0, t: 0, op: 27, k: 0, v: 7 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }, Edge { by: 2, t: 0, holder: 0, role: Some(Role::Write) }, aim(Demote { by: 1, t: 0, holder: 1, at: 3, to_read: true }), Edge { by: 2, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Demote { by: 2, t: 0, holder: 2, at: 1, to_read: false }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, aim(Purge { by: 2, t: 0, of: 1, back: 1, v: 3 })];
@@ -4555,12 +4555,12 @@ fn class_drop_leaves_missing_part_missing_seed_106342_spec_commits_5() {
     }
 }
 
-// spec/commits.md §4, spec/permissions.md §8: a snapshot's part dropped for a purge, reopened as
+// spec/commits.md §4, spec/permissions.md §7: a snapshot's part dropped for a purge, reopened as
 // missing when the purge fell, then dropped for another with no copy come still stands in (a bit
 // of its header, no body needed), as at a node that dropped it once (seed 32032 of the purge-rows
 // mix, shrunk).
 #[test]
-fn snapshot_purged_fell_purged_stands_in_seed_32032_spec_perm_8() {
+fn snapshot_purged_fell_purged_stands_in_seed_32032_spec_perm_7() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, aim(Demote { by: 1, t: 0, holder: 2, at: 1, to_read: false }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 4 }), aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 3 }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 1 }), aim(PurgeNamed { by: 2, t: 0, of: 2, back: 2, v: 9 }), aim(PurgeNamed { by: 2, t: 0, of: 1, back: 1, v: 3 }), aim(Compact { by: 1, t: 0, op: 0 }), Edge { by: 1, t: 0, holder: 0, role: Some(Role::Admin) }, aim(Compact { by: 1, t: 0, op: 0 }), aim(Message { by: 2, t: 0, v: 0 }), Edge { by: 1, t: 0, holder: 2, role: Some(Role::Write) }, aim(PurgeNamed { by: 0, t: 0, of: 2, back: 2, v: 7 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 6 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }];

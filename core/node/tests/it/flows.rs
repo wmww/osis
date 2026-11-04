@@ -141,7 +141,7 @@ fn person_two_devices(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
     (lp, p.person, p.card)
 }
 
-// spec/permissions.md §1, §9; spec/crypto.md §3: a person actor owned by its recovery key, the
+// spec/permissions.md §1, §8; spec/crypto.md §3: a person actor owned by its recovery key, the
 // node its admin, secrets of its own, `keys.0` with inbox and deposit seed, home label genesis
 // with the key listed by static entry; a paired device opens the person's secrets.
 #[test]
@@ -999,7 +999,7 @@ fn cascade_two_hops_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, t, "after"), BTreeSet::from([2]), "nor on T");
 }
 
-// spec/permissions.md §2, §9: recovery removes a device with erase, whatever the person's default.
+// spec/permissions.md §2, §8: recovery removes a device with erase, whatever the person's default.
 #[test]
 fn recovery_erases_whatever_the_default_spec_perm_2() {
     let (mut lp, p, _pa, card) = devices_and_alice(5081);
@@ -1018,11 +1018,11 @@ fn recovery_erases_whatever_the_default_spec_perm_2() {
     assert!(!lp.peers[0].engine.kept_copies().contains(&p));
 }
 
-// spec/permissions.md §9 (recovery card), §5.1: a fresh device holding the card claims the
+// spec/permissions.md §8 (recovery card), §5.1: a fresh device holding the card claims the
 // person (as the recovery key: grants itself admin) and removes the stolen device with the
 // person's rotation; the stolen device's later removal of the honest device is invalid.
 #[test]
-fn stolen_device_recovery_spec_perm_9() {
+fn stolen_device_recovery_spec_perm_8() {
     let (mut lp, p, _pa, card) = devices_and_alice(508);
     let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let mut fresh = net(1, 509);
@@ -1071,11 +1071,11 @@ fn commit_form_redemption_canonical_spec_crdt_3_2() {
     }
 }
 
-// spec/permissions.md §9: a stranger redeems a read link: signing as L it invite-grants its
+// spec/permissions.md §8: a stranger redeems a read link: signing as L it invite-grants its
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.
 #[test]
-fn link_redeem_single_use_spec_perm_9() {
+fn link_redeem_single_use_spec_perm_8() {
     let (mut lp, ps) = people(3, 510);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
@@ -1103,15 +1103,15 @@ fn link_redeem_single_use_spec_perm_9() {
     assert!(lp.peers[2].engine.redeem(&link, &ps2, true).is_err());
     assert_eq!(lp.peers[2].engine.role_on(&d), None);
     // the sharer finalizes the used link: a removal of the absent edge, with its frontier
-    // (spec/permissions.md §2, §9)
+    // (spec/permissions.md §2, §8)
     let fin = lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
     assert!(lp.peers[0].engine.header(&fin.commits[0]).unwrap().frontier.is_some());
 }
 
-// spec/permissions.md §9, §5.1: a forged redemption by a second seed holder, stamped before the
+// spec/permissions.md §8, §5.1: a forged redemption by a second seed holder, stamped before the
 // one the sharer saw, stands until the sharer finalizes; its frontier does not cover it.
 #[test]
-fn single_use_finalization_audits_spec_perm_9() {
+fn single_use_finalization_audits_spec_perm_8() {
     let (mut lp, ps) = people(3, 518);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
@@ -1132,13 +1132,13 @@ fn single_use_finalization_audits_spec_perm_9() {
     }
 }
 
-// spec/permissions.md §9, §5.1, §3: the race flipped by the finalization. Peer 2 redeems first,
+// spec/permissions.md §8, §5.1, §3: the race flipped by the finalization. Peer 2 redeems first,
 // peer 1 later; peer 1 sees both and loses by its view, but keeps K's and the target's secrets
 // (so it keeps following their labels) while L's self-removal is not finalized. The sharer saw
 // only peer 1's redemption: its finalization drops peer 2's and peer 1 is in. Peer 2, the loser
 // once the finalization arrives, drops them.
 #[test]
-fn single_use_loser_keeps_secrets_until_finalized_spec_perm_9() {
+fn single_use_loser_keeps_secrets_until_finalized_spec_perm_8() {
     let (mut lp, ps) = people(3, 522);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
@@ -1175,7 +1175,7 @@ fn single_use_loser_keeps_secrets_until_finalized_spec_perm_9() {
     assert!(dropped.contains(&link.k), "{dropped:?}");
 }
 
-// spec/permissions.md §9, spec/commits.md §2: revoking a joiner of a multi-use link removes it
+// spec/permissions.md §8, spec/commits.md §2: revoking a joiner of a multi-use link removes it
 // and L in one commit with one rotation of K; the other joiner keeps K's new secrets, the
 // revoked one and a seed holder acting as L (bearer use) get none; every peer applies the
 // two-edge commit.
@@ -1215,7 +1215,7 @@ fn revoke_joiner_one_rotation_spec_commits_2() {
     assert!(lp.peers[3].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the seed reads nothing new");
 }
 
-// spec/permissions.md §9, spec/commits.md §2: revoking the joiner of a used single-use link
+// spec/permissions.md §8, spec/commits.md §2: revoking the joiner of a used single-use link
 // (L already gone) is a plain removal of the joiner alone.
 #[test]
 fn revoke_joiner_after_single_use_spec_commits_2() {
@@ -1239,9 +1239,9 @@ fn revoke_joiner_after_single_use_spec_commits_2() {
     }
 }
 
-// spec/permissions.md §9: bearer use reads without writing; `until` expires the link.
+// spec/permissions.md §8: bearer use reads without writing; `until` expires the link.
 #[test]
-fn link_bearer_and_until_spec_perm_9() {
+fn link_bearer_and_until_spec_perm_8() {
     let (mut lp, ps) = people(2, 511);
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
@@ -1270,14 +1270,14 @@ fn link_bearer_and_until_spec_perm_9() {
     assert!(sealed_write(&mut lp, 0, d, "after").is_empty(), "and reads nothing new on the target");
 }
 
-// spec/permissions.md §9 (link finalized), §5.1: an expired link is due for finalization on both of the sharer's
+// spec/permissions.md §8 (link finalized), §5.1: an expired link is due for finalization on both of the sharer's
 // devices (the seed thing is the person's); both finalize concurrently without conflict. A seed
 // holder whose clock lags signs an invite grant as L dated before `until`, after both removals:
 // their frontiers do not cover it, so it is void at every peer, whether it arrives before or
 // after the removals (until they arrive it stands: the window the removal closes); the joiner
 // that redeemed while the link worked stays.
 #[test]
-fn until_link_backdated_grant_void_spec_perm_9() {
+fn until_link_backdated_grant_void_spec_perm_8() {
     let (mut lp, p, _) = person_two_devices(530);
     let mut more = net(3, 531);
     lp.peers.append(&mut more.peers);
@@ -2631,7 +2631,7 @@ fn lockout_bundled_with_own_rotation_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
-// spec/permissions.md §5.1, §8: an admin demoter leaves out of its frontier only what it could drop:
+// spec/permissions.md §5.1, §7: an admin demoter leaves out of its frontier only what it could drop:
 // a covered `author` or `nobody` delta of the demoted writer is listed and stays valid, an
 // `author_or_admin` one is left out, unless the snapshot covering it is a plain writer's, which
 // holds no right over it.

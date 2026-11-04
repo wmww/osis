@@ -30,8 +30,8 @@ Encoding: spec/wire.md §4. Fields:
 - **Content**: deltas on aspects that are not role-class.
 - **Role**: deltas only on role-class aspects (spec/data-model.md §9).
   - A role commit changes at most one `roles.0` edge, except:
-    - a single-use link redemption (the grant plus L's self-removal, both on K, spec/permissions.md §9);
-    - an explicit removal of several holders' edges on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own edge or a self-removal, with one frontier and one rotation (revoking a link joiner together with L, spec/permissions.md §9);
+    - a single-use link redemption (the grant plus L's self-removal, both on K, spec/permissions.md §8);
+    - an explicit removal of several holders' edges on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own edge or a self-removal, with one frontier and one rotation (revoking a link joiner together with L, spec/permissions.md §8);
     - a roster snapshot (spec/permissions.md §6).
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
   - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no edge; all may cover many things.
@@ -154,7 +154,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - **Purgeable by**: a set, not a scale: `nobody` (none), `admin` (the thing's admins), `author` (the delta's author), `author_or_admin` (both), `writer` (every writer, so both too).
   - A `nobody` delta shares a commit only with `nobody` deltas, `created.0` and `required.0^` aside, which go with any; a writer splits a write mixing them into commits (§6).
   - No exception widens it: a body whose set has no holder stays until a keep-at-most bound or expiry, if any.
-  - A member of the set may drop the delta's body: by purge request (spec/permissions.md §8), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
+  - A member of the set may drop the delta's body: by purge request (spec/permissions.md §7), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
   - A **right holder** is a node that holds the right now.
 - **Keep at least** and **keep at most**: each optional; each an absolute time, a duration after the body is replaced, or both (the later bound counts for at least, the earlier for at most). A relative keep at most exists only under `writer`. Where the two bounds disagree, keep at most wins.
 
@@ -206,7 +206,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - A snapshot part has no values of its own: it waits whole and drops once applied.
 - For any dropped delta (here or below), a received blob holding it that may also hold the only true copy of a waiting part of the same commit (one whose slot a copy not yet checkable holds, §4 Copies) is kept until that copy is judged.
 - Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).
-- **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §8). A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
+- **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §7). A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
 - **Carrier only**: a compaction snapshot whose retention (on the wire) has a keep at least (an absolute bound, or a relative one above 0) and a keep at most (either component).
   - It is valid and its writes join, and it carries the live writes of bodies dropped at their keep-at-most bounds (above, spec/sync.md §7), but no body is dropped as covered by it and it covers none for must-hold (spec/sync.md §6).
   - Each node judges this from the snapshot's retention alone, so alike; a delta's retention is immutable, so a later schema or default change re-judges nothing.
@@ -227,7 +227,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 ### Purge
 - **Purge request**: a header field naming earlier deltas (of commits with a smaller `ts`; a later one is not named) by commit, by a whole aspect history, or by author on an aspect (spec/wire.md §4). It MUST NOT name role-class deltas.
   - A later-arriving delta a held request names falls under it as one held does.
-  - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §8): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and drops every body carrying their values, snapshots included, whatever the order the request, the named delta's commit and the snapshot arrive in. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
+  - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §7): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and drops every body carrying their values, snapshots included, whatever the order the request, the named delta's commit and the snapshot arrive in. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
   - A writer that, after applying it, holds no covering snapshot of the aspect under a label it writes re-snapshots there (duplicates are harmless, spec/sync.md §7).
   - A request SHOULD name dead writes; the writer resets live content in the same commit.
   - A commit carrying a request has a delta (it is what places the commit under the thing's labels): where no reset is wanted, a write of `purge.0` (spec/data-model.md §9).
@@ -238,8 +238,8 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - A **header-only blob** goes under a label only as a lasting header (below); its prefix has no expiry and no commitments.
 - A delta is **permanent** when it is durable, its aspect has no fixed retention, its retention has keep at least `abs` forever and no keep at most, and its commit has no `expires`. Only a purge request removes its body.
 - A commit is **lasting** on thing t when either:
-  - a permanent delta of it on t is dropped (other than for breaking a required retention, spec/permissions.md §8);
-  - its purge request has dropped a permanent delta on t at this node (spec/permissions.md §8: its author held the right, as the node then judged; a request that falls stays lasting there).
+  - a permanent delta of it on t is dropped (other than for breaking a required retention, spec/permissions.md §7);
+  - its purge request has dropped a permanent delta on t at this node (spec/permissions.md §7: its author held the right, as the node then judged; a request that falls stays lasting there).
 
   A device coming later, with no snapshot of the aspect stamped after its commit, counts a purged delta as held only by a held request (§4). A lasting commit's header is never forgotten, and every label of a group with t in its closure, whose actor may read t, holds a blob of the commit for good (spec/sync.md §6): a body of it, else a header-only blob. A purge of any other delta leaves nothing at a label. The commit reads as a held commit without that delta's body: its author, actor, `ts` and retention stay, and whether to show it is the reader's choice.
 - **Dropping a body** means destroying every local copy (undo buffers and pre-reset snapshots included), its delta nonce and every local index entry derived from it.

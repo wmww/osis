@@ -278,7 +278,7 @@ impl Engine {
                 }
             }
             // a request's right ends with the role unless the frontier lists it (spec/permissions.md
-            // §8): one this node received stays rightful, whatever became of its body and on
+            // §7): one this node received stays rightful, whatever became of its body and on
             // whatever aspect its own delta lies
             let mut requests = Vec::new();
             for (node, things) in &scope.roles {

@@ -339,7 +339,7 @@ fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>
 /// Whether `k` is a thing where a held single-use redemption granting one of ours stands void
 /// only because an applied redemption by the same signer removed the signer's edge first, with
 /// no explicit write on that edge since: a link race the sharer has not finalized
-/// (spec/permissions.md §3, §9). The finalization may drop the competing redemption and make
+/// (spec/permissions.md §3, §8). The finalization may drop the competing redemption and make
 /// ours stand, so until it arrives the loser keeps the secrets (and with them follows the
 /// labels) it would get back. A redemption is a commit removing its signer's own edge on `k`
 /// beside a grant: a plain leave followed by a void grant (a leaver's forgery) defers nothing.
@@ -479,7 +479,7 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
 }
 
 /// Drops the bearers named on something that no longer hold a role on any of it: the link ended,
-/// what they read went with it, and a new link is a new key (spec/permissions.md §9).
+/// what they read went with it, and a new link is a new key (spec/permissions.md §8).
 fn drop_ended_bearers(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
     let ended: Vec<Tid> = core.ix.bearers.iter().filter(|l| core.ix.held.named_on(l).next().is_some() && !core.ix.held.named_on(l).any(|t| core.role_now(l, t).is_some())).copied().collect();
@@ -627,7 +627,7 @@ impl Engine {
         })
     }
 
-    /// Keeps reading as link key `l`, whose seed this node forgets (spec/permissions.md §9, Bearer
+    /// Keeps reading as link key `l`, whose seed this node forgets (spec/permissions.md §8, Bearer
     /// use: a contact card): what `l` reads stays held and followed for as long as `l` holds its
     /// role, and goes with it (`l`'s edge removed: the link ended).
     pub fn keep_bearer(&mut self, l: &Tid) -> Result<()> {

@@ -519,10 +519,10 @@ fn removal_copy_survives_a_crash_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §9, §4 (verifiers of L's commits need its card): a crash before carrying
+// spec/permissions.md §8, §4 (verifiers of L's commits need its card): a crash before carrying
 // out a link's creation still places L's card under K's label once the node restarts.
 #[test]
-fn link_card_survives_a_crash_spec_permissions_9() {
+fn link_card_survives_a_crash_spec_permissions_8() {
     use osis_node::Mutation;
     for crash in [false, true] {
         let mut net = Net::new();

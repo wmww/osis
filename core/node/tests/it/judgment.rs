@@ -711,14 +711,14 @@ fn invites() -> Vec<Scenario> {
         // §5.1 step 4: an invite level is a class; losing it audits the grants made through it
         Scenario {
             name: "invite grant unseen by the invite's removal",
-            spec: "spec/permissions.md §5.1, §9",
+            spec: "spec/permissions.md §5.1, §8",
             source: "hand-picked: 1 (invite write) grants 2 write, unseen by 0; 0 removes 1 with its frontier: the grant goes to D",
             steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
             orders: None,
         },
         Scenario {
             name: "invite grant seen by the invite's removal",
-            spec: "spec/permissions.md §5.1, §9",
+            spec: "spec/permissions.md §5.1, §8",
             source: "hand-picked: 1 (invite write) grants 2 write and 0 receives it; 0 removes 1 with its frontier: the grant stands",
             steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, Sync { from: 1, to: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
             orders: None,

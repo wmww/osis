@@ -794,7 +794,7 @@ pub(crate) fn broken_by(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Op
 
 /// Whether `required.0^` part `a` of a commit with header `h` is signed by one not a possible admin
 /// of the thing: it binds nothing and costs every node a body, so it goes without a right
-/// (spec/permissions.md §8). A delta is judged by its author's standing, so the actor it names
+/// (spec/permissions.md §7). A delta is judged by its author's standing, so the actor it names
 /// saves nothing. A setting by a possible admin stays, fallen or not: it may stand again.
 pub(crate) fn never_could_set(core: &Core, h: &Header, a: &osis_commit::AspectEntry) -> bool {
     a.ak.as_str() == osis_commit::retention::REQUIRED && !core.ix.held.ever_admins(&a.tid).contains(&h.author)
@@ -1212,7 +1212,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             super::keys::invalidated(tx, &c, ai)?;
         }
     }
-    // a request's right rests on the same timelines (spec/permissions.md §8)
+    // a request's right rests on the same timelines (spec/permissions.md §7)
     if rebuild {
         let things: BTreeSet<Tid> = things.union(&under).copied().collect();
         for (tid, ak) in crate::retention::purged_aspects(tx, &things, &whole)? {
@@ -1276,7 +1276,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
     if holders.len() > 1 {
         // the one exception for edge writes in a plain role commit: a single-use
         // redemption (a grant plus the author key's own self-removal, both on K,
-        // spec/permissions.md §9, spec/commits.md §2)
+        // spec/permissions.md §8, spec/commits.md §2)
         let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.author && c.2.is_none()) && changed.iter().any(|c| c.1 != h.author && c.2.is_some());
         // or an explicit removal of several others' edges on one target (a link joiner with
         // the link key), under one frontier and one rotation: no edge of it a self-removal, each

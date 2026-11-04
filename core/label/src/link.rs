@@ -1,4 +1,4 @@
-//! Links and recovery cards (spec/wire.md §10, spec/permissions.md §9): canonical layouts, caps
+//! Links and recovery cards (spec/wire.md §10, spec/permissions.md §8): canonical layouts, caps
 //! and text forms `osis://link/` / `osis://card/` + unpadded base64url.
 
 use crate::addr::{Address, address_from_value};
@@ -37,7 +37,7 @@ pub struct ShareLink {
     pub k_label: LabelId,
     pub hosts: Vec<Address>,
     pub peers: Vec<Peer>,
-    /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §9).
+    /// `flags` bit 0: the redemption removes L's own edge (spec/permissions.md §8).
     pub single_use: bool,
 }
 

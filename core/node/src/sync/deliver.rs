@@ -467,7 +467,7 @@ impl SyncEngine {
 }
 
 impl SyncEngine {
-    /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §9) after a
+    /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §8) after a
     /// complete pass of K's labels (`complete_pass`) that, for an expired link, ended at every
     /// host after `until` (a pass from before going offline does not count); at once when K's
     /// labels have no host (`peer://` nodes only count as none) and this node made the link (the redeemers reached it directly;

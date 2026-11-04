@@ -481,7 +481,7 @@ fn note_carried_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 }
 
 /// The parts of `(tid, ak)` dropped while invalid (`DropFor::Invalid`) that are valid now are
-/// missing again (spec/commits.md §5, spec/permissions.md §8): they give nothing until the body
+/// missing again (spec/commits.md §5, spec/permissions.md §7): they give nothing until the body
 /// arrives again (node-sync fetches it, `Changed::undropped`; a holder uploads it, it is must-hold
 /// there). Until each does this node may read less than one that kept it.
 pub(crate) fn valid_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
@@ -1004,7 +1004,7 @@ impl Engine {
         })
     }
 
-    /// Drops what goes without a right (spec/permissions.md §8): the held deltas that break their
+    /// Drops what goes without a right (spec/permissions.md §7): the held deltas that break their
     /// thing's required retention and that this node received after the `required.0^`
     /// delta they break, so a backdated change takes no body it already held, and `required.0^`
     /// deltas by a node that never could set one: those of `only`, else all. Returns their

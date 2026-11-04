@@ -935,10 +935,10 @@ fn copy_is_not_synced_spec_perm_3() {
     assert_eq!(net.read(a, t), Some(s("after")));
 }
 
-// spec/permissions.md §3, Keep; §9: K takes the target's default when made, so a joiner removal keeps
+// spec/permissions.md §3, Keep; §8: K takes the target's default when made, so a joiner removal keeps
 // under it; the link key goes plain in the same commit.
 #[test]
-fn a_links_key_takes_the_targets_default_spec_perm_9() {
+fn a_links_key_takes_the_targets_default_spec_perm_8() {
     for (keep, seed) in [(true, 9410), (false, 9415)] {
         let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &osis_store::Faults::new())], seed);
         let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;

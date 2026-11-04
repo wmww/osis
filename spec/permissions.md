@@ -25,7 +25,7 @@
   - Its **creation commit** carries its `created.0`, its first secrets (§3) and its `keys.0`, written as the first admin's write (an author with admin on that actor, or the actor itself), and puts the first admin's edge in `roles.0` (an entry for removals to reset, spec/crdt.md §5.6).
 - **Role grant**: an edge (holder actor, target, role), stored in the target's `roles.0`. On an actor it grants the role on everything the actor owns; on a plain thing, on that thing only.
 - **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, evaluated with the timeline (§5.1) at t. A path climbs role grants and owner links (an owner holds admin on what it owns; an ownerless thing's record edge is a role grant while it stands).
-- **Admin** = write + change role grants + purge (§8) + write admin-only (`^`) aspects (spec/data-model.md §2; §5.2). An admin edge on a plain thing grants changing its role grants and purge on that thing.
+- **Admin** = write + change role grants + purge (§7) + write admin-only (`^`) aspects (spec/data-model.md §2; §5.2). An admin edge on a plain thing grants changing its role grants and purge on that thing.
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
 - An edge write whose holder is its target or its target's owner actor is not applied (§5.1), and a roster snapshot's entry for either is ignored (§6).
 - The role-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants and self-removals (§2), and what rotations and re-seals write into `secrets.0` and `keys.0` (§3).
@@ -121,7 +121,7 @@
     - the node holds no secret of the actor but those kept for reading (learned only from pending or invalid commits, spec/crypto.md §4);
     - the commit is signed by its author, who holds admin or an invite on its actor as the node sees it now, and its `ts` is less than `PENDING_GRANT_WAIT_MS` before now (and not more than `MAX_DRIFT` ahead).
   - Whatever its `ts`, such a signed commit that boxes the node a read epoch newer than every one it held keeps its boxes through the drop (it may still apply and then gives the node the secrets with the role). The node reads nothing from them before it applies. Boxes only at epochs it held are dropped.
-  - A held redemption (a commit removing its signer's own edge on a thing beside a grant there) granting the node, that stands void only because an applied redemption by the same signer removed that edge first, with no explicit write on that edge since (an unfinalized single-use link race, §9), is no loss yet: the node keeps what that grant would give and keeps syncing its labels until such a write arrives.
+  - A held redemption (a commit removing its signer's own edge on a thing beside a grant there) granting the node, that stands void only because an applied redemption by the same signer removed that edge first, with no explicit write on that edge since (an unfinalized single-use link race, §8), is no loss yet: the node keeps what that grant would give and keeps syncing its labels until such a write arrives.
   - A node that lost read access through its own self-removal (§2) drops once that commit is placed (spec/sync.md §5, Placed), so it can place it (above).
   - One that lost it by an `until` passing alone drops as §2 says.
 - **Keep**: a node that lost read access to actor A keeps a read-only copy of A's things when one of its ways to A keeps.
@@ -221,7 +221,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
     - for a demotion below write, also X's held commits acting for one of those things (§5.2, Acting);
     - the role commits and roster snapshots among A's chain certificates for R's target (§4).
   - **Covered commits**: A MAY leave out a commit when A holds or dropped every delta its header lists and each of its deltas on those aspects (for a commit acting for one of those things, each delta but `created.0`) is one A dropped as covered or one A's compaction would drop now (spec/sync.md §7: covered by a snapshot A holds valid, purgeable by A, its keep-at-least bound `MAX_DRIFT` past on A's clock), when A had received every such snapshot (and, for a delta dropped as covered, every snapshot that covered it or covered such a snapshot dropped in turn) as of T.
-  - **Purge requests**: for any demotion A also lists every commit whose purge request's right may rest on X's standing there (§8), received as of T, and none of those is left out as covered. Such a commit is both:
+  - **Purge requests**: for any demotion A also lists every commit whose purge request's right may rest on X's standing there (§7), received as of T, and none of those is left out as covered. Such a commit is both:
     - signed, as author or as the header's actor, by X or by a holder X's possible admins named with write or above on X;
     - naming a delta on a thing whose role-class aspects R puts in question for X or on which such a thing may hold write.
   - Only where a frontier would pass the list bound a node resolves does A leave out the purge-request commits it received last, as few as fit, each then losing its right.
@@ -325,7 +325,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - A certificate copy of S carries the edge and ledger deltas the verifier needs and the reset-only deltas (spec/sync.md §3); its signed header still shows a co-reader the roster's and ledger's sizes (one delta hash per edge and entry) and the number of linked frontier chunks.
 - S replaces N's earlier `roles.0` and `tenures.0` deltas (their writes die at S's `ts`); their retention keeps them at least `ROLE_KEEP` after that (spec/commits.md §5).
 
-## 8. Purge rights
+## 7. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:
   - **admin**: the thing's current admins;
   - **author**: the actor the commit's header names while it holds write on the thing, acting through any node with write on it;
@@ -349,7 +349,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
   - Nothing else goes without a right. A delta so dropped that turns valid counts as never received.
 - What the right promises is that honest nodes keep the body. Which hosts carry it follows the thing's labels: a thing leaving a group leaves that label's hosts whatever its retention (spec/sync.md §6), and holders keep their copies.
 
-## 9. Links
+## 8. Links
 - A **link** consists of K, an actor owned by the sharer with secrets of its own, granted the link's role on the target, and L, a key actor whose seed is in the link, with edge (role r, invite r) on K for the link's role r.
   - The sharer's actor is K's only admin.
   - A client making the link writes the target's `keep` default then in force on K (§3) when it says keep.

@@ -928,7 +928,7 @@ fn entry_created_after_demotion_spec_perm_5_2() {
 
 // spec/crdt.md §4.6 (un-merge is a function of the held set), spec/permissions.md §5.2: as
 // `entry_created_after_demotion_spec_perm_5_2`, with Dave receiving Carol's write inside "late"
-// before her snapshot (dated after it, as §8 requires): alike.
+// before her snapshot (dated after it, as spec/crdt.md §8 requires): alike.
 #[test]
 fn entry_created_after_demotion_write_first_spec_perm_5_1() {
     entry_created_after_demotion(false);

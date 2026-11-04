@@ -1,5 +1,4 @@
-//! Certificates (spec/permissions.md §4), purge rights (§8), rotation (§3), move resolution
-//! (§7).
+//! Certificates (spec/permissions.md §4), purge rights (§7), rotation (§3).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -408,7 +407,7 @@ fn certificates_project_edges_large() {
     sharded(20_000, 0x5eed_0204, cert_run_edges);
 }
 
-/// §8: purge rights by retention, judged at the request's time.
+/// §7: purge rights by retention, judged at the request's time.
 #[test]
 fn purge_rights() {
     let mut w = World::new();

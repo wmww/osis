@@ -1557,7 +1557,7 @@ fn snapshot_join_cost_spec_permissions_5_2() {
     }
 }
 
-// spec/permissions.md §8: what a role change costs an aspect of N commits with R requests on it
+// spec/permissions.md §7: what a role change costs an aspect of N commits with R requests on it
 // (`retention::rejudge_purges`): a join, an honest demotion, a fall and a rise; named requests by an
 // admin, aspect-wide ones by a plain writer with no right. `OSIS_SCALE_N`, `OSIS_SCALE_R`.
 #[test]
