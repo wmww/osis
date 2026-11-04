@@ -62,6 +62,8 @@ pub enum DecodeError {
     NonCanonicalNan,
     /// A known tag around content of the wrong shape.
     TagContent(u64),
+    /// Not the item a `Reader` was told to expect.
+    Shape,
 }
 
 crate::impl_error!(DecodeError {
@@ -80,6 +82,7 @@ crate::impl_error!(DecodeError {
     BadSimple => ("cbor: simple value or float width outside the profile"),
     NonCanonicalNan => ("cbor: non-canonical NaN"),
     TagContent(t) => ("cbor: bad content for tag {t}"),
+    Shape => ("cbor: not the expected item"),
 });
 
 impl Classified for DecodeError {
@@ -316,6 +319,97 @@ pub fn visit_items(input: &[u8], limits: &Limits, visit: &mut dyn FnMut(Place, u
     Ok(())
 }
 
+/// Reads a value of a known shape head by head, under the profile's rules (shortest heads, integers
+/// within i64, valid UTF-8), allocating nothing: a caller holds what it builds to what the bytes
+/// can pay for, where `decode` of hostile bytes costs about 770 B per byte (one B-tree node per
+/// one-entry map). The caller keeps maps and sets in order, as `decode` would.
+pub struct Reader<'a>(Decoder<'a>);
+
+impl<'a> Reader<'a> {
+    pub fn new(input: &'a [u8]) -> Reader<'a> {
+        Reader(Decoder::new(input, &Limits { max_depth: usize::MAX, max_bytes: input.len() }))
+    }
+
+    /// Bytes read so far.
+    pub fn pos(&self) -> usize {
+        self.0.pos
+    }
+
+    /// The input from `start` to the read position.
+    pub fn since(&self, start: usize) -> &'a [u8] {
+        self.0.buf.get(start..self.0.pos).unwrap_or(&[])
+    }
+
+    /// The major type of the next item.
+    pub fn peek_major(&self) -> Option<u8> {
+        self.0.buf.get(self.0.pos).map(|ib| ib >> 5)
+    }
+
+    fn head(&mut self, major: u8) -> Result<u8, DecodeError> {
+        let ib = self.0.byte()?;
+        if ib >> 5 == major { Ok(ib) } else { Err(DecodeError::Shape) }
+    }
+
+    /// Bytes not yet read.
+    pub fn remaining(&self) -> usize {
+        self.0.remaining()
+    }
+
+    /// An array head; its count, at most the remaining bytes.
+    pub fn array(&mut self) -> Result<usize, DecodeError> {
+        let ib = self.head(MAJOR_ARRAY)?;
+        self.0.len(ib, 1)
+    }
+
+    /// A map head; its count of entries.
+    pub fn map(&mut self) -> Result<usize, DecodeError> {
+        let ib = self.head(MAJOR_MAP)?;
+        self.0.len(ib, 2)
+    }
+
+    pub fn uint(&mut self) -> Result<u64, DecodeError> {
+        let ib = self.head(MAJOR_UINT)?;
+        let n = self.0.arg(ib)?;
+        if i64::try_from(n).is_err() {
+            return Err(DecodeError::IntOutOfRange);
+        }
+        Ok(n)
+    }
+
+    /// A byte string of exactly `N` bytes.
+    pub fn fixed<const N: usize>(&mut self) -> Result<[u8; N], DecodeError> {
+        self.bytes()?.try_into().map_err(|_| DecodeError::Shape)
+    }
+
+    pub fn bytes(&mut self) -> Result<&'a [u8], DecodeError> {
+        let ib = self.head(MAJOR_BYTES)?;
+        let n = self.0.len(ib, 1)?;
+        self.0.take(n)
+    }
+
+    pub fn text(&mut self) -> Result<&'a str, DecodeError> {
+        let ib = self.head(MAJOR_TEXT)?;
+        let n = self.0.len(ib, 1)?;
+        std::str::from_utf8(self.0.take(n)?).map_err(|_| DecodeError::InvalidUtf8)
+    }
+
+    /// The tag head `tag`.
+    pub fn tag(&mut self, tag: u64) -> Result<(), DecodeError> {
+        let ib = self.head(MAJOR_TAG)?;
+        if self.0.arg(ib)? == tag { Ok(()) } else { Err(DecodeError::Shape) }
+    }
+
+    pub fn link(&mut self) -> Result<Link, DecodeError> {
+        self.tag(TAG_LINK)?;
+        self.0.link_content()
+    }
+
+    /// The whole input has been read.
+    pub fn end(&self) -> Result<(), DecodeError> {
+        if self.0.pos == self.0.buf.len() { Ok(()) } else { Err(DecodeError::Trailing) }
+    }
+}
+
 struct Decoder<'a> {
     /// Input cut at `max_bytes`.
     buf: &'a [u8],
@@ -525,6 +619,17 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// What follows a link's tag.
+    fn link_content(&mut self) -> Result<Link, DecodeError> {
+        if self.expect(MAJOR_ARRAY, TAG_LINK)? != 3 {
+            return Err(DecodeError::TagContent(TAG_LINK));
+        }
+        let hash = self.fixed_bytes::<32>(TAG_LINK)?;
+        let blob = BlobId(self.fixed_bytes::<32>(TAG_LINK)?);
+        let [suite, key @ ..] = self.fixed_bytes::<33>(TAG_LINK)?;
+        Ok(Link { hash, blob, suite, key })
+    }
+
     fn tagged(&mut self, tag: u64, depth: usize) -> Result<Value, DecodeError> {
         let inner = depth + 1;
         self.enter(inner)?;
@@ -568,13 +673,7 @@ impl<'a> Decoder<'a> {
             }
             TAG_LINK => {
                 self.enter(inner + 1)?;
-                if self.expect(MAJOR_ARRAY, tag)? != 3 {
-                    return Err(DecodeError::TagContent(tag));
-                }
-                let hash = self.fixed_bytes::<32>(tag)?;
-                let blob = BlobId(self.fixed_bytes::<32>(tag)?);
-                let [suite, key @ ..] = self.fixed_bytes::<33>(tag)?;
-                Ok(Value::Link(Link { hash, blob, suite, key }))
+                self.link_content().map(Value::Link)
             }
             _ => {
                 let start = self.pos;

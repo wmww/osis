@@ -316,13 +316,14 @@ fn linked_frontier(tx: &mut Tx<'_>, tid: &Tid, link: &osis_base::Link, listed: &
             let Some(dedup) = tx.core.dedup(tid) else { return Ok(None) };
             let mut src = Listed { blobs: crate::engine::blobs::TxBlobs::new(&mut tx.txn), listed };
             let mut r = osis_label::BlobReader::new(&dedup, &mut src);
-            let v = match osis_label::read_value(*link, &dedup, &mut r, osis_label::LargeParams::FORMAT, *budget) {
-                Ok(v) => v,
+            let b = match osis_label::LargeReader::new(*link, &dedup, &mut r, osis_label::LargeParams::FORMAT, *budget).read_all() {
+                Ok(b) => b,
                 Err(osis_label::Error::Missing) => return Ok(None),
                 Err(osis_label::Error::TooLarge(_)) => return Err(Error::BadInput("linked frontiers above MAX_LINKED_FRONTIERS")),
                 Err(_) => return Err(Error::BadInput("a linked frontier does not read")),
             };
-            let b = osis_base::encode(&v);
+            // by shape, before anything is decoded: a whole-value decode pays for any bytes
+            osis_commit::frontier_value(&b).map_err(|_| Error::BadInput("a linked frontier is not a frontier"))?;
             tx.txn.put_local(&key, &b, osis_store::Shred::No)?;
             b
         }

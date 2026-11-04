@@ -23,6 +23,7 @@ pub fn rule(e: &DecodeError) -> &'static str {
         DecodeError::BadSimple => "simple",
         DecodeError::NonCanonicalNan => "nan",
         DecodeError::TagContent(_) => "tag-content",
+        DecodeError::Shape => "shape",
     }
 }
 

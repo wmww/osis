@@ -235,6 +235,18 @@ pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> B
     out
 }
 
+fn check_signature(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId, vk: &VerifyingKey) -> Result<()> {
+    let _s = crate::costs::span("examine: signature");
+    if let Err(e) = osis_commit::verify_signature(id, &blob.signature, vk) {
+        // the first copy's signature, kept while the author was away: a true copy may be held
+        if tx.core.ix.pending.contains_key(id) {
+            tx.core.redeliver.insert(*id);
+        }
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 /// The stored bytes of pending commit `id`, decoded: `None` when they are gone (it pends no
 /// more) or still unreadable by this build.
 fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
@@ -288,6 +300,12 @@ enum Turn {
 /// a part shown before a thing entered it stays (issues/sync-learned-after-apply.md).
 pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<(usize, usize)>) -> Result<Exam> {
     if !blob.header.is_resolved() {
+        // a held author's signature first: a false one costs no list. An author's record carried
+        // by this commit waits for the lists: only the aspects say which part holds it
+        if let Some(CreationRecord::KeyActor { public_key, .. }) = tx.core.created_for(&blob.header.author, false) {
+            let vk = VerifyingKey::from_slice(public_key)?;
+            check_signature(tx, blob, id, &vk)?;
+        }
         let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Pending(Reason::UnknownCreated(blob.header.actor), Vec::new())) };
         match blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup) {
             Ok(()) => {}
@@ -306,16 +324,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author), Vec::new())) };
     let CreationRecord::KeyActor { public_key, .. } = &author else { return Err(Error::BadInput("author is not a key actor")) };
     let vk = VerifyingKey::from_slice(public_key)?;
-    {
-        let _s = crate::costs::span("examine: signature");
-        if let Err(e) = osis_commit::verify_signature(id, &blob.signature, &vk) {
-            // the first copy's signature, kept while the author was away: a true copy may be held
-            if tx.core.ix.pending.contains_key(id) {
-                tx.core.redeliver.insert(*id);
-            }
-            return Err(e.into());
-        }
-    }
+    check_signature(tx, blob, id, &vk)?;
     h.validate()?;
     // a frontier that does not decode is bad input, never a demotion without one (spec/wire.md
     // §4 field 12)
