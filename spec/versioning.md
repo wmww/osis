@@ -1,16 +1,16 @@
 # Versioning
-> Summary: The format version and the other extension points, the parking rule for data a node cannot interpret, schemas as local knowledge (nothing about them on the wire), the additive evolution rules a schema must follow, open structs, reader defaults and typed-read failures.
+> Summary: How formats and schemas change: extension points, parking of data a node cannot interpret, additive schema evolution and reads across schema versions.
 
 ## 1. Extension points
 Four independent extension points, each parked separately so a node with one unknown item still reads everything else:
-- **Format version**: one integer covering commit header fields, blob framing and format constants (`MAX_BLOB`, `CHUNK_THRESHOLD`, `PAGE_TARGET`, chunking and paging parameters, `MAX_DRIFT`, `ROLE_KEEP`, `INBOX_LIFETIME`, heartbeat bounds). Readers MUST accept every older version forever. Writers MUST emit the oldest version that can express the commit.
+- **Format version**: one integer covering commit header fields, blob framing and the format constants (spec/wire.md §2). Readers MUST accept every older version forever. Writers MUST emit the oldest version that can express the commit.
 - **Merge encodings**: IDs named per fragment inside a delta (spec/crdt.md §3.1). A change to an encoding's grammar is a new encoding ID with an embedding from the old one (spec/crdt.md §7), never an in-place change.
 - **Value types**: new CBOR tags (spec/data-model.md §5).
 - **Algorithms**: enum cases on keys, signatures and sealed boxes; suite bytes and suite IDs (spec/crypto.md §8).
 Local storage, indexes, the node-to-node protocol (spec/sync.md §6, which negotiates its own version) and the API are not part of the format and change freely.
 
 ## 2. Parking rule
-- A node MUST NOT discard, reject or crash on data it cannot interpret: an unknown format version, encoding ID, tag, field ID, enum case, AK, algorithm case or suite. It stores and relays the data, joins what it can, treats the rest as not yet received, and re-examines it after an upgrade. A parked delta waits as spec/commits.md §4 says: on a thing the node syncs it pends its whole commit, otherwise it waits alone.
+- A node MUST NOT discard, reject or crash on data it cannot interpret: an unknown format version, encoding ID, tag, field ID, enum case, AK, algorithm case or suite. It stores and relays the data, joins what it can, treats the rest as not yet received, and re-examines it after an upgrade. A parked delta waits as spec/commits.md §4 says.
 - A parked delta is kept as bytes with its header entry. A parked commit is pending (spec/commits.md §4).
 - A body a node could not join is never covered for it (spec/commits.md §5), so it never compacts one; purge requests, expiry and absolute keep-at-most bounds still apply. It relays other nodes' snapshots and deletions of such blobs like a host does.
 - A role-class value the node cannot type (an unknown role case, say) counts as not received; what depends on it stays pending.
@@ -33,5 +33,5 @@ An aspect's wire type never changes; a different type is a new AK, normally the 
 - **Open structs**: state may hold field IDs a schema does not know. They are preserved, joined and ignored by typed reads.
 - Writes are validated against the writer's schema; every field the writer's schema declares is required at write time.
 - **Reader defaults**: a field with a declared constant default reads as the default when absent. A default is never materialized: the structural diff writes nothing for an absent field whose new value equals its default (spec/crdt.md §9).
-- A typed read of stored data with an unknown enum case, a type mismatch or a missing field without default MUST NOT be taken as a value of the type: it reads as absent and reports the path as a diagnostic (stored data is other writers' input). Typed reads are also available per path, so one bad element leaves the others readable. Untyped reads of any stored data always succeed.
+- A typed read of stored data with an unknown enum case, a type mismatch or a missing field without default MUST NOT be taken as a value of the type: it reads as absent and reports the path as a diagnostic. Typed reads are also available per path, so one bad element leaves the others readable. Untyped reads of any stored data always succeed.
 - A writer never removes or rewrites data its schema cannot read, except by an explicit replace (spec/crdt.md §9).
