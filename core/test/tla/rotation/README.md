@@ -92,8 +92,8 @@ Properties: `NoLeakDirect`, `NoLeakMember`, `NoLeakMemberAll` (invariants), `Exc
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
 | `D0_member` | A {a1, M}, M {m1, m2, D}; m1 removes D, m2 may fork M, a1 may rotate A; the study's rule | **fails** `NoLeakMember` (history box to an ignorant fork) | 3,756 | 15 s |
-| `D0_member_anchor` | as D0_member, anchored sealing and merge | MEMBER_ANCHOR |
-| `D0_member_forge` | as D0_member_anchor, D forges a keyset of M | MEMBER_FORGE |
+| `D0_member_anchor` | as D0_member, anchored sealing and merge | no violation (unfinished, stopped at 50 min; partial liveness checks passed) | 529,544+ | 50 min |
+| `D0_member_forge` | as D0_member_anchor, D forges a keyset of M | no violation (unfinished, stopped; partial liveness checks passed); before descent skipped invalid keysets: **fails** `NoLeakMember` (an ignorant fork made from the forgery descends from kk through it) | 606,566+ | 37 min |
 | `D0_cyc_study` | X {x1, D, Y}, Y {y1, X}; x1 removes D, y1 may rotate Y; the study's cycle rule | **fails** `Settles` (ping-pong) | 2,582 | 37 s |
 | `D0_cyc2_study` | X <-> Y, D leaves X and E leaves Y concurrently; the study's rule | **fails** liveness (each left out of the other) | 365 | 7 s |
 | `D0_below_study` | W {w1, D} holds X, X <-> Y; w1 removes D; the study's rule | **fails** `NoLeakMember` (a staleness rotation boxes Y) | 26 | 6 s |
