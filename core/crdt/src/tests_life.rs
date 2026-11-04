@@ -933,9 +933,8 @@ fn death_across_key_erased_record_spec_5_6() {
 fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     use crate::ops::{Writer, create};
     use crate::view::AnyView;
-    use std::collections::BTreeMap;
     let (x, y) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
-    let map = |v: &str| Value::Map(BTreeMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
+    let map = |v: &str| Value::Map([(Value::Str("k".into()), Value::Str(v.into()))].into_iter().collect());
     let none = |_: &crate::Dot| false;
     let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
     let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
@@ -950,7 +949,7 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     assert_eq!(gone.sweep(&r, &none), None, "a tombstone holds nothing");
     let mut hid = gone.clone();
     hid.join(edit.clone());
-    assert_eq!(hid.read(), Some(Value::Map(BTreeMap::new())));
+    assert_eq!(hid.read(), Some(Value::Map(Default::default())));
     let sweep = hid.sweep(&r, &none).expect("a removal hid the edit");
     let mut after = hid.clone();
     after.join(sweep.clone());
@@ -991,7 +990,7 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
 fn shown(v: Value) -> Option<Value> {
     match v {
         Value::Map(m) => {
-            let m: std::collections::BTreeMap<_, _> = m.into_iter().filter_map(|(k, v)| Some((k, shown(v)?))).collect();
+            let m: osis_base::ValueMap = m.into_iter().filter_map(|(k, v)| Some((k, shown(v)?))).collect();
             (!m.is_empty()).then_some(Value::Map(m))
         }
         Value::List(l) => {
