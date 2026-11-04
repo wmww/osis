@@ -843,7 +843,7 @@ fn cross_thing_learned_late_stays_until_the_part_comes_spec_commits_4() {
     assert_eq!(read(false), (Some(s("t")), Some(s("t")), Some(s("u"))));
 }
 
-// spec/commits.md §4 (the stated limit): a writer of a synced group lists a thing the node never
+// spec/commits.md §4 (the limit in notes/whole-commits.md, Moved from the spec): a writer of a synced group lists a thing the node never
 // reads. A commit across it and a held thing waits whole for its part, until the listing goes.
 #[test]
 fn listed_thing_never_read_holds_a_commit_across_it_spec_commits_4() {

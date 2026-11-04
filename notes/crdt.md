@@ -86,6 +86,15 @@
 - A commit is limited only by its header lists (`MAX_LIST_BYTES`): any delta pages like a snapshot (§8), so a bulk `replace` of a huge map or an import is one atomic commit; the writer streams pages out, readers stream them in. Runs are capped at `MAX_RUN` = 2^12 elements so a page stays under `MAX_PAGE_ITEMS` (Page items below).
 - Commit floor: a minimal commit is about 300 bytes once nonce, framing, tag and padding count, plus a 57-byte wrap per label and a prefix of about 35 bytes. Fine for editing workloads; revisit only if huge commit volumes appear (Tess).
 
+## Moved from the spec
+Consequences of spec/crdt.md rules, worth knowing, not extra rules.
+- **Second session** (§2.1): an expired ephemeral commit is forgotten with its counters; under a session of its own it leaves no gap a snapshot frontier could not pass.
+- **Absent before** (§4.6): the reset at P also drops older writes into P that arrive later (concurrent ones).
+- **Expiring deltas and snapshots** (§4.7, §8): a delta with an expiry is never covered, so its content lives only in its own blob, which hosts drop at T.
+- **Slots read** (§7): every non-register slot holds the register's embedding, so a slot's greatest stamp is at least the register's: the register is chosen only when alone, and then the position is just that register. Two unrelated encodings read as "later writer wins", the other's history kept and readable again if it is written last later. Applying the embedding eagerly after every join equals applying it at read.
+- **Page items** (§8): a blob counts at most its length in bytes.
+- **Snapshot standing in at atomic apply** (§8, spec/commits.md §4): one whose frontier reaches the delta accounts for its writes; one holding nothing of its session says they are dead there or were never received; one whose frontier falls short may have covered either. So all three count, and nodes that applied the commit under the earlier snapshot read like nodes given the later one alone.
+
 ## Implementation (`osis-crdt`)
 - **Structures**: `Fragment` enum, one struct per encoding (`fragment.rs`), crate-private fields; collections are `BTreeMap<Dot, _>`, struct fields and enum payloads `BTreeMap<u64, _>`. Sequences: `seq.rs` (element state, join, prune, presence, read, strip, un-merge, text embedding), `seq_span.rs` (range records), `seq_wire.rs` (runs), `seq_ops.rs` (ops, net effect, undo), `seq_diff.rs` (diff, `edit`), `linearize.rs`; the generic code calls only the hooks re-exported from `seq.rs` and owns a sequence's reset and `W`. A text keeps the chars of deleted elements locally (undo and paste read them); a snapshot does not carry them, so a bootstrapped node's state differs only there.
 
