@@ -86,10 +86,9 @@ impl SyncEngine {
     }
 
     /// Must-hold for a closure body (spec/sync.md §6), judged per part the label's actor reads
-    /// (`b.parts`): a part before its keep-at-least bound, under `nobody` while kept, or
-    /// established uncovered by the label's snapshots. Must-hold: the parts a blob of the
-    /// commit must hold to hold the body (those before keep-at-least or under `nobody`, and
-    /// those of the aspects no snapshot covers).
+    /// (`b.parts`): a part kept (`part_kept`) or established uncovered by the label's
+    /// snapshots. Must-hold: the parts a blob of the commit must hold to hold the body (those
+    /// kept, and those of the aspects no snapshot covers).
     pub(super) fn must_hold(&mut self, b: &Body, snaps: &Snaps, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
@@ -121,17 +120,20 @@ impl SyncEngine {
         Ok(must.then_some(needed))
     }
 
-    /// Whether part `p` of commit `c` is kept whatever covers it: `nobody` (no right holder will
-    /// ever drop it) or before its keep-at-least bound (noted).
+    /// Whether part `p` of commit `c` is kept whatever covers it (spec/sync.md §6): before its
+    /// keep-at-least bound or under `nobody`, and more than `MAX_DRIFT` before its keep-at-most
+    /// bound (noted when that ends). Invariant: an honest node whose clock leads this one's by up
+    /// to `MAX_DRIFT` may already have dropped a part past keep-at-most and deleted its blob;
+    /// this node then neither holds it must-hold nor heals it, so the two never delete and
+    /// re-upload in turn. The cost: a must-hold part goes unhealed in its last `MAX_DRIFT`.
     fn part_kept(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize), note: &mut Note) -> Result<bool> {
         let Some(a) = h.aspects.get(p.0) else { return Ok(false) };
-        if a.retention.by == osis_base::PurgeBy::Nobody {
-            return Ok(true);
-        }
-        let at_least = self.engine.body_keep(c, &a.tid, &a.ak)?.at_least;
-        let kept = at_least > self.now();
-        if kept {
-            note.at(at_least);
+        let k = self.engine.body_keep(c, &a.tid, &a.ak)?;
+        let until = if a.retention.by == osis_base::PurgeBy::Nobody { u64::MAX } else { k.at_least };
+        let until = k.at_most.map_or(until, |m| until.min(m.saturating_sub(osis_base::format::MAX_DRIFT_MS)));
+        let kept = until > self.now();
+        if kept && until != u64::MAX {
+            note.at(until);
         }
         Ok(kept)
     }
