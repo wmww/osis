@@ -553,3 +553,32 @@ fn removed_entry_hides_newer_write_spec_5_6() {
     let w_only = Fragment::Struct(crate::fragment::Struct { meta: Meta { reset: None, w: Some(w) }, fields: BTreeMap::new() });
     all_orders(&[nested_rec(Dot::new(sess(Tid::from_bytes([9; 15])), 1), &Value::Str("secret".into()), w_only)], map(&[]));
 }
+
+/// §3.2, §5.6, §4.3: a record may hold its creation alone: it goes on the wire as
+/// `[Dot, Ci, R, key, []]`, paged or not, stays through a join and a prune, counts toward `written`
+/// and reads as nothing. Its content rejoining finds the entry live.
+#[test]
+fn lone_creation_on_the_wire_spec_5_6() {
+    let k = |i: u64| Value::Str(format!("key{i:05}"));
+    let shells = |n: u64| {
+        use crate::fragment::{Eid, Entry, Map};
+        let rec = |i| (Eid::new(st(1, 1, i).dot, Some(k(i))), Entry { reset: None, frag: None, created: Some(st(1, 1, i)) });
+        Fragment::Map(Map::new(Meta::default(), (1..=n).map(rec).collect()))
+    };
+    let shell = shells(1);
+    assert_eq!(shell.read(), Some(Value::Map(Default::default())));
+    assert!(shell.written().is_some() && shell.present(), "the creation is a write inside the map");
+    let snap = |fragment: Fragment| Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment, frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&snap(shell.clone()), &scx(), None).unwrap();
+    assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap().fragment, shell);
+    let many = shells(600);
+    let mut pages = MemoryPages::with_params(SMALL);
+    let bytes = encode_snapshot(&snap(many.clone()), &scx(), Some(&mut pages)).unwrap();
+    assert!(pages.len() > 1, "paged");
+    assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, many);
+    let mut joined = shell.clone();
+    joined.join(shell.clone());
+    assert_eq!(joined, shell);
+    joined.join(nested_rec(st(1, 1, 1).dot, &k(1), Fragment::Register(reg(st(2, 2, 1), 9))));
+    assert_eq!(joined.read(), Some(Value::Map([(k(1), Value::Int(9))].into())), "the content rejoined");
+}
