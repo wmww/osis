@@ -203,6 +203,32 @@ fn expiring_write_before_entering_closure_goes_spec_sync_9() {
     assert_eq!(notes(&mut net, a, w), BTreeMap::new());
 }
 
+// spec/sync.md §9: the same with a sync step between the write and the placement: a commit taken
+// while its thing was in no labeled closure still goes once one holds it.
+#[test]
+fn write_before_placement_goes_after_a_step_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, g);
+    m.set(w, &eph(STATE), &s("local")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(!net.engine(a).has_unsent(), "a local-only write leaves the sync engine nothing to do");
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("local")));
+}
+
 // notes/ephemeral.md Tess's direction (the shared window): two holders keep editing while one is
 // offline; on reconnect both converge on the merge, through a host
 #[test]
@@ -3043,6 +3069,7 @@ fn ephemeral_chain_depth_counts_durable_links_spec_permissions_1() {
     let e = net.engine(a);
     let mut m = Mutation::new();
     let at_cap = e.new_thing(&mut m, owner);
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(at_cap)) }).unwrap();
     m.set(at_cap, &eph(STATE), &s("ok")).unwrap();
     e.write(m).unwrap();
     let mut m = Mutation::new();
@@ -4748,7 +4775,7 @@ fn revert_run(seed: u64) {
 #[test]
 fn ephemeral_reverts_within_rights_alike_spec_crdt_4_6() {
     let name = "ephemeral::ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6";
-    osis_base::testenv::run_seeds(name, &[0, 3, 5, 96, 132, 181], false, |seed| eph_replay(name, seed), revert_run);
+    osis_base::testenv::run_seeds(name, &[0, 3, 5, 96, 132, 181, 903, 41169], false, |seed| eph_replay(name, seed), revert_run);
 }
 
 #[test]
