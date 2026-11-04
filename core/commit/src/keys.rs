@@ -1,6 +1,6 @@
 //! Delete keys of a commit by level and blob prefix inputs (spec/crypto.md §7, spec/wire.md §5).
 
-use crate::header::{DeleteKey, Kind};
+use crate::header::DeleteKey;
 use crate::retention::delete_levels;
 use crate::Error;
 use osis_base::Tid;
@@ -21,10 +21,10 @@ pub trait Secrets {
     fn write_key(&self, tid: &Tid) -> Option<VerifyingKey>;
 }
 
-/// Delete keys of a delta on `tid` with retention `r` in a commit of `kind`: one per level its
-/// retention calls for; a missing one is an error.
-pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention, kind: Kind) -> Result<Vec<DeleteKey>, Error> {
-    delete_levels(r, kind)
+/// Delete keys of a delta on `tid` with retention `r`: one per level its retention calls for; a
+/// missing one is an error.
+pub fn delete_keys(s: &dyn Secrets, tid: &Tid, r: &Retention) -> Result<Vec<DeleteKey>, Error> {
+    delete_levels(r)
         .iter()
         .map(|level| {
             let key = match *level {

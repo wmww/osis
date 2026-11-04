@@ -53,7 +53,7 @@ impl CommitBlob {
     /// `decode` of a commit this node stored, checked when it arrived: its delete keys are not
     /// decompressed again (a third of what re-reading an aspect's bodies cost). Only for bytes
     /// this node wrote from a blob `decode` accepted (stored and pending rows: a parked row of
-    /// raw bytes fails here as there, on its version); never for bytes from a peer or an import.
+    /// raw bytes fails here as there, on its version); never for bytes from a peer or a bundle.
     pub fn decode_stored(b: &[u8]) -> Result<CommitBlob, Error> {
         Self::decode_as(b, true)
     }

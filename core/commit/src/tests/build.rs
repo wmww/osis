@@ -6,7 +6,7 @@ use crate::tests::verify::{TestSecrets, register_delta, sec};
 use crate::*;
 use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
 use osis_base::{Ak, CommitId, Tid, Ts, Value};
-use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
 use osis_crypto::{SeededRng, Secret32, SigningSecret};
 use osis_schema::{PurgeBy, Retention};
 
@@ -307,28 +307,6 @@ fn purge_rewrite() {
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
     assert_eq!(prefix_inputs(&c.header, &[]).unwrap(), (None, vec![]));
     assert!(matches!(prefix_inputs(&c.header, &[(4, 0), (5, 0)]), Err(Error::Invalid(_))));
-}
-
-// spec/permissions.md §7, spec/wire.md §4: an import carries its origins table, empty ranges,
-// no level-2 key; its deltas re-source writes to `Commit(origin)`.
-#[test]
-fn build_import() {
-    let at = ts(2_000_000);
-    let origin = CommitId([0x0c; 32]);
-    let ots = ts(1_000_000);
-    let mut w = Writer::new(ots, Source::commit(origin), 1);
-    let fragment = create(&mut w, &AnyView, &Value::Str("moved".into())).unwrap();
-    let d = encode_delta(&Delta { nonce: [2; 16], fragment }, &writer_ctx(Form::Commit, Kind::Import, at, t(1), 0, 0), None).unwrap();
-    let mut b = CommitBuilder::new(Kind::Import, at, t(1), t(2), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("app:title.0").unwrap(), 0, 0, d);
-    a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
-    b.aspects.push(a);
-    b.origins.push(Origin { commit: origin, author: t(5), actor: t(6), ts: ots });
-    let c = build(b, &mut MemoryBlobs::default()).unwrap().commit;
-    assert_eq!(c.header.keys.iter().map(|t| t.level).collect::<Vec<_>>().len(), 2);
-    assert!(c.header.keys.iter().all(|t| t.level != 2));
-    assert_eq!(c.header.origins.len(), 1);
-    verify_blob(&c, &key().verifying_key(), &dedup, None).unwrap();
 }
 
 // spec/wire.md §4, §5: the chunk list holds, per introduced blob, the indices of its delta's

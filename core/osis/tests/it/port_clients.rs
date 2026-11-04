@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
-const WRITE: u64 = 11;
+const WRITE: u64 = 10;
 const GET: u64 = 1;
-const SETTLE: u64 = 20;
+const SETTLE: u64 = 19;
 
 static NAMES: AtomicUsize = AtomicUsize::new(0);
 
@@ -147,7 +147,6 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
         format!("{:?}", c.owner_of(t)),
         format!("{:?}", c.created(t)),
         format!("{:?}", c.changed(t)),
-        format!("{:?}", c.same_thing(t, t)),
         e(c.commits(&CommitQuery::new().scope(Scope::Thing(t))).map(|v| format!("{v:?}"))),
         e(c.at(t, k.clone()).history(osis::HistoryFrom::Newest, 5).map(|v| format!("{v:?}"))),
         e(c.at(t, k.clone()).stream().map(|s| format!("{:?}", s.map(|x| x.len())))),
@@ -622,7 +621,6 @@ fn watches_and_rows() {
     assert!(matches!(c.invite_requests(), Err(Error::Unsupported(_))));
     assert!(matches!(c.group_policy(x.g), Err(Error::Unsupported(_))));
     assert!(matches!(c.rotate_reach(), Err(Error::Unsupported(_))));
-    assert!(matches!(c.move_thing(x.t, x.g, &[]), Err(Error::Unsupported(_))));
     assert!(matches!(c.export_bundle(&[x.g], Vec::new()), Err(Error::Unsupported(_))));
     assert!(matches!(c.import_bundle(&b"x"[..]), Err(Error::Unsupported(_))));
     // hosting is an aspect of the node's thing, which it does not read

@@ -65,14 +65,6 @@ fn demotion_receipts() {
     ok("demotion_receipts", 1);
 }
 
-// spec/sync.md §6, spec/commits.md §4: sweep seed 72, two writers' pending commits stop each
-// other's uploads.
-#[test]
-#[ignore = "tier 2"]
-fn move_import_seed_72() {
-    ok("move_import", 72);
-}
-
 // spec/permissions.md §9: two concurrent redemptions of a multi-use link; then revoked.
 #[test]
 #[ignore = "tier 2"]
@@ -199,13 +191,6 @@ fn link_race_seed_2898() {
 #[ignore = "tier 2"]
 fn link_race_seed_3926() {
     ok("link_race", 3926);
-}
-
-// spec/permissions.md §7: move with import and re-grant.
-#[test]
-#[ignore = "tier 2"]
-fn move_import() {
-    ok("move_import", 1);
 }
 
 // spec/permissions.md §3: a group with a member's own sub-actor (the old persona shape), removal rotates.

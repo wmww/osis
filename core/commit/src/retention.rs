@@ -1,6 +1,6 @@
 //! Retention and expiry: fixed tables, write defaults, keep bounds (spec/commits.md §5, §6).
 
-use crate::header::{FOREVER, Header, Kind};
+use crate::header::{FOREVER, Header};
 use crate::Error;
 use osis_base::format::{AT_MOST_GRACE_MS, DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, ROLE_KEEP_MS};
 use osis_base::Ts;
@@ -176,18 +176,13 @@ pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death
     }
 }
 
-/// Delete levels a delta of retention `r` calls for (spec/crypto.md §7); level 2 is omitted for
-/// an import.
-pub(crate) fn delete_levels(r: &Retention, kind: Kind) -> &'static [u8] {
-    let import = kind == Kind::Import;
+/// Delete levels a delta of retention `r` calls for (spec/crypto.md §7).
+pub(crate) fn delete_levels(r: &Retention) -> &'static [u8] {
     match r.by {
         PurgeBy::Nobody => &[],
         PurgeBy::Admin => &[DELETE_ADMIN],
-        PurgeBy::Author if import => &[],
         PurgeBy::Author => &[DELETE_AUTHOR],
-        PurgeBy::AuthorOrAdmin if import => &[DELETE_ADMIN],
         PurgeBy::AuthorOrAdmin => &[DELETE_ADMIN, DELETE_AUTHOR],
-        PurgeBy::Writer if import => &[DELETE_ADMIN, DELETE_WRITER],
         PurgeBy::Writer => &[DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER],
     }
 }

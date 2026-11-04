@@ -105,12 +105,10 @@ fn exit_codes_plan_cli_6() {
     assert_eq!(s.code(&["get"]), 2);
     assert_eq!(s.code(&["set", &t, "a:b.0", "{oops"]), 2);
     assert_eq!(s.code(&["get", "not-a-tid", "a:b.0"]), 2);
-    // 3: absent, unknown thing, same false
+    // 3: absent, unknown thing
     assert_eq!(s.code(&["get", &t, "a:b.0"]), 3);
     let other = "osis://AAAAAAAAAAAAAAAAAAAA";
     assert_eq!(s.code(&["set", other, "a:b.0", "1"]), 3);
-    assert_eq!(s.code(&["same", &t, other]), 3);
-    assert_eq!(s.code(&["same", &t, &t]), 0);
     // 7: invalid (role-class aspects are written only through sharing calls)
     assert_eq!(s.code(&["set", &t, "roles.0", "{}"]), 7);
     // 1: not supported yet (queries)
@@ -279,9 +277,9 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
 }
 
-// notes/cli.md Command table Groups and Sharing: place, sub, groups, roster, role, move, same.
+// notes/cli.md Command table Groups and Sharing: place, sub, groups, roster, role.
 #[test]
-fn groups_and_moves_plan_cli_4() {
+fn groups_plan_cli_4() {
     let s = S::mem();
     assert_eq!(s.code(&["create", "--owner", "me"]), 2, "nothing durable: gone at exit");
     assert_eq!(s.code(&["create", "--owner", "me", "--in", "home", "--group"]), 2, "an ephemeral group, placed ephemerally");
@@ -297,11 +295,8 @@ fn groups_and_moves_plan_cli_4() {
     s.ok(&["sub", "rm", "home", &g]);
     assert_eq!(s.ok(&["role", &t]).line(), "admin");
     s.ok(&["roster", "me"]);
-    let n = s.ok(&["move", &t, "me", "--in", "home"]).line().to_string();
-    assert_ne!(n, t);
-    assert_eq!(s.code(&["same", &t, &n]), 0);
-    s.ok(&["delete", &n]);
-    assert!(s.ok(&["show", &n]).out.contains("state\tdeleted"), "a deleted thing shows as such");
+    s.ok(&["delete", &t]);
+    assert!(s.ok(&["show", &t]).out.contains("state\tdeleted"), "a deleted thing shows as such");
 }
 
 // notes/cli.md Command table Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value

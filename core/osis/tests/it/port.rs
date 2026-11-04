@@ -77,7 +77,6 @@ fn attached_handle_works_at_the_node() {
     assert_eq!(c.owner_of(t), Some(n.me()));
     assert_eq!(c.created(t), n.created(t));
     assert_eq!(c.changed(t), n.changed(t));
-    assert!(c.same_thing(t, t));
     // a client's status adds its attachment
     let mut cs = c.status().unwrap();
     assert_eq!(cs.remotes.len(), 1);
@@ -252,7 +251,7 @@ pub(crate) fn set_batch(nonce: u64, actor: osis::Tid, t: osis::Tid, k: &Ak, v: V
     vec![Value::uint(nonce), Value::Tid(actor), Value::List(vec![Value::Str(k.as_str().into())]), Value::List(vec![Value::List(vec![Value::Int(3), Value::Tid(t), Value::Int(0), op])])]
 }
 
-const WRITE: u64 = 11;
+const WRITE: u64 = 10;
 
 // spec/wire.md §11.2, notes/client-port.md §2 Writes: a repeated nonce is answered with its first result and applies once; one at or below the highest seen and not remembered is outcome unknown; two sessions keep separate ranges; a restarted node remembers nothing: a marked resend is unknown, never run
 #[test]
@@ -528,7 +527,7 @@ fn too_large_sub_is_not_kept() {
         assert_eq!(rep, Ok(Outcome::too_large(small)), "sub {tok}");
     }
     // the protocol's call settles behind every Sub: none is held by the worker
-    assert!(matches!(r.call(1_000_000, 20, vec![]), Outcome::Ok { .. }));
+    assert!(matches!(r.call(1_000_000, 19, vec![]), Outcome::Ok { .. }));
     assert_eq!(n.watches(), before);
     drop(r);
     n.close().unwrap();
@@ -755,13 +754,6 @@ fn process_wide_rows_through_the_socket() {
     c.rotate_reach().unwrap();
     // invites: none
     assert_eq!(c.invite_requests().unwrap(), vec![]);
-    // a move
-    let t = c.write_with(|w| { let t = w.create(c.me())?; w.at(t, ak("note:title.0")).set(&Value::Str("m".into()))?; Ok(t) }).unwrap();
-    let group = c.write_with(|w| { let x = w.create(c.me())?; w.make_group(x)?; Ok(x) }).unwrap();
-    let copy = c.move_thing(t, group, &[group]).unwrap();
-    assert_ne!(copy, t);
-    assert_eq!(n.owner_of(copy), Some(group));
-    assert!(n.groups_of(copy).item_of.contains(&group));
     // pairing a new device, through the old one's socket
     let mut pc = Config::at(StoreAt::Memory(MemStore::new()));
     pc.runtime = Runtime::Own;
@@ -791,8 +783,8 @@ fn process_wide_rows_through_the_socket() {
     // pages lost to a reconnect: the import says so and runs nothing
     let mut raw = Raw::unix(&sock);
     raw.auth([9; 16]).unwrap();
-    assert!(matches!(raw.call(1, 62, vec![Value::Bytes(vec![1, 2])]), Outcome::Ok { .. }));
-    assert!(matches!(raw.call(2, 63, vec![Value::uint(5)]), Outcome::Err { code: 10, .. }));
+    assert!(matches!(raw.call(1, 60, vec![Value::Bytes(vec![1, 2])]), Outcome::Ok { .. }));
+    assert!(matches!(raw.call(2, 61, vec![Value::uint(5)]), Outcome::Err { code: 10, .. }));
     drop(raw);
     drop((c, c3));
     p2.close().unwrap();
@@ -815,10 +807,10 @@ fn bundle_out_and_in_on_one_handle() {
     // an import coming before an export ends: its pages stay its own
     let mut raw = Raw::unix(&sock);
     raw.auth([9; 16]).unwrap();
-    assert!(matches!(raw.call(1, 62, vec![Value::Bytes(out[..3].to_vec())]), Outcome::Ok { .. }));
-    assert!(matches!(raw.call(2, 60, vec![Value::List(vec![Value::Tid(n.home())])]), Outcome::Ok { .. }));
-    assert!(matches!(raw.call(3, 62, vec![Value::Bytes(out[3..].to_vec())]), Outcome::Ok { .. }));
-    assert!(matches!(raw.call(4, 63, vec![Value::uint(out.len() as u64)]), Outcome::Ok { .. }));
+    assert!(matches!(raw.call(1, 60, vec![Value::Bytes(out[..3].to_vec())]), Outcome::Ok { .. }));
+    assert!(matches!(raw.call(2, 58, vec![Value::List(vec![Value::Tid(n.home())])]), Outcome::Ok { .. }));
+    assert!(matches!(raw.call(3, 60, vec![Value::Bytes(out[3..].to_vec())]), Outcome::Ok { .. }));
+    assert!(matches!(raw.call(4, 61, vec![Value::uint(out.len() as u64)]), Outcome::Ok { .. }));
     drop((raw, c));
     n.close().unwrap();
 }
@@ -875,7 +867,7 @@ fn schema_bytes_per_node() {
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
     let src = |name: &str| format!("version 1;\naspect test:{name}.0: string;\n//{}\n", "x".repeat(osis::MAX_SCHEMA_BYTES * 3 / 5));
-    let reg = |r: &mut Raw, tok, name: &str| r.call(tok, 17, vec![Value::Str("t.osis".into()), Value::Str(src(name))]);
+    let reg = |r: &mut Raw, tok, name: &str| r.call(tok, 16, vec![Value::Str("t.osis".into()), Value::Str(src(name))]);
     let mut a = Raw::unix(&sock);
     a.auth([1; 16]).unwrap();
     assert!(matches!(reg(&mut a, 1, "a"), Outcome::Ok { .. }));

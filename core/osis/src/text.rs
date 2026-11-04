@@ -154,7 +154,6 @@ impl Osis {
         }
         let seq = matches!(crate::large::type_of(&key, &path)?, Some(Type::Text));
         let key = crate::Key { ak: ak_of(&key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
-        let tid = self.read_local(|r| r.resolve(tid));
         let now = match self.read_local(|r| r.get_path(tid, &key, &path))? {
             Some(Value::Str(s)) => s,
             None => String::new(),

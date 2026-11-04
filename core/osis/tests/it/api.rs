@@ -508,7 +508,7 @@ fn role_class_refused_spec_permissions_1() {
     let db = db(1);
     let t = db.me();
     let mut w = db.write();
-    assert!(matches!(w.at(t, core::MOVED).set(&t), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, ak("label.0")).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, ak("roles.0")).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, ak("groups.0")).remove(), Err(Error::Invalid(_))));
     // group.0 is ordinary
@@ -579,25 +579,6 @@ fn act_as_spec_commits_1() {
     assert_eq!((actor(c1.id.commit().unwrap()), actor(c2.id.commit().unwrap())), (db.me(), db.node()));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);
-}
-
-// spec/permissions.md §7, notes/api.md Tids and moves: a moved thing reads through its old
-// tid; same_thing is the explicit identity check.
-#[test]
-fn move_and_same_thing_spec_permissions_7() {
-    let db = db(1);
-    let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
-    let owner2 = w.create(db.me()).unwrap();
-    w.at(t, ak("t:x.0")).set(&Value::Int(1)).unwrap();
-    w.commit().unwrap();
-    let m = db.move_thing(t, owner2, &[db.home()]).unwrap();
-    assert_ne!(m, t);
-    assert!(db.same_thing(t, m));
-    assert!(!db.same_thing(t, owner2));
-    assert_eq!(db.get(m, ak("t:x.0")).unwrap(), Some(Value::Int(1)));
-    assert_eq!(db.get(t, ak("t:x.0")).unwrap(), Some(Value::Int(1)));
-    assert!(db.groups_of(m).within.contains(&db.home()));
 }
 
 // notes/api.md Sync configuration and status: without a runtime the surface works locally,

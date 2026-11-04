@@ -168,15 +168,8 @@ impl<'d> Write<'d> {
         self
     }
 
-    /// `t` after moves; recorded as given when the batch goes to a remote node, which
-    /// resolves it as it replays the batch (`Osis::replay`).
-    fn resolve(&self, t: Tid) -> Tid {
-        if self.created.contains(&t) || !self.db.is_local(t) { t } else { self.db.read_local(|r| r.resolve(t)) }
-    }
-
-    /// `t` resolved, failing `UnknownThing` when it is not held; a remote node checks at replay.
+    /// `t`, failing `UnknownThing` when it is not held; a remote node checks at replay.
     fn known(&self, t: Tid) -> Result<Tid> {
-        let t = self.resolve(t);
         if self.created.contains(&t) || !self.db.is_local(t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
@@ -236,7 +229,6 @@ impl<'d> Write<'d> {
 
     fn group(&mut self, g: Tid, items: bool, member: Tid, add: bool, exp: Option<Duration>) -> Result<()> {
         let g = self.known(g)?;
-        let member = self.resolve(member);
         self.group_expiry(g, exp)?;
         // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
         // placements): `Engine::write` splits the group ops by what persists
@@ -303,7 +295,6 @@ impl<'d> Write<'d> {
             Ok(ak) if read_only(ak.as_str()) || is_role_class(ak.as_str()) => Err(Error::Invalid(format!("{ak} is written only by the engine or the sharing calls"))),
             Ok(ak) => Ok(self.intern(ak, &key)),
         };
-        let tid = self.resolve(tid);
         AspectWrite { w: self, tid, key, ix }
     }
 
@@ -451,13 +442,11 @@ impl<'d> Write<'d> {
                     let subs: Vec<Tid> = gs.subgroup_of.into_iter().filter(|g| *g != t && writable(r, g)).collect();
                     for (g, items) in items.into_iter().map(|g| (g, true)).chain(subs.into_iter().map(|g| (g, false))) {
                         // as `unplace` / `remove_subgroup` would record it
-                        let g = if created.contains(&g) { g } else { r.resolve(g) };
                         if !created.contains(&g) && !r.holds(g) {
                             return Err(Error::UnknownThing { tid: g });
                         }
-                        let member = if created.contains(&t) { t } else { r.resolve(t) };
                         note_expiry(&mut group_exp, g, None)?;
-                        b.group(&gk, g, member, items, false)?;
+                        b.group(&gk, g, t, items, false)?;
                     }
                     b.m.free(t);
                 }
@@ -499,7 +488,7 @@ impl Osis {
             let op = match o.uint()? {
                 0 => {
                     let rec = CreationRecord::from_value(&o.next()?).ok_or_else(|| bad("creation record"))?;
-                    if !matches!(rec, CreationRecord::Thing { creator: None, .. }) {
+                    if !matches!(rec, CreationRecord::Thing { .. }) {
                         return Err(bad("creation record"));
                     }
                     w.created.push(rec.tid());
@@ -512,9 +501,9 @@ impl Osis {
                     }
                     WriteOp::MakeGroup(g)
                 }
-                2 => WriteOp::Group { g: w.known(o.tid()?)?, member: w.resolve(o.tid()?), items: o.bool()?, add: o.bool()? },
+                2 => WriteOp::Group { g: w.known(o.tid()?)?, member: o.tid()?, items: o.bool()?, add: o.bool()? },
                 3 => {
-                    let (tid, k, p) = (w.resolve(o.tid()?), key(o.uint()?)?, op(o.next()?)?);
+                    let (tid, k, p) = (o.tid()?, key(o.uint()?)?, op(o.next()?)?);
                     // a link is the node's: this one would name a blob of something it may not
                     // read, or none at all, for every reader of the aspect
                     if self.acting.is_some() && op_links(&p) {
@@ -523,15 +512,15 @@ impl Osis {
                     WriteOp::Path { tid, key: k, op: p }
                 }
                 4 => {
-                    let (tid, k, at) = (w.resolve(o.tid()?), key(o.uint()?)?, WallMs(o.uint()?));
+                    let (tid, k, at) = (o.tid()?, key(o.uint()?)?, WallMs(o.uint()?));
                     expiring.push(tid);
                     WriteOp::Expires { tid, key: k, at }
                 }
-                5 => WriteOp::Retention { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, r: retention(o.next()?)? },
-                6 => WriteOp::Purge { tid: w.resolve(o.tid()?), key: key(o.uint()?)? },
+                5 => WriteOp::Retention { tid: o.tid()?, key: key(o.uint()?)?, r: retention(o.next()?)? },
+                6 => WriteOp::Purge { tid: o.tid()?, key: key(o.uint()?)? },
                 7 => WriteOp::Delete(w.known(o.tid()?)?),
-                8 => WriteOp::PurgeCommit { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, commit: crate::port::codec::commit_id(o.next()?)? },
-                9 => WriteOp::PurgeAuthor { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, actor: o.tid()? },
+                8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::commit_id(o.next()?)? },
+                9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
                 _ => return Err(bad("op kind")),
             };
             o.end()?;

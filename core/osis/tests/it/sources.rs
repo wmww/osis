@@ -541,7 +541,7 @@ fn write_in_flight_across_a_restart_is_unknown() {
 #[test]
 fn resent_nonce_of_an_unknown_session_is_unknown() {
     use osis_proto::{Command, Outcome};
-    const WRITE: u64 = 11;
+    const WRITE: u64 = 10;
     let x = world();
     let ep = x.net.endpoint("r");
     let mut raw = crate::port::Raw::over(&ep, osis_transport::Address { url: x.nc.url().to_string(), key: x.nc.key() });
@@ -1086,7 +1086,7 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
 #[test]
 fn every_resent_nonce_of_a_lost_session_is_unknown() {
     use osis_proto::{Command, Outcome};
-    const WRITE: u64 = 11;
+    const WRITE: u64 = 10;
     let x = world();
     let ep = x.net.endpoint("r");
     let mut raw = crate::port::Raw::over(&ep, osis_transport::Address { url: x.nc.url().to_string(), key: x.nc.key() });

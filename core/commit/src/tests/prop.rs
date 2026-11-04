@@ -31,7 +31,7 @@ fn link() -> impl Strategy<Value = Link> {
 
 prop_compose! {
     fn header()(
-        author in tid(), actor in tid(), kind in 0u64..6, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
+        author in tid(), actor in tid(), kind in 0u64..5, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
         aspects in proptest::collection::vec(aspect(), 0..4),
         chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec(0usize..5, 0..3)), 0..3),
         purge in proptest::collection::vec((proptest::option::of(any::<[u8; 32]>()), tid()), 0..3),
@@ -39,8 +39,7 @@ prop_compose! {
         blind in any::<[u8; 16]>(),
         keys in proptest::collection::vec((1u8..4, any::<u8>()), 0..4),
         frontier in proptest::option::of(any::<i64>()),
-        origins in proptest::collection::vec((any::<[u8; 32]>(), tid(), tid(), 0u64..1 << 40), 0..2),
-        links in proptest::collection::vec(proptest::option::of(link()), 6),
+        links in proptest::collection::vec(proptest::option::of(link()), 5),
     ) -> Header {
         let mut l = Links::default();
         for (f, x) in ListField::ALL.into_iter().zip(links) {
@@ -60,7 +59,6 @@ prop_compose! {
             undoes: undoes.map(CommitId), blind,
             keys: keys.into_iter().map(|(level, b)| dkey(level, b)).collect(),
             frontier: frontier.map(|n| Value::Map([(Value::Int(0), Value::Int(n))].into_iter().collect())),
-            origins: origins.into_iter().map(|(c, author, actor, w)| Origin { commit: CommitId(c), author, actor, ts: ts(w) }).collect(),
             links: l,
             ephemeral: None,
         };
@@ -84,8 +82,6 @@ prop_compose! {
         h.purge.dedup();
         h.keys.sort_by_key(|k| by_item(crate::header::key_value(k)));
         h.keys.dedup();
-        h.origins.sort_by_key(|o| o.commit);
-        h.origins.dedup_by_key(|o| o.commit);
         // a linked list's items are not in the header bytes
         for f in ListField::ALL {
             if h.links.get(f).is_some() {
@@ -95,7 +91,6 @@ prop_compose! {
                     ListField::Purge => h.purge.clear(),
                     ListField::Keys => h.keys.clear(),
                     ListField::Frontier => h.frontier = None,
-                    ListField::Origins => h.origins.clear(),
                 }
             }
         }

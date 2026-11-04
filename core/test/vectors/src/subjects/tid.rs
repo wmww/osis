@@ -8,12 +8,12 @@ use std::collections::BTreeMap;
 
 const SPEC: &str = "spec/wire.md §3";
 
-/// Ordinary-thing, copy and ownerless records and the field rejections. Key-actor records need
+/// Ordinary-thing and ownerless records and the field rejections. Key-actor records need
 /// osis-crypto (`tid/key-actor.vec`).
 pub fn thing() -> VecFile {
     let owner = Tid::from_bytes([1; 15]);
     let nonce = [2u8; 32];
-    let rec = CreationRecord::Thing { owner, nonce, creator: None };
+    let rec = CreationRecord::Thing { owner, nonce };
     let bytes = encode(&rec.to_value());
     let tid = rec.tid();
     assert_eq!(osis_base::hash::hash(&bytes)[..15], tid.as_bytes()[..], "tid is BLAKE3 of the record");
@@ -28,22 +28,6 @@ pub fn thing() -> VecFile {
             .with("text", tid.to_string())
             .with("uri", tid.to_uri()),
     ];
-    // a copy also names its creator (spec/permissions.md §7)
-    let creator = Tid::from_bytes([4; 15]);
-    let copy = CreationRecord::Thing { owner, nonce, creator: Some(creator) };
-    let cb = encode(&copy.to_value());
-    cases.push(
-        Record::new()
-            .with("case", "copy")
-            .with("spec", SPEC)
-            .with("owner", hex(owner.as_bytes()))
-            .with("nonce", hex(&nonce))
-            .with("creator", hex(creator.as_bytes()))
-            .with("record", hex(&cb))
-            .with("tid", hex(copy.tid().as_bytes()))
-            .with("text", copy.tid().to_string())
-            .with("uri", copy.tid().to_uri()),
-    );
     // an ownerless thing names its first admin (spec/permissions.md §1)
     let admin = Tid::from_bytes([5; 15]);
     let ownerless = CreationRecord::Ownerless { admin, nonce };
@@ -60,18 +44,17 @@ pub fn thing() -> VecFile {
             .with("text", ownerless.tid().to_string())
             .with("uri", ownerless.tid().to_uri()),
     );
-    // Field numbers of spec/wire.md §3: 0 owner, 1 key, 2 nonce, 3 creator, 4 admin.
+    // Field numbers of spec/wire.md §3: 0 owner, 1 key, 2 nonce, 3 admin.
     let key = Value::Enum(1, Some(Box::new(Value::Bytes(vec![3; 32]))));
-    let keyed_copy = BTreeMap::from([(Value::Int(1), key.clone()), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(3), Value::Tid(creator))]);
     let both = BTreeMap::from([
         (Value::Int(0), Value::Tid(owner)),
         (Value::Int(1), key),
         (Value::Int(2), Value::Bytes(nonce.to_vec())),
     ]);
     let neither = BTreeMap::from([(Value::Int(2), Value::Bytes(nonce.to_vec()))]);
-    let owner_admin = BTreeMap::from([(Value::Int(0), Value::Tid(owner)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(4), Value::Tid(admin))]);
-    let admin_copy = BTreeMap::from([(Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(3), Value::Tid(creator)), (Value::Int(4), Value::Tid(admin))]);
-    for (name, m) in [("both owner and key", both), ("neither owner, key nor admin", neither), ("creator without owner", keyed_copy), ("both owner and admin", owner_admin), ("ownerless with creator", admin_copy)] {
+    let owner_admin = BTreeMap::from([(Value::Int(0), Value::Tid(owner)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(3), Value::Tid(admin))]);
+    let extra = BTreeMap::from([(Value::Int(0), Value::Tid(owner)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(4), Value::Tid(admin))]);
+    for (name, m) in [("both owner and key", both), ("neither owner, key nor admin", neither), ("both owner and admin", owner_admin), ("an unknown field", extra)] {
         let v = Value::Map(m.into_iter().collect());
         assert!(CreationRecord::from_value(&v).is_none(), "{name} must be rejected");
         cases.push(Record::new().with("case", name).with("spec", SPEC).with("record", hex(&encode(&v))).with("reject", "creation-fields"));

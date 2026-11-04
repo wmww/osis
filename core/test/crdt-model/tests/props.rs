@@ -952,7 +952,7 @@ fn decoder_rejects_writer_rule_violations() {
     assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 8)).is_err());
     let at_lo = Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(1)))) };
     assert!(decode_delta(&enc(&at_lo), &mut Ctx::writer(ts, own.clone(), 5, 8)).is_ok());
-    assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok(), "an import or snapshot context checks no range");
+    assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok(), "a snapshot context checks no range");
     // a foreign stamp in a writer's delta
     let f = Frag::Register { reset: None, write: Some((Stamp::new(2 << 16, Source::session(2, 0), 1), Some(Value::Int(1)))) };
     assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());

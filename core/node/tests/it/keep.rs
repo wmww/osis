@@ -845,23 +845,6 @@ fn restart_before_the_trigger_keeps_spec_perm_3() {
     assert_kept(&mut x);
 }
 
-// spec/permissions.md §7, §3 Keep: a move's copy holds the default, and only that of the setting.
-#[test]
-fn move_carries_the_default_spec_perm_7() {
-    let x = setup(9450, keeping(Role::Read));
-    let (mut lp, d, pb) = (x.lp, x.d, x.pb);
-    let me = lp.peers[0].engine.tid();
-    let (copy, _) = lp.peers[0].engine.move_to(&d, &me).unwrap();
-    assert!(lp.peers[0].engine.roster(&copy).contains_key(&pb));
-    let on_copy = lp.peers[0].engine.get_typed(&copy, &ct::REQUIRED).unwrap().unwrap();
-    assert!(on_copy.keep && on_copy.rules.is_empty());
-    let y = setup(9455, erasing(Role::Read));
-    let (mut lp, d) = (y.lp, y.d);
-    let me = lp.peers[0].engine.tid();
-    let (copy, _) = lp.peers[0].engine.move_to(&d, &me).unwrap();
-    assert!(lp.peers[0].engine.get_typed(&copy, &ct::REQUIRED).unwrap().is_none());
-}
-
 // spec/permissions.md §3, Keep: the node's user may erase a copy, and what hangs on it.
 #[test]
 fn the_user_drops_a_copy_spec_perm_3() {

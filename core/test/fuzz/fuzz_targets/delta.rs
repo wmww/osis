@@ -1,7 +1,7 @@
 //! Delta and snapshot decoders (spec/crdt.md §7–§8): never panic; the decoders check
 //! canonicality themselves; a decoded fragment reads and joins (twice: idempotent) without
 //! panicking; they accept and reject as the whole-delta decoders they replaced (and agree on
-//! the fragment). The first byte picks the form: 0 writer delta, 1 snapshot, 2 import. Pages
+//! the fragment). The first byte picks the form: 0 writer delta, 1 snapshot. Pages
 //! are absent (a paged input fails with `Missing`).
 #![no_main]
 
@@ -13,10 +13,9 @@ use osis_crdt::{CounterRange, DeltaCtx, DeltaKind, Fragment, Interner, MemoryPag
 fuzz_target!(|data: &[u8]| {
     let Some((&form, bytes)) = data.split_first() else { return };
     let ts = Ts::from_u64(1_700_000_000_000 << 16).unwrap_or_default();
-    let (kind, own, range) = match form % 3 {
+    let (kind, own, range) = match form % 2 {
         0 => (DeltaKind::Writer, [1; 15], CounterRange { lo: 1, hi: 1000 }),
-        1 => (DeltaKind::Snapshot, [9; 15], CounterRange::EMPTY),
-        _ => (DeltaKind::Import, [9; 15], CounterRange::EMPTY),
+        _ => (DeltaKind::Snapshot, [9; 15], CounterRange::EMPTY),
     };
     let own = Source::session(Session { node: Tid::from_bytes(own), nonce: [0; SESSION_NONCE_LEN] });
     let cx = DeltaCtx { ts, own, range, kind };

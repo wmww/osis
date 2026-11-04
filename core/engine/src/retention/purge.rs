@@ -4,12 +4,12 @@
 //! `rejudge_purges`), and `signers_could`, by roles of any validity at any time, for what must not
 //! turn on arrival (`could_stand`). A header never names role-class deltas (`Header::validate`).
 
-use super::{aspect_index, drop_carrying, gone_of, hold_valueless, mark_deaths_due, note_carried_again, off_valueless, purged_changed, reopen_to_fetch, sharing, snapshots_of, suspect, uncover, writes_of};
+use super::{aspect_index, drop_carrying, gone_of, hold_valueless, mark_deaths_due, note_carried_again, off_valueless, purged_changed, reopen_to_fetch, snapshots_of, suspect, uncover, writes_of};
 use crate::engine::records::{self, Rd};
-use crate::engine::{Core, DropFor, Engine, LazyHeader, Owned, Tx};
+use crate::engine::{Core, DropFor, Engine, LazyHeader, Tx};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid, Ts};
-use osis_commit::{AspectEntry, Header, Kind, PurgeItem};
+use osis_commit::{AspectEntry, Header, PurgeItem};
 use osis_perm::Point;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +23,7 @@ fn reaches(item: &PurgeItem, ch: &Header, c: &CommitId) -> bool {
     match item {
         PurgeItem::Commit { commit, .. } => commit == c,
         PurgeItem::Aspect { .. } => true,
-        PurgeItem::Author { actor, .. } => ch.purge_actor() == *actor,
+        PurgeItem::Author { actor, .. } => ch.actor == *actor,
     }
 }
 
@@ -45,7 +45,7 @@ pub(super) fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntr
         return false;
     }
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
-    let (by, actor) = (a.retention.by, ch.purge_actor());
+    let (by, actor) = (a.retention.by, ch.actor);
     core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(&p.author, &a.tid, by, &actor, point) && (p.actor == p.author || tl.purge_stands(&p.actor, &a.tid, by, &actor, point)))
 }
 
@@ -58,7 +58,7 @@ fn stands(core: &Core, p: &Header, pc: &CommitId, a: &AspectEntry, ch: &Header, 
 /// `a` of a commit with header `ch`: `holds_right` with roles of any validity at any time, so held
 /// inputs only widen it.
 fn signers_could(core: &Core, p: &Header, a: &AspectEntry, ch: &Header) -> bool {
-    let (held, by, actor) = (&core.ix.held, a.retention.by, ch.purge_actor());
+    let (held, by, actor) = (&core.ix.held, a.retention.by, ch.actor);
     let could = |who: &Tid| {
         (by.admin() && held.ever_admins(&a.tid).contains(who))
             || (by.writer() && held.ever_writers(&a.tid).contains(who))
@@ -169,7 +169,7 @@ fn named_by(core: &Core, item: &PurgeItem, at: Ts) -> Vec<CommitId> {
     }
     let held = core.ix.by_aspect.get(&(*item.tid(), item.ak().clone())).into_iter().flatten();
     let by = |c: &CommitId| match item {
-        PurgeItem::Author { actor, .. } => core.ix.commits.get(c).is_some_and(|m| m.view.kind == Kind::Import || m.view.actor == *actor),
+        PurgeItem::Author { actor, .. } => core.ix.commits.get(c).is_some_and(|m| m.view.actor == *actor),
         _ => true,
     };
     held.take_while(|x| x.0 < at).map(|x| x.1).filter(by).collect()
@@ -213,21 +213,10 @@ pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize
 
 /// Whether missing delta `ai` of `c` counts as held for a held purge request naming it, signed by
 /// one that could ever hold the right (spec/commits.md §4; `apply::gates`). Unlike `known_purged`
-/// it reads no validity, so a demotion arriving later changes nothing here. A request naming
-/// another import of an origin of an import counts for it too (`writes_of`).
+/// it reads no validity, so a demotion arriving later changes nothing here.
 pub(crate) fn counts_as_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = ch.aspects.get(ai) else { return Ok(false) };
-    if requests_on(tx, a, c)?.iter().any(|(_, p)| could_stand(tx.core, p, a, ch, c)) {
-        return Ok(true);
-    }
-    for i in sharing(tx.core, ch, ai).into_iter().filter(|i| i != c) {
-        let Some(h) = tx.core.ix.commits.get(&i).map(|m| m.header.clone()) else { continue };
-        let Some(ia) = h.aspects.iter().find(|x| x.tid == a.tid && x.ak == a.ak) else { continue };
-        if requests_on(tx, ia, &i)?.iter().any(|(_, p)| could_stand(tx.core, p, ia, &h, &i)) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(requests_on(tx, a, c)?.iter().any(|(_, p)| could_stand(tx.core, p, a, ch, c)))
 }
 
 /// The aspects a timeline change on `things` or a change to commits `whole` may change purges of:
@@ -299,7 +288,7 @@ impl AspectRequests {
         if let Some((pc, _)) = by_name {
             return Some(*pc);
         }
-        let actor = ch.purge_actor();
+        let actor = ch.actor;
         let wide = &self.wide;
         let newest = self.newest.entry((a.retention.by as u64, actor)).or_insert_with(|| {
             let on = wide.iter().filter(|x| !matches!(&x.1, PurgeItem::Author { actor: of, .. } if *of != actor));
@@ -323,10 +312,7 @@ impl AspectRequests {
 /// writer's next snapshot what it alone covered is missing too, where no copy is left. Cost: the
 /// aspect's requests and what they name, its snapshots' views, and with an aspect-wide request a
 /// walk of its parts, as `validity::rejudge_once` walks them (`scale::purge_rejudge_cost`). A
-/// memory delta purged has vanished whole and stays gone. An import's writes are its origins' dots
-/// (`writes_of`), and several imports may share them: an owner leaves the list only when no
-/// standing request takes it, and an import comes back only when none of its writes is left on
-/// the list.
+/// memory delta purged has vanished whole and stays gone.
 pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     if tx.txn.is_memory_aspect(tid, ak) {
         return Ok(());
@@ -341,13 +327,11 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     // costs the aspect's requests, not its length
     let mut parts = requests.may_name(core, tid, ak);
     if requests.wide.is_empty() {
-        let shared: Vec<CommitId> = parts.iter().filter_map(|c| core.ix.commits.get(c).and_then(|m| Some(sharing(core, &m.header, m.aspect(tid, ak)?)))).flatten().collect();
-        parts.extend(shared);
         parts.extend(snapshots_of(core, tid, ak));
     }
     let parts: BTreeSet<(Ts, CommitId)> = parts.into_iter().filter_map(|c| Some((core.ix.commits.get(&c)?.view.ts, c))).collect();
-    // `kept`: the writes a standing request takes; `quiet`: parts with writes none takes
-    let (mut rise, mut quiet, mut bare, mut kept) = (Vec::new(), Vec::new(), Vec::new(), BTreeSet::new());
+    // `quiet`: parts with writes no standing request takes
+    let (mut rise, mut quiet, mut bare) = (Vec::new(), Vec::new(), Vec::new());
     let mut fell = false;
     for (_, c) in parts {
         let Some(m) = core.ix.commits.get(&c) else { continue };
@@ -359,13 +343,12 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         }
         let by = requests.standing(core, a, &m.header, &c);
         let dropped = m.dropped.get(&ai);
-        let own = writes_of(core, &m.header, &c, ai);
+        let own = writes_of(&m.header, &c, ai);
         match (by, !own.is_empty()) {
             (Some(pc), true) => {
-                if gone_of(core, &m.header, &c, ai).len() < own.len() {
+                if gone_of(core, &m.header, &c, ai).is_empty() {
                     rise.push((pc, c, ai));
                 }
-                kept.extend(own);
             }
             (None, true) => quiet.push((c, ai)),
             (Some(pc), false) if dropped.is_none() => rise.push((pc, c, ai)),
@@ -382,22 +365,18 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         purge_one(tx, &pc, &c, ai, &mut purged)?;
     }
     purged_changed(tx, purged, changed);
-    // after the rises: what they put on the list keeps a part that shares it from coming back
     let mut back = bare;
     let (mut leaving, mut gone) = (Vec::new(), Vec::new());
     for (c, ai) in quiet {
         let Some(m) = tx.core.ix.commits.get(&c) else { continue };
-        let listed = gone_of(tx.core, &m.header, &c, ai);
-        let going: Vec<Owned> = listed.iter().filter(|o| !kept.contains(*o)).cloned().collect();
+        let going = gone_of(tx.core, &m.header, &c, ai);
         if going.is_empty() {
             continue;
         }
         // dropped as covered it stays so: its cover's copies are its writes while one carries it
         if m.dropped.get(&ai).is_some_and(|d| !d.as_cover()) {
             gone.extend(going.iter().cloned());
-            if going.len() == listed.len() {
-                back.push((c, ai));
-            }
+            back.push((c, ai));
         }
         leaving.extend(going);
     }
@@ -444,7 +423,7 @@ pub(super) fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, c: &CommitId, ai: usize,
     }
     hold_valueless(tx, c, ai, true, changed)?;
     // snapshots carrying the purged values (spec/commits.md §5)
-    let o = writes_of(tx.core, &m.header, c, ai);
+    let o = writes_of(&m.header, c, ai);
     // the held ones (no walk of the aspect: a delete for everyone costs the same at any length)
     let held: Vec<CommitId> = tx.core.ix.snapshots.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for s in held {
@@ -475,7 +454,7 @@ pub(super) fn drop_purged_snapshot(tx: &mut Tx<'_>, s: &CommitId, sai: usize) ->
         let Some((m, ai)) = core.ix.commits.get(c).and_then(|m| Some((m, m.aspect(&tid, &ak)?))) else { continue };
         let Some(a) = m.header.aspects.get(ai) else { continue };
         if requests.standing(core, a, &m.header, c).is_some() {
-            owned.extend(writes_of(core, &m.header, c, ai));
+            owned.extend(writes_of(&m.header, c, ai));
         }
     }
     if owned.is_empty() {
@@ -495,7 +474,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             let core = &*tx.core;
             let Some((m, ai)) = core.ix.commits.get(&c).and_then(|m| Some((m, m.aspect(item.tid(), item.ak())?))) else { continue };
             let Some(a) = m.header.aspects.get(ai) else { continue };
-            if matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention.by as u64, m.header.purge_actor())).or_insert_with(|| holds_right(core, h, id, a, &m.header)) {
+            if matches!(item, PurgeItem::Commit { .. }) || *rights.entry((a.retention.by as u64, m.header.actor)).or_insert_with(|| holds_right(core, h, id, a, &m.header)) {
                 purge_one(tx, id, &c, ai, purged)?;
             }
         }
@@ -560,14 +539,9 @@ impl Engine {
             let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { return Ok(false) };
             for ai in ais {
                 let Some(a) = h.aspects.get(ai) else { continue };
-                // an import's body also goes for a request on another import of its origin
-                for x in sharing(tx.core, &h, ai).into_iter().chain([c]) {
-                    let Some(xh) = tx.core.ix.commits.get(&x).map(|m| m.header.clone()) else { continue };
-                    let Some(xa) = xh.aspects.iter().find(|x| x.tid == a.tid && x.ak == a.ak) else { continue };
-                    let requests = requests_on(tx, xa, &x)?;
-                    if requests.iter().any(|(pc, p)| could_stand(tx.core, p, xa, &xh, &x) && !holds_right(tx.core, p, pc, xa, &xh)) {
-                        return Ok(true);
-                    }
+                let requests = requests_on(tx, a, &c)?;
+                if requests.iter().any(|(pc, p)| could_stand(tx.core, p, a, &h, &c) && !holds_right(tx.core, p, pc, a, &h)) {
+                    return Ok(true);
                 }
             }
             Ok(false)

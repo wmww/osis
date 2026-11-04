@@ -1,5 +1,4 @@
-//! Reads and watches (notes/api.md Reads, Watching): synchronous reads of local state, every
-//! tid resolved through moves, large values materialized up to the bound, typed reads failing
+//! Reads and watches (notes/api.md Reads, Watching): synchronous reads of local state, large values materialized up to the bound, typed reads failing
 //! with the path; watches and callbacks over the dispatcher.
 
 use crate::error::{Error, Result};
@@ -160,21 +159,13 @@ pub(crate) fn knows_in(e: &mut Engine, tid: Tid) -> bool {
 }
 
 impl Reader<'_> {
-    /// The tid that `t` continues as (spec/permissions.md §7). Acting as an actor: `t` itself
-    /// unless it may read both ends.
-    pub fn resolve(&self, t: Tid) -> Tid {
-        let r = self.e.resolve(&t, &t);
-        if self.hidden(t) || self.hidden(r) { t } else { r }
-    }
-
     /// Whether the acting actor may not read `t` (never without one).
     pub(crate) fn hidden(&self, t: Tid) -> bool {
         self.actor.is_some_and(|a| !self.e.readable_by(&a, &t))
     }
 
-    /// The stored value of `tid` resolved (returned too), large values still links.
+    /// The stored value of `tid` (its tid returned too), large values still links.
     pub(crate) fn raw(&mut self, tid: Tid, ak: &Ak) -> Result<(Tid, Option<Value>)> {
-        let tid = self.resolve(tid);
         if self.hidden(tid) {
             return Ok((tid, None));
         }
@@ -292,7 +283,6 @@ impl Reader<'_> {
 
     /// AKs present on the thing.
     pub fn aspects(&mut self, tid: Tid) -> Result<Vec<Ak>> {
-        let tid = self.resolve(tid);
         if self.hidden(tid) {
             return Ok(Vec::new());
         }
@@ -302,30 +292,28 @@ impl Reader<'_> {
     /// The groups the thing is in: those listing it as an item or as a subgroup, and every
     /// group holding it transitively. `group.0` and `placed.0~`, local indexes only.
     pub fn groups_of(&self, tid: Tid) -> GroupsOf {
-        let t = self.resolve(tid);
-        if self.hidden(t) {
+        if self.hidden(tid) {
             return GroupsOf::default();
         }
-        let (items, subs) = self.e.listed_in(&t);
+        let (items, subs) = self.e.listed_in(&tid);
         let seen = |s: std::collections::BTreeSet<Tid>| s.into_iter().filter(|g| !self.hidden(*g)).collect();
-        GroupsOf { item_of: seen(items), subgroup_of: seen(subs), within: seen(self.e.groups_of(&t)) }
+        GroupsOf { item_of: seen(items), subgroup_of: seen(subs), within: seen(self.e.groups_of(&tid)) }
     }
 
     /// The role timeline's roster of `thing` (spec/permissions.md §2).
     pub fn roster(&self, thing: Tid) -> Roster {
-        if self.hidden(self.resolve(thing)) {
+        if self.hidden(thing) {
             return Roster::new();
         }
-        self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.is_some() })).collect()
+        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.is_some() })).collect()
     }
 
     /// This node's effective role on `tid` now (`None`: no access); the acting actor's when
     /// there is one.
     pub fn role_on(&self, tid: Tid) -> Option<Role> {
-        let t = self.resolve(tid);
         match self.actor {
-            Some(a) => self.e.actor_role(&a, &t).filter(|_| !self.hidden(t)),
-            None => self.e.role_on(&t),
+            Some(a) => self.e.actor_role(&a, &tid).filter(|_| !self.hidden(tid)),
+            None => self.e.role_on(&tid),
         }
     }
 
@@ -335,52 +323,45 @@ impl Reader<'_> {
     /// reports; an actor carrying only role data (a link key, a contact before any
     /// data) reads `false` too.
     pub fn knows(&mut self, tid: Tid) -> bool {
-        let t = self.resolve(tid);
-        if self.hidden(t) {
+        if self.hidden(tid) {
             return false;
         }
-        self.e.ephemeral_thing(&t).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&t) || (self.e.knows(&t) && self.e.has_content(&t).unwrap_or(true))
+        self.e.ephemeral_thing(&tid).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&tid) || (self.e.knows(&tid) && self.e.has_content(&tid).unwrap_or(true))
     }
 
     /// Whether the thing's creation is held or it is ephemeral here, deleted or not: what a
-    /// write, grant or move needs.
+    /// write or grant needs.
     pub(crate) fn holds(&self, tid: Tid) -> bool {
-        let t = self.resolve(tid);
-        !self.hidden(t) && self.e.knows(&t)
+        !self.hidden(tid) && self.e.knows(&tid)
     }
 
     /// The thing's owner (`None`: unknown, or a key actor).
     pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
-        let t = self.resolve(tid);
-        if self.hidden(t) {
+        if self.hidden(tid) {
             return None;
         }
-        self.e.owner(&t).map(|o| self.resolve(o))
+        self.e.owner(&tid)
     }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
     /// snapshot (an ephemeral thing's batch, `commit: None`); `None` while it is unknown or
-    /// only a snapshot carrying its `created.0` is here. Follows moves: a moved thing reports
-    /// its copy's creation, the move.
+    /// only a snapshot carrying its `created.0` is here.
     pub fn created(&self, tid: Tid) -> Option<Stamp> {
-        let t = self.resolve(tid);
-        if self.hidden(t) {
+        if self.hidden(tid) {
             return None;
         }
-        self.e.creation(&t).map(stamp)
+        self.e.creation(&tid).map(stamp)
     }
 
-    /// When the thing's content last changed: of the held changes, reverts and imports
-    /// writing its aspects (not `created.0`, `group.0` or role-class ones: placement and
+    /// When the thing's content last changed: of the held changes and reverts writing its aspects (not `created.0`, `group.0` or role-class ones: placement and
     /// sharing are no content change; not ephemeral writes), the one with the latest
     /// `shown()`, else its creation. A delete is a change. A change known here only from a
-    /// snapshot is not seen (notes/api.md Attribution). Follows moves.
+    /// snapshot is not seen (notes/api.md Attribution).
     pub fn changed(&self, tid: Tid) -> Option<Stamp> {
-        let t = self.resolve(tid);
-        if self.hidden(t) {
+        if self.hidden(tid) {
             return None;
         }
-        self.e.changed(&t).map(stamp)
+        self.e.changed(&tid).map(stamp)
     }
 }
 
@@ -508,15 +489,6 @@ impl Osis {
         self.engine(|e| e.now())
     }
 
-    /// Whether two tids name the same thing across moves (spec/permissions.md §7): the only
-    /// explicit resolution call; `Tid` equality is plain bits.
-    pub fn same_thing(&self, a: Tid, b: Tid) -> bool {
-        if let crate::sources::Source::Remote(r) = self.route(a) {
-            return self.infallible(r.call(m::SAME_THING, vec![Value::Tid(a), Value::Tid(b)]).and_then(|v| crate::port::codec::Args::of(vec![v]).bool()));
-        }
-        self.read_local(|r| r.resolve(a) == r.resolve(b))
-    }
-
     /// Reads an aspect and runs `also` under the same engine lock (the dispatcher queues the
     /// events whose effect the read shows).
     pub(crate) fn value_with(&self, tid: Tid, ak: &Ak, also: impl FnOnce()) -> Result<Option<Value>> {
@@ -559,7 +531,7 @@ impl Osis {
         })
     }
 
-    /// Calls `f` with every change of any aspect of `tid` (and of what it moves to), first
+    /// Calls `f` with every change of any aspect of `tid`, first
     /// once per present aspect (`Source::Initial`, through the dispatcher). Like every
     /// callback, `f` gets the database handle, so it need not capture one (a captured clone in
     /// a detached callback keeps the database open; capture `Osis::downgrade()` instead).
@@ -567,7 +539,6 @@ impl Osis {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_watch_thing(&r, tid, Box::new(f));
         }
-        let tid = self.read_local(|r| r.resolve(tid));
         self.subscribe(Filter::Thing(tid), true, move |r| {
             let mut last: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
             for ak in r.aspects(tid).unwrap_or_default() {
@@ -601,7 +572,6 @@ impl Osis {
         if let crate::sources::Source::Remote(r) = self.route(actor) {
             return self.remote_watch_roster(&r, actor, Box::new(f));
         }
-        let actor = self.read_local(|r| r.resolve(actor));
         self.subscribe(Filter::Roster(actor), true, move |r| {
             let mut last = r.roster(actor);
             Box::new(move |db, d| match d {
@@ -667,8 +637,7 @@ impl<'d, K: AspectKey> AspectRef<'d, K> {
 }
 
 impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
-    /// A watch taken atomically with the current value: no change after it is missed. It
-    /// follows moves of the thing.
+    /// A watch taken atomically with the current value: no change after it is missed.
     pub fn watch(&self) -> Result<Watch<K::T>>
     where
         K: Sync,
@@ -680,7 +649,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
             let key = self.key.clone();
             return Ok(Watch::new(st, Arc::new(move |v: &Value| key.decode(v).ok()), sub));
         }
-        let tid = self.db.read_local(|r| r.resolve(self.tid));
+        let tid = self.tid;
         let mut state = None;
         let key = self.key.clone();
         let sub = self.db.subscribe(Filter::Aspect(tid, ak.clone()), false, |r| {
@@ -702,7 +671,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` once with the value at registration (`Source::Initial`, through the
     /// dispatcher like every later call), then on every change; `f` gets the database handle.
     /// Calls coalesce: one call may show several commits' effect and carries the newest one's
-    /// source; an unchanged value is not repeated, an error always is. Follows moves.
+    /// source; an unchanged value is not repeated, an error always is.
     pub fn on_change(&self, mut f: impl FnMut(&Osis, Change<K::T>) + Send + 'static) -> Result<Subscription> {
         let ak = ak_of(&self.key)?;
         if let crate::sources::Source::Remote(r) = self.db.route(self.tid) {
@@ -712,7 +681,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
             let decode = move |db: &Osis, v: Result<Option<Value>>| -> Result<Option<K::T>> { Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d))))) };
             return self.db.remote_on_change(&r, self.tid, ak, Box::new(move |db, ch: Change<Value>| f(db, Change { tid: ch.tid, ak: ch.ak, value: decode(db, ch.value), source: ch.source })));
         }
-        let tid = self.db.read_local(|r| r.resolve(self.tid));
+        let tid = self.tid;
         let key = self.key.clone();
         let ak2 = ak.clone();
         let decode = move |db: &Osis, v: Result<Option<Value>>| Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d)))));
@@ -756,8 +725,7 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
     pub fn get<U: Codec>(&self) -> Result<Option<U>> {
         let Some(v) = self.get_value()? else { return Ok(None) };
         let db = self.a.db;
-        let tid = if db.is_local(self.a.tid) { db.read_local(|r| r.resolve(self.a.tid)) } else { self.a.tid };
         let ak = ak_of(&self.a.key)?;
-        Ok(lenient(tid, &ak, U::from_value(&v), |d| db.engine(|e| e.report(d))))
+        Ok(lenient(self.a.tid, &ak, U::from_value(&v), |d| db.engine(|e| e.report(d))))
     }
 }

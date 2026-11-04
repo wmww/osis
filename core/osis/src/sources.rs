@@ -131,12 +131,11 @@ fn remote_named(l: &Locked, addr: &str) -> Arc<Remote> {
 /// The module comment's rule.
 fn decide_in(l: &mut Locked, thin: bool, tid: Tid) -> Decided {
     if !thin {
-        let t = l.sync.engine().resolve(&tid, &tid);
-        let s = scope_of(l.sync.engine(), t);
+        let s = scope_of(l.sync.engine(), tid);
         if let Some(addr) = s.iter().find_map(|g| l.routes.get(g)) {
             return Decided::Remote(remote_named(l, addr));
         }
-        if l.sync.engine().knows(&t) {
+        if l.sync.engine().knows(&tid) {
             return Decided::Local;
         }
     }
@@ -151,8 +150,7 @@ fn decide_in(l: &mut Locked, thin: bool, tid: Tid) -> Decided {
 /// `t`, spec/sync.md §3) goes elsewhere: it syncs here, or routes to another node. Returns (the
 /// routed group, that group). A plain placement carries nothing: no holder of it misses a write.
 fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
-    let t = l.sync.engine().resolve(&tid, &tid);
-    let s = scope_of(l.sync.engine(), t);
+    let s = scope_of(l.sync.engine(), tid);
     let (routed, addr) = s.iter().find_map(|g| l.routes.get(g).map(|a| (*g, a.clone())))?;
     let other = s.into_iter().find(|g| {
         let elsewhere = match l.routes.get(g) {
@@ -160,7 +158,7 @@ fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
             None => syncs_here(l, g),
         };
         let e = l.sync.engine();
-        elsewhere && e.entitled(&e.group_actor(g), &t)
+        elsewhere && e.entitled(&e.group_actor(g), &tid)
     })?;
     Some((routed, other))
 }
@@ -259,7 +257,7 @@ impl Osis {
             crate::commits::Scope::Group(g) if self.routed() => {
                 let things: Vec<Tid> = self.locked(|l| {
                     let e = l.sync.engine();
-                    e.closure_placed(&e.resolve(g, g)).into_iter().collect()
+                    e.closure_placed(g).into_iter().collect()
                 });
                 self.check_split(&things)?;
             }
@@ -528,40 +526,39 @@ impl Osis {
     }
 
     async fn source_remote(&self, group: Tid, addr: HostAddr) -> Result<()> {
-        let g = self.read_local(|r| r.resolve(group));
         let text = addr.to_string();
-        if g == self.me() {
+        if group == self.me() {
             return Err(Error::Invalid("the home group stays on this node".into()));
         }
         let Some(r) = self.locked(|l| l.remotes.iter().find(|r| r.addr == text).cloned()) else { return Err(Error::Invalid(format!("not attached to {text}"))) };
         crate::net::blocking(|| r.first())?;
         // Value::Bool(false): the node does not know it, or the client's actor may not read it
-        if r.call(method::KNOWS, vec![Value::Tid(g)])? != Value::Bool(true) {
-            return Err(Error::UnknownThing { tid: g });
+        if r.call(method::KNOWS, vec![Value::Tid(group)])? != Value::Bool(true) {
+            return Err(Error::UnknownThing { tid: group });
         }
         let (held, live) = self.locked(|l| {
-            let held = l.engine().knows(&g);
-            (held, syncs_here(l, &g))
+            let held = l.engine().knows(&group);
+            (held, syncs_here(l, &group))
         });
         if live {
-            self.wait_synced_pending(SyncScope::Group(g), self.inner.wait_timeout).await?;
+            self.wait_synced_pending(SyncScope::Group(group), self.inner.wait_timeout).await?;
         }
         self.locked(|l| {
-            let parents: Vec<Tid> = l.engine().groups_of(&g).into_iter().filter(|p| *p != g && !l.routes.contains_key(p)).collect();
+            let parents: Vec<Tid> = l.engine().groups_of(&group).into_iter().filter(|p| *p != group && !l.routes.contains_key(p)).collect();
             if parents.iter().any(|p| syncs_here(l, p)) {
                 // every write in it would be refused (the module's split)
                 return Err(Error::Invalid("this group stays synced here through a group holding it: move that one".into()));
             }
             // written since the wait: never strand it
-            if syncs_here(l, &g) && crate::share::synced_now(l, g) != Some(Ok(())) {
-                return Err(Error::Unsynced { groups: vec![g] });
+            if syncs_here(l, &group) && crate::share::synced_now(l, group) != Some(Ok(())) {
+                return Err(Error::Unsynced { groups: vec![group] });
             }
             self.moving(l, |l| {
-                l.routes.insert(g, text.clone());
+                l.routes.insert(group, text.clone());
                 save_routes(l)?;
                 self.inner.routing.store(true, Ordering::Release);
-                if held && !l.sync.receipts_only().contains(&g) {
-                    let acts = l.sync.set_receipts_only(g, true);
+                if held && !l.sync.receipts_only().contains(&group) {
+                    let acts = l.sync.set_receipts_only(group, true);
                     self.inner.apply(acts);
                 }
                 Ok(())
@@ -570,13 +567,12 @@ impl Osis {
     }
 
     async fn source_local(&self, group: Tid) -> Result<()> {
-        let g = self.read_local(|r| r.resolve(group));
         let (held, role, stopped, has_label, route) = self.locked(|l| {
-            let held = l.engine().knows(&g);
+            let held = l.engine().knows(&group);
             let limit = self.inner.limit;
-            let role = crate::read::Reader { e: l.engine(), limit, actor: None }.role_on(g);
-            let stopped = l.sync.receipts_only().contains(&g);
-            (held, role, stopped, labeled(l, &g), l.routes.get(&g).cloned())
+            let role = crate::read::Reader { e: l.engine(), limit, actor: None }.role_on(group);
+            let stopped = l.sync.receipts_only().contains(&group);
+            (held, role, stopped, labeled(l, &group), l.routes.get(&group).cloned())
         });
         if route.is_none() && !stopped {
             return Ok(());
@@ -586,20 +582,20 @@ impl Osis {
         }
         if !has_label {
             // its first label here: needs admin, as `sync`
-            self.sync_here(g, &[], true)?;
+            self.sync_here(group, &[], true)?;
         }
         if stopped {
-            self.act(|l| l.sync.set_receipts_only(g, false));
+            self.act(|l| l.sync.set_receipts_only(group, false));
         }
         // what was written at the node reaches a host first, else this engine would catch up
         // without it; not asked of a node that is gone
         if let Some(r) = route.as_ref().map(|a| self.locked(|l| remote_named(l, a))) {
-            self.node_uploaded(&r, g)?;
+            self.node_uploaded(&r, group)?;
         }
-        self.wait_synced_pending(SyncScope::Group(g), self.inner.wait_timeout).await?;
+        self.wait_synced_pending(SyncScope::Group(group), self.inner.wait_timeout).await?;
         self.locked(|l| {
             self.moving(l, |l| {
-                l.routes.remove(&g);
+                l.routes.remove(&group);
                 save_routes(l)
             })
         })

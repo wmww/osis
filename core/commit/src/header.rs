@@ -22,12 +22,11 @@ pub enum Kind {
     Role = 1,
     ContentSnapshot = 2,
     RoleSnapshot = 3,
-    Import = 4,
-    RosterSnapshot = 5,
+    RosterSnapshot = 4,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [Kind::Content, Kind::Role, Kind::ContentSnapshot, Kind::RoleSnapshot, Kind::Import, Kind::RosterSnapshot];
+    pub const ALL: [Kind; 5] = [Kind::Content, Kind::Role, Kind::ContentSnapshot, Kind::RoleSnapshot, Kind::RosterSnapshot];
     pub fn id(self) -> u64 {
         self as u64
     }
@@ -38,9 +37,9 @@ impl Kind {
     pub fn is_role(self) -> bool {
         matches!(self, Kind::Role | Kind::RoleSnapshot | Kind::RosterSnapshot)
     }
-    /// Carries own writes (a counter range); snapshots and imports do not.
+    /// Carries own writes (a counter range); compaction snapshots do not.
     pub fn has_own_writes(self) -> bool {
-        !matches!(self, Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::Import)
+        !self.is_compaction()
     }
     /// May carry several deltas per aspect.
     pub fn several_deltas(self) -> bool {
@@ -54,7 +53,6 @@ impl Kind {
     pub fn delta_kind(self) -> DeltaKind {
         match self {
             Kind::ContentSnapshot | Kind::RoleSnapshot => DeltaKind::Snapshot,
-            Kind::Import => DeltaKind::Import,
             Kind::Content | Kind::Role | Kind::RosterSnapshot => DeltaKind::Writer,
         }
     }
@@ -163,8 +161,8 @@ pub enum PurgeItem {
     Commit { commit: CommitId, tid: Tid, ak: Ak },
     /// Every delta on that aspect of every commit with a smaller `ts`.
     Aspect { tid: Tid, ak: Ak },
-    /// Every delta on that aspect of every commit with a smaller `ts` whose purge actor
-    /// (`Header::purge_actor`) is `actor`.
+    /// Every delta on that aspect of every commit with a smaller `ts` whose header actor is
+    /// `actor`.
     Author { tid: Tid, ak: Ak, actor: Tid },
 }
 
@@ -181,15 +179,6 @@ impl PurgeItem {
     }
 }
 
-/// An origin commit of an import (spec/permissions.md §7).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Origin {
-    pub commit: CommitId,
-    pub author: Tid,
-    pub actor: Tid,
-    pub ts: Ts,
-}
-
 /// The header lists that may go by link (spec/wire.md §4, "Inline or link").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ListField {
@@ -198,11 +187,10 @@ pub enum ListField {
     Purge,
     Keys,
     Frontier,
-    Origins,
 }
 
 impl ListField {
-    pub const ALL: [ListField; 6] = [ListField::Aspects, ListField::Chunks, ListField::Purge, ListField::Keys, ListField::Frontier, ListField::Origins];
+    pub const ALL: [ListField; 5] = [ListField::Aspects, ListField::Chunks, ListField::Purge, ListField::Keys, ListField::Frontier];
 }
 
 /// Root links of the lists that go by link; `None` = inline.
@@ -213,7 +201,6 @@ pub struct Links {
     pub purge: Option<Link>,
     pub keys: Option<Link>,
     pub frontier: Option<Link>,
-    pub origins: Option<Link>,
 }
 
 impl Links {
@@ -224,7 +211,6 @@ impl Links {
             ListField::Purge => self.purge.as_ref(),
             ListField::Keys => self.keys.as_ref(),
             ListField::Frontier => self.frontier.as_ref(),
-            ListField::Origins => self.origins.as_ref(),
         }
     }
     pub fn set(&mut self, f: ListField, l: Option<Link>) {
@@ -234,7 +220,6 @@ impl Links {
             ListField::Purge => &mut self.purge,
             ListField::Keys => &mut self.keys,
             ListField::Frontier => &mut self.frontier,
-            ListField::Origins => &mut self.origins,
         };
         *slot = l;
     }
@@ -261,7 +246,6 @@ pub struct Header {
     pub keys: Vec<DeleteKey>,
     /// The frontier value (spec/data-model.md §9), typed by osis-perm.
     pub frontier: Option<Value>,
-    pub origins: Vec<Origin>,
     pub links: Links,
     /// Set on an ephemeral commit (kept in memory by every node, never stored).
     pub ephemeral: Option<EphClass>,
@@ -312,10 +296,6 @@ pub(crate) fn purge_value(p: &PurgeItem) -> Value {
     }
 }
 
-fn origin_value(o: &Origin) -> Value {
-    Value::List(vec![Value::bytes(&o.commit.0), tid(&o.author), tid(&o.actor), uint(o.ts.to_u64())])
-}
-
 /// Canonical bytes of `[tid, ak]`, the aspect sort key.
 pub(crate) fn aspect_key(t: &Tid, a: &Ak) -> Vec<u8> {
     osis_base::encode(&Value::List(vec![tid(t), ak(a)]))
@@ -329,15 +309,6 @@ impl Header {
         self.ephemeral.is_none() && self.expires.is_none() && a.retention.at_least.abs == Some(FOREVER) && a.retention.at_most == osis_schema::Bound::default() && crate::retention::fixed_retention(a.ak.as_str()).is_none()
     }
 
-    /// The actor holding the author right over this commit's deltas (spec/permissions.md §7,
-    /// §8): the actor it acted for; an import's: its first origin commit's.
-    pub fn purge_actor(&self) -> Tid {
-        match self.kind {
-            Kind::Import => self.origins.first().map_or(self.actor, |o| o.actor),
-            _ => self.actor,
-        }
-    }
-
     /// The list's (or frontier's) value as it would sit inline; `None` for an absent frontier.
     pub fn list_value(&self, f: ListField) -> Option<Value> {
         Some(match f {
@@ -346,7 +317,6 @@ impl Header {
             ListField::Purge => Value::List(self.purge.iter().map(purge_value).collect()),
             ListField::Keys => Value::List(self.keys.iter().map(key_value).collect()),
             ListField::Frontier => return self.frontier.clone(),
-            ListField::Origins => Value::List(self.origins.iter().map(origin_value).collect()),
         })
     }
 
@@ -375,7 +345,6 @@ impl Header {
             Value::bytes(&self.blind),
             self.position(ListField::Keys),
             self.position(ListField::Frontier),
-            self.position(ListField::Origins),
             Value::opt(self.ephemeral.map(|c| uint(c as u64))),
         ])
     }
@@ -407,7 +376,6 @@ impl Header {
             ListField::Purge => self.purge.is_empty(),
             ListField::Keys => self.keys.is_empty(),
             ListField::Frontier => self.frontier.is_none(),
-            ListField::Origins => self.origins.is_empty(),
         }
     }
 }
@@ -428,7 +396,6 @@ const MIN_ASPECT: usize = 59;
 const MIN_CHUNK: usize = 35;
 const MIN_PURGE: usize = 20;
 const MIN_KEY: usize = 35;
-const MIN_ORIGIN: usize = 2 + 32 + 2 * (1 + TID_LEN) + 2;
 const MIN_ID: usize = 33;
 
 /// An array of items in strictly ascending bytes, a rule every list of a header keeps. So a repeated
@@ -536,13 +503,6 @@ fn read_purge(r: &mut Reader<'_>) -> Result<PurgeItem, Error> {
     }
 }
 
-fn read_origin(r: &mut Reader<'_>) -> Result<Origin, Error> {
-    if r.array()? != 4 {
-        return Err(Error::Malformed("origin arity"));
-    }
-    Ok(Origin { commit: CommitId(r.fixed()?), author: read_tid(r)?, actor: read_tid(r)?, ts: Ts::from_u64(r.uint()?).ok_or(Error::Malformed("ts out of range"))? })
-}
-
 fn as_ts(v: &Value) -> Result<Ts, Error> {
     Ts::from_u64(as_uint(v)?).ok_or(Error::Malformed("ts out of range"))
 }
@@ -573,7 +533,6 @@ impl Header {
             ListField::Chunks => self.chunks = read_items(r, MIN_CHUNK, read_chunk)?,
             ListField::Purge => self.purge = read_items(r, MIN_PURGE, read_purge)?,
             ListField::Keys => self.keys = read_items(r, MIN_KEY, |r| read_key(r, check))?,
-            ListField::Origins => self.origins = read_items(r, MIN_ORIGIN, read_origin)?,
             ListField::Frontier => {}
         }
         Ok(r.end()?)
@@ -624,7 +583,7 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let [_, author, actor, kind, ts, form, expires, aspects, chunks, purge, undoes, blind, keys, frontier, origins, ephemeral] = items else {
+        let [_, author, actor, kind, ts, form, expires, aspects, chunks, purge, undoes, blind, keys, frontier, ephemeral] = items else {
             return Err(Error::Malformed("header arity"));
         };
         let mut h = Header {
@@ -642,7 +601,6 @@ impl Header {
             blind: as_bytes(blind)?,
             keys: Vec::new(),
             frontier: None,
-            origins: Vec::new(),
             links: Links::default(),
             ephemeral: as_opt(ephemeral)?.map(|c| EphClass::from_id(as_uint(c)?).ok_or(Error::Malformed("ephemeral marker"))).transpose()?,
         };
@@ -651,7 +609,6 @@ impl Header {
         h.take_position(ListField::Purge, purge, stored)?;
         h.take_position(ListField::Keys, keys, stored)?;
         h.take_position(ListField::Frontier, frontier, stored)?;
-        h.take_position(ListField::Origins, origins, stored)?;
         Ok(h)
     }
 

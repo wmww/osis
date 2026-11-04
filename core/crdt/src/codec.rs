@@ -285,7 +285,7 @@ fn encode_elems(cx: &mut Enc, elems: &BTreeMap<Dot, Elem>) -> Result<Value, Erro
 /// A map entry record `[Dot, Ci?, R, Key?, Opt(Fragment)]`.
 pub(crate) fn encode_entry(cx: &mut Enc, id: &Eid, e: &Entry) -> Result<Value, Error> {
     let mut x = vec![cx.dot(&id.dot)];
-    // the creation's commit, where a snapshot or import carries it (a writer's own creations
+    // the creation's commit, where a snapshot carries it (a writer's own creations
     // are implied, §3.2)
     if let Some(c) = e.created.as_ref().filter(|c| !cx.is_own(c)) {
         x.push(cx.commit_of(c));
@@ -696,7 +696,7 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
         if frag.is_some() {
             cx.claim(&dot)?;
         }
-        // the creation: carried by a snapshot or import; implied in a writer's delta for an
+        // the creation: carried by a snapshot; implied in a writer's delta for an
         // entry created here (own dot in the range)
         let created = match ci {
             Some(_) if cx.kind() == DeltaKind::Writer => return Err(Error::Malformed("creation commit in a writer's delta")),

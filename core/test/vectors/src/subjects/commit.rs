@@ -150,24 +150,9 @@ fn session_commit() -> CommitBlob {
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
     let mut a = AspectWrite::new(THING, Ak::new("app:state.0").unwrap(), 1, 2, bytes);
     a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
-    a.records = vec![osis_base::CreationRecord::Thing { owner: ACTOR, nonce: [0x29; 32], creator: None }];
+    a.records = vec![osis_base::CreationRecord::Thing { owner: ACTOR, nonce: [0x29; 32] }];
     b.aspects.push(a);
     b.ephemeral = Some(osis_commit::EphClass::Plain);
-    built(b)
-}
-
-fn import() -> CommitBlob {
-    let at = ts(1_700_000_003_000);
-    let origin = CommitId([0x24; 32]);
-    let ots = ts(1_600_000_000_000);
-    let mut w = Writer::new(at, Source::commit(origin), 1);
-    let fragment = create(&mut w, &AnyView, &Value::Str("moved".into())).unwrap();
-    let d = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(Form::Commit, Kind::Import, at, AUTHOR, 0, 0), None).unwrap();
-    let mut b = CommitBuilder::new(Kind::Import, at, AUTHOR, ACTOR, Form::Commit);
-    let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 0, 0, d);
-    a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
-    b.aspects.push(a);
-    b.origins.push(Origin { commit: origin, author: Tid::from_bytes([0x25; 15]), actor: Tid::from_bytes([0x26; 15]), ts: ots });
     built(b)
 }
 
@@ -184,7 +169,6 @@ pub fn headers() -> VecFile {
     cases.push(record("minimal content commit", "spec/wire.md §4; spec/commits.md §1", &c));
     cases.push(record("role commit, two deltas on one aspect", "spec/wire.md §4; spec/commits.md §2", &role_commit()));
     cases.push(record("content compaction snapshot", "spec/wire.md §4; spec/commits.md §2, §5", &snapshot()));
-    cases.push(record("import with origins", "spec/wire.md §4; spec/permissions.md §7", &import()));
     let e = ephemeral(osis_commit::EphClass::Plain);
     cases.push(record("ephemeral commit", "spec/wire.md §4; spec/commits.md §2", &e));
     cases.push(record("relay-only commit", "spec/wire.md §4; spec/commits.md §2", &ephemeral(osis_commit::EphClass::Relay)));
@@ -263,7 +247,7 @@ fn more_accepted() -> Vec<Record> {
     // purge request, created.0 kept forever
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
-    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::Thing { owner: ACTOR, nonce: [0x2e; 32], creator: None }.to_value(), 7));
+    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::Thing { owner: ACTOR, nonce: [0x2e; 32] }.to_value(), 7));
     cr.retention = retention::CREATED_RETENTION;
     b.aspects.push(cr);
     b.aspects.push(AspectWrite::new(THING, Ak::new("app:body.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("".into()), 8)));
@@ -321,14 +305,6 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = m.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });
     out.push(reject("purge request on a role commit", "spec/commits.md §2, §5", &x, "purge-role-class"));
-    let mut x = content.clone();
-    x.origins.push(Origin { commit: CommitId([1; 32]), author: AUTHOR, actor: ACTOR, ts: ts(5) });
-    out.push(reject("origins on a non-import", "spec/wire.md §4", &x, "origins"));
-    let mut x = import().header;
-    let mut other = x.aspects[0].clone();
-    other.tid = Tid::from_bytes([0xff; 15]);
-    x.aspects.push(other);
-    out.push(reject("import on several things", "spec/permissions.md §7", &x, "import-things"));
     let frontier = Some(Value::Map(Default::default()));
     let mut x = m.clone();
     x.kind = Kind::RoleSnapshot;

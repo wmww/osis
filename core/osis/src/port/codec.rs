@@ -454,7 +454,7 @@ pub(crate) fn scope(v: Value) -> Result<Scope> {
     Ok(s)
 }
 
-const CKINDS: [CommitKind; 6] = [CommitKind::Change, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot, CommitKind::Import, CommitKind::Ephemeral];
+const CKINDS: [CommitKind; 5] = [CommitKind::Change, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot, CommitKind::Ephemeral];
 
 fn ckind_v(k: &CommitKind) -> Value {
     u(CKINDS.iter().position(|x| x == k).unwrap_or(0) as u64)

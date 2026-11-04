@@ -146,7 +146,7 @@ impl Engine {
         self.run(|tx| {
             let mut done = Done::default();
             let mut m = Mutation::new();
-            let a = m.create(crate::identity::thing_record(owner, None, &mut *tx.rng));
+            let a = m.create(crate::identity::thing_record(owner, &mut *tx.rng));
             done.add(Engine::commit_tx(tx, m)?);
             rotation::own_secrets(tx, a, &mut done)?;
             done.add(Engine::commit_tx(tx, also(a)?)?);

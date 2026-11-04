@@ -1,33 +1,16 @@
 //! Reads (notes/api.md Reads): aspect values from local state, the synthetic aspects `tid.0`,
 //! `aspects.0`, `groups.0` (spec/data-model.md §8, §9), `roles.0` as the role timeline's
-//! roster (spec/permissions.md §2), roles, and move resolution of tids in returned values
-//! (spec/permissions.md §7).
+//! roster (spec/permissions.md §2) and roles.
 
 use super::{Core, Engine, records};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_crdt::Fragment;
-use osis_perm::{At, Edge, MoveIndex};
+use osis_perm::{At, Edge};
 use osis_schema::AspectKey;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::BTreeMap;
-
-struct Moves<'c>(&'c Core);
-
-impl MoveIndex for Moves<'_> {
-    fn continued_by(&self, t: &Tid) -> Vec<Tid> {
-        self.0.ix.was.get(t).map(|s| s.iter().copied().collect()).unwrap_or_default()
-    }
-    fn moved(&self, t: &Tid) -> Option<Tid> {
-        self.0.ix.moved.get(t).copied()
-    }
-}
-
-/// Aspects whose tids are not resolved through moves: they name things as such.
-fn unresolved_ak(ak: &str) -> bool {
-    matches!(ak, "tid.0" | "created.0" | "was.0" | "moved.0")
-}
 
 /// Aspects read from the in-memory indexes, not from a state.
 fn synthetic_ak(ak: &str) -> bool {
@@ -54,36 +37,6 @@ fn edge_value(e: &Edge) -> Value {
 }
 
 impl Core {
-    pub(crate) fn resolve(&self, r: &Tid, t: &Tid) -> Tid {
-        if self.ix.was.is_empty() && self.ix.moved.is_empty() {
-            return *t;
-        }
-        match self.timelines.get(r) {
-            Some(tl) => tl.resolve(&Moves(self), r, t, At::now(osis_base::Ts::make(self.now(), 0).unwrap_or_default())),
-            None => {
-                let mut cur = *t;
-                for _ in 0..osis_perm::RESOLUTION_HOPS {
-                    match self.ix.moved.get(&cur) {
-                        Some(x) => cur = *x,
-                        None => break,
-                    }
-                }
-                cur
-            }
-        }
-    }
-
-    fn resolve_value(&self, r: &Tid, v: Value) -> Value {
-        match v {
-            Value::Tid(t) => Value::Tid(self.resolve(r, &t)),
-            Value::List(l) => Value::List(l.into_iter().map(|x| self.resolve_value(r, x)).collect()),
-            Value::Set(s) => Value::Set(s.into_iter().map(|x| self.resolve_value(r, x)).collect()),
-            Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| (self.resolve_value(r, k), self.resolve_value(r, x))).collect()),
-            Value::Enum(c, Some(p)) => Value::Enum(c, Some(Box::new(self.resolve_value(r, *p)))),
-            v => v,
-        }
-    }
-
     pub(crate) fn roster_of(&self, thing: &Tid) -> BTreeMap<Tid, Edge> {
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         self.timelines.get(thing).map(|tl| tl.roster(thing, At::now(ts))).unwrap_or_default()
@@ -99,7 +52,7 @@ impl Engine {
         }
         // an ephemeral thing's record is held beside its deltas, not as `created.0` state
         if let Some(v) = self.ephemeral_core_value(&tid, &ak)? {
-            return Ok(self.resolved(&tid, &ak, v));
+            return Ok(v);
         }
         let v = match ak.as_str() {
             "tid.0" => Some(Value::Tid(tid)),
@@ -113,7 +66,7 @@ impl Engine {
             "placed.0~" => self.placed_value(&tid),
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
-        Ok(self.resolved(&tid, &ak, v))
+        Ok(v)
     }
 
     /// What held commit `c`'s own part on `(tid, ak)` reads, alone (not the aspect's joined
@@ -128,15 +81,6 @@ impl Engine {
             }
             Ok(st.as_ref().and_then(Fragment::read))
         })
-    }
-
-    /// `v` read from `(tid, ak)` with its tids resolved through moves, unless `ak` names things
-    /// as such.
-    fn resolved(&self, tid: &Tid, ak: &Ak, v: Option<Value>) -> Option<Value> {
-        match v {
-            Some(v) if !unresolved_ak(ak.as_str()) => Some(self.core.resolve_value(tid, v)),
-            v => v,
-        }
     }
 
     /// `path` with its map keys in the form the state holds them (a large one as its link,
@@ -168,7 +112,7 @@ impl Engine {
             tx.ensure_paths(tid, ak, std::slice::from_ref(&path))?;
             Ok(tx.cached(tid, ak).and_then(|f| f.at(&path)).filter(Fragment::present).and_then(|f| f.read()))
         })?;
-        Ok(self.resolved(tid, ak, v))
+        Ok(v)
     }
 
     /// The visible elements `r` (by index, clamped to the length) of the text or list at `path`
@@ -183,7 +127,7 @@ impl Engine {
         }
         let path = self.lookup_path(tid, path)?;
         let v = self.run(|tx| tx.read_range(tid, ak, &path, r))?;
-        Ok(self.resolved(tid, ak, v))
+        Ok(v)
     }
 
     /// A typed read (reader defaults, spec/versioning.md §5).
@@ -258,11 +202,6 @@ impl Engine {
         }
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         super::write::role_of(&self.core, &self.tid(), tid, ts)
-    }
-
-    /// Resolves tid `t` held in a value of thing `r` through moves.
-    pub fn resolve(&self, r: &Tid, t: &Tid) -> Tid {
-        self.core.resolve(r, t)
     }
 
     /// The local state fragment of `(tid, ak)` (tests, simulator invariants).

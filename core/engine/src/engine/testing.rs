@@ -284,7 +284,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn value_held_of(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<String>> {
         let Some((h, ai)) = self.core.ix.commits.get(c).and_then(|m| Some((m.header.clone(), m.aspect(tid, ak)?))) else { return Ok(None) };
-        let owned = crate::retention::writes_of(&self.core, &h, c, ai);
+        let owned = crate::retention::writes_of(&h, c, ai);
         // values alone: a later write nested in an expired entry may still name its key
         // (issues/expired-entry-key-kept.md)
         let keyless = |f: &osis_crdt::Fragment| {
@@ -454,13 +454,10 @@ impl Engine {
             ("keyset_parts", format!("{:?}", *ix.keyset_parts)),
             ("holder_keys", format!("{:?}", *ix.holder_keys)),
             ("unresolved", format!("{:?}", *ix.unresolved)),
-            ("was", format!("{:?}", *ix.was)),
-            ("moved", format!("{:?}", *ix.moved)),
             ("groups", format!("{:?}", ix.groups.of)),
             ("secrets", format!("{:?}", *ix.secrets)),
             ("void", format!("{:?}", *ix.void)),
             ("valueless", format!("{:?}", *ix.valueless)),
-            ("imports", format!("{:?}", *ix.imports)),
             ("undone_by", format!("{:?}", *ix.undone_by)),
         ].into_iter().collect();
         IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, carried, tables }

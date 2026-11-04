@@ -182,15 +182,6 @@ fn exempt_deltas_spec_commits_5() {
         assert_eq!(p.engine.roster(&d).get(&bob).map(|e| e.role), Some(Role::Admin), "{i}");
     }
     assert_eq!(read(&mut lp.peers[0], d, "t:typing.0~"), Some(s("typing")));
-    // role-class: `moved.0`, written by the move, is outside the rule
-    let mut m = Mutation::new();
-    m.set(d, &ct::MOVED, &bob).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(1_000);
-    lp.sync_all().unwrap();
-    for i in 1..3 {
-        assert_eq!(read(&mut lp.peers[i], d, "moved.0"), Some(Value::Tid(bob)), "{i}");
-    }
     // `created.0` of a thing whose owner's rule says otherwise: it has its own fixed retention
     let mut m = Mutation::new();
     let child = lp.peers[0].engine.new_thing(&mut m, d);
@@ -199,8 +190,8 @@ fn exempt_deltas_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.body_valid(&c, &child, &ak("created.0")), Some(true));
 }
 
-// spec/commits.md §5: `required.0^` has `created.0`'s fixed retention, is never snapshotted,
-// imported or undone, and is written whole
+// spec/commits.md §5: `required.0^` has `created.0`'s fixed retention, is never snapshotted or
+// undone, and is written whole
 #[test]
 fn setting_itself_fixed_spec_commits_5() {
     assert_eq!(fixed_retention("required.0^"), fixed_retention("created.0"));
@@ -474,23 +465,6 @@ fn setting_falls_through_acting_spec_perm_5_2() {
     assert!(!valid(&lp.peers[1], &setting, &d, "required.0^"));
     assert!(valid(&lp.peers[1], &bad, &d, MSGS), "back with the fallen setting");
     assert_eq!(read(&mut lp.peers[1], d, MSGS), Some(s("junk")));
-}
-
-// spec/data-model.md §9: a move does not carry the setting: the copy's deltas answer to its own
-#[test]
-fn move_carries_no_setting_spec_perm_7() {
-    let (mut lp, d) = setup(337);
-    let alice = lp.peers[0].engine.tid();
-    let kept = hostile(&mut lp, 0, d, "t:m.0", Retention::default(), "kept");
-    require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
-    lp.sync_all().unwrap();
-    let (m2, imports) = lp.peers[0].engine.move_thing(&d, alice).unwrap();
-    lp.advance(1_000);
-    assert!(!imports.is_empty(), "{kept:?}");
-    assert_eq!(read(&mut lp.peers[0], m2, "t:m.0"), Some(s("kept")));
-    assert_eq!(read(&mut lp.peers[0], m2, "required.0^"), None);
-    let free = hostile(&mut lp, 0, m2, "t:n.0", junk(), "free");
-    assert!(valid(&lp.peers[0], &free, &m2, "t:n.0"));
 }
 
 // spec/permissions.md §5.2: a `required.0^` delta arriving as a late part of a commit on two things

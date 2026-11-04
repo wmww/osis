@@ -57,7 +57,7 @@ impl AspectKey for Key {
 /// Typed keys of the core aspects (spec/data-model.md §9). Role-class aspects are read
 /// here and written only through the sharing calls.
 pub mod core {
-    pub use osis_schema::core_types::{ASPECTS, BODY, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, ROLES, MOVED, NAME, NODE, PLACED, REACH, SECRETS, SEEN, TAG, TENURES, TID, Tag, WAS};
+    pub use osis_schema::core_types::{ASPECTS, BODY, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, ROLES, NAME, NODE, PLACED, REACH, SECRETS, SEEN, TAG, TENURES, TID, Tag};
 
     /// Field ids of `group.0` (spec/data-model.md §8), for path ops on it.
     pub mod group {

@@ -3869,7 +3869,7 @@ fn records_beside_parts_counted_spec_sync_9() {
     let ak = osis_base::Ak::new(STATE).unwrap();
     let c = forge_memory(&mut net, a, w, &ak, s("y"));
     let mut padded = c.blob.clone();
-    let mut junk: Vec<osis_base::CreationRecord> = (0..200u8).map(|n| osis_base::CreationRecord::Thing { owner: g, nonce: [n; 32], creator: None }).collect();
+    let mut junk: Vec<osis_base::CreationRecord> = (0..200u8).map(|n| osis_base::CreationRecord::Thing { owner: g, nonce: [n; 32] }).collect();
     junk.append(&mut padded.parts[0].records);
     junk.sort_by_key(osis_base::CreationRecord::tid);
     padded.parts[0].records = junk;

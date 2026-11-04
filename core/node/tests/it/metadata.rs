@@ -215,7 +215,7 @@ fn heartbeats_carry_only_seen() {
         }
         authors.insert(h.author);
         assert_eq!(h.kind, osis_commit::Kind::Content);
-        assert!(h.chunks.is_empty() && h.purge.is_empty() && h.undoes.is_none() && h.frontier.is_none() && h.origins.is_empty());
+        assert!(h.chunks.is_empty() && h.purge.is_empty() && h.undoes.is_none() && h.frontier.is_none());
         let ts = h.ts.wall_ms().0;
         for x in &h.aspects {
             assert_eq!((x.ak.as_str(), x.tid), ("seen.0", h.author), "a heartbeat carried more than seen.0");

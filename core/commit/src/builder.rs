@@ -1,7 +1,7 @@
 //! The commit builder (spec/commits.md §1, spec/wire.md §4).
 
 use crate::blob::{CommitBlob, Part};
-use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, Origin, PurgeItem, aspect_key, key_value, purge_value};
+use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, PurgeItem, aspect_key, key_value, purge_value};
 use crate::project::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
@@ -25,7 +25,7 @@ pub struct AspectWrite {
     /// for every kind but role and roster snapshots.
     pub deltas: Vec<Vec<u8>>,
     /// Resolved retention ([`crate::retention`] helpers: fixed, override, schema default,
-    /// untyped default; snapshot; an import's origin delta's).
+    /// untyped default; snapshot).
     pub retention: Retention,
     /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
     /// keys, [`delete_keys`]).
@@ -61,7 +61,6 @@ pub struct CommitBuilder {
     /// The header's blind (spec/crypto.md §7): given when chunks were framed under it, else
     /// drawn at build.
     pub blind: Option<[u8; 16]>,
-    pub origins: Vec<Origin>,
     /// The ephemeral marker (an ephemeral commit, spec/commits.md §2).
     pub ephemeral: Option<crate::header::EphClass>,
     /// The blob bound each delta is checked against: `MAX_BLOB` (tests shrink it).
@@ -85,7 +84,7 @@ fn build_err(e: Error) -> Error {
 
 impl CommitBuilder {
     pub fn new(kind: Kind, ts: Ts, author: Tid, actor: Tid, form: Form) -> CommitBuilder {
-        CommitBuilder { kind, ts, author, actor, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, origins: Vec::new(), ephemeral: None, max_blob: MAX_BLOB }
+        CommitBuilder { kind, ts, author, actor, form, expires: None, aspects: Vec::new(), purge: Vec::new(), undoes: None, frontier: None, blind: None, ephemeral: None, max_blob: MAX_BLOB }
     }
 
     /// Builds the header (lists above `CHUNK_THRESHOLD` go by link through `sink`), signs it,
@@ -113,7 +112,7 @@ impl CommitBuilder {
             let mut hd: Vec<([u8; 32], Vec<u8>)> = a.deltas.into_iter().map(|d| (delta_hash(&dedup, &d), d)).collect();
             hd.sort_by_key(|x| x.0);
             let (lo, hi) = if kind.has_own_writes() { (a.lo, a.hi) } else { (0, 0) };
-            aspect_keys.push(delete_keys(secrets, &a.tid, &a.retention, kind)?);
+            aspect_keys.push(delete_keys(secrets, &a.tid, &a.retention)?);
             entries.push((
                 AspectEntry {
                     tid: a.tid,
@@ -148,8 +147,6 @@ impl CommitBuilder {
         chunks.sort_by_key(|c| c.blob);
         let mut purge = std::mem::take(&mut self.purge);
         purge.sort_by_cached_key(|p| osis_base::encode(&purge_value(p)));
-        let mut origins = std::mem::take(&mut self.origins);
-        origins.sort_by_key(|o| o.commit);
 
         let mut header = Header {
             version: FORMAT_VERSION,
@@ -166,7 +163,6 @@ impl CommitBuilder {
             blind,
             keys,
             frontier: self.frontier,
-            origins,
             links: Links::default(),
             ephemeral: self.ephemeral,
         };

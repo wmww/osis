@@ -1431,36 +1431,28 @@ fn dating_history(seed: u64) {
     }
 }
 
-// spec/commits.md §5 (deaths of carried writes): a commit-form write and an import's write (dot
-// `Commit(origin)`) on a kept register, each carried by a later snapshot, die at their superseder
-// for their own body and the snapshot alike, by joins and in a recompute (was: neither the
-// import's body nor the snapshot got a death, so both were past keep at least).
+// spec/commits.md §5 (deaths of carried writes): a commit-form write on a kept register, carried
+// by a later snapshot, dies at its superseder for its own body and the snapshot alike, by joins
+// and in a recompute (was: neither got a death, so both were past keep at least).
 #[test]
-fn commit_form_and_import_deaths_dated_spec_commits_5() {
+fn commit_form_deaths_dated_spec_commits_5() {
     let mut lp = net(1, 91);
     let t = new_thing(&mut lp, 0);
-    let me = lp.peers[0].engine.tid();
     let k = ak("t:kept.0");
     let mut m = Mutation::new();
     m.commit_form();
     m.set(t, &KEPT, &s("one")).unwrap();
     let w = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(10);
-    let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
-    let imp = *imports.iter().find(|i| lp.peers[0].engine.header(i).is_some_and(|h| h.aspects.iter().any(|a| a.ak == k))).unwrap();
-    lp.advance(10);
+    lp.advance(20);
     let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
-    let s2 = lp.peers[0].engine.snapshot(&copy, &k).unwrap().unwrap();
     lp.advance(10);
     let w2 = set(&mut lp, 0, t, &KEPT, "two");
-    let c2 = set(&mut lp, 0, copy, &KEPT, "two");
     let e = &mut lp.peers[0].engine;
-    let (t2, tc) = (e.header(&w2).unwrap().ts, e.header(&c2).unwrap().ts);
-    let want = [Some((t2, t2)), Some((t2, t2)), Some((tc, tc)), Some((tc, tc))];
-    let got = |e: &mut osis_node::Engine| [e.deaths(&w, &t, &k).unwrap(), e.deaths(&s1, &t, &k).unwrap(), e.deaths(&imp, &copy, &k).unwrap(), e.deaths(&s2, &copy, &k).unwrap()];
+    let t2 = e.header(&w2).unwrap().ts;
+    let want = [Some((t2, t2)), Some((t2, t2))];
+    let got = |e: &mut osis_node::Engine| [e.deaths(&w, &t, &k).unwrap(), e.deaths(&s1, &t, &k).unwrap()];
     assert_eq!(got(e), want);
     e.replay_deaths(&t, &k).unwrap();
-    e.replay_deaths(&copy, &k).unwrap();
     assert_eq!(got(e), want, "recompute");
 }
 
@@ -1538,39 +1530,6 @@ fn snapshot_dated_through_commit_form_superseder_spec_commits_5() {
     e.drop_body(&kk, &t, &k).unwrap();
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((ts1, ts1)), "recompute");
-}
-
-// spec/commits.md §5 (deaths of carried writes): a snapshot S of a moved thing carries an
-// import's write (dot `Commit(origin)`) and lists the import in `Absorbed`; a node holding S but
-// not the import's header still dates S at the write's superseder, by joins and in a recompute
-// (was: the import could not be mapped to its origin, so S got no death).
-#[test]
-fn snapshot_of_unheld_import_dated_spec_commits_5() {
-    let mut lp = net(2, 94);
-    let t = new_thing(&mut lp, 0);
-    let me = lp.peers[0].engine.tid();
-    let k = ak("t:kept.0");
-    let mut m = Mutation::new();
-    m.commit_form();
-    m.set(t, &KEPT, &s("one")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.advance(10);
-    let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
-    let imp = *imports.iter().find(|i| lp.peers[0].engine.header(i).is_some_and(|h| h.aspects.iter().any(|a| a.ak == k))).unwrap();
-    lp.advance(10);
-    let s2 = lp.peers[0].engine.snapshot(&copy, &k).unwrap().unwrap();
-    lp.advance(10);
-    let c2 = set(&mut lp, 0, copy, &KEPT, "two");
-    let all = packages(&mut lp, 0);
-    for p in all.iter().filter(|p| p.id != imp) {
-        let _ = lp.deliver(1, p);
-    }
-    let tc = lp.peers[0].engine.header(&c2).unwrap().ts;
-    let e = &mut lp.peers[1].engine;
-    assert!(e.header(&imp).is_none() && e.body_not_dropped(&s2, &copy, &k));
-    assert_eq!(e.deaths(&s2, &copy, &k).unwrap(), Some((tc, tc)));
-    e.replay_deaths(&copy, &k).unwrap();
-    assert_eq!(e.deaths(&s2, &copy, &k).unwrap(), Some((tc, tc)), "recompute");
 }
 
 // spec/commits.md §5 (deaths of carried writes): a snapshot S whose author applied W while an
@@ -2919,135 +2878,6 @@ fn second_request_keeps_covered_residue_spec_crdt_4_7() {
     }
     assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), fresh.engine.get(&t, &k).unwrap(), "the older write stays superseded");
     assert_eq!(lp.peers[0].engine.state_digest(&t, &k).unwrap(), fresh.engine.state_digest(&t, &k).unwrap());
-}
-
-// spec/commits.md §5 (keep at most: any write of its deltas the state holds by dot), spec/permissions.md
-// §7: an import holds its origin's dots. Under at most 0 one of its writes dying leaves it live:
-// it keeps its grace, and a later device given what this node holds reads the other write.
-#[test]
-fn import_with_a_live_write_keeps_its_grace_spec_commits_5() {
-    use osis_crdt::PathSeg;
-    let mut lp = net(1, 91);
-    let t = new_thing(&mut lp, 0);
-    let k = ak("t:gonemap.0");
-    let mut m = Mutation::new();
-    for key in ["a", "b"] {
-        m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("old")) }).unwrap();
-    }
-    let origin = lp.peers[0].commit(m).unwrap().unwrap();
-    assert!(matches!(lp.peers[0].engine.header(&origin).unwrap().form, osis_commit::Form::Session(_)));
-    let reg = set(&mut lp, 0, t, &GONE, "old");
-    lp.advance(10);
-    let me = lp.peers[0].engine.tid();
-    let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
-    let e = &lp.peers[0].engine;
-    let i = *imports.iter().find(|i| e.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == origin))).unwrap();
-    lp.advance(10);
-    let mut m = Mutation::new();
-    m.op(copy, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("a"))], op: Op::Set(s("new")) }).unwrap();
-    let kill = lp.peers[0].commit(m).unwrap().unwrap();
-    let died = lp.peers[0].engine.header(&kill).unwrap().ts.wall_ms().0;
-    let e = &mut lp.peers[0].engine;
-    assert!(e.body_live(&i, &copy, &k).unwrap(), "key b is the import's write");
-    assert!(e.body_not_dropped(&i, &copy, &k), "not dropped at its first death");
-    assert_eq!(e.body_keep(&i, &copy, &k).unwrap().at_most, Some(died + osis_base::format::AT_MOST_GRACE_MS));
-    let at = |e: &mut osis_node::Engine, key: &str| e.get_at(&copy, &k, &[PathSeg::Key(s(key))]).unwrap();
-    assert_eq!(at(e, "b"), Some(s("old")));
-    let packs = packages(&mut lp, 0);
-    let now = lp.peers[0].engine.now();
-    let mut later = osis_node::local_peer::Peer::new(92, now).unwrap();
-    for p in &packs {
-        later.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
-    }
-    assert_eq!(at(&mut later.engine, "b"), Some(s("old")), "a later device reads it");
-    assert_eq!(at(&mut later.engine, "a"), Some(s("new")));
-    // an import whose one write dies has no live write left: it goes at the kill
-    let g = ak("t:gone.0");
-    let i = *imports.iter().find(|i| lp.peers[0].engine.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == reg))).unwrap();
-    assert!(lp.peers[0].engine.body_live(&i, &copy, &g).unwrap());
-    lp.advance(10);
-    set(&mut lp, 0, copy, &GONE, "new");
-    let e = &mut lp.peers[0].engine;
-    assert!(!e.body_live(&i, &copy, &g).unwrap() && !e.body_not_dropped(&i, &copy, &g));
-}
-
-// spec/commits.md §5, spec/permissions.md §7: an import's liveness and drop match ordinary deltas
-// holding the same writes (a thing never moved, the same random script on both), not through
-// `writes_of`, which `retention::oracle` shares; a later device given what the node holds reads
-// the same.
-#[test]
-fn import_live_as_ordinary_deltas_spec_commits_5() {
-    use osis_crdt::PathSeg;
-    let mut rng = 1u64;
-    let mut next = move |n: u64| {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        (rng >> 33) % n
-    };
-    let (mut seen_live, mut seen_dead) = (0, 0);
-    for seed in 0..5u64 {
-        let mut lp = net(1, 2000 + seed);
-        let t = new_thing(&mut lp, 0);
-        let plain = new_thing(&mut lp, 0);
-        let k = ak("t:gonemap.0");
-        let groups: Vec<Vec<String>> = vec![vec!["a".into(), "b".into()], vec!["c".into()], vec!["d".into(), "e".into(), "f".into()]];
-        let mut origins = Vec::new();
-        let mut ords = Vec::new();
-        for g in &groups {
-            for (x, out) in [(t, &mut origins), (plain, &mut ords)] {
-                let mut m = Mutation::new();
-                for key in g {
-                    m.op(x, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("old")) }).unwrap();
-                }
-                out.push(lp.peers[0].commit(m).unwrap().unwrap());
-            }
-            lp.advance(5);
-        }
-        let me = lp.peers[0].engine.tid();
-        let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
-        let imp: Vec<_> = origins.iter().map(|o| *imports.iter().find(|i| lp.peers[0].engine.header(i).is_some_and(|h| h.origins.iter().any(|x| x.commit == *o))).unwrap()).collect();
-        let mut read: std::collections::BTreeMap<String, Option<String>> = groups.iter().flatten().map(|x| (x.clone(), Some("old".to_string()))).collect();
-        for step in 0..14 {
-            lp.advance(5);
-            let gi = next(3) as usize;
-            let ki = next(groups[gi].len() as u64) as usize;
-            let key = groups[gi][ki].clone();
-            let remove = next(2) == 0 && read[&key].is_some();
-            let v = format!("v{step}");
-            for x in [copy, plain] {
-                let mut m = Mutation::new();
-                if remove {
-                    m.op(x, &GONEMAP, PathOp { path: vec![], op: Op::Remove(s(&key)) }).unwrap();
-                } else {
-                    m.op(x, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(&key))], op: Op::Set(s(&v)) }).unwrap();
-                }
-                lp.peers[0].commit(m).unwrap();
-            }
-            read.insert(key.clone(), (!remove).then(|| v.clone()));
-            for gi in 0..3 {
-                let e = &mut lp.peers[0].engine;
-                let (a, b) = (e.body_live(&imp[gi], &copy, &k).unwrap(), e.body_live(&ords[gi], &plain, &k).unwrap());
-                let (c, d) = (e.body_not_dropped(&imp[gi], &copy, &k), e.body_not_dropped(&ords[gi], &plain, &k));
-                assert_eq!((a, c), (b, d), "seed {seed} step {step} group {gi}: (live, held) import vs ordinary");
-                if a {
-                    seen_live += 1;
-                } else {
-                    seen_dead += 1;
-                }
-            }
-            let packs = packages(&mut lp, 0);
-            let now = lp.peers[0].engine.now();
-            let mut later = osis_node::local_peer::Peer::new(5000 + seed * 100 + step, now).unwrap();
-            for p in &packs {
-                later.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
-            }
-            for (key, v) in &read {
-                let want = v.as_ref().map(|v| s(v));
-                assert_eq!(later.engine.get_at(&copy, &k, &[PathSeg::Key(s(key))]).unwrap(), want, "seed {seed} step {step} later reads {key} on the copy");
-                assert_eq!(later.engine.get_at(&plain, &k, &[PathSeg::Key(s(key))]).unwrap(), want, "seed {seed} step {step} later reads {key} on the plain thing");
-            }
-        }
-    }
-    assert!(seen_dead > 10 && seen_live > 10, "live {seen_live}, dead {seen_dead}");
 }
 
 // spec/commits.md §5 (nobody shares a commit only with nobody), §6 (one expiry per commit; the

@@ -41,8 +41,6 @@ pub enum CommitKind {
     Role,
     /// A compaction or roster snapshot.
     Snapshot,
-    /// An import after a move.
-    Import,
     /// An own ephemeral-only batch of this session: a change, or a revert (`reverts`).
     Ephemeral,
 }
@@ -176,7 +174,6 @@ pub(crate) fn kind_of_commit(k: Kind) -> CommitKind {
         Kind::Content => CommitKind::Change,
         Kind::Role => CommitKind::Role,
         Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot => CommitKind::Snapshot,
-        Kind::Import => CommitKind::Import,
     }
 }
 
@@ -210,16 +207,10 @@ impl Osis {
             .map_err(Error::from)
         };
         Ok(match s {
-            Scope::Aspects(v) => {
-                let v: Vec<(Tid, Ak)> = v.iter().map(|(t, a)| (self.read_local(|r| r.resolve(*t)), a.clone())).collect();
-                self.engine(|e| v.into_iter().filter(|(t, _)| shown(e, t)).collect())
-            }
-            Scope::Thing(t) => {
-                let t = self.read_local(|r| r.resolve(*t));
-                things(&|_, x| *x == t)?
-            }
+            Scope::Aspects(v) => self.engine(|e| v.iter().filter(|(t, _)| shown(e, t)).cloned().collect()),
+            Scope::Thing(t) => things(&|_, x| x == t)?,
             Scope::Group(g) => {
-                let g = self.read_local(|r| r.resolve(*g));
+                let g = *g;
                 // acting as an actor: a group it may not read names nothing, not even an item it
                 // reads (that would tell the group from an unknown tid)
                 if self.read_local(|r| r.hidden(g)) {

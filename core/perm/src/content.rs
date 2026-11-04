@@ -28,7 +28,7 @@ pub enum Validity {
 impl Timeline {
     /// §5.2: is a delta on `thing` of the commit at `at` (its author node, `ts` and commit ID)
     /// valid? `required` is the role its aspect needs: write for content, the aspect's role for
-    /// `secrets.0`, `keys.0`, `label.0`, `moved.0`, `was.0`. A re-grant (the author holds
+    /// `secrets.0`, `keys.0`, `label.0`. A re-grant (the author holds
     /// `required` at the end of the timeline) validates every write; otherwise a write made
     /// while holding the role stands unless a valid explicit demotion below it (a ledger tenure
     /// with a frontier included) follows, and else only if the newest such demotion's frontier

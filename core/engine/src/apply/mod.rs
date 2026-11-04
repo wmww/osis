@@ -407,18 +407,6 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if let Some(r) = hold.clone().filter(|_| opening.is_empty()) {
         return Ok(Exam::Pending(r, Vec::new()));
     }
-    // an import applies only to a copy its author created (spec/permissions.md §7; tests let a
-    // local writer break this, to test receivers); it waits for the copy's record even where it
-    // holds no part of it, since its header alone names the claim for carried writes
-    if h.kind == osis_commit::Kind::Import && !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
-        for a in &h.aspects {
-            match record(&a.tid) {
-                None => return Ok(Exam::Pending(Reason::UnknownCreated(a.tid), Vec::new())),
-                Some(CreationRecord::Thing { creator: Some(c), .. }) if c == h.author => {}
-                Some(_) => return Err(Error::BadInput("an import into a thing its author did not create")),
-            }
-        }
-    }
     for (t, rec) in &carried {
         if let Some(held) = tx.core.created(t)
             && held != rec
@@ -564,20 +552,10 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     // a memory commit's parts hold everything inline (spec/crdt.md §8)
     let mut unpaged = osis_crdt::Unpaged;
     let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
-    // a snapshot's or an import's carried writes stamped after the commit (spec/crdt.md §8, §7: a
-    // node's next stamp exceeds every stamp it holds, §2.2)
-    let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot || h.kind == Kind::Import;
-    // an import's stamps all lie under its origins' sources, anchors' creations and sibling keys
-    // aside (spec/permissions.md §7), as a writer's are its own (spec/crdt.md §3.3 rule 7).
-    // Invariant (security, spec/requirements.md Purge): every value it holds is the payload of
-    // such a stamp, so `retention::writes_of`, its origins' dots, covers them and going value-less
-    // takes them all (map keys aside, issues/purge-keeps-repeated-key.md); judged from the part
-    // and header alone, in every order.
-    let origins: Vec<osis_crdt::Source> = h.origins.iter().filter(|_| h.kind == Kind::Import).map(|o| osis_crdt::Source::commit(o.commit)).collect();
-    // (tests let a local writer break it, `rules`, to test receivers)
-    let outside = |f: &osis_crdt::Fragment| rules && h.kind == Kind::Import && f.stamps_outside(&|s| origins.contains(s));
+    // a snapshot's carried writes stamped after the commit (spec/crdt.md §8: a node's next stamp
+    // exceeds every stamp it holds, §2.2)
+    let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot;
     let mut late = false;
-    let mut foreign = false;
     #[cfg(test)]
     let whole = whole_part(a.ak.as_str()) || tx.core.whole_apply;
     #[cfg(not(test))]
@@ -585,14 +563,12 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     let r = if whole {
         verify_part(h, id, p, dedup, interner, Some(reader)).map(|d| {
             late = carries && d.fragment().max_ts().is_some_and(|t| t > h.ts);
-            foreign = outside(d.fragment());
             Some(d)
         })
     } else {
         // the full check, keeping nothing: apply streams it again
         let mut each = |f: osis_crdt::Fragment| {
             late |= carries && f.max_ts().is_some_and(|t| t > h.ts);
-            foreign |= outside(&f);
             Ok(())
         };
         osis_commit::stream_part(h, id, p, dedup, interner, Some(reader), &mut each).map(|gives| {
@@ -610,10 +586,6 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     if late {
         out.streamed.retain(|s| (s.ai, s.di) != (p.ai, p.di));
         return Err(Error::BadInput("carried write stamped after its commit"));
-    }
-    if foreign {
-        out.streamed.retain(|s| (s.ai, s.di) != (p.ai, p.di));
-        return Err(Error::BadInput("an import write outside its origins"));
     }
     let Some(d) = decoded else { return Ok(Judged::Good) };
     let part = (p.ai, p.di, d);
@@ -1451,8 +1423,7 @@ impl Engine {
         })
     }
 
-    /// The thing's last content change: of the held content commits (changes, reverts,
-    /// imports) validly writing one of its aspects other than `created.0`, `group.0` and the
+    /// The thing's last content change: of the held content commits (changes, reverts) validly writing one of its aspects other than `created.0`, `group.0` and the
     /// role-class ones, the one shown latest by `min(ts, received)` (an author's clock may
     /// run ahead; `received` is this node's), else its creation. Snapshots are no change, and
     /// ephemeral writes do not count (an ephemeral thing reports its creation).
@@ -1472,7 +1443,7 @@ impl Engine {
                 }
                 let Some(m) = self.core.ix.commits.get(id) else { continue };
                 let valid = m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai));
-                if !matches!(m.header.kind, Kind::Content | Kind::Import) || !valid {
+                if m.header.kind != Kind::Content || !valid {
                     continue;
                 }
                 let c = Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received };
@@ -1634,7 +1605,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
             atomic::index_commit(tx.core, &id, &m.view);
-            copies::note_imports(tx.core, &id, &h);
             tx.core.put_meta(id, m);
             atomic::note_stands_in(tx.core, &id);
             if blob.header.kind.is_compaction() {

@@ -8,7 +8,6 @@
 
 use crate::common;
 use common::*;
-use osis_base::Classified;
 use osis_base::{Clock, ManualClock, Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
@@ -359,9 +358,9 @@ fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_base::CommitId
 
 // spec/requirements.md, Decentralization (a node's judgment of every write is a function of the
 // data it holds); spec/permissions.md §5.2: after a validity flip (a revoke its writer missed), an
-// un-merge (an invalid write arriving), an import (a moved thing), a forget (lost access) and a
-// crash at every write of a transaction, an open from the persisted index computes what a
-// rebuild from the commit records computes
+// un-merge (an invalid write arriving), a forget (lost access) and a crash at every write of a
+// transaction, an open from the persisted index computes what a rebuild from the commit records
+// computes
 #[test]
 fn open_equals_rebuild_after_each_kind_of_change() {
     let mut lp = LocalPeer::new(3, 0x0be2, T0).unwrap();
@@ -399,13 +398,6 @@ fn open_equals_rebuild_after_each_kind_of_change() {
     lp.deliver(0, pk1.iter().find(|p| p.id == late).unwrap()).unwrap();
     assert_eq!(tags(&mut lp), 5, "B's late add arrives invalid");
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "un-merge");
-    // A moves the thing: a copy written as imports, which C receives
-    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    assert!(!imports.is_empty());
-    open_equals_rebuild(&mut lp.peers[0].engine, &[t, copy], "import (writer)");
-    sync(&mut lp, 0, 2);
-    assert!(lp.peers[2].engine.header(&imports[0]).is_some(), "C holds the import");
-    open_equals_rebuild(&mut lp.peers[2].engine, &[t, copy], "import (receiver)");
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §3 (drop lost secrets): after a
@@ -763,7 +755,7 @@ fn reached(e: &Engine) -> [usize; 4] {
 // spec/requirements.md, Decentralization; spec/permissions.md §5.2; spec/commits.md §5: random
 // three-node histories of large values, tags, keep-at-most-0 aspects (drops, large ones with
 // their chunks), compaction snapshots, revokes that flip validity and un-merge late writes,
-// roster snapshots, a move (imports) and late, out-of-order deliveries: at random points a node
+// roster snapshots and late, out-of-order deliveries: at random points a node
 // opened from its persisted index, and then rebuilt from its commit records, equals the running
 // node (views, `by_thing`, `by_chunk`, validity, perm, states). Seeds 0..4, which reach drops,
 // invalid parts, roster snapshots and chunks; more in `_large`.
@@ -771,7 +763,7 @@ fn reached(e: &Engine) -> [usize; 4] {
 fn open_equals_rebuild_random_histories() {
     let seeds: Vec<u64> = (0..4).collect();
     let mut most = [0usize; 4];
-    for (r, _) in osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories", &seeds, false, walks_replay, |seed| random_history(seed, 1, false, false)) {
+    for r in osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories", &seeds, false, walks_replay, |seed| random_history(seed, false)) {
         for k in 0..4 {
             most[k] = most[k].max(r[k]);
         }
@@ -783,20 +775,11 @@ fn open_equals_rebuild_random_histories() {
 #[test]
 #[ignore = "tier 2"]
 fn open_equals_rebuild_random_histories_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_WALKS_START", "OSIS_WALKS_SEEDS", osis_base::testenv::large(0..200)).run("walks::open_equals_rebuild_random_histories_large", walks_replay, |seed| random_history(seed, 1, false, false));
+    osis_base::testenv::Seeds::from_env("OSIS_WALKS_START", "OSIS_WALKS_SEEDS", osis_base::testenv::large(0..200)).run("walks::open_equals_rebuild_random_histories_large", walks_replay, |seed| random_history(seed, false));
 }
 
 fn walks_replay(s: u64) -> String {
     format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test --workspace --test it walks::open_equals_rebuild_random_histories_large -- --ignored --exact")
-}
-
-// as above: seeds where a snapshot of the moved thing carried imported writes whose origin
-// commit arrived after it (the carried index depended on that order)
-#[test]
-fn open_equals_rebuild_random_histories_carried_imports() {
-    for seed in [261, 377] {
-        let _ = random_history(seed, 1, false, false);
-    }
 }
 
 // as above, spec/crdt.md §4.8: seeds where a keep-at-most-0 body died and dropped, its killer
@@ -805,7 +788,7 @@ fn open_equals_rebuild_random_histories_carried_imports() {
 #[test]
 fn open_equals_rebuild_random_histories_unkilled_residue() {
     for seed in [40558, 40797] {
-        let _ = random_history(seed, 1, false, false);
+        let _ = random_history(seed, false);
     }
 }
 
@@ -815,7 +798,7 @@ fn open_equals_rebuild_random_histories_unkilled_residue() {
 #[test]
 fn open_equals_rebuild_random_histories_unheld_part_dies() {
     for seed in [737046, 737257] {
-        let _ = random_history(seed, 1, false, false);
+        let _ = random_history(seed, false);
     }
 }
 
@@ -828,75 +811,35 @@ fn open_equals_rebuild_random_histories_unheld_part_dies() {
 #[test]
 fn open_equals_rebuild_random_histories_forged() {
     let seeds: Vec<u64> = (0..4).collect();
-    osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories_forged", &seeds, false, forged_replay, |seed| random_history(seed, 1, false, true));
+    osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories_forged", &seeds, false, forged_replay, |seed| random_history(seed, true));
 }
 
 /// Seeds: OSIS_WALKS_FORGED_START, OSIS_WALKS_FORGED_SEEDS (default 0..200).
 #[test]
 #[ignore = "tier 2"]
 fn open_equals_rebuild_random_histories_forged_large() {
-    osis_base::testenv::Seeds::from_env("OSIS_WALKS_FORGED_START", "OSIS_WALKS_FORGED_SEEDS", osis_base::testenv::large(0..200)).run("walks::open_equals_rebuild_random_histories_forged_large", forged_replay, |seed| random_history(seed, 1, false, true));
+    osis_base::testenv::Seeds::from_env("OSIS_WALKS_FORGED_START", "OSIS_WALKS_FORGED_SEEDS", osis_base::testenv::large(0..200)).run("walks::open_equals_rebuild_random_histories_forged_large", forged_replay, |seed| random_history(seed, true));
 }
 
 fn forged_replay(s: u64) -> String {
     format!("OSIS_WALKS_FORGED_START={s} OSIS_WALKS_FORGED_SEEDS=1 cargo test --workspace --test it walks::open_equals_rebuild_random_histories_forged_large -- --ignored --exact")
 }
 
-// as above with moves weighted up (copies of copies, their aspects snapshotted); seeds 6013,
-// 6106 and 6305 failed on issues/carried-import-order.md (about one seed in ten did; one in 200
-// without the weighting). With hostile second imports into a copy (spec/permissions.md §7):
-// seeds DOUBLES (6012 and 6036 failed while the last import to arrive named the author; 51999
-// while an invalid snapshot still counted as a carrier of deaths); more in `_large`.
-#[test]
-fn open_equals_rebuild_random_histories_moves() {
-    const PLAIN: [u64; 3] = [6013, 6106, 6305];
-    const DOUBLES: [u64; 3] = [6012, 6036, 51999];
-    let seeds: Vec<u64> = PLAIN.into_iter().chain(DOUBLES).collect();
-    let doubles = |seed: u64| DOUBLES.contains(&seed);
-    let replay = |s: u64| moves_replay(s, doubles(s));
-    let mut doubled = 0;
-    for (seed, (_, n)) in seeds.iter().zip(osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories_moves", &seeds, false, replay, |seed| random_history(seed, 3, doubles(seed), false))) {
-        if n > 0 {
-            eprintln!("seed {seed}: {n} double imports");
-        }
-        doubled += n;
-    }
-    assert!(doubled > 0, "no double import");
-}
-
-/// Seeds: OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS (default 0..100), with hostile second
-/// imports unless OSIS_WALKS_MOVES_DOUBLES=0.
-#[test]
-#[ignore = "tier 2"]
-fn open_equals_rebuild_random_histories_moves_large() {
-    let doubles = osis_base::testenv::u64_var("OSIS_WALKS_MOVES_DOUBLES") != Some(0);
-    let s = osis_base::testenv::Seeds::from_env("OSIS_WALKS_MOVES_START", "OSIS_WALKS_MOVES_SEEDS", osis_base::testenv::large(0..100));
-    s.run("walks::open_equals_rebuild_random_histories_moves_large", |seed| moves_replay(seed, doubles), |seed| random_history(seed, 3, doubles, false));
-}
-
-fn moves_replay(s: u64, doubles: bool) -> String {
-    format!("OSIS_WALKS_MOVES_START={s} OSIS_WALKS_MOVES_SEEDS=1 OSIS_WALKS_MOVES_DOUBLES={} cargo test --workspace --test it walks::open_equals_rebuild_random_histories_moves_large -- --ignored --exact", u8::from(doubles))
-}
-
-/// One random history of `open_equals_rebuild_random_histories` with up to `max_moves` moves (more
-/// than one: moves from step 10, moved things snapshotted more), and with `doubles` sometimes a
-/// second import of a moved thing into its copy; returns what it reached on any node (most of
-/// each `reached` count) and how many double imports it made.
-fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([usize; 4], usize) {
+/// One random history of `open_equals_rebuild_random_histories`; returns what it reached on any
+/// node (most of each `reached` count).
+fn random_history(seed: u64, forge: bool) -> [usize; 4] {
     let mut most = [0usize; 4];
     let mut forged = 0usize;
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
-    let mut things: Vec<Tid> = (0..2).map(|_| new_thing(&mut lp, 0)).collect();
+    let things: Vec<Tid> = (0..2).map(|_| new_thing(&mut lp, 0)).collect();
     for t in things.clone() {
         set_edge(&mut lp.peers[0].engine, t, ids[1], Some(edge(Role::Write)), None);
         set_edge(&mut lp.peers[0].engine, t, ids[2], Some(edge(Role::Admin)), None);
     }
     lp.sync_all().unwrap();
-    let mut moves = 0;
-    let (mut moved, mut double_imports) = (Vec::new(), 0);
     for step in 0..60 {
         let i = rng.below(3) as usize;
         let t = things[rng.below(things.len() as u64) as usize];
@@ -961,25 +904,6 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
             8 => {
                 let _ = lp.peers[i].engine.roster_snapshot(&t, None);
             }
-            x @ (9 | 14) if moves < max_moves && if max_moves > 1 { step > 10 } else { x == 9 && step > 20 } => {
-                if let Ok((copy, _)) = lp.peers[0].engine.move_thing(&t, ids[0]) {
-                    things.push(copy);
-                    moved.push((t, copy));
-                    moves += 1;
-                }
-            }
-            15 if max_moves > 1 && moves > 0 => {
-                let c = *things.last().unwrap();
-                if doubles && rng.below(3) == 0 {
-                    // the creator's hostile second import: each origin listed twice on a copy
-                    let (o, c) = moved[rng.below(moved.len() as u64) as usize];
-                    if lp.peers[0].engine.reimport(&o, &c).is_ok_and(|v| !v.is_empty()) {
-                        double_imports += 1;
-                    }
-                }
-                let a = ["t:keptset.0", "t:gonemap.0", "t:tags.0"][rng.below(3) as usize];
-                let _ = lp.peers[i].engine.snapshot(&c, &ak(a));
-            }
             10 => lp.advance(1 + rng.below(1_200_000)),
             11..=13 => {
                 // some of i's commits, shuffled, to another node
@@ -1025,7 +949,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
             assert_eq!(tagged(&mut lp, i), first, "seed {seed}: peer {i} differs ({forged} forged)");
         }
     }
-    (most, double_imports)
+    most
 }
 
 /// Peer `i` forges a snapshot of `t`'s `t:tags.0`: its state with the value of a held tag (a
@@ -1057,380 +981,4 @@ fn forge_tag(lp: &mut LocalPeer, i: usize, t: Tid, step: usize, rng: &mut Rng) -
     let now = osis_base::Ts::make(lp.peers[i].engine.now(), 0).unwrap();
     let bytes = forge_snapshot(lp, i, t, &tags, now, f);
     lp.peers[i].engine.ingest(&bytes, Vec::new()).is_ok()
-}
-
-// spec/requirements.md, Decentralization; spec/permissions.md §5.2, §7: a snapshot of a moved
-// thing carries imported writes (source `Commit(o)`, o the origin on the old thing); they are
-// the held import's, not carried, whether o arrives before or after the snapshot
-#[test]
-fn carried_imports_alike_in_both_orders() {
-    let mut lp = LocalPeer::new(4, 0xca22, T0).unwrap();
-    lp.sync_all().unwrap();
-    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let t = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    let o = add_tag(&mut lp, 1, t, "a");
-    let pk = lp.packages(1).unwrap();
-    lp.deliver(0, pk.iter().find(|p| p.id == o).unwrap()).unwrap();
-    let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap();
-    let pk = lp.packages(0).unwrap();
-    let (late, rest): (Vec<_>, Vec<_>) = pk.iter().partition(|p| p.id == o);
-    // peer 2: o last; peer 3: o first
-    for p in rest.iter().chain(&late) {
-        lp.deliver(2, p).unwrap();
-    }
-    for p in late.iter().chain(&rest) {
-        lp.deliver(3, p).unwrap();
-    }
-    for i in [2, 3] {
-        assert!(lp.peers[i].engine.index_digest().carried.is_empty(), "peer {i}: the import's writes are not carried");
-        open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy], &format!("peer {i}"));
-    }
-}
-
-// spec/permissions.md §5.2, §7: a snapshot of a moved thing carries an import's writes (source
-// `Commit(o)`); its author, revoked on the copy's owner before the move, could write neither:
-// a node holding o (on the old thing) but not the import shows them nowhere (o owns nothing on
-// the copy, and the invalid snapshot gives nothing).
-#[test]
-fn carried_imports_without_the_import_spec_perm_5_2() {
-    let mut lp = LocalPeer::new(4, 0xca23, T0).unwrap();
-    lp.sync_all().unwrap();
-    let a = lp.peers[0].engine.tid();
-    // P owned by peer 2, peer 0 admin on it; t is peer 0's with one tag (o)
-    let p = new_thing(&mut lp, 2);
-    set_edge(&mut lp.peers[2].engine, p, a, Some(edge(Role::Admin)), None);
-    let t = new_thing(&mut lp, 0);
-    lp.sync_all().unwrap();
-    let o = add_tag(&mut lp, 0, t, "a");
-    lp.sync_all().unwrap();
-    // peer 2 revokes peer 0 on P; peer 0, unaware, moves t into P after it
-    set_edge(&mut lp.peers[2].engine, p, a, None, None);
-    lp.peers[0].clock.advance(1_000);
-    let (copy, imports) = lp.peers[0].engine.move_thing(&t, p).unwrap();
-    assert!(!imports.is_empty());
-    // peer 0 snapshots the copy's tags: the snapshot carries the import's writes
-    assert!(lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap().is_some());
-    let shown = lp.peers[0].engine.get(&copy, &ak("t:tags.0")).unwrap();
-    assert!(format!("{shown:?}").contains("\"a\""), "peer 0 shows its import: {shown:?}");
-    sync(&mut lp, 0, 2);
-    // peer 2, holding everything: the import is invalid, so nothing
-    let tags = ak("t:tags.0");
-    let none = lp.peers[2].engine.get(&copy, &tags).unwrap();
-    assert!(!format!("{none:?}").contains("\"a\""), "the invalid import's writes are not shown: {none:?}");
-    let full = states(&mut lp.peers[2].engine, &[t, copy, p]);
-    // peer 3 gets everything but the imports (it holds o)
-    let pk = lp.packages(2).unwrap();
-    for x in pk.iter().filter(|x| !imports.contains(&x.id)) {
-        lp.deliver(3, x).unwrap();
-    }
-    assert!(lp.peers[3].engine.header(&o).is_some() && imports.iter().all(|i| lp.peers[3].engine.header(i).is_none()));
-    assert_eq!(lp.peers[3].engine.get(&copy, &tags).unwrap(), none, "an invalid snapshot gives nothing");
-    open_equals_rebuild_any(&mut lp.peers[3].engine, &[t, copy, p], "without the imports");
-    for x in pk.iter().filter(|x| imports.contains(&x.id)) {
-        lp.deliver(3, x).unwrap();
-    }
-    assert_eq!(states(&mut lp.peers[3].engine, &[t, copy, p]), full, "then alike with them");
-}
-
-// spec/requirements.md, Decentralization; spec/permissions.md §7: the copy's hostile creator
-// imports t into it a second time, so two held imports list each origin; each owns the origin's
-// writes on its aspects. Two nodes taking the imports in either order, and a snapshot of the
-// copy, agree (imports, carried writes, states) and equal their rebuilds, also where the
-// snapshot comes before either import.
-#[test]
-fn double_import_alike_in_both_orders_spec_perm_7() {
-    let mut lp = LocalPeer::new(6, 0xd0b1, T0).unwrap();
-    lp.sync_all().unwrap();
-    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let t = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    add_tag(&mut lp, 1, t, "a");
-    add_tag(&mut lp, 0, t, "b");
-    lp.sync_all().unwrap();
-    let (copy, first) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    lp.peers[0].clock.advance(1_000);
-    // peer 0 imports t again: each origin listed twice on the copy
-    let second = lp.peers[0].engine.reimport(&t, &copy).unwrap();
-    assert!(!first.is_empty() && !second.is_empty());
-    let pk0 = lp.packages(0).unwrap();
-    let dup = pk0.iter().filter(|p| second.contains(&p.id)).cloned().collect::<Vec<_>>();
-    let (imp, rest): (Vec<_>, Vec<_>) = pk0.iter().filter(|&p| !second.contains(&p.id)).cloned().partition(|p| first.contains(&p.id));
-    for p in &rest {
-        for i in 2..6 {
-            lp.deliver(i, p).unwrap();
-        }
-    }
-    // peer 2: the first move, then the second; peer 3 the other way round
-    for (i, ps) in [(2, [&imp, &dup]), (3, [&dup, &imp])] {
-        for p in ps.into_iter().flatten() {
-            assert!(matches!(lp.deliver(i, p).unwrap(), osis_node::Ingested::Applied(_)), "peer {i} applies each import");
-        }
-    }
-    // peer 0 holds both and snapshots the copy's tags
-    let snap = lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap().unwrap();
-    let pk0 = lp.packages(0).unwrap();
-    let sp: Vec<_> = pk0.iter().filter(|p| p.id == snap).cloned().collect();
-    // peer 4: the second move, the snapshot, the first; peer 5: the snapshot, then both
-    for (i, ps) in [(2, vec![&sp]), (3, vec![&sp]), (4, vec![&dup, &sp, &imp]), (5, vec![&sp, &dup, &imp])] {
-        for p in ps.into_iter().flatten() {
-            assert!(matches!(lp.deliver(i, p).unwrap(), osis_node::Ingested::Applied(_)), "peer {i} applies {:?}", p.id);
-        }
-    }
-    let moved = |e: &Engine| {
-        let d = e.index_digest();
-        (d.tables["imports"].clone(), d.carried)
-    };
-    for i in 3..6 {
-        assert_eq!(moved(&lp.peers[2].engine), moved(&lp.peers[i].engine), "peer {i}: imports, carried");
-        assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), states(&mut lp.peers[i].engine, &[t, copy]), "peer {i}");
-    }
-    for i in 2..6 {
-        open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy], &format!("peer {i}"));
-    }
-}
-
-// spec/requirements.md, Threat model ("malicious readers can only waste storage");
-// spec/permissions.md §7: an import into a copy by a node other than its creator (here a writer
-// demoted to reader, unaware) is bad input and changes nothing, whatever origins it lists. It
-// stripped the copy's imported writes (issues/invalid-import-strips-origin.md).
-#[test]
-fn invalid_reimport_changes_nothing_spec_perm_7() {
-    let mut lp = LocalPeer::new(3, 0xd0b2, T0).unwrap();
-    lp.sync_all().unwrap();
-    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let t = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    add_tag(&mut lp, 1, t, "a");
-    add_tag(&mut lp, 0, t, "b");
-    lp.sync_all().unwrap();
-    let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    // peer 1 is demoted to reader before it imports t into the copy again, unaware
-    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Read)), None);
-    lp.sync(0, 2).unwrap();
-    let before = states(&mut lp.peers[2].engine, &[t, copy]);
-    let second = lp.peers[1].engine.reimport(&t, &copy).unwrap();
-    assert!(!second.is_empty());
-    let pk = lp.packages(1).unwrap();
-    for p in pk.iter().filter(|p| second.contains(&p.id)) {
-        assert_eq!(lp.deliver(2, p).unwrap_err().class(), osis_base::ErrorClass::BadInput, "not the copy's creator");
-    }
-    assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before, "an invalid import changes nothing");
-}
-
-// spec/permissions.md §7, §5.2: an import naming as origin a commit on its own thing (here a
-// commit-form write by the copy's owner) is void wherever both are held, in either order: it
-// joins nothing and its invalidity never un-merges that commit's own writes
-// (issues/import-origin-same-thing.md).
-#[test]
-fn import_of_own_thing_commit_void_spec_perm_7() {
-    let mut lp = LocalPeer::new(3, 0xd0b4, T0).unwrap();
-    lp.sync_all().unwrap();
-    let x = lp.peers[1].engine.tid();
-    let t = new_thing(&mut lp, 0);
-    let o = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, o, x, Some(edge(Role::Admin)), None);
-    lp.sync_all().unwrap();
-    // peer 1, an admin of `o`, creates the copy under it, then is removed
-    let (copy, _) = lp.peers[1].engine.move_thing(&t, o).unwrap();
-    lp.sync(1, 0).unwrap();
-    set_edge(&mut lp.peers[0].engine, o, x, None, None);
-    let body = ak("t:body.0");
-    let mut m = Mutation::new();
-    m.commit_form();
-    m.set(copy, &body, &s("by owner")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    lp.sync(0, 1).unwrap();
-    let imports = lp.peers[1].engine.reimport(&copy, &copy).unwrap();
-    assert!(!imports.is_empty());
-    let pk1: Vec<_> = lp.packages(1).unwrap().into_iter().filter(|p| imports.contains(&p.id)).collect();
-    // peer 0: the commit first; peer 2: the imports first
-    for p in &pk1 {
-        lp.deliver(0, p).unwrap();
-    }
-    for p in lp.packages(0).unwrap().iter().filter(|p| p.id != c && !imports.contains(&p.id)) {
-        lp.deliver(2, p).unwrap();
-    }
-    for p in &pk1 {
-        let r = lp.deliver(2, p).unwrap();
-        assert!(matches!(r, osis_node::Ingested::Applied(_)), "{r:?}");
-    }
-    let pc = lp.peers[0].engine.package(&c).unwrap().unwrap();
-    lp.deliver(2, &pc).unwrap();
-    let of_c = *imports.iter().find(|i| lp.peers[1].engine.header(i).unwrap().origins.iter().any(|o| o.commit == c)).unwrap();
-    for i in 0..3 {
-        assert_eq!(lp.peers[i].engine.get(&copy, &body).unwrap(), Some(s("by owner")), "peer {i}");
-        assert!(lp.peers[i].engine.core.ix.void.contains(&of_c), "peer {i}");
-    }
-    let s0 = states(&mut lp.peers[0].engine, &[copy]);
-    assert_eq!(states(&mut lp.peers[2].engine, &[copy]), s0);
-    assert_eq!(states(&mut lp.peers[1].engine, &[copy]), s0);
-}
-
-// spec/permissions.md §7, §5.2: a node holding a snapshot of a copy but not the move's imports
-// shows the imported writes it carries (the snapshot vouches for them). An import by another
-// node (a reader of the copy) is refused and changes nothing (it once re-attributed those writes
-// to itself, judged invalid there, and they vanished).
-#[test]
-fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
-    let mut lp = LocalPeer::new(3, 0xd0b3, T0).unwrap();
-    lp.sync_all().unwrap();
-    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let t = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    add_tag(&mut lp, 0, t, "a");
-    lp.sync_all().unwrap();
-    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Read)), None);
-    lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap().unwrap();
-    // peer 2: everything but the imports; peer 1 (a reader of the copy): everything
-    let pk0 = lp.packages(0).unwrap();
-    for p in &pk0 {
-        lp.deliver(1, p).unwrap();
-        if !imports.contains(&p.id) {
-            lp.deliver(2, p).unwrap();
-        }
-    }
-    let tags = ak("t:tags.0");
-    let shown = lp.peers[2].engine.get(&copy, &tags).unwrap();
-    assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes: {shown:?}");
-    let moved = |e: &Engine| {
-        let d = e.index_digest();
-        (d.tables["imports"].clone(), d.carried)
-    };
-    let carried = moved(&lp.peers[2].engine).1;
-    let before = states(&mut lp.peers[2].engine, &[t, copy]);
-    let foreign = lp.peers[1].engine.reimport(&t, &copy).unwrap();
-    assert!(!foreign.is_empty());
-    let pk1 = lp.packages(1).unwrap();
-    for p in pk1.iter().filter(|p| foreign.contains(&p.id)) {
-        assert_eq!(lp.deliver(2, p).unwrap_err().class(), osis_base::ErrorClass::BadInput, "not the copy's creator");
-    }
-    assert_eq!(moved(&lp.peers[2].engine).1, carried);
-    assert_eq!(states(&mut lp.peers[2].engine, &[t, copy]), before);
-    open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
-}
-
-// spec/requirements.md, Decentralization; spec/permissions.md §7, spec/commits.md §4: a foreign
-// import whose parts a node does not hold (the copy not synced) waits for the copy's creation
-// record like one with parts and is then refused, as one with parts is.
-#[test]
-fn foreign_import_without_parts_waits_for_the_record_spec_perm_7() {
-    let mut lp = LocalPeer::new(3, 0xd0b5, T0).unwrap();
-    lp.sync_all().unwrap();
-    let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let t = new_thing(&mut lp, 0);
-    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
-    lp.sync_all().unwrap();
-    add_tag(&mut lp, 0, t, "a");
-    lp.sync_all().unwrap();
-    let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Read)), None);
-    lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap().unwrap();
-    let pk0 = lp.packages(0).unwrap();
-    for p in &pk0 {
-        lp.deliver(1, p).unwrap();
-    }
-    // the reader imports t into the copy, so as to be the least import
-    let foreign = lp.peers[1].engine.reimport(&t, &copy).unwrap();
-    assert!(!foreign.is_empty());
-    // peer 2: the foreign imports without parts first, then everything but the move's imports
-    let pk1 = lp.packages(1).unwrap();
-    for p in pk1.iter().filter(|p| foreign.contains(&p.id)) {
-        let mut b = osis_commit::CommitBlob::decode(&p.bytes).unwrap();
-        b.parts.clear();
-        let r = lp.peers[2].engine.ingest(&b.encode(), Vec::new()).unwrap();
-        assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::UnknownCreated(c)) if c == copy), "waits for the copy's record: {r:?}");
-    }
-    for p in pk0.iter().filter(|p| !imports.contains(&p.id)) {
-        lp.deliver(2, p).unwrap();
-    }
-    assert!(lp.peers[2].engine.pending().is_empty(), "refused once the record is held");
-    let shown = lp.peers[2].engine.get(&copy, &ak("t:tags.0")).unwrap();
-    assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes: {shown:?}");
-    open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
-}
-
-// spec/permissions.md §5.2, §7: an origin's writes a valid snapshot of a copy carries count
-// whatever the imports held: the snapshot vouches for them. The copy's creator moved t (`x` on
-// the list, `r` on the register), snapshotted the list, saw `x` deleted on t, then re-imported
-// twice (the list no longer shown: those imports lack it), the second time after its admin edge
-// on the copy's owner was removed. Nodes taking the re-imports in either order show `x` and
-// agree with each other and with their rebuilds.
-#[test]
-fn invalid_import_after_snapshot_alike_spec_perm_7() {
-    let mut lp = LocalPeer::new(5, 0xd0b4, T0).unwrap();
-    lp.sync_all().unwrap();
-    let a = lp.peers[0].engine.tid();
-    // P owned by peer 2, peer 0 admin on it; t is peer 0's
-    let p = new_thing(&mut lp, 2);
-    set_edge(&mut lp.peers[2].engine, p, a, Some(edge(Role::Admin)), None);
-    let t = new_thing(&mut lp, 0);
-    lp.sync_all().unwrap();
-    let mut m = Mutation::new();
-    m.set(t, &LIST, &Value::List(vec![s("x")])).unwrap();
-    m.set(t, &REG, &s("r")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let (copy, _) = lp.peers[0].engine.move_thing(&t, p).unwrap();
-    let list = ak("t:list.0");
-    lp.peers[0].engine.snapshot(&copy, &list).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.op(t, &LIST, PathOp { path: Vec::new(), op: Op::Delete { at: 0, len: 1 } }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].clock.advance(1_000);
-    let lesser = lp.peers[0].engine.reimport(&t, &copy).unwrap();
-    // peer 2 removes peer 0 from P with what it received; peer 0, unaware, imports once more
-    lp.sync(0, 2).unwrap();
-    let scope = osis_perm::DemotionScope { roles: [(a, [p].into())].into(), content: [(a, [p, copy].into())].into() };
-    let now = lp.peers[2].engine.now();
-    let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
-    set_edge(&mut lp.peers[2].engine, p, a, None, Some(f.to_value()));
-    lp.peers[0].clock.advance(1_000);
-    let greater = lp.peers[0].engine.reimport(&t, &copy).unwrap();
-    assert!(!lesser.is_empty() && !greater.is_empty());
-    let pk0 = lp.packages(0).unwrap();
-    let (l, g): (Vec<_>, Vec<_>) = pk0.iter().filter(|x| lesser.contains(&x.id) || greater.contains(&x.id)).cloned().partition(|x| lesser.contains(&x.id));
-    // peers 3 and 4 hold everything but the imports first: the first move's never reach them,
-    // so the list's writes the snapshot carries are judged by the claim
-    let import = |e: &Engine, id| e.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Import);
-    let pk2 = lp.packages(2).unwrap();
-    let rest: Vec<_> = pk0.iter().chain(&pk2).filter(|x| !import(&lp.peers[0].engine, &x.id)).cloned().collect();
-    for i in [3, 4] {
-        for x in &rest {
-            lp.deliver(i, x).unwrap();
-        }
-    }
-    let moved = |e: &Engine| {
-        let d = e.index_digest();
-        (d.tables["imports"].clone(), d.carried)
-    };
-    let shows = |e: &mut Engine| format!("{:?}", e.get(&copy, &list).unwrap()).contains("\"x\"");
-    // peer 3: the greater (invalid) import, then the lesser; peer 4 the other way round
-    for x in &g {
-        lp.deliver(3, x).unwrap();
-    }
-    let carried = moved(&lp.peers[3].engine).1;
-    assert!(carried.values().flatten().any(|g| matches!(g.src.kind(), osis_crdt::SourceKind::Commit(_))), "the list's writes are carried: {carried:?}");
-    assert!(shows(&mut lp.peers[3].engine), "the snapshot vouches for them");
-    open_equals_rebuild_any(&mut lp.peers[3].engine, &[t, copy, p], "greater import only");
-    for x in &l {
-        lp.deliver(3, x).unwrap();
-    }
-    assert!(shows(&mut lp.peers[3].engine), "both imports");
-    for x in l.iter().chain(&g) {
-        lp.deliver(4, x).unwrap();
-    }
-    assert!(shows(&mut lp.peers[4].engine), "peer 4");
-    assert_eq!(moved(&lp.peers[3].engine), moved(&lp.peers[4].engine), "imports, carried");
-    assert_eq!(states(&mut lp.peers[3].engine, &[t, copy, p]), states(&mut lp.peers[4].engine, &[t, copy, p]));
-    for i in [3, 4] {
-        open_equals_rebuild_any(&mut lp.peers[i].engine, &[t, copy, p], &format!("peer {i}"));
-    }
 }

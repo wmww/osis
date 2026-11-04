@@ -54,15 +54,13 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         Label { index: 0, steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![], replaced: false },
     )]);
     vec![
-        ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32], creator: None })),
+        ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32] })),
         ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
         ("holders", "roles.0", ROLES.encode(&holders)),
         ("keys", "keys.0", KEYS.encode(&keys)),
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
         ("tenures", "tenures.0", TENURES.encode(&tenures)),
         ("label", "label.0", LABEL.encode(&labels)),
-        ("moved", "moved.0", MOVED.encode(&tid(25))),
-        ("was", "was.0", WAS.encode(&tid(26))),
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
         ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false, suspect: Default::default() })),

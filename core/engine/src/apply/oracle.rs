@@ -20,7 +20,7 @@ fn fragment(d: Decoded) -> (Fragment, Option<Gives>) {
     }
 }
 
-pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, valid: &[bool], void: bool, j: &mut Joins) -> Result<()> {
+pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, valid: &[bool], j: &mut Joins) -> Result<()> {
     for (ai, _, d) in &parts.whole {
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
@@ -35,7 +35,7 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         }
         if !valid.get(ai).copied().unwrap_or(false) {
             if !snap {
-                arrived_invalid(tx, &a.tid, &a.ak, (!void).then_some(f), j)?;
+                arrived_invalid(tx, &a.tid, &a.ak, f, j)?;
             }
             continue;
         }
@@ -74,17 +74,12 @@ fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<b
     Ok(!f.misstated(&[st], &|d| copies::owner_held(core, tid, ak, d), &|d| copies::owner_expires(core, tid, ak, d)).is_empty())
 }
 
-fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Option<Fragment>, j: &mut Joins) -> Result<()> {
+fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Fragment, j: &mut Joins) -> Result<()> {
     if validity::perm_ak(ak.as_str()) {
         return Ok(());
     }
-    let held = f.is_some();
-    if let Some(f) = &f {
-        join_into_state(tx, tid, ak, f.clone(), false)?;
-    }
-    if !unmerge_fell(tx, tid, ak, f)? && !held {
-        return Ok(());
-    }
+    join_into_state(tx, tid, ak, f.clone(), false)?;
+    unmerge_fell(tx, tid, ak, Some(f))?;
     crate::retention::mark_if_bounded(tx, tid, ak)?;
     tx.core.mark_aspect_changed(tid, ak);
     j.changed.insert((*tid, ak.clone()));

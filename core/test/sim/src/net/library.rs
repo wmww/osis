@@ -425,60 +425,6 @@ fn links(name: &str, seed: u64, single_use: bool) -> Res<Report> {
     sim.finish()
 }
 
-/// Move with import (spec/permissions.md §7): a shared doc moves to a team the sharer owns and
-/// the writer does not read; the copy carries its history and a label of its own, its writer is
-/// re-granted on it, the old thing points at it; writes continue on the copy under a lossy
-/// network.
-pub fn move_import(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x30);
-    let mut sim = sim("move_import", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let a = sim.add_node(&[s], clock(&mut d))?;
-    let b = sim.add_node(&[s], clock(&mut d))?;
-    let [pa, pb] = persons(&mut sim, [a, b], [s, s])?;
-    // the team has no secrets of its own: the copy's own-secrets rotation boxes nobody
-    let team = sim.group(a, pa, &[s])?;
-    let doc = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write)])?;
-    let t = sim.item(a, doc)?;
-    sim.reconnect_all();
-    sim.quiet(40)?;
-    add_tag(&mut sim, b, doc, "before")?;
-    sim.run(60)?;
-    sim.quiet(40)?;
-    let r = sim.engine(a)?.move_to(&doc, &team);
-    let (copy, done) = r.map_err(|e| sim.fail(format!("move_to: {e}")))?;
-    sim.carry(a, done)?;
-    if sim.engine(a)?.move_to(&doc, &team).is_ok() {
-        return Err(sim.fail("a second move of the same thing was allowed (spec/permissions.md §7)"));
-    }
-    // the copy is listed in the team
-    let mut grp = sim.engine(a)?.get_typed(&team, &ct::GROUP).map_err(|e| sim.fail(e.to_string()))?.unwrap_or_default();
-    grp.items.insert(copy);
-    let mut m = Mutation::new();
-    m.set(team, &ct::GROUP, &grp).map_err(|e| sim.fail(e.to_string()))?;
-    sim.commit(a, m)?;
-    if let Some(x) = sim.groups.iter_mut().find(|x| x.g == team) {
-        x.items.push(copy);
-    }
-    sim.run(40)?;
-    sim.quiet(60)?;
-    if sim.engine(b)?.role_on(&copy).is_none_or(|r| r < Role::Write) {
-        return Err(sim.fail("the writer was not re-granted on the copy"));
-    }
-    add_tag(&mut sim, b, copy, "after")?;
-    sim.run(60)?;
-    sim.run_until_quiescent(60)?;
-    expect_tags(&mut sim, &[a, b], copy, &["before", "after"], &["before", "after"])?;
-    for n in [a, b] {
-        let moved = sim.engine(n)?.get_typed(&doc, &ct::MOVED).map_err(|e| sim.fail(e.to_string()))?;
-        if moved != Some(copy) {
-            return Err(sim.fail(format!("node {n}: moved.0 of the old thing is {moved:?}")));
-        }
-    }
-    let _ = t;
-    sim.finish()
-}
-
 /// Group join and leave in the old persona shape: chat actor C with its own label, participants
 /// writers of C; each joins with a persona P owned by its person (secrets of its own), C made a
 /// reader of P, P listed in C's items and subgroups; messages are things owned by P in P's `group.0`. A

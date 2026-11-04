@@ -46,7 +46,7 @@ pub(crate) fn drop_from(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
     let by = h.aspects.get(ai).map_or(osis_base::PurgeBy::Nobody, |a| a.retention.by);
     let me = tx.core.id.tid();
     let at = At::now(Ts::make(tx.now(), 0).unwrap_or_default());
-    if !tx.core.timelines.get(tid).is_some_and(|tl| tl.may_purge(&me, tid, by, &h.purge_actor(), at)) {
+    if !tx.core.timelines.get(tid).is_some_and(|tl| tl.may_purge(&me, tid, by, &h.actor, at)) {
         return Ok(None);
     }
     Ok(Some(body_keep(tx, c, tid, ak)?.at_least.saturating_add(osis_base::format::MAX_DRIFT_MS)))
@@ -63,8 +63,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     }
     for x in holders {
         let Some(a) = h.aspects.get(x) else { continue };
-        // an import's writes are under its origins' dots (`writes_of`)
-        let own = writes_of(tx.core, &h, c, x);
+        let own = writes_of(&h, c, x);
         let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| own.iter().any(|o| o.owns_range(src, lo, hi)));
         // per piece of each delta of the body, the state's part it meets (all of it when none
         // is held)
@@ -153,7 +152,7 @@ impl Engine {
     }
 
     /// Whether a write of the body holding aspect `ak` of `c` is still in this node's state (a
-    /// dot its deltas own, an import's origins' dots, survives there; unknown counts as live). A
+    /// dot its deltas own survives there; unknown counts as live). A
     /// body without one needs no carrier before it leaves a label (spec/sync.md §7); one with one
     /// gets `AT_MOST_GRACE` (spec/commits.md §5). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
@@ -169,13 +168,9 @@ impl Engine {
     }
 
     /// Whether delta `ai` of `c` holds writes of its own and is held value-less for all of them: a
-    /// purge took them, so it has no live write to carry (spec/commits.md §5). An import with a
-    /// purged origin and another standing is not: its other writes count (`body_live`). Limit, with
-    /// that other origin dead too: the residue reads live and its blob waits for a carrier. Only a
-    /// hand-made import lists several origins, and only the thing's creator can write one.
+    /// purge took them, so it has no live write to carry (spec/commits.md §5).
     pub fn part_valueless(&self, h: &Header, c: &CommitId, ai: usize) -> bool {
-        let own = writes_of(&self.core, h, c, ai);
-        !own.is_empty() && gone_of(&self.core, h, c, ai).len() == own.len()
+        !gone_of(&self.core, h, c, ai).is_empty()
     }
 
     /// The lowest `ts` among the writes the held body of aspect `ak` of `c` carries (`None`: not

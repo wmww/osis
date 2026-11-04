@@ -266,7 +266,7 @@ pub struct CounterRange {
 }
 
 impl CounterRange {
-    /// Range of snapshot and import commits, which consume no counters (§2.4).
+    /// Range of snapshot commits, which consume no counters (§2.4).
     pub const EMPTY: CounterRange = CounterRange { lo: 1, hi: 1 };
     pub fn contains(&self, ctr: u64) -> bool {
         self.lo <= ctr && ctr < self.hi

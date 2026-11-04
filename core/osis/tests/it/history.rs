@@ -265,23 +265,6 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     assert!(alice.at(g, typing).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty(), "its writer too");
 }
 
-// spec/permissions.md §7, notes/api.md: the read and the watch follow a move: the copy's imports.
-#[test]
-fn history_follows_a_move() {
-    let db = db(5);
-    let t = thing(&db);
-    say(&db, t, "before");
-    let (_sub, rx) = watch(&db, t, msgs());
-    let copy = db.move_thing(t, db.me(), &[]).unwrap();
-    let page = db.at(t, msgs()).history(HistoryFrom::Newest, 5).unwrap();
-    assert_eq!(page, db.at(copy, msgs()).history(HistoryFrom::Newest, 5).unwrap());
-    assert!(page.entries.iter().any(|e| e.kind == CommitKind::Import), "{page:?}");
-    db.settle();
-    let _ = rx.try_iter().count();
-    let after = say(&db, copy, "after");
-    assert!(heard(&db, &rx).iter().any(|e| matches!(e, HistoryEvent::Commit { id, .. } if *id == after)), "a watch on the old tid");
-}
-
 // spec/data-model.md §6 (large values), notes/api.md History: a page is bounded in the bytes of its values, a link's once materialized, so
 // it fits what a reply carries: it ends early, says more, and the next page goes on. A value above
 // the bound alone reads as too large, its entry in its place.

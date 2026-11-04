@@ -6,7 +6,7 @@
 //! A thing is forgotten when its secret actor is one of the actors just lost and neither the
 //! node nor a held key actor may read it now. Of a forgotten thing only the certificate material
 //! perm judges others' writes by stays: `created.0`, and the role-class aspects except
-//! `secrets.0` (edges, ledger, public keysets, labels, moves). Everything else goes, shredded:
+//! `secrets.0` (edges, ledger, public keysets, labels). Everything else goes, shredded:
 //! aspect units (state, undo buffer, pre-reset snapshots, tables, deaths), the deltas in commit
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects of a forgotten thing that stay: what perm judges others' writes by, no content and
 /// no secret.
-const KEPT: [&str; 8] = ["created.0", "required.0^", "roles.0", "tenures.0", "keys.0", "label.0", "moved.0", "was.0"];
+const KEPT: [&str; 6] = ["created.0", "required.0^", "roles.0", "tenures.0", "keys.0", "label.0"];
 
 /// What goes of a thing `forget` reaches.
 #[derive(Clone, Copy, PartialEq, Eq)]
