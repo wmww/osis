@@ -1043,3 +1043,71 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     net.settle(10_000);
     assert!(blobs.iter().all(|(id, _)| net.host_ids(host, &l).contains(id)), "a removed holder's delete went through");
 }
+
+// spec/sync.md §5 (Replace), spec/crypto.md §7, spec/permissions.md §7: one commit of c's
+// carries a part on t (`writer` retention: w, a writer of t, holds its level-3 key) and one on
+// u, a plain thing of the group (w, no admin of it, holds none of its keys). w, a writer of
+// the label, uploads a junk entry replacing the commit's blob, signed for t's commitment group
+// alone. Every honest holder is away: a reader that comes later must still find u's write at
+// the host (it does once c is back: c uploads the body again).
+#[test]
+#[ignore = "issues/replace-one-group.md: fails, the host drops u's part"]
+fn replace_by_one_group_keeps_other_things_parts_spec_sync_5() {
+    use osis_node::sync::EntryKind;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(2, &[host]);
+    let w = net.node(3, &[host]);
+    let d = net.node(4, &[host]);
+    let g = net.group(a, &[(c, Role::Write), (w, Role::Write), (d, Role::Read)], &[host]);
+    let (ct_, wt) = (net.tid(c), net.tid(w));
+    let t = net.item(c, g, ct_, "x");
+    let u = net.item(c, g, g, "u0");
+    net.pair(w, c);
+    let e = net.engine(c);
+    set_edge(e, t, wt, Role::Write);
+    set_edge(e, t, g, Role::Read);
+    let rs = recipients_of(e, &[(ct_, Role::Admin), (wt, Role::Write), (g, Role::Read)]);
+    rotation(e, t, &rs, 21, false);
+    net.run();
+    net.pair(c, w);
+    assert_eq!(net.read(d, u), Some(s("u0")), "d reads u");
+    net.set_online(d, false);
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &GONE, &s("on t")).unwrap();
+    m.set(u, &REG, &s("keep")).unwrap();
+    let cx = net.engine(c).commit(m).unwrap().unwrap();
+    net.feed(c, Event::Local);
+    net.run();
+    let l = net.label(a);
+    let ids: Vec<_> = net.sync(c).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cx)).map(|(id, _)| id).collect();
+    assert_eq!(ids.len(), 1, "one blob of the commit");
+    assert!(net.host_ids(host, &l).contains(&ids[0]), "uploaded");
+    net.set_online(a, false);
+    net.set_online(c, false);
+
+    // w: a junk entry replacing the blob, by t's level-3 key and the label write key
+    let bytes = net.engine(c).blob(&ids[0]).unwrap().unwrap();
+    let p = osis_label::Prefix::parse(&bytes).unwrap();
+    assert!(p.groups().len() >= 2, "two commitment groups");
+    // the header is in the blob, under the label every writer opens
+    let hb = net.engine(c).header(&cx).unwrap().blind;
+    let wk = osis_crypto::DeleteSecret::derive(net.engine(w).epochs(&t).unwrap().write.newest_held().unwrap().1);
+    let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let head = net.host_path(host, &l).last().unwrap().clone();
+    let write = net.engine(w).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
+    let rep = osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &hb, &l, ids[0], None).unwrap();
+    let junk = vec![0xEE, 1, 2, 3];
+    let jid = osis_label::blob_id(&junk);
+    let wrap = [9; osis_crypto::WRAP_LEN];
+    let stamp = osis_label::sign_stamp(&write, &l, &jid, &wrap);
+    let conn = net.conn_to(w, host).expect("connected");
+    let entry = osis_proto::Entry { blob: junk, wrap, stamp, replaces: vec![rep] };
+    net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Upload { id: 900_020, label: l, entries: vec![entry] }) }]);
+    net.settle(10_000);
+
+    net.set_online(d, true);
+    net.advance(10_000);
+    assert_eq!(net.read(d, u), Some(s("keep")), "a writer of t alone removed u's write from the host (blob held there: {})", net.host_ids(host, &l).contains(&ids[0]));
+}
