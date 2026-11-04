@@ -279,6 +279,46 @@ impl Engine {
         })
     }
 
+    /// Where a value the delta of `c` on `(tid, ak)` wrote is still held, in the state or in a held
+    /// body of the aspect, as a word for a message (tests: `order::value_past_end`).
+    #[doc(hidden)]
+    pub fn value_held_of(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<String>> {
+        let Some((h, ai)) = self.core.ix.commits.get(c).and_then(|m| Some((m.header.clone(), m.aspect(tid, ak)?))) else { return Ok(None) };
+        let owned = crate::retention::writes_of(&self.core, &h, c, ai);
+        // values alone: a later write nested in an expired entry may still name its key
+        // (issues/expired-entry-key-kept.md)
+        let keyless = |f: &osis_crdt::Fragment| {
+            let s = format!("{f:?}");
+            let (mut out, mut rest) = (String::new(), s.as_str());
+            while let Some(i) = rest.find("key: Some(") {
+                out.push_str(&rest[..i]);
+                let mut depth = 0;
+                let close = rest[i..].char_indices().find(|(_, c)| {
+                    depth += i32::from(*c == '(') - i32::from(*c == ')');
+                    *c == ')' && depth == 0
+                });
+                rest = close.map_or("", |(j, _)| &rest[i + j + 1..]);
+                out.push_str("key: None");
+            }
+            out + rest
+        };
+        let carries = |f: &osis_crdt::Fragment| {
+            let mut g = f.clone();
+            g.strip(&|d| owned.iter().any(|o| o.owns(d)));
+            keyless(&g) != keyless(f)
+        };
+        if self.state(tid, ak)?.is_some_and(|f| carries(&f)) {
+            return Ok(Some("the state".into()));
+        }
+        let bodies: Vec<CommitId> = self.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+        for b in bodies {
+            if self.body_fragment(&b, tid, ak)?.is_some_and(|f| carries(&f)) {
+                return Ok(Some(format!("body {b:?}")));
+            }
+        }
+        Ok(None)
+    }
+
     /// Writes the stored pages of `(tid, ak)` hold that their skeleton prunes
     /// (`pages::stale_in_pages`; 0 unpaged). Tests: a join that skipped a page write.
     #[cfg(test)]

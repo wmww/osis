@@ -35,8 +35,18 @@ impl SyncEngine {
                     self.repair_diag(node, s.thing, None, format!("suspect {} {} reported by {node}: same state here", s.thing, s.ak));
                     continue;
                 }
+                // a report no snapshot can settle: another from this same state repairs nothing more
+                if self.repair_state.get(&(s.thing, ak.clone())) == mine.as_ref() {
+                    self.repair_diag(node, s.thing, None, format!("suspect {} {} reported by {node}: already snapshotted from this state", s.thing, s.ak));
+                    continue;
+                }
                 match self.engine.snapshot(&s.thing, &ak) {
-                    Ok(snap) => self.repair_diag(node, s.thing, snap, format!("suspect {} {} reported by {node}: re-snapshotted", s.thing, s.ak)),
+                    Ok(snap) => {
+                        if let Some(d) = self.engine.state_digest(&s.thing, &ak)? {
+                            self.repair_state.insert((s.thing, ak.clone()), d);
+                        }
+                        self.repair_diag(node, s.thing, snap, format!("suspect {} {} reported by {node}: re-snapshotted", s.thing, s.ak));
+                    }
                     Err(e) => self.diag(format!("repair of {} {}: {e}", s.thing, s.ak)),
                 }
             }
