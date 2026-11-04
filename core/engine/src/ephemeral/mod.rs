@@ -122,15 +122,36 @@ impl Engine {
     }
 
     /// Whether `tid` is in some labeled closure here: synced itself, or in a group that is, through
-    /// either side of `group.0`.
+    /// either side of `group.0`, or kept under a synced group's label (`MemorySync::kept`).
     pub fn ephemeral_synced(&self, tid: &Tid) -> bool {
-        self.core.syncs(tid) || self.groups_of(tid).iter().any(|g| self.core.syncs(g))
+        self.core.syncs(tid) || self.core.memory.kept.get(tid).is_some_and(|gs| gs.iter().any(|g| self.core.syncs(g))) || self.groups_of(tid).iter().any(|g| self.core.syncs(g))
     }
 
-    /// Whether `t` is in the closure of `g` (`Engine::closure` and the ephemeral things placed in
-    /// it, transitively through `placed.0~`), without walking it.
+    /// Whether `t` is in the ephemeral closure of `g` (spec/sync.md §9): `Engine::closure`, the
+    /// ephemeral things placed in it (transitively through `placed.0~`), and what a commit was
+    /// kept on under its label here, without walking it.
+    ///
+    /// Invariant the kept rows give (`ephemeral_reverts_within_rights_alike_*`): a node that
+    /// holds a commit on `t` under `g`'s label keeps sending what it has of `t` there, so every
+    /// holder of the label reads `t` alike whatever stops listing it. Rows widen where a commit
+    /// goes, never who may read it: `eph_place` still sends only what `g`'s actor may read.
     pub fn in_ephemeral_closure(&self, g: &Tid, t: &Tid) -> bool {
-        t == g || self.closure(g).contains(t) || self.groups_of(t).contains(g)
+        t == g || self.core.memory.kept.get(t).is_some_and(|gs| gs.contains(g)) || self.closure(g).contains(t) || self.groups_of(t).contains(g)
+    }
+
+    /// A commit on `things` was kept under `g`'s label here (the lane, at `eph_keep`). A thing
+    /// with no record held (its commit already forgotten) gets no row: nothing would free it.
+    pub fn ephemeral_kept(&mut self, g: Tid, things: impl IntoIterator<Item = Tid>) {
+        for t in things {
+            if self.core.created(&t).is_some() && self.core.memory.kept.entry(t).or_default().insert(g) {
+                self.core.memory.closures += 1;
+            }
+        }
+    }
+
+    /// The groups `t` has a `MemorySync::kept` row under (tests, diagnostics).
+    pub fn ephemeral_kept_on(&self, t: &Tid) -> BTreeSet<Tid> {
+        self.core.memory.kept.get(t).cloned().unwrap_or_default()
     }
 
     /// Whether own memory commits or signals wait to be handed to the ephemeral lane

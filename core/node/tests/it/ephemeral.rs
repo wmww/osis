@@ -229,6 +229,243 @@ fn write_before_placement_goes_after_a_step_spec_sync_9() {
     assert_eq!(net.eph_read(b, w, STATE), Some(s("local")));
 }
 
+// spec/sync.md §9 (ephemeral closure): a thing listed nowhere any more stays in the closure of the
+// label a commit on it was kept under, both ways, so its holders read it alike.
+#[test]
+fn unplaced_thing_keeps_syncing_under_its_label_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "v");
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("v")));
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    for n in [a, b] {
+        assert!(net.engine(n).groups_of(&w).is_empty());
+        assert_eq!(net.engine(n).ephemeral_kept_on(&w), BTreeSet::from([g]));
+    }
+    note(&mut net, a, w, "k1", "v1");
+    note(&mut net, b, w, "k2", "v2");
+    net.run();
+    let both = map(&[("k1", "v1"), ("k2", "v2")]);
+    assert_eq!(notes(&mut net, a, w), both);
+    assert_eq!(notes(&mut net, b, w), both);
+}
+
+/// A group of admin `a` (rng `seed`) that may read `x` (a read edge on it) and has `w` placed.
+fn reading_group(net: &mut Net, a: usize, x: Tid, w: Tid, holders: &[(usize, Role)], host: usize, seed: u64) -> Tid {
+    let addr = net.hosts[host].address.clone();
+    let g = net.group_seeded(a, holders, vec![addr], seed);
+    let done = net.engine(a).grant(&x, &g, &crate::common::edge(Role::Read)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(net.engine(a).may_read(&g, &x));
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(net, a);
+    net.run();
+    g
+}
+
+fn label_of(net: &mut Net, n: usize, g: Tid) -> osis_base::LabelId {
+    net.sync(n).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id
+}
+
+fn entries_under(net: &mut Net, n: usize, l: &osis_base::LabelId) -> BTreeSet<osis_base::BlobId> {
+    net.sync(n).ephemeral_held_entries(l).into_iter().map(|x| x.0).collect()
+}
+
+// spec/sync.md §3 (entitlement), §9 (ephemeral closure): a thing moved from group A to group B goes
+// on under A's label while A's actor may read it, and not once it may not: nothing new reaches
+// that label, at the writer or the host, and B's goes on.
+#[test]
+fn moved_thing_reaches_old_label_only_while_it_may_read_spec_sync_3() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(3, &[host]);
+    let addr = net.hosts[host].address.clone();
+    let x = net.group_seeded(a, &[], vec![addr], 1);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, x);
+    m.set(w, &eph(STATE), &s("v")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    let ga = reading_group(&mut net, a, x, w, &[(c, Role::Read)], host, 2);
+    let la = label_of(&mut net, a, ga);
+    assert!(!entries_under(&mut net, a, &la).is_empty(), "under A while placed");
+    assert!(net.engine(a).ephemeral_kept_on(&w).contains(&ga));
+    // moved from A to B
+    let gb = reading_group(&mut net, a, x, w, &[], host, 3);
+    let lb = label_of(&mut net, a, gb);
+    let mut m = Mutation::new();
+    m.op(ga, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(!net.engine(a).groups_of(&w).contains(&ga));
+    let (ina, inb) = (entries_under(&mut net, a, &la), entries_under(&mut net, a, &lb));
+    note(&mut net, a, w, "k1", "v1");
+    net.run();
+    assert!(!entries_under(&mut net, a, &la).is_subset(&ina), "goes on under A: it may read");
+    assert!(!entries_under(&mut net, a, &lb).is_subset(&inb), "and under B");
+    // A's actor loses read of the thing
+    let d = osis_node::flows::Demotion { holder: ga, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+    let done = net.engine(a).demote(&x, &d).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(15_000);
+    assert!(!net.engine(a).may_read(&ga, &x));
+    let held: BTreeSet<_> = net.host_ids(host, &la).into_iter().collect();
+    let (ina, inb) = (entries_under(&mut net, a, &la), entries_under(&mut net, a, &lb));
+    note(&mut net, a, w, "k2", "v2");
+    net.run();
+    assert!(entries_under(&mut net, a, &la).is_subset(&ina), "nothing new under A");
+    assert!(net.host_ids(host, &la).into_iter().all(|b| held.contains(&b)), "nor at the host");
+    assert!(!entries_under(&mut net, a, &lb).is_subset(&inb), "B goes on");
+    assert_eq!(notes(&mut net, c, w).get("k2"), None, "a reader of A alone gets nothing");
+}
+
+// spec/sync.md §9 (ephemeral closure, leaves when freed): the kept row goes with the thing: at its
+// maker when freed, at a holder when its commits expire; a durable thing's when none is left on
+// it, so what peers make a node keep is held commits, which the caps count.
+#[test]
+fn kept_row_goes_with_the_thing_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    // an expiring write on an ephemeral thing, placed, and on a durable item
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, g);
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    m.set(w, &eph(STATE), &s("v")).unwrap();
+    let until = net.now() + 60_000;
+    m.expires(w, &eph(STATE), osis_base::WallMs(until)).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    let u = net.item(a, g, g, "u");
+    net.run();
+    net.eph_write_expiring(a, u, &eph(STATE), s("c"), Some(60_000));
+    net.run();
+    for n in [a, b] {
+        assert_eq!(net.engine(n).ephemeral_kept_on(&w), BTreeSet::from([g]));
+        assert_eq!(net.engine(n).ephemeral_kept_on(&u), BTreeSet::from([g]));
+    }
+    for _ in 0..5 {
+        net.advance(15_000);
+    }
+    assert!(net.engine(b).ephemeral_thing(&w).is_none(), "freed at the holder");
+    assert_eq!(net.engine(b).ephemeral_kept_on(&w), BTreeSet::new());
+    for n in [a, b] {
+        assert_eq!(net.engine(n).ephemeral_kept_on(&u), BTreeSet::new(), "no commit left on it");
+    }
+    assert_eq!(net.engine(a).ephemeral_kept_on(&w), BTreeSet::from([g]), "the maker's own thing stays until freed");
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
+    m.free(w);
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(net.engine(a).ephemeral_thing(&w).is_none(), "freed at the maker");
+    assert_eq!(net.engine(a).ephemeral_kept_on(&w), BTreeSet::new());
+}
+
+// spec/sync.md §9: a commit written in no labeled closure goes once any way brings its thing into
+// one: a durable placement, a label made after the write.
+#[test]
+fn written_outside_goes_on_any_way_in_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let me = net.tid(a);
+    // a durable thing of `g`'s owner chain, written while listed nowhere
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let u = e.new_thing(&mut m, g);
+    m.set(u, &REG, &s("u")).unwrap();
+    e.commit(m).unwrap();
+    net.run();
+    net.eph_write(a, u, &eph(STATE), s("durable placement"));
+    net.run();
+    assert!(!net.engine(a).has_unsent());
+    assert_eq!(net.eph_read(b, u, STATE), None);
+    // a local-only write walks nothing: what is parked is looked at only when a closure may have grown
+    let walked = net.engine(a).core.memory.walked;
+    net.eph_write(a, u, &eph(STATE), s("durable placement"));
+    net.run();
+    assert_eq!(net.engine(a).core.memory.walked, walked, "no walk");
+    assert_eq!(net.engine(a).core.memory.closures, walked, "nothing to walk for");
+    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(u);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &items).unwrap();
+    net.engine(a).commit(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.eph_read(b, u, STATE), Some(s("durable placement")));
+    // an ephemeral placement, with nothing new kept under the label to bring on a walk
+    let w = window(&mut net, a, g, "first");
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, g);
+    m.set(x, &eph(STATE), &s("ephemeral placement")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(net.engine(a).ephemeral_kept_on(&g).contains(&g) && !net.engine(a).ephemeral_synced(&x));
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(x)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("first")));
+    assert_eq!(net.eph_read(b, x, STATE), Some(s("ephemeral placement")));
+    // a group with no label yet, then its label
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let h = e.new_thing(&mut m, me);
+    m.set(h, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, h);
+    m.op(h, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    m.set(w, &eph(STATE), &s("label")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(!net.engine(a).ephemeral_synced(&w));
+    let recipients = recipients_of(net.engine(a), &[(me, Role::Admin)]);
+    rotation(net.engine(a), h, &recipients, 7, true);
+    let addr = net.hosts[host].address.clone();
+    net.engine(a).create_label(&h, &[addr]).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(net.engine(a).ephemeral_synced(&w));
+    let l = label_of(&mut net, a, h);
+    assert!(!entries_under(&mut net, a, &l).is_empty(), "the commit went under the new label");
+}
+
 // notes/ephemeral.md Tess's direction (the shared window): two holders keep editing while one is
 // offline; on reconnect both converge on the merge, through a host
 #[test]
@@ -4671,9 +4908,8 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
 /// random while an admin takes write of a group away. A revert that goes through touched only
 /// what the writer may still write; one refused left the log and what it reads alone, and no
 /// other error is met. In the end the two nodes list every thing in the same groups and read it
-/// alike, except a thing of a group the writer lost that no group lists: its only placement went
-/// with the writer's writes, so it is synced no more and each node keeps what it holds
-/// (spec/sync.md §9).
+/// alike, a thing no group lists any more too (spec/sync.md §9: it stays in the closure of the
+/// labels a commit on it was kept under).
 fn revert_run(seed: u64) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
@@ -4763,11 +4999,7 @@ fn revert_run(seed: u64) {
     for t in &things {
         let (ga, gb) = (net.engine(a).groups_of(t), net.engine(b).groups_of(t));
         assert_eq!(ga, gb, "seed {seed}: {t:?} listed");
-        let owner = net.engine(a).ephemeral_thing(t).and_then(|x| x.record.owner());
-        let unsynced = ga.is_empty() && lost.iter().zip(&groups).any(|(l, g)| *l && owner == Some(*g));
-        if !unsynced {
-            assert_eq!(net.eph_read(a, *t, STATE), net.eph_read(b, *t, STATE), "seed {seed}: {t:?}");
-        }
+        assert_eq!(net.eph_read(a, *t, STATE), net.eph_read(b, *t, STATE), "seed {seed}: {t:?}");
     }
 }
 

@@ -1,0 +1,2 @@
+- `eph_replay` prints `cargo test --workspace --test it ...`, the form CLAUDE.md forbids; `-p osis-node --test it -- --ignored --exact` works.
+- First build in a new worktree was cold (3.7 min for one crate's tests); expected, only a slow spot.

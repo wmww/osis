@@ -73,6 +73,7 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
         tx.core.ix.freeing.remove(t);
         tx.core.ix.held.free(t);
         tx.core.memory.things.remove(t);
+        tx.core.memory.kept.remove(t);
         tx.core.memory.dirty.retain(|(x, _)| x != t);
         tx.core.memory.weighed.retain(|(x, _), _| x != t);
         tx.core.ix.placed.remove(t);
@@ -118,6 +119,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         });
         core.memory.dropped.push((*id, why));
         core.memory.unsent.retain(|c| c != id);
+        core.memory.parked.remove(id);
         core.memory.dirty.extend(v.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         core.memory.unused.extend(v.aspects.iter().map(|a| a.tid));
     }

@@ -590,7 +590,19 @@ pub struct MemorySync {
     pub unsent: Vec<CommitId>,
     /// Own memory commits taken while none of their things was in a labeled closure: they go
     /// once one is (spec/sync.md §9). Not `unsent`, so a local-only write leaves nothing to do.
-    pub parked: Vec<CommitId>,
+    pub parked: BTreeSet<CommitId>,
+    /// Counts what can bring a thing into a closure (a group's items, a placement, a group
+    /// synced, a `kept` row): `parked` is walked only when it moved (`walked`, the count at the
+    /// last walk), so a local-only write costs no walk. Bumped when a transaction that later
+    /// aborts changed them too: one walk too many.
+    pub closures: u64,
+    pub walked: u64,
+    /// Per thing, the groups under whose label a commit on it was kept here: it stays in their
+    /// ephemeral closures (`Engine::in_ephemeral_closure`, spec/sync.md §9), whatever lists it
+    /// since. A row goes when the thing is freed, a durable thing's when no memory commit is
+    /// left on it (`Engine::free_unused_memory`), so rows live only beside held parts or own
+    /// ephemeral things.
+    pub kept: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Memory commits forgotten since the last take, with why (`Engine::take_memory_drops`).
     pub dropped: Vec<(CommitId, MemoryDrop)>,
     /// Memory commits applied since the last take, any origin (`Engine::take_memory_applied`).
@@ -1658,6 +1670,7 @@ impl Tx<'_> {
                 Some(d) => self.core.ix.placed.insert(*tid, d),
                 None => self.core.ix.placed.remove(tid),
             };
+            self.core.memory.closures += 1;
         }
     }
 
