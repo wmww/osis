@@ -42,9 +42,12 @@ const MAX_ROUNDS: usize = 16;
 /// cut to its chain deltas. Admission judges the blob's commit, which anyone can name: a box or a
 /// `label.0` here would be an invite nobody was asked about; a bare edge is the limit (a status
 /// row at worst).
-fn chain_commits(p: &osis_label::InboxPayload) -> Vec<(Vec<u8>, osis_commit::CommitBlob)> {
-    p.chain.iter().filter_map(|v| {
-        let mut c = osis_commit::CommitBlob::decode(&osis_base::encode(v)).ok()?;
+fn chain_commits(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, osis_commit::CommitBlob)> {
+    // each value freed before its plaintext decodes: never two decoded copies of a stranger's blob
+    chain.into_iter().filter_map(|v| {
+        let plain = osis_base::encode(&v);
+        drop(v);
+        let mut c = osis_commit::CommitBlob::decode(&plain).ok()?;
         let aspects = &c.header.aspects;
         let parts = c.parts.iter().filter(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0" | "created.0" | "keys.0"))).cloned().collect();
         c.parts = parts;
@@ -544,7 +547,7 @@ impl SyncEngine {
             for (l, b) in inbox {
                 let Some(bytes) = self.engine.blob(b)? else { continue };
                 let Some((_, payload)) = self.open_inbox(l, &bytes) else { continue };
-                let pt = osis_base::encode(&payload.commit);
+                let (pt, ..) = payload.split();
                 let Ok(blob) = osis_commit::CommitBlob::decode(&pt) else { continue };
                 if (!forced && blob.parts.iter().all(|p| held.contains(&(p.ai, p.di)))) || self.engine.parts_genuine(&blob) == Some(false) {
                     continue;
@@ -681,9 +684,9 @@ impl SyncEngine {
             return Ok(());
         }
         let Some((actor, prefix, payload)) = self.open_inbox_as(&l, &bytes) else { return Ok(()) };
-        let pt = osis_base::encode(&payload.commit);
+        let (pt, things, chain) = payload.split();
         let c = osis_commit::CommitBlob::decode(&pt).ok();
-        let o = c.as_ref().map(|c| Opened::new(&prefix, c, payload.things.clone()));
+        let o = c.as_ref().map(|c| Opened::new(&prefix, c, things.clone()));
         // its labels are followed only once vetted (`vet_inbox_hints`)
         self.inbox_opened.insert((l, b), o.clone().map(Arc::new));
         let (Some(c), Some(o)) = (c, o) else {
@@ -697,11 +700,11 @@ impl SyncEngine {
         } else if !self.admits(&id, &o, &mut None) {
             e.kind = Kind::Request(id);
         } else {
-            self.engine.note_delete_hints(id, &payload.things)?;
+            self.engine.note_delete_hints(id, &things)?;
             e.kind = Kind::Inbox(Some(id));
             // the author's chain first (spec/wire.md §9): the commit applies with no label of the
             // thing read
-            commits.extend(chain_commits(&payload));
+            commits.extend(chain_commits(chain));
             commits.push((pt, c));
             // the pass of the inbox's label stamps it, the home label's of the actor it is sealed
             // to or one above it places its copy (`inbox_certificates`); applying starts them only
@@ -797,14 +800,14 @@ impl SyncEngine {
             }
             let Some(bytes) = self.engine.blob(&b)? else { continue };
             let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
-            let pt = osis_base::encode(&payload.commit);
+            let (pt, things, chain) = payload.split();
             let Ok(blob) = osis_commit::CommitBlob::decode(&pt) else { continue };
             if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {
                 e.kind = Kind::Inbox(Some(x));
                 self.state.set_entry(l, b, e);
             }
-            self.engine.note_delete_hints(x, &payload.things)?;
-            for (cpt, cb) in chain_commits(&payload) {
+            self.engine.note_delete_hints(x, &things)?;
+            for (cpt, cb) in chain_commits(chain) {
                 if let Err(e) = self.engine.ingest(&cpt, Vec::new()) {
                     self.diag(format!("ingest {:?}: {e}", cb.id()));
                 }
@@ -888,7 +891,8 @@ impl SyncEngine {
             self.inbox_opened.insert((*l, *b), None);
             return Ok(None);
         };
-        let x = osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)).ok().map(|c| Arc::new(Opened::new(&prefix, &c, payload.things)));
+        let (pt, things, _) = payload.split();
+        let x = osis_commit::CommitBlob::decode(&pt).ok().map(|c| Arc::new(Opened::new(&prefix, &c, things)));
         self.inbox_opened.insert((*l, *b), x.clone());
         Ok(x)
     }
@@ -1042,7 +1046,8 @@ impl SyncEngine {
         for (l, b) in inbox {
             let Some(bytes) = self.engine.blob(&b)? else { continue };
             let Some((_, payload)) = self.open_inbox(&l, &bytes) else { continue };
-            let names = payload.things.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
+            let (pt, named, _) = payload.split();
+            let names = named.iter().any(|t| things.contains(&t.tid)) || osis_commit::CommitBlob::decode(&pt).is_ok_and(|c| c.header.aspects.iter().any(|a| things.contains(&a.tid)));
             if names {
                 gone.push(b);
             }

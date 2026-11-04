@@ -209,7 +209,7 @@ fn kept_at_most_zero_unrecoverable_spec_commits_5() {
 fn kept_at_most_zero_paged_unrecoverable_spec_commits_5() {
     let mut lp = net2(75);
     let t = new_thing(&mut lp, 0);
-    let fill: std::collections::BTreeMap<Value, Value> = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    let fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     let mut m = Mutation::new();
     m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -237,7 +237,7 @@ fn kept_at_most_zero_paged_unrecoverable_spec_commits_5() {
 fn expired_entry_paged_unrecoverable_spec_commits_6() {
     let mut lp = net2(76);
     let t = new_thing(&mut lp, 0);
-    let fill: std::collections::BTreeMap<Value, Value> = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    let fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     let mut m = Mutation::new();
     m.set(t, &BIG, &Value::Map(fill)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -343,7 +343,7 @@ fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
         let mut lp = net2(77);
         let t = new_thing(&mut lp, 0);
         let marker = "LIVE-ATMOST-MARK-c90d";
-        let mut fill: std::collections::BTreeMap<Value, Value> = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+        let mut fill: osis_base::ValueMap = (0..300).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
         fill.insert(s("secret"), s(&big(marker)));
         let mut m = Mutation::new();
         m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
@@ -727,7 +727,7 @@ fn purged_while_pending_large_or_paged_unrecoverable_spec_commits_5() {
             v[150_000..150_000 + marker.len()].copy_from_slice(marker.as_bytes());
             m.set(t, &BLOB, &Value::Bytes(v)).unwrap();
         } else {
-            let mut fill: std::collections::BTreeMap<Value, Value> = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+            let mut fill: osis_base::ValueMap = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
             fill.insert(s("k030"), s(&big(marker)));
             m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
         }
@@ -1065,12 +1065,12 @@ fn purged_page_away(lp: &mut LocalPeer, marker: &str) -> (Tid, osis_base::Commit
     let a = ak("t:gonemap.0");
     let t = new_thing(lp, 0);
     let mut m = Mutation::new();
-    m.set(t, &GONEMAP, &Value::Map(std::collections::BTreeMap::from([(s("older"), s("kept"))]))).unwrap();
+    m.set(t, &GONEMAP, &Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync(0, 1).unwrap();
     lp.peers[1].engine.set_syncing(t, true).unwrap();
     lp.advance(5);
-    let mut fill: std::collections::BTreeMap<Value, Value> = (0..400).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    let mut fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     fill.insert(s("k000"), s(&big(marker)));
     let mut m = Mutation::new();
     m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
@@ -1117,7 +1117,7 @@ fn flagged_read_of_a_part_gone_with_a_page_away_is_repaired_spec_commits_5() {
         let mut lp = net2(351);
         let a = ak("t:gonemap.0");
         let (t, _, whole) = purged_page_away(&mut lp, marker);
-        assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Map(std::collections::BTreeMap::from([(s("older"), s("kept"))]))), "by snapshot {by_snapshot}");
+        assert_eq!(lp.peers[1].engine.get(&t, &a).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("older"), s("kept"))]))), "by snapshot {by_snapshot}");
         assert_eq!(lp.peers[1].engine.suspects().unwrap().len(), 1);
         if by_snapshot {
             lp.advance(5);
@@ -1156,7 +1156,7 @@ fn part_gone_with_a_page_away_comes_back_when_its_request_fell_spec_commits_5() 
     let t2 = new_thing(&mut lp, 0);
     let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
     lp.peers[1].engine.set_syncing(t2, true).unwrap();
-    let mut fill: std::collections::BTreeMap<Value, Value> = (0..400).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+    let mut fill: osis_base::ValueMap = (0..400).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
     fill.insert(s("k000"), s(&big(marker)));
     let mut m = Mutation::new();
     m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();

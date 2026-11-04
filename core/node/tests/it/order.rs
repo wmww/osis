@@ -1110,7 +1110,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Paged { by, t } => {
-                let big: BTreeMap<Value, Value> = (0..1100).map(|i| (s(&format!("key-{i:05}")), s(&"x".repeat(40)))).collect();
+                let big: osis_base::ValueMap = (0..1100).map(|i| (s(&format!("key-{i:05}")), s(&"x".repeat(40)))).collect();
                 let mut m = Mutation::new();
                 m.set(th(t), &BIG, &Value::Map(big)).unwrap();
                 let id = lp.peers[by].commit(m).unwrap().expect("a write");

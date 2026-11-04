@@ -80,7 +80,7 @@ fn multi_gb_value_streams() {
             max_buffered = max_buffered.max(w.buffered());
         }
         let root = match w.finish(&mut sink).unwrap() {
-            osis_base::Value::Link(l) => l,
+            osis_base::Value::Link(l) => *l,
             v => panic!("not a link: {v:?}"),
         };
         (root, sink.written().len(), max_buffered)

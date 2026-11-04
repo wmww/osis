@@ -3,9 +3,9 @@
 
 use crate::format::{MAX_VALUE_BYTES, MAX_VALUE_DEPTH, TAG_ENUM, TAG_LINK, TAG_SET, TAG_TID, TID_LEN};
 use crate::ids::{BlobId, Link, Tid};
+use crate::sorted::{ValueMap, ValueSet};
 use crate::value::{Float, Unknown, Value};
 use crate::{Classified, ErrorClass};
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub const MAJOR_UINT: u8 = 0;
@@ -276,6 +276,14 @@ pub fn has_link(v: &Value) -> bool {
 }
 
 /// Decodes exactly one value spanning all of `input`.
+///
+/// Memory: any `input` of n bytes costs at most about 56 n at the peak, valid or not. Every item
+/// is at least one byte, so a valid value has at most n items and its arrays', maps' and sets'
+/// heads promise at most n in all; `promise` refuses more before allocating. An item costs one
+/// `Value` (32 B), a string its bytes, a container or boxed variant its allocation's overhead. The
+/// worst shape is a list of unknown tags with one-byte content; nothing here refuses a valid value.
+/// Input that fails can hold up to 72 n of address space, a head claiming slots its bytes never
+/// fill (32 per byte, all of it) beside those tags (40 per byte): the empty slots stay untouched.
 pub fn decode(input: &[u8], limits: &Limits) -> Result<Value, DecodeError> {
     let (v, used) = decode_prefix(input, limits)?;
     if used.len() != input.len() {
@@ -321,8 +329,8 @@ pub fn visit_items(input: &[u8], limits: &Limits, visit: &mut dyn FnMut(Place, u
 
 /// Reads a value of a known shape head by head, under the profile's rules (shortest heads, integers
 /// within i64, valid UTF-8), allocating nothing: a caller holds what it builds to what the bytes
-/// can pay for, where `decode` of hostile bytes costs about 770 B per byte (one B-tree node per
-/// one-entry map). The caller keeps maps and sets in order, as `decode` would.
+/// can pay for, where `decode` of hostile bytes costs about 56 B per byte.
+/// The caller keeps maps and sets in order, as `decode` would.
 pub struct Reader<'a>(Decoder<'a>);
 
 impl<'a> Reader<'a> {
@@ -418,13 +426,15 @@ struct Decoder<'a> {
     pos: usize,
     max_depth: usize,
     deepest: usize,
+    /// Items promised by the heads read so far.
+    promised: usize,
 }
 
 impl<'a> Decoder<'a> {
     fn new(input: &'a [u8], limits: &Limits) -> Decoder<'a> {
         let cut = input.len() > limits.max_bytes;
         let buf = input.get(..limits.max_bytes).unwrap_or(input);
-        Decoder { buf, cut, pos: 0, max_depth: limits.max_depth, deepest: 0 }
+        Decoder { buf, cut, pos: 0, max_depth: limits.max_depth, deepest: 0, promised: 0 }
     }
 
     fn remaining(&self) -> usize {
@@ -473,6 +483,13 @@ impl<'a> Decoder<'a> {
             Some(need) if need <= self.remaining() => Ok(n as usize),
             _ => Err(self.short()),
         }
+    }
+
+    /// Takes a head's promise of `items` more items, for space to hold them. Each is at least one
+    /// byte, so promises beyond the input can never be kept: this bounds what `item` allocates.
+    fn promise(&mut self, items: usize) -> Result<(), DecodeError> {
+        self.promised = self.promised.saturating_add(items);
+        if self.promised > self.buf.len() { Err(self.short()) } else { Ok(()) }
     }
 
     /// Expects a head of `major` and returns its argument.
@@ -574,7 +591,8 @@ impl<'a> Decoder<'a> {
             MAJOR_ARRAY => {
                 self.enter(depth + 1)?;
                 let n = self.len(ib, 1)?;
-                let mut l = Vec::new();
+                self.promise(n)?;
+                let mut l = Vec::with_capacity(n);
                 for _ in 0..n {
                     l.push(self.item(depth + 1)?);
                 }
@@ -583,7 +601,8 @@ impl<'a> Decoder<'a> {
             MAJOR_MAP => {
                 self.enter(depth + 1)?;
                 let n = self.len(ib, 2)?;
-                let mut m = BTreeMap::new();
+                self.promise(n * 2)?;
+                let mut m = Vec::with_capacity(n);
                 let mut prev: &[u8] = &[];
                 for _ in 0..n {
                     let start = self.pos;
@@ -594,13 +613,10 @@ impl<'a> Decoder<'a> {
                         return Err(DecodeError::MapKeyOrder);
                     }
                     prev = raw;
-                    let v = self.item(depth + 1)?;
-                    // Distinct bytes, one value: links with one content hash.
-                    if m.insert(k, v).is_some() {
-                        return Err(DecodeError::EqualLinks);
-                    }
+                    m.push((k, self.item(depth + 1)?));
                 }
-                Ok(Value::Map(m))
+                // Distinct bytes, one value: links with one content hash.
+                ValueMap::from_decoded(m).map(Value::Map).ok_or(DecodeError::EqualLinks)
             }
             MAJOR_TAG => {
                 let tag = self.arg(ib)?;
@@ -641,7 +657,8 @@ impl<'a> Decoder<'a> {
                     return Err(DecodeError::TagContent(tag));
                 }
                 let n = self.len(ib, 1)?;
-                let mut s = BTreeSet::new();
+                self.promise(n)?;
+                let mut s = Vec::with_capacity(n);
                 let mut prev: &[u8] = &[];
                 for _ in 0..n {
                     let start = self.pos;
@@ -651,11 +668,9 @@ impl<'a> Decoder<'a> {
                         return Err(DecodeError::SetOrder);
                     }
                     prev = raw;
-                    if !s.insert(e) {
-                        return Err(DecodeError::EqualLinks);
-                    }
+                    s.push(e);
                 }
-                Ok(Value::Set(s))
+                ValueSet::from_decoded(s).map(Value::Set).ok_or(DecodeError::EqualLinks)
             }
             TAG_TID => Ok(Value::Tid(Tid::from_bytes(self.fixed_bytes::<TID_LEN>(tag)?))),
             TAG_ENUM => {
@@ -673,7 +688,7 @@ impl<'a> Decoder<'a> {
             }
             TAG_LINK => {
                 self.enter(inner + 1)?;
-                self.link_content().map(Value::Link)
+                self.link_content().map(Value::link)
             }
             _ => {
                 let start = self.pos;
@@ -683,7 +698,7 @@ impl<'a> Decoder<'a> {
                 self.deepest = self.deepest.max(saved);
                 let bytes = self.buf.get(start..self.pos).unwrap_or(&[]).to_vec();
                 let content = CanonicalBytes { bytes, depth: content_depth };
-                Unknown::new(tag, content).map(Value::Unknown).ok_or(DecodeError::TagContent(tag))
+                Unknown::new(tag, content).map(Value::unknown).ok_or(DecodeError::TagContent(tag))
             }
         }
     }

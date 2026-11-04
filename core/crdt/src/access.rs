@@ -186,11 +186,13 @@ fn value_bytes(v: &Value) -> usize {
     match v {
         Value::Str(s) => s.len(),
         Value::Bytes(b) => b.len(),
-        Value::Map(m) => tree(m) + m.iter().map(|(k, x)| value_bytes(k) + value_bytes(x)).sum::<usize>(),
+        Value::Map(m) => 2 * m.len() * size_of::<Value>() + m.iter().map(|(k, x)| value_bytes(k) + value_bytes(x)).sum::<usize>(),
         Value::List(l) => l.len() * size_of::<Value>() + l.iter().map(value_bytes).sum::<usize>(),
-        Value::Set(s) => nodes(s.len(), size_of::<Value>()) + s.iter().map(value_bytes).sum::<usize>(),
+        Value::Set(s) => s.len() * size_of::<Value>() + s.iter().map(value_bytes).sum::<usize>(),
         Value::Enum(_, p) => p.as_deref().map_or(0, |p| size_of::<Value>() + value_bytes(p)),
-        _ => 0,
+        Value::Link(_) => size_of::<osis_base::Link>(),
+        Value::Unknown(u) => size_of::<osis_base::Unknown>() + u.content().as_bytes().len(),
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Tid(_) => 0,
     }
 }
 

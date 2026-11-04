@@ -105,7 +105,7 @@ fn big_map_edit_cost() {
     while n <= max {
         let (mut e, batches, bytes, reopen) = engine_reopenable(n as u64);
         let me = e.tid();
-        let kv: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
+        let kv: osis_base::ValueMap = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
         let t0 = Instant::now();
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);
@@ -307,8 +307,8 @@ fn deep_map_edit_cost() {
     for n in [10_000usize, 100_000] {
         let (mut e, batches, bytes) = engine(n as u64 + 1);
         let me = e.tid();
-        let inner: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
-        let outer = Value::Map(BTreeMap::from([(Value::Str("inner".into()), Value::Map(inner)), (Value::Str("x".into()), Value::Int(1))]));
+        let inner: osis_base::ValueMap = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
+        let outer = Value::Map(osis_base::ValueMap::from([(Value::Str("inner".into()), Value::Map(inner)), (Value::Str("x".into()), Value::Int(1))]));
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, me);
         m.set(t, &a, &outer).unwrap();
@@ -1463,7 +1463,7 @@ fn big_map_apply_memory() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap().unwrap();
     let setup = lp.packages(0).unwrap();
-    let kv: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
+    let kv: osis_base::ValueMap = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
     let mut fill = None;
     step(&format!("n={n} write the commit"), &mut || {
         let mut m = Mutation::new();

@@ -4,7 +4,6 @@
 use osis_base::format::{TAG_ENUM, TAG_LINK, TAG_SET, TAG_STRUCT_RESERVED, TAG_TID};
 use osis_base::{BlobId, CanonicalBytes, DecodeError, Float, Limits, Link, Tid, Unknown, Value, decode, decode_prefix, encode, item_prefix};
 use proptest::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
 
 fn d(b: &[u8]) -> Result<Value, DecodeError> {
     decode(b, &Limits::DEFAULT)
@@ -32,7 +31,7 @@ fn leaf() -> impl Strategy<Value = Value> {
         prop::collection::vec(any::<u8>(), 0..30).prop_map(Value::Bytes),
         any::<[u8; 15]>().prop_map(|b| Value::Tid(Tid::from_bytes(b))),
         (any::<[u8; 32]>(), any::<[u8; 32]>(), any::<u8>(), any::<[u8; 32]>())
-            .prop_map(|(hash, blob, suite, key)| Value::Link(Link { hash, blob: BlobId(blob), suite, key })),
+            .prop_map(|(hash, blob, suite, key)| Value::link(Link { hash, blob: BlobId(blob), suite, key })),
         prop_oneof![Just(0u64), Just(23), Just(300), Just(i64::MAX as u64)].prop_map(|c| Value::Enum(c, None)),
     ]
 }
@@ -45,7 +44,7 @@ fn value() -> impl Strategy<Value = Value> {
             prop::collection::vec(inner.clone(), 0..6).prop_map(|e| Value::Set(e.into_iter().collect())),
             (0..=i64::MAX as u64, inner.clone()).prop_map(|(c, p)| Value::Enum(c, Some(Box::new(p)))),
             (prop_oneof![Just(0u64), Just(2), Just(255), Just(259), Just(TAG_STRUCT_RESERVED), Just(70_000), Just(u64::MAX)], inner)
-                .prop_map(|(t, c)| Value::Unknown(Unknown::new(t, CanonicalBytes::from_value(&c)).unwrap())),
+                .prop_map(|(t, c)| Value::unknown(Unknown::new(t, CanonicalBytes::from_value(&c)).unwrap())),
         ]
     })
 }
@@ -194,8 +193,8 @@ fn known_encodings() {
         (Value::Str("a".into()), "6161"),
         (Value::Bytes(vec![1, 2]), "420102"),
         (Value::List(vec![]), "80"),
-        (Value::Map(BTreeMap::from([(Value::Int(1), Value::Int(2)), (Value::Int(-1), Value::Int(0)), (Value::Str("a".into()), Value::Int(0))])), "a3 0102 2000 616100"),
-        (Value::Set(BTreeSet::from([Value::Int(10), Value::Int(1)])), "d90102 82 01 0a"),
+        (Value::Map(osis_base::ValueMap::from([(Value::Int(1), Value::Int(2)), (Value::Int(-1), Value::Int(0)), (Value::Str("a".into()), Value::Int(0))])), "a3 0102 2000 616100"),
+        (Value::Set(osis_base::ValueSet::from([Value::Int(10), Value::Int(1)])), "d90102 82 01 0a"),
     ];
     for (v, h) in cases {
         assert_eq!(encode(&v), hex(h), "{v:?}");
@@ -206,10 +205,10 @@ fn known_encodings() {
     let e = Value::Enum(3, Some(Box::new(Value::Bool(true))));
     assert_eq!(encode(&e), hex(&format!("{} 82 03 f5", tag_head(TAG_ENUM))));
     assert_eq!(encode(&Value::Enum(0, None)), hex(&format!("{} 81 00", tag_head(TAG_ENUM))));
-    let l = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
+    let l = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
     let lh = format!("{} 83 5820{} 5820{} 5821 01{}", tag_head(TAG_LINK), "01".repeat(32), "02".repeat(32), "03".repeat(32));
     assert_eq!(encode(&l), hex(&lh));
-    assert!(matches!(d(&hex(&lh)), Ok(Value::Link(x)) if Value::Link(x) == l && x.blob == BlobId([2; 32]) && x.key == [3; 32]));
+    assert!(matches!(d(&hex(&lh)), Ok(Value::Link(x)) if Value::Link(x.clone()) == l && x.blob == BlobId([2; 32]) && x.key == [3; 32]));
     // §5: unknown tags keep tag and content.
     let u = hex("c2 4101");
     let v = d(&u).unwrap();
@@ -225,9 +224,9 @@ fn known_encodings() {
 #[test]
 fn links_equal_by_hash() {
     use std::hash::{BuildHasher, RandomState};
-    let a = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
-    let b = Value::Link(Link { hash: [1; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
-    let c = Value::Link(Link { hash: [6; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
+    let a = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
+    let b = Value::link(Link { hash: [1; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let c = Value::link(Link { hash: [6; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] });
     assert_eq!(a, b);
     assert_ne!(a, c);
     let rs = RandomState::new();
@@ -249,8 +248,8 @@ fn links_equal_by_hash() {
 // byte-sorted input re-encodes to itself.
 #[test]
 fn links_sort_by_bytes() {
-    let la = Value::Link(Link { hash: [1; 32], blob: BlobId([9; 32]), suite: 1, key: [0; 32] });
-    let lb = Value::Link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0; 32] });
+    let la = Value::link(Link { hash: [1; 32], blob: BlobId([9; 32]), suite: 1, key: [0; 32] });
+    let lb = Value::link(Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [0; 32] });
     let x = Value::List(vec![la, Value::Int(3)]);
     let y = Value::List(vec![lb, Value::Int(5)]);
     assert_eq!(x.cmp(&y), std::cmp::Ordering::Less);
@@ -421,5 +420,211 @@ fn head_boundaries() {
             assert_eq!(got, want, "major {major} arg {a}");
             assert_eq!(head_len(a), want.len(), "arg {a}");
         }
+    }
+}
+
+/// One hostile shape: `item` repeated in a list of `n` bytes at most.
+fn repeated(n: usize, item: &[u8]) -> Vec<u8> {
+    let count = (n - 9) / item.len();
+    let mut out = Vec::with_capacity(n);
+    osis_base::cbor::head(&mut out, osis_base::cbor::MAJOR_ARRAY, count as u64);
+    for _ in 0..count {
+        out.extend_from_slice(item);
+    }
+    out
+}
+
+/// A list holding `item` `depth` lists deep.
+fn nested(depth: usize, item: &[u8]) -> Vec<u8> {
+    [&vec![0x81; depth][..], item].concat()
+}
+
+/// The inputs `decode_peak_within_the_bound` measures: name, bytes. Each decodes.
+fn hostile_shapes(n: usize) -> Vec<(&'static str, Vec<u8>)> {
+    let tid = [&[0xd9, 0x06, 0x50, 0x4f][..], &[1; 15][..]].concat();
+    vec![
+        ("{0:0}", repeated(n, &[0xa1, 0, 0])),
+        ("{}", repeated(n, &[0xa0])),
+        ("[]", repeated(n, &[0x80])),
+        ("[[]]", repeated(n, &[0x81, 0x80])),
+        ("[0]", repeated(n, &[0x81, 0])),
+        ("0", repeated(n, &[0])),
+        ("empty str", repeated(n, &[0x60])),
+        ("one-byte str", repeated(n, &[0x61, b'a'])),
+        ("one-byte bytes", repeated(n, &[0x41, 1])),
+        ("set of one", repeated(n, &[0xd9, 0x01, 0x02, 0x81, 0])),
+        ("enum of one", repeated(n, &[0xd9, 0x06, 0x51, 0x82, 0, 0])),
+        ("unknown tag", repeated(n, &[0xc0, 0])),
+        ("unknown tag around a list", [&[0xc0][..], &repeated(n, &[0])].concat()),
+        ("unknown tags at the depth limit", repeated(n, &[&[0xc0; 63][..], &[0]].concat())),
+        ("tid", repeated(n, &tid)),
+        ("lists at the depth limit", repeated(n, &nested(63, &[0]))),
+        ("maps at the depth limit", repeated(n, &[&[0xa1, 0][..]; 63].concat().into_iter().chain([0]).collect::<Vec<u8>>())),
+        ("big map", {
+            let count = n / 10;
+            let mut out = Vec::with_capacity(n);
+            osis_base::cbor::head(&mut out, osis_base::cbor::MAJOR_MAP, count as u64);
+            for i in 0..count as i64 {
+                encode_into_int(&mut out, i);
+                out.push(0);
+            }
+            out
+        }),
+    ]
+}
+
+/// Inputs that fail, after a head has claimed space their bytes never fill. A claim is space
+/// allocated but untouched, until an item lands in it.
+fn lying_shapes(n: usize) -> Vec<(&'static str, Vec<u8>)> {
+    use osis_base::cbor::{MAJOR_ARRAY, head};
+    let claim = |items: &[u8]| {
+        let mut out = Vec::with_capacity(n);
+        head(&mut out, MAJOR_ARRAY, (n - 9) as u64);
+        while out.len() + items.len() <= n {
+            out.extend_from_slice(items);
+        }
+        out
+    };
+    // each of the depth limit's lists claims its share of what is left
+    let mut spine = Vec::with_capacity(n);
+    for _ in 0..osis_base::format::MAX_VALUE_DEPTH {
+        head(&mut spine, MAJOR_ARRAY, (n / 2) as u64);
+    }
+    spine.resize(n, 0);
+    vec![("one claim, unknown tags", claim(&[0xc0, 0])), ("one claim, zeros", claim(&[0])), ("claims at the depth limit", spine)]
+}
+
+fn encode_into_int(out: &mut Vec<u8>, i: i64) {
+    osis_base::cbor::encode_into(&Value::Int(i), out);
+}
+
+#[cfg(target_os = "linux")]
+fn status_kib(field: &str) -> usize {
+    let s = std::fs::read_to_string("/proc/self/status").unwrap();
+    let line = s.lines().find(|l| l.starts_with(field)).unwrap();
+    line.split_whitespace().nth(1).unwrap().parse().unwrap()
+}
+
+/// Bytes of input a decode may spend `DECODE_PEAK_MAX` per byte on, measured.
+const PEAK_INPUT: usize = 2 << 20;
+/// Allowed resident growth per input byte; the bound `decode` states (`osis_base::cbor`).
+const DECODE_PEAK_MAX: usize = 64;
+/// Allowed address space growth per input byte, untouched claims included: 72 (`osis_base::cbor`),
+/// and a test thread's malloc arena grows it in steps of 64 MiB, 32 B per byte here.
+const DECODE_CLAIM_MAX: usize = 104;
+
+// Every shape of small items, and of heads claiming what their bytes cannot fill, costs under
+// `DECODE_PEAK_MAX` per byte of input in real memory and under `DECODE_CLAIM_MAX` in address space:
+// each runs in its own child process, as the peaks are process-wide and this binary's tests share one.
+#[cfg(target_os = "linux")]
+#[test]
+fn decode_peak_within_the_bound() {
+    const CHILD: &str = "OSIS_DECODE_PEAK_SHAPE";
+    let shapes = |n| hostile_shapes(n).into_iter().chain(lying_shapes(n)).collect::<Vec<_>>();
+    if let Ok(which) = std::env::var(CHILD) {
+        let (_, bytes) = shapes(PEAK_INPUT).swap_remove(which.parse().unwrap());
+        let _ = std::fs::write("/proc/self/clear_refs", "5");
+        let (rss0, vm0) = (status_kib("VmRSS"), status_kib("VmSize"));
+        let v = decode(&bytes, &Limits::DEFAULT);
+        println!("peak_kib={} {}", status_kib("VmHWM").saturating_sub(rss0), status_kib("VmPeak").saturating_sub(vm0));
+        std::hint::black_box(&v);
+        return;
+    }
+    for (name, bytes) in hostile_shapes(1 << 12) {
+        decode(&bytes, &Limits::DEFAULT).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    let exe = std::env::current_exe().unwrap();
+    let mut over = Vec::new();
+    for (i, (name, _)) in shapes(1 << 12).iter().enumerate() {
+        let out = std::process::Command::new(&exe)
+            .args(["--exact", "decode_peak_within_the_bound", "--nocapture", "--test-threads=1"])
+            .env(CHILD, i.to_string())
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{name}: {text}");
+        let line = text.lines().find_map(|l| l.split("peak_kib=").nth(1)).unwrap_or_else(|| panic!("{name}: {text}"));
+        let kib: Vec<usize> = line.split_whitespace().map(|x| x.parse().unwrap()).collect();
+        let [real, claimed] = kib[..] else { panic!("{name}: {line}") };
+        let per_byte = |k: usize| k as f64 * 1024.0 / PEAK_INPUT as f64;
+        println!("{name}: {:.1} B per byte, {:.1} claimed", per_byte(real), per_byte(claimed));
+        if real * 1024 > DECODE_PEAK_MAX * PEAK_INPUT || claimed * 1024 > DECODE_CLAIM_MAX * PEAK_INPUT {
+            over.push((*name, per_byte(real), per_byte(claimed)));
+        }
+    }
+    assert!(over.is_empty(), "over {DECODE_PEAK_MAX} B per byte, or {DECODE_CLAIM_MAX} claimed: {over:?}");
+}
+
+// A valid value's heads promise at most one item per byte; heads that promise more are refused
+// before their space is allocated, each on its own within the input and all together not.
+#[test]
+fn lying_heads_refused_before_allocating() {
+    use osis_base::cbor::{MAJOR_ARRAY, MAJOR_MAP, head};
+    let n: usize = 1 << 16;
+    // each list claims all that is left: only the first few can be believed
+    let mut nested = Vec::new();
+    while nested.len() + 3 < n {
+        let left = n - nested.len() - 3;
+        head(&mut nested, MAJOR_ARRAY, left as u64);
+    }
+    nested.resize(n, 0);
+    assert_eq!(decode(&nested, &Limits { max_depth: usize::MAX, max_bytes: n }), Err(DecodeError::Truncated));
+    let mut maps = Vec::new();
+    head(&mut maps, MAJOR_MAP, (n / 2 - 3) as u64);
+    head(&mut maps, osis_base::cbor::MAJOR_UINT, 0);
+    head(&mut maps, MAJOR_MAP, (n / 2 - 3) as u64);
+    maps.resize(n, 0);
+    assert_eq!(decode(&maps, &Limits { max_depth: usize::MAX, max_bytes: n }), Err(DecodeError::Truncated));
+    // exactly as many as the bytes: every item a byte, nothing refused
+    let mut exact = Vec::new();
+    head(&mut exact, MAJOR_ARRAY, 1000);
+    exact.resize(1000 + exact.len(), 0);
+    assert!(matches!(d(&exact), Ok(Value::List(l)) if l.len() == 1000));
+}
+
+// `Value`'s size is what every item of a decode costs (`osis_base::cbor::decode`).
+#[test]
+fn value_stays_small() {
+    assert!(size_of::<Value>() <= 32, "{}", size_of::<Value>());
+}
+
+// `ValueMap` and `ValueSet` behave as the `BTreeMap` and `BTreeSet` they replaced, equal link keys
+// included: the same entries in the same order by any mix of operations.
+proptest! {
+    #[test]
+    fn sorted_containers_match_btree(ops in proptest::collection::vec((0u8..4, 0u8..12, any::<u8>()), 0..200)) {
+        use std::collections::{BTreeMap, BTreeSet};
+        // a key: an int, or a link of hash `k % 3` with a blob telling equal ones apart
+        let key = |k: u8, v: u8| if k < 6 { Value::Int(k.into()) } else { Value::link(Link { hash: [k % 3; 32], blob: BlobId([v; 32]), suite: 1, key: [0; 32] }) };
+        let bytes = |v: &Value| encode(v);
+        let (mut m, mut bm) = (osis_base::ValueMap::new(), BTreeMap::new());
+        let (mut s, mut bs) = (osis_base::ValueSet::new(), BTreeSet::new());
+        let mut all = Vec::new();
+        for (op, k, v) in ops {
+            let (k, x) = (key(k, v), Value::Int(v.into()));
+            all.push((k.clone(), x.clone()));
+            match op {
+                0 | 1 => {
+                    prop_assert_eq!(m.insert(k.clone(), x.clone()), bm.insert(k.clone(), x));
+                    prop_assert_eq!(s.insert(k.clone()), bs.insert(k));
+                }
+                2 => {
+                    prop_assert_eq!(m.remove(&k), bm.remove(&k));
+                    prop_assert_eq!(s.remove(&k), bs.remove(&k));
+                }
+                _ => {
+                    prop_assert_eq!(m.get(&k), bm.get(&k));
+                    prop_assert_eq!(s.contains(&k), bs.contains(&k));
+                }
+            }
+            prop_assert_eq!(m.iter().map(|(a, b)| (bytes(a), bytes(b))).collect::<Vec<_>>(), bm.iter().map(|(a, b)| (bytes(a), bytes(b))).collect::<Vec<_>>());
+            prop_assert_eq!(s.iter().map(bytes).collect::<Vec<_>>(), bs.iter().map(bytes).collect::<Vec<_>>());
+        }
+        let cm: osis_base::ValueMap = all.iter().cloned().collect();
+        let bcm: BTreeMap<Value, Value> = all.iter().cloned().collect();
+        prop_assert_eq!(cm.iter().map(|(a, b)| (bytes(a), bytes(b))).collect::<Vec<_>>(), bcm.iter().map(|(a, b)| (bytes(a), bytes(b))).collect::<Vec<_>>());
+        let cs: osis_base::ValueSet = all.iter().map(|e| e.0.clone()).collect();
+        let bcs: BTreeSet<Value> = all.iter().map(|e| e.0.clone()).collect();
+        prop_assert_eq!(cs.iter().map(bytes).collect::<Vec<_>>(), bcs.iter().map(bytes).collect::<Vec<_>>());
     }
 }

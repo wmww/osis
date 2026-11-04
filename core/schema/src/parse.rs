@@ -554,7 +554,7 @@ fn lit_value(s: &Schema, lit: &Lit, ty: &Type) -> Result<Value, String> {
                     e.insert(s.default_of(f).ok_or_else(|| format!("struct literal lacks field {}", f.name))?);
                 }
             }
-            Value::Map(m)
+            Value::Map(m.into_iter().collect())
         }
         (Type::Enum(en), Lit::Ident(n, p)) => {
             let (id, c) = en.cases.iter().find(|(_, c)| &c.name == n).ok_or_else(|| format!("unknown case {n}"))?;

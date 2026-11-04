@@ -573,7 +573,7 @@ fn diff_values_at<V: View>(base: Option<&Value>, new: &Value, view: &V, path: &m
         },
         (Encoding::Map, Value::Map(b), Value::Map(n)) => {
             let vview = view.element().ok_or(Error::Mismatch("map without value type"))?;
-            for k in b.keys().filter(|k| !n.contains_key(*k)) {
+            for k in b.keys().filter(|k| !n.contains_key(k)) {
                 out.push(PathOp { path: path.clone(), op: Op::Remove(k.clone()) });
             }
             for (k, nv) in n {

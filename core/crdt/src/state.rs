@@ -778,13 +778,9 @@ impl Fragment {
                 Some(Value::Enum(id, s.payloads.get(&id).and_then(|f| f.read()).map(Box::new)))
             }
             Fragment::Set(s) => {
-                // `insert` keeps the first of equal values: of equal links, the lowest live dot's
-                // (§5.5; `collect` would keep the last).
-                let mut out = std::collections::BTreeSet::new();
-                for v in s.elems.values().filter_map(|e| e.frag.as_ref()?.read()) {
-                    out.insert(v);
-                }
-                Some(Value::Set(out))
+                // `collect` keeps the last of equal values, so backwards: of equal links, the lowest
+                // live dot's (§5.5).
+                Some(Value::Set(s.elems.values().rev().filter_map(|e| e.frag.as_ref()?.read()).collect()))
             }
             Fragment::Map(m) => {
                 let mut by_key: BTreeMap<&Value, Fragment> = BTreeMap::new();

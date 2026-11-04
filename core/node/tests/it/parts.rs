@@ -218,7 +218,7 @@ fn on(pk: &osis_node::local_peer::Package, t: Tid) -> Vec<u8> {
 #[test]
 fn part_missing_pages_waits_like_a_chainless_one_spec_commits_4() {
     use crate::common::*;
-    let map: std::collections::BTreeMap<Value, Value> = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
+    let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     let big = Value::Map(map);
     for (first_g, synced) in [(true, false), (false, false), (true, true), (false, true)] {
         let want = big.clone();
@@ -962,7 +962,7 @@ fn junk_part_keeps_out_no_true_part_spec_commits_4() {
 #[test]
 fn counted_as_held_part_order_spec_commits_4() {
     use crate::common::*;
-    let map: std::collections::BTreeMap<Value, Value> = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
+    let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     let big = Value::Map(map);
     let mut read = Vec::new();
     for first_g in [true, false] {
@@ -1945,7 +1945,7 @@ fn forge_lowering(lp: &mut osis_node::local_peer::LocalPeer, by: usize, t: Tid, 
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     use osis_schema::Codec as _;
     let roles = ak("roles.0");
-    let v = Value::Map(std::collections::BTreeMap::from([(Value::Tid(who), edge(Role::Read).to_value())]));
+    let v = Value::Map(osis_base::ValueMap::from([(Value::Tid(who), edge(Role::Read).to_value())]));
     let author = lp.peers[by].engine.tid();
     let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
     let own = Source::commit(osis_base::CommitId([0; 32]));
@@ -2026,13 +2026,13 @@ fn lowering_ends_a_wait_only_by_a_possible_admin_spec_commits_4() {
             lp.advance(1_000);
             let mut extra = Vec::new();
             if who == Who::SelfGranted {
-                let v = Value::Map(std::collections::BTreeMap::from([(Value::Tid(att), edge(Role::Admin).to_value())]));
+                let v = Value::Map(osis_base::ValueMap::from([(Value::Tid(att), edge(Role::Admin).to_value())]));
                 extra.push(crate::validity::forge_role_commit(&mut lp, 2, y, &ak("roles.0"), &v, 1 << 39));
                 lp.advance(1_000);
             }
             // a reader names a sockpuppet admin, the sockpuppet does the lowering
             let by = if who == Who::Puppet {
-                let v = Value::Map(std::collections::BTreeMap::from([(Value::Tid(lp.peers[4].engine.tid()), edge(Role::Admin).to_value())]));
+                let v = Value::Map(osis_base::ValueMap::from([(Value::Tid(lp.peers[4].engine.tid()), edge(Role::Admin).to_value())]));
                 extra.push(crate::validity::forge_role_commit(&mut lp, 2, y, &ak("roles.0"), &v, 1 << 39));
                 lp.advance(1_000);
                 4

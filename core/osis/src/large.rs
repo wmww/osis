@@ -71,7 +71,7 @@ impl ValueStream {
             Value::Str(s) => Ok(ValueStream { db: db.clone(), tid, len: s.len() as u64, src: Src::Inline(s.into_bytes()), pos: 0 }),
             Value::Bytes(b) => Ok(ValueStream { db: db.clone(), tid, len: b.len() as u64, src: Src::Inline(b), pos: 0 }),
             Value::Link(link) => {
-                let mut reader = Box::new(tree_reader(link));
+                let mut reader = Box::new(tree_reader(*link));
                 let mut first = Vec::new();
                 let (len, head) = loop {
                     if let Some(h) = string_head(&first) {

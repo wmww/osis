@@ -1891,12 +1891,12 @@ mod tests {
         assert!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(5)).unwrap().is_empty());
         assert_eq!(key_dots(&mut txn, &tid, &ak, &set, &Value::Int(6)).unwrap().len(), 1);
         // links: by content hash, whatever blob holds the value
-        let link = |b: u8| Value::Link(osis_base::Link { hash: [7; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
+        let link = |b: u8| Value::link(osis_base::Link { hash: [7; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
         assert_eq!(link(1), link(2));
         assert_eq!(key_row(&set, &link(1), None), key_row(&set, &link(2), None));
         assert_eq!(key_row(&set, &Value::List(vec![link(1)]), None), key_row(&set, &Value::List(vec![link(2)]), None));
         // a value with struct parts is matched as projected: not by the index
-        let st = Value::Map(BTreeMap::from([(Value::Int(0), Value::Int(1))]));
+        let st = Value::Map(osis_base::ValueMap::from([(Value::Int(0), Value::Int(1))]));
         assert_eq!(op_paths(&[PathOp { path: Vec::new(), op: Op::Add(Value::List(vec![st.clone()])) }], &mut |v| Ok(v.clone())).unwrap(), None);
         assert_eq!(op_paths(&[PathOp { path: vec![PathSeg::Key(st.clone()), PathSeg::Key(Value::Int(1))], op: Op::Set(Value::Int(2)) }], &mut |v| Ok(v.clone())).unwrap(), None);
         assert_eq!(op_paths(&[PathOp { path: vec![PathSeg::Key(st)], op: Op::Put(Value::Int(2)) }], &mut |v| Ok(v.clone())).unwrap(), None);
@@ -1913,7 +1913,7 @@ mod tests {
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:s.0").unwrap());
         let nodes = [sess(1), sess(2)];
-        let link = |h: u8, b: u8| Value::Link(osis_base::Link { hash: [h; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
+        let link = |h: u8, b: u8| Value::link(osis_base::Link { hash: [h; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
         let pool = |i: u64| -> Value {
             match i % 14 {
                 0 => Value::Float(Float::new(0.0)),

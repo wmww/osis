@@ -595,7 +595,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.advance(1_000);
     lp.peers[1].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced, keep: None }).unwrap();
     lp.advance(1_000);
-    let grant = Value::Map(BTreeMap::from([(Value::Tid(c), edge(Role::Read).to_value())]));
+    let grant = Value::Map(osis_base::ValueMap::from([(Value::Tid(c), edge(Role::Read).to_value())]));
     let forged = forge_role_commit(&mut lp, 1, d, &ak("roles.0"), &grant, 1 << 40);
     lp.sync_all().unwrap();
     lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
@@ -775,7 +775,7 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
 /// One map entry `k: v` written under `src` at `ts` with counters from `lo`.
 fn entry_by(src: osis_crdt::Source, ts: osis_base::Ts, lo: u64, k: &str, v: &str) -> osis_crdt::Fragment {
     let mut w = osis_crdt::Writer::new(ts, src, lo);
-    osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(BTreeMap::from([(s(k), s(v))]))).unwrap()
+    osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(osis_base::ValueMap::from([(s(k), s(v))]))).unwrap()
 }
 
 /// The own source of held commit `c` at peer `i` (a session-form commit's session).
@@ -800,7 +800,7 @@ fn writer_snapshot_vouches_spec_perm_5_2() {
     let (mut lp, d, _, _) = setup(53);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
-    m.set(d, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("bob"))]))).unwrap();
+    m.set(d, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("bob"))]))).unwrap();
     let real = lp.peers[1].commit(m).unwrap().unwrap();
     sync(&mut lp, 1, 0);
     let lo = lp.peers[1].engine.header(&real).unwrap().aspects[0].lo;
@@ -857,7 +857,7 @@ fn inflated_frontier_keeps_write_in_move_spec_perm_7() {
     let (mut lp, d, _, _) = setup(55);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
-    m.set(d, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("bob"))]))).unwrap();
+    m.set(d, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("bob"))]))).unwrap();
     let bobs = lp.peers[1].commit(m).unwrap().unwrap();
     sync(&mut lp, 1, 0);
     lp.advance(1_000);
@@ -869,7 +869,7 @@ fn inflated_frontier_keeps_write_in_move_spec_perm_7() {
     f.join(entry_by(crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), now, 1 << 42, "c", "alice"));
     let snap = forge_snapshot_with(&mut lp, 2, d, &m_ak, now, f, frontier_of(&bs, 1 << 40));
     lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
-    let want = Some(Value::Map(BTreeMap::from([(s("c"), s("alice")), (s("k"), s("bob"))])));
+    let want = Some(Value::Map(osis_base::ValueMap::from([(s("c"), s("alice")), (s("k"), s("bob"))])));
     assert_eq!(lp.peers[0].engine.get(&d, &m_ak).unwrap(), want);
     lp.advance(1_000);
     let (copy, _) = lp.peers[0].engine.move_thing(&d, a).unwrap();
@@ -972,7 +972,7 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     let (mut lp, d, b, _) = setup(61);
     lp.peers.push(osis_node::local_peer::Peer::new(6100, T0).unwrap());
     lp.sync_all().unwrap();
-    let one = |k: &str, v: &str| Value::Map(BTreeMap::from([(s(k), s(v))]));
+    let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
     put_at(&mut lp, 1, d, &["k"], one("a", "1"));
     lp.sync_all().unwrap();
     lp.advance(DAY);
@@ -1029,7 +1029,7 @@ fn misstated_copy_keeps_no_other_record_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup(65);
     lp.peers.push(osis_node::local_peer::Peer::new(6500, T0).unwrap());
     lp.sync_all().unwrap();
-    let one = |k: &str, v: &str| Value::Map(BTreeMap::from([(s(k), s(v))]));
+    let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
     put_at(&mut lp, 1, d, &["k"], one("a", "1"));
     lp.sync_all().unwrap();
     lp.advance(DAY);
@@ -1076,7 +1076,7 @@ fn commit_form_carried_writes_vouched_spec_perm_5_2() {
     let (x, y) = (osis_base::CommitId([0xA1; 32]), osis_base::CommitId([0xB2; 32]));
     let by = |c: osis_base::CommitId, ts, k: &str| {
         let mut w = osis_crdt::Writer::new(ts, osis_crdt::Source::commit(c), 1);
-        osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(BTreeMap::from([(s(k), s(k))]))).unwrap()
+        osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(osis_base::ValueMap::from([(s(k), s(k))]))).unwrap()
     };
     let mut f = by(x, old, "bob");
     f.join(by(y, now, "alice"));
@@ -1419,8 +1419,8 @@ fn unmerge_paged(seed: u64) {
         set_edge(&mut lp.peers[0].engine, d, c, Some(edge(Role::Admin)), None);
         let pad = "x".repeat(40);
         let key = |i: usize, sfx: &str| s(&format!("key-{i:05}{sfx}"));
-        let big: BTreeMap<Value, Value> = (0..3000).map(|i| (key(i, ""), s(&pad))).collect();
-        let tagset: BTreeSet<Value> = (0..3000).map(|i| key(i, &pad)).collect();
+        let big: osis_base::ValueMap = (0..3000).map(|i| (key(i, ""), s(&pad))).collect();
+        let tagset: osis_base::ValueSet = (0..3000).map(|i| key(i, &pad)).collect();
         let text: String = (0..20_000u32).map(|i| char::from_u32(0x1F600 + i % 64).unwrap()).collect();
         let mut m = Mutation::new();
         m.set(d, &BIG, &Value::Map(big.clone())).unwrap();
@@ -1528,7 +1528,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     lp.peers.push(osis_node::local_peer::Peer::new(9101, T0).unwrap());
     let u = new_thing(&mut lp, 1);
     lp.sync_all().unwrap();
-    let one = |k: &str, v: &str| Value::Map(BTreeMap::from([(s(k), s(v))]));
+    let one = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(s(k), s(v))]));
     put_at(&mut lp, 1, d, &["k"], one("a", "1"));
     lp.sync_all().unwrap();
     lp.advance(DAY);
@@ -1772,7 +1772,7 @@ fn snapshot_forging_entry_key_changes_nothing_spec_perm_5_2() {
     sync(&mut lp, 0, 3);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
-    m.set(t, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("real"))]))).unwrap();
+    m.set(t, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("real"))]))).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     for i in 1..3 {
         sync(&mut lp, 0, i);
@@ -1857,7 +1857,7 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
     let base = packages(&mut lp, 0);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
-    m.set(t, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("real"))]))).unwrap();
+    m.set(t, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("real"))]))).unwrap();
     m.set(t, &REG, &s("reg")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);
@@ -1922,7 +1922,7 @@ fn forged_snapshot_covers_nothing_spec_commits_5() {
     set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
-    m.set(t, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("real"))]))).unwrap();
+    m.set(t, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("real"))]))).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(1_000);
     let honest = lp.peers[0].engine.snapshot(&t, &m_ak).unwrap().unwrap();
@@ -2020,7 +2020,7 @@ fn snapshot_covers_write_inside_earlier_entry_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let map = ak("t:map.0");
     let mut m = Mutation::new();
-    m.set(t, &MAP, &Value::Map(BTreeMap::from([(s("k"), item("x", 1))]))).unwrap();
+    m.set(t, &MAP, &Value::Map(osis_base::ValueMap::from([(s("k"), item("x", 1))]))).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("k")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) }).unwrap();
@@ -2044,7 +2044,7 @@ fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
     sync(&mut lp, 0, 3);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
-    m.set(t, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("real"))]))).unwrap();
+    m.set(t, &m_ak, &Value::Map(osis_base::ValueMap::from([(s("k"), s("real"))]))).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     for i in 1..3 {
         sync(&mut lp, 0, i);

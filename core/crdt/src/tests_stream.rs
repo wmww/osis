@@ -400,7 +400,7 @@ fn stream_recut_pages_spec_8() {
                     4 => std::mem::swap(&mut a, &mut b),
                     _ => {
                         let l = Link { hash: osis_base::hash::hash(&q.pages[k]), blob: BlobId([0; 32]), suite: 1, key: [0; 32] };
-                        q.pages[k - 1] = osis_base::encode(&V::List(vec![V::Link(l)]));
+                        q.pages[k - 1] = osis_base::encode(&V::List(vec![V::link(l)]));
                         let m = Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot };
                         if m.agree().unwrap() { n.0 += 1 } else { n.1 += 1 }
                         continue;

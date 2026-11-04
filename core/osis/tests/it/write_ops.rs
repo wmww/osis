@@ -132,7 +132,7 @@ fn world() -> World {
         .write_with(|w| {
             let things: Vec<Tid> = (0..SETUP).map(|_| w.create_durable(db.me())).collect::<osis::Result<_>>()?;
             for t in &things {
-                w.at(*t, ak(AKS[2])).set(&Value::Map(BTreeMap::new()))?;
+                w.at(*t, ak(AKS[2])).set(&Value::Map(osis_base::ValueMap::new()))?;
             }
             let g0 = w.create_durable(db.me())?;
             let g1 = w.create_durable(db.me())?;
@@ -147,7 +147,7 @@ fn world() -> World {
 
 fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis::Result<()> {
     let key = |k: usize| ak(AKS[k]);
-    let m = |v: &[(i64, i64)]| Value::Map(v.iter().map(|(k, x)| (Value::Int(*k), Value::Int(*x))).collect::<BTreeMap<_, _>>());
+    let m = |v: &[(i64, i64)]| Value::Map(v.iter().map(|(k, x)| (Value::Int(*k), Value::Int(*x))).collect::<BTreeMap<_, _>>().into_iter().collect());
     let [g0, g1] = wd.groups;
     match c {
         Call::Set(t, k, v) => w.at(things[*t], key(*k)).set(&Value::Int(*v)),

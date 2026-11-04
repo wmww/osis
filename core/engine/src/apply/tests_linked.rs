@@ -8,7 +8,7 @@ use osis_base::{CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_schema::core_types as ct;
 use osis_schema::Codec;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 const T0: WallMs = WallMs(1_700_000_000_000);
 
@@ -111,7 +111,7 @@ fn load_with_missing_frontier_blob_spec_perm_6() {
 /// `tenures` (values as written); returns the commit.
 fn raw_snapshot(lp: &mut LocalPeer, t: Tid, tenures: Vec<Value>) -> CommitId {
     let mut m = Mutation::new();
-    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Replace(Value::Map(BTreeMap::new())) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Replace(Value::Map(osis_base::ValueMap::new())) }).unwrap();
     m.op(t, &ct::TENURES, PathOp { path: Vec::new(), op: Op::Replace(Value::Set(tenures.into_iter().collect())) }).unwrap();
     m.roster = true;
     lp.peers[0].engine.core.skip_writer_rules = true;
@@ -231,7 +231,7 @@ fn unresolvable_linked_frontier_spec_perm_6() {
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     lp.peers[0].commit(m).unwrap();
     let fake = osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] };
-    let c = raw_snapshot(&mut lp, t, vec![tenure(me, Some(Value::Link(fake)))]);
+    let c = raw_snapshot(&mut lp, t, vec![tenure(me, Some(Value::link(fake)))]);
     bad_ledger_dropped_alone(&mut lp, t, &c);
 }
 

@@ -4,7 +4,6 @@ use crate::cbor::encode;
 use crate::format::{MAX_AK_BYTES, TID_LEN, TID_TEXT_LEN};
 use crate::value::Value;
 use crate::{ErrorClass, hash};
-use std::collections::BTreeMap;
 use std::fmt;
 
 /// 120-bit thing id: first 15 bytes of BLAKE3 over the canonical creation record.
@@ -99,7 +98,7 @@ pub const SIGNING_KEY_ED25519: u64 = 1;
 impl CreationRecord {
     /// The record's value; its canonical encoding is what the tid hashes.
     pub fn to_value(&self) -> Value {
-        let mut m = BTreeMap::new();
+        let mut m = crate::ValueMap::new();
         match self {
             CreationRecord::Thing { owner, nonce, creator } => {
                 m.insert(Value::Int(REC_OWNER), Value::Tid(*owner));
@@ -510,7 +509,7 @@ mod tests {
         assert_eq!(CreationRecord::from_value(&Value::Int(0)), None);
         let Value::Map(m) = r.to_value() else { unreachable!() };
         let key = |alg, len| Value::Enum(alg, Some(Box::new(Value::Bytes(vec![9; len]))));
-        let with = |f: &dyn Fn(&mut BTreeMap<Value, Value>)| {
+        let with = |f: &dyn Fn(&mut crate::ValueMap)| {
             let mut m = m.clone();
             f(&mut m);
             CreationRecord::from_value(&Value::Map(m))

@@ -56,10 +56,10 @@
 //! another field survives.
 //! ```
 //! # use osis::{Config, Osis, Ak, Value};
-//! # use std::collections::BTreeMap;
+//! # use osis::ValueMap;
 //! # let db = Osis::create(Config::memory())?.0;
 //! let form = Ak::new("app:form.0").unwrap();
-//! let shown = Value::Map(BTreeMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
+//! let shown = Value::Map(ValueMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
 //! let t = w.create(db.me())?;
 //! w.at(t, form.clone()).set(&shown)?;
@@ -293,7 +293,7 @@ pub use write::{AspectWrite, Committed, PathWrite, Write};
 
 /// Keep at least this, as an absolute time: for good (`Retention.at_least.abs`).
 pub use osis_commit::FOREVER;
-pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
+pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, ValueMap, ValueSet, WallMs};
 pub use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId};
 pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Lifetime, Retention, Schema, Step, p};
 

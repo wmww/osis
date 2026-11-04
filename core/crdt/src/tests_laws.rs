@@ -168,7 +168,7 @@ fn budget_big_map_spec_4_1() {
     use std::time::Instant;
     let node = sess(Tid::from_bytes([1; 15]));
     let ts = |t: u64| Ts::from_u64(t << 16).unwrap_or_default();
-    let kv: std::collections::BTreeMap<Value, Value> = (0..100_000i64).map(|i| (Value::Int(i), Value::Int(i * 2))).collect();
+    let kv: osis_base::ValueMap = (0..100_000i64).map(|i| (Value::Int(i), Value::Int(i * 2))).collect();
     let mut w = crate::Writer::new(ts(1), node.clone(), 1);
     let t = Instant::now();
     let d = crate::create(&mut w, &crate::AnyView, &Value::Map(kv)).unwrap();

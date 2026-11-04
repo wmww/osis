@@ -8,7 +8,7 @@ use crate::schema::Schema;
 use crate::types::Type;
 use osis_base::Value;
 use osis_base::format::MAX_VALUE_DEPTH;
-use std::collections::{BTreeMap, BTreeSet};
+use osis_base::{ValueMap, ValueSet};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -178,27 +178,28 @@ impl Walk<'_> {
                 Ok(Value::List(out))
             }
             (Type::Set(e), Value::Set(items)) => {
-                let mut out = BTreeSet::new();
+                let mut out = Vec::with_capacity(items.len());
                 for x in items {
-                    // Distinct elements may project to one value (unknown fields dropped): the
-                    // projection holds it once, as the set read would.
-                    out.insert(self.nested(Step::Elem(x.clone()), x, e, true)?);
+                    out.push(self.nested(Step::Elem(x.clone()), x, e, true)?);
                 }
-                Ok(Value::Set(out))
+                // Distinct elements may project to one value (unknown fields dropped): the
+                // projection holds the first once, as the set read would. Dropped fields can reorder
+                // peer data, so `collect`, not an insert per element (`collect` keeps the last).
+                Ok(Value::Set(out.into_iter().rev().collect::<ValueSet>()))
             }
             (Type::Map(kt, vt), Value::Map(m)) => {
-                let mut out = BTreeMap::new();
+                let mut out = Vec::with_capacity(m.len());
                 for (k, x) in m {
                     let k2 = self.nested(Step::Key(k.clone()), k, kt, true)?;
                     let x2 = self.nested(Step::Key(k.clone()), x, vt, atomic)?;
-                    // Keys projecting to one value: the later entry wins in the projection. Only
-                    // for keys the writer sees as equal (unknown struct fields in a key).
-                    out.insert(k2, x2);
+                    out.push((k2, x2));
                 }
-                Ok(Value::Map(out))
+                // Keys projecting to one value: the later entry wins in the projection. Only for
+                // keys the writer sees as equal (unknown struct fields in a key).
+                Ok(Value::Map(out.into_iter().collect::<ValueMap>()))
             }
             (Type::Struct(st), Value::Map(m)) => {
-                let mut out = BTreeMap::new();
+                let mut out = ValueMap::new();
                 for k in m.keys() {
                     match k {
                         Value::Int(id) if *id >= 0 => {

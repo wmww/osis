@@ -27,7 +27,7 @@ pub trait LinkSource {
 /// A tree node's plaintext `[level, [LINK+], [len+]]`.
 pub fn node_plaintext(level: u64, kids: &[Kid]) -> Result<Vec<u8>, Error> {
     let level = i64::try_from(level).map_err(|_| Error::TooLarge("tree level"))?;
-    let links = Value::List(kids.iter().map(|(l, _)| Value::Link(*l)).collect());
+    let links = Value::List(kids.iter().map(|(l, _)| Value::link(*l)).collect());
     let lens = kids.iter().map(|(_, n)| i64::try_from(*n).map(Value::Int).map_err(|_| Error::TooLarge("tree length")));
     Ok(encode(&Value::List(vec![Value::Int(level), links, Value::List(lens.collect::<Result<_, _>>()?)])))
 }
@@ -481,14 +481,14 @@ mod tests {
         assert_eq!(read_tree(&ok, &d, &mut src, SMALL, usize::MAX).unwrap().len(), 40);
         let top = put_node(&mut src, &d, 2, &[(ok, 39)]);
         assert!(matches!(read_tree(&top, &d, &mut src, SMALL, usize::MAX), Err(Error::Malformed("tree length"))));
-        let two = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(ca); 2]), Value::List(vec![Value::Int(20)])]));
+        let two = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::link(ca); 2]), Value::List(vec![Value::Int(20)])]));
         assert!(parse_node(&two).is_err());
-        let neg = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(ca)]), Value::List(vec![Value::Int(-1)])]));
+        let neg = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::link(ca)]), Value::List(vec![Value::Int(-1)])]));
         assert!(parse_node(&neg).is_err());
-        let over = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::Link(ca); 3]), Value::List(vec![Value::Int(i64::MAX); 3])]));
+        let over = encode(&Value::List(vec![Value::Int(1), Value::List(vec![Value::link(ca); 3]), Value::List(vec![Value::Int(i64::MAX); 3])]));
         assert!(parse_node(&over).is_err());
         // per-level bounds: a chunk is at most CHUNK_MAX, a level-1 node 512 of them
-        let one = |level: i64, n: u64| encode(&Value::List(vec![Value::Int(level), Value::List(vec![Value::Link(ca)]), Value::List(vec![Value::Int(n as i64)])]));
+        let one = |level: i64, n: u64| encode(&Value::List(vec![Value::Int(level), Value::List(vec![Value::link(ca)]), Value::List(vec![Value::Int(n as i64)])]));
         let cmax = CHUNK_MAX as u64;
         assert!(parse_node(&one(1, cmax)).is_ok() && parse_node(&one(1, cmax + 1)).is_err());
         assert!(parse_node(&one(2, 512 * cmax)).is_ok() && parse_node(&one(2, 512 * cmax + 1)).is_err());

@@ -8,7 +8,7 @@ use osis_cli::json;
 use osis_cli::text::{self, no_aliases, parse, print};
 use osis_schema::osis_base::{CanonicalBytes, Unknown};
 use proptest::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 fn floats() -> impl Strategy<Value = Value> {
     prop_oneof![
@@ -47,7 +47,7 @@ fn value() -> impl Strategy<Value = Value> {
             prop::collection::vec(inner.clone(), 0..6).prop_map(|e| Value::Set(e.into_iter().collect())),
             (0..=i64::MAX as u64, inner.clone()).prop_map(|(c, p)| Value::Enum(c, Some(Box::new(p)))),
             (prop_oneof![Just(0u64), Just(2), Just(259), Just(1619), Just(u64::MAX)], inner)
-                .prop_map(|(t, c)| Value::Unknown(Unknown::new(t, CanonicalBytes::from_value(&c)).unwrap())),
+                .prop_map(|(t, c)| Value::unknown(Unknown::new(t, CanonicalBytes::from_value(&c)).unwrap())),
         ]
     })
 }
@@ -96,17 +96,17 @@ fn rec() -> impl Strategy<Value = Value> {
             t,
             Value::Bool(d),
             Value::Int(w),
-            Value::Set(tags),
+            Value::Set(tags.into_iter().collect()),
             p,
-            Value::Map(waits),
+            Value::Map(waits.into_iter().collect()),
             score,
             extra,
             Value::Tid(Tid::from_bytes(owner)),
             body,
             Value::Int(n),
-            Value::Map(at),
-            Value::Map(lens),
-            Value::Set(when_set),
+            Value::Map(at.into_iter().collect()),
+            Value::Map(lens.into_iter().collect()),
+            Value::Set(when_set.into_iter().collect()),
         ];
         Value::Map(f.into_iter().enumerate().map(|(i, v)| (Value::Int(i as i64), v)).collect())
     })
@@ -165,10 +165,10 @@ fn printed_forms_plan_cli_3() {
         Value::float(1e300),
         Value::Tid(t),
         m(vec![(Value::Int(1), Value::Int(2))]),
-        Value::Set(BTreeSet::from([Value::Int(1)])),
+        Value::Set(osis::ValueSet::from([Value::Int(1)])),
         Value::Enum(3, None),
         Value::Enum(3, Some(Box::new(Value::Int(5)))),
-        Value::Unknown(Unknown::new(259, CanonicalBytes::from_value(&Value::Int(7))).unwrap()),
+        Value::unknown(Unknown::new(259, CanonicalBytes::from_value(&Value::Int(7))).unwrap()),
     ]);
     assert_eq!(
         print(&v, None),
@@ -245,7 +245,7 @@ fn json_mapping_plan_cli_5() {
     assert_eq!(j(&Value::float(f64::INFINITY)), "\"Infinity\"");
     assert_eq!(j(&Value::Tid(Tid::from_bytes([0; 15]))), "\"osis://AAAAAAAAAAAAAAAAAAAA\"");
     assert_eq!(j(&Value::Bytes(vec![0, 255])), r#"{"$blob":"AP8"}"#);
-    assert_eq!(j(&Value::Set(BTreeSet::from([Value::Int(1)]))), r#"{"$set":[1]}"#);
+    assert_eq!(j(&Value::Set(osis::ValueSet::from([Value::Int(1)]))), r#"{"$set":[1]}"#);
     assert_eq!(j(&Value::Enum(2, None)), r#"{"$case":2}"#);
     assert_eq!(j(&Value::Enum(2, Some(Box::new(Value::Bool(true))))), r#"{"$case":2,"$payload":true}"#);
     assert_eq!(j(&m(vec![(Value::Bool(true), Value::Int(1))])), r#"{"$map":[[true,1]]}"#);
@@ -256,12 +256,12 @@ fn json_mapping_plan_cli_5() {
         assert_eq!(j(&m(vec![(Value::Str(k.into()), Value::Int(1))])), format!(r#"{{"$map":[["{k}",1]]}}"#));
     }
     assert_eq!(j(&m(vec![(Value::Str("set".into()), Value::Int(1))])), r#"{"set":1}"#);
-    assert_eq!(j(&Value::Unknown(Unknown::new(259, CanonicalBytes::from_value(&Value::Int(7))).unwrap())), r#"{"$tag":259,"$bytes":"Bw"}"#);
+    assert_eq!(j(&Value::unknown(Unknown::new(259, CanonicalBytes::from_value(&Value::Int(7))).unwrap())), r#"{"$tag":259,"$bytes":"Bw"}"#);
     let sc = schema();
     let ty = &sc.aspects["t:rec.0"].ty;
     let v = parse(r#"{title: "x", prio: #high(3), waits: {1: 2s}}"#, Some((&sc, ty)), &no_aliases).unwrap();
     assert_eq!(json::value(&v, Some((&sc, ty))).text(), r#"{"title":"x","prio":{"$case":"high","$payload":3},"waits":{"$map":[[1,2000]]}}"#);
     let mut m2 = BTreeMap::new();
     m2.insert(Value::Int(-1), Value::Int(1));
-    assert_eq!(j(&Value::Map(m2)), r#"{"$map":[[-1,1]]}"#);
+    assert_eq!(j(&Value::Map(m2.into_iter().collect())), r#"{"$map":[[-1,1]]}"#);
 }

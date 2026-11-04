@@ -74,11 +74,11 @@ fn paged_delta_spec_crdt_8() {
         big.insert(s(&format!("key-{i:05}")), s(&"x".repeat(40)));
     }
     let mut m = Mutation::new();
-    m.set(t, &BIG, &Value::Map(big.clone())).unwrap();
+    m.set(t, &BIG, &Value::Map(big.clone().into_iter().collect())).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     assert!(!h.chunks.is_empty(), "paged delta lists its pages");
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(big.clone())));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(big.clone().into_iter().collect())));
     // without its pages the commit waits; with them it applies
     let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == id).unwrap();
     for p in lp.packages(0).unwrap() {
@@ -90,7 +90,7 @@ fn paged_delta_spec_crdt_8() {
     assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitBlobs)), "{r:?}");
     lp.deliver(1, &pk).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(big)));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(big.into_iter().collect())));
     assert_eq!(lp.peers[0].engine.state(&t, &ak("t:big.0")).unwrap(), lp.peers[1].engine.state(&t, &ak("t:big.0")).unwrap());
 }
 
@@ -168,7 +168,7 @@ fn large_value_spec_dm_6() {
 // missing`, or a decode failure: no group, no membership, nothing to sync).
 #[test]
 fn ill_typed_core_element_refused_spec_crdt_3_3() {
-    let bogus = Value::Link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let bogus = Value::link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
     for bad in [bogus, Value::Int(5)] {
         let mut lp = net(2, 15);
         let t = new_thing(&mut lp, 0);
@@ -229,8 +229,8 @@ fn paged_struct_field_converges() {
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     let pad = "y".repeat(40);
-    let mut model: BTreeMap<Value, Value> = (0..3000).map(|i| (s(&format!("k{i}")), s(&format!("{pad}{i}")))).collect();
-    let book = |m: &BTreeMap<Value, Value>, note: &str| Value::Map([(Value::Int(0), Value::Map(m.clone())), (Value::Int(1), s(note))].into_iter().collect());
+    let mut model: osis_base::ValueMap = (0..3000).map(|i| (s(&format!("k{i}")), s(&format!("{pad}{i}")))).collect();
+    let book = |m: &osis_base::ValueMap, note: &str| Value::Map([(Value::Int(0), Value::Map(m.clone())), (Value::Int(1), s(note))].into_iter().collect());
     let mut m = Mutation::new();
     m.set(t, &BOOK, &book(&model, "n0")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();

@@ -137,19 +137,19 @@ fn paging_rejections_spec_8() {
     let mut pages = MemoryPages::with_params(SMALL);
     let page = pages.put(&osis_base::encode(&Value::List(vec![element(1)]))).unwrap();
     // a paged array below the threshold
-    rejects(&snapshot_with(Value::List(vec![Value::Link(page)])), &mut pages, "not canonical");
+    rejects(&snapshot_with(Value::List(vec![Value::link(page)])), &mut pages, "not canonical");
     // links mixed with elements
-    rejects(&snapshot_with(Value::List(vec![Value::Link(page), element(2)])), &mut pages, "mixed");
+    rejects(&snapshot_with(Value::List(vec![Value::link(page), element(2)])), &mut pages, "mixed");
     // one page linked twice
-    rejects(&snapshot_with(Value::List(vec![Value::Link(page), Value::Link(page)])), &mut pages, "twice");
+    rejects(&snapshot_with(Value::List(vec![Value::link(page), Value::link(page)])), &mut pages, "twice");
     // a third level: a link page of link pages
-    let inner = pages.put(&osis_base::encode(&Value::List(vec![Value::Link(page)]))).unwrap();
-    let outer = pages.put(&osis_base::encode(&Value::List(vec![Value::Link(inner)]))).unwrap();
-    rejects(&snapshot_with(Value::List(vec![Value::Link(outer)])), &mut pages, "third");
+    let inner = pages.put(&osis_base::encode(&Value::List(vec![Value::link(page)]))).unwrap();
+    let outer = pages.put(&osis_base::encode(&Value::List(vec![Value::link(inner)]))).unwrap();
+    rejects(&snapshot_with(Value::List(vec![Value::link(outer)])), &mut pages, "third");
     // a link page above the fan-out
     let many: Vec<Link> = (0..9).map(|i| pages.put(&osis_base::encode(&Value::List(vec![element(10 + i)]))).unwrap()).collect();
-    let wide = pages.put(&osis_base::encode(&Value::List(many.into_iter().map(Value::Link).collect()))).unwrap();
-    rejects(&snapshot_with(Value::List(vec![Value::Link(wide)])), &mut pages, "fan-out");
+    let wide = pages.put(&osis_base::encode(&Value::List(many.into_iter().map(Value::link).collect()))).unwrap();
+    rejects(&snapshot_with(Value::List(vec![Value::link(wide)])), &mut pages, "fan-out");
 }
 
 /// A valid paged snapshot still decodes after the expansion limits.
@@ -267,7 +267,7 @@ fn same_stamp_copies_converge_spec_4_1() {
         assert_eq!(x.read(), want);
     }
     // links as keys: equal as `Value`s (by hash), copies by their bytes
-    let link = |b: u8| Value::Link(Link { hash: [9; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
+    let link = |b: u8| Value::link(Link { hash: [9; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
     let (a, b) = (mk(Value::Map([(link(1), Value::Int(9))].into_iter().collect())), mk(Value::Map([(link(2), Value::Int(9))].into_iter().collect())));
     let mut x = a.clone();
     x.join(b.clone());

@@ -311,10 +311,9 @@ pub(crate) fn copies_check(seed: u64, ty: &Ty) {
 fn forged_copies_differ_spec_perm_5_2() {
     use crate::ops::{Writer, create};
     use crate::view::AnyView;
-    use std::collections::BTreeMap;
     let x = sess(Tid::from_bytes([1; 15]));
     let owned = |d: &Dot| d.src == x && d.ctr < 10;
-    let map = |k: &str, v: &str| Value::Map(BTreeMap::from([(Value::Str(k.into()), Value::Str(v.into()))]));
+    let map = |k: &str, v: &str| Value::Map(osis_base::ValueMap::from([(Value::Str(k.into()), Value::Str(v.into()))]));
     let make = |t: u64, v: &Value| create(&mut Writer::new(ts(t), x.clone(), 3), &AnyView, v).unwrap();
     let delta = make(5, &map("k", "real"));
     let mut other = make(1, &map("o", "y"));
@@ -533,7 +532,7 @@ fn paging_format_size_spec_8() {
     // a writer's delta pages the same way (§8: any delta may page)
     let node = sess(Tid::from_bytes([1; 15]));
     let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
-    let items: BTreeSet<Value> = (0..3000).map(|i| Value::Str(format!("bulk import {i}"))).collect();
+    let items: osis_base::ValueSet = (0..3000).map(|i| Value::Str(format!("bulk import {i}"))).collect();
     let d = crate::create(&mut w, &crate::AnyView, &Value::Set(items)).unwrap();
     let cx = DeltaCtx { ts: ts(1 << 20), own: node, range: w.range(), kind: DeltaKind::Writer };
     let mut pages = MemoryPages::new();
@@ -586,7 +585,7 @@ fn page_items_cap_spec_8() {
     for (n, capped) in [(MAX_PAGE_ITEMS, true), (MAX_PAGE_ITEMS - 1, false)] {
         let mut pages = MemoryPages::new();
         let link = pages.put(&osis_base::encode(&zeros(n))).unwrap();
-        let top = Value::List(vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(6), none(), none(), Value::List(vec![Value::Link(link)])]), none(), none()]);
+        let top = Value::List(vec![Value::Bytes(vec![0; 16]), none(), none(), Value::List(vec![Value::Int(6), none(), none(), Value::List(vec![Value::link(link)])]), none(), none()]);
         let e = decode_snapshot(&osis_base::encode(&top), &scx(), &mut Interner::new(), Some(&mut pages)).unwrap_err();
         assert_eq!(is_cap(&e), capped, "{e}");
     }
@@ -636,7 +635,7 @@ fn wide_struct(n: u64, len: usize) -> (Fragment, DeltaCtx) {
     let mut fields = inner.clone();
     fields.insert(n, Ty::Enum([(1, Some(Ty::Struct(inner.clone())))].into_iter().collect()));
     let ty = Ty::Struct(fields);
-    let strs = || (0..n).map(|i| (Value::Int(i as i64), Value::Str(format!("{i:04}{}", "x".repeat(len))))).collect::<std::collections::BTreeMap<_, _>>();
+    let strs = || (0..n).map(|i| (Value::Int(i as i64), Value::Str(format!("{i:04}{}", "x".repeat(len))))).collect::<osis_base::ValueMap>();
     let mut v = strs();
     v.insert(Value::Int(n as i64), Value::Enum(1, Some(Box::new(Value::Map(strs())))));
     let node = sess(Tid::from_bytes([1; 15]));
@@ -696,7 +695,7 @@ fn struct_field_paging_rejections_spec_8() {
     };
     let mut pages = MemoryPages::with_params(SMALL);
     let field = |i: i64| (Value::Int(i), Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), Value::Str("v".into())]));
-    let page = |pages: &mut MemoryPages, v: Value| Value::Link(pages.put(&osis_base::encode(&v)).unwrap());
+    let page = |pages: &mut MemoryPages, v: Value| Value::link(pages.put(&osis_base::encode(&v)).unwrap());
     let a = page(&mut pages, Value::Map([field(5)].into_iter().collect()));
     let b = page(&mut pages, Value::Map([field(2)].into_iter().collect()));
     let empty = page(&mut pages, Value::Map(Default::default()));
@@ -809,10 +808,9 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     use crate::view::AnyView;
     use crate::PathSeg;
     use osis_base::{Tid, Value};
-    use std::collections::BTreeMap;
     let (a, b) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
     let k = Value::Str("k".into());
-    let w1 = create(&mut Writer::new(ts(1), a, 1), &AnyView, &Value::Map(BTreeMap::from([(k.clone(), Value::Int(1))]))).unwrap();
+    let w1 = create(&mut Writer::new(ts(1), a, 1), &AnyView, &Value::Map(osis_base::ValueMap::from([(k.clone(), Value::Int(1))]))).unwrap();
     let mut batch = Batch::new(&w1, Writer::new(ts(2), b.clone(), 1));
     batch.apply(&PathOp { path: vec![PathSeg::Key(k)], op: Op::Set(Value::Int(2)) }, &AnyView).unwrap();
     let (w2, _) = batch.finish().unwrap();
@@ -833,7 +831,7 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     assert_eq!(later, then, "removing others' dots kept the creation");
     let mut alone = Fragment::default();
     alone.join(stripped);
-    assert!(alone.read().is_none_or(|v| v == Value::Map(BTreeMap::new())), "a creation alone joins nothing: {alone:?}");
+    assert!(alone.read().is_none_or(|v| v == Value::Map(osis_base::ValueMap::new())), "a creation alone joins nothing: {alone:?}");
 }
 
 /// spec/commits.md §5 (a body's live writes): a removed map entry's tombstone, keyed by its dot,
@@ -843,10 +841,9 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
     use crate::ops::{Writer, create};
     use crate::view::AnyView;
     use osis_base::{Tid, Value};
-    use std::collections::BTreeMap;
     let (a, b) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
     let k = Value::Str("k".into());
-    let mut st = create(&mut Writer::new(ts(1), a.clone(), 1), &AnyView, &Value::Map(BTreeMap::from([(k.clone(), Value::Int(1))]))).unwrap();
+    let mut st = create(&mut Writer::new(ts(1), a.clone(), 1), &AnyView, &Value::Map(osis_base::ValueMap::from([(k.clone(), Value::Int(1))]))).unwrap();
     let owned = |s: &Source, lo: u64, _: u64| *s == a && lo <= 1;
     assert!(st.holds_owned_write(&owned));
     let mut batch = Batch::new(&st, Writer::new(ts(2), b, 1));
@@ -878,10 +875,9 @@ fn expired_list_reads_empty_spec_crdt_4_3() {
 #[test]
 fn text_deletes_across_key_erased_record_spec_5_6() {
     use crate::ops::{Writer, create};
-    use std::collections::BTreeMap;
     let x = sess(Tid::from_bytes([1; 15]));
     let view = crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
-    let map = |v: &str| Value::Map(BTreeMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
+    let map = |v: &str| Value::Map(osis_base::ValueMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
     let put = create(&mut Writer::new(ts(5), x.clone(), 1), &view, &map("ab")).unwrap();
     let del = crate::diff(&mut Writer::new(ts(8), x.clone(), 7), Some(&put), &view, &map("b")).unwrap().unwrap();
     let mut erased = put.clone();
@@ -901,9 +897,8 @@ fn text_deletes_across_key_erased_record_spec_5_6() {
 fn death_across_key_erased_record_spec_5_6() {
     use crate::ops::{Writer, create};
     use crate::view::AnyView;
-    use std::collections::BTreeMap;
     let x = sess(Tid::from_bytes([1; 15]));
-    let map = |v: &str| Value::Map(BTreeMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
+    let map = |v: &str| Value::Map(osis_base::ValueMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
     let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
     let later = crate::diff(&mut Writer::new(ts(8), x.clone(), 7), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
     let mut erased = put.clone();

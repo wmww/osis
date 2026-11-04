@@ -13,7 +13,6 @@ use osis_crypto::SeededRng;
 use osis_node::Mutation;
 use osis_proto::{Command, Entry, LabelStore};
 use osis_schema::{Aspect, AspectKey, StaticSchema};
-use std::collections::BTreeMap;
 
 /// Version 1 of the skew schema (the old build's).
 pub static SKEW1: StaticSchema = StaticSchema::new(
@@ -41,7 +40,7 @@ pub const REC2: Aspect<Value> = Aspect::new("k:rec.0", &SKEW2);
 pub const NEW2: Aspect<Value> = Aspect::new("k:new.0", &SKEW2);
 
 fn rec(fields: &[(i64, &str)]) -> Value {
-    Value::Map(fields.iter().map(|(k, v)| (Value::Int(*k), Value::Str((*v).into()))).collect::<BTreeMap<_, _>>())
+    Value::Map(fields.iter().map(|(k, v)| (Value::Int(*k), Value::Str((*v).into()))).collect())
 }
 
 /// The commit plaintext of `c` held by node `n`, rewritten to format version `FORMAT_VERSION + 1`

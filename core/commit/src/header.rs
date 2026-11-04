@@ -9,7 +9,6 @@ use osis_base::{Ak, BlobId, CommitId, Limits, Link, Reader, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey};
 use osis_schema::{Bound, PurgeBy, Retention};
-use std::collections::BTreeMap;
 
 /// Decoder limits of commit structures (spec/wire.md §13).
 pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
@@ -280,7 +279,7 @@ pub struct Header {
 // ---- encode
 
 fn bound_value(b: &Bound) -> Value {
-    let mut m = BTreeMap::new();
+    let mut m = osis_base::ValueMap::new();
     if let Some(a) = b.abs {
         m.insert(uint(0), uint(a));
     }
@@ -356,9 +355,9 @@ impl Header {
 
     fn position(&self, f: ListField) -> Value {
         match (f, self.links.get(f)) {
-            (ListField::Frontier, Some(l)) => Value::opt(Some(Value::Link(*l))),
+            (ListField::Frontier, Some(l)) => Value::opt(Some(Value::link(*l))),
             (ListField::Frontier, None) => Value::opt(self.frontier.clone()),
-            (_, Some(l)) => Value::Link(*l),
+            (_, Some(l)) => Value::link(*l),
             (_, None) => self.list_value(f).unwrap_or(Value::List(Vec::new())),
         }
     }
@@ -423,7 +422,7 @@ pub fn verify_signature(id: &CommitId, sig: &Signature, key: &VerifyingKey) -> R
 // ---- decode
 
 // Lists are read by shape, nothing built that the bytes do not pay for. `decode` of hostile bytes
-// costs about 770 B per byte, too much at `MAX_LIST_BYTES` (`Header::resolve`).
+// costs about 56 B per byte, too much at `MAX_LIST_BYTES` (`Header::resolve`).
 
 // About the fewest bytes an item takes: what a list reserves for by its count, so a count the bytes
 // cannot pay for reserves nothing. A wrong value only costs a reallocation.
@@ -600,7 +599,7 @@ impl Header {
             v
         };
         if let Value::Link(l) = inner {
-            self.links.set(f, Some(*l));
+            self.links.set(f, Some(**l));
             return Ok(());
         }
         let bytes = osis_base::encode(inner);

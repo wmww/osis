@@ -166,7 +166,7 @@ impl Schema {
 }
 
 /// Struct fields of a typed-read (so complete) struct value.
-struct Fields<'a>(&'a BTreeMap<Value, Value>);
+struct Fields<'a>(&'a osis_base::ValueMap);
 
 fn form<T>(m: &str) -> Result<T, Error> {
     Err(Error::Form(m.into()))
@@ -194,7 +194,7 @@ impl<'a> Fields<'a> {
     fn uint(&self, id: i64) -> Result<u64, Error> {
         as_uint(self.get(id)?)
     }
-    fn map(&self, id: i64) -> Result<&'a BTreeMap<Value, Value>, Error> {
+    fn map(&self, id: i64) -> Result<&'a osis_base::ValueMap, Error> {
         match self.get(id)? {
             Value::Map(m) => Ok(m),
             _ => form("expected map"),
@@ -206,7 +206,7 @@ impl<'a> Fields<'a> {
             _ => form("expected list"),
         }
     }
-    fn set(&self, id: i64) -> Result<&'a BTreeSet<Value>, Error> {
+    fn set(&self, id: i64) -> Result<&'a osis_base::ValueSet, Error> {
         match self.get(id)? {
             Value::Set(s) => Ok(s),
             _ => form("expected set"),

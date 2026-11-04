@@ -145,7 +145,7 @@ impl ValueWriter {
         }
         if let Some(mut t) = self.tree {
             t.write(sink, &self.head)?;
-            return Ok(Value::Link(t.finish(sink)?));
+            return Ok(Value::link(t.finish(sink)?));
         }
         let buf = self.inline.unwrap_or_default();
         Ok(match self.text {
@@ -167,7 +167,7 @@ pub fn chunk_value(sink: &mut dyn TreeSink, params: LargeParams, v: &Value) -> R
     if bytes.len() <= params.threshold {
         return Ok(v.clone());
     }
-    Ok(Value::Link(write_tree(sink, params.chunk, &bytes)?))
+    Ok(Value::link(write_tree(sink, params.chunk, &bytes)?))
 }
 
 /// Streams the canonical bytes of a large value from its root link, fetching chunks on demand.
@@ -456,7 +456,7 @@ mod tests {
                 continue;
             };
             let mut r = BlobReader::new(&f.dedup, &mut store);
-            assert_eq!(read_value(l, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d.clone()));
+            assert_eq!(read_value(*l, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d.clone()));
             let mut hs = HashSink::new(f.dedup.clone());
             let Value::Link(h) = chunk_value(&mut hs, SMALL, &Value::Bytes(d.clone())).unwrap() else { panic!() };
             assert_eq!(h.hash, l.hash);
@@ -493,6 +493,7 @@ mod tests {
             w.write(&mut bw, p).unwrap();
         }
         let Value::Link(root) = w.finish(&mut bw).unwrap() else { panic!() };
+        let root = *root;
         let mut r = BlobReader::new(&f.dedup, &mut store);
         let mut sr = StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap();
         assert!(sr.is_text());
@@ -522,6 +523,7 @@ mod tests {
         let mut rng = SeededRng::from_u64(4);
         let d = data(5000, 5);
         let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 333) else { panic!() };
+        let root = *root;
         // Opening fetches only the path to the first chunk: blobs arrive one by one on Missing.
         struct Lazy<'a>(&'a mut MemoryBlobs, Option<osis_base::BlobId>);
         impl crate::tree::BlobFetch for Lazy<'_> {
@@ -596,6 +598,7 @@ mod tests {
         let mut rng = SeededRng::from_u64(6);
         let d = data(3000, 6);
         let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 3000) else { panic!() };
+        let root = *root;
         let victim = *store.0.keys().next().unwrap();
         let mut gate = Gate { store: &mut store, fetches: 0, missing_once: Some(victim) };
         let mut r = BlobReader::new(&f.dedup, &mut gate);
@@ -628,6 +631,7 @@ mod tests {
         let mut rng = SeededRng::from_u64(8);
         let d = data(4000, 7);
         let Value::Link(root) = write_bytes(&mut store, &f, &mut rng, &d, 4000) else { panic!() };
+        let root = *root;
         // A blob in the middle of the reading order goes missing once.
         let mut order = Vec::new();
         {
@@ -687,6 +691,7 @@ mod tests {
         let mut w = ValueWriter::bytes(LargeParams::FORMAT, d.len() as u64);
         w.write(&mut bw, &d).unwrap();
         let Value::Link(root) = w.finish(&mut bw).unwrap() else { panic!() };
+        let root = *root;
         // Chunks overlapping the last MiB, and the tree's height.
         let canon = encode(&Value::Bytes(d.clone()));
         let mut end = 0;
@@ -775,6 +780,7 @@ mod tests {
             wmax = wmax.max(w.buffered());
         }
         let Value::Link(root) = w.finish(&mut bw).unwrap() else { panic!() };
+        let root = *root;
         assert!(wmax <= SMALL.chunk.max + path, "{wmax}");
         let mut r = BlobReader::new(&f.dedup, &mut store);
         let mut sr = StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap();
@@ -804,6 +810,7 @@ mod tests {
         let mut w = ValueWriter::bytes(SMALL, d.len() as u64);
         w.write(&mut bw, d).unwrap();
         let Value::Link(root) = w.finish(&mut bw).unwrap() else { panic!() };
+        let root = *root;
         let (written, reused) = (bw.written().len(), bw.reused());
         let mut r = BlobReader::new(&f.dedup, store);
         assert_eq!(read_value(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap(), Value::Bytes(d.to_vec()));
@@ -896,6 +903,7 @@ mod tests {
             let enc = encode(&Value::Bytes(d.clone()));
             match v {
                 Value::Link(root) => {
+                    let root = *root;
                     prop_assert!(enc.len() > SMALL.threshold);
                     let mut r = BlobReader::new(&f.dedup, &mut store);
                     let mut sr = StringReader::open(root, &f.dedup, &mut r, SMALL, usize::MAX).unwrap();

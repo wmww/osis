@@ -72,7 +72,7 @@ pub fn thing() -> VecFile {
     let owner_admin = BTreeMap::from([(Value::Int(0), Value::Tid(owner)), (Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(4), Value::Tid(admin))]);
     let admin_copy = BTreeMap::from([(Value::Int(2), Value::Bytes(nonce.to_vec())), (Value::Int(3), Value::Tid(creator)), (Value::Int(4), Value::Tid(admin))]);
     for (name, m) in [("both owner and key", both), ("neither owner, key nor admin", neither), ("creator without owner", keyed_copy), ("both owner and admin", owner_admin), ("ownerless with creator", admin_copy)] {
-        let v = Value::Map(m);
+        let v = Value::Map(m.into_iter().collect());
         assert!(CreationRecord::from_value(&v).is_none(), "{name} must be rejected");
         cases.push(Record::new().with("case", name).with("spec", SPEC).with("record", hex(&encode(&v))).with("reject", "creation-fields"));
     }

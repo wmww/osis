@@ -915,7 +915,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
                 m.set(t, &GONE, &s(&format!("g{step}"))).unwrap();
             }
             5 => {
-                let fill: std::collections::BTreeMap<Value, Value> = (0..40 + rng.below(40)).map(|k| (s(&format!("k{k:03}")), s(&format!("{step}{}", "g".repeat(400))))).collect();
+                let fill: osis_base::ValueMap = (0..40 + rng.below(40)).map(|k| (s(&format!("k{k:03}")), s(&format!("{step}{}", "g".repeat(400))))).collect();
                 m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
             }
             6 if forge && rng.below(3) == 0 => {
