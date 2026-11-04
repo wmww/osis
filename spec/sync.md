@@ -251,7 +251,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     3. it uploads anything else (a remover does so in the removal's sync, spec/permissions.md §3), and records the steps in `label.0`.
   - While that host refuses the step for now (Register), the admin's uploads and deletions there go on under the host's head (wrapped under the newest read epoch as always, spec/crypto.md §5).
   - An admin that does not hold the head's epochs walks and reads first (§2) and registers nothing.
-- **Deletion by delete key**: a node holding a delete key for a body the label must not hold (§6) deletes it under every label it syncs as soon as it sees the condition. A right holder that sees a body under a relative keep-at-most with no live write sends a delete timed at its bound (spec/commits.md §5). Whichever delete-key holder sees a valid purge executes it.
+- **Deletion by delete key**: a node holding a delete key for a body the label must not hold (§6) deletes it under every label it syncs as soon as it sees the condition. Whichever delete-key holder sees a valid purge executes it.
 
 ## 6. Protocol
 - **Framing**: framed messages over an ordered byte stream (§10); version negotiation, messages and limits: spec/wire.md §11. Every message has a fixed maximum size; every list is paged.

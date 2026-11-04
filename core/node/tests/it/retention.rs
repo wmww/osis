@@ -813,7 +813,7 @@ fn put_removed(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, k: 
 }
 
 // spec/crdt.md §4.7 (expiry is a hard bound), spec/commits.md §5: a part whose expiry is also its
-// absolute keep at most (and a later relative one); a write of its body dies before T. The keep-at-most judgment at the death
+// absolute keep at most (and 0 after replaced, its body keeping a live write); a write of its body dies before T. The keep-at-most judgment at the death
 // must not take the expiry's timer (one key per time, commit and part): at T the live entry goes.
 #[test]
 fn expiry_at_absolute_bound_survives_a_death_spec_crdt_4_7() {
@@ -821,7 +821,7 @@ fn expiry_at_absolute_bound_survives_a_death_spec_crdt_4_7() {
     let t = new_thing(&mut lp, 0);
     let at = lp.peers[0].engine.now().0 + 5_000;
     let mut m = Mutation::new();
-    m.retention(t, &BIG, crate::timed_dead::most(Some(at), Some(3_600_000)).unwrap()).unwrap();
+    m.retention(t, &BIG, crate::timed_dead::most(Some(at), Some(0)).unwrap()).unwrap();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
     m.expires(t, &BIG, WallMs(at)).unwrap();
@@ -835,7 +835,7 @@ fn expiry_at_absolute_bound_survives_a_death_spec_crdt_4_7() {
 }
 
 // spec/commits.md §5 (a live write's carrier goes before its body drops): a body under an
-// absolute and a relative keep at most, past T before any tick; a death arriving then (a
+// absolute keep at most and 0 after replaced, past T before any tick; a death arriving then (a
 // removal of one of its two entries) leaves the drop to the timer, which node-sync's carrier
 // precedes (`due_live_drops`), instead of dropping it in the killing transaction.
 #[test]
@@ -844,7 +844,7 @@ fn death_past_absolute_bound_leaves_drop_to_timer_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let at = lp.peers[0].engine.now().0 + 5_000;
     let mut m = Mutation::new();
-    m.retention(t, &BIG, crate::timed_dead::most(Some(at), Some(3_600_000)).unwrap()).unwrap();
+    m.retention(t, &BIG, crate::timed_dead::most(Some(at), Some(0)).unwrap()).unwrap();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Put(s("1")) }).unwrap();
     m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s("b"))], op: Op::Put(s("2")) }).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
@@ -1137,58 +1137,48 @@ fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
     assert_eq!(e.deaths(&a, &t, &k).unwrap(), Some((tx, tx)));
 }
 
-// spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node): X < Y < Z on a kept register and
-// on a keep-at-most-10m one. In order X dies at Y; delivered Z first, X dies at Z (the first
-// superseder this node held) and stays so when Y comes, never earlier than Y, the earliest:
-// keep at least counts from Z there, and keep at most too, so within D of learning of Z. A node
-// learning of them past Z's bound drops the dead bodies on arrival.
+// spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node): X < Y < Z on a kept register.
+// In order X dies at Y; delivered Z first, X dies at Z (the first superseder this node held) and
+// stays so when Y comes, never earlier than Y, the earliest: keep at least counts from Z there.
+// A node learning of them later keeps the dead bodies to their bound.
 #[test]
 fn deaths_dated_from_first_superseder_held_spec_commits_5() {
-    for (k, name) in [(&KEPT, "t:kept.0"), (&SHORT, "t:short.0")] {
-        let kept = name == "t:kept.0";
-        let mut lp = net(4, 54);
-        let t = new_thing(&mut lp, 0);
-        let mut ids = Vec::new();
-        for v in ["one", "two", "three"] {
-            ids.push(set(&mut lp, 0, t, k, v));
-            lp.advance(10);
-        }
-        let ts: Vec<_> = ids.iter().map(|c| lp.peers[0].engine.header(c).unwrap().ts).collect();
-        let a = ak(name);
-        assert_eq!(lp.peers[0].engine.deaths(&ids[0], &t, &a).unwrap(), Some((ts[1], ts[1])));
-        let pks = packages(&mut lp, 0);
-        let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
-        let rest: Vec<_> = pks.iter().filter(|p| !ids.contains(&p.id)).cloned().collect();
-        for (to, order) in [(1, [0, 2, 1]), (2, [2, 1, 0])] {
-            for p in &rest {
-                lp.deliver(to, p).unwrap();
-            }
-            for i in order {
-                lp.deliver(to, &pk(&ids[i])).unwrap();
-            }
-            let e = &mut lp.peers[to].engine;
-            for x in &ids[..2] {
-                assert_eq!(e.deaths(x, &t, &a).unwrap(), Some((ts[2], ts[2])), "node {to} {name}");
-                let keep = e.body_keep(x, &t, &a).unwrap();
-                if kept {
-                    assert_eq!(keep.at_least, ts[2].wall_ms().0 + 86_400_000, "node {to}");
-                } else {
-                    assert_eq!(keep.at_most, Some(ts[2].wall_ms().0 + 600_000), "node {to}");
-                    assert!(keep.at_most.unwrap() <= e.now().0 + 600_000, "within D of learning");
-                }
-            }
-            assert_eq!(e.deaths(&ids[2], &t, &a).unwrap(), None);
-        }
-        lp.advance(3_600_000);
-        for p in &pks {
-            lp.deliver(3, p).unwrap();
-        }
-        let e = &mut lp.peers[3].engine;
-        for x in &ids[..2] {
-            assert_eq!(e.body_not_dropped(x, &t, &a), kept, "node 3 {name}");
-        }
-        assert_eq!(e.get(&t, &a).unwrap(), Some(s("three")));
+    let mut lp = net(4, 54);
+    let t = new_thing(&mut lp, 0);
+    let a = ak("t:kept.0");
+    let mut ids = Vec::new();
+    for v in ["one", "two", "three"] {
+        ids.push(set(&mut lp, 0, t, &KEPT, v));
+        lp.advance(10);
     }
+    let ts: Vec<_> = ids.iter().map(|c| lp.peers[0].engine.header(c).unwrap().ts).collect();
+    assert_eq!(lp.peers[0].engine.deaths(&ids[0], &t, &a).unwrap(), Some((ts[1], ts[1])));
+    let pks = packages(&mut lp, 0);
+    let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap().clone();
+    let rest: Vec<_> = pks.iter().filter(|p| !ids.contains(&p.id)).cloned().collect();
+    for (to, order) in [(1, [0, 2, 1]), (2, [2, 1, 0])] {
+        for p in &rest {
+            lp.deliver(to, p).unwrap();
+        }
+        for i in order {
+            lp.deliver(to, &pk(&ids[i])).unwrap();
+        }
+        let e = &mut lp.peers[to].engine;
+        for x in &ids[..2] {
+            assert_eq!(e.deaths(x, &t, &a).unwrap(), Some((ts[2], ts[2])), "node {to}");
+            assert_eq!(e.body_keep(x, &t, &a).unwrap().at_least, ts[2].wall_ms().0 + 86_400_000, "node {to}");
+        }
+        assert_eq!(e.deaths(&ids[2], &t, &a).unwrap(), None);
+    }
+    lp.advance(3_600_000);
+    for p in &pks {
+        lp.deliver(3, p).unwrap();
+    }
+    let e = &mut lp.peers[3].engine;
+    for x in &ids[..2] {
+        assert!(e.body_not_dropped(x, &t, &a), "node 3");
+    }
+    assert_eq!(e.get(&t, &a).unwrap(), Some(s("three")));
 }
 
 // spec/commits.md §5 (keep at most 0): a write arriving after the write that replaced it dies on
@@ -1213,17 +1203,16 @@ fn keep_at_most_zero_late_body_dropped_on_arrival_spec_commits_5() {
 // spec/commits.md §5 (keep at most: a tombstone is no live write): a compaction snapshot carrying a
 // keep-at-most map entry, then the entry removed. The tombstone left is keyed by the entry's dot
 // but holds the remover's reset, so the snapshot has no live write: under at most 0 it drops with
-// the removal; under 10m, held, it is due at the removal plus 10m with no grace; dropped live
-// before the removal, it is live no more.
+// the removal (no grace); dropped live before the removal, it is live no more.
 #[test]
 fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
     use osis_crdt::PathSeg;
-    for (k, name, zero, dropped) in [(&GONEMAP, "t:gonemap.0", true, false), (&SHORTMAP, "t:shortmap.0", false, false), (&SHORTMAP, "t:shortmap.0", false, true)] {
+    for dropped in [false, true] {
         let mut lp = net(1, 57);
         let t = new_thing(&mut lp, 0);
-        let a = ak(name);
+        let a = ak("t:gonemap.0");
         let mut m = Mutation::new();
-        m.op(t, k, PathOp { path: vec![PathSeg::Key(s("k1"))], op: Op::Set(s("v")) }).unwrap();
+        m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("k1"))], op: Op::Set(s("v")) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.advance(5);
         let snap = lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
@@ -1235,23 +1224,19 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
             assert!(!e.body_not_dropped(&snap, &t, &a) && e.body_live(&snap, &t, &a).unwrap(), "dropped live");
         }
         let mut m = Mutation::new();
-        m.op(t, k, PathOp { path: Vec::new(), op: Op::Remove(s("k1")) }).unwrap();
-        let rm = lp.peers[0].commit(m).unwrap().unwrap();
+        m.op(t, &GONEMAP, PathOp { path: Vec::new(), op: Op::Remove(s("k1")) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
         let e = &mut lp.peers[0].engine;
-        if zero {
-            assert!(!e.body_not_dropped(&snap, &t, &a), "dropped with the removal");
-        } else if dropped {
+        if dropped {
             assert!(!e.body_live(&snap, &t, &a).unwrap(), "dropped live, live no more");
         } else {
-            assert!(e.body_not_dropped(&snap, &t, &a) && !e.body_live(&snap, &t, &a).unwrap(), "held, no live write");
-            let ts = e.header(&rm).unwrap().ts;
-            assert_eq!(e.body_keep(&snap, &t, &a).unwrap().at_most, Some(ts.wall_ms().0 + 600_000), "no grace");
+            assert!(!e.body_not_dropped(&snap, &t, &a), "dropped with the removal");
         }
     }
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node, never early): random histories
-// on a kept register, a kept set, a kept map and a keep-at-most-10m register by four writers
+// on a kept register, a kept set, a kept map and a keep-at-most-0 register by four writers
 // with compaction snapshots (peer 3's writes reach node 4 only as snapshot copies, some others'
 // never), delivered to node 4 in a random order with snapshots and writes dropped as they come
 // and recomputes batched. Node 5 takes the same commits keeping every body (`keep_bodies`) and
@@ -1295,7 +1280,7 @@ fn dating_history(seed: u64) {
     for i in 1..5 {
         sync(&mut lp, 0, i);
     }
-    let aks = [ak("t:kept.0"), ak("t:keptset.0"), ak("t:map.0"), ak("t:short.0")];
+    let aks = [ak("t:kept.0"), ak("t:keptset.0"), ak("t:map.0"), ak("t:gone.0")];
     let (mut writes, mut snaps) = (Vec::new(), Vec::new());
     for _ in 0..28 {
         let x = below(100);
@@ -1316,7 +1301,7 @@ fn dating_history(seed: u64) {
                     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s(&v))], op: Op::Set(item("e", below(9) as i64)) }).unwrap();
                 }
                 _ => {
-                    m.set(t, &SHORT, &s(&v)).unwrap();
+                    m.set(t, &GONE, &s(&v)).unwrap();
                 }
             }
             // a remove of nothing writes no commit
@@ -1759,7 +1744,7 @@ fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
 }
 
 // spec/commits.md §5 (deaths dated from the bodies only where the state cannot date them): an
-// expiring put into a keep-at-most map, overwritten by a kept put, expires; the expiry moves the
+// expiring put into a map kept at least a while after replaced, overwritten by a put, expires; the expiry moves the
 // entry's records to its key-erased record with nothing beaten across them, so the aspect's
 // deaths are not recomputed (each such expiry recomputing cost O(bodies) per tick).
 #[test]
@@ -1767,13 +1752,16 @@ fn expiry_merging_records_without_death_recomputes_nothing_spec_commits_5() {
     let mut lp = net(1, 57);
     let t = new_thing(&mut lp, 0);
     let now = lp.peers[0].engine.now();
+    let keep = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: osis_schema::Bound { abs: None, rel: Some(3_600_000) }, at_most: osis_schema::Bound::default() };
     for (i, k) in ["a", "b"].into_iter().enumerate() {
         let mut m = Mutation::new();
-        m.op(t, &SHORTMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("old")) }).unwrap();
-        m.expires(t, &SHORTMAP, WallMs(now.0 + 1000 + 100 * i as u64)).unwrap();
+        m.retention(t, &BIG, keep).unwrap();
+        m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("old")) }).unwrap();
+        m.expires(t, &BIG, WallMs(now.0 + 1000 + 100 * i as u64)).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         let mut m = Mutation::new();
-        m.op(t, &SHORTMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("new")) }).unwrap();
+        m.retention(t, &BIG, keep).unwrap();
+        m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("new")) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
     osis_node::costs::take();
@@ -1784,7 +1772,7 @@ fn expiry_merging_records_without_death_recomputes_nothing_spec_commits_5() {
     let recomputes = osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
     assert_eq!(recomputes, 0);
     // the entries' creations expired: value-less, they hide the entries (spec/crdt.md §5.6)
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:shortmap.0")).unwrap(), Some(Value::Map(Default::default())));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap(), Some(Value::Map(Default::default())));
 }
 
 // `any_bounded` reads a count (`Indexes::bounded_held`): exact as bounded parts arrive and drop,
@@ -2047,25 +2035,27 @@ fn remove_all(lp: &mut LocalPeer, t: osis_base::Tid, w: osis_base::Tid) -> osis_
 }
 
 // spec/commits.md §5: a write that falls counts dead from the demotion that took it: under at most
-// D its body drops, value included, D after the demotion; again if a copy comes.
+// 0 its body drops with the demotion, value included; again if a copy comes. A node keeping every
+// body dates it at the demotion's `ts`, not the write's.
 #[test]
-fn invalid_write_drops_at_its_bound_spec_commits_5() {
-    let mut lp = net(2, 981);
+fn invalid_write_drops_at_its_fall_spec_commits_5() {
+    let mut lp = net(3, 981);
+    lp.peers[2].engine.keep_bodies(true);
     let (t, w) = with_writer(&mut lp);
-    let a = ak("t:short.0");
-    let c = set(&mut lp, 1, t, &SHORT, "parked");
+    sync(&mut lp, 0, 2);
+    let a = ak("t:gone.0");
+    let c = set(&mut lp, 1, t, &GONE, "parked");
     sync(&mut lp, 1, 0);
+    sync(&mut lp, 1, 2);
     lp.advance(1_000);
     let fell = remove_all(&mut lp, t, w);
+    sync(&mut lp, 0, 2);
+    let e = &mut lp.peers[2].engine;
+    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((fell, fell)), "the demotion's `ts`, not the write's");
+    assert_eq!(e.body_keep(&c, &t, &a).unwrap().at_most, Some(fell.wall_ms().0));
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&t, &a).unwrap(), None);
-    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((fell, fell)), "the demotion's `ts`, not the write's");
-    assert_eq!(e.body_keep(&c, &t, &a).unwrap().at_most, Some(fell.wall_ms().0 + 600_000));
-    assert!(e.body_not_dropped(&c, &t, &a), "before its bound");
-    lp.advance(600_000);
-    let e = &mut lp.peers[0].engine;
-    e.tick().unwrap();
-    assert!(!e.body_not_dropped(&c, &t, &a), "at its bound");
+    assert!(!e.body_not_dropped(&c, &t, &a), "at its fall");
     assert_eq!(e.value_held_of(&c, &t, &a).unwrap(), None);
     sync(&mut lp, 1, 0);
     assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &a), "a copy arriving goes again");
@@ -2085,7 +2075,8 @@ fn fall_of_a_fall_dates_a_write_again_spec_commits_5() {
     lp.advance(10);
     let before = lp.peers[0].engine.now();
     lp.advance(10);
-    let c = set(&mut lp, 1, t, &SHORT, "parked");
+    lp.peers[0].engine.keep_bodies(true);
+    let c = set(&mut lp, 1, t, &GONE, "parked");
     sync(&mut lp, 1, 0);
     lp.advance(10);
     let none = || Some(osis_schema::core_types::Frontier::default().to_value());
@@ -2095,7 +2086,7 @@ fn fall_of_a_fall_dates_a_write_again_spec_commits_5() {
     lp.advance(1_000);
     let second = remove_all(&mut lp, t, w);
     sync(&mut lp, 2, 0);
-    let a = ak("t:short.0");
+    let a = ak("t:gone.0");
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((first, first)));
     e.demote(&t, &osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Backdated(before), keep: None }).unwrap();
@@ -2107,13 +2098,14 @@ fn fall_of_a_fall_dates_a_write_again_spec_commits_5() {
 #[test]
 fn write_after_demotion_counts_dead_from_its_own_ts_spec_commits_5() {
     let mut lp = net(2, 982);
+    lp.peers[0].engine.keep_bodies(true);
     let (t, w) = with_writer(&mut lp);
     remove_all(&mut lp, t, w);
     lp.advance(1_000);
-    let c = set(&mut lp, 1, t, &SHORT, "after");
+    let c = set(&mut lp, 1, t, &GONE, "after");
     let ts = lp.peers[1].engine.header(&c).unwrap().ts;
     sync(&mut lp, 1, 0);
-    assert_eq!(lp.peers[0].engine.deaths(&c, &t, &ak("t:short.0")).unwrap(), Some((ts, ts)));
+    assert_eq!(lp.peers[0].engine.deaths(&c, &t, &ak("t:gone.0")).unwrap(), Some((ts, ts)));
 }
 
 // spec/commits.md §5, spec/sync.md §7: with the body gone from the node, a writer's snapshot
@@ -2279,9 +2271,10 @@ fn write_under_a_regrant_not_yet_held_returns_spec_commits_5() {
 fn invalid_snapshot_recomputes_no_deaths_spec_commits_5() {
     let mut lp = net(3, 990);
     lp.sync_all().unwrap();
+    lp.peers[0].engine.keep_bodies(true);
     let (t, w) = with_writer(&mut lp);
-    let a = ak("t:short.0");
-    set(&mut lp, 1, t, &SHORT, "mine");
+    let a = ak("t:gone.0");
+    set(&mut lp, 1, t, &GONE, "mine");
     sync(&mut lp, 1, 0);
     lp.advance(10);
     remove_all(&mut lp, t, w);

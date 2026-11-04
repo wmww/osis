@@ -156,7 +156,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - No exception widens it: a body whose set has no holder stays until a keep-at-most bound or expiry, if any.
   - A member of the set may drop the delta's body: by purge request (spec/permissions.md §7), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
   - A **right holder** is a node that holds the right now.
-- **Keep at least** and **keep at most**: each optional; each an absolute time, a duration after the body is replaced, or both (the later bound counts for at least, the earlier for at most). A relative keep at most exists only under `writer`. Where the two bounds disagree, keep at most wins.
+- **Keep at least** and **keep at most**: each optional. Keep at least is an absolute time, a duration after the body is replaced, or both (the later counts). Keep at most is an absolute time T, **0 after replaced** (a relative bound of 0; no other duration), or both (the earlier counts); 0 after replaced exists only under `writer`. Where the two bounds disagree, keep at most wins.
 
 ### Bodies and deaths
 - A **body** is one blob of a commit (a projection, spec/sync.md §3, holds the deltas of one retention class).
@@ -165,7 +165,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - a superseded write's death at the `ts` of the first superseder the node held, never earlier than the death;
   - a validity flip, an un-merge or a new judgment of an invalid delta may date the aspect's deaths again from what it then holds;
   - an expiry dates none: the delta's body goes at T (§6) and a snapshot holds the write value-less.
-- A write of a delta invalid here does not die, nor does a valid write an un-merge took with nothing superseding it (spec/crdt.md §4.6). But under a relative keep at most, on a commit other than a role commit, each counts dead from its **fall** for its body's dates. With no such bound the body stays.
+- A write of a delta invalid here does not die, nor does a valid write an un-merge took with nothing superseding it (spec/crdt.md §4.6). But under keep at most 0 after replaced, on a commit other than a role commit, each counts dead from its **fall** for its body's dates. With no such bound the body stays.
   - An invalid delta's fall is at the `ts` of the demotion that its judgment names (spec/permissions.md §5.2), no earlier than its own `ts`, and with none at its own `ts`.
   - An un-merged write's fall is at the latest fall on the aspect, no earlier than its own `ts`.
   - Only an applied commit's judgment counts: a commit that waits (§4) has no fall.
@@ -182,16 +182,14 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 
 ### Keep bounds
 - **Keep at least**: before the bound (last death so far plus D, or T) a body leaves the labels of its things' groups only by purge request: compaction MUST NOT drop it, right holders MUST NOT delete it at hosts and a demotion's frontier does not leave it out as covered (spec/permissions.md §5.1). A body with no dead writes is past a relative bound.
-- **Keep at most**: the bound is T, or first death plus D for D after replaced, plus `AT_MOST_GRACE` while the body has a live write; with both, the earlier.
+- **Keep at most**: the bound is T, or under 0 after replaced the first death, plus `AT_MOST_GRACE` while the body has a live write; with both, the earlier.
   - A **live write** of a body is any write of its deltas the node's state holds by dot, including element records the state keeps only as anchors (dead per spec/crdt.md §4.8, kept per spec/crdt.md §5.7), but not an element's or entry's tombstone (it holds the remover's reset, not the creation).
   - Each node judges liveness on its own state and dates on its own deaths, so bounds may differ between nodes holding the same commits. A right holder uploads the killing commit before any delete in the same pass.
   - A node drops a body no earlier than its bound from those dates and no later than the bound plus `AT_MOST_GRACE` after it first saw the body dead.
   - By the bound every node MUST drop the body; its live writes stay in the node's state (spec/crdt.md §4.6); right holders delete it at hosts when next online after the bound.
   - A node judges an absolute bound from the header (T, or the purge floor below) and its corrected clock alone, deaths aside, and drops a body applied at or past it only after its apply, so that a carrier can go first (below). A held part of a waiting commit keeps its body until its commit applies.
   - **Carrier**: a node that may write the aspect and holds no snapshot covering a body with live writes writes one before dropping the body (it is held and uploaded like any must-hold body). A body with live writes is deleted at a label only while another entry under it carries them (spec/sync.md §7).
-  - A body with no live write needs no carrier:
-    - under at most 0 after replaced, the node applying the kill that leaves it none drops it in that transaction and deletes it at hosts in the same sync;
-    - under D after replaced, a right holder that sees it with no live write sends hosts a delete timed at the bound (spec/sync.md §5).
+  - A body with no live write needs no carrier: under 0 after replaced, the node applying the kill that leaves it none drops it in that transaction and deletes it at hosts in the same sync.
 - **Never received**: a body dropped for its keep bounds (at its bound or as its writes died) or for carrying a purged value counts as never received from then on, as a missing delta counted as held does (§4).
   - Its live writes stay in the state.
   - The node does not fetch it on its own, but for a part dropped while invalid that turns valid: it is missing again and fetched, and until it arrives the node may read less, the aspect suspect.
@@ -256,7 +254,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - snapshots of role-class aspects keep it.
 - Other compaction-snapshot deltas are `writer` (a receiver checks this; the bounds below are the writer's, from what it holds), with bounds from the **own deltas** of the writes the snapshot carries live (live as for keep at most):
   - keep at least: the longest relative bound among them, with no absolute one;
-  - keep at most: the strictest per component, the shortest relative bound and the earliest absolute bound later than the snapshot's `wall_ms(ts)`, an absolute bound at or before it counting as 0 after replaced.
+  - keep at most: the strictest per component, 0 after replaced if any of them has it and the earliest absolute bound later than the snapshot's `wall_ms(ts)`, an absolute bound at or before it counting as 0 after replaced.
 - A write's own deltas are its own commits' deltas on the aspect (spec/permissions.md §5.2). For writes whose own commit's header the node does not hold, every held snapshot body of the aspect carrying one of them stands in, and if some such write no held snapshot body carries, every compaction snapshot of the aspect the node applied.
 - No schema enters the bounds; a snapshot names the schema of the last applied delta of the aspect in `(ts, ID)` order that names one, else none.
 

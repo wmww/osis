@@ -17,7 +17,7 @@ Written on ostrich with main at the commit that adds this note. Nothing is runni
 ## Decided last session (all recorded; build from these)
 - Kick frontiers: commit IDs only, one system; kept-history removal cost is a stated limit (spec/requirements.md Cost). The hash DAG, per-session heads and F4 links are dropped. ID batches are the fallback if costs ever hurt (notes/frontier-study.md §11).
 - Dropped bodies coming back after a revocation: keep the rule, build it simple and robust; download and CPU are cheap in this corner (issues/drop-rejoin-robust.md, seven items, start with the debug rebuild check).
-- Keep at most: drop "D after replaced" for D > 0; keep "0 after replaced" and absolute T (issues/keep-at-most-relative.md).
+- Keep at most: drop "D after replaced" for D > 0; keep "0 after replaced" and absolute T (built: branch keep-at-most).
 - Moving a thing to another owner: removed (branch remove-moves); notes/moves.md says what could be built later.
 - Roster privacy: notes/roster-names.md option 2 (issues/keyset-names-placement-rosters.md).
 - Key rotation: the requirements study is done (notes/keys-requirements-study.md); two questions wait in notes/questions-for-tess.md (unstamped removals as key departures; depth-0 nesting for keys). Option 2 of roster-names is moot if the second is accepted.

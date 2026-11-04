@@ -143,8 +143,7 @@ impl SyncEngine {
         changed |= !ch.is_empty();
         wide |= !ch.undropped.is_empty();
         narrow.extend(ch.aspects.iter().cloned());
-        self.touched.states.extend(ch.aspects.iter().cloned());
-        self.touched.whole.extend(ch.aspects);
+        self.touched.states.extend(ch.aspects);
         let cs = ch.commits;
         // this node's own write passes a filling label too (`LConn::want_pass`)
         if own {

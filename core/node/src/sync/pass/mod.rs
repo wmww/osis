@@ -3,8 +3,7 @@
 //! head (the actor's role commits the host lacks, then the step; the rest after it is
 //! registered), then uploads of must-hold bodies (role commits first) or relays of stamped ones,
 //! this node's certificates and node card, heartbeats, and deletions of must-not-hold bodies
-//! (`delete`: by the label delete key or a delete key, carriers first), timed deletes for
-//! relative keep-at-most.
+//! (`delete`: by the label delete key or a delete key, carriers first).
 
 mod beats;
 mod bodies;
@@ -96,18 +95,6 @@ enum Fate {
     /// upload (spec/sync.md §5, §7).
     Delete(Why, osis_label::DeleteItem, Option<BlobId>),
 }
-
-/// What a keep-at-most body before its timed delete waits on (`keep_at_most_due`), its aspect.
-enum AtMost {
-    /// No write died: only a death (it marks the body) or another change of the aspect's state
-    /// (`Waits::at_most`) changes its bound or liveness.
-    Live(Tid, Ak),
-    /// A write died: any write may also drop the dots it still holds (`Waits::aspects`).
-    Dead(Tid, Ak),
-}
-
-/// A timed delete due: the entry and its time (`keep_at_most_due`).
-type TimedDue = Option<(Entry, u64)>;
 
 /// Aspects not settled yet (`None`: every aspect; `SyncEngine::unsettled_sets`).
 pub(crate) type Unsettled = BTreeSet<Option<(Tid, Ak)>>;

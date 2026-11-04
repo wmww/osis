@@ -19,7 +19,7 @@ aspect s:map.0: map<string, int>;
 aspect s:gone.0: string [by: writer];
 aspect s:note.0: string;
 aspect s:story.0: set<string>;
-aspect s:short.0: string [by: writer, keep_at_most: 10m];
+aspect s:latest.0: string [by: writer, keep_at_most: 0s];
 "#,
 );
 
@@ -34,8 +34,8 @@ pub const GONE: Aspect<Value> = Aspect::new("s:gone.0", &SIM);
 pub const STORY: Aspect<Value> = Aspect::new("s:story.0", &SIM);
 /// Written with an expiry (scenarios only).
 pub const NOTE: Aspect<Value> = Aspect::new("s:note.0", &SIM);
-/// Kept at most 10 minutes after replaced (scenarios only).
-pub const SHORT: Aspect<Value> = Aspect::new("s:short.0", &SIM);
+/// Kept at most 0 after replaced: only the latest value (scenarios only).
+pub const LATEST: Aspect<Value> = Aspect::new("s:latest.0", &SIM);
 
 const WORDS: [&str; 5] = ["ash", "birch", "cedar", "dogwood", "elm"];
 

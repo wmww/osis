@@ -179,34 +179,10 @@ fn live_part_keeps_waiting_spec_commits_4() {
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:gone.0")).unwrap(), Some(s("x")));
 }
 
-// spec/commits.md §4, §5 (D after replaced): the bound counts from the earliest later commit
-// held, on this node's clock: before it the part waits, past it the commit applies (a tick is
-// enough: the wait wakes at the bound). A clock behind the writer's only waits longer.
-#[test]
-fn part_waits_for_relative_bound_spec_commits_4() {
-    const D: u64 = 600_000;
-    let (mut lp, t, c) = carrierless(0x7c03, vec![mixed("x", Some("1"), at_most(Some(D), None)), mixed("y", None, at_most(Some(D), None))]);
-    lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
-    lp.deliver(1, &c[1]).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "before the bound");
-    let bound = lp.peers[1].engine.header(&c[1].id).unwrap().ts.wall_ms().0 + D;
-    lp.peers[1].clock.set(WallMs(bound - 1));
-    lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "just before the bound");
-    lp.peers[1].clock.set(WallMs(bound));
-    lp.peers[1].engine.tick().unwrap();
-    assert!(lp.peers[1].engine.pending().is_empty(), "at the bound");
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
-    // a clock going back unapplies nothing
-    lp.peers[1].clock.set(WallMs(bound - 1));
-    lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
-}
-
 // spec/commits.md §4, §5 (an absolute keep at most): T passing alone shows nothing, the part is
 // live or its killer is yet to come, and a live body leaves only with a carrier. With a later commit
-// on the aspect it counts from T on this node's clock. A copy arriving later joins, as at the writer.
+// on the aspect it counts from T on this node's clock, and a clock going back unapplies nothing. A
+// copy arriving later joins, as at the writer.
 #[test]
 fn part_past_absolute_bound_spec_commits_4() {
     let t_abs = T0.0 + 3_600_000;
@@ -220,10 +196,16 @@ fn part_past_absolute_bound_spec_commits_4() {
     lp.deliver(1, &c[1]).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
     assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "a later commit, its clock before T");
+    lp.peers[1].clock.set(WallMs(t_abs - 1));
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "just before T");
     lp.peers[1].clock.set(WallMs(t_abs));
     lp.peers[1].engine.tick().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
+    lp.peers[1].clock.set(WallMs(t_abs - 1));
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")), "a clock going back unapplies nothing");
     lp.deliver(1, &c[0]).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &gone).unwrap(), Some(s("y")));
     assert_eq!(lp.peers[1].engine.state(&t, &gone).unwrap(), lp.peers[0].engine.state(&t, &gone).unwrap());
@@ -351,7 +333,7 @@ fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
     sync(lp, 0, to);
 }
 
-/// Two writers' history under keep at most and expiry on `t` (each commit also writing `t:reg.0`
+/// Two writers' history under keep at most (0 after replaced, or T) and expiry on `t` (each commit also writing `t:reg.0`
 /// sometimes, so it is two bodies), then two more writers: `w` given all of it, `g` given it in
 /// another order with some of those bodies held back, both snapshotting and dropping what their
 /// snapshots cover on the way, then each given the other's snapshots and `g` the bodies held back.
@@ -378,7 +360,9 @@ fn gap_snapshot_check(seed: u64, len: u64, expiring: bool) -> Result<(), String>
     let (g, w) = (2, 3);
     lp.peers[g].engine.set_syncing(t, true).unwrap();
     lp.peers[w].engine.set_syncing(t, true).unwrap();
-    let aspects = [ak("t:gone.0"), ak("t:gonemap.0"), ak("t:shortmap.0")];
+    let aspects = [ak("t:gone.0"), ak("t:gonemap.0"), ak("t:big.0")];
+    // the third map's absolute keep at most passes only past the history
+    let t_abs = lp.peers[0].engine.now().0 + 3_600_000;
     let mut packs = Vec::new();
     for _ in 0..len {
         let by = below(2) as usize;
@@ -389,7 +373,7 @@ fn gap_snapshot_check(seed: u64, len: u64, expiring: bool) -> Result<(), String>
         let expires = expiring && a > 0 && below(3) == 0;
         let mut m = Mutation::new();
         let op = if a == 0 || expires || below(4) > 0 { osis_crdt::PathOp { path: if a == 0 { vec![] } else { vec![osis_crdt::PathSeg::Key(s(&key))] }, op: osis_crdt::Op::Set(s(&val)) } } else { osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s(&key)) } };
-        m.retention(t, &aspects[a], at_most(Some(if a == 2 { 600_000 } else { 0 }), None).unwrap()).unwrap();
+        m.retention(t, &aspects[a], if a == 2 { at_most(None, Some(t_abs)) } else { at_most(Some(0), None) }.unwrap()).unwrap();
         m.op(t, &aspects[a], op).unwrap();
         if expires {
             let now = lp.peers[by].engine.now().0;
@@ -414,8 +398,7 @@ fn gap_snapshot_check(seed: u64, len: u64, expiring: bool) -> Result<(), String>
     let mut sent = [Vec::new(), Vec::new()];
     // half the runs without `w`'s snapshots, which would give `g` what it lost
     let w_snapshots = below(2) == 0;
-    // past every write of the history: a bound counted from a later commit has passed (under D
-    // of 10 min not yet)
+    // past every write of the history: a bound counted from a later commit has passed (T not yet)
     for p in [g, w] {
         lp.peers[p].clock.advance(len * 60);
     }

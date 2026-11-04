@@ -741,21 +741,21 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
     lp.sync_all().unwrap();
     lp.peers[1].engine.set_syncing(t, true).unwrap();
-    let short = ak("t:short.0");
+    let asp = ak("t:gone.0");
     // a snapshot stamped before the body settles nothing
-    set(&mut lp, 3, t, &SHORT, "v0");
+    set(&mut lp, 3, t, &GONE, "v0");
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    lp.peers[3].engine.snapshot(&t, &short).unwrap().unwrap();
+    lp.peers[3].engine.snapshot(&t, &asp).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    let c1 = set(&mut lp, 0, t, &SHORT, "v1");
+    let c1 = set(&mut lp, 0, t, &GONE, "v1");
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    set(&mut lp, 2, t, &SHORT, "v2");
+    set(&mut lp, 2, t, &GONE, "v2");
     lp.sync_all().unwrap();
     // peer 1 lets the dead body go (its keep bounds; no snapshot held, so not as covered)
-    lp.peers[1].engine.drop_body(&c1, &t, &short).unwrap();
+    lp.peers[1].engine.drop_body(&c1, &t, &asp).unwrap();
     lp.advance(1_000);
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
     let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::Codec::to_value(&f)));
@@ -763,18 +763,18 @@ fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
     let fp = packages(&mut lp, 0).into_iter().find(|p| p.id == fall).unwrap();
     lp.deliver(1, &fp).unwrap();
     lp.deliver(3, &fp).unwrap();
-    let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == short);
+    let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == asp);
     assert!(flagged(&mut lp), "W's write fell where a body was dropped: flagged");
     lp.advance(1_000);
-    let v3 = set(&mut lp, 3, t, &SHORT, "v3");
+    let v3 = set(&mut lp, 3, t, &GONE, "v3");
     lp.advance(1_000);
-    let z = lp.peers[3].engine.snapshot(&t, &short).unwrap().unwrap();
+    let z = lp.peers[3].engine.snapshot(&t, &asp).unwrap().unwrap();
     for pk in packages(&mut lp, 3).into_iter().filter(|p| p.id == v3 || p.id == z) {
         lp.deliver(1, &pk).unwrap();
     }
     let e = &mut lp.peers[1].engine;
     assert!(e.commit_ids().contains(&z));
-    eprintln!("reads {:?} digest alike {}", e.get(&t, &short).unwrap(), lp.peers[1].engine.state_digest(&t, &short).unwrap() == lp.peers[3].engine.state_digest(&t, &short).unwrap());
+    eprintln!("reads {:?} digest alike {}", e.get(&t, &asp).unwrap(), lp.peers[1].engine.state_digest(&t, &asp).unwrap() == lp.peers[3].engine.state_digest(&t, &asp).unwrap());
     assert!(!flagged(&mut lp), "a valid later snapshot settles the flag");
     // its author removed, listing none of its commits: it gives nothing, the flag shows again
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
@@ -889,29 +889,29 @@ fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));
 }
 
-/// A Flip flag about `body` of `(t, short)` at peer 1, dropped for its bounds: W's write falls.
-fn flip_flag_on(lp: &mut LocalPeer, t: Tid, short: &Ak, body: &CommitId) {
+/// A Flip flag about `body` of `(t, asp)` at peer 1, dropped for its bounds: W's write falls.
+fn flip_flag_on(lp: &mut LocalPeer, t: Tid, asp: &Ak, body: &CommitId) {
     let w = lp.peers[2].engine.tid();
-    lp.peers[1].engine.drop_body(body, &t, short).unwrap();
+    lp.peers[1].engine.drop_body(body, &t, asp).unwrap();
     lp.advance(1_000);
     let f = osis_schema::core_types::Frontier { commits: Default::default() };
     let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::Codec::to_value(&f)));
     for p in packages(lp, 0).into_iter().filter(|p| p.id == fall) {
         lp.deliver(1, &p).unwrap();
     }
-    assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *short), "flagged");
+    assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *asp), "flagged");
 }
 
-/// Y's later write and snapshot of `(t, short)` reach peer 1.
-fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, short: &Ak) {
+/// Y's later write and snapshot of `(t, asp)` reach peer 1.
+fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, asp: &Ak) {
     lp.advance(1_000);
-    let v = set(lp, 3, t, &SHORT, "later");
+    let v = set(lp, 3, t, &GONE, "later");
     lp.advance(1_000);
-    let z = lp.peers[3].engine.snapshot(&t, short).unwrap().unwrap();
+    let z = lp.peers[3].engine.snapshot(&t, asp).unwrap().unwrap();
     for p in packages(lp, 3).into_iter().filter(|p| p.id == v || p.id == z) {
         lp.deliver(1, &p).unwrap();
     }
-    assert!(!lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *short), "settled");
+    assert!(!lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *asp), "settled");
 }
 
 // spec/permissions.md §4: a flag about a dropped snapshot body settles like any other. Its dormancy
@@ -927,14 +927,14 @@ fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
     }
     lp.sync_all().unwrap();
     lp.peers[1].engine.set_syncing(t, true).unwrap();
-    let short = ak("t:short.0");
-    set(&mut lp, 0, t, &SHORT, "v1");
+    let asp = ak("t:gone.0");
+    set(&mut lp, 0, t, &GONE, "v1");
     lp.advance(1_000);
-    let z = lp.peers[0].engine.snapshot(&t, &short).unwrap().unwrap();
+    let z = lp.peers[0].engine.snapshot(&t, &asp).unwrap().unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    set(&mut lp, 2, t, &SHORT, "v2");
+    set(&mut lp, 2, t, &GONE, "v2");
     lp.sync_all().unwrap();
-    flip_flag_on(&mut lp, t, &short, &z);
-    later_snapshot_settles(&mut lp, t, &short);
+    flip_flag_on(&mut lp, t, &asp, &z);
+    later_snapshot_settles(&mut lp, t, &asp);
 }

@@ -347,7 +347,7 @@ mod tests {
         let g = e.new_thing(&mut m, me);
         m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
         e.commit(m).unwrap();
-        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: Default::default(), at_most: osis_schema::Bound { abs: None, rel: Some(1000) } };
+        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: Default::default(), at_most: osis_schema::Bound { abs: None, rel: Some(0) } };
         let t = WallMs(e.now().0 + 2 * 3_600_000);
         let mut m = Mutation::new();
         for (k, v) in [("t:r.0~", "v"), ("t:s.0~", "live")] {
@@ -358,7 +358,7 @@ mod tests {
         let c = e.commit_in_memory(m).unwrap().unwrap();
         lp.advance(10);
         let e = &mut lp.peers[0].engine;
-        // kills `r`'s write: its body's bound is a second (and the grace) later
+        // kills `r`'s write: its body (`s` live) has the grace to its bound
         let mut m = Mutation::new();
         m.retention(g, &ak("t:r.0~"), ret).unwrap();
         m.set(g, &ak("t:r.0~"), &Value::Str("w".into())).unwrap();

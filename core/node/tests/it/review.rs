@@ -211,8 +211,8 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
-    let (short, reg, doc) = (ak("t:short.0"), ak("t:reg.0"), ak("u:doc.0"));
-    set(&mut lp, 0, t, &SHORT, "a");
+    let (gone, reg, doc) = (ak("t:gone.0"), ak("t:reg.0"), ak("u:doc.0"));
+    set(&mut lp, 0, t, &GONE, "a");
     set(&mut lp, 0, t, &KEPT, "k");
     let mut m = Mutation::new();
     m.set(t, &doc, &s("untyped")).unwrap();
@@ -220,7 +220,7 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     let most = |rel| Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel } };
     let mut m = Mutation::new();
     m.set(t, &REG, &s("brief")).unwrap();
-    m.retention(t, &REG, most(Some(5_000))).unwrap();
+    m.retention(t, &REG, most(Some(0))).unwrap();
     let brief = lp.peers[0].commit(m).unwrap().unwrap();
     // node 1 holds every write but the override, and node 0's snapshot carrying it
     let s0 = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
@@ -231,15 +231,15 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     e1.set_syncing(t, true).unwrap();
     e1.reexamine().unwrap();
     let ret = |e: &osis_node::Engine, c: &osis_base::CommitId| e.header(c).unwrap().aspects[0].retention;
-    let snap = e1.snapshot(&t, &short).unwrap().unwrap();
-    assert_eq!(ret(e1, &snap), most(Some(600_000)), "schema default, schema unknown here");
+    let snap = e1.snapshot(&t, &gone).unwrap().unwrap();
+    assert_eq!(ret(e1, &snap), most(Some(0)), "schema default, schema unknown here");
     let snap = e1.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
     assert_eq!(ret(e1, &snap), Retention { at_least: Bound { abs: None, rel: Some(86_400_000) }, ..most(None) }, "keep at least");
     let u = e1.snapshot(&t, &doc).unwrap().unwrap();
     assert_eq!(ret(e1, &u), most(None), "untyped");
     let snap = e1.snapshot(&t, &reg).unwrap().unwrap();
-    assert_eq!(ret(e1, &snap), most(Some(5_000)), "own header not held: the carrying snapshot");
-    assert_eq!(ret(&lp.peers[0].engine, &s0), most(Some(5_000)), "the override");
+    assert_eq!(ret(e1, &snap), most(Some(0)), "own header not held: the carrying snapshot");
+    assert_eq!(ret(&lp.peers[0].engine, &s0), most(Some(0)), "the override");
     // a default write kills the override: neither held snapshot carries it on
     set(&mut lp, 0, t, &REG, "plain");
     sync(&mut lp, 0, 1);
@@ -289,13 +289,13 @@ fn body_is_a_class_spec_commits_5() {
     assert_eq!(e.get(&t, &ak("t:gone2.0")).unwrap(), Some(s("b2")));
     // deaths aggregate over the class: killing one delta's write dates the other's body
     let mut m = Mutation::new();
-    m.set(t, &SHORT, &s("r")).unwrap();
-    m.set(t, &SHORT2, &s("y")).unwrap();
+    m.set(t, &GONE, &s("r")).unwrap();
+    m.set(t, &GONE2, &s("y")).unwrap();
     let c2 = lp.peers[0].commit(m).unwrap().unwrap();
-    set(&mut lp, 0, t, &SHORT, "r2");
+    set(&mut lp, 0, t, &GONE, "r2");
     let e = &mut lp.peers[0].engine;
-    assert!(e.deaths(&c2, &t, &ak("t:short2.0")).unwrap().is_some());
-    assert_eq!(e.deaths(&c2, &t, &ak("t:short2.0")).unwrap(), e.deaths(&c2, &t, &ak("t:short.0")).unwrap());
+    assert!(e.deaths(&c2, &t, &ak("t:gone2.0")).unwrap().is_some());
+    assert_eq!(e.deaths(&c2, &t, &ak("t:gone2.0")).unwrap(), e.deaths(&c2, &t, &ak("t:gone.0")).unwrap());
 }
 
 // spec/crdt.md §8: snapshot frontiers cover only writes the state reflects (valid ones).
@@ -341,25 +341,26 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
 
 // spec/commits.md §5 (a body's live writes span every aspect of its class): a body on two
 // aspects asked by one of them, then changed through the other, is judged afresh whichever
-// aspect is asked (liveness is not cached per asked aspect alone: a stale answer gave a timed
-// delete with no carrier, or a carrier for nothing).
+// aspect is asked (liveness is not cached per asked aspect alone: a stale answer gave a drop with
+// no carrier, or a carrier for nothing).
 #[test]
 fn body_live_spans_its_class_spec_commits_5() {
     let mut lp = net(1, 84);
     let t = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
-    m.set(t, &SHORT, &s("a")).unwrap();
-    m.set(t, &SHORT2, &s("a2")).unwrap();
+    m.set(t, &GONE, &s("a")).unwrap();
+    m.set(t, &GONE2, &s("a2")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
-    set(&mut lp, 0, t, &SHORT, "b");
-    let (a1, a2) = (ak("t:short.0"), ak("t:short2.0"));
+    set(&mut lp, 0, t, &GONE, "b");
+    let (a1, a2) = (ak("t:gone.0"), ak("t:gone2.0"));
     let e = &mut lp.peers[0].engine;
-    assert!(e.body_live(&c, &t, &a1).unwrap(), "its t:short2.0 write is live");
+    assert!(e.body_live(&c, &t, &a1).unwrap(), "its t:gone2.0 write is live");
+    assert!(e.body_not_dropped(&c, &t, &a1), "live: kept");
     lp.advance(10);
-    set(&mut lp, 0, t, &SHORT2, "b2");
+    set(&mut lp, 0, t, &GONE2, "b2");
     let e = &mut lp.peers[0].engine;
-    assert!(e.body_not_dropped(&c, &t, &a1), "dead, kept to first death plus 10 min");
+    assert!(!e.body_not_dropped(&c, &t, &a1), "dead: dropped with the kill");
     assert!(!e.body_live(&c, &t, &a2).unwrap());
     assert!(!e.body_live(&c, &t, &a1).unwrap(), "asked by the other aspect of the body");
 }

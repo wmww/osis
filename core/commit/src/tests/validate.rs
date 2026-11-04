@@ -165,7 +165,7 @@ fn validate_nobody_and_commit_expiry() {
 }
 
 // spec/commits.md §5, §6: expires after ts; no expires with a purge request; purge never names
-// role-class deltas; relative keep at most only under writer.
+// role-class deltas; a relative keep at most only 0 after replaced, only under writer.
 // spec/commits.md §5 (purge not role-class), §5 (purge no expires)
 #[test]
 fn validate_expiry_purge_retention() {
@@ -184,6 +184,11 @@ fn validate_expiry_purge_retention() {
     let mut x = h.clone();
     x.aspects[0].retention.at_most.rel = Some(0);
     assert!(invalid(&x).to_string().contains("writer"));
+    // checked before the delete levels the class calls for
+    x.aspects[0].retention.by = PurgeBy::Writer;
+    assert!(invalid(&x).to_string().contains("delete levels"));
+    x.aspects[0].retention.at_most.rel = Some(1);
+    assert!(invalid(&x).to_string().contains("other than 0"));
 }
 
 // spec/commits.md §5: fixed tables, write defaults (untyped: author, no bounds, no expiry),
@@ -208,25 +213,30 @@ fn retention_rules() {
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
     assert_eq!(write_expires("roles.0", ts(10), Some(&d), Some(50)).unwrap(), None);
     assert!(write_retention("roles.0", None, Some(Retention::default())).is_err());
-    let bad = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(1) } };
+    let bad = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
     assert!(write_retention("app:x.0", None, Some(bad)).is_err());
+    let bad = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(1) } };
+    assert!(write_retention("app:x.0", None, Some(bad)).is_err());
+    assert!(write_retention("app:x.0", None, Some(Retention { at_most: Bound { abs: None, rel: Some(0) }, ..bad })).is_ok());
     // the own deltas' longest relative keep at least (no absolute one) and strictest keep at
     // most (a passed absolute bound counts as 0 after replaced)
     let own = |least: Bound, abs: Option<u64>, rel: Option<u64>| Retention { by: PurgeBy::AuthorOrAdmin, at_least: least, at_most: Bound { abs, rel } };
     let none = Bound::default();
-    let s = snapshot_retention("app:x.0", [own(Bound { abs: Some(900), rel: Some(5) }, Some(500), Some(30)), own(none, Some(300), None), own(Bound { abs: None, rel: Some(7) }, None, Some(10))], 100);
-    assert_eq!(s, Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(7) }, at_most: Bound { abs: Some(300), rel: Some(10) } });
+    let s = snapshot_retention("app:x.0", [own(Bound { abs: Some(900), rel: Some(5) }, Some(500), None), own(none, Some(300), None), own(Bound { abs: None, rel: Some(7) }, None, None)], 100);
+    assert_eq!(s, Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(7) }, at_most: Bound { abs: Some(300), rel: None } });
+    let s = snapshot_retention("app:x.0", [own(none, Some(500), None), own(none, None, Some(0))], 100);
+    assert_eq!(s.at_most, Bound { abs: Some(500), rel: Some(0) });
     assert_eq!(snapshot_retention("app:x.0", [], 100), Retention { by: PurgeBy::Writer, ..Default::default() });
-    let s = snapshot_retention("app:x.0", [own(none, Some(100), None), own(none, Some(400), Some(9))], 100);
+    let s = snapshot_retention("app:x.0", [own(none, Some(100), None), own(none, Some(400), None)], 100);
     assert_eq!(s.at_most, Bound { abs: Some(400), rel: Some(0) });
-    assert_eq!(snapshot_retention("keys.0", [own(none, None, Some(1))], 0), ROLE_RETENTION);
-    let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(100), rel: Some(50) }, at_most: Bound { abs: Some(400), rel: Some(10) } };
+    assert_eq!(snapshot_retention("keys.0", [own(none, None, Some(0))], 0), ROLE_RETENTION);
+    let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(100), rel: Some(50) }, at_most: Bound { abs: Some(400), rel: Some(0) } };
     assert_eq!(keep_at_least(&r, None), 100);
     assert_eq!(keep_at_least(&r, Some(80)), 130);
-    assert_eq!(keep_at_most(&r, None), Some(400));
-    assert_eq!(keep_at_most(&r, Some(20)), Some(30));
+    assert_eq!(keep_at_most(&r, None, false), Some(400));
+    assert_eq!(keep_at_most(&r, Some(20), false), Some(20));
     let h = sample_header();
-    assert_eq!(body_keep(&h, &r, Some(20), Some(80), false), Keep { at_least: 30, at_most: Some(30) });
+    assert_eq!(body_keep(&h, &r, Some(20), Some(80), false), Keep { at_least: 20, at_most: Some(20) });
     let mut p = h.clone();
     p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
     let floor = h.ts.wall_ms().0 + ROLE_KEEP_MS;
@@ -234,8 +244,8 @@ fn retention_rules() {
     assert_eq!(body_keep(&p, &r, Some(20), Some(80), false), Keep { at_least: floor, at_most: Some(floor) });
 }
 
-// spec/commits.md §5 (keep at most): under at most D after replaced, a body's bound is its
-// first death plus D, plus `AT_MOST_GRACE` while it has a live write, whatever its kind.
+// spec/commits.md §5 (keep at most): under at most 0 after replaced, a body's bound is its
+// first death, plus `AT_MOST_GRACE` while it has a live write, whatever its kind.
 #[test]
 fn at_most_grace_spec_commits_5() {
     use crate::retention::body_keep;
@@ -248,9 +258,6 @@ fn at_most_grace_spec_commits_5() {
         assert_eq!(body_keep(x, &r, Some(20), Some(80), false).at_most, Some(20));
         assert_eq!(body_keep(x, &r, Some(20), Some(80), true).at_most, Some(20 + G));
         assert_eq!(body_keep(x, &r, None, None, true).at_most, None);
-        let d = Retention { at_most: Bound { abs: None, rel: Some(5) }, ..r };
-        assert_eq!(body_keep(x, &d, Some(20), Some(80), false).at_most, Some(25));
-        assert_eq!(body_keep(x, &d, Some(20), Some(80), true).at_most, Some(25 + G));
         // an absolute bound is not extended
         let t = Retention { at_most: Bound { abs: Some(30), rel: None }, ..r };
         assert_eq!(body_keep(x, &t, Some(20), Some(80), true).at_most, Some(30));
@@ -273,7 +280,7 @@ fn ephemeral_retention_writer_no_bounds_spec_commits_2() {
     (snapshot.aspects[0].lo, snapshot.aspects[0].hi) = (0, 0);
     for h in [session, snapshot] {
         h.validate().unwrap();
-        for f in [|r: &mut Retention| r.at_least.rel = Some(5), |r: &mut Retention| r.at_least.abs = Some(5), |r: &mut Retention| r.at_most.rel = Some(5), |r: &mut Retention| r.at_most.abs = Some(5)] {
+        for f in [|r: &mut Retention| r.at_least.rel = Some(5), |r: &mut Retention| r.at_least.abs = Some(5), |r: &mut Retention| r.at_most.rel = Some(0), |r: &mut Retention| r.at_most.abs = Some(5)] {
             let mut x = h.clone();
             f(&mut x.aspects[0].retention);
             assert!(invalid(&x).to_string().contains("retention"), "{:?}", x.aspects[0].retention);

@@ -32,7 +32,7 @@ Format version 1, spec/versioning.md §1:
 | `MAX_DRIFT` | 1 hour |
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync.md §5, §9) |
 | `ROLE_KEEP` | 90 days |
-| `AT_MOST_GRACE` | 1 hour: added to the relative keep-at-most bound of a body with a live write (spec/commits.md §5) |
+| `AT_MOST_GRACE` | 1 hour: added to the keep-at-most bound of 0 after replaced (the first death) of a body with a live write (spec/commits.md §5) |
 | `INBOX_LIFETIME` | 90 days |
 | `INBOX_WAITING`, `INBOX_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): deposits a node leaves at an inbox it clears (spec/sync.md §5) |
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |
@@ -99,7 +99,7 @@ Header fields by position:
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a role commit carrying an explicit demotion (spec/permissions.md §5; a writer rule: a receiver checks only that it sits on a role commit). A value that does not decode as a `frontier` is bad input.
 14. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 0, or `kind` 0 and session form, no `chunks`, no `purge`, no `undoes`, no list by link and no `created.0` aspect; every aspect's retention is `writer` with no bounds, with the levels it calls for; a relay-only commit has no `expires`. Anything else is bad input.
 
-Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced), `{}` for no bound; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, sorted and distinct for kinds 1 and 4.
+Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced; in `at_most` only 0), `{}` for no bound; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, sorted and distinct for kinds 1 and 4.
 
 - **Inline or link**: `aspects`, `chunks`, `purge`, `keys` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link to one at or below it or above `MAX_LIST_BYTES`; a writer refuses such a commit. A linked frontier's encoding is exactly `{0: set<32-byte commit ID>}`; anything else is bad input. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key under `"osis v1 commit" || commit ID`.
@@ -113,7 +113,7 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - `expires` on a commit with such an aspect;
   - a `nobody` aspect beside an aspect of another purgeable-by, `created.0` and `required.0^` aside (spec/commits.md §5);
   - a content compaction snapshot's retention `by` other than writer;
-  - a relative keep at most under a class other than writer;
+  - a relative keep at most other than 0, or under a class other than writer;
   - `expires` or a purge item on a role commit;
   - `expires` on a commit with a purge request (spec/commits.md §5);
   - a purge item naming a role-class aspect;

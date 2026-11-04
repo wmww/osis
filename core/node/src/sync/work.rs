@@ -1,11 +1,11 @@
 //! Pass work sets (spec/sync.md §6, §7; spec/requirements.md, Scale): what a pass at one host,
 //! or a local pass of a label served with no host (`SyncEngine::local_work`), judges again. A verdict on a commit's bodies and entries changes only through a trigger:
-//! its entries or their presence, certificate or timed-delete records changed (`State::touch`),
+//! its entries or their presence or certificate records changed (`State::touch`),
 //! the engine marked it changed (`Engine::take_changed`: applied, late parts, a drop, a fired
 //! timer, its thing's creation record, its validity flipped, its deaths moved), a snapshot or a
 //! newer card write of its aspects changed under the label, its thing entered or left the
 //! closure, a time bound passed (keep at least, expiry; a local pass: an entry's prefix expiry), the state of an aspect its verdict
-//! waits on changed (liveness; a keep-at-most body: other than by a valid write's join), a role it reads changed (`roles_moved`), or it was
+//! waits on changed (liveness), a role it reads changed (`roles_moved`), or it was
 //! judged while unsettled and that ended. Anything else (open, a role or owner chain of the label's
 //! actor moving, its own secrets, lost access, a forget, other inputs of the pass: keys and epochs, the
 //! home label's published things) judges everything. A commit or blob leaves the set only once its pass did
@@ -35,8 +35,6 @@ pub(crate) struct Touched {
     pub commits: BTreeSet<CommitId>,
     /// The aspects of changed commits: the commits waiting on their state.
     pub states: BTreeSet<(Tid, Ak)>,
-    /// Aspects whose state changed other than by valid writes (`engine::Changed::aspects`).
-    pub whole: BTreeSet<(Tid, Ak)>,
     /// Blobs that arrived or came with a changed commit (a body linking them uploads them now).
     pub blobs: BTreeSet<BlobId>,
     /// Things whose owner chains changed (`Held::below` of new owner links), or those `roles` reach.
@@ -105,7 +103,7 @@ impl InboxCopied {
 
 impl Touched {
     pub fn is_empty(&self) -> bool {
-        !self.full && !self.keys && !self.clock && self.commits.is_empty() && self.states.is_empty() && self.whole.is_empty() && self.blobs.is_empty() && self.moved.is_empty() && self.roles.is_empty() && self.actors.is_empty()
+        !self.full && !self.keys && !self.clock && self.commits.is_empty() && self.states.is_empty() && self.blobs.is_empty() && self.moved.is_empty() && self.roles.is_empty() && self.actors.is_empty()
     }
 
     /// One entry or commit judged again.
@@ -121,7 +119,6 @@ impl Touched {
         self.full |= o.full;
         self.commits.extend(o.commits.iter().copied());
         self.states.extend(o.states.iter().cloned());
-        self.whole.extend(o.whole.iter().cloned());
         self.blobs.extend(o.blobs.iter().copied());
         self.moved.extend(o.moved.iter().copied());
         self.roles.merge(&o.roles);
@@ -132,7 +129,7 @@ impl Touched {
 
     /// What it holds that grows with changes (`SyncConfig::work_max`).
     pub fn size(&self) -> usize {
-        self.commits.len() + self.blobs.len() + self.states.len() + self.whole.len() + self.moved.len() + self.roles.reached.len() + self.roles.subjects.len()
+        self.commits.len() + self.blobs.len() + self.states.len() + self.moved.len() + self.roles.reached.len() + self.roles.subjects.len()
     }
 }
 
@@ -186,10 +183,6 @@ pub(crate) struct Waits {
     pub due: BTreeMap<u64, BTreeSet<Touch>>,
     /// Commits whose verdict waits on an aspect's state (liveness).
     pub aspects: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
-    /// Keep-at-most bodies before their timed delete: a valid write changes their bound or
-    /// liveness only by killing their writes, which marks them (`retention::note_deaths`,
-    /// replays), so only the aspect's other state changes (`Touched::whole`) wake them.
-    pub at_most: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
     /// Blobs a body links that this node neither holds nor has an entry of: the commits that
     /// upload them once they arrive.
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
@@ -208,9 +201,6 @@ impl Waits {
         }
         for (k, cs) in o.aspects {
             self.aspects.entry(k).or_default().extend(cs);
-        }
-        for (k, cs) in o.at_most {
-            self.at_most.entry(k).or_default().extend(cs);
         }
         for (b, cs) in o.links {
             self.links.entry(b).or_default().extend(cs);
@@ -280,7 +270,7 @@ impl Work {
     /// Whether changes `t` wake a verdict waiting here (`prepare`): the next resync judges it.
     pub fn woken_by(&self, t: &Touched) -> bool {
         let w = &self.waits;
-        t.states.iter().any(|k| w.aspects.contains_key(k)) || t.whole.iter().any(|k| w.at_most.contains_key(k)) || t.blobs.iter().any(|b| w.links.contains_key(b)) || t.keys && !w.keyless.is_empty()
+        t.states.iter().any(|k| w.aspects.contains_key(k)) || t.blobs.iter().any(|b| w.links.contains_key(b)) || t.keys && !w.keyless.is_empty()
     }
 
     /// Takes in what another set collected meanwhile (a pass's own touches).
@@ -351,11 +341,6 @@ impl Left {
         self.waits.aspects.entry((t, a)).or_default().insert(c);
     }
 
-    /// Keep-at-most body `c` of `(t, a)` waits for its timed delete (`Waits::at_most`).
-    pub fn wait_at_most(&mut self, t: Tid, a: Ak, c: CommitId) {
-        self.waits.at_most.entry((t, a)).or_default().insert(c);
-    }
-
     /// Commit `c` waits for linked blob `b`.
     pub fn link(&mut self, b: BlobId, c: CommitId) {
         self.waits.links.entry(b).or_default().insert(c);
@@ -407,11 +392,6 @@ impl SyncEngine {
         }
         for k in std::mem::take(&mut w.touched.states) {
             if let Some(cs) = w.waits.aspects.remove(&k) {
-                w.touched.commits.extend(cs);
-            }
-        }
-        for k in std::mem::take(&mut w.touched.whole) {
-            if let Some(cs) = w.waits.at_most.remove(&k) {
                 w.touched.commits.extend(cs);
             }
         }

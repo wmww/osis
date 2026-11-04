@@ -76,11 +76,11 @@ fn engine_reopenable(seed: u64) -> (Engine, Arc<AtomicU64>, Arc<AtomicU64>, Reop
     (e, batches, bytes, Reopen(inner, root))
 }
 
-static SCALE: StaticSchema = StaticSchema::new("scale.osis", "version 1; aspect s:text.0: text; aspect s:tags.0: set<string>; aspect s:kept.0: set<string> [by: writer, keep_at_least: 1d]; aspect s:short.0: map<string, string> [by: writer, keep_at_most: 10m];\n");
+static SCALE: StaticSchema = StaticSchema::new("scale.osis", "version 1; aspect s:text.0: text; aspect s:tags.0: set<string>; aspect s:kept.0: set<string> [by: writer, keep_at_least: 1d]; aspect s:gone.0: map<string, string> [by: writer, keep_at_most: 0s];\n");
 const TEXT: Aspect<Value> = Aspect::new("s:text.0", &SCALE);
 const TAGS: Aspect<Value> = Aspect::new("s:tags.0", &SCALE);
 const KEPT: Aspect<Value> = Aspect::new("s:kept.0", &SCALE);
-const SHORT: Aspect<Value> = Aspect::new("s:short.0", &SCALE);
+const GONE: Aspect<Value> = Aspect::new("s:gone.0", &SCALE);
 
 /// A size from `var`, else `release` in a release build and `dev` in a dev one. A dev build
 /// re-examines every pending commit at each re-examination (`check_unchanged`, debug only): a
@@ -1085,9 +1085,9 @@ fn put_keys(net: &mut net::Net, n: usize, t: Tid, asp: &Aspect<Value>, ks: &[Str
 // a big aspect judges O(change), not the aspect. N keys on one thing (`OSIS_SCALE_N`, default
 // 10^3) in at most 10^3 commits (`OSIS_SCALE_PER` keys each, default N/10^3 rounded up: a commit
 // costs its joins at both nodes, about 14 ms per one-key commit at 10^4, so 10^4 bodies takes
-// `OSIS_SCALE_PER=1`) at one host, a writer and a reader: (1) under keep at most (every body
-// live, waiting for its timed delete) one more key, then one overwriting the first body's keys
-// (kills that body); (2) under an expiry, an older commit expiring
+// `OSIS_SCALE_PER=1`) at one host, a writer and a reader: (1) under keep at most 0 (every body
+// live) one more key, then one overwriting the first body's keys (kills that body, dropped with
+// the kill); (2) under an expiry, an older commit expiring
 // alone; (3) N things in the group, one write (the closure taken once per pass;
 // `OSIS_SCALE_CLOSURE` things, default N; created `OSIS_SCALE_BATCH` per commit, default 500;
 // the setup's time and spans printed: creation is O(things created) at both nodes). The passes'
@@ -1112,7 +1112,7 @@ fn sync_aspect_pass_cost() {
     let per = size("OSIS_SCALE_PER", n.div_ceil(1_000), n.div_ceil(1_000)).max(1);
     let keys: Vec<String> = (0..n).map(|i| format!("k{i}")).collect();
     for ks in keys.chunks(per) {
-        put_keys(&mut net, a, t, &net::SHORTMAP, ks, "v");
+        put_keys(&mut net, a, t, &net::GONEMAP, ks, "v");
         put_keys(&mut net, a, u, &net::BRIEFMAP, ks, "v");
     }
     net.run();
@@ -1122,14 +1122,14 @@ fn sync_aspect_pass_cost() {
     let stats = |net: &mut net::Net| (net.sync(a).pass_stats(), net.sync(b).pass_stats());
     let s0 = stats(&mut net);
     let t1 = Instant::now();
-    put_key(&mut net, a, t, &net::SHORTMAP, "new", "v");
+    put_key(&mut net, a, t, &net::GONEMAP, "new", "v");
     net.run();
     let one = t1.elapsed();
     let s1 = stats(&mut net);
     net.advance(1_000);
     let s2 = stats(&mut net);
     let t2 = Instant::now();
-    put_keys(&mut net, a, t, &net::SHORTMAP, &keys[..per.min(n)], "w");
+    put_keys(&mut net, a, t, &net::GONEMAP, &keys[..per.min(n)], "w");
     net.run();
     let kill = t2.elapsed();
     let s3 = stats(&mut net);
@@ -1237,18 +1237,18 @@ fn dropped_snapshot_frontier_cost_spec_commits_5() {
     m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None }.to_value()) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
-    let key = ak("s:short.0");
+    let key = ak("s:gone.0");
     let t0 = Instant::now();
     for i in 0..k {
         for j in 0..5 {
             let mut m = Mutation::new();
-            m.op(t, &SHORT, PathOp { path: vec![PathSeg::Key(Value::Str("k".into()))], op: Op::Set(Value::Str(format!("v{i}.{j}"))) }).unwrap();
+            m.op(t, &GONE, PathOp { path: vec![PathSeg::Key(Value::Str("k".into()))], op: Op::Set(Value::Str(format!("v{i}.{j}"))) }).unwrap();
             lp.peers[0].commit(m).unwrap().unwrap();
         }
         let s = lp.peers[0].engine.snapshot(&t, &key).unwrap().unwrap();
         let pk = lp.peers[0].engine.package(&s).unwrap().unwrap();
         lp.deliver(1, &pk).unwrap();
-        lp.advance(11 * 60_000);
+        lp.advance(1_000);
         lp.peers[1].engine.tick().unwrap();
     }
     let fill = t0.elapsed();

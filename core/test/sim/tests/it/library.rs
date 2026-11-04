@@ -256,7 +256,7 @@ fn keep_at_most_seed_6() {
     ok("keep_at_most", 6);
 }
 
-// spec/commits.md §5, spec/sync.md §5: sweep seed 42, a timed delete lost on a cut connection.
+// spec/commits.md §5, spec/sync.md §5: sweep seed 42 (found as a timed delete lost on a cut connection).
 #[test]
 #[ignore = "tier 2"]
 fn keep_at_most_seed_42() {

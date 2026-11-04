@@ -3021,14 +3021,14 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
 fn dropped_snapshot_leaves_frontier_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut lp, d, b, c) = setup(0x5fe0);
-    let sm = ak("t:shortmap.0");
+    let sm = ak("t:gonemap.0");
     let entry = |k: &str, v: &str| {
         let mut m = Mutation::new();
-        m.op(d, &SHORTMAP, PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
+        m.op(d, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
         m
     };
     let mut m = entry("k1", "b");
-    m.op(d, &SHORTMAP, PathOp { path: vec![PathSeg::Key(s("k2"))], op: Op::Set(s("b")) }).unwrap();
+    m.op(d, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("k2"))], op: Op::Set(s("b")) }).unwrap();
     lp.peers[1].commit(m).unwrap().unwrap();
     sync(&mut lp, 1, 2);
     let bob: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.author == b)).collect();
@@ -3101,10 +3101,10 @@ fn dropped_snapshot_leaves_frontier_spec_commits_5() {
 fn bound_dropped_coverer_still_carries_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut lp, d, b, c) = setup(0x5ff0);
-    let sm = ak("t:shortmap.0");
+    let sm = ak("t:gonemap.0");
     let entry = |k: &str, v: &str| {
         let mut m = Mutation::new();
-        m.op(d, &SHORTMAP, PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
+        m.op(d, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(k))], op: Op::Set(s(v)) }).unwrap();
         m
     };
     lp.peers[1].commit(entry("k1", "b")).unwrap().unwrap();

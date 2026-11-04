@@ -263,7 +263,7 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     // keeps to the next compaction or its bound (`body_keep`), so an edit erasing part of
     // it does not re-snapshot the aspect. `t` is `body_keep`'s: past the first death only
     // under a purge request's floor, which this does not cut short
-    let zero = a.retention.at_most.rel == Some(0) && !live && d.is_some_and(|d| t <= d.0.wall_ms().0);
+    let zero = a.retention.at_most.rel.is_some() && !live && d.is_some_and(|d| t <= d.0.wall_ms().0);
     if zero {
         return drop_body(tx);
     }

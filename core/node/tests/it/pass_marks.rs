@@ -54,8 +54,8 @@ fn expiry_judges_only_the_expired_commit_spec_sync_5() {
     assert!(s1.bodies - s0.bodies < 6, "the aspect's live bodies are not judged again: {s0:?} -> {s1:?}");
 }
 
-// spec/commits.md §5 (keep at most: a body whose writes all died goes at its bound, by a timed
-// delete, spec/sync.md §5), §6: a write re-judges the keep-at-most bodies it killed, not every
+// spec/commits.md §5 (keep at most 0: a body whose writes all died goes with the kill, here and at
+// hosts in the same sync), §6: a write re-judges the keep-at-most bodies it killed, not every
 // live one of the aspect (bodies holding a map entry stay live, waiting).
 #[test]
 fn keep_at_most_write_judges_the_bodies_it_killed_spec_commits_5() {
@@ -64,22 +64,20 @@ fn keep_at_most_write_judges_the_bodies_it_killed_spec_commits_5() {
     let a = net.node(1, &[host]);
     let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "t");
-    let live: Vec<CommitId> = (0..6).map(|i| put_key(&mut net, a, t, &SHORTMAP, &format!("k{i}"), "v")).collect();
+    let live: Vec<CommitId> = (0..6).map(|i| put_key(&mut net, a, t, &GONEMAP, &format!("k{i}"), "v")).collect();
     // writes only k0's value: dead once that is overwritten
-    let over = put_key(&mut net, a, t, &SHORTMAP, "k0", "w");
+    let over = put_key(&mut net, a, t, &GONEMAP, "k0", "w");
     net.run();
     net.advance(61_000);
     let l = net.label(a);
     let s0 = net.sync(a).pass_stats();
-    put_key(&mut net, a, t, &SHORTMAP, "k0", "x");
+    assert_eq!(at_host(&mut net, a, host, &l, &over), 1);
+    put_key(&mut net, a, t, &GONEMAP, "k0", "x");
     net.run();
     let s1 = net.sync(a).pass_stats();
     assert!(s1.passes > s0.passes);
     assert!(s1.bodies - s0.bodies < 6, "the live bodies are not judged again: {s0:?} -> {s1:?}");
-    // past the killed body's bound (its death plus 10 min): its timed delete went up
-    net.set_online(a, false);
-    net.advance(600_000 + 1_000);
-    assert_eq!(at_host(&mut net, a, host, &l, &over), 0, "the killed body was judged: deleted at its bound");
+    assert_eq!(at_host(&mut net, a, host, &l, &over), 0, "the killed body was judged: deleted with the kill");
     assert!(live.iter().all(|c| at_host(&mut net, a, host, &l, c) == 1), "the live ones stay");
 }
 
@@ -115,8 +113,8 @@ fn map_op(net: &mut Net, n: usize, t: Tid, asp: &osis_schema::Aspect<Value>, op:
     net.engine(n).commit(m).unwrap().unwrap()
 }
 
-// spec/commits.md §5 (keep at most: a body with no live write goes at its bound by a timed
-// delete, spec/sync.md §5): a body whose entry was removed is dead with no live write (the
+// spec/commits.md §5 (keep at most 0: a body with no live write goes with the kill, here and at
+// hosts in the same sync): a body whose entry was removed is dead with no live write (the
 // tombstone keyed by its dot holds the remover's reset, not its creation), so no grace.
 #[test]
 fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
@@ -125,20 +123,16 @@ fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
     let a = net.node(1, &[host]);
     let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "t");
-    let b = put_key(&mut net, a, t, &SHORTMAP, "k1", "v");
+    let b = put_key(&mut net, a, t, &GONEMAP, "k1", "v");
     net.run();
     net.advance(61_000);
-    map_op(&mut net, a, t, &SHORTMAP, osis_crdt::Op::Remove(s("k1")));
-    net.run();
-    net.advance(61_000);
-    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&SHORTMAP)).unwrap();
-    assert!(net.engine(a).deaths(&b, &t, &ak).unwrap().is_some() && !net.engine(a).body_live(&b, &t, &ak).unwrap(), "dead, no live write");
     let l = net.label(a);
     assert_eq!(at_host(&mut net, a, host, &l, &b), 1);
-    // past the removal plus 10 min (no grace: no live write): the timed delete went up
-    net.set_online(a, false);
-    net.advance(600_000);
-    assert_eq!(at_host(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted at its bound");
+    map_op(&mut net, a, t, &GONEMAP, osis_crdt::Op::Remove(s("k1")));
+    net.run();
+    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&GONEMAP)).unwrap();
+    assert!(!net.engine(a).body_not_dropped(&b, &t, &ak) && !net.engine(a).body_live(&b, &t, &ak).unwrap(), "dropped with the removal, no live write");
+    assert_eq!(at_host(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted in the same sync");
 }
 
 // spec/sync.md §6: a `nobody` body with no keep bound is must-hold for good, but nothing is due for

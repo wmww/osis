@@ -77,7 +77,7 @@ fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key
     Ok(a)
 }
 
-/// `by=NAME,at_least=DUR,at_least_abs=TS,at_most=DUR,at_most_abs=TS` over the key's default.
+/// `by=NAME,at_least=DUR,at_least_abs=TS,at_most=0s,at_most_abs=TS` over the key's default.
 pub fn retention(s: &str, mut r: Retention) -> anyhow::Result<Retention> {
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let (k, v) = part.split_once('=').ok_or_else(|| usage(format!("bad retention item {part:?}")))?;

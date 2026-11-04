@@ -44,12 +44,13 @@ pub fn fixed_retention(ak: &str) -> Option<Retention> {
     }
 }
 
-/// A relative keep-at-most bound exists only under `writer`.
+/// A relative keep at most is only 0 after replaced, and only under `writer`.
 pub(crate) fn check_retention(r: &Retention) -> Result<(), Error> {
-    if r.at_most.rel.is_some() && r.by != PurgeBy::Writer {
-        return Err(Error::Invalid("relative keep at most needs purgeable by writer"));
+    match r.at_most.rel {
+        Some(d) if d != 0 => Err(Error::Invalid("relative keep at most other than 0")),
+        Some(_) if r.by != PurgeBy::Writer => Err(Error::Invalid("keep at most 0 after replaced needs purgeable by writer")),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Retention of a write: the fixed one, else the commit's override, else the schema's default
@@ -62,15 +63,18 @@ pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<
         (None, Some(s)) => s,
         (None, None) => defaults.map(|d| d.retention).unwrap_or_default(),
     };
-    check_retention(&r).map_err(|_| Error::Build("relative keep at most needs purgeable by writer"))?;
+    check_retention(&r).map_err(|e| match e {
+        Error::Invalid(m) => Error::Build(m),
+        e => e,
+    })?;
     Ok(r)
 }
 
 /// Retention of a compaction-snapshot delta (spec/commits.md §5): an aspect with fixed retention
 /// keeps it; any other is `writer` with, over `own` (the retentions standing for the writes the
 /// snapshot carries live), the longest relative keep at least (no absolute one), and the
-/// strictest keep at most: the shortest relative bound and the earliest absolute bound after
-/// `now` (the snapshot's wall ms; one at or before it counts as a relative bound of 0).
+/// strictest keep at most: 0 after replaced if any has it, and the earliest absolute bound after
+/// `now` (the snapshot's wall ms; one at or before it counts as 0 after replaced).
 pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>, now: u64) -> Retention {
     if let Some(f) = fixed_retention(ak) {
         return f;
@@ -82,10 +86,9 @@ pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>, no
         // bound only by being live, and its content goes as it dies
         let m = r.at_most;
         let passed = m.abs.is_some_and(|t| t <= now);
-        at_most.rel = match (at_most.rel, if passed { Some(0) } else { m.rel }) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        if passed || m.rel.is_some() {
+            at_most.rel = Some(0);
+        }
         at_most.abs = match (at_most.abs, m.abs.filter(|_| !passed)) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -95,7 +98,7 @@ pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>, no
 }
 
 /// Whether a compaction snapshot of retention `r` is a carrier only (spec/commits.md §5): it
-/// has a keep at least other than 0 after replaced and a keep at most, so no body is dropped
+/// has a keep at least other than 0 after replaced and a keep at most (either form), so no body is dropped
 /// as covered by it nor counts it covering for must-hold.
 pub fn carrier_only(r: &Retention) -> bool {
     let least = r.at_least.abs.is_some() || r.at_least.rel.is_some_and(|d| d > 0);
@@ -129,10 +132,12 @@ pub(crate) fn keep_at_least(r: &Retention, last_death: Option<u64>) -> u64 {
     r.at_least.abs.unwrap_or(0).max(rel)
 }
 
-/// Keep-at-most bound of a body (wall ms): the earlier of `abs` and first death plus `rel`;
-/// `None` while neither applies.
-pub(crate) fn keep_at_most(r: &Retention, first_death: Option<u64>) -> Option<u64> {
-    let rel = r.at_most.rel.zip(first_death).map(|(d, t)| t.saturating_add(d));
+/// Keep-at-most bound of a body (wall ms): the earlier of `abs` and, under 0 after replaced, the
+/// first death (plus `AT_MOST_GRACE` while the body has a live write); `None` while neither
+/// applies.
+pub(crate) fn keep_at_most(r: &Retention, first_death: Option<u64>, live: bool) -> Option<u64> {
+    let grace = if live { AT_MOST_GRACE_MS } else { 0 };
+    let rel = r.at_most.rel.and(first_death).map(|t| t.saturating_add(grace));
     match (r.at_most.abs, rel) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -157,15 +162,10 @@ pub struct Keep {
 
 /// Effective keep bounds: keep at most wins over keep at least, except the purge-request floor,
 /// which wins over both. Expiry (applied by the caller) beats everything. While the body has a
-/// live write (`live`), a relative keep at most D counts as D plus `AT_MOST_GRACE_MS` (the next
-/// compaction, which covers it, usually drops it first).
+/// live write (`live`), keep at most 0 after replaced counts from the first death plus
+/// `AT_MOST_GRACE_MS` (the next compaction, which covers it, usually drops it first).
 pub fn body_keep(h: &Header, r: &Retention, first_death: Option<u64>, last_death: Option<u64>, live: bool) -> Keep {
-    let mut r = *r;
-    if live {
-        r.at_most.rel = r.at_most.rel.map(|d| d.saturating_add(AT_MOST_GRACE_MS));
-    }
-    let r = &r;
-    let most = keep_at_most(r, first_death);
+    let most = keep_at_most(r, first_death, live);
     let mut least = keep_at_least(r, last_death);
     if let Some(m) = most {
         least = least.min(m);

@@ -404,7 +404,7 @@ A write is **dead** at a node once the join has superseded it:
 **Revival.** Un-merge (§4.6) is the only way a dead write revives.
 - The invalid deltas' writes supersede nothing, so a write only they superseded has no death.
 - A valid write un-merged with the record it sits in still dies at a valid superseder (a reset on that record).
-- Retention alone counts an invalid write, or one so un-merged with no superseder, dead from its fall under a relative keep at most (spec/commits.md §5).
+- Retention alone counts an invalid write, or one so un-merged with no superseder, dead from its fall under keep at most 0 after replaced (spec/commits.md §5).
 
 **Hidden writes.** A write hidden in an element that is not live (§5.6, §5.7 Live) is not dead by that: it dies when a reset prunes it, a compacting writer's sweep included (spec/sync.md §7).
 

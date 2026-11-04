@@ -1004,16 +1004,18 @@ fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
 #[test]
 fn unmeetable_entry_refused_spec_commits_5() {
     let (mut lp, d) = setup(439);
-    let keep = Retention { by: PurgeBy::AuthorOrAdmin, at_most: Bound { abs: None, rel: Some(1_000) }, ..Retention::default() };
+    let keep = Retention { by: PurgeBy::AuthorOrAdmin, at_most: Bound { abs: None, rel: Some(0) }, ..Retention::default() };
     let at_most: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(keep, None))]).into();
+    let later = Retention { by: PurgeBy::Writer, at_most: Bound { abs: None, rel: Some(1_000) }, ..Retention::default() };
+    let after_d: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(later, None))]).into();
     let at_once: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(0)))]).into();
     let beyond: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(osis_commit::FOREVER)))]).into();
-    for r in [at_most, at_once, beyond] {
+    for r in [at_most, after_d, at_once, beyond] {
         let mut m = Mutation::new();
         m.set(d, &ct::REQUIRED, &r).unwrap();
         assert!(lp.peers[0].commit(m).is_err(), "{r:?}");
     }
-    let writer = Retention { by: PurgeBy::Writer, at_most: Bound { abs: None, rel: Some(1_000) }, ..Retention::default() };
+    let writer = Retention { by: PurgeBy::Writer, at_most: Bound { abs: None, rel: Some(0) }, ..Retention::default() };
     let fine: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(writer, Some(60_000)))]).into();
     require(&mut lp, 0, d, &fine);
     let mut m = Mutation::new();

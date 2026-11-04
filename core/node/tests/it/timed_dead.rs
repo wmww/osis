@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Timed deletes of bodies whose writes all died (spec/sync.md §5, §7): no carrier snapshot.
+//! Deletes of bodies whose writes all died (spec/sync.md §7): no carrier snapshot.
 
 use crate::net;
 use net::*;
@@ -7,9 +7,9 @@ use osis_node::Mutation;
 use osis_node::sync::EntryKind;
 
 // spec/sync.md §7 (a body with live writes is deleted only while another entry carries them;
-// one without needs none), spec/commits.md §5: a register under a relative keep-at-most
-// replaced whole goes at its bound by a timed delete sent with the replacing upload, and no
-// covering snapshot is written for it; the node's record of the timed delete goes with the entry.
+// one without needs none), spec/commits.md §5: a register under keep at most 0 replaced whole
+// goes with the kill, here and at the host in the same sync, and no covering snapshot is written
+// for it.
 #[test]
 fn replaced_register_needs_no_carrier_spec_sync_7() {
     let mut net = Net::new();
@@ -22,115 +22,20 @@ fn replaced_register_needs_no_carrier_spec_sync_7() {
     net.engine(a).commit(m).unwrap();
     net.run();
     let l = net.label(a);
+    let before = net.host_ids(host, &l).len();
     let mut m = Mutation::new();
     m.set(t, &GONE, &s("v2")).unwrap();
     net.engine(a).commit(m).unwrap();
     net.run();
-    net.run();
     let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
     assert_eq!(snapshots, 0, "no carrier for a body without live writes");
-    let before = net.host_ids(host, &l).len();
-    assert_eq!(net.sync(a).sync_rows(b'd'), 1, "the timed delete the host took is recorded");
-    net.set_online(a, false);
-    net.clock.advance(3_600_000 + 1_000);
-    let now = net.now();
-    net.hosts[host].hub.tick(now);
-    assert_eq!(net.host_ids(host, &l).len() + 1, before, "the replaced body went at its bound, nobody online");
-    // the record goes with the entry (growth: notes/growth.md)
-    net.set_online(a, true);
-    net.run();
-    assert_eq!(net.sync(a).sync_rows(b'd'), 0, "the timed delete's record left with its entry");
+    assert_eq!(net.host_ids(host, &l).len(), before, "v2 went up, the replaced body left");
 }
 
 /// Host entries of commit `c` under `l`, as node `n` knows them.
 fn at_host(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {
     let ids = net.host_ids(host, l);
     net.sync(n).entries(l).into_iter().filter(|(id, k)| ids.contains(id) && matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
-}
-
-// spec/commits.md §5 (keep at most: a body with a live write keeps `AT_MOST_GRACE`; no
-// carrier needed without one), spec/sync.md §5 (a timed delete cannot be withdrawn), §6
-// (must-hold): a body whose write died gets a timed delete; a validity flip (the replacing
-// writer revoked from before its write) revives the write; the host deletes the body at the
-// plain bound all the same, and a right holder online uploads it again at its next resync (a
-// fresh encryption): a window, not a loss. Offline, the window lasts until it next syncs; the
-// revived write has no death, so the body then stays (no bound). A holder offline throughout reads v1
-// when it comes back (`late_holder_judges_backdated_revoke_alike_*`).
-#[test]
-fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
-    use osis_base::Role;
-    use osis_node::flows::{Demotion, PreSync};
-    let gone = osis_base::Ak::new("t:gone.0").unwrap();
-    for online in [true, false] {
-        let mut net = Net::new();
-        let host = net.add_host();
-        let a = net.node(3, &[host]);
-        let b = net.node(4, &[host]);
-        let late = net.node(5, &[host]);
-        let g = net.group(a, &[(b, Role::Write), (late, Role::Read)], &[host]);
-        net.set_online(late, false);
-        let t = net.item(a, g, g, "x");
-        net.run();
-        let l = net.label(a);
-        let mut m = Mutation::new();
-        m.set(t, &GONE, &s("v1")).unwrap();
-        let c1 = net.engine(a).commit(m).unwrap().unwrap();
-        net.run();
-        net.advance(60_000);
-        let before = net.now();
-        net.advance(1_000);
-        net.run();
-        let mut m = Mutation::new();
-        m.set(t, &GONE, &s("v2")).unwrap();
-        net.engine(b).commit(m).unwrap();
-        net.run();
-        net.advance(1_000);
-        assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v2")));
-        let first = at_host(&mut net, a, host, &l, &c1);
-        assert_eq!(first.len(), 1, "v1's body is at the host, its delete timed");
-        // b revoked from before its write: v2 is void, v1 live again at a
-        let bt = net.tid(b);
-        net.set_online(b, false);
-        let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)), keep: None };
-        let done = net.engine(a).demote(&g, &d).unwrap();
-        let acts = net.sync(a).carry_out(done).unwrap();
-        net.actions(a, acts);
-        net.run();
-        assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v1")), "v1 revived");
-        net.set_online(a, online);
-        // past the plain bound: the host carries out the timed delete
-        net.advance(3_600_000);
-        net.run();
-        let again = at_host(&mut net, a, host, &l, &c1);
-        assert!(!again.contains(&first[0]), "the timed delete went at the plain bound");
-        if online {
-            // the next resync (`resync_ms`) finds the body missing there
-            let resync = net.sync(a).config().resync_ms;
-            net.advance(resync);
-            assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "uploaded again on the next resync");
-            net.set_online(late, true);
-            net.run();
-            net.advance(resync);
-            assert_eq!(net.engine(late).get(&t, &gone).unwrap(), Some(s("v1")), "a holder offline throughout");
-            continue;
-        }
-        assert!(again.is_empty(), "deleted while no right holder is online");
-        net.set_online(a, true);
-        net.run();
-        assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "uploaded again on the next sync");
-        // revived, v1 has no death (spec/crdt.md §4.8: only applied valid writes supersede),
-        // so no keep-at-most bound: the body stays, as at a node that never saw v2 valid
-        assert_eq!(net.engine(a).deaths(&c1, &t, &gone).unwrap(), None);
-        net.advance(osis_base::format::AT_MOST_GRACE_MS);
-        net.advance(1_000);
-        assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "kept: v1 is current");
-        assert!(net.engine(a).body_not_dropped(&c1, &t, &gone));
-        net.set_online(late, true);
-        net.run();
-        let resync = net.sync(a).config().resync_ms;
-        net.advance(resync);
-        assert_eq!(net.engine(late).get(&t, &gone).unwrap(), Some(s("v1")), "a holder offline throughout");
-    }
 }
 
 // spec/permissions.md §5.2 (a write after a revoke's frontier is invalid, whatever the order
@@ -238,13 +143,6 @@ fn reader_after_delete_at_most_zero_spec_commits_4() {
     reader_applies_after_carrierless_delete(0x7d10, r, r, 0);
 }
 
-// The same with D after replaced: a timed delete, carried out by the host at its bound.
-#[test]
-fn reader_after_timed_delete_spec_commits_4() {
-    let r = most(None, Some(600_000));
-    reader_applies_after_carrierless_delete(0x7d20, r, r, 600_000 + 1_000);
-}
-
 // spec/commits.md §4 (atomic apply: a delta that left with no carrier and nothing on its aspect as
 // late waits), §5 (a header-only blob goes under a label only as a lasting header): a snapshot
 // taken without an earlier-stamped removal is dead on arrival under at most 0. Nothing of it stays
@@ -311,8 +209,9 @@ fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {
     assert_eq!(net.engine(late).pending(), Vec::new());
 }
 
-// spec/commits.md §4: a pending commit whose missing part's bound comes wakes its node at the
-// bound, nothing else happening (no resync, no timer of its own).
+// spec/commits.md §4: a pending commit whose missing part's absolute bound comes (a later commit
+// on its aspect held) wakes its node at the bound, nothing else happening (no resync, no timer
+// of its own).
 #[test]
 fn wait_wakes_node_at_bound_spec_commits_4() {
     use osis_base::Role;
@@ -326,7 +225,7 @@ fn wait_wakes_node_at_bound_spec_commits_4() {
     net.run();
     assert!(net.sync(b).config().resync_ms > D);
     net.set_online(a, false);
-    let r = most(None, Some(D)).unwrap();
+    let r = most(Some(net.now() + D), None).unwrap();
     let mut m = Mutation::new();
     m.retention(t, &GONE, r).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
@@ -492,7 +391,7 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     net.run();
     let l = net.label(a);
     let mut m = Mutation::new();
-    m.retention(t, &GONE, most(None, Some(3_600_000)).unwrap()).unwrap();
+    m.retention(t, &GONE, most(None, Some(0)).unwrap()).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
     m.set(t, &REG, &s("k")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
@@ -534,7 +433,7 @@ fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
     net.run();
     let l = net.label(a);
     let mut m = Mutation::new();
-    m.retention(t, &GONE, most(None, Some(3_600_000)).unwrap()).unwrap();
+    m.retention(t, &GONE, most(None, Some(0)).unwrap()).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
     m.set(t, &REG, &s("k")).unwrap();
     let c1 = net.engine(a).commit(m).unwrap().unwrap();
@@ -572,7 +471,7 @@ fn first_sync_waits_across_things_spec_commits_4() {
     net.run();
     let l = net.label(a);
     let mut m = Mutation::new();
-    m.retention(t, &GONE, most(None, Some(3_600_000)).unwrap()).unwrap();
+    m.retention(t, &GONE, most(None, Some(0)).unwrap()).unwrap();
     m.set(t, &GONE, &s("v1")).unwrap();
     m.set(u, &REG, &s("k")).unwrap();
     let c = net.engine(a).commit(m).unwrap().unwrap();
