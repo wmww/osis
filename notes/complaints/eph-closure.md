@@ -1,2 +1,3 @@
 - `eph_replay` prints `cargo test --workspace --test it ...`, the form CLAUDE.md forbids; `-p osis-node --test it -- --ignored --exact` works.
 - First build in a new worktree was cold (3.7 min for one crate's tests); expected, only a slow spot.
+- Review: the revert oracle had no restart; adding one found 2% failing on main, 0.2% on the branch. Restarts belong in every `_alike` oracle.
