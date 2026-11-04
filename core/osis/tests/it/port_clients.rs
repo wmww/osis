@@ -726,7 +726,7 @@ fn revert_names_only_what_it_reads() {
     assert_eq!(x.n.get(x.out, ak("t:e.0~")).unwrap(), Some(Value::Int(7)));
 }
 
-// spec/crdt.md §4.6, spec/permissions.md §5.2, notes/client-port.md §3: reverting a creation deletes the thing: every held aspect, every placement this node may write. The node may; the actor must too: a writer removes no admin-only aspect that way, and no placement in a group it may not write
+// spec/crdt.md §4.6, spec/wire.md §11.2, notes/client-port.md §3: reverting a creation deletes the thing as `delete` does: every held aspect, each placement in a group the actor may write. A writer removes no admin-only aspect that way; a placement in a group it may not write stays, and the answer does not tell of it
 #[test]
 fn revert_of_a_creation_needs_what_the_delete_writes() {
     let x = node();
@@ -745,14 +745,30 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     assert_eq!(x.n.get(m, adm).unwrap(), Some(Value::Int(2)));
     let (m, id) = made(&x);
     x.n.write_with(|w| w.place(m, x.h)).unwrap();
-    let r = c.revert(id);
-    assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid != x.h), "{r:?}");
+    c.revert(id).unwrap();
+    assert!(!x.n.knows(m));
     assert!(x.n.get(x.h, ct::GROUP).unwrap().unwrap().items.contains(&m), "a placement in a group it may not write");
-    assert!(x.n.knows(m));
+    assert!(!x.n.get(x.g, ct::GROUP).unwrap().unwrap().items.contains(&m));
     // nothing beyond its rights: the revert runs
     let (m, id) = made(&x);
     c.revert(id).unwrap();
     assert!(!x.n.knows(m));
+    // an ephemeral thing likewise
+    let id_eph = {
+        let mut w = c.write();
+        let m = w.create(x.g).unwrap();
+        w.at(m, ak("t:e.0~")).set(&Value::Int(1)).unwrap();
+        w.place(m, x.g).unwrap();
+        (m, w.commit().unwrap().unwrap().id)
+    };
+    let (m, id) = id_eph;
+    assert!(x.n.engine(|e| e.ephemeral_thing(&m).is_some()));
+    x.n.write_with(|w| w.place(m, x.h)).unwrap();
+    c.revert(id).unwrap();
+    let (mut gone, groups) = x.n.engine(|e| (e.ephemeral_thing(&m).is_none_or(|t| t.deleted), e.groups_of(&m)));
+    gone &= !groups.contains(&x.g);
+    assert!(gone, "{groups:?}");
+    assert!(groups.contains(&x.h), "a placement in a group it may not write");
 }
 
 // spec/wire.md §11.2: however a raw session spells an addition to `group.0` (set add, whole value, insert, edit, a key step), nothing it may not read gets listed

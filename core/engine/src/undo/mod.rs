@@ -151,7 +151,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let mut deltas = Vec::new();
     let made: BTreeSet<Tid> = made_by(&h, &m.valid).difference(keep).copied().collect();
-    let mut unmade = unmake_ops(tx, &made, ts, node)?;
+    let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
+    let mut unmade = unmake_ops(tx, &made, ts, node, writers)?;
     // an undo writes under this open's session, like any content commit (spec/commits.md §3)
     let form = Form::Session(tx.core.session.nonce);
     let own = form.own_source(node, CommitId([0; 32]));
@@ -257,10 +258,11 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
 /// `made`, its held aspects reset (not `created.0` or role-class ones) and its entries
-/// removed from every `group.0` listing it that this node may write, each resolved after the
-/// undo's own delta of that aspect and joined into it (`unmake_one`). `Permission` when this
-/// node may not write one of `made` (`delete` would refuse; never a partial revert).
-fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid) -> Result<BTreeMap<(Tid, Ak), Vec<PathOp>>> {
+/// removed from every `group.0` listing it that all of `writers` may write (this node, a
+/// confined revert's actor too), each resolved after the undo's own delta of that aspect and
+/// joined into it (`unmake_one`). `Permission` when this node may not write one of `made`
+/// (`delete` would refuse; never a partial revert).
+fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers: &[Tid]) -> Result<BTreeMap<(Tid, Ak), Vec<PathOp>>> {
     if made.is_empty() {
         return Ok(BTreeMap::new());
     }
@@ -281,7 +283,7 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid) -> Resul
     }
     let gak = Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))?;
     for (g, (items, subs)) in &tx.core.ix.groups.defs {
-        if made.contains(g) || crate::engine::write::role_of(tx.core, &node, g, ts) < Some(Role::Write) {
+        if made.contains(g) || !writers.iter().all(|w| crate::engine::write::check_authority(tx.core, *w, &Default::default(), g, GROUP.ak(), ts).is_ok()) {
             continue;
         }
         let rm = |field: u64, set: &BTreeSet<Tid>| set.intersection(made).map(|x| PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(Value::Tid(*x)) }).collect::<Vec<_>>();

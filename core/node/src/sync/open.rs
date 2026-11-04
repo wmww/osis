@@ -247,12 +247,17 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// No key opens `l` on `conn`: tried again from scratch after `resync_ms`.
+    /// No key opens `l` on `conn`: tried again from scratch after `resync_ms`. A hinted label:
+    /// the next thing a blob names it under gets its turn (`vet_inbox_hints`).
     fn fail(&mut self, conn: ConnId, l: LabelId) {
         let now = self.raw_now();
-        if let Some(lc) = self.lc_mut(conn, &l) {
-            lc.phase = Phase::Failed;
-            lc.last_sync = now;
+        let Some(lc) = self.lc_mut(conn, &l) else { return };
+        lc.phase = Phase::Failed;
+        lc.last_sync = now;
+        let tried = (l, lc.group, lc.index);
+        if self.state.hints.get(&l).is_some_and(|h| h.via.is_none()) {
+            self.hint_failed.insert(tried);
+            self.vetted = None;
         }
     }
 

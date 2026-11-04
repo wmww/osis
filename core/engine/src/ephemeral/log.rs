@@ -7,7 +7,7 @@
 //! dropped so is remembered per aspect (newest only) so undo reports it instead of reaching past it.
 
 use super::Written;
-use crate::engine::write::{CommitPlan, Records, Resolved as Delta, check_authority_with, draw_blind, nonce_of, run_ops};
+use crate::engine::write::{CommitPlan, Records, Resolved as Delta, check_acts, check_authority_with, draw_blind, nonce_of, run_ops};
 use crate::engine::{Engine, Mutation, Tx};
 use crate::error::{Error, Result};
 use crate::events::{ChangeId, EphemeralId};
@@ -244,6 +244,10 @@ impl Engine {
         let ts = self.core.hlc.next();
         let own = self.own_sources();
         let node = self.tid();
+        // who must hold write on all it does: this node (spec/crdt.md §4.6), a confined revert's
+        // actor too; things it deletes or brings back count though no write is left to make
+        let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
+        let things: Vec<Tid> = del.iter().chain(&making.made).copied().collect();
         // the log is read inside the transaction (and left as it was: `finish_batch` logs)
         let log = std::mem::take(&mut self.eph.log);
         let batch = self.run(|tx| {
@@ -252,17 +256,28 @@ impl Engine {
                 Some(i) => ephemeral_undo(tx, &log, i, ts, &del, &own)?,
                 None => Vec::new(),
             };
-            unmake_ephemeral(tx, &del, ts, &own, &mut inverse)?;
+            unmake_ephemeral(tx, &del, ts, &own, writers, &mut inverse)?;
+            {
+                let core = &*tx.core;
+                let records: Records<'_> = &|t| core.created_for(t, true).filter(|_| core.ix.held.is_memory(t));
+                if !inverse.is_empty() || !things.is_empty() {
+                    check_acts(core, node, records, &actor, ts)?;
+                }
+                for w in writers {
+                    for t in &things {
+                        check_authority_with(core, *w, records, t, CREATED.ak(), ts)?;
+                    }
+                    for r in &inverse {
+                        check_authority_with(core, *w, records, &r.tid, r.ak.as_str(), ts)?;
+                    }
+                }
+            }
             if confined {
                 let mut placed = Vec::new();
                 for r in inverse.iter().filter(|r| r.ak.as_str() == PLACED.ak()) {
                     placed.push((tx.state(&r.tid, &r.ak)?.cloned(), r.fragment.clone()));
                 }
                 let core = &*tx.core;
-                let records: Records<'_> = &|t| core.created_for(t, true).filter(|_| core.ix.held.is_memory(t));
-                for r in &inverse {
-                    check_authority_with(core, actor, records, &r.tid, r.ak.as_str(), ts)?;
-                }
                 for (st, f) in &placed {
                     if let Some(t) = super::gains(st.as_ref(), f).iter().find(|t| !core.may_read(&actor, t)) {
                         return Err(Error::Permission { tid: *t });
@@ -369,8 +384,9 @@ fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<
 
 /// `delete`'s ephemeral writes for each of `del` (spec/crdt.md §4.6 Undoing a creation):
 /// its held ephemeral aspects reset and its entries removed from every `placed.0~` listing
-/// it, resolved against that aspect after what `out` already writes there and joined into it.
-fn unmake_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, own: &[Source; 2], out: &mut Vec<Inverse>) -> Result<()> {
+/// it that all of `writers` may write, resolved against that aspect after what `out` already
+/// writes there and joined into it.
+fn unmake_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, own: &[Source; 2], writers: &[Tid], out: &mut Vec<Inverse>) -> Result<()> {
     if del.is_empty() {
         return Ok(());
     }
@@ -384,9 +400,11 @@ fn unmake_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, own: &[Source;
         }
     }
     let pak = Ak::new(PLACED.ak()).map_err(|_| Error::Misuse("ak"))?;
-    for (g, (items, subs)) in tx.core.ix.placed.iter() {
+    let core = &*tx.core;
+    let records: Records<'_> = &|t| core.created_for(t, true).filter(|_| core.ix.held.is_memory(t));
+    for (g, (items, subs)) in core.ix.placed.iter() {
         let v = super::place::unplace_ops(items, subs, del);
-        if !del.contains(g) && !v.is_empty() {
+        if !del.contains(g) && !v.is_empty() && writers.iter().all(|w| check_authority_with(core, *w, records, g, PLACED.ak(), ts).is_ok()) {
             ops.entry((*g, pak.clone())).or_default().extend(v);
         }
     }
