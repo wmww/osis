@@ -947,12 +947,14 @@ impl Osis {
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 
-    /// Redeems a link (spec/permissions.md §9): reaches its label by the link key, joins its actor
-    /// as this person (removing the link key in the same commit when the link is single use), then
-    /// waits until the target is here. Returns the target. A link known to have ended (used,
-    /// revoked, expired, its hosts no longer listing its key) fails `Invalid` at once; each wait
-    /// fails `Network` after `Config::wait_timeout`, nobody having answered in time. The link key
-    /// is forgotten on every outcome, a dropped future included.
+    /// Redeems a link (spec/permissions.md §9): reaches its label by the link key, waits until K's
+    /// edge on the target is here, joins K as this person (removing the link key in the same
+    /// commit when the link is single use). Returns the target. A link known to have ended (used,
+    /// revoked, expired, its hosts no longer listing its key, K off the target) fails `Invalid` at
+    /// once; so does, at `Config::wait_timeout`, one whose K never shows an edge on the target (the
+    /// target is the link text's word: such a link joins nothing). Other waits fail `Network`
+    /// then, nobody having answered in time. The link key is forgotten on every outcome, a
+    /// dropped future included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if self.is_attached() {
             link.parse()?;
@@ -967,7 +969,7 @@ impl Osis {
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
         let label = link.k_label;
-        self.wait_until(t, Box::new(move |s, _, _| {
+        self.wait_until(t, Box::new(move |s, _, late| {
             if s.static_entry_refused(&label) {
                 return Some(Err(link_ended()));
             }
@@ -979,10 +981,23 @@ impl Osis {
             if pending_on(e, &k) {
                 return None;
             }
-            if e.link_key_gone(&k, &l) {
+            if e.edge_gone(&k, &l) {
                 return Some(Err(link_ended()));
             }
-            (e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())).then_some(Ok(()))
+            if !(e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())) {
+                return None;
+            }
+            // Joining K gives what K holds and nothing says K holds the target but K's edge on it,
+            // so the grant waits for that edge: a link pairing a target with another thing's K
+            // joins nothing. K's label carries the edge (the sharer's delivery to K, then its
+            // certificate copy there), so an honest link gets here with the target unknown too.
+            if e.knows(&target) && e.roster(&target).contains_key(&k) {
+                return Some(Ok(()));
+            }
+            if e.edge_gone(&target, &k) {
+                return Some(Err(link_ended()));
+            }
+            late.then(|| Err(Error::Invalid("this link gives no access to what it names: ask for a new one".into())))
         }))
         .await?;
         let me = self.me();
@@ -995,7 +1010,7 @@ impl Osis {
         // joined: the grant stands in a view with nothing on K pending
         self.wait_until(t, Box::new(move |s, _, _| {
             let e = s.engine_mut();
-            (e.knows(&target) && e.roster(&k).contains_key(&me) && !pending_on(e, &k)).then_some(Ok(()))
+            (e.roster(&k).contains_key(&me) && !pending_on(e, &k)).then_some(Ok(()))
         }))
         .await?;
         Ok(target)
@@ -1219,8 +1234,10 @@ impl Osis {
     }
 
     /// Imports a contact card: reads the profile by the card's link key (bearer use, nothing
-    /// written) until the person's `keys.0` is here. Returns the person, usable in `grant`. Fails
-    /// `Network` after `Config::wait_timeout`; the card's key is forgotten on every outcome.
+    /// written) until the person's `keys.0` is here and the key's actor K has its edge on the
+    /// profile (as in `redeem`, the card's target is its text's word). Returns the person, usable
+    /// in `grant`. Fails `Network` after `Config::wait_timeout`; the card's key is forgotten on
+    /// every outcome.
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
         if self.is_attached() {
             card.parse()?;
@@ -1228,7 +1245,7 @@ impl Osis {
             return crate::port::codec::Args::of(vec![v]).tid();
         }
         let link = card.parse()?;
-        let p = link.target;
+        let (k, p) = (link.k, link.target);
         let key = self.follow_link(&link)?;
         let found = std::sync::Arc::new(std::sync::Mutex::new(None));
         let f2 = found.clone();
@@ -1238,6 +1255,7 @@ impl Osis {
                 Box::new(move |s, _, _| {
                     let e = s.engine_mut();
                     let owner = e.owner(&p)?;
+                    e.roster(&p).contains_key(&k).then_some(())?;
                     e.get_typed(&owner, &ct::KEYS).ok().flatten()?;
                     *crate::watch::lock(&f2) = Some(owner);
                     Some(Ok(()))

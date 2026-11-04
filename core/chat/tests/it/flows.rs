@@ -1067,7 +1067,7 @@ fn join_held_chat() {
     assert!(matches!(w.until(join(&e, &one), 1000, 30), Err(osis::Error::Invalid(_))), "used up, for someone else");
 }
 
-// spec: none. notes/chat.md: a link whose target names a held chat but whose key is another chat's opens the held chat and redeems nothing (the target is the link text's word); someone kicked with a kept copy does not hold the chat, so a link redeems and rejoins
+// spec: none. notes/chat.md: a link whose target names a held chat but whose key is another chat's opens the held chat and redeems nothing; once kicked with a kept copy the chat is not held, so that link fails and joins nothing, and an honest one rejoins
 #[test]
 fn join_held_target_redeems_nothing_kicked_rejoins() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -1085,6 +1085,9 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
     w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
+    assert!(matches!(w.until(join(&b, &crafted), 1000, 200), Err(osis::Error::Invalid(_))), "known, not held: the link's own key does not reach it");
+    w.run();
+    assert!(chats(&b).unwrap().is_empty(), "c2 not joined");
     assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c);
     w.run();
     assert_eq!(chats(&b).unwrap(), vec![c], "rejoined");

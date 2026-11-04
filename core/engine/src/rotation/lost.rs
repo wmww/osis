@@ -528,6 +528,12 @@ impl Engine {
         })
     }
 
+    /// Has the lost-access trigger judge what a role on `t` reaches: a held key gave this node
+    /// `t`'s secrets without any edge, and the key went (a link not redeemed).
+    pub fn judge_lost(&mut self, t: &Tid) -> Result<()> {
+        self.run(|tx| mark_lost_due(tx, [*t]))
+    }
+
     /// Whether the lost-access trigger has work due now (`drop_lost_due`).
     pub fn lost_due(&self) -> bool {
         let now = self.now().0;
