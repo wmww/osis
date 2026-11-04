@@ -10,3 +10,8 @@ Today: recovery throws away any key change by the removed admin that this device
 Tried fix (branch `repudiation`, not merged): keep the key change if any remaining member might have a copy. Review found a vandal can then fake a copy "for the owner" that nobody can check, which blocks recovery for good.
 Options: keep today's rule (recovery always works; a rare honest key change can be lost for later joiners), or the fix plus "only the owner's own devices can recover from a vandal who targeted the owner" (more rules, still a hole for other admins).
 Recommendation: keep today's rule. Recovery always working matters more, and the loss needs an admin to be both stranded and doing a recovery at the same time.
+
+## 8. A limit on how big one change can be
+Requirement: a change may touch any number of things, with no size limit. In practice one change's list of parts has always been capped at 8 MiB, about 250,000 parts, because a node holds that list whole in memory. So far the cap was unwritten and only the writer checked it.
+Proposal: write the number into the spec and the requirement. A bigger change would have to be split by the app, or we would build streaming for these lists later.
+Recommendation: accept. Changes that big are rare, and the writer gets a plain refusal.
