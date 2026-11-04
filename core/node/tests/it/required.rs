@@ -182,6 +182,14 @@ fn exempt_deltas_spec_commits_5() {
         assert_eq!(p.engine.roster(&d).get(&bob).map(|e| e.role), Some(Role::Admin), "{i}");
     }
     assert_eq!(read(&mut lp.peers[0], d, "t:typing.0~"), Some(s("typing")));
+    // role-class outside an edge write: a `keys.0` write alone (a deposit-seed refresh)
+    let c = *lp.peers[0].engine.refresh_deposit_seed(&d).unwrap().commits.last().unwrap();
+    lp.advance(1_000);
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        assert!(valid(&lp.peers[i], &c, &d, "keys.0"), "{i}");
+        assert!(lp.peers[i].engine.body_not_dropped(&c, &d, &ak("keys.0")), "{i}");
+    }
     // `created.0` of a thing whose owner's rule says otherwise: it has its own fixed retention
     let mut m = Mutation::new();
     let child = lp.peers[0].engine.new_thing(&mut m, d);

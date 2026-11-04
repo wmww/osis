@@ -515,6 +515,46 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("v1")));
 }
 
+// spec/sync.md §6 (must-hold: established uncovered by held snapshots; a pending commit that is
+// no snapshot covers nothing): writer b holds a's commit pending (its body on `t:gone.0` hidden),
+// which also writes `t:reg.0`, and writes `t:reg.0` itself: b's body goes to the host all the
+// same (was issues/sync-unsettled-deadlock.md: two writers' pending commits, each waiting for
+// the other's body, stopped each other's uploads).
+#[test]
+fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
+    use osis_base::Role;
+    let gone = osis_base::Ak::new("t:gone.0").unwrap();
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(74, &[host]);
+    let b = net.node(75, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.set_online(b, false);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, most(None, Some(3_600_000)).unwrap()).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    m.set(t, &REG, &s("k")).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let h = net.engine(a).header(&c1).unwrap();
+    let ai = h.aspects.iter().position(|x| x.ak == gone).unwrap();
+    let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c1 && parts.iter().any(|p| p.0 == ai))).map(|(id, _)| id).collect();
+    assert_eq!(hide.len(), 1);
+    net.hide_blobs.insert(b, hide);
+    net.set_online(b, true);
+    net.run();
+    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::WaitDeltas)]);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("mine")).unwrap();
+    let c2 = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::WaitDeltas)], "still pending");
+    assert!(!at_host(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a pending commit");
+}
+
 // spec/commits.md §4: a reader's first sync of a label, a commit across two of its things, a host hiding
 // the body on one: the group is asked for before the label's entries come, so the commit waits whole.
 #[test]
