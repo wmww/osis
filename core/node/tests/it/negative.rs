@@ -131,10 +131,11 @@ fn compaction_across_skew_no_churn_spec_sync_7() {
 }
 
 /// X, a dead write of the slow node `b` (its corrected clock `MAX_DRIFT` behind `a`'s) whose
-/// keep-at-least and keep-at-most bounds are one absolute time, crosses it. Returns the host's
-/// deletions of X's blobs over the crossing and how many blobs of X either node knew.
-fn at_most_across_skew() -> (usize, usize) {
-    use osis_schema::{Bound, PurgeBy, Retention};
+/// keep-at-least and keep-at-most bounds are one absolute time (or under `nobody`, with that
+/// keep-at-most), crosses it. Returns the host's deletions of X's blobs over the crossing and
+/// how many blobs of X either node knew.
+fn at_most_across_skew(by: osis_schema::PurgeBy) -> (usize, usize) {
+    use osis_schema::{Bound, Retention};
     let mut net = Net::new();
     let host = net.add_host();
     let sk = net.add_host();
@@ -148,7 +149,7 @@ fn at_most_across_skew() -> (usize, usize) {
     let at = Bound { abs: Some(bound), rel: None };
     let mut m = Mutation::new();
     m.set(t, &REG, &s("kept")).unwrap();
-    m.retention(t, &REG, Retention { by: PurgeBy::Writer, at_least: at, at_most: at }).unwrap();
+    m.retention(t, &REG, Retention { by, at_least: at, at_most: at }).unwrap();
     let x = net.engine(b).commit(m).unwrap().unwrap();
     net.run();
     net.advance(1_000);
@@ -188,11 +189,13 @@ fn deletions_of(net: &Net, host: usize, l: &osis_base::LabelId, of: &std::collec
 // spec/sync.md §6 (keep-at-least is must-carry), spec/commits.md §5 (keep at most wins): a dead
 // write whose two bounds are one time, crossed by two right holders whose clocks differ by
 // MAX_DRIFT: the fast one drops and deletes it; the slow one, still before its keep-at-least,
-// must not place it again each pass until its own clock passes (one deletion, one blob).
+// must not place it again each pass until its own clock passes (one deletion, one blob). The
+// same for a `nobody` write with that keep-at-most.
 #[test]
-#[ignore = "issues/kept-at-most-skew-churn.md: fails, (7, 7)"]
 fn at_most_across_skew_no_churn_spec_sync_6() {
-    assert_eq!(at_most_across_skew(), (1, 1), "deletions, blobs of X");
+    for by in [osis_schema::PurgeBy::Writer, osis_schema::PurgeBy::Nobody] {
+        assert_eq!(at_most_across_skew(by), (1, 1), "{by:?}: deletions, blobs of X");
+    }
 }
 
 // spec/commits.md §5 (deaths dated per node), spec/sync.md §6: X < Y < Z on a kept register;

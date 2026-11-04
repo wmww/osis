@@ -288,9 +288,9 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - unexpired inbox blobs.
 
   Per node, a body it holds is **must-hold**, **must-not-hold** or **may-hold** at a label. A body meeting a must-not-hold condition is must-not-hold whatever else holds of it.
+  - A delta is **kept** while it is before its keep-at-least bound or under `nobody`, and its keep-at-most bound (if any) is more than `MAX_DRIFT` ahead on the node's corrected clock.
   - **must-hold**: in the required set and, for a closure body, one of:
-    - before its keep-at-least bound;
-    - under `nobody` while kept;
+    - a delta of it kept;
     - established uncovered: the node can join it and no held snapshot of the aspect under the label that is not a carrier only covers it (spec/commits.md §5).
   - **Header-only blob**: in the required set only as the lasting header of a commit lasting on a thing of the closure whose actor the label's reads (spec/commits.md §5), with no other body of the commit wanted there, and then is must-hold, whatever snapshot covers it. One of a commit with a permanent delta or a purge request that is not lasting here is may-hold: another node may judge it lasting.
   - **must-not-hold**, any of:
@@ -299,7 +299,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - past keep-at-most;
     - dropped without a right (spec/permissions.md §7);
     - outside the required set;
-    - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: before its keep-at-least bound, under `nobody` while kept, or holding a live write no snapshot under the label covers;
+    - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept, or holding a live write no snapshot under the label covers;
     - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
     - another node's node-card commit, for `node.0` and `reach.0`, once that node reads the label's actor no more after an applied edge write on its way to the actor ended an edge (removed it, or its `until` passed).
   - **may-hold**: the rest: covered, between bounds, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
