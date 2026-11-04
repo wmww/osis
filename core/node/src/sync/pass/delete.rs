@@ -203,13 +203,13 @@ impl SyncEngine {
                     sups.push(p2);
                 }
             }
-            // a superset whose extra deltas hold no live write a snapshot under the label does
-            // not cover carries nothing more: this blob is one a right holder dropped them from
+            // a superset whose extra deltas hold nothing only a blob can carry (`must_carry`)
+            // carries nothing more: this blob is one a right holder dropped them from
             // (spec/sync.md §6, §7)
             let mut sup = false;
             'sups: for p2 in sups {
                 for p in p2.iter().filter(|p| !parts.contains(p)) {
-                    if self.part_live(&h, commit, p) && !self.parts_covered(snaps, commit, &h, &[*p], note)? {
+                    if self.must_carry(&h, commit, p, snaps, note)? {
                         sup = true;
                         break 'sups;
                     }

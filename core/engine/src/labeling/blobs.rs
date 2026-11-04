@@ -237,16 +237,33 @@ impl Engine {
         out
     }
 
-    /// The read secrets of thing `t` derived through `owners` (a section's chain, nearest
-    /// first) from the epochs held here of each member in turn (a member given secrets of its
-    /// own since the section was sealed holds the derived epoch in its history).
-    fn derived_through(&self, t: &Tid, owners: &[Tid]) -> Vec<Secret32> {
-        let mut out: Vec<Secret32> = Vec::new();
+    /// The epochs of each member of a section's owner chain (`owners`, nearest first, no tid
+    /// twice: spec/wire.md §4) held here, each derived down the nearer part of the chain to the
+    /// nearest owner (a member given secrets of its own since the section was sealed holds the
+    /// derived epoch in its history). `last`: the previous chain of this blob opening and its
+    /// answer (a commit's sections in one group share a chain: derived once, memory bounded).
+    fn chain_epochs(&self, owners: &[Tid], last: &mut Option<(Vec<Tid>, Vec<ActorEpochs>)>) -> Vec<ActorEpochs> {
+        if let Some((o, v)) = last.as_ref()
+            && o == owners
+        {
+            return v.clone();
+        }
+        let mut out = Vec::new();
         for (i, o) in owners.iter().enumerate() {
             let Some(mut e) = self.epochs(o) else { continue };
             for x in owners.get(..i).into_iter().flatten().rev() {
                 e = ActorEpochs::derived(&e, x);
             }
+            out.push(e);
+        }
+        *last = Some((owners.to_vec(), out.clone()));
+        out
+    }
+
+    /// The read secrets of thing `t` derived by tid from `chain_epochs` of its section's owners.
+    fn derived_through(&self, t: &Tid, owners: &[Tid], last: &mut Option<(Vec<Tid>, Vec<ActorEpochs>)>) -> Vec<Secret32> {
+        let mut out: Vec<Secret32> = Vec::new();
+        for e in self.chain_epochs(owners, last) {
             for (_, s) in ActorEpochs::derived(&e, t).read.held_newest_first() {
                 if !out.iter().any(|x| x.expose() == s.expose()) {
                     out.push(s.clone());
@@ -318,11 +335,12 @@ impl Engine {
         }
         let of_label: Vec<Secret32> = label.map(|g| self.read_secrets(g)).unwrap_or_default();
         let thing_of = |sec: &Section| header.as_ref().and_then(|h| sec.ais.first().and_then(|ai| h.aspects.get(*ai)).map(|a| a.tid));
+        let last = std::cell::RefCell::new(None);
         let own = |sec: &Section| -> Vec<Secret32> {
             let t = thing_of(sec);
             let mut v: Vec<Secret32> = t.map(|t| self.read_secrets(&t)).unwrap_or_default();
             if let Some(t) = t {
-                v.extend(self.derived_through(&t, &sec.owners));
+                v.extend(self.derived_through(&t, &sec.owners, &mut last.borrow_mut()));
             }
             v
         };

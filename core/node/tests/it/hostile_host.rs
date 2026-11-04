@@ -1044,16 +1044,28 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     assert!(blobs.iter().all(|(id, _)| net.host_ids(host, &l).contains(id)), "a removed holder's delete went through");
 }
 
-// spec/sync.md §5 (Replace), spec/crypto.md §7, spec/permissions.md §7: one commit of c's
-// carries a part on t (`writer` retention: w, a writer of t, holds its level-3 key) and one on
-// u, a plain thing of the group (w, no admin of it, holds none of its keys). w, a writer of
-// the label, uploads a junk entry replacing the commit's blob, signed for t's commitment group
-// alone. Every honest holder is away: a reader that comes later must still find u's write at
-// the host (it does once c is back: c uploads the body again).
-#[test]
-#[ignore = "issues/replace-one-group.md: fails, the host drops u's part"]
-fn replace_by_one_group_keeps_other_things_parts_spec_sync_5() {
+/// One commit of c's with a part on t (`writer` retention: w, a writer of t, holds its level-3
+/// key) and one on u, a plain thing of the group (w, no admin of it, holds none of its keys),
+/// held at the host in one blob; with `dead`, u's write is overwritten while still before its
+/// keep-at-least bound (t's too: nothing live left in the blob). d, a reader, is away.
+struct OneGroup {
+    net: Net,
+    host: usize,
+    a: usize,
+    c: usize,
+    w: usize,
+    d: usize,
+    g: osis_base::Tid,
+    t: osis_base::Tid,
+    u: osis_base::Tid,
+    cx: osis_base::CommitId,
+    l: LabelId,
+    id: osis_base::BlobId,
+}
+
+fn one_group(dead: bool) -> OneGroup {
     use osis_node::sync::EntryKind;
+    use osis_schema::{Bound, PurgeBy, Retention};
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1075,39 +1087,119 @@ fn replace_by_one_group_keeps_other_things_parts_spec_sync_5() {
     assert_eq!(net.read(d, u), Some(s("u0")), "d reads u");
     net.set_online(d, false);
     let mut m = osis_node::Mutation::new();
-    m.set(t, &GONE, &s("on t")).unwrap();
+    m.set(t, &REG, &s("on t")).unwrap();
+    m.retention(t, &REG, Retention { by: PurgeBy::Writer, ..Retention::default() }).unwrap();
     m.set(u, &REG, &s("keep")).unwrap();
+    if dead {
+        let least = Retention { at_least: Bound { abs: None, rel: Some(1_800_000) }, ..Retention::default() };
+        m.retention(u, &REG, least).unwrap();
+    }
     let cx = net.engine(c).commit(m).unwrap().unwrap();
     net.feed(c, Event::Local);
     net.run();
+    if dead {
+        let mut m = osis_node::Mutation::new();
+        m.set(t, &REG, &s("later")).unwrap();
+        m.set(u, &REG, &s("later")).unwrap();
+        net.engine(c).commit(m).unwrap().unwrap();
+        net.feed(c, Event::Local);
+        net.run();
+    }
     let l = net.label(a);
     let ids: Vec<_> = net.sync(c).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cx)).map(|(id, _)| id).collect();
-    assert_eq!(ids.len(), 1, "one blob of the commit");
-    assert!(net.host_ids(host, &l).contains(&ids[0]), "uploaded");
-    net.set_online(a, false);
-    net.set_online(c, false);
+    assert_eq!(ids.len(), 1, "{dead}: one blob of the commit");
+    assert!(net.host_ids(host, &l).contains(&ids[0]), "{dead}: uploaded");
+    OneGroup { net, host, a, c, w, d, g, t, u, cx, l, id: ids[0] }
+}
 
-    // w: a junk entry replacing the blob, by t's level-3 key and the label write key
-    let bytes = net.engine(c).blob(&ids[0]).unwrap().unwrap();
-    let p = osis_label::Prefix::parse(&bytes).unwrap();
-    assert!(p.groups().len() >= 2, "two commitment groups");
-    // the header is in the blob, under the label every writer opens
-    let hb = net.engine(c).header(&cx).unwrap().blind;
-    let wk = osis_crypto::DeleteSecret::derive(net.engine(w).epochs(&t).unwrap().write.newest_held().unwrap().1);
-    let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    let head = net.host_path(host, &l).last().unwrap().clone();
-    let write = net.engine(w).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
-    let rep = osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &hb, &l, ids[0], None).unwrap();
-    let junk = vec![0xEE, 1, 2, 3];
-    let jid = osis_label::blob_id(&junk);
-    let wrap = [9; osis_crypto::WRAP_LEN];
-    let stamp = osis_label::sign_stamp(&write, &l, &jid, &wrap);
-    let conn = net.conn_to(w, host).expect("connected");
-    let entry = osis_proto::Entry { blob: junk, wrap, stamp, replaces: vec![rep] };
-    net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Upload { id: 900_020, label: l, entries: vec![entry] }) }]);
-    net.settle(10_000);
+impl OneGroup {
+    /// w uploads `blob` (wrapped `wrap`) replacing the commit's blob, signed for t's commitment
+    /// group alone (its level-3 key) and the label write key.
+    fn replace_with(&mut self, blob: Vec<u8>, wrap: [u8; osis_crypto::WRAP_LEN]) {
+        let OneGroup { net, host, c, w, g, t, cx, l, id, .. } = self;
+        let (host, c, w, g, t, l, id) = (*host, *c, *w, *g, *t, *l, *id);
+        let bytes = net.engine(c).blob(&id).unwrap().unwrap();
+        let p = osis_label::Prefix::parse(&bytes).unwrap();
+        assert!(p.groups().len() >= 2, "two commitment groups");
+        // the header is in the blob, under the label every writer opens
+        let hb = net.engine(c).header(cx).unwrap().blind;
+        let wk = osis_crypto::DeleteSecret::derive(net.engine(w).epochs(&t).unwrap().write.newest_held().unwrap().1);
+        let gl = net.sync(w).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+        let head = net.host_path(host, &l).last().unwrap().clone();
+        let write = net.engine(w).head_keys(&g, gl.index, &head).unwrap().write.unwrap();
+        let rep = osis_label::DeleteItem::sign_by(&write, &[(3, &wk)], p.salt(), &hb, &l, id, None).unwrap();
+        let bid = osis_label::blob_id(&blob);
+        let stamp = osis_label::sign_stamp(&write, &l, &bid, &wrap);
+        let conn = net.conn_to(w, host).expect("connected");
+        let entry = osis_proto::Entry { blob, wrap, stamp, replaces: vec![rep] };
+        net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Upload { id: 900_020, label: l, entries: vec![entry] }) }]);
+        net.settle(10_000);
+        assert!(!net.host_ids(host, &l).contains(&id), "the host took the Replace");
+    }
 
-    net.set_online(d, true);
-    net.advance(10_000);
-    assert_eq!(net.read(d, u), Some(s("keep")), "a writer of t alone removed u's write from the host (blob held there: {})", net.host_ids(host, &l).contains(&ids[0]));
+    /// c comes back (if away), then d, the reader that comes later.
+    fn heal(&mut self) {
+        let (c, d) = (self.c, self.d);
+        self.net.set_online(c, true);
+        self.net.advance(30_000);
+        self.net.settle(10_000);
+        self.net.set_online(d, true);
+        self.net.advance(30_000);
+        self.net.settle(10_000);
+    }
+}
+
+// spec/sync.md §5 (Replace), §6 (must-hold), spec/crypto.md §7, spec/permissions.md §7: w, a
+// writer of the label, uploads a junk entry replacing c's blob across t and u, signed for t's
+// commitment group alone: the stated exposure (notes/whole-commits.md §11). c, online then or
+// back later (`away`), uploads the body again as a fresh encryption, so a reader that comes later
+// finds u's write: a live one, and (`dead`) an overwritten one still before its keep-at-least
+// bound.
+#[test]
+fn replace_by_one_group_healed_by_holders_spec_sync_5() {
+    for (dead, away) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut x = one_group(dead);
+        let (a, c, d, u) = (x.a, x.c, x.d, x.u);
+        x.net.set_online(a, false);
+        x.net.set_online(c, !away);
+        x.replace_with(vec![0xEE, 1, 2, 3], [9; osis_crypto::WRAP_LEN]);
+        x.heal();
+        if dead {
+            assert_eq!(x.net.read(d, u), Some(s("later")), "{away}: d reads u");
+            assert_eq!(x.net.engine(d).held_bodies(&u, &Ak::new("t:reg.0").unwrap()), 3, "{away}: the overwritten write, kept at least, is back at the host");
+        } else {
+            assert_eq!(x.net.read(d, u), Some(s("keep")), "{away}: u's write is back at the host");
+        }
+    }
+}
+
+// spec/sync.md §5, §6, spec/wire.md §4: w replaces c's blob with a genuine-looking encryption of
+// the commit whose u section keeps its wrap over a corrupted ciphertext (a node that cannot read
+// u would take it as genuine and copy the section verbatim). c reads u: it finds the blob bad and
+// uploads a fresh encryption of its own, so d, coming later, reads u's write.
+#[test]
+fn replace_by_corrupted_section_healed_by_its_readers_spec_sync_6() {
+    for away in [false, true] {
+        let mut x = one_group(false);
+        let (a, c, d, g, u, cx) = (x.a, x.c, x.d, x.g, x.u, x.cx);
+        let body = x.net.engine(c).label_bodies_meta(&g).unwrap().into_iter().find(|b| b.commit == cx).unwrap();
+        let mut rng = SeededRng::from_u64(0xc0);
+        let e = x.net.engine(c);
+        let good = e.seal(&body, osis_label::Class::Durable, &[], &mut rng).unwrap().unwrap();
+        let (_, pt) = osis_label::open(&good.blob, &good.key).unwrap();
+        let mut env = osis_commit::Envelope::decode(&pt).unwrap();
+        let h = e.header(&cx).unwrap();
+        let ui = h.aspects.iter().position(|a| a.tid == u).unwrap();
+        let sec = env.sections.iter_mut().find(|s| s.ais.contains(&ui)).unwrap();
+        *sec.ciphertext.last_mut().unwrap() ^= 1;
+        let cb = osis_commit::CommitBlob::decode(&e.body_plaintext(&body).unwrap()).unwrap();
+        let bad = osis_node::labeling::frame_envelope(&env, &h, osis_label::Class::Durable, &mut rng, &cb).unwrap();
+        let secret = x.net.engine(x.w).wrap_secret(&g, None).unwrap().unwrap();
+        let wrap = osis_crypto::wrap(&secret, &bad.id, &bad.key, 1).unwrap();
+        x.net.set_online(a, false);
+        x.net.set_online(c, !away);
+        x.replace_with(bad.blob, wrap);
+        x.heal();
+        assert_eq!(x.net.read(d, u), Some(s("keep")), "{away}: u's write is back at the host");
+    }
 }

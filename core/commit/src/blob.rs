@@ -194,6 +194,10 @@ impl Section {
         if owners.len() > osis_base::format::MAX_OWNER_DEPTH {
             return Err(Error::Malformed("section owner chain too deep"));
         }
+        let mut seen = std::collections::BTreeSet::new();
+        if !owners.iter().all(|o| seen.insert(*o)) {
+            return Err(Error::Malformed("section owner chain repeats a thing"));
+        }
         let wrap = wrap.as_bytes().ok_or(Error::Malformed("section wrap"))?.to_vec();
         if wrap.len() != SECTION_WRAP_LEN {
             return Err(Error::Malformed("section wrap length"));
