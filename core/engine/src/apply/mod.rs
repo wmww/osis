@@ -1233,7 +1233,9 @@ impl Engine {
                 waits::candidates(&mut self.core, now)
             };
             #[cfg(debug_assertions)]
-            self.check_unchanged(&ids);
+            if self.recheck(format!("check_unchanged {ids:?}")) {
+                self.check_unchanged(&ids);
+            }
             if ids.is_empty() {
                 return Ok(());
             }

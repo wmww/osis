@@ -139,6 +139,13 @@ impl Store {
         Ok(())
     }
 
+    /// A stamp of the last commit that changed anything, memory rows included; unique in the
+    /// process across stores and opens. While it stands, a read of the store repeats itself
+    /// (`Engine::point`).
+    pub fn changes(&self) -> u64 {
+        self.pager.changes()
+    }
+
     /// Starts a transaction; reads see its own writes. Drop it to abort.
     pub fn transaction<'a>(&'a mut self, rng: &'a mut dyn CryptoRngCore) -> Result<Transaction<'a>, Error> {
         let d = self.pager.begin()?;
@@ -222,6 +229,9 @@ impl Transaction<'_> {
     /// (recovery finishes or rolls back, and may be repeated after another crash) and read back.
     pub fn commit(self) -> Result<(), Error> {
         let Transaction { pager, d, rng, mut mem, .. } = self;
+        if !mem.undo.is_empty() {
+            pager.note_change();
+        }
         pager.commit(d, rng)?;
         mem.done = true;
         Ok(())

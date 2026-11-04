@@ -227,6 +227,9 @@ impl View {
     }
 }
 
+/// `Engine::point`.
+pub type ReadPoint = (u64, u64, u64, u64);
+
 /// A commit's header, decoded from its stored bytes on first use. The bytes hash to the commit
 /// ID and were verified on arrival by a build with these rules (the index tag), so decoding
 /// does not fail; if it does (a bug, damaged memory) the header reads as its view with every
@@ -775,6 +778,10 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
+    /// Debug builds: the cache hits compared with a fresh read at this point of the store
+    /// (`Engine::recheck`).
+    #[cfg(debug_assertions)]
+    pub(crate) rechecked: (ReadPoint, BTreeSet<String>),
     /// `Engine::labels_of` per group, with the records parsed: dropped when its `label.0` state is written (`wrote`) and
     /// on rollback.
     pub(crate) labels: BTreeMap<Tid, (Vec<std::sync::Arc<crate::labeling::GroupLabel>>, osis_schema::core_types::Labels)>,
@@ -1204,6 +1211,8 @@ impl Core {
             generation: 0,
             memory_generation: 0,
             memory_tx: false,
+            #[cfg(debug_assertions)]
+            rechecked: Default::default(),
             labels: BTreeMap::new(),
             published: None,
             links: None,
@@ -1895,6 +1904,24 @@ fn nonce_count(n: &Nonce) -> u64 {
 }
 
 impl Engine {
+    /// While this stands (no commit changed the store, the indexes stand, the clock stands) a
+    /// read of the engine repeats itself.
+    pub fn point(&self) -> ReadPoint {
+        (self.store.changes(), self.core.generation, self.core.memory_generation, self.core.now().0)
+    }
+
+    /// Debug builds: whether a cache hit of `what` is worth comparing with a fresh read: one
+    /// comparison per `point` checks all that can be checked (repeats held a quarter of the CPU of
+    /// `osis`'s tests, notes/testing.md).
+    #[cfg(debug_assertions)]
+    pub fn recheck(&mut self, what: String) -> bool {
+        let at = self.point();
+        if self.core.rechecked.0 != at {
+            self.core.rechecked = (at, BTreeSet::new());
+        }
+        self.core.rechecked.1.insert(what)
+    }
+
     /// A new node over an empty backend: fresh identity, its node thing with `created.0`,
     /// `node.0` and `keys.0` (spec/permissions.md §4 node card).
     pub fn create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: Config, clock: Arc<dyn Clock>, mut rng: Box<dyn CryptoRngCore + Send>) -> Result<Engine> {

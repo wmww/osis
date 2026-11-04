@@ -2,6 +2,7 @@
 """cpuprof_report.py SAMPLES [N] [FILTER]: the N functions with the most samples, inclusive and
 self, from a tools/cpuprof sample file (symbols by llvm-symbolizer)."""
 import collections
+import glob
 import re
 import shutil
 import subprocess
@@ -10,7 +11,7 @@ import sys
 path = sys.argv[1]
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 40
 filt = sys.argv[3] if len(sys.argv) > 3 else None
-sym = next((s for s in ["llvm-symbolizer", "llvm-symbolizer-18"] if shutil.which(s)), None)
+sym = shutil.which("llvm-symbolizer") or next(iter(sorted(glob.glob("/usr/bin/llvm-symbolizer-*"), reverse=True)), None)
 if sym is None:
     sys.exit("cpuprof: no llvm-symbolizer on PATH")
 samples = [line.split() for line in open(path) if line.strip()]

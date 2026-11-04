@@ -335,6 +335,15 @@ pub(crate) struct Pager {
     units: HashMap<u64, Vec<u8>>,
     unit_bytes: usize,
     broken: bool,
+    /// `Store::changes`.
+    changes: u64,
+}
+
+/// `Store::changes` stamps: one sequence for the process, so no two stores or opens share one.
+static CHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_change() -> u64 {
+    CHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Pager {
@@ -363,7 +372,7 @@ impl Pager {
 
     #[allow(clippy::too_many_arguments)]
     fn new(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, epoch: u64, root_key: Secret32, top_ver: u64, meta: Meta, top: Node) -> Pager {
-        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, broken: false }
+        Pager { backend, root, cfg, epoch, root_key, top_ver, next_ver: meta.next_ver, open_spills: BTreeSet::new(), meta, top, nodes: HashMap::new(), units: HashMap::new(), unit_bytes: 0, broken: false, changes: next_change() }
     }
 
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
@@ -385,7 +394,17 @@ impl Pager {
         self.units.clear();
         self.unit_bytes = 0;
         self.broken = false;
+        self.changes = next_change();
         Ok(())
+    }
+
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
+    /// The memory overlay changed in a commit (`Store::changes`).
+    pub fn note_change(&mut self) {
+        self.changes = next_change();
     }
 
     pub fn cfg(&self) -> &StoreConfig {
@@ -619,6 +638,7 @@ impl Pager {
         if d.is_empty() && d.meta == self.meta {
             return Ok(());
         }
+        self.changes = next_change();
         let r = self.commit_inner(d, rng);
         if r.is_err() {
             self.broken = true;

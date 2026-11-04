@@ -5,14 +5,15 @@
 //! label carries: each body sealed and wrapped under its reader actor's read secret as node-sync
 //! places it, opened only with the read secrets the receiver holds.
 
-use crate::engine::{Config, Engine};
+use crate::engine::{Config, Engine, ReadPoint};
 use crate::error::Result;
 use crate::events::Event;
 use crate::{Ingested, Mutation};
 use osis_base::{BlobId, Clock, CommitId, Link, ManualClock, WallMs};
 use osis_crypto::SeededRng;
 use osis_store::{MemoryBackend, MemoryRoot};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
@@ -168,7 +169,19 @@ pub struct LocalPeer {
     pub peers: Vec<Peer>,
     /// Seals `SealedPackage`s (fresh blob keys and salts).
     pub rng: SeededRng,
+    memo: SyncMemo,
 }
+
+/// What `sync_all` need not do again (`Engine::point`: nothing a delivery reads moved).
+#[derive(Default)]
+struct SyncMemo {
+    /// Per sender: its packages, with a hash of each, at a point of its engine.
+    sent: HashMap<usize, (ReadPoint, Hashed)>,
+    /// (receiver, package hash): delivered as a duplicate that changed nothing, at this point.
+    duplicate: HashMap<(usize, u64), ReadPoint>,
+}
+
+type Hashed = Arc<Vec<(Package, u64)>>;
 
 impl LocalPeer {
     /// `n` fresh nodes, seeds derived from `seed`, all at wall time `t`.
@@ -179,7 +192,7 @@ impl LocalPeer {
 
     /// Peers made elsewhere; `seed` seeds the sealing rng.
     pub fn of(peers: Vec<Peer>, seed: u64) -> LocalPeer {
-        LocalPeer { peers, rng: SeededRng::from_u64(seed ^ 0x5ea1) }
+        LocalPeer { peers, rng: SeededRng::from_u64(seed ^ 0x5ea1), memo: SyncMemo::default() }
     }
 
     pub fn peer(&mut self, i: usize) -> Option<&mut Peer> {
@@ -267,12 +280,37 @@ impl LocalPeer {
         self.sync_changed(from, to).map(|_| ())
     }
 
+    /// `packages`, hashed, kept while `from`'s engine stands.
+    fn packages_hashed(&mut self, from: usize) -> Result<Hashed> {
+        let at = self.peers.get(from).map(|p| p.engine.point()).unwrap_or_default();
+        if let Some((_, v)) = self.memo.sent.get(&from).filter(|(p, _)| *p == at) {
+            return Ok(v.clone());
+        }
+        let hash = |pk: &Package| {
+            let mut h = DefaultHasher::new();
+            (&pk.id, &pk.bytes, &pk.blobs).hash(&mut h);
+            h.finish()
+        };
+        let v: Hashed = Arc::new(self.packages(from)?.into_iter().map(|pk| { let n = hash(&pk); (pk, n) }).collect());
+        self.memo.sent.insert(from, (at, v.clone()));
+        Ok(v)
+    }
+
     /// `sync`; whether any delivery was more than a duplicate.
     fn sync_changed(&mut self, from: usize, to: usize) -> Result<bool> {
         osis_base::testenv::checkpoint();
         let mut changed = false;
-        for pk in self.packages(from)? {
-            changed |= !matches!(self.deliver(to, &pk)?, Ingested::Duplicate(_));
+        for (pk, hash) in self.packages_hashed(from)?.iter() {
+            let key = (to, *hash);
+            let at = self.peers.get(to).map(|p| p.engine.point());
+            if at.is_some() && self.memo.duplicate.get(&key).copied() == at {
+                continue;
+            }
+            let dup = matches!(self.deliver(to, pk)?, Ingested::Duplicate(_));
+            changed |= !dup;
+            if let Some(after) = self.peers.get(to).map(|p| p.engine.point()).filter(|a| dup && Some(*a) == at) {
+                self.memo.duplicate.insert(key, after);
+            }
         }
         Ok(changed)
     }

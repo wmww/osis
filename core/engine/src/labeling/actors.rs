@@ -101,7 +101,9 @@ impl Engine {
     pub fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
         if let Some(l) = self.core.inbox_labels.get(a).copied() {
             #[cfg(debug_assertions)]
-            assert_eq!(l, self.inbox_label_read(a), "inbox_label({a}) cached");
+            if self.recheck(format!("inbox_label {a}")) {
+                assert_eq!(l, self.inbox_label_read(a), "inbox_label({a}) cached");
+            }
             return l;
         }
         let l = self.inbox_label_read(a);
@@ -125,7 +127,9 @@ impl Engine {
     pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
         if let Some(m) = self.core.inbox_actors.clone() {
             #[cfg(debug_assertions)]
-            assert_eq!(*m, *self.inbox_actors_read(), "inbox_actors cached");
+            if self.recheck("inbox_actors".to_string()) {
+                assert_eq!(*m, *self.inbox_actors_read(), "inbox_actors cached");
+            }
             return m;
         }
         let m = self.inbox_actors_read();
@@ -227,7 +231,7 @@ impl Engine {
     }
 
     /// `group_labels`, shared: decoded once per write of the `label.0` (`Core::labels`, which
-    /// keeps the records it parsed: debug builds check them against the store on every hit).
+    /// keeps the records it parsed: debug builds check them against the store, `recheck`).
     pub fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
         if self.core.created(g).is_none() {
             return Vec::new();
@@ -237,7 +241,9 @@ impl Engine {
             #[cfg(debug_assertions)]
             {
                 let cached = _records.clone();
-                assert!(self.label_records(g) == cached, "labels_of({g}) cached");
+                if self.recheck(format!("labels_of {g}")) {
+                    assert!(self.label_records(g) == cached, "labels_of({g}) cached");
+                }
             }
             return v;
         }
