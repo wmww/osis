@@ -34,8 +34,12 @@ fn try_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Option<Role>) {
     // remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
     m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
-    if let Some(r) = role {
-        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(r).to_value()) }).unwrap();
+    match role {
+        Some(r) => m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(r).to_value()) }).map(|_| ()).unwrap(),
+        // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
+        None => {
+            m.frontier(ct::Frontier::default().to_value());
+        }
     }
     let _ = e.commit(m);
 }

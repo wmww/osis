@@ -28,11 +28,11 @@
 - **Admin** = write + change role grants + purge (§7) + write admin-only (`^`) aspects (spec/data-model.md §2; §5.2). An admin edge on a plain thing grants changing its role grants and purge on that thing.
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
 - An edge write whose holder is its target or its target's owner actor is not applied (§5.1), and a roster snapshot's entry for either is ignored (§6).
-- The role-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants and self-removals (§2), and what rotations and re-seals write into `secrets.0` and `keys.0` (§3).
+- The role-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants, self-removals and finalizes (§2), and what rotations and re-seals write into `secrets.0` and `keys.0` (§3).
 - An ephemeral thing (spec/data-model.md §1) has no role-class aspects: a node's role on it is its role on a new thing owned by the nearest durable thing on its owner chain. An ephemeral ownerless thing has none, so writes on it, and on things below it, are invalid. Ephemeral writes need the role the durable write would need.
 
 ## 2. Role grant writes
-- **Edge writes**: grant, change and removal of an edge are writes to the target's `roles.0`, each in its own role commit (spec/commits.md §2), by a node with admin on the target.
+- **Edge writes**: grant, change and removal of an edge are writes to the target's `roles.0`, each in its own role commit (spec/commits.md §2), by a node with admin on the target (a finalize, below: with write).
   - A removal of an absent edge is an edge write too (a reset of the holder's entry).
   - A grant or change is remove + put: a reset of every entry of the holder the writer holds, live or not, and a new entry holding the whole edge (spec/crdt.md §5.6 `remove`, then `put` of an absent key).
   - A `roles.0` delta writing inside an entry it does not create is bad input (judged from the delta and its header: the entry's dot is outside the delta's own dots).
@@ -40,10 +40,15 @@
 - An edge may carry `until: timestamp`: the edge counts as removed from `wall_ms(t) >= until`.
 - **An `until` passing** is a loss (§3) the node judges by its own clock, with no role commit behind it. A node whose read access only an `until` ended (walked with every edge's time ahead, it has a role):
   - First hears out the labels it tracks whose closure holds a thing it would forget. For each such label, one of these holds: it has a pass ended with nothing outstanding at every host it is open at, and is open at one; or some host refuses it (stranded, or not admitted); or it has no host.
-  - Meanwhile its writes from before the `until` go up (that expiry holds them back from no epoch, spec/crypto.md §4; a host that already serves a later step refuses them), and a renewal held by then keeps its role.
+  - Meanwhile its writes from before the `until` go up (a host that already serves a later step refuses them), and a renewal held by then keeps its role.
   - Then it drops.
   - It drops anyway `LOST_HEARD_WAIT_MS` after it first found the role gone.
-  - A role commit received beside the ended edge that does not itself end the role changes nothing of this. A removal, demotion or an edge written with `until` 0 (below) ends it at once.
+  - A role commit received beside the ended edge that does not itself end the role changes nothing of this. A removal, demotion or an edge written with `until` 0 (below) ends it at once; a finalize (below) counts as the `until` it finalizes.
+- **Finalize**: a removal of another holder's edge carrying no frontier. It applies (§5.1) iff the edge is past its `until` at the removal's `ts` (as the timeline orders it: a renewal ordered before it counts) and its author holds write on the target and a role there at least the edge's (a timed admin edge needs an admin); else it applies nothing, whoever wrote it.
+  - It is no explicit write: it audits nothing, so the removed holder's own timestamps still decide its writes (§5.1, §5.2).
+  - It is the edge's departure for keys (spec/crypto.md §4) and carries its rotation (§3) like any removal; one finalize may remove several ended edges of one target (spec/commits.md §2).
+  - It says keep or erase as its `until` would (§3, Keep: the default in force at the expiry's key).
+  - A node with write on actor T holding an edge on T it may finalize, past its `until` by its own clock, MUST write the finalize before its next commit encrypting under T other than by sealing a box to T (spec/crypto.md §4). Lacking a current secret of a role it would rotate, it waits for a re-seal, as for any removal.
 - A removal says **keep or erase** (§3, Keep).
   - Its plain entry reset says erase.
   - Its entry reset with the edge written anew with `until` 0 (role read, no invite, no `tied`, the standing edge's `keyset`), gone at every clock, says keep, and is a removal all the same (§5.1, §6), in one commit with its rotation. A client writes `until` 0 for nothing else.
@@ -82,7 +87,7 @@
 - A plain thing uses derived role secrets until it gets a non-owner holder. It then gets random secrets of its own by a rotation from the derived epochs (spec/crypto.md §3), boxed to its owner and each holder, and a `keys.0`.
   - A thing that is to be granted a role on anything gets secrets of its own first.
   - An admin node that sees a current non-owner holder of a plain thing (left so by its only keyset part turning invalid, spec/crypto.md §3) SHOULD give it secrets of its own the same way, boxing every current holder, deciding at the end of a complete sync pass (below) of the labels of the actor its secrets derive from. Concurrent ones fork (spec/crypto.md §4).
-- **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, `until`) of holder M from actor A (a device removal is one, on the person actor) requires rotating every role secret M could open through A:
+- **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, finalize) of holder M from actor A (a device removal is one, on the person actor) requires rotating every role secret M could open through A:
   - on A, the roles M left;
   - on every thing with secrets of its own that A's roles open (what A owns, the targets of A's edges, and so on transitively), the roles A holds there among those the roles M left open through A (a role secret opens only boxes of that role, spec/crypto.md §4).
   - Content is not re-encrypted.
@@ -109,7 +114,7 @@
   - It is delivered as an inbox blob (spec/sync.md §3; to a node, over a direct connection, spec/sync.md §2) and placed under the actor's labels like any role commit.
   - A node that may rotate r SHOULD re-seal a current holder of r that it sees without a box at a current epoch of r, or whose heartbeat reports it stranded (§4), before it next writes under the actor.
   - **Complete pass**: it decides at the end of a complete sync pass of the actor's labels: one that read the log of every host, and of every peer it received the label from, can reach and that still reads it, to its end. A node MAY stop waiting for peers a bounded time after the role change it decides on (policy).
-  - It re-seals never for a holder whose edge's `until` is within `MAX_DRIFT`, never for a holder actor left out (above), and only at established epochs (spec/crypto.md §4).
+  - It re-seals never for a holder actor left out (above), and only at established epochs (spec/crypto.md §4).
   - It re-seals for a role only when holding the secret of such a current epoch the holder lacks a box at. It boxes the ones it holds; another holder boxes the rest.
 - **Label role keys** (spec/sync.md §2) derive from the newest epoch of each role; only an admin registers them. An admin issues the next step when it next syncs that label there, after uploading the rotation commits it registers (spec/sync.md §5), when either holds:
   - it holds an epoch newer than a host's head;
@@ -123,7 +128,7 @@
   - Whatever its `ts`, such a signed commit that boxes the node a read epoch newer than every one it held keeps its boxes through the drop (it may still apply and then gives the node the secrets with the role). The node reads nothing from them before it applies. Boxes only at epochs it held are dropped.
   - A held redemption (a commit removing its signer's own edge on a thing beside a grant there) granting the node, that stands void only because an applied redemption by the same signer removed that edge first, with no explicit write on that edge since (an unfinalized single-use link race, §8), is no loss yet: the node keeps what that grant would give and keeps syncing its labels until such a write arrives.
   - A node that lost read access through its own self-removal (§2) drops once that commit is placed (spec/sync.md §5, Placed), so it can place it (above).
-  - One that lost it by an `until` passing alone drops as §2 says.
+  - One that lost it by an `until` passing alone (a finalize counting as its `until`) drops as §2 says.
 - **Keep**: a node that lost read access to actor A keeps a read-only copy of A's things when one of its ways to A keeps.
   - A **way** is a holder H of A, in one of these forms:
     - an edge of H on A that ended saying keep, the node holding a role on H just before the write that last changed it;
@@ -183,7 +188,7 @@
   - A reader reads a node's suspect list from its live heartbeat under L (that commit's `seen.0` part, not the aspect's joined read); the repair it asks for is spec/sync.md §7.
 - **Placing revokes**: any node that syncs a label and holds a revoke or roster snapshot about the author of an entry under that label that it judges invalid, or cannot judge yet, places it there (a non-writer by deposit), with the chain certificates of that commit's own author, of the `keys.0` commits only those of actors that read the label's actor. A revoke changes no verdict on the writes its frontier covers, so it is not placed for those alone.
 - **Exception to spec/crypto.md §4**: a node that may not rotate the label's actor A places, under a read epoch of A that does not cover a departure it knows of, only the revokes of the departures inside holders on A that leave that epoch uncovered. For a departure of X from actor M (a holder on A, or the last actor on a chain of holders below one), these are:
-  - the newest applied write lowering X's edge on M, whole (its deltas on M, its rotation's boxes included), with its author's chain certificates (a departure by `until` has no such write);
+  - the newest applied write lowering X's edge on M, whole (its deltas on M, its rotation's boxes included), with its author's chain certificates;
   - the current `keys.0` commits of each actor on that chain from A's holder to M, projected to that `keys.0` delta, with its author's chain certificates.
   - Nothing else goes under that epoch, except what spec/crypto.md §4 exempts (its own self-removal until placed).
 - The grantee's current `keys.0` commits go under the target's label as a certificate, so every admin can seal and list the grantee.
@@ -200,14 +205,15 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
    - admin on the thing;
    - for an invite grant, the effective invite it needs;
    - for a self-removal (§2), admin on the edge's holder;
+   - for a finalize (§2), its own rule there;
    - a write lowering another holder's edge by an author that also has owner-chain or edge-admin authority on the thing is an explicit write of that class (step 3).
-   - An **explicit write** is an applied edge write attributed to owner-chain or edge-admin authority (step 3), grants and raises included; self-removals and invite grants are not.
+   - An **explicit write** is an applied edge write attributed to owner-chain or edge-admin authority (step 3), grants and raises included; self-removals, finalizes and invite grants are not.
    - Authority at a point is evaluated over every thing's state at that point, so the walk is one joint computation.
-3. Attribute each applied write by X on N to X's **authority class** on N at that point: owner chain, edge admin, or invite (with its level); owner chain before edge, admin before invite. A self-removal (§2) through admin on actor M ≠ X counts as a write by X on M, attributed to X's class on M; one lowering X's own edge is attributed to X's class on its target (none, for a node with no class there).
+3. Attribute each applied write by X on N to X's **authority class** on N at that point: owner chain, edge admin, or invite (with its level); owner chain before edge, admin before invite. A finalize is attributed to no class. A self-removal (§2) through admin on actor M ≠ X counts as a write by X on M, attributed to X's class on M; one lowering X's own edge is attributed to X's class on its target (none, for a node with no class there).
 4. An applied write R at time T **demotes** X on N when X's effective class on N (the maximum over all its paths) falls: from the owner chain, from edge admin to below, or to a lower invite level.
    - R then adds to D every earlier applied edge write by X on N, and, when N is an actor, on everything below N by ownership (transitively) where X's class also falls, attributed to a class X fell through (above its class after R, up to its class before R) and not covered by R's **frontier**, and the walk restarts.
    - Losing a path while another keeps the class is no fall: removing X's admin edge on N while X keeps the owner chain audits nothing, and X's later removal from the chain audits its edge-admin writes too.
-   - **Edge as restored**: an explicit write on edge (M, T) judges X's class before it with the edge as restored: the join (componentwise maximum, alive) of the edge's values since the last explicit write on it, values taken away by `until` or self-removal included, plus, for X, the standing it kept as the author of an earlier explicit write on that edge (below).
+   - **Edge as restored**: an explicit write on edge (M, T) judges X's class before it with the edge as restored: the join (componentwise maximum, alive) of the edge's values since the last explicit write on it, values taken away by `until`, self-removal or finalize included, plus, for X, the standing it kept as the author of an earlier explicit write on that edge (below).
    - R never demotes its own author: an author that is or reaches the holder (by owner links and edges alive just before R) keeps the standing the edge as restored for it gave it, even when R writes it unchanged, until the next explicit write on that edge, which audits it against the edge as restored.
    - Each edge write of a commit is judged on its own, against the state before the commit. The commit's applied edge writes then take effect one at a time in order (the header's aspect order, then by holder tid, bytewise); each write's demotions and whether its author reaches the holder just before it are judged with the earlier ones in effect.
 5. A walk that adds nothing to D has settled; the timeline is the settled walk of the final round of §6. D is rebuilt from scratch whenever the held set changes.
@@ -232,7 +238,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
   - A frontier MUST NOT list a commit A had not received as of T.
   - Besides R itself, nothing but the frontier decides what X's writes before T survive: a write on A's chain that the frontier does not list is audited like any other.
   - A frontier above `CHUNK_THRESHOLD` is a chunked large value referenced by link (spec/commits.md §1).
-- A demotion by `until` or by self-removal audits nothing. The next explicit write on that edge, by any node, audits with its frontier against the edge as restored.
+- A demotion by `until`, self-removal or finalize audits nothing. The next explicit write on that edge, by any node, audits with its frontier against the edge as restored.
 
 ### 5.2 Layer 2: content
 - A delta by actor X on thing N is valid if X held write or above on N just before the commit's key (§6; edges' `until` judged at its `ts`) and no valid explicit demotion of X below write on N is ordered after it (a ledger entry with a frontier counts as an explicit demotion at its key, §6).
@@ -373,7 +379,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
     - a held role history shows L's edge, or K's on the target, removed or past `until`.
   - A redeemer that stops, for any reason, forgets the seed and so loses read access to K and what K holds (§3).
 - `until` on L's edge expires the link. **Single use** (the link's `flags` bit 0, spec/wire.md §10) = the redemption also removes L's own edge in the same commit (a self-removal).
-- **Finalized**: both are finalized by a sharer device writing a plain removal of L (§5.1): a node that holds the link's seed thing and admin on K MUST write it once L's edge expired or was self-removed with no explicit write on it since, after a complete pass of K's labels (§3) that ended, for an expiry, after `until` (when K's labels have no host, at once and only by the node that wrote the seed thing; with hosts it waits for that pass however long it takes).
+- **Finalized**: L's edge past `until` is finalized like any ended edge (§2), by any writer of K: that removal rotates K and audits nothing. Besides, an expired or self-removed L is finalized by a sharer device writing an explicit removal of L (§5.1), which audits L's invite grants: a node that holds the link's seed thing and admin on K MUST write it once L's edge expired or was self-removed (or finalized) with no explicit write on it since, after a complete pass of K's labels (§3) that ended, for an expiry, after `until` (when K's labels have no host, at once and only by the node that wrote the seed thing; with hosts it waits for that pass however long it takes).
   - An invite grant as L that the removal's frontier does not cover is dropped (§5.1 step 4); one received before it stands.
 - The sharer's link seed thing is placed in the sharer's home group, so every device of the sharer holds it. A device removal does not end a link: the removed device reads through L until L is removed from K. An implementation MUST tell the one removing a device which of the person's links still work, and let any device of the sharer remove their L.
 - **Bearer use**: act as L without writing anything. Read only. A node that read as L may forget the seed and keep what L reads and follow it (a contact card, spec/sync.md §3): it counts as read access while L holds a role on it (§3).

@@ -173,6 +173,7 @@ impl W {
                 self.class(c);
                 self.tid(&on);
             }
+            Attr::Finalize => self.u8(2),
         }
     }
     fn edge_map(&mut self, m: &BTreeMap<Tid, Edge>) {
@@ -621,6 +622,7 @@ impl<'a> R<'a> {
         let attr = match self.u8()? {
             0 => Attr::By(self.class()?),
             1 => Attr::SelfRemoval(self.class()?, self.tid()?),
+            2 => Attr::Finalize,
             _ => return None,
         };
         Some(Applied { author, target, point, attr })

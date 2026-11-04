@@ -280,7 +280,7 @@ impl Engine {
     /// holder's edge on M), each the whole write on M with what judges it, and the current `keys.0`
     /// commits of each actor on the chain, projected to that `keys.0`, with its author's chain: the only
     /// certificates a node that may not rotate places under such an epoch (spec/permissions.md
-    /// §4). A departure by `until` has no write and places only the keysets.
+    /// §4).
     pub fn inside_holder_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
         let a = *actor;
         let deps = self.run(|tx| crate::rotation::uncovered_departures(tx, &a)).unwrap_or_default();
@@ -306,8 +306,9 @@ impl Engine {
                 if op.target != m || op.holder != leaver {
                     continue;
                 }
-                let old = tl.edges_at(Some(mc.point())).get(&op.holder, &op.target).map(|e| e.role);
-                let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
+                // lowering for keys, as the departure (`rotation::key_role`)
+                let old = crate::rotation::key_role(tl.edges_at(Some(mc.point())).get(&op.holder, &op.target));
+                let new = crate::rotation::key_role(op.edge.as_ref());
                 if new < old && newest.as_ref().is_none_or(|(t, _, _)| mc.ts > *t) {
                     newest = Some((mc.ts, *wid, *c));
                 }

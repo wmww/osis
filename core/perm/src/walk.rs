@@ -2,8 +2,8 @@
 //! starts and their ledgers (§6). From scratch, deterministic, a pure function of the held set.
 //!
 //! Readings of the spec (notes/permissions.md, "Implementation"):
-//! - R demotes X on N when R is an explicit write (applied, not a self-removal, not an invite
-//!   grant; or a ledger tenure end with a frontier) on edge (M, T), X is M or reaches M, N is T
+//! - R demotes X on N when R is an explicit write (applied, not a self-removal, finalize or
+//!   invite grant; or a ledger tenure end with a frontier) on edge (M, T), X is M or reaches M, N is T
 //!   or reachable from T (edges of any role and `until`, owner links), and X's class on N after
 //!   R is below its class with the edge restored ("as if the holder still held the role"): the
 //!   join (componentwise maximum, alive) of its values since the last explicit write on it,
@@ -36,6 +36,8 @@ pub enum Attr {
     /// A self-removal (§2), audited when the author's class `.0` on `.1` falls: the holder
     /// it is admin of, or the target for its own edge.
     SelfRemoval(Class, Tid),
+    /// A finalize (§2): no explicit write, attributed to no class, so never audited.
+    Finalize,
 }
 
 impl Attr {
@@ -44,6 +46,7 @@ impl Attr {
         match *self {
             Attr::By(c) => (c, target),
             Attr::SelfRemoval(c, on) => (c, on),
+            Attr::Finalize => (Class::None, target),
         }
     }
 }
@@ -1926,6 +1929,16 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usiz
         // for its own edge (a single-use redemption's: like its grant), §5.1 step 3.
         let class = if m == a { st.class } else { view.standing(&a, best, &m).class };
         return Some(Attr::SelfRemoval(class, if m == a { t } else { m }));
+    }
+    // A finalize (§2): a removal of another holder's edge carrying no frontier. Invariants:
+    // it applies only to an edge past its `until` at the write's `ts` (as the timeline orders
+    // it, a renewal placed before it included), so a removal of an unended edge does nothing;
+    // only by an author with write whose role there is at least the edge's (an ended admin
+    // edge needs an admin); judged from held writes and stamps alone, no reader's clock.
+    if c.frontier.is_none() && new.is_none_or(|e| e.says_keep()) && lowers(new.as_ref(), old) {
+        let ended = old.is_some_and(|o| o.until.is_some() && !o.alive_at(Some(c.ts)));
+        let may = st.role >= Some(Role::Write) && old.is_some_and(|o| st.role >= Some(o.role));
+        return (ended && may).then_some(Attr::Finalize);
     }
     match st.class {
         Class::Chain | Class::Edge => Some(Attr::By(st.class)),

@@ -708,18 +708,13 @@ impl SyncEngine {
     }
 
     /// The roles of `a` uncovered by a known departure, a departure by this node's own
-    /// self-removal not counted until that commit is placed (spec/crypto.md §4), nor an expiry
-    /// after this node's own role there ended (`expired_after_own_end`: its writes from before
-    /// go up while it hears its labels out, spec/permissions.md §2).
+    /// self-removal not counted until that commit is placed (spec/crypto.md §4).
     fn placing(&mut self, a: &Tid) -> Result<BTreeSet<osis_base::Role>> {
         let mut deps = Vec::new();
         for (d, own) in self.engine.run(|tx| crate::rotation::departures_placing(tx, a))? {
             if let Some(c) = own
                 && !self.placed(&c)?
             {
-                continue;
-            }
-            if crate::rotation::expired_after_own_end(&self.engine.core, a, &d) {
                 continue;
             }
             deps.push(d);

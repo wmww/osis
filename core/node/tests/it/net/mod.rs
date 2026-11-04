@@ -905,6 +905,8 @@ pub fn rotation(e: &mut Engine, a: Tid, recipients: &[Recipient], rng: u64, seed
 pub fn remove_holder(e: &mut Engine, a: Tid, holder: Tid, recipients: &[Recipient], rng: u64) -> CommitId {
     let mut m = Mutation::new();
     m.op(a, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
+    m.frontier(ct::Frontier::default().to_value());
     let ts = m.take_ts(e);
     let names = osis_keys::Names { departs: Some(osis_keys::Own { ts: ts.to_u64(), node: e.tid() }), ..osis_keys::Names::default() };
     rotation_ops(e, &mut m, a, recipients, rng, false, &names);

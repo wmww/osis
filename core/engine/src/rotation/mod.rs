@@ -17,10 +17,10 @@ use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rota
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use departures::{departures_placing, expired_after_own_end, may_rotate, uncovered_roles_of};
+pub use departures::{departures_placing, may_rotate, uncovered_roles_of};
 pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS, PENDING_GRANT_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
-pub(crate) use departures::{departures, grant_names, held_for, uncovered_departures, uncovered_roles};
+pub(crate) use departures::{departures, grant_names, held_for, key_role, uncovered_departures, uncovered_roles};
 use departures::{below_of, collect, uncovered_by_role};
 pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due};
 #[cfg(test)]
@@ -37,7 +37,7 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
     let deps = departures(tx, a)?;
     let Some(by_role) = uncovered_by_role(tx, a, &deps)? else { return Ok(BTreeSet::new()) };
     let held = held_for(tx, &deps)?;
-    let current: BTreeSet<Tid> = tx.core.current_holders(a).into_iter().map(|x| x.0).collect();
+    let current: BTreeSet<Tid> = tx.core.key_holders(a).into_iter().map(|x| x.0).collect();
     let mut out = BTreeSet::new();
     let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
     'roles: for (r, ds) in by_role {
@@ -243,15 +243,12 @@ fn fresh_box_keeps_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Rol
     Ok(fresh_box_epoch(tx, held, m, r)?.is_some_and(|e| epoch_keeps_out(held, m, r, &e, inner)))
 }
 
-/// Current holders of `a` as box recipients; each of `skip` gets its new role or is left out
-/// (departing holders). Holders whose keys are unknown are left out (re-sealed later).
+/// Current holders of `a` for keys (`Core::key_holders`) as box recipients; each of `skip` gets
+/// its new role or is left out (departing holders). Holders whose keys are unknown are left out
+/// (re-sealed later).
 pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: &[(Tid, Option<Role>)]) -> Result<Vec<Recipient>> {
-    let now = tx.core.now();
     let mut out = Vec::new();
-    for (m, role, until) in tx.core.current_holders(a) {
-        if until.is_some_and(|u| u <= now) {
-            continue;
-        }
+    for (m, role) in tx.core.key_holders(a) {
         let role = match skip.iter().find(|(s, _)| *s == m) {
             Some((_, new)) => match new {
                 Some(r) => *r,
@@ -293,7 +290,7 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
 /// sealed free, its boxes carry this node's names for it (spec/crypto.md §4).
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, holders: &[Recipient], pending: &[Departure]) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
-    let deps = if pending.is_empty() { departures(tx, &a)? } else { collect(tx, &a, &mut None, pending)?.into_iter().collect() };
+    let deps = if pending.is_empty() { departures(tx, &a)? } else { collect(tx, &a, pending)?.into_iter().collect() };
     let actors = held_for(tx, &deps)?;
     let mut boxed = Vec::with_capacity(holders.len());
     let mut box_names = Vec::new();
@@ -398,7 +395,7 @@ fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotat
 /// first, under each label `c` goes under (spec/crypto.md §4, names), so whoever reads `c` there
 /// can meet them.
 pub(crate) fn placed_with(c: osis_base::CommitId, names: Option<&osis_keys::Names>) -> Vec<osis_base::CommitId> {
-    let named: BTreeSet<osis_base::CommitId> = names.into_iter().flat_map(|n| n.list.iter().map(|n| n.key.commit)).filter(|x| *x != c && *x != osis_keys::EXPIRY).collect();
+    let named: BTreeSet<osis_base::CommitId> = names.into_iter().flat_map(|n| n.list.iter().map(|n| n.key.commit)).filter(|x| *x != c).collect();
     std::iter::once(c).chain(named).collect()
 }
 
@@ -419,9 +416,17 @@ pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
 /// encrypts under its secrets: first those of the intermediate actors of departures inside
 /// holders (bottom-up: each actor after every actor on its departures' chains below it, each
 /// once; on a role cycle, in walk order), then `a`'s uncovered roles `who` may rotate
-/// (spec/permissions.md §3) where that helps (`rotation_due`). Returns the roles still
-/// uncovered: it must not encrypt under them.
+/// (spec/permissions.md §3) where that helps (`rotation_due`). Each of those actors first gets
+/// the finalize `who` may write of its edges past their `until` (`finalize_due`). Returns the
+/// roles still uncovered: it must not encrypt under them.
 pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<BTreeSet<Role>> {
+    ensure_rotated_but(tx, who, a, &[], done)
+}
+
+/// `ensure_rotated`, finalizing on `a` no edge of a holder in `rewriting`: the commit about to
+/// be written writes those edges anew (a removal, which is their departure, or a renewal).
+pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], done: &mut Done) -> Result<BTreeSet<Role>> {
+    let target = a;
     // a plain thing follows its owner's epochs
     let mut found = None;
     for step in tx.core.owner_chain(&a) {
@@ -453,6 +458,7 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
         }
         let x = *x;
         stack.pop();
+        finalize_due(tx, who, x, if x == target { rewriting } else { &[] }, done)?;
         let may = may_rotate(tx.core, &who, &x);
         let mine = rotation_due(tx, &x, &may)?;
         if !mine.is_empty() {
@@ -462,9 +468,27 @@ pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done)
     uncovered_roles(tx, &a)
 }
 
+/// The finalize `who` may write of the edges on `a` past their `until` by this node's clock
+/// (spec/permissions.md §2, `flows::edges::finalizable`), written now: a node with write on `a`
+/// writes it before its next commit encrypting under `a`. It is `a`'s departure for keys, and
+/// carries the rotation.
+pub(crate) fn finalize_due(tx: &mut Tx<'_>, who: Tid, a: Tid, skip: &[Tid], done: &mut Done) -> Result<()> {
+    let mut ended = flows::edges::finalizable(tx.core, &who, &a);
+    ended.retain(|x| !skip.contains(&x.0));
+    if ended.is_empty() {
+        return Ok(());
+    }
+    flows::edges::finalize_in(tx, who, a, &ended, done)
+}
+
 /// `ensure_rotated`, failing when `roles` stay uncovered.
 pub(crate) fn require_covered(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
-    let still = ensure_rotated(tx, who, a, done)?;
+    require_covered_but(tx, who, a, &[], roles, done)
+}
+
+/// `require_covered` as `ensure_rotated_but`.
+pub(crate) fn require_covered_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &[Tid], roles: &BTreeSet<Role>, done: &mut Done) -> Result<()> {
+    let still = ensure_rotated_but(tx, who, a, rewriting, done)?;
     if roles.iter().any(|r| still.contains(r)) {
         return Err(Error::Misuse("an epoch to encrypt under does not cover a known departure (another node must rotate first)"));
     }
@@ -515,7 +539,7 @@ pub(crate) fn own_secrets_candidates(core: &Core, a: &Tid) -> Vec<Tid> {
         .map(|(t, _)| *t)
         .filter(|t| last.replace(*t) != Some(*t))
         .filter(|t| !core.has_own_secrets(t) && !core.is_key_actor(t) && core.secret_actor(t) == Some(*a))
-        .filter(|t| core.role_now(&me, t) == Some(Role::Admin) && core.current_holders(t).iter().any(|(m, _, _)| Some(*m) != core.owner(t)))
+        .filter(|t| core.role_now(&me, t) == Some(Role::Admin) && core.key_holders(t).iter().any(|(m, _)| Some(*m) != core.owner(t)))
         .collect()
 }
 
@@ -531,9 +555,8 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
     Ok(done)
 }
 
-/// The re-seal trigger for `a` (spec/permissions.md §3): current holders lacking a box at a
-/// current epoch of a role this node may rotate, never for an edge whose `until` is within
-/// `MAX_DRIFT`.
+/// The re-seal trigger for `a` (spec/permissions.md §3): current holders for keys lacking a box
+/// at a current epoch of a role this node may rotate.
 ///
 /// Invariant: once re-seals settle (every node holding the same commits finds no holder to
 /// re-seal), every node counts the same current epochs of each role, since what a rotation
@@ -544,7 +567,7 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 /// a node holding it re-seals (issues/fork-held-by-non-rotators.md: one that may not, cannot).
 /// `tests::forked_reseals_settle_*` and `tests::forks_with_departures_settle_*` check it.
 pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
-    if tx.core.reseal_quiet.contains(a) && tx.core.ix.departures.get(a).is_some_and(|(_, until)| until.is_none_or(|u| tx.core.now() < u)) {
+    if tx.core.reseal_quiet.contains(a) && tx.core.ix.departures.contains_key(a) {
         #[cfg(debug_assertions)]
         assert_eq!(reseal_scan(tx, a)?, Vec::new(), "reseal_quiet of {a:?} went stale");
         return Ok(Vec::new());
@@ -552,12 +575,10 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
     let _s = crate::costs::span("reseal: scan");
     let out = reseal_scan(tx, a)?;
     if out.is_empty() {
-        // the clock alone only takes holders away (an edge's `until`); a write ahead of the clock
-        // is the horizon of `departures`, whose entry holds this memo
+        // held while `departures` holds its entry (same rosters, secrets and epochs)
         departures(tx, a)?;
         tx.core.reseal_quiet.insert(*a);
     } else {
-        // its horizon passed: `departures` takes a new entry, which must not vouch for this
         tx.core.reseal_quiet.remove(a);
     }
     Ok(out)
@@ -571,9 +592,8 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     }
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
-    let holders: Vec<osis_keys::Holder> = tx.core.current_holders(a).into_iter().map(|(holder, role, until)| osis_keys::Holder { holder, role, until }).collect();
-    let now = tx.core.now();
-    let due = osis_keys::reseal_needed(&secrets, &epochs, &holders, now);
+    let holders: Vec<osis_keys::Holder> = tx.core.key_holders(a).into_iter().map(|(holder, role)| osis_keys::Holder { holder, role }).collect();
+    let due = osis_keys::reseal_needed(&secrets, &epochs, &holders);
     if due.is_empty() {
         return Ok(Vec::new());
     }
@@ -624,7 +644,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     require_covered(tx, me, a, roles, &mut done)?;
     let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let secrets = secrets_in(tx, &a)?;
-    let role = tx.core.current_holders(&a).into_iter().find(|(m, _, _)| *m == holder).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
+    let role = tx.core.key_holders(&a).into_iter().find(|(m, _)| *m == holder).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
     // a holder actor at the keyset this node may seal it to (`left_out`)
     let rcpt = recipient(tx, holder, role)?;
     let deps = departures(tx, &a)?;
@@ -710,7 +730,15 @@ impl Engine {
         let a = *actor;
         self.run(|tx| {
             let mut done = Done::default();
-            for (m, roles) in reseal_candidates(tx, &a)? {
+            let mut due = reseal_candidates(tx, &a)?;
+            if !due.is_empty() {
+                // re-sealing encrypts under `a`: an ended edge is finalized first, and its holder
+                // is then no candidate
+                let me = tx.core.id.tid();
+                finalize_due(tx, me, a, &[], &mut done)?;
+                due = reseal_candidates(tx, &a)?;
+            }
+            for (m, roles) in due {
                 done.extend(reseal_one(tx, a, m, &roles)?);
             }
             Ok(done)
@@ -723,7 +751,7 @@ impl Engine {
     pub fn reshare(&mut self, actor: &Tid, holder: &Tid) -> Result<Done> {
         let (a, m) = (*actor, *holder);
         self.run(|tx| {
-            let role = tx.core.current_holders(&a).into_iter().find(|(x, _, _)| *x == m).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
+            let role = tx.core.key_holders(&a).into_iter().find(|(x, _)| *x == m).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
             let me = tx.core.id.tid();
             let may = may_rotate(tx.core, &me, &a);
             let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may.contains(r)).collect();

@@ -4,8 +4,7 @@
 use crate::aspects::{box_key, from_schema};
 use crate::epoch::{ActorEpochs, ROLES};
 use crate::names::{Held, Name, Names};
-use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{Role, Tid, WallMs};
+use osis_base::{Role, Tid};
 use osis_crypto::Epoch;
 use osis_schema::core_types::{SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
@@ -175,8 +174,7 @@ impl std::fmt::Debug for Via {
 }
 
 impl Departure {
-    /// Holder `holder` of A removed, demoted below `from`, or past its `until`; up to admin, no
-    /// name yet.
+    /// Holder `holder` of A removed or demoted below `from`; up to admin, no name yet.
     pub fn holder(holder: Tid, from: Role) -> Departure {
         Departure { via: Via::default(), holder, from, upto: Role::Admin, at: None }
     }
@@ -209,7 +207,7 @@ impl Departure {
     }
 
     /// The departure an edge change makes: `old` and `new` are the holder's roles before and
-    /// after (none = no edge, or `until` passed).
+    /// after (none = no edge).
     pub fn of_change(holder: Tid, old: Option<Role>, new: Option<Role>) -> Option<Departure> {
         let from = match new {
             None => Role::Read,
@@ -224,11 +222,6 @@ impl Departure {
     pub fn roles(&self) -> BTreeSet<Role> {
         ROLES.into_iter().filter(|r| self.concerns(*r)).collect()
     }
-}
-
-/// `until <= wall_ms` of the corrected clock (spec/crypto.md §4): the edge counts as removed.
-pub fn expired(until: Option<WallMs>, now: WallMs) -> bool {
-    until.is_some_and(|u| u <= now)
 }
 
 /// What the node holds of the actors on a departure's chain: their `secrets.0` and epochs
@@ -327,24 +320,19 @@ pub fn rotate_first(actor: &Tid, epochs: &ActorEpochs, roles: &BTreeSet<Role>, m
         .collect()
 }
 
-/// A current holder as a re-sealer sees it: role on the actor (an owner: admin) and `until`.
+/// A current holder as a re-sealer sees it: its role on the actor (an owner: admin).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Holder {
     pub holder: Tid,
     pub role: Role,
-    pub until: Option<WallMs>,
 }
 
 /// Re-seal trigger (spec/permissions.md §3): holders lacking a box at a current epoch of a role
-/// they hold, with the roles to re-seal (`box_holder`). Never a holder
-/// whose `until` is within `MAX_DRIFT`. The caller decides after a sync pass of the actor's
-/// labels that fetched everything, and only for roles it may rotate.
-pub fn reseal_needed(secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder], now: WallMs) -> Vec<(Tid, BTreeSet<Role>)> {
+/// they hold, with the roles to re-seal (`box_holder`). The caller decides after a sync pass of
+/// the actor's labels that fetched everything, and only for roles it may rotate.
+pub fn reseal_needed(secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder]) -> Vec<(Tid, BTreeSet<Role>)> {
     let mut out = Vec::new();
     for m in holders {
-        if m.until.is_some_and(|u| u.0 <= now.0.saturating_add(MAX_DRIFT_MS)) {
-            continue;
-        }
         let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= m.role).filter(|r| !reseal_missing(secrets, epochs, &m.holder, *r).is_empty()).collect();
         if !roles.is_empty() {
             out.push((m.holder, roles));
@@ -367,8 +355,7 @@ mod tests {
         Tid::from_bytes([7; 15])
     }
 
-    // spec/crypto.md §4: a departure is a removal, a demotion below r, or `until` passing; it
-    // concerns the roles it left, at most the role of each hop on the next.
+    // spec/crypto.md §4: a departure is a removal or a demotion below r; it concerns the roles it left, at most the role of each hop on the next.
     #[test]
     fn departures() {
         let m = Tid::from_bytes([1; 15]);
@@ -409,6 +396,5 @@ mod tests {
         let long: Via = (0..200_000u32).map(|i| Tid::from_bytes([(i % 251) as u8; 15])).collect();
         assert_eq!(long.len(), 200_000);
         drop(long);
-        assert!(expired(Some(WallMs(5)), WallMs(5)) && !expired(Some(WallMs(6)), WallMs(5)) && !expired(None, WallMs(5)));
     }
 }

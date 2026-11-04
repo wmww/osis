@@ -97,15 +97,17 @@ pub fn edge(role: Role) -> ct::Edge {
 }
 
 /// Peer `i` writes `holder`'s edge on `thing` as remove + put (`None` removes it), with an
-/// optional frontier.
+/// optional frontier: a removal given none carries an empty one (an explicit removal; one with
+/// no frontier is a finalize, spec/permissions.md §2).
 pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
     // an edge change is remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
     m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    let removal = edge.as_ref().is_none_or(|x| x.until == Some(osis_base::WallMs(0)));
     if let Some(x) = edge {
         m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(x.to_value()) }).unwrap();
     }
-    if let Some(f) = frontier {
+    if let Some(f) = frontier.or_else(|| removal.then(|| ct::Frontier::default().to_value())) {
         m.frontier(f);
     }
     e.commit(m).unwrap().unwrap()

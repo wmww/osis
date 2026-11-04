@@ -173,11 +173,13 @@ pub(crate) fn readable(core: &Core, a: &Tid) -> bool {
 }
 
 /// Whether all that ended the node's (or a held key actor's) role on `a` is an `until` passing:
-/// walked with every edge's time ahead, a role is there. A removal saying its own keep is
-/// written with `until` 0, gone at every clock (spec/permissions.md §2), so it never counts.
+/// walked with every edge's time ahead and every finalize undone (it counts as the `until` it
+/// finalizes, spec/permissions.md §2), a role is there. A removal saying its own keep is written
+/// with `until` 0, gone at every clock, so it never counts.
 pub(super) fn lost_by_time(core: &Core, a: &Tid) -> bool {
     let (node, ts) = (core.id.tid(), osis_base::Ts::default());
-    let role = |x: &Tid| crate::engine::write::role_of(core, x, a, ts).is_some();
+    let Some(tl) = core.timelines.get(a) else { return false };
+    let role = |x: &Tid| tl.role_unfinalized(x, a, ts).is_some();
     role(&node) || core.key_actors.keys().any(role)
 }
 

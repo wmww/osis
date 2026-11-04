@@ -10,6 +10,7 @@ mod crash;
 mod deletion;
 mod deposit_queue;
 mod fill;
+mod finalize;
 #[cfg(feature = "driver")]
 mod driver;
 mod encodings;

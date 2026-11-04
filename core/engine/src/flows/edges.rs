@@ -169,7 +169,8 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
     }
     let roles = roles_up_to(edge.role);
-    rotation::require_covered(tx, who, target, &roles, &mut done)?;
+    // a renewal of an ended edge is not finalized first: the grant writes it anew
+    rotation::require_covered_but(tx, who, target, &[holder], &roles, &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
     let secrets = secrets_in(tx, &target)?;
     // a holder actor whose newest epoch still does not cover its departures (this node may not
@@ -249,6 +250,16 @@ fn entry_dots(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Vec<(osis_crdt::Dot, o
     tx.core.ix.holder_keys.iter().filter(|((t, _), m)| t == target && *m == holder).map(|((_, d), m)| (d.clone(), osis_base::Value::Tid(*m))).collect()
 }
 
+/// The reset of `holder`'s edge on `target` in `m`: its live entry and every entry of it the node
+/// saw, so it resets also an entry an earlier write reset in the state while applying nothing on
+/// the timeline (a void finalize, spec/permissions.md §2), where the edge still stands.
+fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
+    remove_edge(m, target, holder)?;
+    let dots = entry_dots(tx, &target, &holder);
+    m.dead_resets.entry((target, super::ak("roles.0")?)).or_default().extend(dots);
+    Ok(())
+}
+
 /// A removal or demotion (or a self-removal) of `d.holder` on `target` by `who`: an explicit
 /// demotion carries the frontier and the target's rotation of the roles the holder left in the
 /// same commit (spec/permissions.md §3), after the cascade on the target; a self-removal
@@ -308,7 +319,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         m.sign_as(s);
     }
     match old {
-        Some(_) => remove_edge(&mut m, target, holder)?,
+        Some(_) => removal(tx, &mut m, target, holder)?,
         None => {
             if d.new.is_some() {
                 return Err(Error::Misuse("no edge to lower"));
@@ -327,7 +338,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         put_edge(&mut m, target, holder, &Edge { keyset, ..n.clone() })?;
     }
     for (o, _) in &gone {
-        remove_edge(&mut m, target, *o)?;
+        removal(tx, &mut m, target, *o)?;
     }
     if !selfr && let Some(f) = frontier {
         m.frontier(f);
@@ -335,19 +346,23 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     // an explicit demotion carries the target's rotation of the roles the holders left
     let mut rot = None;
     let mut unreached = Vec::new();
-    let new_role = new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role);
+    // departures for keys: roles with `until` disregarded (spec/crypto.md §4), so a removal of an
+    // edge past its `until` is the departure and rotates
+    let new_role = rotation::key_role(new_p.as_ref());
     let mut left: BTreeSet<Role> = BTreeSet::new();
     let mut pending = Vec::new();
     for (x, o, n) in std::iter::once((holder, old, new_role)).chain(gone.iter().map(|(x, e)| (*x, Some(*e), None))) {
-        let held_role = o.filter(|o| o.alive_at(Some(ts))).map(|o| o.role);
+        let held_role = rotation::key_role(o.as_ref());
         if let Some(dep) = Departure::of_change(x, held_role, n) {
             left.extend(ROLES.into_iter().filter(|r| *r >= dep.from && Some(*r) <= held_role));
             pending.push(dep);
         }
     }
     if !selfr && !left.is_empty() && tx.core.has_own_secrets(&target) {
-        // boxing to the remaining holders encrypts under their keysets: the cascade first
-        rotation::ensure_rotated(tx, who, target, &mut done)?;
+        // boxing to the remaining holders encrypts under their keysets: the cascade first (no
+        // finalize of an edge this commit removes)
+        let removing: Vec<Tid> = std::iter::once(holder).chain(gone.iter().map(|(x, _)| *x)).collect();
+        rotation::ensure_rotated_but(tx, who, target, &removing, &mut done)?;
         let may = rotation::may_rotate(tx.core, &who, &target);
         let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
         if !roles.is_empty() {
@@ -385,32 +400,125 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     done.add(c);
     if let Some(c) = c {
-        for x in std::iter::once(holder).chain(gone.iter().map(|(x, _)| *x)) {
-            done.deliveries.extend(deliver_parts(tx, x, c, &[target], Parts::Edge, Vec::new())?);
-        }
-        done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), &unreached)?);
-        // every label the removed parties could read: the target and what its roles open
-        let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts), own_secrets: &|t: &Tid| tx.core.has_own_secrets(t) };
-        let mut under: Vec<Tid> = osis_keys::reached(&graph, target, holder).into_iter().collect();
-        if let Err(i) = under.binary_search(&target) {
-            under.insert(i, target);
-        }
-        done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, rot.as_ref().map(|r| &r.names)), under })?);
+        let removed: Vec<Tid> = std::iter::once(holder).chain(gone.iter().map(|(x, _)| *x)).collect();
         // a removal of another actor G's edge (explicit, or a self-removal by an admin of G,
-        // lowering too): it leaves G's closure bodies (G reads the target no more) and the target
-        // may have left it already (an unplace), so it goes under the labels holding G, where
-        // G's holders learn it (G's inbox reaches only its admins)
-        let first = (new_role.is_none() || selfr).then_some(holder);
-        for x in first.into_iter().chain(gone.iter().map(|(x, _)| *x)) {
-            if x != who && !tx.core.is_key_actor(&x) {
-                done.deliveries.push(super::owe(tx, Delivery::Removal { commit: c, under: x })?);
-            }
-        }
+        // lowering too) leaves G's closure bodies
+        let gone_from = if new_role.is_none() || selfr { &removed[..] } else { removed.get(1..).unwrap_or_default() };
+        lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removed, gone_from, &mut done)?;
     }
     // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must
     // still seal the removal under the labels it leaves
     done.drop_lost |= selfr;
     Ok(done)
+}
+
+/// The deliveries of role commit `c` by `who` lowering edges on `target` (spec/permissions.md §2,
+/// §3): the inbox copy to each holder in `lowered`, the rotation `rot` by inbox to `unreached`,
+/// placement before any other upload under every label the first lowered party could read (the
+/// target and what its roles open), and, for each actor in `gone_from` (its edge removed, not the
+/// author's own), under the labels holding it: it leaves its closure bodies (it reads the target
+/// no more) and the target may have left it already (an unplace), so its holders learn it there
+/// (its inbox reaches only its admins).
+#[allow(clippy::too_many_arguments)]
+fn lowered_deliveries(tx: &mut Tx<'_>, who: Tid, target: Tid, c: CommitId, rot: Option<&osis_keys::Rotation>, unreached: &[Tid], lowered: &[Tid], gone_from: &[Tid], done: &mut Done) -> Result<()> {
+    let ts = now_ts(tx.core);
+    for x in lowered {
+        done.deliveries.extend(deliver_parts(tx, *x, c, &[target], Parts::Edge, Vec::new())?);
+    }
+    done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), unreached)?);
+    let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts), own_secrets: &|t: &Tid| tx.core.has_own_secrets(t) };
+    let mut under: Vec<Tid> = lowered.first().map(|h| osis_keys::reached(&graph, target, *h).into_iter().collect()).unwrap_or_default();
+    if let Err(i) = under.binary_search(&target) {
+        under.insert(i, target);
+    }
+    done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, rot.map(|r| &r.names)), under })?);
+    for x in gone_from {
+        if *x != who && !tx.core.is_key_actor(x) {
+            done.deliveries.push(super::owe(tx, Delivery::Removal { commit: c, under: *x })?);
+        }
+    }
+    Ok(())
+}
+
+/// The edges on `target` that `who` (this node, or a key actor it signs as) may finalize now
+/// (spec/permissions.md §2), each with whether its finalize says keep: past their `until` by
+/// this node's clock (an edge the timeline holds with every applied write in effect), of a role
+/// at most `who`'s own there, `who` holding write; not its own (that is a self-removal).
+pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -> Vec<(Tid, PermEdge, bool)> {
+    let ts = now_ts(core);
+    let Some(tl) = core.timelines.get(target) else { return Vec::new() };
+    let role = tl.role(who, target, At::now(ts));
+    if role < Some(Role::Write) {
+        return Vec::new();
+    }
+    let ended: Vec<(Tid, PermEdge)> = tl.edges_at(None).holders(target).filter(|(m, e)| *m != who && e.until.is_some() && !e.says_keep() && !e.alive_at(Some(ts)) && Some(e.role) <= role).map(|(m, e)| (*m, *e)).collect();
+    if ended.is_empty() {
+        return Vec::new();
+    }
+    // it says what the expiry would (spec/permissions.md §3, Keep): the default at its key
+    let ends = tl.ended(target, ts);
+    ended
+        .into_iter()
+        .map(|(m, e)| {
+            let keep = match ends.get(&m).map(|x| x.0) {
+                Some(osis_perm::EdgeEnd::Until(key)) => crate::apply::validity::keep_in_force(core, target, &key),
+                _ => false,
+            };
+            (m, e, keep)
+        })
+        .collect()
+}
+
+/// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
+/// their removal with no frontier, each saying keep or erase as its expiry would, and the
+/// rotation of the roles they held that `who` may rotate, in one role commit. Not written when
+/// `who` holds no current secret of such a role (it waits for a re-seal, spec/crypto.md §4).
+/// The cascade below `target` is the caller's (`rotation::ensure_rotated`).
+pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<()> {
+    let mut m = Mutation::new();
+    if who != tx.core.id.tid() {
+        m.sign_as(who);
+    }
+    let mut left: BTreeSet<Role> = BTreeSet::new();
+    let mut pending = Vec::new();
+    for (x, e, keep) in ended {
+        removal(tx, &mut m, target, *x)?;
+        if *keep {
+            let keyset = e.keyset.map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit });
+            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, since: None, tied: None, keyset })?;
+        }
+        if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
+            left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
+            pending.push(dep);
+        }
+    }
+    let mut rot = None;
+    let mut unreached = Vec::new();
+    let may = rotation::may_rotate(tx.core, &who, &target);
+    let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
+    if !roles.is_empty() && tx.core.has_own_secrets(&target) {
+        let Some(held) = tx.core.epochs(&target).filter(|h| roles.iter().all(|r| h.role(*r).newest_held().is_some())) else { return Ok(()) };
+        let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
+        let holders = rotation::recipients(tx, &target, &skip)?;
+        let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
+        if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
+            rotation::fresh_deposit_seed(tx, &mut m, target)?;
+        }
+        unreached = rotation::unreached(tx, &target, &r)?;
+        rot = Some(r);
+    }
+    // a writer's write on `roles.0`: judged by the finalize authority, not an admin's
+    m.unchecked();
+    let c = Engine::commit_tx(tx, m)?;
+    if let Some(r) = &rot {
+        rotation::record(tx, target, r)?;
+    }
+    done.add(c);
+    if let Some(c) = c {
+        let removed: Vec<Tid> = ended.iter().map(|x| x.0).collect();
+        lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removed, &removed, done)?;
+    }
+    Ok(())
 }
 
 /// The parts of held commit `c` on `actor`'s `secrets.0`.

@@ -139,6 +139,7 @@ RULES = [
     ("spec/permissions.md", "3", "left out", "MUST NOT box a holder actor M"),
     ("spec/permissions.md", "3", "removal placement", "MUST, in the same sync and before any other upload"),
     ("spec/permissions.md", "2", "tied edge removed", "MUST remove the edge when it may"),
+    ("spec/permissions.md", "2", "finalize", "MUST write the finalize before its next commit encrypting under T"),
     ("spec/permissions.md", "3", "drop lost secrets", "MUST drop those role secrets"),
     ("spec/permissions.md", "4", "stranded heartbeat", "It MUST place one with `stranded: true`"),
     ("spec/permissions.md", "5.1", "frontier received", "frontier MUST NOT list a commit A had not received"),

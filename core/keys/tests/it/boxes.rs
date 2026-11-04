@@ -4,7 +4,7 @@
 use crate::common::Applied;
 use crate::common;
 use common::*;
-use osis_base::{Role, WallMs};
+use osis_base::Role;
 use osis_crypto::{BoxItem, BoxSlot, Secret32, seal_box};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{ActorEpochs, Error, Holder, HolderKeys, Opener, Recipient, ROLES, box_holder, ingest, open_boxes, reseal_missing, reseal_needed, roles_up_to, rotate};
@@ -124,9 +124,9 @@ fn rotation_keeps_other_roles_boxes() {
     want.push(box_key(k, Role::Write, &rot.rotated[0].epoch));
     want.sort();
     assert_eq!(s.boxes.keys().filter(|b| b.holder == k).cloned().collect::<Vec<_>>(), want);
-    let holders = [Holder { holder: k, role: Role::Write, until: None }];
+    let holders = [Holder { holder: k, role: Role::Write }];
     assert!(reseal_missing(&s, &v, &k, Role::Read).is_empty());
-    assert!(reseal_needed(&s, &v, &holders, WallMs(0)).is_empty());
+    assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut kv = ActorEpochs::default();
     ingest(&f.a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
     assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()), "both read forks held");

@@ -227,6 +227,19 @@ impl Core {
         out
     }
 
+    /// The holders of `actor` for keys (spec/crypto.md §4): its owner (admin) and every holder
+    /// of an edge on it by `rotation::key_role`, every held applied write in effect and `until`
+    /// disregarded: keys read no clock, so an edge past its `until` stays until it is finalized
+    /// (spec/permissions.md §2).
+    pub fn key_holders(&self, actor: &Tid) -> Vec<(Tid, Role)> {
+        let owner = self.owner(actor);
+        let mut out: Vec<(Tid, Role)> = owner.map(|o| (o, Role::Admin)).into_iter().collect();
+        if let Some(tl) = self.timelines.get(actor) {
+            out.extend(tl.edges_at(None).holders(actor).filter(|(m, _)| Some(**m) != owner).filter_map(|(m, e)| Some((*m, crate::rotation::key_role(Some(e))?))));
+        }
+        out
+    }
+
     /// The actor whose role secrets a label of `group` derives from: the group if it has
     /// secrets of its own, else its owner (spec/sync.md §3).
     pub(crate) fn has_own_secrets(&self, tid: &Tid) -> bool {

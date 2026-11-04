@@ -1275,11 +1275,11 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         // redemption (a grant plus the author key's own self-removal, both on K,
         // spec/permissions.md §8, spec/commits.md §2)
         let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.author && c.2.is_none()) && changed.iter().any(|c| c.1 != h.author && c.2.is_some());
-        // or an explicit removal of several others' edges on one target (a link joiner with
-        // the link key), under one frontier and one rotation: no edge of it a self-removal, each
-        // gone or saying keep
+        // or a removal of several others' edges on one target under one rotation (a link joiner
+        // with the link key, under one frontier; a finalize of several ended edges): no edge of
+        // it a self-removal, each gone or saying keep
         let first = holders.first().map(|m| m.0);
-        let removal = h.frontier.is_some() && changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none_or(|e| e.says_keep()) && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
+        let removal = changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none_or(|e| e.says_keep()) && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
         if !redemption && !removal {
             return Err(Error::BadInput("a role commit changes more than one edge"));
         }
@@ -1297,12 +1297,9 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         if *m == h.author {
             continue;
         }
-        let old = core.timelines.get(target).map(|tl| tl.roster(target, At::END)).and_then(|r| r.get(m).copied());
-        let demotes = match (old, new) {
-            (Some(o), None) => o.role >= Role::Read,
-            (Some(o), Some(n)) => n.role < o.role || n.says_keep(),
-            _ => false,
-        };
+        // for keys: `until` disregarded (spec/crypto.md §4)
+        let old = core.timelines.get(target).and_then(|tl| crate::rotation::key_role(tl.edges_at(None).get(m, target)));
+        let demotes = old.is_some_and(|o| crate::rotation::key_role(new.as_ref()) < Some(o));
         // a self-removal carries no rotation: the next node that may rotate does it
         // (spec/permissions.md §3)
         if demotes && !self_removal(core, &h.author, target, m, h.ts) && core.ix.own_keys.contains(target) {

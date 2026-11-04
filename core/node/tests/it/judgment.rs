@@ -586,7 +586,7 @@ fn starts() -> Vec<Scenario> {
         },
         // spec/permissions.md §2, §5.2: an edge counts as removed from `until` on
         Scenario {
-            name: "until passes: expiry as departure",
+            name: "until passes: the edge ends",
             spec: "spec/permissions.md §2, §5.2",
             source: "hand-picked: 0 sets 1's write edge to end 2.5 s on (1 not told), 1 writes 1 s and 3 s on (the first valid, the second invalid: the edge expired)",
             steps: vec![Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: Some(2500), invite: None, flow: false }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }],

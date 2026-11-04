@@ -30,7 +30,7 @@ Encoding: spec/wire.md §4. Fields:
 - **Role**: deltas only on role-class aspects (spec/data-model.md §9).
   - A role commit changes at most one `roles.0` edge, except:
     - a single-use link redemption (the grant plus L's self-removal, both on K, spec/permissions.md §8);
-    - an explicit removal of several holders' edges on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own edge or a self-removal, with one frontier and one rotation (revoking a link joiner together with L, spec/permissions.md §8);
+    - a removal of several holders' edges on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own edge or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §8), or a finalize of several ended edges (spec/permissions.md §2);
     - a roster snapshot (spec/permissions.md §6).
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
   - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no edge; all may cover many things.
