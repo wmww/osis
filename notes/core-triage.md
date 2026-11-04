@@ -16,7 +16,7 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | # | Issue | Cat | Size | Why here |
 |---|---|---|---|---|
 | 2 | order-seed-91730013-expired-in-snapshot | A? | M | Undiagnosed: as made, a snapshot still holds an expired write's value two hours past T. If real, expired content kept. Replay first (unverified). Likely the same bug as #3's 7520036. |
-| 3 | list-expiry-harness-seeds | A?/C | M | Class 1 (snapshot hidden-anchor vouch) fixed. Class 2 open: an undo body keeps an undelete's copy of an expired char past T (seeds 9220029, 7520036), the same missing rule as undelete-copy-survives-purge. |
+| 3 | list-expiry-harness-seeds | A?/C | M | Class 1 (snapshot hidden-anchor vouch) fixed. Class 2 open: an undo body keeps an undelete's copy of an expired char past T (seeds 9220029, 7520036), the same missing rule as copies-outlive-purge-expiry (being built). |
 | 4 | purge-no-reset-older-value | A?/C | S to diagnose | A purge without a reset reads `None` at the admin and an older value at a new device. Check whether content the user believes gone shows, or whether it is the accepted 2B limit. |
 | 5 | pending-unbounded | A | M | A reader or inbox sender grows what a node keeps pending, for good. Needs Tess's bound. **WC**: step 3 shrinks pending to parts on unheld things; re-check then. |
 | 6 | purged-values-in-waiting-copies | A | M | Purged values sit in waiting copies (part and request both waiting for the record; a blob kept for a junk-held slot; an unnamed waiting snapshot). **WC**, with #5. |
