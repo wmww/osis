@@ -225,12 +225,7 @@ impl Engine {
                         return out;
                     }
                 }
-                osis_base::ChainStep::Key(k) => {
-                    if k != *t {
-                        out.push(k);
-                    }
-                    return out;
-                }
+                // a key actor above `t` is the owner the step before pushed: listed once
                 _ => return out,
             }
         }
