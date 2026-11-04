@@ -6,7 +6,7 @@ use crate::header::{Header, ListField};
 use crate::keys::Prefix;
 use crate::tree::{self, LinkSource, TreeSink, node_plaintext};
 use crate::Error;
-use osis_base::format::{CHUNK_THRESHOLD, MAX_OBJECT_DEPTH};
+use osis_base::format::{CHUNK_THRESHOLD, MAX_LIST_BYTES, MAX_OBJECT_DEPTH};
 use osis_base::{BlobId, ChunkParams, Limits, Link, Value};
 use osis_crypto::{Secret32, link_hash};
 use std::collections::HashMap;
@@ -82,28 +82,26 @@ pub fn write_list(bytes: &[u8], dedup: &Secret32, sink: &mut dyn BlobSink, prefi
     tree::write_tree(&mut ListSink { dedup, sink, prefix }, ChunkParams::FORMAT, bytes)
 }
 
-/// Default local bound on a resolved header list (`Header::resolve`): a node policy, not a
-/// format limit (spec/requirements.md: a change has no size limit).
-pub const MAX_LIST_BYTES: usize = 64 * CHUNK_THRESHOLD;
-
 /// Reads the bytes of a header list's chunk tree under `root`, checking every content hash. A
 /// non-final chunk below `CHUNK_MIN` is bad input; output above `max` bytes is refused
-/// (`TooLarge`, a local bound), which also bounds the chunks visited.
+/// (`TooLarge`), which also bounds the chunks visited.
 pub fn read_list(root: &Link, dedup: &Secret32, src: &mut dyn BlobSource, max: usize) -> Result<Vec<u8>, Error> {
     tree::read_tree(root, dedup, &mut ListSource(src), ChunkParams::FORMAT, max)
 }
 
 impl Header {
     /// Fetches and fills every linked list, keyed by the dedup secret of the header's `actor`.
-    /// A linked list at or below `CHUNK_THRESHOLD` is bad input; one above `max` bytes (a local
-    /// bound such as [`MAX_LIST_BYTES`]) is not resolved (`TooLarge`, Local).
-    pub fn resolve(&mut self, src: &mut dyn BlobSource, actor_dedup: &Secret32, max: usize) -> Result<(), Error> {
+    /// A linked list at or below `CHUNK_THRESHOLD` or above `MAX_LIST_BYTES` is bad input.
+    pub fn resolve(&mut self, src: &mut dyn BlobSource, actor_dedup: &Secret32) -> Result<(), Error> {
         for f in ListField::ALL {
             let Some(link) = self.links.get(f).copied() else { continue };
             if !self.list_is_empty(f) {
                 continue;
             }
-            let bytes = read_list(&link, actor_dedup, src, max)?;
+            let bytes = read_list(&link, actor_dedup, src, MAX_LIST_BYTES).map_err(|e| match e {
+                Error::TooLarge(_) => Error::Invalid("linked list above MAX_LIST_BYTES"),
+                e => e,
+            })?;
             if bytes.len() <= CHUNK_THRESHOLD {
                 return Err(Error::Malformed("linked list at or below CHUNK_THRESHOLD"));
             }

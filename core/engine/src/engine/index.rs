@@ -289,9 +289,7 @@ impl Rec for osis_perm::Edge {
             None => None,
             Some(t) => Some(crate::flows::tied::tie_perm(osis_schema::core_types::Tie::from_value(&t).ok()?)),
         };
-        let e = osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, since: Rec::from(since)?, tied, keyset: Rec::from(keyset)? };
-        // as `validity::edge_of` reads them
-        e.well_formed().then_some(e)
+        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, since: Rec::from(since)?, tied, keyset: Rec::from(keyset)? })
     }
 }
 impl Rec for u64 {
@@ -812,7 +810,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             if !h.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&h.actor)
             {
-                h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.txn), &dedup, osis_commit::MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
+                h.resolve(&mut super::blobs::TxBlobs::new(&mut tx.txn), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
             }
             debug_assert_eq!(super::View::of(&h), *view, "meta row of {id:?} is stale");
             if view.linked { super::LazyHeader::ready(Arc::new(h)) } else { super::LazyHeader::stored(id, bytes, view.clone(), fault.clone()) }

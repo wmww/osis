@@ -382,6 +382,44 @@ fn redemption_on_two_targets_refused_spec_commits_2() {
     assert!(matches!(r, Err(crate::Error::BadInput(m)) if m.contains("more than one edge")), "{r:?}");
 }
 
+// spec/permissions.md §2, spec/commits.md §4: an edge value with `invite` above its role is bad by
+// itself, its entry reset with it: the holder's edge stays, the part never reaches the walk; a
+// roster snapshot's other parts stand.
+#[test]
+fn over_invite_edge_bad_input_spec_perm_2() {
+    let mut lp = LocalPeer::new(2, 945, T0).unwrap();
+    lp.sync_all().unwrap();
+    let me = lp.peers[0].engine.tid();
+    let x = lp.peers[1].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap();
+    edge(&mut lp, t, x, Some(Role::Write), None);
+    lp.sync_all().unwrap();
+    let over = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Write), since: None, tied: None, keyset: None };
+    let mut mu = Mutation::new();
+    mu.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(over.to_value()) }).unwrap();
+    let c = lp.peers[0].engine.commit_hostile(mu).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let r = lp.deliver(1, &pk);
+    assert!(matches!(r, Err(crate::Error::BadInput(m)) if m.contains("no well-formed edge")), "{r:?}");
+    let roster = lp.peers[1].engine.roster(&t);
+    assert_eq!(roster.get(&x).map(|e| e.role), Some(Role::Write));
+    let writer = lp.peers[0].engine.roster(&t);
+    assert_eq!(writer.get(&x).map(|e| e.role), Some(Role::Write), "its author read it as no write either");
+    // a roster snapshot's over-invite delta goes alone
+    let roster: ct::Holders = [(x, over)].into_iter().collect();
+    let mut mu = Mutation::new();
+    mu.replace(t, &ct::ROLES, &roster).unwrap();
+    mu.replace(t, &ct::TENURES, &ct::Tenures(Vec::new())).unwrap();
+    mu.roster_for_tests();
+    let c = lp.peers[0].engine.commit_hostile(mu).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    let r = lp.deliver(1, &pk);
+    assert!(matches!(r, Ok(Ingested::Applied(_))), "{r:?}");
+    assert_eq!(lp.peers[1].engine.roster(&t).get(&x), None, "a roster without that delta: its author, on the owner chain, could remove x anyway");
+}
+
 /// A snapshot's part on `ak`, or every part with an empty `ak`.
 fn part_of(pk: &crate::local_peer::Package, ak: &str) -> Vec<u8> {
     let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();

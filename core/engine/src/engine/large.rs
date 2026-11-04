@@ -339,7 +339,7 @@ pub(crate) fn chunk_op(op: &mut PathOp, schema: Option<&Schema>, ak: &str, state
 /// Whether `v`, held atomically (a set element, a map key), is held as a link
 /// (spec/data-model.md §6: above `CHUNK_THRESHOLD`).
 fn atomic_large(v: &Value) -> bool {
-    !matches!(v, Value::Link(_)) && osis_base::encode(v).len() > osis_base::format::CHUNK_THRESHOLD
+    !matches!(v, Value::Link(_)) && v.above_chunk_threshold()
 }
 
 /// What an index lookup finds an atomic value by: a large one by its link (content hash only,

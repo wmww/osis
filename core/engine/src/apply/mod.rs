@@ -34,7 +34,7 @@ use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
-use osis_commit::{CommitBlob, Decoded, Header, Kind, MAX_LIST_BYTES, delta_ctx, verify_part};
+use osis_commit::{CommitBlob, Decoded, Header, Kind, delta_ctx, verify_part};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{BlobId, ChainStep, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, WallMs};
 use osis_crdt::Interner;
@@ -289,7 +289,7 @@ enum Turn {
 pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<(usize, usize)>) -> Result<Exam> {
     if !blob.header.is_resolved() {
         let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Pending(Reason::UnknownCreated(blob.header.actor), Vec::new())) };
-        match blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES) {
+        match blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup) {
             Ok(()) => {}
             Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs, Vec::new())),
             Err(e) => return Err(e.into()),
@@ -819,7 +819,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
             && let Some(dedup) = tx.core.dedup(&old.header.actor)
         {
             let mut h = old.header.clone();
-            if h.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES).is_ok() {
+            if h.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup).is_ok() {
                 old.header = h;
             }
         }
@@ -1019,7 +1019,7 @@ impl Engine {
                 if !h.is_resolved() {
                     self.run(|tx| {
                         let Some(dedup) = tx.core.dedup(&h.actor) else { return Err(Error::Misuse("not resolved")) };
-                        Ok(h.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES)?)
+                        Ok(h.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup)?)
                     })
                     .ok()?;
                 }
@@ -1605,7 +1605,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if !blob.header.is_resolved()
                 && let Some(dedup) = tx.core.dedup(&blob.header.actor)
             {
-                blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES).map_err(|_| Error::Corrupt("header lists"))?;
+                blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup).map_err(|_| Error::Corrupt("header lists"))?;
             }
             let id = blob.id();
             let h = Arc::new(blob.header.clone());

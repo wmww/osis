@@ -80,10 +80,6 @@ impl Edge {
             (Some(_), None) => false,
         }
     }
-    /// Well formed: invite at most the role (spec/permissions.md §2).
-    pub fn well_formed(&self) -> bool {
-        self.invite.is_none_or(|i| i <= self.role)
-    }
 }
 
 /// `new` removes `old` or lowers it in every component (role, invite, `until`) keeping its

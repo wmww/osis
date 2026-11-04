@@ -198,3 +198,48 @@ fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
     assert!(check(&mut b, false, "x:map.0").is_ok());
     assert!(check(&mut b, true, "roles.0").is_ok());
 }
+
+// spec/data-model.md §6, spec/commits.md §4: a value that must be chunked, held unchunked, is bad
+// by itself, judged without its type; a `tenures.0` element may pass the threshold whole.
+#[test]
+fn unchunked_large_value_is_bad_input_spec_dm_6() {
+    use osis_base::format::CHUNK_THRESHOLD;
+    let (mut b, _) = one_commit();
+    let (author, at) = (b.header.author, b.header.ts);
+    b.header.aspects[0].hi = 1 << 20;
+    let fragment = |v: &Value| create(&mut Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1), &AnyView, v).unwrap();
+    let check = |b: &mut CommitBlob, v: &Value| {
+        let delta = encode_delta(&Delta { nonce: [5; 16], fragment: fragment(v) }, &writer_ctx(SESSION, Kind::Content, at, author, 1, b.header.aspects[0].hi), None).unwrap();
+        b.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &t(3)), &delta)];
+        b.parts[0].delta = delta;
+        verify_part(&b.header, &b.id(), &b.parts[0], &sec(0xd0, &t(3)), &mut Interner::new(), None)
+    };
+    let wide = Value::List((0..CHUNK_THRESHOLD as i64 / 8).map(|i| Value::Int(i + (1 << 40))).collect());
+    assert!(osis_base::encode(&wide).len() > CHUNK_THRESHOLD);
+    let long = Value::Str("x".repeat(CHUNK_THRESHOLD));
+    let bad = [
+        long.clone(),
+        Value::Bytes(vec![0; CHUNK_THRESHOLD]),
+    ];
+    for v in &bad {
+        let e = check(&mut b, v).err();
+        assert!(matches!(e, Some(Error::Malformed(_))), "{e:?}");
+        assert_eq!(e.unwrap().class(), ErrorClass::BadInput);
+    }
+    // in an ephemeral commit, which has no chunks, it stays inline
+    b.header.ephemeral = Some(EphClass::Plain);
+    check(&mut b, &long).unwrap();
+    b.header.ephemeral = None;
+    // just at the threshold
+    let at_most = Value::Str("x".repeat(CHUNK_THRESHOLD - 5));
+    assert_eq!(osis_base::encode(&at_most).len(), CHUNK_THRESHOLD);
+    check(&mut b, &at_most).unwrap();
+    check(&mut b, &Value::Str("x".repeat(CHUNK_THRESHOLD - 4))).unwrap_err();
+    assert!(fragment(&Value::Enum(1, Some(Box::new(long.clone())))).holds_unchunked(false));
+    // a map key whole; the tenure exception: a whole set element passes, a large value inside
+    // it does not (these page: judged on the fragment)
+    assert!(fragment(&Value::Map([(wide.clone(), Value::Int(1))].into())).holds_unchunked(false));
+    let elem = Value::Set([wide].into());
+    assert!(fragment(&elem).holds_unchunked(true) && !fragment(&elem).holds_unchunked(false));
+    assert!(fragment(&long).holds_unchunked(false));
+}

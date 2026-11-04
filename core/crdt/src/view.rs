@@ -54,7 +54,43 @@ impl View for AnyView {
     }
 }
 
+/// A value (a register's write) holding, unchunked, what must be chunked: a blob or string, a set
+/// element or a map key above `CHUNK_THRESHOLD` (spec/data-model.md §6). A value's struct fields
+/// are map entries under int keys, which never pass it.
+fn holds_large(v: &Value) -> bool {
+    match v {
+        Value::Str(_) | Value::Bytes(_) => v.above_chunk_threshold(),
+        Value::List(items) => items.iter().any(holds_large),
+        Value::Set(items) => items.iter().any(Value::above_chunk_threshold),
+        Value::Map(m) => m.iter().any(|(k, x)| k.above_chunk_threshold() || holds_large(x)),
+        Value::Enum(_, Some(p)) => holds_large(p),
+        _ => false,
+    }
+}
+
 impl crate::fragment::Fragment {
+    /// Whether this fragment holds, unchunked, a value that must be chunked (spec/data-model.md
+    /// §6): `holds_large` in any register, or a map key, or (`whole_elements`) a set or bag
+    /// element's whole value above `CHUNK_THRESHOLD`. Text characters merge as sequences and never
+    /// chunk.
+    pub fn holds_unchunked(&self, whole_elements: bool) -> bool {
+        use crate::fragment::{Bag, Fragment, Register, Set, Slots};
+        let reg = |r: &Register| r.write.as_ref().and_then(|w| w.value.as_ref()).is_some_and(holds_large);
+        let on = |f: &Fragment| f.holds_unchunked(whole_elements);
+        match self {
+            Fragment::Register(r) => reg(r),
+            Fragment::Slots(Slots { reg: r, slots }) => r.as_ref().is_some_and(reg) || slots.values().any(on),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).any(|f| {
+                let whole = |r: &Register| r.write.as_ref().and_then(|w| w.value.as_ref()).is_some_and(Value::above_chunk_threshold);
+                on(f) || (whole_elements && matches!(f, Fragment::Register(r) if whole(r)))
+            }),
+            Fragment::Struct(s) => s.fields.values().any(on),
+            Fragment::Enum(e) => e.payloads.values().any(on),
+            Fragment::Map(m) => m.entries.iter().any(|(id, e)| id.key().is_some_and(Value::above_chunk_threshold) || e.frag.as_deref().is_some_and(on)),
+            Fragment::Seq(s) => s.elems().values().any(|el| matches!(&el.content, crate::seq::SeqContent::Frag(f) if on(f))),
+        }
+    }
+
     /// Whether every position this fragment carries fits `view`: each non-register fragment has
     /// the view's encoding (a register may stand anywhere: its value is judged), each value (a
     /// register's write, a map key) projects at its position, and each enum case write names a

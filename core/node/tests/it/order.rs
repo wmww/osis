@@ -138,6 +138,10 @@ pub(crate) enum Step {
     Removal { by: usize, t: usize, holder: usize },
     /// A roster snapshot of `t` by `by` holding exactly `keep`, whatever the timeline says.
     HostileRoster { by: usize, t: usize, keep: Vec<(usize, Role)> },
+    /// A roster snapshot of `t` by `by` holding `holder` with `role` and an invite above it.
+    OverInviteRoster { by: usize, t: usize, holder: usize, role: Role, invite: Role },
+    /// A `keys.0` write of one field of `t`, unchecked: 1 (`write`) to none, 5 (`deposit_seed`).
+    HostileKeys { by: usize, t: usize, field: u64 },
     /// A register write on `t`, unchecked.
     HostileWrite { by: usize, t: usize, v: u8 },
     /// A `required.0^` on `t` (spec/commits.md §5): by `rule % 4`, nothing, `op`'s aspect as
@@ -981,6 +985,25 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 m.replace(th(t), &osis_schema::core_types::TENURES, &osis_schema::core_types::Tenures(Vec::new())).unwrap();
                 m.roster_for_tests();
                 lp.peers[by].engine.commit_hostile(m).unwrap().expect("a snapshot writes");
+                Some(by)
+            }
+            Step::OverInviteRoster { by, t, holder, role, invite } => {
+                let roster: osis_schema::core_types::Holders = [(ids[holder], osis_schema::core_types::Edge { invite: Some(invite), ..edge(role) })].into_iter().collect();
+                let mut m = Mutation::new();
+                m.replace(th(t), &osis_schema::core_types::ROLES, &roster).unwrap();
+                m.replace(th(t), &osis_schema::core_types::TENURES, &osis_schema::core_types::Tenures(Vec::new())).unwrap();
+                m.roster_for_tests();
+                lp.peers[by].engine.commit_hostile(m).unwrap().expect("a snapshot writes");
+                Some(by)
+            }
+            Step::HostileKeys { by, t, field } => {
+                let v = match field {
+                    5 => Some([9u8; 32]).to_value(),
+                    _ => None::<osis_schema::core_types::Keyset>.to_value(),
+                };
+                let mut m = Mutation::new();
+                m.op(th(t), &osis_schema::core_types::KEYS, PathOp { path: vec![PathSeg::Field(field)], op: Op::Set(v) }).unwrap();
+                lp.peers[by].engine.commit_hostile(m).unwrap().expect("a keys.0 write writes");
                 Some(by)
             }
             Step::Require { by, t, op, rule } => {

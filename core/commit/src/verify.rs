@@ -60,8 +60,7 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         DeltaKind::Snapshot => Decoded::Snapshot(decode_snapshot(&part.delta, &cx, interner, pages)?),
         DeltaKind::Writer | DeltaKind::Import => Decoded::Delta(decode_delta(&part.delta, &cx, interner, pages)?),
     };
-    check_entry_keys(a.ak.as_str(), d.fragment())?;
-    check_types(a.ak.as_str(), d.fragment())?;
+    check_fragment(h, a.ak.as_str(), d.fragment())?;
     Ok(d)
 }
 
@@ -75,7 +74,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         return Err(Error::DeltaHash { ai: part.ai, di: part.di });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
-    // the keyed-removal and type rules hold of the whole iff of every piece (per record, per position); a bad
+    // `check_fragment` holds of the whole iff of every piece (per record, per position); a bad
     // delta still streams to its end, so a decoding error wins as in `verify_part`
     let ak = a.ak.as_str();
     let mut keyed = Ok(());
@@ -84,7 +83,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
             Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => f,
         };
         if keyed.is_ok() {
-            keyed = check_entry_keys(ak, &f).and_then(|()| check_types(ak, &f));
+            keyed = check_fragment(h, ak, &f);
         }
         if keyed.is_ok() { each(f) } else { Ok(()) }
     };
@@ -94,6 +93,18 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     };
     keyed?;
     Ok(out)
+}
+
+/// The rules a delta's fragment answers to by itself (spec/commits.md §4), per record and position.
+fn check_fragment(h: &Header, ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
+    check_entry_keys(ak, f)?;
+    check_types(ak, f)?;
+    // a tenure is never chunked whole, its frontier is; an ephemeral commit has no chunks, so its
+    // values stay inline (spec/data-model.md §6)
+    if h.ephemeral.is_none() && f.holds_unchunked(ak != "tenures.0") {
+        return Err(Error::Malformed("an unchunked value above CHUNK_THRESHOLD"));
+    }
+    Ok(())
 }
 
 /// A keyed map removal or tombstone (a keyed entry record with a reset) outside the

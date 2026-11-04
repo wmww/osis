@@ -1871,7 +1871,7 @@ impl<'a> Pass<'a> {
         }
         for (m, e) in &s.roster {
             let e = Edge { since: None, ..*e };
-            if *m == s.thing || self.input.owners.owner_actor(&s.thing) == Some(*m) || !e.well_formed() {
+            if *m == s.thing || self.input.owners.owner_actor(&s.thing) == Some(*m) {
                 continue;
             }
             if self.w.edges.get(m, &s.thing) != Some(&e) {
@@ -1912,7 +1912,7 @@ impl<'a> Pass<'a> {
 pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usize, best: &BTreeMap<Tid, Role>) -> Option<Attr> {
     let op = c.ops.get(k)?;
     let (a, m, t) = (c.author, op.holder, op.target);
-    if m == t || view.owners.owner_actor(&t) == Some(m) || op.edge.is_some_and(|e| !e.well_formed()) {
+    if m == t || view.owners.owner_actor(&t) == Some(m) {
         return None;
     }
     let new = op.edge.map(|e| Edge { since: None, ..e });
@@ -2016,13 +2016,13 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
         let Some(s) = input.snaps.get(sid) else { continue };
         let (init, virt) = ledger_writes(s);
         for (m, e) in init {
-            if m != *thing && input.owners.owner_actor(thing) != Some(m) && e.well_formed() {
+            if m != *thing && input.owners.owner_actor(thing) != Some(m) {
                 initial.set(m, *thing, Some(e));
             }
         }
         for v in virt {
-            // The filters real writes get: no self edge, no owner edge, invite at most the role.
-            if v.holder == *thing || input.owners.owner_actor(thing) == Some(v.holder) || v.edge.is_some_and(|e| !e.well_formed()) {
+            // The filters real writes get: no self edge, no owner edge.
+            if v.holder == *thing || input.owners.owner_actor(thing) == Some(v.holder) {
                 continue;
             }
             // just after the commit its key names (whose writes on the thing S ignores), so
