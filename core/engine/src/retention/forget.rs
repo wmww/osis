@@ -76,6 +76,13 @@ fn forgotten_ak(fate: Fate, ak: &Ak) -> bool {
     }
 }
 
+/// Whether dropping the secrets of `lost` forgets `t` (erased or kept as a copy): its secrets
+/// derive from a lost actor's and no held path reads it (node-sync: where this node's writes on
+/// what an `until` ended would go).
+pub(crate) fn would_forget(core: &Core, lost: &BTreeSet<Tid>, t: &Tid) -> bool {
+    fate(core, lost, t) != Fate::Stays
+}
+
 /// Whether a part on `(t, ak)` is content of a kept copy, which takes none: everything an erased
 /// thing's forgetting would drop but `secrets.0`, where a re-grant's boxes come.
 pub(crate) fn frozen(core: &Core, t: &Tid, ak: &Ak) -> bool {

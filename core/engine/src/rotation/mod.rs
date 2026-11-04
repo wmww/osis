@@ -17,12 +17,12 @@ use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rota
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use departures::{departures_placing, may_rotate, uncovered_roles_of};
-pub use lost::{Dropped, Leaving, LostScope, PENDING_GRANT_WAIT_MS};
+pub use departures::{departures_placing, expired_after_own_end, may_rotate, uncovered_roles_of};
+pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS, PENDING_GRANT_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use departures::{departures, grant_names, held_for, uncovered_departures, uncovered_roles};
 use departures::{below_of, collect, uncovered_by_role};
-pub(crate) use lost::{boxes_kept, load_lost_due, mark_lost_due};
+pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due};
 #[cfg(test)]
 pub(crate) use lost::authentic;
 

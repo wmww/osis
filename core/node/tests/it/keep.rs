@@ -577,24 +577,81 @@ fn any_path_keeps_spec_perm_3() {
     assert!(lp.peers[1].engine.kept_copies().contains(&c));
 }
 
-// spec/permissions.md §3, Keep: an `until` passing, no role commit behind it: the node acts when it
-// next judges (here the manual drop; a restart changes nothing), reading the default.
+// spec/permissions.md §2, §3 Keep: an `until` passing is a loss the node judges by itself, with no
+// role commit behind it and through a restart; the trigger leaves it to node-sync to hear its labels
+// out (`Leaving::timed`, from when it was first judged), and the drop reads the default.
 #[test]
 fn until_ending_spec_perm_3() {
+    use osis_node::rotation::LostScope;
     for ((edge, keep), seed) in [(keeping(Role::Read), 9350), (erasing(Role::Read), 9355)] {
         let at = osis_base::WallMs(T0.0 + 3_600_000);
         let mut x = setup(seed, (ct::Edge { until: Some(at), ..edge }, keep));
         x.lp.peers[1].engine.drop_lost_due().unwrap();
+        assert_eq!(x.lp.peers[1].engine.next_lost_due(), Some(at.0));
         reopen(&mut x.lp, 1, seed + 2).unwrap();
+        assert_eq!(x.lp.peers[1].engine.next_lost_due(), Some(at.0), "the list survives a restart");
         x.lp.peers[1].clock.set(at);
-        assert!(!x.lp.peers[1].engine.lost_due(), "nothing by the time alone");
-        x.lp.peers[1].engine.drop_lost_secrets().unwrap();
+        assert!(x.lp.peers[1].engine.lost_due());
+        let d = x.d;
+        let r = x.lp.peers[1].engine.forget_lost(LostScope::Due).unwrap();
+        assert!(r.actors.is_empty() && r.leaving, "by the time alone: node-sync hears its labels out first");
+        assert!(!x.lp.peers[1].engine.lost_due());
+        let l = x.lp.peers[1].engine.lost_leaving().unwrap();
+        assert_eq!(l.timed.get(&d), Some(&at.0));
+        assert_eq!(l.recheck_at, Some(at.0 + osis_node::rotation::LOST_HEARD_WAIT_MS));
+        reopen(&mut x.lp, 1, seed + 3).unwrap();
+        assert_eq!(x.lp.peers[1].engine.lost_leaving().unwrap(), l, "the record survives a restart");
+        x.lp.peers[1].engine.forget_lost(LostScope::Only(&[d])).unwrap();
+        assert!(x.lp.peers[1].engine.lost_leaving().unwrap().timed.is_empty());
         if keep {
             assert_kept(&mut x);
         } else {
             assert_erased(&mut x);
         }
     }
+}
+
+// spec/permissions.md §2 (lost access by an `until`): a role commit received on a thing whose edge to
+// this node only expired says nothing of that edge: the loss waits as an `until` passing does (a
+// renewal may follow it); a removal received acts at once; a renewal held in time keeps access and
+// lists the thing again at the new `until`.
+#[test]
+fn a_commit_beside_an_expired_edge_waits_spec_perm_2() {
+    use osis_node::rotation::LostScope;
+    let at = osis_base::WallMs(T0.0 + 3_600_000);
+    let mut x = setup(9370, (ct::Edge { until: Some(at), ..edge_of(Role::Read) }, false));
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    // a renewal in time: readable, and due again at the new `until`
+    let later = osis_base::WallMs(at.0 + 3_600_000);
+    x.lp.peers[0].engine.grant(&x.d, &x.pb, &ct::Edge { until: Some(later), ..edge_of(Role::Read) }).unwrap();
+    spread(&mut x.lp);
+    x.lp.peers[1].clock.set(osis_base::WallMs(at.0 + 1));
+    x.lp.peers[0].clock.set(osis_base::WallMs(at.0 + 1));
+    let r = x.lp.peers[1].engine.forget_lost(LostScope::Due).unwrap();
+    assert!(r.actors.is_empty() && !r.leaving);
+    assert_eq!(x.lp.peers[1].engine.next_lost_due(), Some(later.0));
+    let d = x.d;
+    assert_eq!(read(&mut x.lp, d), Some(s(&big(D_MARK))));
+    // the renewal passes; another holder's grant arrives beside the expired edge
+    x.lp.peers[1].clock.set(osis_base::WallMs(later.0 + 1));
+    x.lp.peers[0].clock.set(osis_base::WallMs(later.0 + 1));
+    let pa = x.lp.peers[0].engine.owner(&x.d).unwrap();
+    let other = thing_of(&mut x.lp, 0, pa);
+    x.lp.peers[0].engine.grant(&x.d, &other, &edge_of(Role::Read)).unwrap();
+    spread(&mut x.lp);
+    assert!(x.lp.peers[1].engine.lost_due());
+    let r = x.lp.peers[1].engine.forget_lost(LostScope::Due).unwrap();
+    assert!(r.actors.is_empty() && r.leaving, "nothing received ended the edge: heard out first");
+    assert!(x.lp.peers[1].engine.lost_leaving().unwrap().timed.contains_key(&d));
+    assert!(found(&mut x.lp, D_MARK), "held while its labels are heard out");
+    // a removal with no `until` in it: at once
+    let mut x = setup(9375, erasing(Role::Read));
+    let (d, pb) = (x.d, x.pb);
+    x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap();
+    spread(&mut x.lp);
+    let r = x.lp.peers[1].engine.forget_lost(LostScope::Due).unwrap();
+    assert!(!r.actors.is_empty() && !r.leaving);
+    assert_erased(&mut x);
 }
 
 // spec/permissions.md §3, Keep: an `until` ending reads the default in force at its key: a setting ordered

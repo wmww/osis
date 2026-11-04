@@ -673,6 +673,18 @@ pub(super) fn uncovered_by_role(tx: &mut Tx<'_>, a: &Tid, deps: &[Departure]) ->
     Ok(Some(by_role))
 }
 
+/// Whether `d`, a departure from `a`, is an edge's `until` passing at a time this node and every
+/// held key actor had no role on `a`, with none now (spec/permissions.md §2, spec/crypto.md §4):
+/// it holds back nothing this node uploads while it hears its labels out. All it can still send
+/// was written before that time, when the holder that left could read it, and it writes nothing
+/// new.
+pub fn expired_after_own_end(core: &Core, a: &Tid, d: &Departure) -> bool {
+    let Some(n) = d.at.filter(|n| n.key.commit == osis_keys::EXPIRY) else { return false };
+    let Some(ts) = Ts::from_u64(n.key.ts) else { return false };
+    let none = |x: &Tid| crate::engine::write::role_of(core, x, a, ts).is_none();
+    !super::lost::readable(core, a) && none(&core.id.tid()) && core.key_actors.keys().all(none)
+}
+
 /// The known departures of `a`, each with the commit that made it when that is this node's
 /// own self-removal (`own_leaving`): node-sync's cover check ignores such a departure until the
 /// commit is placed (spec/crypto.md §4).

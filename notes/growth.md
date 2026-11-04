@@ -28,6 +28,7 @@ The probe for the M rows: 400 overwrites of one register by one node, compacted 
 ## Other workloads
 | Cause | Where | Grows with, size | Kind | Issue |
 |---|---|---|---|---|
+| Lost-access work list `l/`: 23 B per thing with an edge's `until` ahead; `T/`: 24 B per actor lost by an `until` waiting to be heard out | Node | Per such thing, until its last `until` passes: an admin of a thing the node syncs can set one far ahead, on what it could as well fill; `T/` goes with the drop (at most `LOST_HEARD_WAIT_MS` later) | Bounded by things held; a step asks by time (`ix.lost_due_at`) | none |
 | Kept copy (spec/permissions.md §3, Keep): `K/` per copy, a tid per holder it hangs on (at most the holders it had), plus what the copy holds, as held at the removal | Node | Per actor removed from saying keep; a copy takes nothing new, expiry and bounds still run | Inherent (chosen), until the user's `drop_kept` | none |
 | A removal saying keep: one dead edge (`until` 0) in `roles.0`, carried by roster snapshots (spec/permissions.md §2, §6) | Thing, every node holding its roles | Per holder removed saying keep, not per removal | Until a re-grant replaces it or a later plain removal; inherent (the removed node must be able to read it) | none |
 | Full history (keep at least forever, or no compaction) | Both | Each commit's bodies, as written | Inherent (chosen) | none |

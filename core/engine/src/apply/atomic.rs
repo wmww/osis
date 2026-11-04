@@ -729,6 +729,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         // a rotation from before the removal, arriving after it, must not give a kept copy a secret
         let copies: Vec<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "secrets.0" && tx.core.ix.kept.contains_key(&a.tid)).map(|a| a.tid).collect();
         crate::rotation::mark_lost_due(tx, copies)?;
+    } else {
+        // an own edge with an `until` (a self-demotion): judged when it passes
+        crate::rotation::arm_untils(tx, rosters.iter().copied())?;
     }
     // a memory commit is ephemeral state to watchers (a local one's batch queues its own event,
     // `Engine::write`) and to the ephemeral lane (`MemorySync`), nothing to the durable sync path
@@ -954,6 +957,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         let rosters: Vec<Tid> = h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
         if meta.origin != Origin::Local {
             crate::rotation::mark_lost_due(tx, rosters.iter().copied())?;
+        } else {
+            crate::rotation::arm_untils(tx, rosters.iter().copied())?;
         }
         for thing in rosters.into_iter().collect::<BTreeSet<_>>() {
             tx.core.events.queue(Event::Roster { thing });
@@ -993,6 +998,8 @@ pub(crate) fn leave_walk(tx: &mut Tx<'_>, id: &CommitId, waiting: &[osis_commit:
     let flipped = rejudged(tx, true)?;
     if meta.origin != Origin::Local {
         crate::rotation::mark_lost_due(tx, out.iter().copied())?;
+    } else {
+        crate::rotation::arm_untils(tx, out.iter().copied())?;
     }
     for thing in out {
         tx.core.events.queue(Event::Roster { thing });
