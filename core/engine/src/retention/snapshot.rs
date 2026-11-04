@@ -411,7 +411,7 @@ impl Engine {
             // bounds from the retention of the writes it carries, schema known here or not
             // (spec/commits.md §5); a memory one's are `writer` without bounds (spec/commits.md §2)
             let retention = if memory {
-                osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() }
+                osis_commit::retention::EPHEMERAL_RETENTION
             } else {
                 osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0)
             };
@@ -466,7 +466,7 @@ impl Engine {
                 frontiers.insert(&own, hi - 1);
             }
             frontiers.retain(&traced);
-            let retention = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() };
+            let retention = osis_commit::retention::EPHEMERAL_RETENTION;
             let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
             let records = crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter());
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
