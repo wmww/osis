@@ -315,7 +315,7 @@ impl SyncEngine {
             let ts = self.engine.header(&s.commit).map(|h| h.ts);
             let gone = match ts {
                 None => true,
-                Some(ts) => !first && (s.tries >= MAX_INBOX_RESENDS || self.acted(&s.holder, ts)),
+                Some(ts) => !first && (s.tries >= MAX_INBOX_RESENDS || self.acted(&s.holder, ts, &s.things)),
             };
             if gone || !s.edge_only && !self.still_holder(&s.holder, &s.commit) {
                 self.forget_delivery(&s.holder, &s.commit);
@@ -446,14 +446,18 @@ impl SyncEngine {
         targets.iter().any(|t| self.engine.core.current_holders(t).iter().any(|(m, _, _)| m == holder))
     }
 
-    /// Whether `holder` acted after `since` as this node sees it: a held commit newer than that
-    /// by the holder, for it, or by a node with a role on it (its devices).
-    fn acted(&self, holder: &Tid, since: Ts) -> bool {
+    /// Whether `holder` acted on a delivery naming `things` after `since` as this node sees it:
+    /// a held commit newer than that, by the holder, for it, or by a node with a role on it (its
+    /// devices), writing one of `things` or a thing it owns. Acting elsewhere says nothing of
+    /// this delivery (its blob may have been cleared, spec/sync.md §5), so it is sent again.
+    fn acted(&self, holder: &Tid, since: Ts, things: &[Tid]) -> bool {
         let tl = self.engine.core.timelines.get(holder);
         // the views: O(commits) without decoding headers
         self.engine.core.ix.commits.values().any(|m| {
             let h = &m.view;
-            h.ts > since && (h.author == *holder || h.actor == *holder || tl.is_some_and(|tl| tl.role(&h.author, holder, At::now(h.ts)).is_some()))
+            h.ts > since
+                && (h.author == *holder || h.actor == *holder || tl.is_some_and(|tl| tl.role(&h.author, holder, At::now(h.ts)).is_some()))
+                && h.aspects.iter().any(|a| self.engine.owner_chain(&a.tid).any(|t| things.contains(&t)))
         })
     }
 

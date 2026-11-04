@@ -189,6 +189,12 @@ impl SyncEngine {
         self.state.label_entries(l).map(|(b, e)| (b, e.kind.clone())).collect()
     }
 
+    /// The groups label `l` is held under on this node's connections (tests).
+    #[doc(hidden)]
+    pub fn conn_groups(&self, l: &LabelId) -> Vec<osis_base::Tid> {
+        self.conns.values().filter_map(|c| c.labels.get(l)).map(|x| x.group).collect()
+    }
+
     /// The wrap and stamp this node keeps for an entry (tests).
     #[doc(hidden)]
     pub fn entry_meta(&self, l: &LabelId, b: &osis_base::BlobId) -> Option<([u8; osis_crypto::WRAP_LEN], Option<osis_crypto::Signature>)> {

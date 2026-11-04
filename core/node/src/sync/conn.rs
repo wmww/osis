@@ -154,6 +154,16 @@ pub(crate) struct Requests {
 }
 
 impl Requests {
+    /// Drops what is recorded of the labels `gone` names (left this connection).
+    pub fn forget(&mut self, gone: impl Fn(&LabelId) -> bool) {
+        self.sent.retain(|(l, _), _| !gone(l));
+        self.deleting.retain(|(l, _), _| !gone(l));
+        self.replacing.retain(|(l, _), _| !gone(l));
+        self.timed_sent.retain(|(l, _)| !gone(l));
+        self.reopens.retain(|l, _| !gone(l));
+        self.refusals.retain(|l, _| !gone(l));
+    }
+
     /// The commands carrying the `UNTAGGED` requests were given, the last tagged `tag`.
     pub fn given(&mut self, tag: u64) {
         for v in self.sent.values_mut().chain(self.deleting.values_mut()) {
@@ -494,6 +504,25 @@ impl SyncEngine {
         let conns: Vec<(ConnId, HostKey)> = self.conns.iter().filter(|(_, c)| c.session.is_ready()).map(|(id, c)| (*id, c.host)).collect();
         if conns.is_empty() {
             return Ok(());
+        }
+        // a label a held `label.0` records is that group's on every connection (spec/sync.md
+        // §3): one a hint opened under another thing there (a host a sender names took the
+        // claim) leaves it, and starts again below as the group's where the group names that
+        // host. Otherwise it stayed open under the hint's thing for the connection's life, and
+        // what that host sent was judged under it (`group_of`). Any group recording it will do:
+        // two `label.0`s may name one label (an admin may copy another group's), and moving
+        // between them would reopen it at every call.
+        let mut recorded: BTreeMap<LabelId, BTreeSet<Tid>> = BTreeMap::new();
+        for (g, l) in self.labels() {
+            recorded.entry(l.id).or_default().insert(g);
+        }
+        for (id, c) in self.conns.iter_mut() {
+            let stale: Vec<LabelId> = c.labels.iter().filter(|(l, x)| recorded.get(l).is_some_and(|gs| !gs.contains(&x.group))).map(|(l, _)| *l).collect();
+            for l in &stale {
+                c.labels.remove(l);
+                self.unsubscribe.insert((*id, *l));
+            }
+            c.req.forget(|l| stale.contains(l));
         }
         let labels = self.wanted_labels();
         for (conn, host) in conns {

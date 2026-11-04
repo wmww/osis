@@ -407,3 +407,53 @@ fn junk_under_another_label_stays_spec_sync_5() {
     let held = net.host_ids(host, &l);
     assert!(junk.iter().all(|x| held.contains(x)), "kept");
 }
+
+// spec/sync.md §3, §5: a share whose inbox blob was cleared before its holder read it is sent
+// again after `INBOX_LIFETIME`, though the holder has since written elsewhere where the sender
+// sees it (that says nothing of this share; counting it dropped the share for good).
+#[test]
+fn cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3() {
+    let (mut net, host, a, b, alice, bob) = two_persons();
+    let addr = net.address(host);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, alice);
+    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let (_, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+    let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..4 {
+        net.advance(60_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Write));
+    // Bob away: the share's blob lands in his inbox and is cleared there before he reads it
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let before = net.host_ids(host, &home);
+    net.set_online(b, false);
+    let t = grants(&mut net, a, alice, bob, 1)[0];
+    net.run();
+    let cleared: Vec<osis_base::BlobId> = net.host_ids(host, &home).into_iter().filter(|x| !before.contains(x)).collect();
+    assert!(!cleared.is_empty(), "the share was deposited");
+    let now = net.now();
+    for x in &cleared {
+        osis_proto::LabelStore::delete(net.hosts[host].hub.store_mut(), &home, x, now).unwrap();
+    }
+    net.set_online(b, true);
+    let item = net.item(b, g, g, "from bob");
+    for _ in 0..4 {
+        net.advance(60_000);
+    }
+    assert_eq!(net.read(a, item), Some(s("from bob")), "Alice sees Bob act");
+    assert_ne!(net.engine(b).role_on(&t), Some(Role::Read), "cleared");
+    let day = 86_400_000;
+    for _ in 0..osis_base::format::INBOX_LIFETIME_MS / day + 2 {
+        net.advance(day);
+    }
+    assert_eq!(net.engine(b).role_on(&t), Some(Role::Read), "the cleared share came again");
+}
