@@ -1494,3 +1494,56 @@ fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
     assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "m2 and its edit kept");
 }
+
+// spec/crdt.md §4.6, §4.7 (an undo takes the earliest T it copies): 0 removes an expiring entry and
+// a lasting one in one write, then undoes it. Past the expiring entry's T only it is gone: the
+// lasting entry the undo brought back stays.
+#[test]
+#[ignore = "issues/copy-expiry-collateral.md"]
+fn undo_spares_lasting_values_past_a_copied_expiry_repro_spec_crdt_4_7() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let mut lp = net(1, 84);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:map.0");
+    let t_end = lp.peers[0].engine.now().0 + 60_000;
+    put_entry(&mut lp, t, "e", Some(t_end));
+    put_entry(&mut lp, t, "kept", None);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("e")) }).unwrap();
+    m.op(t, &MAP, PathOp { path: Vec::new(), op: Op::Remove(s("kept")) }).unwrap();
+    let del = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.undo(del);
+    lp.peers[0].engine.write(m).unwrap();
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("kept"))]).unwrap(), Some(item("v", 1)));
+    lp.advance(60_001);
+    lp.peers[0].engine.tick().unwrap();
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("kept"))]).unwrap(), Some(item("v", 1)), "the undone removal of a lasting entry stays undone");
+}
+
+// spec/crdt.md §4.7 (copy expiry, split by expiry): one write reacts to an expiring entry, posts
+// `m2` and edits it (an op building on an earlier one of the write). Past T only the reaction goes.
+#[test]
+#[ignore = "issues/copy-expiry-collateral.md"]
+fn copy_expiry_split_spares_ops_building_on_each_other_repro_spec_crdt_4_7() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let mut lp = net(1, 85);
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:map.0");
+    let t_end = lp.peers[0].engine.now().0 + 60_000;
+    put_entry(&mut lp, t, "e", Some(t_end));
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("e")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) }).unwrap();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(Value::Int(9)) }).unwrap();
+    lp.peers[0].engine.write(m).unwrap();
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)));
+    lp.advance(60_001);
+    lp.peers[0].engine.tick().unwrap();
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("e"))]).unwrap(), None, "e expired");
+    assert_eq!(lp.peers[0].engine.get_at(&t, &k, &[PathSeg::Key(s("m2"))]).unwrap(), Some(item("M2-MARK", 9)), "m2 kept");
+}
