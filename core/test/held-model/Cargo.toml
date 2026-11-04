@@ -1,0 +1,19 @@
+[package]
+name = "held-model"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Brute-force model of what a node holding a set of commits reads and keeps (retention, validity, apply). Not the implementation."
+
+[lib]
+test = false
+doctest = false
+
+# Independent of every osis crate on purpose (tools/policy.py checks it): std only.
+[dependencies]
+
+# Reference model: style lints off; correctness is checked by its tests.
+[lints.rust]
+unsafe_code = "forbid"
+[lints.clippy]
+all = { level = "allow", priority = -1 }

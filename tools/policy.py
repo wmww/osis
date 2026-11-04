@@ -58,7 +58,13 @@ for m in members:
     rel = os.path.relpath(m, ROOT)
     man = load(os.path.join(m, "Cargo.toml"))
     lints = man.get("lints", {})
-    is_model = rel.startswith(("core/test/crdt-model", "core/test/roles-model"))
+    is_model = rel.startswith(("core/test/crdt-model", "core/test/roles-model", "core/test/held-model"))
+    # held-model is an independent reading of the spec: it may depend on no workspace crate
+    if rel == "core/test/held-model":
+        for table in dep_tables(man):
+            for name, spec in table.items():
+                if name in internal or (isinstance(spec, dict) and "path" in spec):
+                    errs.append(f"{rel}: depends on workspace crate `{name}`; it must stay independent")
     # app/android: the workspace lints with unsafe_code at deny, for its one `#[unsafe(no_mangle)]`
     # entry point (NativeActivity finds `android_main` by name; notes/android.md)
     is_android = rel == "app/android"
