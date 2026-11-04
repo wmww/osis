@@ -201,4 +201,11 @@ impl Engine {
         let Some(m) = self.core.ix.commits.get(c) else { return false };
         m.aspect(tid, ak).is_some_and(|ai| !m.dropped.contains_key(&ai))
     }
+
+    /// The snapshots that covered `c`'s part on `(tid, ak)` when it dropped, and those that
+    /// covered such a coverer dropped in turn (`Dropped::covered_by`).
+    pub fn coverers_of(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
+        let Some(ai) = self.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)) else { return Vec::new() };
+        super::coverers(&self.core, c, ai)
+    }
 }

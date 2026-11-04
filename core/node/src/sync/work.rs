@@ -457,7 +457,7 @@ impl SyncEngine {
                 }
             }
             for k in aspects {
-                w.touched.commits.extend(self.engine.core.durable_on(&k));
+                w.touched.commits.extend(self.engine.core.held_on(&k));
             }
             for t in things {
                 w.touched.commits.extend(self.commits_on_thing(&t));
@@ -572,10 +572,9 @@ impl SyncEngine {
         w.until = self.roster_horizon(closure, g);
     }
 
-    /// Every durable commit with a delta on thing `t`.
+    /// Every held commit with a delta on thing `t`.
     fn commits_on_thing(&self, t: &Tid) -> BTreeSet<CommitId> {
-        let core = &self.engine.core;
-        core.aspects_of(t).flat_map(|(_, s)| s.iter().map(|x| x.1)).filter(|c| !core.ix.commits.get(c).is_some_and(|m| m.view.memory)).collect()
+        self.engine.core.aspects_of(t).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect()
     }
 
     /// The aggregates of `w` from every entry under `l`.

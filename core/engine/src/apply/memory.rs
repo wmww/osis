@@ -1,9 +1,9 @@
-//! Memory class for the ephemeral lane (node-sync; spec/sync.md §9, notes/ephemeral.md): what
-//! the lane takes from Core (own memory commits to place, commits forgotten with why, applied
-//! commits, aspects whose snapshots fell invalid), the node cap's measures of memory commits
-//! (what a held part costs a holder, `part_charge`, and a bound on it from the part's bytes
-//! alone, `part_bound`, so `Engine::ingest_memory` decodes nothing past the room it is given),
-//! coalescing (one snapshot of an aspect's unsent own commits) and the compaction trigger.
+//! Memory class for node-sync (spec/sync.md §9, notes/ephemeral.md): what node-sync takes from
+//! Core besides the ordinary change marks (commits forgotten with why, aspects whose snapshots
+//! fell invalid), the node cap's measures of memory commits (what a held part costs a holder,
+//! `part_charge`, and a bound on it from the part's bytes alone, `part_bound`, so
+//! `Engine::ingest_memory` decodes nothing past the room it is given), coalescing (one snapshot
+//! of an aspect's unsent own commits) and the compaction trigger.
 
 use crate::engine::{Engine, MemoryDrop, Tx};
 use crate::error::{Error, Result};
@@ -169,77 +169,13 @@ impl Engine {
         self.core.ix.commits.iter().filter(|(_, m)| m.view.memory).map(|(id, m)| (*id, (0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).count(), m.view.author == me)).collect()
     }
 
-    /// Own memory commits applied since the last take that are not held back, for the lane to
-    /// place: those on things in no labeled closure wait until one holds them (`parked`), those
-    /// on things in the closure of a group in `busy` (an own upload of its label in flight,
-    /// spec/sync.md §9 coalescing) stay unsent, and later writes join them; of the
-    /// rest, an aspect's two or more unsent plain session-form commits are replaced by one
-    /// snapshot of their join (`coalesce`), so an aspect goes up as one entry per round trip
-    /// whatever the write rate.
-    pub fn take_memory_commits(&mut self, busy: &BTreeSet<Tid>) -> Result<Vec<CommitId>> {
-        // parked ones in the order they were written; walked only when a closure may have grown
-        let parked = if self.core.memory.walked == self.core.memory.closures {
-            Vec::new()
-        } else {
-            self.core.memory.walked = self.core.memory.closures;
-            let mut p: Vec<CommitId> = std::mem::take(&mut self.core.memory.parked).into_iter().collect();
-            p.sort_by_key(|c| self.core.ix.commits.get(c).map(|m| m.view.ts));
-            p
-        };
-        let unsent = std::mem::take(&mut self.core.memory.unsent);
-        let mut out = Vec::new();
-        for c in parked.into_iter().chain(unsent) {
-            let Some(m) = self.core.ix.commits.get(&c) else { continue };
-            if !m.view.aspects.iter().any(|a| self.ephemeral_synced(&a.tid)) {
-                self.core.memory.parked.insert(c);
-                continue;
-            }
-            let held_back = m.view.aspects.iter().any(|a| busy.iter().any(|g| self.in_ephemeral_closure(g, &a.tid)));
-            if held_back {
-                self.core.memory.unsent.push(c);
-            } else {
-                out.push(c);
-            }
-        }
-        // per aspect, two or more unsent own commits go as one: plain writes coalesce into a
-        // snapshot of their join; with an own snapshot among them (the trigger fired while the
-        // label was busy) a snapshot of the whole state covers them all
-        let mut by_aspect: BTreeMap<(Tid, Ak), (Vec<CommitId>, bool)> = BTreeMap::new();
-        for c in &out {
-            let Some(m) = self.core.ix.commits.get(c) else { continue };
-            let plain = matches!(m.view.form, Form::Session(n) if n == self.core.session.nonce) && !m.view.kind.is_compaction();
-            if plain || m.view.kind.is_compaction() {
-                for a in &m.view.aspects {
-                    let e = by_aspect.entry((a.tid, a.ak.clone())).or_default();
-                    e.0.push(*c);
-                    e.1 |= !plain;
-                }
-            }
-        }
-        for ((tid, ak), (ids, all)) in by_aspect {
-            if ids.len() < 2 {
-                continue;
-            }
-            let s = if all { self.snapshot(&tid, &ak)? } else { self.coalesce(&tid, &ak, &ids)? };
-            if let Some(s) = s {
-                out.push(s);
-            }
-        }
-        // what coalescing (or anything else since) forgot never goes; the snapshot was listed
-        // unsent by its apply
-        let mut seen = BTreeSet::new();
-        out.retain(|c| self.holds_memory(c) && seen.insert(*c));
-        self.core.memory.unsent.retain(|c| !seen.contains(c));
-        Ok(out)
-    }
-
-    /// Memory commits forgotten since the last take, with why (the lane forgets their entries
-    /// and deletes them where it may, `MemoryDrop`). Only commits no longer held are listed.
-    /// Also frees the received memory things their commits were the last on
-    /// (`free_unused_memory`).
-    pub fn take_memory_drops(&mut self) -> Vec<(CommitId, MemoryDrop)> {
+    /// Memory commits forgotten since the last take, with their header and why (node-sync
+    /// releases their charge and deletes their entries at hosts where it may, `MemoryDrop`).
+    /// Only commits no longer held are listed. Also frees the received memory things their
+    /// commits were the last on (`free_unused_memory`).
+    pub fn take_memory_drops(&mut self) -> Vec<(CommitId, std::sync::Arc<osis_commit::Header>, MemoryDrop)> {
         let d = std::mem::take(&mut self.core.memory.dropped);
-        let d: Vec<_> = d.into_iter().filter(|(c, _)| !self.holds_memory(c)).collect();
+        let d: Vec<_> = d.into_iter().filter(|(c, _, _)| !self.holds_memory(c)).collect();
         if let Err(e) = self.free_unused_memory() {
             let now = self.now();
             self.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::EphemeralRefused, tids: Vec::new(), commit: None, peer: None, detail: format!("freeing unused ephemeral records: {e}") }, now);
@@ -252,16 +188,12 @@ impl Engine {
     /// forgotten since the last sweep: a record is no state of its own (every commit about the
     /// thing carries it again), so dropping it loses nothing and received things do not pile up
     /// (notes/ephemeral.md Records go with their commit's other parts). A durable thing is never
-    /// freed: its `MemorySync::kept` row goes once no memory commit is on it, so rows stay
-    /// bounded by what the caps count.
+    /// freed.
     pub fn free_unused_memory(&mut self) -> Result<()> {
         let cands = std::mem::take(&mut self.core.memory.unused);
         let mut free = BTreeSet::new();
         for t in cands {
             if !self.core.ix.held.is_memory(&t) {
-                if !self.core.aspects_of(&t).any(|((_, ak), s)| ak.lifetime() != osis_base::Lifetime::Durable && !s.is_empty()) {
-                    self.core.memory.kept.remove(&t);
-                }
                 continue;
             }
             let made_here = self.core.memory.things.get(&t).is_some_and(|m| m.made_here);
@@ -277,12 +209,6 @@ impl Engine {
             tx.set_memory();
             crate::apply::free::free(tx, &free)
         })
-    }
-
-    /// Memory commits applied here since the last take, any origin (the lane promotes the
-    /// entries waiting on them).
-    pub fn take_memory_applied(&mut self) -> Vec<CommitId> {
-        std::mem::take(&mut self.core.memory.applied)
     }
 
     /// Memory aspects a held memory snapshot of which turned invalid since the last take (a
@@ -319,13 +245,16 @@ impl Engine {
     /// cost more than `FACTOR` times a snapshot of it, each weighed per part as holders are
     /// charged (`part_weight`) plus `ENTRY_CHARGE`, this node writes the snapshot
     /// (`compaction_snapshot`) if it may. Weighed only once the held cost passes `FACTOR` times
-    /// the snapshot cost last weighed, so rebuilds cost O(1) per byte written, amortized. The
-    /// snapshots written (listed unsent by their apply: the lane places them).
+    /// the snapshot cost last weighed, so rebuilds cost O(1) per byte written, amortized. Only
+    /// aspects of things in a labeled closure here: compaction serves the caps, and a snapshot
+    /// of a thing in no closure goes nowhere while the bodies it covered may still travel in a
+    /// commit that also touches the closure (a deletion's resets beside the unplacing). The
+    /// snapshots written (marked changed by their apply: the passes place them).
     pub fn memory_compactions(&mut self, force: bool) -> Result<Vec<CommitId>> {
         let dirty: Vec<(Tid, Ak)> = if force { self.memory_aspects() } else { std::mem::take(&mut self.core.memory.dirty).into_iter().collect() };
         let mut out = Vec::new();
         for (tid, ak) in dirty {
-            if !self.core.ix.held.is_memory(&tid) && self.core.created(&tid).is_none() {
+            if (!self.core.ix.held.is_memory(&tid) && self.core.created(&tid).is_none()) || !self.ephemeral_synced(&tid) {
                 continue;
             }
             let Some((held, largest, bodies)) = self.held_cost(&tid, &ak)? else { continue };

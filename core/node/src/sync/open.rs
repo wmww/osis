@@ -516,13 +516,13 @@ impl SyncEngine {
         }
         // a reconciliation ended unanswered (an open a new head ended): the next sync starts one
         if kind == Request::Reconcile {
-            self.eph.reconciling.remove(&(conn, l));
+            self.memory.reconciling.remove(&(conn, l));
         }
-        // a refused Sync listed nothing to the host: the next one announces the held entries
-        // again (else `eph_synced` counted the stale list as held there)
+        // a refused Sync listed nothing to the host: the next one lists the held memory entries
+        // again (else the stale list counted as held there)
         if kind == Request::Sync {
-            self.eph.gained.remove(&(conn, l));
-            self.eph.announced.remove(&(conn, l));
+            self.memory.gained.remove(&(conn, l));
+            self.memory.announced.remove(&(conn, l));
         }
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {

@@ -4,6 +4,7 @@
 //! host (`deletions`) and in this node's own served state (`local_deletions`).
 
 use super::*;
+use crate::engine::MemoryDrop;
 
 impl SyncEngine {
     /// The deletion step of a local pass, over the entries of `scope` no host or peer holds
@@ -158,7 +159,7 @@ impl SyncEngine {
         let (g, l, host, snaps, settled) = (&at.g, &at.l, at.host.as_ref(), at.snaps, at.settled);
         let now = self.now();
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok(None) };
-        let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(None) };
+        let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(self.judge_forgotten(commit, parts, note)) };
         let h = m.header.clone();
         // a blob expires whole with its class (spec/sync.md §3)
         if let Some(t) = parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).and(h.expires) {
@@ -265,6 +266,28 @@ impl SyncEngine {
         // a body outside the required set holds no write this label must keep
         let hold = classify(&f);
         Ok(Some((hold, hold != Hold::MustNot(Why::Outside), aspects)))
+    }
+
+    /// An entry of a memory commit the engine forgot whole (spec/sync.md §9: covered,
+    /// superseded, expired, freed): must-not-hold, with live writes to carry when a snapshot or
+    /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
+    /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
+    /// A superseded body is its author's to delete, nobody else's.
+    fn judge_forgotten(&mut self, commit: &CommitId, parts: &[(usize, usize)], note: &mut Note) -> Option<Judged> {
+        let f = self.memory.forgotten.get(commit)?;
+        let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| f.header.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+        let live = match &f.why {
+            MemoryDrop::Gone => false,
+            MemoryDrop::Covered { .. } => true,
+            MemoryDrop::Superseded { .. } => {
+                if f.header.author != self.engine.tid() {
+                    return None;
+                }
+                true
+            }
+        };
+        note.unsure = true;
+        Some((Hold::MustNot(Why::Dropped), live, aspects))
     }
 
     /// Unopened entries present at `host` under replaced label `l` that only content commits
@@ -540,6 +563,18 @@ impl SyncEngine {
     fn carried(&mut self, at: &At, e: &Entry) -> Result<Carriage> {
         let (g, l, host) = (&at.g, &at.l, at.host.as_ref());
         let Kind::Commit { commit, parts, .. } = &e.kind else { return Ok((false, Vec::new(), None)) };
+        // a forgotten memory commit: carried once an entry of what covered or superseded it is
+        // held at the host (spec/sync.md §9); nothing here to snapshot for it
+        if self.memory.forgotten.contains_key(commit) {
+            // what covers or supersedes it now: a coverer forgotten in turn (superseded before
+            // it was placed, covered by a later snapshot) stands for what covers that
+            let by = self.carriers_of_forgotten(commit);
+            let carried = by.iter().any(|s| self.state.entries_of(l, s).any(|(b, _)| host.is_none_or(|host| self.state.holds_at(host, l, &b))));
+            // a coverer the host refused for the label's cap goes up again replacing this
+            // body, in the room it frees (spec/sync.md §5, §7)
+            let via = if carried { None } else { host.and_then(|s| by.iter().flat_map(|c| self.state.entries_of(l, c).map(|(b, _)| b)).find(|b| self.capped.contains(&(*s, *l, *b)))) };
+            return Ok((carried || via.is_some(), Vec::new(), via));
+        }
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new(), None)) };
         let x = self.engine.group_actor(g);
         let (mut all, mut need, mut via) = (true, Vec::new(), None);
@@ -634,17 +669,30 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// The recorded carrier of a dropped body on `(t, a)`, followed through carriers that were
-    /// dropped in turn to one whose body this node still holds (a carrier dropped before it went
-    /// up carries nothing: its writes moved to a later snapshot, or a new one is due).
+    /// A carrier of body `body` on `(t, a)` whose own body this node still holds: one recorded
+    /// for it here (`State::carriers`), one the engine dropped its part under (`Dropped::covered_by`)
+    /// or what a forgotten memory commit was covered or superseded by, followed through carriers
+    /// dropped in turn (a carrier dropped before it went up carries nothing: its writes moved to
+    /// a later snapshot, or a new one is due).
     fn carrier_of(&self, body: &CommitId, t: &Tid, a: &Ak) -> Option<CommitId> {
-        let on = |c: &CommitId| self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == *t && x.ak == *a));
-        let mut c = *self.state.carriers.get(body)?.by.iter().rev().find(|c| on(c))?;
-        for _ in 0..64 {
+        let has = |h: &osis_commit::Header| h.aspects.iter().any(|x| x.tid == *t && x.ak == *a);
+        let on = |c: &CommitId| self.engine.header(c).is_some_and(|h| has(&h)) || self.memory.forgotten.get(c).is_some_and(|f| has(&f.header));
+        let next = |c: &CommitId| -> Vec<CommitId> {
+            let mut v: Vec<CommitId> = self.state.carriers.get(c).map(|x| x.by.iter().rev().copied().collect()).unwrap_or_default();
+            v.extend(self.engine.coverers_of(c, t, a));
+            v.extend(self.memory.forgotten.get(c).map(|f| f.why.by()).unwrap_or_default());
+            v
+        };
+        let mut seen = BTreeSet::from([*body]);
+        let mut stack = next(body);
+        while let Some(c) = stack.pop() {
+            if !seen.insert(c) || !on(&c) {
+                continue;
+            }
             if self.engine.body_not_dropped(&c, t, a) {
                 return Some(c);
             }
-            c = *self.state.carriers.get(&c)?.by.iter().rev().find(|c| on(c))?;
+            stack.extend(next(&c));
         }
         None
     }
@@ -730,8 +778,16 @@ impl SyncEngine {
         }
         Ok(match &e.kind {
             Kind::Commit { commit, parts, salt } => {
-                let dks = self.engine.delete_secrets_of(commit, parts);
-                let hb = self.engine.header(commit).map(|h| h.blind);
+                // a forgotten memory commit's keys are in the header kept for it
+                let (dks, hb) = match self.memory.forgotten.get(commit) {
+                    Some(f) => {
+                        let a = parts.first().and_then(|(ai, _)| f.header.aspects.get(*ai));
+                        let keys: Vec<osis_commit::DeleteKey> = a.map(|a| a.keys.iter().filter_map(|i| f.header.keys.get(*i).copied()).collect()).unwrap_or_default();
+                        let tid = a.map_or(f.header.actor, |a| a.tid);
+                        (self.engine.ephemeral_delete_secrets_for(&tid, &f.header.actor, &keys), Some(f.header.blind))
+                    }
+                    None => (self.engine.delete_secrets_of(commit, parts), self.engine.header(commit).map(|h| h.blind)),
+                };
                 delete_item(keys, l, *id, at, hb.as_ref().map(|hb| (salt, hb)), &dks)
             }
             _ => None,

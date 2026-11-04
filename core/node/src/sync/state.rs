@@ -103,6 +103,10 @@ pub struct Entry {
     /// Placed by this node as a certificate blob (spec/sync.md §3).
     pub cert: bool,
     pub kind: Kind,
+    /// An ephemeral blob (its prefix class, spec/sync.md §9): the entry and everything recorded
+    /// about it (presence, blob record, tombstone) live in memory only, never in the sync
+    /// records, and go with a restart.
+    pub memory: bool,
 }
 
 impl Entry {
@@ -120,6 +124,8 @@ pub struct BlobRec {
     pub key: Secret32,
     /// A certificate encryption (never shared with another label).
     pub cert: bool,
+    /// A memory commit's blob (`Entry::memory`): the record lives in memory only.
+    pub memory: bool,
 }
 
 /// A body under a label: (label, commit, its `(ai, di)` delta set, sorted).
@@ -316,6 +322,23 @@ pub struct State {
     pub version: u64,
     /// Entries and hosts' copies gone so far, in memory (`InboxCopied`).
     pub losses: u64,
+    /// Memory-class entries (`Entry::memory`) and the memory commits they are of: nothing
+    /// recorded about them is written (`put`, `del` skip them).
+    pub memory_entries: BTreeSet<(LabelId, BlobId)>,
+    pub memory_commits: BTreeSet<CommitId>,
+    /// What each memory entry held from another node is charged against its label's node cap
+    /// (`SyncConfig::ephemeral_bytes`; `Engine::memory_charge`, at least its bytes) and the sum
+    /// per label; the same for entries whose commit waits unverified (the pending share).
+    pub memory_charge: BTreeMap<(LabelId, BlobId), u64>,
+    pub memory_bytes: BTreeMap<LabelId, u64>,
+    pub pending_charge: BTreeMap<(LabelId, BlobId), u64>,
+    pub pending_bytes: BTreeMap<LabelId, u64>,
+    /// Encoded size of each memory entry's blob while held here (tests, diagnostics).
+    pub memory_sizes: BTreeMap<(LabelId, BlobId), usize>,
+    /// What a tombstoned memory entry was (`remove_entry`), while its tombstone lasts: a host
+    /// announcing it again within that time (one an upload reached late) gets it recorded as
+    /// present there without a fetch, so the deletion is judged there too (`log_events`).
+    pub tomb_kinds: BTreeMap<(LabelId, BlobId), Kind>,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -415,7 +438,7 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         7 => Kind::Request(CommitId(r.arr()?)),
         _ => return Err(Error::Corrupt("sync entry kind")),
     };
-    Ok(Entry { wrap, stamp, cert, kind })
+    Ok(Entry { wrap, stamp, cert, kind, memory: false })
 }
 
 impl State {
@@ -466,7 +489,7 @@ impl State {
                     let cert = x.u8()? == 1;
                     let parts = decode_parts(&mut x)?;
                     s.by_commit.entry(commit).or_default().insert(id);
-                    s.blobs.insert(id, BlobRec { commit, parts, key, cert });
+                    s.blobs.insert(id, BlobRec { commit, parts, key, cert, memory: false });
                 }
                 b"k" => {
                     s.certs.insert((LabelId(r.arr()?), CommitId(r.arr()?)));
@@ -701,8 +724,51 @@ impl State {
         self.writes.insert(k, None);
     }
 
+    /// `put` of a record about entry `b` of `l`: nothing for a memory entry.
+    fn put_of(&mut self, l: &LabelId, b: &BlobId, k: Vec<u8>, v: Vec<u8>) {
+        if !self.memory_entries.contains(&(*l, *b)) {
+            self.put(k, v);
+        }
+    }
+
+    fn del_of(&mut self, l: &LabelId, b: &BlobId, k: Vec<u8>) {
+        if !self.memory_entries.contains(&(*l, *b)) {
+            self.del(k);
+        }
+    }
+
+    /// Whether entry `b` of `l` is a memory entry.
+    pub fn is_memory(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.memory_entries.contains(&(*l, *b))
+    }
+
+    /// Notes the encoded size of memory entry `b` of `l`'s blob.
+    pub fn note_memory_size(&mut self, l: LabelId, b: BlobId, size: usize) {
+        if self.memory_entries.contains(&(l, b)) {
+            self.memory_sizes.insert((l, b), size);
+        }
+    }
+
     pub fn set_entry(&mut self, l: LabelId, b: BlobId, e: Entry) {
-        self.put(key(ENTRY, &[&l.0, &b.0]), encode_entry(&e));
+        self.set_entry_fed(l, b, e, true);
+    }
+
+    /// `set_entry` without announcing the entry to the sessions this node serves (`feed`): a
+    /// tombstoned entry recorded again only to delete it where a host still holds it.
+    pub fn set_entry_quiet(&mut self, l: LabelId, b: BlobId, e: Entry) {
+        self.set_entry_fed(l, b, e, false);
+    }
+
+    fn set_entry_fed(&mut self, l: LabelId, b: BlobId, e: Entry, fed: bool) {
+        debug_assert!(self.entries.get(&(l, b)).is_none_or(|o| o.memory == e.memory), "an entry changes class");
+        if e.memory {
+            self.memory_entries.insert((l, b));
+            if let Kind::Commit { commit, .. } = &e.kind {
+                self.memory_commits.insert(*commit);
+            }
+        } else {
+            self.put(key(ENTRY, &[&l.0, &b.0]), encode_entry(&e));
+        }
         self.touch(l, b);
         if let Some(old) = self.entries.get(&(l, b)).cloned() {
             self.index(l, b, &old, false);
@@ -710,8 +776,37 @@ impl State {
         self.index(l, b, &e, true);
         self.entries.insert((l, b), e);
         self.touch(l, b);
-        self.feed.added(l, b);
+        if fed {
+            self.feed.added(l, b);
+        }
         self.version += 1;
+    }
+
+    /// Charges memory entry `b` of `l` (held from another node) `n` against the label's cap
+    /// (replacing any earlier charge), or releases it (`None`).
+    pub fn charge_memory(&mut self, l: LabelId, b: BlobId, n: Option<u64>) {
+        let old = self.memory_charge.remove(&(l, b)).unwrap_or(0);
+        let total = self.memory_bytes.entry(l).or_default();
+        *total = total.saturating_sub(old).saturating_add(n.unwrap_or(0));
+        if let Some(n) = n {
+            self.memory_charge.insert((l, b), n);
+        }
+        if *total == 0 {
+            self.memory_bytes.remove(&l);
+        }
+    }
+
+    /// Charges a memory entry waiting unverified against the label's share, or releases it.
+    pub fn charge_pending(&mut self, l: LabelId, b: BlobId, n: Option<u64>) {
+        let old = self.pending_charge.remove(&(l, b)).unwrap_or(0);
+        let total = self.pending_bytes.entry(l).or_default();
+        *total = total.saturating_sub(old).saturating_add(n.unwrap_or(0));
+        if let Some(n) = n {
+            self.pending_charge.insert((l, b), n);
+        }
+        if *total == 0 {
+            self.pending_bytes.remove(&l);
+        }
     }
 
     /// Whether a body of commit `c` sharing a delta with `parts` (sorted) left `l` by a delete
@@ -726,8 +821,11 @@ impl State {
         if let Some(Entry { cert: false, kind: Kind::Commit { commit, parts, .. }, .. }) = self.entries.get(&(l, b)) {
             self.deleted.insert((l, *commit, parts.clone()), self.now);
         }
+        if let Some(e) = self.entries.get(&(l, b)).filter(|e| e.memory && matches!(e.kind, Kind::Commit { .. })) {
+            self.tomb_kinds.insert((l, b), e.kind.clone());
+        }
         if self.drop_entry(l, b) {
-            self.put(key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
+            self.put_of(&l, &b, key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
             self.tombs.insert((l, b), self.now);
         }
     }
@@ -740,37 +838,55 @@ impl State {
         self.index(l, b, &e, false);
         self.version += 1;
         self.losses += 1;
-        self.del(key(ENTRY, &[&l.0, &b.0]));
+        if e.memory {
+            self.charge_memory(l, b, None);
+            self.charge_pending(l, b, None);
+            self.memory_sizes.remove(&(l, b));
+            // the class marks go last: `drop_entry` of a memory entry writes nothing
+            if let Kind::Commit { commit, .. } = &e.kind
+                && !self.entries.values().any(|o| matches!(&o.kind, Kind::Commit { commit: c, .. } if c == commit))
+            {
+                self.memory_commits.remove(commit);
+            }
+        } else {
+            self.del(key(ENTRY, &[&l.0, &b.0]));
+        }
         self.feed.deleted(l, b);
         true
     }
 
-    /// Forgets every record of an entry that turned out ephemeral (its blob's prefix class):
-    /// the lane holds it from now on, the sync records never (no tombstone).
-    pub fn forget_ephemeral(&mut self, l: LabelId, b: BlobId) {
+    /// Forgets every record of an entry announced without its bytes that turned out ephemeral
+    /// (its blob's prefix class, spec/sync.md §9): it is recorded again as a memory entry (no
+    /// tombstone).
+    pub fn forget_class(&mut self, l: LabelId, b: BlobId) {
         let hosts: Vec<HostKey> = self.present_by.range((l, b, [0u8; 32])..).take_while(|(x, y, _)| *x == l && *y == b).map(|(_, _, s)| *s).collect();
         for s in hosts {
             self.set_present(s, l, b, false);
         }
         self.drop_entry(l, b);
+        self.memory_entries.remove(&(l, b));
     }
 
     /// Forgets tombstones, and hosts' tombstoned answers, past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
-        let lifetime = osis_base::format::TOMBSTONE_LIFETIME_MS;
-        let old: Vec<(HostKey, LabelId, BlobId)> = self.gone.iter().filter(|((s, l, b), t)| t.saturating_add(lifetime) <= now && !self.is_present(s, l, b)).map(|(k, _)| *k).collect();
+        // a memory entry's tombstone lasts `MAX_DRIFT`, as a host's does (spec/sync.md §5)
+        let life = |memory: bool| if memory { osis_base::format::MAX_DRIFT_MS } else { osis_base::format::TOMBSTONE_LIFETIME_MS };
+        let old: Vec<(HostKey, LabelId, BlobId)> = self.gone.iter().filter(|((s, l, b), t)| t.saturating_add(life(self.memory_entries.contains(&(*l, *b)))) <= now && !self.is_present(s, l, b)).map(|(k, _)| *k).collect();
         for (s, l, b) in old {
             self.gone.remove(&(s, l, b));
             self.gone_by.remove(&(l, b, s));
             self.touch(l, b);
-            self.del(key(GONE, &[&s, &l.0, &b.0]));
+            self.del_of(&l, &b, key(GONE, &[&s, &l.0, &b.0]));
         }
-        let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|(_, t)| t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS) <= now).map(|(k, _)| *k).collect();
+        let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|((l, b), t)| t.saturating_add(life(self.memory_entries.contains(&(*l, *b)))) <= now).map(|(k, _)| *k).collect();
         for (l, b) in old {
             self.tombs.remove(&(l, b));
-            self.del(key(TOMB, &[&l.0, &b.0]));
+            self.del_of(&l, &b, key(TOMB, &[&l.0, &b.0]));
+            self.memory_entries.remove(&(l, b));
+            self.tomb_kinds.remove(&(l, b));
         }
-        self.deleted.retain(|_, t| t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS) > now);
+        let memory_commits = &self.memory_commits;
+        self.deleted.retain(|(_, c, _), t| t.saturating_add(life(memory_commits.contains(c))) > now);
     }
 
     pub fn set_reach_secret(&mut self, s: Secret32) {
@@ -802,7 +918,7 @@ impl State {
                 self.present_by.insert((l, b, s));
                 self.touch(l, b);
                 self.version += 1;
-                self.put(k, Vec::new());
+                self.put_of(&l, &b, k, Vec::new());
             }
         } else if self.present.remove(&(s, l, b)) {
             self.present_by.remove(&(l, b, s));
@@ -810,11 +926,11 @@ impl State {
             self.version += 1;
             self.losses += 1;
             self.deposited.remove(&(s, l, b));
-            self.del(k);
+            self.del_of(&l, &b, k);
             self.drop_doubt(s, l, b);
             // a timed delete is done once the entry left that host
             if self.timed.remove(&(s, l, b)) {
-                self.del(key(TIMED, &[&s, &l.0, &b.0]));
+                self.del_of(&l, &b, key(TIMED, &[&s, &l.0, &b.0]));
             }
         }
     }
@@ -827,7 +943,7 @@ impl State {
         let changed = if on { self.deposited.insert((s, l, b)) } else { self.deposited.remove(&(s, l, b)) };
         if changed {
             self.touch(l, b);
-            self.put(key(PRESENT, &[&s, &l.0, &b.0]), if on { vec![1] } else { Vec::new() });
+            self.put_of(&l, &b, key(PRESENT, &[&s, &l.0, &b.0]), if on { vec![1] } else { Vec::new() });
         }
     }
 
@@ -896,8 +1012,10 @@ impl State {
     }
 
     pub fn add_blob(&mut self, id: BlobId, rec: BlobRec) {
-        let v = encode_parts(Wr::new().raw(&rec.commit.0).raw(rec.key.expose()).u8(u8::from(rec.cert)), &rec.parts).take();
-        self.put(key(BLOB, &[&id.0]), v);
+        if !rec.memory {
+            let v = encode_parts(Wr::new().raw(&rec.commit.0).raw(rec.key.expose()).u8(u8::from(rec.cert)), &rec.parts).take();
+            self.put(key(BLOB, &[&id.0]), v);
+        }
         self.by_commit.entry(rec.commit).or_default().insert(id);
         self.new_blobs.insert(rec.commit);
         self.blobs.insert(id, rec);
@@ -911,7 +1029,9 @@ impl State {
                     self.by_commit.remove(&r.commit);
                 }
             }
-            self.del(key(BLOB, &[&id.0]));
+            if !r.memory {
+                self.del(key(BLOB, &[&id.0]));
+            }
         }
     }
 
@@ -1069,7 +1189,7 @@ impl State {
             self.gone_by.insert((l, b, s));
             self.touch(l, b);
             self.version += 1;
-            self.put(key(GONE, &[&s, &l.0, &b.0]), Wr::new().u64(self.now).take());
+            self.put_of(&l, &b, key(GONE, &[&s, &l.0, &b.0]), Wr::new().u64(self.now).take());
         }
     }
 
@@ -1077,12 +1197,12 @@ impl State {
     pub fn set_doubtful(&mut self, s: HostKey, l: LabelId, b: BlobId, wrap: [u8; WRAP_LEN]) {
         self.set_gone(s, l, b);
         self.doubts.insert((s, l, b), wrap);
-        self.put(key(DOUBT, &[&s, &l.0, &b.0]), wrap.to_vec());
+        self.put_of(&l, &b, key(DOUBT, &[&s, &l.0, &b.0]), wrap.to_vec());
     }
 
     pub fn drop_doubt(&mut self, s: HostKey, l: LabelId, b: BlobId) {
         if self.doubts.remove(&(s, l, b)).is_some() {
-            self.del(key(DOUBT, &[&s, &l.0, &b.0]));
+            self.del_of(&l, &b, key(DOUBT, &[&s, &l.0, &b.0]));
         }
     }
 
@@ -1093,7 +1213,7 @@ impl State {
             self.gone_by.remove(&(l, b, s));
             self.touch(l, b);
             self.version += 1;
-            self.del(key(GONE, &[&s, &l.0, &b.0]));
+            self.del_of(&l, &b, key(GONE, &[&s, &l.0, &b.0]));
         }
     }
 
@@ -1114,8 +1234,10 @@ impl State {
             c.by.push(snapshot);
         }
         c.at = now;
-        let v = [Wr::new().u64(now).take(), encode_commits(&c.by)].concat();
-        self.put(key(CARRIER, &[&body.0]), v);
+        if !self.memory_commits.contains(&body) {
+            let v = [Wr::new().u64(now).take(), encode_commits(&c.by)].concat();
+            self.put(key(CARRIER, &[&body.0]), v);
+        }
     }
 
     /// Forgets the carriers no body needs any more (spec/sync.md §7: they decide whether a
@@ -1141,7 +1263,9 @@ impl State {
         let gone: Vec<CommitId> = self.carriers.keys().filter(|b| !keep.contains(b)).copied().collect();
         for b in gone {
             self.carriers.remove(&b);
-            self.del(key(CARRIER, &[&b.0]));
+            if !self.memory_commits.contains(&b) {
+                self.del(key(CARRIER, &[&b.0]));
+            }
         }
     }
 
@@ -1158,7 +1282,7 @@ impl State {
     pub fn set_timed(&mut self, s: HostKey, l: LabelId, b: BlobId) {
         if self.timed.insert((s, l, b)) {
             self.touch(l, b);
-            self.put(key(TIMED, &[&s, &l.0, &b.0]), Vec::new());
+            self.put_of(&l, &b, key(TIMED, &[&s, &l.0, &b.0]), Vec::new());
         }
     }
 
@@ -1437,7 +1561,7 @@ mod tests {
     // spec: none (local store format): a commit entry keeps its blob's salt and round trips.
     #[test]
     fn commit_entry_salt_round_trips() {
-        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![(0, 1)], salt: [9; 16] } };
+        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![(0, 1)], salt: [9; 16] }, memory: false };
         let back = decode_entry(&encode_entry(&e)).unwrap();
         assert!(matches!(back.kind, Kind::Commit { salt, .. } if salt == [9; 16]));
     }
@@ -1563,7 +1687,7 @@ mod tests {
         s.set_doubtful(h, l, b, [3; WRAP_LEN]);
         s.set_timed(h, l, b);
         // body carried by mid, itself dropped and carried by snap; other's carrier stands alone
-        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: body, parts: vec![(0, 0)], salt: [0; 16] } });
+        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: body, parts: vec![(0, 0)], salt: [0; 16] }, memory: false });
         s.set_carrier(body, mid);
         s.set_carrier(mid, snap);
         s.set_carrier(other, snap);

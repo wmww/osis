@@ -261,8 +261,6 @@ struct PeerStore<'a> {
     used_here: BTreeMap<[u8; 32], u64>,
     total_left: u64,
     acc: Accepted,
-    /// Ephemeral entries held in memory (`ephemeral`): served like the others.
-    eph: &'a super::ephemeral::Lane,
     relays: &'a mut osis_proto::RelayGate,
 }
 
@@ -302,12 +300,6 @@ impl PeerStore<'_> {
 
     fn live(&self, l: &LabelId, b: &BlobId) -> std::result::Result<Option<EntryMeta>, StoreError> {
         let log = self.feed.labels.get(l);
-        if let Some(e) = self.eph.entries.get(&(*l, *b)) {
-            if log.is_some_and(|x| x.hidden(b, self.now)) {
-                return Ok(None);
-            }
-            return Ok(Some(EntryMeta { wrap: e.wrap, stamp: e.stamp, size: e.blob.len() as u64, add_seq: log.and_then(|x| x.adds.get(b)).copied().unwrap_or(0), pending_delete: None }));
-        }
         let Some(e) = self.entries.get(&(*l, *b)) else { return Ok(None) };
         if log.is_some_and(|x| x.hidden(b, self.now)) {
             return Ok(None);
@@ -388,11 +380,6 @@ impl LabelStore for PeerStore<'_> {
     }
 
     fn blob(&self, blob_id: &BlobId) -> std::result::Result<Option<Vec<u8>>, StoreError> {
-        if let Some((_, l)) = self.eph.by_blob.range((*blob_id, LabelId([0; 16]))..).next().filter(|(b, _)| b == blob_id)
-            && let Some(e) = self.eph.entries.get(&(*l, *blob_id))
-        {
-            return Ok(Some(e.blob.clone()));
-        }
         self.engine.borrow_mut().blob(blob_id).map_err(local)
     }
 
@@ -468,9 +455,6 @@ impl LabelStore for PeerStore<'_> {
             }
             ids.insert(*b);
         }
-        for (b, _) in SyncEngine::eph_entries_of(self.eph, label).filter(|(b, _)| *b >= start).take(max.saturating_add(1)) {
-            ids.insert(b);
-        }
         let mut out = Vec::new();
         for b in ids {
             if out.len() >= max {
@@ -493,8 +477,7 @@ impl LabelStore for PeerStore<'_> {
 
     fn live_ids_in(&self, label: &LabelId, lower: &BlobId, upper: Option<&BlobId>) -> std::result::Result<Vec<BlobId>, StoreError> {
         let below = |b: &BlobId| upper.is_none_or(|u| b < u);
-        let mut ids: BTreeSet<BlobId> = self.entries.range((*label, *lower)..).take_while(|((l, b), _)| l == label && below(b)).map(|((_, b), _)| *b).collect();
-        ids.extend(self.eph.entries.range((*label, *lower)..).take_while(|((l, b), _)| l == label && below(b)).map(|((_, b), _)| *b));
+        let ids: BTreeSet<BlobId> = self.entries.range((*label, *lower)..).take_while(|((l, b), _)| l == label && below(b)).map(|((_, b), _)| *b).collect();
         let mut out = Vec::new();
         for b in ids {
             if self.live(label, &b)?.is_some() {
@@ -646,7 +629,6 @@ impl SyncEngine {
                 used_here: BTreeMap::new(),
                 total_left: self.cfg.peer_total_bytes.saturating_sub(total),
                 acc: Accepted::default(),
-                eph: &self.eph,
                 relays: &mut self.relay_gate,
             };
             let o = s.conn.handle(now, &mut store, input);
@@ -728,7 +710,7 @@ impl SyncEngine {
         // a relay-only entry: delivered here and passed on (the other served sessions, the
         // hosts of the label), held by nobody (spec/sync.md §5)
         for r in relays {
-            self.relay_in(super::ephemeral::RelayFrom::Served(conn), r.label, r.blob_id, r.blob.to_vec(), r.wrap, Some(r.stamp), out)?;
+            self.relay_in(super::memory::RelayFrom::Served(conn), r.label, r.blob_id, r.blob.to_vec(), r.wrap, Some(r.stamp), out)?;
         }
         for (id, code) in refused {
             self.serve_with(conn, ServingInput::Reply { id, reply: Err(code) }, labels, out)?;

@@ -200,7 +200,9 @@ impl SyncEngine {
     pub(crate) fn lost(&mut self, conn: ConnId) {
         // its requests not answered go with it (asked again on the next connection)
         if let Some(c) = self.conns.remove(&conn) {
-            self.eph_lost(conn, c.host, &c.req.fetching);
+            if let Err(e) = self.memory_lost(conn, c.host, &c.req.fetching) {
+                self.diag(format!("forgetting a connection's memory entries: {e}"));
+            }
             // deposits not answered on this connection go out again on the next one
             for o in self.outbox.values_mut().filter(|o| o.sent == Some(conn)) {
                 o.sent = None;
@@ -394,7 +396,7 @@ impl SyncEngine {
             E::Step { label, step } => self.stale_step(conn, label, step, out)?,
             E::Registered { label } => self.registered(conn, label, out)?,
             E::PathSteps { label, steps, more } => self.path_steps(conn, label, steps, more, out)?,
-            E::EntryStatus { label, blob_ids, codes } => self.entry_status(conn, label, blob_ids, codes, out)?,
+            E::EntryStatus { label, blob_ids, codes } => self.entry_status(conn, label, blob_ids, codes)?,
             E::DeleteStatus { label, blob_ids, codes } => self.delete_status(conn, label, blob_ids, codes)?,
             E::Budget { label, blob_id, code, budget } => self.budget(conn, label, blob_id, code, budget.map(|b| b.0))?,
             // a Push names its label: one not started on this connection is junk (spec/wire.md
@@ -410,12 +412,12 @@ impl SyncEngine {
                 self.log_events(Some(conn), label, events, cursor, out)?
             }
             E::Want { label, ids } => {
-                let rest = self.eph_want(conn, label, ids, out)?;
-                self.want(conn, label, rest, out)?
+                self.memory_want(conn, label, &ids)?;
+                self.want(conn, label, ids, out)?
             }
             E::Synced { label } => {
-                self.synced(conn, label, out)?;
-                self.eph_synced(conn, label, out)?
+                self.memory_synced(conn, label);
+                self.synced(conn, label, out)?
             }
             E::NeedReconcile { label, trimmed } => {
                 let s = self.conns.get_mut(&conn).map(|c| {
@@ -426,9 +428,9 @@ impl SyncEngine {
                 });
                 if let Some(s) = s {
                     self.state.set_cursor(s, label, None);
-                    // a lane reconciliation running lists the present entries too and syncs from
-                    // no cursor after it; this one's reply would be taken for it (`reconciled`)
-                    if !self.eph.reconciling.contains_key(&(conn, label)) {
+                    // a restart reconciliation running lists the present entries too and syncs
+                    // from its cursor after it; this one's reply would be taken for it (`reconciled`)
+                    if !self.memory.reconciling.contains(&(conn, label)) {
                         let ids = self.state.present_at(&s, &label);
                         self.command(conn, Command::Reconcile { label, ids }, out)?;
                     }
@@ -437,7 +439,7 @@ impl SyncEngine {
             E::Reconciled { label, need, have } => self.reconciled(conn, label, need, have, out)?,
             E::Fetched { label, items } => {
                 let ids: Vec<osis_base::BlobId> = items.iter().map(|f| f.blob_id).collect();
-                self.eph_fetch_done(conn, label, &ids, false);
+                self.memory_fetch_done(conn, label, &ids, false);
                 // asked for and not there: not asked again on this connection
                 let mut gone = false;
                 for f in items.iter().filter(|f| f.entry.is_none()) {
@@ -463,7 +465,7 @@ impl SyncEngine {
                     }
                 }
                 if let Some(l) = label {
-                    self.eph_fetch_done(conn, l, &fetch, true);
+                    self.memory_fetch_done(conn, l, &fetch, true);
                 }
                 self.refused(conn, label, kind, code, out)?
             }
