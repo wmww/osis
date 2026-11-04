@@ -12,6 +12,6 @@ Options: keep today's rule (recovery always works; a rare honest key change can 
 Recommendation: keep today's rule. Recovery always working matters more, and the loss needs an admin to be both stranded and doing a recovery at the same time.
 
 ## 8. A limit on how big one change can be
-Requirement: a change may touch any number of things, with no size limit. In practice one change's list of parts has always been capped at 8 MiB, about 250,000 parts, because a node holds that list whole in memory. So far the cap was unwritten and only the writer checked it. The spec-validity branch writes it down, and every receiver would refuse a bigger change too.
-Proposal: write the number into the requirement as well. A bigger change would have to be split by the app, or we would build streaming for these lists later.
-Recommendation: accept. Changes that big are rare, and the writer gets a plain refusal.
+Not a limit of 8 MiB of data: 4 GiB in one value is tested. A commit's header lists every chunk it adds, about 38 bytes each, and that list is capped at 8 MiB because a node holds it whole in memory. Chunks average about 80 KB, so the real limit is about 17 GB in one commit (estimated from those two numbers, not run), or about 220,000 chunks or parts. Past it the writer gets a plain refusal.
+Tess: a commit should be able to upload GBs of data. Open: is about 17 GB enough? Otherwise raise the cap, which costs memory per header and lets a hostile header hold that much, or stream the lists, which is a build.
+Recommendation: keep it now and write the number down; whole commits may change this list anyway.
