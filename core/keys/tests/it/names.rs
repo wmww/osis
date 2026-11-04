@@ -42,7 +42,7 @@ fn keyset(k: u8) -> KeysetName {
 
 #[derive(Clone, Debug)]
 enum Kind {
-    /// A departure written alone (a self-removal, an `until`).
+    /// A departure written alone (a self-removal).
     Departure,
     /// A rotation to `epoch`, its keyset listing `list`; `departs`: it writes a departure itself.
     Rotation { epoch: Epoch, list: BTreeSet<Epoch>, departs: bool },

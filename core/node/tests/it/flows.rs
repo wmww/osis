@@ -62,7 +62,7 @@ fn spread_sealed(lp: &mut LocalPeer) {
 /// Peer `from` writes `v` on `t` and sends it sealed (`SealedPackage`) to every other peer: the
 /// peers that read it then. One that does not read it opened none of its bodies (it lacks the key,
 /// not the delivery).
-fn sealed_write(lp: &mut LocalPeer, from: usize, t: Tid, v: &str) -> BTreeSet<usize> {
+pub(crate) fn sealed_write(lp: &mut LocalPeer, from: usize, t: Tid, v: &str) -> BTreeSet<usize> {
     let mut m = Mutation::new();
     m.set(t, &REG, &s(v)).unwrap();
     let c = lp.peers[from].commit(m).unwrap().unwrap();
@@ -172,7 +172,7 @@ fn person_and_pairing_spec_perm_1() {
 }
 
 /// `n` peers, each with its own person actor (no pairing); everyone holds everyone's commits.
-fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
+pub(crate) fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
     let mut lp = net(n, seed);
     let mut ps = Vec::new();
     for i in 0..n {
@@ -186,7 +186,7 @@ pub(crate) fn edge_of(role: Role) -> ct::Edge {
     ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }
 }
 
-fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
+pub(crate) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
     lp.peers[i].engine.epochs(&t).and_then(|e| e.read.newest_held().map(|x| x.0))
 }
 
@@ -1254,17 +1254,19 @@ fn link_bearer_and_until_spec_perm_8() {
     assert_eq!(lp.peers[1].engine.commit_ids().len(), before, "and writes nothing");
     lp.advance(2 * 3_600_000);
     assert!(lp.peers[1].engine.redeem(&link, &ps1, false).is_err(), "expired");
-    // the sharer finalizes: a plain removal of L (with a frontier); K rotates before the next
-    // encryption under it (`until` was the departure)
+    // the sharer finalizes: a plain removal of L (with a frontier), L's departure for keys: it
+    // carries K's rotation (spec/crypto.md §4)
     let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
     let k0 = newest_read(&lp, 0, link.k).unwrap();
+    assert!(lp.peers[0].engine.departures(&link.k).unwrap().is_empty(), "past `until` is no departure by itself");
     let fin = lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
+    assert_eq!(fin.commits.len(), 1);
     assert!(lp.peers[0].engine.header(&fin.commits[0]).unwrap().frontier.is_some());
     assert!(!lp.peers[0].engine.roster(&link.k).contains_key(&l));
-    let (rot, still) = lp.peers[0].engine.ensure_rotated(&link.k).unwrap();
-    assert!(still.is_empty() && rot.commits.len() == 1);
     let k1 = newest_read(&lp, 0, link.k).unwrap();
-    assert_ne!(k0, k1);
+    assert_ne!(k0, k1, "the removal rotated K");
+    let (rot, still) = lp.peers[0].engine.ensure_rotated(&link.k).unwrap();
+    assert!(still.is_empty() && rot.commits.is_empty());
     sync(&mut lp, 0, 1);
     assert!(lp.peers[1].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the bearer is out");
     assert!(sealed_write(&mut lp, 0, d, "after").is_empty(), "and reads nothing new on the target");
@@ -1418,21 +1420,30 @@ fn key_actor_holders_not_resealed_spec_perm_3() {
     }
 }
 
-// spec/crypto.md §4 (departure by `until`): the departures known are kept per actor; one that
-// starts when an edge's `until` passes is seen once the clock passes it, with nothing applied.
+// spec/crypto.md §4, spec/permissions.md §2 (finalize): keys read no clock: an edge past its
+// `until` is no departure by itself; the node about to encrypt finalizes it, a removal with no
+// frontier carrying the rotation, which is then the departure and covered.
 #[test]
-fn departures_follow_the_clock_spec_crypto_4() {
+fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
     let (mut lp, ps) = people(2, 534);
     let (pa, pb) = (ps[0], ps[1]);
     let t = thing_of(&mut lp, 0, pa);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 5_000);
     lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
-    assert!(lp.peers[0].engine.departures(&t).unwrap().is_empty());
+    let e0 = newest_read(&lp, 0, t);
     lp.advance(10_000);
+    assert!(lp.peers[0].engine.departures(&t).unwrap().is_empty(), "the clock alone departs nobody");
+    assert!(lp.peers[0].engine.core.key_holders(&t).iter().any(|(m, _)| *m == pb), "a holder for keys until finalized");
+    let (done, still) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
+    assert!(still.is_empty() && done.commits.len() == 1, "the finalize, rotating");
+    let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
+    assert!(h.frontier.is_none());
+    assert_ne!(newest_read(&lp, 0, t), e0);
+    assert!(!lp.peers[0].engine.core.key_holders(&t).iter().any(|(m, _)| *m == pb));
     let deps = lp.peers[0].engine.departures(&t).unwrap();
     assert!(deps.iter().any(|d| d.holder == pb), "{deps:?}");
-    let (done, still) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
-    assert!(still.is_empty() && done.commits.len() == 1, "rotated away");
+    let (again, _) = lp.peers[0].engine.ensure_rotated(&t).unwrap();
+    assert!(again.commits.is_empty(), "covered by the finalize's own rotation");
 }
 
 // notes/sync.md Limits (stranded device re-paired), spec/permissions.md §3: a device whose
@@ -2074,10 +2085,10 @@ fn backdated_revoke_lists_certs_as_of_cutoff_spec_perm_5_1() {
     }
 }
 
-// spec/crypto.md §4 (covers by names; a departure past its `until` is named by its expiry). A
-// node granted write with `until` while another admin rotated write only (a demotion it had not
-// seen with the grant) keeps its box at the current read epoch. Once `until` passes, the next
-// writer rotates read before encrypting, and the key actor holds none of it.
+// spec/crypto.md §4 (covers by names), spec/permissions.md §2 (finalize). A node granted write
+// with `until` while another admin rotated write only (a demotion it had not seen with the grant)
+// keeps its box at the current read epoch. Once `until` passes, the next writer finalizes the
+// edge before encrypting, rotating read, and the key actor holds none of it.
 #[test]
 fn raced_grant_read_box_after_until_spec_crypto_4() {
     let (mut lp, ps) = people(4, 521);

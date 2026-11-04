@@ -297,6 +297,8 @@ impl Sim {
         let holder = self.tid(j)?;
         let mut m = Mutation::new();
         m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).map_err(|e| self.fail(e.to_string()))?;
+        // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
+        m.frontier(ct::Frontier::default().to_value());
         let id = self.commit(i, m)?;
         id.ok_or_else(|| self.fail("removal changed nothing"))
     }

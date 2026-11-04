@@ -560,9 +560,36 @@ impl Timeline {
     pub fn falls(&self, node: &Tid, thing: &Tid) -> &[crate::walk::Fall] {
         self.walked.falls.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
     }
+    /// The edges at the end, each edge whose last write is a finalize (§2) as it stood just
+    /// before it: what an `until` passing alone ended (§3, Lost access). O(the walk's history):
+    /// only a node that lost access asks.
+    pub fn edges_unfinalized(&self) -> EdgesAt<'_> {
+        let mut last: BTreeMap<(Tid, Tid), Point> = BTreeMap::new();
+        for c in &self.walked.history {
+            last.insert((c.holder, c.target), c.point);
+        }
+        let mut e = self.edges_at(None);
+        for ((m, t), p) in last {
+            let finalize = self.input.commits.get(&p.commit).is_some_and(|c| {
+                c.ops.iter().enumerate().any(|(k, o)| o.holder == m && o.target == t && u32::try_from(k).is_ok_and(|k| self.walked.applied.get(&WriteId::Op(c.id, k)).is_some_and(|a| a.attr == walk::Attr::Finalize)))
+            });
+            if finalize {
+                let before = self.edges_at(Some(p)).get(&m, &t).copied();
+                e.set(m, t, before);
+            }
+        }
+        e
+    }
+
+    /// `node`'s effective role on `thing` at `ts` over `edges_unfinalized`.
+    pub fn role_unfinalized(&self, node: &Tid, thing: &Tid, ts: Ts) -> Option<Role> {
+        let edges = self.edges_unfinalized();
+        View::at(&self.input.owners, &edges, Some(ts)).roles_from(node).get(thing).copied()
+    }
+
     /// Whether edge (`holder`, `target`) was lowered by a write that audits nothing (a
-    /// self-removal, §2) with no explicit write on it since (§5.1 step 4: the next one restores
-    /// it). An expiry by `until` is read from the edge itself.
+    /// self-removal or finalize, §2) with no explicit write on it since (§5.1 step 4: the next
+    /// one restores it). An expiry by `until` is read from the edge itself.
     pub fn lowered_unaudited(&self, holder: &Tid, target: &Tid) -> bool {
         self.walked.prior.contains_key(&(*holder, *target))
     }

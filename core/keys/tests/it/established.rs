@@ -6,7 +6,7 @@
 use crate::common::Applied;
 use crate::common;
 use common::*;
-use osis_base::{Role, Tid, WallMs};
+use osis_base::{Role, Tid};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{
     ActorEpochs, Departure, KeysWrite, Holder, Names, Opener, Provenance, Recipient, Rotation, box_holder, ingest,
@@ -205,11 +205,11 @@ fn reorder_holding_e2_without_e1() {
 
     // A complete pass with m1 still a holder as a2 sees it: no re-seal, and none boxes e2.
     let holders = [
-        Holder { holder: w.p, role: Role::Admin, until: None },
-        Holder { holder: w.a2, role: Role::Admin, until: None },
-        Holder { holder: w.m1, role: Role::Read, until: None },
+        Holder { holder: w.p, role: Role::Admin },
+        Holder { holder: w.a2, role: Role::Admin },
+        Holder { holder: w.m1, role: Role::Read },
     ];
-    assert!(reseal_needed(&s2, &a2v, &holders, WallMs(0)).is_empty());
+    assert!(reseal_needed(&s2, &a2v, &holders).is_empty());
     let out = box_holder(&w.a, &a2v, &s2, &w.rcpt(w.m1), &read(), &mut rng(3)).unwrap().unwrap();
     assert!(!out.boxes.contains_key(&box_key(w.m1, Role::Read, &e2)));
     assert!(!out.history.contains_key(&history_key(Role::Read, &e2)));
@@ -242,7 +242,7 @@ fn snapshot_established_needs_departure() {
     ingest(&w.a, &s1, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut v, None).unwrap();
     assert!(v.read.current().is_empty());
     assert!(snapshot_keyed(&s1, &mut v).unwrap());
-    let holders = [Holder { holder: g, role: Role::Read, until: None }];
+    let holders = [Holder { holder: g, role: Role::Read }];
     let rc = actor_rcpt(g, Role::Read, &ge);
     v.establish(&Holding(BTreeSet::new()));
     assert!(!v.read.is_established(&e1), "the removal not held");
@@ -256,7 +256,7 @@ fn snapshot_established_needs_departure() {
     assert_eq!(v.read.provenance(&e1), Some(Provenance::Rotated));
     assert_eq!(v.read.current(), vec![e1]);
     assert!(may_compact_secrets(&s1, &v).unwrap());
-    assert_eq!(reseal_needed(&s1, &v, &holders, WallMs(0)), vec![(g, read())]);
+    assert_eq!(reseal_needed(&s1, &v, &holders), vec![(g, read())]);
     assert!(box_holder(&w.a, &v, &s1, &rc, &read(), &mut rng(3)).unwrap().is_some());
 }
 

@@ -481,8 +481,12 @@ fn write_op(m: &mut Mutation, e: &mut osis_node::Engine, t: Tid, op: u8, k: u8, 
 fn edge_write(t: Tid, holder: Tid, e: Option<osis_schema::core_types::Edge>) -> Mutation {
     let mut m = Mutation::new();
     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(holder)) }).unwrap();
-    if let Some(e) = e {
-        m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) }).unwrap();
+    match e {
+        Some(e) => m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) }).map(|_| ()).unwrap(),
+        // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
+        None => {
+            m.frontier(osis_schema::core_types::Frontier::default().to_value());
+        }
     }
     m
 }

@@ -380,12 +380,8 @@ pub(crate) struct NamesHeld<'c> {
 impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the name's thing, or, having none
     /// there, its `keys.0` part (a copy of some of it, a certificate copy or another label's parts,
-    /// may lack the departure). An expiry's name (no commit) is met: the write that set its
-    /// `until` is named beside it.
+    /// may lack the departure).
     fn met(&self, n: &Name) -> bool {
-        if n.key.commit == osis_keys::EXPIRY {
-            return true;
-        }
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {
             let part = |ak: &str| m.header.aspects.iter().position(|a| a.tid == n.thing && a.ak.as_str() == ak);
             part("roles.0").or_else(|| part("keys.0")).is_none_or(|ai| !m.missing.contains(&ai))

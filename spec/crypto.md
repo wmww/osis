@@ -96,16 +96,15 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Below**: a thing is below A when it is a current holder of A, the owner included, or, transitively, a current holder of such a thing, whether or not it has secrets of its own.
 - **Names**: a rotation of actor A names the departures its rotator holds from A and from each thing below A, read from its own role timeline (spec/permissions.md §5.1), never copied from another history box. For each such thing T:
   - T's epoch start at the rotator (a roster snapshot, spec/permissions.md §6), if any;
-  - every applied commit ordered after it that applies an edge write on T lowering an edge (a removal, demotion or self-removal) or setting an `until` that has passed;
-  - every current edge on T past its `until` (its **expiry**);
+  - every applied commit ordered after it that applies an edge write on T lowering an edge (a removal, demotion, self-removal or finalize);
   - every applied commit ordered after the start whose demotion's audit dropped (spec/permissions.md §5.1) an edge write on T, named once per thing its edge writes target.
-- A name is that thing and the commit's key (spec/permissions.md §6). An expiry's key is (the first `ts` at `until`, the holder's tid, the all-zero commit ID).
+- A name is that thing and the commit's key (spec/permissions.md §6).
 - **Keyset name**: per holder actor M it boxes and role r, the rotation also names (M, r, the epoch of M its box names, the symmetric form's epoch of s included).
 - **Departs mark**: when the rotation commit itself writes such an edge on A it cannot name itself. The names then carry its departs mark, its `ts` and signing node.
 - Every history box of one rotation carries the same names.
 - The rotator places every named commit under each label it places the rotation commit under (spec/sync.md §5).
 - **Met**: the names of a history box entry are met at a node when all of these hold:
-  - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a copy of the commit lacking it does not), or its key is ordered before the node's epoch start (spec/permissions.md §6) of the name's thing. An expiry name is met wherever the names are read.
+  - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a copy of the commit lacking it does not), or its key is ordered before the node's epoch start (spec/permissions.md §6) of the name's thing.
   - each keyset name (M, r, f) is **held**: some valid `keys.0` body of M the node holds (a role commit's delta or a compaction snapshot; a dropped one counts) writes f as M's keyset of r or lists f in that keyset's supersedes (no epoch start stands in).
   - its departs mark, if any, is met: the node holds that commit (by those two) or its epoch start of A is ordered after them.
 
@@ -122,12 +121,12 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Uses**: a node uses an epoch (encrypts under it, boxes its secret, puts it in a history box) only when it is established.
 
 ### Departures and covering
-- **Departure** from role r of actor A: a removal of a holder M, a demotion of M below r, or M's edge passing its `until` (`until <= wall_ms` of the corrected clock at the time of encrypting).
+- **Holders for keys**: the holders of A by the role timeline (spec/permissions.md §5.1) with every applied edge write in effect and `until` disregarded, a removal's value saying keep (`until` 0, spec/permissions.md §2) counting as no edge; the owner holds admin. Keys read no clock: an edge past its `until` stays a holder until its finalize (spec/permissions.md §2). "Current holder" in this section and in spec/permissions.md §3 means a holder for keys.
+- **Departure** from role r of actor A: an applied edge write removing a holder M or demoting it below r, as holders for keys see it (a finalize is a removal).
 - **Inside**: a departure inside a holder M of A is a departure from M or inside a holder of M (a device of M, a holder on an actor under M, and so on). Chains have no depth bound and may pass an actor more than once, A included (a role cycle, spec/permissions.md §3), but never pass the departed holder.
 - **Concerns**: a departure concerns the roles of A the departed party held through the chain: those it left of the last actor, at most each actor's role on the next.
 - **Attributes**: a node attributes a departure of holder H from thing T it knows of to the name of the newest (by key; one commit named on two things by the greater thing) of:
   - an applied commit ordered after its epoch start of T whose edge write lowered H's edge on T;
-  - H's edge on T past its `until` (its expiry);
   - an applied commit ordered after that start whose demotion's audit dropped an edge write putting H's edge on T (named on the first of the things its edge writes target).
   - A holder with a box at a current epoch of T whose role it no longer holds and no such commit is attributed to its epoch start of T, or, with none, to nothing.
 - **Covers**: an epoch e of role r of A **covers** a departure that concerns r when some live entry of e's history box whose names are met at the node names it: its name is among the names, or it is a departure from A by the rotation commit itself (its departs mark). Boxes decide nothing: an epoch is relied on only for what its rotator held.
@@ -140,7 +139,6 @@ Terms in this section depend on each other; each is defined once, under its bold
   - Signing with a delete key (§7), opening a label and reading are not encrypting under.
 - A node that may rotate role r of an actor (spec/permissions.md §3) MUST NOT **encrypt under** an epoch of r that does not cover a departure it knows of; it rotates first. Exceptions:
   - The wrap of a rotation commit itself (§5).
-  - When the node's own role on A ended by an `until` alone (walked with every edge's time ahead it has a role, spec/permissions.md §2) and had ended by the time of an expiry, that expiry holds back nothing it uploads.
   - A departure whose newest edge write is the node's own self-removal (spec/permissions.md §2; signed by it or a key actor it holds) holds back none of the node's encrypting, here or under spec/permissions.md §4, until that commit is placed (spec/sync.md §5, Placed). Both are judged from what the node stores.
 - **Established only**: a node encrypts under established epochs only, except under the epochs a rotation commit makes in that commit itself. The secret of any other epoch (one whose rotation commit it has not applied, or is pending or invalid, spec/commits.md §4) is kept for reading.
 - **Reading-only secrets**: a secret learned only from a pending or invalid commit (from its boxes, or from history boxes opened with such a secret) is kept for reading and never encrypted under until an applied valid box or a history box opened with a secret not so learned carries it. Such a commit's epochs count for nothing else: a box it holds that the node cannot open records nothing; what its history boxes list supersedes nothing.

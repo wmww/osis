@@ -4,7 +4,7 @@
 
 use crate::common;
 use common::*;
-use osis_base::{Role, Tid, WallMs};
+use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
     ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Name, Names, Opener, ROLES, Recipient, box_holder, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate,
@@ -82,8 +82,7 @@ fn lost_device_owner_rotation() {
 }
 
 // spec/permissions.md §3: a grant raced by a rotation leaves the grantee without a box at the
-// current epoch; the re-seal trigger finds it (not within `MAX_DRIFT` of its `until`), and the
-// re-seal clears it.
+// current epoch; the re-seal trigger finds it, and the re-seal clears it.
 #[test]
 fn grant_raced_by_rotation() {
     let (a, p, g) = (tid(1), tid(2), tid(5));
@@ -96,16 +95,11 @@ fn grant_raced_by_rotation() {
     grant.apply(&mut s);
     let mut v = view.clone();
     v = rot.preview(&v).unwrap();
-    let now = WallMs(1_000_000_000);
-    let holders = [Holder { holder: p, role: Role::Admin, until: None }, Holder { holder: g, role: Role::Read, until: None }];
-    assert_eq!(reseal_needed(&s, &v, &holders, now), vec![(g, read())]);
-    let near = [Holder { holder: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_000)) }];
-    assert!(reseal_needed(&s, &v, &near, now).is_empty());
-    let far = [Holder { holder: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_001)) }];
-    assert_eq!(reseal_needed(&s, &v, &far, now).len(), 1);
+    let holders = [Holder { holder: p, role: Role::Admin }, Holder { holder: g, role: Role::Read }];
+    assert_eq!(reseal_needed(&s, &v, &holders), vec![(g, read())]);
     let reseal = osis_keys::box_holder(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
     reseal.apply(&mut s);
-    assert!(reseal_needed(&s, &v, &holders, now).is_empty());
+    assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut gv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { holder: g, epochs: &ge }, &mut gv, None).unwrap();
     assert!(gv.read.secret(&v.read.newest().unwrap()).is_some());
@@ -157,7 +151,7 @@ fn rotation_held_before_the_removal() {
     w.apply(&mut s);
     let kdep = [Departure::holder(k, Role::Read).at(Some(name(a, 10)))];
     assert!(!may_encrypt_under(&a, &v, Role::Read, &e3, &kdep, &AllHeld));
-    assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write, until: None }], WallMs(0)).is_empty());
+    assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write }]).is_empty());
 }
 
 // spec/crypto.md §4 (boxes decide nothing; study C2): an epoch whose rotation left M unboxed

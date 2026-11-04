@@ -271,9 +271,9 @@ fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
 /// departed holder), one departure each: the oracle of `walk_matches_path_walk` and
 /// `walk_with_cycles_keeps_every_bounded_chain`.
 fn path_walk(tx: &mut Tx<'_>, a: &Tid, depth: usize, out: &mut BTreeSet<Departure>) -> crate::error::Result<()> {
-    let mut mine = super::departures::direct_departures(tx, a, &mut None)?;
+    let mut mine = super::departures::direct_departures(tx, a)?;
     if depth > 0 {
-        for (x, role, _) in tx.core.current_holders(a) {
+        for (x, role) in tx.core.key_holders(a) {
             if x == *a || !tx.core.has_own_secrets(&x) {
                 continue;
             }
@@ -601,8 +601,8 @@ fn all_boxed(lp: &mut LocalPeer, i: usize, actors: &[Tid]) -> bool {
         let e = lp.peers[i].engine.epochs(t).unwrap();
         let s = lp.peers[i].engine.get_typed(t, &ct::SECRETS).unwrap().unwrap();
         let core = &lp.peers[i].engine.core;
-        let ms: Vec<osis_keys::Holder> = core.current_holders(t).into_iter().map(|(holder, role, until)| osis_keys::Holder { holder, role, until }).collect();
-        osis_keys::reseal_needed(&s, &e, &ms, core.now()).is_empty()
+        let ms: Vec<osis_keys::Holder> = core.key_holders(t).into_iter().map(|(holder, role)| osis_keys::Holder { holder, role }).collect();
+        osis_keys::reseal_needed(&s, &e, &ms).is_empty()
     })
 }
 
@@ -1930,8 +1930,8 @@ fn withheld_departures_leak_nothing() {
 }
 
 // As `withheld_departures_leak_nothing`, `more` also: grants by admins, an `until` soon set on a
-// holder's edge at its role, and the clock moving on. Seed 3 leaks with the `until` names
-// ignored. (The audit names matter only for a demotion on another thing, an owner chain's:
+// holder's edge at its role, and the clock moving on (ended edges finalized by whoever next
+// encrypts, spec/permissions.md §2). (The audit names matter only for a demotion on another thing, an owner chain's:
 // `audit_dropped_grant_named_spec_crypto_4`.)
 #[test]
 fn withheld_departures_audits_and_expiries_leak_nothing() {

@@ -545,9 +545,8 @@ indexes! {
     pub kept: JMap<Tid, BTreeSet<Tid>>,
     /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
     pub deaths_due: JSet<(Tid, Ak)>,
-    /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
-    /// write's future `ts`); cleared by `role_changed`.
-    pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
+    /// `rotation::departures` per actor; cleared by `role_changed`.
+    pub departures: JMap<Tid, Vec<osis_keys::Departure>>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
     /// Things and their roster snapshots kept out of perm for a linked frontier not held here
@@ -666,8 +665,8 @@ pub struct Core {
     /// decodes role parts. Cleared with `head_keys`: a role-class write, `role_changed`.
     pub holders_named: HashMap<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
     /// Actors whose re-seal trigger found no holder lacking a box (`rotation::reseal_candidates`):
-    /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster, same
-    /// clock horizon); cleared with it.
+    /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster);
+    /// cleared with it.
     pub reseal_quiet: BTreeSet<Tid>,
     /// `Engine::inbox_label`'s answers by actor, and the things on their owner chains above them:
     /// a write there can move many answers (`inbox_moved`).

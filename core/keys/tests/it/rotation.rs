@@ -5,7 +5,7 @@
 use crate::common::Applied;
 use crate::common;
 use common::*;
-use osis_base::{Role, Tid, WallMs};
+use osis_base::{Role, Tid};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::aspects::box_key;
 use osis_keys::{ActorEpochs, Holder, HolderKeys, Opener, Recipient, SecretsWrite, box_holder, ingest, reseal_needed, roles_up_to, rotate};
@@ -47,11 +47,11 @@ fn key_actor_grant_raced_by_read_rotation() {
     let mut v = view.clone();
     v = rot.preview(&v).unwrap();
     let er2 = rot.rotated[0].epoch;
-    let holders = [Holder { holder: k, role: Role::Write, until: None }];
-    assert_eq!(reseal_needed(&s, &v, &holders, WallMs(0)), vec![(k, set(&[Role::Read]))]);
+    let holders = [Holder { holder: k, role: Role::Write }];
+    assert_eq!(reseal_needed(&s, &v, &holders), vec![(k, set(&[Role::Read]))]);
     let w = box_holder(&a, &v, &s, &key_rcpt(k, Role::Write, &seed), &set(&[Role::Read]), &mut rng(4)).unwrap().unwrap();
     w.apply(&mut s);
-    assert!(reseal_needed(&s, &v, &holders, WallMs(0)).is_empty());
+    assert!(reseal_needed(&s, &v, &holders).is_empty());
     let mut kv = ActorEpochs::default();
     ingest(&a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
     assert!(kv.read.secret(&er2).is_some());
