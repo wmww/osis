@@ -19,3 +19,8 @@ With whole commits (one package per change, branch whole-2b), each locked part c
 - **A (recommended for now):** accept it, and say so in spec/requirements.md. It only shows IDs, never content or membership, and only to people who already share a change with that thing.
 - **B:** hide it. A reader usually holds the thing's record and can find the owners there; only a first change to a short-lived (ephemeral) thing would still need another way. That means more rules in the hottest code path.
 whole-2b merges with A's behaviour; B can follow if you prefer it.
+
+## 4. Should a purge reach an undo made before its device saw the purge?
+Undo restores a value (an old register value, a deleted list item) by writing it again as a new change. An undo made after the device holds the purge never restores purged content. But if someone undoes while the purge is still on its way, the restored copy is their own change, and the purge of the original does not touch it, so the content stays. Background: issues/copies-outlive-purge-expiry.md.
+- **A (recommended):** accept and say so in spec/requirements.md ("Undo never brings back what another party purged, once the undoing device has seen the purge; an earlier undo is its own change, purged on its own"). Purging the whole history of the field reaches both.
+- **B:** every undo marks which original each restored value copies, so a purge reaches the copies too. A wire and engine change across every undo kind for a rare race.
