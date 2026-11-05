@@ -200,8 +200,8 @@ aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<b
 aspect clients.0^: map<tid, client>;
 aspect required.0^: required_rules;
 aspect purge.0: timestamp;
-aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
-aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
+aspect group.0: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
+aspect placed.0~: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
 aspect groups.0: set<tid> [synthetic, guaranteed];
 aspect name.0: string;
 aspect body.0: markdown;

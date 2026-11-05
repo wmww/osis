@@ -1433,10 +1433,123 @@ fn a_first_member_makes_a_group() {
     }).unwrap();
     assert_eq!(db.engine(|e| e.commit_ids().len()), before);
     assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(e)]);
+    // a durable group's first member, still in memory: nothing durable either
+    let durable = made(&db);
+    let before = db.engine(|e| e.commit_ids().len());
+    let e = db.batch(|w| {
+        let e = w.create()?;
+        w.group(durable).add(osis::Member::Item(e))?;
+        Ok(e)
+    }).unwrap();
+    assert_eq!(db.engine(|e| e.commit_ids().len()), before);
+    assert_eq!(db.members(durable).unwrap(), vec![osis::Member::Item(e)]);
 }
 
-// spec/commits.md §6, notes/api.md Writes: a first member that expires takes the group with it, which is no error; a
-// subgroup expires as an item does; a removal in an expiring batch is the disagreement it always was
+/// A durable thing of `db`'s.
+fn made(db: &Osis) -> osis::Tid {
+    db.batch(|w| w.create_durable(db.me())).unwrap()
+}
+
+// spec/data-model.md §8: two devices each adding what is to them a first member both keep theirs, whichever arrives first
+#[test]
+fn first_members_on_two_devices_both_stay() {
+    let (a, b, _) = paired();
+    let (g, x, y) = (made(&a), made(&a), made(&a));
+    deliver(&a, &b);
+    a.batch(|w| w.group(g).add(osis::Member::Item(x))).unwrap();
+    b.batch(|w| w.group(g).add(osis::Member::Item(y))).unwrap();
+    deliver(&a, &b);
+    deliver(&b, &a);
+    let both = {
+        let mut v = vec![osis::Member::Item(x), osis::Member::Item(y)];
+        v.sort_by_key(|m| m.tid());
+        v
+    };
+    assert_eq!(a.members(g).unwrap(), both);
+    assert_eq!(b.members(g).unwrap(), both);
+}
+
+// spec/data-model.md §8: members arriving between an add's call and its commit, unheard of at the call, are not erased by it
+#[test]
+fn a_member_arriving_during_a_batch_stays() {
+    let (a, b, _) = paired();
+    let (g, x, y) = (made(&a), made(&a), made(&a));
+    deliver(&a, &b);
+    a.batch(|w| w.group(g).add(osis::Member::Item(x))).unwrap();
+    let mut w = b.write();
+    w.group(g).add(osis::Member::Item(y)).unwrap();
+    deliver(&a, &b);
+    w.commit().unwrap();
+    deliver(&b, &a);
+    assert!(b.members(g).unwrap().contains(&osis::Member::Item(x)));
+    assert!(a.members(g).unwrap().contains(&osis::Member::Item(x)), "the loss would spread");
+}
+
+// spec/data-model.md §8: a member added after a delete of the group counts, in one batch or from another device
+#[test]
+fn a_member_added_after_a_delete_stays() {
+    let (a, b, c) = paired();
+    let (g, x, y) = (made(&a), made(&a), made(&a));
+    a.batch(|w| w.group(g).add(osis::Member::Item(x))).unwrap();
+    a.batch(|w| {
+        w.delete(g)?;
+        w.group(g).add(osis::Member::Item(y))
+    })
+    .unwrap();
+    assert_eq!(a.members(g).unwrap(), vec![osis::Member::Item(y)], "the same batch");
+    let h = made(&a);
+    a.batch(|w| w.group(h).add(osis::Member::Item(x))).unwrap();
+    deliver(&a, &b);
+    a.batch(|w| w.delete(h)).unwrap();
+    c.advance(1000);
+    b.batch(|w| w.group(h).add(osis::Member::Item(y))).unwrap();
+    deliver(&a, &b);
+    deliver(&b, &a);
+    assert_eq!(a.members(h).unwrap(), vec![osis::Member::Item(y)], "a later add on another device");
+    assert_eq!(b.members(h).unwrap(), vec![osis::Member::Item(y)]);
+}
+
+// spec/commits.md §6: what an expiring first member wrote leaves a later lasting member alone, in either field
+#[test]
+fn a_lasting_member_outlives_an_expiring_first() {
+    let c = clock();
+    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let (g, x, s, y) = (made(&db), made(&db), made(&db), made(&db));
+    let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
+    db.batch(|w| {
+        w.group(g).expires(minute).add(osis::Member::Item(x))?;
+        w.group(g).expires(minute).add(osis::Member::Subgroup(s))
+    })
+    .unwrap();
+    db.batch(|w| w.group(g).add(osis::Member::Item(y))).unwrap();
+    c.advance(61_000);
+    db.engine(|e| e.tick()).unwrap();
+    assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(y)]);
+}
+
+// spec/commits.md §7: a revert of a first member takes that member alone
+#[test]
+fn a_revert_of_a_first_member_takes_only_it() {
+    let (a, b, _) = paired();
+    let (g, x, y) = (made(&a), made(&a), made(&a));
+    deliver(&a, &b);
+    let done = commit_with(&a, |w| w.group(g).add(osis::Member::Item(x)));
+    b.batch(|w| w.group(g).add(osis::Member::Item(y))).unwrap();
+    deliver(&a, &b);
+    deliver(&b, &a);
+    a.revert(done.id).unwrap();
+    deliver(&a, &b);
+    assert_eq!(a.members(g).unwrap(), vec![osis::Member::Item(y)]);
+    assert_eq!(b.members(g).unwrap(), vec![osis::Member::Item(y)]);
+    let only = made(&a);
+    let done = commit_with(&a, |w| w.group(only).add(osis::Member::Item(x)));
+    a.revert(done.id).unwrap();
+    assert!(a.members(only).unwrap().is_empty());
+    a.batch(|w| w.group(only).add(osis::Member::Item(y))).unwrap();
+    assert_eq!(a.members(only).unwrap(), vec![osis::Member::Item(y)], "and it can be one again");
+}
+
+// spec/commits.md §6, notes/api.md Writes: a subgroup expires as an item does; a removal in an expiring batch is the disagreement it always was
 #[test]
 fn membership_expires_item_or_subgroup_spec_commits_6() {
     let c = clock();
