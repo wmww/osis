@@ -168,7 +168,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - **A waiting part past its expiry**: a part that waits (§4) when its expiry passes goes from the node at T, and one arriving past T goes if it waits. Either counts as never received: its non-value writes join only through snapshots. Every local copy goes with it. That node may read what came before the part until a writer next compacts (spec/sync.md §7); a commit such a part applied before T stays applied.
 - **A waiting part under a purge**: a waiting part that an applied purge request names whose author may purge it (judged once the node holds the request and the commit's header) is held value-less from then on.
   - The node keeps it as its leftover (spec/crdt.md §4.7) and no other local copy of it; it waits and applies as that, so nodes holding the same commits read alike.
-  - With a page of it not held it cannot be stripped: it goes at once with every local copy, as a part missing when purged.
+  - With a page of it not held, or parked (spec/versioning.md §2), it cannot be stripped: it goes at once with every local copy, as a part missing when purged.
   - If the request no longer drops it when its commit applies, it is fetched again like any missing delta.
   - While its thing's record is unknown no right can be judged, so such a part keeps its values in the pending copy, for good if the record never comes; a request on that thing waits with it.
   - A snapshot part has no values of its own: it waits unstripped and drops once applied.

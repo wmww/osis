@@ -873,14 +873,14 @@ fn parts_differential_large_spec_commits_4() {
 
 // spec/commits.md §4: the differential's histories play through a write that changes nothing (no
 // commit) and a sync carrying a hostile roster snapshot the receiver refuses (a frontier linked
-// outside its chunk list), so no seed is left out for either (seeds 9350000+: 16 and 1 were).
+// outside its chunk list, at the second last sync), so no seed is left out for either (seeds
+// 9350000+: 16 and 1 were; this is seed 9350074's prefix). `play` panics on either.
 #[test]
 fn history_plays_past_a_no_op_write_and_a_refused_commit_spec_commits_4() {
     use Step::*;
-    let steps = [NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, BadPart { by: 0, a: 0, b: 0, how: 3 }, Sync { from: 0, to: 1 }];
-    let played = play(SEED, &steps);
-    let b = CommitBlob::decode(&played.packs.last().unwrap().bytes).unwrap();
-    assert_eq!(b.header.kind, osis_commit::Kind::RosterSnapshot, "the hostile snapshot made");
+    let a = |s: Step| Aim(Box::new(s));
+    let steps = [NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, a(Roster { by: 0, t: 2 }), Advance { who: None, ms: 1000 }, Forged { by: 1, a: 4, b: 4, how: 1, op: 6, k: 0, v: 1 }, Sync { from: 0, to: 1 }, BadPart { by: 0, a: 0, b: 0, how: 2 }, BadPart { by: 0, a: 2, b: 2, how: 3 }, Roster { by: 0, t: 2 }, Sync { from: 0, to: 1 }, a(New { by: 0, parent: 4, write: true }), a(New { by: 0, parent: 1, write: true }), a(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Read) }), Roster { by: 0, t: 3 }, Sync { from: 1, to: 0 }, Sync { from: 0, to: 1 }];
+    play(SEED, &steps);
 }
 
 // spec/commits.md §4: a relay's junk part on a thing whose record is away cannot be hash-checked; it
