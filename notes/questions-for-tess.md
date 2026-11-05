@@ -22,6 +22,9 @@ The pass (spec/requirements.md) dropped limits that follow from a stated propert
 2. Removing an account whose kept writes number more than about 1.9 million fails. Keep (recommended: rare; it only bites on data whose history is kept forever), or require removals of any size.
 3. "Byte-identical everywhere" now reads "equal values compare equal on every node", since a large value's bytes carry random keys. Confirm that is the property you want (recommended).
 
+## 12. Depth 0 bends a little (re your Q2)
+You decided a group never looks inside its member groups. Fixing a leak bent that a little: if a device already holds a member group's keys and knows someone left it, it won't hand out that group's old key, and it won't keep writing under a parent key that passes the old key on. It never fetches or walks anything it doesn't already hold. Why: a removal that has to go out on its own (its key change waiting) would otherwise let the removed person keep reading everything the group can read. Cost: until a device that may change the member group's key next syncs, that group's members don't see new content in shared things above it (devices do this every sync pass, not lazily). Recommended: accept. The alternative is accepting the leak while a removal's key change waits.
+
 ## Decided (Tess)
 - Q1: option A (any writer finalizes an ended timed share), built as item 280.
 - Q2: option A, a group never looks inside its member actors, with the two extra rules of notes/keys-requirements-study.md §4. Role cycles (Q8): Tess left it to us: no key cycles (the earlier grant in the agreed order gets keys, the later one none), model-check first, fall back to accepting a leak in cycles until the next knowing re-key if a hidden cycle leaks. Nested shared tags can be one-way. Plan: issues/keys-depth0.md.
