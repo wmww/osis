@@ -7,7 +7,8 @@ Terms:
 - **Thing**: anything with an identity. **Aspect**: one typed datum of a thing. **Group**: a thing that lists things; the unit of sync.
 - **Change**: one signed, atomic edit (a commit). **Part**: what a change writes on one aspect. **Body**: the stored bytes of a part.
 - **Actor**: a thing that can hold rights (a device, person, team, shared space). **Holder**: an actor with a role (read, write, admin) on something.
-- **Untrusted (blind) node**: a node that stores or relays data it cannot read. **Host**: a node that stores and serves a group's data.
+- **Node**: a running osis instance with its own identity and store. It reads what it holds keys for and keeps the rest encrypted, in any mix; nothing else separates nodes. **Host**: a role, not a kind of node: a node hosts a group by storing it and serving it to others, whether or not it can read it. A node is **untrusted** for data it cannot read.
+- **Peer**: another node a node syncs with directly. **Relay**: forwards a connection's encrypted bytes and stores nothing; not a node. **Client**: a program using a node out of process, on the same machine or another; which actor it acts as is a separate matter.
 
 ## Purpose
 - End-user apps with small-to-large interconnected data across users and devices. Many apps, app versions, generic tools and agents share the same data, like a file format.

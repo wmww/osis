@@ -3,7 +3,7 @@
 
 ## What osis needs from the network (spec/requirements.md)
 - Long-lived connections with host push (subscriptions, relay-only signals), several labels per connection, one round trip for the common case.
-- Blind always-on nodes are the backbone; client-to-host reachability matters most. Direct P2P adds LAN, offline and no-host sync.
+- Always-on nodes hosting what they cannot read are the backbone; client-to-host reachability matters most. Direct P2P adds LAN, offline and no-host sync.
 - No required coordinator: any helper is replaceable and self-hostable; osis works without it (LAN, any host, a known address).
 - A blind node must not learn authorship or role grants. It learns client IPs (accepted), not node identities.
 - Authorization is application-level (node signatures, label role keys), so the transport only needs confidentiality and a stable peer key to dial.
