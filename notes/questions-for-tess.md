@@ -26,6 +26,14 @@ A removal's frontier lists the removed person's writes it had seen, and each lis
 - A: keep it, and have clients leave out of a frontier the writes made before the person first held the role. Recommended (receivers unchanged).
 - B: receivers also require the role "as restored" at the write (more rules in validity).
 
+## 9. Owner removal step 6: what hosts do during a dispute
+A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) settled most of step 6. Hosts need one gate: while two admins are in a dispute, nobody deletes data at a host when the reason rests on a write only one side accepts. Without it the two sides delete and re-upload forever, or a body is lost before the other side ever fetched it. The plan's other candidates failed. What the gate costs, and a choice:
+- **Cost, either way:** while a dispute lasts, deletes only one side agrees with (a purge, an old version being replaced, compaction) don't reach hosts: the encrypted data stays and hosts grow until the dispute is settled.
+- **Choice: how precise the gate is.**
+  - **A (recommended): per field.** No deletes at hosts on any field a disputed write touched. One check, plus three small cases. Extra cost: a purge *both* sides agree with, on such a field, also waits until the dispute ends. Fits "a fight may do wide damage, its handling must not spread through the code".
+  - **B: per reason.** Every delete reason names the write it rests on; only those resting on disputed writes wait. Precise, but touches every place that decides a delete (about seven kinds).
+- **Stated limits, for your OK:** after the fork, the losing side's new devices get only what its own devices held when the race was lost, plus what shared members carry across. And one shape is safe only because role changes reach devices before content does; a host delivering content first could lose a body (the model shows it). Not yet modelled: several hosts picking different winners, several disputes at once.
+
 ## Decided (Tess)
 - Q1: option A (any writer finalizes an ended timed share), built as item 280.
 - Q2: option A, a group never looks inside its member actors, with the two extra rules of notes/keys-requirements-study.md §4. Role cycles (Q8): Tess left it to us: no key cycles (the earlier grant in the agreed order gets keys, the later one none), model-check first, fall back to accepting a leak in cycles until the next knowing re-key if a hidden cycle leaks. Nested shared tags can be one-way. Plan: issues/keys-depth0.md.
