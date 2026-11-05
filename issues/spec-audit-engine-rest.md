@@ -7,5 +7,5 @@
 - `Input::cyclic` and resuming a timeline from old starts (spec/permissions.md §6 says rounds begin from none): the fixed-point argument in `walk::drive` read, not proved; `check_scratch` tests it in debug builds.
 
 ## Questions, not traced to a concrete harm
-- `chain_judge` (engine/src/undo/mod.rs:332): `undone_by` holds every held undo commit naming a commit, whatever its validity, and an invalid later commit counts as "in effect". §4.6 does not say whether an invalid undo commit undoes, or whether an invalid delta "holds writes of the aspect". Effect limited to undo's step-back.
+- `chain_judge` (engine/src/undo/mod.rs:332): `undone_by` holds every held undo commit naming a commit, whatever its validity, and an invalid later commit counts as "in effect". §4.6 does not say whether an invalid undo commit undoes, or whether an invalid delta "holds writes of the aspect". Effect limited to undo's step-back, but since whole-commits step 3 any signer's header-only commit applies, so a stranger's `undoes` can flip this node's step-back on any aspect (whether its own undo resets or restores): likely the same rule as `Tx::has_state` (judge by valid parts only).
 - A held later compaction snapshot counts as a later change in effect, so step-back stops after any compaction here (literal §4.6, same in code); intended?

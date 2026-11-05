@@ -1089,7 +1089,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0" | "placed.0~") {
         return Ok(());
     }
-    // `placed.0~` follows every state write (`Tx::placed_from`)
+    // `placed.0~` follows every state write (`Tx::derive`)
     if ak.as_str() == "placed.0~" {
         return Ok(());
     }

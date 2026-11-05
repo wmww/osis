@@ -3367,17 +3367,29 @@ fn frontier_lists_commit_with_unheld_part_spec_perm_5_1() {
 /// Peer 1's key signs a content commit writing `node.0` on `k` (a card on a thing it has no
 /// role on), under a session of its own.
 fn forge_card(lp: &mut LocalPeer, k: Tid) -> osis_commit::CommitBlob {
+    forge_on(lp, k, "node.0")
+}
+
+/// Peer 1's key signs a commit (of `a`'s class) writing aspect `a` of `k` (a thing it has no
+/// role on), under a session of its own.
+fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
     let b = lp.peers[1].engine.tid();
-    let form = forged_session(b);
+    let kind = if osis_schema::core_types::is_role_class(a) { Kind::Role } else { Kind::Content };
+    // a role commit is its own source (its body goes in the probe below: header only)
+    let form = if kind == Kind::Role { osis_commit::Form::Commit } else { forged_session(b) };
     let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let mut w = Writer::new(ts, form.own_source(b, osis_base::CommitId([0; 32])), 1);
     let v = osis_schema::AspectKey::encode(&osis_schema::core_types::NODE, &osis_schema::core_types::NodeInfo { software: "forged".into() });
     let f = create(&mut w, &AnyView, &v).unwrap();
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, 1, 2), None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, form);
-    cb.aspects.push(AspectWrite::new(k, ak("node.0"), 1, 2, bytes));
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, kind, ts, b, 1, 2), None).unwrap();
+    let mut cb = CommitBuilder::new(kind, ts, b, b, form);
+    let mut w = AspectWrite::new(k, ak(a), 1, 2, bytes);
+    if let Some(r) = osis_commit::retention::fixed_retention(a) {
+        w.retention = r;
+    }
+    cb.aspects.push(w);
     let rec = lp.peers[0].engine.get_typed(&k, &osis_schema::core_types::CREATED).unwrap().unwrap();
     cb.build(&lp.peers[1].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit
 }
@@ -3414,4 +3426,32 @@ fn stranger_card_makes_no_node_spec_perm_4() {
             assert!(!lp.peers[0].engine.is_node(&k).unwrap(), "header only {header_only}: a stranger's card makes no node");
         }
     }
+}
+
+// spec/sync.md §2 (a group's labels are its `label.0` state): a stranger's header-only commit
+// listing `label.0` on a thing (it applies, its part invalid) gives the thing no label here:
+// it is not a labeled group, nor published under its owner's home label.
+#[test]
+fn stranger_label_listing_labels_nothing_spec_sync_2() {
+    let mut lp = net(2, 952);
+    lp.sync_all().unwrap();
+    let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
+    let (p, _) = lp.peers[0].engine.create_person(&hosts).unwrap();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, p.person);
+    lp.peers[0].commit(m).unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.labeled_groups().contains(&p.person), "the person's home label");
+    let before = e.published_under(&p.person);
+    let mut blob = forge_on(&mut lp, t, "label.0");
+    blob.parts.clear();
+    let id = blob.id();
+    let e = &mut lp.peers[0].engine;
+    assert_eq!(e.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
+    assert!(!e.labeled_groups().contains(&t), "a listing labels nothing");
+    assert!(!e.published_under(&p.person).contains(&t));
+    assert_eq!(e.published_under(&p.person), before);
+    // nor after a reopen
+    e.reload().unwrap();
+    assert!(!e.labeled_groups().contains(&t));
 }
