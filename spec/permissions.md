@@ -24,7 +24,7 @@
   - With no admin left, its edges, secrets and keys change no more (holders keep reading and writing as granted) and nothing recovers it.
   - Its **creation commit** carries its `created.0`, its first secrets (§3) and its `keys.0`, written as the first admin's write (an author with admin on that actor, or the actor itself), and puts the first admin's edge in `roles.0` (an entry for removals to reset, spec/crdt.md §5.6).
 - **Role grant**: an edge (holder actor, target, role), stored in the target's `roles.0`. On an actor it grants the role on everything the actor owns; on a plain thing, on that thing only.
-- **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, evaluated with the timeline (§5.1) at t. A path climbs role grants and owner links (an owner holds admin on what it owns; an ownerless thing's record edge is a role grant while it stands).
+- **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, evaluated with the timeline (§5.1) at t. A path climbs role grants and owner links (an owner holds admin on what it owns; an ownerless thing's record edge is a role grant while it stands); an actor holds admin on itself.
 - **Admin** = write + change role grants + purge (§7) + write admin-only (`^`) aspects (spec/data-model.md §2; §5.2). An admin edge on a plain thing grants changing its role grants and purge on that thing.
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
 - An edge write whose holder is its target or its target's owner actor is not applied (§5.1), and a roster snapshot's entry for either is ignored (§6).
@@ -44,7 +44,7 @@
   - Then it drops.
   - It drops anyway `LOST_HEARD_WAIT_MS` after it first found the role gone.
   - A role commit received beside the ended edge that does not itself end the role changes nothing of this. A removal, demotion or an edge written with `until` 0 (below) ends it at once; a finalize (below) counts as the `until` it finalizes.
-- **Finalize**: a removal of another holder's edge carrying no frontier. It applies (§5.1) iff the edge is past its `until` at the removal's `ts` (as the timeline orders it: a renewal ordered before it counts) and its author holds write on the target and a role there at least the edge's (a timed admin edge needs an admin); else it applies nothing, whoever wrote it.
+- **Finalize**: a removal of another holder's edge carrying no frontier that is not a self-removal (below). It applies (§5.1) iff the edge is past its `until` at the removal's `ts` (as the timeline orders it: a renewal ordered before it counts) and its author holds write on the target and a role there at least the edge's (a timed admin edge needs an admin); else it applies nothing, whoever wrote it.
   - It is no explicit write: it audits nothing, so the removed holder's own timestamps still decide its writes (§5.1, §5.2).
   - It is the edge's departure for keys (spec/crypto.md §4) and carries its rotation (§3) like any removal; one finalize may remove several ended edges of one target (spec/commits.md §2).
   - It says keep or erase as its `until` would (§3, Keep: the default in force at the expiry's key).
@@ -241,7 +241,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - A demotion by `until`, self-removal or finalize audits nothing. The next explicit write on that edge, by any node, audits with its frontier against the edge as restored.
 
 ### 5.2 Layer 2: content
-- A delta by actor X on thing N is valid if X held write or above on N just before the commit's key (§6; edges' `until` judged at its `ts`) and no valid explicit demotion of X below write on N is ordered after it (a ledger entry with a frontier counts as an explicit demotion at its key, §6).
+- A delta is judged by its author node's authority, whatever its header actor (Acting, below, adds a condition). A delta by X on thing N is valid if X held write or above on N just before the commit's key (§6; edges' `until` judged at its `ts`) and no valid explicit demotion of X below write on N is ordered after it (a ledger entry with a frontier counts as an explicit demotion at its key, §6).
   - An **explicit demotion of X below write on N** is an applied explicit write (§5.1 step 2) by another author, or a ledger entry with a frontier, that demotes X on N (§5.1 step 4) and takes X's role on N, with the edge as restored, from write or above to below write.
 - Otherwise it is valid iff the frontier of X's newest valid explicit demotion below write on N (ledger entries included) lists its commit.
 - A delta of an **admin-only** aspect (AK marker `^`, spec/data-model.md §2) is judged by the two rules above with admin in place of write: X held admin on N, demotions below admin. A writer that does not hold admin on N MUST NOT write one; every node judges it alike from the AK alone, also on an ephemeral commit's part and a compaction snapshot's delta.
@@ -335,9 +335,9 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 ## 7. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:
   - **admin**: the thing's current admins;
-  - **author**: the actor the commit's header names while it holds write on the thing, acting through any node with write on it;
+  - **author**: the delta's header actor while it holds write on the thing: the actor itself and any node with write on that actor;
   - **writer**: any current writer of the thing.
-  - An admin not acting for that actor holds no right under `author`, and an author that lost write on the thing holds none until it regains it.
+  - An admin with no write on that actor holds no right under `author`, and an actor that lost write on the thing gives none until it regains it.
 - A role counts toward the right only as it would for a delta needing that role at the request's key (§5.1): a demotion whose frontier does not list the request takes the right however early its `ts`; one that lists it leaves the purge standing.
 - **A purge request** drops a named delta iff its author held that right at the request's time and, when it acts for another actor (its header actor), so did that actor. Each delta of a request by whole aspect or by author is judged alone, so the class of one never widens the others (an admin's request by author leaves that author's `author` and `nobody` deltas).
 - **Judgment** follows the role timeline the node holds, in any arrival order:

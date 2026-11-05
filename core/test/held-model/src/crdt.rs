@@ -82,16 +82,21 @@ pub fn canon(s: &State, kind: AspectKind) -> State {
                     Some(w) if survives(w.stamp, e) => out.push(w.clone()),
                     _ => out.push(anchor(d)),
                 }
-                out.extend(
-                    s.values()
-                        .filter(|w| w.op == Op::Delete { elem: d } && survives(w.stamp, e))
-                        .max_by_key(|w| w.stamp)
-                        .cloned(),
-                );
+                out.extend(s.values().filter(|w| is_flag(w, d) && survives(w.stamp, e)).max_by_key(|w| flag_order(w)).cloned());
             }
         }
     }
     join(out.iter())
+}
+
+/// A deleted-flag write on element `d` (delete or undelete).
+fn is_flag(w: &Write, d: Dot) -> bool {
+    matches!(w.op, Op::Delete { elem } | Op::Undelete { elem, .. } if elem == d)
+}
+
+/// Flag register order: stamp, then `true` over `false` (spec/crdt.md §5.7 Join).
+fn flag_order(w: &Write) -> (Stamp, bool) {
+    (w.stamp, matches!(w.op, Op::Delete { .. }))
 }
 
 /// A bare anchor record for element `d`.
@@ -150,7 +155,7 @@ pub fn read(c: &State, kind: AspectKind) -> Read {
         AspectKind::Text => {
             let present = c.values().any(|w| match &w.op {
                 Op::Insert { ch, .. } => ch.is_some(),
-                Op::Delete { .. } => true,
+                Op::Delete { .. } | Op::Undelete { .. } => true,
                 _ => false,
             });
             if !present {
@@ -161,14 +166,20 @@ pub fn read(c: &State, kind: AspectKind) -> Read {
     }
 }
 
-fn text_char(c: &State, d: Dot) -> Option<Val> {
-    if c.values().any(|w| w.op == Op::Delete { elem: d }) {
-        return None;
-    }
-    c.values().find_map(|w| match w.op {
-        Op::Insert { ch, .. } if w.stamp.dot == d => ch,
+/// The char of a live text element: the creation's, else a winning undelete's; none without a
+/// surviving creation or under a delete (spec/crdt.md §5.7).
+pub fn text_char(c: &State, d: Dot) -> Option<Val> {
+    let flag = c.values().filter(|w| is_flag(w, d)).max_by_key(|w| flag_order(w));
+    let undel = match flag.map(|w| &w.op) {
+        Some(Op::Delete { .. }) => return None,
+        Some(Op::Undelete { ch, .. }) => *ch,
         _ => None,
-    })
+    };
+    let created = c.values().find_map(|w| match w.op {
+        Op::Insert { ch, .. } if w.stamp.dot == d => Some(ch),
+        _ => None,
+    })?;
+    created.or(undel)
 }
 
 /// Placement order of every reachable record (spec/crdt.md §6): children by sibling key (the
@@ -227,7 +238,7 @@ pub fn supersedes(s: &Write, w: &Write) -> bool {
         (Op::SetIn { entry: a, .. }, Op::SetIn { entry: b, .. }) => a == b,
         (Op::Remove { entry: a }, Op::Remove { entry: b }) => a == b,
         (Op::Insert { .. }, Op::Delete { elem }) => *elem == w.stamp.dot,
-        (Op::Delete { elem: a }, Op::Delete { elem: b }) => a == b,
+        (Op::Delete { elem: a } | Op::Undelete { elem: a, .. }, Op::Delete { elem: b } | Op::Undelete { elem: b, .. }) => a == b,
         _ => false,
     }
 }

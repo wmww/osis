@@ -11,3 +11,5 @@ Each was found by reading code only. Add a node test per line (core/node/tests/i
 5. **Possible admins exclude pending role commits** (spec/commits.md §4): a drift-parked grant gives its holder no purge right by any role ever held (`counts_as_purged`, `Held::ever_holders`). (Its atomic-apply uses went with whole-commits step 3.)
 6. **Covered drop needs the node's own right** (spec/commits.md §5 Between the bounds): a node demoted below the right keeps a body a rightful snapshot covers (`drop_from` None).
 7. **An aspect-wide purge names compaction snapshots** (spec/commits.md §5 Purge): `PurgeItem::Aspect` drops a snapshot of the aspect it may purge.
+8. **An own-edge lowering by an edge admin is a self-removal** (spec/permissions.md §2, held-model AMBIGUITIES 25): `walk.rs` `judge` checks it before the author's class; no test pins it for an author with edge-admin authority.
+9. **An invalid undo is in effect** (spec/crdt.md §4.6, AMBIGUITIES 28): `undo::chain_judge` counts every applied undo; `in_effect_chains_spec_crdt_4_6` has no invalid undo.

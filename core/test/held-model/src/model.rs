@@ -1,7 +1,7 @@
 //! `evaluate`: the whole judgment of a held set, recomputed from scratch.
 
 use crate::crdt::{self, Read, State};
-use crate::roles::{edge_events, need, Possible, Timeline};
+use crate::roles::{edge_events, namings, need, rosters, Possible, Timeline, World};
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,7 +14,7 @@ pub type DeltaRef = (CommitId, ThingId, Aspect);
 pub enum KeepWhy {
     /// Its commit waits (parked or atomic apply); spec/commits.md §5: kept until it applies.
     Pending,
-    /// Role-class: fixed retention, roster snapshots out of scope.
+    /// Role-class: fixed retention; the model drops none (ASSUMPTIONS.md).
     Role,
     /// Before its keep-at-least bound.
     AtLeast,
@@ -42,6 +42,9 @@ pub enum DropWhy {
     Covered { by: CommitId },
     /// Past keep at most; `carrier`: it has live writes, which stay in the state.
     AtMost { carrier: bool },
+    /// A waiting part past its expiry, or an unjoinable (parked) body expired or purged: it counts
+    /// as never received (spec/commits.md §5, spec/versioning.md §2).
+    Gone,
 }
 
 /// What the node does with a held body.
@@ -96,61 +99,103 @@ fn expired(c: &Commit, now: u64) -> bool {
 
 fn names(q: &Commit, c: &Commit, p: &Part) -> bool {
     c.ts < q.ts
-        && c.kind != CommitKind::Role
+        && !c.is_role()
         && q.purge.iter().any(|it| match *it {
             PurgeItem::Commit { commit, thing, aspect } => commit == c.id && p.thing == thing && p.aspect == aspect,
             PurgeItem::Aspect { thing, aspect } => p.thing == thing && p.aspect == aspect,
-            PurgeItem::Author { thing, aspect, author } => p.thing == thing && p.aspect == aspect && c.author == author,
+            PurgeItem::Author { thing, aspect, author } => p.thing == thing && p.aspect == aspect && c.actor == author,
         })
 }
 
-pub fn evaluate(h: &Held) -> Outcome {
+/// What applied and joined, and the role timeline over it.
+struct Joined<'a> {
+    live: Vec<&'a Commit>,
+    applied: BTreeSet<CommitId>,
+    waiting: BTreeSet<PartRef>,
+    view: Vec<Commit>,
+    tl: Timeline,
+}
+
+fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
     let now = h.now;
-    let owners: BTreeMap<ThingId, NodeId> = h.things.iter().map(|t| (t.id, t.owner)).collect();
-    let by_id: BTreeMap<CommitId, &Commit> = h.commits.iter().map(|c| (c.id, c)).collect();
-    let mut o = Outcome::default();
-
-    // Parking (spec/crdt.md §2.2): more than MAX_DRIFT ahead counts as not received.
-    o.parked = by_id.values().filter(|c| wall(c.ts) > now.saturating_add(MAX_DRIFT)).map(|c| c.id).collect();
-    let live: Vec<&Commit> = by_id.values().copied().filter(|c| !o.parked.contains(&c.id)).collect();
-
-    // Possible admins and writers: every held edge write, any validity.
-    let possible = Possible::new(&owners, &edge_events(live.iter().copied()));
-
-    // Atomic apply (spec/commits.md §4): least fixpoint, "past keep at most" grows with it.
+    let world = World::new(&h.things);
+    let mut live: Vec<&Commit> = h.commits.iter().filter(|c| !parked.contains(&c.id)).collect();
+    live.sort_by_key(|c| c.id);
+    // Atomic apply and waits (spec/commits.md §4): least fixpoint; possible admins and writers,
+    // what leads from an author to a thing, and "past keep at most" grow with the applied set.
     let mut applied: BTreeSet<CommitId> = BTreeSet::new();
-    loop {
+    let waiting = loop {
+        let w = Waits::new(&world, &live, &applied);
+        let possible = Possible::new(&world, &namings(w.view.iter()));
         let mut changed = false;
         for c in &live {
             if applied.contains(&c.id) {
                 continue;
             }
-            let ok = if c.kind == CommitKind::Role {
-                c.parts.iter().any(|p| matches!(p.body, Body::Held(_)))
-            } else {
-                c.parts.iter().all(|p| counted_held(c, p, &live, &applied, &possible, now))
-            };
-            if ok {
+            if applies(c, &live, &applied, &possible, &w, now) {
                 applied.insert(c.id);
                 changed = true;
             }
         }
         if !changed {
-            break;
+            break w.waiting;
         }
-    }
+    };
+    // What joined: applied commits without their waiting parts.
+    let view: Vec<Commit> = live.iter().filter(|c| applied.contains(&c.id)).map(|c| without(c, &waiting)).collect();
+    // Role timeline over the joined role commits, epoch starts chosen in rounds.
+    let tl = Timeline::settle(world, edge_events(view.iter()), rosters(view.iter()));
+    Joined { live, applied, waiting, view, tl }
+}
+
+fn parked(h: &Held) -> BTreeSet<CommitId> {
+    // Parking (spec/crdt.md §2.2): more than MAX_DRIFT ahead counts as not received.
+    h.commits.iter().filter(|c| wall(c.ts) > h.now.saturating_add(MAX_DRIFT)).map(|c| c.id).collect()
+}
+
+/// The settled role timeline of a held set.
+pub fn timeline(h: &Held) -> Timeline {
+    join_held(h, &parked(h)).tl
+}
+
+pub fn evaluate(h: &Held) -> Outcome {
+    let now = h.now;
+    let by_id: BTreeMap<CommitId, &Commit> = h.commits.iter().map(|c| (c.id, c)).collect();
+    let mut o = Outcome::default();
+    o.parked = parked(h);
+    let Joined { live, applied, waiting, view, tl } = join_held(h, &o.parked);
     o.applied = applied.clone();
     let is_applied = |c: &Commit| applied.contains(&c.id);
 
-    // Role timeline over applied role commits.
-    let tl = Timeline::walk(owners.clone(), edge_events(live.iter().copied().filter(|c| is_applied(c))));
+    // Required retention (spec/commits.md §5): the valid `required.0^` deltas, by key.
+    let required: Vec<(Key, ThingId, Vec<Rule>)> = view
+        .iter()
+        .filter(|c| c.kind == CommitKind::Content)
+        .flat_map(|c| c.parts.iter().map(move |p| (c, p)))
+        .filter_map(|(c, p)| match &p.body {
+            Body::Held(Delta::Required(rules)) if p.aspect == Aspect::REQUIRED => {
+                tl.valid_delta(c.author, c.actor, p.thing, Role::Admin, c.key(), c.id).then(|| (c.key(), p.thing, rules.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    let in_force = |t: ThingId, key: Key| -> Option<&Vec<Rule>> {
+        required.iter().filter(|(k, th, _)| *th == t && *k < key).max_by_key(|(k, _, _)| *k).map(|(_, _, r)| r)
+    };
 
     // Validity of every part of an applied commit.
     for c in live.iter().filter(|c| is_applied(c)) {
         for (i, p) in c.parts.iter().enumerate() {
             let v = match c.kind {
                 CommitKind::Role => tl.applied_part(c.id, i),
-                _ => tl.valid_as(c.author, p.thing, need(p.aspect), c.key(), c.id),
+                CommitKind::Roster => tl.rosters_applied.contains(&c.id),
+                _ => {
+                    let ok = tl.valid_delta(c.author, c.actor, p.thing, need(p.aspect), c.key(), c.id);
+                    let breaks = c.kind == CommitKind::Content
+                        && !p.aspect.fixed()
+                        && in_force(p.thing, c.key()).is_some_and(|rules| breaks(rules, c, p));
+                    ok && !breaks
+                }
             };
             o.valid.insert((c.id, i), v);
         }
@@ -167,7 +212,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     for q in live.iter().filter(|q| !q.purge.is_empty() && is_applied(q)) {
         for c in &live {
             for (i, p) in c.parts.iter().enumerate() {
-                if !names(q, c, p) || !tl.right(q.author, q.key(), q.id, p.retention.by, c.author, p.thing) {
+                if !names(q, c, p) || !tl.right(q.author, q.actor, q.key(), q.id, p.retention.by, c.actor, p.thing) {
                     continue;
                 }
                 if is_applied(c) {
@@ -212,7 +257,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     let mut aspects: BTreeSet<(ThingId, Aspect)> = BTreeSet::new();
     for c in &live {
         for p in &c.parts {
-            if c.kind != CommitKind::Role && writes(p).is_some() {
+            if !c.is_role() && writes(p).is_some() {
                 aspects.insert((p.thing, p.aspect));
             }
         }
@@ -225,7 +270,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     for &(t, a) in &aspects {
         let mut snap_ws: Vec<Write> = Vec::new();
         let mut own_ws: Vec<Write> = Vec::new();
-        for c in live.iter().filter(|c| is_applied(c)) {
+        for c in &view {
             for (i, p) in c.parts.iter().enumerate() {
                 if p.thing != t || p.aspect != a {
                     continue;
@@ -244,6 +289,12 @@ pub fn evaluate(h: &Held) -> Outcome {
             snap_ws.iter().filter(|w| matches!(w.op, Op::Create { .. })).map(|w| w.stamp.dot).collect();
         let mut ws: Vec<Write> = Vec::new();
         for mut w in own_ws {
+            // an undelete's char goes with its creator's delta (spec/crdt.md §4.7)
+            if let Op::Undelete { elem, ch } = &mut w.op {
+                if invalid(elem.commit) {
+                    *ch = None;
+                }
+            }
             if invalid(w.owner()) {
                 match &mut w.op {
                     // un-merged seq creations stay as content-less hidden anchors
@@ -276,7 +327,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     // Deaths per held body (spec/crdt.md §4.8, spec/commits.md §5 Bodies and deaths).
     let falls: BTreeMap<(ThingId, Aspect), u64> = {
         let mut m: BTreeMap<(ThingId, Aspect), u64> = BTreeMap::new();
-        for c in live.iter().filter(|c| is_applied(c) && c.kind != CommitKind::Role) {
+        for c in view.iter().filter(|c| !c.is_role()) {
             for (i, p) in c.parts.iter().enumerate() {
                 if valid_m.get(&(c.id, i)) == Some(&false) {
                     let f = tl.fall(c.author, p.thing, need(p.aspect), wall(c.ts));
@@ -287,7 +338,7 @@ pub fn evaluate(h: &Held) -> Outcome {
         }
         m
     };
-    for c in live.iter().filter(|c| is_applied(c) && c.kind != CommitKind::Role) {
+    for c in view.iter().filter(|c| !c.is_role()) {
         for (i, p) in c.parts.iter().enumerate() {
             let Some(ws) = writes(p) else { continue };
             let key = (p.thing, p.aspect);
@@ -332,8 +383,8 @@ pub fn evaluate(h: &Held) -> Outcome {
     let mut fates = BTreeMap::new();
     for c in by_id.values() {
         for (i, p) in c.parts.iter().enumerate() {
-            if matches!(p.body, Body::Held(_)) {
-                fates.insert((c.id, i), fate(c, i, p, &o, &live, &tl, h.me, &pending_purged, now, &never_received, &vl));
+            if matches!(p.body, Body::Held(_) | Body::Parked) {
+                fates.insert((c.id, i), fate(c, i, p, &o, &live, &tl, h.me, &pending_purged, &waiting, now, &never_received, &vl));
             }
         }
     }
@@ -354,6 +405,10 @@ pub fn evaluate(h: &Held) -> Outcome {
     };
     for c in &h.commits {
         for (i, p) in c.parts.iter().enumerate() {
+            // a waiting body is stripped of others' values only when its commit applies
+            if o.fates.get(&(c.id, i)) == Some(&Fate::Keep(KeepWhy::Pending)) {
+                continue;
+            }
             for w in writes(p).into_iter().flatten() {
                 seen(Some((c.id, i)), p.thing, p.aspect, w, &mut o);
             }
@@ -365,16 +420,132 @@ pub fn evaluate(h: &Held) -> Outcome {
     o
 }
 
-/// spec/commits.md §4: does a part count as held for atomic apply.
-fn counted_held(c: &Commit, p: &Part, live: &[&Commit], applied: &BTreeSet<CommitId>, pos: &Possible, now: u64) -> bool {
-    if !matches!(p.body, Body::Missing) {
-        return true;
+/// What waits (spec/commits.md §4), as of an applied set.
+struct Waits {
+    world: World,
+    /// Applied commits as joined so far (their waiting parts missing): what names holders.
+    view: Vec<Commit>,
+    /// Held parts that wait, of any commit.
+    waiting: BTreeSet<PartRef>,
+    /// Per author, the things something leads to from it.
+    leads: BTreeMap<NodeId, BTreeSet<ThingId>>,
+}
+
+impl Waits {
+    fn new(world: &World, live: &[&Commit], applied: &BTreeSet<CommitId>) -> Waits {
+        let mut w = Waits { world: world.clone(), view: vec![], waiting: BTreeSet::new(), leads: BTreeMap::new() };
+        // what leads from an author to a thing: owner links, first admins, and holders named by an
+        // applied part's edge write or roster entry, whether the walk applies it or not
+        let mut prev: Option<BTreeSet<PartRef>> = None;
+        loop {
+            w.view = live.iter().filter(|c| applied.contains(&c.id)).map(|c| without(c, &w.waiting)).collect();
+            let ns = namings(w.view.iter());
+            let mut adj: BTreeMap<NodeId, BTreeSet<ThingId>> = BTreeMap::new();
+            for (&t, o) in &world.owners {
+                match o {
+                    Owner::Actor(a) | Owner::Ownerless { first_admin: a } => {
+                        adj.entry(*a).or_default().insert(t);
+                    }
+                    Owner::Key => {}
+                }
+            }
+            for &(th, _, h, _) in &ns {
+                adj.entry(h).or_default().insert(th);
+            }
+            let authors: BTreeSet<NodeId> = live.iter().map(|c| c.author).collect();
+            w.leads = authors
+                .into_iter()
+                .map(|a| {
+                    let mut seen = BTreeSet::from([a]);
+                    let mut todo = vec![a];
+                    while let Some(x) = todo.pop() {
+                        for &y in adj.get(&x).into_iter().flatten() {
+                            if seen.insert(y) {
+                                todo.push(y);
+                            }
+                        }
+                    }
+                    (a, seen)
+                })
+                .collect();
+            w.waiting = live
+                .iter()
+                .flat_map(|c| c.parts.iter().enumerate().map(move |(i, p)| (c, i, p)))
+                .filter(|(c, _, p)| matches!(p.body, Body::Held(_) | Body::Parked) && w.part_waits(c, p))
+                .map(|(c, i, _)| (c.id, i))
+                .collect();
+            if prev.as_ref() == Some(&w.waiting) {
+                return w;
+            }
+            prev = Some(w.waiting.clone());
+        }
     }
+
+    /// A thing waits: its record or one up its owner chain unknown, or nothing leads from the
+    /// author to it.
+    fn thing_waits(&self, t: ThingId, author: NodeId) -> bool {
+        let chain = self.world.chain_above(t);
+        if !self.world.known(t) || chain.iter().any(|&o| !self.world.known(o)) {
+            return true;
+        }
+        t != author && !chain.contains(&author) && !self.leads.get(&author).is_some_and(|s| s.contains(&t))
+    }
+
+    fn part_waits(&self, c: &Commit, p: &Part) -> bool {
+        p.body == Body::Parked || self.thing_waits(p.thing, c.author)
+    }
+}
+
+/// The commit as joined: its waiting parts count as not received.
+fn without(c: &Commit, waiting: &BTreeSet<PartRef>) -> Commit {
+    let mut c = c.clone();
+    for (i, p) in c.parts.iter_mut().enumerate() {
+        if waiting.contains(&(c.id, i)) {
+            p.body = Body::Missing;
+        }
+    }
+    c
+}
+
+/// spec/commits.md §4 Pending: does the commit apply now.
+fn applies(c: &Commit, live: &[&Commit], applied: &BTreeSet<CommitId>, pos: &Possible, w: &Waits, now: u64) -> bool {
+    if !w.world.known(c.author) {
+        return false;
+    }
+    let held = |p: &Part| matches!(p.body, Body::Held(_) | Body::Parked);
+    let waits = |p: &Part| held(p) && w.part_waits(c, p);
+    if c.kind == CommitKind::Role {
+        // each part waits alone; the commit applies with any joined part
+        return c.parts.iter().any(|p| held(p) && !waits(p));
+    }
+    let as_missing = |p: &Part| counted_held(c, p, live, applied, pos, &w.world, now);
+    if !c.parts.iter().any(held) {
+        // no part held: a waiting thing or a missing delta not counted held keeps it pending
+        return c.parts.iter().all(|p| !w.thing_waits(p.thing, c.author) && (p.body == Body::Dropped || as_missing(p)));
+    }
+    if c.parts.iter().filter(|p| held(p)).all(waits) {
+        return false;
+    }
+    c.parts.iter().all(|p| match p.body {
+        Body::Dropped => true,
+        Body::Missing => as_missing(p),
+        _ => !waits(p) || as_missing(p),
+    })
+}
+
+/// Does a delta break its governing entry of a `required.0^` setting (spec/commits.md §5).
+fn breaks(rules: &[Rule], c: &Commit, p: &Part) -> bool {
+    let entry = rules.iter().find(|r| r.prefix == Some(p.aspect.name)).or_else(|| rules.iter().find(|r| r.prefix.is_none()));
+    entry.is_some_and(|e| e.retention != p.retention || c.expires != e.expiry.map(|d| wall(c.ts) + d))
+}
+
+/// spec/commits.md §4: would the part count as held for atomic apply were it missing.
+fn counted_held(c: &Commit, p: &Part, live: &[&Commit], applied: &BTreeSet<CommitId>, pos: &Possible, world: &World, now: u64) -> bool {
     if expired(c, now) {
         return true;
     }
     // Purged: an applied request stamped after it names it, by a possible holder of the right.
-    if live.iter().any(|q| applied.contains(&q.id) && names(q, c, p) && pos.right(q.author, p.retention.by, c.author, p.thing)) {
+    if live.iter().any(|q| applied.contains(&q.id) && names(q, c, p) && pos.right(q.author, q.actor, p.retention.by, c.actor, p.thing)) {
         return true;
     }
     // Past keep at most: another applied commit on the aspect stamped no earlier.
@@ -393,6 +564,18 @@ fn counted_held(c: &Commit, p: &Part, live: &[&Commit], applied: &BTreeSet<Commi
             }
         }
     }
+    // Breaks a required retention: a held `required.0^` delta on its thing ordered before it,
+    // any validity, by a possible admin.
+    if c.kind == CommitKind::Content
+        && !p.aspect.fixed()
+        && live.iter().any(|r| {
+            r.key() < c.key()
+                && pos.admin(p.thing, r.author)
+                && r.parts.iter().any(|q| q.thing == p.thing && matches!(&q.body, Body::Held(Delta::Required(rules)) if breaks(rules, c, p)))
+        })
+    {
+        return true;
+    }
     // Under a later snapshot by a possible writer (admin for admin-only), any validity.
     let need = need(p.aspect);
     if live.iter().any(|s| {
@@ -403,17 +586,47 @@ fn counted_held(c: &Commit, p: &Part, live: &[&Commit], applied: &BTreeSet<Commi
     }) {
         return true;
     }
-    // Author lowered: a role commit with a frontier not listing it, by another possible admin.
+    // Author lowered: on its thing or one up its owner chain, by another actor, a possible admin
+    // there, with a frontier not listing it.
+    let lowered = |x: NodeId| x == c.author || x == c.actor;
+    let mut on: Vec<ThingId> = vec![p.thing];
+    on.extend(world.chain_above(p.thing));
     live.iter().any(|r| {
-        r.kind == CommitKind::Role
-            && r.frontier.is_some()
-            && !r.lists(c.id)
-            && r.author != c.author
-            && pos.admin(p.thing, r.author)
-            && r.parts.iter().any(|q| {
-                q.thing == p.thing
-                    && matches!(&q.body, Body::Held(Delta::Edge(e)) if e.holder == c.author && !e.role.is_some_and(|x| x >= need))
-            })
+        on.iter().any(|&t| {
+            if r.lists(c.id) || lowered(r.author) || !pos.admin(t, r.author) {
+                return false;
+            }
+            let held_parts = || r.parts.iter().filter(|q| q.thing == t).filter_map(|q| match &q.body {
+                Body::Held(Delta::Roster(it)) => Some(it),
+                _ => None,
+            });
+            match r.kind {
+                CommitKind::Role => {
+                    r.frontier.is_some()
+                        && r.parts.iter().any(|q| {
+                            q.thing == t && matches!(&q.body, Body::Held(Delta::Edge(e)) if lowered(e.holder) && !e.role.is_some_and(|x| x >= need))
+                        })
+                }
+                // a ledger entry with a frontier, in a snapshot showing a roster edge, that no
+                // roster edge or entry of that role or above starts at the end of
+                CommitKind::Roster => {
+                    held_parts().any(|it| matches!(it, RosterItem::Edge { .. }))
+                        && held_parts().any(|it| match it {
+                            RosterItem::Tenure { holder, role, until, frontier: Some(f), .. } => {
+                                lowered(*holder)
+                                    && *role >= need
+                                    && !f.contains(&c.id)
+                                    && !held_parts().any(|o| match o {
+                                        RosterItem::Edge { edge, since } => edge.holder == *holder && edge.role.is_some_and(|x| x >= need) && *since == Some(*until),
+                                        RosterItem::Tenure { holder: h2, role: r2, since, .. } => h2 == holder && *r2 >= need && *since == Some(*until),
+                                    })
+                            }
+                            _ => false,
+                        })
+                }
+                _ => false,
+            }
+        })
     })
 }
 
@@ -427,20 +640,28 @@ fn fate(
     tl: &Timeline,
     me: NodeId,
     pending_purged: &BTreeSet<PartRef>,
+    waiting: &BTreeSet<PartRef>,
     now: u64,
     never_received: &dyn Fn(&Commit, &Part) -> bool,
     vl: &dyn Fn(CommitId, ThingId, Aspect) -> bool,
 ) -> Fate {
     let pr = (c.id, i);
-    if c.kind == CommitKind::Role {
+    if c.is_role() {
         return Fate::Keep(KeepWhy::Role);
     }
-    if !o.applied.contains(&c.id) {
-        // (a waiting part past its expiry cannot occur here: an expired part counts as held, and
-        // no other wait is modeled, ASSUMPTIONS.md)
+    let waits = !o.applied.contains(&c.id) || waiting.contains(&pr);
+    // a waiting part past its expiry goes (spec/commits.md §5); an unjoinable body cannot be
+    // stripped, so a purge or expiry drops it whole (spec/versioning.md §2)
+    if (waits && expired(c, now)) || (p.body == Body::Parked && (expired(c, now) || o.purged.contains_key(&pr) || pending_purged.contains(&pr))) {
+        return Fate::MustDrop(DropWhy::Gone);
+    }
+    let copy = writes(p).is_some_and(|ws| ws.iter().any(|w| w.values().iter().any(|&(own, v)| v.is_some() && vl(own, p.thing, p.aspect))));
+    if waits || p.body == Body::Parked {
         if pending_purged.contains(&pr) && c.kind != CommitKind::Snapshot {
             return Fate::Leftover(LeftoverWhy::PendingPurged);
         }
+        // a waiting body keeps its body, copies of value-less values included, until its commit
+        // applies (spec/commits.md §5, spec/crdt.md §4.7 Copies)
         return Fate::Keep(KeepWhy::Pending);
     }
     if expired(c, now) {
@@ -459,7 +680,6 @@ fn fate(
     // A body carrying a copy of a value held value-less is held as its leftover, and is a body
     // like a whole one for keep bounds and covering (spec/commits.md §5 Dropping a body).
     let mut ws = writes(p).cloned().unwrap_or_default();
-    let copy = ws.iter().any(|w| w.values().iter().any(|&(own, v)| v.is_some() && vl(own, p.thing, p.aspect)));
     for w in &mut ws {
         w.strip(|x| vl(x, p.thing, p.aspect));
     }
@@ -498,7 +718,7 @@ fn fate(
                 if o.valid.get(&(s.id, j)) != Some(&true) || o.purged.contains_key(&(s.id, j)) || never_received(s, q) {
                     continue;
                 }
-                if !tl.right(s.author, s.key(), s.id, r.by, c.author, p.thing) || !tl.right(me, (u64::MAX, me, u32::MAX), u32::MAX, r.by, c.author, p.thing) {
+                if !tl.right(s.author, s.actor, s.key(), s.id, r.by, c.actor, p.thing) || !tl.right(me, me, (u64::MAX, me, u32::MAX), u32::MAX, r.by, c.actor, p.thing) {
                     continue;
                 }
                 if crdt::covers(sw, &ws, p.aspect.kind) {
@@ -531,6 +751,11 @@ pub fn act(h: &Held, o: &Outcome, may: Option<PartRef>) -> Held {
                             w.strip(|x| o.valueless.contains(&(x, t, a)));
                         }
                     }
+                    false
+                }
+                Fate::MustDrop(DropWhy::Gone) => {
+                    p.body = Body::Missing;
+                    p.stripped.clear();
                     false
                 }
                 Fate::MustDrop(_) => true,

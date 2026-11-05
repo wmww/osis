@@ -1,7 +1,7 @@
 //! A small random history generator (for this crate's properties and for an engine adapter), and a
 //! shuffle of a held set's order. Dependency-free PRNG so a seed means the same history everywhere.
 
-use crate::model::evaluate;
+use crate::model::{evaluate, timeline};
 use crate::types::*;
 use std::collections::BTreeSet;
 
@@ -50,7 +50,31 @@ pub const ADM: Aspect = Aspect::admin_reg(4);
 pub const PURGE: Aspect = Aspect::reg(9);
 pub const ASPECTS: [Aspect; 4] = [REG, MAP, TEXT, ADM];
 pub const NODES: u64 = 4;
-pub const THINGS: [Thing; 2] = [Thing { id: 1, owner: 0 }, Thing { id: 2, owner: 1 }];
+/// A person actor owned by node 2, owning thing 12.
+pub const PERSON: ThingId = 20;
+/// A link: K (an actor owned by node 0, with an edge on thing 10) and L (a key actor).
+pub const LINK_K: ThingId = 21;
+pub const LINK_L: NodeId = 30;
+/// Every creation record: the nodes and L (key actors), things owned by nodes, by the person, and an
+/// ownerless thing whose first admin is node 3.
+pub const THINGS: [Thing; 11] = [
+    Thing { id: 0, owner: Owner::Key },
+    Thing { id: 1, owner: Owner::Key },
+    Thing { id: 2, owner: Owner::Key },
+    Thing { id: 3, owner: Owner::Key },
+    Thing { id: LINK_L, owner: Owner::Key },
+    Thing { id: 10, owner: Owner::Actor(0) },
+    Thing { id: 11, owner: Owner::Actor(1) },
+    Thing { id: PERSON, owner: Owner::Actor(2) },
+    Thing { id: 12, owner: Owner::Actor(PERSON) },
+    Thing { id: 13, owner: Owner::Ownerless { first_admin: 3 } },
+    Thing { id: LINK_K, owner: Owner::Actor(0) },
+];
+/// Things content is written on, and the node with authority on each by its owner chain.
+pub const CONTENT: [(ThingId, NodeId); 4] = [(10, 0), (11, 1), (12, 2), (13, 3)];
+/// Things roles are written on, with that node.
+pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3), (PERSON, 2), (LINK_K, 0)];
+pub const HOLDERS: [NodeId; 7] = [0, 1, 2, 3, PERSON, LINK_K, LINK_L];
 pub const START: u64 = 1_000_000_000;
 
 /// Retention presets the generator draws from.
@@ -69,15 +93,87 @@ fn stamp(ts: u64, commit: CommitId, ctr: u32) -> Stamp {
     Stamp { ts, dot: Dot { commit, ctr } }
 }
 
-/// A random history of `n` commits by `NODES` nodes on `THINGS`, every body held but about one in
-/// ten missing, `now` up to six hours after the last commit. Snapshots are written from the
-/// author's model state of everything before them.
+fn role_part(thing: ThingId, e: EdgeWrite) -> Part {
+    Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body: Body::Held(Delta::Edge(e)), stripped: Default::default() }
+}
+
+fn plain_part(thing: ThingId, aspect: Aspect, retention: Retention, d: Delta) -> Part {
+    Part { thing, aspect, retention, body: Body::Held(d), stripped: Default::default() }
+}
+
+/// The roster snapshot of `n` an owner-chain author writes from its own timeline (spec/permissions.md
+/// §6): the standing edges with `since`, and a ledger entry per ended tenure of write or above.
+pub fn roster_parts(h: &Held, n: ThingId) -> Vec<Part> {
+    let tl = timeline(h);
+    let mut cur: std::collections::BTreeMap<NodeId, (Role, Key)> = Default::default();
+    let mut parts = Vec::new();
+    for p in tl.applied.iter().filter(|p| p.ev.thing == n && p.ev.holder != NodeId::MAX) {
+        let new = p.ev.value.filter(|v| v.role >= Role::Write && v.alive(wall(p.ev.key.0))).map(|v| v.role);
+        let old = cur.get(&p.ev.holder).copied();
+        if old.map(|o| o.0) == new {
+            continue;
+        }
+        if let Some((role, since)) = old {
+            let frontier = if p.explicit { p.ev.frontier.as_ref().map(|f| f.iter().copied().collect()) } else { None };
+            let t = RosterItem::Tenure { holder: p.ev.holder, role, since: Some(since), until: p.ev.key, frontier };
+            parts.push(Part { aspect: Aspect::TENURES, ..plain_part(n, Aspect::TENURES, Retention::ROLE, Delta::Roster(t)) });
+        }
+        match new {
+            Some(r) => cur.insert(p.ev.holder, (r, p.ev.key)),
+            None => cur.remove(&p.ev.holder),
+        };
+    }
+    for (&(t, holder), e) in tl.state_at((u64::MAX, NodeId::MAX, CommitId::MAX)) {
+        if t != n {
+            continue;
+        }
+        let edge = EdgeWrite { holder, role: Some(e.role), invite: e.invite, until: e.until };
+        let since = cur.get(&holder).map(|c| c.1);
+        parts.push(plain_part(n, Aspect::ROLES, Retention::ROLE, Delta::Roster(RosterItem::Edge { edge, since })));
+    }
+    parts
+}
+
+/// A random history of `n` commits on `THINGS`: content, compaction snapshots, purges, undos,
+/// required retention, acting for the person, edge writes (grants, `until`, invites, self-removals,
+/// finalizes, link redemptions) and roster snapshots; every body held but about one in ten missing
+/// and a few parked; sometimes a creation record unknown; `now` up to six hours after the last
+/// commit. Snapshots, undos and rosters are written from the author's model state.
 pub fn history(seed: u64, n: usize) -> Held {
     let mut r = Rng::new(seed);
     let mut commits: Vec<Commit> = Vec::new();
     let mut ids: BTreeSet<CommitId> = BTreeSet::new();
     let mut w = START;
     let mut logical = 0u64;
+    let mut new_id = |r: &mut Rng| loop {
+        let id = r.below(1_000_000) as CommitId + 1;
+        if ids.insert(id) {
+            break id;
+        }
+    };
+    let base = |id, author, ts| Commit {
+        id,
+        author,
+        actor: author,
+        ts,
+        expires: None,
+        kind: CommitKind::Content,
+        parts: vec![],
+        purge: vec![],
+        frontier: None,
+        undoes: None,
+    };
+    // half the histories set a link up: K's edge on thing 10, L's (invite) edge on K
+    if r.chance(50) {
+        let ts = w * MS;
+        let until = r.chance(50).then(|| w + (2 + r.below(8)) * HOUR);
+        let k = EdgeWrite::role(LINK_K, Some(Role::Write));
+        let l = EdgeWrite { holder: LINK_L, role: Some(Role::Write), invite: Some(Role::Write), until };
+        let (a, b) = (new_id(&mut r), new_id(&mut r));
+        commits.push(Commit { kind: CommitKind::Role, parts: vec![role_part(10, k)], ..base(a, 0, ts) });
+        commits.push(Commit { kind: CommitKind::Role, parts: vec![role_part(LINK_K, l)], ..base(b, 0, ts + 1) });
+        logical = 1;
+    }
     for _ in 0..n {
         let step = r.below(4) * HOUR / 2;
         if step == 0 {
@@ -87,63 +183,146 @@ pub fn history(seed: u64, n: usize) -> Held {
         }
         w += step;
         let ts = w * MS + logical;
-        let id = loop {
-            let id = r.below(1_000_000) as CommitId + 1;
-            if ids.insert(id) {
-                break id;
-            }
+        let id = new_id(&mut r);
+        let (thing, chief) = r.pick(&CONTENT);
+        // chiefs write most of the time, so most histories have valid writes and rights (an author
+        // nothing leads to the thing from waits)
+        let named: Vec<NodeId> = commits
+            .iter()
+            .filter(|c| c.is_role())
+            .flat_map(|c| c.parts.iter())
+            .filter_map(|p| match &p.body {
+                Body::Held(Delta::Edge(e)) if p.thing == thing && e.holder < NODES as NodeId => Some(e.holder),
+                _ => None,
+            })
+            .collect();
+        let author = if r.chance(70) {
+            chief
+        } else if !named.is_empty() && r.chance(60) {
+            r.pick(&named)
+        } else {
+            r.below(NODES) as NodeId
         };
-        let th = r.pick(&THINGS);
-        let thing = th.id;
-        // owners write half the time, so most histories have valid writes and rights
-        let author = if r.chance(50) { th.owner } else { r.below(NODES) as NodeId };
         let roll = r.below(100);
-        let base = Commit { id, author, ts, expires: None, kind: CommitKind::Content, parts: vec![], purge: vec![], frontier: None };
+        let prefix = |me: NodeId| Held { now: w, me, things: THINGS.to_vec(), commits: commits.clone(), own_state: vec![] };
         let c = if roll < 15 {
-            let holder = r.below(NODES) as NodeId;
-            let role = r.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)]);
-            let frontier = (role != Some(Role::Admin))
-                .then(|| commits.iter().filter(|c| c.author == holder && r.chance(60)).map(|c| c.id).collect());
-            let body = Body::Held(Delta::Edge(EdgeWrite { holder, role }));
-            Commit { kind: CommitKind::Role, frontier, parts: vec![Part { thing, aspect: Aspect::ROLES, retention: Retention::ROLE, body, stripped: Default::default() }], ..base }
-        } else if roll < 25 && !commits.is_empty() {
+            let (thing, chief) = r.pick(&TARGETS);
+            let author = if r.chance(50) { chief } else { r.below(NODES) as NodeId };
+            let sub = r.below(100);
+            if sub < 55 {
+                let holder = r.pick(&HOLDERS);
+                let role = r.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)]);
+                let invite = role.filter(|_| r.chance(15));
+                let until = (role.is_some() && r.chance(25)).then(|| w + r.below(4) * HOUR);
+                let frontier = (role != Some(Role::Admin))
+                    .then(|| commits.iter().filter(|c| c.author == holder && r.chance(60)).map(|c| c.id).collect());
+                let e = EdgeWrite { holder, role, invite, until };
+                Commit { kind: CommitKind::Role, frontier, parts: vec![role_part(thing, e)], ..base(id, author, ts) }
+            } else if sub < 70 {
+                // self-removal (or lowering) of the author's own edge
+                let role = r.pick(&[None, Some(Role::Read)]);
+                Commit { kind: CommitKind::Role, parts: vec![role_part(thing, EdgeWrite::role(author, role))], ..base(id, author, ts) }
+            } else if sub < 80 {
+                // finalize: another's edge (a timed one when held), no frontier
+                let timed: Vec<NodeId> = commits
+                    .iter()
+                    .flat_map(|c| c.parts.iter())
+                    .filter_map(|p| match &p.body {
+                        Body::Held(Delta::Edge(e)) if p.thing == thing && e.until.is_some() => Some(e.holder),
+                        _ => None,
+                    })
+                    .collect();
+                let holder = if timed.is_empty() { r.pick(&HOLDERS) } else { r.pick(&timed) };
+                Commit { kind: CommitKind::Role, parts: vec![role_part(thing, EdgeWrite::role(holder, None))], ..base(id, author, ts) }
+            } else if sub < 87 {
+                // a link redemption: L invite-grants a node on K, single use removing L's edge
+                let holder = r.below(NODES) as NodeId;
+                let mut parts = vec![role_part(LINK_K, EdgeWrite::role(holder, Some(r.pick(&[Role::Read, Role::Write]))))];
+                if r.chance(50) {
+                    parts.push(role_part(LINK_K, EdgeWrite::role(LINK_L, None)));
+                }
+                Commit { kind: CommitKind::Role, parts, ..base(id, LINK_L, ts) }
+            } else {
+                let parts = if thing == 13 { vec![] } else { roster_parts(&prefix(chief), thing) };
+                if parts.is_empty() {
+                    Commit { kind: CommitKind::Role, parts: vec![role_part(thing, EdgeWrite::role(r.pick(&HOLDERS), Some(Role::Read)))], ..base(id, chief, ts) }
+                } else {
+                    Commit { kind: CommitKind::Roster, parts, ..base(id, chief, ts) }
+                }
+            }
+        } else if roll < 23 && !commits.is_empty() {
             let aspect = r.pick(&ASPECTS);
-            let prefix = Held { now: w, me: author, things: THINGS.to_vec(), commits: commits.clone(), own_state: vec![] };
-            let o = evaluate(&prefix);
+            let o = evaluate(&prefix(author));
             let mut ws = o.states.get(&(thing, aspect)).cloned().unwrap_or_default();
             // a snapshot carries writes of expiring deltas value-less (spec/crdt.md §8)
             for x in &mut ws {
                 x.strip(|c| commits.iter().any(|k| k.id == c && k.expires.is_some()));
             }
             let retention = if r.chance(15) { Retention { least_rel: Some(HOUR), most_zero: true, ..Retention::WRITER } } else { Retention::WRITER };
-            let body = Body::Held(Delta::Writes(ws));
-            Commit { kind: CommitKind::Snapshot, parts: vec![Part { thing, aspect, retention, body, stripped: Default::default() }], ..base }
-        } else if roll < 35 && !commits.is_empty() {
+            Commit { kind: CommitKind::Snapshot, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
+        } else if roll < 31 && !commits.is_empty() {
             let target = commits[r.below(commits.len() as u64) as usize].clone();
             let tp = target.parts[0].clone();
             let item = match r.below(3) {
                 0 => PurgeItem::Commit { commit: target.id, thing: tp.thing, aspect: tp.aspect },
                 1 => PurgeItem::Aspect { thing: tp.thing, aspect: tp.aspect },
-                _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.author },
+                _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.actor },
             };
             let ws = vec![Write { stamp: stamp(ts, id, 1), op: Op::Set { value: Some(r.below(5) as Val) } }];
-            let part = Part { thing: tp.thing, aspect: PURGE, retention: Retention::PLAIN, body: Body::Held(Delta::Writes(ws)), stripped: Default::default() };
-            Commit { purge: vec![item], parts: vec![part], ..base }
-        } else {
-            let aspect = r.pick(&ASPECTS);
-            let prior: Vec<Write> = commits
-                .iter()
-                .flat_map(|c| c.parts.iter())
-                .filter(|p| p.thing == thing && p.aspect == aspect)
-                .flat_map(|p| match &p.body {
-                    Body::Held(Delta::Writes(ws)) => ws.clone(),
-                    _ => vec![],
-                })
-                .collect();
-            let ws = content_writes(&mut r, aspect.kind, ts, id, &prior);
+            let author = match CONTENT.iter().find(|x| x.0 == tp.thing) {
+                Some(&(_, chief)) if r.chance(60) => chief,
+                _ => author,
+            };
+            Commit { purge: vec![item], parts: vec![plain_part(tp.thing, PURGE, Retention::PLAIN, Delta::Writes(ws))], ..base(id, author, ts) }
+        } else if roll < 34 {
+            // a required retention setting for one aspect or every AK
+            let prefix_ = r.pick(&[None, Some(REG.name), Some(MAP.name), Some(TEXT.name)]);
             let retention = r.pick(&retentions(w));
-            let expires = (r.chance(15) && retention.least_abs.is_none()).then(|| w + (1 + r.below(4)) * HOUR);
-            Commit { expires, parts: vec![Part { thing, aspect, retention, body: Body::Held(Delta::Writes(ws)), stripped: Default::default() }], ..base }
+            let expiry = (retention.least_abs.is_none() && r.chance(20)).then(|| (1 + r.below(3)) * HOUR);
+            let d = Delta::Required(vec![Rule { prefix: prefix_, retention, expiry }]);
+            Commit { parts: vec![plain_part(thing, Aspect::REQUIRED, Retention::FIXED, d)], ..base(id, chief, ts) }
+        } else {
+            let undone = (roll < 44)
+                .then(|| {
+                    let cands: Vec<CommitId> = commits.iter().filter(|c| c.kind == CommitKind::Content && c.purge.is_empty()).map(|c| c.id).collect();
+                    (!cands.is_empty()).then(|| r.pick(&cands)).and_then(|t| crate::undo::undo(&prefix(author), t, id, ts, author))
+                })
+                .flatten();
+            match undone {
+                Some(u) => u,
+                None => {
+                    let aspect = r.pick(&ASPECTS);
+                    let prior: Vec<Write> = commits
+                        .iter()
+                        .flat_map(|c| c.parts.iter())
+                        .filter(|p| p.thing == thing && p.aspect == aspect)
+                        .flat_map(|p| match &p.body {
+                            Body::Held(Delta::Writes(ws)) => ws.clone(),
+                            _ => vec![],
+                        })
+                        .collect();
+                    let ws = content_writes(&mut r, aspect.kind, ts, id, &prior);
+                    let mut retention = r.pick(&retentions(w));
+                    let mut expires = (r.chance(15) && retention.least_abs.is_none()).then(|| w + (1 + r.below(4)) * HOUR);
+                    // half the writers follow the required retention they hold
+                    if r.chance(50) {
+                        let req = commits.iter().filter(|c| c.ts < ts).flat_map(|c| c.parts.iter().map(move |p| (c, p))).filter_map(|(c, p)| match &p.body {
+                            Body::Held(Delta::Required(rules)) if p.thing == thing => Some((c.ts, rules.clone())),
+                            _ => None,
+                        });
+                        if let Some((_, rules)) = req.max_by_key(|x| x.0) {
+                            let e = rules.iter().find(|x| x.prefix == Some(aspect.name)).or_else(|| rules.iter().find(|x| x.prefix.is_none()));
+                            if let Some(e) = e {
+                                retention = e.retention;
+                                expires = e.expiry.map(|d| w + d);
+                            }
+                        }
+                    }
+                    // node 2 acts for its person on the person's thing half the time
+                    let actor = if thing == 12 && author == 2 && r.chance(50) { PERSON } else { author };
+                    Commit { expires, actor, parts: vec![plain_part(thing, aspect, retention, Delta::Writes(ws))], ..base(id, author, ts) }
+                }
+            }
         };
         commits.push(c);
     }
@@ -151,10 +330,17 @@ pub fn history(seed: u64, n: usize) -> Held {
         for p in &mut c.parts {
             if r.chance(10) {
                 p.body = Body::Missing;
+            } else if r.chance(2) {
+                p.body = Body::Parked;
             }
         }
     }
-    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things: THINGS.to_vec(), commits, own_state: vec![] }
+    let mut things = THINGS.to_vec();
+    if r.chance(5) {
+        let gone = r.pick(&[3, PERSON, 12, 13, LINK_K, LINK_L]);
+        things.retain(|t| t.id != gone);
+    }
+    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits, own_state: vec![] }
 }
 
 fn content_writes(r: &mut Rng, kind: AspectKind, ts: u64, id: CommitId, prior: &[Write]) -> Vec<Write> {

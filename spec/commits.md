@@ -184,7 +184,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 ### Required retention
 - **Required retention**: `required.0^` (spec/data-model.md §9) has, in `rules`, AK prefixes mapped to a purgeable-by, keep bounds and an optional expiry duration, and, in `keep`, the default for removals (spec/permissions.md §2), read in force as the rules are.
   - A delta answers to it unless it is a compaction snapshot's or its aspect has fixed retention or is not durable.
-  - The setting **in force** at a key is what the newest valid `required.0^` delta on the thing ordered before that key says (spec/permissions.md §5.2); none: nothing is required.
+  - The setting **in force** at a key is what the newest valid `required.0^` delta on the thing ordered strictly before that key (by key, spec/permissions.md §5.1) says, each judged as an admin-only delta at its own key (spec/permissions.md §5.2); none: nothing is required.
   - The entry governing an AK is the one with its longest prefix, the empty prefix matching every AK; no entry: nothing is required.
   - A delta **breaks** an entry that governs it if it does not carry exactly the entry's purgeable-by and bounds and its commit, with a duration, `expires` = `wall_ms(ts)` + that duration, without one no `expires`.
   - A delta that breaks the setting in force at its key is invalid; its commit's other deltas are judged on their own.
