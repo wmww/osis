@@ -69,14 +69,14 @@ fn attached_handle_works_at_the_node() {
     assert_eq!(n.get(t, title.clone()).unwrap(), Some(Value::Str("a".into())));
     assert_eq!(c.get(t, title.clone()).unwrap(), Some(Value::Str("a".into())));
     assert_eq!(c.aspects(t).unwrap(), n.aspects(t).unwrap());
-    assert!(c.knows(t) && !c.knows(osis::Tid::from_bytes([7; 15])));
-    assert_eq!(c.groups_of(t), n.groups_of(t));
-    assert!(c.groups_of(t).item_of.contains(&g));
-    assert_eq!(c.roster(t), n.roster(t));
-    assert_eq!(c.role_on(t), n.role_on(t));
-    assert_eq!(c.owner_of(t), Some(n.me()));
-    assert_eq!(c.created(t), n.created(t));
-    assert_eq!(c.changed(t), n.changed(t));
+    assert!(c.knows(t).unwrap() && !c.knows(osis::Tid::from_bytes([7; 15])).unwrap());
+    assert_eq!(c.groups_of(t).unwrap(), n.groups_of(t).unwrap());
+    assert!(c.groups_of(t).unwrap().item_of.contains(&g));
+    assert_eq!(c.roster(t).unwrap(), n.roster(t).unwrap());
+    assert_eq!(c.role_on(t).unwrap(), n.role_on(t).unwrap());
+    assert_eq!(c.owner_of(t).unwrap(), Some(n.me()));
+    assert_eq!(c.created(t).unwrap(), n.created(t).unwrap());
+    assert_eq!(c.changed(t).unwrap(), n.changed(t).unwrap());
     // a client's status adds its attachment
     let mut cs = c.status().unwrap();
     assert_eq!(cs.remotes.len(), 1);
@@ -121,7 +121,7 @@ fn attached_handle_works_at_the_node() {
     assert_eq!(c.get(t, title.clone()).unwrap(), Some(Value::Str("b".into())));
     // a thing watch and a dropped subscription
     let (ttx, trx) = channel();
-    let ts = c.watch_thing(t, move |_, ch| ttx.send(ch.ak).unwrap());
+    let ts = c.watch_thing(t, move |_, ch| ttx.send(ch.ak).unwrap()).unwrap();
     let mut seen = Vec::new();
     while !seen.contains(&title) {
         seen.push(trx.recv_timeout(W).unwrap());
@@ -137,7 +137,7 @@ fn attached_handle_works_at_the_node() {
     let c2 = c.clone();
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c2.engine(|_| ()))).is_err(), "Internals on an attached handle");
     drop(c);
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 // spec/wire.md §11.2 (max_reply), notes/client-port.md §2 Reply allowance: a value above the reply bound reads TooLarge; `stream` reads it by stream_read pages
@@ -166,7 +166,7 @@ fn too_large_then_stream_read() {
     assert!(got == big, "stream equals the value");
     assert_eq!(c.at(t, k).len().unwrap(), Some(big.len() as u64));
     drop(c);
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 /// A raw protocol session (tests of the wire rules).
@@ -294,7 +294,7 @@ fn write_nonces_per_session() {
     assert_eq!(a, b);
     drop((r, r2));
     // a restart: nothing remembered, so a resend of what ran is unknown, every one of them
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
     let n = node(&store, &net, &sock, false);
     let mut r = Raw::unix(&sock);
     assert!(matches!(r.auth([1; 16]), Ok(Outcome::Ok { .. })));
@@ -305,7 +305,7 @@ fn write_nonces_per_session() {
     }
     assert_ne!(n.get(t, k.clone()).unwrap(), Some(Value::Int(9)));
     drop(r);
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 // spec/sync.md §10 (unix), spec/wire.md §11.2 (Error 1), notes/client-port.md §0, §5: the Owner tier comes from the unix transport alone: a keyed InProcess peer on the node's own listener is refused at Auth (Error 1) and its calls too
@@ -325,7 +325,7 @@ fn keyed_peer_is_never_owner() {
     let mut u = Raw::unix(&sock);
     assert!(matches!(u.auth([1; 16]), Ok(Outcome::Ok { .. })));
     drop((r, u));
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 // spec/wire.md §11.2, notes/client-port.md §2 Port stall bounds: the worst method rows as the port worker runs them (each one engine transaction holding the lock the sync driver needs) against a Sync pass's per-input bound (notes/sync.md Hub stall bounds: 1024 puts in one commit, about 0.45 s at 10^5 entries). Wall time of the call at an otherwise idle node (the worker is one thread). Release, by hand: `cargo test --release -p osis --test it -- --ignored port::bench_worst_rows --nocapture`
@@ -377,7 +377,7 @@ fn bench_worst_rows() {
             }
         });
         drop(cs);
-        small.close().unwrap();
+        assert_eq!(small.close().unwrap(), osis::Close::Closed);
     }
     time("get", &mut || drop(c.get(things[0], k.clone()).unwrap()));
     time("write 1024 sets", &mut || {
@@ -394,7 +394,7 @@ fn bench_worst_rows() {
     time("undo, home group", &mut || drop(c.undo(&Scope::Group(c.home()))));
     time("status", &mut || drop(c.status().unwrap()));
     drop(c);
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 
@@ -469,11 +469,11 @@ fn attached_wait_synced_as_at_the_node() {
     assert_eq!(n.status().unwrap().groups[&lone].labels.len(), 1);
     block_on(c.wait_synced(SyncScope::Group(lone), W)).unwrap();
     // the sharing reads agree with the node's
-    assert_eq!(c.links(g).len(), 1);
-    assert_eq!(c.links(g), n.links(g));
-    assert_eq!(c.reach(t), n.reach(t));
-    assert!(!c.holder_path(g, n.node()).is_empty());
-    assert_eq!(c.holder_path(g, n.node()), n.holder_path(g, n.node()));
+    assert_eq!(c.links(g).unwrap().len(), 1);
+    assert_eq!(c.links(g).unwrap(), n.links(g).unwrap());
+    assert_eq!(c.reach(t).unwrap(), n.reach(t).unwrap());
+    assert!(!c.holder_path(g, n.node()).unwrap().is_empty());
+    assert_eq!(c.holder_path(g, n.node()).unwrap(), n.holder_path(g, n.node()).unwrap());
     c.sync_now().unwrap();
     block_on(c.wait_synced(SyncScope::Group(t), W)).unwrap();
     block_on(c.wait_synced(SyncScope::All, W)).unwrap();
@@ -497,8 +497,8 @@ fn attached_wait_synced_as_at_the_node() {
     assert!(matches!(block_on(cm.wait_synced(SyncScope::All, short)), Err(osis::Error::Network(_))));
     drop(waits);
     drop((c, cm));
-    m.close().unwrap();
-    n.close().unwrap();
+    assert_eq!(m.close().unwrap(), osis::Close::Closed);
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 // spec/wire.md §11.1-§11.2 (max_reply, MAX_SUBS), notes/client-port.md §2: a Sub whose initial Reply exceeds max_reply is answered TooLarge and is not kept live at the node's worker either, so MAX_SUBS bounds the worker's subscriptions and a later change costs nothing for them
@@ -530,7 +530,7 @@ fn too_large_sub_is_not_kept() {
     assert!(matches!(r.call(1_000_000, 19, vec![]), Outcome::Ok { .. }));
     assert_eq!(n.watches(), before);
     drop(r);
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 /// A host on `net` taking any label, with its address.
@@ -595,34 +595,34 @@ fn rows_that_wait_through_the_socket() {
     assert_eq!(block_on(cb.redeem(&link)).unwrap(), g);
     until(|| cb.get(t, k.clone()).is_ok_and(|v| v == Some(Value::Str("x".into()))), "the group's content at Bob");
     let bob = cb.me();
-    until(|| !ca.holder_path(g, bob).is_empty(), "the join reached Alice");
+    until(|| !ca.holder_path(g, bob).unwrap().is_empty(), "the join reached Alice");
     // its removal, through hers: the link ends with it
-    assert_eq!(ca.links(g).len(), 1);
+    assert_eq!(ca.links(g).unwrap().len(), 1);
     block_on(ca.demote(g, bob, Lower::Remove, plain)).unwrap();
-    assert!(ca.holder_path(g, bob).is_empty());
-    assert_eq!(ca.links(g).len(), 0);
+    assert!(ca.holder_path(g, bob).unwrap().is_empty());
+    assert_eq!(ca.links(g).unwrap().len(), 0);
     // an error of the flow comes back as itself
     assert!(matches!(block_on(ca.demote(g, bob, Lower::To(Role::Read), plain)), Err(osis::Error::Invalid(_))));
     // a direct holder lowered: the role goes over the wire
     let (g2, _) = group("y");
     ca.share(g2, bob, Role::Write, Default::default()).unwrap();
     block_on(ca.demote(g2, bob, Lower::To(Role::Read), Demotion { sync: WaitForSync::Try(Duration::from_secs(5)), ..plain })).unwrap();
-    assert_eq!(a.roster(g2).get(&bob).map(|e| e.role), Some(Role::Read));
+    assert_eq!(a.roster(g2).unwrap().get(&bob).map(|e| e.role), Some(Role::Read));
     // ending a link, and a joiner of one
     let (g3, _) = group("z");
     let l3 = ca.make_link(g3, Role::Read, Default::default()).unwrap();
-    let id = ca.links(g3)[0].id;
+    let id = ca.links(g3).unwrap()[0].id;
     block_on(ca.revoke_link(id, plain)).unwrap();
-    assert_eq!(ca.links(g3).len(), 0);
+    assert_eq!(ca.links(g3).unwrap().len(), 0);
     assert!(!l3.to_string().is_empty());
     let (g4, _) = group("w");
     let l4 = ca.make_link(g4, Role::Read, Default::default()).unwrap();
     block_on(ca.wait_synced(SyncScope::All, W)).unwrap();
     assert_eq!(block_on(cb.redeem(&l4)).unwrap(), g4);
-    let id = ca.links(g4)[0].id;
-    until(|| !ca.holder_path(g4, bob).is_empty(), "the second join reached Alice");
+    let id = ca.links(g4).unwrap()[0].id;
+    until(|| !ca.holder_path(g4, bob).unwrap().is_empty(), "the second join reached Alice");
     block_on(ca.revoke_joiner(id, bob, Demotion { keep: Some(false), ..plain })).unwrap();
-    assert!(ca.holder_path(g4, bob).is_empty());
+    assert!(ca.holder_path(g4, bob).unwrap().is_empty());
     // a contact card made and imported through the sockets
     let card = cb.contact_card().unwrap();
     assert_eq!(card, b.contact_card().unwrap());
@@ -631,9 +631,9 @@ fn rows_that_wait_through_the_socket() {
     assert_eq!(ca.profile_of(bob).unwrap(), Some(profile));
     assert_eq!(ca.profile_of(ca.me()).unwrap(), None);
     drop((ca, cb));
-    a.close().unwrap();
-    b.close().unwrap();
-    host.close().unwrap();
+    assert_eq!(a.close().unwrap(), osis::Close::Closed);
+    assert_eq!(b.close().unwrap(), osis::Close::Closed);
+    assert_eq!(host.close().unwrap(), osis::Close::Closed);
 }
 
 // spec: none (API surface); notes/client-port.md §2 (rows that wait): a row that waits holds neither the worker (another call is answered meanwhile) nor the database: the last handle going ends it, told, and the store closes well before its deadline
@@ -670,7 +670,7 @@ fn a_waiting_row_holds_nothing() {
     rx.recv_timeout(W).expect("the worker answered beside a waiting row");
     let (ctx, crx) = channel();
     std::thread::spawn(move || ctx.send(n.close()).unwrap());
-    crx.recv_timeout(W).expect("close waited for a row that waits").unwrap();
+    assert_eq!(crx.recv_timeout(W).expect("close waited for a row that waits").unwrap(), osis::Close::Closed);
     go_tx.send(()).unwrap();
     assert!(t.join().unwrap().is_err(), "told");
     drop(m);
@@ -726,23 +726,23 @@ fn process_wide_rows_through_the_socket() {
     assert_eq!(c.devices().unwrap(), n.devices().unwrap());
     assert_eq!(c.devices().unwrap().len(), 1);
     c.add_host(&addr).unwrap();
-    assert_eq!(n.hosts(), vec![addr.clone()]);
-    assert_eq!(c.hosts(), vec![addr.clone()]);
+    assert_eq!(n.hosts().unwrap(), vec![addr.clone()]);
+    assert_eq!(c.hosts().unwrap(), vec![addr.clone()]);
     c.remove_host(&addr).unwrap();
-    assert_eq!(n.hosts(), vec![]);
+    assert_eq!(n.hosts().unwrap(), vec![]);
     c.add_host(&addr).unwrap();
     // hosting: shown, set, and up without a restart; off
-    assert_eq!(c.hosting(), None);
-    assert_eq!(c.host_key(), None);
+    assert_eq!(c.hosting().unwrap(), None);
+    assert_eq!(c.host_key().unwrap(), None);
     let h = osis::Hosting { listen: vec!["mem://n2".into()], admit: osis::Admit::Own, ..Default::default() };
     c.set_hosting(Some(h.clone())).unwrap();
-    assert_eq!(n.hosting(), Some(h.clone()));
-    assert_eq!(c.hosting(), Some(h));
-    assert_eq!(c.host_key(), n.host_key());
-    assert!(c.host_key().is_some());
+    assert_eq!(n.hosting().unwrap(), Some(h.clone()));
+    assert_eq!(c.hosting().unwrap(), Some(h));
+    assert_eq!(c.host_key().unwrap(), n.host_key().unwrap());
+    assert!(c.host_key().unwrap().is_some());
     until(|| matches!(n.host_address(), Ok(Some(_))), "hosting did not start under the running node");
     c.set_hosting(None).unwrap();
-    assert_eq!(c.hosting(), None);
+    assert_eq!(c.hosting().unwrap(), None);
     until(|| matches!(n.host_address(), Ok(None)), "hosting did not stop");
     // policies, reach
     let p = GroupPolicy { publish_reach: Some(false), receipts_only: false };
@@ -787,9 +787,9 @@ fn process_wide_rows_through_the_socket() {
     assert!(matches!(raw.call(2, 61, vec![Value::uint(5)]), Outcome::Err { code: 10, .. }));
     drop(raw);
     drop((c, c3));
-    p2.close().unwrap();
-    n.close().unwrap();
-    host.close().unwrap();
+    assert_eq!(p2.close().unwrap(), osis::Close::Closed);
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
+    assert_eq!(host.close().unwrap(), osis::Close::Closed);
 }
 
 // spec: none (API surface); notes/client-port.md §2 (Bundles): export and import share one connection without mixing: a bundle exported, read to its end, and imported on the same handle
@@ -812,7 +812,7 @@ fn bundle_out_and_in_on_one_handle() {
     assert!(matches!(raw.call(3, 60, vec![Value::Bytes(out[3..].to_vec())]), Outcome::Ok { .. }));
     assert!(matches!(raw.call(4, 61, vec![Value::uint(out.len() as u64)]), Outcome::Ok { .. }));
     drop((raw, c));
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 // spec: none (API surface); notes/client-port.md §2: a pairing reply above the small allowance comes back from the one send: an offer is used once, so a retry under a larger allowance would be refused
@@ -833,8 +833,8 @@ fn pair_reply_above_the_small_allowance() {
     let p = join.finish(&reply).unwrap();
     assert_eq!(p.node(), node);
     drop((c, p));
-    n.close().unwrap();
-    host.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
+    assert_eq!(host.close().unwrap(), osis::Close::Closed);
 }
 
 // spec/wire.md §11.2 (client port), notes/client-port.md §2 Writes: writes from several threads of one attached handle all apply: nonces leave the client in the order they were taken (on its I/O thread), so none reaches the node below a later one and reads "outcome unknown" without having run
@@ -856,7 +856,7 @@ fn threads_writing_on_one_handle() {
     let failed: usize = hs.into_iter().map(|h| h.join().unwrap()).sum();
     assert_eq!(failed, 0);
     drop(c);
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 // spec/wire.md §11.2 (client port), notes/client-port.md §2 (MAX_SCHEMA_BYTES): schema sources registered through the port count per node, not per connection (registrations are process-wide and kept); the same source again costs nothing
@@ -877,7 +877,7 @@ fn schema_bytes_per_node() {
     assert!(matches!(reg(&mut b, 1, "a"), Outcome::Ok { .. }), "the same source again");
     assert!(matches!(reg(&mut b, 2, "b"), Outcome::Err { code: 5, .. }), "past the node's bound");
     drop(b);
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
 
 // notes/api.md Handle and sync: an attached handle's connection thread that dies of a panic closes
@@ -909,5 +909,5 @@ fn client_thread_panic_fails_waits() {
     let r = crate::common::block_on(c.wait_synced(osis::SyncScope::All, far));
     assert!(matches!(r, Err(osis::Error::Network(_))), "{r:?}");
     drop(c);
-    m.close().unwrap();
+    assert_eq!(m.close().unwrap(), osis::Close::Closed);
 }

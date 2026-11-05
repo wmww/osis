@@ -254,7 +254,7 @@ fn offline_write_reaches_the_peer_at_the_redial_spec_sync_6() {
     let g = chat(&a, &[]);
     a.grant(g, bob, Role::Write, Default::default()).unwrap();
     w.run();
-    assert_eq!(b.role_on(g), Some(Role::Write));
+    assert_eq!(b.role_on(g).unwrap(), Some(Role::Write));
     w.set_online(&b, false);
     let t = message(&b, g, "by bob");
     w.advance(30_000);
@@ -358,7 +358,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_8() {
     assert_eq!(a.get(p, name.clone()).unwrap(), Some(s("Bob")));
     assert_eq!(a.engine(|e| e.core.ix.bearers.len()), 1);
     // what it reads as survives a restart
-    a.close().unwrap();
+    assert_eq!(a.close().unwrap(), osis::Close::Closed);
     let a = Osis::open(at(&w, 3)).unwrap();
     w.run();
     let (client, _) = b.add_client(None).unwrap();
@@ -369,7 +369,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_8() {
     b.write_with(|x| x.at(p, name.clone()).set(&s("Robert"))).unwrap();
     w.run();
     assert_eq!(a.get(p, name.clone()).unwrap(), Some(s("Robert")));
-    let link = b.links(p).remove(0).id;
+    let link = b.links(p).unwrap().remove(0).id;
     w.until(b.revoke_link(link, skip()), 1000, 10).unwrap();
     w.run();
     assert_eq!(a.get(p, name.clone()).unwrap(), None, "the link ended: what it read goes (spec/permissions.md §3)");
@@ -388,7 +388,7 @@ fn placing_where_holders_may_not_read_is_reported_spec_sync_3() {
     w.run();
     let told = Arc::new(Mutex::new(Vec::new()));
     let t2 = told.clone();
-    let _sub = b.on_diagnostic(move |_, d| t2.lock().unwrap().push((d.kind, d.tids.clone())));
+    let _sub = b.on_diagnostic(move |_, d| t2.lock().unwrap().push((d.kind, d.tids.clone()))).unwrap();
     let mine = b
         .write_with(|x| {
             let t = x.create(b.me())?;

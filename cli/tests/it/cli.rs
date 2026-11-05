@@ -111,10 +111,11 @@ fn exit_codes_plan_cli_6() {
     assert_eq!(s.code(&["set", other, "a:b.0", "1"]), 3);
     // 7: invalid (role-class aspects are written only through sharing calls)
     assert_eq!(s.code(&["set", &t, "roles.0", "{}"]), 7);
-    // 1: not supported yet (queries)
+    // 1: not built yet (queries)
     let o = s.call(&["--json", "ls", "home"], "");
     assert_eq!(o.code, 1);
-    assert!(o.err.starts_with("{\"error\":{\"kind\":\"Unsupported\""), "{}", o.err);
+    assert!(o.err.starts_with("{\"error\":{\"kind\":\"Cli\""), "{}", o.err);
+    assert!(o.err.contains("not built yet"), "{}", o.err);
     // 8: store missing
     let d = tmp("missing");
     let o = osis_cli::main_with(["osis", "-s", d.to_str().unwrap(), "whoami"], &mut &b""[..], &mut Vec::new(), &mut Vec::new());
@@ -296,7 +297,7 @@ fn groups_plan_cli_4() {
     assert_eq!(s.ok(&["role", &t]).line(), "admin");
     s.ok(&["roster", "me"]);
     s.ok(&["delete", &t]);
-    assert!(s.ok(&["show", &t]).out.contains("state\tdeleted"), "a deleted thing shows as such");
+    assert!(s.ok(&["show", &t]).out.contains("state\tempty"), "a deleted thing has no content");
 }
 
 // notes/cli.md Command table Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value
@@ -337,15 +338,15 @@ fn sharing_commands_local_plan_cli_4() {
 }
 
 // notes/cli.md Command table: commands over API pieces not built yet (queries, backlinks) parse and
-// report Unsupported; sharing commands without a runtime or hosts fail as the API does.
+// report it; sharing commands without a runtime or hosts fail as the API does.
 #[test]
-fn unbuilt_commands_report_unsupported_plan_cli_4() {
+fn unbuilt_commands_say_so_plan_cli_4() {
     let s = S::mem();
     let t = s.thing();
     for args in [vec!["ls", "home"], vec!["backlinks", &t]] {
         let o = s.call(&args, "");
         assert_eq!(o.code, 1, "{args:?}: {}", o.err);
-        assert!(o.err.contains("not supported yet"), "{args:?}: {}", o.err);
+        assert!(o.err.contains("not built yet"), "{args:?}: {}", o.err);
     }
     assert_eq!(s.ok(&["device", "ls"]).out.lines().count(), 1, "this device");
     assert_eq!(s.ok(&["hosts", "ls"]).out, "");

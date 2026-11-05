@@ -150,7 +150,7 @@ fn watch_thing_all_aspects() {
     let t = thing(&db);
     db.write_with(|w| w.at(t, ak("t:a.0")).set(&Value::Int(1))).unwrap();
     let (tx, rx) = channel();
-    let _s = db.watch_thing(t, move |_, c| tx.send((c.ak.as_str().to_string(), c.source == Source::Initial, c.value)).unwrap());
+    let _s = db.watch_thing(t, move |_, c| tx.send((c.ak.as_str().to_string(), c.source == Source::Initial, c.value)).unwrap()).unwrap();
     db.write_with(|w| w.at(t, ak("t:b.0")).set(&Value::Int(2))).unwrap();
     db.settle();
     let all: Vec<_> = rx.try_iter().collect();
@@ -185,7 +185,7 @@ fn derived_change_on_expiry() {
 fn diagnostics_reach_subscribers() {
     let db = db(1);
     let (tx, rx) = channel();
-    let _s = db.on_diagnostic(move |_, d| tx.send(d.kind).unwrap());
+    let _s = db.on_diagnostic(move |_, d| tx.send(d.kind).unwrap()).unwrap();
     let _ = db.engine(|e| e.ingest(&[0xff, 0x00, 0x01], Vec::new()));
     assert_eq!(recv(&rx), DiagnosticKind::BadInput);
 }
@@ -195,8 +195,8 @@ fn diagnostics_reach_subscribers() {
 fn watch_roster_initial() {
     let db = db(1);
     let (tx, rx) = channel();
-    let _s = db.watch_roster(db.me(), move |_, r| tx.send(r).unwrap());
-    assert_eq!(recv(&rx), db.roster(db.me()));
+    let _s = db.watch_roster(db.me(), move |_, r| tx.send(r).unwrap()).unwrap();
+    assert_eq!(recv(&rx).unwrap(), db.roster(db.me()).unwrap());
 }
 
 // notes/api.md Watching, Fixed directions: watches fire on remote writes: a commit made on
@@ -296,7 +296,7 @@ fn panicking_callback_is_a_diagnostic() {
     let k = ak("t:x.0");
     let t = thing(&db);
     let (dtx, drx) = channel();
-    let _d = db.on_diagnostic(move |_, d| dtx.send(d.kind).unwrap());
+    let _d = db.on_diagnostic(move |_, d| dtx.send(d.kind).unwrap()).unwrap();
     let _p = db.at(t, k.clone()).on_change(|_, c| assert_eq!(c.source, Source::Initial)).unwrap();
     let (tx, rx) = channel();
     let _s = db.at(t, k.clone()).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();

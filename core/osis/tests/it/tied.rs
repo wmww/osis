@@ -32,7 +32,7 @@ fn listed(db: &Osis, g: Tid, t: Tid) -> bool {
 }
 
 fn reach_of(db: &Osis, t: Tid, g: Tid) -> Option<GroupReach> {
-    db.reach(t).into_iter().find(|r| r.group == g)
+    db.reach(t).unwrap().into_iter().find(|r| r.group == g)
 }
 
 /// Alice's shared tag `g` (Bob writer, Carol writer); Bob's card shared into it, tied.
@@ -67,16 +67,16 @@ fn share_into_unplace_and_stale_placement() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let t = card(&bob, "plan");
     assert_eq!(bob.share_into(t, g, Role::Write, ShareOpts::default()).unwrap(), Share::Tied(Role::Write));
-    assert!(listed(&bob, g, t) && bob.roster(t)[&g].tied, "placement and edge at once");
+    assert!(listed(&bob, g, t) && bob.roster(t).unwrap()[&g].tied, "placement and edge at once");
     w.run();
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
     assert_eq!(reach_of(&alice, t, g), Some(GroupReach { group: g, placed: true, share: Share::Tied(Role::Write) }));
 
     // no admin on Bob's card: the edge goes as a self-removal through admin on the tag, at once
     alice.write_with(|w| w.unplace(t, g)).unwrap();
-    assert!(!alice.roster(t).contains_key(&g), "removed with the unplace, before any sync");
+    assert!(!alice.roster(t).unwrap().contains_key(&g), "removed with the unplace, before any sync");
     w.run();
-    assert!(!bob.roster(t).contains_key(&g));
+    assert!(!bob.roster(t).unwrap().contains_key(&g));
     assert_eq!(text(&alice, t), None, "Alice lost the card");
     assert_eq!(reach_of(&bob, t, g), None);
 
@@ -88,10 +88,10 @@ fn share_into_unplace_and_stale_placement() {
     w.advance(60_000);
     w.run();
     assert!(listed(&bob, g, t), "the placement stays");
-    assert!(!bob.roster(t).contains_key(&g), "and grants nothing");
+    assert!(!bob.roster(t).unwrap().contains_key(&g), "and grants nothing");
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Excluded));
     for db in [&alice, &carol] {
-        assert!(!db.roster(t).contains_key(&g), "the tag's holders learn the removal");
+        assert!(!db.roster(t).unwrap().contains_key(&g), "the tag's holders learn the removal");
     }
     edit(&bob, t, "plan v2");
     w.run();
@@ -103,7 +103,7 @@ fn share_into_unplace_and_stale_placement() {
     assert!(matches!(bob.remove_edge_of(g, t), Err(Error::Invalid(_))), "Bob is the card's admin: demote");
     alice.remove_edge_of(g, t).unwrap();
     w.run();
-    assert!(!bob.roster(t).contains_key(&g));
+    assert!(!bob.roster(t).unwrap().contains_key(&g));
     assert!(matches!(alice.share_into(t, g, Role::Read, ShareOpts::default()), Err(Error::Permission { .. })), "only what you may share");
 }
 
@@ -125,14 +125,14 @@ fn obligation_after_unplace_and_hand_grant_survives() {
         w.unplace(hand, g)
     })
     .unwrap();
-    assert!(carol.roster(tied).contains_key(&g), "Carol may not remove it");
+    assert!(carol.roster(tied).unwrap().contains_key(&g), "Carol may not remove it");
     assert_eq!(reach_of(&carol, tied, g), Some(GroupReach { group: g, placed: false, share: Share::Tied(Role::Read) }));
     w.run();
     for db in [&alice, &bob, &carol] {
-        assert_eq!(db.roster(hand).get(&g).map(|e| (e.role, e.tied)), Some((Role::Read, false)), "the hand grant stays");
+        assert_eq!(db.roster(hand).unwrap().get(&g).map(|e| (e.role, e.tied)), Some((Role::Read, false)), "the hand grant stays");
     }
     for db in [&alice, &bob, &carol] {
-        assert!(!db.roster(tied).contains_key(&g), "the tied edge went");
+        assert!(!db.roster(tied).unwrap().contains_key(&g), "the tied edge went");
     }
     assert_eq!(text(&carol, tied), None, "Carol lost it");
 }
@@ -158,7 +158,7 @@ fn concurrent_raise_and_unplace_converge_unshared() {
         assert!(!listed(db, g, t));
     }
     for db in [&alice, &bob, &carol] {
-        assert!(!db.roster(t).contains_key(&g), "unplaced and unshared");
+        assert!(!db.roster(t).unwrap().contains_key(&g), "unplaced and unshared");
     }
 }
 
@@ -182,17 +182,17 @@ fn nested_tied_shares() {
     bob.write_with(|w| w.place(sub, g)).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("deep"), "tag -> sub-tag -> card");
-    assert_eq!(carol.role_on(t), Some(Role::Read), "the minimum along the path");
+    assert_eq!(carol.role_on(t).unwrap(), Some(Role::Read), "the minimum along the path");
     alice.write_with(|w| {
         w.remove_subgroup(g, sub)?;
         w.unplace(sub, g)
     })
     .unwrap();
-    assert!(!alice.roster(sub).contains_key(&g), "Alice, admin of the tag only: at once");
+    assert!(!alice.roster(sub).unwrap().contains_key(&g), "Alice, admin of the tag only: at once");
     w.run();
-    assert!(!bob.roster(sub).contains_key(&g));
-    assert_eq!(bob.roster(t).get(&sub).map(|e| e.tied), Some(true), "the inner share stays");
-    assert_eq!(carol.role_on(t), None);
+    assert!(!bob.roster(sub).unwrap().contains_key(&g));
+    assert_eq!(bob.roster(t).unwrap().get(&sub).map(|e| e.tied), Some(true), "the inner share stays");
+    assert_eq!(carol.role_on(t).unwrap(), None);
 }
 
 
@@ -217,7 +217,7 @@ fn receipts_only_scope_left_to_holders() {
     w.run();
     phone.sync_policy(sub, osis::GroupPolicy { receipts_only: true, ..Default::default() }).unwrap();
     w.run();
-    assert_eq!(phone.roster(sub).get(&g).map(|e| e.tied), Some(true));
+    assert_eq!(phone.roster(sub).unwrap().get(&g).map(|e| e.tied), Some(true));
     w.set_online(&alice, false);
     w.set_online(&bob, false);
     carol.write_with(|w| w.unplace(sub, g)).unwrap();
@@ -225,12 +225,12 @@ fn receipts_only_scope_left_to_holders() {
     w.advance(60_000);
     w.run();
     assert!(!listed(&phone, g, sub), "the phone saw the unplace");
-    assert!(phone.roster(sub).contains_key(&g), "but left the tied edge alone");
+    assert!(phone.roster(sub).unwrap().contains_key(&g), "but left the tied edge alone");
     w.set_online(&alice, true);
     w.set_online(&bob, true);
     w.advance(60_000);
     w.run();
-    assert!(!bob.roster(sub).contains_key(&g), "a holder removed it");
+    assert!(!bob.roster(sub).unwrap().contains_key(&g), "a holder removed it");
 }
 
 // spec/permissions.md §2 (tied edge removed only once the placement is gone): Bob's laptop
@@ -262,7 +262,7 @@ fn edge_before_placement_is_not_removed() {
     w.set_reachable(&bob, s1, false);
     assert_eq!(bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
     w.advance(70_000);
-    assert!(phone.roster(t).get(&g).is_some_and(|e| e.tied) && !listed(&phone, g, t), "the phone has the edge, not the placement");
+    assert!(phone.roster(t).unwrap().get(&g).is_some_and(|e| e.tied) && !listed(&phone, g, t), "the phone has the edge, not the placement");
     // other activity under the tag's label: the phone passes it again
     alice.write_with(|w| w.at(g, osis::core::NAME).set(&"Shared!".to_string())).unwrap();
     for _ in 0..3 {
@@ -271,7 +271,7 @@ fn edge_before_placement_is_not_removed() {
     w.set_reachable(&bob, s1, true);
     w.advance(70_000);
     assert!(listed(&alice, g, t));
-    assert_eq!(bob.roster(t).get(&g).map(|e| e.tied), Some(true), "the share stays");
+    assert_eq!(bob.roster(t).unwrap().get(&g).map(|e| e.tied), Some(true), "the share stays");
 }
 
 // spec/permissions.md §2 (the tie names the placement): Bob's phone gets the tied edge before the
@@ -300,27 +300,27 @@ fn edge_first_then_placement_then_unplace_removes_it() {
     w.set_reachable(&bob, s1, false);
     bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap();
     w.advance(70_000);
-    assert!(phone.roster(t).get(&g).is_some_and(|e| e.tied) && !listed(&phone, g, t), "the edge first");
+    assert!(phone.roster(t).unwrap().get(&g).is_some_and(|e| e.tied) && !listed(&phone, g, t), "the edge first");
     w.set_reachable(&bob, s1, true);
     for _ in 0..3 {
         w.advance(70_000);
     }
     assert!(listed(&phone, g, t) && listed(&alice, g, t), "then the placement");
-    assert!(phone.roster(t).get(&g).is_some_and(|e| e.tied));
+    assert!(phone.roster(t).unwrap().get(&g).is_some_and(|e| e.tied));
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
     // Alice, admin of the tag, would remove it too: offline, the phone's obligation alone
     w.set_online(&alice, false);
     phone.write_with(|w| w.unplace(t, g)).unwrap();
-    assert!(phone.roster(t).contains_key(&g), "not a self-removal: left to the obligation");
+    assert!(phone.roster(t).unwrap().contains_key(&g), "not a self-removal: left to the obligation");
     w.advance(70_000);
-    assert!(!phone.roster(t).contains_key(&g) && !bob.roster(t).contains_key(&g), "the phone removed it");
+    assert!(!phone.roster(t).unwrap().contains_key(&g) && !bob.roster(t).unwrap().contains_key(&g), "the phone removed it");
     w.set_online(&alice, true);
     for _ in 0..3 {
         w.advance(70_000);
     }
     for db in [&alice, &bob, &phone] {
         assert!(!listed(db, g, t));
-        assert!(!db.roster(t).contains_key(&g), "the tied edge went");
+        assert!(!db.roster(t).unwrap().contains_key(&g), "the tied edge went");
     }
 }
 
@@ -347,7 +347,7 @@ fn placement_pruned_by_a_reset_counts_as_gone() {
     w.run();
     for db in [&alice, &bob, &carol] {
         assert!(!listed(db, g, t) && listed(db, g, other));
-        assert!(!db.roster(t).contains_key(&g), "the tied edge went");
+        assert!(!db.roster(t).unwrap().contains_key(&g), "the tied edge went");
     }
 }
 
@@ -371,7 +371,7 @@ fn invalidated_placement_removes_the_tied_edge() {
     }
     for db in [&alice, &bob, &carol] {
         assert!(!listed(db, g, t), "the placement is invalid");
-        assert!(!db.roster(t).contains_key(&g), "the tied edge went");
+        assert!(!db.roster(t).unwrap().contains_key(&g), "the tied edge went");
     }
 }
 
@@ -387,14 +387,14 @@ fn group_holders_learn_edge_removal() {
     bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
     for db in [&alice, &carol] {
-        assert!(db.roster(t).contains_key(&g), "granted");
+        assert!(db.roster(t).unwrap().contains_key(&g), "granted");
     }
     let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&bob);
     w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
     w.run();
     for db in [&alice, &bob, &carol] {
-        assert!(!db.roster(t).contains_key(&g), "the removal reached {}", db.me());
+        assert!(!db.roster(t).unwrap().contains_key(&g), "the removal reached {}", db.me());
         assert_eq!(reach_of(db, t, g).map(|r| r.share), Some(Share::Excluded));
     }
     assert_eq!(text(&carol, t), None, "Carol lost the card");
@@ -414,13 +414,13 @@ fn inherited_inbox_opens() {
     bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
     for db in [&alice, &carol] {
-        assert!(db.roster(t).contains_key(&g), "the grant reached {}", db.me());
+        assert!(db.roster(t).unwrap().contains_key(&g), "the grant reached {}", db.me());
         assert_eq!(db.get(t, osis::core::NAME).unwrap(), Some("Bob's".to_string()));
     }
     w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
     w.run();
     for db in [&alice, &carol] {
-        assert!(!db.roster(t).contains_key(&g), "and its removal {}", db.me());
+        assert!(!db.roster(t).unwrap().contains_key(&g), "and its removal {}", db.me());
     }
 }
 
@@ -456,7 +456,7 @@ fn group_admin_learns_removal_elsewhere() {
     w.run();
     w.advance(60_000);
     w.run();
-    let stale: Vec<&str> = [("alice", &alice), ("bob", &bob), ("carol", &carol), ("dave", &dave)].into_iter().filter(|(_, db)| db.roster(t).contains_key(&g)).map(|(n, _)| n).collect();
+    let stale: Vec<&str> = [("alice", &alice), ("bob", &bob), ("carol", &carol), ("dave", &dave)].into_iter().filter(|(_, db)| db.roster(t).unwrap().contains_key(&g)).map(|(n, _)| n).collect();
     assert!(stale.is_empty(), "the removal reached everyone; not {stale:?}");
     assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
     assert_eq!(seed(&carol), old, "Carol does not learn the new one");
@@ -501,7 +501,7 @@ fn group_admin_copies_removal_without_new_keys() {
     w.run();
     w.advance(60_000);
     w.run();
-    assert!(!carol.roster(t).contains_key(&g), "the removal reached carol");
+    assert!(!carol.roster(t).unwrap().contains_key(&g), "the removal reached carol");
     assert_ne!(seed(&dave), old, "the removal refreshed the deposit seed");
     assert_eq!(seed(&carol), old, "Carol does not learn the new one");
 }
@@ -544,7 +544,7 @@ fn group_removal_deposit_promoted_without_new_keys() {
     w.run();
     w.advance(60_000);
     w.run();
-    assert!(!zoe.roster(t).contains_key(&g), "the removal reached zoe");
+    assert!(!zoe.roster(t).unwrap().contains_key(&g), "the removal reached zoe");
     assert_ne!(seed_of(&zoe, t), seed_of(&dave, t), "zoe does not learn the fresh seed");
 }
 
@@ -707,7 +707,7 @@ fn grant_and_removal_orders_large() {
         w.advance(120_000);
         w.run();
         for (n, db) in [("alice", &alice), ("eve", &eve), ("carol", &carol), ("dave", &dave)] {
-            assert_eq!(db.roster(t).contains_key(&h), granted, "seed {seed}: {n}'s roster");
+            assert_eq!(db.roster(t).unwrap().contains_key(&h), granted, "seed {seed}: {n}'s roster");
         }
         alice.grant(h, b, Role::Read, EdgeOpts::default()).unwrap();
         w.run();

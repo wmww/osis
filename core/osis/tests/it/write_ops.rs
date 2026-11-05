@@ -214,7 +214,7 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
             }
             vals.push(format!("{a}={:?}", db.get(*t, a.clone()).unwrap()));
         }
-        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t), db.get(*t, core::GROUP).unwrap(), db.groups_of(*t), vals.join(" "))));
+        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t).unwrap(), db.get(*t, core::GROUP).unwrap(), db.groups_of(*t).unwrap(), vals.join(" "))));
     }
     out
 }

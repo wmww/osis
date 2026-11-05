@@ -159,7 +159,7 @@ impl Osis {
             None => String::new(),
             Some(_) => return Err(Error::Invalid("not a string".into())),
         };
-        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None, known: self.knows(tid) }));
+        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None, known: self.knows(tid)? }));
         let b = Bind { tid, key, path, seq };
         let (st2, b2) = (st.clone(), b.clone());
         let sub = self.at(tid, b.key.clone()).on_change(move |db, c| {

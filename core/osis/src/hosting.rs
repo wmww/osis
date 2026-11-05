@@ -33,16 +33,16 @@ pub struct Hosting {
 
 impl Osis {
     /// What this node hosts (none: it does not).
-    pub fn hosting(&self) -> Option<Hosting> {
-        let h = self.get(self.node(), ct::HOST).ok().flatten()?;
-        Some(Hosting {
+    pub fn hosting(&self) -> Result<Option<Hosting>> {
+        let Some(h) = self.get(self.node(), ct::HOST)? else { return Ok(None) };
+        Ok(Some(Hosting {
             listen: h.listen,
             admit: h.admit,
             labels: h.labels,
             replicate: h.replicate.into_iter().map(|a| HostAddr::new(&a.url, a.key)).collect(),
             policy: h.policy,
             caps: h.caps,
-        })
+        }))
     }
 
     /// Starts, changes or (none) stops hosting: writes this node's `host.0^`. Stopping
@@ -87,12 +87,14 @@ impl Osis {
     /// The key of this node's host address (the transport key of its host secret), known
     /// without listening: made when `host.0^` is first set, kept until hosting stops. With a
     /// fixed listen URL, `HostAddr::new(url, key)` is the address `host_address` will report.
-    pub fn host_key(&self) -> Option<[u8; 32]> {
+    /// `Unsupported` on a thin client.
+    pub fn host_key(&self) -> Result<Option<[u8; 32]>> {
         if self.is_attached() {
-            let v = self.rcall(crate::port::method::HOST_KEY, vec![]).ok()?;
-            let k = crate::port::codec::Args::of(vec![v]).opt().ok()??;
-            return crate::port::codec::Args::of(vec![k]).bytes().ok()?.try_into().ok();
+            let v = self.rcall(crate::port::method::HOST_KEY, vec![])?;
+            let Some(k) = crate::port::codec::Args::of(vec![v]).opt()? else { return Ok(None) };
+            let k = crate::port::codec::Args::of(vec![k]).bytes()?.try_into().map_err(|_| crate::port::codec::bad("host key"))?;
+            return Ok(Some(k));
         }
-        self.locked(|l| l.sync.host_key())
+        Ok(self.locked(|l| l.sync.host_key()))
     }
 }

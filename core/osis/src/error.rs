@@ -34,12 +34,14 @@ pub enum Error {
     /// A write through another node may or may not have applied (its reply was lost and the node
     /// cannot tell). Repeating it is a new write: read first, repeat only if it is not there.
     OutcomeUnknown,
-    /// Not provided by this build yet.
+    /// This kind of handle does not carry this call: an attached handle asked for what needs its
+    /// process to be the node, a thin client for an owner's call. Trying again will not help.
     Unsupported(String),
+    /// The node at the other end will not take this session: it refused the client secret or the
+    /// uid, or the address serves no client port.
+    Refused(String),
     /// The database is closed.
     Closed,
-    /// `close`: this handle is closed, but `handles` others keep the database open.
-    StillOpen { handles: usize },
 }
 
 osis_base::impl_error!(Error {
@@ -54,9 +56,9 @@ osis_base::impl_error!(Error {
     Storage(m) => ("storage: {m}"),
     Network(m) => ("network: {m}"),
     OutcomeUnknown => ("outcome unknown: the write may have applied, read before repeating it"),
-    Unsupported(m) => ("not supported yet: {m}"),
+    Unsupported(m) => ("not available on this handle: {m}"),
+    Refused(m) => ("refused by the node: {m}"),
     Closed => ("database closed"),
-    StillOpen { handles } => ("{handles} other handle(s) keep the database open"),
 });
 
 pub type Result<T> = std::result::Result<T, Error>;

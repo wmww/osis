@@ -12,6 +12,7 @@ fn cfg(seed: u64, clock: &Arc<ManualClock>) -> Config {
     c.clock = Some(clock.clone());
     // a host that never runs: a profile (where the sender's name lives) needs one named
     c.hosts = vec![osis::HostAddr::new("quic://127.0.0.1:9", [7; 32])];
+    c.runtime = osis::Runtime::Manual(osis::internals::ManualNet::new());
     c
 }
 

@@ -55,7 +55,7 @@ fn run(app: AndroidApp) -> Result<(), String> {
     let event_loop = EventLoop::with_user_event().with_android_app(app).build().map_err(|e| e.to_string())?;
     let app = App::with_event_loop(event_loop);
     let (mb, inbox) = mailbox::<Msg>(app.waker());
-    let ui = Ui::new(data, app.window(), mb, inbox);
+    let ui = Ui::new(data, app.window(), mb, inbox).map_err(|e| e.to_string())?;
     let look = ui.look();
     let root = tree(look.clone());
     app.run("osis", (400.0, 800.0), root, ui, look.bg).map_err(|e| e.to_string())

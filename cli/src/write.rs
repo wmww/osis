@@ -5,7 +5,7 @@ use crate::args::{CreateArgs, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, 
 use crate::text::{self, PStep};
 use crate::{Ctx, key_ty, parse_dur, parse_ts, ty_in, usage};
 use clap::Parser;
-use osis::{AspectKey, AspectWrite, CaseId, Error, Key, Path, Retention, Step, Tid, Value, WallMs};
+use osis::{AspectKey, AspectWrite, CaseId, Key, Path, Retention, Step, Tid, Value, WallMs};
 use osis_schema::{Bound, PurgeBy, Type};
 use std::ops::Range;
 
@@ -226,7 +226,7 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
             };
             pw.splice(range(&args[0])?, &s)?
         }
-        "undelete" => return Err(Error::Unsupported("undelete (issues/api-deferred.md)".into()).into()),
+        "undelete" => return Err(crate::cmd::not_built("undelete (issues/api-deferred.md)")),
         "add" => {
             n(1)?;
             pw.add(&ctx.value(&args[0], ety)?)?

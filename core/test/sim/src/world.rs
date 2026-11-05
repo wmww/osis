@@ -234,7 +234,10 @@ impl World {
             for (i, db) in v.iter().enumerate().skip(self.offline.len()) {
                 if let Some(db) = db {
                     let diags = self.diags.clone();
-                    db.on_diagnostic(move |_, d| diags.lock().unwrap_or_else(|e| e.into_inner()).entry(i).or_default().push(format!("{:?}: {}", d.kind, d.detail))).detach();
+                    // a database of this harness is local: registering cannot fail
+                    if let Ok(sub) = db.on_diagnostic(move |_, d| diags.lock().unwrap_or_else(|e| e.into_inner()).entry(i).or_default().push(format!("{:?}: {}", d.kind, d.detail))) {
+                        sub.detach();
+                    }
                 }
             }
             self.offline.resize(v.len(), false);

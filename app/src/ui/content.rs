@@ -277,7 +277,7 @@ impl Ui {
                 let mut ts = tiles(d, &items)?;
                 if v == View::Recent {
                     for tile in &mut ts {
-                        tile.sub = d.edited(tile.tid);
+                        tile.sub = d.edited(tile.tid)?;
                     }
                 }
                 c.tiles(ts, grid);
@@ -321,7 +321,7 @@ impl Ui {
             let via: osis::Result<Vec<String>> = r.via.iter().map(|g| d.name(*g)).collect();
             who = format!("{who} · via {}", via?.join(", "));
         }
-        c.blocks.push(Block::Chips(vec![ChipM::action(Icon::Eye, &who, Act::None), ChipM::action(Icon::Clock, &d.edited(t), Act::None), ChipM::action(Icon::Back, "Undo", Act::Undo(t))]));
+        c.blocks.push(Block::Chips(vec![ChipM::action(Icon::Eye, &who, Act::None), ChipM::action(Icon::Clock, &d.edited(t)?, Act::None), ChipM::action(Icon::Back, "Undo", Act::Undo(t))]));
         Ok(c)
     }
 

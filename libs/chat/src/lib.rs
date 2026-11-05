@@ -195,7 +195,7 @@ pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
 pub fn leave(db: &Osis, c: Tid) -> Result<()> {
     let mut last = Vec::new();
     loop {
-        let path = db.holder_path(c, db.me());
+        let path = db.holder_path(c, db.me())?;
         let Some((t, _)) = path.last() else { return if last.is_empty() { db.leave(c) } else { Ok(()) } };
         if path == last {
             return Ok(());
@@ -208,45 +208,60 @@ pub fn leave(db: &Osis, c: Tid) -> Result<()> {
 /// Whether `h` is an actor people hold the chat through, as a link's actor K (spec/permissions.md
 /// §8) or a team: owned by an actor that has an owner itself. A person's owner is a key, and the
 /// holders of a person are its devices.
-fn held_through(db: &Osis, h: Tid) -> bool {
-    db.owner_of(h).and_then(|o| db.owner_of(o)).is_some()
+fn held_through(db: &Osis, h: Tid) -> Result<bool> {
+    let Some(o) = db.owner_of(h)? else { return Ok(false) };
+    Ok(db.owner_of(o)?.is_some())
 }
 
 /// A link's key on K: a key actor with invite. Never a person.
-fn link_key(db: &Osis, m: Tid, e: &osis::Edge) -> bool {
-    e.invite.is_some() && db.owner_of(m).is_none()
+fn link_key(db: &Osis, m: Tid, e: &osis::Edge) -> Result<bool> {
+    Ok(e.invite.is_some() && db.owner_of(m)?.is_none())
 }
 
 /// Who holds the chat, with the role they have: its direct holders and those holding it through an
 /// actor (`held_through`), link joiners so, at the lesser of the two roles. As this node knows them:
 /// a direct member learns a link joiner from its first post, and lists K until then if nobody else
 /// of K is known (`kick` of K ends everyone behind it).
-pub fn members(db: &Osis, c: Tid) -> BTreeMap<Tid, Role> {
+pub fn members(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
     let mut out = BTreeMap::new();
     let mut put = |m: Tid, r: Role| {
         let e = out.entry(m).or_insert(r);
         *e = r.max(*e);
     };
-    for (h, e) in db.roster(c) {
-        if !held_through(db, h) {
+    for (h, e) in db.roster(c)? {
+        if !held_through(db, h)? {
             put(h, e.role);
             continue;
         }
-        let behind = db.roster(h);
+        let behind = db.roster(h)?;
         if behind.is_empty() {
             put(h, e.role);
         }
-        for (m, x) in behind.iter().filter(|(m, x)| !link_key(db, **m, x)) {
-            put(*m, x.role.min(e.role));
+        for (m, x) in &behind {
+            if !link_key(db, *m, x)? {
+                put(*m, x.role.min(e.role));
+            }
         }
     }
-    out
+    Ok(out)
 }
 
 /// The links that work on the chat, as this node knows them: each link's actor K and its role. Not
 /// members; `osis::Osis::links` has what its maker alone knows.
-pub fn member_links(db: &Osis, c: Tid) -> BTreeMap<Tid, Role> {
-    db.roster(c).into_iter().filter(|(h, _)| held_through(db, *h) && db.roster(*h).iter().any(|(m, x)| link_key(db, *m, x))).map(|(h, e)| (h, e.role)).collect()
+pub fn member_links(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
+    let mut out = BTreeMap::new();
+    for (h, e) in db.roster(c)? {
+        if !held_through(db, h)? {
+            continue;
+        }
+        for (m, x) in db.roster(h)? {
+            if link_key(db, m, &x)? {
+                out.insert(h, e.role);
+                break;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Where a message is: its year's aspect and its place there.
@@ -458,7 +473,7 @@ fn entry_of(year: u32, e: HistoryEntry<Value>) -> Option<Entry> {
 /// The years a chat's messages may be under: its creation's to next year's (a clock ahead).
 fn years(db: &Osis, c: Tid) -> Result<Vec<u32>> {
     let now = year_of(db.now().0);
-    let first = db.created(c).map_or(now, |s| year_of(s.ts.wall_ms().0));
+    let first = db.created(c)?.map_or(now, |s| year_of(s.ts.wall_ms().0));
     Ok((first.min(now)..=now.saturating_add(1)).collect())
 }
 
@@ -764,7 +779,7 @@ fn purge(db: &Osis, c: Tid, ids: &[Id]) -> Result<()> {
 /// Whether this person's request would drop a body of `sender`'s, by the chat's purge set: a request
 /// without the right drops nothing anywhere, so it is refused here.
 pub fn may_delete(db: &Osis, c: Tid, sender: Tid) -> Result<bool> {
-    let role = db.role_on(c);
+    let role = db.role_on(c)?;
     let admin = role == Some(Role::Admin);
     let writer = matches!(role, Some(Role::Admin | Role::Write));
     let own = sender == db.me() && writer;
@@ -838,7 +853,7 @@ pub fn watch(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) ->
 
 /// Tells of this person's own writes on the chat turned invalid: a member who had not seen a
 /// retention change or its own kick. Its message is the commit named: `resend` it.
-pub fn on_rejected(db: &Osis, c: Tid, mut f: impl FnMut(osis::CommitId) + Send + 'static) -> Subscription {
+pub fn on_rejected(db: &Osis, c: Tid, mut f: impl FnMut(osis::CommitId) + Send + 'static) -> Result<Subscription> {
     db.on_diagnostic(move |_, d| {
         if d.kind == osis::DiagnosticKind::OwnWriteInvalid
             && d.tids.contains(&c)

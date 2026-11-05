@@ -253,7 +253,7 @@ fn chat_members() {
     let held = |w: &World| (stores[0].held_bytes(), w.hosts[host].backend.held_bytes());
     let (member0, host0) = held(&w);
     println!("STORE m={m} after the joins: a member {member0} B ({} B per member), host {host0} B", member0 / m.max(1) as u64);
-    assert_eq!(last.roster(c).len(), m + 1);
+    assert_eq!(last.roster(c).unwrap().len(), m + 1);
     let (rows, blobs, nblobs) = stores[0].held_split();
     println!("STORE a member, per member: rows {} B, {nblobs} blobs {} B", rows / m.max(1) as u64, blobs / m.max(1) as u64);
     for (what, n, bytes) in osis::internals::Internals::engine(&members[0], |e| e.held_report()).unwrap() {
@@ -381,7 +381,7 @@ fn joiner_reads_each_pending_commit_few_times() {
             a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
             w.run();
         });
-        assert_eq!(b.roster(c).len(), m + 2);
+        assert_eq!(b.roster(c).unwrap().len(), m + 2);
         n.get("reexamine: read pending").copied().unwrap_or(0)
     };
     let m = 9;
@@ -807,7 +807,7 @@ fn add_judges_nothing_per_message() {
             a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
             w.run();
         });
-        assert_eq!(members[0].roster(c).len(), 5);
+        assert_eq!(members[0].roster(c).unwrap().len(), 5);
         let of = |k: &str| n.get(k).copied().unwrap_or(0);
         (of("pass: full"), of("pass: bodies of a commit"), of("rejudge: a commit"), of("secrets: decode"))
     };

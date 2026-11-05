@@ -49,13 +49,13 @@ fn hosting_own_then_open_spec_sync_5() {
     let (carol, _) = w.person(3, &[base]);
     w.run();
     assert_eq!(alice.host_address().unwrap(), None);
-    assert_eq!(alice.host_key(), None);
+    assert_eq!(alice.host_key().unwrap(), None);
     alice.set_hosting(Some(Hosting { listen: vec!["quic://alice:1".into()], admit: Admit::Own, ..Default::default() })).unwrap();
-    let key = alice.host_key().expect("known before it listens");
+    let key = alice.host_key().unwrap().expect("known before it listens");
     w.run();
     let ha = alice.host_address().unwrap().expect("listening");
     assert_eq!(HostAddr::new("quic://alice:1", key), ha, "the key it listens with");
-    assert_eq!(alice.hosting().unwrap().admit, Admit::Own);
+    assert_eq!(alice.hosting().unwrap().unwrap().admit, Admit::Own);
     let ai = w.index(&alice).unwrap();
     let s = w.host_of(ai).unwrap();
 
@@ -80,7 +80,7 @@ fn hosting_own_then_open_spec_sync_5() {
     assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [carol.home()]), "{r:?}");
 
     // open: Bob's label is taken at his next registration
-    alice.set_hosting(Some(Hosting { admit: Admit::Open, ..alice.hosting().unwrap() })).unwrap();
+    alice.set_hosting(Some(Hosting { admit: Admit::Open, ..alice.hosting().unwrap().unwrap() })).unwrap();
     w.run();
     for _ in 0..5 {
         w.advance(120_000);
@@ -112,7 +112,7 @@ fn hosting_own_then_open_spec_sync_5() {
     w.run();
     assert_eq!(alice.host_address().unwrap(), None);
     assert!(alice.sync_engine(|e| e.host_key()).is_none());
-    assert_eq!(alice.host_key(), None);
+    assert_eq!(alice.host_key().unwrap(), None);
 }
 
 /// A group owned by `owner` (held by `db`), placed in `within`, synced on `hosts`.
@@ -168,14 +168,14 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     let x = group_of(&bob, bob.me(), bob.home(), &hosts);
     bob.grant(x, a, Role::Read, Default::default()).unwrap();
     w.run();
-    assert_eq!(alice.role_on(x), Some(Role::Read));
+    assert_eq!(alice.role_on(x).unwrap(), Some(Role::Read));
     let lx = label_of(&alice, x);
     assert!(!admitted(&alice).contains(&lx), "own: a group Alice only reads");
 
     // nor when she co-administers it: Bob still owns it
     bob.grant(x, a, Role::Admin, Default::default()).unwrap();
     w.run();
-    assert_eq!(alice.role_on(x), Some(Role::Admin));
+    assert_eq!(alice.role_on(x).unwrap(), Some(Role::Admin));
     assert!(!admitted(&alice).contains(&lx), "own: a group Bob owns that Alice co-administers");
     // nor when Bob grants her node admin directly
     bob.grant(x, alice.node(), Role::Admin, Default::default()).unwrap();
@@ -270,7 +270,7 @@ fn own_random(seed: u64) {
                 1 => {
                     let his: Vec<Tid> = std::iter::once(bob.me()).chain(groups.iter().copied().filter(|g| chain(&owner, *g).iter().any(|x| *x == bob.me() || bob_admin.contains(x)))).collect();
                     let o = his[next(his.len())];
-                    if bob.role_on(o) != Some(Role::Admin) {
+                    if bob.role_on(o).unwrap() != Some(Role::Admin) {
                         continue;
                     }
                     let g = group_of(&bob, o, if o == bob.me() { bob.home() } else { o }, hosts);
@@ -282,7 +282,7 @@ fn own_random(seed: u64) {
                 }
                 // Bob grants Alice's person read or admin, or her node admin, on a group he admins
                 2 => {
-                    let his: Vec<Tid> = groups.iter().copied().filter(|g| bob.role_on(*g) == Some(Role::Admin)).collect();
+                    let his: Vec<Tid> = groups.iter().copied().filter(|g| bob.role_on(*g).unwrap() == Some(Role::Admin)).collect();
                     if his.is_empty() {
                         continue;
                     }
@@ -380,19 +380,19 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     db.add_host(&db.host_address().unwrap().unwrap()).unwrap();
     common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(30))).unwrap();
     let home = home_label(&db);
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert_eq!(host_store_labels(&dir), vec![home]);
 
     // stopped and started again with no driver running: the new key's host starts empty
     let db = Osis::open(at(2, false)).unwrap();
-    let old = db.host_key();
+    let old = db.host_key().unwrap();
     db.set_hosting(None).unwrap();
     db.set_hosting(hosting()).unwrap();
-    assert_ne!(db.host_key(), old);
-    db.close().unwrap();
+    assert_ne!(db.host_key().unwrap(), old);
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let db = Osis::open(at(3, true)).unwrap();
     listening(&db);
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert_eq!(host_store_labels(&dir), Vec::new());
 
     // stopped on a running driver: the files go
@@ -401,21 +401,21 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     assert!(files());
     db.set_hosting(None).unwrap();
     wait_for("the host store erased", || !files());
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
 
     // stopped with no driver running: the next driver start erases
     let db = Osis::open(at(5, true)).unwrap();
     db.set_hosting(hosting()).unwrap();
     listening(&db);
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert!(files());
     let db = Osis::open(at(6, false)).unwrap();
     db.set_hosting(None).unwrap();
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert!(files());
     let db = Osis::open(at(7, true)).unwrap();
     wait_for("the host store erased", || !files());
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -440,11 +440,11 @@ fn own_runtime_close_frees_host_store() {
     let db = Osis::create(at(0)).unwrap().0;
     db.set_hosting(Some(Hosting { listen: vec!["mem://o".into()], admit: Admit::Open, ..Default::default() })).unwrap();
     listening(&db);
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
     for i in 1..6 {
         let db = Osis::open(at(i)).unwrap();
         listening(&db);
-        db.close().unwrap();
+        assert_eq!(db.close().unwrap(), osis::Close::Closed);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -59,8 +59,8 @@ fn newest(db: &Osis, c: Tid) -> Message {
 #[test]
 fn create_post_read_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    assert_eq!(a.owner_of(c), None);
-    assert_eq!(members(&a, c).get(&bob), Some(&Role::Write));
+    assert_eq!(a.owner_of(c).unwrap(), None);
+    assert_eq!(members(&a, c).unwrap().get(&bob), Some(&Role::Write));
     post(&a, c, "hi").unwrap();
     post(&a, c, "hi").unwrap();
     w.run();
@@ -244,7 +244,7 @@ fn kick_keep_erase_purge_spec_perm_3() {
     w.run();
     assert!(b.kept_copies().unwrap().is_empty());
     assert!(texts(&b, c).is_empty(), "erased");
-    assert!(!b.knows(c));
+    assert!(!b.knows(c).unwrap());
 }
 
 // spec/commits.md §5: required retention refuses a member's other retention: refused at its writer, and if forged past it, invalid and unshown; every other aspect too; a stale writer is told
@@ -258,7 +258,7 @@ fn required_and_stale_writer_spec_commits_5() {
     let bad = osis::Retention { by: PurgeBy::Nobody, ..Default::default() };
     assert!(x.at(c, k.clone()).retention(bad).replace(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
     let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap());
+    let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     // Bob offline: the timer changes, he posts under the old rule
     w.set_online(&b, false);
     w.advance(1000);
@@ -278,7 +278,7 @@ fn required_and_stale_writer_spec_commits_5() {
     let mine = find(&b, c, &stale).unwrap().unwrap();
     assert!(!mine.valid, "its sender sees it did not go");
     assert_eq!(mine.body, Body::Text("stale".into()), "and can send it again");
-    assert_eq!(members(&a, c).get(&bob), Some(&Role::Write));
+    assert_eq!(members(&a, c).unwrap().get(&bob), Some(&Role::Write));
     assert!(resend(&a, c, &mine).is_err(), "not another's");
     let again = resend(&b, c, &mine).unwrap();
     w.run();
@@ -418,7 +418,7 @@ fn restart_and_thin_client_spec_client_port() {
     assert_eq!(texts(&thin, c), ["before"]);
     assert!(post(&thin, c, "no").is_err(), "a reader");
     drop(thin);
-    a.close().unwrap();
+    assert_eq!(a.close().unwrap(), osis::Close::Closed);
     w.run();
     let a = Osis::open(cfg).unwrap();
     assert_eq!(texts(&a, c), ["before"]);
@@ -444,7 +444,7 @@ fn kicked_while_offline_spec_perm_5() {
     post(&b, c, "seen").unwrap();
     w.run();
     let (tx, rx) = std::sync::mpsc::channel();
-    let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap());
+    let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     w.set_online(&b, false);
     w.advance(1000);
     w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
@@ -535,7 +535,7 @@ fn admins_are_equal_spec_perm_1() {
     w.run();
     assert!(post(&a, c, "no").is_err());
     post(&b, c, "mine now").unwrap();
-    assert_eq!(members(&b, c).len(), 1);
+    assert_eq!(members(&b, c).unwrap().len(), 1);
 
     let Room { mut w, a, b, c, bob } = room(Options::default());
     add(&a, c, bob, Role::Admin).unwrap();
@@ -546,7 +546,7 @@ fn admins_are_equal_spec_perm_1() {
     w.set_online(&b, true);
     w.advance(60_000);
     w.run();
-    assert_eq!(members(&a, c), members(&b, c));
+    assert_eq!(members(&a, c).unwrap(), members(&b, c).unwrap());
 }
 
 // spec/permissions.md §3 (Keep): an erased member added again gets the chat back
@@ -697,7 +697,7 @@ fn link_joiner_leaves_spec_perm_8() {
     leave(&b, c).unwrap();
     w.run();
     assert!(post(&b, c, "gone").is_err());
-    assert!(b.holder_path(c, b.me()).is_empty());
+    assert!(b.holder_path(c, b.me()).unwrap().is_empty());
     assert_eq!(texts(&b, c), ["hi"], "the leaver's copy");
     post(&d, c, "still here").unwrap();
     w.run();
@@ -725,7 +725,7 @@ fn link_after_leave_and_kick_spec_perm_8() {
     w.run();
     w.advance(70_000);
     w.run();
-    assert_eq!(member_links(&a, c).len(), 1, "a leave ends no link");
+    assert_eq!(member_links(&a, c).unwrap().len(), 1, "a leave ends no link");
     w.until(join(&d, &l), 1000, 30).unwrap();
     w.run();
     assert_eq!(texts(&d, c), ["hi"]);
@@ -740,7 +740,7 @@ fn link_after_leave_and_kick_spec_perm_8() {
     w.run();
     w.advance(70_000);
     w.run();
-    assert!(member_links(&a, c).is_empty(), "a kick ends the link");
+    assert!(member_links(&a, c).unwrap().is_empty(), "a kick ends the link");
     assert!(matches!(w.until(join(&e, &l), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
     assert!(matches!(w.until(join(&d, &l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked person stays out");
     let fresh = link(&a, c, Role::Write, false).unwrap();
@@ -764,9 +764,9 @@ fn expired_link_not_shown_spec_perm_8() {
     let c = create(&a, &Options::default()).unwrap();
     a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::WallMs(a.now().0 + 1000)), single_use: false, direct: false }).unwrap();
     w.run();
-    assert_eq!(member_links(&a, c).len(), 1);
+    assert_eq!(member_links(&a, c).unwrap().len(), 1);
     w.advance(2000);
-    assert!(member_links(&a, c).is_empty());
+    assert!(member_links(&a, c).unwrap().is_empty());
 }
 
 // spec/permissions.md §8: `members` lists the people who joined by a link, not its actor; a direct member learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a member
@@ -780,25 +780,25 @@ fn link_joiners_are_members_spec_perm_8() {
     let l = link(&a, c, Role::Read, false).unwrap();
     let once = link(&a, c, Role::Write, true).unwrap();
     w.run();
-    assert_eq!(member_links(&a, c).len(), 2);
-    assert_eq!(members(&a, c).into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob]), "a link no one used is nobody");
+    assert_eq!(member_links(&a, c).unwrap().len(), 2);
+    assert_eq!(members(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob]), "a link no one used is nobody");
     w.until(join(&d, &l), 1000, 30).unwrap();
     w.until(join(&e, &l), 1000, 30).unwrap();
     w.until(join(&f, &once), 1000, 30).unwrap();
     w.run();
-    assert_eq!(members(&a, c).into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob, d.me(), e.me(), f.me()]));
-    assert!(members(&d, c).contains_key(&e.me()), "a joiner sees the link's other joiners");
-    assert_eq!(members(&a, c).get(&d.me()), Some(&Role::Read), "the link's role");
-    assert_eq!(members(&a, c).get(&f.me()), Some(&Role::Write));
-    assert_eq!(member_links(&a, c).len(), 1, "the single-use link is spent");
+    assert_eq!(members(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob, d.me(), e.me(), f.me()]));
+    assert!(members(&d, c).unwrap().contains_key(&e.me()), "a joiner sees the link's other joiners");
+    assert_eq!(members(&a, c).unwrap().get(&d.me()), Some(&Role::Read), "the link's role");
+    assert_eq!(members(&a, c).unwrap().get(&f.me()), Some(&Role::Write));
+    assert_eq!(member_links(&a, c).unwrap().len(), 1, "the single-use link is spent");
     post(&f, c, "from a joiner").unwrap();
     w.run();
-    assert!(members(&b, c).contains_key(&f.me()), "a direct member, from the post");
+    assert!(members(&b, c).unwrap().contains_key(&f.me()), "a direct member, from the post");
     w.until(kick(&a, c, d.me(), None, WaitForSync::Skip), 1000, 10).unwrap();
     w.run();
-    let left = members(&a, c);
+    let left = members(&a, c).unwrap();
     assert!(!left.contains_key(&d.me()) && left.contains_key(&e.me()), "{left:?}");
-    assert!(member_links(&a, c).is_empty(), "kicking a joiner ended the link");
+    assert!(member_links(&a, c).unwrap().is_empty(), "kicking a joiner ended the link");
     // a rotation naming K's keyset: a direct member and a joiner go on
     let (g, _) = w.person(6, &[0]);
     let gid = meet(&mut w, &a, &g);
@@ -896,7 +896,7 @@ fn scale(n_members: u64, n_msgs: usize) {
     }
     eprintln!("join {n_members}: {:?}", t.elapsed());
     let b = &ms[0];
-    assert_eq!(members(b, c).len(), n_members as usize + 1);
+    assert_eq!(members(b, c).unwrap().len(), n_members as usize + 1);
     let t = Instant::now();
     let before = w.traffic(&a);
     for i in 0..n_msgs {
@@ -946,7 +946,7 @@ fn scale(n_members: u64, n_msgs: usize) {
     let after = w.traffic(&new);
     eprintln!("newcomer fetch: {:?}, down {} MB; first page complete {}", t.elapsed(), (after.down - before.down) / 1_000_000, Timeline::new(&new, c).unwrap().older(&new, 1).unwrap().complete);
     let t = Instant::now();
-    let kicked = members(&a, c).into_keys().find(|k| *k != a.me()).unwrap();
+    let kicked = members(&a, c).unwrap().into_keys().find(|k| *k != a.me()).unwrap();
     w.until(kick(&a, c, kicked, None, WaitForSync::Skip), 1000, 10).unwrap();
     w.run();
     eprintln!("kick: {:?}", t.elapsed());
@@ -970,7 +970,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert!(texts(&d, c).contains(&"<deleted>".to_string()));
     add(&a, c, dee, Role::Admin).unwrap();
     w.run();
-    assert_eq!(members(&b, c).get(&dee), Some(&Role::Admin));
+    assert_eq!(members(&b, c).unwrap().get(&dee), Some(&Role::Admin));
     let his = post(&b, c, "moderate me").unwrap();
     w.run();
     delete(&d, c, &find(&d, c, &his).unwrap().unwrap()).unwrap();
@@ -978,7 +978,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert!(matches!(find(&a, c, &his).unwrap().unwrap().body, Body::Deleted { .. }));
     leave(&b, c).unwrap();
     w.run();
-    assert_eq!(members(&a, c).get(&bob), None);
+    assert_eq!(members(&a, c).unwrap().get(&bob), None);
     assert!(post(&b, c, "gone").is_err());
     assert!(texts(&b, c).contains(&"from bob".to_string()), "the leaver's copy");
     assert!(texts(&a, c).contains(&"from bob".to_string()), "the others keep it");
@@ -988,7 +988,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     // the kick's pre-sync on a live chat
     w.until(kick(&a, c, dee, None, WaitForSync::Required), 1000, 60).unwrap();
     w.run();
-    assert_eq!(members(&a, c).len(), 1);
+    assert_eq!(members(&a, c).unwrap().len(), 1);
 }
 
 // notes/chat-designs/e.md What is different: per-year aspects: reads merge across the new year; a watch hears the next year's first message; a new device gets both

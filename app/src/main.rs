@@ -61,7 +61,7 @@ fn run() -> Result<(), String> {
     }
     let app = App::new().map_err(|e| e.to_string())?;
     let (mb, inbox) = mailbox::<Msg>(app.waker());
-    let ui = Ui::new(data, app.window(), mb, inbox);
+    let ui = Ui::new(data, app.window(), mb, inbox).map_err(|e| e.to_string())?;
     let look = ui.look();
     let root = tree(look.clone());
     app.run("osis", (1100.0, 720.0), root, ui, look.bg).map_err(|e| e.to_string())

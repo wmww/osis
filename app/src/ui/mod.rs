@@ -200,21 +200,21 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(data: Data, window: WindowId, mb: Mailbox<Msg>, inbox: Inbox<Msg>) -> Ui {
+    pub fn new(data: Data, window: WindowId, mb: Mailbox<Msg>, inbox: Inbox<Msg>) -> osis::Result<Ui> {
         let (theme, mode) = data.look().unwrap_or((None, ModeChoice::Auto));
         let theme = Theme::named(theme.as_deref().unwrap_or("frost"));
         let mode = kit_mode(&mode);
         let m = mb.clone();
         let diag_sub = data.db.on_diagnostic(move |_, d| {
             m.post(Msg::Diagnostic(format!("{:?}: {}", d.kind, d.detail)));
-        });
+        })?;
         let look = Arc::new(Look::new(&theme, mode == Mode::Dark, None));
         // a chat joined or left elsewhere on this store comes and goes with the synced groups
         let m = mb.clone();
         let status_sub = data.db.watch_status(move |_, _| {
             m.post(Msg::Changed);
-        });
-        Ui {
+        })?;
+        Ok(Ui {
             data,
             window,
             mb,
@@ -245,7 +245,7 @@ impl Ui {
             compose: chat::Compose::default(),
             _diag_sub: diag_sub,
             diag: None,
-        }
+        })
     }
 
     /// The first look, for the initial root widget.
@@ -343,7 +343,7 @@ impl Ui {
                 let mb = self.mb.clone();
                 let s = self.data.db.watch_thing(t, move |_, _| {
                     mb.post(Msg::Changed);
-                });
+                })?;
                 self.subs.insert(t, s);
             }
         }

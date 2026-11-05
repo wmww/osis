@@ -332,6 +332,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 10 | network | `[text]` |
     | 11 | unsupported | `[text]` |
     | 12 | outcome unknown: the write may have applied | `[]` |
+    | 13 | refused: this session may not use the node | `[text]` |
 
   - **Payload**: `[0, ..]` is a delivery, `[1]` the subscription lapsed (its id is free), `[2, source]` a delivery above `max_reply`.
   - **Flow control**: spec/sync.md §6; Notifies follow the push rule.

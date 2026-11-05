@@ -180,7 +180,7 @@ impl Joining {
             e.set_app_record(PERSON, person.as_bytes())?;
             Ok(done)
         })?;
-        let hosts = self.db.hosts();
+        let hosts = self.db.hosts()?;
         self.db.engine(|e| save_hosts(e, &hosts))?;
         self.db.carry(done)?;
         Ok(self.db)
@@ -195,6 +195,7 @@ impl Osis {
     /// dropped future) the recovery key is forgotten and the store gets no person record (it
     /// does not open as a database; use a fresh store for the next attempt).
     pub async fn restore(cfg: Config, card: &RecoveryCard) -> Result<Osis> {
+        cfg.check()?;
         let c = card.parse()?;
         let hosts = with_hosts(&cfg, c.hosts.iter().cloned().map(HostAddr).collect());
         let Fresh { mut sync, clock } = fresh_engine(&cfg, &hosts)?;
@@ -224,7 +225,7 @@ impl Osis {
             return crate::port::codec::Args::of(vec![v]).text()?.parse();
         }
         let (me, node) = (self.me(), self.node());
-        let hosts: Vec<Value> = self.hosts().iter().map(|s| Value::Str(s.to_string())).collect();
+        let hosts: Vec<Value> = self.hosts()?.iter().map(|s| Value::Str(s.to_string())).collect();
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self.locked(|x| {
             let mut s = [0u8; 32];
@@ -276,6 +277,7 @@ impl Osis {
     /// Starts pairing this fresh store as a new device of the person that made `offer`: returns
     /// the request to carry to the offering device and, with its reply, `Joining::finish`.
     pub fn pair(cfg: Config, offer: &PairOffer) -> Result<Joining> {
+        cfg.check()?;
         let items = unpack(&offer.0, OFFER)?;
         let [_, Value::Tid(person), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;

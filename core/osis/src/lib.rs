@@ -12,7 +12,7 @@
 //! let note = w.create(db.me())?;
 //! w.place(note, db.home())?;
 //! w.commit()?;
-//! assert!(db.groups_of(note).item_of.contains(&db.home()));
+//! assert!(db.groups_of(note)?.item_of.contains(&db.home()));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -116,7 +116,8 @@
 //! # Sync, hosts and the recovery card
 //! `create` makes a person (owned by a recovery key) whose home group is synced on
 //! `Config.hosts`; it returns the recovery card, the only copy of that key. Sync runs on a
-//! runtime (`Runtime::Own`, or the app's tokio handle); without one everything works locally.
+//! runtime (`Runtime::Own`, or the app's tokio handle); without one everything works locally, and
+//! `Config.hosts` is refused.
 //! Status, waiting until synced and restoring from the card are the network-facing calls.
 //! ```no_run
 //! # use osis::{Config, Osis, Runtime, HostAddr, SyncScope};
@@ -160,9 +161,8 @@
 //! ```
 //! # use osis::{Config, Osis, Role, LinkOpts, HostAddr};
 //! // a link names hosts (or is direct, `LinkOpts::direct`)
-//! let mut cfg = Config::memory();
-//! cfg.hosts = vec![HostAddr::new("quic://example.org:4433", [7; 32])];
-//! let db = Osis::create(cfg)?.0;
+//! let db = Osis::create(Config::memory())?.0;
+//! db.add_host(&HostAddr::new("quic://example.org:4433", [7; 32]))?;
 //! let mut w = db.write();
 //! let g = w.create(db.me())?;
 //! w.make_group(g)?;
@@ -170,7 +170,7 @@
 //! db.sync(g, &[])?;
 //! let link = db.make_link(g, Role::Write, LinkOpts { until: None, single_use: true, direct: false })?;
 //! assert!(link.to_string().starts_with("osis://link/"));
-//! assert_eq!(db.links(g).len(), 1);
+//! assert_eq!(db.links(g)?.len(), 1);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -236,7 +236,7 @@
 //! ```compile_fail
 //! #![deny(unused_must_use)]
 //! let db = osis::Osis::create(osis::Config::memory()).unwrap().0;
-//! db.on_diagnostic(|_, _| {});
+//! db.on_diagnostic(|_, _| {})?;
 //! ```
 //! - A forgotten commit: `Write` is `#[must_use]`:
 //! ```compile_fail
@@ -275,7 +275,7 @@ pub use port::client::SOCK_FILE;
 pub use port::client::{own_uid, socket_dir};
 pub use error::{Error, Result};
 pub use hosting::{Admit, HostCaps, Hosting, LabelId};
-pub use handle::{Config, DEFAULT_IDLE_COMMIT, DEFAULT_WAIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
+pub use handle::{Close, Config, DEFAULT_IDLE_COMMIT, DEFAULT_WAIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
 pub use net::{GroupPolicy, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keep::{KeepAlive, REFRESH_DIVISOR};

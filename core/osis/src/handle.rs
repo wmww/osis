@@ -81,14 +81,16 @@ pub struct Config {
     pub clock: Option<Arc<dyn Clock>>,
     /// Seed for a deterministic rng (tests only; default OS randomness).
     pub seed: Option<u64>,
-    /// Where background sync runs (default `Runtime::None`: no network).
+    /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with `hosts` set).
     pub runtime: Runtime,
     /// How hosts and co-reader nodes are dialed (default: QUIC).
     pub transport: Option<Transport>,
     /// Sync with co-reader nodes directly (spec/sync.md §5, §10; default on): listen with the
-    /// dialable key, publish `reach.0`, and with feature `lan` announce on the LAN.
+    /// dialable key, publish `reach.0`, and with feature `lan` announce on the LAN. Over QUIC it
+    /// takes feature `iroh`: without it no co-reader is dialed, on or off.
     pub peers: bool,
-    /// Relay URLs published in `reach.0` (self-hosted `iroh-relay`s; feature `iroh`).
+    /// Relay URLs published in `reach.0` (self-hosted `iroh-relay`s; feature `iroh`, without it
+    /// `Invalid`).
     pub relays: Vec<String>,
     /// Hosts for `create`, `restore` and `pair`; an opened database keeps its stored list.
     pub hosts: Vec<HostAddr>,
@@ -120,6 +122,19 @@ impl Config {
 
     pub fn dir(path: impl Into<std::path::PathBuf>) -> Config {
         Config::at(StoreAt::Dir(path.into()))
+    }
+
+    /// `Invalid` for what would silently do nothing: hosts with no runtime to reach them, relays
+    /// in a build with no transport to use them.
+    pub(crate) fn check(&self) -> Result<()> {
+        if !self.hosts.is_empty() && matches!(self.runtime, Runtime::None) {
+            return Err(Error::Invalid("Config.hosts with Runtime::None: nothing would sync; set Config.runtime".into()));
+        }
+        let quic = matches!(self.transport, None | Some(crate::Transport::Quic));
+        if !self.relays.is_empty() && quic && !cfg!(feature = "iroh") {
+            return Err(Error::Invalid("Config.relays needs feature `iroh`".into()));
+        }
+        Ok(())
     }
 }
 
@@ -234,6 +249,16 @@ impl Drop for LifeGuard {
         lock(&self.0.m).1 = true;
         self.0.cv.notify_all();
     }
+}
+
+/// What `Osis::close` found. Either way this handle is gone.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Close {
+    /// The database is closed: its store can be opened again.
+    Closed,
+    /// `handles` other handles keep the database open.
+    StillOpen { handles: usize },
 }
 
 /// A database handle: `Clone + Send + Sync`; clones share one database, which closes with the
@@ -391,6 +416,7 @@ impl Osis {
     /// copy of the recovery key: show or store it, osis keeps none of it. Without hosts there
     /// is nothing to restore from: no card (the key is discarded).
     pub fn create(cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
+        cfg.check()?;
         let Fresh { mut sync, clock } = fresh_engine(&cfg, &cfg.hosts)?;
         let engine = sync.engine_mut();
         let hosts: Vec<osis_label::Address> = cfg.hosts.iter().map(|s| s.0.clone()).collect();
@@ -408,6 +434,7 @@ impl Osis {
 
     /// Opens an existing database.
     pub fn open(cfg: Config) -> Result<Osis> {
+        cfg.check()?;
         let (b, r) = parts(&cfg)?;
         let clock = clock(&cfg);
         let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, open_salt(&cfg)?))?;
@@ -490,12 +517,12 @@ impl Osis {
     /// running then may keep the host store a little longer), with `Runtime::Tokio` on a
     /// multi-thread runtime its task ends (so the app may shut that runtime down); on a
     /// current-thread runtime `close` does not wait for sync, which ends once the app drives that
-    /// runtime again. While other handles keep it open, this one is closed and it fails
-    /// `StillOpen` at once. From a callback (the dispatcher, which holds the database while it
+    /// runtime again. While other handles keep it open, this one is closed and it returns
+    /// `Close::StillOpen` at once. From a callback (the dispatcher, which holds the database while it
     /// runs) it fails `Invalid` at once: drop the handle instead. Never call it while holding
     /// something a running callback may wait for (a lock, a channel it awaits): close waits for
     /// that callback.
-    pub fn close(self) -> Result<()> {
+    pub fn close(self) -> Result<Close> {
         if self.inner.dispatch.shared.on_dispatcher() {
             return Err(Error::Invalid("close() from a callback would wait on itself; drop the handle".into()));
         }
@@ -506,14 +533,14 @@ impl Osis {
         // (in place on a multi-thread runtime: the holder may need that worker's tasks)
         let (users, closed) = crate::net::blocking(|| *life.cv.wait_while(lock(&life.m), |(users, closed)| *users == 0 && !*closed).unwrap_or_else(|e| e.into_inner()));
         if !closed {
-            return Err(Error::StillOpen { handles: users });
+            return Ok(Close::StillOpen { handles: users });
         }
         if let Some(e) = ended {
             // the driver, and the host with it, is gone: the host store is free and the app may
             // shut its runtime down
             crate::net::wait_ended(&e);
         }
-        Ok(())
+        Ok(Close::Closed)
     }
 
     /// This device's node tid (attached: the node's).

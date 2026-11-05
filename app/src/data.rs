@@ -313,7 +313,7 @@ impl Data {
         let mut out = Vec::new();
         // a tag nested in a tag is its subgroup, not a member: `groups_of` does not list the parent
         // (issues/api-subgroup-parents.md)
-        let mut cands: BTreeSet<Tid> = self.db.groups_of(t).within.into_iter().collect();
+        let mut cands: BTreeSet<Tid> = self.db.groups_of(t)?.within.into_iter().collect();
         if self.get(t, TAG)?.is_some() {
             cands.extend(self.all_tags()?);
         }
@@ -358,7 +358,7 @@ impl Data {
         }
         match v {
             View::Recent => {
-                let mut by: Vec<(u64, Tid)> = out.into_iter().map(|t| (self.changed(t).unwrap_or(0), t)).collect();
+                let mut by = out.into_iter().map(|t| Ok((self.changed(t)?.unwrap_or(0), t))).collect::<Result<Vec<(u64, Tid)>>>()?;
                 by.sort_by(|a, b| b.cmp(a));
                 Ok(by.into_iter().map(|(_, t)| t).collect())
             }
@@ -372,11 +372,14 @@ impl Data {
     /// When `t` last changed: wall ms of its newest content change, else its creation, each at
     /// `min(ts, received)` (a device whose clock runs ahead cannot date a change into the future).
     /// Works around issues/api-change-time.md.
-    pub fn changed(&self, t: Tid) -> Option<u64> {
+    pub fn changed(&self, t: Tid) -> Result<Option<u64>> {
         let q = CommitQuery::new().scope(Scope::Thing(t)).kind(CommitKind::Change).kind(CommitKind::Revert).limit(1);
-        let newest = self.db.commits(&q).ok().and_then(|c| c.first().map(|e| (e.commit.ts, e.commit.received)));
-        let (ts, received) = newest.or_else(|| self.db.created(t).map(|c| (c.ts, c.received)))?;
-        Some(ts.wall_ms().0.min(received.0))
+        let newest = self.db.commits(&q)?.first().map(|e| (e.commit.ts, e.commit.received));
+        let at = match newest {
+            Some(x) => Some(x),
+            None => self.db.created(t)?.map(|c| (c.ts, c.received)),
+        };
+        Ok(at.map(|(ts, received)| ts.wall_ms().0.min(received.0)))
     }
 
     fn sort_by_name(&self, v: &mut [Tid]) -> Result<()> {
@@ -471,11 +474,11 @@ impl Data {
         let db = &self.db;
         let me = db.me();
         let now = db.now();
-        let mine: BTreeSet<Tid> = db.roster(me).into_keys().chain([me, db.node()]).collect();
+        let mine: BTreeSet<Tid> = db.roster(me)?.into_keys().chain([me, db.node()]).collect();
         let mut r = Reach::default();
         let mut seen = BTreeSet::new();
         let mut todo = vec![t];
-        if let Some(o) = db.owner_of(t) {
+        if let Some(o) = db.owner_of(t)? {
             todo.push(o);
         }
         while let Some(x) = todo.pop() {
@@ -485,11 +488,11 @@ impl Data {
             if x != t && mine.contains(&x) {
                 continue;
             }
-            if x != t && db.knows(x) && self.get(x, TAG)?.is_some() {
+            if x != t && db.knows(x)? && self.get(x, TAG)?.is_some() {
                 // a shared tag: its holders see what it holds, and so does its owner (implicitly
                 // its admin, not on its roster)
                 r.via.push(x);
-                todo.extend(db.owner_of(x));
+                todo.extend(db.owner_of(x)?);
             } else if x != t {
                 let name = self.person_name(x)?;
                 if !r.people.contains(&name) {
@@ -497,7 +500,7 @@ impl Data {
                 }
                 continue;
             }
-            todo.extend(db.roster(x).into_iter().filter(|(_, e)| live(e, now)).map(|(m, _)| m));
+            todo.extend(db.roster(x)?.into_iter().filter(|(_, e)| live(e, now)).map(|(m, _)| m));
         }
         r.people.sort();
         Ok(r)
@@ -548,7 +551,7 @@ impl Data {
     /// Works around issues/undo-creation-unplaces.md (with `next_undo`).
     pub fn undo(&self, t: Tid) -> Result<bool> {
         let scope = Scope::Thing(t);
-        if let Some(c) = self.db.created(t).and_then(|c| c.commit)
+        if let Some(c) = self.db.created(t)?.and_then(|c| c.commit)
             && self.next_undo(&scope)? == Some(ChangeId::Commit(c))
         {
             return Ok(false);
@@ -576,11 +579,11 @@ impl Data {
     }
 
     /// "Edited 5 min ago" for `t` (its newest change).
-    pub fn edited(&self, t: Tid) -> String {
-        match self.changed(t) {
+    pub fn edited(&self, t: Tid) -> Result<String> {
+        Ok(match self.changed(t)? {
             Some(ms) => format!("Edited {}", ago(self.db.now().0.saturating_sub(ms))),
             None => "Not saved yet".into(),
-        }
+        })
     }
 
     // ---- events
@@ -928,7 +931,7 @@ impl Data {
         // (issues/api-subgroup-parents.md)
         for g in self.groups()?.into_iter().chain(self.things()?) {
             // a group I cannot edit keeps its edge (to a now empty thing) rather than fail the delete
-            let writable = matches!(self.db.role_on(g), Some(osis::Role::Write | osis::Role::Admin));
+            let writable = matches!(self.db.role_on(g)?, Some(osis::Role::Write | osis::Role::Admin));
             if writable && self.get(g, GROUP)?.is_some_and(|gr| gr.subgroups.contains(&t)) {
                 parents.push(g);
             }
