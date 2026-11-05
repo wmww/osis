@@ -332,19 +332,23 @@ fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, o
     Ok(())
 }
 
-/// From the commits holding writes of `(tid, ak)`: who undoes whom, and whether every change
-/// (a commit that is not an undo) ordered after `after` is out of effect (spec/crdt.md §4.6).
-/// Being in effect is a property of the whole commit: its undoers are every held undo commit
-/// naming it, wherever they write (`undone_by`), and theirs in turn.
+/// From the commits counting on `(tid, ak)` (a part there valid here, body held or not): who
+/// undoes whom, and whether every change (a commit that is not an undo) ordered after `after`
+/// is out of effect (spec/crdt.md §4.6). Being in effect is a property of the whole commit: its
+/// undoers are the undo commits naming it (`undone_by`) with a valid part on an aspect it
+/// lists, wherever else they write, and theirs in turn.
 fn chain_judge(core: &crate::engine::Core, tid: &Tid, ak: &Ak, after: (Ts, CommitId)) -> (BTreeMap<CommitId, Vec<CommitId>>, bool) {
-    let held: Vec<(Ts, CommitId)> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect();
+    let counts = |c: &CommitId| core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai)));
+    let held: Vec<(Ts, CommitId)> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().filter(|x| counts(&x.1)).collect();
     let mut undoers: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
     let mut todo: Vec<CommitId> = held.iter().map(|x| x.1).collect();
     while let Some(c) = todo.pop() {
         if undoers.contains_key(&c) {
             continue;
         }
-        let us: Vec<CommitId> = core.ix.undone_by.get(&c).into_iter().flatten().copied().collect();
+        let Some(target) = core.ix.commits.get(&c) else { continue };
+        let undoes = |u: &CommitId| core.ix.commits.get(u).is_some_and(|m| m.view.aspects.iter().enumerate().any(|(ai, a)| m.valid_at(ai) && target.aspect(&a.tid, &a.ak).is_some()));
+        let us: Vec<CommitId> = core.ix.undone_by.get(&c).into_iter().flatten().copied().filter(|u| undoes(u)).collect();
         todo.extend(us.iter().copied());
         undoers.insert(c, us);
     }

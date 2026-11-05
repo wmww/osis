@@ -2,10 +2,9 @@
 //! more goes with its memory-class record, the memory commits every thing of which is freed
 //! (`unindex_commit`, the mirror of what applying a commit indexes) and its aspects' memory rows
 //! (one store call). Freeing leaves the indexes as if those commits had never applied
-//! (`tests::free_equals_never_indexed`); a commit that also touches a thing not freed stays, and
-//! so does every thing it is on, whole, until all of them are freed; so does the owner of a held
-//! thing not freed. A memory commit that also touches a durable thing (an item's writes with its
-//! `placed.0~` add into a durable group) keeps its things until it goes by retention.
+//! (`tests::free_equals_never_indexed`); a memory commit that also touches a thing not freed
+//! stays for it, its freed parts dropped; the owner of a held thing not freed stays. Durable
+//! commits are never touched: none holds a part on a memory thing.
 
 use crate::engine::records;
 use crate::engine::{Core, Tx};
@@ -37,15 +36,10 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
             tx.core.ix.freeing.remove(&t);
         }
     }
-    // what stays, to a fixpoint: a thing a durable commit is on (defensively: a durable commit
-    // persists its things) and the owner of a held thing not freed (its chain)
+    // what stays, to a fixpoint: the owner of a held thing not freed (its chain)
     loop {
         let core = &*tx.core;
-        let stays: Vec<Tid> = freed
-            .iter()
-            .filter(|t| core.ix.held.owned(t).any(|x| !freed.contains(x)) || core.on_thing(t).any(|c| core.ix.commits.get(&c).is_some_and(|m| !m.view.memory)))
-            .copied()
-            .collect();
+        let stays: Vec<Tid> = freed.iter().filter(|t| core.ix.held.owned(t).any(|x| !freed.contains(x))).copied().collect();
         if stays.is_empty() {
             break;
         }
@@ -64,7 +58,10 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
             tx.core.waits.unpended(&c);
         }
     }
-    let cands: BTreeSet<CommitId> = freed.iter().flat_map(|t| tx.core.on_thing(t)).collect();
+    // a durable commit holds no part on a memory thing (its part waits for the durable record,
+    // `apply::thing_wait`; one carrying `created.0` persists the thing): what lists one here is
+    // a header only, left as on any thing not held
+    let cands: BTreeSet<CommitId> = freed.iter().flat_map(|t| tx.core.on_thing(t)).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.memory)).collect();
     for c in cands {
         let whole = tx.core.ix.commits.get(&c).is_some_and(|m| m.view.aspects.iter().all(|a| freed.contains(&a.tid)));
         if whole {

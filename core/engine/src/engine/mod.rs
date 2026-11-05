@@ -461,8 +461,11 @@ indexes! {
     /// writes to strip in O(invalid parts), not O(history).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
-    /// and whether its body is held. Invariant: it finds commits, never answers what a thing has
-    /// (any signer can list any aspect); that reads the state (`Tx::has_state`).
+    /// and whether its body is held. Invariant (also for `by_thing`, `undone_by`): it finds
+    /// commits, never decides anything alone, since any signer's header can list any aspect.
+    /// What a thing has reads the state (`Tx::has_state`); what a commit counts for (undo's
+    /// in effect, keeping a memory thing, a field's retention) reads its parts valid here
+    /// (`Meta::valid_at`), body held or not.
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
     /// `retention::any_bounded` without walking the aspect.
