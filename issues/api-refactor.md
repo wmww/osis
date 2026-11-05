@@ -23,8 +23,8 @@ let text = db.at(note, notes::BODY).edit_text()?;
 
 db.sync(note, &[])?;                                       // only if no synced group carries it
 db.grant(note, friend, Role::Write, GrantOpts::default())?;
-db.set_role(note, friend, Some(Role::Read), SetRole::default()).await?;
-db.set_role(note, friend, None, SetRole::default()).await?;      // no access
+db.set_role(note, friend, Some(Role::Read), SetRoleOpts::default()).await?;
+db.set_role(note, friend, None, SetRoleOpts::default()).await?;      // no access
 ```
 
 ## Decided
@@ -67,7 +67,7 @@ Change:
 16. **`edit_text(tid, key, path)` and `keep_alive(tid, key, path, v)`** take positions differently from everything else → `at(t, k).path(p).edit_text()` and `.keep_alive(v)`.
 17. **Callback naming**: `watch_*` take a callback under another word. All callbacks are `on_*`: `on_thing_change`, `on_grants_change` (done), `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
 18. **`AspectKey`**: three implementations (`Aspect<T>`, `Ak`, `Key`) plus `db.key`. `Key` with no schema is `Ak`. One dynamic key: `db.key(name)` typed when a schema is registered, else untyped. `Ak` becomes a name only, if the examples stay readable. The trait's methods exist for generated code and the crate: seal it or hide them.
-19. **`LinkOpts`, `GrantOpts` and `SetRole`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
+19. **`LinkOpts`, `GrantOpts` and `SetRoleOpts`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
 20. **`now()`** on an attached handle that cannot reach its node falls back to this process's clock, unsaid. A time is no decision-maker's default, but it should say so or return `Result`.
 
 Added by step 2's review (agent's call):

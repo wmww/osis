@@ -4,7 +4,7 @@
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::{ak, block_on};
-use osis::{SetRole, SyncFirst, ClientSecret, CommitQuery, Config, GrantOpts, Error, HostAddr, MemStore, Osis, Role, Runtime, Scope, StoreAt, SyncScope, Tid, Transport, Value};
+use osis::{SetRoleOpts, SyncFirst, ClientSecret, CommitQuery, Config, GrantOpts, Error, HostAddr, MemStore, Osis, Role, Runtime, Scope, StoreAt, SyncScope, Tid, Transport, Value};
 use std::time::{Duration, Instant};
 
 const W: Duration = Duration::from_secs(20);
@@ -144,7 +144,7 @@ impl Chat {
 
     /// Alice kicks `who`, the removal saying `keep` if it says, and Bob's node hears.
     fn kick(&self, who: Tid, keep: Option<bool>) {
-        let d = SetRole { sync: SyncFirst::Skip, keep };
+        let d = SetRoleOpts { sync: SyncFirst::Skip, keep };
         block_on(self.a.set_role(self.g, who, None, d)).unwrap();
         let nudge = Nudge::default();
         until("Bob's node hears", || {
@@ -327,7 +327,7 @@ fn sim_group(a: &Osis) -> Tid {
 }
 
 fn sim_kick(w: &mut World, a: &Osis, g: Tid, who: Tid, keep: Option<bool>) {
-    let d = SetRole { sync: SyncFirst::Skip, keep };
+    let d = SetRoleOpts { sync: SyncFirst::Skip, keep };
     w.until(a.set_role(g, who, None, d), 1000, 10).unwrap();
     w.run();
 }
@@ -495,7 +495,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     let side = t;
     x.commit().unwrap();
     b.grant(side, elsewhere, Role::Admin, Default::default()).unwrap();
-    let skip = || SetRole { sync: SyncFirst::Skip, keep: None };
+    let skip = || SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     w.run();
     for c in [reader, leaves_after, left_before] {
         assert_eq!(b.acting_as(c).at(m, text()).get().unwrap(), Some(s("hello")));
@@ -589,7 +589,7 @@ fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
     assert_eq!(watch.current().unwrap(), Some(s("hello")));
     x.kick(x.bob, None);
     assert_eq!(watch.current().unwrap(), Some(s("hello")));
-    let d = SetRole { sync: SyncFirst::Skip, keep: None };
+    let d = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     block_on(x.b.set_role(x.bob, actor, None, d)).unwrap();
     until("hidden", || hidden(&app, x.m));
     assert!(app.kept_copies().unwrap().is_empty());
@@ -719,7 +719,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     x.at(u, text()).set(&s("by bob")).unwrap();
     x.at(m, text()).set(&s("by bob, unsent")).unwrap();
     x.commit().unwrap();
-    let d = SetRole { sync: SyncFirst::Skip, keep: None };
+    let d = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     w.until(a.set_role(g, bob, None, d), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
@@ -811,7 +811,7 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     w.commit().unwrap();
     let nudge = Nudge::default();
     until("Bob has t", || { nudge.at(b); b.at(t, text()).get().ok().flatten() == Some(s("before")) });
-    let d = SetRole { sync: SyncFirst::Skip, keep: None };
+    let d = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     block_on(a.set_role(xg, h, None, d)).unwrap();
     let nudge = Nudge::default();
     until("kept", || { nudge.at(b); b.kept_copies().unwrap().contains(&xg) });

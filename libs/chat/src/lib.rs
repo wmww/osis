@@ -6,7 +6,7 @@
 
 use osis::schema::osis_base::cbor;
 use osis::schema::{Bound, core_types as ct};
-use osis::{Ak, ChangeId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRole, Subscription, SyncFirst, Tid, Ts, Value};
+use osis::{Ak, ChangeId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, SyncFirst, Tid, Ts, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -175,7 +175,7 @@ pub fn add(db: &Osis, c: Tid, person: Tid, role: Role) -> Result<()> {
 /// Removes a participant, a read-only copy left to them or not by `keep` (`None`: the chat's
 /// default).
 pub async fn kick(db: &Osis, c: Tid, person: Tid, keep: Option<bool>, sync: SyncFirst) -> Result<()> {
-    db.set_role(c, person, None, SetRole { sync, keep }).await
+    db.set_role(c, person, None, SetRoleOpts { sync, keep }).await
 }
 
 /// A link anyone holding it can join by, as `role`.

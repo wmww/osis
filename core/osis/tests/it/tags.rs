@@ -7,7 +7,7 @@ use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
 use osis::core::{BODY, GROUP, NAME, TAG, Tag};
-use osis::{SetRole, Member, GrantOpts, Error, Osis, Result, Role, Tid};
+use osis::{SetRoleOpts, Member, GrantOpts, Error, Osis, Result, Role, Tid};
 use osis_sim::world::World;
 
 /// A sub-tag of `parent` owned by `owner`, with a tied edge for the parent (unless the parent
@@ -188,7 +188,7 @@ fn tag_owned_cards_reader_writer_demotion() {
     assert_eq!(text(&alice, notes).unwrap().as_deref(), Some("from the writer"));
     assert_eq!(text(&reader, spec).unwrap().as_deref(), Some("v2"));
 
-    w.until(alice.set_role(team, wr, Some(Role::Read), SetRole::default()), 1000, 20).unwrap();
+    w.until(alice.set_role(team, wr, Some(Role::Read), SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     assert_eq!(writer.role_on(team).unwrap(), Some(Role::Read));
     assert!(matches!(edit(&writer, spec, "v2", "v3"), Err(Error::Permission { .. })));

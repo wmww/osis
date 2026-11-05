@@ -205,7 +205,7 @@
 //! assert_eq!(links.iter().filter(|l| l.target == g).count(), 1);
 //! // who holds `g`, and who holds it through what
 //! assert!(db.holders(g)?.iter().any(|h| h.actor == links[0].id.actor() && h.through.is_empty()));
-//! // grant, and later change or remove: `db.set_role(g, holder, Some(Role::Read), SetRole::default()).await`
+//! // grant, and later change or remove: `db.set_role(g, holder, Some(Role::Read), SetRoleOpts::default()).await`
 //! db.grant(g, db.node(), Role::Read, GrantOpts::default())?;
 //! assert_eq!(db.grants(g)?[&db.node()].role, Role::Read);
 //! # Ok::<(), osis::Error>(())
@@ -323,7 +323,7 @@ pub use keep::{KeepAlive, REFRESH_DIVISOR};
 pub use keys::{Key, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp};
-pub use share::{ContactCard, Device, GrantOpts, GroupSync, Holder, HostAddr, InviteId, LinkId, LinkInfo, LinkOpts, Member, PRESYNC_WAIT, RecoveryCard, SetRole, ShareLink, Status, SyncFirst, SyncScope, SyncState};
+pub use share::{ContactCard, Device, GrantOpts, GroupSync, Holder, HostAddr, InviteId, LinkId, LinkInfo, LinkOpts, Member, PRESYNC_WAIT, RecoveryCard, SetRoleOpts, ShareLink, Status, SyncFirst, SyncScope, SyncState};
 pub use sources::{GroupSource, RemoteConfig, RemoteStatus};
 pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};

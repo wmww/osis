@@ -6,7 +6,7 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::{ak, block_on};
 use osis::internals::Internals as _;
-use osis::{SetRole, SyncFirst, Member, ClientSecret, Config, Error, GroupSource, HostAddr, MemStore, Osis, RemoteConfig, Role, Runtime, StoreAt, SyncScope, SyncState, Tid, Transport, Value};
+use osis::{SetRoleOpts, SyncFirst, Member, ClientSecret, Config, Error, GroupSource, HostAddr, MemStore, Osis, RemoteConfig, Role, Runtime, StoreAt, SyncScope, SyncState, Tid, Transport, Value};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
@@ -1062,7 +1062,7 @@ fn a_demotion_of_a_routed_group_is_refused() {
     let (other, _) = x.n.add_client(None).unwrap();
     x.n.grant(x.g, other, Role::Read, Default::default()).unwrap();
     block_on(x.n.wait_synced(SyncScope::Group(x.g), W)).unwrap();
-    let d = SetRole { sync: SyncFirst::Skip, ..Default::default() };
+    let d = SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() };
     let r = block_on(x.p.set_role(x.g, x.actor, None, d));
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     assert!(x.n.grants(x.g).unwrap().contains_key(&x.actor));

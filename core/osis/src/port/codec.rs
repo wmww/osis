@@ -4,7 +4,7 @@
 use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp};
-use crate::share::{GrantOpts, GroupSync, Holder, HostAddr, LinkId, LinkInfo, Member, SetRole, Status, SyncFirst, SyncScope, SyncState};
+use crate::share::{GrantOpts, GroupSync, Holder, HostAddr, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncFirst, SyncScope, SyncState};
 use crate::watch::{CommitInfo, Source};
 use crate::write::Committed;
 use osis_base::{Ak, CommitId, LabelId, Role, Tid, Ts, Value, WallMs};
@@ -799,17 +799,17 @@ pub(crate) fn sync_first(v: Value) -> Result<SyncFirst> {
     Ok(s)
 }
 
-/// A `SetRole`: `[sync first, Opt(keep)]`.
-pub(crate) fn set_role_v(o: &SetRole) -> Value {
+/// A `SetRoleOpts`: `[sync first, Opt(keep)]`.
+pub(crate) fn set_role_v(o: &SetRoleOpts) -> Value {
     Value::List(vec![sync_first_v(o.sync), opt(o.keep, Value::Bool)])
 }
 
-pub(crate) fn set_role(v: Value) -> Result<SetRole> {
+pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
     let mut a = Args::new(v)?;
     let sync = sync_first(a.next()?)?;
     let keep = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
     a.end()?;
-    Ok(SetRole { sync, keep })
+    Ok(SetRoleOpts { sync, keep })
 }
 
 /// A sync policy's fields.
