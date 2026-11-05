@@ -28,15 +28,15 @@ Encoding: spec/wire.md §4. Fields:
 ## 2. Kinds
 - **Content**: deltas on aspects that are not role-class.
 - **Role**: deltas only on role-class aspects (spec/data-model.md §9).
-  - A role commit changes at most one `roles.0` edge, except:
+  - A role commit changes at most one `roles.0` grant, except:
     - a single-use link redemption (the grant plus L's self-removal, both on K, spec/permissions.md §8);
-    - a removal of several holders' edges on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own edge or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §8), or a finalize of several ended edges (spec/permissions.md §2);
+    - a removal of several holders' grants on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own grant or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §8), or a finalize of several ended grants (spec/permissions.md §2);
     - a roster snapshot (spec/permissions.md §6).
-  - A removal of another holder's edge with no frontier (a finalize, spec/permissions.md §2) removes only edges past their `until` at its `ts`; an explicit removal always carries a frontier.
+  - A removal of another holder's grant with no frontier (a finalize, spec/permissions.md §2) removes only grants past their `until` at its `ts`; an explicit removal always carries a frontier.
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
-  - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no edge; all may cover many things.
+  - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no grant; all may cover many things.
   - Role commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
-  - A role commit MAY carry several deltas for one `(tid, ak)` (a roster snapshot one per edge or ledger entry, plus one per aspect carrying the reset alone): they share the aspect's counter range, their commit-level writes share the stamp `(ts, source, lo)`, and their creations use distinct counters; the aspect's delta is their join.
+  - A role commit MAY carry several deltas for one `(tid, ak)` (a roster snapshot one per grant or ledger entry, plus one per aspect carrying the reset alone): they share the aspect's counter range, their commit-level writes share the stamp `(ts, source, lo)`, and their creations use distinct counters; the aspect's delta is their join.
 - **`created.0`** is carried by the thing's first durable commit, of either kind.
   - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required.0^` is bad input likewise.
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
@@ -64,7 +64,7 @@ Encoding: spec/wire.md §4. Fields:
   - an AK without `*` in a relay-only commit;
   - an AK with `~` or `*` in a durable commit.
 
-  For such a part: a writer MUST NOT write one (a durable write on a draft is a durable commit persisting it, spec/data-model.md §1), and a receiver drops it alone, as a part not matching its header entry (§4).
+  For such a part: a writer MUST NOT write one (a durable write on an ephemeral thing is a durable commit persisting it, spec/data-model.md §1), and a receiver drops it alone, as a part not matching its header entry (§4).
 - A commit spanning several kinds is invalid.
 
 ## 3. Dot forms
@@ -106,7 +106,7 @@ Encoding: spec/wire.md §4. Fields:
   - A delta that matches and is bad by itself never applies. Only those bytes can match, so nothing marks it: it is judged again if it comes again. Bad by itself means:
     - it does not decode;
     - a `created.0` delta that is not one minting of its record;
-    - a `roles.0` write inside an entry it did not create, or a value that is no well-formed edge (spec/permissions.md §2);
+    - a `roles.0` write inside an entry it did not create, or a value that is no well-formed grant (spec/permissions.md §2);
     - a value held unchunked that spec/data-model.md §6 chunks;
     - a carried write stamped after its commit;
     - a linked frontier that spec/permissions.md §6 calls bad input by itself.

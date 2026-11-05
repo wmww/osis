@@ -96,11 +96,11 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Below**: a thing is below A when it is a current holder of A, the owner included, or, transitively, a current holder of such a thing, whether or not it has secrets of its own.
 - **Names**: a rotation of actor A names the departures its rotator holds from A and from each thing below A, read from its own role timeline (spec/permissions.md §5.1), never copied from another history box. For each such thing T:
   - T's epoch start at the rotator (a roster snapshot, spec/permissions.md §6), if any;
-  - every applied commit ordered after it that applies an edge write on T lowering an edge (a removal, demotion, self-removal or finalize);
+  - every applied commit ordered after it that applies an edge write on T lowering a grant (a removal, demotion, self-removal or finalize);
   - every applied commit ordered after the start whose demotion's audit dropped (spec/permissions.md §5.1) an edge write on T, named once per thing its edge writes target.
 - A name is that thing and the commit's key (spec/permissions.md §6).
 - **Keyset name**: per holder actor M it boxes and role r, the rotation also names (M, r, the epoch of M its box names, the symmetric form's epoch of s included).
-- **Departs mark**: when the rotation commit itself writes such an edge on A it cannot name itself. The names then carry its departs mark, its `ts` and signing node.
+- **Departs mark**: when the rotation commit itself writes such a grant on A it cannot name itself. The names then carry its departs mark, its `ts` and signing node.
 - Every history box of one rotation carries the same names.
 - The rotator places every named commit under each label it places the rotation commit under (spec/sync.md §5).
 - **Met**: the names of a history box entry are met at a node when all of these hold:
@@ -126,8 +126,8 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Inside**: a departure inside a holder M of A is a departure from M or inside a holder of M (a device of M, a holder on an actor under M, and so on). Chains have no depth bound and may pass an actor more than once, A included (a role cycle, spec/permissions.md §3), but never pass the departed holder.
 - **Concerns**: a departure concerns the roles of A the departed party held through the chain: those it left of the last actor, at most each actor's role on the next.
 - **Attributes**: a node attributes a departure of holder H from thing T it knows of to the name of the newest (by key; one commit named on two things by the greater thing) of:
-  - an applied commit ordered after its epoch start of T whose edge write lowered H's edge on T;
-  - an applied commit ordered after that start whose demotion's audit dropped an edge write putting H's edge on T (named on the first of the things its edge writes target).
+  - an applied commit ordered after its epoch start of T whose edge write lowered H's grant on T;
+  - an applied commit ordered after that start whose demotion's audit dropped an edge write putting H's grant on T (named on the first of the things its edge writes target).
   - A holder with a box at a current epoch of T whose role it no longer holds and no such commit is attributed to its epoch start of T, or, with none, to nothing.
 - **Covers**: an epoch e of role r of A **covers** a departure that concerns r when some live entry of e's history box whose names are met at the node names it: its name is among the names, or it is a departure from A by the rotation commit itself (its departs mark). Boxes decide nothing: an epoch is relied on only for what its rotator held.
 
@@ -149,16 +149,16 @@ Terms in this section depend on each other; each is defined once, under its bold
   - Times decide nothing.
 - **Sealers' boxes**: a node seals A's secret to a holder actor M (a rotation, grant or re-seal) for a set of roles only when the names of every box to M of those roles it holds are met at the node; else M is left out (spec/permissions.md §3). Names it cannot open count as unmet. A box of another role does not count. The boxes that count are:
   - every such box in A's `secrets.0` at a current epoch of A;
-  - the boxes to M of every held commit putting M's edge on A (the put applied, or the commit ordered before A's epoch start) whose `secrets.0` delta on A is valid and held or dropped.
-- **Free**: holding at least one such box, or granting M while M holds no edge on A and the node lacks no such commit's `secrets.0` delta on A, the node seals free, by its box judgement.
-- **Bound**: holding none, the node seals bound. M's edge on A (its roster entry, spec/permissions.md §6; M holding none, the newest such commit whose delta it lacks) names in `keyset` (spec/data-model.md §9) the key of a `keys.0` commit of M.
+  - the boxes to M of every held commit putting M's grant on A (the put applied, or the commit ordered before A's epoch start) whose `secrets.0` delta on A is valid and held or dropped.
+- **Free**: holding at least one such box, or granting M while M holds no grant on A and the node lacks no such commit's `secrets.0` delta on A, the node seals free, by its box judgement.
+- **Bound**: holding none, the node seals bound. M's grant on A (its roster entry, spec/permissions.md §6; M holding none, the newest such commit whose delta it lacks) names in `keyset` (spec/data-model.md §9) the key of a `keys.0` commit of M.
   - The node seals M only to that commit's read keyset, for role read only (M is left out of the roles above), when both hold:
     - it holds the commit applied with its `keys.0` delta on M valid and not missing (dropped: M's `keys.0` keyset of read is the one the delta wrote);
     - for each departure inside M it knows concerning read, that keyset's epoch is M's newest epoch of read at the node and keeps the departure out.
-  - Else, or when the edge names none, M is left out.
-- **`keyset` of an edge**:
-  - An edge write putting M's edge on A that boxes M (a grant or raise) writes in `keyset` the key of the rotation commit of the epoch of M its read box names (sealed bound: the commit it is bound to; holding no such commit, the standing edge's `keyset`).
-  - Every other write of M's edge on A carries the standing edge's `keyset`, and so does a roster snapshot's entry for M.
+  - Else, or when the grant names none, M is left out.
+- **`keyset` of a grant**:
+  - An edge write putting M's grant on A that boxes M (a grant or raise) writes in `keyset` the key of the rotation commit of the epoch of M its read box names (sealed bound: the commit it is bound to; holding no such commit, the standing grant's `keyset`).
+  - Every other write of M's grant on A carries the standing grant's `keyset`, and so does a roster snapshot's entry for M.
 - A grant that would leave a holder actor out of every role it grants is not made.
 
 ## 5. Blobs, wraps, inbox blobs

@@ -63,7 +63,7 @@ A role commit may carry several deltas for one aspect sharing one range (spec/co
 
 ### 2.4 What the commit header provides
 - `ts` of the commit.
-- Per aspect: `(tid, ak, counter range [lo, hi), delta hashes)` as in §2.3. Encoding IDs and the sources table are inside the delta (§3.2), not in the header. A content commit carries one delta per `(tid, ak)`; a roster snapshot (spec/permissions.md §6) carries one `roles.0` delta per edge, and the aspect's delta is the join of all of them that the node holds.
+- Per aspect: `(tid, ak, counter range [lo, hi), delta hashes)` as in §2.3. Encoding IDs and the sources table are inside the delta (§3.2), not in the header. A content commit carries one delta per `(tid, ak)`; a roster snapshot (spec/permissions.md §6) carries one `roles.0` delta per grant, and the aspect's delta is the join of all of them that the node holds.
 - Dot form (commit, or session with its nonce).
 - Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges).
 - `expires: T` (wall ms), optional, one per commit (§4.7).
