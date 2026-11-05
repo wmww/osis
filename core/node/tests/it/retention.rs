@@ -3084,3 +3084,71 @@ fn stripped_part_fallen_then_expired_holds_its_leftover_spec_commits_6() {
     lp.peers[4].restart(0x7e4).unwrap();
     alike_4_5(&mut lp, t, None, "expired, restarted");
 }
+
+// spec/commits.md §5, §6: a member gone from `group.0` by expiry or purge is gone from what
+// derives from it too (the index sync follows), and stays so across a reopen.
+#[test]
+fn group_index_follows_a_member_gone_by_retention_spec_commits_5() {
+    use osis_crdt::PathSeg;
+    use osis_schema::core_types::GROUP;
+    fn add(g: Tid, x: Tid) -> Mutation {
+        let mut m = Mutation::new();
+        m.op(g, &GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(x)) }).unwrap();
+        m
+    }
+    #[track_caller]
+    fn gone(lp: &mut LocalPeer, i: usize, g: Tid, x: Tid, stays: Tid) {
+        for reopened in [false, true] {
+            let e = &mut lp.peers[i].engine;
+            if reopened {
+                e.reload().unwrap();
+            }
+            let v = e.get(&g, &osis_base::Ak::new("group.0").unwrap()).unwrap().unwrap();
+            assert!(!osis_schema::AspectKey::decode(&GROUP, &v).unwrap().items.contains(&x), "the state");
+            assert!(!e.closure(&g).contains(&x) && !e.durable_groups_of(&x).contains(&g) && !e.groups_of(&x).contains(&g), "reopened {reopened}: the index");
+            assert!(e.closure(&g).contains(&stays) && e.durable_groups_of(&stays).contains(&g), "reopened {reopened}: who stays");
+        }
+    }
+    let mut lp = net(2, 71);
+    let (g, stays) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    lp.peers[0].commit(add(g, stays)).unwrap().unwrap();
+
+    // at its expiry
+    let x = new_thing(&mut lp, 0);
+    let at = lp.peers[0].engine.now().0 + 5_000;
+    let mut m = add(g, x);
+    m.expires(g, &GROUP, WallMs(at)).unwrap();
+    let late = lp.peers[0].commit(m).unwrap().unwrap();
+    assert!(lp.peers[0].engine.closure(&g).contains(&x));
+    lp.advance(6_000);
+    lp.peers[0].engine.tick().unwrap();
+    gone(&mut lp, 0, g, x, stays);
+    // past it on arrival
+    sync(&mut lp, 0, 1);
+    assert!(lp.peers[1].engine.header(&late).is_some());
+    lp.peers[1].engine.tick().unwrap();
+    gone(&mut lp, 1, g, x, stays);
+
+    // by a purge of its commit
+    let x = new_thing(&mut lp, 0);
+    let c = lp.peers[0].commit(add(g, x)).unwrap().unwrap();
+    assert!(lp.peers[0].engine.closure(&g).contains(&x));
+    let mut m = Mutation::new();
+    m.op(g, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(lp.peers[0].engine.now().to_value()) }).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: g, ak: osis_base::Ak::new("group.0").unwrap() });
+    lp.peers[0].commit(m).unwrap().unwrap();
+    gone(&mut lp, 0, g, x, stays);
+
+    // a keep bound drops a body, not what the state reads
+    let x = new_thing(&mut lp, 0);
+    let at = lp.peers[0].engine.now().0 + 5_000;
+    let mut m = add(g, x);
+    m.retention(g, &GROUP, crate::timed_dead::most(Some(at), None).unwrap()).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(6_000);
+    lp.peers[0].engine.tick().unwrap();
+    let group = osis_base::Ak::new("group.0").unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(!e.body_not_dropped(&c, &g, &group));
+    assert!(e.closure(&g).contains(&x) && e.durable_groups_of(&x).contains(&g), "the member stays");
+}
