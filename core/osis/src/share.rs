@@ -80,7 +80,7 @@ pub struct Demotion {
     /// a device that merely lacks a re-seal would discard an honest rotation. A direct edge only.
     pub repudiate: bool,
     /// A removal's word (spec/permissions.md §3, Keep): the removed holder's devices keep a
-    /// read-only copy, or erase. `None`: the thing's default (`required.0^`'s `keep`, `core::RequiredRules`); erase for a
+    /// read-only copy, or erase. `None`: the thing's default (`core::RequiredRules::keep`); erase for a
     /// device leaving this person.
     pub keep: Option<bool>,
 }
@@ -1020,22 +1020,9 @@ impl Osis {
     }
 
     /// The person's links that still work, whichever device made them (each holds the seed thing;
-    /// one whose seed has not arrived is not listed), and those at each attached node; filter by
-    /// `LinkInfo::target`. `Unsupported` on a thin client; beside a store of its own, a node this
-    /// handle reaches as a thin client lists none. `Network` while an attached node cannot be reached.
+    /// one whose seed has not arrived is not listed); filter by `LinkInfo::target`. `Unsupported` on
+    /// a thin client, which is also why a node attached with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
-        let mut all = if self.is_attached() { Vec::new() } else { self.live_links()? };
-        for r in self.locked(|l| l.remotes.clone()) {
-            match r.call(crate::port::method::LINKS, vec![]).and_then(crate::port::codec::links) {
-                Err(Error::Unsupported(_)) if !self.is_attached() => {}
-                got => all.extend(got?),
-            }
-        }
-        Ok(all)
-    }
-
-    /// The links of this process's person at its own node.
-    pub(crate) fn own_links(&self) -> Result<Vec<LinkInfo>> {
         if self.is_attached() {
             return crate::port::codec::links(self.rcall(crate::port::method::LINKS, vec![])?);
         }
@@ -1337,7 +1324,7 @@ impl Osis {
         let me = self.me();
         let was = self.roster(me)?.contains_key(&node);
         self.demote(me, node, Lower::Remove, d).await?;
-        if was { self.own_links() } else { Ok(Vec::new()) }
+        if was { self.links() } else { Ok(Vec::new()) }
     }
 
     /// The hosts new labels go to (and kept connected). `Unsupported` on a thin client: they are

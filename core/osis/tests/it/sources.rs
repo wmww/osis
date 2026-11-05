@@ -202,7 +202,7 @@ fn moving_a_group_both_ways() {
     // merged status: the node's state for the routed group, the attachment up
     until("the node's state shows", || x.p.status().unwrap().groups[&x.g].state == SyncState::Synced);
     assert!(x.p.status().unwrap().remotes[0].connected);
-    // a node it reaches as a thin client lists no links; its own still do
+    // a node it reaches as a thin client adds no links
     assert!(x.p.links().unwrap().is_empty());
     // home: nothing left to catch up with a host gone is a failure that keeps the route
     block_on(x.n.wait_synced(SyncScope::Group(x.g), W)).unwrap();
@@ -353,7 +353,7 @@ fn disconnected_remote_is_network_never_stale() {
     assert!(matches!(x.p.changed(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.reach(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.holder_path(x.t, x.p.me()), Err(Error::Network(_))));
-    assert!(matches!(x.p.links_of(x.t), Err(Error::Network(_))));
+    assert!(x.p.links().unwrap().is_empty(), "the links are this node's: none is at the node gone");
     assert!(matches!(x.p.watch_thing(x.t, |_, _| {}), Err(Error::Network(_))));
     assert!(matches!(x.p.watch_roster(x.t, |_, _| {}), Err(Error::Network(_))));
     let before = x.p_local_copy();

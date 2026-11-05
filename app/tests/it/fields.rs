@@ -97,6 +97,20 @@ fn edits_are_well_typed() {
     }
 }
 
+/// A contact's tile reads its emails for its subtitle: one that cannot be read is told, not shown as no email.
+#[test]
+fn a_tile_tells_of_emails_it_cannot_read() {
+    let mut cfg = Config::memory();
+    cfg.materialize_limit = 1000;
+    let d = Data::new(Osis::create(cfg).unwrap().0);
+    let c = d.create(NewKind::Contact).unwrap();
+    let many = (0..100).map(|i| (format!("someone{i}@example.org"), osis_app::contact::Labeled { label: String::new(), pref: false })).collect();
+    let mut w = d.db.write();
+    w.at(c, osis_app::contact::EMAILS).set(&many).unwrap();
+    w.commit().unwrap();
+    assert!(matches!(d.tile(c), Err(osis::Error::TooLarge { .. })));
+}
+
 /// A value that cannot be read shows as such, read-only: an empty editable row could overwrite it.
 #[test]
 fn a_value_too_large_to_read_is_no_empty_row() {

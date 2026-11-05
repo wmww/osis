@@ -362,7 +362,7 @@ pub fn parse_duration(s: &str) -> Option<i64> {
 
 // ---- parsing
 
-/// Resolves `me`, `node`, `home` and script variables (`$name`) to tids.
+/// Resolves `me`, `node` and script variables (`$name`) to tids.
 pub type Aliases<'a> = &'a dyn Fn(&str) -> Option<Tid>;
 
 pub fn no_aliases(_: &str) -> Option<Tid> {
@@ -497,30 +497,11 @@ pub fn type_at_path(s: &Schema, root: &Type, path: &[Step]) -> Option<Type> {
     Some(cur)
 }
 
-/// The element, key and value types inside a collection type (for op arguments).
-pub fn inner_types(s: &Schema, t: &Type) -> (Option<Type>, Option<Type>) {
+/// The element type of a list or set (for op arguments).
+pub fn element_type(s: &Schema, t: &Type) -> Option<Type> {
     match kind(s, t) {
-        Kind::List(e) | Kind::Set(e) => (Some(e), None),
-        Kind::Map(k, v) => (Some(k), Some(v)),
-        _ => (None, None),
-    }
-}
-
-/// An enum case id by name or number at a type.
-pub fn case_id(s: Option<&Schema>, t: Option<&Type>, w: &str) -> Result<(u64, Option<Type>), String> {
-    let en = match (s, t) {
-        (Some(s), Some(t)) => match kind(s, t) {
-            Kind::Enum(e) => Some(e),
-            _ => None,
-        },
+        Kind::List(e) | Kind::Set(e) => Some(e),
         _ => None,
-    };
-    let w = w.strip_prefix('#').unwrap_or(w);
-    match w.parse::<u64>() {
-        Ok(id) => Ok((id, en.and_then(|e| e.cases.get(&id).and_then(|c| c.payload.clone())))),
-        Err(_) => en
-            .and_then(|e| e.cases.iter().find(|(_, c)| c.name == w).map(|(id, c)| (*id, c.payload.clone())))
-            .ok_or_else(|| format!("unknown case {w:?}")),
     }
 }
 

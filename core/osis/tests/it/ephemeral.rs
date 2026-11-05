@@ -271,7 +271,6 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     }
     db.settle();
     assert!(rx.try_recv().is_err(), "once each");
-    assert_eq!(db.at(t, ring.clone()).get().unwrap(), None);
     assert_eq!(db.at(t, ring.clone()).get().unwrap(), None, "a signal holds nothing");
     assert!(db.aspects(t).unwrap().is_empty());
     assert_eq!(durable_marks(&db), before);

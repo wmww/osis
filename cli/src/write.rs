@@ -191,7 +191,7 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     let pt = type_at(&key, &p);
     let sch = key.schema();
     let et = match (&sch, &pt) {
-        (Some(s), Some(t)) => text::inner_types(s, t).0,
+        (Some(s), Some(t)) => text::element_type(s, t),
         _ => None,
     };
     let ety = sch.zip(et.as_ref());
