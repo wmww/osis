@@ -19,7 +19,7 @@ use osis_node::undo::HeldCommit;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Which aspects a query, undo or redo ranges over; resolved when used. `Thing` and `Group`
-/// cover durable aspects and ephemeral things and memberships; an
+/// cover durable aspects, drafts and memberships in memory; an
 /// ephemeral aspect of a durable thing (a cursor, a selection) is in scope only when named by
 /// `Aspects`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,7 +77,7 @@ pub struct CommitQuery {
 /// Why a commit cannot be reverted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotUndoableReason {
-    /// What it wrote is no longer here (tidied up, past a keep bound or purged), or an ephemeral
+    /// What it wrote is no longer here (tidied up, past `Retention::at_most` or purged), or an ephemeral
     /// commit left the undo memory (`Config::ephemeral_undo_bytes`).
     ContentGone,
     /// Reverting it writes nothing: everything it wrote was overwritten since.

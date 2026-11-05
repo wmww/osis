@@ -91,9 +91,9 @@ fn attached_handle_works_at_the_node() {
     assert_eq!(c.changed(t).unwrap(), n.changed(t).unwrap());
     // a client's status adds its attachment
     let mut cs = c.status().unwrap();
-    assert_eq!(cs.client_connections.len(), 1);
-    assert!(cs.client_connections[0].connected);
-    cs.client_connections.clear();
+    assert_eq!(cs.node_connections.len(), 1);
+    assert!(cs.node_connections[0].connected);
+    cs.node_connections.clear();
     assert_eq!(cs, n.status().unwrap());
     // an unknown thing's write fails as locally
     let ghost = osis::Tid::from_bytes([9; 15]);
@@ -458,7 +458,7 @@ fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::Address>, sock:
     db
 }
 
-// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (rows that wait), notes/api.md Sync status: an attached handle's `wait_synced` has the node's outcomes: Ok once synced (All, and Group after `sync` through the port), Unsynced for a group without a label, waiting while the peer is unreachable; at most `MAX_WAITS` waits at once per connection; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
+// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (rows that wait), notes/api.md Sync status: an attached handle's `wait_synced` has the node's outcomes: Ok once synced (AllWithSavedPeers, and Thing after `sync` through the port), Unsynced for a group without a label, waiting while the peer is unreachable; at most `MAX_WAITS` waits at once per connection; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
 #[test]
 fn attached_wait_synced_as_at_the_node() {
     use crate::common::block_on;
@@ -469,7 +469,7 @@ fn attached_wait_synced_as_at_the_node() {
     let sock = d.0.join("n.sock");
     let n = node_on(&net, "n", vec![addr], &sock);
     let c = attach(&sock);
-    block_on(c.wait_synced(SyncScope::AllWithPeers)).unwrap();
+    block_on(c.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     // a group without a label: Unsynced naming it, at once, as at the node
     let (g, t) = c
         .commit_with(|w| {
@@ -502,25 +502,25 @@ fn attached_wait_synced_as_at_the_node() {
     assert_eq!(c.holders(g).unwrap(), n.holders(g).unwrap());
     c.nudge_sync().unwrap();
     block_on(c.wait_synced(SyncScope::Thing(t))).unwrap();
-    block_on(c.wait_synced(SyncScope::AllWithPeers)).unwrap();
+    block_on(c.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     assert_eq!(n.status().unwrap().groups[&g].state, osis::SyncState::Synced);
     // a node whose only peer nobody serves: it waits, as at the node
     let sock2 = d.0.join("m.sock");
     let m = node_on(&net, "m", vec![osis::Address::new(&"mem://nobody".parse().unwrap(), [3; 32])], &sock2);
     let cm = attach(&sock2);
     let short = Duration::from_millis(500);
-    assert!(crate::common::within(short, cm.wait_synced(SyncScope::AllWithPeers)).is_none());
-    assert!(crate::common::within(short, m.wait_synced(SyncScope::AllWithPeers)).is_none());
+    assert!(crate::common::within(short, cm.wait_synced(SyncScope::AllWithSavedPeers)).is_none());
+    assert!(crate::common::within(short, m.wait_synced(SyncScope::AllWithSavedPeers)).is_none());
     // at most 16 waits at once per connection (each a waiter the node checks per change); an
     // ended one frees its place
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-    let mut waits: Vec<_> = (0..16).map(|_| Box::pin(cm.wait_synced(SyncScope::AllWithPeers))).collect();
+    let mut waits: Vec<_> = (0..16).map(|_| Box::pin(cm.wait_synced(SyncScope::AllWithSavedPeers))).collect();
     for w in &mut waits {
         assert!(w.as_mut().poll(&mut cx).is_pending());
     }
-    assert!(matches!(block_on(cm.wait_synced(SyncScope::AllWithPeers)), Err(osis::Error::Invalid(_))));
+    assert!(matches!(block_on(cm.wait_synced(SyncScope::AllWithSavedPeers)), Err(osis::Error::Invalid(_))));
     waits.pop();
-    assert!(crate::common::within(short, cm.wait_synced(SyncScope::AllWithPeers)).is_none());
+    assert!(crate::common::within(short, cm.wait_synced(SyncScope::AllWithSavedPeers)).is_none());
     drop(waits);
     drop((c, cm));
     assert_eq!(m.close().unwrap(), osis::Close::Closed);
@@ -613,7 +613,7 @@ fn rows_that_wait_through_the_socket() {
     let plain = SetRoleOpts { sync: SyncFirst::Required, retain_copy: None };
     // a joiner by link, through its daemon
     let link = ca.make_link(g, Role::Write, Default::default()).unwrap();
-    block_on(ca.wait_synced(SyncScope::AllWithPeers)).unwrap();
+    block_on(ca.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     assert_eq!(block_on(cb.redeem(&link)).unwrap(), g);
     until(|| cb.at(t, osis::DynamicAspectKey::untyped(k.clone())).get().is_ok_and(|v| v == Some(Value::Str("x".into()))), "the group's content at Bob");
     let bob = cb.me();
@@ -639,7 +639,7 @@ fn rows_that_wait_through_the_socket() {
     assert!(!l3.to_string().is_empty());
     let (g4, _) = group("w");
     let l4 = ca.make_link(g4, Role::Read, Default::default()).unwrap();
-    block_on(ca.wait_synced(SyncScope::AllWithPeers)).unwrap();
+    block_on(ca.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     assert_eq!(block_on(cb.redeem(&l4)).unwrap(), g4);
     until(|| ca.holders(g4).unwrap().iter().any(|h| h.actor == bob), "the second join reached Alice");
     block_on(ca.set_role(g4, bob, None, SetRoleOpts { retain_copy: Some(false), ..plain })).unwrap();
@@ -799,7 +799,7 @@ fn process_wide_rows_through_the_socket() {
     w.at(t, osis::DynamicAspectKey::untyped(ak("note:big.0"))).set(&Value::Str(big.clone())).unwrap();
     w.group(g).add(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
-    crate::common::block_on(c.wait_synced(SyncScope::AllWithPeers)).unwrap();
+    crate::common::block_on(c.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     let mut out = Vec::new();
     c.export_bundle(&[g], &mut out).unwrap();
     assert!(out.len() > osis::internals::STREAM_CHUNK, "{}", out.len());
@@ -922,13 +922,13 @@ fn client_thread_panic_fails_waits() {
     let d = Dir::new();
     let net = osis_transport::Net::new(2);
     let sock = d.0.join("m.sock");
-    // a peer nobody answers at: `wait_synced(All)` waits
+    // a peer nobody answers at: `wait_synced(AllWithSavedPeers)` waits
     let m = node_on(&net, "m", vec![osis::Address::new(&"mem://nobody".parse().unwrap(), [3; 32])], &sock);
     let c = attach(&sock);
     let (tx, rx) = channel();
     let c2 = c.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(crate::common::block_on(c2.wait_synced(osis::SyncScope::AllWithPeers)));
+        let _ = tx.send(crate::common::block_on(c2.wait_synced(osis::SyncScope::AllWithSavedPeers)));
     });
     let t0 = std::time::Instant::now();
     while m.waiting() == 0 {
@@ -938,7 +938,7 @@ fn client_thread_panic_fails_waits() {
     c.panic_client_thread();
     let r = rx.recv_timeout(W).expect("a wait hung on a dead connection thread");
     assert!(matches!(r, Err(osis::Error::Network(_))), "{r:?}");
-    let r = crate::common::block_on(c.wait_synced(osis::SyncScope::AllWithPeers));
+    let r = crate::common::block_on(c.wait_synced(osis::SyncScope::AllWithSavedPeers));
     assert!(matches!(r, Err(osis::Error::Network(_))), "{r:?}");
     drop(c);
     assert_eq!(m.close().unwrap(), osis::Close::Closed);
@@ -954,7 +954,7 @@ fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let mut o = osis::internals::Opening::memory();
     o.app.dispatch = osis::Dispatcher::Pump(std::sync::Arc::new(|| {}));
     let c = crate::common::block_on(osis::internals::connect_socket(&sock, o)).unwrap();
-    crate::common::block_on(c.wait_synced(osis::SyncScope::AllWithPeers)).unwrap();
+    crate::common::block_on(c.wait_synced(osis::SyncScope::AllWithSavedPeers)).unwrap();
     let r = crate::common::block_on(osis::internals::connect_socket(&d.0.join("none.sock"), osis::internals::Opening::memory()));
     assert!(matches!(r, Err(osis::Error::Network(_))), "{:?}", r.map(|_| ()));
 }
@@ -984,7 +984,7 @@ fn a_dropped_client_wait_leaves_nothing_at_the_node() {
         }
     };
     {
-        let mut synced = Box::pin(c.wait_synced(osis::SyncScope::AllWithPeers));
+        let mut synced = Box::pin(c.wait_synced(osis::SyncScope::AllWithSavedPeers));
         let mut redeem = Box::pin(c.redeem(&link));
         assert!(synced.as_mut().poll(&mut cx).is_pending());
         assert!(redeem.as_mut().poll(&mut cx).is_pending());

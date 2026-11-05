@@ -147,7 +147,7 @@ pub enum Cmd {
     /// Whether this node stores and serves data for others, and on what terms: show, set or stop it
     #[command(subcommand)]
     Serving(ServingCmd),
-    /// Thin clients this node serves (`clients.0^`)
+    /// Thin clients of this node, each with an actor of its own
     #[command(subcommand)]
     Clients(ClientsCmd),
     /// Keep the store open: sync, serve data for others if set to (the flags set it, as `serving set`;
@@ -203,9 +203,9 @@ pub enum Cmd {
     },
     /// Aspect keys of a thing
     Aspects { t: String },
-    /// Delete every aspect and placement of a thing
+    /// Delete every aspect and membership of a thing
     Delete { t: String },
-    /// Things in a group
+    /// Things in a group, by query (not built yet: `members` lists them)
     Ls {
         g: String,
         #[arg(long, value_name = "AK")]
@@ -217,7 +217,7 @@ pub enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// Things whose values reference T
+    /// Things whose values reference T (not built yet)
     Backlinks {
         t: String,
         #[arg(long)]
@@ -247,14 +247,14 @@ pub enum Cmd {
         #[arg(long = "max", value_name = "N", default_value_t = PAGE)]
         max: usize,
     },
-    /// Purge an aspect's history, one commit's delta or an author's deltas, each where this actor may
+    /// Purge an aspect's history, one commit's write or an author's writes, each where this actor may
     Purge {
         t: String,
         ak: String,
-        /// Only this commit's delta
+        /// Only this commit's write
         #[arg(long, value_name = "C", conflicts_with = "author")]
         commit: Option<String>,
-        /// Only this actor's deltas stamped before now, also those arriving later
+        /// Only this actor's writes stamped before now, also those arriving later
         #[arg(long, value_name = "A")]
         author: Option<String>,
     },
@@ -380,23 +380,23 @@ pub enum Cmd {
     /// Contact cards
     #[command(subcommand)]
     Card(CardCmd),
-    /// Group chat (notes/chat.md)
+    /// Group chat
     #[command(subcommand)]
     Chat(ChatCmd),
     /// Create an ownerless thing, ADMIN its first admin (prints its tid). Transitional: goes with
     /// owners, when `create` is this
     Ownerless { admin: String },
-    /// Connectivity and per-group sync state
+    /// Sync connections up, then how each group's sync stands
     Status {
         #[arg(long)]
         watch: bool,
     },
-    /// Sync now and wait until everything (or G) reached a peer; groups with no peer are named, not waited for
+    /// Sync now and wait until everything (or G) reached a saved peer; groups with none are named, not waited for (G with none fails)
     Sync {
         #[arg(long, value_name = "G")]
         group: Option<String>,
     },
-    /// Wait until everything (or G) reached a peer; groups with no peer are named, not waited for
+    /// Wait until everything (or G) reached a saved peer; groups with none are named, not waited for (G with none fails)
     Wait {
         #[arg(long, value_name = "G")]
         group: Option<String>,
@@ -484,9 +484,11 @@ pub enum PairCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum NodeCmd {
+    /// List them: `NODE ROLE`
     Ls,
+    /// Remove a node from this account (a lost or stolen one: `--sync skip`), listing the links it can still use
     Rm {
-        /// (Its own id: `node` is the global `--node`'s, whose value this would become.)
+        // its own id: `node` is the global `--node`'s, whose value this would become
         #[arg(id = "removed_node", value_name = "NODE")]
         node: String,
         #[command(flatten)]
@@ -504,7 +506,9 @@ pub enum PeersCmd {
         #[arg(long, value_name = "G")]
         group: Option<String>,
     },
+    /// Save a peer, a node serving at ADDR (its `serving show`): what syncs from now on syncs with it
     Add { addr: String },
+    /// Remove a saved peer
     Rm { addr: String },
 }
 
@@ -519,7 +523,7 @@ pub enum ClientsCmd {
     },
     /// List them: `ACTOR UNTIL|-`
     Ls,
-    /// Revoke one: closes its connections, removes its grants (with their rotations) and its
+    /// Remove one: closes its connections, removes its grants and its
     /// entry (none: exit 3)
     Rm { actor: String },
     /// A new secret for one (printed only here); the old one and its connections end
@@ -598,6 +602,7 @@ pub enum MemberCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum LinkCmd {
+    /// Make a link giving ROLE on T, and sync T if it does not yet; prints the link
     Make {
         t: String,
         role: String,
@@ -606,6 +611,7 @@ pub enum LinkCmd {
         #[arg(long)]
         single_use: bool,
     },
+    /// Join what LINK names; prints the thing
     Redeem { link: String },
     /// The account's working links (of thing T)
     Ls { t: Option<String> },
@@ -744,12 +750,15 @@ pub enum GroupCmd {
     /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node connected by --remote; held in the
     /// store. Local: this store syncs it, and it is caught up before calls come home
     Source { g: String, to: String },
+    /// How this node syncs G: shows it, and changes what the flags name
     Policy {
         g: String,
-        #[arg(long, value_name = "BOOL")]
-        share_address: Option<bool>,
-        #[arg(long, value_name = "BOOL")]
-        heartbeats: Option<bool>,
+        /// Whether G's readers are told how to reach this node: auto, always, never
+        #[arg(long, value_name = "WHEN")]
+        share_address: Option<String>,
+        /// How much of G this node holds: full, log-only
+        #[arg(long, value_name = "MODE")]
+        mode: Option<String>,
     },
 }
 

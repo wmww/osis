@@ -39,7 +39,7 @@ pub enum HistoryBody<T> {
         /// Who made it (`None`: not known here).
         actor: Option<Tid>,
     },
-    /// Gone for another reason: it expired, passed a keep bound or was tidied up.
+    /// Gone for another reason: it expired, passed `Retention::at_most` or was tidied up.
     Gone,
     /// Not on this node yet: known of, and still to arrive. Not an absence.
     NotFetched,
@@ -72,9 +72,10 @@ pub struct HistoryPage<T> {
     pub entries: Vec<HistoryEntry<T>>,
     /// More entries lie that way here.
     pub more: bool,
-    /// Every sync carrying the thing finished here, so past the last entry there is nothing this
-    /// node knows of. `false`: entries may yet arrive anywhere in the history, older ones too
-    /// (offline, syncing): not fetched, not absent.
+    /// Every sync carrying the thing with a saved peer finished here, so past the last entry there
+    /// is nothing this node knows of. `false`: entries may yet arrive anywhere in the history, older
+    /// ones too (offline, syncing): not fetched, not absent. A group with no saved peer has no such
+    /// pass to wait for and counts as finished, though a node that reads it may hold more.
     pub complete: bool,
 }
 

@@ -68,15 +68,15 @@ fn chat(edge: GrantOpts, role: Role) -> Chat {
     let b_store = MemStore::new();
     let b = osis::internals::create(on(&net, "b", &b_store, vec![addr.clone()])).unwrap().0;
     let card = b.contact_card().unwrap();
-    block_on(b.wait_synced(SyncScope::AllWithPeers)).unwrap();
+    block_on(b.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     let bob = block_on(a.import_contact(&card)).unwrap();
     let mut w = a.write();
     let g = w.create().unwrap();
     w.group(a.me()).add(osis::Member::Item(g)).unwrap();
     w.commit().unwrap();
     a.sync(g, &[]).unwrap();
-    block_on(a.wait_synced(SyncScope::AllWithPeers)).unwrap();
-    block_on(b.wait_synced(SyncScope::AllWithPeers)).unwrap();
+    block_on(a.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
+    block_on(b.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     let mut w = a.write();
     let m = w.create_with_admin(g).unwrap();
     w.group(g).add(osis::Member::Item(m)).unwrap();
@@ -262,10 +262,10 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
         assert!(other.retained_copies().unwrap().is_empty());
         let Chat { b, b_store, net, addr, urls, m, g, nc, .. } = x;
         assert_eq!(b.close().unwrap(), osis::Close::Closed);
-        until("down", || !app.status().unwrap().client_connections[0].connected);
+        until("down", || !app.status().unwrap().node_connections[0].connected);
         let b2 = osis::internals::open(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
         assert_eq!(b2.client_listen(&urls).unwrap().remove(0), nc);
-        until("reconnected", || app.status().unwrap().client_connections[0].connected);
+        until("reconnected", || app.status().unwrap().node_connections[0].connected);
         if keep {
             assert_eq!(app.at(m, osis::DynamicAspectKey::untyped(text())).get().unwrap(), Some(s("hello")), "after a restart");
             assert!(read_big(&app, m));

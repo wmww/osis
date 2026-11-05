@@ -142,7 +142,7 @@ fn demo_once_per_person() {
     let n = a.create_note().unwrap();
     a.toggle_favorite(n).unwrap();
     assert!(osis_app::demo::add(&a).unwrap());
-    assert!(a.is_favorite(n).unwrap(), "demo keeps the person's favorites");
+    assert!(a.is_favorite(n).unwrap(), "demo keeps the account's favorites");
     sync(&a, &b);
     assert!(!osis_app::demo::add(&b).unwrap());
     let count = |d: &Data| d.things().unwrap().into_iter().filter(|t| d.name(*t).unwrap() == "Home").count();

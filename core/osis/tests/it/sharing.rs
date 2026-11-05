@@ -816,7 +816,7 @@ fn bundle_round_trip_spec_sync_11() {
     w.run();
     w.set_online(&db, false);
     let t = item(&da, da.me(), da.me(), "by bundle");
-    w.until(da.wait_synced(SyncScope::AllWithPeers), 1000, 5).unwrap();
+    w.until(da.wait_synced(SyncScope::AllWithSavedPeers), 1000, 5).unwrap();
     let mut b = Vec::new();
     da.export_bundle(&[da.me()], &mut b).unwrap();
     assert_eq!(x(&db, t), None);
@@ -987,10 +987,10 @@ fn removing_a_device_lists_its_links_spec_permissions_8() {
     let made_here = da.make_link(g, Role::Read, Default::default()).unwrap();
     w.run();
     let links = da.links_of(g).unwrap();
-    assert_eq!(links.len(), 2, "every device lists the person's links");
+    assert_eq!(links.len(), 2, "every device lists the account's links");
     let here = links.iter().map(|l| l.id.actor()).find(|k| *k != there).unwrap();
     let stranger = carol.node();
-    assert!(w.until(da.remove_node(stranger, skip_sync()), 1000, 10).unwrap().is_empty(), "no device of this person");
+    assert!(w.until(da.remove_node(stranger, skip_sync()), 1000, 10).unwrap().is_empty(), "no node of this account");
     let open = w.until(da.remove_node(db.node(), skip_sync()), 1000, 10).unwrap();
     let mut ids: Vec<Tid> = open.iter().map(|l| l.id.actor()).collect();
     ids.sort();

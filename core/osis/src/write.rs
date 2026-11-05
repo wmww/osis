@@ -100,7 +100,7 @@ impl WriteOp {
     }
 }
 
-/// Writes that become one commit, all or nothing. Reads see written state only. What cannot share
+/// Writes that become one commit, all or nothing. Reads meanwhile do not see them. What cannot share
 /// a commit fails `commit` with `Invalid`, naming what clashed; writing it as several commits is up
 /// to the app:
 /// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing's
@@ -237,7 +237,7 @@ impl<'d> Write<'d> {
         i
     }
 
-    /// A new thing, the acting actor its first admin. It is held in memory, and gone at restart,
+    /// A new thing, the acting actor its first admin: a draft, held in memory and gone at restart,
     /// until its first durable write, which keeps it with its tid and its memberships. `Invalid`
     /// at commit on a thin client's handle: its actor goes with the client, so what it makes
     /// names who stays (`create_with_admin`).
@@ -326,8 +326,8 @@ impl<'d> Write<'d> {
 
     /// Writes every op as one commit; `None` when nothing changes. Fails before anything applies
     /// with `Permission`, `UnknownThing`, or `Invalid` (also when the ops cannot share a commit:
-    /// `Write`); `OutcomeUnknown`, only through another node, may have applied: read before
-    /// repeating it.
+    /// `Write`, or past 1024 ops through another node); `OutcomeUnknown`, only through another node,
+    /// may have applied: read before repeating it.
     pub fn commit(self) -> Result<Option<Commit>> {
         let deciders = self.deciders();
         if let Route::Remote(r) = self.db.route_write_all(&deciders)? {
@@ -643,7 +643,7 @@ pub struct GroupWrite<'w, 'd> {
 }
 
 impl<'w, 'd> GroupWrite<'w, 'd> {
-    /// Adds a member. A thing becomes a group with its first member. A new thing still in memory
+    /// Adds a member. A thing becomes a group with its first member. A draft
     /// joins in memory, and for good when it is kept; else the add is durable, and keeps the group.
     /// In a commit that expires (`Write::expires`) the member leaves by itself at that time: a
     /// disappearing message leaves its group.

@@ -229,6 +229,7 @@ impl Osis {
     /// `Osis::pair` with it and the app carries the request back to `pair_accept`. Whoever holds
     /// the offer can make their node a full admin node of this account until it is used or
     /// expires (10 minutes): show it only to the new node.
+    /// `Unsupported` on a client with its own actor.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::PAIR_OFFER, vec![])?;
@@ -250,6 +251,7 @@ impl Osis {
     /// Accepts a new node's request to an offer of this node: makes it an admin of the
     /// account (or lets back in a node already one) and returns its node tid
     /// with the reply to carry back.
+    /// `Unsupported` on a client with its own actor.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
         if !self.has_store() {
             // once: a `TooLarge` retry would find the offer used

@@ -352,7 +352,7 @@ pub(crate) fn status_v(s: &Status) -> Value {
 pub(crate) fn status(v: Value) -> Result<Status> {
     let mut a = Args::new(v)?;
     let connected = usize::try_from(a.uint()?).map_err(|_| bad("count"))?;
-    let mut st = Status { connected, groups: Default::default(), client_connections: Vec::new(), two_sources: Default::default() };
+    let mut st = Status { connected, groups: Default::default(), node_connections: Vec::new(), two_sources: Default::default() };
     for g in a.list()? {
         let mut b = Args::new(g)?;
         let t = b.tid()?;
@@ -753,7 +753,7 @@ pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
 /// A sync scope: `[]` all, `[tid]` the groups holding it.
 pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
     Value::List(match s {
-        SyncScope::AllWithPeers => vec![],
+        SyncScope::AllWithSavedPeers => vec![],
         SyncScope::Thing(t) => vec![Value::Tid(t)],
     })
 }
@@ -761,7 +761,7 @@ pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
 pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     let mut a = Args::new(v)?;
     let s = match a.opt_tid()? {
-        None => SyncScope::AllWithPeers,
+        None => SyncScope::AllWithSavedPeers,
         Some(t) => SyncScope::Thing(t),
     };
     a.end()?;

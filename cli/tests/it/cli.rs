@@ -357,10 +357,16 @@ fn sharing_commands_local_plan_cli_4() {
     let other = S::mem();
     let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
-    assert_eq!(s.code(&["node", "rm", &stranger]), 0, "no device of this person: nothing to do");
+    assert_eq!(s.code(&["node", "rm", &stranger]), 0, "no node of this account: nothing to do");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
     let st = s.ok(&["--json", "status"]).line().to_string();
-    assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"two_sources\":[]}"), "{st}");
+    assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"connected\":0,\"two_sources\":[]}"), "{st}");
+    assert_eq!(s.ok(&["status"]).out.lines().next(), Some("connected 0"));
+    // notes/cli.md Command table: `group policy` shows and sets `SyncOptions`
+    assert_eq!(s.ok(&["group", "policy", "me"]).out, "share_address auto\nmode full\n");
+    assert_eq!(s.ok(&["group", "policy", "me", "--share-address", "always"]).out, "share_address always\nmode full\n");
+    assert_eq!(s.ok(&["group", "policy", "me"]).out, "share_address always\nmode full\n");
+    assert_eq!(s.code(&["group", "policy", "me", "--mode", "some"]), 2);
 }
 
 // notes/cli.md Command table: commands over API pieces not built yet (queries, backlinks) parse and
@@ -374,7 +380,7 @@ fn unbuilt_commands_say_so_plan_cli_4() {
         assert_eq!(o.code, 1, "{args:?}: {}", o.err);
         assert!(o.err.contains("not built yet"), "{args:?}: {}", o.err);
     }
-    assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1, "this device");
+    assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1, "this node");
     assert_eq!(s.ok(&["peers", "ls"]).out, "");
     assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
 }
@@ -588,7 +594,7 @@ fn clients_commands_plan_cli() {
     assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "actor", "me"]), 2);
 }
 
-// notes/cli.md Command table `hosting`: `host.0^` written field by field, shown (with the peer
+// notes/cli.md Command table `serving`: `host.0^` written field by field, shown (with the peer
 // address each listen URL will have, known without serving), stopped (a new start, a new key); a
 // group names its labels (as `status` lists them), a label ID works too, `''` clears a field.
 #[test]
@@ -624,7 +630,7 @@ fn serving_commands_plan_cli_4() {
     assert_eq!(s.code(&["serving", "set", "--cap", "me=5"]), 2);
     s.ok(&["serving", "off"]);
     assert_eq!(s.code(&["serving", "show"]), 3);
-    // stopping shreds the peer secret: a new start has a new address; no listen URL, no address
+    // stopping shreds the serving secret: a new start has a new address; no listen URL, no address
     s.ok(&["serving", "set"]);
     assert_eq!(s.ok(&["serving", "show"]).out, "admit own\n");
     s.ok(&["serving", "set", "--listen", "quic://0.0.0.0:7400"]);

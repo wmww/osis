@@ -100,7 +100,7 @@ fn two_accounts_three_nodes_one_peer_localhost() {
     pair(&a1, &a2, Some(&addr));
     let me1 = osis(&a1, &["--json", "whoami"]);
     let me2 = osis(&a2, &["--json", "whoami"]);
-    assert_eq!(field(&me1, "me"), field(&me2, "me"), "one person, two devices");
+    assert_eq!(field(&me1, "me"), field(&me2, "me"), "one account, two nodes");
     assert_eq!(osis(&a1, &["node", "ls"]).lines().count(), 2);
 
     // Alice shares a group by link; Bob redeems it
@@ -521,7 +521,7 @@ fn daemon_clients_localhost() {
             let open = osis(&s, &["node", "rm", &other, "--sync", "skip"]);
             assert!(open.contains("osis link revoke"), "{open}");
             assert_eq!(osis(&s, &["node", "ls"]).lines().count(), 1);
-            assert_eq!(osis(&s, &["link", "ls"]).lines().count(), open.lines().count(), "the person's links");
+            assert_eq!(osis(&s, &["link", "ls"]).lines().count(), open.lines().count(), "the account's links");
             let dev = dir("daemon-device-2");
             pair(&s, &dev, Some(&addr));
             let ls = osis(&s, &["node", "ls"]);

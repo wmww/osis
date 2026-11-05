@@ -137,7 +137,7 @@ byte_id!(LabelId);
 byte_id!(CommitId);
 byte_id!(BlobId);
 
-/// `role = enum { 0 read, 1 write, 2 admin }` (spec/data-model.md §9).
+/// `role = enum { 0 read, 1 write, 2 admin }`.
 impl Codec for Role {
     fn to_value(&self) -> Value {
         Value::Enum(

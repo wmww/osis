@@ -105,9 +105,9 @@ impl fmt::Display for Path {
 pub enum PathErrorKind {
     /// The value's kind does not match the type.
     Mismatch { expected: &'static str },
-    /// An enum case the schema does not declare (newer data). Parked.
+    /// An enum case the schema does not declare (newer data).
     UnknownCase(u64),
-    /// A CBOR tag this build does not know. Parked.
+    /// A kind of value this build does not know.
     UnknownTag(u64),
     /// A declared field without default is absent (or, on write, any declared field).
     MissingField(u64),
@@ -119,7 +119,7 @@ pub enum PathErrorKind {
     UndeclaredField(u64),
     /// The path leads nowhere in the value or the type.
     NotFound,
-    /// A write nests deeper than `MAX_VALUE_DEPTH`.
+    /// A write nests too deep.
     TooDeep,
     /// The schema cannot type the position (unknown name; only for unvalidated schemas).
     Schema(String),

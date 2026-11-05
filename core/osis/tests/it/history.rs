@@ -158,7 +158,7 @@ fn page_says_when_it_may_miss_entries() {
     let t = t.unwrap();
     say(&db, t, "x");
     assert!(!db.at(t, osis::DynamicAspectKey::untyped(msgs())).history(HistoryFrom::Newest, 1).unwrap().complete, "still syncing");
-    w.until(db.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
+    w.until(db.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
     w.run();
     assert!(db.at(t, osis::DynamicAspectKey::untyped(msgs())).history(HistoryFrom::Newest, 1).unwrap().complete);
     // a thing in no label: nothing to wait for
@@ -302,7 +302,7 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(msgs())).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
 }
 
-// spec/commits.md §5 (a writer does not undo `required.0^`), notes/api.md `knows`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
+// spec/commits.md §5 (a writer does not undo `required.0^`), notes/api.md `has_content`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
 #[test]
 fn required_is_no_content_spec_commits_5() {
     use osis::internals::schema::core_types as ct;
@@ -362,4 +362,39 @@ fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
     db.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     db.commit_with(|w| w.delete(t)).unwrap();
     assert!(!db.has_content(t).unwrap());
+}
+
+// notes/api.md Attribution (required retention): `core::REQUIRED` and the engine's `ct::REQUIRED` are
+// one aspect in one form, each reading what the other wrote; a `Duration` past what the store counts
+// is refused, not stored as something else; `Bound::FOREVER` stands.
+#[test]
+fn required_rules_are_one_aspect_under_both_keys() {
+    use osis::internals::schema::core_types as ct;
+    let db = db_at(1);
+    let t = thing(&db);
+    let rule = |retention, expires| osis::core::Required { retention, expires };
+    let forever = osis::Retention { at_least: osis::Bound::FOREVER, ..Default::default() };
+    let rules = osis::core::RequiredRules {
+        rules: [("app:a".to_string(), rule(forever, None)), ("app:b".to_string(), rule(osis::Retention::default(), Some(Duration::from_secs(60))))].into(),
+        retain_copies: true,
+    };
+    db.commit_with(|w| w.at(t, osis::core::REQUIRED).set(&rules)).unwrap();
+    assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap(), Some(rules.clone()));
+    let engine = db.at(t, ct::REQUIRED).get().unwrap().unwrap();
+    assert!(engine.keep);
+    assert_eq!(engine.rules["app:b"].expires, Some(60_000));
+    assert_eq!(engine.rules["app:a"].at_least.abs, osis::Bound::FOREVER.until.map(|t| t.0));
+    db.commit_set(t, ct::REQUIRED, &ct::RequiredRules { keep: false, ..engine }).unwrap();
+    assert!(!db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().retain_copies);
+    let too_long = |d| osis::core::RequiredRules { rules: [("app:c".to_string(), d)].into(), retain_copies: false };
+    let held = db.at(t, osis::core::REQUIRED).get().unwrap();
+    for bad in [
+        rule(osis::Retention::default(), Some(Duration::MAX)),
+        rule(osis::Retention { at_most: osis::Bound { until: None, after_replaced: Some(Duration::MAX) }, ..Default::default() }, None),
+    ] {
+        let mut w = db.write();
+        w.at(t, osis::core::REQUIRED).set(&too_long(bad)).unwrap();
+        assert!(matches!(w.commit(), Err(Error::Invalid(_))));
+    }
+    assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap(), held, "nothing written");
 }

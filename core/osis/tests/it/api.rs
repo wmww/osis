@@ -637,7 +637,7 @@ fn local_sync_surface_spec_api_sync() {
     assert_eq!(d.to_string().replace(":4040", "").parse::<osis::Address>().unwrap(), d);
     assert_eq!(osis::Address::new(&"quic://h".parse().unwrap(), [7; 32]), d);
     db.add_peer(&a).unwrap();
-    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::AllWithPeers)), Err(Error::Network(_))));
+    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers)), Err(Error::Network(_))));
     drop(db);
     let db = osis::internals::open(cfg(1, store, &c)).unwrap();
     assert_eq!(db.saved_peers().unwrap(), vec![a]);
@@ -734,7 +734,7 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
 }
 
 // notes/api.md Reads (knows), Watching: a deleted thing reads unknown (`created` still reports
-// it); the delete reaches a thing watch, whose callback reads `knows` false.
+// it); the delete reaches a thing watch, whose callback reads `has_content` false.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn deleted_reads_unknown_spec_api_reads() {
@@ -1196,7 +1196,7 @@ fn sync_refuses_other_peers() {
     assert!(matches!(db.sync(g, &[a, b]), Err(Error::Invalid(_))));
 }
 
-// notes/api.md Reading: `knows` is about content: a thing created and made durable with none reads
+// notes/api.md Reading: `has_content` is about content: a thing created and made durable with none reads
 // `false`, like a deleted one, and still takes writes.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -1524,7 +1524,7 @@ fn a_member_added_after_a_delete_stays() {
     b.commit_with(|w| w.group(h).add(osis::Member::Item(y))).unwrap();
     deliver(&a, &b);
     deliver(&b, &a);
-    assert_eq!(a.members(h).unwrap(), vec![osis::Member::Item(y)], "a later add on another device");
+    assert_eq!(a.members(h).unwrap(), vec![osis::Member::Item(y)], "a later add on another node");
     assert_eq!(b.members(h).unwrap(), vec![osis::Member::Item(y)]);
 }
 
@@ -1722,7 +1722,7 @@ fn urls_and_serving_policy_are_typed() {
 fn waiting_calls_are_send() {
     fn send<T: Send>(_: T) {}
     fn all(db: Osis, login: osis::NodeLogin, link: osis::ShareLink, card: osis::ContactCard, recovery: osis::RecoveryCard, t: osis::Tid, o: osis::SetRoleOpts) {
-        send(db.wait_synced(osis::SyncScope::AllWithPeers));
+        send(db.wait_synced(osis::SyncScope::AllWithSavedPeers));
         send(db.redeem(&link));
         send(db.import_contact(&card));
         send(db.set_role(t, t, None, o));

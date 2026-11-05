@@ -56,6 +56,7 @@ impl Osis {
     /// Registers a client: a new actor of this account, which the account's nodes can grant to.
     /// Returns the actor and the secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
     /// client reaches (it starts with none).
+    /// `Unsupported` on a client with its own actor.
     pub fn add_client(&self, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
         if !self.has_store() {
             let v = self.rcall(method::ADD_CLIENT, vec![crate::port::codec::opt(until, |w| Value::uint(w.0))])?;
@@ -83,6 +84,7 @@ impl Osis {
     }
 
     /// The clients registered with `add_client`.
+    /// `Unsupported` on a client with its own actor.
     pub fn clients(&self) -> Result<Vec<Client>> {
         if !self.has_store() {
             let v = self.rcall(method::CLIENTS, vec![])?;
@@ -105,6 +107,7 @@ impl Osis {
     /// actor has no node to keep a copy. A role this node may not remove fails here, as does one
     /// on a thing this node reads at another node (`Unsupported`, the sessions ended, the entry
     /// staying: move its group home and call this again).
+    /// `Unsupported` on a client with its own actor.
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
         if !self.has_store() {
             let v = self.rcall(method::REMOVE_CLIENT, vec![Value::Tid(actor)])?;
@@ -130,8 +133,9 @@ impl Osis {
         Ok(true)
     }
 
-    /// A new bearer secret for a client: the old hash is gone, with its live connections; the
+    /// A new bearer secret for a client: the old one stops working, and its live connections end; the
     /// actor and its grants stay. `Invalid` when there is no entry.
+    /// `Unsupported` on a client with its own actor.
     pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
         if !self.has_store() {
             return secret_of(self.rcall(method::ROTATE_CLIENT_SECRET, vec![Value::Tid(actor)])?);
