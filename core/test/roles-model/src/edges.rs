@@ -37,6 +37,8 @@ pub const NEVER: u32 = u32::MAX;
 const LATE: u32 = 1000;
 /// Time at which final authority is read.
 const NOW: u32 = 500;
+/// The cause of a drop seeded before the walk.
+const SEED: usize = usize::MAX;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub struct Edge {
@@ -70,6 +72,10 @@ pub struct EWrite {
     /// are ordered alike everywhere.
     pub id: u32,
     pub ops: Vec<(usize, Option<Edge>)>,
+    /// A finalize (spec/permissions.md §2): frontier-less removals of other holders' ended
+    /// edges. Each op applies iff its edge is past `until` at `t` and the author holds write
+    /// and a role at least the edge's; attributed to no class, audits nothing.
+    pub fin: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -88,6 +94,8 @@ pub enum Attr {
     /// With the author's effective invite at that point (its level).
     Invite(Role),
     SelfOnly,
+    /// A finalize's op (no class, never audited).
+    Final,
 }
 
 /// Authority class of (role, invite) for auditing: edge admin above every invite level.
@@ -126,6 +134,8 @@ struct EPass {
     dropped: u64,
     attr: Vec<Attr>,
     demoting: u64,
+    /// Ops applied as explicit demotions (the holder's class fell; audited).
+    demoting_ops: u64,
     grew: bool,
 }
 
@@ -183,6 +193,15 @@ impl EHist {
             .map(|&(x, new)| {
                 if x == O {
                     Attr::Skipped
+                } else if w.fin && x != a {
+                    let mine = if a == O { Role::Admin } else { role };
+                    let ended = edges[x].is_some_and(|e| w.t >= e.until);
+                    let ok = new.is_none() && ended && mine >= Role::Write && edges[x].is_some_and(|e| mine >= e.role);
+                    if ok {
+                        Attr::Final
+                    } else {
+                        Attr::Skipped
+                    }
                 } else if a == O {
                     Attr::Owner
                 } else if x == a {
@@ -259,6 +278,7 @@ impl EHist {
         let mut attr = vec![Attr::Skipped; nops];
         // Commits that demoted someone (and so audited) in this walk.
         let mut demoting = 0u64;
+        let mut demoting_ops = 0u64;
         for &i in order {
             let w = &self.writes[i];
             let ats = self.judge(w, &edges);
@@ -275,12 +295,13 @@ impl EHist {
                 // Self-removal and invite grants audit nothing; `held` keeps the highest
                 // class since the last audit, so the next explicit demotion audits as if
                 // the holder still held it.
-                if x == w.author || matches!(at, Attr::Invite(_)) || now >= held[x] {
+                if x == w.author || matches!(at, Attr::Invite(_) | Attr::Final) || now >= held[x] {
                     held[x] = held[x].max(now);
                     continue;
                 }
                 let before = held[x];
                 held[x] = now;
+                demoting_ops |= 1 << op;
                 if mode == Drops::Off || cycled {
                     continue;
                 }
@@ -291,20 +312,26 @@ impl EHist {
                 }
             }
             if grew {
-                return EPass { edges, dropped, attr, demoting, grew: true };
+                return EPass { edges, dropped, attr, demoting, demoting_ops, grew: true };
             }
         }
-        EPass { edges, dropped, attr, demoting, grew: false }
+        EPass { edges, dropped, attr, demoting, demoting_ops, grew: false }
     }
 
     /// The timeline: walks until one adds nothing to D (step 5). Sticky: drops last for the
     /// evaluation; Provenance: a drop whose cause no longer demotes is undone.
     pub fn eval_mode(&self, mode: Drops) -> EOut {
+        self.eval_from(mode, 0).0
+    }
+
+    /// The timeline with D starting at the ops in `d0` (a trust set's seeds, `crate::trust`),
+    /// and the ops the settled walk applied as explicit demotions.
+    pub fn eval_from(&self, mode: Drops, d0: u64) -> (EOut, u64) {
         let order = self.order();
         let base = self.bases();
         let nops = base[self.writes.len()];
-        // cause[op]: the demotion (commit) whose audit dropped op.
-        let mut cause: Vec<Option<usize>> = vec![None; nops];
+        // cause[op]: the demotion (commit) whose audit dropped op; SEED for d0.
+        let mut cause: Vec<Option<usize>> = (0..nops).map(|j| (d0 >> j & 1 == 1).then_some(SEED)).collect();
         let mut seen = HashSet::new();
         let mut passes = 0;
         loop {
@@ -317,7 +344,7 @@ impl EHist {
             if mode == Drops::Provenance && !cycled {
                 let mut undone = false;
                 for c in cause.iter_mut() {
-                    if c.map_or(false, |r| p.demoting >> r & 1 == 0) {
+                    if c.map_or(false, |r| r != SEED && p.demoting >> r & 1 == 0) {
                         *c = None;
                         undone = true;
                     }
@@ -326,7 +353,7 @@ impl EHist {
                     continue;
                 }
             }
-            return EOut { edges: p.edges, dropped: p.dropped, attr: p.attr, base, passes, cycled };
+            return (EOut { edges: p.edges, dropped: p.dropped, attr: p.attr, base, passes, cycled }, p.demoting_ops);
         }
     }
 
@@ -528,7 +555,8 @@ pub fn trace(h: &EHist, mode: Drops) -> String {
     for i in h.order() {
         let w = &h.writes[i];
         let ops: Vec<String> = w.ops.iter().enumerate().map(|(k, &(x, e))| format!("{x} := {} {:?}", fmt_edge(e), o.attr[o.base[i] + k])).collect();
-        s += &format!("    w{i}: {} sets {} at t={} id {} | {}\n", w.author, ops.join(", "), w.t, w.id, crate::fmt_recv(&h.recv[i], w.author));
+        let fin = if w.fin { " (finalize)" } else { "" };
+        s += &format!("    w{i}: {}{fin} sets {} at t={} id {} | {}\n", w.author, ops.join(", "), w.t, w.id, crate::fmt_recv(&h.recv[i], w.author));
     }
     s + &format!("    -> {:?} dropped commits {:#b} ({} passes, cycled {})", o.all(), o.dropped_commits(), o.passes, o.cycled)
 }
@@ -737,6 +765,11 @@ impl crate::shrink::Shrink for EHist {
                 h.recv[i][m] = LATE;
                 out.push(h);
             }
+            if self.writes[i].fin {
+                let mut h = self.clone();
+                h.writes[i].fin = false;
+                out.push(h);
+            }
         }
         let untils = |h: &EHist| -> Vec<u32> { h.genesis.iter().chain(h.writes.iter().flat_map(|w| w.ops.iter().map(|o| &o.1))).filter_map(|e| e.map(|e| e.until)).collect() };
         let times: Vec<u32> = self.writes.iter().map(|w| w.t).chain(self.recv.iter().flatten().copied()).chain(untils(self)).collect();
@@ -815,7 +848,7 @@ pub fn random_hist(rng: &mut Rng) -> EHist {
         };
         let mut r: Vec<u32> = (0..n).map(|_| rt(rng, t)).collect();
         r[author] = t;
-        h.writes.push(EWrite { author, t, id, ops });
+        h.writes.push(EWrite { author, t, id, ops, fin: false });
         h.recv.push(r);
     }
     let ws: Vec<(usize, u32)> = h.writes.iter().map(|w| (w.author, w.t)).collect();
@@ -883,7 +916,7 @@ pub fn exhaustive(k: usize, edges: &[Option<Edge>], recv_opts: &[u32], recv_at: 
                     c /= recv_opts.len();
                 }
                 let id = menu.len() as u32;
-                menu.push((EWrite { author: *author, t, id, ops: ops.clone() }, r));
+                menu.push((EWrite { author: *author, t, id, ops: ops.clone(), fin: false }, r));
             }
         }
     }
@@ -932,6 +965,224 @@ pub fn run(samples: u64, mode: Drops) {
     random(samples, 0x5eed, mode).print(&format!("{mode:?} random"), mode);
 }
 
+// ---------- disputes (crate::trust) ----------
+
+/// A plain op lowering another holder's edge in a way that can take admin away: a removal,
+/// or a value below admin or timed.
+fn lowering(e: Option<Edge>) -> bool {
+    e.map_or(true, |e| e.role < Role::Admin || e.until != NEVER)
+}
+
+impl crate::trust::Trusting for EHist {
+    type Res = (Vec<(Role, Role)>, Vec<u32>);
+    fn n_ops(&self) -> usize {
+        self.bases()[self.writes.len()]
+    }
+    fn n_writes(&self) -> usize {
+        self.writes.len()
+    }
+    fn walk_from(&self, d0: u64) -> crate::trust::Walked<Self::Res> {
+        let (o, demoting) = self.eval_from(Drops::Sticky, d0);
+        let applied = (0..o.attr.len()).filter(|&j| o.attr[j] != Attr::Skipped).fold(0, |m, j| m | 1 << j);
+        crate::trust::Walked { res: result(self, &o), applied, demoting }
+    }
+    fn plain(&self) -> Self::Res {
+        result(self, &walk(self))
+    }
+    fn victim(&self, op: usize) -> Option<usize> {
+        let base = self.bases();
+        let w = &self.writes[self.commit_of(&base, op)];
+        let x = w.ops[op - base[self.commit_of(&base, op)]].0;
+        (!w.fin && x != w.author && x != O).then_some(x)
+    }
+    /// Every op of the victim's commits ordered before R that the demoter had not received
+    /// before `t`, but those on its own edge (one target: everything is in question).
+    fn seeds(&self, op: usize) -> u64 {
+        let Some(x) = self.victim(op) else { return 0 };
+        let base = self.bases();
+        let c = self.commit_of(&base, op);
+        let r = &self.writes[c];
+        (0..self.writes.len())
+            .filter(|&j| j != c && self.writes[j].author == x && self.recv[j][r.author] >= r.t && (self.writes[j].t, self.writes[j].author, self.writes[j].id) < (r.t, r.author, r.id))
+            .flat_map(|j| self.writes[j].ops.iter().enumerate().filter(|o| o.1 .0 != x).map(|(k, _)| base[j] + k).collect::<Vec<_>>())
+            .fold(0, |m, q| m | 1 << q)
+    }
+    fn key(&self, op: usize) -> (u32, usize) {
+        let base = self.bases();
+        let c = self.commit_of(&base, op);
+        (self.writes[c].id, op - base[c])
+    }
+    fn permute(&self, perm: &[usize]) -> Self {
+        EHist::permute(self, perm)
+    }
+    fn honest(&self) -> Option<Self> {
+        honest(self)
+    }
+    fn mutual(&self) -> bool {
+        let lowers = |i: usize, a: usize, x: usize| !self.writes[i].fin && self.writes[i].author == a && self.writes[i].ops.iter().any(|&(y, e)| y == x && lowering(e));
+        let unlisted = |i: usize, j: usize| self.recv[j][self.writes[i].author] >= self.writes[i].t;
+        let n = self.writes.len();
+        // y granted a: wrote a value on a's edge.
+        let granted = |y: usize, a: usize| self.writes.iter().any(|w| w.author == y && w.ops.iter().any(|&(z, e)| z == a && e.is_some()));
+        (0..n).any(|i| (0..n).any(|j| {
+            let (a, x) = (self.writes[i].author, self.writes[j].author);
+            let hits = |b: usize| b != x && b != O && lowers(j, x, b);
+            a != x && a != O && x != O && lowers(i, a, x) && (hits(a) || (1..self.n()).any(|g| granted(g, a) && hits(g))) && unlisted(i, j)
+        }))
+    }
+    fn same_state(&self, a: &Self::Res, b: &Self::Res) -> bool {
+        a.0 == b.0
+    }
+}
+
+/// Who may write ops lowering another holder (`lowering`) in a dispute search; grants of a
+/// full admin edge (admin, invite admin, no `until`), self-removals and finalizes are free.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Who {
+    /// Only the first admin (node 1).
+    OneRemover,
+    /// Node a lowers x only if a < x; grants too.
+    Rank,
+    /// Node a lowers x only if a < x; full admin grants by anyone.
+    RankFreeGrants,
+    Anyone,
+}
+
+/// How writes travel in a dispute search.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Net {
+    /// Receipts within clock skew (2 units) of the stamp, nobody offline.
+    Online,
+    /// A third of receipts never happen (offline, withheld, or a quarter of the writes late).
+    Offline,
+}
+
+/// A random post-owner history (notes/owner-removal-plan.md step 2): node 0 is the inert old
+/// owner (never writes, holds nothing), node 1 the first admin by its implicit edge (genesis:
+/// before every write, removable), other nodes start with random edges (earlier history every
+/// node saw). Commits as in `random_hist` plus finalizes, limited by `who`, received by `net`.
+pub fn random_post(rng: &mut Rng, who: Who, net: Net) -> EHist {
+    let n = 3 + rng.below(4);
+    let full = Edge { role: Role::Admin, until: NEVER, invite: Role::Admin };
+    let mut genesis: Vec<Option<Edge>> = (0..n).map(|_| if rng.below(3) == 0 { None } else { Some(rand_edge(rng)) }).collect();
+    genesis[O] = None;
+    genesis[1] = Some(full);
+    let k = 2 + rng.below(7);
+    let mut h = EHist { genesis, writes: vec![], recv: vec![] };
+    while h.writes.len() < k {
+        let author = 1 + rng.below(n - 1);
+        let t = 1 + rng.below(10) as u32;
+        if rng.below(4) != 0 && h.writes.iter().any(|w| w.t == t && w.author == author) {
+            continue;
+        }
+        let id = rng.next() as u32;
+        if h.writes.iter().any(|w| w.id == id) {
+            continue;
+        }
+        let may_lower = |y: usize| match who {
+            Who::OneRemover => author == 1,
+            Who::Rank | Who::RankFreeGrants => author < y,
+            Who::Anyone => true,
+        };
+        // Rank: only lower ranks are written at all.
+        let targets: Vec<usize> = (1..n).filter(|&y| y != author && (who != Who::Rank || may_lower(y))).collect();
+        let mut fin = false;
+        let ops = match rng.below(10) {
+            _ if targets.is_empty() => vec![(author, rand_lower(rng, h.genesis[author]))],
+            0 | 1 => vec![(author, rand_lower(rng, h.genesis[author]))],
+            2 => vec![(targets[rng.below(targets.len())], Some(rand_edge(rng))), (author, None)],
+            3 => {
+                fin = true;
+                vec![(targets[rng.below(targets.len())], None)]
+            }
+            _ => vec![(targets[rng.below(targets.len())], if rng.below(3) == 0 { None } else { Some(rand_edge(rng)) })],
+        };
+        // A lowering op the shape forbids becomes a full admin grant.
+        let ops = ops.into_iter().map(|(y, e)| if y != author && !fin && lowering(e) && !may_lower(y) { (y, Some(full)) } else { (y, e) }).collect();
+        let mut r: Vec<u32> = (0..n)
+            .map(|_| match net {
+                Net::Offline if rng.below(3) == 0 => LATE,
+                _ => (t as i64 + rng.below(6) as i64 - 2).max(0) as u32,
+            })
+            .collect();
+        r[author] = t;
+        h.writes.push(EWrite { author, t, id, ops, fin });
+        h.recv.push(r);
+    }
+    let ws: Vec<(usize, u32)> = h.writes.iter().map(|w| (w.author, w.t)).collect();
+    let sets: Vec<Vec<usize>> = h.writes.iter().map(|w| w.ops.iter().map(|o| o.0).collect()).collect();
+    let eligible: Vec<bool> = h.writes.iter().map(|w| net == Net::Offline && w.ops.iter().all(|(_, e)| e.is_none_or(|e| e.role < Role::Admin && e.invite == Role::None))).collect();
+    let late = crate::late_writes(rng, &eligible);
+    crate::hold_chains(&ws, &late, |j, x| sets[j].contains(&x), &mut h.recv);
+    h
+}
+
+/// Exhaustive dispute search: inert 0, first admin 1, admin 2, inviter 3 (write, invite
+/// write), outsider 4. Every set of `k` commits from a menu: author (1-3) × holder × edge in
+/// `edges`, a finalize by each author of each other holder, a redemption by 3; times {2,4,6};
+/// receipts in `recv_opts` at nodes 1 and 2 (others receive at 0).
+pub fn exhaustive_disputes(k: usize, edges: &[Option<Edge>], recv_opts: &[u32]) -> crate::trust::Stats<EHist> {
+    let e = |role, invite, until| Some(Edge { role, until, invite });
+    let genesis = vec![None, e(Role::Admin, Role::Admin, NEVER), e(Role::Admin, Role::Admin, NEVER), e(Role::Write, Role::Write, NEVER), None];
+    let n = genesis.len();
+    let mut ops_menu: Vec<(usize, Vec<(usize, Option<Edge>)>, bool)> = Vec::new();
+    for author in 1..4 {
+        for x in (1..n).filter(|&x| x != author) {
+            for &ed in edges {
+                ops_menu.push((author, vec![(x, ed)], false));
+            }
+            ops_menu.push((author, vec![(x, None)], true));
+        }
+    }
+    ops_menu.push((3, vec![(4, e(Role::Write, Role::None, NEVER)), (3, None)], false));
+    let mut menu = Vec::new();
+    for (author, ops, fin) in &ops_menu {
+        for t in [2, 4, 6] {
+            let others: Vec<usize> = [1, 2].into_iter().filter(|m| m != author).collect();
+            for c in 0..recv_opts.len().pow(others.len() as u32) {
+                let mut r = vec![0; n];
+                r[*author] = t;
+                let mut c = c;
+                for &m in &others {
+                    r[m] = recv_opts[c % recv_opts.len()];
+                    c /= recv_opts.len();
+                }
+                let id = menu.len() as u32;
+                menu.push((EWrite { author: *author, t, id, ops: ops.clone(), fin: *fin }, r));
+            }
+        }
+    }
+    let total = menu.len().pow(k as u32);
+    let (menu, genesis) = (&menu, &genesis);
+    crate::trust::parallel(|th, threads| {
+        let mut st = crate::trust::Stats::default();
+        let mut rng = Rng(0x5eed ^ (th as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15));
+        let mut idx = th;
+        'next: while idx < total {
+            let mut x = idx;
+            idx += threads;
+            let mut h = EHist { genesis: genesis.clone(), writes: vec![], recv: vec![] };
+            let mut prev = 0;
+            for j in 0..k {
+                let wi = x % menu.len();
+                x /= menu.len();
+                if j > 0 && wi <= prev {
+                    continue 'next;
+                }
+                prev = wi;
+                h.writes.push(menu[wi].0.clone());
+                h.recv.push(menu[wi].1.clone());
+            }
+            let mut s = HashSet::new();
+            if !h.writes.iter().all(|w| s.insert((w.t, w.author))) {
+                continue;
+            }
+            crate::trust::check(&h, &mut st, &mut rng);
+        }
+        st
+    })
+}
+
 // ---------- scenarios ----------
 
 #[cfg(test)]
@@ -954,7 +1205,7 @@ mod tests {
                 r[m] = tm;
             }
             let id = self.0.writes.len() as u32;
-            self.0.writes.push(EWrite { author, t, id, ops: ops.to_vec() });
+            self.0.writes.push(EWrite { author, t, id, ops: ops.to_vec(), fin: false });
             self.0.recv.push(r);
             self.0.writes.len() - 1
         }

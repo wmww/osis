@@ -101,6 +101,8 @@ struct Pass {
     attr: Vec<Attr>,
     /// Writes the walk added to D (it stops at the first write that adds any).
     added: u64,
+    /// Explicit writes that lowered another holder's edge.
+    demoting: u64,
 }
 
 impl JHist {
@@ -316,6 +318,7 @@ impl JHist {
         let mut r = self.roles(&edges);
         let mut rest = Restored { since: vec![vec![Role::None; na]; nn + na], kept: HashMap::new() };
         let mut attr = vec![Attr::Skipped; self.writes.len()];
+        let mut demoting = 0u64;
         for &i in order {
             let w = &self.writes[i];
             if dropped >> i & 1 == 1 || self.is_owner_edge(w) {
@@ -335,27 +338,36 @@ impl JHist {
                 *s = (*s).max(old);
                 continue;
             }
+            if w.role < old && w.holder != w.author {
+                demoting |= 1 << i;
+            }
             let added = self.audit(i, old, own, &edges, &r, &attr, &mut rest, audit);
             if added != 0 {
-                return Pass { edges, roles: r, attr, added };
+                return Pass { edges, roles: r, attr, added, demoting };
             }
         }
-        Pass { edges, roles: r, attr, added: 0 }
+        Pass { edges, roles: r, attr, added: 0, demoting }
     }
 
     /// The timeline (§5.1): walks from scratch, each walk restarting with the writes the last
     /// one added to D (sticky within the evaluation), until a walk adds nothing (step 5).
     /// `audit = false` never drops (the reference for the nobody-offline check).
     pub fn eval(&self, audit: bool) -> JOut {
+        self.eval_from(audit, 0).0
+    }
+
+    /// The timeline with D starting at `d0` (a trust set's seeds, `crate::trust`), and the
+    /// explicit writes the settled walk applied lowering another holder's edge.
+    pub fn eval_from(&self, audit: bool, d0: u64) -> (JOut, u64) {
         let order = self.order();
-        let mut dropped = 0u64;
+        let mut dropped = d0;
         let mut passes = 0;
         loop {
             passes += 1;
             let p = self.pass(&order, dropped, audit);
             if p.added == 0 {
                 let applied = (0..self.writes.len()).filter(|&j| p.attr[j] != Attr::Skipped).fold(0u64, |m, j| m | 1 << j);
-                return JOut { edges: p.edges, roles: p.roles, applied, dropped, passes };
+                return (JOut { edges: p.edges, roles: p.roles, applied, dropped, passes }, p.demoting);
             }
             dropped |= p.added;
         }
@@ -513,6 +525,145 @@ impl crate::shrink::Shrink for JHist {
         }
         out
     }
+}
+
+// ---------- disputes (crate::trust) ----------
+
+impl JHist {
+    /// Every edge ever held: genesis or written with a role.
+    fn ever(&self) -> Vec<Vec<Role>> {
+        let mut e = self.genesis.clone();
+        for w in &self.writes {
+            e[w.holder][w.target] = e[w.holder][w.target].max(w.role);
+        }
+        e
+    }
+
+    /// Actors reachable from actor `n` by edges ever held and owner links: what a demotion on
+    /// `n` puts in question.
+    pub fn reach(&self, n: usize) -> Vec<bool> {
+        let v = self.reachable(&self.ever(), self.nodes + n);
+        (0..self.actors()).map(|x| v[self.nodes + x]).collect()
+    }
+}
+
+impl crate::trust::Trusting for JHist {
+    type Res = (Vec<Vec<Role>>, Vec<Vec<Role>>, Vec<u32>);
+    fn n_ops(&self) -> usize {
+        self.writes.len()
+    }
+    fn n_writes(&self) -> usize {
+        self.writes.len()
+    }
+    fn walk_from(&self, d0: u64) -> crate::trust::Walked<Self::Res> {
+        let (o, demoting) = self.eval_from(true, d0);
+        crate::trust::Walked { res: self.result(&o), applied: o.applied, demoting }
+    }
+    fn plain(&self) -> Self::Res {
+        self.result(&walk(self))
+    }
+    fn victim(&self, i: usize) -> Option<usize> {
+        let w = &self.writes[i];
+        (w.holder != w.author && !self.is_owner_edge(w)).then_some(w.holder)
+    }
+    /// The writes ordered before R, on its target and below it, by nodes other than the
+    /// demoter that ever reach the holder by admin edges, that the demoter had not received
+    /// before `t`, but their writes on their own edges.
+    fn seeds(&self, i: usize) -> u64 {
+        let Some(m) = self.victim(i) else { return 0 };
+        let r = &self.writes[i];
+        let admins: Vec<Vec<Role>> = self.ever().iter().map(|row| row.iter().map(|&r| if r == Role::Admin { r } else { Role::None }).collect()).collect();
+        let up = self.reaching(&admins, m);
+        let below = self.reach(r.target);
+        let in_question = |w: &JWrite| below[w.target] || w.holder >= self.nodes && below[w.holder - self.nodes];
+        (0..self.writes.len())
+            .filter(|&j| j != i && up[self.writes[j].author] && self.writes[j].author != r.author && self.writes[j].holder != self.writes[j].author && in_question(&self.writes[j]) && self.recv[j][r.author] >= r.t && (self.writes[j].t, self.writes[j].author, self.writes[j].id) < (r.t, r.author, r.id))
+            .fold(0, |m, j| m | 1 << j)
+    }
+    fn key(&self, i: usize) -> (u32, usize) {
+        (self.writes[i].id, 0)
+    }
+    fn permute(&self, perm: &[usize]) -> Self {
+        JHist::permute(self, perm)
+    }
+    fn honest(&self) -> Option<Self> {
+        honest(self)
+    }
+    fn mutual(&self) -> bool {
+        let ever = self.ever();
+        let up: Vec<Vec<bool>> = (0..self.nodes + self.actors()).map(|m| self.reaching(&ever, m)).collect();
+        let lowers = |w: &JWrite, x: usize| w.role < Role::Admin && w.holder != w.author && up[w.holder][x];
+        let unlisted = |i: usize, j: usize| self.recv[j][self.writes[i].author] >= self.writes[i].t;
+        let n = self.writes.len();
+        // node g granted node a something: wrote a role on an edge a reaches through.
+        let granted = |g: usize, a: usize| self.writes.iter().any(|w| w.author == g && w.role > Role::None && up[w.holder][a]);
+        (0..n).any(|i| (0..n).any(|j| {
+            let (a, x) = (self.writes[i].author, self.writes[j].author);
+            let hits = |b: usize| b != x && lowers(&self.writes[j], b);
+            a != x && lowers(&self.writes[i], x) && (hits(a) || (0..self.nodes).any(|g| granted(g, a) && hits(g))) && unlisted(i, j)
+        }))
+    }
+    fn same_state(&self, a: &Self::Res, b: &Self::Res) -> bool {
+        a.0 == b.0 && a.1 == b.1
+    }
+    fn outside_equal(&self, i: usize, a: &Self::Res, b: &Self::Res) -> bool {
+        let below = self.reach(self.writes[i].target);
+        (0..self.actors()).filter(|&u| !below[u]).all(|u| a.0.iter().zip(&b.0).all(|(ra, rb)| ra[u] == rb[u]) && a.1.iter().zip(&b.1).all(|(ra, rb)| ra[u] == rb[u]))
+    }
+}
+
+/// A random post-owner history (notes/owner-removal-plan.md step 2): every actor ownerless,
+/// its first admin (a node or a lower actor) holding the implicit admin edge before every
+/// write, removable; other edges start at random (earlier history every node saw); writes as
+/// in `random_hist`, more of them lowering admins.
+pub fn random_post(rng: &mut Rng) -> JHist {
+    let nodes = 2 + rng.below(3);
+    let na = 2 + rng.below(2);
+    let ents = nodes + na;
+    let mut genesis = vec![vec![Role::None; na]; ents];
+    for m in 0..ents {
+        for x in 0..na {
+            if m != nodes + x && rng.below(3) == 0 {
+                genesis[m][x] = [Role::Read, Role::Write, Role::Admin, Role::Admin][rng.below(4)];
+            }
+        }
+    }
+    for x in 0..na {
+        genesis[rng.below(nodes + x)][x] = Role::Admin;
+    }
+    let k = 2 + rng.below(7);
+    let mut h = JHist { nodes, owners: vec![Owner::None; na], genesis, writes: vec![], recv: vec![] };
+    while h.writes.len() < k {
+        let author = rng.below(nodes);
+        let t = 1 + rng.below(8) as u32;
+        if rng.below(4) != 0 && h.writes.iter().any(|w| w.t == t && w.author == author) {
+            continue;
+        }
+        let id = rng.next() as u32;
+        if h.writes.iter().any(|w| w.id == id) {
+            continue;
+        }
+        let target = rng.below(na);
+        let holder = loop {
+            let m = rng.below(ents);
+            if m != nodes + target {
+                break m;
+            }
+        };
+        let role = [Role::None, Role::None, Role::None, Role::Read, Role::Write, Role::Admin][rng.below(6)];
+        let mut r: Vec<u32> = (0..nodes).map(|_| if rng.below(3) == 0 { LATE } else { (t as i64 + rng.below(6) as i64 - 2).max(0) as u32 }).collect();
+        r[author] = t;
+        h.writes.push(JWrite { author, t, id, target, holder, role });
+        h.recv.push(r);
+    }
+    let ever = h.ever();
+    let reach: Vec<Vec<bool>> = (0..nodes).map(|y| h.reachable(&ever, y)).collect();
+    let ws: Vec<(usize, u32)> = h.writes.iter().map(|w| (w.author, w.t)).collect();
+    let holders: Vec<usize> = h.writes.iter().map(|w| w.holder).collect();
+    let eligible: Vec<bool> = h.writes.iter().map(|w| w.role < Role::Admin).collect();
+    let late = crate::late_writes(rng, &eligible);
+    crate::hold_chains(&ws, &late, |j, x| reach[x][holders[j]], &mut h.recv);
+    h
 }
 
 // ---------- search ----------

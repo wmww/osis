@@ -1,4 +1,4 @@
-//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|snapshot|edges|edges-prov|joint|digest]`.
+//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|snapshot|edges|edges-prov|joint|disputes|disputes-random|digest]`.
 
 use roles_model::{edges, joint, single, snapshot};
 
@@ -11,6 +11,8 @@ fn main() {
                 println!("{name} {d:016x}");
             }
         }
+        Some("disputes") => roles_model::trust::run(samples, false),
+        Some("disputes-random") => roles_model::trust::run(samples, true),
         Some("joint") => joint::random(samples, 0x5eed).print(),
         Some("snapshot") => snapshot::random(samples, 0x5eed).print(),
         Some("edges") => edges::run(samples, edges::Drops::Sticky),

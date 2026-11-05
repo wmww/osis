@@ -14,6 +14,8 @@
 //! - `snapshot`: §6 roster snapshots, epoch starts and the tenure ledger on two levels.
 //! - `content`: §5.2 per-delta content validity.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
+//! - `trust`: disputes and trust sets over `edges` and `joint` (notes/owner-removal-plan.md
+//!   step 3), below.
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
 //! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order
 //! agrees with the canonical one); `Display` on a history prints it as a trace. The joint
@@ -22,6 +24,25 @@
 //! histories: a refactor must keep it (values in notes/testing.md, Models).
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs
 //! the scenarios.
+//!
+//! Disputes (`trust`; results in notes/owners.md, "Model results, committed"). A node's
+//! trust set is one more walk input: ops it sides with, each an edge write R by A lowering
+//! another holder X. R seeds D with X's writes ordered before R that R's frontier does not
+//! list, X's writes on its own edges excepted. Shrink: trusted ops a walk leaves unapplied
+//! lose their seeds for good, all at once, and the walk is redone from scratch. A dispute is
+//! an unapplied R that applies as an explicit demotion of X once its seeds are added to D,
+//! keyed (R, X). Post-owner shape (owner-removal step 2): `edges::random_post` keeps node 0
+//! as an inert old owner and gives node 1 the first admin's edge before every write;
+//! `joint::random_post` makes every actor ownerless with its first admin's edge in genesis.
+//! Both walks gain `eval_from` (D seeded) and the demotions they applied; `edges` gains
+//! finalizes (`EWrite::fin`, spec/permissions.md §2). Searches: `roles-model -- N disputes`
+//! (exhaustive edge tiers, then N random histories per shape: who may lower whom × online or
+//! offline, then N joint histories); `disputes-random` skips the exhaustive tiers. Hard
+//! properties: no trust set reads as the plain walk; nobody offline raises no dispute;
+//! equal trust sets read alike in any write order; T, T', T reads as T; a pick changes
+//! nothing outside its target's reach (joint). Reported: disputes per shape and those
+//! without a mutual removal, shrink and pick rounds, picks leaving their dispute open, and
+//! trusting a demotion that applies anyway changing the result.
 
 pub mod content;
 pub mod edges;
@@ -29,6 +50,7 @@ pub mod joint;
 pub mod shrink;
 pub mod single;
 pub mod snapshot;
+pub mod trust;
 
 /// Roles, `None` below read.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
