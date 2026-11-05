@@ -51,7 +51,7 @@ fn secret_of(v: Value) -> Result<ClientSecret> {
 }
 
 impl Osis {
-    /// Registers a client: mints its actor, owned by the account,
+    /// Registers a client: mints its actor, of the account,
     /// with secrets of its own, placed in the home group so the account's devices can grant to
     /// it, and writes its `clients.0^` entry, all in one transaction. Returns the actor and the
     /// secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the

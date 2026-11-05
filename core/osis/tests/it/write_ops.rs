@@ -236,6 +236,31 @@ fn batch_equals_single_op_batches() {
     }
 }
 
+// spec: none (notes/api.md Keys): an app's generic helper names `osis::AspectKey` alone, with or without a value type, and takes generated keys and `osis::Key`
+#[test]
+fn a_generic_helper_names_aspect_key() {
+    fn set_and_read<K: osis::AspectKey>(db: &Osis, t: Tid, k: K, v: &K::T) -> osis::Result<Option<K::T>>
+    where
+        K: Clone,
+    {
+        let mut w = db.write();
+        w.at(t, k.clone()).set(v)?;
+        w.commit()?;
+        db.at(t, k).get()
+    }
+    fn title_of<K: osis::AspectKey<T = String>>(db: &Osis, t: Tid, k: K) -> osis::Result<String> {
+        Ok(db.at(t, k).get()?.unwrap_or_default())
+    }
+    let db = db(1);
+    let mut w = db.write();
+    let t = w.create().unwrap();
+    w.commit().unwrap();
+    let key = db.key("app:h.0").unwrap();
+    assert_eq!(set_and_read(&db, t, key, &Value::Int(1)).unwrap(), Some(Value::Int(1)));
+    assert_eq!(set_and_read(&db, t, notes::TITLE, &"x".to_string()).unwrap().as_deref(), Some("x"));
+    assert_eq!(title_of(&db, t, notes::TITLE).unwrap(), "x");
+}
+
 // spec: none (notes/api.md Writes): a backward range moves nothing and says so
 #[test]
 fn a_backward_move_range_is_invalid() {
