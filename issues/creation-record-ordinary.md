@@ -9,6 +9,9 @@ Today `created.0` has fixed `nobody` retention, kept forever, with an exemption 
 - A creation in an expiring commit ends the thing at that time, so a disappearing message is one commit.
 - The exemption goes, along with `Committed`-level consequences of the split (issues/api-refactor.md, One commit).
 
+## Latitude (Tess)
+No sign-off needed. If this fails for dull internal reasons, that's fine. Other outcomes are acceptable: purge and expiry of a creation allowed conceptually but handled specially, keeping the data they need; or what exists today. Any of them beats quietly splitting a write.
+
 ## To settle
 1. **What remains.** Late writes must be told from writes to an unknown thing, and a purge must be judged by its author's role at the time, which is rooted in the record. So a purge leaves a tombstone at least holding the request and what proves it: possibly the record and a chain. Is that smaller than today's record, or the same with a new name? An expiry may need less: it's in the creation's own signed header.
 2. **Order.** The purge arriving before the creation, before grants it relies on, or at a node that never held the thing. Must converge (spec/requirements.md).
