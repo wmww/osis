@@ -171,8 +171,8 @@ impl Ui {
         }
         match d.kind(t)? {
             Kind::Event => {
-                if let Some(s) = d.get(t, crate::event::START)? {
-                    c.line(crate::data::fmt_when(&s, d.get(t, crate::event::END)?.as_ref()));
+                if let Some(s) = d.db.at(t, crate::event::START).get()? {
+                    c.line(crate::data::fmt_when(&s, d.db.at(t, crate::event::END).get()?.as_ref()));
                     use crate::time::{DAY, HOUR, MINUTE};
                     let mut chips = vec![ChipM::action(Icon::Back, "Day earlier", Act::Nudge(t, -DAY, 0)), ChipM::action(Icon::Plus, "Day later", Act::Nudge(t, DAY, 0))];
                     if matches!(s, crate::event::Start::At(_)) {
@@ -186,7 +186,7 @@ impl Ui {
                     c.blocks.push(Block::Chips(chips));
                     // how it repeats: the current choice is a filled chip
                     use crate::event::RepeatFreq as F;
-                    let cur = d.get(t, crate::event::REPEAT)?;
+                    let cur = d.db.at(t, crate::event::REPEAT).get()?;
                     let custom = cur.as_ref().is_some_and(|r| r.interval != 1 || !r.weekdays.is_empty() || !r.monthdays.is_empty() || r.until.is_some() || r.count.is_some());
                     let mut rep = Vec::new();
                     for (label, f) in [("Once", None), ("Daily", Some(F::Daily)), ("Weekly", Some(F::Weekly)), ("Monthly", Some(F::Monthly)), ("Yearly", Some(F::Yearly))] {
@@ -231,7 +231,7 @@ impl Ui {
                     let mut ts = Vec::new();
                     for x in evs {
                         let mut tile = d.tile(x.tid)?;
-                        let place = d.get(x.tid, crate::event::LOCATION)?.filter(|p| !p.is_empty());
+                        let place = d.db.at(x.tid, crate::event::LOCATION).get()?.filter(|p| !p.is_empty());
                         // a timed event from an earlier day: until its end, or all day when it goes on
                         let mut time = if x.all_day || (x.start < day && x.end >= day + DAY) {
                             "All day".to_string()

@@ -3,6 +3,7 @@
 //! self-removal, else a node that may removes it later; one way only.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::TestWrites as _;
 use crate::scenario::{introduce, new_tag, person};
 use osis::internals::Internals as _;
 use osis::internals::node::sync::EntryKind;
@@ -11,7 +12,7 @@ use osis::{EdgeOpts, Error, GroupReach, Osis, Role, Share, ShareOpts, Tid};
 use osis_sim::world::World;
 
 fn card(db: &Osis, text: &str) -> Tid {
-    db.write_with(|w| {
+    db.batch(|w| {
         let c = w.create(db.me())?;
         w.at(c, BODY).set(&text.to_string())?;
         Ok(c)
@@ -20,15 +21,15 @@ fn card(db: &Osis, text: &str) -> Tid {
 }
 
 fn text(db: &Osis, t: Tid) -> Option<String> {
-    db.get(t, BODY).unwrap()
+    db.at(t, BODY).get().unwrap()
 }
 
 fn edit(db: &Osis, t: Tid, new: &str) {
-    db.write_with(|w| w.at(t, BODY).set(&new.to_string())).unwrap();
+    db.commit_set(t, BODY, &new.to_string()).unwrap();
 }
 
 fn listed(db: &Osis, g: Tid, t: Tid) -> bool {
-    db.get(g, GROUP).unwrap().unwrap_or_default().items.contains(&t)
+    db.at(g, GROUP).get().unwrap().unwrap_or_default().items.contains(&t)
 }
 
 fn reach_of(db: &Osis, t: Tid, g: Tid) -> Option<GroupReach> {
@@ -73,7 +74,7 @@ fn share_into_unplace_and_stale_placement() {
     assert_eq!(reach_of(&alice, t, g), Some(GroupReach { group: g, placed: true, share: Share::Tied(Role::Write) }));
 
     // no admin on Bob's card: the edge goes as a self-removal through admin on the tag, at once
-    alice.write_with(|w| w.unplace(t, g)).unwrap();
+    alice.batch(|w| w.unplace(t, g)).unwrap();
     assert!(!alice.roster(t).unwrap().contains_key(&g), "removed with the unplace, before any sync");
     w.run();
     assert!(!bob.roster(t).unwrap().contains_key(&g));
@@ -116,11 +117,11 @@ fn obligation_after_unplace_and_hand_grant_survives() {
     let tied = card(&bob, "tied");
     let hand = card(&bob, "hand");
     bob.share_into(tied, g, Role::Read, ShareOpts::default()).unwrap();
-    bob.write_with(|w| w.place(hand, g)).unwrap();
+    bob.batch(|w| w.place(hand, g)).unwrap();
     bob.grant(hand, g, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
     assert_eq!(reach_of(&carol, hand, g).map(|r| r.share), Some(Share::Untied(Role::Read)));
-    carol.write_with(|w| {
+    carol.batch(|w| {
         w.unplace(tied, g)?;
         w.unplace(hand, g)
     })
@@ -148,7 +149,7 @@ fn concurrent_raise_and_unplace_converge_unshared() {
     w.run();
     w.set_online(&bob, false);
     w.set_online(&carol, false);
-    carol.write_with(|w| w.unplace(t, g)).unwrap();
+    carol.batch(|w| w.unplace(t, g)).unwrap();
     assert_eq!(bob.share_into(t, g, Role::Write, ShareOpts::default()).unwrap(), Share::Tied(Role::Write));
     w.set_online(&bob, true);
     w.set_online(&carol, true);
@@ -168,7 +169,7 @@ fn concurrent_raise_and_unplace_converge_unshared() {
 #[test]
 fn nested_tied_shares() {
     let Setup { mut w, alice, bob, carol, g } = setup();
-    let sub = bob.write_with(|w| {
+    let sub = bob.batch(|w| {
         let s = w.create(bob.me())?;
         w.make_group(s)?;
         Ok(s)
@@ -179,11 +180,11 @@ fn nested_tied_shares() {
     assert_eq!(bob.share_into(sub, g, Role::Read, ShareOpts { subgroup: true, ..ShareOpts::default() }).unwrap(), Share::Tied(Role::Read));
     bob.share_into(t, sub, Role::Write, ShareOpts::default()).unwrap();
     // the sub-tag's own aspects (its roster among them) sync as an item of the tag
-    bob.write_with(|w| w.place(sub, g)).unwrap();
+    bob.batch(|w| w.place(sub, g)).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("deep"), "tag -> sub-tag -> card");
     assert_eq!(carol.role_on(t).unwrap(), Some(Role::Read), "the minimum along the path");
-    alice.write_with(|w| {
+    alice.batch(|w| {
         w.remove_subgroup(g, sub)?;
         w.unplace(sub, g)
     })
@@ -206,7 +207,7 @@ fn receipts_only_scope_left_to_holders() {
     let join = Osis::pair(w.cfg(4, &[]), &bob.pair_offer().unwrap()).unwrap();
     let (_, reply) = bob.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
-    let sub = bob.write_with(|w| {
+    let sub = bob.batch(|w| {
         let s = w.create(bob.me())?;
         w.make_group(s)?;
         Ok(s)
@@ -220,7 +221,7 @@ fn receipts_only_scope_left_to_holders() {
     assert_eq!(phone.roster(sub).unwrap().get(&g).map(|e| e.tied), Some(true));
     w.set_online(&alice, false);
     w.set_online(&bob, false);
-    carol.write_with(|w| w.unplace(sub, g)).unwrap();
+    carol.batch(|w| w.unplace(sub, g)).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -254,17 +255,17 @@ fn edge_before_placement_is_not_removed() {
     alice.grant(g, b, Role::Write, EdgeOpts::default()).unwrap();
     w.run();
     let t = card(&bob, "plan");
-    bob.write_with(|w| w.place(t, bob.home())).unwrap();
+    bob.batch(|w| w.place(t, bob.me())).unwrap();
     for _ in 0..3 {
         w.advance(70_000);
     }
-    assert!(text(&phone, t).is_some() && phone.get(g, GROUP).unwrap().is_some(), "the phone holds the card and the tag");
+    assert!(text(&phone, t).is_some() && phone.at(g, GROUP).get().unwrap().is_some(), "the phone holds the card and the tag");
     w.set_reachable(&bob, s1, false);
     assert_eq!(bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
     w.advance(70_000);
     assert!(phone.roster(t).unwrap().get(&g).is_some_and(|e| e.tied) && !listed(&phone, g, t), "the phone has the edge, not the placement");
     // other activity under the tag's label: the phone passes it again
-    alice.write_with(|w| w.at(g, osis::core::NAME).set(&"Shared!".to_string())).unwrap();
+    alice.commit_set(g, osis::core::NAME, &"Shared!".to_string()).unwrap();
     for _ in 0..3 {
         w.advance(70_000);
     }
@@ -293,7 +294,7 @@ fn edge_first_then_placement_then_unplace_removes_it() {
     alice.grant(g, b, Role::Write, EdgeOpts::default()).unwrap();
     w.run();
     let t = card(&bob, "plan");
-    bob.write_with(|w| w.place(t, bob.home())).unwrap();
+    bob.batch(|w| w.place(t, bob.me())).unwrap();
     for _ in 0..3 {
         w.advance(70_000);
     }
@@ -310,7 +311,7 @@ fn edge_first_then_placement_then_unplace_removes_it() {
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
     // Alice, admin of the tag, would remove it too: offline, the phone's obligation alone
     w.set_online(&alice, false);
-    phone.write_with(|w| w.unplace(t, g)).unwrap();
+    phone.batch(|w| w.unplace(t, g)).unwrap();
     assert!(phone.roster(t).unwrap().contains_key(&g), "not a self-removal: left to the obligation");
     w.advance(70_000);
     assert!(!phone.roster(t).unwrap().contains_key(&g) && !bob.roster(t).unwrap().contains_key(&g), "the phone removed it");
@@ -336,10 +337,15 @@ fn placement_pruned_by_a_reset_counts_as_gone() {
     w.run();
     w.set_online(&alice, false);
     w.set_online(&bob, false);
-    carol.write_with(|w| w.unplace(t, g)).unwrap();
+    carol.batch(|w| w.unplace(t, g)).unwrap();
     w.run();
     let group = osis::core::Group { items: [other].into(), subgroups: Default::default() };
-    carol.write_with(|w| w.at(g, GROUP).replace(&group)).unwrap();
+    // no API call does this; another implementation's commit may
+    carol.engine(|e| {
+        let mut m = osis::internals::node::Mutation::new();
+        m.op(g, &GROUP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Replace(osis::Codec::to_value(&group)) })?;
+        e.write(m)
+    }).unwrap();
     w.run();
     w.set_online(&alice, true);
     w.set_online(&bob, true);
@@ -359,7 +365,7 @@ fn placement_pruned_by_a_reset_counts_as_gone() {
 fn invalidated_placement_removes_the_tied_edge() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let t = card(&bob, "plan");
-    bob.write_with(|w| w.place(t, bob.home())).unwrap();
+    bob.batch(|w| w.place(t, bob.me())).unwrap();
     w.run();
     w.set_online(&bob, false);
     assert_eq!(bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
@@ -383,13 +389,13 @@ fn invalidated_placement_removes_the_tied_edge() {
 fn group_holders_learn_edge_removal() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let t = card(&bob, "plan");
-    bob.write_with(|w| w.place(t, g)).unwrap();
+    bob.batch(|w| w.place(t, g)).unwrap();
     bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
     for db in [&alice, &carol] {
         assert!(db.roster(t).unwrap().contains_key(&g), "granted");
     }
-    let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
+    let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&bob);
     w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
     w.run();
@@ -415,7 +421,7 @@ fn inherited_inbox_opens() {
     w.run();
     for db in [&alice, &carol] {
         assert!(db.roster(t).unwrap().contains_key(&g), "the grant reached {}", db.me());
-        assert_eq!(db.get(t, osis::core::NAME).unwrap(), Some("Bob's".to_string()));
+        assert_eq!(db.at(t, osis::core::NAME).get().unwrap(), Some("Bob's".to_string()));
     }
     w.until(bob.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
     w.run();
@@ -441,7 +447,7 @@ fn group_admin_learns_removal_elsewhere() {
     dave.grant(h, a, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
     let t = card(&bob, "plan");
-    bob.write_with(|w| {
+    bob.batch(|w| {
         w.place(t, g)?;
         w.place(t, h)
     })
@@ -450,7 +456,7 @@ fn group_admin_learns_removal_elsewhere() {
     bob.grant(t, h, Role::Admin, EdgeOpts::default()).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
-    let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
+    let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
     w.until(dave.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
     w.run();
@@ -486,7 +492,7 @@ fn group_admin_copies_removal_without_new_keys() {
     w.run();
     assert_eq!(text(&dave, met).as_deref(), Some("met"));
     let t = card(&bob, "plan");
-    bob.write_with(|w| {
+    bob.batch(|w| {
         w.place(t, g)?;
         w.place(t, h)
     })
@@ -495,7 +501,7 @@ fn group_admin_copies_removal_without_new_keys() {
     bob.grant(t, h, Role::Admin, EdgeOpts::default()).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
-    let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
+    let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
     w.until(dave.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
     w.run();
@@ -512,7 +518,7 @@ fn skip() -> osis::Demotion {
 }
 
 fn seed_of(db: &Osis, t: Tid) -> Option<[u8; 32]> {
-    db.get(t, osis::core::KEYS).ok().flatten().and_then(|k| k.deposit_seed)
+    db.at(t, osis::core::KEYS).get().ok().flatten().and_then(|k| k.deposit_seed)
 }
 
 // spec/sync.md §5, §6: Dave reads G and removes G's edge on his card outside G's closure: his deposit under G's label is promoted by its admin, who reads the card no more and holds none of its fresh `keys.0`, its author's chain complete without it; a reader joining later learns the removal and not the fresh deposit seed
@@ -560,7 +566,7 @@ fn owner_home_copy_of_removal_without_new_keys() {
     let o = new_tag(&alice, "O").unwrap();
     alice.grant(o, e, Role::Read, EdgeOpts::default()).unwrap();
     let m = alice
-        .write_with(|w| {
+        .batch(|w| {
             let m = w.create(o)?;
             w.make_group(m)?;
             Ok(m)
@@ -795,12 +801,12 @@ fn a_copy_survives_its_granter_rotating() {
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
     let frank = person(&mut w, 7, 0);
     let f = introduce(&mut w, &dave, &frank);
-    let keys = alice.get(dave.me(), osis::core::KEYS).unwrap();
+    let keys = alice.at(dave.me(), osis::core::KEYS).get().unwrap();
     dave.grant(dave.me(), f, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
     w.until(dave.demote(dave.me(), f, osis::Lower::Remove, skip()), 1000, 20).unwrap();
     w.run();
-    assert_ne!(alice.get(dave.me(), osis::core::KEYS).unwrap(), keys, "alice holds his new keys");
+    assert_ne!(alice.at(dave.me(), osis::core::KEYS).get().unwrap(), keys, "alice holds his new keys");
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter's keys moved");
 }
 
@@ -877,7 +883,11 @@ fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     let p = new_tag(&frank, "P").unwrap();
     frank.grant(p, fd, Role::Admin, EdgeOpts::default()).unwrap();
     w.run();
-    let t = dave.write_with(|x| { let c = x.create(p)?; x.at(c, BODY).set(&"dave's".to_string())?; Ok(c) }).unwrap();
+    let mut x = dave.write();
+    let c = x.create(p).unwrap();
+    x.at(c, BODY).set(&"dave's".to_string()).unwrap();
+    let t = c;
+    x.commit().unwrap();
     w.run();
     dave.share(t, h, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
@@ -943,5 +953,5 @@ fn a_later_reader_learns_no_keys_of_a_thing_the_group_lost() {
     w.run();
     assert_eq!(text(&bob, t), None);
     assert_eq!(seed_of(&bob, t), None, "no keys of t for a later reader");
-    assert!(dave.get(t, osis::core::KEYS).unwrap().is_some());
+    assert!(dave.at(t, osis::core::KEYS).get().unwrap().is_some());
 }

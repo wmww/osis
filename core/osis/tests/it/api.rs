@@ -2,6 +2,8 @@
 //! Writes, Errors, Footguns closed).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::watched;
+use crate::common::TestWrites as _;
 use osis::AspectKey as _;
 use osis::internals::Internals as _;
 use crate::common;
@@ -33,19 +35,18 @@ fn task(title: &str) -> Task {
 fn create_and_reopen_spec_api_handle() {
     let store = MemStore::new();
     let c = clock();
-    let (node, me, home) = {
+    let (node, me) = {
         let db = Osis::create(cfg(1, store.clone(), &c)).unwrap().0;
         assert_ne!(db.me(), db.node());
-        assert_eq!(db.get(db.home(), core::GROUP).unwrap(), Some(Group::default()));
+        assert_eq!(db.at(db.me(), core::GROUP).get().unwrap(), Some(Group::default()));
         assert_eq!(db.role_on(db.me()).unwrap(), Some(Role::Admin));
-        (db.node(), db.me(), db.home())
+        (db.node(), db.me())
     };
     fn send_sync<T: Send + Sync>() {}
     send_sync::<Osis>();
-    send_sync::<osis::Watch<String>>();
     send_sync::<osis::Subscription>();
     let db = Osis::open(cfg(2, store, &c)).unwrap();
-    assert_eq!((db.node(), db.me(), db.home()), (node, me, home));
+    assert_eq!((db.node(), db.me()), (node, me));
     // an empty store is not a database
     assert!(Osis::open(cfg(3, MemStore::new(), &c)).is_err());
 }
@@ -59,18 +60,20 @@ fn create_and_reopen_spec_api_handle() {
 fn typed_keys_and_paths_spec_versioning_5() {
     let db = db(1);
     let mut w = db.write();
-    let n = w.create_in(db.me(), &[db.home()]).unwrap();
+    let n = w.create_in(db.me(), &[db.me()]).unwrap();
     w.at(n, notes::TITLE).set(&"Groceries".to_string()).unwrap();
     w.at(n, notes::TASKS).set(&vec![task("milk"), task("eggs")]).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.get(n, notes::TITLE).unwrap().as_deref(), Some("Groceries"));
-    assert_eq!(db.get(n, notes::TASKS).unwrap().unwrap()[1].title, "eggs");
+    assert_eq!(db.at(n, notes::TITLE).get().unwrap().as_deref(), Some("Groceries"));
+    assert_eq!(db.at(n, notes::TASKS).get().unwrap().unwrap()[1].title, "eggs");
     let at = db.at(n, notes::TASKS);
     assert_eq!(at.path(p![1, task::TITLE]).get::<String>().unwrap().as_deref(), Some("eggs"));
-    assert_eq!(at.path(p![5, task::TITLE]).get_value().unwrap(), None);
+    assert_eq!(at.path(p![5, task::TITLE]).get::<osis::Value>().unwrap(), None);
     // path op on a typed list element
-    db.write_with(|w| w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&true)).unwrap();
-    assert!(db.get(n, notes::TASKS).unwrap().unwrap()[0].done);
+    let mut w = db.write();
+    w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&true).unwrap();
+    w.commit().unwrap();
+    assert!(db.at(n, notes::TASKS).get().unwrap().unwrap()[0].done);
     // mistyped data: untyped write of an int under a string AK
     let (tx, diags) = std::sync::mpsc::channel();
     let _d = db.on_diagnostic(move |_, d| {
@@ -78,24 +81,24 @@ fn typed_keys_and_paths_spec_versioning_5() {
             tx.send(d).unwrap();
         }
     }).unwrap();
-    db.write_with(|w| w.at(n, ak("note:title.0")).set(&Value::Int(3))).unwrap();
-    assert_eq!(db.get(n, notes::TITLE).unwrap(), None, "absent, not an error");
+    db.commit_set(n, ak("note:title.0"), &Value::Int(3)).unwrap();
+    assert_eq!(db.at(n, notes::TITLE).get().unwrap(), None, "absent, not an error");
     let d = recv(&diags);
     assert_eq!((d.tids, d.detail.as_str()), (vec![n], "note:title.0: type error at (root): expected string"));
-    assert_eq!(db.get(n, ak("note:title.0")).unwrap(), Some(Value::Int(3)));
+    assert_eq!(db.at(n, ak("note:title.0")).get().unwrap(), Some(Value::Int(3)));
     // one element of another shape (as a newer version's enum case would be)
     let Value::List(mut l) = notes::TASKS.encode(&vec![task("milk"), task("eggs")]) else { panic!() };
     let Some(Value::Map(m)) = l.get_mut(1) else { panic!() };
     m.insert(Value::Int(1), Value::Int(7));
-    db.write_with(|w| w.at(n, ak("note:tasks.0")).set(&Value::List(l))).unwrap();
-    assert_eq!(db.get(n, notes::TASKS).unwrap(), None);
+    db.commit_set(n, ak("note:tasks.0"), &Value::List(l)).unwrap();
+    assert_eq!(db.at(n, notes::TASKS).get().unwrap(), None);
     let at = db.at(n, notes::TASKS);
     assert_eq!(at.path(p![0, task::TITLE]).get::<String>().unwrap().as_deref(), Some("milk"));
     assert_eq!(at.path(p![1, task::TITLE]).get::<String>().unwrap(), None);
-    assert_eq!(at.path(p![1]).get_value().unwrap(), None);
+    assert_eq!(at.path(p![1]).get::<osis::Value>().unwrap(), None);
     assert_eq!(at.path(p![0]).get::<Task>().unwrap().map(|t| t.title).as_deref(), Some("milk"));
     // a path the schema does not have is the caller's mistake: an error
-    assert!(matches!(at.path(osis::Path(vec![osis::Step::Index(0), osis::Step::Field(99)])).get_value(), Err(Error::Type { .. })));
+    assert!(matches!(at.path(osis::Path(vec![osis::Step::Index(0), osis::Step::Field(99)])).get::<Value>(), Err(Error::Type { .. })));
     // a typed write is validated against the writer's schema
     let mut w = db.write();
     let e = w.at(n, notes::TASKS).path(p![0, task::DONE]).set(&s("no")).unwrap_err();
@@ -109,7 +112,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
 fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
     let db = db(1);
     let mut w = db.write();
-    let n = w.create_in(db.me(), &[db.home()]).unwrap();
+    let n = w.create_in(db.me(), &[db.me()]).unwrap();
     w.commit().unwrap();
     let (tx, diags) = std::sync::mpsc::channel();
     let _d = db.on_diagnostic(move |_, d| {
@@ -118,8 +121,8 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
         }
     }).unwrap();
     let bogus = Value::link(osis::schema::osis_base::Link { hash: [3; 32], blob: osis::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
-    db.write_with(|w| w.at(n, ak("note:pinned.0")).set(&Value::Map([(bogus, Value::Int(1))].into_iter().collect()))).unwrap();
-    assert_eq!(db.get(n, notes::PINNED).unwrap(), None, "absent, not an error");
+    db.commit_set(n, ak("note:pinned.0"), &Value::Map([(bogus, Value::Int(1))].into_iter().collect())).unwrap();
+    assert_eq!(db.at(n, notes::PINNED).get().unwrap(), None, "absent, not an error");
     assert_eq!(recv(&diags).tids, vec![n]);
 }
 
@@ -131,35 +134,39 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
 fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     use osis::schema::osis_base::{BlobId, Link};
     let db = db(1);
-    let n = db.write_with(|w| w.create_in(db.me(), &[db.home()])).unwrap();
+    let mut w = db.write();
+    let n = w.create_in(db.me(), &[db.me()]).unwrap();
+    w.commit().unwrap();
     let (tx, diags) = std::sync::mpsc::channel();
     let _d = db.on_diagnostic(move |_, d| {
         if d.kind == osis::DiagnosticKind::Unreadable {
             tx.send(d).unwrap();
         }
     }).unwrap();
-    let watch = db.at(n, notes::TASKS).watch().unwrap();
+    let watch = watched(&db, n, notes::TASKS).unwrap();
     let (ctx, changes) = std::sync::mpsc::channel();
     let _sub = db.at(n, notes::TASKS).on_change(move |_, c| ctx.send(c.value).unwrap()).unwrap();
     assert_eq!(recv(&changes), Ok(None), "the initial call");
     // two tasks, the first's tags holding a link that names no blob
     let tasks = vec![task("a"), task("b")];
-    db.write_with(|w| w.at(n, notes::TASKS).set(&tasks)).unwrap();
+    db.commit_set(n, notes::TASKS, &tasks).unwrap();
     // calls coalesce (a late call reads the latest state): take this one before the next write
     assert_eq!(recv(&changes), Ok(Some(tasks.clone())));
-    let Some(Value::List(mut raw)) = db.at(n, ak("note:tasks.0")).get_value().unwrap() else { panic!() };
+    let Some(Value::List(mut raw)) = db.at(n, ak("note:tasks.0")).get().unwrap() else { panic!() };
     let Value::Map(first) = &mut raw[0] else { panic!() };
     let bogus = Value::link(Link { hash: [3; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
     // and a held blob of another thing's large value: under that thing's dedup secret
-    let m = db.write_with(|w| w.create(db.me())).unwrap();
-    db.write_with(|w| w.at(m, ak("t:big.0")).set(&s(&"x".repeat(200 << 10)))).unwrap();
+    let mut w = db.write();
+    let m = w.create(db.me()).unwrap();
+    w.commit().unwrap();
+    db.commit_set(m, ak("t:big.0"), &s(&"x".repeat(200 << 10))).unwrap();
     let foreign = db.engine(|e| e.get(&m, &ak("t:big.0"))).unwrap().unwrap();
     assert!(matches!(foreign, Value::Link(_)));
     first.insert(Value::Int(task::TAGS.0 as i64), Value::Set([s("kept"), bogus, foreign].into_iter().collect()));
-    db.write_with(|w| w.at(n, ak("note:tasks.0")).set(&Value::List(raw))).unwrap();
+    db.commit_set(n, ak("note:tasks.0"), &Value::List(raw)).unwrap();
     let mut want = tasks.clone();
     want[0].tags = ["kept".to_string()].into();
-    assert_eq!(db.get(n, notes::TASKS).unwrap(), Some(want.clone()), "the rest reads");
+    assert_eq!(db.at(n, notes::TASKS).get().unwrap(), Some(want.clone()), "the rest reads");
     let d = recv(&diags);
     assert_eq!(d.tids, vec![n]);
     assert!(d.detail.contains("blob missing") && d.detail.contains("verification failed"), "{}", d.detail);
@@ -170,8 +177,8 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     assert_eq!(watch.current(), Ok(Some(want)));
     // at the aspect root: the aspect reads absent, not an error
     let k = ak("t:x.0");
-    db.write_with(|w| w.at(n, k.clone()).set(&Value::link(Link { hash: [6; 32], blob: BlobId([7; 32]), suite: 1, key: [8; 32] }))).unwrap();
-    assert_eq!(db.at(n, k).get_value().unwrap(), None);
+    db.commit_set(n, k.clone(), &Value::link(Link { hash: [6; 32], blob: BlobId([7; 32]), suite: 1, key: [8; 32] })).unwrap();
+    assert_eq!(db.at(n, k).get().unwrap(), None);
 }
 
 // spec/data-model.md §6 (unreadable link): a link whose blob is not held yet reads absent, and
@@ -180,10 +187,12 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
 #[test]
 fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
     let db = db(1);
-    let n = db.write_with(|w| w.create_in(db.me(), &[db.home()])).unwrap();
+    let mut w = db.write();
+    let n = w.create_in(db.me(), &[db.me()]).unwrap();
+    w.commit().unwrap();
     let k = ak("t:big.0");
     let big = s(&"x".repeat(200 << 10));
-    db.write_with(|w| w.at(n, k.clone()).set(&big)).unwrap();
+    db.commit_set(n, k.clone(), &big).unwrap();
     let Some(Value::Link(l)) = db.engine(|e| e.get(&n, &k)).unwrap() else { panic!() };
     let bytes = db.engine(|e| e.blob(&l.blob)).unwrap().unwrap();
     db.engine(|e| {
@@ -193,7 +202,7 @@ fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
         })
     })
     .unwrap();
-    let watch = db.at(n, k.clone()).watch().unwrap();
+    let watch = watched(&db, n, k.clone()).unwrap();
     assert_eq!(watch.current(), Ok(None), "not held: absent");
     let (tx, changes) = std::sync::mpsc::channel();
     let _sub = db.at(n, k.clone()).on_change(move |_, c| tx.send((c.value, c.source)).unwrap()).unwrap();
@@ -209,15 +218,15 @@ fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
 #[test]
 fn registered_schema_key_spec_api_keys() {
     let db = db(1);
-    db.register_schema_source("notes.osis", notes::SCHEMA.source()).unwrap();
-    assert!(db.register_schema_source("bad.osis", "schema nonsense").is_err());
+    db.register_schema("notes.osis", notes::SCHEMA.source()).unwrap();
+    assert!(db.register_schema("bad.osis", "schema nonsense").is_err());
     // a schema declaring a core AK is the core schema's business, not an app's
-    assert!(db.register_schema_source("core.osis", "version 1;\naspect name.0: int;\n").is_err());
+    assert!(db.register_schema("core.osis", "version 1;\naspect name.0: int;\n").is_err());
     assert_eq!(db.key("name.0").unwrap().schema().map(|s| s.declares_core()), Some(true));
     // a later registration of an AK types it
-    db.register_schema_source("n2.osis", "version 5;\naspect note:title.0: int;\n").unwrap();
+    db.register_schema("n2.osis", "version 5;\naspect note:title.0: int;\n").unwrap();
     assert_eq!(db.key("note:title.0").unwrap().schema().map(|s| s.version), Some(5));
-    db.register_schema_source("notes.osis", notes::SCHEMA.source()).unwrap();
+    db.register_schema("notes.osis", notes::SCHEMA.source()).unwrap();
     let title = db.key("note:title.0").unwrap();
     assert!(title.schema().is_some());
     assert!(db.key("other:x.0").unwrap().schema().is_none());
@@ -233,7 +242,7 @@ fn registered_schema_key_spec_api_keys() {
     w.at(n, ak("note:tasks.0")).set(&Value::List(vec![Value::Map(t.into_iter().collect())])).unwrap();
     w.commit().unwrap();
     let tasks = db.key("note:tasks.0").unwrap();
-    let v = db.at(n, tasks).path(p![0, task::WEIGHT]).get_value().unwrap();
+    let v = db.at(n, tasks).path(p![0, task::WEIGHT]).get::<osis::Value>().unwrap();
     assert_eq!(v, Some(Value::float(1.0)));
 }
 
@@ -243,8 +252,8 @@ fn registered_schema_key_spec_api_keys() {
 fn absent_reads_none_spec_api_reads() {
     let db = db(1);
     let other = db_other_thing();
-    assert_eq!(db.get(other, ak("a:b.0")).unwrap(), None);
-    assert_eq!(db.get(db.me(), ak("a:b.0")).unwrap(), None);
+    assert_eq!(db.at(other, ak("a:b.0")).get().unwrap(), None);
+    assert_eq!(db.at(db.me(), ak("a:b.0")).get().unwrap(), None);
     assert!(!db.knows(other).unwrap());
     assert_eq!(db.role_on(other).unwrap(), None);
 }
@@ -255,7 +264,7 @@ fn db_other_thing() -> osis::Tid {
 }
 
 fn titles(db: &Osis, t: osis::Tid) -> Vec<String> {
-    db.get(t, notes::TASKS).unwrap().unwrap().into_iter().map(|x| x.title).collect()
+    db.at(t, notes::TASKS).get().unwrap().unwrap().into_iter().map(|x| x.title).collect()
 }
 
 // notes/api.md Writes: whole-value ops and every path op.
@@ -266,59 +275,65 @@ fn write_ops_spec_api_writes() {
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     let (m, st, c) = (ak("t:map.0"), ak("t:set.0"), ak("t:reg.0"));
-    w.at(t, m.clone()).path(p![]).put(&"a".to_string(), &1i64).unwrap();
-    w.at(t, m.clone()).path(p![]).put(&"b".to_string(), &2i64).unwrap();
+    w.at(t, m.clone()).path(p!["a"]).set(&1i64).unwrap();
+    w.at(t, m.clone()).path(p!["b"]).set(&2i64).unwrap();
     w.at(t, st.clone()).path(p![]).add(&"x".to_string()).unwrap();
     w.at(t, st.clone()).path(p![]).add(&"y".to_string()).unwrap();
     w.at(t, notes::TASKS).set(&vec![task("a"), task("b"), task("c")]).unwrap();
     w.at(t, c.clone()).set(&s("one")).unwrap();
     w.commit().unwrap();
-    db.write_with(|w| {
-        w.at(t, m.clone()).path(p![]).remove_key(&"a".to_string())?;
-        w.at(t, m.clone()).path(p!["b"]).set(&5i64)?;
-        w.at(t, st.clone()).path(p![]).remove_elem(&"x".to_string())?;
-        w.at(t, notes::TASKS).path(p![]).insert(0, &[task("z")])?;
-        w.at(t, c.clone()).replace(&s("two"))
-    })
-    .unwrap();
-    assert_eq!(db.get(t, m.clone()).unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("b"), Value::Int(5))]))));
-    assert_eq!(db.get(t, st.clone()).unwrap(), Some(Value::Set(osis_base::ValueSet::from([s("y")]))));
+    let mut w = db.write();
+    w.at(t, m.clone()).path(p!["a"]).remove().unwrap();
+    w.at(t, m.clone()).path(p!["b"]).set(&5i64).unwrap();
+    w.at(t, st.clone()).path(p!["x"]).remove().unwrap();
+    w.at(t, notes::TASKS).path(p![]).insert(0, &[task("z")]).unwrap();
+    w.at(t, c.clone()).replace(&s("two")).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, m.clone()).get().unwrap(), Some(Value::Map(osis_base::ValueMap::from([(s("b"), Value::Int(5))]))));
+    assert_eq!(db.at(t, st.clone()).get().unwrap(), Some(Value::Set(osis_base::ValueSet::from([s("y")]))));
     assert_eq!(titles(&db, t), ["z", "a", "b", "c"]);
-    assert_eq!(db.get(t, c.clone()).unwrap(), Some(s("two")));
-    db.write_with(|w| {
-        w.at(t, notes::TASKS).path(p![]).delete(0..1)?;
-        w.at(t, notes::TASKS).path(p![2]).remove()
-    })
-    .unwrap();
-    db.write_with(|w| w.at(t, notes::TASKS).path(p![]).move_range(0..1, 1)).unwrap();
+    assert_eq!(db.at(t, c.clone()).get().unwrap(), Some(s("two")));
+    let mut w = db.write();
+    w.at(t, notes::TASKS).path(p![]).delete(0..1).unwrap();
+    w.at(t, notes::TASKS).path(p![2]).remove().unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    w.at(t, notes::TASKS).path(p![]).move_range(0..1, 1).unwrap();
+    w.commit().unwrap();
     assert_eq!(titles(&db, t), ["b", "a"]);
-    db.write_with(|w| w.at(t, m.clone()).path(p!["b"]).remove()).unwrap();
-    assert_eq!(db.get(t, m.clone()).unwrap(), Some(Value::Map(osis_base::ValueMap::new())));
+    let mut w = db.write();
+    w.at(t, m.clone()).path(p!["b"]).remove().unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, m.clone()).get().unwrap(), Some(Value::Map(osis_base::ValueMap::new())));
     // counter, max, enum case, text splice through typed keys
-    db.write_with(|w| {
-        w.at(t, notes::VIEWS).inc(&2i64)?;
-        w.at(t, notes::VIEWS).inc(&3i64)?;
-        w.at(t, notes::BODY).set(&"hello world".to_string())
-    })
-    .unwrap();
-    assert_eq!(db.get(t, notes::VIEWS).unwrap(), Some(5));
-    db.write_with(|w| w.at(t, notes::BODY).path(p![]).splice(0..5, "goodbye")).unwrap();
-    assert_eq!(db.get(t, notes::BODY).unwrap().as_deref(), Some("goodbye world"));
-    db.write_with(|w| w.at(t, notes::TASKS).set(&vec![task("a")])).unwrap();
-    db.write_with(|w| w.at(t, notes::TASKS).path(p![0, task::PRIORITY]).set_case(osis::CaseId(1), Some(Value::Enum(2, None)))).unwrap();
-    assert_eq!(db.get(t, notes::TASKS).unwrap().unwrap()[0].priority, Some(notes::Priority::High));
+    let mut w = db.write();
+    w.at(t, notes::VIEWS).path(osis::Path::root()).contribute(&2i64).unwrap();
+    w.at(t, notes::VIEWS).path(osis::Path::root()).contribute(&3i64).unwrap();
+    w.at(t, notes::BODY).set(&"hello world".to_string()).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, notes::VIEWS).get().unwrap(), Some(5));
+    let mut w = db.write();
+    w.at(t, notes::BODY).path(p![]).splice(0..5, "goodbye").unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, notes::BODY).get().unwrap().as_deref(), Some("goodbye world"));
+    db.commit_set(t, notes::TASKS, &vec![task("a")]).unwrap();
+    let mut w = db.write();
+    w.at(t, notes::TASKS).path(p![0, task::PRIORITY]).set(&Value::Enum(1, Some(Box::new(Value::Enum(2, None))))).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, notes::TASKS).get().unwrap().unwrap()[0].priority, Some(notes::Priority::High));
     // max: observe keeps the largest contribution
-    db.register_schema_source("t.osis", "version 1;\naspect t:max.0: max<int>;\n").unwrap();
+    db.register_schema("t.osis", "version 1;\naspect t:max.0: max<int>;\n").unwrap();
     let mx = db.key("t:max.0").unwrap();
-    db.write_with(|w| {
-        w.at(t, mx.clone()).path(p![]).observe(&7i64)?;
-        w.at(t, mx.clone()).path(p![]).observe(&3i64)
-    })
-    .unwrap();
-    assert_eq!(db.get(t, mx).unwrap(), Some(Value::Int(7)));
+    let mut w = db.write();
+    w.at(t, mx.clone()).path(p![]).contribute(&7i64).unwrap();
+    w.at(t, mx.clone()).path(p![]).contribute(&3i64).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, mx).get().unwrap(), Some(Value::Int(7)));
     // remove the aspect; a field cannot be removed by path
-    db.write_with(|w| w.at(t, c.clone()).remove()).unwrap();
-    assert_eq!(db.get(t, c).unwrap(), None);
+    let mut w = db.write();
+    w.at(t, c.clone()).remove().unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, c).get().unwrap(), None);
     let mut w = db.write();
     assert!(matches!(w.at(t, notes::TASKS).path(p![0, task::DONE]).remove(), Err(Error::Invalid(_))));
     // a set element is atomic
@@ -337,18 +352,24 @@ fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
     let t = w.create(db.me()).unwrap();
     w.at(t, k.clone()).set(&form("a", "b")).unwrap();
     w.commit().unwrap();
-    let shown = db.get(t, k.clone()).unwrap().unwrap();
+    let shown = db.at(t, k.clone()).get().unwrap().unwrap();
     // meanwhile another writer changes field 1
-    db.write_with(|w| w.at(t, k.clone()).path(p![Value::Int(1)]).set(&s("B"))).unwrap();
-    assert_eq!(db.get(t, k.clone()).unwrap(), Some(form("a", "B")));
+    let mut w = db.write();
+    w.at(t, k.clone()).path(p![Value::Int(1)]).set(&s("B")).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, k.clone()).get().unwrap(), Some(form("a", "B")));
     // the user edits field 0 of what they were shown
     let edited = form("A", "b");
-    db.write_with(|w| w.at(t, k.clone()).edit(&shown, &edited)).unwrap();
-    assert_eq!(db.get(t, k.clone()).unwrap(), Some(form("A", "B")));
+    let mut w = db.write();
+    w.at(t, k.clone()).edit(&shown, &edited).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, k.clone()).get().unwrap(), Some(form("A", "B")));
     // `set` of the edited value clobbers the concurrent change
-    db.write_with(|w| w.at(t, k.clone()).path(p![Value::Int(1)]).set(&s("C"))).unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&edited)).unwrap();
-    assert_eq!(db.get(t, k).unwrap(), Some(form("A", "b")));
+    let mut w = db.write();
+    w.at(t, k.clone()).path(p![Value::Int(1)]).set(&s("C")).unwrap();
+    w.commit().unwrap();
+    db.commit_set(t, k.clone(), &edited).unwrap();
+    assert_eq!(db.at(t, k).get().unwrap(), Some(form("A", "b")));
 }
 
 // notes/api.md Reads, Large values: a value above the materialization bound fails TooLarge
@@ -367,10 +388,10 @@ fn materialization_bound_spec_data_model_6() {
     let t = w.create(db.me()).unwrap();
     w.at(t, k.clone()).set(&Value::Map(osis_base::ValueMap::from([(Value::Int(0), big), (Value::Int(1), s("small")), (Value::Int(2), mid)]))).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.get(t, k.clone()), Err(Error::TooLarge { limit: 64 * 1024 }));
+    assert_eq!(db.at(t, k.clone()).get(), Err(Error::TooLarge { limit: 64 * 1024 }));
     assert_eq!(db.at(t, k.clone()).path(p![osis::FieldId(1)]).get::<String>().unwrap().as_deref(), Some("small"));
-    assert!(matches!(db.at(t, k.clone()).path(p![osis::FieldId(0)]).get_value(), Err(Error::TooLarge { .. })));
-    assert!(matches!(db.at(t, k.clone()).path(p![osis::FieldId(2)]).get_value(), Err(Error::TooLarge { .. })));
+    assert!(matches!(db.at(t, k.clone()).path(p![osis::FieldId(0)]).get::<osis::Value>(), Err(Error::TooLarge { .. })));
+    assert!(matches!(db.at(t, k.clone()).path(p![osis::FieldId(2)]).get::<osis::Value>(), Err(Error::TooLarge { .. })));
 }
 
 // spec/data-model.md §6: a chunked large value reads back whole within the bound.
@@ -383,7 +404,7 @@ fn large_value_round_trip_spec_data_model_6() {
     let t = w.create(db.me()).unwrap();
     w.at(t, k.clone()).set(&big).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.get(t, k).unwrap(), Some(big));
+    assert_eq!(db.at(t, k).get().unwrap(), Some(big));
 }
 
 // notes/api.md Writes: create with explicit owner and placement; groups; place, unplace,
@@ -393,37 +414,36 @@ fn large_value_round_trip_spec_data_model_6() {
 fn create_place_delete_spec_data_model_8() {
     let db = db(1);
     let mut w = db.write();
-    let folder = w.create_in(db.me(), &[db.home()]).unwrap();
+    let folder = w.create_in(db.me(), &[db.me()]).unwrap();
     w.make_group(folder).unwrap();
-    let a = w.create_in(db.me(), &[folder, db.home()]).unwrap();
+    let a = w.create_in(db.me(), &[folder, db.me()]).unwrap();
     let b = w.create(db.me()).unwrap();
     w.at(a, ak("t:x.0")).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.groups_of(a).unwrap().within.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([folder, db.home()]));
+    assert_eq!(db.groups_of(a).unwrap().within.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([folder, db.me()]));
     assert!(db.groups_of(b).unwrap().within.is_empty());
-    db.write_with(|w| {
-        w.place(b, folder)?;
-        w.unplace(a, db.home())
-    })
-    .unwrap();
+    let mut w = db.write();
+    w.place(b, folder).unwrap();
+    w.unplace(a, db.me()).unwrap();
+    w.commit().unwrap();
     assert_eq!(db.groups_of(a).unwrap().within, vec![folder]);
-    let sub = db
-        .write_with(|w| {
-            let s = w.create(db.me())?;
-            w.make_group(s)?;
-            w.add_subgroup(folder, s)?;
-            w.place(b, s)?;
-            Ok(s)
-        })
-        .unwrap();
+    let mut w = db.write();
+    let s = w.create(db.me()).unwrap();
+    w.make_group(s).unwrap();
+    w.add_subgroup(folder, s).unwrap();
+    w.place(b, s).unwrap();
+    let sub = s;
+    w.commit().unwrap();
     assert!(db.groups_of(b).unwrap().within.contains(&sub));
     assert!(db.groups_of(b).unwrap().within.contains(&folder));
-    db.write_with(|w| w.delete(a)).unwrap();
+    let mut w = db.write();
+    w.delete(a).unwrap();
+    w.commit().unwrap();
     assert!(db.groups_of(a).unwrap().within.is_empty());
-    assert_eq!(db.get(a, ak("t:x.0")).unwrap(), None);
+    assert_eq!(db.at(a, ak("t:x.0")).get().unwrap(), None);
     // deleted: not known, though its creation stays held; a later write recreates it
     assert!(!db.knows(a).unwrap() && db.created(a).unwrap().is_some());
-    db.write_with(|w| w.at(a, ak("t:x.0")).set(&Value::Int(2))).unwrap();
+    db.commit_set(a, ak("t:x.0"), &Value::Int(2)).unwrap();
     assert!(db.knows(a).unwrap());
     // an unknown group or owner
     let mut w = db.write();
@@ -448,7 +468,7 @@ fn local_rights_check_spec_permissions_1() {
     w.at(t, ak("t:x.0")).set(&Value::Int(2)).unwrap();
     assert_eq!(w.commit(), Err(Error::UnknownThing { tid: t }));
     deliver(&a, &b);
-    assert_eq!(b.get(t, ak("t:x.0")).unwrap(), Some(Value::Int(1)));
+    assert_eq!(b.at(t, ak("t:x.0")).get().unwrap(), Some(Value::Int(1)));
     assert_eq!(b.role_on(t).unwrap(), None);
     let before = b.engine(|e| e.commit_ids().len());
     let mut w = b.write();
@@ -484,7 +504,7 @@ fn tree_in_one_batch_spec_permissions_1() {
     for (i, t) in [x, y, z].into_iter().enumerate() {
         assert_eq!(b.owner_of(t).unwrap(), Some([a.me(), x, y][i]));
         assert!(b.created(t).unwrap().is_some());
-        assert_eq!(b.get(t, ak("t:x.0")).unwrap(), Some(Value::Int(i as i64)));
+        assert_eq!(b.at(t, ak("t:x.0")).get().unwrap(), Some(Value::Int(i as i64)));
     }
     let before = b.engine(|e| e.commit_ids().len());
     let mut w = b.write();
@@ -511,8 +531,14 @@ fn role_class_refused_spec_permissions_1() {
     assert!(matches!(w.at(t, ak("label.0")).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, ak("roles.0")).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, ak("groups.0")).remove(), Err(Error::Invalid(_))));
-    // group.0 is ordinary
-    w.at(t, core::GROUP).set(&Group::default()).unwrap();
+    // group.0 changes by the group calls alone: they check sync and clean up tied edges
+    assert!(matches!(w.at(t, core::GROUP).set(&Group::default()), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, core::GROUP).path(p![core::group::ITEMS]).add(&t), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, ak("group.0")).remove(), Err(Error::Invalid(_))));
+    assert!(matches!(db.edit_text(t, ak("group.0"), osis::Path::root()).and_then(|s| {
+        s.replace(0..0, "x")?;
+        s.commit()
+    }), Err(Error::Invalid(_))));
 }
 
 // spec/crdt.md §4.7: expiry is a hard bound however late the driver's Tick: from T on, no call
@@ -522,18 +548,15 @@ fn expired_unseen_before_tick_spec_crdt_4_7() {
     let c = clock();
     let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let (k, e) = (ak("t:msg.0"), ak("t:typing.0~"));
-    let t = db
-        .write_with(|w| {
-            let t = w.create(db.me())?;
-            w.at(t, k.clone()).expires_in(std::time::Duration::from_secs(60)).set(&s("hi"))?;
-            w.at(t, e.clone()).expires_in(std::time::Duration::from_secs(60)).set(&s("typing"))?;
-            Ok(t)
-        })
-        .unwrap();
+    let mut w = db.write();
+    let t = w.create(db.me()).unwrap();
+    w.at(t, k.clone()).expires_in(std::time::Duration::from_secs(60)).set(&s("hi")).unwrap();
+    w.at(t, e.clone()).expires_in(std::time::Duration::from_secs(60)).set(&s("typing")).unwrap();
+    w.commit().unwrap();
     c.advance(59_999);
-    assert_eq!((db.get(t, k.clone()).unwrap(), db.get(t, e.clone()).unwrap()), (Some(s("hi")), Some(s("typing"))));
+    assert_eq!((db.at(t, k.clone()).get().unwrap(), db.at(t, e.clone()).get().unwrap()), (Some(s("hi")), Some(s("typing"))));
     c.advance(1);
-    assert_eq!((db.get(t, k).unwrap(), db.get(t, e).unwrap()), (None, None));
+    assert_eq!((db.at(t, k).get().unwrap(), db.at(t, e).get().unwrap()), (None, None));
 }
 
 // spec/commits.md §6, §5: per-write expiry kills the value at T; retention per write; purge
@@ -549,17 +572,19 @@ fn expiry_retention_purge_spec_commits_5_6() {
     let ret = osis::Retention { by: osis::schema::PurgeBy::Writer, ..Default::default() };
     w.at(t, r.clone()).retention(ret).set(&s("kept")).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.get(t, k.clone()).unwrap(), Some(s("hi")));
+    assert_eq!(db.at(t, k.clone()).get().unwrap(), Some(s("hi")));
     c.advance(61_000);
     db.engine(|e| e.tick()).unwrap();
-    assert_eq!(db.get(t, k.clone()).unwrap(), None);
+    assert_eq!(db.at(t, k.clone()).get().unwrap(), None);
     // expiry in the past is invalid at commit
     let mut w = db.write();
     assert!(matches!(w.at(t, k.clone()).expires_at(osis::WallMs(T0)).set(&s("late")), Err(Error::Invalid(_))));
     drop(w);
     // purge
-    db.write_with(|w| w.at(t, r.clone()).purge()).unwrap();
-    assert_eq!(db.get(t, r.clone()).unwrap(), None);
+    let mut w = db.write();
+    w.at(t, r.clone()).purge().unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, r.clone()).get().unwrap(), None);
 }
 
 // notes/api.md Writes: `act_as` changes the header actor; the default is `me()`.
@@ -591,7 +616,7 @@ fn local_sync_surface_spec_api_sync() {
     let db = Osis::create(cfg(1, store.clone(), &c)).unwrap().0;
     assert!(db.hosts().unwrap().is_empty());
     let st = db.status().unwrap();
-    assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(osis::SyncState::NoHosts));
+    assert_eq!(st.groups.get(&db.me()).map(|g| g.state), Some(osis::SyncState::NoHosts));
     assert!("".parse::<osis::HostAddr>().is_err());
     let a = osis::HostAddr::new("quic://h:1", [7; 32]);
     assert_eq!(a.to_string().parse::<osis::HostAddr>().unwrap(), a);
@@ -614,7 +639,7 @@ fn created_reads_through_run_time_key_spec_data_model_9() {
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     w.commit().unwrap();
-    let v = db.get(t, db.key("created.0").unwrap()).unwrap().unwrap();
+    let v = db.at(t, db.key("created.0").unwrap()).get().unwrap().unwrap();
     assert!(matches!(&v, Value::Map(m) if m.get(&Value::Int(0)) == Some(&Value::Tid(db.me()))));
 }
 
@@ -633,7 +658,7 @@ fn stream_len_set_stream_spec_data_model_6() {
     let t = w.create(db.me()).unwrap();
     w.at(t, k.clone()).set_stream(&data[..]).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.get(t, k.clone()), Err(Error::TooLarge { limit: 64 * 1024 }));
+    assert_eq!(db.at(t, k.clone()).get(), Err(Error::TooLarge { limit: 64 * 1024 }));
     assert_eq!(db.at(t, k.clone()).len().unwrap(), Some(300_000));
     let mut st = db.at(t, k.clone()).stream().unwrap().unwrap();
     let mut all = Vec::new();
@@ -662,10 +687,10 @@ fn stream_len_set_stream_spec_data_model_6() {
     assert_eq!(st.seek(SeekFrom::End(10)).unwrap(), 300_000, "past the end clamps to the end");
     // a small value streams too; absent reads None; a non-string fails
     let small = ak("t:small.0");
-    db.write_with(|w| w.at(t, small.clone()).set(&s("hello"))).unwrap();
+    db.commit_set(t, small.clone(), &s("hello")).unwrap();
     assert_eq!(db.at(t, small.clone()).len().unwrap(), Some(5));
     assert_eq!(db.at(t, ak("t:none.0")).len().unwrap(), None);
-    db.write_with(|w| w.at(t, ak("t:n.0")).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, ak("t:n.0"), &Value::Int(1)).unwrap();
     assert!(matches!(db.at(t, ak("t:n.0")).len(), Err(Error::Invalid(_))));
 }
 
@@ -687,7 +712,7 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     // durable things: an ephemeral placement is no `NotSynced` matter (nothing leaves the
     // device anyway); placing a durable thing persists the group
     let home_item = w.create_durable(db.me()).unwrap();
-    w.place(home_item, db.home()).unwrap();
+    w.place(home_item, db.me()).unwrap();
     let lost = w.create_durable(db.me()).unwrap();
     w.place(lost, g).unwrap();
     w.commit().unwrap();
@@ -703,12 +728,11 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
 #[test]
 fn deleted_reads_unknown_spec_api_reads() {
     let db = db(1);
-    let t = db.write_with(|w| {
-        let t = w.create_in(db.me(), &[db.home()])?;
-        w.at(t, ak("t:x.0")).set(&Value::Int(1))?;
-        w.at(t, ak("t:y.0")).set(&Value::Int(2))?;
-        Ok(t)
-    }).unwrap();
+    let mut w = db.write();
+    let t = w.create_in(db.me(), &[db.me()]).unwrap();
+    w.at(t, ak("t:x.0")).set(&Value::Int(1)).unwrap();
+    w.at(t, ak("t:y.0")).set(&Value::Int(2)).unwrap();
+    w.commit().unwrap();
     assert!(db.knows(t).unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     let _sub = db.watch_thing(t, move |db, c| {
@@ -717,12 +741,14 @@ fn deleted_reads_unknown_spec_api_reads() {
     db.settle();
     let initial: Vec<_> = rx.try_iter().collect();
     assert!(initial.iter().all(|(_, _, known)| *known), "{initial:?}");
-    db.write_with(|w| w.delete(t)).unwrap();
+    let mut w = db.write();
+    w.delete(t).unwrap();
+    w.commit().unwrap();
     db.settle();
     let got: Vec<_> = rx.try_iter().collect();
     assert!(got.iter().any(|(ak, v, known)| ak.as_str() == "t:x.0" && *v == Ok(None) && !known), "{got:?}");
     assert!(!db.knows(t).unwrap() && db.created(t).unwrap().is_some());
-    assert!(!db.groups_of(db.home()).unwrap().item_of.contains(&t) && !db.get(db.home(), core::GROUP).unwrap().unwrap().items.contains(&t));
+    assert!(!db.groups_of(db.me()).unwrap().item_of.contains(&t) && !db.at(db.me(), core::GROUP).get().unwrap().unwrap().items.contains(&t));
     // an unknown tid: not known, no creation
     let other = db_other_thing();
     assert!(!db.knows(other).unwrap() && db.created(other).unwrap().is_none());
@@ -734,8 +760,8 @@ fn deleted_reads_unknown_spec_api_reads() {
 #[test]
 fn groups_of_relations_spec_data_model_8() {
     let db = db(1);
-    let home = db.home();
-    let (g1, g2, tag, x) = db.write_with(|w| {
+    let home = db.me();
+    let (g1, g2, tag, x) = db.batch(|w| {
         let group = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
             let g = w.create_in(db.me(), &[home])?;
             w.make_group(g)?;
@@ -761,10 +787,12 @@ fn groups_of_relations_spec_data_model_8() {
     assert_eq!(gx.item_of, vec![tag]);
     assert!(gx.subgroup_of.is_empty());
     assert_eq!(gx.within.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([tag, g1, g2, home]));
-    db.write_with(|w| w.delete(tag)).unwrap();
+    let mut w = db.write();
+    w.delete(tag).unwrap();
+    w.commit().unwrap();
     assert_eq!(db.groups_of(tag).unwrap(), osis::GroupsOf::default());
     for g in [g1, g2] {
-        let d = db.get(g, core::GROUP).unwrap().unwrap();
+        let d = db.at(g, core::GROUP).get().unwrap().unwrap();
         assert!(!d.items.contains(&tag) && !d.subgroups.contains(&tag), "{g}: {d:?}");
     }
     assert!(!db.knows(tag).unwrap());
@@ -780,40 +808,40 @@ fn groups_of_relations_spec_data_model_8() {
 #[test]
 fn placement_reaching_no_synced_group_fails_spec_api_writes() {
     let db = db(1);
-    let home = db.home();
-    let g = db.write_with(|w| {
-        let g = w.create_in(db.me(), &[home])?;
-        w.make_group(g)?;
-        Ok(g)
-    }).unwrap();
+    let home = db.me();
+    let mut w = db.write();
+    let g = w.create_in(db.me(), &[home]).unwrap();
+    w.make_group(g).unwrap();
+    w.commit().unwrap();
     let mut w = db.write();
     let x = w.create_durable(db.me()).unwrap();
     w.place(x, g).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("add_subgroup")));
     assert!(!db.knows(x).unwrap() && db.created(x).unwrap().is_none(), "nothing applied");
     // an ephemeral thing stays on this device anyway
-    let e = db.write_with(|w| w.create_in(db.me(), &[g])).unwrap();
+    let mut w = db.write();
+    let e = w.create_in(db.me(), &[g]).unwrap();
+    w.commit().unwrap();
     assert!(db.groups_of(e).unwrap().item_of.contains(&g));
     // ... until a durable write persists it with that placement: the same check
-    let r = db.write_with(|w| w.at(e, ak("t:x.0")).set(&Value::Int(1)));
+    let r = db.commit_set(e, ak("t:x.0"), &Value::Int(1));
     assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("add_subgroup")), "{r:?}");
     assert_eq!(db.created(e).unwrap().unwrap().commit, None, "still ephemeral");
     // a group with no synced group at all: device-local, allowed (a `NotSynced` diagnostic)
-    let local = db.write_with(|w| {
-        let l = w.create_durable(db.me())?;
-        w.make_group(l)?;
-        let y = w.create_durable(db.me())?;
-        w.place(y, l)?;
-        Ok(l)
-    }).unwrap();
+    let mut w = db.write();
+    let l = w.create_durable(db.me()).unwrap();
+    w.make_group(l).unwrap();
+    let y = w.create_durable(db.me()).unwrap();
+    w.place(y, l).unwrap();
+    let local = l;
+    w.commit().unwrap();
     assert!(db.knows(local).unwrap());
     // the fix: the group as a subgroup too, in the same batch
-    let x = db.write_with(|w| {
-        let x = w.create_durable(db.me())?;
-        w.place(x, g)?;
-        w.add_subgroup(home, g)?;
-        Ok(x)
-    }).unwrap();
+    let mut w = db.write();
+    let x = w.create_durable(db.me()).unwrap();
+    w.place(x, g).unwrap();
+    w.add_subgroup(home, g).unwrap();
+    w.commit().unwrap();
     assert!(db.groups_of(x).unwrap().within.contains(&home));
 }
 
@@ -852,7 +880,9 @@ fn close_waits_or_names_holders_spec_api_handle() {
     for keep in [false, true] {
         let db = common::db(1);
         let k = ak("t:x.0");
-        let t = db.write_with(|w| w.create(db.me())).unwrap();
+        let mut w = db.write();
+        let t = w.create(db.me()).unwrap();
+        w.commit().unwrap();
         let (entered, rx) = std::sync::mpsc::channel();
         let (go, wait) = std::sync::mpsc::channel::<()>();
         let wait = Mutex::new(wait);
@@ -868,7 +898,7 @@ fn close_waits_or_names_holders_spec_api_handle() {
                 *kept2.lock().unwrap() = Some(db.clone());
             }
         }).unwrap().detach();
-        db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+        db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
         recv(&rx);
         let weak = db.downgrade();
         let closing = std::thread::spawn(move || db.close());
@@ -897,15 +927,15 @@ fn values_past_limits(string: usize, map: i64) {
     for _ in 0..600 {
         deep = Value::List(vec![deep]);
     }
-    assert!(db.write_with(|w| w.at(t, ak("t:deep.0")).set(&deep)).is_err(), "nesting past the depth limit accepted");
+    assert!(db.commit_set(t, ak("t:deep.0"), &deep).is_err(), "nesting past the depth limit accepted");
     let huge = Value::Str("x".repeat(string));
-    db.write_with(|w| w.at(t, ak("t:huge.0")).set(&huge)).unwrap();
-    assert_eq!(db.get(t, ak("t:huge.0")).unwrap(), Some(huge));
+    db.commit_set(t, ak("t:huge.0"), &huge).unwrap();
+    assert_eq!(db.at(t, ak("t:huge.0")).get().unwrap(), Some(huge));
     let big: osis_base::ValueMap = (0..map).map(|i| (Value::Int(i), Value::Int(i))).collect();
-    let _ = db.write_with(|w| w.at(t, ak("t:map.0")).set(&Value::Map(big)));
+    let _ = db.commit_set(t, ak("t:map.0"), &Value::Map(big));
     // still working
-    db.write_with(|w| w.at(t, ak("t:x.0")).set(&Value::Int(1))).unwrap();
-    assert_eq!(db.get(t, ak("t:x.0")).unwrap(), Some(Value::Int(1)));
+    db.commit_set(t, ak("t:x.0"), &Value::Int(1)).unwrap();
+    assert_eq!(db.at(t, ak("t:x.0")).get().unwrap(), Some(Value::Int(1)));
 }
 
 // spec/data-model.md §5 (Depth: writers refuse deeper values); notes/api.md Errors: values past the limits
@@ -923,39 +953,35 @@ fn values_past_limits_huge_spec_data_model() {
     values_past_limits(8 << 20, 200_000);
 }
 
-// notes/api.md Writes (`place_expiring`, `expires`, `write_with`), spec/commits.md §6: a thing
+// notes/api.md Writes (`place_expiring`, `expires`), spec/commits.md §6: a thing
 // created with an expiring placement leaves its group at T by itself, its expiring value goes
-// too; `expires(None)` is no expiry; a zero expiry is invalid; `write_with` returns the
+// too; `expires(None)` is no expiry; a zero expiry is invalid; a batch returns the
 // closure's value.
 #[test]
 fn expiring_placement_api_writes() {
     let c = clock();
     let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let (x, d) = (ak("t:x.0"), Some(std::time::Duration::from_secs(60)));
-    let gone = db
-        .write_with(|w| {
-            let t = w.create_expiring_in(db.me(), db.home(), d)?;
-            w.at(t, x.clone()).expires(d).set(&s("bye"))?;
-            Ok(t)
-        })
-        .unwrap();
-    let kept = db
-        .write_with(|w| {
-            let t = w.create_expiring_in(db.me(), db.home(), None)?;
-            w.at(t, x.clone()).expires(None).set(&s("stays"))?;
-            Ok(t)
-        })
-        .unwrap();
-    let items = |db: &Osis| db.get(db.home(), core::GROUP).unwrap().unwrap().items;
+    let mut w = db.write();
+    let t = w.create_expiring_in(db.me(), db.me(), d).unwrap();
+    w.at(t, x.clone()).expires(d).set(&s("bye")).unwrap();
+    let gone = t;
+    w.commit().unwrap();
+    let mut w = db.write();
+    let t = w.create_expiring_in(db.me(), db.me(), None).unwrap();
+    w.at(t, x.clone()).expires(None).set(&s("stays")).unwrap();
+    let kept = t;
+    w.commit().unwrap();
+    let items = |db: &Osis| db.at(db.me(), core::GROUP).get().unwrap().unwrap().items;
     assert!(items(&db).contains(&gone) && items(&db).contains(&kept));
     c.advance(61_000);
     db.engine(|e| e.tick()).unwrap();
     assert!(!items(&db).contains(&gone), "the placement expired");
     assert!(items(&db).contains(&kept));
-    assert_eq!(db.get(gone, x.clone()).unwrap(), None);
-    assert_eq!(db.get(kept, x.clone()).unwrap(), Some(s("stays")));
+    assert_eq!(db.at(gone, x.clone()).get().unwrap(), None);
+    assert_eq!(db.at(kept, x.clone()).get().unwrap(), Some(s("stays")));
     let mut w = db.write();
-    assert!(matches!(w.create_expiring_in(db.me(), db.home(), Some(std::time::Duration::ZERO)), Err(Error::Invalid(_))));
+    assert!(matches!(w.create_expiring_in(db.me(), db.me(), Some(std::time::Duration::ZERO)), Err(Error::Invalid(_))));
     assert!(matches!(w.at(kept, x).expires(Some(std::time::Duration::ZERO)).set(&s("now")), Err(Error::Invalid(_))));
     // one batch cannot mix expiries on one group's `group.0` (expiry is per aspect write)
     drop(w);
@@ -965,13 +991,13 @@ fn expiring_placement_api_writes() {
     assert!(matches!(w.create_expiring_in(db.me(), g, d), Err(Error::Invalid(_))), "the group's definition would expire");
     drop(w);
     let mut w = db.write();
-    w.create_expiring_in(db.me(), db.home(), d).unwrap();
-    w.create_expiring_in(db.me(), db.home(), d).unwrap();
-    assert!(matches!(w.create_expiring_in(db.me(), db.home(), Some(std::time::Duration::from_secs(5))), Err(Error::Invalid(_))));
-    assert!(matches!(w.create_in(db.me(), &[db.home()]), Err(Error::Invalid(_))));
+    w.create_expiring_in(db.me(), db.me(), d).unwrap();
+    w.create_expiring_in(db.me(), db.me(), d).unwrap();
+    assert!(matches!(w.create_expiring_in(db.me(), db.me(), Some(std::time::Duration::from_secs(5))), Err(Error::Invalid(_))));
+    assert!(matches!(w.create_in(db.me(), &[db.me()]), Err(Error::Invalid(_))));
     drop(w);
     // the `group.0` field constants are the ones `place` writes
-    assert_eq!(db.at(db.home(), core::GROUP).path(p![core::group::ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
+    assert_eq!(db.at(db.me(), core::GROUP).path(p![core::group::ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
 }
 
 // spec/commits.md §2 (`created.0`); notes/api.md Reads (`owner_of`, `created`, `now`): the owner fixed at creation, the creating
@@ -991,7 +1017,7 @@ fn owner_created_now_api_reads() {
     assert_eq!((ci.commit, ci.ts, ci.node, ci.actor, ci.received), (done.id.commit(), done.ts, db.node(), db.me(), osis::WallMs(T0 + 5)));
     assert_eq!(ci.shown(), osis::WallMs(T0 + 5));
     c.advance(5);
-    db.write_with(|w| w.at(t, ak("t:x.0")).set(&s("later"))).unwrap();
+    db.commit_set(t, ak("t:x.0"), &s("later")).unwrap();
     assert_eq!(db.created(t).unwrap().unwrap(), ci, "the creation, not the newest commit");
     let other = common::db(2);
     assert_eq!(db.owner_of(other.me()).unwrap(), None);
@@ -1011,43 +1037,43 @@ fn changed_content_only_api_reads() {
     let j = Osis::pair(cfg(2, MemStore::new(), &cb), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
-    let t = a
-        .write_with(|w| {
-            let t = w.create_durable(a.me())?;
-            w.place(t, a.home())?;
-            Ok(t)
-        })
-        .unwrap();
+    let mut w = a.write();
+    let t = w.create_durable(a.me()).unwrap();
+    w.place(t, a.me()).unwrap();
+    w.commit().unwrap();
     assert_eq!(a.changed(t).unwrap(), a.created(t).unwrap());
     ca.advance(10);
-    a.write_with(|w| w.at(t, ak("t:x.0")).set(&s("1"))).unwrap();
+    a.commit_set(t, ak("t:x.0"), &s("1")).unwrap();
     let ch = a.changed(t).unwrap().unwrap();
     assert_eq!((ch.commit, ch.shown()), (Some(newest(&a, t)), osis::WallMs(T0 + 10)));
     assert_ne!(a.created(t).unwrap(), Some(ch));
     // placement: neither the item's nor the group's content
-    let home = a.changed(a.home()).unwrap();
+    let home = a.changed(a.me()).unwrap();
     ca.advance(10);
-    let g = a.write_with(|w| w.create_durable(a.me())).unwrap();
-    a.write_with(|w| {
-        w.place(t, g)?;
-        w.unplace(t, a.home())
-    })
-    .unwrap();
-    assert_eq!((a.changed(t).unwrap(), a.changed(a.home()).unwrap()), (Some(ch), home));
+    let mut w = a.write();
+    let g = w.create_durable(a.me()).unwrap();
+    w.commit().unwrap();
+    let mut w = a.write();
+    w.place(t, g).unwrap();
+    w.unplace(t, a.me()).unwrap();
+    w.commit().unwrap();
+    assert_eq!((a.changed(t).unwrap(), a.changed(a.me()).unwrap()), (Some(ch), home));
     // b's clock runs 30 min ahead (within MAX_DRIFT): its change shows at its receipt here
     deliver(&a, &b);
     cb.advance(30 * 60_000);
-    b.write_with(|w| w.at(t, ak("t:x.0")).set(&s("2"))).unwrap();
+    b.commit_set(t, ak("t:x.0"), &s("2")).unwrap();
     deliver(&b, &a);
     let ch = a.changed(t).unwrap().unwrap();
     assert_eq!((ch.node, ch.ts.wall_ms(), ch.shown()), (b.node(), osis::WallMs(T0 + 30 * 60_000), osis::WallMs(T0 + 20)));
     // a's next change: its ts follows b's (the clock rule), shown latest at its receipt
     ca.advance(10);
-    a.write_with(|w| w.at(t, ak("t:y.0")).set(&s("3"))).unwrap();
+    a.commit_set(t, ak("t:y.0"), &s("3")).unwrap();
     let ch = a.changed(t).unwrap().unwrap();
     assert_eq!((ch.node, ch.shown()), (a.node(), osis::WallMs(T0 + 30)));
     ca.advance(10);
-    a.write_with(|w| w.delete(t)).unwrap();
+    let mut w = a.write();
+    w.delete(t).unwrap();
+    w.commit().unwrap();
     assert!(!a.knows(t).unwrap());
     assert_eq!(a.changed(t).unwrap().unwrap().shown(), osis::WallMs(T0 + 40), "a delete is a change");
     let mut w = a.write();
@@ -1074,15 +1100,21 @@ fn path_op_into_absent_key_spec_crdt_5_6() {
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
     let r = ak("t:reactions.0");
-    let t = a.write_with(|w| w.create_durable(a.me())).unwrap();
+    let mut w = a.write();
+    let t = w.create_durable(a.me()).unwrap();
+    w.commit().unwrap();
     deliver(&a, &b);
-    a.write_with(|w| w.at(t, r.clone()).path(p!["m1"]).add(&s("x"))).unwrap();
-    b.write_with(|w| w.at(t, r.clone()).path(p!["m1"]).add(&s("y"))).unwrap();
+    let mut w = a.write();
+    w.at(t, r.clone()).path(p!["m1"]).add(&s("x")).unwrap();
+    w.commit().unwrap();
+    let mut w = b.write();
+    w.at(t, r.clone()).path(p!["m1"]).add(&s("y")).unwrap();
+    w.commit().unwrap();
     deliver(&a, &b);
     deliver(&b, &a);
     let want = Value::Map(osis_base::ValueMap::from([(s("m1"), Value::Set(osis_base::ValueSet::from([s("x"), s("y")])))]));
-    assert_eq!(a.get(t, r.clone()).unwrap(), Some(want.clone()));
-    assert_eq!(b.get(t, r).unwrap(), Some(want));
+    assert_eq!(a.at(t, r.clone()).get().unwrap(), Some(want.clone()));
+    assert_eq!(b.at(t, r).get().unwrap(), Some(want));
 }
 
 // spec/commits.md §2 (`created.0` is carried by the first commit and by covering snapshots),
@@ -1145,11 +1177,10 @@ fn relays_without_iroh_are_refused() {
 fn sync_refuses_other_hosts() {
     let db = db(1);
     let (a, b) = (osis::HostAddr::new("mem://a", [1; 32]), osis::HostAddr::new("mem://b", [2; 32]));
-    let g = db.write_with(|w| {
-        let g = w.create(db.me())?;
-        w.make_group(g)?;
-        Ok(g)
-    }).unwrap();
+    let mut w = db.write();
+    let g = w.create(db.me()).unwrap();
+    w.make_group(g).unwrap();
+    w.commit().unwrap();
     db.sync(g, std::slice::from_ref(&a)).unwrap();
     db.sync(g, std::slice::from_ref(&a)).unwrap();
     db.sync(g, &[]).unwrap();
@@ -1164,15 +1195,19 @@ fn sync_refuses_other_hosts() {
 fn knows_is_about_content() {
     let db = db(1);
     let k = ak("t:x.0");
-    let t = db.write_with(|w| w.create(db.me())).unwrap();
+    let mut w = db.write();
+    let t = w.create(db.me()).unwrap();
+    w.commit().unwrap();
     db.sync(t, &[]).unwrap();
     assert_eq!(db.created(t).unwrap().map(|c| c.commit.is_some()), Some(true), "durable");
     assert!(!db.knows(t).unwrap(), "no content yet");
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     assert!(db.knows(t).unwrap());
-    db.write_with(|w| w.delete(t)).unwrap();
+    let mut w = db.write();
+    w.delete(t).unwrap();
+    w.commit().unwrap();
     assert!(!db.knows(t).unwrap());
-    db.write_with(|w| w.at(t, k).set(&Value::Int(2))).unwrap();
+    db.commit_set(t, k, &Value::Int(2)).unwrap();
     assert!(db.knows(t).unwrap());
 }
 
@@ -1193,7 +1228,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
     let mut w = db.write();
     w.at(t, k.clone()).purge_commit(last).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.get(t, k.clone()).unwrap(), None);
+    assert_eq!(db.at(t, k.clone()).get().unwrap(), None);
     assert!(!db.aspects(t).unwrap().contains(&k));
 }
 
@@ -1216,7 +1251,7 @@ fn a_cut_tells_exactly_what_it_took_out_of_sync() {
         w.make_group(g).unwrap();
         g
     };
-    let synced = db.write_with(|w| Ok(group(w))).unwrap();
+    let synced = db.batch(|w| Ok(group(w))).unwrap();
     db.sync(synced, &[osis::HostAddr::new("mem://a", [1; 32])]).unwrap();
     let mut w = db.write();
     let (mid, low, plain, tag, far, dual) = (group(&mut w), group(&mut w), group(&mut w), group(&mut w), group(&mut w), group(&mut w));
@@ -1244,13 +1279,21 @@ fn a_cut_tells_exactly_what_it_took_out_of_sync() {
         db.settle();
         rx.try_iter().flatten().collect::<BTreeSet<osis::Tid>>()
     };
-    db.write_with(|w| w.remove_subgroup(mid, low)).unwrap();
+    let mut w = db.write();
+    w.remove_subgroup(mid, low).unwrap();
+    w.commit().unwrap();
     assert_eq!(told(&rx), BTreeSet::from([below]), "a level down");
-    db.write_with(|w| w.remove_subgroup(plain, far)).unwrap();
+    let mut w = db.write();
+    w.remove_subgroup(plain, far).unwrap();
+    w.commit().unwrap();
     assert_eq!(told(&rx), BTreeSet::new(), "it never synced");
-    db.write_with(|w| w.delete(tag)).unwrap();
+    let mut w = db.write();
+    w.delete(tag).unwrap();
+    w.commit().unwrap();
     assert_eq!(told(&rx), BTreeSet::from([in_tag]), "its items, not the tag");
-    db.write_with(|w| w.remove_subgroup(synced, dual)).unwrap();
+    let mut w = db.write();
+    w.remove_subgroup(synced, dual).unwrap();
+    w.commit().unwrap();
     assert_eq!(told(&rx), BTreeSet::from([in_dual]), "its items, not itself");
 }
 
@@ -1267,11 +1310,11 @@ fn cutting_a_subgroup_reports_what_it_strands() {
             let _ = tx.send(d.tids.clone());
         }
     }).unwrap().detach();
-    let synced = db.write_with(|w| {
-        let g = w.create(db.me())?;
-        w.make_group(g)?;
-        Ok(g)
-    }).unwrap();
+    let mut w = db.write();
+    let g = w.create(db.me()).unwrap();
+    w.make_group(g).unwrap();
+    let synced = g;
+    w.commit().unwrap();
     db.sync(synced, &[osis::HostAddr::new("mem://a", [1; 32])]).unwrap();
     let mut w = db.write();
     let sub = w.create(db.me()).unwrap();
@@ -1286,8 +1329,55 @@ fn cutting_a_subgroup_reports_what_it_strands() {
     w.commit().unwrap();
     db.settle();
     assert_eq!(rx.try_iter().collect::<Vec<_>>(), Vec::<Vec<osis::Tid>>::new());
-    db.write_with(|w| w.remove_subgroup(synced, sub)).unwrap();
+    let mut w = db.write();
+    w.remove_subgroup(synced, sub).unwrap();
+    w.commit().unwrap();
     db.settle();
     let told: BTreeSet<osis::Tid> = rx.try_iter().flatten().collect();
     assert_eq!(told, BTreeSet::from([stranded]), "a subgroup is no member: its own aspects never went through this group");
+}
+
+// spec: none (client surface: notes/api.md Writes). The aspect's own ops write it whole; the same at an empty path is refused, the
+// collection ops take one
+#[test]
+fn whole_value_ops_refuse_the_empty_path() {
+    let db = db(1);
+    let (k, l) = (ak("t:x.0"), ak("t:s.0"));
+    let mut w = db.write();
+    let t = w.create(db.me()).unwrap();
+    assert!(matches!(w.at(t, k.clone()).path(p![]).set(&Value::Int(1)), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, k.clone()).path(p![]).replace(&Value::Int(1)), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, k.clone()).path(p![]).remove(), Err(Error::Invalid(_))));
+    w.at(t, k.clone()).path(p!["a"]).set(&Value::Int(1)).unwrap();
+    w.at(t, l.clone()).path(p![]).add(&Value::Int(1)).unwrap();
+    w.at(t, l.clone()).path(p![]).add(&Value::Int(2)).unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, k).path(p!["a"]).get::<Value>().unwrap(), Some(Value::Int(1)));
+    let mut w = db.write();
+    w.at(t, l.clone()).path(p![Value::Int(1)]).remove().unwrap();
+    w.commit().unwrap();
+    assert_eq!(db.at(t, l).get().unwrap(), Some(Value::Set([Value::Int(2)].into_iter().collect())));
+}
+
+// spec: none (client surface: notes/api.md Reads). `items` and `subgroups` list a group's members as `groups_of` sees them: durable
+// and ephemeral placements alike; a thing that is no group has none
+#[test]
+fn items_and_subgroups_list_members() {
+    let db = db(1);
+    let mut w = db.write();
+    let g = w.create(db.me()).unwrap();
+    w.make_group(g).unwrap();
+    let (kept, draft, sub) = (w.create(db.me()).unwrap(), w.create(db.me()).unwrap(), w.create(db.me()).unwrap());
+    w.at(kept, ak("t:x.0")).set(&Value::Int(1)).unwrap();
+    w.at(g, ak("t:x.0")).set(&Value::Int(1)).unwrap();
+    w.place(kept, g).unwrap();
+    w.place(draft, g).unwrap();
+    w.add_subgroup(g, sub).unwrap();
+    w.commit().unwrap();
+    let mut want = vec![kept, draft];
+    want.sort();
+    assert_eq!(db.items(g).unwrap(), want);
+    assert_eq!(db.subgroups(g).unwrap(), vec![sub]);
+    assert!(db.groups_of(draft).unwrap().item_of.contains(&g), "the same answer from the other side");
+    assert_eq!(db.items(kept).unwrap(), Vec::<osis::Tid>::new());
 }

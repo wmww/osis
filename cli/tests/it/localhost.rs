@@ -104,7 +104,7 @@ fn two_people_three_devices_one_host_localhost() {
     assert_eq!(osis(&a1, &["device", "ls"]).lines().count(), 2);
 
     // Alice shares a group by link; Bob redeems it
-    let g = osis(&a1, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+    let g = osis(&a1, &["create", "--owner", "me", "--in", "me", "--group", "t:made.0", "true"]);
     osis(&a1, &["group", "sync", &g]);
     let t = osis(&a1, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"hello\""]);
     let link = osis(&a1, &["link", "make", &g, "write"]);
@@ -138,10 +138,10 @@ fn two_people_three_devices_one_host_localhost() {
     assert_eq!(absent.status.code(), Some(3), "Alice's last change undone everywhere: absent");
 
     // a bundle carries the home group to the other device by hand
-    let n = osis(&a1, &["create", "--owner", "me", "--in", "home", "t:x.0", "\"by hand\""]);
+    let n = osis(&a1, &["create", "--owner", "me", "--in", "me", "t:x.0", "\"by hand\""]);
     // a bundle holds what is placed under the label: a pass places it (the device syncs; a2 does not)
     osis(&a1, &["sync"]);
-    let bundle = osis_in(&a1, &["bundle", "export", "home"], b"");
+    let bundle = osis_in(&a1, &["bundle", "export", "me"], b"");
     osis_in(&a2, &["bundle", "import"], &bundle);
     assert_eq!(osis(&a2, &["get", &n, "t:x.0"]), "\"by hand\"");
     assert!(osis(&a2, &["inspect", "thing", &n]).contains("t:x.0"));
@@ -342,7 +342,7 @@ fn own_host_device_localhost() {
     let (_host, served) = serve(&h, &[]);
     assert_eq!(served, addr, "the address `hosting show` said");
 
-    let g = osis(&a, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+    let g = osis(&a, &["create", "--owner", "me", "--in", "me", "--group", "t:made.0", "true"]);
     osis(&a, &["group", "sync", &g]);
     let t = osis(&a, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"hello\""]);
     let link = osis(&a, &["link", "make", &g, "write"]);
@@ -354,7 +354,7 @@ fn own_host_device_localhost() {
     let o = Command::new(OSIS).arg("-s").arg(&b).args(["--timeout", "5s", "sync"]).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(6), "{err}");
-    assert!(err.contains(&format!("host {addr} does not admit group {} (yet)", field(&home, "home"))), "{err}");
+    assert!(err.contains(&format!("host {addr} does not admit group {} (yet)", field(&home, "me"))), "{err}");
 }
 
 /// Runs `osis` once; (exit code, stdout, stderr).
@@ -371,7 +371,7 @@ fn run_in(store: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
 }
 
 /// A `write` script whose last line names an unknown thing (exit 3, nothing committed).
-const BAD_SCRIPT: &[u8] = b"create --owner me --in home --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
+const BAD_SCRIPT: &[u8] = b"create --owner me --in me --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
 
 // spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally; `device ls`, `card show`, `hosting set/show/off`, `hosts add/rm`, `link redeem/revoke`, `demote`, `bundle export/import`, `pair offer`, `device rm`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
@@ -444,7 +444,7 @@ fn daemon_clients_localhost() {
         // and `wait` (which wait at the node); a group without a label fails `wait` as locally
         let mut unsynced = None;
         if xdg {
-            let g = osis(&s, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+            let g = osis(&s, &["create", "--owner", "me", "--in", "me", "--group", "t:made.0", "true"]);
             assert_eq!(osis(&s, &["group", "sync", &g]), "");
             let gt = osis(&s, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"shared\""]);
             assert_eq!(osis(&s, &["grant", &g, &bob, "read"]), "");
@@ -483,12 +483,12 @@ fn daemon_clients_localhost() {
             osis(&s, &["hosting", "off"]);
             assert_eq!(run(&s, &["hosting", "show"]).0, 3);
             // a link redeemed and ended through daemons
-            let g = osis(&b, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+            let g = osis(&b, &["create", "--owner", "me", "--in", "me", "--group", "t:made.0", "true"]);
             osis(&b, &["group", "sync", &g]);
             let link = osis(&b, &["link", "make", &g, "read"]);
             assert_eq!(osis(&s, &["link", "redeem", &link]), g);
             // ... and made there: a joiner, removed with `demote`; another link, revoked
-            let sg = osis(&s, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+            let sg = osis(&s, &["create", "--owner", "me", "--in", "me", "--group", "t:made.0", "true"]);
             osis(&s, &["group", "sync", &sg]);
             let link = osis(&s, &["link", "make", &sg, "read"]);
             assert_eq!(osis(&b, &["link", "redeem", &link]), sg);
@@ -507,7 +507,7 @@ fn daemon_clients_localhost() {
             osis(&s, &["link", "revoke", &id]);
             assert_eq!(osis(&s, &["link", "ls", &sg]), "");
             // a bundle, and a new device paired through the daemon's stdin flow
-            let bundle = cmd().arg("-s").arg(&s).args(["bundle", "export", "home"]).output().unwrap();
+            let bundle = cmd().arg("-s").arg(&s).args(["bundle", "export", "me"]).output().unwrap();
             assert!(bundle.status.success() && bundle.stdout.starts_with(b"osisbndl"), "{}", String::from_utf8_lossy(&bundle.stderr));
             assert_eq!(run_in(&s, &["bundle", "import"], &bundle.stdout).0, 0);
             let dev = dir("daemon-device");

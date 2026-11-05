@@ -44,19 +44,19 @@ fn contact_form() {
     let form = d.contact_form(c).unwrap();
     let row = |form: &[osis_app::fields::FormRow], label: &str| form.iter().find(|r| r.label == label).unwrap().act.clone();
     d.form_apply(c, &row(&form, "Title"), "Gardener").unwrap();
-    assert_eq!(d.get(c, ORG).unwrap().unwrap().title, "Gardener");
+    assert_eq!(d.db.at(c, ORG).get().unwrap().unwrap().title, "Gardener");
     d.form_apply(c, &row(&form, "Given name"), "Theo").unwrap();
-    assert_eq!(d.get(c, NAMES).unwrap().unwrap().given.as_deref(), Some("Theo"));
+    assert_eq!(d.db.at(c, NAMES).get().unwrap().unwrap().given.as_deref(), Some("Theo"));
     let add = form.iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "contact:emails.0" })).unwrap().act.clone();
     d.form_apply(c, &add, "theo@example.org").unwrap();
     let form = d.contact_form(c).unwrap();
     let email = form.iter().find(|r| r.value == "theo@example.org").unwrap().act.clone();
     d.form_apply(c, &email, "theo@posteo.se").unwrap();
-    assert_eq!(d.get(c, EMAILS).unwrap().unwrap().into_keys().collect::<Vec<_>>(), vec!["theo@posteo.se".to_string()]);
+    assert_eq!(d.db.at(c, EMAILS).get().unwrap().unwrap().into_keys().collect::<Vec<_>>(), vec!["theo@posteo.se".to_string()]);
     let form = d.contact_form(c).unwrap();
     let email = form.iter().find(|r| r.value == "theo@posteo.se").unwrap().act.clone();
     d.form_apply(c, &email, "").unwrap();
-    assert!(d.get(c, EMAILS).unwrap().unwrap_or_default().is_empty(), "empty removes");
+    assert!(d.db.at(c, EMAILS).get().unwrap().unwrap_or_default().is_empty(), "empty removes");
     assert_eq!(d.kind(c).unwrap(), osis_app::data::Kind::Contact, "a note given contact fields is a contact");
 }
 
@@ -69,7 +69,7 @@ fn edits_are_well_typed() {
     let e = d.create(NewKind::Event).unwrap();
     d.set_repeat(e, Some(osis_app::event::RepeatFreq::Weekly)).unwrap();
     let s = d.db.edit_text(e, BODY, osis::Path::root()).unwrap();
-    s.insert(0, "line one\nline two\n").unwrap();
+    s.replace(0..0, "line one\nline two\n").unwrap();
     s.commit().unwrap();
     drop(s);
     let rows = d.field_rows(e).unwrap();
@@ -95,4 +95,20 @@ fn edits_are_well_typed() {
     if let Some(b) = b {
         assert!(d.set_field(e, b, "maybe").is_err());
     }
+}
+
+/// A value that cannot be read shows as such, read-only: an empty editable row could overwrite it.
+#[test]
+fn a_value_too_large_to_read_is_no_empty_row() {
+    let mut cfg = Config::memory();
+    cfg.materialize_limit = 1000;
+    let d = Data::new(Osis::create(cfg).unwrap().0);
+    let n = d.create(NewKind::Note).unwrap();
+    let mut w = d.db.write();
+    w.at(n, osis::core::BODY).set(&"x".repeat(2000)).unwrap();
+    w.commit().unwrap();
+    let rows = d.field_rows(n).unwrap();
+    let row = rows.iter().find(|r| r.ak == "body.0").unwrap();
+    assert_eq!(row.edit, Edit::None, "{row:?}");
+    assert!(row.value.contains("larger"), "{row:?}");
 }

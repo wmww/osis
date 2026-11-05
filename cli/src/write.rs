@@ -5,7 +5,7 @@ use crate::args::{CreateArgs, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, 
 use crate::text::{self, PStep};
 use crate::{Ctx, key_ty, parse_dur, parse_ts, ty_in, usage};
 use clap::Parser;
-use osis::{AspectKey, AspectWrite, CaseId, Key, Path, Retention, Step, Tid, Value, WallMs};
+use osis::{AspectKey, AspectWrite, Key, Path, Retention, Step, Tid, Value, WallMs};
 use osis_schema::{Bound, PurgeBy, Type};
 use std::ops::Range;
 
@@ -42,7 +42,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
                 }
                 if cur.is_none() {
                     let untyped = Key::new(osis::Ak::new(key.ak()).map_err(|_| usage("bad AK"))?, None);
-                    cur = Some(ctx.db.get(t, untyped)?);
+                    cur = Some(ctx.db.at(t, untyped).get()?);
                 }
                 let here = cur.as_ref().and_then(|v| v.as_ref()).and_then(|v| osis_schema::value_at(v, &Path(out.clone())));
                 match here {
@@ -147,7 +147,11 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, replace: bool) -
             _ => return Err(usage("--stream takes [PATH] and the value on stdin")),
         };
         let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
-        aw.path(p).set_stream(&mut *ctx.stdin)?;
+        if p.0.is_empty() {
+            aw.set_stream(&mut *ctx.stdin)?;
+        } else {
+            aw.path(p).set_stream(&mut *ctx.stdin)?;
+        }
         return Ok(());
     }
     let (p, val) = match a.rest.as_slice() {
@@ -186,11 +190,11 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     let p = path(ctx, t, &key, &a.path, true)?;
     let pt = type_at(&key, &p);
     let sch = key.schema();
-    let (et, vt) = match (&sch, &pt) {
-        (Some(s), Some(t)) => text::inner_types(s, t),
-        _ => (None, None),
+    let et = match (&sch, &pt) {
+        (Some(s), Some(t)) => text::inner_types(s, t).0,
+        _ => None,
     };
-    let (ety, vty) = (sch.zip(et.as_ref()), sch.zip(vt.as_ref()));
+    let ety = sch.zip(et.as_ref());
     let args = &a.args;
     let n = |k: usize| -> anyhow::Result<()> {
         if args.len() == k { Ok(()) } else { Err(usage(format!("{} takes {k} argument(s)", a.op))) }
@@ -231,36 +235,9 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
             n(1)?;
             pw.add(&ctx.value(&args[0], ety)?)?
         }
-        "remove-elem" => {
+        "contribute" => {
             n(1)?;
-            pw.remove_elem(&ctx.value(&args[0], ety)?)?
-        }
-        "put" => {
-            n(2)?;
-            pw.put(&ctx.value(&args[0], ety)?, &ctx.value(&args[1], vty)?)?
-        }
-        "remove-key" => {
-            n(1)?;
-            pw.remove_key(&ctx.value(&args[0], ety)?)?
-        }
-        "inc" => {
-            n(1)?;
-            pw.inc(&ctx.value(&args[0], None)?)?
-        }
-        "observe" => {
-            n(1)?;
-            pw.observe(&ctx.value(&args[0], None)?)?
-        }
-        "set-case" => {
-            if args.is_empty() || args.len() > 2 {
-                return Err(usage("set-case ID [V]"));
-            }
-            let (id, payload_ty) = text::case_id(sch, pt.as_ref(), &args[0]).map_err(usage)?;
-            let pl = match args.get(1) {
-                Some(v) => Some(ctx.value(v, sch.zip(payload_ty.as_ref()))?),
-                None => None,
-            };
-            pw.set_case(CaseId(id), pl)?
+            pw.contribute(&ctx.value(&args[0], None)?)?
         }
         other => return Err(usage(format!("unknown op {other:?}"))),
     }

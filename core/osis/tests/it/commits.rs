@@ -1,6 +1,7 @@
 //! The commit query, undo, redo, revert (notes/api.md Commits; spec/commits.md §7, spec/crdt.md §4.6).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
@@ -19,10 +20,10 @@ fn undo_redo_cycle_spec_commits_7() {
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     w.commit().unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(2)).unwrap();
     let scope = Scope::Aspects(vec![(t, k.clone())]);
-    let get = || db.get(t, k.clone()).unwrap();
+    let get = || db.at(t, k.clone()).get().unwrap();
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), Some(Value::Int(1)));
     db.redo(&scope).unwrap().unwrap();
@@ -47,11 +48,11 @@ fn undo_redo_cycle_spec_commits_7() {
     // separate aspects undo step by step
     let scope = Scope::Thing(t);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
-    db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
-    db.write_with(|w| w.at(t, b.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, a.clone(), &Value::Int(1)).unwrap();
+    db.commit_set(t, b.clone(), &Value::Int(1)).unwrap();
     db.undo(&scope).unwrap().unwrap();
     db.undo(&scope).unwrap().unwrap();
-    assert_eq!((db.get(t, a.clone()).unwrap(), db.get(t, b.clone()).unwrap()), (None, None));
+    assert_eq!((db.at(t, a.clone()).get().unwrap(), db.at(t, b.clone()).get().unwrap()), (None, None));
     // another scope sees nothing to undo
     let other = Scope::Aspects(vec![(t, ak("t:other.0"))]);
     assert_eq!(db.undo(&other).unwrap(), None);
@@ -65,17 +66,17 @@ fn new_change_clears_redo_spec_commits_7() {
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     w.commit().unwrap();
-    db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, a.clone(), &Value::Int(1)).unwrap();
     let scope = Scope::Thing(t);
     db.undo(&scope).unwrap().unwrap();
-    db.write_with(|w| w.at(t, b.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, b.clone(), &Value::Int(1)).unwrap();
     assert_eq!(db.redo(&scope).unwrap(), None);
-    assert_eq!(db.get(t, a).unwrap(), None);
+    assert_eq!(db.at(t, a).get().unwrap(), None);
     // undo then redo still pairs up after the new change
     db.undo(&scope).unwrap().unwrap();
-    assert_eq!(db.get(t, b.clone()).unwrap(), None);
+    assert_eq!(db.at(t, b.clone()).get().unwrap(), None);
     db.redo(&scope).unwrap().unwrap();
-    assert_eq!(db.get(t, b).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(t, b).get().unwrap(), Some(Value::Int(1)));
 }
 
 // spec/commits.md §7: when the newest change's body was dropped, undo reports it and never
@@ -87,11 +88,11 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     w.commit().unwrap();
-    db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, a.clone(), &Value::Int(1)).unwrap();
     let newest = commit_with(&db, |w| w.at(t, b.clone()).set(&Value::Int(1))).id.commit().unwrap();
     db.engine(|e| e.drop_body(&newest, &t, &b)).unwrap();
     assert_eq!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { commit: osis::ChangeId::Commit(newest), reason: DropReason::Compacted }));
-    assert_eq!(db.get(t, a).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(t, a).get().unwrap(), Some(Value::Int(1)));
     assert_eq!(db.revert(osis::ChangeId::Commit(newest)), Err(Error::NotUndoable { commit: osis::ChangeId::Commit(newest), reason: DropReason::Compacted }));
 }
 
@@ -126,7 +127,7 @@ fn query_relations_spec_crdt_4_6() {
     let c2 = w.commit().unwrap().unwrap();
     // the node's commit is not me's to undo, but revert reverts it
     let u = db.revert(c2.id).unwrap();
-    assert_eq!(db.get(t, j.clone()).unwrap(), None);
+    assert_eq!(db.at(t, j.clone()).get().unwrap(), None);
     let all = CommitQuery::new().scope(Scope::Group(g));
     let h = db.commits(&all).unwrap();
     let entry = |c: osis::CommitId| h.iter().find(|e| e.commit.id == osis::ChangeId::Commit(c)).unwrap().clone();
@@ -140,7 +141,9 @@ fn query_relations_spec_crdt_4_6() {
     assert_eq!(paged.len(), 1);
     assert_eq!(paged[0].commit.id, h[1].commit.id);
     // purge drops c1's body
-    db.write_with(|w| w.at(t, k.clone()).purge()).unwrap();
+    let mut w = db.write();
+    w.at(t, k.clone()).purge().unwrap();
+    w.commit().unwrap();
     let h = db.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, k.clone())]))).unwrap();
     assert!(h.iter().find(|e| e.commit.id == c1.id).unwrap().dropped);
     assert!(db.revert(osis::ChangeId::Commit(osis::CommitId([7; 32]))).is_err());
@@ -151,7 +154,7 @@ fn query_relations_spec_crdt_4_6() {
 fn query_filters_api_commits() {
     let db = db(1);
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
-    let t = db.write_with(|w| w.create(db.me())).unwrap();
+    let t = db.batch(|w| w.create(db.me())).unwrap();
     let c1 = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     let mut w = db.write();
     w.act_as(db.node());
@@ -202,10 +205,10 @@ fn sync2(a: &Osis, b: &Osis) {
 fn undo_redo_across_devices_spec_commits_7() {
     let (da, db) = two_devices();
     let k = ak("t:x.0");
-    let t = da.write_with(|w| w.create(da.me())).unwrap();
+    let t = da.batch(|w| w.create(da.me())).unwrap();
     let c1 = commit_with(&da, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     sync2(&da, &db);
-    let get = |d: &Osis| d.get(t, k.clone()).unwrap();
+    let get = |d: &Osis| d.at(t, k.clone()).get().unwrap();
     assert_eq!(get(&db), Some(Value::Int(1)));
     let scope = Scope::Thing(t);
     let u = db.undo(&scope).unwrap().unwrap();
@@ -242,7 +245,7 @@ fn find_another_actors_revert_api_commits() {
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
     let k = ak("t:x.0");
     let t = alice
-        .write_with(|wr| {
+        .batch(|wr| {
             let t = wr.create(alice.me())?;
             wr.make_group(t)?;
             Ok(t)
@@ -253,10 +256,10 @@ fn find_another_actors_revert_api_commits() {
     w.run();
     let c = commit_with(&alice, |wr| wr.at(t, k.clone()).set(&Value::Int(1)));
     w.run();
-    assert_eq!(bob.get(t, k.clone()).unwrap(), Some(Value::Int(1)));
+    assert_eq!(bob.at(t, k.clone()).get().unwrap(), Some(Value::Int(1)));
     let r = bob.revert(c.id).unwrap();
     w.run();
-    assert_eq!(alice.get(t, k.clone()).unwrap(), None);
+    assert_eq!(alice.at(t, k.clone()).get().unwrap(), None);
     let found = alice.commits(&CommitQuery::new().reverts(c.id.commit().unwrap())).unwrap();
     assert_eq!(found.iter().map(|e| (e.commit.id, e.commit.actor)).collect::<Vec<_>>(), vec![(r.id, bob.me())]);
     let mine = alice.commits(&CommitQuery::new().scope(Scope::Thing(t)).actor(alice.me()).kind(CommitKind::Change)).unwrap();
@@ -266,7 +269,7 @@ fn find_another_actors_revert_api_commits() {
     assert_eq!(bob.undo(&Scope::Thing(t)).unwrap(), None, "bob made no change");
     bob.redo(&Scope::Thing(t)).unwrap().unwrap();
     w.run();
-    assert_eq!(alice.get(t, k).unwrap(), Some(Value::Int(1)));
+    assert_eq!(alice.at(t, k).get().unwrap(), Some(Value::Int(1)));
 }
 
 // spec/crdt.md §4.6: undo never steps back over a live later change: x = 1, 2, 1, 5; undoing
@@ -284,9 +287,9 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
     commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(5)));
     db.undo(&Scope::Thing(t)).unwrap().unwrap();
-    assert_eq!(db.get(t, k.clone()).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(t, k.clone()).get().unwrap(), Some(Value::Int(1)));
     assert_eq!(db.revert(c1.id), Err(Error::NotUndoable { commit: c1.id, reason: DropReason::Superseded }));
-    assert_eq!(db.get(t, k).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(t, k).get().unwrap(), Some(Value::Int(1)));
 }
 
 // spec/crdt.md §4.6: "in effect" is a property of the whole commit. Z writes x = 5 and z, X
@@ -298,7 +301,7 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
 fn in_effect_is_whole_commit_spec_crdt_4_6() {
     let db = db(1);
     let (x, y, z) = (ak("t:x.0"), ak("t:y.0"), ak("t:z.0"));
-    let t = db.write_with(|w| w.create_durable(db.me())).unwrap();
+    let t = db.batch(|w| w.create_durable(db.me())).unwrap();
     commit_with(&db, |w| w.at(t, x.clone()).set(&Value::Int(0)));
     let cw = commit_with(&db, |w| w.at(t, x.clone()).set(&Value::Int(1)));
     let cz = commit_with(&db, |w| {
@@ -314,11 +317,11 @@ fn in_effect_is_whole_commit_spec_crdt_4_6() {
         let u = db.revert(c).unwrap();
         assert!(db.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, x.clone())]))).unwrap().iter().all(|e| e.commit.id != u.id), "the undo writes nothing on x");
     }
-    assert_eq!((db.get(t, y.clone()).unwrap(), db.get(t, z).unwrap()), (None, None));
+    assert_eq!((db.at(t, y.clone()).get().unwrap(), db.at(t, z).get().unwrap()), (None, None));
     db.revert(cy.id).unwrap();
-    assert_eq!(db.get(t, x.clone()).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(t, x.clone()).get().unwrap(), Some(Value::Int(1)));
     db.revert(cw.id).unwrap();
-    assert_eq!(db.get(t, x).unwrap(), Some(Value::Int(0)));
+    assert_eq!(db.at(t, x).get().unwrap(), Some(Value::Int(0)));
 }
 
 // notes/api.md Attribution, spec/permissions.md §5.2: the API reports only verifiable authorship.
@@ -330,7 +333,7 @@ fn snapshot_only_attribution_api_history() {
     use osis::Source;
     let (a, b, c) = (db(1), db(2), db(3));
     let k = ak("t:x.0");
-    let t = a.write_with(|w| w.create_durable(a.me())).unwrap();
+    let t = a.batch(|w| w.create_durable(a.me())).unwrap();
     deliver(&a, &b);
     deliver(&a, &c);
     let done = commit_with(&a, |w| w.at(t, k.clone()).set(&Value::Int(7)));
@@ -370,17 +373,17 @@ fn field(id: u64) -> osis::Step {
 fn exact_undo_spec_crdt_4_6() {
     let (a, b) = two_devices();
     for d in [&a, &b] {
-        d.register_schema_source("doc.osis", DOC_SCHEMA).unwrap();
+        d.register_schema("doc.osis", DOC_SCHEMA).unwrap();
     }
     let doc = ak("x:doc.0");
-    let t = a.write_with(|w| w.create(a.me())).unwrap();
-    a.write_with(|w| {
+    let t = a.batch(|w| w.create(a.me())).unwrap();
+    a.batch(|w| {
         w.at(t, doc.clone()).path(osis::Path(vec![field(0)])).set(&"n".to_string())?;
-        w.at(t, doc.clone()).path(osis::Path(vec![field(2)])).set_case(osis::CaseId(1), Some(Value::Map(Default::default())))
+        w.at(t, doc.clone()).path(osis::Path(vec![field(2)])).set(&Value::Enum(1, Some(Box::new(Value::Map(Default::default())))))
     })
     .unwrap();
     sync2(&a, &b);
-    let before = a.get(t, doc.clone()).unwrap();
+    let before = a.at(t, doc.clone()).get().unwrap();
     let scope = Scope::Thing(t);
     let spots: [(&str, osis::Path); 3] = [
         ("struct field set", osis::Path(vec![field(1)])),
@@ -390,34 +393,34 @@ fn exact_undo_spec_crdt_4_6() {
     let write = |d: &Osis, p: &osis::Path, item: &str| {
         let item = item.to_string();
         let key = d.key("x:doc.0").unwrap();
-        d.write_with(|w| if p.0.len() == 1 && p.0[0] == field(3) { w.at(t, key.clone()).path(p.clone()).insert(0, &[item]) } else { w.at(t, key.clone()).path(p.clone()).add(&item) }).unwrap();
+        d.batch(|w| if p.0.len() == 1 && p.0[0] == field(3) { w.at(t, key.clone()).path(p.clone()).insert(0, &[item]) } else { w.at(t, key.clone()).path(p.clone()).add(&item) }).unwrap();
     };
     for (name, p) in &spots {
         write(&a, p, "x");
-        assert_ne!(a.get(t, doc.clone()).unwrap(), before, "{name}");
+        assert_ne!(a.at(t, doc.clone()).get().unwrap(), before, "{name}");
         a.undo(&scope).unwrap().unwrap();
-        assert_eq!(a.get(t, doc.clone()).unwrap(), before, "{name}");
+        assert_eq!(a.at(t, doc.clone()).get().unwrap(), before, "{name}");
         // concurrent: b writes into the spot unseen, a writes and undoes, then they meet
         write(&b, p, "y");
-        let b_only = b.get(t, doc.clone()).unwrap();
+        let b_only = b.at(t, doc.clone()).get().unwrap();
         write(&a, p, "x");
         a.undo(&scope).unwrap().unwrap();
         sync2(&a, &b);
-        assert_eq!(a.get(t, doc.clone()).unwrap(), before, "{name}: b's concurrent write wiped");
-        assert_eq!(b.get(t, doc.clone()).unwrap(), before, "{name}");
+        assert_eq!(a.at(t, doc.clone()).get().unwrap(), before, "{name}: b's concurrent write wiped");
+        assert_eq!(b.at(t, doc.clone()).get().unwrap(), before, "{name}");
         // seen: b's write is held when a undoes, so only a's write goes
         write(&b, p, "y");
         sync2(&a, &b);
         write(&a, p, "x");
 
         a.undo(&scope).unwrap().unwrap();
-        assert_eq!(a.get(t, doc.clone()).unwrap(), b_only, "{name}: b's held write stays");
+        assert_eq!(a.at(t, doc.clone()).get().unwrap(), b_only, "{name}: b's held write stays");
         // back to the start for the next spot: b undoes its write (a's undone write's
         // tombstone carries no value, so it does not block the reset)
         sync2(&a, &b);
         b.undo(&scope).unwrap().unwrap();
         sync2(&a, &b);
-        assert_eq!(a.get(t, doc.clone()).unwrap(), before, "{name}");
+        assert_eq!(a.at(t, doc.clone()).get().unwrap(), before, "{name}");
     }
 }
 
@@ -454,39 +457,39 @@ fn step(db: &Osis, scope: &Scope, n: Next) -> Option<ChangeId> {
 fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(1);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    let mk = |db: &Osis| db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    let mk = |db: &Osis| db.batch(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
-    let t = db.write_with(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
+    let t = db.batch(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let created = db.created(t).unwrap().unwrap().commit.map(ChangeId::Commit).unwrap();
-    db.write_with(|w| { w.place(t, f2)?; w.add_subgroup(f3, t) }).unwrap();
+    db.batch(|w| { w.place(t, f2)?; w.add_subgroup(f3, t) }).unwrap();
     let edit = commit_with(&db, |w| w.at(t, y.clone()).set(&Value::Int(2))).id;
     let s = Scope::Thing(t);
     assert_eq!(next(&db, &s, Next::Redo), None);
     assert_eq!(next(&db, &s, Next::Undo), Some(edit));
     step(&db, &s, Next::Undo).unwrap();
-    assert_eq!(db.get(t, y.clone()).unwrap(), None);
+    assert_eq!(db.at(t, y.clone()).get().unwrap(), None);
     assert_eq!(next(&db, &s, Next::Undo), Some(created));
     step(&db, &s, Next::Undo).unwrap();
     let gs = db.groups_of(t).unwrap();
-    assert!(!db.knows(t).unwrap() && gs.item_of.is_empty() && gs.subgroup_of.is_empty() && db.get(t, x.clone()).unwrap().is_none(), "deleted: {gs:?}");
+    assert!(!db.knows(t).unwrap() && gs.item_of.is_empty() && gs.subgroup_of.is_empty() && db.at(t, x.clone()).get().unwrap().is_none(), "deleted: {gs:?}");
     assert_eq!(next(&db, &s, Next::Undo), None);
     step(&db, &s, Next::Redo).unwrap();
     let gs = db.groups_of(t).unwrap();
-    assert!(db.knows(t).unwrap() && db.get(t, x.clone()).unwrap() == Some(Value::Int(1)));
+    assert!(db.knows(t).unwrap() && db.at(t, x.clone()).get().unwrap() == Some(Value::Int(1)));
     let mut items = gs.item_of;
     items.sort();
     let mut want = vec![f, f2];
     want.sort();
     assert_eq!((items, gs.subgroup_of), (want, vec![f3]));
     step(&db, &s, Next::Redo).unwrap();
-    assert_eq!(db.get(t, y.clone()).unwrap(), Some(Value::Int(2)));
+    assert_eq!(db.at(t, y.clone()).get().unwrap(), Some(Value::Int(2)));
     assert_eq!(next(&db, &s, Next::Redo), None);
     // reverting the creation directly, with a later change in effect, deletes too (the later
     // content goes with it), and reverting that revert restores everything
     let r = db.revert(created).unwrap();
-    assert!(!db.knows(t).unwrap() && db.get(t, y.clone()).unwrap().is_none() && db.groups_of(t).unwrap().within.is_empty());
+    assert!(!db.knows(t).unwrap() && db.at(t, y.clone()).get().unwrap().is_none() && db.groups_of(t).unwrap().within.is_empty());
     db.revert(r.id).unwrap();
-    assert!(db.get(t, x).unwrap() == Some(Value::Int(1)) && db.get(t, y).unwrap() == Some(Value::Int(2)) && db.groups_of(t).unwrap().within.len() == 2);
+    assert!(db.at(t, x).get().unwrap() == Some(Value::Int(1)) && db.at(t, y).get().unwrap() == Some(Value::Int(2)) && db.groups_of(t).unwrap().within.len() == 2);
 }
 
 // notes/ephemeral.md API delta (Undo), spec/crdt.md §4.6: undoing the batch that created an
@@ -496,10 +499,15 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     let db = db(2);
     let k = ak("app:draft.0~");
-    let mk = |db: &Osis| db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    let mk = |db: &Osis| db.batch(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
-    let e = db.write_with(|w| { let e = w.create_in(db.me(), &[f])?; w.at(e, k.clone()).set(&Value::Int(1))?; Ok(e) }).unwrap();
-    db.write_with(|w| w.place(e, f2)).unwrap();
+    let mut w = db.write();
+    let e = w.create_in(db.me(), &[f]).unwrap();
+    w.at(e, k.clone()).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    w.place(e, f2).unwrap();
+    w.commit().unwrap();
     let sorted = |mut v: Vec<osis::Tid>| {
         v.sort();
         v
@@ -510,10 +518,10 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     let picked = next(&db, &s, Next::Undo).unwrap();
     assert!(matches!(picked, ChangeId::Ephemeral(_)));
     step(&db, &s, Next::Undo).unwrap();
-    assert!(!db.knows(e).unwrap() && db.groups_of(e).unwrap().item_of.is_empty() && db.get(e, k.clone()).unwrap().is_none());
+    assert!(!db.knows(e).unwrap() && db.groups_of(e).unwrap().item_of.is_empty() && db.at(e, k.clone()).get().unwrap().is_none());
     assert_eq!(step(&db, &s, Next::Undo), None);
     step(&db, &s, Next::Redo).unwrap();
-    assert!(db.knows(e).unwrap() && db.get(e, k).unwrap() == Some(Value::Int(1)));
+    assert!(db.knows(e).unwrap() && db.at(e, k).get().unwrap() == Some(Value::Int(1)));
     assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
     // still an ephemeral thing: nothing reached the store for it
     assert_eq!(db.created(e).unwrap().unwrap().commit, None);
@@ -525,13 +533,13 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
 fn next_reports_what_undo_and_redo_revert_api_commits() {
     let db = db(3);
     let k = ak("t:x.0");
-    let f = db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    let f = db.batch(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     let in_f = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
         let t = w.create_durable(db.me())?;
         w.place(t, f)?;
         Ok(t)
     };
-    let (a, b) = db.write_with(|w| Ok((in_f(w)?, in_f(w)?))).unwrap();
+    let (a, b) = db.batch(|w| Ok((in_f(w)?, in_f(w)?))).unwrap();
     let ca = commit_with(&db, |w| w.at(a, k.clone()).set(&Value::Int(1))).id;
     let cb = commit_with(&db, |w| w.at(b, k.clone()).set(&Value::Int(1))).id;
     let (sa, sf) = (Scope::Thing(a), Scope::Group(f));
@@ -546,7 +554,7 @@ fn next_reports_what_undo_and_redo_revert_api_commits() {
     assert_eq!(step(&db, &sf, Next::Redo), None);
     assert_eq!(next(&db, &sf, Next::Undo), Some(cb2));
     step(&db, &sa, Next::Redo).unwrap();
-    assert_eq!(db.get(a, k).unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(a, k).get().unwrap(), Some(Value::Int(1)));
     assert!(matches!(db.commits(&CommitQuery::new().next(Next::Undo)), Err(Error::Invalid(_))));
 }
 
@@ -562,21 +570,21 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     let bob = crate::scenario::person(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
     let x = ak("t:x.0");
-    let g = alice.write_with(|wr| { let g = wr.create(alice.me())?; wr.make_group(g)?; Ok(g) }).unwrap();
+    let g = alice.batch(|wr| { let g = wr.create(alice.me())?; wr.make_group(g)?; Ok(g) }).unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, osis::Role::Write, osis::EdgeOpts::default()).unwrap();
     w.run();
-    let mk = |owner: osis::Tid| alice.write_with(|wr| { let t = wr.create_in(owner, &[g])?; wr.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
+    let mk = |owner: osis::Tid| alice.batch(|wr| { let t = wr.create_in(owner, &[g])?; wr.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let t = mk(g);
     w.run();
-    assert_eq!(bob.get(t, x.clone()).unwrap(), Some(Value::Int(1)));
+    assert_eq!(bob.at(t, x.clone()).get().unwrap(), Some(Value::Int(1)));
     let s = Scope::Thing(t);
     alice.undo(&s).unwrap().unwrap();
     w.run();
     assert!(!bob.knows(t).unwrap() && bob.groups_of(t).unwrap().within.is_empty());
     alice.redo(&s).unwrap().unwrap();
     w.run();
-    assert!(bob.knows(t).unwrap() && bob.get(t, x.clone()).unwrap() == Some(Value::Int(1)) && bob.groups_of(t).unwrap().item_of == vec![g]);
+    assert!(bob.knows(t).unwrap() && bob.at(t, x.clone()).get().unwrap() == Some(Value::Int(1)) && bob.groups_of(t).unwrap().item_of == vec![g]);
     let c = ChangeId::Commit(alice.created(t).unwrap().unwrap().commit.unwrap());
     bob.revert(c).unwrap();
     w.run();
@@ -596,7 +604,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
 #[test]
 fn creation_revert_found_by_created_scope_api_commits() {
     let (da, db) = two_devices();
-    let t = da.write_with(|w| w.create_durable(da.me())).unwrap();
+    let t = da.batch(|w| w.create_durable(da.me())).unwrap();
     let c = da.created(t).unwrap().unwrap().commit.map(ChangeId::Commit).unwrap();
     commit_with(&da, |w| {
         w.at(t, ak("t:made.0")).remove()?;

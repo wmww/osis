@@ -12,7 +12,7 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_node::flows::{Demotion, PreSync};
 use osis_schema::core_types as ct;
-use osis_schema::{Codec, Path};
+use osis_schema::{Codec, p};
 
 /// A thin client's bearer secret: shown once by `add_client` and `rotate_client_secret`; osis keeps
 /// only its hash. Whoever holds it is the client. `Debug` is redacted; zeroized on drop.
@@ -67,12 +67,12 @@ impl Osis {
         }
         let secret = ClientSecret::generate();
         let entry = secret.entry(until);
-        let (me, node, home) = (self.me(), self.node(), self.home());
+        let (me, node) = (self.me(), self.node());
         let (actor, done) = self.engine(|e| {
             e.mint_actor(&me, |a| {
                 let mut m = osis_node::Mutation::new();
                 m.op(node, &ct::CLIENTS, PathOp { path: vec![PathSeg::Key(Value::Tid(a))], op: Op::Set(entry.to_value()) })?;
-                m.op(home, &ct::GROUP, crate::write::group_op(true, a, true))?;
+                m.op(me, &ct::GROUP, crate::write::group_op(true, a, true))?;
                 m.act_as(me);
                 Ok(m)
             })
@@ -92,7 +92,7 @@ impl Osis {
                 Ok(Client { actor, until })
             }).collect();
         }
-        Ok(self.get(self.node(), ct::CLIENTS)?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor, until: c.until }).collect())
+        Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor, until: c.until }).collect())
     }
 
     /// Revokes a thin client: its sessions end at once, its actor is demoted from everything it
@@ -110,18 +110,22 @@ impl Osis {
             return crate::port::codec::Args::of(vec![v]).bool();
         }
         let node = self.node();
-        let Some(e) = self.get(node, ct::CLIENTS)?.unwrap_or_default().remove(&actor) else { return Ok(false) };
+        let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor) else { return Ok(false) };
         // ended under any clock: one moved back revives no half-removed client
         let ended = Some(WallMs(0));
         if e.until != ended {
-            self.write_with(|w| w.at(node, ct::CLIENTS).path(Path::root()).put(&actor, &ct::Client { until: ended, ..e }))?;
+            let mut w = self.write();
+            w.at(node, ct::CLIENTS).path(p![actor]).set(&ct::Client { until: ended, ..e })?;
+            w.commit()?;
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
             self.not_routed("remove_client", t)?;
             let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced, keep: None })?))?;
             self.carry(done)?;
         }
-        self.write_with(|w| w.at(node, ct::CLIENTS).path(Path::root()).remove_key(&actor))?;
+        let mut w = self.write();
+        w.at(node, ct::CLIENTS).path(p![actor]).remove()?;
+        w.commit()?;
         Ok(true)
     }
 
@@ -132,10 +136,12 @@ impl Osis {
             return secret_of(self.rcall(method::ROTATE_CLIENT_SECRET, vec![Value::Tid(actor)])?);
         }
         let node = self.node();
-        let e = self.get(node, ct::CLIENTS)?.unwrap_or_default().remove(&actor).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
+        let e = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor).ok_or_else(|| Error::Invalid(format!("no client {actor}")))?;
         let secret = ClientSecret::generate();
         let entry = secret.entry(e.until);
-        self.write_with(|w| w.at(node, ct::CLIENTS).path(Path::root()).put(&actor, &entry))?;
+        let mut w = self.write();
+        w.at(node, ct::CLIENTS).path(p![actor]).set(&entry)?;
+        w.commit()?;
         Ok(secret)
     }
 }

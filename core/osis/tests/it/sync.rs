@@ -2,6 +2,7 @@
 //! Sync configuration and status), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use osis_sim::world::World;
@@ -29,7 +30,7 @@ fn write_refused(db: &Osis, t: Tid) -> bool {
 }
 
 fn x(db: &Osis, t: Tid) -> Option<Value> {
-    db.get(t, ak("t:x.0")).unwrap()
+    db.at(t, ak("t:x.0")).get().unwrap()
 }
 
 // notes/api.md Handle (create), Sync status; spec/sync.md §2 (home label): a new person's home
@@ -41,10 +42,10 @@ fn create_syncs_home_spec_sync_2() {
     let (db, _card) = w.person(1, &[host]);
     w.run();
     let st = db.status().unwrap();
-    assert_eq!(st.groups.get(&db.home()).map(|g| g.state), Some(SyncState::Synced), "{st:?}");
+    assert_eq!(st.groups.get(&db.me()).map(|g| g.state), Some(SyncState::Synced), "{st:?}");
     assert_eq!(st.connected, 1);
-    item(&db, db.me(), db.home(), "hello");
-    assert_ne!(db.status().unwrap().groups.get(&db.home()).map(|g| g.state), Some(SyncState::Synced), "a local commit is not at the host yet");
+    item(&db, db.me(), db.me(), "hello");
+    assert_ne!(db.status().unwrap().groups.get(&db.me()).map(|g| g.state), Some(SyncState::Synced), "a local commit is not at the host yet");
     w.until(db.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
 }
 
@@ -57,9 +58,9 @@ fn pairing_spec_permissions_1() {
     let host = w.add_host();
     let (da, _) = w.person(1, &[host]);
     w.run();
-    let t = item(&da, da.me(), da.home(), "before pairing");
+    let t = item(&da, da.me(), da.me(), "before pairing");
     for i in 0..10 {
-        item(&da, da.me(), da.home(), &format!("{i}{}", "x".repeat(4000)));
+        item(&da, da.me(), da.me(), &format!("{i}{}", "x".repeat(4000)));
     }
     let offer = da.pair_offer().unwrap();
     let join = Osis::pair(w.cfg(2, &[]), &offer).unwrap();
@@ -72,7 +73,7 @@ fn pairing_spec_permissions_1() {
     assert_eq!(db.me(), da.me());
     w.run();
     assert_eq!(x(&db, t), Some(s("before pairing")));
-    let u = item(&db, db.me(), db.home(), "from the new device");
+    let u = item(&db, db.me(), db.me(), "from the new device");
     w.run();
     assert_eq!(x(&da, u), Some(s("from the new device")));
     let devs: Vec<Tid> = da.devices().unwrap().into_iter().map(|d| d.node).collect();
@@ -81,7 +82,7 @@ fn pairing_spec_permissions_1() {
     let skip = osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
     w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
     assert!(!da.devices().unwrap().iter().any(|d| d.node == db.node()));
-    let after = item(&da, da.me(), da.home(), "after the removal");
+    let after = item(&da, da.me(), da.me(), "after the removal");
     w.run();
     assert_eq!(x(&db, after), None, "the removed device reads nothing new");
 }
@@ -93,7 +94,7 @@ fn restore_from_card_spec_permissions_8() {
     let mut w = World::new();
     let host = w.add_host();
     let (da, card) = w.person(1, &[host]);
-    let t = item(&da, da.me(), da.home(), "kept by the host");
+    let t = item(&da, da.me(), da.me(), "kept by the host");
     w.run();
     let card: osis::RecoveryCard = card.to_string().parse().unwrap();
     w.advance(1000);
@@ -102,7 +103,7 @@ fn restore_from_card_spec_permissions_8() {
     assert_eq!(dc.me(), da.me());
     assert_eq!(x(&dc, t), Some(s("kept by the host")));
     assert_eq!(dc.role_on(dc.me()).unwrap(), Some(Role::Admin));
-    let u = item(&dc, dc.me(), dc.home(), "after restore");
+    let u = item(&dc, dc.me(), dc.me(), "after restore");
     w.run();
     assert_eq!(x(&da, u), Some(s("after restore")));
 }
@@ -126,11 +127,15 @@ fn delete_reaches_other_node_spec_api_writes() {
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     alice.grant(ro, b, Role::Read, Default::default()).unwrap();
     let t = item(&alice, g, g, "doomed");
-    alice.write_with(|wr| wr.place(t, ro)).unwrap();
+    let mut wr = alice.write();
+    wr.place(t, ro).unwrap();
+    wr.commit().unwrap();
     w.run();
     assert!(bob.knows(t).unwrap());
     assert_eq!(bob.groups_of(t).unwrap().item_of.len(), 2);
-    bob.write_with(|wr| wr.delete(t)).unwrap();
+    let mut wr = bob.write();
+    wr.delete(t).unwrap();
+    wr.commit().unwrap();
     assert!(!bob.knows(t).unwrap());
     w.run();
     assert!(!alice.knows(t).unwrap() && alice.created(t).unwrap().is_some());
@@ -141,7 +146,7 @@ fn delete_reaches_other_node_spec_api_writes() {
 /// A group owned by `db`'s person, synced on its hosts.
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();
-    let g = w.create_in(db.me(), &[db.home()]).unwrap();
+    let g = w.create_in(db.me(), &[db.me()]).unwrap();
     w.make_group(g).unwrap();
     w.commit().unwrap();
     db.sync(g, &[]).unwrap();
@@ -178,7 +183,7 @@ fn client_commit_reaches_a_third_device() {
     wr.at(t, ak("t:x.0")).set(&s("by bob")).unwrap();
     wr.commit().unwrap();
     w.run();
-    assert_eq!(c.get(t, ak("t:x.0")).unwrap(), Some(s("by bob")));
+    assert_eq!(c.at(t, ak("t:x.0")).get().unwrap(), Some(s("by bob")));
 }
 
 // spec/sync.md §3 (contact card, inbox), spec/permissions.md §2 (grant): Alice imports Bob's
@@ -235,7 +240,7 @@ fn link_redeem_spec_permissions_8() {
     let g = group(&alice);
     let before = item(&alice, g, g, "before the link");
     let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
-    assert_eq!(alice.links(g).unwrap().len(), 1);
+    assert_eq!(alice.links_of(g).unwrap().len(), 1);
     w.run();
     let link: osis::ShareLink = link.to_string().parse().unwrap();
     // a hinted label the joiner fails to open first is retried after `resync_ms`
@@ -245,7 +250,7 @@ fn link_redeem_spec_permissions_8() {
     let u = item(bob, g, g, "from the joiner");
     w.run();
     assert_eq!(x(&alice, u), Some(s("from the joiner")));
-    assert!(alice.links(g).unwrap().is_empty(), "single use: L left K");
+    assert!(alice.links_of(g).unwrap().is_empty(), "single use: L left K");
     assert!(alice.engine(|e| !e.held_links().unwrap().is_empty() && e.links_due().unwrap().is_empty()), "finalized on the redemption");
     let v = item(&alice, g, g, "after the link ended");
     w.run();
@@ -328,7 +333,7 @@ fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     w.run();
     assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
-    let k = alice.links(g).unwrap()[0].id;
+    let k = alice.links_of(g).unwrap()[0].id;
     let l = alice.roster(k).unwrap().into_keys().find(|m| alice.owner_of(*m).unwrap().is_none()).unwrap();
     (alice, bob, g, k, l)
 }
@@ -397,7 +402,7 @@ fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
         assert_eq!(w.until(o.redeem(&link), 1000, 10).unwrap(), g);
         w.run();
     }
-    let k = alice.links(g).unwrap()[0].id;
+    let k = alice.links_of(g).unwrap()[0].id;
     let l = alice.roster(k).unwrap().into_keys().find(|m| alice.owner_of(*m).unwrap().is_none()).unwrap();
     (w, alice, bob, carol, g, k, l)
 }
@@ -421,7 +426,7 @@ fn demote_link_joiner_spec_permissions_8() {
     let r = alice.roster(k).unwrap();
     assert!(!r.contains_key(&bob.me()) && !r.contains_key(&l) && r.contains_key(&carol.me()));
     assert!(alice.holder_path(g, bob.me()).unwrap().is_empty());
-    assert!(alice.links(g).unwrap().is_empty(), "the link ends with its joiner");
+    assert!(alice.links_of(g).unwrap().is_empty(), "the link ends with its joiner");
     let commits = alice.engine(|e| e.commit_ids().len());
     w.until(alice.demote(g, bob.me(), Lower::Remove, skip), 1000, 10).unwrap();
     assert_eq!(alice.engine(|e| e.commit_ids().len()), commits, "nothing left to remove");
@@ -609,7 +614,7 @@ fn remote_signal_spec_sync_5() {
     let _a = alice.at(g, ring.clone()).on_change(move |_, c| tx.send(("alice", c)).unwrap()).unwrap();
     let _b = bob.at(g, ring.clone()).on_change(move |_, c| tx2.send(("bob", c)).unwrap()).unwrap();
     let _ = (recv(&rx), recv(&rx));
-    bob.write_with(|wr| wr.at(g, ring.clone()).set(&Value::Int(1))).unwrap();
+    bob.commit_set(g, ring.clone(), &Value::Int(1)).unwrap();
     w.run();
     let mut got = [recv(&rx), recv(&rx)];
     got.sort_by_key(|g| g.0);
@@ -618,7 +623,7 @@ fn remote_signal_spec_sync_5() {
     assert!(matches!(got[1].1.source, osis::Source::Local(_)));
     alice.settle();
     assert!(rx.try_recv().is_err(), "once");
-    assert_eq!(alice.get(g, ring).unwrap(), None);
+    assert_eq!(alice.at(g, ring).get().unwrap(), None);
 }
 
 // spec/commits.md §6 (expiry), notes/chat.md (disappearing messages): a message written with an
@@ -658,14 +663,14 @@ fn text_sessions_merge_spec_crdt_5_7() {
     let (_, reply) = da.pair_accept(join.request()).unwrap();
     let db = join.finish(&reply).unwrap();
     for d in [&da, &db] {
-        d.register_schema_source("t.osis", TEXT_SCHEMA).unwrap();
+        d.register_schema("t.osis", TEXT_SCHEMA).unwrap();
     }
     let body = da.key("n:body.0").unwrap();
     let mut wr = da.write();
-    let t = wr.create_in(da.me(), &[da.home()]).unwrap();
+    let t = wr.create_in(da.me(), &[da.me()]).unwrap();
     wr.commit().unwrap();
     let sa = da.edit_text(t, body.clone(), osis::Path::root()).unwrap();
-    sa.insert(0, "hello").unwrap();
+    sa.replace(0..0, "hello").unwrap();
     assert!(sa.commit().unwrap().is_some());
     assert_eq!(sa.commit().unwrap(), None, "nothing new");
     w.run();
@@ -675,8 +680,8 @@ fn text_sessions_merge_spec_crdt_5_7() {
     sa.on_remote(move |s, _| {
         let _ = tx.send(s.to_string());
     });
-    sb.insert(5, " world").unwrap();
-    sa.insert(0, ">").unwrap();
+    sb.replace(5..5, " world").unwrap();
+    sa.replace(0..0, ">").unwrap();
     sb.commit().unwrap();
     w.run();
     let merged = recv(&rx);
@@ -698,11 +703,11 @@ fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     let (_, reply) = da.pair_accept(join.request()).unwrap();
     let db = join.finish(&reply).unwrap();
     for d in [&da, &db] {
-        d.register_schema_source("t.osis", TEXT_SCHEMA).unwrap();
+        d.register_schema("t.osis", TEXT_SCHEMA).unwrap();
     }
-    let t = da.write_with(|w| w.create_in(da.me(), &[da.home()])).unwrap();
+    let t = da.batch(|w| w.create_in(da.me(), &[da.me()])).unwrap();
     let sa = da.edit_text(t, da.key("n:body.0").unwrap(), osis::Path::root()).unwrap();
-    sa.insert(0, "hello world").unwrap();
+    sa.replace(0..0, "hello world").unwrap();
     sa.commit().unwrap();
     w.run();
     db.settle();
@@ -734,7 +739,7 @@ fn text_session_remote_splices_map_caret() {
     let sb = db.edit_text(t, db.key("n:body.0").unwrap(), osis::Path::root()).unwrap();
     assert_eq!(sb.text(), "hello world");
     sb.replace(0..1, "H").unwrap();
-    sb.insert(6, "big ").unwrap();
+    sb.replace(6..6, "big ").unwrap();
     sb.commit().unwrap();
     w.run();
     let (merged, edits) = recv(&rx);
@@ -760,17 +765,17 @@ fn text_session_remote_splices_map_caret() {
 fn text_session_after_remote_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
     let (_d, rx) = uncommitted(&da);
-    db.write_with(|w| w.delete(t)).unwrap();
-    sa.insert(11, "!").unwrap();
+    db.batch(|w| w.delete(t)).unwrap();
+    sa.replace(11..11, "!").unwrap();
     w.run();
     assert!(!da.knows(t).unwrap(), "deleted here");
-    sa.insert(0, "> ").unwrap();
+    sa.replace(0..0, "> ").unwrap();
     drop(sa);
     assert_eq!(recv(&rx), vec![t]);
     w.run();
     for d in [&da, &db] {
         assert!(!d.knows(t).unwrap(), "not recreated");
-        assert_eq!(d.get(t, d.key("n:body.0").unwrap()).unwrap(), None);
+        assert_eq!(d.at(t, d.key("n:body.0").unwrap()).get().unwrap(), None);
     }
 }
 
@@ -780,14 +785,14 @@ fn text_session_after_remote_delete_drops() {
 fn text_session_after_local_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
     let (_d, rx) = uncommitted(&da);
-    sa.insert(11, "!").unwrap();
-    da.write_with(|w| w.delete(t)).unwrap();
+    sa.replace(11..11, "!").unwrap();
+    da.batch(|w| w.delete(t)).unwrap();
     drop(sa);
     assert_eq!(recv(&rx), vec![t]);
     w.run();
     for d in [&da, &db] {
         assert!(!d.knows(t).unwrap(), "not recreated");
-        assert_eq!(d.get(t, d.key("n:body.0").unwrap()).unwrap(), None);
+        assert_eq!(d.at(t, d.key("n:body.0").unwrap()).get().unwrap(), None);
     }
 }
 
@@ -797,15 +802,17 @@ fn text_session_after_local_delete_drops() {
 #[test]
 fn text_session_keeps_edits_across_delete_undo() {
     let (_w, da, _db, t, sa) = text_pair();
-    sa.insert(11, "!").unwrap();
-    da.write_with(|w| w.delete(t)).unwrap();
+    sa.replace(11..11, "!").unwrap();
+    let mut w = da.write();
+    w.delete(t).unwrap();
+    w.commit().unwrap();
     assert!(matches!(sa.commit(), Err(osis::Error::UnknownThing { .. })));
     assert!(!da.knows(t).unwrap(), "not recreated");
     assert_eq!(sa.text(), "hello world!", "kept");
     da.undo(&osis::Scope::Thing(t)).unwrap().unwrap();
     assert!(da.knows(t).unwrap());
     sa.commit().unwrap().unwrap();
-    assert_eq!(da.get(t, da.key("n:body.0").unwrap()).unwrap(), Some(osis::Value::Str("hello world!".into())));
+    assert_eq!(da.at(t, da.key("n:body.0").unwrap()).get().unwrap(), Some(osis::Value::Str("hello world!".into())));
 }
 
 // notes/api.md Sync configuration (`add_host`), spec/sync.md §2 (`label.0` hosts, inbox): a
@@ -818,16 +825,16 @@ fn add_host_moves_labels_spec_sync_2() {
     let (a, card) = Osis::create(w.cfg(1, &[])).unwrap();
     assert!(card.is_none());
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoHosts);
+    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoHosts);
     a.add_host(&w.addr(host).unwrap()).unwrap();
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::Synced);
-    let inbox = a.get(a.me(), osis::core::KEYS).unwrap().unwrap().inbox.unwrap();
+    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::Synced);
+    let inbox = a.at(a.me(), osis::core::KEYS).get().unwrap().unwrap().inbox.unwrap();
     assert_eq!(inbox.hosts.len(), 1);
     w.until(a.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
     a.remove_host(&w.addr(host).unwrap()).unwrap();
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoHosts);
+    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoHosts);
 }
 
 // notes/api.md Sync status (`wait_synced(All)` leaves `NoHosts` groups out): Carol has no
@@ -845,12 +852,12 @@ fn wait_synced_all_skips_hostless_groups() {
     w.run();
     assert_eq!(w.until(carol.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
-    assert_eq!(carol.status().unwrap().groups[&carol.home()].state, SyncState::NoHosts);
+    assert_eq!(carol.status().unwrap().groups[&carol.me()].state, SyncState::NoHosts);
     let t = item(&alice, g, g, "after the redeem");
     w.until(alice.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
     w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
     assert_eq!(x(&carol, t), Some(s("after the redeem")));
-    assert!(matches!(w.until(carol.wait_synced(SyncScope::Group(carol.home()), Duration::from_secs(10)), 1000, 10), Err(osis::Error::Unsynced { .. })));
+    assert!(matches!(w.until(carol.wait_synced(SyncScope::Group(carol.me()), Duration::from_secs(10)), 1000, 10), Err(osis::Error::Unsynced { .. })));
 }
 
 // notes/api.md Sync status (`wait_synced` scopes the deliveries): Bob's inbox is on a host
@@ -900,7 +907,7 @@ fn wait_synced_all_waits_on_hosted_label_of_mixed_group() {
     // the hostless one is replaced (it takes nothing until it retires): `Group(g)` fails only
     // on her hostless home, which holds `g`
     let r = w.until(carol.wait_synced(SyncScope::Group(g), Duration::from_secs(10)), 1000, 10);
-    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [carol.home()]), "{r:?}");
+    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [carol.me()]), "{r:?}");
     w.set_reachable(&carol, h, false);
     item(&carol, g, g, "while cut off");
     assert!(matches!(w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(5)), 1000, 10), Err(osis::Error::Network(_))));
@@ -958,16 +965,16 @@ fn add_host_scope_spec_sync_2() {
     w.run();
     assert_eq!(alice.role_on(his).unwrap(), Some(Role::Admin));
     alice.make_link(mine, Role::Read, osis::LinkOpts::default()).unwrap();
-    let k = alice.links(mine).unwrap()[0].id;
+    let k = alice.links_of(mine).unwrap()[0].id;
     w.run();
     let hosts = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|l| !l.replaced).unwrap().hosts.len());
     alice.add_host(&w.addr(s1).unwrap()).unwrap();
     w.run();
-    assert_eq!((hosts(alice.home()), hosts(mine), hosts(his), hosts(k)), (2, 2, 1, 1));
+    assert_eq!((hosts(alice.me()), hosts(mine), hosts(his), hosts(k)), (2, 2, 1, 1));
     alice.remove_host(&w.addr(s0).unwrap()).unwrap();
     alice.remove_host(&w.addr(s1).unwrap()).unwrap();
     w.run();
-    assert_eq!((hosts(alice.home()), hosts(mine), hosts(his), hosts(k)), (0, 1, 1, 1), "a shared group keeps its last host");
+    assert_eq!((hosts(alice.me()), hosts(mine), hosts(his), hosts(k)), (0, 1, 1, 1), "a shared group keeps its last host");
 }
 
 // spec/crdt.md §2.1 (a session per open): a device restored from a backup of its store keeps
@@ -984,13 +991,13 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     let store = store.clone();
     let (a, card) = Osis::create(cfg).unwrap();
     w.run();
-    let t = item(&a, a.me(), a.home(), "before the backup");
-    let u = item(&a, a.me(), a.home(), "other before the backup");
+    let t = item(&a, a.me(), a.me(), "before the backup");
+    let u = item(&a, a.me(), a.me(), "other before the backup");
     w.run();
     let backup = store.backup();
     for v in ["after the backup 1", "after the backup 2"] {
-        a.write_with(|wr| wr.at(t, ak("t:x.0")).set(&s(v))).unwrap();
-        a.write_with(|wr| wr.at(u, ak("t:x.0")).set(&s(v))).unwrap();
+        a.commit_set(t, ak("t:x.0"), &s(v)).unwrap();
+        a.commit_set(u, ak("t:x.0"), &s(v)).unwrap();
     }
     w.run();
     w.until(a.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
@@ -1010,7 +1017,7 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     let form = |db: &Osis, c| db.engine(|e| e.header(&c).unwrap().form);
     assert!(matches!(form(&b, first), osis_commit::Form::Session(_)));
     // an undo before the pass too: of a creation, which also edits the home group's `group.0`
-    let v = item(&b, b.me(), b.home(), "made after the restore");
+    let v = item(&b, b.me(), b.me(), "made after the restore");
     let undo = b.undo(&osis::Scope::Thing(v)).unwrap().unwrap().id.commit().unwrap();
     assert!(matches!(form(&b, undo), osis_commit::Form::Session(_)));
     assert_eq!(x(&b, v), None);
@@ -1029,12 +1036,12 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     let c = w.until(Osis::restore(w.cfg(3, &[]), &card), 1000, 10).unwrap();
     w.run();
     assert_eq!((x(&c, t), x(&c, u), x(&c, v)), (Some(s("restored")), Some(s("restored, caught up")), None));
-    assert!(!c.groups_of(v).unwrap().item_of.contains(&c.home()), "the undone creation left the home group");
+    assert!(!c.groups_of(v).unwrap().item_of.contains(&c.me()), "the undone creation left the home group");
 }
 
 /// A thing of `db`'s person with `t:x.0` = `v`, placed nowhere.
 fn plain(db: &Osis, v: &str) -> Tid {
-    db.write_with(|w| {
+    db.batch(|w| {
         let t = w.create(db.me())?;
         w.at(t, ak("t:x.0")).set(&s(v))?;
         Ok(t)
@@ -1071,7 +1078,7 @@ fn a_grant_then_a_sync_gives_the_route() {
     assert_eq!(x(bob, t), Some(s("for bob")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
     assert_eq!(bob.status().unwrap().groups[&t].state, SyncState::Synced);
-    bob.write_with(|o| o.at(t, ak("t:x.0")).set(&s("from bob"))).unwrap();
+    bob.commit_set(t, ak("t:x.0"), &s("from bob")).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("from bob")));
     let label = alice.status().unwrap().groups[&t].labels.clone();
@@ -1135,7 +1142,7 @@ fn an_unsync_after_a_share_cuts_the_route() {
     w.run();
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("two"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("two")).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("one")), "nothing carries the write");
     alice.sync(t, &[]).unwrap();
@@ -1157,14 +1164,14 @@ fn a_thing_leaving_its_group_loses_the_route() {
     w.run();
     assert_eq!(x(bob, t), Some(s("in g")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
-    alice.write_with(|w| w.unplace(t, g)).unwrap();
+    alice.batch(|w| w.unplace(t, g)).unwrap();
     w.run();
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    alice.write_with(|w| w.place(t, g)).unwrap();
+    alice.batch(|w| w.place(t, g)).unwrap();
     w.run();
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("back"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("back")).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("back")));
 }
@@ -1186,7 +1193,7 @@ fn losing_the_group_but_keeping_the_edge_loses_the_route() {
     assert!(bob.roster(t).unwrap().contains_key(&ids[0]) && !bob.roster(g).unwrap().contains_key(&ids[0]));
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("after"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
     alice.sync(t, &[]).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("after")));
@@ -1288,7 +1295,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     assert!(bob.groups_of(t).unwrap().item_of.is_empty() && alice.groups_of(t).unwrap().item_of.is_empty(), "no placement");
     assert!(bob.status().unwrap().split.is_empty() && alice.status().unwrap().split.is_empty());
     assert!(write_refused(bob, t), "read only");
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("later"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("later")).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("later")));
     // a later reader finds it under the group's label
@@ -1298,7 +1305,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     // and the edge's end reaches them
     w.until(alice.demote(t, h, Lower::Remove, Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }), 1000, 10).unwrap();
     w.run();
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("after"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
     w.run();
     assert_ne!(x(bob, t), Some(s("after")));
     assert_ne!(x(carol, t), Some(s("after")));
@@ -1358,13 +1365,13 @@ fn a_grant_to_a_group_with_no_label() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
-    let h = alice.write_with(|w| {
+    let h = alice.batch(|w| {
         let g = w.create(alice.me())?;
         w.make_group(g)?;
         Ok(g)
     })
     .unwrap();
-    let private = alice.write_with(|w| {
+    let private = alice.batch(|w| {
         let t = w.create_in(h, &[h])?;
         w.at(t, ak("t:x.0")).set(&s("private"))?;
         Ok(t)
@@ -1390,7 +1397,7 @@ fn an_excluded_thing_is_no_route_through_its_group() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
-    let g = alice.write_with(|w| {
+    let g = alice.batch(|w| {
         let g = w.create(alice.me())?;
         w.make_group(g)?;
         Ok(g)
@@ -1400,7 +1407,7 @@ fn an_excluded_thing_is_no_route_through_its_group() {
     alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     let t = plain(&alice, "excluded");
-    alice.write_with(|w| w.place(t, g)).unwrap();
+    alice.batch(|w| w.place(t, g)).unwrap();
     alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     w.advance(120_000);
@@ -1421,7 +1428,7 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     let bob = &others[0];
     let group = |text: &str| {
         alice
-            .write_with(|w| {
+            .batch(|w| {
                 let g = w.create(alice.me())?;
                 w.make_group(g)?;
                 w.at(g, ak("t:x.0")).set(&s(text))?;
@@ -1436,7 +1443,7 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     let t = plain(&alice, "deep");
     alice.share_into(sub, g, Role::Read, osis::ShareOpts { subgroup: true, ..Default::default() }).unwrap();
     alice.share_into(t, sub, Role::Read, Default::default()).unwrap();
-    alice.write_with(|w| w.place(sub, g)).unwrap();
+    alice.batch(|w| w.place(sub, g)).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("deep")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
@@ -1458,7 +1465,7 @@ fn no_missing_route_where_nobody_misses_one() {
     w.run();
     assert!(unrouted(&alice, t).is_empty(), "a private tag in home");
     // a group Bob leaves behind: he read its item; he has no business with its route now
-    let g = alice.write_with(|w| {
+    let g = alice.batch(|w| {
         let g = w.create(alice.me())?;
         w.make_group(g)?;
         Ok(g)
@@ -1478,7 +1485,7 @@ fn no_missing_route_where_nobody_misses_one() {
     assert!(unrouted(bob, item).is_empty(), "no business of Bob's now");
     assert!(no_routes(bob));
     // a writer's chain through a thing whose label Bob does not read
-    let owner = alice.write_with(|w| {
+    let owner = alice.batch(|w| {
         let g = w.create(alice.me())?;
         w.make_group(g)?;
         Ok(g)
@@ -1488,7 +1495,7 @@ fn no_missing_route_where_nobody_misses_one() {
     alice.grant(owner, ids[1], Role::Admin, Default::default()).unwrap();
     w.run();
     let shared = alice
-        .write_with(|w| {
+        .batch(|w| {
             let c = w.create(owner)?;
             w.at(c, ak("t:x.0")).set(&s("shared"))?;
             Ok(c)
@@ -1497,7 +1504,7 @@ fn no_missing_route_where_nobody_misses_one() {
     alice.sync(shared, &[]).unwrap();
     alice.grant(shared, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
-    frank.write_with(|w| w.at(shared, ak("t:x.0")).set(&s("by frank"))).unwrap();
+    frank.commit_set(shared, ak("t:x.0"), &s("by frank")).unwrap();
     w.run();
     w.advance(120_000);
     w.run();
@@ -1614,7 +1621,7 @@ fn chunks_under_an_inbox_label_cost_no_kem() {
     let before = bob.sync_engine(|e| e.pass_stats().inbox_tries);
     let big: String = (0..3_000_000u32).map(|i| char::from(b'a' + ((i.wrapping_mul(2654435761) >> 13) % 26) as u8)).collect();
     let t = alice
-        .write_with(|w| {
+        .batch(|w| {
             let t = w.create_in(f, &[f])?;
             w.at(t, ak("t:x.0")).set(&Value::Str(big.clone()))?;
             Ok(t)
@@ -1816,7 +1823,7 @@ fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
     let mut w = World::new();
     let host = w.add_host();
     let (da, _) = w.person(1, &[host]);
-    let t = item(&da, da.me(), da.home(), "before");
+    let t = item(&da, da.me(), da.me(), "before");
     let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
     let (_, reply) = da.pair_accept(join.request()).unwrap();
     let db = join.finish(&reply).unwrap();
@@ -1849,12 +1856,12 @@ fn kicked_from_a_group_ends_what_it_holds() {
     alice.share(t, h, Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("one")));
-    bob.write_with(|w| w.at(t, ak("t:x.0")).set(&s("bob's"))).unwrap();
+    bob.commit_set(t, ak("t:x.0"), &s("bob's")).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("bob's")));
     w.until(alice.demote(h, ids[0], Lower::Remove, skip()), 1000, 10).unwrap();
     w.run();
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("after"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
     w.run();
     assert_ne!(x(bob, t), Some(s("after")));
     assert_eq!(x(carol, t), Some(s("after")));
@@ -1866,7 +1873,7 @@ fn kicked_from_a_group_ends_what_it_holds() {
     // the edge's end is under the group's label too: a reader after it reads nothing later
     w.until(alice.demote(t, h, Lower::Remove, skip()), 1000, 10).unwrap();
     w.run();
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("edge gone"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("edge gone")).unwrap();
     w.run();
     alice.grant(h, ids[3], Role::Read, Default::default()).unwrap();
     w.run();
@@ -1898,14 +1905,14 @@ fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
     assert_eq!(x(dan, t), Some(s("one")), "joiner");
     w.until(alice.demote(p, ids[0], Lower::Remove, skip()), 1000, 10).unwrap();
     w.run();
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("after"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
     w.run();
     assert_ne!(x(bob, t), Some(s("after")));
     assert_eq!(x(carol, t), Some(s("after")));
     assert_eq!(x(dan, t), Some(s("after")));
     w.until(alice.demote(p, dan.me(), Lower::Remove, skip()), 1000, 10).unwrap();
     w.run();
-    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("last"))).unwrap();
+    alice.commit_set(t, ak("t:x.0"), &s("last")).unwrap();
     w.run();
     assert_ne!(x(dan, t), Some(s("last")));
     assert_eq!(x(carol, t), Some(s("last")));
@@ -2061,7 +2068,7 @@ fn share_of_a_group_carries_its_items() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
-    let g = alice.write_with(|w| {
+    let g = alice.batch(|w| {
         let g = w.create(alice.me())?;
         w.make_group(g)?;
         Ok(g)
@@ -2085,7 +2092,7 @@ fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
     let cfg = w.cfg(1, &[host]);
     let (a, _) = Osis::create(cfg.clone()).unwrap();
     w.run();
-    let t = item(&a, a.me(), a.home(), "first");
+    let t = item(&a, a.me(), a.me(), "first");
     let mut forms = vec![];
     let mut db = a;
     for v in ["second", "third"] {

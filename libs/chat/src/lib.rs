@@ -103,11 +103,11 @@ fn rules(purge: PurgeBy, disappear: Option<Duration>, keep: bool) -> Result<ct::
 /// member can write under an earlier key. One flow, several commits: a crash leaves a chat of one.
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = db.create_ownerless(db.me())?;
-    db.write_with(|w| {
-        w.at(c, ct::REQUIRED).set(&rules(o.purge, o.disappear, o.keep)?)?;
-        w.at(c, settings_ak()?).set(&settings_value(&o.name, o.edit))?;
-        w.make_group(c)
-    })?;
+    let mut w = db.write();
+    w.at(c, ct::REQUIRED).set(&rules(o.purge, o.disappear, o.keep)?)?;
+    w.at(c, settings_ak()?).set(&settings_value(&o.name, o.edit))?;
+    w.make_group(c)?;
+    w.commit()?;
     db.sync(c, &o.hosts)?;
     Ok(c)
 }
@@ -129,7 +129,7 @@ pub struct Settings {
 /// What this node knows of a chat's settings.
 pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
     let mut s = Settings::default();
-    if let Some(Value::Map(m)) = db.get(c, settings_ak()?)? {
+    if let Some(Value::Map(m)) = db.at(c, settings_ak()?).get()? {
         if let Some(Value::Str(n)) = m.get(&Value::Int(0)) {
             s.name.clone_from(n);
         }
@@ -137,7 +137,7 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
             s.edit = e.parse().unwrap_or_default();
         }
     }
-    let r = db.get(c, ct::REQUIRED)?.unwrap_or_default();
+    let r = db.at(c, ct::REQUIRED).get()?.unwrap_or_default();
     s.keep = r.keep;
     if let Some(m) = r.rules.get(MSGS) {
         s.purge = m.by;
@@ -152,14 +152,17 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
 pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
     let ak = settings_ak()?;
     // a value of another shape is someone's junk: not a chat
-    Ok(db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && matches!(db.get(*t, ak.clone()), Ok(Some(_)))).map(|(t, _)| t).collect())
+    Ok(db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && matches!(db.at(*t, ak.clone()).get(), Ok(Some(_)))).map(|(t, _)| t).collect())
 }
 
 /// Sets the disappearing timer: later messages take it, earlier ones keep what they have. A member
 /// who has not seen the change writes under the old rule, and its node hears `on_rejected`.
 pub fn set_disappearing(db: &Osis, c: Tid, d: Option<Duration>) -> Result<()> {
     let s = settings(db, c)?;
-    db.write_with(|w| w.at(c, ct::REQUIRED).set(&rules(s.purge, d, s.keep)?))
+    let mut w = db.write();
+    w.at(c, ct::REQUIRED).set(&rules(s.purge, d, s.keep)?)?;
+    w.commit()?;
+    Ok(())
 }
 
 /// Adds a member (an admin's call): `Write` to post, `Admin` to moderate, `Read` for a channel.

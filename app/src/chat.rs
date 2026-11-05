@@ -62,7 +62,7 @@ fn profile(db: &Osis) -> Result<Option<Tid>> {
 /// The name messages go out under: the profile's `name.0`, else `OSIS_CHAT_NAME`.
 pub fn my_name(db: &Osis) -> Result<Option<String>> {
     let own = match profile(db)? {
-        Some(p) => db.get(p, NAME)?.filter(|n| !n.trim().is_empty()),
+        Some(p) => db.at(p, NAME).get()?.filter(|n| !n.trim().is_empty()),
         None => None,
     };
     Ok(own.or_else(|| std::env::var("OSIS_CHAT_NAME").ok().filter(|n| !n.trim().is_empty())))
@@ -71,7 +71,10 @@ pub fn my_name(db: &Osis) -> Result<Option<String>> {
 /// Sets the profile's name (empty: none).
 pub fn set_name(db: &Osis, name: &str) -> Result<()> {
     let p = profile(db)?.ok_or_else(|| osis::Error::Invalid("a name needs a host: start with --host".into()))?;
-    db.write_with(|w| if name.trim().is_empty() { w.at(p, NAME).remove() } else { w.at(p, NAME).set(&name.trim().to_string()) })
+    let mut w = db.write();
+    if name.trim().is_empty() { w.at(p, NAME).remove()? } else { w.at(p, NAME).set(&name.trim().to_string())? }
+    w.commit()?;
+    Ok(())
 }
 
 /// Sends `text` (a `subject` first, as the CLI's `--subject`), answering `reply_to`.

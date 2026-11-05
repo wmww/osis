@@ -3,16 +3,17 @@
 //! people it is shared with, and tells apps when it changes.
 //!
 //! # Open a database
-//! The owner of a new thing is always explicit; `me()` is the usual owner. Placement is a group
-//! op in the same batch. A new thing lives in memory until its first durable write.
+//! The owner of a new thing is always explicit; `me()` is the usual owner, and is also a group,
+//! synced to all your devices. Placement is a group op in the same batch. A new thing lives in
+//! memory until its first durable write.
 //! ```
 //! use osis::{Config, Osis};
 //! let db = Osis::create(Config::memory())?.0;
 //! let mut w = db.write();
 //! let note = w.create(db.me())?;
-//! w.place(note, db.home())?;
+//! w.place(note, db.me())?;
 //! w.commit()?;
-//! assert!(db.groups_of(note)?.item_of.contains(&db.home()));
+//! assert!(db.items(db.me())?.contains(&note));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -23,13 +24,12 @@
 //! # use osis::{Config, Osis, Ak, Value};
 //! # let db = Osis::create(Config::memory())?.0;
 //! let title = Ak::new("note:title.0").unwrap();
-//! let t = db.write_with(|w| {
-//!     let t = w.create(db.me())?;
-//!     w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
-//!     Ok(t)
-//! })?;
-//! assert_eq!(db.get(t, title.clone())?, Some(Value::Str("Groceries".into())));
-//! assert_eq!(db.get(t, Ak::new("note:other.0").unwrap())?, None);
+//! let mut w = db.write();
+//! let t = w.create(db.me())?;
+//! w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
+//! w.commit()?;
+//! assert_eq!(db.at(t, title.clone()).get()?, Some(Value::Str("Groceries".into())));
+//! assert_eq!(db.at(t, Ak::new("note:other.0").unwrap()).get()?, None);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -42,7 +42,7 @@
 //! let tags = Ak::new("note:tags.0").unwrap();
 //! let mut w = db.write();
 //! let t = w.create(db.me())?;
-//! w.at(t, tags.clone()).path(p![]).put(&"color".to_string(), &"red".to_string())?;
+//! w.at(t, tags.clone()).path(p!["color"]).set(&"red".to_string())?;
 //! w.commit()?;
 //! let c: Option<String> = db.at(t, tags).path(p!["color"]).get()?;
 //! assert_eq!(c.as_deref(), Some("red"));
@@ -65,8 +65,10 @@
 //! w.commit()?;
 //! let mut edited = shown.clone();
 //! if let Value::Map(m) = &mut edited { m.insert(Value::Int(1), Value::Int(2)); }
-//! db.write_with(|w| w.at(t, form.clone()).edit(&shown, &edited))?;
-//! assert_eq!(db.get(t, form)?, Some(edited));
+//! let mut w = db.write();
+//! w.at(t, form.clone()).edit(&shown, &edited)?;
+//! w.commit()?;
+//! assert_eq!(db.at(t, form).get()?, Some(edited));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -83,12 +85,36 @@
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let sub = db.at(t, k.clone()).on_change(move |_db, c| { let _ = tx.send(c); })?;
-//! db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1)))?;
+//! let mut w = db.write();
+//! w.at(t, k.clone()).set(&Value::Int(1))?;
+//! w.commit()?;
 //! assert_eq!(rx.recv().unwrap().source, Source::Initial);
 //! let c = rx.recv().unwrap();
 //! assert!(matches!(c.source, Source::Local(_)));
 //! assert_eq!(c.value, Ok(Some(Value::Int(1))));
 //! drop(sub);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Watching from async code
+//! Forward `on_change` to a channel of whichever runtime you use and await that. The current
+//! value comes first and no change is missed between reading it and subscribing.
+//! ```
+//! # use osis::{Config, Osis, Ak, Value};
+//! # let db = Osis::create(Config::memory())?.0;
+//! let k = Ak::new("app:count.0").unwrap();
+//! let mut w = db.write();
+//! let t = w.create(db.me())?;
+//! w.commit()?;
+//! let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+//! let _sub = db.at(t, k.clone()).on_change(move |_db, c| { let _ = tx.send(c.value); })?;
+//! let mut w = db.write();
+//! w.at(t, k.clone()).set(&Value::Int(1))?;
+//! w.commit()?;
+//! tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(async {
+//!     assert_eq!(rx.recv().await, Some(Ok(None)));
+//!     assert_eq!(rx.recv().await, Some(Ok(Some(Value::Int(1)))));
+//! });
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -103,13 +129,15 @@
 //! let t = w.create(db.me())?;
 //! w.at(t, k.clone()).set(&Value::Int(1))?;
 //! w.commit()?;
-//! db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2)))?;
+//! let mut w = db.write();
+//! w.at(t, k.clone()).set(&Value::Int(2))?;
+//! w.commit()?;
 //! let u = db.undo(&Scope::Thing(t))?.unwrap();
-//! assert_eq!(db.get(t, k.clone())?, Some(Value::Int(1)));
+//! assert_eq!(db.at(t, k.clone()).get()?, Some(Value::Int(1)));
 //! let undos = db.commits(&CommitQuery::new().scope(Scope::Thing(t)).kind(CommitKind::Revert))?;
 //! assert_eq!(undos[0].commit.id, u.id);
 //! db.redo(&Scope::Thing(t))?;
-//! assert_eq!(db.get(t, k)?, Some(Value::Int(2)));
+//! assert_eq!(db.at(t, k).get()?, Some(Value::Int(2)));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -136,7 +164,7 @@
 //! # use osis::{Config, Osis, SyncState};
 //! let (db, card) = Osis::create(Config::memory())?;
 //! assert!(card.is_none(), "no hosts: nothing to restore from");
-//! assert_eq!(db.status()?.groups[&db.home()].state, SyncState::NoHosts);
+//! assert_eq!(db.status()?.groups[&db.me()].state, SyncState::NoHosts);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -170,7 +198,7 @@
 //! db.sync(g, &[])?;
 //! let link = db.make_link(g, Role::Write, LinkOpts { until: None, single_use: true, direct: false })?;
 //! assert!(link.to_string().starts_with("osis://link/"));
-//! assert_eq!(db.links(g)?.len(), 1);
+//! assert_eq!(db.links()?.iter().filter(|l| l.target == g).count(), 1);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -180,14 +208,18 @@
 //! ```
 //! # use osis::{Config, Osis, Ak, Value};
 //! let db = Osis::create(Config::memory())?.0;
-//! let t = db.write_with(|w| w.create(db.me()))?;
+//! let mut w = db.write();
+//! let t = w.create(db.me())?;
+//! w.commit()?;
 //! let ring = Ak::new("app:ring.0*").unwrap();
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let _sub = db.at(t, ring.clone()).on_change(move |_, c| { let _ = tx.send(c.value); })?;
 //! assert_eq!(rx.recv().unwrap(), Ok(None));
-//! db.write_with(|w| w.at(t, ring.clone()).set(&Value::Bool(true)))?;
+//! let mut w = db.write();
+//! w.at(t, ring.clone()).set(&Value::Bool(true))?;
+//! w.commit()?;
 //! assert_eq!(rx.recv().unwrap(), Ok(Some(Value::Bool(true))));
-//! assert_eq!(db.get(t, ring)?, None);
+//! assert_eq!(db.at(t, ring).get()?, None);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -208,10 +240,10 @@
 //! assert_eq!(s, "some bytes");
 //! let title = Ak::new("app:title.0").unwrap();
 //! let ed = db.edit_text(t, title.clone(), Path::root())?;
-//! ed.insert(0, "Hello")?;
-//! ed.insert(5, " world")?;
+//! ed.replace(0..0, "Hello")?;
+//! ed.replace(5..5, " world")?;
 //! ed.commit()?; // one commit for the whole pause
-//! assert_eq!(db.get(t, title)?, Some(osis::Value::Str("Hello world".into())));
+//! assert_eq!(db.at(t, title).get()?, Some(osis::Value::Str("Hello world".into())));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -281,13 +313,13 @@ pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keep::{KeepAlive, REFRESH_DIVISOR};
 pub use keys::{Key, core};
 pub use large::ValueStream;
-pub use read::{AspectRef, Edge, GroupsOf, PathRef, Reader, Roster, Stamp};
+pub use read::{AspectRef, Edge, GroupsOf, PathRef, Roster, Stamp};
 pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupReach, GroupSync, InviteId, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, HostAddr, Share, ShareLink, ShareOpts, Status, SyncScope, SyncState, WaitForSync};
 pub use sources::{GroupSource, RemoteConfig, RemoteStatus};
 pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
 pub use history::{HISTORY_PAGE, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPage, HistoryPos};
-pub use watch::{Change, Changed, CommitInfo, Dispatcher, Source, Subscription, Watch};
+pub use watch::{Change, CommitInfo, Dispatcher, Source, Subscription};
 pub use write::{AspectWrite, Committed, PathWrite, Write};
 
 /// Keep at least this, as an absolute time: for good (`Retention.at_least.abs`).

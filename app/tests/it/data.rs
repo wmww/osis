@@ -15,9 +15,9 @@ fn app_group_and_views() {
     let d = data();
     let g = d.main_group().unwrap();
     assert_eq!(d.main_group().unwrap(), g);
-    let home = d.db.get(d.db.home(), GROUP).unwrap().unwrap();
+    let home = d.db.at(d.db.me(), GROUP).get().unwrap().unwrap();
     assert!(home.items.contains(&g) && home.subgroups.contains(&g));
-    assert_eq!(d.db.get(g, TAG).unwrap(), None);
+    assert_eq!(d.db.at(g, TAG).get().unwrap(), None);
     let views = d.views().unwrap();
     assert_eq!(views.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>(), vec![View::Calendar, View::People, View::Tags, View::Recent]);
     assert_eq!(d.favorites().unwrap(), views.iter().map(|(_, t)| *t).collect::<Vec<_>>());
@@ -51,7 +51,7 @@ fn create_open_favorite_delete() {
     d.delete(t).unwrap();
     assert_eq!(d.opened().unwrap(), None, "deleting the open thing goes home");
     assert!(!d.favorites().unwrap().contains(&t), "a deleted favorite is skipped");
-    assert_eq!(d.db.get(t, NAME).unwrap(), None);
+    assert_eq!(d.db.at(t, NAME).get().unwrap(), None);
 }
 
 /// Demo data once; kinds, tags, colours, contents and search over it.
@@ -125,7 +125,9 @@ fn kinds_tags_reach_undo() {
     d.remove_tag(n, g).unwrap();
     assert!(d.tags_of(n).unwrap().is_empty());
     assert!(d.things().unwrap().contains(&n), "still in the app group");
-    d.db.write_with(|w| w.at(n, NAME).set(&"changed".to_string())).unwrap();
+    let mut w = d.db.write();
+    w.at(n, NAME).set(&"changed".to_string()).unwrap();
+    w.commit().unwrap();
     assert!(d.undo(n).unwrap());
     assert_eq!(d.name(n).unwrap(), "");
     assert!(d.edited(n).unwrap().starts_with("Edited "));

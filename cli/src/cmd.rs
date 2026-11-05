@@ -503,6 +503,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let arr = |v: &[Tid]| J::Arr(v.iter().map(|g| J::tid(*g)).collect());
             ctx.emit(&lines, J::obj([("item_of", arr(&gs.item_of)), ("subgroup_of", arr(&gs.subgroup_of)), ("within", arr(&gs.within))]))
         }
+        Cmd::Members { g } => {
+            let g = ctx.tid(&g)?;
+            let (items, subs) = (db.items(g)?, db.subgroups(g)?);
+            let rel = [("item", &items), ("subgroup", &subs)];
+            let lines = rel.iter().flat_map(|(n, v)| v.iter().map(move |t| format!("{n}\t{}", t.to_uri()))).collect::<Vec<_>>();
+            let arr = |v: &[Tid]| J::Arr(v.iter().map(|t| J::tid(*t)).collect());
+            ctx.emit(&lines, J::obj([("items", arr(&items)), ("subgroups", arr(&subs))]))
+        }
         Cmd::Roster { t, watch: false, .. } => roster(ctx, &t),
         Cmd::Roster { t, watch: true, count } => {
             let t = ctx.tid(&t)?;
@@ -553,7 +561,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             wait(ctx, db.demote(t, m, to, d))
         }
         Cmd::Leave { t } => Ok(db.leave(ctx.tid(&t)?)?),
-        Cmd::KeepDefault { t, keep } => Ok(db.set_keep_default(ctx.tid(&t)?, keep)?),
         Cmd::Kept { drop: Some(a) } => Ok(db.drop_kept(ctx.tid(&a)?)?),
         Cmd::Kept { drop: None } => {
             for a in db.kept_copies()? {
@@ -583,10 +590,11 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
         Cmd::Link(LinkCmd::Ls { t }) => {
-            let ls = match t {
-                Some(t) => db.links(ctx.tid(&t)?)?,
-                None => db.all_links()?,
-            };
+            let mut ls = db.links()?;
+            if let Some(t) = t {
+                let t = ctx.tid(&t)?;
+                ls.retain(|l| l.target == t);
+            }
             let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {}", l.id.to_uri(), role_text(l.role), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
             ctx.emit(&lines, links_j(&ls))
         }
@@ -683,14 +691,13 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     };
     let hosts = own_hosts(&db)?;
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
-    let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri()), format!("home\t{}", db.home().to_uri())];
+    let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri())];
     lines.extend(hosts.iter().map(|s| format!("host\t{s}")));
     lines.push(format!("store\t{store}"));
     lines.push(format!("software\t{sw}"));
     let j = J::obj([
         ("me", J::tid(db.me())),
         ("node", J::tid(db.node())),
-        ("home", J::tid(db.home())),
         ("hosts", J::Arr(hosts.iter().map(|s| J::str(s.to_string())).collect())),
         ("store", J::str(store)),
         ("software", J::str(sw)),
@@ -720,11 +727,11 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
         return Ok(());
     }
     let (v, pty) = match path {
-        None | Some("") => (db.get(t, key.clone())?, key.ty().cloned()),
+        None | Some("") => (db.at(t, key.clone()).get()?, key.ty().cloned()),
         Some(p) => {
             let p = write::path(ctx, t, &key, p, false)?;
             let pty = key.schema().and_then(|s| text::type_at_path(s, key.ty()?, &p.0));
-            (db.at(t, key.clone()).path(p).get_value()?, pty)
+            (db.at(t, key.clone()).path(p).get::<osis::Value>()?, pty)
         }
     };
     let Some(v) = v else { return Err(exit(3, "")) };
@@ -747,7 +754,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
             (base, new)
         }
         None if ctx.tty => {
-            let cur = db.get(t, key.clone())?.ok_or_else(|| exit(3, "absent: nothing to edit (use set)"))?;
+            let cur = db.at(t, key.clone()).get()?.ok_or_else(|| exit(3, "absent: nothing to edit (use set)"))?;
             let shown = text::print(&cur, if ctx.g.raw { None } else { ty });
             let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
             let edited = edit_in(&edit_dir(), &editor, &format!("{shown}\n"))?;
@@ -843,10 +850,10 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     let mut fields = Vec::new();
     for ak in &aks {
         let key = ctx.key(ak.as_str())?;
-        let (s, j) = match db.get(t, key.clone()) {
+        let (s, j) = match db.at(t, key.clone()).get() {
             Ok(Some(v)) => show_value(ctx, &v, key_ty(&key)),
             // a value its schema does not read (a `Mismatch` diagnostic): shown untyped
-            Ok(None) => match db.get(t, ak.clone()) {
+            Ok(None) => match db.at(t, ak.clone()).get() {
                 Ok(Some(v)) => show_value(ctx, &v, None),
                 _ => ("(absent)".to_string(), J::Null),
             },

@@ -4,12 +4,12 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::port::method as m;
-use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
+use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{ChangeId, Diagnostic, Engine};
+use osis_schema::core_types::{GROUP, Group, PLACED};
 use osis_schema::{AspectKey, Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 /// An edge of a roster (spec/permissions.md §2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,8 +144,8 @@ pub(crate) fn lenient<T>(tid: Tid, ak: &Ak, r: std::result::Result<T, PathError>
     r.map_err(|e| report(mismatch(tid, ak, &e))).ok()
 }
 
-/// A consistent view for several reads (`Osis::read`); also what every single read uses.
-pub struct Reader<'a> {
+/// One locked view of the engine: what every single read uses.
+pub(crate) struct Reader<'a> {
     pub(crate) e: &'a mut Engine,
     pub(crate) limit: usize,
     /// Reads as this actor (`Osis::act_as`): a thing it may not read answers exactly as a thing
@@ -248,11 +248,6 @@ impl Reader<'_> {
             return Ok(None);
         }
         self.materialize(&tid, ak, v)
-    }
-
-    /// `v` if it decodes through `key`, else `None` with a `Mismatch` diagnostic.
-    pub(crate) fn checked<K: AspectKey>(&mut self, tid: Tid, ak: &Ak, key: &K, v: Result<Option<Value>>) -> Result<Option<Value>> {
-        Ok(v?.filter(|x| lenient(tid, ak, key.decode(x), |d| self.e.report(d)).is_some()))
     }
 
     /// The value at `path` inside an aspect (typed projection through the key's schema when it
@@ -369,35 +364,13 @@ impl Reader<'_> {
 }
 
 impl Osis {
-    /// Runs `f` with a consistent view across several reads. `Unsupported` on a handle attached
-    /// to a node (`Osis::attach`): the port carries no read transaction.
-    ///
-    /// `Unsupported` too while this node routes a group elsewhere (`group_source`): the closure
-    /// reads this engine alone, where a routed group's things are stale, and a transaction cannot
-    /// span two sources.
-    pub fn read<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> Result<R> {
-        self.local_only("read")?;
-        let (limit, actor) = (self.inner.limit, self.acting);
-        self.locked(|l| {
-            if !l.routes.is_empty() {
-                return Err(Error::Unsupported("read on a handle routing a group to another node".into()));
-            }
-            Ok(f(&mut Reader { e: l.engine(), limit, actor }))
-        })
-    }
-
-    /// `read` on this process's engine (callers route first).
+    /// Runs `f` on this process's engine (callers route first).
     pub(crate) fn read_local<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
         let (limit, actor) = (self.inner.limit, self.acting);
         self.engine(|e| f(&mut Reader { e, limit, actor }))
     }
 
-    /// A typed read: `None` when absent or the thing is unknown.
-    pub fn get<K: AspectKey>(&self, tid: Tid, key: K) -> Result<Option<K::T>> {
-        self.at(tid, key).get()
-    }
-
-    /// An aspect, for reads at paths, watches and callbacks.
+    /// An aspect, for reads (`None` when absent or the thing is unknown), paths and callbacks.
     pub fn at<K: AspectKey>(&self, tid: Tid, key: K) -> AspectRef<'_, K> {
         AspectRef { db: self, tid, key }
     }
@@ -419,6 +392,30 @@ impl Osis {
             return crate::port::codec::groups(r.call(m::GROUPS_OF, vec![Value::Tid(tid)])?);
         }
         Ok(self.read_local(|r| r.groups_of(tid)))
+    }
+
+    /// The things `group` contains, in tid order (empty when it is no group). Being in a group
+    /// grants nothing: who holds a role on it is `roster`.
+    pub fn items(&self, group: Tid) -> Result<Vec<Tid>> {
+        Ok(self.members(group)?.items.into_iter().collect())
+    }
+
+    /// The subgroups of `group`, in tid order: their items count as its members too.
+    pub fn subgroups(&self, group: Tid) -> Result<Vec<Tid>> {
+        Ok(self.members(group)?.subgroups.into_iter().collect())
+    }
+
+    /// `group.0` and the ephemeral placements (`placed.0~`), as `groups_of` sees them.
+    fn members(&self, g: Tid) -> Result<Group> {
+        let (durable, placed) = match self.route(g) {
+            crate::sources::Source::Remote(_) => (self.at(g, GROUP).get()?, self.at(g, PLACED).get()?),
+            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(g, &GROUP)?, r.get(g, &PLACED)?)))?,
+        };
+        let mut d = durable.unwrap_or_default();
+        let p = placed.unwrap_or_default();
+        d.items.extend(p.items);
+        d.subgroups.extend(p.subgroups);
+        Ok(d)
     }
 
     /// Who holds a role on `thing`.
@@ -467,7 +464,8 @@ impl Osis {
         crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::stamp).transpose()
     }
 
-    /// When the thing was created (`Reader::created`).
+    /// When the thing was created: the oldest valid commit carrying its creation (an ephemeral
+    /// thing's batch, with no commit id); `None` while it is unknown here.
     pub fn created(&self, tid: Tid) -> Result<Option<Stamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CREATED, tid);
@@ -475,7 +473,8 @@ impl Osis {
         Ok(self.read_local(|r| r.created(tid)))
     }
 
-    /// When the thing's content last changed (`Reader::changed`).
+    /// When the thing's content last changed (placement and sharing are no content change, a delete
+    /// is); its creation if never since. A change known here only from a snapshot is not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<Stamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CHANGED, tid);
@@ -644,15 +643,6 @@ impl<'d, K: AspectKey> AspectRef<'d, K> {
         self.db.read_local(|r| r.get(self.tid, &self.key))
     }
 
-    /// The whole value, untyped.
-    pub fn get_value(&self) -> Result<Option<Value>> {
-        let ak = ak_of(&self.key)?;
-        if let crate::sources::Source::Remote(r) = self.db.route(self.tid) {
-            return self.db.remote_get(&r, self.tid, &ak, &Path::root());
-        }
-        self.db.read_local(|r| r.value(self.tid, &ak))
-    }
-
     /// A position inside the value.
     pub fn path(&self, path: Path) -> PathRef<'_, 'd, K> {
         PathRef { a: self, path }
@@ -660,41 +650,13 @@ impl<'d, K: AspectKey> AspectRef<'d, K> {
 }
 
 impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
-    /// A watch taken atomically with the current value: no change after it is missed.
-    pub fn watch(&self) -> Result<Watch<K::T>>
-    where
-        K: Sync,
-    {
-        let ak = ak_of(&self.key)?;
-        if let crate::sources::Source::Remote(r) = self.db.route(self.tid) {
-            let key = self.key.clone();
-            let (st, sub) = self.db.remote_watch(&r, self.tid, ak, Box::new(move |v: &Value| key.decode(v).is_ok()))?;
-            let key = self.key.clone();
-            return Ok(Watch::new(st, Arc::new(move |v: &Value| key.decode(v).ok()), sub));
-        }
-        let tid = self.tid;
-        let mut state = None;
-        let key = self.key.clone();
-        let sub = self.db.subscribe(Filter::Aspect(tid, ak.clone()), false, |r| {
-            let v = r.value(tid, &ak);
-            let st = WatchState::new(r.checked(tid, &ak, &key, v));
-            state = Some(st.clone());
-            let key = key.clone();
-            Box::new(move |db, d| match d {
-                Delivery::Aspect { value, .. } => st.update(db.read_local(|r| r.checked(tid, &ak, &key, value))),
-                Delivery::Moved => st.update(Err(crate::sources::moved())),
-                _ => {}
-            })
-        });
-        let state = state.ok_or(Error::Closed)?;
-        // the held value decoded when stored: a mismatch was reported and stored as absent
-        Ok(Watch::new(state, Arc::new(move |v: &Value| key.decode(v).ok()), sub))
-    }
-
     /// Calls `f` once with the value at registration (`Source::Initial`, through the
     /// dispatcher like every later call), then on every change; `f` gets the database handle.
     /// Calls coalesce: one call may show several commits' effect and carries the newest one's
     /// source; an unchanged value is not repeated, an error always is.
+    ///
+    /// For async code, forward to a channel of any runtime and await that: the first value and
+    /// every later one arrive in order, with no gap between reading and subscribing.
     pub fn on_change(&self, mut f: impl FnMut(&Osis, Change<K::T>) + Send + 'static) -> Result<Subscription> {
         let ak = ak_of(&self.key)?;
         if let crate::sources::Source::Remote(r) = self.db.route(self.tid) {
@@ -736,7 +698,7 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
     }
 
     /// The untyped value at the path (typed projection when the key has a schema).
-    pub fn get_value(&self) -> Result<Option<Value>> {
+    fn value(&self) -> Result<Option<Value>> {
         if let crate::sources::Source::Remote(r) = self.a.db.route(self.a.tid) {
             return self.a.db.remote_get(&r, self.a.tid, &ak_of(&self.a.key)?, &self.path);
         }
@@ -746,7 +708,7 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
     /// The value at the path as `U`; one bad element of a large collection reads as absent
     /// alone (a `Mismatch` diagnostic).
     pub fn get<U: Codec>(&self) -> Result<Option<U>> {
-        let Some(v) = self.get_value()? else { return Ok(None) };
+        let Some(v) = self.value()? else { return Ok(None) };
         let db = self.a.db;
         let ak = ak_of(&self.a.key)?;
         Ok(lenient(self.a.tid, &ak, U::from_value(&v), |d| db.engine(|e| e.report(d))))

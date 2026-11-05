@@ -2,6 +2,8 @@
 //! client listener. Two devices P and N of one person sync through a host; P attaches to N's client
 //! listener as a thin client whose actor N minted.
 
+use crate::common::watched;
+use crate::common::TestWrites as _;
 use crate::common::{ak, block_on};
 use osis::internals::Internals as _;
 use osis::{ClientSecret, Config, Error, GroupSource, HostAddr, MemStore, Osis, RemoteConfig, Role, Runtime, StoreAt, SyncScope, SyncState, Tid, Transport, Value};
@@ -73,7 +75,7 @@ fn world_waiting(p_wait: Duration) -> World {
     let (_, reply) = n.pair_accept(joining.request()).unwrap();
     let p = joining.finish(&reply).unwrap();
     let (g, t) = n
-        .write_with(|w| {
+        .batch(|w| {
             let g = w.create(n.me())?;
             w.make_group(g)?;
             let t = w.create(g)?;
@@ -90,7 +92,7 @@ fn world_waiting(p_wait: Duration) -> World {
     let nc = n.client_listen(&urls).unwrap().remove(0);
     until("P has the group", || {
         let _ = p.sync_now();
-        p.get(t, title()).ok().flatten() == Some(Value::Str("first".into()))
+        p.at(t, title()).get().ok().flatten() == Some(Value::Str("first".into()))
     });
     World { net, host: Some(host), n, n_store, p, p_store, addr, nc, urls, secret, actor, g, t }
 }
@@ -121,7 +123,7 @@ impl World {
     }
 
     fn set_n(&self, v: &str) {
-        self.n.write_with(|w| w.at(self.t, title()).set(&s(v))).unwrap();
+        self.n.commit_set(self.t, title(), &s(v)).unwrap();
     }
 }
 
@@ -132,7 +134,7 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
     x.attach_p();
     // only at N, in the group the client may read, not synced to P yet (N is cut from the host)
     x.net.partition("n", "s");
-    let only_n = x.n.write_with(|w| {
+    let only_n = x.n.batch(|w| {
         let o = w.create(x.g)?;
         w.place(o, x.g)?;
         w.at(o, title()).set(&s("at n"))?;
@@ -140,25 +142,25 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
     }).unwrap();
     x.set_n("n's");
     // no route: P reads its own synced copy, not N's newer one
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("first")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("first")));
     // known here nowhere: the attachment answers
-    assert_eq!(x.p.get(only_n, title()).unwrap(), Some(s("at n")));
+    assert_eq!(x.p.at(only_n, title()).get().unwrap(), Some(s("at n")));
     assert!(!x.p.engine(|e| e.knows(&only_n)));
     // a write to it goes there, not here
-    x.p.write_with(|w| w.at(only_n, title()).set(&s("from p"))).unwrap();
-    assert_eq!(x.n.get(only_n, title()).unwrap(), Some(s("from p")));
+    x.p.commit_set(only_n, title(), &s("from p")).unwrap();
+    assert_eq!(x.n.at(only_n, title()).get().unwrap(), Some(s("from p")));
     assert!(!x.p.engine(|e| e.knows(&only_n)));
     // a batch over both sources is refused, nothing written
-    assert!(matches!(x.p.write_with(|w| { w.at(only_n, title()).set(&s("a"))?; w.at(x.t, title()).set(&s("b")) }), Err(Error::Invalid(_))));
-    assert_eq!(x.n.get(only_n, title()).unwrap(), Some(s("from p")));
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("first")));
+    assert!(matches!(x.p.batch(|w| { w.at(only_n, title()).set(&s("a"))?; w.at(x.t, title()).set(&s("b")) }), Err(Error::Invalid(_))));
+    assert_eq!(x.n.at(only_n, title()).get().unwrap(), Some(s("from p")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("first")));
     // down: local goes on, remote is Network, never UnknownThing and never a local answer
     x.net.partition("p", "n");
     x.net.disconnect("p", "n");
     until("attachment down", || !x.p.status().unwrap().remotes[0].connected);
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("first")));
-    assert!(matches!(x.p.get(only_n, title()), Err(Error::Network(_))));
-    assert!(matches!(x.p.write_with(|w| w.at(only_n, title()).set(&s("z"))), Err(Error::Network(_))));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("first")));
+    assert!(matches!(x.p.at(only_n, title()).get(), Err(Error::Network(_))));
+    assert!(matches!(x.p.commit_set(only_n, title(), &s("z")), Err(Error::Network(_))));
     assert!(!x.p.engine(|e| e.knows(&only_n)));
     drop(x.host);
 }
@@ -181,41 +183,41 @@ fn moving_a_group_both_ways() {
     until("N synced", || x.n.status().unwrap().groups[&x.g].state == SyncState::Synced);
     // N's write reads at P at once, P's own copy unchanged
     x.set_n("n1");
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("n1")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("n1")));
     assert_eq!(x.p_local_copy(), Some(s("first")));
     // P's write lands at N, not in P's copy
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("p1"))).unwrap();
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("p1")));
+    x.p.commit_set(x.t, title(), &s("p1")).unwrap();
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("p1")));
     assert_eq!(x.p_local_copy(), Some(s("first")));
     // a new thing in the routed group is made there; this engine never hears of it
-    let made = x.p.write_with(|w| {
-        let o = w.create(x.g)?;
-        w.place(o, x.g)?;
-        w.at(o, title()).set(&s("made through p"))?;
-        Ok(o)
-    }).unwrap();
-    assert_eq!(x.n.get(made, title()).unwrap(), Some(s("made through p")));
+    let mut w = x.p.write();
+    let o = w.create(x.g).unwrap();
+    w.place(o, x.g).unwrap();
+    w.at(o, title()).set(&s("made through p")).unwrap();
+    let made = o;
+    w.commit().unwrap();
+    assert_eq!(x.n.at(made, title()).get().unwrap(), Some(s("made through p")));
     assert!(!x.p.engine(|e| e.knows(&made)));
-    assert_eq!(x.p.get(made, title()).unwrap(), Some(s("made through p")));
+    assert_eq!(x.p.at(made, title()).get().unwrap(), Some(s("made through p")));
     // merged status: the node's state for the routed group, the attachment up
     until("the node's state shows", || x.p.status().unwrap().groups[&x.g].state == SyncState::Synced);
     assert!(x.p.status().unwrap().remotes[0].connected);
-    // a transaction over this engine would read the stale copy: refused
-    assert!(matches!(x.p.read(|r| r.value(x.t, &ak("note:title.0"))), Err(Error::Unsupported(_))));
+    // a node it reaches as a thin client lists no links; its own still do
+    assert!(x.p.links().unwrap().is_empty());
     // home: nothing left to catch up with a host gone is a failure that keeps the route
     block_on(x.n.wait_synced(SyncScope::Group(x.g), W)).unwrap();
     block_on(x.p.group_source(x.g, GroupSource::Local)).unwrap();
     assert!(x.p.routes().is_empty());
     assert!(!(x.p.group_policy(x.g).unwrap().receipts_only));
     // what P wrote through N is here: no stale read after the move
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("p1")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("p1")));
     assert_eq!(x.p_local_copy(), Some(s("p1")));
     // and P's own writes sync again
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("p2"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("p2")).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(x.g), W)).unwrap();
     until("N got P's write", || {
         let _ = x.n.sync_now();
-        x.n.get(x.t, title()).unwrap() == Some(s("p2"))
+        x.n.at(x.t, title()).get().unwrap() == Some(s("p2"))
     });
     drop(x.host);
 }
@@ -233,13 +235,13 @@ fn a_node_unsyncing_a_group_a_process_thinks_is_local() {
         !x.p.engine(|e| e.labels_of(&x.g).iter().any(|l| !l.replaced))
     });
     x.set_n("n after unsync");
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("first")), "still P's, not a fallback");
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("p after unsync"))).unwrap();
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("first")), "still P's, not a fallback");
+    x.p.commit_set(x.t, title(), &s("p after unsync")).unwrap();
     assert_eq!(x.p_local_copy(), Some(s("p after unsync")));
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("n after unsync")));
-    assert_eq!(c.get(x.t, title()).unwrap(), Some(s("n after unsync")));
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("n after unsync")));
+    assert_eq!(c.at(x.t, title()).get().unwrap(), Some(s("n after unsync")));
     x.to_remote();
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("n after unsync")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("n after unsync")));
     drop(x.host);
 }
 
@@ -250,12 +252,12 @@ fn moves_with_pending_writes_refuse() {
     x.attach_p();
     x.net.partition("p", "s");
     x.net.disconnect("p", "s");
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("pending"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("pending")).unwrap();
     let r = block_on(x.p.group_source(x.g, GroupSource::Remote(x.nc.clone())));
     assert!(matches!(r, Err(Error::Network(_) | Error::Unsynced { .. })), "{r:?}");
     assert!(x.p.routes().is_empty());
     assert!(!x.p.group_policy(x.g).unwrap().receipts_only);
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("pending")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("pending")));
     // another world: away with nothing pending, then home with P cut from the host
     let x = world_waiting(Duration::from_millis(300));
     x.attach_p();
@@ -266,7 +268,7 @@ fn moves_with_pending_writes_refuse() {
     let r = block_on(x.p.group_source(x.g, GroupSource::Local));
     assert!(r.is_err(), "{r:?}");
     assert_eq!(x.p.routes().get(&x.g), Some(&x.nc.to_string()));
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("newer")), "the route stays until caught up");
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("newer")), "the route stays until caught up");
     assert_eq!(x.p_local_copy(), Some(s("first")));
     // another: home while only the node holds a write
     let x = world_waiting(Duration::from_millis(300));
@@ -274,11 +276,11 @@ fn moves_with_pending_writes_refuse() {
     x.to_remote();
     x.net.partition("n", "s");
     x.net.disconnect("n", "s");
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("only at n"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("only at n")).unwrap();
     let r = block_on(x.p.group_source(x.g, GroupSource::Local));
     assert!(matches!(r, Err(Error::Network(_))), "{r:?}");
     assert_eq!(x.p.routes().get(&x.g), Some(&x.nc.to_string()));
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("only at n")), "still at the node");
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("only at n")), "still at the node");
     drop(x.host);
 }
 
@@ -290,13 +292,13 @@ fn moves_with_pending_writes_finish_after_healing() {
     x.attach_p();
     x.net.partition("p", "s");
     x.net.disconnect("p", "s");
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("pending"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("pending")).unwrap();
     assert!(block_on(x.p.group_source(x.g, GroupSource::Remote(x.nc.clone()))).is_err());
     x.net.heal("p", "s");
     until("the pending write reaches N", || {
         let _ = x.p.sync_now();
         let _ = x.n.sync_now();
-        x.n.get(x.t, title()).unwrap() == Some(s("pending"))
+        x.n.at(x.t, title()).get().unwrap() == Some(s("pending"))
     });
     block_on(x.p.wait_synced(SyncScope::Group(x.g), W)).unwrap();
     x.to_remote();
@@ -309,11 +311,11 @@ fn moves_with_pending_writes_finish_after_healing() {
         let _ = x.p.sync_now();
         block_on(x.p.group_source(x.g, GroupSource::Local)).is_ok()
     });
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("newer")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("newer")));
     x.to_remote();
     x.net.partition("n", "s");
     x.net.disconnect("n", "s");
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("only at n"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("only at n")).unwrap();
     assert!(block_on(x.p.group_source(x.g, GroupSource::Local)).is_err());
     x.net.heal("n", "s");
     until("home with the write", || {
@@ -321,7 +323,7 @@ fn moves_with_pending_writes_finish_after_healing() {
         let _ = x.p.sync_now();
         block_on(x.p.group_source(x.g, GroupSource::Local)).is_ok()
     });
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("only at n")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("only at n")));
     drop(x.host);
 }
 
@@ -331,17 +333,16 @@ fn disconnected_remote_is_network_never_stale() {
     let x = world();
     x.attach_p();
     x.to_remote();
-    let watch = x.p.at(x.t, title()).watch().unwrap();
+    let watch = watched(&x.p, x.t, title()).unwrap();
     x.set_n("seen");
     until("watch", || watch.current().ok().flatten() == Some(s("seen")));
     x.net.partition("p", "n");
     x.net.disconnect("p", "n");
     until("down", || !x.p.status().unwrap().remotes[0].connected);
     assert!(x.p_local_copy().is_some());
-    assert!(matches!(x.p.get(x.t, title()), Err(Error::Network(_))));
-    assert!(matches!(x.p.at(x.t, title()).get_value(), Err(Error::Network(_))));
+    assert!(matches!(x.p.at(x.t, title()).get(), Err(Error::Network(_))));
     assert!(matches!(x.p.aspects(x.t), Err(Error::Network(_))));
-    assert!(matches!(x.p.at(x.t, title()).watch(), Err(Error::Network(_))));
+    assert!(matches!(watched(&x.p, x.t, title()), Err(Error::Network(_))));
     // every read of a thing there says so, none answers with a default
     assert!(matches!(x.p.knows(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.groups_of(x.t), Err(Error::Network(_))));
@@ -352,22 +353,22 @@ fn disconnected_remote_is_network_never_stale() {
     assert!(matches!(x.p.changed(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.reach(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.holder_path(x.t, x.p.me()), Err(Error::Network(_))));
-    assert!(matches!(x.p.links(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.links_of(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.watch_thing(x.t, |_, _| {}), Err(Error::Network(_))));
     assert!(matches!(x.p.watch_roster(x.t, |_, _| {}), Err(Error::Network(_))));
     let before = x.p_local_copy();
-    assert!(matches!(x.p.write_with(|w| w.at(x.t, title()).set(&s("lost?"))), Err(Error::Network(_))));
+    assert!(matches!(x.p.commit_set(x.t, title(), &s("lost?")), Err(Error::Network(_))));
     assert_eq!(x.p_local_copy(), before);
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("seen")));
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("seen")));
     until("the watch tells", || watch.current().is_err());
     assert!(matches!(watch.current(), Err(Error::Network(_))));
     // back: the watch closes the gap
     x.set_n("in the gap");
     x.net.heal("p", "n");
     until("watch after reconnect", || watch.current().ok().flatten() == Some(s("in the gap")));
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("in the gap")));
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("after"))).unwrap();
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("after")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("in the gap")));
+    x.p.commit_set(x.t, title(), &s("after")).unwrap();
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("after")));
     drop(x.host);
 }
 
@@ -376,7 +377,7 @@ fn disconnected_remote_is_network_never_stale() {
 fn a_move_ends_watches_of_the_group() {
     let x = world();
     x.attach_p();
-    let local = x.p.at(x.t, title()).watch().unwrap();
+    let local = watched(&x.p, x.t, title()).unwrap();
     let (tx, rx) = channel();
     let sub = x.p.at(x.t, title()).on_change(move |_, c| tx.send(c.value.is_err()).unwrap()).unwrap();
     assert!(!(rx.recv_timeout(W).unwrap()));
@@ -384,7 +385,7 @@ fn a_move_ends_watches_of_the_group() {
     until("local watch ended", || local.current().is_err());
     assert!(rx.recv_timeout(W).unwrap());
     drop(sub);
-    let remote = x.p.at(x.t, title()).watch().unwrap();
+    let remote = watched(&x.p, x.t, title()).unwrap();
     assert!(remote.current().is_ok());
     block_on(x.p.group_source(x.g, GroupSource::Local)).unwrap();
     until("remote watch ended", || remote.current().is_err());
@@ -403,12 +404,12 @@ fn a_nodes_client_does_not_read_what_it_moved_away() {
     let mut c = Config::memory();
     c.transport = Some(Transport::InProcess(x.net.endpoint("pc")));
     let client = Osis::attach_client(&pc, &sec, c).unwrap();
-    assert_eq!(client.get(x.t, title()).unwrap(), Some(s("first")));
-    let w = client.at(x.t, title()).watch().unwrap();
+    assert_eq!(client.at(x.t, title()).get().unwrap(), Some(s("first")));
+    let w = watched(&client, x.t, title()).unwrap();
     x.attach_p();
     x.to_remote();
     x.set_n("newer");
-    assert_eq!(client.get(x.t, title()).unwrap(), None);
+    assert_eq!(client.at(x.t, title()).get().unwrap(), None);
     assert!(!client.knows(x.t).unwrap());
     until("its subscription lapsed", || w.current().is_err());
     drop(x.host);
@@ -420,24 +421,26 @@ fn lost_reply_retried_applies_once() {
     let x = world();
     let c = x.thin("c1");
     let name = ak("note:n.0");
-    c.write_with(|w| w.at(x.t, title()).set(&s("before"))).unwrap();
+    c.commit_set(x.t, title(), &s("before")).unwrap();
     let before = commits_of(&x.n, x.t);
     x.n.port_panic_next(true);
-    c.write_with(|w| w.at(x.t, name.clone()).set(&s("once"))).unwrap();
-    assert_eq!(x.n.get(x.t, name).unwrap(), Some(s("once")));
+    c.commit_set(x.t, name.clone(), &s("once")).unwrap();
+    assert_eq!(x.n.at(x.t, name).get().unwrap(), Some(s("once")));
     assert_eq!(commits_of(&x.n, x.t), before + 1, "applied exactly once");
     // a set of an equal value commits nothing, so only a count tells a second run
     let count = count_key(&[&x.n]);
     x.n.port_panic_next(true);
-    c.write_with(|w| w.at(x.t, count.clone()).inc(&1i64)).unwrap();
-    assert_eq!(x.n.get(x.t, count).unwrap(), Some(Value::Int(1)), "applied exactly once");
+    let mut w = c.write();
+    w.at(x.t, count.clone()).path(osis::Path::root()).contribute(&1i64).unwrap();
+    w.commit().unwrap();
+    assert_eq!(x.n.at(x.t, count).get().unwrap(), Some(Value::Int(1)), "applied exactly once");
     drop(x.host);
 }
 
 /// A counter's key, its schema registered on `dbs`: an op whose second run shows.
 fn count_key(dbs: &[&Osis]) -> osis::Key {
     for db in dbs {
-        db.register_schema_source("count.osis", "version 1;\naspect count:n.0: counter<int>;\n").unwrap();
+        db.register_schema("count.osis", "version 1;\naspect count:n.0: counter<int>;\n").unwrap();
     }
     dbs[0].key("count:n.0").unwrap()
 }
@@ -455,17 +458,19 @@ fn unsent_write_retried_applies_once() {
     // session it evicted: unknown, though it never ran
     let before = commits_of(&x.n, x.t);
     x.n.port_panic_next(false);
-    let r = c.write_with(|w| w.at(x.t, title()).set(&s("first write")));
+    let r = c.commit_set(x.t, title(), &s("first write"));
     assert!(matches!(&r, Err(Error::OutcomeUnknown)), "{r:?}");
     assert_eq!(commits_of(&x.n, x.t), before);
     // a new write makes the session known (a resend right after that unknown could be of a write
     // that ran before the state went: unknown too, `every_resent_nonce_of_a_lost_session_is_unknown`)
-    c.write_with(|w| w.at(x.t, title()).set(&s("new"))).unwrap();
+    c.commit_set(x.t, title(), &s("new")).unwrap();
     // with the session known: sent again, it runs once (a count: a second run shows)
     let count = count_key(&[&x.n]);
     x.n.port_panic_next(false);
-    c.write_with(|w| w.at(x.t, count.clone()).inc(&1i64)).unwrap();
-    assert_eq!(x.n.get(x.t, count).unwrap(), Some(Value::Int(1)), "applied exactly once");
+    let mut w = c.write();
+    w.at(x.t, count.clone()).path(osis::Path::root()).contribute(&1i64).unwrap();
+    w.commit().unwrap();
+    assert_eq!(x.n.at(x.t, count).get().unwrap(), Some(Value::Int(1)), "applied exactly once");
     assert_eq!(commits_of(&x.n, x.t), before + 2);
     drop(x.host);
 }
@@ -475,13 +480,13 @@ fn unsent_write_retried_applies_once() {
 fn a_worker_panic_ends_one_session_and_the_port_lives() {
     let x = world();
     let (c1, c2) = (x.thin("c1"), x.thin("c2"));
-    let w2 = c2.at(x.t, title()).watch().unwrap();
+    let w2 = watched(&c2, x.t, title()).unwrap();
     x.n.port_panic_next(true);
     let t0 = Instant::now();
-    assert!(matches!(c1.get(x.t, title()), Err(Error::Network(_))));
+    assert!(matches!(c1.at(x.t, title()).get(), Err(Error::Network(_))));
     assert!(t0.elapsed() < Duration::from_secs(30), "no stall timeout");
-    until("c1 reconnected", || c1.get(x.t, title()).is_ok());
-    assert_eq!(c2.get(x.t, title()).unwrap(), Some(s("first")));
+    until("c1 reconnected", || c1.at(x.t, title()).get().is_ok());
+    assert_eq!(c2.at(x.t, title()).get().unwrap(), Some(s("first")));
     x.set_n("still live");
     until("c2's watch still live", || w2.current().ok().flatten() == Some(s("still live")));
     drop(x.host);
@@ -495,13 +500,13 @@ fn restart_keeps_the_attachment_working() {
     cc.transport = Some(Transport::InProcess(x.net.endpoint("c1")));
     cc.wait_timeout = W;
     let c = Osis::attach_client(&x.nc, &x.secret, cc).unwrap();
-    let w = c.at(x.t, title()).watch().unwrap();
+    let w = watched(&c, x.t, title()).unwrap();
     let (c2, t) = (c.clone(), x.t);
     x.net.partition("c1", "n");
     x.net.disconnect("c1", "n");
     until("down", || !c.status().unwrap().remotes[0].connected);
     // calls while down are definite: not sent
-    assert!(matches!(c2.write_with(|w| w.at(t, title()).set(&s("not sent"))), Err(Error::Network(_))));
+    assert!(matches!(c2.commit_set(t, title(), &s("not sent")), Err(Error::Network(_))));
     // the node restarts on its store and listens again
     let (net, store, addr, urls) = (x.net.clone(), x.n_store.clone(), x.addr.clone(), x.urls.clone());
     assert_eq!(std::mem::replace(&mut x.n, Osis::create(Config::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
@@ -509,10 +514,10 @@ fn restart_keeps_the_attachment_working() {
     assert_eq!(n2.client_listen(&urls).unwrap().remove(0), x.nc, "the client listener's key survives a restart");
     net.heal("c1", "n");
     until("client back up", || c.status().unwrap().remotes[0].connected);
-    n2.write_with(|w| w.at(t, title()).set(&s("after restart"))).unwrap();
+    n2.commit_set(t, title(), &s("after restart")).unwrap();
     until("the watch came back", || w.current().ok().flatten() == Some(s("after restart")));
-    c.write_with(|w| w.at(t, title()).set(&s("again"))).unwrap();
-    assert_eq!(n2.get(t, title()).unwrap(), Some(s("again")));
+    c.commit_set(t, title(), &s("again")).unwrap();
+    assert_eq!(n2.at(t, title()).get().unwrap(), Some(s("again")));
     drop(x.host.take());
 }
 
@@ -532,7 +537,7 @@ fn write_in_flight_across_a_restart_is_unknown() {
     let (c2, t) = (c.clone(), x.t);
     let th = std::thread::spawn(move || {
         tx.send(()).unwrap();
-        c2.write_with(|w| w.at(t, title()).set(&s("maybe")))
+        c2.commit_set(t, title(), &s("maybe"))
     });
     rx.recv().unwrap();
     until("the node ran it", || commits_of(&x.n, t) == before + 1);
@@ -565,7 +570,7 @@ fn resent_nonce_of_an_unknown_session_is_unknown() {
     let unknown = |o: &Outcome| matches!(o, Outcome::Err { .. });
     let o = raw.call_at(1, WRITE, batch(1 | resent, "marked"));
     assert!(unknown(&o), "{o:?}");
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("first")));
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("first")));
     // the session is known now: a later nonce is new, and marked it answers from memory
     let o = raw.call_at(2, WRITE, batch(2, "two"));
     assert!(matches!(o, Outcome::Ok { .. }), "{o:?}");
@@ -594,14 +599,13 @@ fn owner_reconnect_registers_schemas_again() {
     let n = open(true);
     let c = Osis::attach(&sock, Config::memory()).unwrap();
     let src = "version 1;\naspect re:title.0: string;\n";
-    c.register_schema_source("re.osis", src).unwrap();
+    c.register_schema("re.osis", src).unwrap();
     assert!(n.key("re:title.0").unwrap().schema().is_some());
-    let t = c.write_with(|w| {
-        let t = w.create(c.me())?;
-        w.at(t, title()).set(&s("x"))?;
-        Ok(t)
-    }).unwrap();
-    let watch = c.at(t, title()).watch().unwrap();
+    let mut w = c.write();
+    let t = w.create(c.me()).unwrap();
+    w.at(t, title()).set(&s("x")).unwrap();
+    w.commit().unwrap();
+    let watch = watched(&c, t, title()).unwrap();
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
     until("down", || !c.status().unwrap().remotes[0].connected);
     let n = open(false);
@@ -623,7 +627,7 @@ fn write_in_flight_gives_up_after_wait_timeout() {
     let before = commits_of(&x.n, x.t);
     x.n.port_panic_next(true);
     let (c2, t) = (c.clone(), x.t);
-    let th = std::thread::spawn(move || c2.write_with(|w| w.at(t, title()).set(&s("maybe"))));
+    let th = std::thread::spawn(move || c2.commit_set(t, title(), &s("maybe")));
     until("the node ran it", || commits_of(&x.n, t) == before + 1);
     x.net.partition("c1", "n");
     x.net.disconnect("c1", "n");
@@ -654,23 +658,23 @@ fn client_listener_key_is_its_own() {
     // rotate_reach: nothing changes for clients
     x.n.rotate_reach().unwrap();
     until("dialable key rotated", || own(x.n.sync_engine(|s| s.dialable_secret()).expose()) != own(dialable.expose()));
-    assert_eq!(c.get(x.t, title()).unwrap(), Some(s("first")));
+    assert_eq!(c.at(x.t, title()).get().unwrap(), Some(s("first")));
     assert_eq!(x.n.sync_engine(|s| s.client_listen_key()), Some(key));
     // rotate_client_key: the old client is out for good
     let new = x.n.rotate_client_key().unwrap().remove(0);
     assert_ne!(new.key(), key);
     assert_ne!(new.key(), own(x.n.sync_engine(|s| s.dialable_secret()).expose()));
     until("old-key client down", || !c.status().unwrap().remotes[0].connected);
-    assert!(matches!(c.get(x.t, title()), Err(Error::Network(_))));
+    assert!(matches!(c.at(x.t, title()).get(), Err(Error::Network(_))));
     std::thread::sleep(SHORT);
-    assert!(matches!(c.get(x.t, title()), Err(Error::Network(_))));
+    assert!(matches!(c.at(x.t, title()).get(), Err(Error::Network(_))));
     // same URL, new key: the old address cannot reach it, a new one can
     let mut cfg = Config::memory();
     cfg.transport = Some(Transport::InProcess(x.net.endpoint("c2")));
     cfg.wait_timeout = SHORT;
     assert!(matches!(Osis::attach_client(&x.nc, &x.secret, cfg.clone()), Err(Error::Network(_))));
     let c2 = Osis::attach_client(&new, &x.secret, cfg.clone()).unwrap();
-    assert_eq!(c2.get(x.t, title()).unwrap(), Some(s("first")));
+    assert_eq!(c2.at(x.t, title()).get().unwrap(), Some(s("first")));
     // no URL: stops, ends sessions, shreds
     assert!(x.n.client_listen(&[]).unwrap().is_empty());
     assert_eq!(x.n.sync_engine(|s| s.client_listen_key()), None);
@@ -734,7 +738,7 @@ fn config_remotes_and_the_persisted_route() {
     c.remotes = vec![RemoteConfig { addr: x.nc.clone(), secret: x.secret.clone() }];
     let thin = Osis::attach_remotes(c).unwrap();
     assert_eq!(thin.me(), x.actor);
-    assert_eq!(thin.get(x.t, title()).unwrap(), Some(s("first")));
+    assert_eq!(thin.at(x.t, title()).get().unwrap(), Some(s("first")));
     assert!(matches!(block_on(thin.group_source(x.g, GroupSource::Local)), Err(Error::Unsupported(_))));
     assert!(matches!(thin.attach_node(&x.nc, &x.secret, &Config::memory()), Err(Error::Unsupported(_))));
     // a second client actor at the same node: two actors in one store-less process
@@ -749,14 +753,14 @@ fn config_remotes_and_the_persisted_route() {
     x.attach_p();
     x.to_remote();
     x.set_n("n1");
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("n1")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("n1")));
     let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
     assert_eq!(std::mem::replace(&mut x.p, Osis::create(Config::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
     // reopened without its attachment: Network, never the copy here
     let p2 = Osis::open(cfg_on(&net, "p", &pstore, vec![addr.clone()])).unwrap();
     assert_eq!(p2.routes().get(&x.g), Some(&x.nc.to_string()));
-    assert!(matches!(p2.get(x.t, title()), Err(Error::Network(_))));
-    assert!(matches!(p2.write_with(|w| w.at(x.t, title()).set(&s("z"))), Err(Error::Network(_))));
+    assert!(matches!(p2.at(x.t, title()).get(), Err(Error::Network(_))));
+    assert!(matches!(p2.commit_set(x.t, title(), &s("z")), Err(Error::Network(_))));
     let st = p2.status().unwrap();
     assert_eq!(st.remotes, vec![osis::RemoteStatus { address: x.nc.to_string(), connected: false }]);
     assert_eq!(p2.close().unwrap(), osis::Close::Closed);
@@ -764,13 +768,13 @@ fn config_remotes_and_the_persisted_route() {
     let mut c = cfg_on(&net, "p", &pstore, vec![addr.clone()]);
     c.remotes = vec![RemoteConfig { addr: x.nc.clone(), secret: x.secret.clone() }];
     let p3 = Osis::open(c).unwrap();
-    until("the attachment came up", || p3.get(x.t, title()).ok().flatten() == Some(s("n1")));
+    until("the attachment came up", || p3.at(x.t, title()).get().ok().flatten() == Some(s("n1")));
     assert_eq!(p3.close().unwrap(), osis::Close::Closed);
     // a route naming a node gone for good: home works with no attachment at all
     let p4 = Osis::open(cfg_on(&net, "p", &pstore, vec![addr])).unwrap();
     block_on(p4.group_source(x.g, GroupSource::Local)).unwrap();
     assert!(p4.routes().is_empty());
-    assert_eq!(p4.get(x.t, title()).unwrap(), Some(s("n1")));
+    assert_eq!(p4.at(x.t, title()).get().unwrap(), Some(s("n1")));
     drop(x.host.take());
 }
 
@@ -785,7 +789,7 @@ fn a_write_overtaken_by_a_move_fails() {
         let _ = p.sync_policy(g, osis::GroupPolicy { receipts_only: true, ..Default::default() });
     }));
     let before = x.p_local_copy();
-    let r = x.p.write_with(|w| w.at(x.t, title()).set(&s("stranded?")));
+    let r = x.p.commit_set(x.t, title(), &s("stranded?"));
     x.p.after_route(Box::new(|| {}));
     assert!(matches!(&r, Err(Error::Network(m)) if m.contains("moved")), "{r:?}");
     assert_eq!(x.p_local_copy(), before);
@@ -805,7 +809,7 @@ fn thin_client_over_quic() {
         if create { Osis::create(c).unwrap().0 } else { Osis::open(c).unwrap() }
     };
     let n = open(true);
-    let (g, t) = n.write_with(|w| {
+    let (g, t) = n.batch(|w| {
         let g = w.create(n.me())?;
         w.make_group(g)?;
         let t = w.create(g)?;
@@ -822,10 +826,10 @@ fn thin_client_over_quic() {
     cfg.wait_timeout = W;
     let c = Osis::attach_client(&addr, &secret, cfg.clone()).unwrap();
     assert_eq!(c.me(), actor);
-    assert_eq!(c.get(t, title()).unwrap(), Some(s("first")));
-    let watch = c.at(t, title()).watch().unwrap();
-    c.write_with(|w| w.at(t, title()).set(&s("from client"))).unwrap();
-    assert_eq!(n.get(t, title()).unwrap(), Some(s("from client")));
+    assert_eq!(c.at(t, title()).get().unwrap(), Some(s("first")));
+    let watch = watched(&c, t, title()).unwrap();
+    c.commit_set(t, title(), &s("from client")).unwrap();
+    assert_eq!(n.at(t, title()).get().unwrap(), Some(s("from client")));
     until("watch", || watch.current().ok().flatten() == Some(s("from client")));
     // an impostor key at the same URL: the handshake fails, no secret sent
     let mut short = cfg.clone();
@@ -835,21 +839,21 @@ fn thin_client_over_quic() {
     // restart on the same store and port: the same address, the session comes back
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
     until("down", || !c.status().unwrap().remotes[0].connected);
-    assert!(matches!(c.get(t, title()), Err(Error::Network(_))));
+    assert!(matches!(c.at(t, title()).get(), Err(Error::Network(_))));
     assert!(matches!(watch.current(), Err(Error::Network(_))));
     let n = open(false);
     assert_eq!(n.client_listen(&[addr.url().to_string()]).unwrap().remove(0), addr);
     until("reconnected", || c.status().unwrap().remotes[0].connected);
     until("the watch came back", || watch.current().ok().flatten() == Some(s("from client")));
-    c.write_with(|w| w.at(t, title()).set(&s("again"))).unwrap();
-    assert_eq!(n.get(t, title()).unwrap(), Some(s("again")));
+    c.commit_set(t, title(), &s("again")).unwrap();
+    assert_eq!(n.at(t, title()).get().unwrap(), Some(s("again")));
     // a rotation: the old address never answers again
     let new = n.rotate_client_key().unwrap().remove(0);
     assert_ne!(new.key(), addr.key());
     assert_eq!(new.url(), addr.url());
     until("old-key client down", || !c.status().unwrap().remotes[0].connected);
     assert!(matches!(Osis::attach_client(&addr, &secret, short.clone()), Err(Error::Network(_))));
-    assert_eq!(Osis::attach_client(&new, &secret, cfg).unwrap().get(t, title()).unwrap(), Some(s("again")));
+    assert_eq!(Osis::attach_client(&new, &secret, cfg).unwrap().at(t, title()).get().unwrap(), Some(s("again")));
 }
 
 // spec/sync.md §10, issues/cli-proxy.md Transport slots: a flood of connections past the client listener's pending slots, each from a source of its own and never authenticating, neither drops an authenticated client (no error ever reached its watch) nor keeps a new one out
@@ -867,11 +871,11 @@ fn a_flood_keeps_clients_in() {
         flood.push(crate::port::Raw::over(&x.net.endpoint(&format!("f{i}")), addr.clone()));
     }
     // none of it touched the client
-    assert_eq!(c.get(x.t, title()).unwrap(), Some(s("first")));
+    assert_eq!(c.at(x.t, title()).get().unwrap(), Some(s("first")));
     assert!(rx.try_recv().is_err(), "the client's connection was dropped");
     assert!(c.status().unwrap().remotes[0].connected);
     // a new client gets in during it
-    assert_eq!(x.thin("c2").get(x.t, title()).unwrap(), Some(s("first")));
+    assert_eq!(x.thin("c2").at(x.t, title()).get().unwrap(), Some(s("first")));
     drop(flood);
     drop(x.host);
 }
@@ -884,30 +888,30 @@ fn several_attachments_never_skip_a_down_one() {
     let m = Osis::create(cfg_on(&x.net, "m", &MemStore::new(), vec![])).unwrap().0;
     let mc = m.client_listen(&["mem://m-clients".to_string()]).unwrap().remove(0);
     let (ma, msec) = m.add_client(None).unwrap();
-    let g2 = m.write_with(|w| {
-        let g = w.create(m.me())?;
-        w.make_group(g)?;
-        Ok(g)
-    }).unwrap();
+    let mut w = m.write();
+    let g = w.create(m.me()).unwrap();
+    w.make_group(g).unwrap();
+    let g2 = g;
+    w.commit().unwrap();
     m.grant(g2, ma, Role::Write, Default::default()).unwrap();
-    let there = m.write_with(|w| {
-        let o = w.create(g2)?;
-        w.place(o, g2)?;
-        w.at(o, title()).set(&s("at m"))?;
-        Ok(o)
-    }).unwrap();
+    let mut w = m.write();
+    let o = w.create(g2).unwrap();
+    w.place(o, g2).unwrap();
+    w.at(o, title()).set(&s("at m")).unwrap();
+    let there = o;
+    w.commit().unwrap();
     x.attach_p();
     x.p.attach_node(&mc, &msec, &cfg_on(&x.net, "p", &MemStore::new(), vec![])).unwrap();
-    assert_eq!(x.p.get(there, title()).unwrap(), Some(s("at m")));
-    x.p.write_with(|w| w.at(there, title()).set(&s("from p"))).unwrap();
-    assert_eq!(m.get(there, title()).unwrap(), Some(s("from p")));
+    assert_eq!(x.p.at(there, title()).get().unwrap(), Some(s("at m")));
+    x.p.commit_set(there, title(), &s("from p")).unwrap();
+    assert_eq!(m.at(there, title()).get().unwrap(), Some(s("from p")));
     // the first attachment goes down: nothing is known about `there` at it any more
     x.net.partition("p", "n");
     x.net.disconnect("p", "n");
     until("down", || !x.p.status().unwrap().remotes[0].connected);
-    assert!(matches!(x.p.get(there, title()), Err(Error::Network(_))));
-    assert!(matches!(x.p.write_with(|w| w.at(there, title()).set(&s("wrong place?"))), Err(Error::Network(_))));
-    assert_eq!(m.get(there, title()).unwrap(), Some(s("from p")));
+    assert!(matches!(x.p.at(there, title()).get(), Err(Error::Network(_))));
+    assert!(matches!(x.p.commit_set(there, title(), &s("wrong place?")), Err(Error::Network(_))));
+    assert_eq!(m.at(there, title()).get().unwrap(), Some(s("from p")));
     drop(x.host);
 }
 
@@ -934,7 +938,7 @@ fn differential(seed: u64) -> usize {
     let mut r = Rng(seed);
     // three groups and a thing per placement mix, every thing known on both sides, then the host goes
     let mk = |n: usize| -> Vec<Tid> {
-        x.n.write_with(|w| {
+        x.n.batch(|w| {
             let mut v = Vec::new();
             for _ in 0..n {
                 let g = w.create(x.n.me())?;
@@ -953,20 +957,19 @@ fn differential(seed: u64) -> usize {
     let mut things: Vec<(Tid, Vec<Tid>)> = Vec::new();
     for mask in 1u8..8 {
         let of: Vec<Tid> = gs.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, g)| *g).collect();
-        let t = x.n.write_with(|w| {
-            let t = w.create(of[0])?;
-            for g in &of {
-                w.place(t, *g)?;
-            }
-            w.at(t, title()).set(&s("start"))?;
-            Ok(t)
-        }).unwrap();
+        let mut w = x.n.write();
+        let t = w.create(of[0]).unwrap();
+        for g in &of {
+            w.place(t, *g).unwrap();
+        }
+        w.at(t, title()).set(&s("start")).unwrap();
+        w.commit().unwrap();
         things.push((t, of));
     }
     block_on(x.n.wait_synced(SyncScope::All, W)).unwrap();
     until("P has them", || {
         let _ = x.p.sync_now();
-        things.iter().all(|(t, _)| x.p.get(*t, title()).ok().flatten() == Some(s("start")))
+        things.iter().all(|(t, _)| x.p.at(*t, title()).get().ok().flatten() == Some(s("start")))
     });
     block_on(x.p.wait_synced(SyncScope::All, W)).unwrap();
     // from here the two copies diverge: nothing moves between them but what the calls do
@@ -1013,7 +1016,7 @@ fn differential(seed: u64) -> usize {
             }
             4..=6 => {
                 let v = format!("v{step}");
-                let w = x.p.write_with(|w| w.at(*t, title()).set(&s(&v)));
+                let w = x.p.commit_set(*t, title(), &s(&v));
                 match (is_remote, attached) {
                     _ if split => {
                         assert!(matches!(w, Err(Error::Invalid(_))), "step {step}: {w:?}");
@@ -1031,7 +1034,7 @@ fn differential(seed: u64) -> usize {
                 }
             }
             _ => {
-                let g = x.p.get(*t, title());
+                let g = x.p.at(*t, title()).get();
                 match (is_remote, attached) {
                     (false, _) => assert_eq!(g.unwrap(), Some(s(&local[which])), "step {step} seed {seed}: {which}"),
                     (true, true) => assert_eq!(g.unwrap(), Some(s(&remote[which])), "step {step} seed {seed}: {which}"),
@@ -1042,7 +1045,7 @@ fn differential(seed: u64) -> usize {
         // each side holds only what the model says went there
         if step % 16 == 0 {
             for (i, (t, _)) in things.iter().enumerate() {
-                assert_eq!(x.n.get(*t, title()).unwrap(), Some(s(&remote[i])), "step {step}");
+                assert_eq!(x.n.at(*t, title()).get().unwrap(), Some(s(&remote[i])), "step {step}");
                 assert_eq!(x.p.engine(|e| e.get(t, &ak("note:title.0")).unwrap()), Some(s(&local[i])), "step {step}");
             }
         }
@@ -1128,8 +1131,8 @@ fn a_move_tells_a_client_nothing_of_what_it_never_read() {
     let mut c = Config::memory();
     c.transport = Some(Transport::InProcess(x.net.endpoint("pc")));
     let client = Osis::attach_client(&pc, &sec, c).unwrap();
-    assert_eq!(client.get(x.t, title()).unwrap(), None);
-    let w = client.at(x.t, title()).watch().unwrap();
+    assert_eq!(client.at(x.t, title()).get().unwrap(), None);
+    let w = watched(&client, x.t, title()).unwrap();
     x.attach_p();
     x.to_remote();
     client.settle();
@@ -1156,7 +1159,7 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     assert!(block_on(x.p.group_source(x.g, GroupSource::Local)).is_err());
     assert!(!x.p.group_policy(x.g).unwrap().receipts_only, "syncing again, behind");
     assert_eq!(x.p.routes().get(&x.g), Some(&x.nc.to_string()));
-    assert_eq!(client.get(x.t, title()).unwrap(), None, "a stale value, as if current");
+    assert_eq!(client.at(x.t, title()).get().unwrap(), None, "a stale value, as if current");
     drop(x.host);
 }
 
@@ -1196,18 +1199,18 @@ fn a_silent_remote_holds_no_client_of_this_node() {
     x.p.listen_unix(&sock).unwrap();
     let o1 = Osis::attach(&sock, Config::memory()).unwrap();
     let o2 = Osis::attach(&sock, Config::memory()).unwrap();
-    let mine = x.p.write_with(|w| {
-        let t = w.create(x.p.me())?;
-        w.place(t, x.p.home())?;
-        w.at(t, title()).set(&s("mine"))?;
-        Ok(t)
-    }).unwrap();
+    let mut w = x.p.write();
+    let t = w.create(x.p.me()).unwrap();
+    w.place(t, x.p.me()).unwrap();
+    w.at(t, title()).set(&s("mine")).unwrap();
+    let mine = t;
+    w.commit().unwrap();
     // silent: no close, nothing answers
     x.net.partition("p", "n");
     let (tx, rx) = channel();
     let t = x.t;
     std::thread::spawn(move || {
-        let r = o1.get(t, title());
+        let r = o1.at(t, title()).get();
         tx.send(r).unwrap();
     });
     let r = rx.recv_timeout(W).expect("the worker waits on the remote");
@@ -1215,7 +1218,7 @@ fn a_silent_remote_holds_no_client_of_this_node() {
     assert!(matches!(o2.at(t, title()).history(osis::HistoryFrom::Newest, 1), Err(Error::Unsupported(_))), "a history too: this node's copy is stale");
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        tx.send((o2.get(mine, title()), o2.status().map(|s| s.remotes.len()))).unwrap();
+        tx.send((o2.at(mine, title()).get(), o2.status().map(|s| s.remotes.len()))).unwrap();
     });
     let (v, _) = rx.recv_timeout(W).expect("another client is held");
     assert_eq!(v.unwrap(), Some(s("mine")));
@@ -1252,13 +1255,13 @@ fn tracked(t: Tid) -> Tracked {
 fn moves_differential(seed: u64) -> (usize, usize) {
     let x = world_waiting(Duration::from_millis(600));
     // a second synced group H: `both` is carried by it too, `placed` is only placed there later
-    let h = x.n.write_with(|w| {
+    let h = x.n.batch(|w| {
         let h = w.create(x.n.me())?;
         w.make_group(h)?;
         Ok(h)
     }).unwrap();
     x.n.sync(h, &[]).unwrap();
-    let thing = || x.n.write_with(|w| {
+    let thing = || x.n.batch(|w| {
         let t = w.create(x.g)?;
         w.place(t, x.g)?;
         w.at(t, title()).set(&s("first"))?;
@@ -1269,7 +1272,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
     block_on(x.n.wait_synced(SyncScope::All, W)).unwrap();
     until("P has them", || {
         let _ = x.p.sync_now();
-        x.p.get(both, title()).ok().flatten() == Some(s("first")) && x.p.get(placed, title()).ok().flatten() == Some(s("first")) && x.p.engine(|e| e.groups_of(&both).contains(&h))
+        x.p.at(both, title()).get().ok().flatten() == Some(s("first")) && x.p.at(placed, title()).get().ok().flatten() == Some(s("first")) && x.p.engine(|e| e.groups_of(&both).contains(&h))
     });
     x.attach_p();
     let mut r = Rng(seed);
@@ -1310,8 +1313,8 @@ fn moves_differential(seed: u64) -> (usize, usize) {
             3 if remote && !cut => x.n.port_panic_next(r.next(2) == 0),
             4..=6 => {
                 let v = format!("v{step}");
-                let write = x.p.write_with(|w| {
-                    w.at(m.t, count.clone()).inc(&1i64)?;
+                let write = x.p.batch(|w| {
+                    w.at(m.t, count.clone()).path(osis::Path::root()).contribute(&1i64)?;
                     w.at(m.t, title()).set(&s(&v))
                 });
                 match write {
@@ -1330,22 +1333,24 @@ fn moves_differential(seed: u64) -> (usize, usize) {
             }
             7 if !remote => {
                 let v = format!("b{step}");
-                x.p.write_with(|w| w.at(both, title()).set(&s(&v))).unwrap();
+                x.p.commit_set(both, title(), &s(&v)).unwrap();
                 both_acked = v;
             }
-            8 if !remote => assert_eq!(x.p.get(both, title()).unwrap(), Some(s(&both_acked)), "step {step} seed {seed}"),
+            8 if !remote => assert_eq!(x.p.at(both, title()).get().unwrap(), Some(s(&both_acked)), "step {step} seed {seed}"),
             // no edge: H does not carry it, so nothing is split, and a read stays where it was
             9 if remote && !is_placed => {
-                x.p.write_with(|w| w.place(placed, h)).unwrap();
+                let mut w = x.p.write();
+                w.place(placed, h).unwrap();
+                w.commit().unwrap();
                 is_placed = true;
             }
-            _ => match x.p.get(m.t, title()) {
+            _ => match x.p.at(m.t, title()).get() {
                 Ok(Some(Value::Str(v))) => {
                     if remote {
                         // the node may not have pulled what this device uploaded before moving: wait
                         until("the node's copy caught up", || {
                             let _ = x.n.sync_now();
-                            let now = x.p.get(m.t, title()).unwrap();
+                            let now = x.p.at(m.t, title()).get().unwrap();
                             now == Some(s(&m.acked)) || m.maybe.iter().any(|y| now == Some(s(y)))
                         });
                     } else {
@@ -1365,19 +1370,19 @@ fn moves_differential(seed: u64) -> (usize, usize) {
         // second-group things read at the node, never this engine's copy
         if remote {
             let v = format!("refused{step}");
-            let write = x.p.write_with(|w| w.at(both, title()).set(&s(&v)));
+            let write = x.p.commit_set(both, title(), &s(&v));
             assert!(matches!(write, Err(Error::Invalid(_))), "step {step} seed {seed}: a write through the route misses H: {write:?}");
             refused += 1;
             assert!(x.p.status().unwrap().split.contains(&both), "step {step}");
             assert!(!x.p.status().unwrap().split.contains(&placed), "step {step}: H does not carry it");
-            let read = x.p.get(both, title());
+            let read = x.p.at(both, title()).get();
             if cut {
                 assert!(matches!(read, Err(Error::Network(_))), "step {step} seed {seed}: this engine's copy answered: {read:?}");
             } else {
                 let m = &things[1];
                 until("the node's copies caught up", || {
                     let _ = x.n.sync_now();
-                    let at = |t| x.p.get(t, title()).ok().flatten();
+                    let at = |t| x.p.at(t, title()).get().ok().flatten();
                     at(both) == Some(s(&both_acked)) && (at(placed) == Some(s(&m.acked)) || m.maybe.iter().any(|y| at(placed) == Some(s(y))))
                 });
             }
@@ -1388,7 +1393,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
     }
     // exactly once: the count adds every write that applied, at either source
     for m in &things {
-        let applied = || match x.n.get(m.t, count.clone()).unwrap() {
+        let applied = || match x.n.at(m.t, count.clone()).get().unwrap() {
             Some(Value::Int(n)) => n as usize,
             _ => 0,
         };
@@ -1403,7 +1408,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
     until("every acknowledged write on `both` reached N", || {
         let _ = x.p.sync_now();
         let _ = x.n.sync_now();
-        x.n.get(both, title()).unwrap() == Some(s(&both_acked))
+        x.n.at(both, title()).get().unwrap() == Some(s(&both_acked))
     });
     drop(x.host);
     (refused, is_placed as usize)
@@ -1411,11 +1416,10 @@ fn moves_differential(seed: u64) -> (usize, usize) {
 
 /// A group of the person, synced on P.
 fn second_group(x: &World) -> Tid {
-    let h = x.p.write_with(|w| {
-        let h = w.create(x.p.me())?;
-        w.make_group(h)?;
-        Ok(h)
-    }).unwrap();
+    let mut w = x.p.write();
+    let h = w.create(x.p.me()).unwrap();
+    w.make_group(h).unwrap();
+    w.commit().unwrap();
     x.p.sync(h, &[]).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
     h
@@ -1434,7 +1438,7 @@ fn third_node(x: &World) -> Osis {
         for i in w_db.invite_requests().unwrap() {
             let _ = w_db.accept_invite(i);
         }
-        w_db.get(x.t, title()).ok().flatten() == Some(s("first"))
+        w_db.at(x.t, title()).get().ok().flatten() == Some(s("first"))
     });
     w_db
 }
@@ -1451,30 +1455,30 @@ fn a_split_thing_reads_at_the_route_and_refuses_writes() {
     x.to_remote();
     assert_eq!(x.p.status().unwrap().split.iter().copied().collect::<Vec<_>>(), vec![x.t]);
     // what only G carries: W syncs G alone
-    w_db.write_with(|w| w.at(x.t, title()).set(&s("from w"))).unwrap();
+    w_db.batch(|w| w.at(x.t, title()).set(&s("from w"))).unwrap();
     block_on(w_db.wait_synced(SyncScope::All, W)).unwrap();
     until("N has W's write", || {
         let _ = x.n.sync_now();
-        x.n.get(x.t, title()).unwrap() == Some(s("from w"))
+        x.n.at(x.t, title()).get().unwrap() == Some(s("from w"))
     });
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("from w")), "the route answers");
-    let r = x.p.write_with(|w| w.at(x.t, title()).set(&s("from p")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("from w")), "the route answers");
+    let r = x.p.commit_set(x.t, title(), &s("from p"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     assert!(matches!(x.p.grant(x.t, x.actor, Role::Read, Default::default()), Err(Error::Invalid(_))));
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("from w")), "nothing written");
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("from w")), "nothing written");
     // other things of G are not split
-    x.p.write_with(|w| w.at(x.g, title()).set(&s("on g"))).unwrap();
-    assert_eq!(x.n.get(x.g, title()).unwrap(), Some(s("on g")));
+    x.p.commit_set(x.g, title(), &s("on g")).unwrap();
+    assert_eq!(x.n.at(x.g, title()).get().unwrap(), Some(s("on g")));
     // home: no split left, and the write reaches W through G
     block_on(x.n.wait_synced(SyncScope::Group(x.g), W)).unwrap();
     block_on(x.p.group_source(x.g, GroupSource::Local)).unwrap();
     assert!(x.p.status().unwrap().split.is_empty());
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("from p"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("from p")).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(x.t), W)).unwrap();
     until("W and N have it", || {
         let _ = w_db.sync_now();
         let _ = x.n.sync_now();
-        w_db.get(x.t, title()).unwrap() == Some(s("from p")) && x.n.get(x.t, title()).unwrap() == Some(s("from p"))
+        w_db.at(x.t, title()).get().unwrap() == Some(s("from p")) && x.n.at(x.t, title()).get().unwrap() == Some(s("from p"))
     });
     drop(x.host);
 }
@@ -1490,7 +1494,7 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
     });
     x.attach_p();
     x.to_remote();
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("acked"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("acked")).unwrap();
     assert!(x.p.status().unwrap().split.is_empty());
     x.n.share_into(x.t, h, Role::Write, Default::default()).unwrap();
     block_on(x.n.wait_synced(SyncScope::Group(h), W)).unwrap();
@@ -1498,8 +1502,8 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
         let _ = x.p.sync_now();
         x.p.status().unwrap().split.contains(&x.t)
     });
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("acked")));
-    let r = x.p.write_with(|w| w.at(x.t, title()).set(&s("again")));
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("acked")));
+    let r = x.p.commit_set(x.t, title(), &s("again"));
     let Err(Error::Invalid(why)) = r else { panic!("{r:?}") };
     assert!(why.contains(&h.to_string()) && why.contains(&x.g.to_string()), "{why}");
     drop(x.host);
@@ -1512,13 +1516,15 @@ fn placing_a_routed_thing_in_a_local_group_changes_nothing() {
     let h = second_group(&x);
     x.attach_p();
     x.to_remote();
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("acked"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("acked")).unwrap();
     assert_eq!(x.p_local_copy(), Some(s("first")));
-    x.p.write_with(|w| w.place(x.t, h)).unwrap();
-    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("acked")));
+    let mut w = x.p.write();
+    w.place(x.t, h).unwrap();
+    w.commit().unwrap();
+    assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("acked")));
     assert!(x.p.status().unwrap().split.is_empty());
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("again"))).unwrap();
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("again")));
+    x.p.commit_set(x.t, title(), &s("again")).unwrap();
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("again")));
     // with a shared edge it would be split: refused, two sources
     assert!(matches!(x.p.share_into(x.t, h, Role::Read, Default::default()), Err(Error::Invalid(_))));
     drop(x.host);
@@ -1544,11 +1550,11 @@ fn a_client_of_this_node_reads_no_split_thing() {
 fn routing_to_what_the_actor_may_not_read_is_as_to_nothing() {
     let x = world();
     x.attach_p();
-    let hidden = x.n.write_with(|w| {
-        let t = w.create(x.n.me())?;
-        w.at(t, title()).set(&s("not for the client"))?;
-        Ok(t)
-    }).unwrap();
+    let mut w = x.n.write();
+    let t = w.create(x.n.me()).unwrap();
+    w.at(t, title()).set(&s("not for the client")).unwrap();
+    let hidden = t;
+    w.commit().unwrap();
     x.n.sync(hidden, &[]).unwrap();
     let ghost = osis::Tid::from_bytes([9; 15]);
     assert_eq!(block_on(x.p.group_source(hidden, GroupSource::Remote(x.nc.clone()))), Err(Error::UnknownThing { tid: hidden }));
@@ -1574,7 +1580,9 @@ fn a_host_address_refuses_a_client() {
 fn an_empty_group_at_the_node_can_be_routed_to() {
     let x = world();
     x.attach_p();
-    let e = x.n.write_with(|w| w.create(x.n.me())).unwrap();
+    let mut w = x.n.write();
+    let e = w.create(x.n.me()).unwrap();
+    w.commit().unwrap();
     x.n.sync(e, &[]).unwrap();
     x.n.grant(e, x.actor, Role::Read, Default::default()).unwrap();
     let c = x.thin("c9");
@@ -1589,11 +1597,10 @@ fn an_empty_group_at_the_node_can_be_routed_to() {
 fn a_group_without_a_label_here_comes_home() {
     let x = world();
     x.attach_p();
-    let h = x.p.write_with(|w| {
-        let h = w.create(x.p.me())?;
-        w.make_group(h)?;
-        Ok(h)
-    }).unwrap();
+    let mut w = x.p.write();
+    let h = w.create(x.p.me()).unwrap();
+    w.make_group(h).unwrap();
+    w.commit().unwrap();
     x.p.set_route(h, Some(x.nc.to_string()));
     block_on(x.p.group_source(h, GroupSource::Local)).unwrap();
     assert!(x.p.routes().is_empty());
@@ -1633,7 +1640,7 @@ fn status_and_diagnostic_watches_started_while_down_come_up() {
     assert!(rx.recv_timeout(W).unwrap().unwrap().contains_key(&x.actor));
     x.net.partition("c1", "n");
     x.net.disconnect("c1", "n");
-    until("down", || c.get(x.t, title()).is_err());
+    until("down", || c.at(x.t, title()).get().is_err());
     assert!(matches!(rx.recv_timeout(W).unwrap(), Err(Error::Network(_))), "the lost connection is told");
     assert!(matches!(c.watch_roster(x.g, |_, _| {}), Err(Error::Network(_))));
     let (st, sr) = channel();
@@ -1650,7 +1657,7 @@ fn status_and_diagnostic_watches_started_while_down_come_up() {
     let first = rx.recv_timeout(W).unwrap().unwrap();
     assert!(first.contains_key(&x.actor));
     while !sr.recv_timeout(W).unwrap() {}
-    until("the diagnostics subscription is live", || c.get(x.t, title()).is_ok());
+    until("the diagnostics subscription is live", || c.at(x.t, title()).get().is_ok());
     c.settle();
     let t = x.t;
     x.n.engine(|e| e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::BadInput, tids: vec![t], commit: None, peer: None, detail: "after the reconnect".into() }));
@@ -1666,11 +1673,10 @@ fn moving_home_after_a_share_into_a_second_group() {
     let x = world();
     // sorting after g: a thing's first group by tid was the one named
     let h = loop {
-        let h = x.p.write_with(|w| {
-            let h = w.create(x.p.me())?;
-            w.make_group(h)?;
-            Ok(h)
-        }).unwrap();
+        let mut w = x.p.write();
+        let h = w.create(x.p.me()).unwrap();
+        w.make_group(h).unwrap();
+        w.commit().unwrap();
         if h > x.g {
             break h;
         }
@@ -1705,7 +1711,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     });
     x.attach_p();
     x.to_remote();
-    x.p.write_with(|w| w.at(x.t, title()).set(&s("acked"))).unwrap();
+    x.p.commit_set(x.t, title(), &s("acked")).unwrap();
     // a change this engine never holds, of a thing that stays out of H: it cannot tell
     let mut w = x.p.write();
     w.at(x.g, title()).set(&s("on g")).unwrap();
@@ -1721,8 +1727,8 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     assert!(!x.p.engine(|e| e.header(&c.id.commit().unwrap()).is_some()));
     let r = x.p.revert(c.id);
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("acked")), "nothing written");
-    assert_eq!(x.n.get(x.g, title()).unwrap(), Some(s("on g")), "nothing written");
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("acked")), "nothing written");
+    assert_eq!(x.n.at(x.g, title()).get().unwrap(), Some(s("on g")), "nothing written");
     drop(x.host);
 }
 
@@ -1741,7 +1747,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
     x.p.listen_unix(&sock).unwrap();
     let o = Osis::attach(&sock, Config::memory()).unwrap();
     assert!(o.status().unwrap().split.contains(&x.t));
-    let r = o.write_with(|w| w.at(x.t, title()).set(&s("via owner")));
+    let r = o.commit_set(x.t, title(), &s("via owner"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     drop(o);
     let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
@@ -1750,9 +1756,9 @@ fn split_shows_through_the_port_and_after_a_restart() {
     c.remotes = vec![RemoteConfig { addr: x.nc.clone(), secret: x.secret.clone() }];
     let p = Osis::open(c).unwrap();
     assert!(p.status().unwrap().split.contains(&x.t));
-    let r = p.write_with(|w| w.at(x.t, title()).set(&s("reopened")));
+    let r = p.commit_set(x.t, title(), &s("reopened"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
-    until("the attachment came up", || p.get(x.t, title()).ok().flatten() == Some(s("first")));
+    until("the attachment came up", || p.at(x.t, title()).get().ok().flatten() == Some(s("first")));
     assert_eq!(p.close().unwrap(), osis::Close::Closed);
     let _ = std::fs::remove_dir_all(&d);
     drop(x.host);
@@ -1771,10 +1777,10 @@ fn a_split_made_after_the_route_refuses_the_write() {
         p.set_route(g, Some(addr.clone()));
         let _ = p.sync_policy(g, osis::GroupPolicy { receipts_only: true, ..Default::default() });
     }));
-    let r = x.p.write_with(|w| w.at(x.t, title()).set(&s("late")));
+    let r = x.p.commit_set(x.t, title(), &s("late"));
     x.p.after_route(Box::new(|| {}));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
-    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("first")), "nothing written");
+    assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("first")), "nothing written");
     drop(x.host);
 }
 
@@ -1787,7 +1793,7 @@ fn an_ephemeral_placement_in_a_routed_group_counts() {
     let (a, _) = x.p.add_client(None).unwrap();
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
     let thing = |owner: Tid, also: Option<Tid>| {
-        x.p.write_with(|w| {
+        x.p.batch(|w| {
             let e = w.create(owner)?;
             w.at(e, draft.clone()).set(&s("here"))?;
             w.place(e, x.g)?;
@@ -1806,7 +1812,7 @@ fn an_ephemeral_placement_in_a_routed_group_counts() {
     assert!(!x.p.engine(|d| d.readable_by(&a, &e)), "this node's copy is stale");
     let split = x.p.status().unwrap().split;
     assert!(split.contains(&both) && !split.contains(&e), "{split:?}");
-    let r = x.p.write_with(|w| w.at(both, draft.clone()).set(&s("again")));
+    let r = x.p.commit_set(both, draft.clone(), &s("again"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     let r = x.p.undo(&osis::Scope::Group(x.g));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");

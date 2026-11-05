@@ -17,9 +17,9 @@ fn splice_keeps_unshown_remote_merge() {
     let t = n.create_note().unwrap();
     let s = n.db.edit_text(t, BODY, osis::Path::root()).unwrap();
     let shown = "hello world";
-    s.insert(0, shown).unwrap();
+    s.replace(0..0, shown).unwrap();
     // the "remote" merge, ahead of the widget
-    s.insert(6, "brave ").unwrap();
+    s.replace(6..6, "brave ").unwrap();
     splice(&s, shown, "hello world!").unwrap();
     assert_eq!(s.text(), "hello brave world!", "after the merge");
     splice(&s, "hello world!", ">hello world!").unwrap();

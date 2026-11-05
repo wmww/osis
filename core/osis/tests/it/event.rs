@@ -3,6 +3,7 @@
 //! any other. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::TestWrites as _;
 use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
@@ -32,7 +33,7 @@ fn local(y: i64, m: i64, d: i64, h: i64, min: i64) -> i64 {
 }
 
 fn new_event(db: &Osis, calendar: Tid, name: &str, start: Start, end: Option<End>) -> Result<Tid> {
-    db.write_with(|w| {
+    db.batch(|w| {
         let e = w.create_in(calendar, &[calendar])?;
         w.at(e, NAME).set(&name.to_string())?;
         w.at(e, START).set(&start)?;
@@ -66,24 +67,22 @@ fn calendar_shared_read_only() {
     let work = new_tag(&alice, "Work").unwrap();
     let berlin = || Some("Europe/Berlin".to_string());
     let standup = new_event(&alice, work, "Standup", Start::At(Wall { time: local(2027, 3, 15, 9, 0), zone: berlin() }), Some(End::After(30 * MIN))).unwrap();
-    alice
-        .write_with(|wr| {
-            wr.at(standup, REPEAT).set(&Repeat {
-                freq: RepeatFreq::Weekly,
-                interval: 1,
-                weekdays: BTreeSet::from([RepeatWeekdays { day: Weekday::Mon, nth: None }]),
-                monthdays: BTreeSet::new(),
-                until: Some(date(2027, 12, 31)),
-                count: None,
-                skip: BTreeSet::from([Occurrence::At(local(2027, 4, 5, 9, 0))]),
-            })?;
-            wr.at(standup, ALERTS).set(&BTreeSet::from([10 * MIN]))?;
-            wr.at(standup, BODY).set(&"Daily sync, keep it short.".to_string())
-        })
-        .unwrap();
+    let mut wr = alice.write();
+    wr.at(standup, REPEAT).set(&Repeat {
+        freq: RepeatFreq::Weekly,
+        interval: 1,
+        weekdays: BTreeSet::from([RepeatWeekdays { day: Weekday::Mon, nth: None }]),
+        monthdays: BTreeSet::new(),
+        until: Some(date(2027, 12, 31)),
+        count: None,
+        skip: BTreeSet::from([Occurrence::At(local(2027, 4, 5, 9, 0))]),
+    }).unwrap();
+    wr.at(standup, ALERTS).set(&BTreeSet::from([10 * MIN])).unwrap();
+    wr.at(standup, BODY).set(&"Daily sync, keep it short.".to_string()).unwrap();
+    wr.commit().unwrap();
     // one occurrence moved to the afternoon
     let moved = new_event(&alice, work, "Standup (moved)", Start::At(Wall { time: local(2027, 3, 22, 14, 0), zone: berlin() }), None).unwrap();
-    alice.write_with(|wr| wr.at(moved, OVERRIDES).set(&Overrides { series: standup, at: Occurrence::At(local(2027, 3, 22, 9, 0)) })).unwrap();
+    alice.commit_set(moved, OVERRIDES, &Overrides { series: standup, at: Occurrence::At(local(2027, 3, 22, 9, 0)) }).unwrap();
     // an all-day span, and a flight ending in another zone
     let offsite = new_event(&alice, work, "Offsite", Start::Day(date(2027, 5, 3)), Some(End::Day(date(2027, 5, 5)))).unwrap();
     let flight = new_event(
@@ -97,16 +96,16 @@ fn calendar_shared_read_only() {
     alice.grant(work, b, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
 
-    assert_eq!(bob.get(standup, START).unwrap(), Some(Start::At(Wall { time: local(2027, 3, 15, 9, 0), zone: berlin() })));
-    assert_eq!(bob.get(standup, END).unwrap(), Some(End::After(30 * MIN)));
-    let r = bob.get(standup, REPEAT).unwrap().unwrap();
+    assert_eq!(bob.at(standup, START).get().unwrap(), Some(Start::At(Wall { time: local(2027, 3, 15, 9, 0), zone: berlin() })));
+    assert_eq!(bob.at(standup, END).get().unwrap(), Some(End::After(30 * MIN)));
+    let r = bob.at(standup, REPEAT).get().unwrap().unwrap();
     assert_eq!((r.freq, r.interval, r.skip.len()), (RepeatFreq::Weekly, 1, 1));
-    assert_eq!(bob.get(moved, OVERRIDES).unwrap().unwrap().series, standup);
-    assert_eq!(bob.get(offsite, END).unwrap(), Some(End::Day(date(2027, 5, 5))));
-    match bob.get(flight, END).unwrap() {
+    assert_eq!(bob.at(moved, OVERRIDES).get().unwrap().unwrap().series, standup);
+    assert_eq!(bob.at(offsite, END).get().unwrap(), Some(End::Day(date(2027, 5, 5))));
+    match bob.at(flight, END).get().unwrap() {
         Some(End::At(Wall { zone, .. })) => assert_eq!(zone.as_deref(), Some("Europe/London")),
         other => panic!("{other:?}"),
     }
     assert_eq!(tag_names(&bob, standup).unwrap(), ["Work"]);
-    assert!(matches!(bob.write_with(|wr| wr.at(standup, LOCATION).set(&"Room 1".to_string())), Err(Error::Permission { .. })));
+    assert!(matches!(bob.commit_set(standup, LOCATION, &"Room 1".to_string()), Err(Error::Permission { .. })));
 }

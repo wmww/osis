@@ -2,6 +2,7 @@
 //! share, tag-owned things. Tier 1 (the slower cases tier 2).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::TestWrites as _;
 use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
@@ -12,15 +13,16 @@ use osis_sim::world::World;
 /// A sub-tag of `parent` owned by `owner`, with a tied edge for the parent (unless the parent
 /// owns it) so the parent's holders reach what it holds.
 fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
-    let t = db.write_with(|w| {
-        let t = w.create_in(owner, &[parent])?;
-        w.make_group(t)?;
-        w.at(t, TAG).set(&Tag::default())?;
-        w.at(t, NAME).set(&name.to_string())?;
-        Ok(t)
-    })?;
+    let mut w = db.write();
+    let t = w.create_in(owner, &[parent])?;
+    w.make_group(t)?;
+    w.at(t, TAG).set(&Tag::default())?;
+    w.at(t, NAME).set(&name.to_string())?;
+    w.commit()?;
     if owner == parent {
-        db.write_with(|w| w.add_subgroup(parent, t))?;
+        let mut w = db.write();
+        w.add_subgroup(parent, t)?;
+        w.commit()?;
     } else {
         db.share_into(t, parent, role, ShareOpts { subgroup: true, ..ShareOpts::default() })?;
     }
@@ -29,7 +31,7 @@ fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Re
 
 /// A card: a thing with a body, owned by `owner`, placed nowhere yet.
 fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
-    db.write_with(|w| {
+    db.batch(|w| {
         let c = w.create(owner)?;
         w.at(c, BODY).set(&text.to_string())?;
         Ok(c)
@@ -45,30 +47,30 @@ fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
 }
 
 fn place(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
-    db.write_with(|w| w.place(thing, tag))
+    db.batch(|w| w.place(thing, tag))
 }
 
 /// Removes a thing from a tag; the tag's tied edge on it goes once the unplace synced (the
 /// thing's admin removes it with a rotation, spec/permissions.md §2).
 fn remove(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
-    db.write_with(|w| w.unplace(thing, tag))
+    db.batch(|w| w.unplace(thing, tag))
 }
 
 fn edit(db: &Osis, card: Tid, shown: &str, new: &str) -> Result<()> {
-    db.write_with(|w| w.at(card, BODY).edit(&shown.to_string(), &new.to_string()))
+    db.batch(|w| w.at(card, BODY).edit(&shown.to_string(), &new.to_string()))
 }
 
 fn text(db: &Osis, card: Tid) -> Result<Option<String>> {
-    db.get(card, BODY)
+    db.at(card, BODY).get()
 }
 
 /// The things in a tag and its sub-tags (subgroups carrying `tag.0`).
 fn list(db: &Osis, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
-    let g = db.get(tag, GROUP)?.unwrap_or_default();
+    let g = db.at(tag, GROUP).get()?.unwrap_or_default();
     let things = g.items.iter().filter(|t| !g.subgroups.contains(t)).copied().collect();
     let mut subs = Vec::new();
     for s in g.subgroups {
-        if db.get(s, TAG)?.is_some() {
+        if db.at(s, TAG).get()?.is_some() {
             subs.push(s);
         }
     }

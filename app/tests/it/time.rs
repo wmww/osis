@@ -38,12 +38,14 @@ fn week_and_nudge() {
     use osis_app::event::END;
     let d = Data::new(Osis::create(Config::memory()).unwrap().0);
     let e = d.create(NewKind::Event).unwrap();
-    let Some(Start::At(w0)) = d.get(e, START).unwrap() else { panic!("a new event has a wall start") };
+    let Some(Start::At(w0)) = d.db.at(e, START).get().unwrap() else { panic!("a new event has a wall start") };
     assert_eq!((w0.time % HOUR, w0.zone), (0, None), "on the hour, floating");
-    assert_eq!(d.get(e, END).unwrap(), Some(End::After(HOUR)), "for an hour");
+    assert_eq!(d.db.at(e, END).get().unwrap(), Some(End::After(HOUR)), "for an hour");
     let wed = 20_754;
     let s = wed * DAY + 10 * HOUR;
-    d.db.write_with(|w| w.at(e, START).set(&Start::At(Wall { time: s, zone: None }))).unwrap();
+    let mut w = d.db.write();
+    w.at(e, START).set(&Start::At(Wall { time: s, zone: None })).unwrap();
+    w.commit().unwrap();
     let monday = monday_of(s);
     assert_eq!(monday, 20_752 * DAY);
     let days_on = |d: &Data| -> Vec<usize> {
@@ -59,18 +61,19 @@ fn week_and_nudge() {
     assert_eq!(e2 - s2, 15 * MINUTE, "never shorter than 15 min");
     // late evening: an event past midnight shows on both days
     let late = wed * DAY + 23 * HOUR + 30 * MINUTE;
-    d.db.write_with(|w| {
-        w.at(e, START).set(&Start::At(Wall { time: late, zone: None }))?;
-        w.at(e, END).set(&End::After(HOUR))
-    })
-    .unwrap();
+    let mut w = d.db.write();
+    w.at(e, START).set(&Start::At(Wall { time: late, zone: None })).unwrap();
+    w.at(e, END).set(&End::After(HOUR)).unwrap();
+    w.commit().unwrap();
     assert_eq!(days_on(&d), vec![2, 3]);
     d.nudge(e, DAY, 30 * MINUTE).unwrap();
     assert_eq!(d.span(e).unwrap().unwrap(), (late + DAY, late + DAY + 90 * MINUTE, false));
     assert_eq!(days_on(&d), vec![3, 4]);
-    d.db.write_with(|w| w.at(e, START).set(&Start::Day(100))).unwrap();
+    let mut w = d.db.write();
+    w.at(e, START).set(&Start::Day(100)).unwrap();
+    w.commit().unwrap();
     d.nudge(e, -HOUR, 0).unwrap();
-    assert_eq!(d.get(e, START).unwrap(), Some(Start::Day(99)), "a day event moves by whole days");
+    assert_eq!(d.db.at(e, START).get().unwrap(), Some(Start::Day(99)), "a day event moves by whole days");
 }
 
 /// Nudges in Los Angeles: a move keeps the wall time, a length is elapsed time, so over the
@@ -228,27 +231,31 @@ fn nudge_keeps_the_end_form() {
     let d = Data::new(Osis::create(Config::memory()).unwrap().0);
     let e = d.create(NewKind::Event).unwrap();
     let t = 20_752 * DAY + 9 * HOUR;
-    d.db.write_with(|w| {
-        w.at(e, START).set(&Start::At(Wall { time: t, zone: None }))?;
-        w.at(e, END).remove()
-    })
-    .unwrap();
+    let mut w = d.db.write();
+    w.at(e, START).set(&Start::At(Wall { time: t, zone: None })).unwrap();
+    w.at(e, END).remove().unwrap();
+    w.commit().unwrap();
     d.nudge(e, HOUR, 0).unwrap();
-    assert_eq!(d.get(e, END).unwrap(), None, "a moment moved is still a moment");
+    assert_eq!(d.db.at(e, END).get().unwrap(), None, "a moment moved is still a moment");
     let end = End::At(Wall { time: t + 2 * HOUR, zone: Some("+02:00".into()) });
-    d.db.write_with(|w| w.at(e, END).set(&end)).unwrap();
+    let mut w = d.db.write();
+    w.at(e, END).set(&end).unwrap();
+    w.commit().unwrap();
     d.nudge(e, DAY, 0).unwrap();
-    assert_eq!(d.get(e, END).unwrap(), Some(End::At(Wall { time: t + 2 * HOUR + DAY, zone: Some("+02:00".into()) })));
+    assert_eq!(d.db.at(e, END).get().unwrap(), Some(End::At(Wall { time: t + 2 * HOUR + DAY, zone: Some("+02:00".into()) })));
     // a day event far out: no overflow
-    d.db.write_with(|w| {
-        w.at(e, START).set(&Start::Day(i64::MAX))?;
-        w.at(e, END).remove()
-    })
-    .unwrap();
+    let mut w = d.db.write();
+    w.at(e, START).set(&Start::Day(i64::MAX)).unwrap();
+    w.at(e, END).remove().unwrap();
+    w.commit().unwrap();
     d.nudge(e, DAY, DAY).unwrap();
     d.nudge(e, -DAY, 0).unwrap();
-    d.db.write_with(|w| w.at(e, START).set(&Start::At(Wall { time: i64::MIN, zone: None }))).unwrap();
-    d.db.write_with(|w| w.at(e, END).set(&End::After(i64::MAX))).unwrap();
+    let mut w = d.db.write();
+    w.at(e, START).set(&Start::At(Wall { time: i64::MIN, zone: None })).unwrap();
+    w.commit().unwrap();
+    let mut w = d.db.write();
+    w.at(e, END).set(&End::After(i64::MAX)).unwrap();
+    w.commit().unwrap();
     d.nudge(e, -DAY, HOUR).unwrap();
     d.week(monday_of(0)).unwrap();
 }

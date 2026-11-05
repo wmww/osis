@@ -215,21 +215,7 @@ impl TextSession {
         Ok(())
     }
 
-    /// Inserts `text` before char `at`.
-    pub fn insert(&self, at: usize, text: &str) -> Result<()> {
-        self.edit(|b| {
-            let r = char_range(b, &(at..at))?;
-            b.insert_str(r.start, text);
-            Ok(())
-        })
-    }
-
-    /// Deletes the chars in `range`.
-    pub fn delete(&self, range: Range<usize>) -> Result<()> {
-        self.replace(range, "")
-    }
-
-    /// Replaces the chars in `range` with `text`.
+    /// Replaces the chars in `range` with `text`: an empty range inserts, empty text deletes.
     pub fn replace(&self, range: Range<usize>, text: &str) -> Result<()> {
         self.edit(|b| {
             let r = char_range(b, &range)?;

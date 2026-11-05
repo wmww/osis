@@ -3,6 +3,8 @@
 //! spec: none (API surface, notes/api.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::watched;
+use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
@@ -32,11 +34,11 @@ fn on_change_initial_then_local() {
     let db = db(1);
     let k = ak("t:x.0");
     let t = thing(&db);
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     let (tx, rx) = channel();
     let _s = db.at(t, k.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     // a write racing the initial call: initial still shows the value at registration
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(2)).unwrap();
     let c = recv(&rx);
     assert_eq!((c.source, c.value), (Source::Initial, Ok(Some(Value::Int(1)))));
     let c = recv(&rx);
@@ -48,28 +50,33 @@ fn on_change_initial_then_local() {
     assert_eq!(recv(&rx).as_deref(), Some("osis-dispatch"));
 }
 
-// notes/api.md Watching: a watch is taken atomically with the current value; `changed`
-// variants wake on the next change; the async one runs on a plain executor (no runtime).
+// notes/api.md Watching: `on_change` is taken atomically with the current value and wakes on the
+// next change; forwarded to an async channel it runs on a plain executor (no runtime).
 #[test]
 fn watch_current_and_changed() {
     let db = db(1);
     let t = thing(&db);
-    let w = db.at(t, notes::TITLE).watch().unwrap();
+    let w = watched(&db, t, notes::TITLE).unwrap();
     assert_eq!(w.current().unwrap(), None);
     assert!(!w.try_changed());
-    db.write_with(|x| x.at(t, notes::TITLE).set(&"a".to_string())).unwrap();
+    db.commit_set(t, notes::TITLE, &"a".to_string()).unwrap();
     assert!(w.changed_timeout(Duration::from_secs(20)));
     assert_eq!(w.current().unwrap().as_deref(), Some("a"));
+    // from async code: on_change forwarded to an async channel
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let _a = db.at(t, notes::TITLE).on_change(move |_, c| tx.send(c.value.unwrap()).unwrap()).unwrap();
+    assert_eq!(block_on(rx.recv()), Some(Some("a".to_string())), "the current value first");
     let db2 = db.clone();
     let h = std::thread::spawn(move || {
-        db2.write_with(|x| x.at(t, notes::TITLE).set(&"b".to_string())).unwrap();
+        db2.commit_set(t, notes::TITLE, &"b".to_string()).unwrap();
     });
-    block_on(w.changed());
+    assert_eq!(block_on(rx.recv()), Some(Some("b".to_string())));
     h.join().unwrap();
+    assert!(w.changed_timeout(Duration::from_secs(20)));
     db.settle();
     assert_eq!(w.current().unwrap().as_deref(), Some("b"));
     // writing the same value changes nothing: no wake
-    db.write_with(|x| x.at(t, notes::TITLE).set(&"b".to_string())).unwrap();
+    db.commit_set(t, notes::TITLE, &"b".to_string()).unwrap();
     db.settle();
     assert!(!w.try_changed());
 }
@@ -114,7 +121,7 @@ fn subscription_raii_and_detach() {
     let first: Vec<_> = rx.try_iter().map(|x| x.0).collect();
     assert_eq!(first.len(), 2);
     drop(s);
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     db.settle();
     let after: Vec<_> = rx.try_iter().collect();
     assert_eq!(after, vec![("kept", Ok(Some(Value::Int(1))))]);
@@ -133,13 +140,13 @@ fn api_usable_from_callback() {
         .at(t, a.clone())
         .on_change(move |db2, c| {
             if let Ok(Some(Value::Int(n))) = c.value {
-                db2.write_with(|w| w.at(t, b2.clone()).set(&Value::Int(n * 10))).unwrap();
+                db2.commit_set(t, b2.clone(), &Value::Int(n * 10)).unwrap();
                 db2.settle();
-                tx.send(db2.get(t, b2.clone()).unwrap()).unwrap();
+                tx.send(db2.at(t, b2.clone()).get().unwrap()).unwrap();
             }
         })
         .unwrap();
-    db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(4))).unwrap();
+    db.commit_set(t, a.clone(), &Value::Int(4)).unwrap();
     assert_eq!(recv(&rx), Some(Value::Int(40)));
 }
 
@@ -148,10 +155,10 @@ fn api_usable_from_callback() {
 fn watch_thing_all_aspects() {
     let db = db(1);
     let t = thing(&db);
-    db.write_with(|w| w.at(t, ak("t:a.0")).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, ak("t:a.0"), &Value::Int(1)).unwrap();
     let (tx, rx) = channel();
     let _s = db.watch_thing(t, move |_, c| tx.send((c.ak.as_str().to_string(), c.source == Source::Initial, c.value)).unwrap()).unwrap();
-    db.write_with(|w| w.at(t, ak("t:b.0")).set(&Value::Int(2))).unwrap();
+    db.commit_set(t, ak("t:b.0"), &Value::Int(2)).unwrap();
     db.settle();
     let all: Vec<_> = rx.try_iter().collect();
     let initial: std::collections::BTreeSet<&str> = all.iter().filter(|r| r.1).map(|r| r.0.as_str()).collect();
@@ -169,7 +176,9 @@ fn derived_change_on_expiry() {
     let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let k = ak("t:x.0");
     let t = thing(&db);
-    db.write_with(|w| w.at(t, k.clone()).expires_in(Duration::from_secs(5)).set(&Value::Int(1))).unwrap();
+    let mut w = db.write();
+    w.at(t, k.clone()).expires_in(Duration::from_secs(5)).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap();
     let (tx, rx) = channel();
     let _s = db.at(t, k).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
@@ -211,7 +220,7 @@ fn two_nodes_remote_watch() {
     deliver(&a, &b);
     let (tx, rx) = channel();
     let _s = b.at(t, k.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
-    let w = b.at(t, k.clone()).watch().unwrap();
+    let w = watched(&b, t, k.clone()).unwrap();
     assert_eq!(recv(&rx).source, Source::Initial);
     let done = commit_with(&a, |w| w.at(t, k.clone()).set(&Value::Int(9)));
     deliver(&a, &b);
@@ -239,7 +248,7 @@ fn block_dispatcher(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Sender<(
         })
         .unwrap();
     db.settle();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     recv(&in_rx);
     (s, go_tx)
 }
@@ -256,7 +265,7 @@ fn coalesced_call_carries_newest_source() {
     db.settle();
     assert_eq!(recv(&rx).source, Source::Initial);
     let (_gate, go) = block_dispatcher(&db);
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     let last = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(2)));
     go.send(()).unwrap();
     db.settle();
@@ -278,9 +287,9 @@ fn errors_not_coalesced() {
     let t = thing(&db);
     let (tx, rx) = channel();
     let _s = db.at(t, k.clone()).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
-    let w = db.at(t, k.clone()).watch().unwrap();
+    let w = watched(&db, t, k.clone()).unwrap();
     for i in 0..2u8 {
-        db.write_with(|w| w.at(t, k.clone()).set(&Value::Bytes(vec![i; 2000]))).unwrap();
+        db.commit_set(t, k.clone(), &Value::Bytes(vec![i; 2000])).unwrap();
         db.settle();
     }
     let errs: Vec<_> = rx.try_iter().filter(|v| matches!(v, Err(osis::Error::TooLarge { limit: 1000 }))).collect();
@@ -300,7 +309,7 @@ fn panicking_callback_is_a_diagnostic() {
     let _p = db.at(t, k.clone()).on_change(|_, c| assert_eq!(c.source, Source::Initial)).unwrap();
     let (tx, rx) = channel();
     let _s = db.at(t, k.clone()).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     assert_eq!(recv(&drx), DiagnosticKind::Callback);
     db.settle();
     assert_eq!(rx.try_iter().last(), Some(Ok(Some(Value::Int(1)))));
@@ -328,13 +337,13 @@ fn drop_waits_for_call_in_flight() {
             }
         })
         .unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     recv(&in_rx);
     let h = std::thread::spawn(move || go_tx.send(()).unwrap());
     drop(s);
     assert_eq!(*done.lock().unwrap(), 1);
     h.join().unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(2)).unwrap();
     db.settle();
     assert_eq!(*done.lock().unwrap(), 1);
 }
@@ -345,17 +354,17 @@ fn drop_waits_for_call_in_flight() {
 fn mistyped_value_watches_absent() {
     let db = db(1);
     let t = thing(&db);
-    db.write_with(|w| w.at(t, notes::TITLE).set(&"a".to_string())).unwrap();
-    let w = db.at(t, notes::TITLE).watch().unwrap();
+    db.commit_set(t, notes::TITLE, &"a".to_string()).unwrap();
+    let w = watched(&db, t, notes::TITLE).unwrap();
     let (tx, rx) = channel();
     let _s = db.at(t, notes::TITLE).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
     assert_eq!(recv(&rx), Ok(Some("a".to_string())));
-    db.write_with(|x| x.at(t, ak("note:title.0")).set(&Value::Int(3))).unwrap();
+    db.commit_set(t, ak("note:title.0"), &Value::Int(3)).unwrap();
     assert_eq!(recv(&rx), Ok(None));
     db.settle();
     assert!(w.try_changed());
     assert_eq!(w.current(), Ok(None));
-    db.write_with(|x| x.at(t, notes::TITLE).set(&"b".to_string())).unwrap();
+    db.commit_set(t, notes::TITLE, &"b".to_string()).unwrap();
     assert_eq!(recv(&rx), Ok(Some("b".to_string())));
 }
 
@@ -375,7 +384,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     c.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
         w2.fetch_add(1, Ordering::SeqCst);
         if let Some(db) = weak2.get().and_then(|w| w.upgrade()) {
-            let _ = db.read(|_| ());
+            let _ = db.knows(db.me());
         }
     }));
     let db = Osis::create(c).unwrap().0;
@@ -395,12 +404,12 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
             db.settle();
             assert!(db.clone().close().is_err());
             if c.value == Ok(Some(Value::Int(1))) {
-                db.write_with(|w| w.at(t, k2.clone()).set(&Value::Int(2))).unwrap();
+                db.commit_set(t, k2.clone(), &Value::Int(2)).unwrap();
             }
             c2.lock().unwrap().push((std::thread::current().id(), c.value.unwrap()));
         })
         .unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     assert!(calls.lock().unwrap().is_empty(), "nothing runs before settle");
     assert_eq!(wakes.load(Ordering::SeqCst), base + 1, "one wake for the batch");
     db.settle();
@@ -420,12 +429,12 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
         .unwrap();
     *slot.lock().unwrap() = Some(s);
     db.settle();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(3))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(3)).unwrap();
     db.settle();
     assert_eq!(*n.lock().unwrap(), 1);
     // another thread's settle pumps too
     let db2 = db.clone();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(4))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(4)).unwrap();
     let other = std::thread::spawn(move || {
         db2.settle();
         std::thread::current().id()

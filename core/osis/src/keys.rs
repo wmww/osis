@@ -54,12 +54,12 @@ impl AspectKey for Key {
     }
 }
 
-/// Typed keys of the core aspects (spec/data-model.md §9). Role-class aspects are read
-/// here and written only through the sharing calls.
+/// Typed keys of the core aspects (spec/data-model.md §9). Role-class aspects are read here and
+/// written only through the sharing calls, `GROUP` only through the group calls of `Write`.
 pub mod core {
-    pub use osis_schema::core_types::{ASPECTS, BODY, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, ROLES, NAME, NODE, PLACED, REACH, SECRETS, SEEN, TAG, TENURES, TID, Tag};
+    pub use osis_schema::core_types::{ASPECTS, BODY, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, ROLES, NAME, NODE, PLACED, REACH, REQUIRED, Required, RequiredRules, SECRETS, SEEN, TAG, TENURES, TID, Tag};
 
-    /// Field ids of `group.0` (spec/data-model.md §8), for path ops on it.
+    /// Field ids of `group.0` (spec/data-model.md §8), for path reads of it.
     pub mod group {
         use osis_schema::FieldId;
         /// `set<tid>`: the group's items.

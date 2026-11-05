@@ -550,11 +550,11 @@ impl Worker {
         let mut a = Args::of(args);
         let b = Value::Bool;
         let v = match m {
-            method::WHOAMI => Value::List(vec![Value::Tid(db.me()), Value::Tid(db.node()), Value::Tid(db.home())]),
+            method::WHOAMI => Value::List(vec![Value::Tid(db.me()), Value::Tid(db.node())]),
             method::GET => {
                 let (tid, ak, path) = (a.tid()?, a.ak()?, c::path(a.next()?)?);
                 let key = db.key(ak.as_str())?;
-                let r = if path.0.is_empty() { db.at(tid, ak).get_value() } else { db.at(tid, key).path(path).get_value() };
+                let r = if path.0.is_empty() { db.at(tid, ak).get() } else { db.at(tid, key).path(path).get() };
                 c::read_v(&r)
             }
             method::ASPECTS => Value::List(db.aspects(a.tid()?)?.iter().map(c::ak_v).collect()),
@@ -603,7 +603,7 @@ impl Worker {
                         return Err(Error::TooLarge { limit: MAX_SCHEMA_BYTES });
                     }
                 }
-                db.register_schema_source(&file, &src)?;
+                db.register_schema(&file, &src)?;
                 self.schemas.insert(h, src.len());
                 Value::List(vec![])
             }
@@ -741,8 +741,7 @@ impl Worker {
             }
             method::REACH => c::reach_v(&db.reach(a.tid()?)?),
             method::HOLDER_PATH => c::pairs_v(&db.holder_path(a.tid()?, a.tid()?)?),
-            method::LINKS => c::links_v(&db.links(a.tid()?)?),
-            method::ALL_LINKS => c::links_v(&db.all_links()?),
+            method::LINKS => c::links_v(&db.own_links()?),
             method::MAKE_LINK => {
                 let (t, r) = (a.tid()?, c::role(&a.next()?)?);
                 let until = a.opt_wall()?;

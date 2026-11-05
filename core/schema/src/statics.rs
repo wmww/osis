@@ -33,6 +33,9 @@ impl StaticSchema {
     pub fn error(&self) -> Option<&ParseError> {
         self.parsed().as_ref().err()
     }
+    pub fn file(&self) -> &'static str {
+        self.file
+    }
     pub fn source(&self) -> &'static str {
         self.src
     }

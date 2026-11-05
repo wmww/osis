@@ -50,7 +50,15 @@ impl Data {
         let mut rows = Vec::new();
         for ak in aks {
             let key = self.db.key(&ak)?;
-            let value = self.db.get(t, key.clone()).ok().flatten();
+            let value = match self.db.at(t, key.clone()).get() {
+                Ok(v) => v,
+                // shown read-only: an empty editable row could overwrite it
+                Err(e @ osis::Error::TooLarge { .. }) => {
+                    rows.push(Row { ak: ak.clone(), path: Path::root(), depth: 0, label: ak.clone(), ty: "unreadable".into(), value: e.to_string(), edit: Edit::None, optional: false });
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             let schema = key.schema();
             match (schema, schema.and_then(|s| s.aspects.get(&ak)).map(|d| d.ty.clone())) {
                 (Some(s), Some(ty)) => flatten(s, &ak, &ty, value.as_ref(), Path::root(), ak.clone(), 0, &mut rows),
@@ -87,7 +95,14 @@ impl Data {
             };
             if row.optional { Value::Enum(1, Some(Box::new(inner))) } else { inner }
         };
-        self.db.write_with(|w| w.at(t, key.clone()).path(row.path.clone()).set(&v))
+        let mut w = self.db.write();
+        if row.path.0.is_empty() {
+            w.at(t, key).set(&v)?;
+        } else {
+            w.at(t, key).path(row.path.clone()).set(&v)?;
+        }
+        w.commit()?;
+        Ok(())
     }
 }
 
@@ -280,18 +295,18 @@ impl Data {
     /// A contact's form: names, nickname, title, organisation, emails, phones.
     pub fn contact_form(&self, t: Tid) -> Result<Vec<FormRow>> {
         use crate::contact::{EMAILS, NAMES, NICKNAME, ORG, PHONES, names, org};
-        let n = self.get(t, NAMES)?;
-        let o = self.get(t, ORG)?;
+        let n = self.db.at(t, NAMES).get()?;
+        let o = self.db.at(t, ORG).get()?;
         let field = |label: &str, ph: &str, row: Row| FormRow { label: label.into(), value: row.value.clone(), placeholder: ph.into(), act: FormAct::Field(row) };
         let mut out = vec![
             field("Given name", "", text_row("contact:names.0", Path::root().push(names::GIVEN), "given", n.as_ref().and_then(|n| n.given.clone()).unwrap_or_default(), true)),
             field("Family name", "", text_row("contact:names.0", Path::root().push(names::FAMILY), "family", n.as_ref().and_then(|n| n.family.clone()).unwrap_or_default(), true)),
-            field("Nickname", "", text_row("contact:nickname.0", Path::root(), "nickname", self.get(t, NICKNAME)?.unwrap_or_default(), false)),
+            field("Nickname", "", text_row("contact:nickname.0", Path::root(), "nickname", self.db.at(t, NICKNAME).get()?.unwrap_or_default(), false)),
             field("Title", "", text_row("contact:org.0", Path::root().push(org::TITLE), "title", o.as_ref().map(|o| o.title.clone()).unwrap_or_default(), false)),
             field("Organisation", "", text_row("contact:org.0", Path::root().push(org::NAME), "name", o.as_ref().map(|o| o.name.clone()).unwrap_or_default(), false)),
         ];
         for (ak, key, label, add) in [("contact:emails.0", EMAILS, "Email", "Add an email"), ("contact:phones.0", PHONES, "Phone", "Add a phone")] {
-            for k in self.get(t, key)?.unwrap_or_default().into_keys() {
+            for k in self.db.at(t, key).get()?.unwrap_or_default().into_keys() {
                 out.push(FormRow { label: label.into(), value: k.clone(), placeholder: "removed when empty".into(), act: FormAct::RenameKey { ak, old: k } });
             }
             out.push(FormRow { label: label.into(), value: String::new(), placeholder: add.into(), act: FormAct::AddKey { ak } });
@@ -313,20 +328,23 @@ impl Data {
                 if text == old {
                     return Ok(());
                 }
-                self.db.write_with(|w| {
-                    w.at(t, key.clone()).path(Path::root()).remove_key(&old.to_string())?;
-                    if !text.is_empty() {
-                        w.at(t, key.clone()).path(Path::root()).put(&text.to_string(), &entry)?;
-                    }
-                    Ok(())
-                })
+                let mut w = self.db.write();
+                w.at(t, key.clone()).path(Path::root().push(old.as_str())).remove()?;
+                if !text.is_empty() {
+                    w.at(t, key.clone()).path(Path::root().push(text)).set(&entry)?;
+                }
+                w.commit()?;
+                Ok(())
             }
             FormAct::AddKey { ak } => {
                 if text.is_empty() {
                     return Ok(());
                 }
                 let key = self.db.key(ak)?;
-                self.db.write_with(|w| w.at(t, key.clone()).path(Path::root()).put(&text.to_string(), &Labeled { label: String::new(), pref: false }))
+                let mut w = self.db.write();
+                w.at(t, key).path(Path::root().push(text)).set(&Labeled { label: String::new(), pref: false })?;
+                w.commit()?;
+                Ok(())
             }
         }
     }

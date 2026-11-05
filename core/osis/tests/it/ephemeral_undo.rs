@@ -2,6 +2,7 @@
 //! delta, Local engine Undo; spec/crdt.md §4.6): an in-memory log of this session's own
 //! ephemeral batches, the scope rule, mixed batches as one change, the history cap.
 
+use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
 use crate::common::CreateIn;
@@ -22,13 +23,15 @@ fn int(n: i64) -> Option<Value> {
 fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     let db = setup(1);
     let k = ak("app:draft.0~");
-    let t = db.write_with(|w| w.create(db.me())).unwrap();
+    let mut w = db.write();
+    let t = w.create(db.me()).unwrap();
+    w.commit().unwrap();
     let marks = || db.engine(|e| (e.commit_ids().len(), e.core.generation));
     let before = marks();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(2)).unwrap();
     let scope = Scope::Thing(t);
-    let get = || db.get(t, k.clone()).unwrap();
+    let get = || db.at(t, k.clone()).get().unwrap();
     let all = db.commits(&CommitQuery::new().scope(scope.clone())).unwrap();    assert_eq!(all.len(), 3, "the creation and two writes");
     assert!(all.iter().all(|e| e.kind == CommitKind::Ephemeral && e.in_effect && matches!(e.commit.id, ChangeId::Ephemeral(_))));
     let u = db.undo(&scope).unwrap().unwrap();
@@ -54,7 +57,7 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), int(1));
     // a new change clears redo
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(5))).unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(5)).unwrap();
     assert_eq!(db.redo(&scope).unwrap(), None);
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(get(), int(1));
@@ -63,12 +66,10 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     let newest = db.commits(&CommitQuery::new().scope(scope.clone()).in_effect(true).kind(CommitKind::Ephemeral)).unwrap()[0].commit.id;
     db.revert(newest).unwrap();
     let other = setup(2);
-    other
-        .write_with(|w| {
-            let x = w.create(other.me())?;
-            w.at(x, k.clone()).set(&Value::Int(1))
-        })
-        .unwrap();
+    let mut w = other.write();
+    let x = w.create(other.me()).unwrap();
+    w.at(x, k.clone()).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap();
     let oid = other.commits(&CommitQuery::new().kind(CommitKind::Ephemeral)).unwrap()[0].commit.id;
     assert!(matches!(db.revert(oid), Err(Error::Invalid(_))));
 }
@@ -81,20 +82,22 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
     let db = setup(3);
     let text = ak("doc:text.0");
     let cursor = ak("doc:cursor.0~");
-    let d = db.write_with(|w| w.create_durable(db.me())).unwrap();
-    db.write_with(|w| w.at(d, text.clone()).set(&Value::Str("a".into()))).unwrap();
-    db.write_with(|w| w.at(d, cursor.clone()).set(&Value::Int(1))).unwrap();
-    db.write_with(|w| w.at(d, cursor.clone()).set(&Value::Int(2))).unwrap();
+    let mut w = db.write();
+    let d = w.create_durable(db.me()).unwrap();
+    w.commit().unwrap();
+    db.commit_set(d, text.clone(), &Value::Str("a".into())).unwrap();
+    db.commit_set(d, cursor.clone(), &Value::Int(1)).unwrap();
+    db.commit_set(d, cursor.clone(), &Value::Int(2)).unwrap();
     let doc = Scope::Thing(d);
     assert!(db.commits(&CommitQuery::new().scope(doc.clone())).unwrap().iter().all(|e| e.kind != CommitKind::Ephemeral));
     db.undo(&doc).unwrap().unwrap();
-    assert_eq!(db.get(d, text.clone()).unwrap(), None, "the text change, not a cursor move");
-    assert_eq!(db.get(d, cursor.clone()).unwrap(), int(2));
+    assert_eq!(db.at(d, text.clone()).get().unwrap(), None, "the text change, not a cursor move");
+    assert_eq!(db.at(d, cursor.clone()).get().unwrap(), int(2));
     let cur = Scope::Aspects(vec![(d, ak("doc:cursor.0~"))]);
     db.undo(&cur).unwrap().unwrap();
-    assert_eq!(db.get(d, cursor.clone()).unwrap(), int(1));
+    assert_eq!(db.at(d, cursor.clone()).get().unwrap(), int(1));
     db.redo(&cur).unwrap().unwrap();
-    assert_eq!(db.get(d, cursor).unwrap(), int(2));
+    assert_eq!(db.at(d, cursor).get().unwrap(), int(2));
 }
 
 // notes/ephemeral.md API delta (Writes, Undo): a batch with a durable and an ephemeral half is
@@ -104,7 +107,9 @@ fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
     let db = setup(4);
     let x = ak("t:x.0");
     let sel = ak("t:sel.0~");
-    let d = db.write_with(|w| w.create_durable(db.me())).unwrap();
+    let mut w = db.write();
+    let d = w.create_durable(db.me()).unwrap();
+    w.commit().unwrap();
     let mut w = db.write();
     w.at(d, x.clone()).set(&Value::Int(1)).unwrap();
     w.at(d, sel.clone()).set(&Value::Int(7)).unwrap();
@@ -116,12 +121,12 @@ fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
     assert_eq!(found[0].aspects.len(), 2, "both halves in one entry: {:?}", found[0].aspects);
     let u = db.undo(&scope).unwrap().unwrap();
     assert!(matches!(u.id, ChangeId::Commit(_)), "the revert has a durable half");
-    assert_eq!((db.get(d, x.clone()).unwrap(), db.get(d, sel.clone()).unwrap()), (None, None));
+    assert_eq!((db.at(d, x.clone()).get().unwrap(), db.at(d, sel.clone()).get().unwrap()), (None, None));
     db.redo(&scope).unwrap().unwrap();
-    assert_eq!((db.get(d, x.clone()).unwrap(), db.get(d, sel.clone()).unwrap()), (int(1), int(7)));
+    assert_eq!((db.at(d, x.clone()).get().unwrap(), db.at(d, sel.clone()).get().unwrap()), (int(1), int(7)));
     // the Thing scope covers the batch through its durable half: undo reverts it whole
     db.undo(&Scope::Thing(d)).unwrap().unwrap();
-    assert_eq!((db.get(d, x).unwrap(), db.get(d, sel).unwrap()), (None, None));
+    assert_eq!((db.at(d, x).get().unwrap(), db.at(d, sel).get().unwrap()), (None, None));
 }
 
 // notes/ephemeral.md API delta (Undo): a folder scope covers its durable item and its
@@ -131,7 +136,7 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     let db = setup(5);
     let (body, draft) = (ak("t:body.0"), ak("t:draft.0~"));
     let (f, item, e) = db
-        .write_with(|w| {
+        .batch(|w| {
             let f = w.create_durable(db.me())?;
             w.make_group(f)?;
             let item = w.create_durable(db.me())?;
@@ -141,12 +146,12 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
             Ok((f, item, e))
         })
         .unwrap();
-    db.write_with(|w| w.at(item, body.clone()).set(&Value::Int(1))).unwrap();
-    db.write_with(|w| w.at(e, draft.clone()).set(&Value::Int(1))).unwrap();
-    db.write_with(|w| w.at(item, body.clone()).set(&Value::Int(2))).unwrap();
-    db.write_with(|w| w.at(e, draft.clone()).set(&Value::Int(2))).unwrap();
+    db.commit_set(item, body.clone(), &Value::Int(1)).unwrap();
+    db.commit_set(e, draft.clone(), &Value::Int(1)).unwrap();
+    db.commit_set(item, body.clone(), &Value::Int(2)).unwrap();
+    db.commit_set(e, draft.clone(), &Value::Int(2)).unwrap();
     let scope = Scope::Group(f);
-    let state = || (db.get(item, body.clone()).unwrap(), db.get(e, draft.clone()).unwrap());
+    let state = || (db.at(item, body.clone()).get().unwrap(), db.at(e, draft.clone()).get().unwrap());
     db.undo(&scope).unwrap().unwrap();
     assert_eq!(state(), (int(2), int(1)));
     db.undo(&scope).unwrap().unwrap();
@@ -160,7 +165,9 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     db.redo(&scope).unwrap().unwrap();
     assert_eq!(state(), (int(2), int(2)));
     // an ephemeral placement is a change of the folder: undone and redone like one
-    db.write_with(|w| w.unplace(e, f)).unwrap();
+    let mut w = db.write();
+    w.unplace(e, f).unwrap();
+    w.commit().unwrap();
     assert!(!db.groups_of(e).unwrap().within.contains(&f));
     db.undo(&scope).unwrap().unwrap();
     assert!(db.groups_of(e).unwrap().within.contains(&f));
@@ -178,7 +185,7 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     x.ephemeral_history = 8_000;
     let db = Osis::create(x).unwrap().0;
     let k = ak("app:n.0~");
-    let t = db.write_with(|w| w.create(db.me())).unwrap();
+    let t = db.batch(|w| w.create(db.me())).unwrap();
     let mut ids = Vec::new();
     for i in 0..40 {
         ids.push(db.write().tap(|w| w.at(t, k.clone()).set(&Value::Int(i)).unwrap()).commit().unwrap().unwrap().id);
@@ -202,8 +209,10 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     let mut x = cfg(7, MemStore::new(), &c);
     x.ephemeral_history = 0;
     let db = Osis::create(x).unwrap().0;
-    let t = db.write_with(|w| w.create(db.me())).unwrap();
-    db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).unwrap();
+    let mut w = db.write();
+    let t = w.create(db.me()).unwrap();
+    w.commit().unwrap();
+    db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     assert!(matches!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { reason: DropReason::Compacted, .. })));
 }
 
@@ -226,39 +235,39 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     let db = setup(9);
     let draft = ak("app:draft.0~");
     let body = ak("app:body.0");
-    let f = db.write_with(|w| { let f = w.create_durable(db.me())?; w.make_group(f)?; Ok(f) }).unwrap();
-    let e = db
-        .write_with(|w| {
-            let e = w.create(db.me())?;
-            w.place(e, f)?;
-            w.at(e, draft.clone()).set(&Value::Int(1))?;
-            Ok(e)
-        })
-        .unwrap();
+    let mut w = db.write();
+    let f = w.create_durable(db.me()).unwrap();
+    w.make_group(f).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    let e = w.create(db.me()).unwrap();
+    w.place(e, f).unwrap();
+    w.at(e, draft.clone()).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap();
     let durable_in_f = |db: &Osis| db.engine(|x| x.durable_groups_of(&e)).contains(&f);
     let s = Scope::Thing(e);
-    db.write_with(|w| w.at(e, body.clone()).set(&Value::Int(1))).unwrap();
+    db.commit_set(e, body.clone(), &Value::Int(1)).unwrap();
     assert!(durable_in_f(&db));
     db.undo(&s).unwrap().unwrap();
     assert!(db.groups_of(e).unwrap().item_of == vec![f] && !durable_in_f(&db), "placed ephemerally again");
-    assert!(db.get(e, body.clone()).unwrap().is_none() && db.get(e, draft.clone()).unwrap() == int(1) && db.knows(e).unwrap(), "the draft");
+    assert!(db.at(e, body.clone()).get().unwrap().is_none() && db.at(e, draft.clone()).get().unwrap() == int(1) && db.knows(e).unwrap(), "the draft");
     assert!(db.created(e).unwrap().unwrap().commit.is_some(), "the record stays durable");
     db.undo(&s).unwrap().unwrap();
-    assert!(!db.knows(e).unwrap() && db.groups_of(e).unwrap().within.is_empty() && db.get(e, draft.clone()).unwrap().is_none(), "the draft's creation undone");
+    assert!(!db.knows(e).unwrap() && db.groups_of(e).unwrap().within.is_empty() && db.at(e, draft.clone()).get().unwrap().is_none(), "the draft's creation undone");
     assert_eq!(db.undo(&s).unwrap(), None);
     db.redo(&s).unwrap().unwrap();
-    assert!(db.knows(e).unwrap() && db.groups_of(e).unwrap().item_of == vec![f] && !durable_in_f(&db) && db.get(e, draft.clone()).unwrap() == int(1));
+    assert!(db.knows(e).unwrap() && db.groups_of(e).unwrap().item_of == vec![f] && !durable_in_f(&db) && db.at(e, draft.clone()).get().unwrap() == int(1));
     db.redo(&s).unwrap().unwrap();
-    assert!(durable_in_f(&db) && db.get(e, body.clone()).unwrap() == int(1) && db.get(e, draft.clone()).unwrap() == int(1));
+    assert!(durable_in_f(&db) && db.at(e, body.clone()).get().unwrap() == int(1) && db.at(e, draft.clone()).get().unwrap() == int(1));
     assert_eq!(db.redo(&s).unwrap(), None);
     // undo the save again, then save anew: the placement converts
     db.undo(&s).unwrap().unwrap();
     assert!(!durable_in_f(&db));
-    db.write_with(|w| w.at(e, body.clone()).set(&Value::Int(2))).unwrap();
+    db.commit_set(e, body.clone(), &Value::Int(2)).unwrap();
     assert!(durable_in_f(&db) && db.groups_of(e).unwrap().item_of == vec![f]);
     // and undoing that new save returns to the draft too
     db.undo(&s).unwrap().unwrap();
-    assert!(!durable_in_f(&db) && db.groups_of(e).unwrap().item_of == vec![f] && db.get(e, body).unwrap().is_none() && db.knows(e).unwrap());
+    assert!(!durable_in_f(&db) && db.groups_of(e).unwrap().item_of == vec![f] && db.at(e, body).get().unwrap().is_none() && db.knows(e).unwrap());
 }
 
 // notes/ephemeral.md Undo (undoing a save returns the draft): a draft with no content of its
@@ -267,10 +276,16 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
 #[test]
 fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
     let db = setup(10);
-    let f = db.write_with(|w| { let f = w.create_durable(db.me())?; w.make_group(f)?; Ok(f) }).unwrap();
-    let e = db.write_with(|w| { let e = w.create(db.me())?; w.place(e, f)?; Ok(e) }).unwrap();
+    let mut w = db.write();
+    let f = w.create_durable(db.me()).unwrap();
+    w.make_group(f).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    let e = w.create(db.me()).unwrap();
+    w.place(e, f).unwrap();
+    w.commit().unwrap();
     assert!(db.knows(e).unwrap());
-    db.write_with(|w| w.at(e, ak("app:body.0")).set(&Value::Int(1))).unwrap();
+    db.commit_set(e, ak("app:body.0"), &Value::Int(1)).unwrap();
     let s = Scope::Thing(e);
     db.undo(&s).unwrap().unwrap();
     assert!(db.knows(e).unwrap() && db.groups_of(e).unwrap().item_of == vec![f], "the draft again");
@@ -278,7 +293,9 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
     assert!(!db.knows(e).unwrap() && db.groups_of(e).unwrap().within.is_empty(), "its creation undone");
     db.redo(&s).unwrap().unwrap();
     assert!(db.knows(e).unwrap() && db.groups_of(e).unwrap().item_of == vec![f]);
-    db.write_with(|w| w.delete(e)).unwrap();
+    let mut w = db.write();
+    w.delete(e).unwrap();
+    w.commit().unwrap();
     assert!(!db.knows(e).unwrap(), "deleting the draft again: known");
     assert_eq!(db.groups_of(e).unwrap().within, vec![], "deleting the draft again");
 }
@@ -290,9 +307,17 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
 #[test]
 fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
     let db = setup(11);
-    let n = db.write_with(|w| { let n = w.create(db.me())?; w.at(n, ak("app:body.0")).set(&Value::Int(1))?; Ok(n) }).unwrap();
-    let g = db.write_with(|w| { let g = w.create(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    let mut w = db.write();
+    let n = w.create(db.me()).unwrap();
+    w.at(n, ak("app:body.0")).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    let g = w.create(db.me()).unwrap();
+    w.make_group(g).unwrap();
+    w.commit().unwrap();
     assert!(db.created(g).unwrap().unwrap().commit.is_none(), "the group is ephemeral");
-    db.write_with(|w| w.place(n, g)).unwrap();
+    let mut w = db.write();
+    w.place(n, g).unwrap();
+    w.commit().unwrap();
     assert!(db.created(g).unwrap().unwrap().commit.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
 }

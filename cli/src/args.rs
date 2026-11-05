@@ -104,7 +104,7 @@ pub struct DemoteFlags {
     /// Repudiate the holder's rotations this device cannot open (a writer that locked everyone out)
     #[arg(long)]
     pub repudiate: bool,
-    /// On a removal: the removed holder's devices keep a read-only copy (true) or erase (false); default: the thing's (`keep-default`)
+    /// On a removal: the removed holder's devices keep a read-only copy (true) or erase (false); default: the thing's (`required.0^`, field keep)
     #[arg(long, value_name = "BOOL")]
     pub keep: Option<bool>,
 }
@@ -123,7 +123,7 @@ pub enum Cmd {
         #[arg(long, value_name = "ADDR")]
         host: Vec<String>,
     },
-    /// This store's person, device, home group and hosts
+    /// This store's person (also its home group), device and hosts
     Whoami,
     /// Pair devices
     #[command(subcommand)]
@@ -150,7 +150,7 @@ pub enum Cmd {
         #[arg(long = "client-listen", value_name = "URL")]
         client_listen: Vec<String>,
     },
-    /// Create a thing, optionally setting aspects: create --owner me --in home note:title.0 '"x"'
+    /// Create a thing, optionally setting aspects: create --owner me --in me note:title.0 '"x"'
     Create(CreateArgs),
     /// Read an aspect (or a path in it); absent exits 3
     Get {
@@ -171,7 +171,7 @@ pub enum Cmd {
     /// Remove an aspect or a map entry, set element or list element
     Rm(RmArgs),
     /// A path op: insert I V.., delete A..B, move A..B TO, splice A..B S, undelete A..B, add V,
-    /// remove-elem V, put K V, remove-key K, inc N, observe V, set-case ID [V]
+    /// contribute N
     Op(OpArgs),
     /// Write only what changed from --base to the value on stdin ($EDITOR on a terminal)
     Edit {
@@ -301,6 +301,8 @@ pub enum Cmd {
     Sub(SubCmd),
     /// Groups listing T as an item or a subgroup, and every group holding T (within)
     Groups { t: String },
+    /// What group G contains: its items and subgroups
+    Members { g: String },
     /// Holders of a thing with their edges (--watch: one line per change)
     Roster {
         t: String,
@@ -362,12 +364,6 @@ pub enum Cmd {
     Kept {
         #[arg(long, value_name = "ACTOR")]
         drop: Option<String>,
-    },
-    /// Set whether a removal from T keeps a read-only copy by default (admin); absent: it erases
-    KeepDefault {
-        t: String,
-        #[arg(action = clap::ArgAction::Set, value_name = "BOOL")]
-        keep: bool,
     },
     /// Place T in group G and give G a tied edge on T (it goes when the placement goes)
     ShareInto {
