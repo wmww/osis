@@ -9,3 +9,5 @@ What can pend for good since whole-commits step 3 (a node never waits for a part
 To decide: total bytes per label or author class, what is evicted (oldest unsigned first keeps a flood from pushing out what can verify), how a true commit evicted comes back (`SyncEngine::redeliver` can ingest its entry again).
 
 Not a bound in itself, but the same call: a pending commit's other entries leave with the host's (`forget_blob`), so a true copy deleted from every host while junk holds its slot needs a holder's new upload. Keeping those blobs while the commit pends would let one sender grow one commit's copies by flood-and-delete.
+
+Also (item 294): a waiting part keeps its body past an absolute keep-at-most bound until it applies; a part that never applies keeps it for good at that node (hosts still delete at the bound). The bound this issue asks for covers it.
