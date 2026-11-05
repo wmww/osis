@@ -338,7 +338,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
   - **author**: the delta's header actor while it holds write on the thing: the actor itself and any node with write on that actor;
   - **writer**: any current writer of the thing.
   - An admin with no write on that actor holds no right under `author`, and an actor that lost write on the thing gives none until it regains it.
-- A role counts toward the right only as it would for a delta needing that role at the request's key (§5.1): a demotion whose frontier does not list the request takes the right however early its `ts`; one that lists it leaves the purge standing.
+- A role counts toward the right exactly when a delta of its holder needing that role at the request's key would be valid (§5.2): a demotion whose frontier does not list the request takes the right however early its `ts`; one that lists it leaves the purge standing; a re-grant gives the right back to a request made in the gap, as to its writes.
 - **A purge request** drops a named delta iff its author held that right at the request's time and, when it acts for another actor (its header actor), so did that actor. Each delta of a request by whole aspect or by author is judged alone, so the class of one never widens the others (an admin's request by author leaves that author's `author` and `nobody` deltas).
 - **Judgment** follows the role timeline the node holds, in any arrival order:
   - A named delta a request comes to drop is dropped then.

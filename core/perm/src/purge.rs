@@ -18,10 +18,12 @@ impl Timeline {
     }
 
     /// §7: whether the commit at `at` holds, for its signer `who`, what `may_purge` asks at its own
-    /// key, each role it rests on valid there as a delta needing that role would be: a demotion
-    /// whose frontier leaves the commit out takes the right however early its `ts`.
+    /// key. Invariant: each role it rests on counts exactly when a delta of that node needing the
+    /// role at that key is valid (§5.2), nothing more: a demotion whose frontier leaves the commit
+    /// out takes the right however early its `ts`, and a re-grant gives back the right of a request
+    /// made in the gap as it does that request's own writes.
     pub fn purge_stands(&self, who: &Tid, thing: &Tid, by: PurgeBy, actor: &Tid, at: Point) -> bool {
-        let holds = |x: &Tid, on: &Tid, need: Role| self.role(x, on, At::before(at)) >= Some(need) && self.delta_valid(Point { node: *x, ..at }, on, need) == Validity::Valid;
+        let holds = |x: &Tid, on: &Tid, need: Role| self.delta_valid(Point { node: *x, ..at }, on, need) == Validity::Valid;
         (by.admin() && holds(who, thing, Role::Admin)) || (by.writer() && holds(who, thing, Role::Write)) || (by.author() && holds(who, actor, Role::Write) && holds(actor, thing, Role::Write))
     }
 

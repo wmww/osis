@@ -1,7 +1,0 @@
-# A purge request arriving before the delta it names leaves its value held
-> Summary: `arrival_order_purge_large` seed 3001 (default range, plain size; main's adapter and model fail it too): in reversed order a node holds the value of a `t:reg.0` delta that a by-aspect purge request of its own author drops; the node as made agrees with held-model.
-> Tags: engine, retention, tests
-
-Replay: `OSIS_ORDER_SEED=3001 OSIS_ORDER_LEN=60 OSIS_ORDER_SHRINK=0 cargo test -p osis-node --test it -- --include-ignored order::arrival_order_purge_large_spec_commits_5` (fails at once; a shrink takes minutes).
-
-The held set is the whole history (67 commits). As made the node and held-model agree; order #1 (reversed) ends with `held-model differs: forbidden value held` for model commit #35 part 1: a `t:reg.0` write (`author_or_admin`, no bounds) by node 2 on a thing owned by node 1, named by #36, node 2's later request by whole aspect history on that `t:reg.0`. Validity and applied sets agree with the model at that node. Same held set, two orders, two answers: spec/commits.md §5 Purge ("whatever the order the request, the named delta's commit and the carrying body arrive in"; "A later-arriving delta an applied request names falls under it as one held does") points at the engine's late-delta path (`purge::purge_arrived`) or its judgment of the `author` right there. #35 also carries a part on an out-of-scope AK in the same commit.
