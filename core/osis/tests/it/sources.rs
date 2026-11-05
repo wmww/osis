@@ -1838,7 +1838,7 @@ fn connect_node_takes_a_new_secret_and_refuses_a_second_login() {
     let (_other, other) = x.n.add_client(None).unwrap();
     let second = NodeLogin { addr: x.nc.clone(), secret: other };
     assert!(matches!(x.p.connect_node(&second, W), Err(Error::Invalid(_))));
-    assert_eq!(x.p.status().unwrap().remotes[0].connected, true, "the connection stands");
+    assert!(x.p.status().unwrap().remotes[0].connected, "the connection stands");
     let new = x.n.rotate_client_secret(x.actor).unwrap();
     until("the old session ended", || !x.p.status().unwrap().remotes[0].connected);
     x.p.connect_node(&NodeLogin { addr: x.nc.clone(), secret: new }, W).unwrap();
