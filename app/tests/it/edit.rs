@@ -15,7 +15,7 @@ fn data() -> Data {
 fn splice_keeps_unshown_remote_merge() {
     let n = data();
     let t = n.create_note().unwrap();
-    let s = n.db.edit_text(t, BODY, osis::Path::root()).unwrap();
+    let s = n.db.at(t, BODY).edit_text().unwrap();
     let shown = "hello world";
     s.replace(0..0, shown).unwrap();
     // the "remote" merge, ahead of the widget
@@ -46,7 +46,7 @@ fn splice_keeps_unshown_remote_merge() {
 fn splice_random_against_reference() {
     let n = data();
     let t = n.create_note().unwrap();
-    let s = n.db.edit_text(t, BODY, osis::Path::root()).unwrap();
+    let s = n.db.at(t, BODY).edit_text().unwrap();
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
     let mut rnd = move |m: usize| {
         x ^= x << 13;

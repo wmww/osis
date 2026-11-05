@@ -24,7 +24,7 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     let db = setup(1);
     let k = ak("app:draft.0~");
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     let marks = || db.engine(|e| (e.commit_ids().len(), e.core.generation));
     let before = marks();
@@ -67,7 +67,7 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     db.revert(newest).unwrap();
     let other = setup(2);
     let mut w = other.write();
-    let x = w.create(other.me()).unwrap();
+    let x = w.create().unwrap();
     w.at(x, k.clone()).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let oid = other.commits(&CommitQuery::new().kind(CommitKind::Ephemeral)).unwrap()[0].commit.id;
@@ -138,11 +138,10 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     let (f, item, e) = db
         .batch(|w| {
             let f = w.create_durable(db.me())?;
-            w.make_group(f)?;
             let item = w.create_durable(db.me())?;
-            w.place(item, f)?;
-            let e = w.create(db.me())?;
-            w.place(e, f)?;
+            w.group(f).add(osis::Member::Item(item))?;
+            let e = w.create()?;
+            w.group(f).add(osis::Member::Item(e))?;
             Ok((f, item, e))
         })
         .unwrap();
@@ -166,7 +165,7 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
     assert_eq!(state(), (int(2), int(2)));
     // an ephemeral placement is a change of the folder: undone and redone like one
     let mut w = db.write();
-    w.unplace(e, f).unwrap();
+    w.group(f).remove(osis::Member::Item(e)).unwrap();
     w.commit().unwrap();
     assert!(!db.groups_of(e).unwrap().within.contains(&f));
     db.undo(&scope).unwrap().unwrap();
@@ -185,7 +184,7 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     x.ephemeral_history = 8_000;
     let db = Osis::create(x).unwrap().0;
     let k = ak("app:n.0~");
-    let t = db.batch(|w| w.create(db.me())).unwrap();
+    let t = db.batch(|w| w.create()).unwrap();
     let mut ids = Vec::new();
     for i in 0..40 {
         ids.push(db.write().tap(|w| w.at(t, k.clone()).set(&Value::Int(i)).unwrap()).commit().unwrap().unwrap().id);
@@ -210,7 +209,7 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     x.ephemeral_history = 0;
     let db = Osis::create(x).unwrap().0;
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     assert!(matches!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { reason: DropReason::Compacted, .. })));
@@ -237,11 +236,10 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     let body = ak("app:body.0");
     let mut w = db.write();
     let f = w.create_durable(db.me()).unwrap();
-    w.make_group(f).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let e = w.create(db.me()).unwrap();
-    w.place(e, f).unwrap();
+    let e = w.create().unwrap();
+    w.group(f).add(osis::Member::Item(e)).unwrap();
     w.at(e, draft.clone()).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let durable_in_f = |db: &Osis| db.engine(|x| x.durable_groups_of(&e)).contains(&f);
@@ -278,11 +276,10 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
     let db = setup(10);
     let mut w = db.write();
     let f = w.create_durable(db.me()).unwrap();
-    w.make_group(f).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let e = w.create(db.me()).unwrap();
-    w.place(e, f).unwrap();
+    let e = w.create().unwrap();
+    w.group(f).add(osis::Member::Item(e)).unwrap();
     w.commit().unwrap();
     assert!(db.knows(e).unwrap());
     db.commit_set(e, ak("app:body.0"), &Value::Int(1)).unwrap();
@@ -308,16 +305,15 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
 fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
     let db = setup(11);
     let mut w = db.write();
-    let n = w.create(db.me()).unwrap();
+    let n = w.create().unwrap();
     w.at(n, ak("app:body.0")).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let g = w.create(db.me()).unwrap();
-    w.make_group(g).unwrap();
+    let g = w.create().unwrap();
     w.commit().unwrap();
     assert!(db.created(g).unwrap().unwrap().commit.is_none(), "the group is ephemeral");
     let mut w = db.write();
-    w.place(n, g).unwrap();
+    w.group(g).add(osis::Member::Item(n)).unwrap();
     w.commit().unwrap();
     assert!(db.created(g).unwrap().unwrap().commit.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
 }

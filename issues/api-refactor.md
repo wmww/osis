@@ -36,7 +36,11 @@ Tess answered; the refactor is now in progress (Execution, below).
 
 ### Owner removal is in progress elsewhere
 Design for the world after it:
-- **`create()` takes no owner and `owner_of` goes.** The first admin is the acting actor. Until owners are gone, whatever still needs one is doc-hidden and marked for removal: `create_owned_by(owner)`, `create_ownerless(admin)`, `owner_of`.
+- **`create()` takes no owner and `owner_of` goes.** Done but for removing what is doc-hidden and marked (`create_owned_by(owner)`, `create_ownerless(admin)`, `owner_of`, the CLI's `create --owner`, `ownerless`) when owners go. Then these need an answer, none sayable with `create()` alone:
+  - A thin client: `create()` is `Invalid` (its actor goes with it), so it names a group it may write. After owners, its first admin would be an actor that ends with the client: nobody could administer what it made. It needs the account, or the group, as first admin.
+  - Tree-of-things and a group's holders: a thing owned by a group is read by the group's holders with no grant (entitlement, spec/sync.md §3): `create_owned_by(g)` in tests and the CLI's localhost tests. After owners that is `add_with_grant`, with its boxes per thing.
+  - Chat tells a person from a team and a link key by `owner_of` (`held_through`, `link_key`); the app's `reach` starts from it. Above, Follows from Sharing.
+  - Chat's `create_ownerless(me)` becomes plain `create()` plus a durable write: nothing else in it needs an owner.
 - **Leave room for dispute calls** (list, listen, choose). They are per-node trust choices, not data writes: plain calls on `Osis` (`disputes()`, `on_dispute(f)`, `choose_side(..)`), nothing on `Write`. Not built here, but nothing should block them.
 - **Don't touch engine or perm internals** for renames: the owner work is in there. Rename at the `osis` API, CLI and docs; leave engine names, and spec prose the owner work is rewriting, for a last sweep.
 
@@ -51,28 +55,20 @@ Each is a fresh verdict by the tests in notes/api-design.md, including those tha
 Change:
 1. **`Config` as one struct for every constructor** → required inputs become arguments. `hosts` is read only by `create`, `restore` and `pair`; `store` is ignored by every `attach*`; `remotes` by most. `Osis::create(Store, hosts, Config)`, `open(Store, Config)`, and so on; `Config` holds only what applies everywhere, with `Default`. `clock` and `seed` move to `internals`.
 2. **`attach`, `attach_client`, `attach_remotes`, `attach_node`** → `Osis::connect_socket(path, Config)` and `Osis::connect(&[NodeLogin], Config)`, plus `db.attach_node` and `detach_node` for a handle with a store. `is_attached` is misnamed: it is false on a handle with `attach_node` attachments (verified). Rename it `has_store`, inverted.
-3. **Expiry**: `expires_at`, `expires_in`, `expires(Option)` → `.expires(Expiry::{At, In})`. Not calling it means the key's default.
-4. **Group ops** → a `w.group(g)` builder like `w.at`: `.expires(e)`, `.add(Member)`, `.remove(Member)`. `Member::{Item, Subgroup}` (exists: `add_with_grant` takes it) replaces `place`, `place_expiring`, `unplace`, `add_subgroup`, `remove_subgroup` and `ShareOpts.subgroup`. `make_group` stays a question: can a group just exist on first member? It affects "is this a group", so check `require_synced` before deciding.
-5. **Sequence ops** → one `splice(range, items)`, generic over list items and `&str`, replaces `insert`, `delete` and text `splice`.
-6. **Purge**: `purge`, `purge_commit`, `purge_author` → `purge(Purge::{All, Change(id), Author(actor)})`. Same action, different targets. Note `All` also removes the aspect; keep that visible in its doc.
 7. Done with sharing (`SyncFirst`).
 8. **`CommitQuery`**: builder and public fields are two ways, and `next` changes the contract ("needs a scope", "not with `after`", new failure). Plain struct with `Default`, like the other options. `next` becomes `undo_target(&scope)` and `redo_target(&scope)`; `Next` goes. `actor(a)` adds to `actors`: one spelling.
-9. **`Committed { id, ts, also }`** → `changes: Vec<ChangeId>` (first carries the record), `ts`. Today `id` and `also` differ in type for no gain.
 10. **`GroupPolicy`**: a whole-replacement struct with `publish_reach: Option<bool>`. `None` is a third state, so make it `Reach::{Auto, Always, Never}`. Getter and setter have unrelated names (`group_policy`, `sync_policy`): `sync_options` and `set_sync_options`. `receipts_only` → `SyncMode::{Full, HeadersOnly}`.
 11. **`Hosting.policy: BTreeMap<String, u64>`** → a typed struct; unknown names then cannot exist at run time. `listen: Vec<String>`, `client_listen(&[String])` and `relays` → a URL type, or at least consistent with `Address`.
 12. **`Diagnostic { kind, tids, commit, peer, detail }`**: the meaning of `tids` depends on `kind` (documented positionally: "`tids`: item, group") → an enum with named fields per kind.
 13. **`Stamp` and `CommitInfo`**: verified the same fields but for `Option<CommitId>` vs `ChangeId`, and only `Stamp` has `shown()`. One type.
 14. **`SyncScope::Group(t)`** takes any thing → `SyncScope::{All, Thing(t)}`, matching `Scope`.
 15. **Waiting**: `wait_synced` takes a timeout, `redeem` and others use `Config.wait_timeout`, demotions use constant `PRESYNC_WAIT` or `Try(d)`. Every `async` call takes one explicit timeout, and the constant and config field go. Check the attach dial, which needs a value too.
-16. **`edit_text(tid, key, path)` and `keep_alive(tid, key, path, v)`** take positions differently from everything else → `at(t, k).path(p).edit_text()` and `.keep_alive(v)`.
 17. **Callback naming**: `watch_*` take a callback under another word. All callbacks are `on_*`: `on_thing_change`, `on_grants_change` (done), `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
 18. **`AspectKey`**: three implementations (`Aspect<T>`, `Ak`, `Key`) plus `db.key`. `Key` with no schema is `Ak`. One dynamic key: `db.key(name)` typed when a schema is registered, else untyped. `Ak` becomes a name only, if the examples stay readable. The trait's methods exist for generated code and the crate: seal it or hide them.
 19. **`LinkOpts`, `GrantOpts` and `SetRoleOpts`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
 20. **`now()`** on an attached handle that cannot reach its node falls back to this process's clock, unsaid. A time is no decision-maker's default, but it should say so or return `Result`.
 
 Added by step 2's review (agent's call):
-- **Empty path is the whole value.** A path names a position; `set`, `replace` and `set_stream` work at the empty path, undoing step 2's refusal (it was a magic value: `insert`, `contribute` and `get` already work there, and it forced branches at `app/src/fields.rs:99` and `cli/src/write.rs:150,165`). `at(k).set(&K::T)` stays as the compile-time typed call; say so at its definition. Removes `not_root` and the `stream_in` split.
-- **`members(g) -> Vec<Member>`** replaces `items` and `subgroups` (with D4): one call, one read, round-trips with `add` and `remove`. A tid that is both item and subgroup appears twice.
 - **`on_status_change`** gets `Result<Status>`, like the roster watch (with D17): today a store failure at a status change is told to nobody.
 
 Keep as they are:
@@ -115,8 +111,7 @@ Keep as they are:
 | `sync_now` | `nudge_sync`? | It nudges; `wait_synced` is what syncs |
 | `make_link`, `redeem`, `import_contact` | keep | Clear |
 | `hosts()`, `hosting()`, `host_address()` | `hosts()` and `own_host_*` | The hosts this account uses vs the host this node runs |
-| `create_ownerless`, `owner_of`, `create(owner)` | `create(first_admin)` or `create()` | Owner removal; don't design twice |
-| `place*`, `unplace`, `placed.0~`, `PlacementNotPersisted`, `place_plan` | `add`, `remove`, membership words | Decided 3 |
+| `placed.0~`, `PlacementNotPersisted`, `place_plan`, "placed" in prose | membership words | Decided 3 |
 
 ### Vocabulary
 - **Nodes** (Tess; spec/requirements.md Terms, issues/node-host-unify.md): `node` in the API, never `device`: `devices()` and `remove_device` become `nodes()` and `remove_node`; apps may say device to their users. Host is a role. "Blind node" goes. "Thin client" and "Owner" go: a **client** is a program using a node out of process, local or remote, and a **remote client** one on another machine; neither name says what actor it acts as. `is_attached` and `attach*` follow (D2).
@@ -130,8 +125,6 @@ Keep as they are:
 - **Membership**: being in a group grants nothing (spec/permissions.md §1 already says so) and a thing can be in many groups. The docs must keep "a group's members" (what it contains) clearly apart from "a group's holders" (who has a role on it), since people will confuse them. Sync's other "placed" (a commit held at a host, spec/sync.md §5) becomes "uploaded" or "at a host".
 
 ## G. From building osis-chat (old api-review, not re-checked)
-- `replace` of a `Value::Map` on a long aspect costs a write O(writes so far); a scalar stays flat. Nothing says so.
-- `set` of an equal value writes nothing, so `at.set` silently loses a repeated message on a kept-write aspect, which must use `replace`. Not wrong, but it is the first thing one reaches for. Look at it together with `set` vs `replace` naming: the two names don't say how they differ.
 - No `at.history_entry(id)`: a lookup is a walk from `After(HistoryPos::time(ts))`, so an id must carry its `ts` and aspect.
 - `on_history` is per aspect, so a per-year chat holds one subscription per year, none for a year beyond next.
 - `HistoryBody::Purged { by }` once needed a commit query with no by-id filter; check it's solved by `actor`.
@@ -150,7 +143,7 @@ Keep as they are:
 
 ## Execution
 One branch per step, in order; each merges before the next starts.
-- **4. Shapes**: D.
+- **4. Shapes**: D. 4a (writing and addressing data) done; 4b: D1, D2, D8, D10 to D15, D17 to D20.
 - **5. Leaks**: E, once `internals` has what tests need.
 - **6. Names and docs**: F, the Vocabulary, and H's doc rewrite.
 

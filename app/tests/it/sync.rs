@@ -2,7 +2,7 @@
 //! path of core's tests) and over malformed synced data.
 use osis::internals::Internals as _;
 use osis::core::{BODY, GROUP};
-use osis::{Ak, Config, ManualClock, MemStore, Osis, Path, StoreAt, Tid, Value, WallMs};
+use osis::{Ak, Config, ManualClock, MemStore, Osis, StoreAt, Tid, Value, WallMs};
 use osis_app::data::{Data, Kind};
 use osis_app::schema::View;
 use std::sync::Arc;
@@ -168,7 +168,7 @@ fn remote_delete_of_the_open_thing() {
     let (a, b) = two();
     a.main_group().unwrap();
     let n = a.create_note().unwrap();
-    let s = a.db.edit_text(n, BODY, Path::root()).unwrap();
+    let s = a.db.at(n, BODY).edit_text().unwrap();
     s.replace(0..0, "hello").unwrap();
     s.commit().unwrap();
     sync(&a, &b);
@@ -189,8 +189,8 @@ fn malformed_aspects_do_not_break_reads() {
     osis_app::demo::add(&a).unwrap();
     let g = a.main_group().unwrap();
     let bad = |w: &mut osis::Write<'_>, ak: &str, v: Value| -> osis::Result<()> {
-        let t = w.create(a.db.me())?;
-        w.place(t, g)?;
+        let t = w.create()?;
+        w.group(g).add(osis::Member::Item(t))?;
         w.at(t, Ak::new(ak).unwrap()).set(&v)?;
         Ok(())
     };
@@ -206,8 +206,8 @@ fn malformed_aspects_do_not_break_reads() {
     // an event with a far start and a huge duration
     {
         let mut w = a.db.write();
-        let t = w.create(a.db.me()).unwrap();
-        w.place(t, g).unwrap();
+        let t = w.create().unwrap();
+        w.group(g).add(osis::Member::Item(t)).unwrap();
         w.at(t, osis_app::event::START).set(&osis_app::event::Start::At(osis_app::event::Wall { time: i64::MAX - 1, zone: None })).unwrap();
         w.at(t, osis_app::event::END).set(&osis_app::event::End::After(i64::MAX)).unwrap();
         w.commit().unwrap();

@@ -13,7 +13,7 @@ use osis_sim::world::World;
 
 fn card(db: &Osis, text: &str) -> Tid {
     db.batch(|w| {
-        let c = w.create(db.me())?;
+        let c = w.create()?;
         w.at(c, BODY).set(&text.to_string())?;
         Ok(c)
     })
@@ -103,7 +103,7 @@ fn add_with_grant_unplace_and_stale_placement() {
     assert_eq!(reach_of(&alice, t, g), Some(GroupReach { group: g, placed: true, share: Share::Tied(Role::Write) }));
 
     // no admin on Bob's card: the edge goes as a self-removal through admin on the tag, at once
-    alice.batch(|w| w.unplace(t, g)).unwrap();
+    alice.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     assert!(!alice.grants(t).unwrap().contains_key(&g), "removed with the unplace, before any sync");
     w.run();
     assert!(!bob.grants(t).unwrap().contains_key(&g));
@@ -147,13 +147,13 @@ fn obligation_after_unplace_and_hand_grant_survives() {
     let tied = card(&bob, "tied");
     let hand = card(&bob, "hand");
     bob.add_with_grant(Member::Item(tied), g, Role::Read).unwrap();
-    bob.batch(|w| w.place(hand, g)).unwrap();
+    bob.batch(|w| w.group(g).add(osis::Member::Item(hand))).unwrap();
     bob.grant(hand, g, Role::Read, GrantOpts::default()).unwrap();
     w.run();
     assert_eq!(reach_of(&carol, hand, g).map(|r| r.share), Some(Share::Untied(Role::Read)));
     carol.batch(|w| {
-        w.unplace(tied, g)?;
-        w.unplace(hand, g)
+        w.group(g).remove(osis::Member::Item(tied))?;
+        w.group(g).remove(osis::Member::Item(hand))
     })
     .unwrap();
     assert!(carol.grants(tied).unwrap().contains_key(&g), "Carol may not remove it");
@@ -179,7 +179,7 @@ fn concurrent_raise_and_unplace_converge_unshared() {
     w.run();
     w.set_online(&bob, false);
     w.set_online(&carol, false);
-    carol.batch(|w| w.unplace(t, g)).unwrap();
+    carol.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     bob.add_with_grant(Member::Item(t), g, Role::Write).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Tied(Role::Write)));
     w.set_online(&bob, true);
@@ -201,8 +201,7 @@ fn concurrent_raise_and_unplace_converge_unshared() {
 fn nested_tied_shares() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let sub = bob.batch(|w| {
-        let s = w.create(bob.me())?;
-        w.make_group(s)?;
+        let s = w.create()?;
         Ok(s)
     })
     .unwrap();
@@ -212,13 +211,13 @@ fn nested_tied_shares() {
     assert_eq!(reach_of(&bob, sub, g).map(|r| r.share), Some(Share::Tied(Role::Read)));
     bob.add_with_grant(Member::Item(t), sub, Role::Write).unwrap();
     // the sub-tag's own aspects (its roster among them) sync as an item of the tag
-    bob.batch(|w| w.place(sub, g)).unwrap();
+    bob.batch(|w| w.group(g).add(osis::Member::Item(sub))).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("deep"), "tag -> sub-tag -> card");
     assert_eq!(carol.role_on(t).unwrap(), Some(Role::Read), "the minimum along the path");
     alice.batch(|w| {
-        w.remove_subgroup(g, sub)?;
-        w.unplace(sub, g)
+        w.group(g).remove(osis::Member::Subgroup(sub))?;
+        w.group(g).remove(osis::Member::Item(sub))
     })
     .unwrap();
     assert!(!alice.grants(sub).unwrap().contains_key(&g), "Alice, admin of the tag only: at once");
@@ -240,8 +239,7 @@ fn receipts_only_scope_left_to_holders() {
     let (_, reply) = bob.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
     let sub = bob.batch(|w| {
-        let s = w.create(bob.me())?;
-        w.make_group(s)?;
+        let s = w.create()?;
         Ok(s)
     })
     .unwrap();
@@ -254,7 +252,7 @@ fn receipts_only_scope_left_to_holders() {
     assert_eq!(phone.grants(sub).unwrap().get(&g).map(|e| e.with_membership), Some(true));
     w.set_online(&alice, false);
     w.set_online(&bob, false);
-    carol.batch(|w| w.unplace(sub, g)).unwrap();
+    carol.batch(|w| w.group(g).remove(osis::Member::Item(sub))).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -288,11 +286,11 @@ fn edge_before_placement_is_not_removed() {
     alice.grant(g, b, Role::Write, GrantOpts::default()).unwrap();
     w.run();
     let t = card(&bob, "plan");
-    bob.batch(|w| w.place(t, bob.me())).unwrap();
+    bob.batch(|w| w.group(bob.me()).add(osis::Member::Item(t))).unwrap();
     for _ in 0..3 {
         w.advance(70_000);
     }
-    assert!(text(&phone, t).is_some() && phone.at(g, GROUP).get().unwrap().is_some(), "the phone holds the card and the tag");
+    assert!(text(&phone, t).is_some() && phone.knows(g).unwrap(), "the phone holds the card and the tag");
     w.set_reachable(&bob, s1, false);
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Tied(Role::Read)));
@@ -328,7 +326,7 @@ fn edge_first_then_placement_then_unplace_removes_it() {
     alice.grant(g, b, Role::Write, GrantOpts::default()).unwrap();
     w.run();
     let t = card(&bob, "plan");
-    bob.batch(|w| w.place(t, bob.me())).unwrap();
+    bob.batch(|w| w.group(bob.me()).add(osis::Member::Item(t))).unwrap();
     for _ in 0..3 {
         w.advance(70_000);
     }
@@ -345,7 +343,7 @@ fn edge_first_then_placement_then_unplace_removes_it() {
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
     // Alice, admin of the tag, would remove it too: offline, the phone's obligation alone
     w.set_online(&alice, false);
-    phone.batch(|w| w.unplace(t, g)).unwrap();
+    phone.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     assert!(phone.grants(t).unwrap().contains_key(&g), "not a self-removal: left to the obligation");
     w.advance(70_000);
     assert!(!phone.grants(t).unwrap().contains_key(&g) && !bob.grants(t).unwrap().contains_key(&g), "the phone removed it");
@@ -371,7 +369,7 @@ fn placement_pruned_by_a_reset_counts_as_gone() {
     w.run();
     w.set_online(&alice, false);
     w.set_online(&bob, false);
-    carol.batch(|w| w.unplace(t, g)).unwrap();
+    carol.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     w.run();
     let group = osis::core::Group { items: [other].into(), subgroups: Default::default() };
     // no API call does this; another implementation's commit may
@@ -399,7 +397,7 @@ fn placement_pruned_by_a_reset_counts_as_gone() {
 fn invalidated_placement_removes_the_tied_edge() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let t = card(&bob, "plan");
-    bob.batch(|w| w.place(t, bob.me())).unwrap();
+    bob.batch(|w| w.group(bob.me()).add(osis::Member::Item(t))).unwrap();
     w.run();
     w.set_online(&bob, false);
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
@@ -424,7 +422,7 @@ fn invalidated_placement_removes_the_tied_edge() {
 fn group_holders_learn_edge_removal() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let t = card(&bob, "plan");
-    bob.batch(|w| w.place(t, g)).unwrap();
+    bob.batch(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
     bob.grant(t, g, Role::Read, GrantOpts::default()).unwrap();
     w.run();
     for db in [&alice, &carol] {
@@ -483,8 +481,8 @@ fn group_admin_learns_removal_elsewhere() {
     w.run();
     let t = card(&bob, "plan");
     bob.batch(|w| {
-        w.place(t, g)?;
-        w.place(t, h)
+        w.group(g).add(osis::Member::Item(t))?;
+        w.group(h).add(osis::Member::Item(t))
     })
     .unwrap();
     bob.grant(t, g, Role::Read, GrantOpts::default()).unwrap();
@@ -529,8 +527,8 @@ fn group_admin_copies_removal_without_new_keys() {
     assert_eq!(text(&dave, met).as_deref(), Some("met"));
     let t = card(&bob, "plan");
     bob.batch(|w| {
-        w.place(t, g)?;
-        w.place(t, h)
+        w.group(g).add(osis::Member::Item(t))?;
+        w.group(h).add(osis::Member::Item(t))
     })
     .unwrap();
     bob.grant(t, g, Role::Read, GrantOpts::default()).unwrap();
@@ -604,8 +602,7 @@ fn owner_home_copy_of_removal_without_new_keys() {
     alice.grant(o, e, Role::Read, GrantOpts::default()).unwrap();
     let m = alice
         .batch(|w| {
-            let m = w.create(o)?;
-            w.make_group(m)?;
+            let m = w.create_owned_by(o)?;
             Ok(m)
         })
         .unwrap();
@@ -929,7 +926,7 @@ fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     frank.grant(p, fd, Role::Admin, GrantOpts::default()).unwrap();
     w.run();
     let mut x = dave.write();
-    let c = x.create(p).unwrap();
+    let c = x.create_owned_by(p).unwrap();
     x.at(c, BODY).set(&"dave's".to_string()).unwrap();
     let t = c;
     x.commit().unwrap();

@@ -76,10 +76,9 @@ fn world_waiting(p_wait: Duration) -> World {
     let p = joining.finish(&reply).unwrap();
     let (g, t) = n
         .batch(|w| {
-            let g = w.create(n.me())?;
-            w.make_group(g)?;
-            let t = w.create(g)?;
-            w.place(t, g)?;
+            let g = w.create()?;
+            let t = w.create_owned_by(g)?;
+            w.group(g).add(osis::Member::Item(t))?;
             w.at(t, title()).set(&Value::Str("first".into()))?;
             Ok((g, t))
         })
@@ -135,8 +134,8 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
     // only at N, in the group the client may read, not synced to P yet (N is cut from the host)
     x.net.partition("n", "s");
     let only_n = x.n.batch(|w| {
-        let o = w.create(x.g)?;
-        w.place(o, x.g)?;
+        let o = w.create_owned_by(x.g)?;
+        w.group(x.g).add(osis::Member::Item(o))?;
         w.at(o, title()).set(&s("at n"))?;
         Ok(o)
     }).unwrap();
@@ -191,8 +190,8 @@ fn moving_a_group_both_ways() {
     assert_eq!(x.p_local_copy(), Some(s("first")));
     // a new thing in the routed group is made there; this engine never hears of it
     let mut w = x.p.write();
-    let o = w.create(x.g).unwrap();
-    w.place(o, x.g).unwrap();
+    let o = w.create_owned_by(x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(o)).unwrap();
     w.at(o, title()).set(&s("made through p")).unwrap();
     let made = o;
     w.commit().unwrap();
@@ -601,7 +600,7 @@ fn owner_reconnect_registers_schemas_again() {
     c.register_schema("re.osis", src).unwrap();
     assert!(n.key("re:title.0").unwrap().schema().is_some());
     let mut w = c.write();
-    let t = w.create(c.me()).unwrap();
+    let t = w.create().unwrap();
     w.at(t, title()).set(&s("x")).unwrap();
     w.commit().unwrap();
     let watch = watched(&c, t, title()).unwrap();
@@ -809,10 +808,9 @@ fn thin_client_over_quic() {
     };
     let n = open(true);
     let (g, t) = n.batch(|w| {
-        let g = w.create(n.me())?;
-        w.make_group(g)?;
-        let t = w.create(g)?;
-        w.place(t, g)?;
+        let g = w.create()?;
+        let t = w.create_owned_by(g)?;
+        w.group(g).add(osis::Member::Item(t))?;
         w.at(t, title()).set(&s("first"))?;
         Ok((g, t))
     }).unwrap();
@@ -888,14 +886,13 @@ fn several_attachments_never_skip_a_down_one() {
     let mc = m.client_listen(&["mem://m-clients".to_string()]).unwrap().remove(0);
     let (ma, msec) = m.add_client(None).unwrap();
     let mut w = m.write();
-    let g = w.create(m.me()).unwrap();
-    w.make_group(g).unwrap();
+    let g = w.create().unwrap();
     let g2 = g;
     w.commit().unwrap();
     m.grant(g2, ma, Role::Write, Default::default()).unwrap();
     let mut w = m.write();
-    let o = w.create(g2).unwrap();
-    w.place(o, g2).unwrap();
+    let o = w.create_owned_by(g2).unwrap();
+    w.group(g2).add(osis::Member::Item(o)).unwrap();
     w.at(o, title()).set(&s("at m")).unwrap();
     let there = o;
     w.commit().unwrap();
@@ -940,8 +937,7 @@ fn differential(seed: u64) -> usize {
         x.n.batch(|w| {
             let mut v = Vec::new();
             for _ in 0..n {
-                let g = w.create(x.n.me())?;
-                w.make_group(g)?;
+                let g = w.create()?;
                 v.push(g);
             }
             Ok(v)
@@ -957,9 +953,9 @@ fn differential(seed: u64) -> usize {
     for mask in 1u8..8 {
         let of: Vec<Tid> = gs.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, g)| *g).collect();
         let mut w = x.n.write();
-        let t = w.create(of[0]).unwrap();
+        let t = w.create_owned_by(of[0]).unwrap();
         for g in &of {
-            w.place(t, *g).unwrap();
+            w.group(*g).add(osis::Member::Item(t)).unwrap();
         }
         w.at(t, title()).set(&s("start")).unwrap();
         w.commit().unwrap();
@@ -1202,8 +1198,8 @@ fn a_silent_remote_holds_no_client_of_this_node() {
     let o1 = Osis::attach(&sock, Config::memory()).unwrap();
     let o2 = Osis::attach(&sock, Config::memory()).unwrap();
     let mut w = x.p.write();
-    let t = w.create(x.p.me()).unwrap();
-    w.place(t, x.p.me()).unwrap();
+    let t = w.create().unwrap();
+    w.group(x.p.me()).add(osis::Member::Item(t)).unwrap();
     w.at(t, title()).set(&s("mine")).unwrap();
     let mine = t;
     w.commit().unwrap();
@@ -1258,14 +1254,13 @@ fn moves_differential(seed: u64) -> (usize, usize) {
     let x = world_waiting(Duration::from_millis(600));
     // a second synced group H: `both` is carried by it too, `placed` is only placed there later
     let h = x.n.batch(|w| {
-        let h = w.create(x.n.me())?;
-        w.make_group(h)?;
+        let h = w.create()?;
         Ok(h)
     }).unwrap();
     x.n.sync(h, &[]).unwrap();
     let thing = || x.n.batch(|w| {
-        let t = w.create(x.g)?;
-        w.place(t, x.g)?;
+        let t = w.create_owned_by(x.g)?;
+        w.group(x.g).add(osis::Member::Item(t))?;
         w.at(t, title()).set(&s("first"))?;
         Ok(t)
     }).unwrap();
@@ -1342,7 +1337,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
             // no edge: H does not carry it, so nothing is split, and a read stays where it was
             9 if remote && !is_placed => {
                 let mut w = x.p.write();
-                w.place(placed, h).unwrap();
+                w.group(h).add(osis::Member::Item(placed)).unwrap();
                 w.commit().unwrap();
                 is_placed = true;
             }
@@ -1419,8 +1414,8 @@ fn moves_differential(seed: u64) -> (usize, usize) {
 /// A group of the person, synced on P.
 fn second_group(x: &World) -> Tid {
     let mut w = x.p.write();
-    let h = w.create(x.p.me()).unwrap();
-    w.make_group(h).unwrap();
+    let h = w.create().unwrap();
+    w.at(h, ak("t:made.0")).set(&Value::Bool(true)).unwrap();
     w.commit().unwrap();
     x.p.sync(h, &[]).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
@@ -1521,7 +1516,7 @@ fn placing_a_routed_thing_in_a_local_group_changes_nothing() {
     x.p.commit_set(x.t, title(), &s("acked")).unwrap();
     assert_eq!(x.p_local_copy(), Some(s("first")));
     let mut w = x.p.write();
-    w.place(x.t, h).unwrap();
+    w.group(h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
     assert_eq!(x.p.at(x.t, title()).get().unwrap(), Some(s("acked")));
     assert!(x.p.status().unwrap().split.is_empty());
@@ -1553,7 +1548,7 @@ fn routing_to_what_the_actor_may_not_read_is_as_to_nothing() {
     let x = world();
     x.attach_p();
     let mut w = x.n.write();
-    let t = w.create(x.n.me()).unwrap();
+    let t = w.create().unwrap();
     w.at(t, title()).set(&s("not for the client")).unwrap();
     let hidden = t;
     w.commit().unwrap();
@@ -1583,7 +1578,7 @@ fn an_empty_group_at_the_node_can_be_routed_to() {
     let x = world();
     x.attach_p();
     let mut w = x.n.write();
-    let e = w.create(x.n.me()).unwrap();
+    let e = w.create().unwrap();
     w.commit().unwrap();
     x.n.sync(e, &[]).unwrap();
     x.n.grant(e, x.actor, Role::Read, Default::default()).unwrap();
@@ -1600,8 +1595,7 @@ fn a_group_without_a_label_here_comes_home() {
     let x = world();
     x.attach_p();
     let mut w = x.p.write();
-    let h = w.create(x.p.me()).unwrap();
-    w.make_group(h).unwrap();
+    let h = w.create().unwrap();
     w.commit().unwrap();
     x.p.set_route(h, Some(x.nc.to_string()));
     block_on(x.p.group_source(h, GroupSource::Local)).unwrap();
@@ -1676,8 +1670,7 @@ fn moving_home_after_a_share_into_a_second_group() {
     // sorting after g: a thing's first group by tid was the one named
     let h = loop {
         let mut w = x.p.write();
-        let h = w.create(x.p.me()).unwrap();
-        w.make_group(h).unwrap();
+        let h = w.create().unwrap();
         w.commit().unwrap();
         if h > x.g {
             break h;
@@ -1796,11 +1789,11 @@ fn an_ephemeral_placement_in_a_routed_group_counts() {
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
     let thing = |owner: Tid, also: Option<Tid>| {
         x.p.batch(|w| {
-            let e = w.create(owner)?;
+            let e = w.create_owned_by(owner)?;
             w.at(e, draft.clone()).set(&s("here"))?;
-            w.place(e, x.g)?;
+            w.group(x.g).add(osis::Member::Item(e))?;
             if let Some(h) = also {
-                w.place(e, h)?;
+                w.group(h).add(osis::Member::Item(e))?;
             }
             Ok(e)
         }).unwrap()

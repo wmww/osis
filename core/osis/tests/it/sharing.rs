@@ -30,7 +30,6 @@ fn x(db: &Osis, t: Tid) -> Option<Value> {
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();
     let g = w.create_in(db.me(), &[db.me()]).unwrap();
-    w.make_group(g).unwrap();
     w.commit().unwrap();
     db.sync(g, &[]).unwrap();
     g
@@ -94,7 +93,7 @@ fn grant_refuses_a_lower_role() {
     let b = bob.me();
     let plain = {
         let mut x = alice.write();
-        let t = x.create(alice.me()).unwrap();
+        let t = x.create().unwrap();
         x.at(t, ak("t:x.0")).set(&s("v")).unwrap();
         x.commit().unwrap();
         t

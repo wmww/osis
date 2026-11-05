@@ -12,7 +12,7 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, NAME, TAG};
-use osis::{ChangeId, CommitKind, CommitQuery, Config, Grant, HostAddr, Osis, Result, Runtime, Scope, Tid, Transport, p};
+use osis::{ChangeId, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -163,10 +163,12 @@ impl Data {
     pub fn groups(&self) -> Result<Vec<Tid>> {
         let db = &self.db;
         let home = db.me();
-        let subs = self.db.subgroups(home)?;
         let mut out = Vec::new();
-        for t in subs {
-            if t != home && self.db.at(t, APP).get()? == Some(true) {
+        for m in self.db.members(home)? {
+            if let Member::Subgroup(t) = m
+                && t != home
+                && self.db.at(t, APP).get()? == Some(true)
+            {
                 out.push(t);
             }
         }
@@ -182,18 +184,17 @@ impl Data {
         let mut w = db.write();
         // an item of home (its own aspects sync) and a subgroup (its items sync: a group's
         // members are its items and its subgroups' members, not its items' items)
-        let g = w.create(db.me())?;
-        w.make_group(g)?;
+        let g = w.create()?;
         w.at(g, APP).set(&true)?;
-        w.place(g, db.me())?;
-        w.add_subgroup(db.me(), g)?;
+        w.group(db.me()).add(Member::Item(g))?;
+        w.group(db.me()).add(Member::Subgroup(g))?;
         let mut favs = Vec::new();
         for (v, name, color) in VIEWS {
-            let t = w.create(db.me())?;
+            let t = w.create()?;
             w.at(t, VIEW).set(&v)?;
             w.at(t, NAME).set(&name.to_string())?;
             w.at(t, COLOR).set(&color.to_string())?;
-            w.place(t, g)?;
+            w.group(g).add(Member::Item(t))?;
             favs.push(t);
         }
         w.at(g, FAVORITES).set(&favs)?;
@@ -208,14 +209,14 @@ impl Data {
         let mut seen = BTreeSet::new();
         let mut todo: Vec<Tid> = Vec::new();
         for g in &groups {
-            todo.extend(self.db.items(*g)?.into_iter().chain(self.db.subgroups(*g)?).filter(|t| !groups.contains(t)));
+            todo.extend(self.db.members(*g)?.into_iter().map(Member::tid).filter(|t| !groups.contains(t)));
         }
         while let Some(t) = todo.pop() {
             if !seen.insert(t) {
                 continue;
             }
             if self.db.at(t, TAG).get()?.is_some() {
-                todo.extend(self.db.items(t)?.into_iter().chain(self.db.subgroups(t)?).filter(|x| !groups.contains(x) && !seen.contains(x)));
+                todo.extend(self.db.members(t)?.into_iter().map(Member::tid).filter(|x| !groups.contains(x) && !seen.contains(x)));
             }
         }
         // one view per kind: where two devices both made the views, the smallest tid
@@ -304,7 +305,7 @@ impl Data {
             cands.extend(self.all_tags()?);
         }
         for g in cands {
-            if g != t && self.db.at(g, TAG).get()?.is_some() && (self.db.items(g)?.contains(&t) || self.db.subgroups(g)?.contains(&t)) {
+            if g != t && self.db.at(g, TAG).get()?.is_some() && self.db.members(g)?.iter().any(|m| m.tid() == t) {
                 out.push(g);
             }
         }
@@ -315,12 +316,15 @@ impl Data {
     /// A tag's subtags and items (subtags are not repeated among the items), each by name.
     pub fn tag_contents(&self, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
         let mut subs = Vec::new();
-        for s in self.db.subgroups(tag)? {
-            if s != tag && self.db.at(s, TAG).get()?.is_some() {
-                subs.push(s);
+        let mut items = Vec::new();
+        for m in self.db.members(tag)? {
+            match m {
+                Member::Subgroup(s) if s != tag && self.db.at(s, TAG).get()?.is_some() => subs.push(s),
+                Member::Item(t) if t != tag => items.push(t),
+                _ => {}
             }
         }
-        let mut items: Vec<Tid> = self.db.items(tag)?.into_iter().filter(|t| !subs.contains(t) && *t != tag).collect();
+        items.retain(|t| !subs.contains(t));
         self.sort_by_name(&mut subs)?;
         self.sort_by_name(&mut items)?;
         Ok((subs, items))
@@ -516,7 +520,7 @@ impl Data {
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let nest = self.db.at(t, TAG).get()?.is_some();
         let mut w = self.db.write();
-        if nest { w.add_subgroup(tag, t)? } else { w.place(t, tag)? }
+        w.group(tag).add(if nest { Member::Subgroup(t) } else { Member::Item(t) })?;
         w.commit()?;
         Ok(())
     }
@@ -524,11 +528,10 @@ impl Data {
     /// Takes `t` out of `tag` (it stays in the app group): unplaces a thing, un-nests a tag.
     pub fn remove_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let mut w = self.db.write();
-        if self.db.subgroups(tag)?.contains(&t) {
-            w.remove_subgroup(tag, t)?;
-        }
-        if self.db.items(tag)?.contains(&t) {
-            w.unplace(t, tag)?;
+        for m in self.db.members(tag)? {
+            if m.tid() == t {
+                w.group(tag).remove(m)?;
+            }
         }
         w.commit()?;
         Ok(())
@@ -899,7 +902,7 @@ impl Data {
         let n_tags = if kind == NewKind::Tag { self.all_tags()?.len() } else { 0 };
         let now = crate::time::now_local();
         let mut w = db.write();
-        let t = w.create(db.me())?;
+        let t = w.create()?;
         w.at(t, NAME).set(&String::new())?;
         match kind {
             NewKind::Note => {}
@@ -913,13 +916,12 @@ impl Data {
                 w.at(t, crate::contact::NAMES).set(&crate::contact::Names { given: None, family: None, middle: None, prefix: None, suffix: None })?;
             }
             NewKind::Tag => {
-                w.make_group(t)?;
                 let c = TAG_COLORS.get(n_tags % TAG_COLORS.len()).map(|c| c.to_string());
                 w.at(t, TAG).set(&osis::core::Tag { color: c })?;
-                w.add_subgroup(g, t)?;
+                w.group(g).add(Member::Subgroup(t))?;
             }
         }
-        w.place(t, g)?;
+        w.group(g).add(Member::Item(t))?;
         w.at(g, OPEN).path(p![node]).set(&t)?;
         w.commit()?;
         Ok(t)
@@ -935,13 +937,13 @@ impl Data {
         for g in self.groups()?.into_iter().chain(self.things()?) {
             // a group I cannot edit keeps its edge (to a now empty thing) rather than fail the delete
             let writable = matches!(self.db.role_on(g)?, Some(osis::Role::Write | osis::Role::Admin));
-            if writable && self.db.subgroups(g)?.contains(&t) {
+            if writable && self.db.members(g)?.contains(&Member::Subgroup(t)) {
                 parents.push(g);
             }
         }
         let mut w = self.db.write();
         for g in &parents {
-            w.remove_subgroup(*g, t)?;
+            w.group(*g).remove(Member::Subgroup(t))?;
         }
         w.delete(t)?;
         w.commit()?;

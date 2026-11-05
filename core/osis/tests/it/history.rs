@@ -21,7 +21,7 @@ fn db_at(n: u64) -> Osis {
 }
 
 fn thing(db: &Osis) -> Tid {
-    db.batch(|w| w.create(db.me())).unwrap()
+    db.batch(|w| w.create()).unwrap()
 }
 
 fn say(db: &Osis, t: Tid, x: &str) -> ChangeId {
@@ -84,7 +84,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     let b = say(&db, t, "next");
     let (_sub, rx) = watch(&db, t, msgs());
     let mut w = db.write();
-    w.at(t, msgs()).purge_commit(a).unwrap();
+    w.at(t, msgs()).purge(osis::Purge::Change(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
     let page = db.at(t, msgs()).history(HistoryFrom::Oldest, 10).unwrap();
     assert_eq!(page.entries.len(), 2, "no entry for the request");
@@ -96,7 +96,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     assert!(got.iter().any(|e| matches!(e, HistoryEvent::Commit { id, entry: Some(e) } if *id == a && matches!(e.body, HistoryBody::Purged { .. }))), "{got:?}");
     // an ephemeral batch has no delta to purge; a memory aspect takes none
     let mut w = db.write();
-    assert!(matches!(w.at(t, ak("t:x.0~")).purge_author(db.me()), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, ak("t:x.0~")).purge(osis::Purge::Author(db.me())), Err(Error::Invalid(_))));
 }
 
 // spec/permissions.md §7: a purge by author through the API: an admin's request drops a writer's
@@ -113,9 +113,8 @@ fn purge_author_through_the_api_spec_perm_7() {
     w.run();
     let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut x = alice.write();
-    let g = x.create(alice.me()).unwrap();
-    x.place(g, alice.me()).unwrap();
-    x.make_group(g).unwrap();
+    let g = x.create().unwrap();
+    x.group(alice.me()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, Role::Read, Default::default()).unwrap();
@@ -125,7 +124,7 @@ fn purge_author_through_the_api_spec_perm_7() {
     }
     w.run();
     let mut x = bob.write();
-    x.at(g, msgs()).purge_author(alice.me()).unwrap();
+    x.at(g, msgs()).purge(osis::Purge::Author(alice.me())).unwrap();
     assert!(matches!(x.commit(), Err(Error::Permission { needs: Role::Write, .. })), "a reader");
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     w.run();
@@ -133,7 +132,7 @@ fn purge_author_through_the_api_spec_perm_7() {
     let own = say(&alice, g, "mine");
     w.run();
     let mut x = alice.write();
-    x.at(g, msgs()).purge_author(bob.me()).unwrap();
+    x.at(g, msgs()).purge(osis::Purge::Author(bob.me())).unwrap();
     let rq = x.commit().unwrap().unwrap().id;
     w.run();
     for db in [&alice, &bob] {
@@ -152,8 +151,8 @@ fn page_says_when_it_may_miss_entries() {
     let host = w.add_host();
     let (db, _) = w.person(1, &[host]);
     let t = db.batch(|x| {
-        let t = x.create(db.me())?;
-        x.place(t, db.me())?;
+        let t = x.create()?;
+        x.group(db.me()).add(osis::Member::Item(t))?;
         Ok(t)
     });
     let t = t.unwrap();
@@ -177,8 +176,8 @@ fn a_new_device_reads_newest_first_spec_sync_6() {
     let host = w.add_host();
     let (db, _) = w.person(1, &[host]);
     let mut x = db.write();
-    let t = x.create(db.me()).unwrap();
-    x.place(t, db.me()).unwrap();
+    let t = x.create().unwrap();
+    x.group(db.me()).add(osis::Member::Item(t)).unwrap();
     x.commit().unwrap();
     // the thing's creation comes with its first message, which judging needs first
     say(&db, t, "first");
@@ -225,9 +224,8 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     w.run();
     let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut x = alice.write();
-    let g = x.create(alice.me()).unwrap();
-    x.place(g, alice.me()).unwrap();
-    x.make_group(g).unwrap();
+    let g = x.create().unwrap();
+    x.group(alice.me()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
@@ -235,7 +233,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     let typing = ak("t:typing.0~");
     let (_sub, rx) = watch(&bob, g, typing.clone());
     let mut x = alice.write();
-    x.at(g, typing.clone()).expires_in(Duration::from_secs(5)).set(&s("alice types")).unwrap();
+    x.at(g, typing.clone()).expires(osis::Expiry::In(Duration::from_secs(5))).set(&s("alice types")).unwrap();
     x.commit().unwrap();
     // at once for its writer
     let own = alice.at(g, typing.clone()).history(HistoryFrom::Newest, 5).unwrap();
@@ -298,7 +296,7 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     let rules: ct::RequiredRules = [(String::new(), ct::Required::new(osis::Retention::default(), Some(60_000)))].into_iter().collect();
     db.commit_set(t, ct::REQUIRED, &rules).unwrap();
     let mut w = db.write();
-    w.at(t, msgs()).purge_commit(a).unwrap();
+    w.at(t, msgs()).purge(osis::Purge::Change(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
     assert_eq!(db.at(t, msgs()).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
 }
@@ -318,7 +316,7 @@ fn required_is_no_content_spec_commits_5() {
     assert!(!db.knows(t).unwrap(), "deleted");
     assert_eq!(db.at(t, ct::REQUIRED).get().unwrap(), Some(rules.clone()), "still in force");
     let mut w = db.write();
-    let u = w.create(db.me()).unwrap();
+    let u = w.create().unwrap();
     w.at(u, msgs()).set(&s("x")).unwrap();
     w.at(u, ct::REQUIRED).set(&rules).unwrap();
     w.commit().unwrap();

@@ -443,12 +443,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
-        Cmd::Replace(a) => one_write(ctx, ScriptCmd::Replace(a)),
+        Cmd::Overwrite(a) => one_write(ctx, ScriptCmd::Overwrite(a)),
         Cmd::Rm(a) => one_write(ctx, ScriptCmd::Rm(a)),
         Cmd::Op(a) => one_write(ctx, ScriptCmd::Op(a)),
-        Cmd::Place { t, g } => one_write(ctx, ScriptCmd::Place { t, g }),
-        Cmd::Unplace { t, g } => one_write(ctx, ScriptCmd::Unplace { t, g }),
-        Cmd::Sub(s) => one_write(ctx, ScriptCmd::Sub(s)),
+        Cmd::Group(GroupCmd::Member(m)) => one_write(ctx, ScriptCmd::Group(m)),
         Cmd::Delete { t } => one_write(ctx, ScriptCmd::Delete { t }),
         Cmd::Get { t, ak, path, stream, len } => get(ctx, &t, &ak, path.as_deref(), stream, len),
         Cmd::Edit { t, ak, path, base } => edit(ctx, &t, &ak, path.as_deref(), base),
@@ -495,9 +493,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let mut w = db.write();
             let mut at = w.at(tid, key);
             match (commit, author) {
-                (Some(c), _) => at.purge_commit(osis::ChangeId::Commit(c))?,
-                (_, Some(a)) => at.purge_author(a)?,
-                _ => at.purge()?,
+                (Some(c), _) => at.purge(osis::Purge::Change(osis::ChangeId::Commit(c)))?,
+                (_, Some(a)) => at.purge(osis::Purge::Author(a))?,
+                _ => at.purge(osis::Purge::All)?,
             }
             let done = w.commit()?;
             emit_commit(ctx, done.and_then(|d| d.id.commit()))
@@ -517,7 +515,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Members { g } => {
             let g = ctx.tid(&g)?;
-            let (items, subs) = (db.items(g)?, db.subgroups(g)?);
+            let members = db.members(g)?;
+            let of = |want: fn(Member) -> Option<Tid>| members.iter().copied().filter_map(want).collect::<Vec<_>>();
+            let (items, subs) = (of(|m| if let Member::Item(t) = m { Some(t) } else { None }), of(|m| if let Member::Subgroup(t) = m { Some(t) } else { None }));
             let rel = [("item", &items), ("subgroup", &subs)];
             let lines = rel.iter().flat_map(|(n, v)| v.iter().map(move |t| format!("{n}\t{}", t.to_uri()))).collect::<Vec<_>>();
             let arr = |v: &[Tid]| J::Arr(v.iter().map(|t| J::tid(*t)).collect());

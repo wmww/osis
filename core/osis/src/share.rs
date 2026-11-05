@@ -37,8 +37,13 @@ pub enum Member {
 }
 
 impl Member {
+    /// The member's tid, whichever way it is in the group.
+    pub fn tid(self) -> Tid {
+        self.parts().0
+    }
+
     /// The thing, and whether it is a subgroup.
-    fn parts(self) -> (Tid, bool) {
+    pub(crate) fn parts(self) -> (Tid, bool) {
         match self {
             Member::Item(t) => (t, false),
             Member::Subgroup(t) => (t, true),
@@ -568,7 +573,7 @@ impl Osis {
     }
 
     /// Adds `member` to `group` and grants the group `role` on it, tied together: the grant goes
-    /// when the membership goes (`Write::unplace`, `Write::remove_subgroup`), so the group's holders
+    /// when the membership goes (`GroupWrite::remove`), so the group's holders
     /// reach what is in the group for as long as it is, through the group's sync. Being a member
     /// alone grants nothing, and a plain `grant` to the group stays when the membership goes.
     ///
@@ -577,8 +582,7 @@ impl Osis {
     ///
     /// Needs write on the group and admin on the thing (or an `invite` of at least `role`, the
     /// group having no grant yet), else `Permission` before anything is written. `Invalid`, as for
-    /// `grant`, below a role the group lost. To add without granting: `Write::place`,
-    /// `Write::add_subgroup`. `Unsupported` on a thin client.
+    /// `grant`, below a role the group lost. To add without granting: `Write::group`. `Unsupported` on a thin client.
     pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
         let (tid, subgroup) = member.parts();
         if let crate::sources::Source::Remote(r) = self.route_write_all(&[tid, group])? {
@@ -611,7 +615,7 @@ impl Osis {
         if !placed {
             let mut w = self.write();
             w.sharing = true;
-            if subgroup { w.add_subgroup(group, tid)? } else { w.place(tid, group)? }
+            w.group(group).add(member)?;
             w.commit()?;
         }
         if !grant {
@@ -632,7 +636,7 @@ impl Osis {
     }
 
     /// Removes the grants of `pairs` (thing, group) tied to a membership gone here, where this
-    /// node may as a self-removal (`Write::commit` after an unplace). Otherwise, or on failure, a
+    /// node may as a self-removal (`Write::commit` after a removal). Otherwise, or on failure, a
     /// node that may remove it does so later (node-sync's obligation).
     pub(crate) fn untie_now(&self, pairs: &[(Tid, Tid)]) {
         for (t, g) in pairs {
@@ -939,7 +943,7 @@ impl Osis {
         // the seed thing in the home group: every device of this person holds it and may
         // finalize the link (spec/permissions.md §8)
         let mut w = self.write();
-        w.place(keep, self.me())?;
+        w.group(self.me()).add(Member::Item(keep))?;
         w.commit()?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
@@ -1188,8 +1192,7 @@ impl Osis {
             return Err(Error::Invalid("this database has no hosts: a contact card needs one".into()));
         }
         let mut w = self.write();
-        let p = w.create(me)?;
-        w.make_group(p)?;
+        let p = w.create()?;
         w.commit()?;
         self.persist(&[p])?;
         self.locked(|x| -> Result<()> {
@@ -1441,6 +1444,8 @@ impl Osis {
     /// own at once; give it a label with `sync` or place it like any thing. Its grants are never
     /// compacted, and once no admin is left nobody can change it (members keep their roles).
     /// `Permission` (admin on `admin`), `UnknownActor` (no `keys.0` of `admin` here).
+    // Removed with owners (issues/api-refactor.md Decided).
+    #[doc(hidden)]
     pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
         if self.is_attached() {
             let v = self.rcall(crate::port::method::CREATE_OWNERLESS, vec![Value::Tid(admin)])?;

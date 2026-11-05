@@ -56,15 +56,25 @@ fn attached_handle_works_at_the_node() {
     assert!(c.is_attached());
     assert_eq!((c.me(), c.node()), (n.me(), n.node()));
     let title = ak("note:title.0");
+    // a later batch's first member makes a group, at the node
+    let (plain, kept) = c.batch(|w| {
+        let (p, k) = (w.create()?, w.create()?);
+        w.at(p, ak("t:x.0")).set(&osis::Value::Int(1))?;
+        w.at(k, ak("t:x.0")).set(&osis::Value::Int(1))?;
+        Ok((p, k))
+    }).unwrap();
+    c.batch(|w| w.group(plain).add(osis::Member::Item(kept))).unwrap();
+    assert_eq!(n.members(plain).unwrap(), vec![osis::Member::Item(kept)]);
+    assert_eq!(c.members(plain).unwrap(), vec![osis::Member::Item(kept)]);
+    assert_eq!(n.groups_of(kept).unwrap().item_of, vec![plain]);
     // a batch naming no existing thing goes to the node too
-    c.batch(|w| w.create(c.me())).unwrap();
+    c.batch(|w| w.create()).unwrap();
     let (t, g) = c
         .batch(|w| {
-            let g = w.create(c.me())?;
-            w.make_group(g)?;
-            let t = w.create(c.me())?;
+            let g = w.create()?;
+            let t = w.create()?;
             w.at(t, title.clone()).set(&Value::Str("a".into()))?;
-            w.place(t, g)?;
+            w.group(g).add(osis::Member::Item(t))?;
             Ok((t, g))
         })
         .unwrap();
@@ -154,7 +164,7 @@ fn too_large_then_stream_read() {
     let k = ak("f:blob.0");
     let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
     let mut w = n.write();
-    let t = w.create(n.me()).unwrap();
+    let t = w.create().unwrap();
     w.at(t, k.clone()).set(&Value::Bytes(big.clone())).unwrap();
     w.commit().unwrap();
     assert!(matches!(c.at(t, k.clone()).get(), Err(osis::Error::TooLarge { .. })));
@@ -262,7 +272,7 @@ fn write_nonces_per_session() {
     let n = node(&store, &net, &sock, true);
     let k = ak("note:n.0");
     let mut w = n.write();
-    let t = w.create(n.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     let mut r = Raw::unix(&sock);
     assert!(matches!(r.auth([1; 16]), Ok(Outcome::Ok { .. })));
@@ -345,7 +355,7 @@ fn bench_worst_rows() {
             n.batch(|w| {
                 (0..100)
                     .map(|i| {
-                        let t = w.create(n.me())?;
+                        let t = w.create()?;
                         w.at(t, k.clone()).set(&Value::Int(chunk * 100 + i))?;
                         Ok(t)
                     })
@@ -372,7 +382,7 @@ fn bench_worst_rows() {
         let small = node(&MemStore::new(), &osis_transport::Net::new(2), &s2, true);
         let cs = attach(&s2);
         let mut w = cs.write();
-        let t = w.create(cs.me()).unwrap();
+        let t = w.create().unwrap();
         w.commit().unwrap();
         time("get, small store, 100 times", &mut || {
             for _ in 0..100 {
@@ -448,11 +458,10 @@ fn attached_wait_synced_as_at_the_node() {
     // a group without a label: Unsynced naming it, at once, as at the node
     let (g, t) = c
         .batch(|w| {
-            let g = w.create(c.me())?;
-            w.make_group(g)?;
-            let t = w.create(g)?;
+            let g = w.create()?;
+            let t = w.create_owned_by(g)?;
             w.at(t, ak("note:title.0")).set(&Value::Str("a".into()))?;
-            w.place(t, g)?;
+            w.group(g).add(osis::Member::Item(t))?;
             Ok((g, t))
         })
         .unwrap();
@@ -465,7 +474,7 @@ fn attached_wait_synced_as_at_the_node() {
     let link = c.make_link(g, Role::Read, Default::default()).unwrap();
     assert!(!link.to_string().is_empty());
     // through the port: the node syncs a thing nothing carries, and it has a label there
-    let lone = c.batch(|w| w.create(c.me())).unwrap();
+    let lone = c.batch(|w| w.create()).unwrap();
     c.sync(lone, &[]).unwrap();
     c.grant(lone, n.node(), Role::Read, Default::default()).unwrap();
     assert_eq!(n.status().unwrap().groups[&lone].labels.len(), 1);
@@ -512,7 +521,7 @@ fn too_large_sub_is_not_kept() {
     let k = ak("f:blob.0");
     let small = osis_proto::client::SMALL_REPLY;
     let mut w = n.write();
-    let t = w.create(n.me()).unwrap();
+    let t = w.create().unwrap();
     w.at(t, k.clone()).set(&Value::Bytes(vec![7; small + 1000])).unwrap();
     w.commit().unwrap();
     let before = n.watches();
@@ -574,11 +583,10 @@ fn rows_that_wait_through_the_socket() {
     let group = |text: &str| {
         let (g, t) = ca
             .batch(|w| {
-                let g = w.create(ca.me())?;
-                w.make_group(g)?;
-                let t = w.create(g)?;
+                let g = w.create()?;
+                let t = w.create_owned_by(g)?;
                 w.at(t, k.clone()).set(&Value::Str(text.into()))?;
-                w.place(t, g)?;
+                w.group(g).add(osis::Member::Item(t))?;
                 Ok((g, t))
             })
             .unwrap();
@@ -644,8 +652,7 @@ fn a_waiting_row_holds_nothing() {
     let s2 = d.0.join("m.sock");
     let m = node_on(&net, "m", vec![osis::HostAddr::new("mem://nobody", [3; 32])], &s2);
     let mut w = m.write();
-    let g = w.create(m.me()).unwrap();
-    w.make_group(g).unwrap();
+    let g = w.create().unwrap();
     w.commit().unwrap();
     let link: ShareLink = m.make_link(g, Role::Read, Default::default()).unwrap();
     let sock = d.0.join("n.sock");
@@ -685,8 +692,7 @@ fn no_waiting_row_once_the_handles_went() {
     let s2 = d.0.join("m.sock");
     let m = node_on(&net, "m", vec![osis::HostAddr::new("mem://nobody", [3; 32])], &s2);
     let mut w = m.write();
-    let g = w.create(m.me()).unwrap();
-    w.make_group(g).unwrap();
+    let g = w.create().unwrap();
     w.commit().unwrap();
     let link = m.make_link(g, Role::Read, Default::default()).unwrap();
     let sock = d.0.join("n.sock");
@@ -694,7 +700,7 @@ fn no_waiting_row_once_the_handles_went() {
     let c = attach(&sock);
     // a callback stuck in the dispatcher holds the database after the last handle
     let mut w = n.write();
-    let t = w.create(n.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     let (stuck_tx, stuck_rx) = channel::<()>();
     let (in_tx, in_rx) = channel();
@@ -773,9 +779,9 @@ fn process_wide_rows_through_the_socket() {
     // a bundle of more than a page, out through the socket and in through another's
     let big = "b".repeat(osis::STREAM_CHUNK * 3 / 2);
     let mut w = c.write();
-    let t = w.create(g).unwrap();
+    let t = w.create_owned_by(g).unwrap();
     w.at(t, ak("note:big.0")).set(&Value::Str(big.clone())).unwrap();
-    w.place(t, g).unwrap();
+    w.group(g).add(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
     crate::common::block_on(c.wait_synced(SyncScope::All, W)).unwrap();
     let mut out = Vec::new();
@@ -856,7 +862,7 @@ fn threads_writing_on_one_handle() {
     let c = attach(&sock);
     let k = ak("note:n.0");
     let mut w = n.write();
-    let t = w.create(n.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     let hs: Vec<_> = (0..8)
         .map(|i| {

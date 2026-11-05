@@ -27,7 +27,6 @@ fn create(a: &Osis) -> Tid {
     let rules = ct::RequiredRules { rules: BTreeMap::from([("chat:msgs:".to_string(), msgs), (String::new(), rest)]), keep: true };
     let mut w = a.write();
     w.at(c, ct::REQUIRED).set(&rules).unwrap();
-    w.make_group(c).unwrap();
     w.commit().unwrap();
     a.sync(c, &[]).unwrap();
     c
@@ -35,7 +34,7 @@ fn create(a: &Osis) -> Tid {
 
 fn post(a: &Osis, c: Tid, i: usize) {
     let mut w = a.write();
-    w.at(c, Ak::new(MSGS).unwrap()).replace(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
+    w.at(c, Ak::new(MSGS).unwrap()).overwrite(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
     w.commit().unwrap();
 }
 
@@ -396,7 +395,7 @@ const TEXT: &str = "app:text:y1.0";
 
 fn write(a: &Osis, t: Tid, i: usize) {
     let mut w = a.write();
-    w.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+    w.at(t, Ak::new(TEXT).unwrap()).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
     w.commit().unwrap();
 }
 
@@ -479,9 +478,8 @@ fn many_labels() {
     phase(&mut w, "create", n, &[&a, &b], |w| {
         for i in 0..n {
             let mut x = a.write();
-            let t = x.create(a.me()).unwrap();
-            x.make_group(t).unwrap();
-            x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+            let t = x.create().unwrap();
+            x.at(t, Ak::new(TEXT).unwrap()).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
             x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             things.push(t);
@@ -559,9 +557,8 @@ fn labels_world(n: usize) -> (World, Osis, Osis, Tid, Vec<Tid>) {
 
 fn share_new(w: &mut World, a: &Osis, p: Tid, i: usize) -> Tid {
     let mut x = a.write();
-    let t = x.create(a.me()).unwrap();
-    x.make_group(t).unwrap();
-    x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+    let t = x.create().unwrap();
+    x.at(t, Ak::new(TEXT).unwrap()).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
     x.commit().unwrap();
     a.sync(t, &[]).unwrap();
     a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();
@@ -711,9 +708,8 @@ fn a_burst_of_shares_costs_each_about_once() {
     let burst = |w: &mut World, from: usize| {
         for i in 0..BURST {
             let mut x = a.write();
-            let t = x.create(a.me()).unwrap();
-            x.make_group(t).unwrap();
-            x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {}", from + i).into_bytes())).unwrap();
+            let t = x.create().unwrap();
+            x.at(t, Ak::new(TEXT).unwrap()).overwrite(&Value::Bytes(format!("text {}", from + i).into_bytes())).unwrap();
             x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();
@@ -746,9 +742,8 @@ fn a_burst_past_the_budget_sends_each_body_about_once() {
     let things: Vec<Tid> = (0..BURST)
         .map(|i| {
             let mut x = a.write();
-            let t = x.create(a.me()).unwrap();
-            x.make_group(t).unwrap();
-            x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+            let t = x.create().unwrap();
+            x.at(t, Ak::new(TEXT).unwrap()).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
             x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();

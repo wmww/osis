@@ -3,6 +3,7 @@
 //! actor for every row. The rights of that actor are the whole authorization.
 
 use crate::common::watched;
+use crate::common::MembersOf as _;
 use crate::common::TestWrites as _;
 use crate::common::{T0, ak, block_on};
 use crate::port::{Raw, set_batch};
@@ -56,19 +57,16 @@ fn open(store: &MemStore, net: &osis_transport::Net, clock: &Arc<ManualClock>, c
 fn node() -> Node {
     let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(WallMs(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
-    let me = n.me();
     let (g, t, placed, out, h, u) = n
         .batch(|w| {
-            let g = w.create(me)?;
-            w.make_group(g)?;
-            let t = w.create(g)?;
-            w.place(t, g)?;
-            let placed = w.create(me)?;
-            w.place(placed, g)?;
-            let out = w.create(me)?;
-            let h = w.create(me)?;
-            w.make_group(h)?;
-            let u = w.create(h)?;
+            let g = w.create()?;
+            let t = w.create_owned_by(g)?;
+            w.group(g).add(osis::Member::Item(t))?;
+            let placed = w.create()?;
+            w.group(g).add(osis::Member::Item(placed))?;
+            let out = w.create()?;
+            let h = w.create()?;
+            let u = w.create_owned_by(h)?;
             Ok((g, t, placed, out, h, u))
         })
         .unwrap();
@@ -176,7 +174,7 @@ fn reads_are_exactly_the_actors() {
     assert_eq!(c.commits(&CommitQuery::new().scope(Scope::Thing(x.t))).unwrap(), x.n.commits(&CommitQuery::new().scope(Scope::Thing(x.t))).unwrap());
     // a group listing it shows only groups it reads
     let mut w = x.n.write();
-    w.place(x.t, x.h).unwrap();
+    w.group(x.h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
     assert!(c.groups_of(x.t).unwrap().item_of.contains(&x.g) && !c.groups_of(x.t).unwrap().item_of.contains(&x.h));
     assert!(x.n.groups_of(x.t).unwrap().item_of.contains(&x.h));
@@ -213,7 +211,7 @@ fn writes_are_the_actors() {
     let name = ak("t:name.0");
     let (a, s, c) = x.client(Role::Read);
     assert!(matches!(c.commit_set(x.t, name.clone(), &Value::Int(1)), Err(Error::Permission { tid, .. }) if tid == x.t));
-    assert!(matches!(c.batch(|w| w.create(x.g)), Err(Error::Permission { .. })), "read on the owner is no write");
+    assert!(matches!(c.batch(|w| w.create_owned_by(x.g)), Err(Error::Permission { .. })), "read on the owner is no write");
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
     c.commit_set(x.t, name.clone(), &Value::Int(2)).unwrap();
     assert_eq!(x.n.at(x.t, name.clone()).get().unwrap(), Some(Value::Int(2)));
@@ -221,26 +219,27 @@ fn writes_are_the_actors() {
     assert_eq!((last.commit.actor, last.commit.node), (a, x.n.node()));
     // created things
     let made = c.batch(|w| {
-        let m = w.create(x.g)?;
+        let m = w.create_owned_by(x.g)?;
         w.at(m, name.clone()).set(&Value::Int(3))?;
         Ok(m)
     });
     let made = made.unwrap();
     assert_eq!(x.n.owner_of(made).unwrap(), Some(x.g));
     assert_eq!(c.at(made, name.clone()).get().unwrap(), Some(Value::Int(3)));
-    assert!(matches!(c.batch(|w| w.create(a)), Err(Error::Invalid(_))), "its own actor as owner");
-    assert!(matches!(c.batch(|w| w.create(x.n.me())), Err(Error::Permission { .. })), "the person as owner");
+    assert!(matches!(c.batch(|w| w.create_owned_by(a)), Err(Error::Invalid(_))), "its own actor as owner");
+    assert!(matches!(c.batch(|w| w.create_owned_by(x.n.me())), Err(Error::Permission { .. })), "the person as owner");
+    assert!(matches!(c.batch(|w| w.create()), Err(Error::Invalid(_))), "the acting actor: its own");
     // a batch naming another actor: a raw session (the API records its own)
     let mut r = x.raw(&s);
     let forged = r.call_at(1, WRITE, set_batch(1, x.n.me(), x.t, &name, Value::Int(4)));
     assert!(matches!(forged, Outcome::Err { .. }), "{forged:?}");
     assert_eq!(x.n.at(x.t, name.clone()).get().unwrap(), Some(Value::Int(2)));
     // placing what it may not read
-    assert!(matches!(c.batch(|w| w.place(x.out, x.g)), Err(Error::UnknownThing { .. })));
-    assert!(matches!(c.batch(|w| w.place(x.t, x.h)), Err(Error::UnknownThing { .. })), "a group it does not read");
+    assert!(matches!(c.batch(|w| w.group(x.g).add(osis::Member::Item(x.out))), Err(Error::UnknownThing { .. })));
+    assert!(matches!(c.batch(|w| w.group(x.h).add(osis::Member::Item(x.t))), Err(Error::UnknownThing { .. })), "a group it does not read");
     // a purge needs write, whatever the node may do: read was refused above; with write it names
     // what the actor has no right to: its reset stands, the body stays (see the test below)
-    c.batch(|w| w.at(x.t, name.clone()).purge()).unwrap();
+    c.batch(|w| w.at(x.t, name.clone()).purge(osis::Purge::All)).unwrap();
     x.n.grant(x.g, a, Role::Admin, Default::default()).unwrap();
     // an aspect of the node needs the actor's rights too
     let node_thing = x.n.node();
@@ -257,10 +256,10 @@ fn split_write_comes_back_whole_spec_commits_6() {
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
     let mut w = c.write();
     w.at(x.t, name.clone()).set(&Value::Int(1)).unwrap();
-    w.at(x.t, brief.clone()).expires_in(Duration::from_secs(3600)).set(&Value::Int(2)).unwrap();
+    w.at(x.t, brief.clone()).expires(osis::Expiry::In(Duration::from_secs(3600))).set(&Value::Int(2)).unwrap();
     let done = w.commit().unwrap().unwrap();
     let first = done.id.commit().expect("a commit");
-    let [other] = done.also.as_slice() else { panic!("one more commit: {:?}", done.also) };
+    let [osis::ChangeId::Commit(other)] = done.also.as_slice() else { panic!("one more commit: {:?}", done.also) };
     let h = |id| x.n.engine(|e| e.header(&id)).unwrap();
     assert_eq!(h(first).ts, h(*other).ts, "one ts");
     assert_eq!((h(first).expires, h(*other).expires), (None, Some(h(first).ts.wall_ms().0 + 3_600_000)));
@@ -282,7 +281,7 @@ fn client_purge_is_judged_by_the_actor_spec_perm_7() {
     w.at(x.t, name.clone()).retention(only).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let mut w = c.write();
-    w.at(x.t, name.clone()).purge().unwrap();
+    w.at(x.t, name.clone()).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     assert_eq!(held(&name), [true], "the person's author-only delta");
     // a writer's own
@@ -292,19 +291,19 @@ fn client_purge_is_judged_by_the_actor_spec_perm_7() {
     w.at(x.t, own.clone()).retention(only).set(&Value::Int(2)).unwrap();
     w.commit().unwrap();
     let mut w = w2.write();
-    w.at(x.t, own.clone()).purge().unwrap();
+    w.at(x.t, own.clone()).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     assert_eq!(held(&own), [false]);
     // an admin, any admin class
     let other = ak("t:other.0");
     x.n.commit_set(x.t, other.clone(), &Value::Int(3)).unwrap();
     let mut w = c.write();
-    w.at(x.t, other.clone()).purge().unwrap();
+    w.at(x.t, other.clone()).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     assert_eq!(x.n.at(x.t, other.clone()).get().unwrap(), None);
     // the person itself may
     let mut w = x.n.write();
-    w.at(x.t, name.clone()).purge().unwrap();
+    w.at(x.t, name.clone()).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     assert_eq!(held(&name), [false]);
     assert_eq!(c.me(), a);
@@ -325,7 +324,7 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
         w.at(t, k.clone()).retention(forever).set(&Value::Str("secret".into())).unwrap();
         w.commit().unwrap();
         let mut w = x.n.write();
-        w.at(t, k.clone()).purge().unwrap();
+        w.at(t, k.clone()).purge(osis::Purge::All).unwrap();
         w.commit().unwrap();
     }
     let entries = x.n.commits(&q(x.t)).unwrap();
@@ -347,8 +346,8 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
     });
     id.unwrap();
     let mut w = x.n.write();
-    w.at(x.t, both.clone()).purge().unwrap();
-    w.at(x.u, both.clone()).purge().unwrap();
+    w.at(x.t, both.clone()).purge(osis::Purge::All).unwrap();
+    w.at(x.u, both.clone()).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     let sc = CommitQuery::new().scope(Scope::Aspects(vec![(x.t, both.clone()), (x.u, both.clone())]));
     assert!(x.n.commits(&sc).unwrap().iter().any(|e| e.purged.len() == 2), "the node reads both");
@@ -704,27 +703,27 @@ fn group_aspect_ops_place_only_what_it_reads() {
     let x = node();
     let (a, sec, c) = x.client(Role::Write);
     let hidden = |r: osis::Result<()>| assert!(matches!(r, Err(Error::UnknownThing { .. })), "{r:?}");
-    hidden(c.batch(|w| w.place(x.out, x.g)));
-    hidden(c.batch(|w| w.place(Tid::from_bytes([9; 15]), x.g)));
+    hidden(c.batch(|w| w.group(x.g).add(osis::Member::Item(x.out))));
+    hidden(c.batch(|w| w.group(x.g).add(osis::Member::Item(Tid::from_bytes([9; 15])))));
     let with_out = ct::Group { items: [x.t, x.out].into_iter().collect(), subgroups: Default::default() };
     assert!(matches!(c.commit_set(x.g, ct::GROUP, &with_out), Err(Error::Invalid(_))));
-    assert!(matches!(c.batch(|w| w.at(x.g, ct::GROUP).replace(&with_out)), Err(Error::Invalid(_))));
+    assert!(matches!(c.batch(|w| w.at(x.g, ct::GROUP).overwrite(&with_out)), Err(Error::Invalid(_))));
     let mut raw = x.raw(&sec);
     assert!(matches!(raw.call_at(1, WRITE, set_batch(1, a, x.g, &ak("group.0"), osis::Codec::to_value(&with_out))), Outcome::Err { .. }));
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
     // what it reads, and what the batch creates
     let mut w = c.write();
-    let m = w.create(x.g).unwrap();
-    w.place(m, x.g).unwrap();
+    let m = w.create_owned_by(x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(m)).unwrap();
     let g2 = m;
     w.commit().unwrap();
     assert!(x.n.groups_of(g2).unwrap().item_of.contains(&x.g));
     // a listed name it may not read may go: it holds write on the list
     let mut w = x.n.write();
-    w.place(x.out, x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
     w.commit().unwrap();
     let mut w = c.write();
-    w.unplace(x.out, x.g).unwrap();
+    w.group(x.g).remove(osis::Member::Item(x.out)).unwrap();
     w.commit().unwrap();
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
 }
@@ -735,7 +734,7 @@ fn a_batch_by_hand_writes_group_0_by_no_op() {
     let x = node();
     let (a, sec, c) = x.client(Role::Write);
     let mut raw = x.raw(&sec);
-    let invalid = |o: Outcome, what: &str| assert!(matches!(&o, Outcome::Err { detail, .. } if format!("{detail:?}").contains("group calls")), "{what}: {o:?}");
+    let invalid = |o: Outcome, what: &str| assert!(matches!(&o, Outcome::Err { detail, .. } if format!("{detail:?}").contains("Write::group")), "{what}: {o:?}");
     let readable = ct::Group { items: [x.t].into_iter().collect(), subgroups: Default::default() };
     invalid(raw.call_at(1, WRITE, set_batch(1, a, x.g, &ak("group.0"), osis::Codec::to_value(&readable))), "set");
     let batch = |nonce: u64, op: Vec<Value>| vec![Value::uint(nonce), Value::Tid(a), Value::List(vec![Value::Str("group.0".into())]), Value::List(vec![Value::List(op)])];
@@ -752,9 +751,9 @@ fn a_batch_by_hand_writes_group_0_by_no_op() {
     assert_eq!(x.n.items(x.g).unwrap().len(), 2);
     // the call an expiry in the table is for
     let mut w = c.write();
-    let m = w.create(x.g).unwrap();
+    let m = w.create_owned_by(x.g).unwrap();
     w.at(m, ak("t:name.0")).set(&Value::Int(1)).unwrap();
-    w.place_expiring(m, x.g, Some(Duration::from_secs(60))).unwrap();
+    w.group(x.g).expires(osis::Expiry::In(Duration::from_secs(60))).add(osis::Member::Item(m)).unwrap();
     w.commit().unwrap();
     assert!(x.n.items(x.g).unwrap().contains(&m));
 }
@@ -766,7 +765,7 @@ fn hidden_group_scopes_nothing() {
     let name = ak("t:name.0");
     let (_, _, c) = x.client(Role::Write);
     let mut w = x.n.write();
-    w.place(x.t, x.h).unwrap();
+    w.group(x.h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
     c.commit_set(x.t, name.clone(), &Value::Int(1)).unwrap();
     let ghost = Tid::from_bytes([9; 15]);
@@ -815,9 +814,9 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     let (_, _, c) = x.client(Role::Write);
     let made = |x: &Node| {
         let mut w = x.n.write();
-        let m = w.create(x.g).unwrap();
+        let m = w.create_owned_by(x.g).unwrap();
         w.at(m, name.clone()).set(&Value::Int(1)).unwrap();
-        w.place(m, x.g).unwrap();
+        w.group(x.g).add(osis::Member::Item(m)).unwrap();
         (m, w.commit().unwrap().unwrap().id)
     };
     let (m, id) = made(&x);
@@ -826,7 +825,7 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     assert_eq!(x.n.at(m, adm).get().unwrap(), Some(Value::Int(2)));
     let (m, id) = made(&x);
     let mut w = x.n.write();
-    w.place(m, x.h).unwrap();
+    w.group(x.h).add(osis::Member::Item(m)).unwrap();
     w.commit().unwrap();
     c.revert(id).unwrap();
     assert!(!x.n.knows(m).unwrap());
@@ -839,15 +838,15 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     // an ephemeral thing likewise
     let id_eph = {
         let mut w = c.write();
-        let m = w.create(x.g).unwrap();
+        let m = w.create_owned_by(x.g).unwrap();
         w.at(m, ak("t:e.0~")).set(&Value::Int(1)).unwrap();
-        w.place(m, x.g).unwrap();
+        w.group(x.g).add(osis::Member::Item(m)).unwrap();
         (m, w.commit().unwrap().unwrap().id)
     };
     let (m, id) = id_eph;
     assert!(x.n.engine(|e| e.ephemeral_thing(&m).is_some()));
     let mut w = x.n.write();
-    w.place(m, x.h).unwrap();
+    w.group(x.h).add(osis::Member::Item(m)).unwrap();
     w.commit().unwrap();
     c.revert(id).unwrap();
     let (mut gone, groups) = x.n.engine(|e| (e.ephemeral_thing(&m).is_none_or(|t| t.deleted), e.groups_of(&m)));
@@ -982,7 +981,7 @@ fn revert_tells_no_hidden_body_dropped() {
     };
     x.n.commit_set(x.out, name.clone(), &Value::Int(8)).unwrap();
     let mut w = x.n.write();
-    w.at(x.out, name.clone()).purge().unwrap();
+    w.at(x.out, name.clone()).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     assert!(!x.n.engine(|e| e.body_not_dropped(&match id { osis::ChangeId::Commit(c) => c, _ => unreachable!() }, &x.out, &name)), "the body went");
     assert!(matches!(x.n.revert(id), Err(Error::NotUndoable { .. })), "the node sees it");
@@ -1005,7 +1004,7 @@ fn refused_undo_blocks_only_its_scope() {
     let older = set(2);
     let unplaced = {
         let mut w = c.write();
-        w.unplace(x.placed, x.g).unwrap();
+        w.group(x.g).remove(osis::Member::Item(x.placed)).unwrap();
         w.commit().unwrap().unwrap().id
     };
     for _ in 0..2 {
@@ -1028,8 +1027,8 @@ fn hidden_answers_writes_as_unknown() {
     let x = node();
     let (_, _, c) = x.client(Role::Write);
     let me = x.n.me();
-    let ephg = x.n.batch(|w| { let e = w.create(me)?; w.make_group(e)?; Ok(e) }).unwrap();
-    let eph = x.n.batch(|w| { let e = w.create(me)?; w.at(e, ak("t:e.0~")).set(&Value::Int(1))?; Ok(e) }).unwrap();
+    let ephg = x.n.batch(|w| { let e = w.create()?; Ok(e) }).unwrap();
+    let eph = x.n.batch(|w| { let e = w.create()?; w.at(e, ak("t:e.0~")).set(&Value::Int(1))?; Ok(e) }).unwrap();
     assert!(x.n.engine(|e| e.ephemeral_thing(&eph).is_some() && e.ephemeral_thing(&ephg).is_some()));
     let ghost = Tid::from_bytes([9; 15]);
     let g = write_answers(&c, &x, ghost);
@@ -1059,17 +1058,16 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
         read(c.undo(&Scope::Group(t)).map(|v| format!("{v:?}"))),
         read(c.redo(&Scope::Group(t)).map(|v| format!("{v:?}"))),
         read(c.redo(&Scope::Thing(t)).map(|v| format!("{v:?}"))),
-        write(&|w| w.place(t, x.g)),
-        write(&|w| w.unplace(t, x.g)),
-        write(&|w| w.add_subgroup(x.g, t)),
-        write(&|w| w.remove_subgroup(x.g, t)),
-        write(&|w| w.place(x.t, t)),
-        write(&|w| w.unplace(x.t, t)),
-        write(&|w| w.make_group(t)),
-        write(&|w| w.create(t).map(|_| ())),
+        write(&|w| w.group(x.g).add(osis::Member::Item(t))),
+        write(&|w| w.group(x.g).remove(osis::Member::Item(t))),
+        write(&|w| w.group(x.g).add(osis::Member::Subgroup(t))),
+        write(&|w| w.group(x.g).remove(osis::Member::Subgroup(t))),
+        write(&|w| w.group(t).add(osis::Member::Item(x.t))),
+        write(&|w| w.group(t).remove(osis::Member::Item(x.t))),
+        write(&|w| w.create_owned_by(t).map(|_| ())),
         write(&|w| {
-            let m = w.create(x.g)?;
-            w.place(m, t)
+            let m = w.create_owned_by(x.g)?;
+            w.group(t).add(osis::Member::Item(m))
         }),
         write(&|w| w.at(t, ak("t:sig.0*")).set(&Value::Int(1))),
         write(&|w| w.at(t, ak("t:e.0~")).set(&Value::Int(1))),
@@ -1090,33 +1088,32 @@ fn revert_lists_nothing_hidden() {
     let refused = |r: osis::Result<osis::Committed>, g: Tid| assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == g), "{r:?}");
     let unplaced = |m: Tid| {
         let mut w = x.n.write();
-        w.unplace(m, x.g).unwrap();
+        w.group(x.g).remove(osis::Member::Item(m)).unwrap();
         w.commit().unwrap().unwrap().id
     };
     let listed = |m: Tid| x.n.groups_of(m).unwrap().item_of.contains(&x.g);
     // durable
     let mut w = x.n.write();
-    w.place(x.out, x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
     w.commit().unwrap();
     let id = unplaced(x.out);
     refused(c.revert(id), x.g);
     assert!(!listed(x.out));
     // a subgroup
     let mut w = x.n.write();
-    w.add_subgroup(x.g, x.h).unwrap();
+    w.group(x.g).add(osis::Member::Subgroup(x.h)).unwrap();
     w.commit().unwrap();
     let rm = {
         let mut w = x.n.write();
-        w.remove_subgroup(x.g, x.h).unwrap();
+        w.group(x.g).remove(osis::Member::Subgroup(x.h)).unwrap();
         w.commit().unwrap().unwrap().id
     };
     refused(c.revert(rm), x.g);
     assert!(!x.n.groups_of(x.h).unwrap().subgroup_of.contains(&x.g));
     // ephemeral
-    let me = x.n.me();
     let mut w = x.n.write();
-    let e = w.create(me).unwrap();
-    w.place(e, x.g).unwrap();
+    let e = w.create().unwrap();
+    w.group(x.g).add(osis::Member::Item(e)).unwrap();
     w.commit().unwrap();
     let eid = unplaced(e);
     assert!(matches!(eid, osis::ChangeId::Ephemeral(_)));
@@ -1124,18 +1121,18 @@ fn revert_lists_nothing_hidden() {
     assert!(!listed(e));
     // its own unplace of a listed name it may not read: gone stays gone
     let mut w = x.n.write();
-    w.place(x.placed, x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(x.placed)).unwrap();
     w.commit().unwrap();
     let mut w = c.write();
-    w.unplace(x.placed, x.g).unwrap();
+    w.group(x.g).remove(osis::Member::Item(x.placed)).unwrap();
     w.commit().unwrap();
     assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
     assert!(!listed(x.placed));
     // what it reads goes back
     let mut w = c.write();
-    let m = w.create(x.g).unwrap();
+    let m = w.create_owned_by(x.g).unwrap();
     w.at(m, ak("t:name.0")).set(&Value::Int(1)).unwrap();
-    w.place(m, x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(m)).unwrap();
     let mine = m;
     w.commit().unwrap();
     let id = unplaced(mine);
@@ -1143,12 +1140,12 @@ fn revert_lists_nothing_hidden() {
     assert!(listed(mine));
     // both halves of one change: the durable half refused after the ephemeral one was built: nothing of either, nothing logged, no commit
     let mut w = x.n.write();
-    w.place(x.out, x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
     w.commit().unwrap();
     let eph = ak("t:e.0~");
     let both = {
         let mut w = x.n.write();
-        w.unplace(x.out, x.g).unwrap();
+        w.group(x.g).remove(osis::Member::Item(x.out)).unwrap();
         w.at(x.t, eph.clone()).set(&Value::Int(5)).unwrap();
         w.commit().unwrap().unwrap().id
     };
@@ -1162,7 +1159,7 @@ fn revert_lists_nothing_hidden() {
     assert_eq!(x.n.at(x.t, eph.clone()).get().unwrap(), Some(Value::Int(6)), "its counters still run");
     // the node may, what the actor may not
     let mut w = x.n.write();
-    w.place(x.out, x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
     w.commit().unwrap();
     let id = unplaced(x.out);
     x.n.revert(id).unwrap();
@@ -1170,9 +1167,9 @@ fn revert_lists_nothing_hidden() {
     // a client's draft saved, undone and redone: its own, placed by it
     let name = ak("t:name.0");
     let mut w = c.write();
-    let m = w.create(x.g).unwrap();
+    let m = w.create_owned_by(x.g).unwrap();
     w.at(m, ak("t:e.0~")).set(&Value::Int(1)).unwrap();
-    w.place(m, x.g).unwrap();
+    w.group(x.g).add(osis::Member::Item(m)).unwrap();
     let d = m;
     w.commit().unwrap();
     assert!(x.n.engine(|e| e.ephemeral_thing(&d).is_some()));
@@ -1214,8 +1211,8 @@ fn persisting_converts_only_placements_the_actor_may_write() {
     let e = x
         .n
         .batch(|w| {
-            let e = w.create(x.g)?;
-            w.place(e, x.h)?;
+            let e = w.create_owned_by(x.g)?;
+            w.group(x.h).add(osis::Member::Item(e))?;
             Ok(e)
         })
         .unwrap();
@@ -1226,8 +1223,8 @@ fn persisting_converts_only_placements_the_actor_may_write() {
     let e2 = x
         .n
         .batch(|w| {
-            let e = w.create(x.g)?;
-            w.place(e, x.h)?;
+            let e = w.create_owned_by(x.g)?;
+            w.group(x.h).add(osis::Member::Item(e))?;
             Ok(e)
         })
         .unwrap();
@@ -1265,7 +1262,7 @@ fn walk(seed: u64) {
     let (g, h) = (x.g, x.h);
     // an item of a group it may not read tells nothing of that group
     let mut w = x.n.write();
-    w.place(x.t, h).unwrap();
+    w.group(h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
     let (mut a, mut s) = x.n.add_client(None).unwrap();
     let mut c = x.attach(&s).unwrap();
@@ -1352,12 +1349,12 @@ fn walk(seed: u64) {
                 let i = rng.next(2) as usize;
                 let target = [g, h][i];
                 let may = on_group[i] >= Some(Role::Write) && on_thing.is_some();
-                let r = c.batch(|w| w.place(x.out, target));
+                let r = c.batch(|w| w.group(target).add(osis::Member::Item(x.out)));
                 assert_eq!(r.is_ok(), may, "{why}: placing out in group {i} with {:?} on it and {on_thing:?} on out: {r:?}", on_group[i]);
                 assert_eq!(x.n.groups_of(x.out).unwrap().item_of.contains(&target), may, "{why}");
                 if may {
                     let mut w = x.n.write();
-                    w.unplace(x.out, target).unwrap();
+                    w.group(target).remove(osis::Member::Item(x.out)).unwrap();
                     w.commit().unwrap();
                 }
             }
@@ -1446,18 +1443,18 @@ fn history_rows_as_the_actor() {
     assert_eq!(e.commit.actor, a);
     let id = e.commit.id;
     let mut w = c.write();
-    w.at(x.t, k.clone()).purge_commit(id).unwrap();
+    w.at(x.t, k.clone()).purge(osis::Purge::Change(id)).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
     let e = &x.n.at(x.t, k.clone()).history(HistoryFrom::Newest, 2).unwrap().entries;
     assert!(e.iter().any(|e| e.commit.id == id && e.body == HistoryBody::Purged { by: rq, actor: Some(a) }), "{e:?}");
     assert_eq!(&c.at(x.t, k.clone()).history(HistoryFrom::Newest, 2).unwrap().entries, e, "over the port too");
     // what it may not write: refused for that
     let mut w = c.write();
-    w.at(x.u, k.clone()).purge_author(a).unwrap();
+    w.at(x.u, k.clone()).purge(osis::Purge::Author(a)).unwrap();
     assert!(w.commit().is_err());
     let (_, _, ro) = x.client(Role::Read);
     let mut w = ro.write();
-    w.at(x.t, k.clone()).purge_commit(one).unwrap();
+    w.at(x.t, k.clone()).purge(osis::Purge::Change(one)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a reader's request");
     // the second layer: a handle acting for it reads nothing either, if a delivery ever reached one
     let acting = x.n.acting_as(a);
@@ -1470,7 +1467,7 @@ fn history_rows_as_the_actor() {
     assert!(!heard.is_empty());
     // by author over the port
     let mut w = c.write();
-    w.at(x.t, k.clone()).purge_author(x.n.me()).unwrap();
+    w.at(x.t, k.clone()).purge(osis::Purge::Author(x.n.me())).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
     let e = x.n.at(x.t, k.clone()).history(HistoryFrom::Oldest, 1).unwrap().entries;
     assert_eq!(e[0].commit.id, one);

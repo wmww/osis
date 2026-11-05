@@ -4,10 +4,11 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::port::method as m;
+use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{ChangeId, Diagnostic, Engine};
-use osis_schema::core_types::{GROUP, Group, PLACED};
+use osis_schema::core_types::{GROUP, PLACED};
 use osis_schema::{AspectKey, Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 
@@ -394,28 +395,19 @@ impl Osis {
         Ok(self.read_local(|r| r.groups_of(tid)))
     }
 
-    /// The things `group` contains, in tid order (empty when it is no group). Being in a group
-    /// grants nothing: who holds a role on it is `grants`.
-    pub fn items(&self, group: Tid) -> Result<Vec<Tid>> {
-        Ok(self.members(group)?.items.into_iter().collect())
-    }
-
-    /// The subgroups of `group`, in tid order: their items count as its members too.
-    pub fn subgroups(&self, group: Tid) -> Result<Vec<Tid>> {
-        Ok(self.members(group)?.subgroups.into_iter().collect())
-    }
-
-    /// `group.0` and the ephemeral placements (`placed.0~`), as `groups_of` sees them.
-    fn members(&self, g: Tid) -> Result<Group> {
-        let (durable, placed) = match self.route(g) {
-            crate::sources::Source::Remote(_) => (self.at(g, GROUP).get()?, self.at(g, PLACED).get()?),
-            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(g, &GROUP)?, r.get(g, &PLACED)?)))?,
+    /// What `group` contains: its items, then its subgroups, each in tid order (empty when it has
+    /// never had a member). A thing both item and subgroup appears as both. Being in a group grants
+    /// nothing: who holds a role on it is `grants`.
+    pub fn members(&self, group: Tid) -> Result<Vec<Member>> {
+        let (durable, placed) = match self.route(group) {
+            crate::sources::Source::Remote(_) => (self.at(group, GROUP).get()?, self.at(group, PLACED).get()?),
+            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(group, &GROUP)?, r.get(group, &PLACED)?)))?,
         };
         let mut d = durable.unwrap_or_default();
         let p = placed.unwrap_or_default();
         d.items.extend(p.items);
         d.subgroups.extend(p.subgroups);
-        Ok(d)
+        Ok(d.items.into_iter().map(Member::Item).chain(d.subgroups.into_iter().map(Member::Subgroup)).collect())
     }
 
     /// The roles granted on `thing`, by holder. Whoever holds through those: `holders`.
@@ -451,6 +443,8 @@ impl Osis {
     }
 
     /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).
+    // Removed with owners (issues/api-refactor.md Decided).
+    #[doc(hidden)]
     pub fn owner_of(&self, tid: Tid) -> Result<Option<Tid>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             let v = r.call(m::OWNER_OF, vec![Value::Tid(tid)])?;

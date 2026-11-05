@@ -185,7 +185,22 @@ pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Resu
     w.commit().unwrap().unwrap()
 }
 
-/// `create` and `place` into `groups` in one batch.
+/// `Osis::members` split by how each is in the group.
+pub trait MembersOf {
+    fn items(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>>;
+    fn subgroups(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>>;
+}
+
+impl MembersOf for Osis {
+    fn items(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>> {
+        Ok(self.members(g)?.into_iter().filter_map(|m| if let osis::Member::Item(t) = m { Some(t) } else { None }).collect())
+    }
+    fn subgroups(&self, g: osis::Tid) -> osis::Result<Vec<osis::Tid>> {
+        Ok(self.members(g)?.into_iter().filter_map(|m| if let osis::Member::Subgroup(t) = m { Some(t) } else { None }).collect())
+    }
+}
+
+/// `create` and add to `groups` in one batch.
 pub trait CreateIn {
     fn create_in(&mut self, owner: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
     /// `create` with a durable write (`t:made.0`), so the thing is persisted by this batch.
@@ -194,28 +209,31 @@ pub trait CreateIn {
 
 impl CreateIn for osis::Write<'_> {
     fn create_in(&mut self, owner: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid> {
-        let t = self.create(owner)?;
+        let t = self.create_owned_by(owner)?;
         for g in groups {
-            self.place(t, *g)?;
+            self.group(*g).add(osis::Member::Item(t))?;
         }
         Ok(t)
     }
     fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid> {
-        let t = self.create(owner)?;
+        let t = self.create_owned_by(owner)?;
         self.at(t, ak("t:made.0")).set(&osis::Value::Bool(true))?;
         Ok(t)
     }
 }
 
-/// `create` and `place_expiring` into `g` in one batch.
+/// `create` and add to `g` with an expiry in one batch.
 pub trait CreateExpiringIn {
     fn create_expiring_in(&mut self, owner: osis::Tid, g: osis::Tid, d: Option<std::time::Duration>) -> osis::Result<osis::Tid>;
 }
 
 impl CreateExpiringIn for osis::Write<'_> {
     fn create_expiring_in(&mut self, owner: osis::Tid, g: osis::Tid, d: Option<std::time::Duration>) -> osis::Result<osis::Tid> {
-        let t = self.create(owner)?;
-        self.place_expiring(t, g, d)?;
+        let t = self.create_owned_by(owner)?;
+        match d {
+            Some(d) => self.group(g).expires(osis::Expiry::In(d)).add(osis::Member::Item(t))?,
+            None => self.group(g).add(osis::Member::Item(t))?,
+        }
         Ok(t)
     }
 }

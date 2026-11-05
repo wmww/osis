@@ -53,14 +53,14 @@ pub struct Global {
     pub remote_secret: Option<PathBuf>,
 }
 
-/// Write flags of `set`, `replace`, `rm`, `op`.
+/// Write flags of `set`, `overwrite`, `rm`, `op`.
 #[derive(Args, Debug, Clone, Default)]
 pub struct WriteFlags {
     /// Expire this write after DUR
     #[arg(long, value_name = "DUR")]
     pub expires_in: Option<String>,
     /// Expire this write at TS (RFC 3339 or ms)
-    #[arg(long, value_name = "TS")]
+    #[arg(long, value_name = "TS", conflicts_with = "expires_in")]
     pub expires_at: Option<String>,
     /// Retention: by=NAME,at_least=DUR,at_least_abs=TS,at_most=0s,at_most_abs=TS
     #[arg(long, value_name = "SPEC")]
@@ -154,7 +154,7 @@ pub enum Cmd {
         #[arg(long = "client-listen", value_name = "URL")]
         client_listen: Vec<String>,
     },
-    /// Create a thing, optionally setting aspects: create --owner me --in me note:title.0 '"x"'
+    /// Create a thing, optionally setting aspects: create --in me note:title.0 '"x"'
     Create(CreateArgs),
     /// Read an aspect (or a path in it); absent exits 3
     Get {
@@ -170,12 +170,12 @@ pub enum Cmd {
     },
     /// Make an aspect (or path) equal to VALUE: set T AK [PATH] VALUE
     Set(SetArgs),
-    /// Reset, then write VALUE: replace T AK [PATH] VALUE
-    Replace(SetArgs),
+    /// Write VALUE whole, always, in place of what is there: overwrite T AK [PATH] VALUE
+    Overwrite(SetArgs),
     /// Remove an aspect or a map entry, set element or list element
     Rm(RmArgs),
-    /// A path op: insert I V.., delete A..B, move A..B TO, splice A..B S, undelete A..B, add V,
-    /// contribute N
+    /// A path op: splice A..B [V..] (a text position: splice A..B S), move A..B TO, undelete A..B,
+    /// add V, contribute N
     Op(OpArgs),
     /// Write only what changed from --base to the value on stdin ($EDITOR on a terminal)
     Edit {
@@ -186,7 +186,7 @@ pub enum Cmd {
         #[arg(long, value_name = "VALUE")]
         base: Option<String>,
     },
-    /// Run a script from stdin as one commit (lines: create, set, replace, rm, op, place, unplace, sub, delete)
+    /// Run a script from stdin as one commit (lines: create, set, overwrite, rm, op, group add, group rm, delete)
     Write,
     /// Every aspect of a thing, its groups and role
     Show {
@@ -296,13 +296,6 @@ pub enum Cmd {
     },
     /// Revert any change by commit id
     Revert { id: String },
-    /// Place T into group G
-    Place { t: String, g: String },
-    /// Remove T from group G
-    Unplace { t: String, g: String },
-    /// Subgroups
-    #[command(subcommand)]
-    Sub(SubCmd),
     /// Groups listing T as an item or a subgroup, and every group holding T (within)
     Groups { t: String },
     /// What group G contains: its items and subgroups
@@ -383,7 +376,8 @@ pub enum Cmd {
     /// Group chat (notes/chat.md)
     #[command(subcommand)]
     Chat(ChatCmd),
-    /// Create an ownerless thing, ADMIN its first admin (prints its tid)
+    /// Create an ownerless thing, ADMIN its first admin (prints its tid). Transitional: goes with
+    /// owners, when `create` is this
     Ownerless { admin: String },
     /// Connectivity and per-group sync state
     Status {
@@ -421,14 +415,12 @@ pub enum Cmd {
 
 #[derive(Args, Debug, Clone)]
 pub struct CreateArgs {
-    /// Owner actor (`me` usually)
+    /// Owner actor, default the acting one. Transitional: goes with owners. Still needed by a
+    /// thin client, which owns nothing, and for what a group's holders read without a grant
     #[arg(long, value_name = "ACTOR")]
-    pub owner: String,
+    pub owner: Option<String>,
     #[command(flatten)]
     pub place: PlaceArgs,
-    /// Give it an empty group.0
-    #[arg(long)]
-    pub group: bool,
     /// Bind $NAME to the new tid (write scripts)
     #[arg(long = "as", value_name = "NAME")]
     pub as_: Option<String>,
@@ -568,10 +560,29 @@ impl HostFlags {
     }
 }
 
+/// A group's members (`group add`, `group rm`).
 #[derive(Subcommand, Debug, Clone)]
-pub enum SubCmd {
-    Add { g: String, sub: String },
-    Rm { g: String, sub: String },
+pub enum MemberCmd {
+    /// Add T to group G: an item, or with --subgroup a subgroup
+    Add {
+        g: String,
+        t: String,
+        #[arg(long)]
+        subgroup: bool,
+        /// The membership expires after DUR
+        #[arg(long, value_name = "DUR")]
+        expires_in: Option<String>,
+        /// The membership expires at TS (RFC 3339 or ms)
+        #[arg(long, value_name = "TS", conflicts_with = "expires_in")]
+        expires_at: Option<String>,
+    },
+    /// Remove T from group G: an item, or with --subgroup a subgroup
+    Rm {
+        g: String,
+        t: String,
+        #[arg(long)]
+        subgroup: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -709,6 +720,8 @@ pub enum CardCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum GroupCmd {
+    #[command(flatten)]
+    Member(MemberCmd),
     /// Make G synced (default: the store's hosts)
     Sync {
         g: String,
@@ -772,13 +785,11 @@ pub struct ScriptLine {
 pub enum ScriptCmd {
     Create(CreateArgs),
     Set(SetArgs),
-    Replace(SetArgs),
+    Overwrite(SetArgs),
     Rm(RmArgs),
     Op(OpArgs),
-    Place { t: String, g: String },
-    Unplace { t: String, g: String },
     #[command(subcommand)]
-    Sub(SubCmd),
+    Group(MemberCmd),
     Delete { t: String },
 }
 

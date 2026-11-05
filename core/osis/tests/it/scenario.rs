@@ -25,8 +25,7 @@ pub fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
 /// A tag owned by the person, synced under its own label (a shareable root, not placed in home).
 pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
     let mut w = db.write();
-    let t = w.create(db.me())?;
-    w.make_group(t)?;
+    let t = w.create()?;
     w.at(t, TAG).set(&Tag::default())?;
     w.at(t, NAME).set(&name.to_string())?;
     w.commit()?;
@@ -39,8 +38,7 @@ pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
 pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
     db.batch(|w| {
         let t = w.create_in(db.me(), &[db.me()])?;
-        w.make_group(t)?;
-        w.add_subgroup(db.me(), t)?;
+        w.group(db.me()).add(osis::Member::Subgroup(t))?;
         w.at(t, TAG).set(&Tag::default())?;
         w.at(t, NAME).set(&name.to_string())?;
         Ok(t)

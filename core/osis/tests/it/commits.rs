@@ -18,7 +18,7 @@ fn undo_redo_cycle_spec_commits_7() {
     let db = db(1);
     let k = ak("t:x.0");
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     db.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
     db.commit_set(t, k.clone(), &Value::Int(2)).unwrap();
@@ -64,7 +64,7 @@ fn new_change_clears_redo_spec_commits_7() {
     let db = db(1);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     db.commit_set(t, a.clone(), &Value::Int(1)).unwrap();
     let scope = Scope::Thing(t);
@@ -86,7 +86,7 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
     let db = db(1);
     let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     db.commit_set(t, a.clone(), &Value::Int(1)).unwrap();
     let newest = commit_with(&db, |w| w.at(t, b.clone()).set(&Value::Int(1))).id.commit().unwrap();
@@ -116,8 +116,7 @@ fn query_relations_spec_crdt_4_6() {
     let db = db(1);
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     let mut w = db.write();
-    let g = w.create(db.me()).unwrap();
-    w.make_group(g).unwrap();
+    let g = w.create().unwrap();
     let t = w.create_in(db.me(), &[g]).unwrap();
     w.commit().unwrap();
     let c1 = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
@@ -142,7 +141,7 @@ fn query_relations_spec_crdt_4_6() {
     assert_eq!(paged[0].commit.id, h[1].commit.id);
     // purge drops c1's body
     let mut w = db.write();
-    w.at(t, k.clone()).purge().unwrap();
+    w.at(t, k.clone()).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
     let h = db.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, k.clone())]))).unwrap();
     assert!(h.iter().find(|e| e.commit.id == c1.id).unwrap().dropped);
@@ -154,7 +153,7 @@ fn query_relations_spec_crdt_4_6() {
 fn query_filters_api_commits() {
     let db = db(1);
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
-    let t = db.batch(|w| w.create(db.me())).unwrap();
+    let t = db.batch(|w| w.create()).unwrap();
     let c1 = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     let mut w = db.write();
     w.act_as(db.node());
@@ -205,7 +204,7 @@ fn sync2(a: &Osis, b: &Osis) {
 fn undo_redo_across_devices_spec_commits_7() {
     let (da, db) = two_devices();
     let k = ak("t:x.0");
-    let t = da.batch(|w| w.create(da.me())).unwrap();
+    let t = da.batch(|w| w.create()).unwrap();
     let c1 = commit_with(&da, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     sync2(&da, &db);
     let get = |d: &Osis| d.at(t, k.clone()).get().unwrap();
@@ -246,8 +245,7 @@ fn find_another_actors_revert_api_commits() {
     let k = ak("t:x.0");
     let t = alice
         .batch(|wr| {
-            let t = wr.create(alice.me())?;
-            wr.make_group(t)?;
+            let t = wr.create()?;
             Ok(t)
         })
         .unwrap();
@@ -376,7 +374,7 @@ fn exact_undo_spec_crdt_4_6() {
         d.register_schema("doc.osis", DOC_SCHEMA).unwrap();
     }
     let doc = ak("x:doc.0");
-    let t = a.batch(|w| w.create(a.me())).unwrap();
+    let t = a.batch(|w| w.create()).unwrap();
     a.batch(|w| {
         w.at(t, doc.clone()).path(osis::Path(vec![field(0)])).set(&"n".to_string())?;
         w.at(t, doc.clone()).path(osis::Path(vec![field(2)])).set(&Value::Enum(1, Some(Box::new(Value::Map(Default::default())))))
@@ -393,7 +391,7 @@ fn exact_undo_spec_crdt_4_6() {
     let write = |d: &Osis, p: &osis::Path, item: &str| {
         let item = item.to_string();
         let key = d.key("x:doc.0").unwrap();
-        d.batch(|w| if p.0.len() == 1 && p.0[0] == field(3) { w.at(t, key.clone()).path(p.clone()).insert(0, &[item]) } else { w.at(t, key.clone()).path(p.clone()).add(&item) }).unwrap();
+        d.batch(|w| if p.0.len() == 1 && p.0[0] == field(3) { w.at(t, key.clone()).path(p.clone()).splice(0..0, &[item]) } else { w.at(t, key.clone()).path(p.clone()).add(&item) }).unwrap();
     };
     for (name, p) in &spots {
         write(&a, p, "x");
@@ -457,11 +455,12 @@ fn step(db: &Osis, scope: &Scope, n: Next) -> Option<ChangeId> {
 fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(1);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    let mk = |db: &Osis| db.batch(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    // groups already: a first member would write the group durably in the batch
+    let mk = |db: &Osis| db.batch(|w| { let g = w.create_durable(db.me())?; let d = w.create_durable(db.me())?; w.group(g).add(osis::Member::Item(d))?; Ok(g) }).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.batch(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let created = db.created(t).unwrap().unwrap().commit.map(ChangeId::Commit).unwrap();
-    db.batch(|w| { w.place(t, f2)?; w.add_subgroup(f3, t) }).unwrap();
+    db.batch(|w| { w.group(f2).add(osis::Member::Item(t))?; w.group(f3).add(osis::Member::Subgroup(t)) }).unwrap();
     let edit = commit_with(&db, |w| w.at(t, y.clone()).set(&Value::Int(2))).id;
     let s = Scope::Thing(t);
     assert_eq!(next(&db, &s, Next::Redo), None);
@@ -499,14 +498,15 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     let db = db(2);
     let k = ak("app:draft.0~");
-    let mk = |db: &Osis| db.batch(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    // groups already: a first member would write the group durably in the batch
+    let mk = |db: &Osis| db.batch(|w| { let g = w.create_durable(db.me())?; let d = w.create_durable(db.me())?; w.group(g).add(osis::Member::Item(d))?; Ok(g) }).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let mut w = db.write();
     let e = w.create_in(db.me(), &[f]).unwrap();
     w.at(e, k.clone()).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    w.place(e, f2).unwrap();
+    w.group(f2).add(osis::Member::Item(e)).unwrap();
     w.commit().unwrap();
     let sorted = |mut v: Vec<osis::Tid>| {
         v.sort();
@@ -533,10 +533,10 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
 fn next_reports_what_undo_and_redo_revert_api_commits() {
     let db = db(3);
     let k = ak("t:x.0");
-    let f = db.batch(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
+    let f = db.batch(|w| { let g = w.create_durable(db.me())?; Ok(g) }).unwrap();
     let in_f = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
         let t = w.create_durable(db.me())?;
-        w.place(t, f)?;
+        w.group(f).add(osis::Member::Item(t))?;
         Ok(t)
     };
     let (a, b) = db.batch(|w| Ok((in_f(w)?, in_f(w)?))).unwrap();
@@ -570,7 +570,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     let bob = crate::scenario::person(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
     let x = ak("t:x.0");
-    let g = alice.batch(|wr| { let g = wr.create(alice.me())?; wr.make_group(g)?; Ok(g) }).unwrap();
+    let g = alice.batch(|wr| { let g = wr.create()?; Ok(g) }).unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, osis::Role::Write, osis::GrantOpts::default()).unwrap();
     w.run();

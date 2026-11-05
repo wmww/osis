@@ -106,7 +106,6 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let mut w = db.write();
     w.at(c, ct::REQUIRED).set(&rules(o.purge, o.disappear, o.keep)?)?;
     w.at(c, settings_ak()?).set(&settings_value(&o.name, o.edit))?;
-    w.make_group(c)?;
     w.commit()?;
     db.sync(c, &o.hosts)?;
     Ok(c)
@@ -347,7 +346,7 @@ fn body_value(d: &Draft, r: Option<&Replaces>) -> Result<Value> {
         m.insert(Value::Int(1), id_value(&r.original).ok_or_else(bad)?);
         m.insert(Value::Int(2), Value::List(r.prior.iter().map(|p| id_value(p).ok_or_else(bad)).collect::<Result<_>>()?));
     }
-    // one scalar: a `replace` of a map leaves state per entry, and a long aspect's write grows with it
+    // one scalar: an `overwrite` of a map leaves state per entry, and a long aspect's write grows with it
     Ok(Value::Bytes(cbor::encode(&Value::Map(m))))
 }
 
@@ -375,7 +374,7 @@ fn body_read(v: &Value) -> Option<(Draft, Option<Replaces>)> {
 }
 
 /// Sends a message: one commit, one delta. Retention and expiry come from the chat's rule, filled
-/// by the node. `replace`, not `set`: a set equal to the last message would write nothing.
+/// by the node. `overwrite`, not `set`: a set equal to the last message would write nothing.
 pub fn send(db: &Osis, c: Tid, d: &Draft) -> Result<Id> {
     write_body(db, c, d, None)
 }
@@ -398,7 +397,7 @@ pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
 fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> {
     let year = year_of(db.now().0);
     let mut w = db.write();
-    w.at(c, year_ak(year)?).replace(&body_value(d, r)?)?;
+    w.at(c, year_ak(year)?).overwrite(&body_value(d, r)?)?;
     let done = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?;
     Ok(Id { year, pos: HistoryPos { ts: done.ts, id: done.id } })
 }
@@ -773,7 +772,7 @@ fn purge(db: &Osis, c: Tid, ids: &[Id]) -> Result<()> {
     }
     let mut w = db.write();
     for i in ids {
-        w.at(c, year_ak(i.year)?).purge_commit(i.pos.id)?;
+        w.at(c, year_ak(i.year)?).purge(osis::Purge::Change(i.pos.id))?;
     }
     w.commit().map(drop)
 }
@@ -808,7 +807,7 @@ pub fn delete(db: &Osis, c: Tid, m: &Message) -> Result<()> {
 pub fn purge_participant(db: &Osis, c: Tid, actor: Tid) -> Result<()> {
     let mut w = db.write();
     for y in years(db, c)? {
-        w.at(c, year_ak(y)?).purge_author(actor)?;
+        w.at(c, year_ak(y)?).purge(osis::Purge::Author(actor))?;
     }
     w.commit().map(drop)
 }

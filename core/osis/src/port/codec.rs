@@ -211,13 +211,13 @@ pub(crate) fn change(v: Value) -> Result<ChangeId> {
 }
 
 pub(crate) fn committed_v(c: &Committed) -> Value {
-    Value::List(vec![change_v(&c.id), ts_v(c.ts), Value::List(c.also.iter().map(|x| Value::bytes(&x.0)).collect())])
+    Value::List(vec![change_v(&c.id), ts_v(c.ts), Value::List(c.also.iter().map(change_v).collect())])
 }
 
 pub(crate) fn committed(v: Value) -> Result<Committed> {
     let mut a = Args::new(v)?;
     let (id, ts) = (change(a.next()?)?, ts(&a.next()?)?);
-    let also = Args::of(vec![a.next()?]).list()?.into_iter().map(commit_id).collect::<Result<_>>()?;
+    let also = Args::of(vec![a.next()?]).list()?.into_iter().map(change).collect::<Result<_>>()?;
     let c = Committed { id, ts, also };
     a.end()?;
     Ok(c)
