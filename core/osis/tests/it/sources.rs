@@ -1539,7 +1539,7 @@ fn a_client_of_this_node_reads_no_split_thing() {
     drop(x.host);
 }
 
-// notes/client-port.md §3: what routing asks answers for a thing the client's actor may not read exactly as for a tid nobody knows: no existence oracle.
+// spec/sync.md §10, notes/client-port.md §3: what routing asks answers for a thing the client's actor may not read exactly as for a tid nobody knows: no existence oracle.
 #[test]
 fn routing_to_what_the_actor_may_not_read_is_as_to_nothing() {
     let x = world();
@@ -1557,7 +1557,7 @@ fn routing_to_what_the_actor_may_not_read_is_as_to_nothing() {
     drop(x.host);
 }
 
-// notes/client-port.md §2: a host's sessions answer the client port's kinds with protocol Error 11: `Refused`, and the attachment does not retry.
+// spec/wire.md §11.2, notes/client-port.md §2: a host's sessions answer the client port's kinds with protocol Error 11: `Refused`, and the attachment does not retry.
 #[test]
 fn a_host_address_refuses_a_client() {
     let x = world();
