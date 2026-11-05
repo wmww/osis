@@ -8,10 +8,10 @@
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use crate::flows::{recipient, secrets_in};
-use osis_base::{CommitId, Role, Tid};
+use osis_base::{Role, Tid};
 use osis_crypto::Epoch;
 use osis_keys::{Grant, HolderKeys, Keysets, ROLES, Recipient, Seal};
-use osis_schema::core_types::{BoxKey, SecretBox, Secrets};
+use osis_schema::core_types::Secrets;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -119,55 +119,14 @@ fn held_invalid(tx: &mut Tx<'_>, m: &Tid, r: Role, k: &Epoch) -> Result<bool> {
     Ok(false)
 }
 
-/// Every box of an actor's `secrets.0` this node holds, valid or not (`held_boxes`).
-pub(crate) struct HeldBoxes {
-    state: Arc<Secrets>,
-    invalid: Vec<(BoxKey, SecretBox)>,
-}
-
-impl HeldBoxes {
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&BoxKey, &SecretBox)> {
-        self.state.boxes.iter().chain(self.invalid.iter().map(|(k, b)| (k, b)))
-    }
-}
-
-/// Every box of `a`'s `secrets.0` this node holds, valid or not (spec/crypto.md §4, Held boxes):
-/// the state's, and those of each held delta judged invalid. Invalidity decides whose writes
-/// count, not what opens: a box an invalid commit wrote still opens for whoever holds the keyset
-/// it names, so the rules a leak turns on (departures read from boxes, staleness, taint, the
-/// knowing re-key) judge it too.
-///
-/// Invariant: a key cycle, a stale keyset or a box to a party holding no role, written by a commit
-/// this node judges invalid (its author demoted concurrently, a box removal failing Authority),
-/// is rotated away like one a valid commit wrote: a removed party reads none of the new content
-/// once the writer holds that commit. Junk boxes make `a`'s rotators rotate once per such commit,
-/// whoever wrote them: a reader of `a` too, which could not rotate `a` itself
-/// (issues/held-boxes-reader-rekey.md).
-pub(crate) fn held_boxes(tx: &mut Tx<'_>, a: &Tid) -> Result<HeldBoxes> {
-    let state = secrets_in(tx, a)?;
-    let ak = crate::flows::ak("secrets.0")?;
-    let commits: Vec<CommitId> = tx.core.ix.invalid.get(&(*a, ak.clone())).into_iter().flatten().copied().collect();
-    let mut invalid = Vec::new();
-    for c in commits {
-        let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(a, &ak).filter(|ai| !m.valid_at(*ai))) else { continue };
-        for d in crate::apply::held_parts(tx, &c, ai)? {
-            if let osis_commit::Decoded::Delta(d) = d {
-                invalid.extend(crate::apply::keys::secrets_write(&d.fragment).boxes);
-            }
-        }
-    }
-    Ok(HeldBoxes { state, invalid })
-}
-
 /// The tainted keysets of role `r` of actor `m` (spec/crypto.md §4, 4b): the epochs at which
-/// the boxes of `m`'s `secrets.0` this node holds (`held_boxes`) box a holder whose grant on `m`
-/// is keyless.
+/// the boxes of `m`'s `secrets.0` state box a holder whose grant on `m` is keyless.
 fn tainted(tx: &mut Tx<'_>, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>> {
     if !has_keyless(tx.core, m) {
         return Ok(BTreeSet::new());
     }
-    let boxes = held_boxes(tx, m)?;
-    Ok(keyless_boxed(tx.core, m, &boxes, r))
+    let s = secrets_in(tx, m)?;
+    Ok(keyless_boxed(tx.core, m, &s, r))
 }
 
 /// Whether some grant on `a` is keyless: else no box of `a` goes through one (the usual case,
@@ -176,11 +135,11 @@ fn has_keyless(core: &mut Core, a: &Tid) -> bool {
     key_access(core).range((*a, Tid::from_bytes([0; 15]))..).next().is_some_and(|x| x.0 == *a)
 }
 
-/// The epochs of role `r` of `a` at which `boxes` (`a`'s held boxes) box a holder whose grant on
-/// `a` is keyless (`osis_keys::boxing_keyless`): `a`'s tainted keysets, or, for an actor this
+/// The epochs of role `r` of `a` at which `s` (`a`'s `secrets.0` state) boxes a holder whose
+/// grant on `a` is keyless (`osis_keys::boxing_keyless`): `a`'s tainted keysets, or, for an actor this
 /// node may rotate, the epochs its knowing re-key leaves.
-fn keyless_boxed(core: &mut Core, a: &Tid, boxes: &HeldBoxes, r: Role) -> BTreeSet<Epoch> {
-    let boxes: Vec<(Tid, Epoch)> = boxes.iter().map(|x| x.0).filter(|k| k.role == r).filter_map(|k| Some((k.holder, osis_keys::aspects::from_schema(&k.epoch).ok()?))).collect();
+fn keyless_boxed(core: &mut Core, a: &Tid, s: &Secrets, r: Role) -> BTreeSet<Epoch> {
+    let boxes: Vec<(Tid, Epoch)> = s.boxes.iter().map(|x| x.0).filter(|k| k.role == r).filter_map(|k| Some((k.holder, osis_keys::aspects::from_schema(&k.epoch).ok()?))).collect();
     // holders whose grant is keyless; a box to a holder that departed is a departure from `a`
     // (its own rotators' covers rule), not a key cycle
     let holders: BTreeSet<Tid> = core.key_holders(a).into_iter().map(|x| x.0).collect();
@@ -274,12 +233,13 @@ pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, needed: Role, holders: 
     avoid.is_empty() || on_a(&avoid) >= Some(needed) || on_a(&BTreeSet::new()) < Some(needed)
 }
 
-/// Whether `a`'s epoch `e` of role `r` has a stale box (spec/crypto.md §4, rule 2): a box held
-/// (`held_boxes`) to a holder actor naming a keyset held invalid, tainted, or listed by a held
+/// Whether `a`'s epoch `e` of role `r` has a stale box (spec/crypto.md §4, rule 2): a box of its
+/// `secrets.0` state to a holder actor naming a keyset held invalid, tainted, or listed by a held
 /// valid keyset of it.
 pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
-    let boxes = held_boxes(tx, a)?;
-    let named: Vec<(Tid, Epoch)> = boxes
+    let s = secrets_in(tx, a)?;
+    let named: Vec<(Tid, Epoch)> = s
+        .boxes
         .iter()
         .filter(|(k, _)| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e))
         .filter(|(k, _)| !tx.core.is_key_actor(&k.holder))
@@ -294,15 +254,15 @@ pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<b
     Ok(false)
 }
 
-/// Whether `a`'s epoch `e` of role `r` boxes a holder whose grant on `a` is keyless, by a box held
-/// (`held_boxes`; spec/crypto.md §4, rule 4: a node that may rotate `a` re-keys while a current
+/// Whether `a`'s epoch `e` of role `r` boxes a holder whose grant on `a` is keyless, by a box of
+/// its `secrets.0` state (spec/crypto.md §4, rule 4: a node that may rotate `a` re-keys while a current
 /// epoch does).
 pub(crate) fn keyless_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
     if !has_keyless(tx.core, a) {
         return Ok(false);
     }
-    let boxes = held_boxes(tx, a)?;
-    Ok(keyless_boxed(tx.core, a, &boxes, r).contains(e))
+    let s = secrets_in(tx, a)?;
+    Ok(keyless_boxed(tx.core, a, &s, r).contains(e))
 }
 
 /// The held rotation commits of the keysets the boxes `w` writes to holder actors name

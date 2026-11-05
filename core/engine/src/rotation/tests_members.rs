@@ -495,6 +495,60 @@ fn forked_anchors_wait_for_merge_spec_crypto_4() {
     assert_eq!(leaked(&mut lp, 3, &[m, a], d, start), Vec::<Tid>::new());
 }
 
+// spec/permissions.md §3 (a removal goes alone while Seal waits), spec/crypto.md §4 (Seal; model
+// `D0_fork_rm`): as `forked_anchors_wait_for_merge_spec_crypto_4`, A's two current epochs anchor
+// M at its two keysets k1 and k2. a1 removes a2 from A: no rotation of A can seal M yet, so the
+// removal goes alone. a2 holds no role at once; A's rotation stays due and a1 encrypts nothing
+// under A until M's merge lets it rotate, which covers a2's departure: a2 opens nothing new.
+// (Before: the removal itself waited for M's merger, so a writer of M withholding its merge kept
+// a2's role on A.)
+#[test]
+fn removal_goes_alone_while_seal_waits_spec_permissions_3() {
+    let read = BTreeSet::from([Role::Read]);
+    let none = BTreeSet::new();
+    let mut lp = LocalPeer::new(5, 964, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (d, m2, a2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[4].engine.tid());
+    let m = group(&mut lp, 0);
+    let a = group(&mut lp, 3);
+    lp.peers[0].engine.grant(&m, &m2, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
+    lp.peers[3].engine.grant(&a, &a2, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[3].engine.grant(&a, &m, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    rotate_leaving_out(&mut lp, 0, m, &read, &[]);
+    lp.peers[2].clock.advance(1_000);
+    rotate_leaving_out(&mut lp, 2, m, &read, &[]);
+    send_skipping(&mut lp, 0, 3, &none);
+    send_skipping(&mut lp, 2, 4, &none);
+    lp.peers[3].engine.ensure_rotated(&a).unwrap();
+    lp.peers[4].engine.ensure_rotated(&a).unwrap();
+    send_skipping(&mut lp, 4, 3, &none);
+    send_skipping(&mut lp, 2, 3, &none);
+    assert_eq!(lp.peers[3].engine.epochs(&a).unwrap().read.current().len(), 2, "A forked over M's two keysets");
+    let start = held_by(&lp, 4, &[m, a]);
+    let before = lp.peers[3].engine.epochs(&a).unwrap().read.current();
+    // a1 removes a2: written at once, without a rotation
+    assert_eq!(removal(&mut lp, 3, a, a2).len(), 1, "the removal is written");
+    assert!(!lp.peers[3].engine.core.key_holders(&a).iter().any(|h| h.0 == a2), "a2 holds no role on A");
+    assert_eq!(lp.peers[3].engine.epochs(&a).unwrap().read.current(), before, "no rotation of A");
+    let (done, still) = lp.peers[3].engine.ensure_rotated(&a).unwrap();
+    assert!(done.commits.is_empty() && still.contains(&Role::Read), "A's rotation due waits; a1 encrypts nothing under A");
+    // M merges; a1 rotates A, covering a2's departure
+    lp.sync_all().unwrap();
+    let mut merged = 0;
+    for i in [0, 2] {
+        merged += lp.peers[i].engine.ensure_rotated(&m).unwrap().0.commits.len();
+        lp.sync_all().unwrap();
+    }
+    assert_eq!(merged, 1, "M's merger merges");
+    let (done, still) = lp.peers[3].engine.ensure_rotated(&a).unwrap();
+    assert!(!done.commits.is_empty() && still.is_empty(), "A rotates once M merged");
+    let w = newest_read(&lp, 3, a).unwrap();
+    assert!(!openable(&mut lp, 3, &[m, a], a2, start).contains(&(a, Role::Read, w)), "a2 opens nothing of A's new epoch");
+}
+
 // spec/crypto.md §4 (Held keyset: valid; Descends; Stale: held invalid; model
 // `D0_member_forge`): D, an admin of M, forges M's keyset X_d (listing kk) after its removal. R
 // (peer 0) lacks the removal: X_d is valid there, descends from kk, and R seals A at it (D
@@ -694,13 +748,13 @@ fn knowing_rekey_after_hidden_grant_spec_crypto_4() {
     assert!(lp.peers[2].engine.ensure_rotated(&y).unwrap().0.commits.is_empty(), "settled");
 }
 
-// spec/crypto.md §4 (Held boxes: a box an invalid commit wrote still opens): peer 0 demotes Y's
-// admin peer 2 to reader while peer 2, not knowing, grants X read on Y, boxing Y's read epoch to
-// X. At peer 0 the grant is invalid (peer 2 is no admin there): X holds no role on Y, yet the
-// box opens Y's epoch for X's member D. Peer 0 counts it (a box held to a party holding no role
-// is a departure no epoch covers), so it rotates Y before writing and D opens nothing new.
+// spec/crypto.md §4 (Boxes: an invalid commit's boxes judge nothing): peer 0 demotes Y's admin
+// peer 2 to reader while peer 2, not knowing, grants X read on Y, boxing Y's read epoch to X. At
+// peer 0 the grant is invalid (peer 2 is no admin there): X holds no role on Y, yet the box opens
+// Y's epoch for X's member D. That epoch is one peer 2 holds as a reader and could hand on
+// anyway: peer 0 counts no departure from the box and rotates nothing for it (the stated limit).
 #[test]
-fn invalid_grant_box_rotated_away_spec_crypto_4() {
+fn invalid_grant_box_judges_nothing_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 961, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (d, p2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
@@ -717,14 +771,53 @@ fn invalid_grant_box_rotated_away_spec_crypto_4() {
     assert!(openable(&mut lp, 2, &[x, y], d, start.clone()).contains(&(y, Role::Read, e0)), "the box to X opens Y's epoch for D");
     lp.sync_all().unwrap();
     assert!(!lp.peers[0].engine.core.key_holders(&y).iter().any(|h| h.0 == x), "the grant is invalid at peer 0");
-    assert_eq!(newest_read(&lp, 0, y), Some(e0));
-    assert!(blocked_at(&mut lp, 0, y).contains(&Role::Read), "Y's read epoch boxes a party holding no role");
-    lp.peers[0].engine.ensure_rotated(&y).unwrap();
-    let e1 = newest_read(&lp, 0, y).unwrap();
-    assert_ne!(e1, e0);
-    let mut known = start;
-    known.insert((y, Role::Read, e0));
-    assert!(!openable(&mut lp, 0, &[x, y], d, known).contains(&(y, Role::Read, e1)), "D opens none of Y's new epoch");
+    assert!(lp.peers[0].engine.core.key_holders(&y).iter().any(|h| h.0 == p2), "its author still reads Y");
+    assert_eq!(newest_read(&lp, 2, y), Some(e0), "and holds the epoch it boxed");
+    assert!(blocked_at(&mut lp, 0, y).is_empty());
+    assert!(lp.peers[0].engine.ensure_rotated(&y).unwrap().0.commits.is_empty());
+}
+
+// spec/crypto.md §4 (Boxes: an invalid commit's boxes judge nothing;
+// issues/held-boxes-reader-rekey.md): reader R of G writes `secrets.0` deltas (invalid: a delta
+// needs write) boxing G's current read epoch to party P, which holds no role on G. G's admin
+// counts no departure from them and rotates nothing: a reader cannot make G rotate per commit,
+// and a rotation would buy nothing against it (R holds the new epoch too).
+#[test]
+fn reader_junk_boxes_force_no_rotation_spec_crypto_4() {
+    let mut lp = LocalPeer::new(3, 963, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (r, p) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &r, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let e0 = newest_read(&lp, 0, g).unwrap();
+    for _ in 0..3 {
+        lp.peers[1].clock.advance(1_000);
+        let s = lp.peers[1].engine.get_typed(&g, &ct::SECRETS).unwrap().unwrap();
+        let own = s.boxes.iter().find(|(k, _)| k.holder == r && k.role == Role::Read).map(|(_, b)| b.clone()).unwrap();
+        let key = ct::BoxKey { holder: p, role: Role::Read, epoch: osis_keys::aspects::to_schema(&e0) };
+        let w = osis_keys::SecretsWrite { boxes: [(key, own)].into(), ..Default::default() };
+        lp.peers[1]
+            .engine
+            .run(|tx| {
+                // as R's engine would refuse to: every node judges it invalid
+                tx.core.skip_writer_rules = true;
+                let mut m = Mutation::new();
+                m.unchecked();
+                crate::flows::put_secrets(&mut m, g, &w, true)?;
+                crate::engine::Engine::commit_tx(tx, m)?;
+                tx.core.skip_writer_rules = false;
+                Ok(())
+            })
+            .unwrap();
+    }
+    send_skipping(&mut lp, 1, 0, &BTreeSet::new());
+    let ak = crate::flows::ak("secrets.0").unwrap();
+    assert_eq!(lp.peers[0].engine.core.ix.invalid.get(&(g, ak)).map_or(0, |c| c.len()), 3, "peer 0 holds the junk deltas, invalid");
+    assert!(lp.peers[0].engine.departures(&g).unwrap().is_empty(), "no departure from junk boxes");
+    assert!(blocked_at(&mut lp, 0, g).is_empty());
+    assert!(lp.peers[0].engine.ensure_rotated(&g).unwrap().0.commits.is_empty(), "no rotation");
+    assert_eq!(newest_read(&lp, 0, g), Some(e0));
 }
 
 // spec/crypto.md §4 (merge, rule 3; model `D0_nc_2adm`, the shape that broke the candidate
@@ -897,10 +990,10 @@ fn removal_lacking_rotated_secret_refused_spec_permissions_3() {
 // to sign, left it out for good); and 9540070 (a rotation of read alone needs write: the
 // writer's possession check judged it by read, and its own commit was refused); 1838 (two admins
 // of an actor M rotate it concurrently, both knowing the removal: an actor A holding boxes to M
-// at both keysets had none to seal M at, M left out of A for good until merge took any fork).
+// at both keysets had none to seal M at, M left out of A for good until merge took any fork); 1105 (D granted admin then read on one actor: the second grant, lowering, must be refused, not written as a demotion with no frontier or rotation).
 #[test]
 fn cycle_removals_leak_nothing_random() {
-    cycle_stats(osis_base::testenv::run_seeds("rotation::tests_members::cycle_removals_leak_nothing_random", &[0, 1, 2, 3, 4, 5, 1032, 1055, 1838, 9_540_070], false, cycle_replay, cycle_removals));
+    cycle_stats(osis_base::testenv::run_seeds("rotation::tests_members::cycle_removals_leak_nothing_random", &[0, 1, 2, 3, 4, 5, 1032, 1055, 1105, 1838, 9_540_070], false, cycle_replay, cycle_removals));
 }
 
 /// Seeds: OSIS_CYCLE_START, OSIS_CYCLE_SEEDS (default 1000..1200).

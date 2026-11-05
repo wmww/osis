@@ -102,4 +102,8 @@ fLearners == {"m1", "m2"}
 fDeps == {<<"D", "M", "m1">>}
 fEager == {<<"m1", "M">>, <<"m2", "M">>}
 fG == << <<"A", "M">> >>
+\* ... and device E reads A; m1 removes E from A (Alone: while the anchors
+\* fork the removal goes without A's rotation)
+eMem == fMem \cup {<<"A", "E">>}
+eDeps == {<<"E", "A", "m1">>}
 =============================================================================

@@ -1,7 +1,7 @@
 //! Departures from an actor (spec/permissions.md §3, spec/crypto.md §4): the ones this node
 //! knows of, read from the role timeline (applied edge writes that lowered an edge, edge writes a
-//! demotion's audit dropped, whose holder holds less now) and from the boxes held, valid or not
-//! (box holders at a current epoch that hold less than that role now), each attributed to the
+//! demotion's audit dropped, whose holder holds less now) and from the `secrets.0` state (box
+//! holders at a current epoch that hold less than that role now), each attributed to the
 //! name a rotation knowing it writes (`events`); the names rotations write (`names`). A
 //! departure from a holder actor of `a` is none of `a`'s (spec/crypto.md §4, Holder actors).
 //! Departures are recomputed on demand (O(edge history)) and cached per actor (`departures`),
@@ -11,7 +11,7 @@
 
 use crate::engine::{Core, Tx};
 use crate::error::Result;
-use crate::flows::now_ts;
+use crate::flows::{now_ts, secrets_in};
 use osis_base::{Role, Tid};
 use osis_keys::{Departure, Name};
 use osis_perm::{At, EdgeOp, RoleCommit, Timeline, WriteId};
@@ -128,7 +128,7 @@ fn thing_names(core: &Core, a: &Tid, out: &mut BTreeSet<Name>) {
 }
 
 /// Departures from `a` itself: holders that hold less now (`Core::key_holders`) than a departure event
-/// of theirs (`events`) or a box held at a current epoch, valid or not, had them hold (spec/crypto.md §4), each
+/// of theirs (`events`) or a box of the `secrets.0` state at a current epoch had them hold (spec/crypto.md §4), each
 /// concerning the roles above its current one up to the highest it left, and named by its newest
 /// event (a box holder with none: by `a`'s epoch start, which its snapshot dropped it at; with no
 /// start either, by nothing, so no epoch covers it until a rotation supersedes the box). The
@@ -161,11 +161,10 @@ fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
         }
         start = start_of(tx.core, tl, a).map(|s| Name { thing: *a, key: key_of(&s) });
     }
-    // from boxes held, valid or not (`members::held_boxes`): a box at a current epoch of a role
-    // its holder no longer holds
+    // from the `secrets.0` state: a box at a current epoch of a role its holder no longer holds
     if let Some(epochs) = tx.core.epochs(a) {
-        let boxes = super::members::held_boxes(tx, a)?;
-        for (k, _) in boxes.iter() {
+        let s = secrets_in(tx, a)?;
+        for k in s.boxes.keys() {
             if osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).is_current(&e)) {
                 note(k.holder, Role::Read, k.role, None);
             }

@@ -92,6 +92,7 @@
   - on every thing with secrets of its own that A's roles open (what A owns, the targets of A's grants, and so on transitively), the roles A holds there among those the roles M left open through A (a role secret opens only boxes of that role, spec/crypto.md §4). Those rotations are required through A's keyset: A's rotation lists the keyset M could open, so each box to A at it is stale (spec/crypto.md §4, Holder actors), and so on up.
   - Content is not re-encrypted.
 - The write by another node that removes or demotes M on A and the rotation of A's roles it requires are one role commit (spec/commits.md §2). A node may hold its parts at different times (spec/commits.md §4).
+  - While Seal waits (spec/crypto.md §4, Holder actors) the write goes alone, a finalize included: the removal applies at once, and its departure stays uncovered, so A's rotation is due and no node that may rotate encrypts under A until one is made (spec/crypto.md §4, Encrypting under).
 - A self-removal (§2) carries no rotation: the departure stays uncovered until the next node that may rotate does so.
 - Every other rotation is required of whoever may make it, when it next encrypts under the secret (spec/crypto.md §4). Nobody is required to sync anything to find it.
 - **Who rotates**: a node with effective role write or above on an actor may rotate its roles at or below that role (a writer rotates read and write, an admin all three); through a holder actor only by showing it holds that actor's keyset secret (spec/crypto.md §4, Possession).

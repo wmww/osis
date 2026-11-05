@@ -1365,7 +1365,7 @@ pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid
 }
 
 /// Rules of a role commit that need its deltas
-/// (spec/commits.md §2, spec/wire.md §4 position 13, spec/permissions.md §3).
+/// (spec/commits.md §2, spec/wire.md §4 position 13).
 pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
     if h.kind != Kind::Role {
         return Ok(());
@@ -1430,23 +1430,6 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
             let removes = *m != h.author && new.as_ref().is_none_or(|e| e.says_keep()) && !self_removal(core, &h.author, target, m, h.ts);
             if removes && old.is_some_and(|o| o.until.is_none() || o.alive_at(Some(h.ts))) {
                 return Err(Error::BadInput("a removal with no frontier of an edge not past its until"));
-            }
-        }
-    }
-    // a removal or demotion on a thing with secrets of its own carries its rotation
-    for (target, m, new) in &changed {
-        if *m == h.author {
-            continue;
-        }
-        // for keys: `until` disregarded (spec/crypto.md §4)
-        let old = core.timelines.get(target).and_then(|tl| crate::rotation::key_role(tl.edges_at(None).get(m, target)));
-        let demotes = old.is_some_and(|o| crate::rotation::key_role(new.as_ref()) < Some(o));
-        // a self-removal carries no rotation: the next node that may rotate does it
-        // (spec/permissions.md §3)
-        if demotes && !self_removal(core, &h.author, target, m, h.ts) && core.ix.own_keys.contains(target) {
-            let has = |ak: &str| h.aspects.iter().any(|a| a.tid == *target && a.ak.as_str() == ak);
-            if !has("secrets.0") || !has("keys.0") {
-                return Err(Error::BadInput("a removal without the rotation it requires"));
             }
         }
     }
