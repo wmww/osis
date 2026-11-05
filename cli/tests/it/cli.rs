@@ -283,7 +283,7 @@ fn commits_undo_redo_plan_cli_4() {
 fn groups_plan_cli_4() {
     let s = S::mem();
     assert_eq!(s.code(&["create"]), 2, "nothing durable: gone at exit");
-    assert_eq!(s.code(&["create", "--in", "me"]), 2, "an ephemeral group, placed ephemerally");
+    assert_eq!(s.code(&["create", "--in", "me"]), 2, "an ephemeral member");
     let g = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     let t = s.thing();
     s.ok(&["group", "add", &g, &t]);
@@ -399,6 +399,7 @@ const SCHEMA: &str = "version 1;
 type task = struct { 0 title: string, 1 done: bool, 2 due: option<timestamp> };
 aspect todo:task.0: task;
 aspect todo:list.0: list<task>;
+aspect todo:note.0: text;
 aspect todo:count.0: counter<int>;
 aspect todo:ping.0*: int;
 ";
@@ -448,6 +449,15 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["get", t, "todo:list.0", "[1].title"], "").1, "\"b\"\n");
     assert_eq!(call(&["op", t, "todo:list.0", "", "splice", "0..1"], "").0, 0);
     assert_eq!(call(&["get", t, "todo:list.0", "[0].title"], "").1, "\"b\"\n");
+    // a text position: quoted or bare; no text deletes
+    assert_eq!(call(&["set", t, "todo:note.0", "\"hello world\""], "").0, 0);
+    assert_eq!(call(&["op", t, "todo:note.0", "", "splice", "0..5", "\"goodbye\""], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:note.0"], "").1, "\"goodbye world\"\n");
+    assert_eq!(call(&["op", t, "todo:note.0", "", "splice", "0..0", "oh"], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:note.0"], "").1, "\"ohgoodbye world\"\n");
+    assert_eq!(call(&["op", t, "todo:note.0", "", "splice", "0..2"], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:note.0"], "").1, "\"goodbye world\"\n");
+    assert_eq!(call(&["op", t, "todo:note.0", "", "splice", "0..0", "a", "b"], "").0, 2, "one text");
     assert_eq!(call(&["op", t, "todo:count.0", "", "contribute", "5"], "").0, 0);
     assert_eq!(call(&["op", t, "todo:count.0", "", "contribute", "-2"], "").0, 0);
     assert_eq!(call(&["get", t, "todo:count.0"], "").1, "3\n");
@@ -742,7 +752,7 @@ fn history_and_purge_commands_plan_cli() {
     assert_eq!(s.code(&["history", &t, "note:m.0", "--before", "nonsense"]), 2);
 }
 
-// notes/cli.md Command table `group add`, `op`: a membership that expires by flag, a list and a text splice, an `--owner` still naming one (transitional)
+// notes/cli.md Command table `group add`, `op`: a membership that expires by flag, `--admin` naming who stays
 #[test]
 fn group_and_splice_commands() {
     let s = S::mem();
@@ -751,7 +761,7 @@ fn group_and_splice_commands() {
     s.ok(&["group", "add", &g, &t, "--expires-in", "1h"]);
     assert!(s.ok(&["members", &g]).out.contains(&t));
     assert_eq!(s.code(&["group", "add", &g, &t, "--expires-in", "1h", "--expires-at", "2030-01-01T00:00:00Z"]), 2, "one expiry");
-    let owned = s.ok(&["create", "--owner", &g, "t:x.0", "1"]).line().to_string();
+    let owned = s.ok(&["create", "--admin", &g, "t:x.0", "1"]).line().to_string();
     assert!(s.ok(&["show", &owned]).out.contains(&format!("owner\t{g}")), "{}", s.ok(&["show", &owned]).out);
     let schema = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");

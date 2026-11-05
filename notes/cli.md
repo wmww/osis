@@ -44,8 +44,8 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `serve [hosting set flags] [--client-listen URL]…` (a line `client URL#KEY` per listener after the host address) | `hosting`, `set_hosting`, `host_address`, `client_listen`, then as `diag --follow` | now |
 | `clients rotate-key` (prints the new addresses; through a daemon its listeners move at once) | `rotate_client_key` | now |
 | `group source G local\|ADDR`, with `--remote ADDR --remote-secret FILE` on this and every later command on that store (no secret is stored; without it a routed group exits 1 `Network`); not through a daemon (exit 1) | `group_source`, `Config.remotes`, `attach_node`, `detach_node`, `await_remotes`, `routes`, `attach_remotes` | now |
-| `create [--owner A] [--in G\|--in-all G,G] [AK V]…` (nothing durable: exit 2, the thing would vanish at exit; `--in` alone is an ephemeral write; `--owner` is transitional, gone with owners: `create_owned_by`, for a thin client, which owns nothing, and what a group's holders read without a grant) | `write`, `Write::create`, `place`, `make_group`, `set`, `commit` | now |
-| `get T AK [PATH]` | `at().get()`, `at().path().get()`; `--stream` / `--len`: `stream()` (raw bytes to stdout) / its `len` | now |
+| `create [--admin G] [--in G\|--in-all G,G] [AK V]…` (nothing durable: exit 2, the thing would vanish at exit; `--in` alone is an ephemeral write; `--admin` is `create_with_admin`: a thin client's way to create, and a thing a group's holders read with no grant) | `write`, `Write::create`, `place`, `make_group`, `set`, `commit` | now |
+| `get T AK [PATH]` | `at().get()`, `at().path().get()`; `--stream` / `--len`: `path().stream()` (raw bytes to stdout) / its `len` | now |
 | `set` / `overwrite` / `rm T AK [PATH] [V]` | `PathWrite::set/overwrite/remove`; `set --stream` (value on stdin): `set_stream` | now |
 | `op T AK PATH OP ARGS` | `PathWrite` ops | now (`undelete` 2nd; untyped sequence ops fail in the crdt) |
 | `edit T AK --base V` (stdin) | `Write`, `edit` | now |
@@ -57,7 +57,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `ls G` / `backlinks T` | query / backlinks | 2nd (no API yet) |
 | `watch T [AK]` | `at().on_change` / `watch_thing` | now |
 | `history T AK [--oldest] [--before POS] [--after POS] [--max N]` (a line: `TS/COMMIT` place, time, actor, node, kind, validity, body; `--json` adds `more`, `complete`) | `AspectRef::history` | now |
-| `purge T AK [--commit C \| --author A]` | `AspectWrite::purge`, `purge_commit`, `purge_author` | now |
+| `purge T AK [--commit C \| --author A]` | `AspectWrite::purge` (`Purge::All`, `Change`, `Author`) | now |
 | `commits [SCOPE] [--actor A] [--kind K] [--reverts C] [--reverted-by C] [--in-effect B] [--since/--until TS] [--after C] [--max N] [--next undo\|redo]` / `undo` / `redo` / `revert C` | `commits` / `undo` / `redo` / `revert` | now |
 | `group add G T [--subgroup] [--expires-in D\|--expires-at TS]` / `group rm G T [--subgroup]` / `groups` / `members G` | `Write::group`, `groups_of` (lines `item`/`subgroup`/`within` TAB group), `members` | now |
 | `members G` (lines `item`/`subgroup` TAB thing) | `items`, `subgroups` | now |

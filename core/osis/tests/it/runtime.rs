@@ -160,11 +160,11 @@ async fn text_idle_commit_api_text_sessions() {
     let mut w = db.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
-    let s = db.at(t, k.clone()).edit_text().unwrap();
+    let s = db.at(t, k.clone()).path(osis::p![]).edit_text().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let _watch = db.at(t, k.clone()).on_change(move |_, c| tx.send(c.value.unwrap()).unwrap()).unwrap();
     assert_eq!(tokio::time::timeout(GUARD, rx.recv()).await.unwrap(), Some(None), "the current value first");
-    s.replace(0..0, "hi").unwrap();
+    s.splice(0..0, "hi").unwrap();
     assert_eq!(tokio::time::timeout(GUARD, rx.recv()).await.unwrap(), Some(Some(Value::Str("hi".into()))));
     assert_eq!(db.at(t, k).get().unwrap(), Some(Value::Str("hi".into())));
     assert_eq!(s.commit().unwrap(), None, "already committed");
@@ -178,7 +178,7 @@ async fn text_idle_commit_api_text_sessions() {
 async fn keep_alive_rewrites_until_dropped() {
     let net = osis_transport::Net::new(4);
     let db = Osis::create(cfg(1, vec![], Transport::InProcess(net.endpoint("a")))).unwrap().0;
-    db.register_schema("c.osis", "version 1;\naspect c:cursor.0~: map<tid, int> [expires: 60ms];\naspect c:flag.0~: map<tid, int>;\n").unwrap();
+    db.register_schema("c.osis", "version 1;\naspect c:cursor.0~: map<tid, int> [expires: 60ms];\naspect c:flag.0~: map<tid, int>;\naspect c:on.0~: int [expires: 60ms];\n").unwrap();
     let k = db.key("c:cursor.0~").unwrap();
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -186,6 +186,10 @@ async fn keep_alive_rewrites_until_dropped() {
     let me = osis::Path(vec![osis::Step::Key(Value::Tid(db.node()))]);
     let mine = |db: &Osis| db.at(t, k.clone()).get().unwrap().and_then(|v| if let Value::Map(m) = v { m.get(&Value::Tid(db.node())).cloned() } else { None });
     assert!(db.at(t, db.key("c:flag.0~").unwrap()).path(me.clone()).keep_alive(&Value::Int(1)).is_err(), "no default expiry");
+    let on = db.key("c:on.0~").unwrap();
+    let whole = db.at(t, on.clone()).keep_alive(&Value::Int(7)).unwrap();
+    assert_eq!(db.at(t, on.clone()).get().unwrap(), Some(Value::Int(7)), "the whole aspect");
+    drop(whole);
     let ka = db.at(t, k.clone()).path(me).keep_alive(&Value::Int(1)).unwrap();
     assert_eq!(mine(&db), Some(Value::Int(1)));
     // rewritten every 30 ms: four writes besides the first come (GUARD only against a hang: no

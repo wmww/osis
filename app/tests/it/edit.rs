@@ -15,11 +15,11 @@ fn data() -> Data {
 fn splice_keeps_unshown_remote_merge() {
     let n = data();
     let t = n.create_note().unwrap();
-    let s = n.db.at(t, BODY).edit_text().unwrap();
+    let s = n.db.at(t, BODY).path(osis::p![]).edit_text().unwrap();
     let shown = "hello world";
-    s.replace(0..0, shown).unwrap();
+    s.splice(0..0, shown).unwrap();
     // the "remote" merge, ahead of the widget
-    s.replace(6..6, "brave ").unwrap();
+    s.splice(6..6, "brave ").unwrap();
     splice(&s, shown, "hello world!").unwrap();
     assert_eq!(s.text(), "hello brave world!", "after the merge");
     splice(&s, "hello world!", ">hello world!").unwrap();
@@ -30,7 +30,7 @@ fn splice_keeps_unshown_remote_merge() {
     splice(&s, ">hellX world!", ">hellX_rld!").unwrap();
     assert_eq!(s.text(), ">hellX brave_rld!", "a replace right after the merge");
     let len = s.text().chars().count();
-    s.replace(0..len, ">hellX brave world!").unwrap();
+    s.splice(0..len, ">hellX brave world!").unwrap();
     // a deletion across the merge point: the merge wins, only what was typed lands, after it
     splice(&s, ">hellX world!", ">hell_rld!").unwrap();
     assert_eq!(s.text(), ">hellX brave _world!");
@@ -46,7 +46,7 @@ fn splice_keeps_unshown_remote_merge() {
 fn splice_random_against_reference() {
     let n = data();
     let t = n.create_note().unwrap();
-    let s = n.db.at(t, BODY).edit_text().unwrap();
+    let s = n.db.at(t, BODY).path(osis::p![]).edit_text().unwrap();
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
     let mut rnd = move |m: usize| {
         x ^= x << 13;
@@ -78,7 +78,7 @@ fn splice_random_against_reference() {
         let remote = apply(&sh, rat, rdel, &rins);
         let new = apply(&sh, ldat, ldel, &lins);
         let len = s.text().chars().count();
-        s.replace(0..len, &st(&remote)).unwrap();
+        s.splice(0..len, &st(&remote)).unwrap();
         splice(&s, &st(&sh), &st(&new)).unwrap();
         let got: Vec<char> = s.text().chars().collect();
         let case = format!("shown {:?} remote {:?} new {:?} got {:?}", st(&sh), st(&remote), st(&new), st(&got));

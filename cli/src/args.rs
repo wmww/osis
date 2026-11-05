@@ -415,10 +415,9 @@ pub enum Cmd {
 
 #[derive(Args, Debug, Clone)]
 pub struct CreateArgs {
-    /// Owner actor, default the acting one. Transitional: goes with owners. Still needed by a
-    /// thin client, which owns nothing, and for what a group's holders read without a grant
-    #[arg(long, value_name = "ACTOR")]
-    pub owner: Option<String>,
+    /// First admin in place of the acting actor: a thin client's way to create, naming a group that outlives it
+    #[arg(long, value_name = "G")]
+    pub admin: Option<String>,
     #[command(flatten)]
     pub place: PlaceArgs,
     /// Bind $NAME to the new tid (write scripts)

@@ -12,7 +12,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::read::{AspectRef, PathRef, ak_of};
+use crate::read::{PathRef, ak_of};
 use crate::watch::{Source, Subscription, lock};
 use crate::write::Committed;
 use osis_base::{Tid, Value};
@@ -146,7 +146,8 @@ fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Committed>> {
 }
 
 impl<K: AspectKey> PathRef<'_, '_, K> {
-    /// Opens a text session on the string here. An absent position starts empty.
+    /// Opens a text session on the string here. An absent position starts empty. `Unsupported`
+    /// through an attached node.
     pub fn edit_text(&self) -> Result<TextSession> {
         let (db, tid, key, path) = self.parts();
         if let crate::sources::Source::Remote(_) = db.route(tid) {
@@ -189,13 +190,6 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     }
 }
 
-impl<K: AspectKey> AspectRef<'_, K> {
-    /// `path(Path::root()).edit_text()`: the whole aspect.
-    pub fn edit_text(&self) -> Result<TextSession> {
-        self.path(Path::root()).edit_text()
-    }
-}
-
 impl TextSession {
     /// The buffer now.
     pub fn text(&self) -> String {
@@ -223,7 +217,7 @@ impl TextSession {
     }
 
     /// Replaces the chars in `range` with `text`: an empty range inserts, empty text deletes.
-    pub fn replace(&self, range: Range<usize>, text: &str) -> Result<()> {
+    pub fn splice(&self, range: Range<usize>, text: &str) -> Result<()> {
         self.edit(|b| {
             let r = char_range(b, &range)?;
             b.replace_range(r, text);

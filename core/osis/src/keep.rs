@@ -87,6 +87,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// a default expiry (schema `[expires: ...]`) well above the network delay and the clock
     /// differences between nodes; the database needs its runtime (a `Config::transport`) for the
     /// timer. Nothing outlives the process: after a restart the app calls this again.
+    /// `Unsupported` through an attached node.
     pub fn keep_alive<U: Codec>(&self, value: &U) -> Result<KeepAlive> {
         let (db, tid, key, path) = self.parts();
         if let crate::sources::Source::Remote(_) = db.route(tid) {
@@ -111,7 +112,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
 }
 
 impl<K: AspectKey> AspectRef<'_, K> {
-    /// `path(Path::root()).keep_alive(value)`: the whole aspect, with `value`'s type checked at
+    /// The same as `path(Path::root()).keep_alive(value)`, but for checking `value`'s type at
     /// compile time.
     pub fn keep_alive(&self, value: &K::T) -> Result<KeepAlive> {
         self.path(Path::root()).keep_alive(&self.key.encode(value))

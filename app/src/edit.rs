@@ -43,7 +43,7 @@ pub fn splice(s: &TextSession, shown: &str, new: &str) -> osis::Result<()> {
             (ra + ri.len(), 0, li)
         }
     };
-    s.replace(at..at + del, &ins.iter().collect::<String>())
+    s.splice(at..at + del, &ins.iter().collect::<String>())
 }
 
 /// The edits from `shown` (the widget's text) to `text` (the session's), to map the caret

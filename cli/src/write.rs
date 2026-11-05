@@ -118,13 +118,13 @@ fn index(s: &str) -> anyhow::Result<usize> {
 }
 
 pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &mut Did) -> anyhow::Result<()> {
-    let owner = a.owner.as_deref().map(|o| ctx.tid(o)).transpose()?;
+    let admin = a.admin.as_deref().map(|o| ctx.tid(o)).transpose()?;
     let place = place(ctx, &a.place)?;
     if !a.pairs.len().is_multiple_of(2) {
         return Err(usage("create takes AK VALUE pairs"));
     }
-    let t = match owner {
-        Some(o) => w.create_owned_by(o)?,
+    let t = match admin {
+        Some(a) => w.create_with_admin(a)?,
         None => w.create()?,
     };
     for g in place {
@@ -205,7 +205,9 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
                 return Err(usage("splice A..B [V...]"));
             }
             let r = range(&args[0])?;
-            if matches!(pt, Some(Type::Text)) {
+            if args.len() == 1 {
+                pw.splice(r, ())?
+            } else if matches!(pt, Some(Type::Text)) {
                 n(2)?;
                 let s = ctx.arg_text(&args[1])?;
                 let s = if s.starts_with('"') {
