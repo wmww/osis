@@ -345,7 +345,7 @@ pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keep::{KeepAlive, REFRESH_DIVISOR};
 pub use keys::{Key, core};
 pub use large::ValueStream;
-pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp};
+pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
 pub use share::{ContactCard, Device, GrantOpts, GroupSync, Holder, HostAddr, InviteId, LinkId, LinkInfo, LinkOpts, Member, RecoveryCard, SetRoleOpts, ShareLink, Status, SyncFirst, SyncScope, SyncState, Url};
 pub use sources::{GroupSource, NodeLogin, RemoteStatus};
 pub use text::{Splice, TextSession};

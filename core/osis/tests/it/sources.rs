@@ -1828,6 +1828,22 @@ fn connecting_at_zero_and_infinity() {
     drop(x.host);
 }
 
+// spec/sync.md §10, notes/client-port.md §6: a login names its secret: a new secret after a rotation connects at the first call, and a live connection by another secret is `Invalid`, never silently kept as someone else's
+#[test]
+fn connect_node_takes_a_new_secret_and_refuses_a_second_login() {
+    let x = world();
+    x.attach_p();
+    let (_other, other) = x.n.add_client(None).unwrap();
+    let second = NodeLogin { addr: x.nc.clone(), secret: other };
+    assert!(matches!(x.p.connect_node(&second, W), Err(Error::Invalid(_))));
+    assert_eq!(x.p.status().unwrap().remotes[0].connected, true, "the connection stands");
+    let new = x.n.rotate_client_secret(x.actor).unwrap();
+    until("the old session ended", || !x.p.status().unwrap().remotes[0].connected);
+    x.p.connect_node(&NodeLogin { addr: x.nc.clone(), secret: new }, W).unwrap();
+    assert_eq!(x.p.status().unwrap().remotes, vec![osis::RemoteStatus { address: x.nc.clone(), connected: true }]);
+    drop(x.host);
+}
+
 // spec/sync.md §10, notes/client-port.md §6: a node's connection to a node that is down says so and keeps trying; calling again says how it stands; a refused secret keeps nothing; a thing known nowhere here then answers there
 #[test]
 fn connect_node_keeps_trying_a_node_that_is_down() {

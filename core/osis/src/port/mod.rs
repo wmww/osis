@@ -54,7 +54,7 @@ pub(crate) mod method {
     pub const STREAM_READ: u64 = 18;
     /// `[]` -> `[]` once every Notify for changes before it went (`Osis::settle`). The worker
     /// runs the node's `settle`, waiting for its dispatcher: a callback in the node's process
-    /// that waits on the port worker (an thin client of its own node) deadlocks it.
+    /// that waits on the port worker (a thin client of its own node) deadlocks it.
     pub const SETTLE: u64 = 19;
     /// `[]` -> wall ms
     pub const NOW: u64 = 20;

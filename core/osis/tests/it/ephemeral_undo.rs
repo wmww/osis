@@ -249,7 +249,7 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     db.undo(&s).unwrap().unwrap();
     assert!(db.groups_of(e).unwrap().item_of == vec![f] && !durable_in_f(&db), "placed ephemerally again");
     assert!(db.at(e, osis::Key::untyped(body.clone())).get().unwrap().is_none() && db.at(e, osis::Key::untyped(draft.clone())).get().unwrap() == int(1) && db.knows(e).unwrap(), "the draft");
-    assert!(db.created(e).unwrap().unwrap().id.commit().is_some(), "the record stays durable");
+    assert!(db.created(e).unwrap().unwrap().commit.is_some(), "the record stays durable");
     db.undo(&s).unwrap().unwrap();
     assert!(!db.knows(e).unwrap() && db.groups_of(e).unwrap().within.is_empty() && db.at(e, osis::Key::untyped(draft.clone())).get().unwrap().is_none(), "the draft's creation undone");
     assert_eq!(db.undo(&s).unwrap(), None);
@@ -311,9 +311,9 @@ fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
     let mut w = db.write();
     let g = w.create().unwrap();
     w.commit().unwrap();
-    assert!(db.created(g).unwrap().unwrap().id.commit().is_none(), "the group is ephemeral");
+    assert!(db.created(g).unwrap().unwrap().commit.is_none(), "the group is ephemeral");
     let mut w = db.write();
     w.group(g).add(osis::Member::Item(n)).unwrap();
     w.commit().unwrap();
-    assert!(db.created(g).unwrap().unwrap().id.commit().is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
+    assert!(db.created(g).unwrap().unwrap().commit.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
 }

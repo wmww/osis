@@ -153,6 +153,10 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
         e(c.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).map(|_| "written".to_string())),
         e(c.batch(|w| w.delete(t)).map(|_| "written".to_string())),
         e(c.undo(&Scope::Thing(t)).map(|v| format!("{v:?}"))),
+        e(c.undo_target(&Scope::Thing(t)).map(|v| format!("{v:?}"))),
+        e(c.holders(t).map(|v| format!("{v:?}"))),
+        e(c.leave(c.me(), t).map(|()| "left".to_string())),
+        e(c.leave(t, t).map(|()| "left".to_string())),
     ];
     let w = watched(c, t, osis::Key::untyped(k)).unwrap();
     out.push(format!("{:?}", w.current()));
@@ -1696,6 +1700,20 @@ fn a_client_leaves_alone() {
     assert!(matches!(c.leave(other, x.g), Err(Error::Permission { .. })));
     assert!(matches!(c.leave(x.n.me(), x.g), Err(Error::Permission { .. })));
     assert!(x.n.grants(x.g).unwrap().contains_key(&other));
+    // through a team it reads: says so, names the team, ends nothing
+    let (b, _s, cb) = x.client(Role::Read);
+    x.n.grant(x.h, b, Role::Read, Default::default()).unwrap();
+    x.n.grant(x.out, x.h, Role::Read, Default::default()).unwrap();
+    let r = cb.leave(b, x.out);
+    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains(&x.h.to_string())), "{r:?}");
+    assert_eq!(x.n.grants(x.h).unwrap().get(&b).map(|g| g.role), Some(Role::Read));
+    assert!(x.n.grants(x.out).unwrap().contains_key(&x.h));
+    // what it may not read: as a thing nobody knows, and nobody's grant moves
+    let (ghost, before) = (Tid::from_bytes([9; 15]), x.n.grants(x.out).unwrap());
+    assert_eq!(c.leave(a, ghost), Ok(()));
+    assert_eq!(c.leave(a, x.out), Ok(()));
+    assert_eq!(x.n.grants(x.out).unwrap(), before);
+    assert!(matches!(c.leave(ghost, x.g), Err(Error::Permission { .. })), "another tid, known or not, reads the same");
     c.leave(a, x.g).unwrap();
     assert!(!x.n.grants(x.g).unwrap().contains_key(&a));
     assert!(x.n.grants(x.g).unwrap().contains_key(&other));

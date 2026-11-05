@@ -6,7 +6,7 @@ use crate::handle::Osis;
 use crate::port::method as m;
 use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription};
-use osis_base::{Ak, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{ChangeId, Diagnostic, Engine};
 use osis_schema::ApiKey;
 use osis_schema::core_types::{GROUP, PLACED};
@@ -27,12 +27,10 @@ pub struct Grant {
 }
 
 /// A change's author and time, as its signed header says (a snapshot applied is reported as
-/// itself, never as the writes it carries): `Osis::created`, `Osis::changed`, why a watch fired, a
-/// commit or history entry.
+/// itself, never as the writes it carries): why a watch fired, a commit or history entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
-    /// The commit, or the ephemeral batch for a change with no durable half. An ephemeral thing's
-    /// creation names no batch of its own: `id.commit()` is `None`, and it cannot be reverted by id.
+    /// The commit, or the ephemeral batch for a change with no durable half.
     pub id: ChangeId,
     /// The actor the author acted for.
     pub actor: Tid,
@@ -52,12 +50,30 @@ impl Stamp {
     }
 }
 
-/// `Stamp::id` of an ephemeral thing's creation. The engine keeps no batch id for it, and 0 is no
-/// batch's number (they start at 1), so no call finds it.
-const UNNAMED_BATCH: ChangeId = ChangeId::Ephemeral(osis_node::EphemeralId { session: [0; osis_crdt::SESSION_NONCE_LEN], n: 0 });
+/// When a thing was made or last changed (`Osis::created`, `Osis::changed`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ThingStamp {
+    /// The commit; `None` when it is only the creation of a thing still ephemeral.
+    pub commit: Option<CommitId>,
+    /// The actor the author acted for.
+    pub actor: Tid,
+    /// The authoring node.
+    pub node: Tid,
+    /// The author's clock, the same on every node.
+    pub ts: Ts,
+    /// When this node received it (per node).
+    pub received: WallMs,
+}
 
-fn stamp(c: osis_node::Creation) -> Stamp {
-    Stamp { id: c.commit.map_or(UNNAMED_BATCH, ChangeId::Commit), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
+impl ThingStamp {
+    /// The time to show and sort by, as `Stamp::shown`.
+    pub fn shown(&self) -> WallMs {
+        self.ts.wall_ms().min(self.received)
+    }
+}
+
+fn stamp(c: osis_node::Creation) -> ThingStamp {
+    ThingStamp { commit: c.commit, ts: c.ts, node: c.node, actor: c.actor, received: c.received }
 }
 
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
@@ -353,7 +369,7 @@ impl Reader<'_> {
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
     /// snapshot (an ephemeral thing's batch); `None` while it is unknown or
     /// only a snapshot carrying its `created.0` is here.
-    pub fn created(&self, tid: Tid) -> Option<Stamp> {
+    pub fn created(&self, tid: Tid) -> Option<ThingStamp> {
         if self.hidden(tid) {
             return None;
         }
@@ -364,7 +380,7 @@ impl Reader<'_> {
     /// sharing are no content change; not ephemeral writes), the one with the latest
     /// `shown()`, else its creation. A delete is a change. A change known here only from a
     /// snapshot is not seen.
-    pub fn changed(&self, tid: Tid) -> Option<Stamp> {
+    pub fn changed(&self, tid: Tid) -> Option<ThingStamp> {
         if self.hidden(tid) {
             return None;
         }
@@ -461,14 +477,14 @@ impl Osis {
         Ok(self.read_local(|r| r.owner_of(tid)))
     }
 
-    fn remote_stamp(&self, r: &crate::port::client::Remote, m: u64, tid: Tid) -> Result<Option<Stamp>> {
+    fn remote_stamp(&self, r: &crate::port::client::Remote, m: u64, tid: Tid) -> Result<Option<ThingStamp>> {
         let v = r.call(m, vec![Value::Tid(tid)])?;
-        crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::stamp).transpose()
+        crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::thing_stamp).transpose()
     }
 
     /// When the thing was created: the oldest valid commit carrying its creation (an ephemeral
-    /// thing's batch: `Stamp::id` names no commit); `None` while it is unknown here.
-    pub fn created(&self, tid: Tid) -> Result<Option<Stamp>> {
+    /// thing's batch: no commit); `None` while it is unknown here.
+    pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CREATED, tid);
         }
@@ -477,7 +493,7 @@ impl Osis {
 
     /// When the thing's content last changed (placement and sharing are no content change, a delete
     /// is); its creation if never since. A change known here only from a snapshot is not seen.
-    pub fn changed(&self, tid: Tid) -> Result<Option<Stamp>> {
+    pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CHANGED, tid);
         }

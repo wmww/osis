@@ -821,7 +821,7 @@ fn placement_reaching_no_synced_group_fails_spec_api_writes() {
     // ... until a durable write persists it with that placement: the same check
     let r = db.commit_set(e, osis::Key::untyped(ak("t:x.0")), &Value::Int(1));
     assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("as a subgroup")), "{r:?}");
-    assert_eq!(db.created(e).unwrap().unwrap().id.commit(), None, "still ephemeral");
+    assert_eq!(db.created(e).unwrap().unwrap().commit, None, "still ephemeral");
     // a group with no synced group at all: device-local, allowed (a `NotSynced` diagnostic)
     let mut w = db.write();
     let l = w.create_durable(db.me()).unwrap();
@@ -1010,7 +1010,7 @@ fn owner_created_now_api_reads() {
     let done = w.commit().unwrap().unwrap();
     assert_eq!(db.owner_of(t).unwrap(), Some(db.me()));
     let ci = db.created(t).unwrap().unwrap();
-    assert_eq!((ci.id.commit(), ci.ts, ci.node, ci.actor, ci.received), (done.id.commit(), done.ts, db.node(), db.me(), osis::WallMs(T0 + 5)));
+    assert_eq!((ci.commit, ci.ts, ci.node, ci.actor, ci.received), (done.id.commit(), done.ts, db.node(), db.me(), osis::WallMs(T0 + 5)));
     assert_eq!(ci.shown(), osis::WallMs(T0 + 5));
     c.advance(5);
     db.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("later")).unwrap();
@@ -1041,7 +1041,7 @@ fn changed_content_only_api_reads() {
     ca.advance(10);
     a.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("1")).unwrap();
     let ch = a.changed(t).unwrap().unwrap();
-    assert_eq!((ch.id.commit(), ch.shown()), (Some(newest(&a, t)), osis::WallMs(T0 + 10)));
+    assert_eq!((ch.commit, ch.shown()), (Some(newest(&a, t)), osis::WallMs(T0 + 10)));
     assert_ne!(a.created(t).unwrap(), Some(ch));
     // placement: neither the item's nor the group's content
     let home = a.changed(a.me()).unwrap();
@@ -1076,7 +1076,7 @@ fn changed_content_only_api_reads() {
     let e = w.create().unwrap();
     w.at(e, osis::Key::untyped(ak("t:x.0~"))).set(&s("draft")).unwrap();
     w.commit().unwrap();
-    assert!(a.created(e).unwrap().unwrap().id.commit().is_none());
+    assert!(a.created(e).unwrap().unwrap().commit.is_none());
     assert_eq!(a.changed(e).unwrap(), a.created(e).unwrap());
 }
 
@@ -1129,7 +1129,7 @@ fn created_not_a_snapshot_spec_commits_2() {
     let done = w.commit().unwrap().unwrap();
     c.advance(60_000);
     let snap = a.engine(|e| e.snapshot(&t, &ak("t:x.0"))).unwrap().unwrap();
-    assert_eq!(a.created(t).unwrap().unwrap().id.commit(), Some(done.id.commit().unwrap()));
+    assert_eq!(a.created(t).unwrap().unwrap().commit, Some(done.id.commit().unwrap()));
     let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.id.commit().unwrap()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
         b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
@@ -1193,7 +1193,7 @@ fn knows_is_about_content() {
     let t = w.create().unwrap();
     w.commit().unwrap();
     db.sync(t, &[]).unwrap();
-    assert_eq!(db.created(t).unwrap().map(|c| c.id.commit().is_some()), Some(true), "durable");
+    assert_eq!(db.created(t).unwrap().map(|c| c.commit.is_some()), Some(true), "durable");
     assert!(!db.knows(t).unwrap(), "no content yet");
     db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
     assert!(db.knows(t).unwrap());
@@ -1585,7 +1585,7 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
 fn a_group_and_member_of_one_batch_keep_by_what_is_written() {
     let db = db(1);
     let x = ak("t:x.0");
-    let kept = |t: osis::Tid| db.created(t).unwrap().unwrap().id.commit().is_some();
+    let kept = |t: osis::Tid| db.created(t).unwrap().unwrap().commit.is_some();
     let new = |write_member: bool| {
         db.batch(|w| {
             let (g, m) = (w.create()?, w.create()?);
