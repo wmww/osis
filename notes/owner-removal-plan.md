@@ -21,7 +21,7 @@ Everything else reads validity as it does now. Enforced: the dispute types are p
 ## Order
 Each step passes the gate alone and is useful alone. Spec changes go with each step; spec/requirements.md Permissions, Deterministic, API and Scale change in the steps that break them.
 
-### 0. Keys at depth 0 (issues/keys-depth0.md)
+### 0. Keys at depth 0 (issues/keys-depth0.md) — built, item 295
 It deletes names below an actor, keyset names and the departure walk, which removes two review findings: names growing forever without snapshots, and a grant on one side leaving a holder out for good. Without it, step 1 needs a new reset point for names. Built (branch depth0); open: issues/keys-depth0-removed-member-rotates.md. Step 2 must keep the first admin's implicit edge a grant ordered at creation for key access (`rotation::members::grants` orders owners first today).
 
 ### 1. Delete roster snapshots
