@@ -82,12 +82,12 @@ Since registration waits for the rotation chain to be uploaded, the interleaving
 Write and admin rotation, holder actors beyond one group with one leaving device (no nested holders, the group's honest keyset changes made outside the model), a grant's edge without its box (one record), the compaction residual of the study (a snapshot of g meeting the name with g forked: `GSnap` with "fork" is in no cfg), epoch starts (roster snapshots) of the rotated actor, forged history entries, invalid rotation commits, demotion and `until`, several hosts or branches of the step tree, steps without rotation, entry boxes and key-actor readers, `label.0` records, `ROLE_KEEP` compaction of steps in `label.0` and of rotation commits (`secrets.0` snapshots, so snapshot-established epochs and the post-compaction residue of notes/sync.md Limits).
 
 ## Depth0.tla: depth-0 sealing (notes/keys-requirements-study.md §4)
-Several actors and holder actors, read role only, an actor's keyset = its read epoch; crypto as access (a node's secrets: the closure over boxes and history boxes of the commits it holds; a removed device's: over every box ever written); any delivery order; ignorant forks, unprompted rotations and one forged keyset as one-shot steps; A's own departures by frozen coverage (no establishment, hosts or claims: Rotation.tla's). Constants select the rule variants (`Stale`, `Anchor`, `Merge`, `LeaveOut`, `CycleCheck`, `Rejoin`); instances are defined in `Depth0MC.tla` (a `.cfg` cannot write tuples), so run with module `Depth0MC`:
+Several actors and holder actors, read role only, an actor's keyset = its read epoch; crypto as access (a node's secrets: the closure over boxes and history boxes of the commits it holds; a removed device's: over every box ever written); any delivery order; ignorant forks, unprompted rotations and one forged keyset as one-shot steps; A's own departures by frozen coverage (no establishment, hosts or claims: Rotation.tla's). Constants select the rule variants (`Stale`, `Anchor`, `Merge`, `LeaveOut`, `CycleCheck`, `Rejoin`; for rule 4 `Grants`, `Hidden`, `Taint`, `MaxBlind`); instances are defined in `Depth0MC.tla` (a `.cfg` cannot write tuples), so run with module `Depth0MC`:
 ```
 java -XX:+UseParallelGC -cp ~/.cache/tla/tla2tools.jar tlc2.TLC -workers 4 \
   -metadir /tmp/tlc-states -config D0_cyc.cfg Depth0MC
 ```
-Properties: `NoLeakDirect`, `NoLeakMember`, `NoLeakMemberAll` (invariants), `Excludes`, `CurrentOpens`, `ReadsAll`, `Settles` (fairness of learning, forced rotation, re-seal). Not in run.sh until the cycle rule is decided (issues/keys-depth0.md). TLC 2.19, 3-4 workers, a shared box at load 40-100 (wall clock).
+Properties: `NoLeakDirect`, `NoLeakMember`, `NoLeakMemberAll` (invariants), `Excludes`, `CurrentOpens`, `ReadsAll`, `Settles` (fairness of learning, forced rotation, re-seal). The rule-4 instances (`D0_nc*`, last table) are in run.sh; the rows above record the candidates that failed. TLC 2.19, 3-4 workers, a shared box at load 40-100 (wall clock).
 
 | cfg | instance | result | states | time |
 |---|---|---|---|---|
@@ -108,3 +108,28 @@ Properties: `NoLeakDirect`, `NoLeakMember`, `NoLeakMemberAll` (invariants), `Exc
 | `D0_cyc3_commit` | as D0_cyc3, the commit rule | **fails** `Settles` (rotations chase round the cycle) | 204 | 18 s |
 
 A 3-cycle under Fresh with unprompted rotations of Y and Z ran 34,914 states without a violation before it was stopped (unfinished).
+
+**Rule 4: no key cycles** (`CycleCheck = "nocycle"`, issues/keys-depth0.md, study §4). Actor grants in an agreed order (`Grants`); each node gives key access to the grants it holds greedily in that order (`KH`), seals no keyless grant, and rotates its actor while a current epoch boxes an actor without key access (`Keyless`). `Hidden` grants are missing at a node at first (learned fairly; made later, so initial epochs do not box them); `MaxBlind` bounds the boxes sealed to a holder with no true key access (the ignorance window as one-shot adversary steps). `Taint`: a keyset boxing an actor without key access is stale and never sealed to. Extra properties: `NoLeakKnown`, `NoLeakKnownAll` (a device removed from the actor, or from an actor with no key path to it, reads no content written knowing the removal once every node holds every grant; `All`: and the writer holds every keyset and re-seal). Writes = 2, `Writes = 1` for the hidden ones; MaxE 7. TLC 2.19, 1 worker each, 2-4 runs side by side, load 8-45.
+
+| cfg | instance | result | states | time |
+|---|---|---|---|---|
+| `D0_nc` | 2-cycle X <-> Y, X holding Y granted first; x1 removes D from X, y1 may rotate Y | pass | 608 | 3 s |
+| `D0_nc_rev` | as D0_nc, Y holding X granted first | pass | 814 | 3 s |
+| `D0_nc2` | as D0_nc, E leaves Y concurrently | pass | 10,225 | 48 s |
+| `D0_nc3` | 3-cycle, Z holding X granted last; x1 removes D | pass | 454 | 10 s |
+| `D0_nc_below` | W holds X, X <-> Y; w1 removes D from W; y1 may rotate Y | pass | 11,634 | 141 s |
+| `D0_nc_2adm` | as D0_nc_rev, second admin y2 of Y may rotate Y (broke Fresh) | pass | 7,400 | 64 s |
+| `D0_nc_hide` | as D0_nc_rev, y1 lacks the earlier grant: seals Y to X's old keyset | **fails** `NoLeakDirect` (expected: the hidden-grant leak) | 39 | 1 s |
+| `D0_nc_hide_lim` | as D0_nc_hide, the stated limit, no taint | **fails** `NoLeakKnownAll` (expected: x1, knowing all, writes sealed to Y's keyset that boxes X's old one) | 366 | 5 s |
+| `D0_nc_hide_live` | as D0_nc_hide_lim, liveness and member invariants only | pass | 32,896 | 364 s |
+| `D0_nc_hide_taint_lean` | as D0_nc_hide_lim with Taint, no unprompted rotation | pass (probes: a blind box of Y to X exists while a knowing write happens) | 7,180 | 54 s |
+| `D0_nc_hide_taint` | as D0_nc_hide_taint_lean, y1 may rotate Y | no violation (unfinished, stopped) | 80,949+ | 25 min |
+| `D0_nc_2adm_hide_lean` | as D0_nc_2adm without unprompted rotation, y2 lacks the earlier grant; Taint | no violation (unfinished, stopped); safety only (no `PROPERTIES`, 3 workers): no violation, unfinished | 137,813+; 4,882,683+ | 25 min; 15 min |
+| `D0_nc3_hide` | as D0_nc3, x1 lacks the grant of X holding Y and seals X to Z; Taint (a probe: `NoLeakDirect` fails, 34 states) | safety only (3 workers): pass; with liveness no violation (unfinished, stopped) | 392,368; 14,426+ | 63 s; 25 min |
+
+Liveness checking dominates: safety-only runs of the same instances go 100-1000 times faster.
+
+Content records now carry the rule-4 premises, so the earlier rows' state counts grow (rechecked: `D0_cyc` passes in 2,737 states, `D0_cyc_study` fails liveness in 3,162).
+
+Without `MaxBlind` (any number of blind seals) `D0_nc_hide_taint_lean` fails liveness at the epoch bound: concurrent re-seals by x1 and the still-ignorant y1 re-form the cycle between fresh keysets, x1 rotates off it, and again, until `MaxE`.
+

@@ -73,6 +73,16 @@ instances=(
   "sides MC reup_once.cfg small fail"         # candidate (b)
   "sides MC fork_split.cfg small fail"        # fork: the race loser's reach
   "sides MC place_order.cfg small fail"       # placement fetched after what it places
+  "rotation Depth0MC D0_nc.cfg small pass"            # rule 4, no key cycles (issues/keys-depth0.md)
+  "rotation Depth0MC D0_nc_rev.cfg small pass"
+  "rotation Depth0MC D0_nc2.cfg all pass"
+  "rotation Depth0MC D0_nc3.cfg small pass"
+  "rotation Depth0MC D0_nc_below.cfg all pass"
+  "rotation Depth0MC D0_nc_2adm.cfg all pass"
+  "rotation Depth0MC D0_nc_hide.cfg small fail"       # a grant the sealer does not hold leaks
+  "rotation Depth0MC D0_nc_hide_lim.cfg small fail"   # ... past a knowing writer without taint
+  "rotation Depth0MC D0_nc_hide_live.cfg all pass"
+  "rotation Depth0MC D0_nc_hide_taint_lean.cfg all pass"
   "roles Roles MC_core.cfg small pass"
   "roles Roles MC_multi.cfg small pass"
   "roles Roles MC_group.cfg all pass"
