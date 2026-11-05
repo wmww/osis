@@ -32,8 +32,11 @@ pub struct Hosting {
 }
 
 impl Osis {
-    /// What this node hosts (none: it does not).
+    /// What this node hosts (none: it does not). `Unsupported` on a thin client.
     pub fn hosting(&self) -> Result<Option<Hosting>> {
+        if self.thin_client() {
+            return Err(Error::Unsupported("a thin client: hosting is its node's".into()));
+        }
         let Some(h) = self.get(self.node(), ct::HOST)? else { return Ok(None) };
         Ok(Some(Hosting {
             listen: h.listen,

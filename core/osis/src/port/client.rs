@@ -899,6 +899,11 @@ impl Osis {
     }
 
     /// The attachment process-wide calls go to on a handle with no store of its own.
+    /// Whether this handle is a thin client: no store, a secret, an actor of its own at the node.
+    pub(crate) fn thin_client(&self) -> bool {
+        self.inner.thin.get().is_some_and(|t| t.primary.keyed)
+    }
+
     fn primary(&self) -> &Arc<Remote> {
         self.inner.thin.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
     }

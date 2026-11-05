@@ -626,8 +626,8 @@ fn watches_and_rows() {
     assert!(matches!(c.rotate_reach(), Err(Error::Unsupported(_))));
     assert!(matches!(c.export_bundle(&[x.g], Vec::new()), Err(Error::Unsupported(_))));
     assert!(matches!(c.import_bundle(&b"x"[..]), Err(Error::Unsupported(_))));
-    // hosting is an aspect of the node's thing, which it does not read
-    assert_eq!(c.hosting().unwrap(), None);
+    // never "it does not host" from one who may not read the node's thing
+    assert!(matches!(c.hosting(), Err(Error::Unsupported(_))));
     assert!(matches!(c.host_key(), Err(Error::Unsupported(_))), "the node's own: not for a client");
     assert!(matches!(c.hosts(), Err(Error::Unsupported(_))));
     assert!(c.set_hosting(Some(Default::default())).is_err());
