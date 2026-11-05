@@ -148,4 +148,26 @@ v2Mem == vMem \cup {<<"G", "g2">>}
 v2Adm == vAdm \cup {<<"G", "g2">>}
 v2Learners == vLearners \cup {"g2"}
 v2NoSync == {<<"g2", "A">>, <<"g2", "M">>}
+\* first admin (issues/owner-to-first-admin.md, Risks 1): F (device f1) is
+\* T's first admin, its record edge first in grant order; T is granted on F
+\* later, closing a cycle, so keyless; t1 (T's other admin) removes F from T,
+\* after which T's grant on F has key access and F's epochs need a re-seal to
+\* T. f1 writes T through F until it knows the removal; f1 may rotate F once
+\* unprompted
+faActs == <<"F", "T">>
+faMem == {<<"F", "f1">>, <<"F", "T">>, <<"T", "F">>, <<"T", "t1">>}
+faAdm == {<<"F", "f1">>, <<"T", "t1">>}
+faLearners == {"f1", "t1"}
+faDeps == {<<"F", "T", "t1">>}
+faEager == {<<"f1", "F">>}
+faVia == {<<"f1", "T">>}
+faFirst == {<<"T", "F">>}
+faG == << <<"T", "F">>, <<"F", "T">> >>
+\* ... and T was plain (derived from F) until t1's grant gave it its own
+\* secrets (T's initial epoch); f1 lacks that rotation at first
+faPlain == {<<"T", "F">>}
+faUnaware == {<<"f1", "T">>}
+\* derivation alone: no grant of T on F
+fdMem == faMem \ {<<"F", "T">>}
+fdG == << <<"T", "F">> >>
 =============================================================================
