@@ -158,6 +158,16 @@ pub fn deliver(from: &Osis, to: &Osis) {
     }
 }
 
+/// Two devices of one person on one clock; commits travel by `deliver`.
+pub fn paired() -> (Osis, Osis, Arc<ManualClock>) {
+    let c = clock();
+    let a = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let j = Osis::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
+    let (_, reply) = a.pair_accept(j.request()).unwrap();
+    let b = j.finish(&reply).unwrap();
+    (a, b, c)
+}
+
 /// Runs a future to completion on this thread (no runtime: the API's futures are resolved by
 /// the database, notes/api.md Design rules).
 pub fn block_on<F: std::future::Future>(f: F) -> F::Output {

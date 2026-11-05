@@ -17,7 +17,7 @@ use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
-use osis_schema::core_types::{GROUP, PLACED, is_role_class};
+use osis_schema::core_types::{GROUP, is_role_class};
 use osis_schema::{AspectKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -64,8 +64,6 @@ pub enum Purge {
 pub(crate) enum WriteOp {
     /// A new thing; its record fixes its tid.
     Create(CreationRecord),
-    /// An empty `group.0` (the thing was no group when recorded).
-    MakeGroup(Tid),
     /// Adds (removes) `member` to the items, or the subgroups, of `g`.
     Group { g: Tid, member: Tid, items: bool, add: bool },
     /// An op at a path of an aspect (whole-value ops at the root).
@@ -89,7 +87,7 @@ impl WriteOp {
     fn tid(&self) -> Option<Tid> {
         match self {
             WriteOp::Create(_) => None,
-            WriteOp::MakeGroup(t) | WriteOp::Delete(t) | WriteOp::Group { g: t, .. } => Some(*t),
+            WriteOp::Delete(t) | WriteOp::Group { g: t, .. } => Some(*t),
             WriteOp::Path { tid, .. } | WriteOp::Expires { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
         }
     }
@@ -110,8 +108,6 @@ pub struct Write<'d> {
     /// Per group whose `group.0` this batch writes through the group calls: the expiry those
     /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
     group_exp: BTreeMap<Tid, Option<Expiry>>,
-    /// The groups a member was added to in this batch, each looked at once (`first_member`).
-    grown: BTreeSet<Tid>,
     /// A thing that must still be known (`Osis::knows`) when the batch commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
@@ -127,14 +123,9 @@ impl Committed {
 }
 
 impl Osis {
-    /// Whether `g` holds `group.0` or `placed.0~`, read without its members: a group may be large.
-    fn is_group(&self, g: Tid) -> Result<bool> {
-        Ok(self.aspects(g)?.iter().any(|a| a.as_str() == GROUP.ak() || a.as_str() == PLACED.ak()))
-    }
-
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), grown: BTreeSet::new(), alive: None, sharing: false }
+        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), alive: None, sharing: false }
     }
 }
 
@@ -266,24 +257,9 @@ impl<'d> Write<'d> {
         Ok(())
     }
 
-    /// A thing with no members yet becomes a group here: `group.0` needs both its fields, or it
-    /// decodes as none and the member is lost.
-    fn first_member(&mut self, g: Tid) -> Result<()> {
-        if !self.grown.insert(g) {
-            return Ok(());
-        }
-        if self.created.contains(&g) || !self.db.is_group(g)? {
-            self.ops.push(WriteOp::MakeGroup(g));
-        }
-        Ok(())
-    }
-
     fn member(&mut self, g: Tid, m: Member, add: bool, e: Option<Expiry>) -> Result<()> {
         let g = self.known(g)?;
         self.group_expiry(g, e)?;
-        if add {
-            self.first_member(g)?;
-        }
         let (member, subgroup) = m.parts();
         // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
         // placements): `Engine::write` splits the group ops by what persists
@@ -399,7 +375,6 @@ impl<'d> Write<'d> {
             .map(|o| {
                 Ok(Value::List(match o {
                     WriteOp::Create(rec) => vec![u(0), rec.to_value()],
-                    WriteOp::MakeGroup(g) => vec![u(1), t(*g)],
                     WriteOp::Group { g, member, items, add } => vec![u(2), t(*g), t(*member), Value::Bool(*items), Value::Bool(*add)],
                     WriteOp::Path { tid, key, op } => vec![u(3), t(*tid), u(u64::from(*key)), op_v(op)?],
                     WriteOp::Expires { tid, key, at } => vec![u(4), t(*tid), u(u64::from(*key)), u(at.0)],
@@ -434,9 +409,6 @@ impl<'d> Write<'d> {
                         return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name another owner (create_owned_by)".into()));
                     }
                     b.m.create(rec);
-                }
-                WriteOp::MakeGroup(t) => {
-                    b.m.op(t, &*gk, PathOp { path: Vec::new(), op: Op::Set(osis_schema::core_types::Group::default().to_value()) })?;
                 }
                 WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
                 WriteOp::Path { tid, key: k, op } => {
@@ -487,8 +459,7 @@ impl<'d> Write<'d> {
 
 impl Osis {
     /// Commits a batch received in wire form (`Write::wire`) as this node's own: tids resolved
-    /// and checked as the recorder checks them locally, keys typed by this node's schemas, an
-    /// empty `group.0` for what already is a group dropped.
+    /// and checked as the recorder checks them locally, keys typed by this node's schemas.
     pub(crate) fn replay(&self, args: Vec<Value>) -> Result<Option<Committed>> {
         use crate::port::codec::{Args, bad, op, retention};
         let mut a = Args::of(args);
@@ -523,13 +494,6 @@ impl Osis {
                     w.created.push(rec.tid());
                     WriteOp::Create(rec)
                 }
-                1 => {
-                    let g = w.known(o.tid()?)?;
-                    if !w.created.contains(&g) && self.is_group(g)? {
-                        continue;
-                    }
-                    WriteOp::MakeGroup(g)
-                }
                 2 => WriteOp::Group { g: w.known(o.tid()?)?, member: o.tid()?, items: o.bool()?, add: o.bool()? },
                 3 => {
                     let (tid, k, p) = (o.tid()?, key(o.uint()?)?, op(o.next()?)?);
@@ -560,7 +524,7 @@ impl Osis {
             }
             // a group written with an expiry: a `delete` of the batch removing a placement there
             // fails as it would locally (`note_expiry`)
-            if let WriteOp::Group { g, .. } | WriteOp::MakeGroup(g) = &op {
+            if let WriteOp::Group { g, .. } = &op {
                 w.group_exp.entry(*g).or_insert(None);
             }
             w.ops.push(op);

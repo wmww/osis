@@ -1218,7 +1218,7 @@ fn persisting_converts_only_placements_the_actor_may_write() {
         .unwrap();
     c.commit_set(e, ak("t:name.0"), &Value::Int(1)).unwrap();
     assert_eq!(x.n.at(e, ak("t:name.0")).get().unwrap(), Some(Value::Int(1)));
-    assert!(!x.n.at(x.h, ct::GROUP).get().unwrap().unwrap().items.contains(&e), "written durably with this node's rights");
+    assert!(!x.n.at(x.h, ct::GROUP).get().unwrap().unwrap_or_default().items.contains(&e), "written durably with this node's rights");
     // the same write by the node converts it
     let e2 = x
         .n

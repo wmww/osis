@@ -455,8 +455,7 @@ fn step(db: &Osis, scope: &Scope, n: Next) -> Option<ChangeId> {
 fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(1);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    // groups already: a first member would write the group durably in the batch
-    let mk = |db: &Osis| db.batch(|w| { let g = w.create_durable(db.me())?; let d = w.create_durable(db.me())?; w.group(g).add(osis::Member::Item(d))?; Ok(g) }).unwrap();
+    let mk = |db: &Osis| db.batch(|w| w.create_durable(db.me())).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.batch(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let created = db.created(t).unwrap().unwrap().commit.map(ChangeId::Commit).unwrap();
@@ -498,8 +497,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     let db = db(2);
     let k = ak("app:draft.0~");
-    // groups already: a first member would write the group durably in the batch
-    let mk = |db: &Osis| db.batch(|w| { let g = w.create_durable(db.me())?; let d = w.create_durable(db.me())?; w.group(g).add(osis::Member::Item(d))?; Ok(g) }).unwrap();
+    let mk = |db: &Osis| db.batch(|w| w.create_durable(db.me())).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let mut w = db.write();
     let e = w.create_in(db.me(), &[f]).unwrap();

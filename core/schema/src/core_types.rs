@@ -321,9 +321,23 @@ pub fn required_for<'a>(rules: &'a RequiredRules, ak: &str) -> Option<&'a Requir
     (0..=ak.len()).rev().filter(|n| ak.is_char_boundary(*n)).find_map(|n| ak.get(..n).and_then(|p| rules.rules.get(p)))
 }
 
-codec_struct! {
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Group { 0 items: BTreeSet<Tid>, 1 subgroups: BTreeSet<Tid> }
+/// `group.0`, `placed.0~`: a field never written reads empty, its default in the schema. A first
+/// member so needs no write of the other field, which beside a concurrent add would risk it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Group {
+    pub items: BTreeSet<Tid>,
+    pub subgroups: BTreeSet<Tid>,
+}
+
+impl Codec for Group {
+    fn to_value(&self) -> Value {
+        rt::struct_value(vec![(0, self.items.to_value()), (1, self.subgroups.to_value())])
+    }
+    fn from_value(v: &Value) -> Result<Self, PathError> {
+        let m = rt::struct_map(v)?;
+        let set = |id: u64| if m.contains_key(&id.to_value()) { rt::field(m, id) } else { Ok(BTreeSet::new()) };
+        Ok(Group { items: set(0)?, subgroups: set(1)? })
+    }
 }
 codec_struct! {
     /// `tag.0`: marks a group as a user-facing tag (notes/tags.md).

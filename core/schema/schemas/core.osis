@@ -65,9 +65,9 @@ aspect required.0^: required_rules;
 /// When a purge request by name or by author was last made here: the delta such a commit carries, no
 /// read of the purged aspect changed by it (spec/commits.md §5).
 aspect purge.0: timestamp;
-aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
+aspect group.0: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
 /// The ephemeral placements into this group: items and subgroups placed while ephemeral, read with group.0. Written by group ops only.
-aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
+aspect placed.0~: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
 aspect groups.0: set<tid> [synthetic, guaranteed];
 
 /// What humans call the thing.
