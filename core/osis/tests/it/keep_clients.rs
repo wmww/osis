@@ -462,7 +462,8 @@ fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_2() {
     w.advance(2 * hour);
     w.run();
     assert_eq!(b.at(m, text()).get().unwrap(), None, "erased: the default says so, and it heard no more");
-    a.grant(g, bob, Role::Read, GrantOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
+    // at its old role: below it `grant` is refused (it would undo what Bob wrote)
+    a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
     a.commit_set(m, text(), &s("during")).unwrap();
     w.run();
     let mut hours = 2;
