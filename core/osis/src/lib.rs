@@ -184,10 +184,13 @@
 //! ```
 //!
 //! # Sharing
-//! Grants need the holder's keys (a contact card, a shared group); links need nothing. Things a
-//! group owns are what its holders read: create shared things with the group as owner.
+//! A role says who may; sync says where the data goes. `grant` records a role and needs the
+//! holder's keys (a contact card, a shared group); the holder reads once a synced group it reads
+//! holds the thing, or the thing's own `sync` carries it. `set_role` changes or removes a role. A
+//! link needs no keys and syncs its thing. Things a group owns are what its holders read: create
+//! shared things with the group as owner.
 //! ```
-//! # use osis::{Config, Osis, Role, LinkOpts, HostAddr};
+//! # use osis::{Config, GrantOpts, Osis, Role, LinkOpts, HostAddr};
 //! // a link names hosts (or is direct, `LinkOpts::direct`)
 //! let db = Osis::create(Config::memory())?.0;
 //! db.add_host(&HostAddr::new("quic://example.org:4433", [7; 32]))?;
@@ -198,7 +201,13 @@
 //! db.sync(g, &[])?;
 //! let link = db.make_link(g, Role::Write, LinkOpts { until: None, single_use: true, direct: false })?;
 //! assert!(link.to_string().starts_with("osis://link/"));
-//! assert_eq!(db.links()?.iter().filter(|l| l.target == g).count(), 1);
+//! let links = db.links()?;
+//! assert_eq!(links.iter().filter(|l| l.target == g).count(), 1);
+//! // who holds `g`, and who holds it through what
+//! assert!(db.holders(g)?.iter().any(|h| h.actor == links[0].id.actor() && h.through.is_empty()));
+//! // grant, and later change or remove: `db.set_role(g, holder, Some(Role::Read), SetRole::default()).await`
+//! db.grant(g, db.node(), Role::Read, GrantOpts::default())?;
+//! assert_eq!(db.grants(g)?[&db.node()].role, Role::Read);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -313,8 +322,8 @@ pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keep::{KeepAlive, REFRESH_DIVISOR};
 pub use keys::{Key, core};
 pub use large::ValueStream;
-pub use read::{AspectRef, Edge, GroupsOf, PathRef, Roster, Stamp};
-pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupReach, GroupSync, InviteId, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, HostAddr, Share, ShareLink, ShareOpts, Status, SyncScope, SyncState, WaitForSync};
+pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp};
+pub use share::{ContactCard, Device, GrantOpts, GroupSync, Holder, HostAddr, InviteId, LinkId, LinkInfo, LinkOpts, Member, PRESYNC_WAIT, RecoveryCard, SetRole, ShareLink, Status, SyncFirst, SyncScope, SyncState};
 pub use sources::{GroupSource, RemoteConfig, RemoteStatus};
 pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};

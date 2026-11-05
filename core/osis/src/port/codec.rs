@@ -3,8 +3,8 @@
 
 use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
 use crate::error::{Error, Result};
-use crate::read::{Edge, GroupsOf, Roster, Stamp};
-use crate::share::{EdgeOpts, GroupReach, GroupSync, HostAddr, LinkInfo, Share, Status, SyncScope, SyncState};
+use crate::read::{Grant, Grants, GroupsOf, Stamp};
+use crate::share::{GrantOpts, GroupSync, Holder, HostAddr, LinkId, LinkInfo, Member, SetRole, Status, SyncFirst, SyncScope, SyncState};
 use crate::watch::{CommitInfo, Source};
 use crate::write::Committed;
 use osis_base::{Ak, CommitId, LabelId, Role, Tid, Ts, Value, WallMs};
@@ -246,16 +246,16 @@ pub(crate) fn groups(v: Value) -> Result<GroupsOf> {
     Ok(g)
 }
 
-pub(crate) fn roster_v(r: &Roster) -> Value {
-    Value::List(r.iter().map(|(t, e)| Value::List(vec![Value::Tid(*t), role_v(e.role), opt(e.until, |w| u(w.0)), opt(e.invite, role_v), Value::Bool(e.tied)])).collect())
+pub(crate) fn grants_v(r: &Grants) -> Value {
+    Value::List(r.iter().map(|(t, e)| Value::List(vec![Value::Tid(*t), role_v(e.role), opt(e.until, |w| u(w.0)), opt(e.invite, role_v), Value::Bool(e.with_membership)])).collect())
 }
 
-pub(crate) fn roster(v: Value) -> Result<Roster> {
-    let mut out = Roster::new();
+pub(crate) fn grants(v: Value) -> Result<Grants> {
+    let mut out = Grants::new();
     for x in Args::of(vec![v]).list()? {
         let mut a = Args::new(x)?;
         let t = a.tid()?;
-        let e = Edge { role: role(&a.next()?)?, until: a.opt_wall()?, invite: a.opt()?.map(|r| role(&r)).transpose()?, tied: a.bool()? };
+        let e = Grant { role: role(&a.next()?)?, until: a.opt_wall()?, invite: a.opt()?.map(|r| role(&r)).transpose()?, with_membership: a.bool()? };
         a.end()?;
         out.insert(t, e);
     }
@@ -699,74 +699,60 @@ pub(crate) fn retention(v: Value) -> Result<Retention> {
     Ok(r)
 }
 
-/// Edge options: `[Opt(until), Opt(invite)]`.
-pub(crate) fn edge_opts_v(o: &EdgeOpts) -> Value {
+/// Grant options: `[Opt(until), Opt(invite)]`.
+pub(crate) fn grant_opts_v(o: &GrantOpts) -> Value {
     Value::List(vec![opt(o.until, |w| u(w.0)), opt(o.invite, role_v)])
 }
 
-pub(crate) fn edge_opts(v: Value) -> Result<EdgeOpts> {
+pub(crate) fn grant_opts(v: Value) -> Result<GrantOpts> {
     let mut a = Args::new(v)?;
     let until = a.opt_wall()?;
     let invite = a.opt()?.map(|r| role(&r)).transpose()?;
     a.end()?;
-    Ok(EdgeOpts { until, invite })
+    Ok(GrantOpts { until, invite })
 }
 
-/// A share: `[0, role]` tied, `[1, role]` untied, `[2]` excluded.
-pub(crate) fn share_v(s: Share) -> Value {
-    Value::List(match s {
-        Share::Tied(r) => vec![u(0), role_v(r)],
-        Share::Untied(r) => vec![u(1), role_v(r)],
-        Share::Excluded => vec![u(2)],
+/// A member of a group: `[0, tid]` item, `[1, tid]` subgroup.
+pub(crate) fn member_v(m: Member) -> Value {
+    Value::List(match m {
+        Member::Item(t) => vec![u(0), Value::Tid(t)],
+        Member::Subgroup(t) => vec![u(1), Value::Tid(t)],
     })
 }
 
-pub(crate) fn share(v: Value) -> Result<Share> {
+pub(crate) fn member(v: Value) -> Result<Member> {
     let mut a = Args::new(v)?;
-    let s = match a.uint()? {
-        0 => Share::Tied(role(&a.next()?)?),
-        1 => Share::Untied(role(&a.next()?)?),
-        2 => Share::Excluded,
-        _ => return Err(bad("share")),
+    let m = match a.uint()? {
+        0 => Member::Item(a.tid()?),
+        1 => Member::Subgroup(a.tid()?),
+        _ => return Err(bad("member")),
     };
     a.end()?;
-    Ok(s)
+    Ok(m)
 }
 
-pub(crate) fn reach_v(r: &[GroupReach]) -> Value {
-    Value::List(r.iter().map(|x| Value::List(vec![Value::Tid(x.group), Value::Bool(x.placed), share_v(x.share)])).collect())
+pub(crate) fn holders_v(h: &[Holder]) -> Value {
+    Value::List(h.iter().map(|x| Value::List(vec![Value::Tid(x.actor), role_v(x.role), opt(x.until, |w| u(w.0)), tids_v(&x.through)])).collect())
 }
 
-pub(crate) fn reach(v: Value) -> Result<Vec<GroupReach>> {
+pub(crate) fn holders(v: Value) -> Result<Vec<Holder>> {
     Args::of(vec![v]).list()?.into_iter().map(|x| {
         let mut a = Args::new(x)?;
-        let r = GroupReach { group: a.tid()?, placed: a.bool()?, share: share(a.next()?)? };
+        let (actor, r, until) = (a.tid()?, role(&a.next()?)?, a.opt_wall()?);
+        let through = a.list()?.into_iter().map(|t| Args::of(vec![t]).tid()).collect::<Result<Vec<Tid>>>()?;
         a.end()?;
-        Ok(r)
-    }).collect()
-}
-
-pub(crate) fn pairs_v(p: &[(Tid, Tid)]) -> Value {
-    Value::List(p.iter().map(|(a, b)| Value::List(vec![Value::Tid(*a), Value::Tid(*b)])).collect())
-}
-
-pub(crate) fn pairs(v: Value) -> Result<Vec<(Tid, Tid)>> {
-    Args::of(vec![v]).list()?.into_iter().map(|x| {
-        let mut a = Args::new(x)?;
-        let r = (a.tid()?, a.tid()?);
-        a.end()?;
-        Ok(r)
+        Ok(Holder { actor, role: r, until, through })
     }).collect()
 }
 
 pub(crate) fn links_v(l: &[LinkInfo]) -> Value {
-    Value::List(l.iter().map(|x| Value::List(vec![Value::Tid(x.id), Value::Tid(x.target), role_v(x.role), opt(x.until, |w| u(w.0)), Value::Bool(x.single_use)])).collect())
+    Value::List(l.iter().map(|x| Value::List(vec![Value::Tid(x.id.0), Value::Tid(x.target), role_v(x.role), opt(x.until, |w| u(w.0)), Value::Bool(x.single_use)])).collect())
 }
 
 pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
     Args::of(vec![v]).list()?.into_iter().map(|x| {
         let mut a = Args::new(x)?;
-        let r = LinkInfo { id: a.tid()?, target: a.tid()?, role: role(&a.next()?)?, until: a.opt_wall()?, single_use: a.bool()? };
+        let r = LinkInfo { id: LinkId(a.tid()?), target: a.tid()?, role: role(&a.next()?)?, until: a.opt_wall()?, single_use: a.bool()? };
         a.end()?;
         Ok(r)
     }).collect()
@@ -790,32 +776,40 @@ pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     Ok(s)
 }
 
-/// A `Demotion`: `[sync, Opt(backdate), repudiate, Opt(keep)]`, sync 0 required, 1 skip, else
-/// `[ms]` try.
-pub(crate) fn demotion_v(d: &crate::Demotion) -> Value {
-    let sync = match d.sync {
-        crate::WaitForSync::Required => u(0),
-        crate::WaitForSync::Skip => u(1),
-        crate::WaitForSync::Try(t) => Value::List(vec![u(u64::try_from(t.as_millis()).unwrap_or(u64::MAX))]),
-    };
-    Value::List(vec![sync, opt(d.backdate, |w| u(w.0)), Value::Bool(d.repudiate), opt(d.keep, Value::Bool)])
+/// A `SyncFirst`: `[0]` required, `[1, ms]` try, `[2]` skip, `[3, time]` backdate.
+pub(crate) fn sync_first_v(s: SyncFirst) -> Value {
+    Value::List(match s {
+        SyncFirst::Required => vec![u(0)],
+        SyncFirst::Try(t) => vec![u(1), u(u64::try_from(t.as_millis()).unwrap_or(u64::MAX))],
+        SyncFirst::Skip => vec![u(2)],
+        SyncFirst::Backdate(w) => vec![u(3), u(w.0)],
+    })
 }
 
-pub(crate) fn demotion(v: Value) -> Result<crate::Demotion> {
+pub(crate) fn sync_first(v: Value) -> Result<SyncFirst> {
     let mut a = Args::new(v)?;
-    let sync = match a.next()? {
-        Value::List(l) => crate::WaitForSync::Try(std::time::Duration::from_millis(Args::of(l).uint()?)),
-        s => match s.as_uint() {
-            Some(0) => crate::WaitForSync::Required,
-            Some(1) => crate::WaitForSync::Skip,
-            _ => return Err(bad("demotion")),
-        },
+    let s = match a.uint()? {
+        0 => SyncFirst::Required,
+        1 => SyncFirst::Try(std::time::Duration::from_millis(a.uint()?)),
+        2 => SyncFirst::Skip,
+        3 => SyncFirst::Backdate(osis_base::WallMs(a.uint()?)),
+        _ => return Err(bad("sync first")),
     };
-    let backdate = a.opt_wall()?;
-    let repudiate = a.bool()?;
+    a.end()?;
+    Ok(s)
+}
+
+/// A `SetRole`: `[sync first, Opt(keep)]`.
+pub(crate) fn set_role_v(o: &SetRole) -> Value {
+    Value::List(vec![sync_first_v(o.sync), opt(o.keep, Value::Bool)])
+}
+
+pub(crate) fn set_role(v: Value) -> Result<SetRole> {
+    let mut a = Args::new(v)?;
+    let sync = sync_first(a.next()?)?;
     let keep = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
     a.end()?;
-    Ok(crate::Demotion { sync, backdate, repudiate, keep })
+    Ok(SetRole { sync, keep })
 }
 
 /// A sync policy's fields.

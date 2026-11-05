@@ -11,17 +11,17 @@ use osis_schema::core_types::{GROUP, Group, PLACED};
 use osis_schema::{AspectKey, Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 
-/// An edge of a roster (spec/permissions.md §2).
+/// A role granted to one holder (`Osis::grants`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Edge {
+pub struct Grant {
     pub role: Role,
-    /// The edge counts as removed from this wall time on.
+    /// The grant ends at this time.
     pub until: Option<WallMs>,
-    /// The role this holder may grant others (invite grants).
+    /// The role this holder may grant others.
     pub invite: Option<Role>,
-    /// Tied to the placement of the thing in this holder, a group (`Osis::share_into`): removed
-    /// once the placement is gone (spec/permissions.md §2).
-    pub tied: bool,
+    /// The holder is a group and this grant goes when the thing stops being its member
+    /// (`Osis::add_with_grant`). Not a member now (`Osis::groups_of`), it is on its way out.
+    pub with_membership: bool,
 }
 
 /// A thing's time (`Osis::created`, `Osis::changed`): the commit, its author and when.
@@ -64,8 +64,8 @@ pub struct GroupsOf {
     pub within: Vec<Tid>,
 }
 
-/// The role timeline's roster of a thing: holder actor → edge.
-pub type Roster = BTreeMap<Tid, Edge>;
+/// The grants on a thing, by holder.
+pub type Grants = BTreeMap<Tid, Grant>;
 
 pub(crate) fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
     Ak::new(key.ak()).map_err(|_| Error::Invalid(format!("bad AK {:?}", key.ak())))
@@ -295,12 +295,12 @@ impl Reader<'_> {
         GroupsOf { item_of: seen(items), subgroup_of: seen(subs), within: seen(self.e.groups_of(&tid)) }
     }
 
-    /// The role timeline's roster of `thing` (spec/permissions.md §2).
-    pub fn roster(&self, thing: Tid) -> Roster {
+    /// The grants on `thing` (spec/permissions.md §2).
+    pub fn grants(&self, thing: Tid) -> Grants {
         if self.hidden(thing) {
-            return Roster::new();
+            return Grants::new();
         }
-        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.is_some() })).collect()
+        self.e.roster(&thing).into_iter().map(|(m, e)| (m, Grant { role: e.role, until: e.until, invite: e.invite, with_membership: e.tied.is_some() })).collect()
     }
 
     /// This node's effective role on `tid` now (`None`: no access); the acting actor's when
@@ -395,7 +395,7 @@ impl Osis {
     }
 
     /// The things `group` contains, in tid order (empty when it is no group). Being in a group
-    /// grants nothing: who holds a role on it is `roster`.
+    /// grants nothing: who holds a role on it is `grants`.
     pub fn items(&self, group: Tid) -> Result<Vec<Tid>> {
         Ok(self.members(group)?.items.into_iter().collect())
     }
@@ -418,12 +418,12 @@ impl Osis {
         Ok(d)
     }
 
-    /// Who holds a role on `thing`.
-    pub fn roster(&self, thing: Tid) -> Result<Roster> {
+    /// The roles granted on `thing`, by holder. Whoever holds through those: `holders`.
+    pub fn grants(&self, thing: Tid) -> Result<Grants> {
         if let crate::sources::Source::Remote(r) = self.route(thing) {
-            return crate::port::codec::roster(r.call(m::ROSTER, vec![Value::Tid(thing)])?);
+            return crate::port::codec::grants(r.call(m::GRANTS, vec![Value::Tid(thing)])?);
         }
-        Ok(self.read_local(|r| r.roster(thing)))
+        Ok(self.read_local(|r| r.grants(thing)))
     }
 
     /// This node's effective role on `tid` now (`None`: no access).
@@ -514,7 +514,7 @@ impl Osis {
             let d = &self.inner.dispatch;
             // the route was decided before this lock: a move since ends it at once
             let on = match &filter {
-                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Roster(t) => Some(*t),
+                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) => Some(*t),
                 Filter::History(t, _) => {
                     l.engine().watch_history();
                     Some(*t)
@@ -583,18 +583,18 @@ impl Osis {
         }
     }
 
-    /// Calls `f` with the roster of `actor` now (through the dispatcher) and on every change. Fails
-    /// `Network` when `actor` is at a node that cannot be reached now; a live watch hears a lost
-    /// connection as an `Err`, and the roster again once it is back.
-    pub fn watch_roster(&self, actor: Tid, mut f: impl FnMut(&Osis, Result<Roster>) + Send + 'static) -> Result<Subscription> {
-        if let crate::sources::Source::Remote(r) = self.route(actor) {
-            return self.remote_watch_roster(&r, actor, Box::new(f));
+    /// Calls `f` with `grants(thing)` now (through the dispatcher) and on every change. Fails
+    /// `Network` when `thing` is at a node that cannot be reached now; a live watch hears a lost
+    /// connection as an `Err`, and the grants again once it is back.
+    pub fn on_grants_change(&self, thing: Tid, mut f: impl FnMut(&Osis, Result<Grants>) + Send + 'static) -> Result<Subscription> {
+        if let crate::sources::Source::Remote(r) = self.route(thing) {
+            return self.remote_on_grants_change(&r, thing, Box::new(f));
         }
-        Ok(self.subscribe(Filter::Roster(actor), true, move |r| {
-            let mut last = r.roster(actor);
+        Ok(self.subscribe(Filter::Grants(thing), true, move |r| {
+            let mut last = r.grants(thing);
             Box::new(move |db, d| match d {
                 Delivery::Initial => f(db, Ok(last.clone())),
-                Delivery::Roster => match db.roster(actor) {
+                Delivery::Grants => match db.grants(thing) {
                     Ok(r) if r == last => {}
                     Ok(r) => {
                         last = r.clone();

@@ -14,82 +14,75 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-/// How long a `WaitForSync::Required` demotion waits for its pre-sync.
+/// How long `SyncFirst::Required` waits.
 pub const PRESYNC_WAIT: Duration = Duration::from_secs(30);
 
-/// `until` and `invite` of an edge.
+/// When a grant ends and what its holder may grant others (`Osis::grant`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EdgeOpts {
+pub struct GrantOpts {
+    /// The grant ends at this time.
     pub until: Option<WallMs>,
+    /// The highest role the holder may grant others, at most its own.
     pub invite: Option<Role>,
 }
 
-/// How `Osis::share_into` places.
+/// What a group contains. Being a member grants nothing: who may read a thing is who holds a role
+/// on it (`Osis::grants`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Member {
+    /// A thing in the group.
+    Item(Tid),
+    /// A group whose own members count as members of this one.
+    Subgroup(Tid),
+}
+
+impl Member {
+    /// The thing, and whether it is a subgroup.
+    fn parts(self) -> (Tid, bool) {
+        match self {
+            Member::Item(t) => (t, false),
+            Member::Subgroup(t) => (t, true),
+        }
+    }
+}
+
+/// One way an actor holds a role on a thing (`Osis::holders`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Holder {
+    pub actor: Tid,
+    /// The role this way gives: the least along it.
+    pub role: Role,
+    /// When this way ends: the earliest end along it. One that has ended is not listed.
+    pub until: Option<WallMs>,
+    /// The actors between the thing and this holder, nearest the thing first: empty for a grant
+    /// on the thing itself, the link's actor for someone who joined by a link, a team for its
+    /// members.
+    pub through: Vec<Tid>,
+}
+
+/// What to do about work a holder may have done that this device has not seen, before lowering
+/// or removing its role. Work not seen by then is undone everywhere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ShareOpts {
-    /// Place the thing (a group) as a subgroup, not as an item.
-    pub subgroup: bool,
-    /// When this node may not grant: place anyway (the thing is then excluded: holders of the
-    /// group see its tid, not the thing) instead of failing `Permission`.
-    pub place_anyway: bool,
-}
-
-/// How a group's holders reach a thing through that group (`Osis::reach`, `share_into`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Share {
-    /// A tied edge (`share_into`): it goes when the placement goes.
-    Tied(Role),
-    /// An edge granted by hand (`grant`): it stays when the placement goes.
-    Untied(Role),
-    /// No edge: placed, but the group's holders do not reach the thing through it.
-    Excluded,
-}
-
-/// One group's view of a thing (`Osis::reach`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GroupReach {
-    pub group: Tid,
-    /// The group lists the thing as an item or subgroup. A tied edge without it is on its way
-    /// out (a node that may remove it does).
-    pub placed: bool,
-    pub share: Share,
-}
-
-/// Whether a demotion waits for its pre-sync (spec/permissions.md §5.3).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WaitForSync {
-    /// Fail with `Unsynced` when a group cannot be synced (within `PRESYNC_WAIT`).
+pub enum SyncFirst {
+    /// Catch up first; fail `Unsynced` when that cannot be done soon.
     #[default]
     Required,
-    /// Proceed after the timeout, with a diagnostic.
+    /// Try to catch up for this long, then go ahead with a diagnostic.
     Try(Duration),
-    /// Stamp now (a stolen device).
+    /// Go ahead now, keeping what this device has seen: for a stolen device or a hostile holder.
     Skip,
+    /// Go ahead now, keeping only what this device had seen by this time.
+    Backdate(WallMs),
 }
 
+/// How `Osis::set_role` takes a role away.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Demotion {
-    pub sync: WaitForSync,
-    /// An explicitly backdated revoke: no pre-sync; the frontier as of this time.
-    pub backdate: Option<WallMs>,
-    /// Also repudiate the demoted holder's rotations of the target this device cannot open (a
-    /// writer that rotated it and sealed the new secrets to itself alone, locking everyone else
-    /// out: a plain demotion then fails). Those rotations are undone everywhere and the target
-    /// rotates from the secrets before them (spec/permissions.md §3); content under their
-    /// epochs stays readable only where those secrets are already held. Only after a lockout:
-    /// a device that merely lacks a re-seal would discard an honest rotation. A direct edge only.
-    pub repudiate: bool,
-    /// A removal's word (spec/permissions.md §3, Keep): the removed holder's devices keep a
-    /// read-only copy, or erase. `None`: the thing's default (`core::RequiredRules::keep`); erase for a
-    /// device leaving this person.
+pub struct SetRole {
+    pub sync: SyncFirst,
+    /// On removal: whether the holder's devices keep a read-only copy (`true`) or erase it
+    /// (`false`). `None`: the thing's default (`core::RequiredRules::keep`), and erase for a device
+    /// leaving its account. `Invalid` when a role remains.
     pub keep: Option<bool>,
-}
-
-/// The role after a demotion.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Lower {
-    To(Role),
-    Remove,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -111,11 +104,36 @@ pub struct LinkOpts {
     pub direct: bool,
 }
 
+/// Names a link (`LinkInfo::id`, `Osis::revoke_link`). Its text form is what `FromStr` reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LinkId(pub(crate) Tid);
+
+impl LinkId {
+    /// The actor those who joined by this link hold through: `Holder::through` names it, and
+    /// `Osis::holders` of it lists them.
+    pub fn actor(&self) -> Tid {
+        self.0
+    }
+}
+
+impl std::fmt::Display for LinkId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0.to_uri())
+    }
+}
+
+impl std::str::FromStr for LinkId {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<LinkId> {
+        s.trim().parse().map(LinkId).map_err(|_| Error::Invalid(format!("no link id: {s}")))
+    }
+}
+
 /// A link of this person (`links`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkInfo {
-    /// The link's actor K: what `revoke_link` takes.
-    pub id: Tid,
+    /// What `revoke_link` takes.
+    pub id: LinkId,
     pub target: Tid,
     pub role: Role,
     pub until: Option<WallMs>,
@@ -370,12 +388,15 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
     Ok(Status { connected: sync.connected(), groups, remotes: Vec::new(), split: BTreeSet::new() })
 }
 
-fn edge(role: Role, o: EdgeOpts) -> ct::Edge {
+fn edge(role: Role, o: GrantOpts) -> ct::Edge {
     ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: None, keyset: None }
 }
 
-fn share_of(e: crate::Edge) -> Share {
-    if e.tied { Share::Tied(e.role) } else { Share::Untied(e.role) }
+/// The role of `h`'s edge on `t` that passed its `until` and is still in the state. A new edge
+/// below it is a demotion to receivers (spec/permissions.md §3, spec/crypto.md §4: `until` disregarded
+/// for keys), with a frontier and a rotation, so it takes `set_role`.
+fn ended_role(e: &osis_node::Engine, t: &Tid, h: &Tid) -> Option<Role> {
+    e.core.timelines.get(t).and_then(|tl| tl.edges_at(None).get(h, t).map(|x| x.role))
 }
 
 /// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with an owner,
@@ -502,25 +523,25 @@ impl Osis {
         self.guarded(tids, |e| persist_in(e, me, tids))
     }
 
-    /// `holder` is this person or a client of this node: this node serves it, and the thing stays
-    /// as local as it was.
-    fn served_here(&self, holder: Tid) -> Result<bool> {
-        Ok(holder == self.me() || self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().contains_key(&holder))
-    }
-
-    /// Grants `holder` `role` on `target` (spec/permissions.md §2): needs admin on the target
-    /// (or an invite edge) and the holder's `keys.0` (a contact card, a shared group, pairing),
-    /// else `UnknownActor`. Records the permission and nothing else: the grant reaches the
-    /// holder's devices through its inbox, a group holder's readers through the copy its admins
-    /// place under its label, and the holder reads the target only through a label that carries
-    /// it (spec/sync.md §2); with none it holds the role and no route, which `status` shows
-    /// (`SyncState::NoRoute`, `GroupSync::unrouted`) until `sync` gives the target a label
-    /// (`share` does both). Grants one by one each cost about 2.6 KB of boxes: share sets through
-    /// a group. Adds, raises, or changes `until` and `invite`. A role below the holder's present
-    /// one is `Invalid`: lowering takes `demote`, which syncs and rotates keys first.
-    pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
+    /// Grants `holder` `role` on `target`: adds a holder, raises a role, or changes `until` and
+    /// `invite` (what `opts` leaves out goes). It never waits and never lowers a role: a role below
+    /// the holder's present one, or below a grant of its that ended, is `Invalid` and takes
+    /// `set_role`.
+    ///
+    /// `set_role` also adds and raises, and this overlap is on purpose: `grant` is the call that can
+    /// neither block nor take anything away, for sync code and for callers that mean only that, and
+    /// the only one that sets `until` and `invite`.
+    ///
+    /// This records the permission and nothing else. The holder reads the target only once a synced
+    /// group it reads holds the target, or the target's own `sync` carries it; until then `status`
+    /// shows `SyncState::NoRoute` and names the holder (`GroupSync::unrouted`).
+    ///
+    /// Needs admin on the target (or an `invite` of at least `role`, for someone with no grant yet),
+    /// else `Permission`, and the holder's keys here (a contact card, a shared group, pairing), else
+    /// `UnknownActor`. Each grant costs about 2.6 KB of keys: to share with many, grant one group.
+    pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
-            return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
+            return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::grant_opts_v(&opts)]).map(drop);
         }
         if !self.holds(target) {
             return Err(Error::UnknownThing { tid: target });
@@ -531,10 +552,10 @@ impl Osis {
             self.guard_local(l, &[target])?;
             let e = l.engine();
             known_actor(e, holder)?;
-            // an edge change keeps its tie; a new hand grant is untied
+            // a change keeps the tie to a membership; a new hand grant has none
             let cur = e.roster(&target).get(&holder).copied();
-            if cur.is_some_and(|x| role < x.role) {
-                return Err(Error::Invalid("a lower role needs demote".into()));
+            if cur.is_some_and(|x| role < x.role) || cur.is_none() && ended_role(e, &target, &holder).is_some_and(|r| role < r) {
+                return Err(Error::Invalid("a lower role takes set_role".into()));
             }
             let tied = cur.and_then(|x| x.tied).map(flows::tied::tie_ct);
             e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)
@@ -542,87 +563,64 @@ impl Osis {
         self.carry(done)
     }
 
-    /// `grant`, with a route: when `holder` reads no live label carrying `target` as this node
-    /// knows them (`Engine::routed`), `target` is synced first (its own label on this database's
-    /// hosts; needs admin, else `Permission`), then the edge is written. Not for `me()` or this
-    /// node's own clients: they read what this node holds, and the thing stays as local as it
-    /// was. `share_into` is the other way to a route: placing the thing in a synced group.
-    pub fn share(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
-            return r.call(crate::port::method::SHARE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
-        }
-        if !self.holds(target) {
-            return Err(Error::UnknownThing { tid: target });
-        }
-        let served = self.served_here(holder)?;
-        let routed = self.locked(|l| {
-            let e = l.engine();
-            known_actor(e, holder)?;
-            Ok::<_, Error>(served || e.routed(&holder, &target))
-        })?;
-        if !routed {
-            self.sync_here(target, &[], false)?;
-        }
-        self.grant(target, holder, role, opts)
-    }
-
-    /// Shares `tid` with the holders of `group` at `role` by placing it there (spec/permissions.md
-    /// §2): the placement (skipped when the thing is already placed so) and a tied edge of the
-    /// group on it, which goes when the placement goes (`Write::unplace`). An existing edge of the
-    /// group at `role` or above is kept as it is, tied or not. Needs write on the group and admin
-    /// on `tid` (or an invite edge of at least `role`, and no edge of the group yet), else
-    /// `Permission` before anything is written, unless `opts.place_anyway` (then `Excluded`).
-    pub fn share_into(&self, tid: Tid, group: Tid, role: Role, opts: ShareOpts) -> Result<Share> {
+    /// Adds `member` to `group` and grants the group `role` on it, tied together: the grant goes
+    /// when the membership goes (`Write::unplace`, `Write::remove_subgroup`), so the group's holders
+    /// reach what is in the group for as long as it is, through the group's sync. Being a member
+    /// alone grants nothing, and a plain `grant` to the group stays when the membership goes.
+    ///
+    /// Already a member, nothing more is written to the group. A grant of the group at `role` or
+    /// above stays as it is, tied or not, and a raise of a grant made by hand stays untied.
+    ///
+    /// Needs write on the group and admin on the thing (or an `invite` of at least `role`, the
+    /// group having no grant yet), else `Permission` before anything is written. To add without
+    /// granting: `Write::place`, `Write::add_subgroup`.
+    pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
+        let (tid, subgroup) = member.parts();
         if let crate::sources::Source::Remote(r) = self.route_write_all(&[tid, group])? {
-            return crate::port::codec::share(r.call(crate::port::method::SHARE_INTO, vec![Value::Tid(tid), Value::Tid(group), crate::port::codec::role_v(role), Value::Bool(opts.subgroup), Value::Bool(opts.place_anyway)])?);
+            return r.call(crate::port::method::ADD_WITH_GRANT, vec![crate::port::codec::member_v(member), Value::Tid(group), crate::port::codec::role_v(role)]).map(drop);
         }
         for x in [tid, group] {
             if !self.holds(x) {
                 return Err(Error::UnknownThing { tid: x });
             }
         }
-        let existing = self.roster(tid)?.get(&group).copied();
-        // a tied edge whose placement is gone here is tied again to the new one
-        let retie = existing.is_some_and(|x| x.tied) && self.engine(|e| e.tie_dead(&tid, &group))?;
+        let existing = self.grants(tid)?.get(&group).copied();
+        // a tied grant whose membership is gone here is tied again to the new one
+        let retie = existing.is_some_and(|x| x.with_membership) && self.engine(|e| e.tie_dead(&tid, &group))?;
         let role = existing.filter(|_| retie).map_or(role, |x| x.role.max(role));
         let grant = retie || existing.is_none_or(|e| e.role < role);
-        let may = grant && self.engine(|e| e.may_grant(&tid, &group, role));
-        if grant && !may && !opts.place_anyway {
+        if grant && !self.engine(|e| e.may_grant(&tid, &group, role)) {
             return Err(Error::Permission { tid, needs: Role::Admin });
         }
         let placed = self.read_local(|r| {
             let gs = r.groups_of(tid);
-            if opts.subgroup { gs.subgroup_of.contains(&group) } else { gs.item_of.contains(&group) }
+            if subgroup { gs.subgroup_of.contains(&group) } else { gs.item_of.contains(&group) }
         });
-        if may {
-            // durable first, so the placement is too
+        if grant {
+            // durable first, so the membership is too
             self.persist(&[tid])?;
         }
         if !placed {
             let mut w = self.write();
             w.sharing = true;
-            if opts.subgroup { w.add_subgroup(group, tid)? } else { w.place(tid, group)? }
+            if subgroup { w.add_subgroup(group, tid)? } else { w.place(tid, group)? }
             w.commit()?;
         }
         if !grant {
-            return Ok(existing.map_or(Share::Excluded, share_of));
+            return Ok(());
         }
-        if !may {
-            return Ok(Share::Excluded);
-        }
-        // tied to the placement's live element (written above, or already there); an existing
-        // hand edge stays untied
-        let tied = existing.is_none_or(|x| x.tied);
+        // tied to the membership's live element (written above, or already there); a grant made
+        // by hand stays untied
+        let tied = existing.is_none_or(|x| x.with_membership);
         let done = self.guarded(&[tid, group], |e| {
             let tie = match tied {
-                true => Some(e.placement(&tid, &group, opts.subgroup)?.ok_or_else(|| Error::Invalid(format!("{tid} is not placed in {group} here")))?),
+                true => Some(e.placement(&tid, &group, subgroup)?.ok_or_else(|| Error::Invalid(format!("{tid} is not placed in {group} here")))?),
                 false => None,
             };
             let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct), keyset: None };
             e.grant(&tid, &group, &edge).map_err(needs_admin)
         })?;
-        self.carry(done)?;
-        Ok(if tied { Share::Tied(role) } else { Share::Untied(role) })
+        self.carry(done)
     }
 
     /// Removes the tied edges of `pairs` (thing, group) whose placement is gone here, where this
@@ -640,55 +638,54 @@ impl Osis {
         }
     }
 
-    /// Removes `group`'s edge on `target` as an admin of the group (a self-removal,
-    /// spec/permissions.md §2: no pre-sync, no rotation; the target's next writer or admin
-    /// rotates). `Invalid` when this node is an admin of `target` (use `demote`), `Permission`
-    /// when it is no admin of `group`; nothing is written when there is no such edge.
-    pub fn remove_edge_of(&self, group: Tid, target: Tid) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route_write_all(&[group, target])? {
-            return r.call(crate::port::method::REMOVE_EDGE_OF, vec![Value::Tid(group), Value::Tid(target)]).map(drop);
+    /// Everyone who holds a role on `target`, directly or through an actor that holds one (a person
+    /// through a group, a joiner through a link), each by every grant that makes it a holder, nearest
+    /// first: an actor with several ways in is listed once per grant it holds them by, a way
+    /// going by the shortest path to that grant. Who holds through an actor: `holders` of that actor,
+    /// or those here with it in `through`. Grants one level down, with `invite` and whether a grant
+    /// goes with a membership: `grants`.
+    pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
+        if let crate::sources::Source::Remote(r) = self.route(target) {
+            return crate::port::codec::holders(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
         }
-        if !self.roster(target)?.contains_key(&group) {
-            return Ok(());
-        }
-        let done = self.guarded(&[group, target], |e| match e.may_remove(&target, &group) {
-            Some(flows::Untie::SelfRemoval) => Ok(e.demote(&target, &flows::Demotion { holder: group, new: None, presync: PreSync::Synced, keep: None })?),
-            Some(flows::Untie::Explicit) => Err(Error::Invalid(format!("this node is an admin of {target}: use demote"))),
-            None => Err(Error::Permission { tid: group, needs: Role::Admin }),
-        })?;
-        self.carry(done)
-    }
-
-    /// Per group, how its holders reach `tid` through it (spec/permissions.md §2): every group
-    /// listing it as an item or subgroup (`Tied`, `Untied` or `Excluded`), and every group with
-    /// a tied edge on it that no longer lists it (`placed: false`, until that edge goes).
-    pub fn reach(&self, tid: Tid) -> Result<Vec<GroupReach>> {
-        if let crate::sources::Source::Remote(r) = self.route(tid) {
-            return crate::port::codec::reach(r.call(crate::port::method::REACH, vec![Value::Tid(tid)])?);
-        }
-        let (gs, roster) = self.read_local(|r| (r.groups_of(tid), r.roster(tid)));
-        let placed: BTreeSet<Tid> = gs.item_of.into_iter().chain(gs.subgroup_of).collect();
-        let mut out: Vec<GroupReach> = placed.iter().map(|g| GroupReach { group: *g, placed: true, share: roster.get(g).copied().map_or(Share::Excluded, share_of) }).collect();
-        out.extend(roster.iter().filter(|(g, e)| e.tied && !placed.contains(g)).map(|(g, e)| GroupReach { group: *g, placed: false, share: Share::Tied(e.role) }));
-        Ok(out)
-    }
-
-    /// Changes `until`/`invite` of an edge or raises its role (a lower role: `demote`).
-    pub fn change_edge(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
-            return r.call(crate::port::method::CHANGE_EDGE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
-        }
-        self.grant(target, holder, role, opts)
+        Ok(self.read_local(|r| {
+            let mut out: Vec<Holder> = Vec::new();
+            let mut seen = BTreeSet::from([target]);
+            // an actor to look behind, by the first way (a shortest) that found it
+            let mut queue = std::collections::VecDeque::from([(target, None, None, Vec::new())]);
+            while let Some((at, role, until, through)) = queue.pop_front() {
+                let role: Option<Role> = role;
+                let until: Option<WallMs> = until;
+                let through: Vec<Tid> = through;
+                for (actor, g) in r.grants(at) {
+                    if actor == target || through.contains(&actor) {
+                        continue;
+                    }
+                    let way = Holder {
+                        actor,
+                        role: role.map_or(g.role, |x| x.min(g.role)),
+                        until: [until, g.until].into_iter().flatten().min(),
+                        through: through.clone(),
+                    };
+                    if seen.insert(actor) {
+                        let mut on = way.through.clone();
+                        on.push(actor);
+                        queue.push_back((actor, Some(way.role), way.until, on));
+                    }
+                    out.push(way);
+                }
+            }
+            out
+        }))
     }
 
     /// Runs the pre-sync of a demotion (spec/permissions.md §5.3) over the labels holding
-    /// `things`, as `d` says.
-    async fn presync(&self, things: BTreeSet<Tid>, d: Demotion) -> Result<PreSync> {
-        if let Some(t) = d.backdate {
-            return Ok(PreSync::Backdated(t));
-        }
-        if d.sync == WaitForSync::Skip {
-            return Ok(PreSync::Unsynced { proceed: true });
+    /// `things`, as `sync` says.
+    async fn presync(&self, things: BTreeSet<Tid>, sync: SyncFirst) -> Result<PreSync> {
+        match sync {
+            SyncFirst::Backdate(t) => return Ok(PreSync::Backdated(t)),
+            SyncFirst::Skip => return Ok(PreSync::Unsynced { proceed: true }),
+            SyncFirst::Required | SyncFirst::Try(_) => {}
         }
         // groups held here are synced; those held for receipts only are read for receipts
         // (their commit headers, notes/sync.md Receipts-only reads)
@@ -700,20 +697,20 @@ impl Osis {
             return Ok(PreSync::Synced);
         }
         self.act(|l| l.sync.read_receipts(&reads));
-        // ended on a dropped future too: a daemon outlives a client gone mid-demote
+        // ended on a dropped future too: a daemon outlives a client gone midway
         let reading = ReceiptsGuard { db: self.downgrade(), groups: reads.clone() };
         self.sync_labels();
-        let wait = match d.sync {
-            WaitForSync::Try(t) => t,
+        let wait = match sync {
+            SyncFirst::Try(t) => t,
             _ => PRESYNC_WAIT,
         };
         let r = self.groups_synced(Some(groups.clone()), reads.clone(), wait, None).await;
         drop(reading);
         let mut all = groups;
         all.extend(reads);
-        match (r, d.sync) {
+        match (r, sync) {
             (Ok(()), _) => Ok(PreSync::Synced),
-            (Err(_), WaitForSync::Try(_)) => {
+            (Err(_), SyncFirst::Try(_)) => {
                 self.engine(|e| e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Unsynced, tids: all, commit: None, peer: None, detail: "demotion proceeded without its pre-sync".into() }));
                 Ok(PreSync::Unsynced { proceed: true })
             }
@@ -730,114 +727,132 @@ impl Osis {
         self.wait_until(Some(wait), Box::new(move |sync, _, late| synced(sync, groups.as_deref(), &reads, deliveries.as_ref(), late)))
     }
 
-    /// The edges through which `actor` is a holder of `target` (spec/permissions.md §2): the
-    /// (thing, holder) pairs from `target` down to `actor` of a shortest chain, e.g. `[(target,
-    /// K), (K, actor)]` for a link joiner; empty when it is none.
-    pub fn holder_path(&self, target: Tid, actor: Tid) -> Result<Vec<(Tid, Tid)>> {
-        if let crate::sources::Source::Remote(r) = self.route(target) {
-            return crate::port::codec::pairs(r.call(crate::port::method::HOLDER_PATH, vec![Value::Tid(target), Value::Tid(actor)])?);
-        }
-        Ok(self.read_local(|r| {
-            let mut via: BTreeMap<Tid, Tid> = BTreeMap::from([(target, target)]);
-            let mut queue = std::collections::VecDeque::from([target]);
-            while let Some(x) = queue.pop_front() {
-                for m in r.roster(x).into_keys() {
-                    if via.contains_key(&m) {
-                        continue;
-                    }
-                    via.insert(m, x);
-                    if m == actor {
-                        let mut path = vec![(x, m)];
-                        let mut cur = x;
-                        while cur != target {
-                            let Some(p) = via.get(&cur).copied() else { break };
-                            path.push((p, cur));
-                            cur = p;
-                        }
-                        path.reverse();
-                        return path;
-                    }
-                    queue.push_back(m);
-                }
-            }
-            Vec::new()
-        }))
-    }
-
-    /// Lowers or removes `holder`'s edge on `target` (spec/permissions.md §2, §3, §5): first the
-    /// pre-sync of every label the demoted authority wrote under, as `d` says; then the
-    /// demotion with this node's frontier and the target's rotation, in one commit.
+    /// Makes `holder`'s role on `target` this one: raises, lowers, or with `None` removes. The usual
+    /// way to change a role (`grant` says why both exist). A role that does not change writes
+    /// nothing. Someone with no role gets a `grant` with default options, or with `None` nothing is
+    /// written. `until` and `invite` stay as they are (`invite` capped at the new role): `grant` sets
+    /// those.
     ///
-    /// A removal follows every way the holder reaches `target` (`holder_path`) until none is
-    /// left; removing a holder that reaches it no more writes nothing. A holder that joined by
-    /// a link made on this device is removed from the link's actor K together with the link key
-    /// in one commit (`revoke_joiner`; the joiner may keep the seed, spec/permissions.md §8): the
-    /// link stops working for anyone who has not redeemed it, K's other joiners stay. A link
-    /// joiner's role cannot be lowered (it could act as the link key), only removed. A holder
-    /// reaching `target` through another actor (a team, or a link made on another device) is
-    /// `Invalid`: demote it there.
+    /// A raise waits for nothing. Lowering or removing first does as `SetRole::sync` says, so that
+    /// what the holder did while it could is kept. `SetRole::keep` with a role is `Invalid`.
+    ///
+    /// A removal follows every way the holder has in (`holders`) until none is left. A holder who
+    /// joined by a link of this account is removed together with the link's key, in one commit:
+    /// it may have kept the link's text. The link then stops working for anyone who has not used
+    /// it yet (make a new one), and its other joiners stay. A joiner's role cannot be changed, only
+    /// removed (`Invalid`; `grant` gives it a role of its own). Nor can this call reach through
+    /// another actor (a team, a link of another account): `Invalid`, naming the actor to set
+    /// the role on.
     ///
     /// `Unsupported` on a thing this node reads at another node: move its group home first. A
-    /// revocation written to the copy here would never leave it.
-    pub async fn demote(&self, target: Tid, holder: Tid, to: Lower, d: Demotion) -> Result<()> {
+    /// removal written to the copy here would never leave it.
+    pub async fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRole) -> Result<()> {
+        keep_only_on_removal(role, o)?;
         if self.is_attached() {
-            let role = crate::port::codec::opt(match to { Lower::To(r) => Some(r), Lower::Remove => None }, crate::port::codec::role_v);
-            return self.rtask(crate::port::method::DEMOTE, vec![Value::Tid(target), Value::Tid(holder), role, crate::port::codec::demotion_v(&d)]).await.map(drop);
+            return self.rtask(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
         }
-        self.not_routed("demote", target)?;
-        // each round removes one way in; the bound only guards against a roster that never settles
+        self.not_routed("set_role", target)?;
+        // each round removes one way in; the bound only guards against grants that never settle
         for _ in 0..16 {
-            let path = self.holder_path(target, holder)?;
-            let via = match (path.as_slice(), to) {
-                ([], Lower::Remove) => return Ok(()),
-                ([], Lower::To(_)) => return Err(Error::Invalid(format!("{holder} is no holder of {target}"))),
-                ([_], _) => None,
-                ([(_, k), (_, _)], _) => Some(*k),
-                ([(_, k), ..], _) => return Err(Error::Invalid(format!("{holder} reaches {target} through {k}: demote it there"))),
+            let Some(way) = self.holders(target)?.into_iter().find(|h| h.actor == holder) else {
+                let Some(r) = role else { return Ok(()) };
+                // a grant that ended above `r`: goes first, as a removal, with what that takes
+                if self.engine(|e| ended_role(e, &target, &holder)).is_some_and(|old| r < old) {
+                    self.lower(target, holder, None, o, false).await?;
+                }
+                return self.grant(target, holder, r, GrantOpts::default());
             };
-            match via {
-                None => self.demote_edge(target, holder, to, d).await?,
-                Some(k) => {
-                    if !self.held_links()?.iter().any(|h| h.k == k && h.target == target) {
-                        return Err(Error::Invalid(format!("{holder} reaches {target} through {k}, a group actor: demote it there")));
+            match way.through.as_slice() {
+                [] => {
+                    let cur = self.grants(target)?.get(&holder).copied().ok_or(Error::Invalid(format!("{holder} is no holder of {target}")))?;
+                    match role {
+                        Some(r) if r == cur.role => return Ok(()),
+                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, invite: cur.invite }),
+                        _ => self.lower(target, holder, role, o, false).await?,
                     }
-                    if to != Lower::Remove {
+                }
+                [k] if self.held_links()?.iter().any(|h| h.k == *k && h.target == target) => {
+                    if role.is_some() {
                         return Err(Error::Invalid(format!("{holder} joined {target} by a link: it can only be removed")));
                     }
-                    self.revoke_joiner(k, holder, d).await?;
+                    self.remove_joiner(*k, holder, o).await?;
                 }
+                [k, ..] => return Err(Error::Invalid(format!("{holder} reaches {target} through {k}: set its role there"))),
             }
-            if to != Lower::Remove {
+            if role.is_some() {
                 return Ok(());
             }
         }
         Err(Error::Invalid(format!("{holder} still reaches {target}")))
     }
 
-    async fn demote_edge(&self, t: Tid, m: Tid, to: Lower, d: Demotion) -> Result<()> {
-        let new = match to {
-            Lower::To(role) => {
-                let cur = self.roster(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
+    /// `set_role` for one who locked everyone else out: a writer that replaced the keys of `target`
+    /// and sealed the new ones to itself alone, so that `set_role` fails here. Also undoes, everywhere,
+    /// that holder's key changes this device cannot open, and changes the keys from those before
+    /// them; what was written under the undone keys stays readable only where they are already held.
+    ///
+    /// Only after a lockout: on a device that merely lacks a key someone has yet to send it, this
+    /// discards an honest change. `holder` must hold a grant on `target` itself (else `Invalid`); `role`
+    /// can lower or remove, not raise. Nothing to undo: the same as `set_role`.
+    pub async fn repudiate(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRole) -> Result<()> {
+        keep_only_on_removal(role, o)?;
+        if self.is_attached() {
+            return self.rtask(crate::port::method::REPUDIATE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
+        }
+        self.not_routed("repudiate", target)?;
+        match (self.holders(target)?.into_iter().find(|h| h.actor == holder), role) {
+            (None, None) => return Ok(()),
+            (None, Some(_)) => return Err(Error::Invalid(format!("{holder} is no holder of {target}"))),
+            (Some(way), _) if !way.through.is_empty() => return Err(Error::Invalid("repudiating takes the holder's grant on the thing itself".into())),
+            (Some(way), Some(r)) if r > way.role => return Err(Error::Invalid("repudiating cannot raise a role".into())),
+            _ => {}
+        }
+        self.lower(target, holder, role, o, true).await
+    }
+
+    /// Lowers or removes the grant of `m` on `t`: the pre-sync of every label the lost authority
+    /// wrote under, then the demotion with this node's frontier and the target's rotation, in one
+    /// commit (spec/permissions.md §2, §3, §5).
+    async fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRole, repudiate: bool) -> Result<()> {
+        let new = match role {
+            Some(role) => {
+                let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
                 Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None })
             }
-            Lower::Remove => None,
+            None => None,
         };
         let things = self.engine(|e| e.presync_scope(&t, &m, new.as_ref()));
-        let presync = self.presync(things, d).await?;
+        let presync = self.presync(things, o.sync).await?;
         // a person's default does not reach its devices (spec/permissions.md §2)
-        let keep = d.keep.or((t == self.inner.me).then_some(false));
+        let keep = o.keep.or((t == self.inner.me).then_some(false));
         let fd = flows::Demotion { holder: m, new, presync, keep };
-        let done = self.guarded(&[t], |e| (if d.repudiate { e.demote_repudiating(&t, &fd) } else { e.demote(&t, &fd) }).map_err(needs_admin))?;
+        let done = self.guarded(&[t], |e| (if repudiate { e.demote_repudiating(&t, &fd) } else { e.demote(&t, &fd) }).map_err(needs_admin))?;
         self.carry(done)
     }
 
-    /// Removes this person's own edge on `target` (a self-removal; no pre-sync).
-    pub fn leave(&self, target: Tid) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
-            return r.call(crate::port::method::LEAVE, vec![Value::Tid(target)]).map(drop);
+    /// Removes `holder`'s own grant on `target`, on the holder's own authority: no catching up, and
+    /// the keys change only when the target's next writer or admin writes. `holder` is `me()`, or a
+    /// group or other actor this node is an admin of (as when a group's admin drops a thing that was
+    /// shared into it). No such grant writes nothing.
+    ///
+    /// `Invalid` for another actor when this node is an admin of `target`: taking that role away is
+    /// `set_role`'s, with its catching up. `Permission` when this node is no admin of `holder`.
+    pub fn leave(&self, holder: Tid, target: Tid) -> Result<()> {
+        let own = holder == self.me();
+        let route = if own { self.route_write(target)? } else { self.route_write_all(&[holder, target])? };
+        if let crate::sources::Source::Remote(r) = route {
+            return r.call(crate::port::method::LEAVE, vec![Value::Tid(holder), Value::Tid(target)]).map(drop);
         }
-        let me = self.me();
-        let done = self.guarded(&[target], |e| Ok(e.demote(&target, &flows::Demotion { holder: me, new: None, presync: PreSync::Synced, keep: None })?))?;
+        if !self.grants(target)?.contains_key(&holder) {
+            return Ok(());
+        }
+        let things = if own { vec![target] } else { vec![holder, target] };
+        let done = self.guarded(&things, |e| match e.may_remove(&target, &holder) {
+            Some(flows::Untie::Explicit) if !own => Err(Error::Invalid(format!("this node is an admin of {target}: use set_role"))),
+            None if !own => Err(Error::Permission { tid: holder, needs: Role::Admin }),
+            // this account's own grant, whichever way this node also holds the target
+            _ => Ok(e.demote(&target, &flows::Demotion { holder, new: None, presync: PreSync::Synced, keep: None })?),
+        })?;
         self.carry(done)
     }
 
@@ -870,8 +885,8 @@ impl Osis {
 
     /// Makes a share link to `target` with `role` (spec/permissions.md §8): its actor K and key L
     /// on this database's hosts. Anyone holding the link can redeem it until `until` or
-    /// `revoke_link`. A composite like `share`: it syncs `target` when it has no label of its own,
-    /// the only place K can read it.
+    /// `revoke_link`. It also syncs `target` when it has no label of its own, the only place K
+    /// can read it, so a link always works.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
@@ -1035,7 +1050,7 @@ impl Osis {
             .into_iter()
             .filter_map(|h| {
                 let e = self.engine(|e| e.roster(&h.k).get(&h.l).copied())?;
-                Some(LinkInfo { id: h.k, target: h.target, role: e.role, until: e.until, single_use: h.single_use })
+                Some(LinkInfo { id: LinkId(h.k), target: h.target, role: e.role, until: e.until, single_use: h.single_use })
             })
             .collect())
     }
@@ -1047,42 +1062,35 @@ impl Osis {
         self.engine(|e| person_links(e, me))
     }
 
-    /// Link `id`'s key L (`held_links`).
-    fn link_key(&self, id: Tid) -> Result<Tid> {
-        self.held_links()?.iter().find(|h| h.k == id).map(|h| h.l).ok_or(Error::Invalid(format!("no link {id} of this person")))
+    /// Link actor `k`'s key L (`held_links`).
+    fn link_key(&self, k: Tid) -> Result<Tid> {
+        self.held_links()?.iter().find(|h| h.k == k).map(|h| h.l).ok_or(Error::Invalid(format!("no link {k} of this person")))
     }
 
-    /// Ends a link (spec/permissions.md §8): removes its key from K (joiners stay holders of K;
-    /// one that kept the seed is revoked only with a new link for the others).
-    pub async fn revoke_link(&self, id: Tid, d: Demotion) -> Result<()> {
+    /// Ends a link: nobody can use it from now on. Those who joined by it keep their role; to remove
+    /// one, `set_role`. `sync` as for `set_role`: anyone holding the link's text may have used it.
+    pub async fn revoke_link(&self, id: LinkId, sync: SyncFirst) -> Result<()> {
         if self.is_attached() {
-            return self.rtask(crate::port::method::REVOKE_LINK, vec![Value::Tid(id), crate::port::codec::demotion_v(&d)]).await.map(drop);
+            return self.rtask(crate::port::method::REVOKE_LINK, vec![Value::Tid(id.0), crate::port::codec::sync_first_v(sync)]).await.map(drop);
         }
-        self.not_routed("revoke_link", id)?;
-        let l = self.link_key(id)?;
-        self.demote_edge(id, l, Lower::Remove, d).await
+        self.not_routed("revoke_link", id.0)?;
+        let l = self.link_key(id.0)?;
+        self.lower(id.0, l, None, SetRole { sync, keep: None }, false).await
     }
 
-    /// Removes `joiner` from link `id`'s actor K and ends the link in the same commit, under one
-    /// rotation (spec/permissions.md §8: a joiner may keep the seed); the other joiners stay
-    /// holders of K and need a new link to invite anyone. After the pre-sync `demote` does.
-    pub async fn revoke_joiner(&self, id: Tid, joiner: Tid, d: Demotion) -> Result<()> {
-        if self.is_attached() {
-            return self.rtask(crate::port::method::REVOKE_JOINER, vec![Value::Tid(id), Value::Tid(joiner), crate::port::codec::demotion_v(&d)]).await.map(drop);
-        }
-        self.not_routed("revoke_joiner", id)?;
-        if d.repudiate {
-            return Err(Error::Invalid("repudiating rotations needs the holder's direct edge".into()));
-        }
-        let l = self.link_key(id)?;
+    /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
+    /// (spec/permissions.md §8: a joiner may keep the seed); the other joiners stay holders of K and
+    /// need a new link to invite anyone. After the pre-sync.
+    async fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRole) -> Result<()> {
+        self.not_routed("set_role", k)?;
+        let l = self.link_key(k)?;
         let things = self.engine(|e| {
-            let mut s = e.presync_scope(&id, &joiner, None);
-            s.extend(e.presync_scope(&id, &l, None));
+            let mut s = e.presync_scope(&k, &joiner, None);
+            s.extend(e.presync_scope(&k, &l, None));
             s
         });
-        let say = d.keep;
-        let presync = self.presync(things, d).await?;
-        let done = self.guarded(&[id], |e| e.revoke_joiner(&id, &l, &joiner, presync, say).map_err(needs_admin))?;
+        let presync = self.presync(things, o.sync).await?;
+        let done = self.guarded(&[k], |e| e.revoke_joiner(&k, &l, &joiner, presync, o.keep).map_err(needs_admin))?;
         self.carry(done)
     }
 
@@ -1315,15 +1323,15 @@ impl Osis {
         })
     }
 
-    /// Removes a device from the person (a lost or stolen one: `Demotion { sync: Skip, .. }` or a
-    /// backdate; spec/permissions.md §5.3). Returns the person's links still working: the device
-    /// keeps their seeds, so whoever holds it can read and join through each until `revoke_link`
-    /// (spec/permissions.md §8). Those are links shared in advance too: ending them is the
-    /// caller's choice. None when `node` was no device.
-    pub async fn remove_device(&self, node: Tid, d: Demotion) -> Result<Vec<LinkInfo>> {
+    /// Removes a device from this account (a lost or stolen one: `SyncFirst::Skip` or
+    /// `SyncFirst::Backdate`). This is `set_role(me, node, None, o)`, here because of what it
+    /// returns, which is easy to forget: this account's links still working. The device keeps their
+    /// keys, so whoever holds it can read and join through each until `revoke_link`, and ending
+    /// them is the caller's choice. None when `node` was no device.
+    pub async fn remove_device(&self, node: Tid, o: SetRole) -> Result<Vec<LinkInfo>> {
         let me = self.me();
-        let was = self.roster(me)?.contains_key(&node);
-        self.demote(me, node, Lower::Remove, d).await?;
+        let was = self.grants(me)?.contains_key(&node);
+        self.set_role(me, node, None, o).await?;
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
@@ -1407,7 +1415,7 @@ impl Osis {
     /// Creates an ownerless thing (spec/permissions.md §1): no owner, so nobody holds
     /// owner-chain authority on it; its admins are edges, all equal, starting with `admin`
     /// (`me()`, or an actor this device is an admin of), fixed by its tid. It has secrets of its
-    /// own at once; give it a label with `sync` or place it like any thing. Its roster is never
+    /// own at once; give it a label with `sync` or place it like any thing. Its grants are never
     /// compacted, and once no admin is left nobody can change it (members keep their roles).
     /// `Permission` (admin on `admin`), `UnknownActor` (no `keys.0` of `admin` here).
     pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
@@ -1651,6 +1659,14 @@ impl Osis {
         }
         self.try_act(|x| Ok(x.sync.import_bundle(&b)?))
     }
+}
+
+/// `SetRole::keep` is a removal's word.
+fn keep_only_on_removal(role: Option<Role>, o: SetRole) -> Result<()> {
+    if role.is_some() && o.keep.is_some() {
+        return Err(Error::Invalid("keep is for removing a role: there is no copy to keep while a role remains".into()));
+    }
+    Ok(())
 }
 
 /// The commit of `Osis::persist`.

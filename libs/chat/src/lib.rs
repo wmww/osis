@@ -1,12 +1,12 @@
 //! Group chat on osis primitives alone (notes/chat.md, design notes/chat-designs/e.md): a chat is one
-//! ownerless actor C; members hold write on it; a message is one kept write on a per-year aspect of
-//! C, its sender the commit's verified actor. No member actor, member list or per-message thing.
+//! ownerless actor C; participants hold write on it; a message is one kept write on a per-year aspect of
+//! C, its sender the commit's verified actor. No participant actor, participant list or per-message thing.
 
 #![forbid(unsafe_code)]
 
 use osis::schema::osis_base::cbor;
 use osis::schema::{Bound, core_types as ct};
-use osis::{Ak, ChangeId, CommitKind, Demotion, EdgeOpts, Error, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Lower, Osis, Result, Retention, Role, Subscription, Tid, Ts, Value, WaitForSync};
+use osis::{Ak, ChangeId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRole, Subscription, SyncFirst, Tid, Ts, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -67,7 +67,7 @@ impl std::str::FromStr for EditMode {
 }
 
 /// How a chat starts. Default: Signal-like: author or admin deletes, edits purge, nothing
-/// disappears, a kicked member keeps a read-only copy.
+/// disappears, a kicked participant keeps a read-only copy.
 #[derive(Clone, Debug)]
 pub struct Options {
     pub name: String,
@@ -76,7 +76,7 @@ pub struct Options {
     pub edit: EditMode,
     /// Messages disappear this long after they are sent.
     pub disappear: Option<Duration>,
-    /// A kicked member keeps a read-only copy, unless the kick says otherwise.
+    /// A kicked participant keeps a read-only copy, unless the kick says otherwise.
     pub keep: bool,
     /// Where the chat syncs; empty: the database's hosts. A host must admit an ownerless thing by
     /// its label or admit anyone: `admit own` does not take it.
@@ -90,7 +90,7 @@ impl Default for Options {
 }
 
 /// The retention rules of a chat: the message rule, and the plain default for every other aspect, so
-/// junk that nobody could erase is invalid (design E, Hostile member).
+/// junk that nobody could erase is invalid (design E, Hostile participant).
 fn rules(purge: PurgeBy, disappear: Option<Duration>, keep: bool) -> Result<ct::RequiredRules> {
     let ms = disappear.map(|d| u64::try_from(d.as_millis()).map_err(|_| Error::Invalid("too long".into()))).transpose()?;
     let at_least = if ms.is_some() { Bound::default() } else { Bound { abs: Some(osis::FOREVER), rel: None } };
@@ -100,7 +100,7 @@ fn rules(purge: PurgeBy, disappear: Option<Duration>, keep: bool) -> Result<ct::
 }
 
 /// A new chat, this person its first admin: required retention set before anyone is granted, so no
-/// member can write under an earlier key. One flow, several commits: a crash leaves a chat of one.
+/// participant can write under an earlier key. One flow, several commits: a crash leaves a chat of one.
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = db.create_ownerless(db.me())?;
     let mut w = db.write();
@@ -155,7 +155,7 @@ pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
     Ok(db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && matches!(db.at(*t, ak.clone()).get(), Ok(Some(_)))).map(|(t, _)| t).collect())
 }
 
-/// Sets the disappearing timer: later messages take it, earlier ones keep what they have. A member
+/// Sets the disappearing timer: later messages take it, earlier ones keep what they have. A participant
 /// who has not seen the change writes under the old rule, and its node hears `on_rejected`.
 pub fn set_disappearing(db: &Osis, c: Tid, d: Option<Duration>) -> Result<()> {
     let s = settings(db, c)?;
@@ -165,14 +165,16 @@ pub fn set_disappearing(db: &Osis, c: Tid, d: Option<Duration>) -> Result<()> {
     Ok(())
 }
 
-/// Adds a member (an admin's call): `Write` to post, `Admin` to moderate, `Read` for a channel.
+/// Adds a participant (an admin's call): `Write` to post, `Admin` to moderate, `Read` for a channel.
+/// A chat is synced from `create`, so this only grants.
 pub fn add(db: &Osis, c: Tid, person: Tid, role: Role) -> Result<()> {
-    db.share(c, person, role, EdgeOpts::default())
+    db.grant(c, person, role, GrantOpts::default())
 }
 
-/// Removes a member, a read-only copy left to them or not by `keep` (`None`: the chat's default).
-pub async fn kick(db: &Osis, c: Tid, person: Tid, keep: Option<bool>, sync: WaitForSync) -> Result<()> {
-    db.demote(c, person, Lower::Remove, Demotion { sync, backdate: None, repudiate: false, keep }).await
+/// Removes a participant, a read-only copy left to them or not by `keep` (`None`: the chat's
+/// default).
+pub async fn kick(db: &Osis, c: Tid, person: Tid, keep: Option<bool>, sync: SyncFirst) -> Result<()> {
+    db.set_role(c, person, None, SetRole { sync, keep }).await
 }
 
 /// A link anyone holding it can join by, as `role`.
@@ -180,9 +182,9 @@ pub fn link(db: &Osis, c: Tid, role: Role, single_use: bool) -> Result<osis::Sha
     db.make_link(c, role, osis::LinkOpts { until: None, single_use, direct: false })
 }
 
-/// Joins by link: the chat, once it is here. Kicks reach a joiner like any member (`kick`). A chat
+/// Joins by link: the chat, once it is here. Kicks reach a joiner like any participant (`kick`). A chat
 /// already held (`chats`) is returned as is, also when redeeming failed because it is: the link
-/// may be used up, or its maker or a member pasted it. So a link never raises a member's role, and
+/// may be used up, or its maker or a participant pasted it. So a link never raises a participant's role, and
 /// one whose target names a held chat opens that chat and joins nothing, whatever its key is. One
 /// naming a chat not held joins only if its key is on that chat (`Osis::redeem`).
 pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
@@ -194,18 +196,14 @@ pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
     db.redeem(l).await.or_else(|e| if held() { Ok(c) } else { Err(e) })
 }
 
-/// Removes this person: every edge it holds the chat through (a link joiner's is on the link's key).
+/// Removes this person: every grant it holds the chat through (a link joiner's is on the link's
+/// actor).
 pub fn leave(db: &Osis, c: Tid) -> Result<()> {
-    let mut last = Vec::new();
-    loop {
-        let path = db.holder_path(c, db.me())?;
-        let Some((t, _)) = path.last() else { return if last.is_empty() { db.leave(c) } else { Ok(()) } };
-        if path == last {
-            return Ok(());
-        }
-        db.leave(*t)?;
-        last = path;
+    let me = db.me();
+    for way in db.holders(c)?.into_iter().filter(|h| h.actor == me) {
+        db.leave(me, way.through.last().copied().unwrap_or(c))?;
     }
+    Ok(())
 }
 
 /// Whether `h` is an actor people hold the chat through, as a link's actor K (spec/permissions.md
@@ -217,26 +215,26 @@ fn held_through(db: &Osis, h: Tid) -> Result<bool> {
 }
 
 /// A link's key on K: a key actor with invite. Never a person.
-fn link_key(db: &Osis, m: Tid, e: &osis::Edge) -> Result<bool> {
+fn link_key(db: &Osis, m: Tid, e: &osis::Grant) -> Result<bool> {
     Ok(e.invite.is_some() && db.owner_of(m)?.is_none())
 }
 
 /// Who holds the chat, with the role they have: its direct holders and those holding it through an
 /// actor (`held_through`), link joiners so, at the lesser of the two roles. As this node knows them:
-/// a direct member learns a link joiner from its first post, and lists K until then if nobody else
+/// a direct participant learns a link joiner from its first post, and lists K until then if nobody else
 /// of K is known (`kick` of K ends everyone behind it).
-pub fn members(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
+pub fn participants(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
     let mut out = BTreeMap::new();
     let mut put = |m: Tid, r: Role| {
         let e = out.entry(m).or_insert(r);
         *e = r.max(*e);
     };
-    for (h, e) in db.roster(c)? {
+    for (h, e) in db.grants(c)? {
         if !held_through(db, h)? {
             put(h, e.role);
             continue;
         }
-        let behind = db.roster(h)?;
+        let behind = db.grants(h)?;
         if behind.is_empty() {
             put(h, e.role);
         }
@@ -250,14 +248,14 @@ pub fn members(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
 }
 
 /// The links that work on the chat, as this node knows them: each link's actor K and its role. Not
-/// members; `osis::Osis::links` has what its maker alone knows.
-pub fn member_links(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
+/// participants; `osis::Osis::links` has what its maker alone knows.
+pub fn links(db: &Osis, c: Tid) -> Result<BTreeMap<Tid, Role>> {
     let mut out = BTreeMap::new();
-    for (h, e) in db.roster(c)? {
+    for (h, e) in db.grants(c)? {
         if !held_through(db, h)? {
             continue;
         }
-        for (m, x) in db.roster(h)? {
+        for (m, x) in db.grants(h)? {
             if link_key(db, m, &x)? {
                 out.insert(h, e.role);
                 break;
@@ -404,7 +402,7 @@ fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> 
     Ok(Id { year, pos: HistoryPos { ts: done.ts, id: done.id } })
 }
 
-/// A write claiming to replace `original`, past `edit`'s checks: what a hostile member can do. Tests.
+/// A write claiming to replace `original`, past `edit`'s checks: what a hostile participant can do. Tests.
 #[doc(hidden)]
 pub fn write_raw_edit(db: &Osis, c: Tid, text: &str, original: Id) -> Id {
     write_raw_replaces(db, c, text, &Replaces { original, prior: vec![original] })
@@ -544,7 +542,7 @@ pub struct Message {
     pub sender: Tid,
     pub time: u64,
     /// Valid. `false` only for this person's own write, turned invalid (a stale writer's, a kicked
-    /// member's): others' invalid writes are not shown.
+    /// participant's): others' invalid writes are not shown.
     pub valid: bool,
     pub body: Body,
     /// The name and reply of the version shown.
@@ -661,7 +659,7 @@ impl Timeline {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Since {
     /// Each under the original's id, in its newest version: an edit of an older message comes as
-    /// that message again, a late post (a member was offline) as what it is. A deletion of an older
+    /// that message again, a late post (a participant was offline) as what it is. A deletion of an older
     /// message moves no cursor: `watch`.
     pub messages: Vec<Message>,
     /// Where to go on from: the entry that arrived last of those read (`None`: nothing read, the
@@ -806,7 +804,7 @@ pub fn delete(db: &Osis, c: Tid, m: &Message) -> Result<()> {
 
 /// Erases everything `actor` sent, within each write's purge rights; later writes stay, so kick too.
 /// One header actor: a person's devices share theirs, each of its thin clients has its own.
-pub fn purge_member(db: &Osis, c: Tid, actor: Tid) -> Result<()> {
+pub fn purge_participant(db: &Osis, c: Tid, actor: Tid) -> Result<()> {
     let mut w = db.write();
     for y in years(db, c)? {
         w.at(c, year_ak(y)?).purge_author(actor)?;
@@ -854,7 +852,7 @@ pub fn watch(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) ->
     Ok(subs)
 }
 
-/// Tells of this person's own writes on the chat turned invalid: a member who had not seen a
+/// Tells of this person's own writes on the chat turned invalid: a participant who had not seen a
 /// retention change or its own kick. Its message is the commit named: `resend` it.
 pub fn on_rejected(db: &Osis, c: Tid, mut f: impl FnMut(osis::CommitId) + Send + 'static) -> Result<Subscription> {
     db.on_diagnostic(move |_, d| {

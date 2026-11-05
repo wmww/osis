@@ -29,7 +29,7 @@ db.set_role(note, friend, None, SetRole::default()).await?;      // no access
 
 ## Decided
 Tess answered; the refactor is now in progress (Execution, below).
-1. **`grant` and `share`: not bundled.** A role says who may; `sync` says where the data goes. `share` goes; `grant` only grants, as before, and refuses to lower. Chat's one `share` is on an already synced chat and the app only grants, so real callers lose nothing; tests and the CLI call `sync` then `grant`. `grant`'s doc and `status` (`NoRoute`) must make a holder with no way to the data obvious. `make_link` keeps syncing its target, as a link can't work otherwise. Revisit if the app finds this awkward.
+1. **`grant` and `share`: not bundled.** A role says who may; `sync` says where the data goes. Done: `share` is gone. `make_link` keeps syncing its target, as a link can't work otherwise. Revisit if the app finds this awkward.
 2. **`Tid` stays**: a tid is a concept and is not called a thing ID. **`Ak` stays**: renaming it would sweep every crate for little gain.
 3. **Member**: a thing is a member of a group. `osis-chat`'s members become participants.
 4. **Layout**: top-level `libs/` holds `chat` and `kit`, and whatever else is useful to some but not all users of osis. `app/` and `cli/` stay where they are.
@@ -43,23 +43,7 @@ Design for the world after it:
 ## A. Remove: a second way to do the same thing
 Done but for what later steps own:
 - `Config::at` duplicates `memory`, `dir` and the struct: D1.
-- `ShareOpts.place_anyway` is `place` itself: B3.
-- `demote` following a link joiner into `revoke_joiner`: keep one route: B2.
 - `attach_client` is `attach_remotes` with one entry: D2.
-
-## B. Sharing: one verb per intent
-All of this speaks of granting a role (F, Vocabulary). Today: `grant`, `share`, `share_into`, `change_edge`, `demote(Lower)`, `leave`, `remove_edge_of`, `remove_device`, `remove_client`, `revoke_link`, `revoke_joiner`.
-1. **`grant(target, holder, role, GrantOpts)`** is the one call that adds, raises or changes `until` and `invite`, and nothing else (Decided 1). Removes `share` and `change_edge`. `grant` refuses lowering (done).
-2. **Demote and remove become separate functions.** `demote(.., Lower::{To, Remove}, Demotion)` is centered wrongly: the two cases differ in what is allowed (a joiner can only be removed) and what applies (`keep` only on removal).
-   - `set_role(target, holder, Option<Role>, SetRole { sync: SyncFirst, keep })`, async: makes the holder's role this one, raising, lowering or (`None`) removing (Tess). The usual call. Replaces `demote`, with no separate revoke. It keeps `until` and `invite` as they are (`invite` capped at the new role, as today); `grant` is what sets them. `keep` is the removal's word: `Invalid` with `Some`. A link joiner's role still can't be lowered, only removed (`Invalid`).
-   - `grant` stays beside it, the one justified overlap: it never waits and never takes anything away, for sync code and for callers that mean only that. Say so at its definition.
-   -    - `repudiate(target, holder)` as its own call: today's `Demotion.repudiate` is a rare recovery with its own rules ("a direct edge only", "only after a lockout").
-   - Decide whether removing a link joiner stays in `set_role(.., None, ..)` or is only `revoke_joiner`; one route.
-3. **`share_into`** stays as "add to a group and let its holders in", without `ShareOpts`: `share_into(member: Member, group, role)`. `place_anyway` goes: an app that wants it calls `Write::group(..).add`. It returns nothing unless an app needs `Share`; `reach` answers that.
-4. **`leave(target)` and `remove_edge_of(group, target)`** are both self-removals: one `leave(holder, target)`, with `me()` as the usual holder.
-5. **`remove_device` and `remove_client`**: both a removal of a holder of the account plus cleanup. Keep them, but give each the same `SetRole` options where it applies; `remove_client` is sync and takes none, and that difference should be justified or removed.
-6. **`Share::{Tied, Untied, Excluded}`, `Edge.tied`, `GroupReach`, `reach`, `holder_path`**: tie and path are internals. Keep a way to answer "who can get at this, through what, and will it go when the membership goes", in plain words: `via_group` on a grant, say. `holder_path` is used by chat, and the old api-review notes the missing reverse ("who holds through this"), so design one `holders(target)` answering both.
-7. **Links**: `LinkInfo.id` is documented as "the link's actor K"; make an opaque `LinkId`. `revoke_joiner` is named for link internals; `joiner` is fine, but see B2.
 
 ## D. Shape, re-decided
 Each is a fresh verdict by the tests in notes/api-design.md, including those that stay.
@@ -68,10 +52,10 @@ Change:
 1. **`Config` as one struct for every constructor** → required inputs become arguments. `hosts` is read only by `create`, `restore` and `pair`; `store` is ignored by every `attach*`; `remotes` by most. `Osis::create(Store, hosts, Config)`, `open(Store, Config)`, and so on; `Config` holds only what applies everywhere, with `Default`. `clock` and `seed` move to `internals`.
 2. **`attach`, `attach_client`, `attach_remotes`, `attach_node`** → `Osis::connect_socket(path, Config)` and `Osis::connect(&[NodeLogin], Config)`, plus `db.attach_node` and `detach_node` for a handle with a store. `is_attached` is misnamed: it is false on a handle with `attach_node` attachments (verified). Rename it `has_store`, inverted.
 3. **Expiry**: `expires_at`, `expires_in`, `expires(Option)` → `.expires(Expiry::{At, In})`. Not calling it means the key's default.
-4. **Group ops** → a `w.group(g)` builder like `w.at`: `.expires(e)`, `.add(Member)`, `.remove(Member)`. `Member::{Item, Subgroup}` replaces `place`, `place_expiring`, `unplace`, `add_subgroup`, `remove_subgroup` and `ShareOpts.subgroup`. `make_group` stays a question: can a group just exist on first member? It affects "is this a group", so check `require_synced` before deciding.
+4. **Group ops** → a `w.group(g)` builder like `w.at`: `.expires(e)`, `.add(Member)`, `.remove(Member)`. `Member::{Item, Subgroup}` (exists: `add_with_grant` takes it) replaces `place`, `place_expiring`, `unplace`, `add_subgroup`, `remove_subgroup` and `ShareOpts.subgroup`. `make_group` stays a question: can a group just exist on first member? It affects "is this a group", so check `require_synced` before deciding.
 5. **Sequence ops** → one `splice(range, items)`, generic over list items and `&str`, replaces `insert`, `delete` and text `splice`.
 6. **Purge**: `purge`, `purge_commit`, `purge_author` → `purge(Purge::{All, Change(id), Author(actor)})`. Same action, different targets. Note `All` also removes the aspect; keep that visible in its doc.
-7. **`Demotion`** → fields override each other (`backdate` beats `sync`), so merge them into an enum: `SyncFirst::{Required, Try(d), Skip, Backdate(t)}`.
+7. Done with sharing (`SyncFirst`).
 8. **`CommitQuery`**: builder and public fields are two ways, and `next` changes the contract ("needs a scope", "not with `after`", new failure). Plain struct with `Default`, like the other options. `next` becomes `undo_target(&scope)` and `redo_target(&scope)`; `Next` goes. `actor(a)` adds to `actors`: one spelling.
 9. **`Committed { id, ts, also }`** → `changes: Vec<ChangeId>` (first carries the record), `ts`. Today `id` and `also` differ in type for no gain.
 10. **`GroupPolicy`**: a whole-replacement struct with `publish_reach: Option<bool>`. `None` is a third state, so make it `Reach::{Auto, Always, Never}`. Getter and setter have unrelated names (`group_policy`, `sync_policy`): `sync_options` and `set_sync_options`. `receipts_only` → `SyncMode::{Full, HeadersOnly}`.
@@ -81,7 +65,7 @@ Change:
 14. **`SyncScope::Group(t)`** takes any thing → `SyncScope::{All, Thing(t)}`, matching `Scope`.
 15. **Waiting**: `wait_synced` takes a timeout, `redeem` and others use `Config.wait_timeout`, demotions use constant `PRESYNC_WAIT` or `Try(d)`. Every `async` call takes one explicit timeout, and the constant and config field go. Check the attach dial, which needs a value too.
 16. **`edit_text(tid, key, path)` and `keep_alive(tid, key, path, v)`** take positions differently from everything else → `at(t, k).path(p).edit_text()` and `.keep_alive(v)`.
-17. **Callback naming**: `watch_*` take a callback under another word. All callbacks are `on_*`: `on_thing_change`, `on_roster_change`, `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
+17. **Callback naming**: `watch_*` take a callback under another word. All callbacks are `on_*`: `on_thing_change`, `on_grants_change` (done), `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
 18. **`AspectKey`**: three implementations (`Aspect<T>`, `Ak`, `Key`) plus `db.key`. `Key` with no schema is `Ak`. One dynamic key: `db.key(name)` typed when a schema is registered, else untyped. `Ak` becomes a name only, if the examples stay readable. The trait's methods exist for generated code and the crate: seal it or hide them.
 19. **`LinkOpts`, `GrantOpts` and `SetRole`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
 20. **`now()`** on an attached handle that cannot reach its node falls back to this process's clock, unsaid. A time is no decision-maker's default, but it should say so or return `Result`.
@@ -111,7 +95,7 @@ Keep as they are:
 - **`Ts`** is a hybrid clock value, exposed in `Stamp`, `CommitInfo`, `Committed` and `CommitQuery.since` next to `WallMs`. One `Time` type for apps; ordering is opaque in `HistoryPos`.
 - **`CommitKind::{Role, Snapshot}`**, `HistoryBody::Dropped`, `CommitEntry.dropped`: "snapshot" is compaction. Keep what an app must see to explain history (notes/api.md Attribution), and rename it in plain words.
 - **Sync status**: `GroupSync.labels`, `not_admitted`, `Stranded`, `ReceiptsOnly`, `NoRoute`, `unrouted`, `Status.split`. Labels are needed to configure hosts, so call them what they are for hosts (`host_ids`?) and keep them with hosting.
-- **Other words to translate or hide**: `rotate_reach`, `publish_reach`, `rotate_client_key`, `backdate`, `repudiate`, `materialize_limit`, `tied`, "pre-sync", "co-reader", "K", "L".
+- **Other words to translate or hide**: `rotate_reach`, `publish_reach`, `rotate_client_key`, `materialize_limit`, "pre-sync", "co-reader", "K", "L".
 - **`Key::new(ak, schema)`** and `Schema` in the public API (`register_schema` takes a source now): see D18.
 - **`KeepAlive::writes`** doc-hidden on an app type: move to `internals`.
 
@@ -127,24 +111,20 @@ Keep as they are:
 | `DropReason` | `NotUndoableReason` | It is why a revert fails |
 | `knows` | `has_content` | What it answers: a thing created and not yet written is known here, and reads `false` |
 | `at.len()`, `path.len()` | `byte_len()` | It is canonical size in bytes, not element count |
-| `Lower` | gone (B2) | |
-| `Edge`, `EdgeOpts`, `change_edge` | `Grant`, `GrantOpts` | issues/grant-rename-multi-actor.md |
 | person, "person actor", `Person`, `PERSON` | account | Decided: issues/account-rename.md |
 | `sync_now` | `nudge_sync`? | It nudges; `wait_synced` is what syncs |
 | `make_link`, `redeem`, `import_contact` | keep | Clear |
 | `hosts()`, `hosting()`, `host_address()` | `hosts()` and `own_host_*` | The hosts this account uses vs the host this node runs |
 | `create_ownerless`, `owner_of`, `create(owner)` | `create(first_admin)` or `create()` | Owner removal; don't design twice |
 | `place*`, `unplace`, `placed.0~`, `PlacementNotPersisted`, `place_plan` | `add`, `remove`, membership words | Decided 3 |
-| `demote`, `Demotion` | `set_role`, `SyncFirst` | B2 |
-| `roster`, `Roster`, `watch_roster` | `grants(target)` | The word for a list of grants |
 
 ### Vocabulary
 - **Account**, not person or user: an account may be a team, a bot or a shared identity. `me()` keeps its name.
 - **Roles**: one sentence for all of it: an actor is *granted a role* on a thing, and is then a *holder* of that role. A role can be set, or removed. Clean out older words wherever API, CLI, spec and notes use them:
-  - *edge* for a grant (70 lines in `core/osis/src`, 131 in `spec/`), including "tied edge", `EdgeKey` and the CLI's `edge`.
+  - *edge* for a grant (comments in `core/osis/src`, 131 lines in `spec/`), including "tied edge" and `EdgeKey`. The API and CLI say grant.
   - *rights* where a role is meant, *demotion* and *revocation* for setting or removing a role (55 and more lines). `Error::Permission` may stay as the general word, or become `NeedsRole`.
   - *entitlement* and *tenure*: internal, keep them out of anything public; the spec may keep what it must define.
-  - *share*: only for a composite that also gives access (`share_into`), or dropped with it. `Share::{Tied, Untied, Excluded}` follows B6.
+  - *share*: dropped from the API but for `ShareLink`, which step 6 may rename.
 - **Membership**: being in a group grants nothing (spec/permissions.md §1 already says so) and a thing can be in many groups. The docs must keep "a group's members" (what it contains) clearly apart from "a group's holders" (who has a role on it), since people will confuse them. Sync's other "placed" (a commit held at a host, spec/sync.md §5) becomes "uploaded" or "at a host".
 
 ## G. From building osis-chat (old api-review, not re-checked)
@@ -158,13 +138,16 @@ Keep as they are:
 - Crate docs after the refactor: rewrite `lib.rs` sections to the Public docs rules in notes/api-design.md, since most examples change anyway. "Footguns closed" is the first to go or become plain advice. Module-level jargon in the first lines of each section ("placement is a group op") likewise.
 - Rendered docs still cite `spec/` as plain text (about 90 lines, 38 in `share.rs`). Keep those that help a reader, drop the rest. To make them links, a doc-only module could embed the spec with `#[doc = include_str!(..)]`; not tried. Links between spec files would need rewriting, and `tools/gate.sh` runs its full gate on spec edits once Rust reads `spec/`, unless that file joins its docs step.
 
+### Follow-ups from Sharing
+- `remove_device` stays as `set_role(me, node, None, ..)` for what it returns (working links). If apps find it no help, drop it: two lines at the caller.
+- `Holder` has no `invite` or tie: `grants` one level down covers them. Chat still walks `grants` for participants and tells a person from a team by `owner_of`; owner removal must give it another test (the same in the app's `reach`).
+
 ## Related issues, resolve within this work
 - issues/api-leaving-give-up.md (a give-up call belongs with `leave`), issues/account-rename.md, issues/grant-rename-multi-actor.md (public `act_as(actor) -> Osis` could replace `Write::act_as`).
 - issues/api-deferred.md stays for what isn't built, but its shapes should follow this design.
 
 ## Execution
 One branch per step, in order; each merges before the next starts.
-- **3. Sharing**: B.
 - **4. Shapes**: D.
 - **5. Leaks**: E, once `internals` has what tests need.
 - **6. Names and docs**: F, the Vocabulary, and H's doc rewrite.

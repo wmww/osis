@@ -89,8 +89,8 @@ pub struct Write<'d> {
     /// A thing that must still be known (`Osis::knows`) when the batch commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
-    /// `Osis::share_into`: an edge follows, or the caller asked to place without one; no report
-    /// that holders may not read what this places.
+    /// `Osis::add_with_grant`: a grant follows; no report that holders may not read what this
+    /// places.
     pub(crate) sharing: bool,
 }
 
@@ -244,7 +244,7 @@ impl<'d> Write<'d> {
     /// subgroup too. A placement only in groups that do not sync at all (device-local data) is
     /// allowed and reported by a `NotSynced` diagnostic, as is a placement in a synced group
     /// whose holders may not read `tid` (owned by someone else, with no edge: it does not reach
-    /// them; own it by the group, or `Osis::share_into`).
+    /// them; own it by the group, or `Osis::add_with_grant`).
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
         self.place_expiring(tid, g, None)
     }
@@ -255,7 +255,7 @@ impl<'d> Write<'d> {
     pub fn place_expiring(&mut self, tid: Tid, g: Tid, expires: Option<Duration>) -> Result<()> {
         self.group(g, true, tid, true, expires)
     }
-    /// Removes `tid` from the items of `g`. A tied edge of `g` on `tid` (`Osis::share_into`)
+    /// Removes `tid` from the items of `g`. A grant of `g` on `tid` made with the membership (`Osis::add_with_grant`)
     /// goes in a commit right after when this node may remove it as a self-removal (admin on `g`
     /// only); otherwise a node that may remove it does so later (spec/permissions.md §2).
     pub fn unplace(&mut self, tid: Tid, g: Tid) -> Result<()> {
@@ -650,7 +650,7 @@ fn not_synced(e: &mut osis_node::Engine, placed: &[(Tid, Tid)], sharing: bool) {
             if sharing {
                 continue;
             }
-            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "placed in a group whose holders may not read it: it does not reach them (own it by the group, or share_into)".into() });
+            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "placed in a group whose holders may not read it: it does not reach them (own it by the group, or add_with_grant)".into() });
         } else if !(labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g))) {
             e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "placed only in groups no synced group holds: it stays on this device".into() });
         }

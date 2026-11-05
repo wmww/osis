@@ -35,7 +35,7 @@ fn newest_text(db: &Osis, c: osis::Tid) -> Option<Body> {
     Timeline::new(db, c).unwrap().older(db, 1).unwrap().messages.pop().map(|m| m.body)
 }
 
-// notes/client-port.md §3: an app on a member's node as a thin client: reads pages and a watch through the port; with write of its own it posts under its own actor; a reader may not; its own edit works
+// notes/client-port.md §3: an app on a participant's node as a thin client: reads pages and a watch through the port; with write of its own it posts under its own actor; a reader may not; its own edit works
 #[test]
 fn thin_client_reads_watches_posts_spec_client_port() {
     let net = osis_transport::Net::new(5);
@@ -66,7 +66,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     let got = rx.recv_timeout(W).unwrap();
     assert!(matches!(&got, Event::Entry(e) if e.id == second), "{got:?}");
     assert!(post(&app, c, "a reader").is_err());
-    n.change_edge(c, actor, Role::Write, Default::default()).unwrap();
+    n.grant(c, actor, Role::Write, Default::default()).unwrap();
     let end = Instant::now() + W;
     let mine = loop {
         match post(&app, c, "from the app") {
@@ -79,7 +79,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     assert_eq!(m.sender, actor, "a client is its own sender");
     edit(&app, c, &find(&app, c, &mine).unwrap().unwrap(), "fixed").unwrap();
     assert_eq!(newest_text(&n, c), Some(Body::Text("fixed".into())));
-    // the node gone: a member list says so, and `leave` acts on no empty answer
+    // the node gone: a participant list says so, and `leave` acts on no empty answer
     net.partition("app", "n");
     net.disconnect("app", "n");
     let end = Instant::now() + W;
@@ -87,7 +87,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(matches!(members(&app, c), Err(osis::Error::Network(_))));
+    assert!(matches!(participants(&app, c), Err(osis::Error::Network(_))));
     assert!(matches!(leave(&app, c), Err(osis::Error::Network(_))));
-    assert!(n.roster(c).unwrap().contains_key(&actor));
+    assert!(n.grants(c).unwrap().contains_key(&actor));
 }

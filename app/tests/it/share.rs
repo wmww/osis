@@ -2,7 +2,7 @@
 //! nests only: sharing through a tag waits on issues/tag-sharing-op.md), undo across people.
 use osis::internals::Internals as _;
 use osis::core::NAME;
-use osis::{Config, EdgeOpts, ManualClock, MemStore, Osis, Role, StoreAt, WallMs};
+use osis::{Config, GrantOpts, ManualClock, MemStore, Osis, Role, StoreAt, WallMs};
 use osis_app::data::{Data, NewKind};
 use std::sync::Arc;
 
@@ -43,7 +43,7 @@ fn two_people() -> (Data, Data) {
 /// A tag Alice made in the app and shared with Bob (`role`).
 fn shared_tag(a: &Data, b: &Data, role: Role) -> osis::Tid {
     let tag = a.create(NewKind::Tag).unwrap();
-    a.db.grant(tag, b.db.me(), role, EdgeOpts::default()).unwrap();
+    a.db.grant(tag, b.db.me(), role, GrantOpts::default()).unwrap();
     tag
 }
 
@@ -73,12 +73,12 @@ fn reach_through_someone_elses_tag() {
     sync(&a, &b);
     let nb = b.create(NewKind::Note).unwrap();
     b.add_tag(nb, tag).unwrap();
-    b.db.grant(nb, tag, Role::Write, EdgeOpts::default()).unwrap();
+    b.db.grant(nb, tag, Role::Write, GrantOpts::default()).unwrap();
     let r = b.reach(nb).unwrap();
     assert_eq!((r.people.len(), r.via.clone()), (1, vec![tag]), "{r:?}");
     assert_ne!(r.who(), "Only you");
     let na = a.create(NewKind::Note).unwrap();
-    a.db.grant(na, b.db.me(), Role::Read, EdgeOpts::default()).unwrap();
+    a.db.grant(na, b.db.me(), Role::Read, GrantOpts::default()).unwrap();
     sync(&a, &b);
     assert_eq!(b.reach(na).unwrap().people.len(), 1, "Alice owns it");
 }
@@ -89,7 +89,7 @@ fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
     let tag = a.create(NewKind::Tag).unwrap();
     let until = WallMs(a.db.now().0 + 86_400_000);
-    a.db.grant(tag, b.db.me(), Role::Read, EdgeOpts { until: Some(until), invite: None }).unwrap();
+    a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), invite: None }).unwrap();
     assert_eq!(a.reach(tag).unwrap().people.len(), 1);
 }
 
@@ -103,7 +103,7 @@ fn undo_is_mine_and_keeps_the_thing() {
     assert!(!a.undo(n).unwrap(), "nothing to undo on a new thing");
     assert!(a.things().unwrap().contains(&n));
     a.add_tag(n, tag).unwrap();
-    a.db.grant(n, tag, Role::Write, EdgeOpts::default()).unwrap();
+    a.db.grant(n, tag, Role::Write, GrantOpts::default()).unwrap();
     let mut w = a.db.write();
     w.at(n, NAME).set(&"mine".to_string()).unwrap();
     w.commit().unwrap();
@@ -137,7 +137,7 @@ fn edited_time() {
     let made = a.changed(n).unwrap().unwrap();
     let tag = shared_tag(&a, &b, Role::Read);
     a.add_tag(n, tag).unwrap();
-    a.db.grant(n, tag, Role::Read, EdgeOpts::default()).unwrap();
+    a.db.grant(n, tag, Role::Read, GrantOpts::default()).unwrap();
     assert_eq!(a.changed(n).unwrap(), Some(made), "a placement or an edge is not an edit");
     assert!(a.changed(n).unwrap().unwrap() <= a.db.now().0);
 }

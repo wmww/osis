@@ -290,7 +290,7 @@ fn chat_channel_localhost() {
     let mine = osis(&b, &["chat", "post", &c, "--from", "bob", "from bob"]);
     // the people who joined, by their link; not the link's actor
     let whom = field(&osis(&b, &["--json", "whoami"]), "me").to_string();
-    let m = osis(&a, &["chat", "members", &c]);
+    let m = osis(&a, &["chat", "participants", &c]);
     assert!(m.lines().any(|l| l.starts_with(&format!("{whom} Write via "))) && m.lines().any(|l| l.starts_with("link ")), "{m}");
     let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !osis(&a, &["chat", "read", &c]).contains("from bob") {
@@ -495,12 +495,12 @@ fn daemon_clients_localhost() {
             osis(&b, &["sync"]);
             let bob_me = field(&osis(&b, &["--json", "whoami"]), "me").to_string();
             let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            while run(&s, &["via", &sg, &bob_me]).0 != 0 {
+            while !osis(&s, &["holders", &sg]).contains(&bob_me) {
                 assert!(std::time::Instant::now() < end, "the join did not reach the daemon");
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            osis(&s, &["demote", &sg, &bob_me, "remove"]);
-            assert_ne!(run(&s, &["via", &sg, &bob_me]).0, 0);
+            osis(&s, &["set-role", &sg, &bob_me, "none"]);
+            assert!(!osis(&s, &["holders", &sg]).contains(&bob_me));
             osis(&s, &["link", "make", &sg, "read"]);
             let ls = osis(&s, &["link", "ls", &sg]);
             let id = ls.split_whitespace().next().unwrap_or_else(|| panic!("{ls}")).to_string();

@@ -296,7 +296,7 @@ fn groups_plan_cli_4() {
     assert!(s.ok(&["members", "me"]).out.lines().any(|l| l == format!("subgroup\t{g}")));
     s.ok(&["sub", "rm", "me", &g]);
     assert_eq!(s.ok(&["role", &t]).line(), "admin");
-    s.ok(&["roster", "me"]);
+    s.ok(&["grants", "me"]);
     s.ok(&["delete", &t]);
     assert!(s.ok(&["show", &t]).out.contains("state\tempty"), "a deleted thing has no content");
 }
@@ -391,7 +391,7 @@ fn watch_initial_not_counted_plan_cli_4() {
     // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`), none counted
     assert_eq!(o.out.lines().count(), 2, "{}", o.out);
     assert!(o.out.lines().all(|l| l.contains("\"source\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
-    let o = s.call(&["--timeout", "50ms", "roster", "me", "--watch", "--count", "1"], "");
+    let o = s.call(&["--timeout", "50ms", "grants", "me", "--watch", "--count", "1"], "");
     assert_eq!((o.code, o.out.lines().count(), o.err.trim()), (6, 1, "error: timed out after 0 change(s)"), "{}", o.out);
 }
 
@@ -541,7 +541,7 @@ fn chat_commands_plan_cli() {
     assert!(s.ok(&["chat", "read", &c]).out.contains(&format!("<deleted by {me}>")));
     assert!(s.ok(&["--json", "chat", "read", &c]).out.contains(&format!("\"deleted_by\":\"{me}\"")));
     assert_ne!(s.code(&["chat", "resend", &c, &two]), 0, "delivered: nothing to send again");
-    assert!(s.ok(&["chat", "members", &c]).out.contains("Admin"));
+    assert!(s.ok(&["chat", "participants", &c]).out.contains("Admin"));
     assert_ne!(s.code(&["chat", "create", "--purge", "x"]), 0);
     assert_ne!(s.code(&["chat", "edit", &c, "not/an/id", "x"]), 0);
 }
@@ -627,7 +627,7 @@ fn hosting_commands_plan_cli_4() {
 
 // notes/cli.md Deviations `-v`: a command that syncs prints the node's diagnostics on stderr
 // (as `diag --follow`); without `-v`, or on a local command, none. The diagnostic: a thing
-// placed only in groups no synced group holds (`NotSynced`), by `share-into` (it syncs) and by
+// placed only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs) and by
 // `place` (local).
 #[test]
 fn verbose_prints_diagnostics_plan_cli_4() {
@@ -636,13 +636,13 @@ fn verbose_prints_diagnostics_plan_cli_4() {
     let (g, g2, g3, g4, g5) = (group(), group(), group(), group(), group());
     let t = s.ok(&["create", "--owner", "me", "--in", &g, "t:x.0", "1"]).line().to_string();
     let line = format!("NotSynced {t} placed only in groups no synced group holds: it stays on this device");
-    let o = s.ok(&["-v", "share-into", &t, &g2, "read"]);
+    let o = s.ok(&["-v", "add-with-grant", &t, &g2, "read"]);
     assert_eq!(o.err.lines().filter(|l| *l == line).count(), 1, "{}", o.err);
-    let o = s.ok(&["share-into", &t, &g3, "read"]);
+    let o = s.ok(&["add-with-grant", &t, &g3, "read"]);
     assert_eq!(o.err, "");
     let o = s.ok(&["-v", "place", &t, &g4]);
     assert_eq!(o.err, "", "a local command");
-    let o = s.ok(&["-v", "--json", "share-into", &t, &g5, "read"]);
+    let o = s.ok(&["-v", "--json", "add-with-grant", &t, &g5, "read"]);
     assert!(o.err.contains("\"kind\":\"NotSynced\""), "{}", o.err);
 }
 
@@ -710,7 +710,7 @@ fn ownerless_plan_cli() {
     let t = s.ok(&["ownerless", "me"]).line().to_string();
     assert_eq!(s.ok(&["role", &t]).line(), "admin");
     assert!(s.ok(&["show", &t]).out.contains("owner\tnone"));
-    assert!(s.ok(&["roster", &t]).out.contains("admin"));
+    assert!(s.ok(&["grants", &t]).out.contains("admin"));
     s.ok(&["set", &t, "name.0", "\"chat\""]);
     assert_ne!(s.code(&["ownerless", &t[..t.len() - 1]]), 0);
 }

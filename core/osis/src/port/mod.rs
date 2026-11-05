@@ -26,8 +26,8 @@ pub(crate) mod method {
     pub const HOLDS: u64 = 69;
     /// `[tid]` -> groups
     pub const GROUPS_OF: u64 = 4;
-    /// `[tid]` -> roster
-    pub const ROSTER: u64 = 5;
+    /// `[tid]` -> grants
+    pub const GRANTS: u64 = 5;
     /// `[tid]` -> Opt(role)
     pub const ROLE_ON: u64 = 6;
     /// `[tid]` -> Opt(tid)
@@ -66,21 +66,16 @@ pub(crate) mod method {
     pub const SYNC: u64 = 23;
     /// `[group]` -> `[]`
     pub const UNSYNC: u64 = 24;
-    /// `[target, holder, role, edge opts]` -> `[]`
+    /// `[target, holder, role, grant opts]` -> `[]`
     pub const GRANT: u64 = 25;
-    pub const CHANGE_EDGE: u64 = 26;
-    /// `[tid, group, role, subgroup, place_anyway]` -> share
-    pub const SHARE_INTO: u64 = 27;
-    /// `[group, target]` -> `[]`
-    pub const REMOVE_EDGE_OF: u64 = 28;
-    /// `[target]` -> `[]`
+    /// `[member, group, role]` -> `[]`
+    pub const ADD_WITH_GRANT: u64 = 27;
+    /// `[holder, target]` -> `[]`
     pub const LEAVE: u64 = 29;
     /// `[target, role, Opt(until), single_use, direct]` -> link text
     pub const MAKE_LINK: u64 = 30;
-    /// `[tid]` -> `[[group, placed, share]*]`
-    pub const REACH: u64 = 31;
-    /// `[target, actor]` -> `[[thing, holder]*]`
-    pub const HOLDER_PATH: u64 = 32;
+    /// `[target]` -> `[[actor, role, Opt(until), [actor*]]*]`
+    pub const HOLDERS: u64 = 32;
     /// `[]` -> `[[id, target, role, Opt(until), single_use]*]`
     pub const LINKS: u64 = 33;
     /// `[Opt(until)]` -> `[actor, secret]` (`Osis::add_client`)
@@ -99,9 +94,6 @@ pub(crate) mod method {
     pub const DROP_KEPT: u64 = 40;
     /// `[tid, ak, from, limit, max bytes]` -> `[[entry*], more, complete]`
     pub const HISTORY: u64 = 41;
-    /// `[target, holder, role, edge opts]` -> `[]` (`Osis::share`: `sync` when the holder has
-    /// no route, then `grant`)
-    pub const SHARE: u64 = 42;
     /// `[admin]` -> tid (`Osis::create_ownerless`)
     pub const CREATE_OWNERLESS: u64 = 43;
     /// `[]` -> `[[node, role]*]`
@@ -147,12 +139,12 @@ pub(crate) mod method {
     pub const WAIT_SYNCED: u64 = 62;
     /// `[link text]` -> tid
     pub const REDEEM: u64 = 63;
-    /// `[target, holder, Opt(role), demotion]` -> `[]` (no role: removed)
-    pub const DEMOTE: u64 = 64;
-    /// `[link id, demotion]` -> `[]`
+    /// `[target, holder, Opt(role), set role]` -> `[]` (no role: removed)
+    pub const SET_ROLE: u64 = 64;
+    /// `[link id, sync first]` -> `[]`
     pub const REVOKE_LINK: u64 = 65;
-    /// `[link id, joiner, demotion]` -> `[]`
-    pub const REVOKE_JOINER: u64 = 66;
+    /// `[target, holder, Opt(role), set role]` -> `[]`
+    pub const REPUDIATE: u64 = 66;
     /// `[card text]` -> person
     pub const IMPORT_CONTACT: u64 = 67;
 
@@ -160,19 +152,19 @@ pub(crate) mod method {
     /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this
     /// node's authority and take no actor (they would be a confused deputy).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | HOLDS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
+        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | HOLDS | GROUPS_OF | GRANTS | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
     }
 }
 
 /// Subscription filters (`Sub.filter`): `[0, tid, ak]` aspect, `[1, tid]` thing, `[2, tid]`
-/// roster, `[3]` status, `[4]` diagnostics, `[5, method, [arg*]]` a row that waits, run at the node
+/// grants, `[3]` status, `[4]` diagnostics, `[5, method, [arg*]]` a row that waits, run at the node
 /// without holding its worker: the Reply and at most one Notify carry `Opt(outcome)`, the outcome
 /// once known; an Unsub or the connection's end cancels it, as dropping the future does locally;
 /// `[6, tid, ak]` an aspect's history: each Notify `[change, Opt(entry)]`, the entry read when sent.
 pub(crate) mod filter {
     pub const ASPECT: u64 = 0;
     pub const THING: u64 = 1;
-    pub const ROSTER: u64 = 2;
+    pub const GRANTS: u64 = 2;
     pub const STATUS: u64 = 3;
     pub const DIAGNOSTICS: u64 = 4;
     pub const TASK: u64 = 5;

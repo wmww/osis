@@ -489,7 +489,7 @@ fn roles_persist_first_spec_data_model_1() {
     let e = alice.batch(|w| w.create(g)).unwrap();
     alice.grant(e, bob.me(), Role::Write, Default::default()).unwrap();
     assert!(alice.created(e).unwrap().unwrap().commit.is_some(), "persisted first");
-    assert!(alice.roster(e).unwrap().contains_key(&bob.me()));
+    assert!(alice.grants(e).unwrap().contains_key(&bob.me()));
     let (db, _c) = setup(20);
     let (d, e) = db
         .batch(|w| {

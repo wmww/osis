@@ -155,7 +155,7 @@ impl Port {
 /// What a subscription callback leaves for the worker (shared with the dispatcher).
 #[derive(Default)]
 struct Pending {
-    /// The roster or status changed since the last Notify.
+    /// The grants or status changed since the last Notify.
     dirty: bool,
     /// Aspect or thing subscription: aspects changed, with their newest source.
     aks: BTreeMap<Ak, crate::watch::Source>,
@@ -200,7 +200,7 @@ type Task = std::pin::Pin<Box<dyn Future<Output = Result<Value>>>>;
 enum Kind {
     Aspect(Tid, Ak),
     Thing(Tid),
-    Roster(Tid),
+    Grants(Tid),
     History(Tid, Ak),
     Status,
     Diagnostics,
@@ -212,7 +212,7 @@ impl Kind {
     /// The thing it watches.
     fn thing(&self) -> Option<Tid> {
         match self {
-            Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Roster(t) | Kind::History(t, _) => Some(*t),
+            Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Grants(t) | Kind::History(t, _) => Some(*t),
             _ => None,
         }
     }
@@ -314,22 +314,21 @@ fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
             a.end()?;
             Box::pin(async move { Ok(Value::Tid(db.redeem(&link).await?)) })
         }
-        method::DEMOTE => {
+        method::SET_ROLE | method::REPUDIATE => {
             let (target, holder) = (a.tid()?, a.tid()?);
-            let to = a.opt()?.map_or(Ok(crate::Lower::Remove), |r| c::role(&r).map(crate::Lower::To))?;
-            let d = c::demotion(a.next()?)?;
+            let role = a.opt()?.map(|r| c::role(&r)).transpose()?;
+            let o = c::set_role(a.next()?)?;
             a.end()?;
-            Box::pin(async move { db.demote(target, holder, to, d).await.map(|()| nothing()) })
+            if m == method::SET_ROLE {
+                Box::pin(async move { db.set_role(target, holder, role, o).await.map(|()| nothing()) })
+            } else {
+                Box::pin(async move { db.repudiate(target, holder, role, o).await.map(|()| nothing()) })
+            }
         }
         method::REVOKE_LINK => {
-            let (id, d) = (a.tid()?, c::demotion(a.next()?)?);
+            let (id, sync) = (crate::share::LinkId(a.tid()?), c::sync_first(a.next()?)?);
             a.end()?;
-            Box::pin(async move { db.revoke_link(id, d).await.map(|()| nothing()) })
-        }
-        method::REVOKE_JOINER => {
-            let (id, joiner, d) = (a.tid()?, a.tid()?, c::demotion(a.next()?)?);
-            a.end()?;
-            Box::pin(async move { db.revoke_joiner(id, joiner, d).await.map(|()| nothing()) })
+            Box::pin(async move { db.revoke_link(id, sync).await.map(|()| nothing()) })
         }
         method::IMPORT_CONTACT => {
             let card: crate::ContactCard = a.text()?.parse()?;
@@ -561,7 +560,7 @@ impl Worker {
             method::KNOWS => b(db.knows(a.tid()?)?),
             method::HOLDS => b(db.holds(a.tid()?)),
             method::GROUPS_OF => c::groups_v(&db.groups_of(a.tid()?)?),
-            method::ROSTER => c::roster_v(&db.roster(a.tid()?)?),
+            method::GRANTS => c::grants_v(&db.grants(a.tid()?)?),
             method::ROLE_ON => c::opt(db.role_on(a.tid()?)?, c::role_v),
             method::OWNER_OF => c::opt(db.owner_of(a.tid()?)?, Value::Tid),
             method::CREATED => c::opt(db.created(a.tid()?)?, |s| c::stamp_v(&s)),
@@ -651,22 +650,12 @@ impl Worker {
                 db.unsync(a.tid()?)?;
                 Value::List(vec![])
             }
-            method::GRANT | method::CHANGE_EDGE | method::SHARE => {
-                let (t, h, r, o) = (a.tid()?, a.tid()?, c::role(&a.next()?)?, c::edge_opts(a.next()?)?);
-                match m {
-                    method::GRANT => db.grant(t, h, r, o)?,
-                    method::SHARE => db.share(t, h, r, o)?,
-                    _ => db.change_edge(t, h, r, o)?,
-                }
+            method::GRANT => {
+                db.grant(a.tid()?, a.tid()?, c::role(&a.next()?)?, c::grant_opts(a.next()?)?)?;
                 Value::List(vec![])
             }
-            method::SHARE_INTO => {
-                let (t, g, r) = (a.tid()?, a.tid()?, c::role(&a.next()?)?);
-                let o = crate::ShareOpts { subgroup: a.bool()?, place_anyway: a.bool()? };
-                c::share_v(db.share_into(t, g, r, o)?)
-            }
-            method::REMOVE_EDGE_OF => {
-                db.remove_edge_of(a.tid()?, a.tid()?)?;
+            method::ADD_WITH_GRANT => {
+                db.add_with_grant(c::member(a.next()?)?, a.tid()?, c::role(&a.next()?)?)?;
                 Value::List(vec![])
             }
             method::CREATE_OWNERLESS => Value::Tid(db.create_ownerless(a.tid()?)?),
@@ -736,11 +725,10 @@ impl Worker {
                 nothing()
             }
             method::LEAVE => {
-                db.leave(a.tid()?)?;
+                db.leave(a.tid()?, a.tid()?)?;
                 Value::List(vec![])
             }
-            method::REACH => c::reach_v(&db.reach(a.tid()?)?),
-            method::HOLDER_PATH => c::pairs_v(&db.holder_path(a.tid()?, a.tid()?)?),
+            method::HOLDERS => c::holders_v(&db.holders(a.tid()?)?),
             method::LINKS => c::links_v(&db.links()?),
             method::MAKE_LINK => {
                 let (t, r) = (a.tid()?, c::role(&a.next()?)?);
@@ -791,9 +779,9 @@ impl Worker {
                 let t = thing(a.tid()?)?;
                 (Kind::Thing(t), Filter::Thing(t))
             }
-            filter::ROSTER => {
+            filter::GRANTS => {
                 let t = thing(a.tid()?)?;
-                (Kind::Roster(t), Filter::Roster(t))
+                (Kind::Grants(t), Filter::Grants(t))
             }
             filter::HISTORY => {
                 let (t, ak) = (thing(a.tid()?)?, a.ak()?);
@@ -831,7 +819,7 @@ impl Worker {
                 // a fired signal carries a fifth item: delivered even when equal to the last
                 Delivery::Fired { tid, ak, source, value } => queue(&mut lock(&p), Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::source_v(&source), Value::Bool(true)])),
                 Delivery::History { id, .. } => lock(&p).note_history(id, &held2),
-                Delivery::Roster | Delivery::Status(_) => lock(&p).dirty = true,
+                Delivery::Grants | Delivery::Status(_) => lock(&p).dirty = true,
                 // this node's own source for it moved: the client's subscription ends
                 Delivery::Moved => lock(&p).lapsed = true,
                 Delivery::Diagnostic(x) => queue(&mut lock(&p), c::diag_v(&x)),
@@ -844,7 +832,7 @@ impl Worker {
             match &kind {
                 Kind::Aspect(t, ak) => initial = Ok(c::read_v(&r.value(*t, ak))),
                 Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect())),
-                Kind::Roster(t) => initial = Ok(c::roster_v(&r.roster(*t))),
+                Kind::Grants(t) => initial = Ok(c::grants_v(&r.grants(*t))),
                 _ => {}
             }
             cb
@@ -985,7 +973,7 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
                 out.push((Value::List(vec![c::change_v(id), c::opt(e.as_ref(), c::hist_entry_v)]), None));
             }
         }
-        Kind::Roster(t) if g.dirty => out.push((c::roster_v(&db.read_local(|r| r.roster(*t))), None)),
+        Kind::Grants(t) if g.dirty => out.push((c::grants_v(&db.read_local(|r| r.grants(*t))), None)),
         Kind::Status if g.dirty => {
             if let Ok(st) = db.status() {
                 out.push((c::status_v(&st), None));

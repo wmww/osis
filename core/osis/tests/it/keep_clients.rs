@@ -4,7 +4,7 @@
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::{ak, block_on};
-use osis::{ClientSecret, CommitQuery, Config, Demotion, EdgeOpts, Error, HostAddr, Lower, MemStore, Osis, Role, Runtime, Scope, StoreAt, SyncScope, Tid, Transport, Value, WaitForSync};
+use osis::{SetRole, SyncFirst, ClientSecret, CommitQuery, Config, GrantOpts, Error, HostAddr, MemStore, Osis, Role, Runtime, Scope, StoreAt, SyncScope, Tid, Transport, Value};
 use std::time::{Duration, Instant};
 
 const W: Duration = Duration::from_secs(20);
@@ -58,7 +58,7 @@ struct Chat {
     m: Tid,
 }
 
-fn chat(edge: EdgeOpts, role: Role) -> Chat {
+fn chat(edge: GrantOpts, role: Role) -> Chat {
     let net = osis_transport::Net::new(5);
     let host = Osis::create(on(&net, "s", &MemStore::new(), vec![])).unwrap().0;
     host.set_hosting(Some(osis::Hosting { listen: vec!["mem://s".into()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
@@ -144,8 +144,8 @@ impl Chat {
 
     /// Alice kicks `who`, the removal saying `keep` if it says, and Bob's node hears.
     fn kick(&self, who: Tid, keep: Option<bool>) {
-        let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep };
-        block_on(self.a.demote(self.g, who, Lower::Remove, d)).unwrap();
+        let d = SetRole { sync: SyncFirst::Skip, keep };
+        block_on(self.a.set_role(self.g, who, None, d)).unwrap();
         let nudge = Nudge::default();
         until("Bob's node hears", || {
             nudge.at(&self.b);
@@ -202,7 +202,7 @@ fn refused(c: &Osis, t: Tid) -> bool {
 #[test]
 fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
     for keep in [true, false] {
-        let x = chat(EdgeOpts::default(), Role::Write);
+        let x = chat(GrantOpts::default(), Role::Write);
         let (_, secret, app) = x.app(Role::Write);
         let (_, other) = x.stranger();
         assert_eq!(app.at(x.m, text()).get().unwrap(), Some(s("hello")));
@@ -310,7 +310,7 @@ fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
     if let Some(k) = keep {
         a.set_keep_default(g, k).unwrap();
     }
-    a.grant(g, bob, Role::Write, EdgeOpts { invite: Some(Role::Read), ..Default::default() }).unwrap();
+    a.grant(g, bob, Role::Write, GrantOpts { invite: Some(Role::Read), ..Default::default() }).unwrap();
     w.run();
     assert_eq!(b.at(m, text()).get().unwrap(), Some(s("hello")));
     (a, b, bob, g, m)
@@ -327,8 +327,8 @@ fn sim_group(a: &Osis) -> Tid {
 }
 
 fn sim_kick(w: &mut World, a: &Osis, g: Tid, who: Tid, keep: Option<bool>) {
-    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep };
-    w.until(a.demote(g, who, Lower::Remove, d), 1000, 10).unwrap();
+    let d = SetRole { sync: SyncFirst::Skip, keep };
+    w.until(a.set_role(g, who, None, d), 1000, 10).unwrap();
     w.run();
 }
 
@@ -353,7 +353,7 @@ fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
         a.set_keep_default(g, k).unwrap();
     }
     let (hour, t0) = (3_600_000, w.now());
-    a.grant(g, bob, Role::Write, EdgeOpts { until: Some(osis::WallMs(t0 + hour)), ..Default::default() }).unwrap();
+    a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::WallMs(t0 + hour)), ..Default::default() }).unwrap();
     w.run();
     assert_eq!(b.at(m, text()).get().unwrap(), Some(s("hello")));
     (w, a, b, bob, g, m, t0, hour)
@@ -390,7 +390,7 @@ fn an_until_passing_offline_loses_nothing_spec_permissions_2() {
         let own = n;
         x.commit().unwrap();
         w.advance(1000);
-        a.grant(g, bob, Role::Write, EdgeOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
+        a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
         w.run();
         w.advance(2 * hour);
         w.run();
@@ -462,7 +462,7 @@ fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_2() {
     w.advance(2 * hour);
     w.run();
     assert_eq!(b.at(m, text()).get().unwrap(), None, "erased: the default says so, and it heard no more");
-    a.grant(g, bob, Role::Read, EdgeOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
+    a.grant(g, bob, Role::Read, GrantOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
     a.commit_set(m, text(), &s("during")).unwrap();
     w.run();
     let mut hours = 2;
@@ -495,12 +495,12 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     let side = t;
     x.commit().unwrap();
     b.grant(side, elsewhere, Role::Admin, Default::default()).unwrap();
-    let skip = || Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    let skip = || SetRole { sync: SyncFirst::Skip, keep: None };
     w.run();
     for c in [reader, leaves_after, left_before] {
         assert_eq!(b.acting_as(c).at(m, text()).get().unwrap(), Some(s("hello")));
     }
-    w.until(b.demote(bob, left_before, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(b.set_role(bob, left_before, None, skip()), 1000, 10).unwrap();
     w.run();
     sim_kick(&mut w, &a, g, bob, None);
     assert_eq!(b.kept_copies().unwrap(), vec![g]);
@@ -514,7 +514,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     assert_eq!(b.acting_as(reader).kept_copies().unwrap(), vec![g]);
     // a reader of the holder writes nothing, whatever its role on the holder
     assert!(refused(&b.acting_as(leaves_after), m));
-    w.until(b.demote(bob, leaves_after, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(b.set_role(bob, leaves_after, None, skip()), 1000, 10).unwrap();
     w.run();
     assert!(!reads(leaves_after));
     let new = mk(Some(Role::Read));
@@ -531,7 +531,7 @@ fn a_client_with_its_own_edge_spec_permissions_3() {
         let (a, b, bob, g, m) = sim(&mut w, Some(true));
         let (c, _) = b.add_client(None).unwrap();
         let (other, _) = b.add_client(None).unwrap();
-        b.grant(g, c, Role::Read, EdgeOpts::default()).unwrap();
+        b.grant(g, c, Role::Read, GrantOpts::default()).unwrap();
         w.run();
         assert_eq!(b.acting_as(c).at(m, text()).get().unwrap(), Some(s("hello")));
         assert!(!b.acting_as(other).knows(m).unwrap());
@@ -556,7 +556,7 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     x.at(m, text()).set(&s("in the chat")).unwrap();
     x.commit().unwrap();
     a.set_keep_default(chat, true).unwrap();
-    a.grant(chat, f, Role::Read, EdgeOpts::default()).unwrap();
+    a.grant(chat, f, Role::Read, GrantOpts::default()).unwrap();
     let (app, _) = b.add_client(None).unwrap();
     let (before, _) = b.add_client(None).unwrap();
     b.grant(bob, app, Role::Read, Default::default()).unwrap();
@@ -582,15 +582,15 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
 // spec/wire.md §11.2, notes/client-port.md §3: an app watching a copy, its role on the person ended: it reads nothing from then on, and its watch gets nothing more and lapses at the next change
 #[test]
 fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
-    let x = chat(EdgeOpts::default(), Role::Write);
+    let x = chat(GrantOpts::default(), Role::Write);
     x.a.set_keep_default(x.g, true).unwrap();
     let (actor, _, app) = x.app(Role::Read);
     let watch = watched(&app, x.m, text()).unwrap();
     assert_eq!(watch.current().unwrap(), Some(s("hello")));
     x.kick(x.bob, None);
     assert_eq!(watch.current().unwrap(), Some(s("hello")));
-    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
-    block_on(x.b.demote(x.bob, actor, Lower::Remove, d)).unwrap();
+    let d = SetRole { sync: SyncFirst::Skip, keep: None };
+    block_on(x.b.set_role(x.bob, actor, None, d)).unwrap();
     until("hidden", || hidden(&app, x.m));
     assert!(app.kept_copies().unwrap().is_empty());
     assert_eq!(watch.current().unwrap(), Some(s("hello")), "what it had read: nothing more comes");
@@ -648,7 +648,7 @@ fn an_ownerless_chat_keeps_spec_permissions_3() {
     x.at(m, text()).set(&s("hello")).unwrap();
     x.commit().unwrap();
     a.set_keep_default(g, true).unwrap();
-    a.grant(g, bob, Role::Write, EdgeOpts::default()).unwrap();
+    a.grant(g, bob, Role::Write, GrantOpts::default()).unwrap();
     w.run();
     assert_eq!(b.at(m, text()).get().unwrap(), Some(s("hello")));
     let (app, _) = b.add_client(None).unwrap();
@@ -719,8 +719,8 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     x.at(u, text()).set(&s("by bob")).unwrap();
     x.at(m, text()).set(&s("by bob, unsent")).unwrap();
     x.commit().unwrap();
-    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
-    w.until(a.demote(g, bob, Lower::Remove, d), 1000, 10).unwrap();
+    let d = SetRole { sync: SyncFirst::Skip, keep: None };
+    w.until(a.set_role(g, bob, None, d), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -746,7 +746,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
 // spec/permissions.md §3 (Keep; it writes nothing there), notes/client-port.md §3: a client that reads a copy cannot place it in a group it writes
 #[test]
 fn a_client_places_no_copy_spec_permissions_3() {
-    let c = chat(EdgeOpts::default(), Role::Write);
+    let c = chat(GrantOpts::default(), Role::Write);
     let (actor, _, app) = c.app(Role::Admin);
     let own = c.b.batch(|w| { let o = w.create(c.b.me())?; w.place(o, c.b.me())?; w.make_group(o)?; Ok(o) }).unwrap();
     c.b.grant(own, actor, Role::Write, Default::default()).unwrap();
@@ -793,7 +793,7 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
 // spec/permissions.md §3 (Keep): a chat read through a realm Bob stays in: the kick of the realm from the chat leaves a copy beside a label that goes on syncing, through restarts; the label settles, the realm's new items arrive
 #[test]
 fn a_copy_beside_a_live_holder_spec_permissions_3() {
-    let x0 = chat(EdgeOpts::default(), Role::Write);
+    let x0 = chat(GrantOpts::default(), Role::Write);
     let (h, a, b) = (x0.g, &x0.a, &x0.b);
     let mut w = a.write();
     let g = w.create(a.me()).unwrap();
@@ -803,7 +803,7 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     w.commit().unwrap();
     a.sync(xg, &[]).unwrap();
     a.set_keep_default(xg, true).unwrap();
-    a.grant(xg, h, Role::Read, EdgeOpts::default()).unwrap();
+    a.grant(xg, h, Role::Read, GrantOpts::default()).unwrap();
     let mut w = a.write();
     let t = w.create(xg).unwrap();
     w.place(t, h).unwrap();
@@ -811,8 +811,8 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     w.commit().unwrap();
     let nudge = Nudge::default();
     until("Bob has t", || { nudge.at(b); b.at(t, text()).get().ok().flatten() == Some(s("before")) });
-    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
-    block_on(a.demote(xg, h, Lower::Remove, d)).unwrap();
+    let d = SetRole { sync: SyncFirst::Skip, keep: None };
+    block_on(a.set_role(xg, h, None, d)).unwrap();
     let nudge = Nudge::default();
     until("kept", || { nudge.at(b); b.kept_copies().unwrap().contains(&xg) });
     assert!(b.role_on(h).unwrap().is_some() && b.role_on(xg).unwrap().is_none());
@@ -839,7 +839,7 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
 // spec/sync.md §2 (Route), notes/client-port.md Routes for client actors: a thing granted to Bob that nothing carries shows without a route at Bob's node and to Bob's app (a thin client acting as his actor), and the app reads it once the granter syncs it
 #[test]
 fn a_thin_client_sees_the_missing_route_and_the_thing_once_synced() {
-    let x = chat(EdgeOpts::default(), Role::Read);
+    let x = chat(GrantOpts::default(), Role::Read);
     let (_, _, app) = x.app(Role::Read);
     let t = x
         .a
@@ -859,7 +859,7 @@ fn a_thin_client_sees_the_missing_route_and_the_thing_once_synced() {
     });
     assert_ne!(app.at(t, text()).get().ok().flatten(), Some(s("plain")));
     // sharing is not for a thin client (`method::for_client`): `share` as `grant`
-    assert!(matches!(app.share(t, x.bob, Role::Read, Default::default()), Err(osis::Error::Unsupported(_))));
+    assert!(matches!(app.grant(t, x.bob, Role::Read, Default::default()), Err(osis::Error::Unsupported(_))));
     x.a.sync(t, &[]).unwrap();
     until("the app reads it", || {
         nudge.at(&x.b);

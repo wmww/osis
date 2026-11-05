@@ -12,7 +12,7 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, NAME, TAG};
-use osis::{ChangeId, CommitKind, CommitQuery, Config, Edge, HostAddr, Osis, Result, Runtime, Scope, Tid, Transport, p};
+use osis::{ChangeId, CommitKind, CommitQuery, Config, Grant, HostAddr, Osis, Result, Runtime, Scope, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -454,14 +454,14 @@ impl Data {
         Ok(out)
     }
 
-    /// Who can see `t`: its owner and its roster, through holder actors (shared tags, with their
-    /// owners) down to people; me and my devices are "you". Edges with an `until` count until it
+    /// Who can see `t`: its owner and its holders, through holder actors (shared tags, with their
+    /// owners) down to people; me and my devices are "you". Grants with an `until` count until it
     /// passes.
     pub fn reach(&self, t: Tid) -> Result<Reach> {
         let db = &self.db;
         let me = db.me();
         let now = db.now();
-        let mine: BTreeSet<Tid> = db.roster(me)?.into_keys().chain([me, db.node()]).collect();
+        let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node()]).collect();
         let mut r = Reach::default();
         let mut seen = BTreeSet::new();
         let mut todo = vec![t];
@@ -477,7 +477,7 @@ impl Data {
             }
             if x != t && db.knows(x)? && self.db.at(x, TAG).get()?.is_some() {
                 // a shared tag: its holders see what it holds, and so does its owner (implicitly
-                // its admin, not on its roster)
+                // its admin, with no grant)
                 r.via.push(x);
                 todo.extend(db.owner_of(x)?);
             } else if x != t {
@@ -487,7 +487,7 @@ impl Data {
                 }
                 continue;
             }
-            todo.extend(db.roster(x)?.into_iter().filter(|(_, e)| live(e, now)).map(|(m, _)| m));
+            todo.extend(db.grants(x)?.into_iter().filter(|(_, e)| live(e, now)).map(|(m, _)| m));
         }
         r.people.sort();
         Ok(r)
@@ -1022,8 +1022,8 @@ impl Data {
     }
 }
 
-/// Whether a roster edge is in force at `now` (an `until` ends it).
-fn live(e: &Edge, now: osis::WallMs) -> bool {
+/// Whether a grant is in force at `now` (an `until` ends it).
+fn live(e: &Grant, now: osis::WallMs) -> bool {
     e.until.is_none_or(|u| u > now)
 }
 

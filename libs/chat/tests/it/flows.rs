@@ -1,7 +1,7 @@
 //! Chat end to end on the sim. spec: none (a client surface specified in notes/chat.md).
 
 use osis_chat::*;
-use osis::{ChangeId, HistoryFrom, Osis, Role, Tid, Value, WaitForSync};
+use osis::{SyncFirst, ChangeId, HistoryFrom, Osis, Role, Tid, Value};
 use osis_sim::world::World;
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -55,12 +55,12 @@ fn newest(db: &Osis, c: Tid) -> Message {
     Timeline::new(db, c).unwrap().older(db, 1).unwrap().messages.remove(0)
 }
 
-// spec/permissions.md §1, §5.2 and spec/commits.md §5: a chat in one flow: ownerless, synced, required retention; a post reaches a member with its verified sender; identical posts are two messages; paging both ways
+// spec/permissions.md §1, §5.2 and spec/commits.md §5: a chat in one flow: ownerless, synced, required retention; a post reaches a participant with its verified sender; identical posts are two messages; paging both ways
 #[test]
 fn create_post_read_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     assert_eq!(a.owner_of(c).unwrap(), None);
-    assert_eq!(members(&a, c).unwrap().get(&bob), Some(&Role::Write));
+    assert_eq!(participants(&a, c).unwrap().get(&bob), Some(&Role::Write));
     post(&a, c, "hi").unwrap();
     post(&a, c, "hi").unwrap();
     w.run();
@@ -142,7 +142,7 @@ fn concurrent_edits_agree_spec_crdt_1() {
     let c = create(&a, &Options { edit: EditMode::Keep, ..Options::default() }).unwrap();
     post(&a, c, "base").unwrap();
     w.run();
-    assert_eq!(texts(&a2, c), ["base"], "a new device of a member");
+    assert_eq!(texts(&a2, c), ["base"], "a new device of a participant");
     w.set_online(&a2, false);
     let m = newest(&a, c);
     edit(&a, c, &m, "from one").unwrap();
@@ -155,7 +155,7 @@ fn concurrent_edits_agree_spec_crdt_1() {
     assert_eq!(texts(&a, c), ["from two"]);
 }
 
-// spec/commits.md §5, spec/sync.md §6: delete for everyone by author and moderator; a member cannot delete another's; a tombstone reaches a new device with its sender
+// spec/commits.md §5, spec/sync.md §6: delete for everyone by author and moderator; a participant cannot delete another's; a tombstone reaches a new device with its sender
 #[test]
 fn delete_for_everyone_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -217,14 +217,14 @@ fn purge_sets_spec_perm_7() {
     }
 }
 
-// spec/permissions.md §3 (Keep), §5.1: a kicked member keeps a read-only copy, sees nothing new and writes nothing others accept; the override erases; purge by author erases its messages for those left
+// spec/permissions.md §3 (Keep), §5.1: a kicked participant keeps a read-only copy, sees nothing new and writes nothing others accept; the override erases; purge by author erases its messages for those left
 #[test]
 fn kick_keep_erase_purge_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&b, c, "before").unwrap();
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c).len(), 2, "kept");
@@ -233,21 +233,21 @@ fn kick_keep_erase_purge_spec_perm_3() {
     w.run();
     assert_eq!(texts(&b, c).len(), 2, "nothing new");
     assert_eq!(texts(&a, c).len(), 3);
-    purge_member(&a, c, bob).unwrap();
+    purge_participant(&a, c, bob).unwrap();
     w.run();
     assert!(texts(&a, c).contains(&"<deleted>".to_string()) && !texts(&a, c).contains(&"before".to_string()));
 
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, Some(false), WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(b.kept_copies().unwrap().is_empty());
     assert!(texts(&b, c).is_empty(), "erased");
     assert!(!b.knows(c).unwrap());
 }
 
-// spec/commits.md §5: required retention refuses a member's other retention: refused at its writer, and if forged past it, invalid and unshown; every other aspect too; a stale writer is told
+// spec/commits.md §5: required retention refuses a participant's other retention: refused at its writer, and if forged past it, invalid and unshown; every other aspect too; a stale writer is told
 #[test]
 fn required_and_stale_writer_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -278,7 +278,7 @@ fn required_and_stale_writer_spec_commits_5() {
     let mine = find(&b, c, &stale).unwrap().unwrap();
     assert!(!mine.valid, "its sender sees it did not go");
     assert_eq!(mine.body, Body::Text("stale".into()), "and can send it again");
-    assert_eq!(members(&a, c).unwrap().get(&bob), Some(&Role::Write));
+    assert_eq!(participants(&a, c).unwrap().get(&bob), Some(&Role::Write));
     assert!(resend(&a, c, &mine).is_err(), "not another's");
     let again = resend(&b, c, &mine).unwrap();
     w.run();
@@ -398,7 +398,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     }
 }
 
-// spec/requirements.md, notes/client-port.md §3: a restart reads the same; a thin client of a member reads and is its own sender
+// spec/requirements.md, notes/client-port.md §3: a restart reads the same; a thin client of a participant reads and is its own sender
 #[test]
 fn restart_and_thin_client_spec_client_port() {
     use osis::internals::Internals as _;
@@ -426,7 +426,7 @@ fn restart_and_thin_client_spec_client_port() {
     assert_eq!(texts(&a, c), ["before", "after"]);
 }
 
-// spec/permissions.md §5.2: a member cannot speak as another: refused at its writer; a member's write as an actor it may not act for is unknown to the API
+// spec/permissions.md §5.2: a participant cannot speak as another: refused at its writer; a participant's write as an actor it may not act for is unknown to the API
 #[test]
 fn no_forged_sender_spec_perm_5() {
     let Room { w: _, a, b, c, .. } = room(Options::default());
@@ -437,7 +437,7 @@ fn no_forged_sender_spec_perm_5() {
     assert!(matches!(x.commit(), Err(osis::Error::Permission { .. })));
 }
 
-// spec/permissions.md §5.1, spec/commits.md §4: a member offline at the kick: what it wrote after the stamp turns invalid everywhere it is held, its own node says so; others never show it; what it wrote before the pre-sync reached the kicker drops too (design E: accepted without Required)
+// spec/permissions.md §5.1, spec/commits.md §4: a participant offline at the kick: what it wrote after the stamp turns invalid everywhere it is held, its own node says so; others never show it; what it wrote before the pre-sync reached the kicker drops too (design E: accepted without Required)
 #[test]
 fn kicked_while_offline_spec_perm_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -447,7 +447,7 @@ fn kicked_while_offline_spec_perm_5() {
     let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     w.set_online(&b, false);
     w.advance(1000);
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     let late = post(&b, c, "late").unwrap();
     w.set_online(&b, true);
@@ -468,9 +468,9 @@ fn kicked_while_offline_spec_perm_5() {
     assert!(texts(&a, c).contains(&"late".to_string()), "a known forced yes: re-adding revives it (notes/chat-cases.md)");
 }
 
-// spec/permissions.md §3 (Keep): a kept copy's device of the kicked member; a new device sees nothing of it (the design's forced "no")
+// spec/permissions.md §3 (Keep): a kept copy's device of the kicked participant; a new device sees nothing of it (the design's forced "no")
 #[test]
-fn new_device_of_a_member_sees_history_spec_sync_6() {
+fn new_device_of_a_participant_sees_history_spec_sync_6() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     for i in 0..200 {
         post(&a, c, &format!("m{i}")).unwrap();
@@ -503,7 +503,7 @@ fn new_device_of_a_member_sees_history_spec_sync_6() {
     assert_eq!(newest(&a, c).sender, bob, "one sender across devices");
     assert_eq!(newest(&a, c).body, Body::Text("from the new device".into()));
     // a device removed erases, a kicked person's new device gets nothing
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     let late = new_device(&mut w, 8);
     assert!(texts(&late, c).is_empty(), "known forced no: notes/chat-cases.md");
@@ -515,7 +515,7 @@ fn kept_copy_still_disappears_spec_commits_6() {
     let Room { mut w, a, b, c, bob } = room(Options { disappear: Some(Duration::from_secs(60)), ..Options::default() });
     post(&a, c, "short").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c), ["short"]);
@@ -525,37 +525,37 @@ fn kept_copy_still_disappears_spec_commits_6() {
     assert!(texts(&b, c).is_empty(), "gone from the copy: {:?}", texts(&b, c));
 }
 
-// spec/permissions.md §1 (admins all equal): a later admin may kick the creator; with no admin left members still post; two admins kicking each other end the same everywhere
+// spec/permissions.md §1 (admins all equal): a later admin may kick the creator; with no admin left participants still post; two admins kicking each other end the same everywhere
 #[test]
 fn admins_are_equal_spec_perm_1() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     add(&a, c, bob, Role::Admin).unwrap();
     w.run();
-    w.until(kick(&b, c, a.me(), None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&b, c, a.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(post(&a, c, "no").is_err());
     post(&b, c, "mine now").unwrap();
-    assert_eq!(members(&b, c).unwrap().len(), 1);
+    assert_eq!(participants(&b, c).unwrap().len(), 1);
 
     let Room { mut w, a, b, c, bob } = room(Options::default());
     add(&a, c, bob, Role::Admin).unwrap();
     w.run();
     w.set_online(&b, false);
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
-    w.until(kick(&b, c, a.me(), None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    w.until(kick(&b, c, a.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.set_online(&b, true);
     w.advance(60_000);
     w.run();
-    assert_eq!(members(&a, c).unwrap(), members(&b, c).unwrap());
+    assert_eq!(participants(&a, c).unwrap(), participants(&b, c).unwrap());
 }
 
-// spec/permissions.md §3 (Keep): an erased member added again gets the chat back
+// spec/permissions.md §3 (Keep): an erased participant added again gets the chat back
 #[test]
 fn erased_then_added_again_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "one").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, Some(false), WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(texts(&b, c).is_empty());
     post(&a, c, "two").unwrap();
@@ -594,7 +594,7 @@ fn creator_on_a_new_device_spec_sync_3() {
     assert_eq!(texts(&r, c), ["hello", "from two"], "restored");
 }
 
-// spec/permissions.md §5.1, §5.2: a member's write stamped after its kick reaches another member before the kick does: once the kick is there it is hidden from others, an edit of the member's older message by it answers for nothing; its own node shows it, marked; a watch says it turned invalid
+// spec/permissions.md §5.1, §5.2: a participant's write stamped after its kick reaches another participant before the kick does: once the kick is there it is hidden from others, an edit of the participant's older message by it answers for nothing; its own node shows it, marked; a watch says it turned invalid
 #[test]
 fn turned_invalid_at_a_reader_spec_perm_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -607,7 +607,7 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     w.run();
     w.advance(1000);
     w.set_online(&a, false);
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.advance(1000);
     let m = find(&b, c, &old).unwrap().unwrap();
     let edit_id = edit(&b, c, &m, "rewritten").unwrap();
@@ -629,7 +629,7 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     assert_eq!(find(&b, c, &edit_id).unwrap().unwrap().id, edit_id, "an invalid edit replaces nothing");
 }
 
-// spec/permissions.md §5.2: an edit's list of what it answers for hides only its sender's own tombstones: a member naming another's deleted message hides nothing
+// spec/permissions.md §5.2: an edit's list of what it answers for hides only its sender's own tombstones: a participant naming another's deleted message hides nothing
 #[test]
 fn forged_prior_hides_no_tombstone_spec_perm_5() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
@@ -645,7 +645,7 @@ fn forged_prior_hides_no_tombstone_spec_perm_5() {
     assert_eq!(texts(&a, c), ["<deleted>", "his, edited"]);
 }
 
-// spec: none (notes/chat.md Read): a cursor goes by arrival: a member's post made offline, stamped before what the reader has seen, comes after the cursor; any entry's id is a cursor; nothing new reads as nothing
+// spec: none (notes/chat.md Read): a cursor goes by arrival: a participant's post made offline, stamped before what the reader has seen, comes after the cursor; any entry's id is a cursor; nothing new reads as nothing
 #[test]
 fn late_post_comes_after_a_cursor_spec_none() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
@@ -697,7 +697,7 @@ fn link_joiner_leaves_spec_perm_8() {
     leave(&b, c).unwrap();
     w.run();
     assert!(post(&b, c, "gone").is_err());
-    assert!(b.holder_path(c, b.me()).unwrap().is_empty());
+    assert!(!b.holders(c).unwrap().iter().any(|h| h.actor == b.me()));
     assert_eq!(texts(&b, c), ["hi"], "the leaver's copy");
     post(&d, c, "still here").unwrap();
     w.run();
@@ -725,7 +725,7 @@ fn link_after_leave_and_kick_spec_perm_8() {
     w.run();
     w.advance(70_000);
     w.run();
-    assert_eq!(member_links(&a, c).unwrap().len(), 1, "a leave ends no link");
+    assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1, "a leave ends no link");
     w.until(join(&d, &l), 1000, 30).unwrap();
     w.run();
     assert_eq!(texts(&d, c), ["hi"]);
@@ -736,11 +736,11 @@ fn link_after_leave_and_kick_spec_perm_8() {
     w.until(join(&b, &l), 1000, 30).unwrap();
     w.run();
     assert!(texts(&b, c).contains(&"joined after the leave".to_string()), "the link text brings a leaver back");
-    w.until(kick(&a, c, d.me(), None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, d.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
-    assert!(member_links(&a, c).unwrap().is_empty(), "a kick ends the link");
+    assert!(osis_chat::links(&a, c).unwrap().is_empty(), "a kick ends the link");
     assert!(matches!(w.until(join(&e, &l), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
     assert!(matches!(w.until(join(&d, &l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked person stays out");
     let fresh = link(&a, c, Role::Write, false).unwrap();
@@ -764,14 +764,14 @@ fn expired_link_not_shown_spec_perm_8() {
     let c = create(&a, &Options::default()).unwrap();
     a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::WallMs(a.now().0 + 1000)), single_use: false, direct: false }).unwrap();
     w.run();
-    assert_eq!(member_links(&a, c).unwrap().len(), 1);
+    assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1);
     w.advance(2000);
-    assert!(member_links(&a, c).unwrap().is_empty());
+    assert!(osis_chat::links(&a, c).unwrap().is_empty());
 }
 
-// spec/permissions.md §8: `members` lists the people who joined by a link, not its actor; a direct member learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a member
+// spec/permissions.md §8: `participants` lists the people who joined by a link, not its actor; a direct participant learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a participant
 #[test]
-fn link_joiners_are_members_spec_perm_8() {
+fn link_joiners_are_participants_spec_perm_8() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     let (d, _) = w.person(3, &[0]);
     let (e, _) = w.person(4, &[0]);
@@ -780,31 +780,31 @@ fn link_joiners_are_members_spec_perm_8() {
     let l = link(&a, c, Role::Read, false).unwrap();
     let once = link(&a, c, Role::Write, true).unwrap();
     w.run();
-    assert_eq!(member_links(&a, c).unwrap().len(), 2);
-    assert_eq!(members(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob]), "a link no one used is nobody");
+    assert_eq!(osis_chat::links(&a, c).unwrap().len(), 2);
+    assert_eq!(participants(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob]), "a link no one used is nobody");
     w.until(join(&d, &l), 1000, 30).unwrap();
     w.until(join(&e, &l), 1000, 30).unwrap();
     w.until(join(&f, &once), 1000, 30).unwrap();
     w.run();
-    assert_eq!(members(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob, d.me(), e.me(), f.me()]));
-    assert!(members(&d, c).unwrap().contains_key(&e.me()), "a joiner sees the link's other joiners");
-    assert_eq!(members(&a, c).unwrap().get(&d.me()), Some(&Role::Read), "the link's role");
-    assert_eq!(members(&a, c).unwrap().get(&f.me()), Some(&Role::Write));
-    assert_eq!(member_links(&a, c).unwrap().len(), 1, "the single-use link is spent");
+    assert_eq!(participants(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob, d.me(), e.me(), f.me()]));
+    assert!(participants(&d, c).unwrap().contains_key(&e.me()), "a joiner sees the link's other joiners");
+    assert_eq!(participants(&a, c).unwrap().get(&d.me()), Some(&Role::Read), "the link's role");
+    assert_eq!(participants(&a, c).unwrap().get(&f.me()), Some(&Role::Write));
+    assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1, "the single-use link is spent");
     post(&f, c, "from a joiner").unwrap();
     w.run();
-    assert!(members(&b, c).unwrap().contains_key(&f.me()), "a direct member, from the post");
-    w.until(kick(&a, c, d.me(), None, WaitForSync::Skip), 1000, 10).unwrap();
+    assert!(participants(&b, c).unwrap().contains_key(&f.me()), "a direct participant, from the post");
+    w.until(kick(&a, c, d.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
-    let left = members(&a, c).unwrap();
+    let left = participants(&a, c).unwrap();
     assert!(!left.contains_key(&d.me()) && left.contains_key(&e.me()), "{left:?}");
-    assert!(member_links(&a, c).unwrap().is_empty(), "kicking a joiner ended the link");
-    // a rotation naming K's keyset: a direct member and a joiner go on
+    assert!(osis_chat::links(&a, c).unwrap().is_empty(), "kicking a joiner ended the link");
+    // a rotation naming K's keyset: a direct participant and a joiner go on
     let (g, _) = w.person(6, &[0]);
     let gid = meet(&mut w, &a, &g);
     add(&a, c, gid, Role::Write).unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     post(&g, c, "after the rotation").unwrap();
     post(&f, c, "and from a joiner").unwrap();
@@ -849,7 +849,7 @@ fn link_join_name_reply_cursor_spec_perm_8() {
     let again = since(&b, c, Some(&cursor), 10).unwrap();
     assert_eq!(again.messages.len(), 1);
     assert_eq!((again.messages[0].id, again.messages[0].name.as_deref(), &again.messages[0].body), (first, Some("alice"), &Body::Text("hi!".into())));
-    w.until(kick(&a, c, b.me(), None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, b.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(post(&b, c, "after").is_err());
     post(&d, c, "still here").unwrap();
@@ -858,7 +858,7 @@ fn link_join_name_reply_cursor_spec_perm_8() {
     assert_eq!(texts(&b, c).len(), 2, "the kicked joiner's copy");
 }
 
-/// Post and read on a chat of 10^4 messages and 100 members (notes/chat.md Costs).
+/// Post and read on a chat of 10^4 messages and 100 participants (notes/chat.md Costs).
 #[test]
 #[ignore = "timing: --release"]
 fn scale_post_read() {
@@ -877,7 +877,7 @@ fn scale_small() {
     scale(20, 2000);
 }
 
-fn scale(n_members: u64, n_msgs: usize) {
+fn scale(n_participants: u64, n_msgs: usize) {
     use std::time::Instant;
     let mut w = World::new();
     let host = w.add_host();
@@ -886,7 +886,7 @@ fn scale(n_members: u64, n_msgs: usize) {
     let c = create(&a, &Options::default()).unwrap();
     let t = Instant::now();
     let mut ms = Vec::new();
-    for i in 0..n_members {
+    for i in 0..n_participants {
         let (m, _) = w.person(100 + i, &[host]);
         w.run();
         let p = meet(&mut w, &a, &m);
@@ -894,9 +894,9 @@ fn scale(n_members: u64, n_msgs: usize) {
         w.run();
         ms.push(m);
     }
-    eprintln!("join {n_members}: {:?}", t.elapsed());
+    eprintln!("join {n_participants}: {:?}", t.elapsed());
     let b = &ms[0];
-    assert_eq!(members(b, c).unwrap().len(), n_members as usize + 1);
+    assert_eq!(participants(b, c).unwrap().len(), n_participants as usize + 1);
     let t = Instant::now();
     let before = w.traffic(&a);
     for i in 0..n_msgs {
@@ -908,7 +908,7 @@ fn scale(n_members: u64, n_msgs: usize) {
     }
     w.run();
     let after = w.traffic(&a);
-    eprintln!("post+sync {n_msgs} to {n_members}: {:?}, up {} B/msg", t.elapsed(), (after.up - before.up) / n_msgs as u64);
+    eprintln!("post+sync {n_msgs} to {n_participants}: {:?}, up {} B/msg", t.elapsed(), (after.up - before.up) / n_msgs as u64);
     let t = Instant::now();
     for i in 0..100 {
         post(&a, c, &format!("x{i}")).unwrap();
@@ -946,13 +946,13 @@ fn scale(n_members: u64, n_msgs: usize) {
     let after = w.traffic(&new);
     eprintln!("newcomer fetch: {:?}, down {} MB; first page complete {}", t.elapsed(), (after.down - before.down) / 1_000_000, Timeline::new(&new, c).unwrap().older(&new, 1).unwrap().complete);
     let t = Instant::now();
-    let kicked = members(&a, c).unwrap().into_keys().find(|k| *k != a.me()).unwrap();
-    w.until(kick(&a, c, kicked, None, WaitForSync::Skip), 1000, 10).unwrap();
+    let kicked = participants(&a, c).unwrap().into_keys().find(|k| *k != a.me()).unwrap();
+    w.until(kick(&a, c, kicked, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     eprintln!("kick: {:?}", t.elapsed());
 }
 
-// spec/permissions.md §3 (Keep): leaving keeps by the chat's default, the others keep its messages; a new member gets the tombstones and history; a member promoted to moderator deletes another's
+// spec/permissions.md §3 (Keep): leaving keeps by the chat's default, the others keep its messages; a new participant gets the tombstones and history; a participant promoted to moderator deletes another's
 #[test]
 fn leave_promote_newcomer_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -970,7 +970,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert!(texts(&d, c).contains(&"<deleted>".to_string()));
     add(&a, c, dee, Role::Admin).unwrap();
     w.run();
-    assert_eq!(members(&b, c).unwrap().get(&dee), Some(&Role::Admin));
+    assert_eq!(participants(&b, c).unwrap().get(&dee), Some(&Role::Admin));
     let his = post(&b, c, "moderate me").unwrap();
     w.run();
     delete(&d, c, &find(&d, c, &his).unwrap().unwrap()).unwrap();
@@ -978,7 +978,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert!(matches!(find(&a, c, &his).unwrap().unwrap().body, Body::Deleted { .. }));
     leave(&b, c).unwrap();
     w.run();
-    assert_eq!(members(&a, c).unwrap().get(&bob), None);
+    assert_eq!(participants(&a, c).unwrap().get(&bob), None);
     assert!(post(&b, c, "gone").is_err());
     assert!(texts(&b, c).contains(&"from bob".to_string()), "the leaver's copy");
     assert!(texts(&a, c).contains(&"from bob".to_string()), "the others keep it");
@@ -986,9 +986,9 @@ fn leave_promote_newcomer_spec_perm_3() {
     w.run();
     assert!(!texts(&b, c).contains(&"unseen".to_string()));
     // the kick's pre-sync on a live chat
-    w.until(kick(&a, c, dee, None, WaitForSync::Required), 1000, 60).unwrap();
+    w.until(kick(&a, c, dee, None, SyncFirst::Required), 1000, 60).unwrap();
     w.run();
-    assert_eq!(members(&a, c).unwrap().len(), 1);
+    assert_eq!(participants(&a, c).unwrap().len(), 1);
 }
 
 // notes/chat-designs/e.md What is different: per-year aspects: reads merge across the new year; a watch hears the next year's first message; a new device gets both
@@ -1041,13 +1041,13 @@ fn chats_lists_held_chats() {
     assert!(chats(&r.b).unwrap().is_empty());
 
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
     assert!(chats(&b).unwrap().is_empty());
 }
 
-// spec: none. notes/chat.md: joining a chat already held gives the chat: its maker or a member pasting a link, a used single-use link, a joiner's second redemption (each failed or hung before); a used link still fails for someone outside
+// spec: none. notes/chat.md: joining a chat already held gives the chat: its maker or a participant pasting a link, a used single-use link, a joiner's second redemption (each failed or hung before); a used link still fails for someone outside
 #[test]
 fn join_held_chat() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
@@ -1057,7 +1057,7 @@ fn join_held_chat() {
     let (e, _) = w.person(4, &[0]);
     w.run();
     assert_eq!(w.until(join(&a, &l), 1000, 30).unwrap(), c, "its maker");
-    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c, "a member");
+    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c, "a participant");
     assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c);
     w.run();
     assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c, "used up, by this person");
@@ -1082,7 +1082,7 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
     w.run();
     assert_eq!(chats(&b).unwrap(), vec![c], "c2 not joined");
 
-    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
     assert!(matches!(w.until(join(&b, &crafted), 1000, 200), Err(osis::Error::Invalid(_))), "known, not held: the link's own key does not reach it");
