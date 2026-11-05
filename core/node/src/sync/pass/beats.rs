@@ -172,7 +172,8 @@ impl SyncEngine {
         let now = self.now();
         if !stranded
             // its own newest: anyone's header may list this node's `seen.0`
-            && let Some((c, h)) = self.engine.core.ix.by_aspect.get(&(me, Ak::new("seen.0").map_err(|_| crate::Error::Misuse("ak"))?)).into_iter().flatten().rev().find_map(|x| self.engine.header(&x.1).filter(|h| h.author == me).map(|h| (x.1, h)))
+            && let Some(c) = self.engine.latest_by(&me, "seen.0", Some(&me))
+            && let Some(h) = self.engine.header(&c)
             && h.ts.wall_ms().0.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > now
             && self.engine.get_typed(&me, &ct::SEEN).ok().flatten().is_some_and(|s| !s.stranded)
         {
