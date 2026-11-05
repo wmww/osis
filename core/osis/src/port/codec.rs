@@ -3,7 +3,7 @@
 
 use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
 use crate::error::{Error, Result};
-use crate::read::{Grant, Grants, GroupsOf, Stamp};
+use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
 use crate::share::{GrantOpts, GroupSync, Holder, HostAddr, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncFirst, SyncScope, SyncState};
 use crate::watch::Source;
 use crate::write::Committed;
@@ -232,6 +232,17 @@ pub(crate) fn stamp(v: Value) -> Result<Stamp> {
     let i = Stamp { id: change(a.next()?)?, actor: a.tid()?, node: a.tid()?, ts: ts(&a.next()?)?, received: wall(&a.next()?)? };
     a.end()?;
     Ok(i)
+}
+
+pub(crate) fn thing_stamp_v(s: &ThingStamp) -> Value {
+    Value::List(vec![opt(s.commit, |c| Value::bytes(&c.0)), Value::Tid(s.actor), Value::Tid(s.node), ts_v(s.ts), u(s.received.0)])
+}
+
+pub(crate) fn thing_stamp(v: Value) -> Result<ThingStamp> {
+    let mut a = Args::new(v)?;
+    let s = ThingStamp { commit: a.opt()?.map(commit_id).transpose()?, actor: a.tid()?, node: a.tid()?, ts: ts(&a.next()?)?, received: wall(&a.next()?)? };
+    a.end()?;
+    Ok(s)
 }
 
 pub(crate) fn groups_v(g: &GroupsOf) -> Value {

@@ -541,7 +541,7 @@ impl Data {
     /// Works around issues/undo-creation-unplaces.md (with `next_undo`).
     pub fn undo(&self, t: Tid) -> Result<bool> {
         let scope = Scope::Thing(t);
-        if let Some(c) = self.db.created(t)?.and_then(|c| c.id.commit())
+        if let Some(c) = self.db.created(t)?.and_then(|c| c.commit)
             && self.next_undo(&scope)? == Some(ChangeId::Commit(c))
         {
             return Ok(false);

@@ -341,7 +341,7 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     let created = did.created.first().map(|(_, t)| *t);
     // a new thing with no durable data lives in this process's memory only
     let unsaved = match created {
-        Some(t) => db.created(t)?.is_some_and(|c| c.id.commit().is_none()),
+        Some(t) => db.created(t)?.is_some_and(|c| c.commit.is_none()),
         None => false,
     };
     if unsaved {
@@ -865,7 +865,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     lines.push(format!("owner\t{}", owner.map_or("none".into(), |o| o.to_uri())));
     let changed = db.changed(t)?;
-    let stamp = |c: Option<osis::Stamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, ts_of(c.ts)), c.node.to_uri()));
+    let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, ts_of(c.ts)), c.node.to_uri()));
     lines.push(format!("created\t{}", stamp(created)));
     lines.push(format!("changed\t{}", stamp(changed)));
     let j = J::obj([
@@ -882,8 +882,8 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     ctx.emit(&lines, j)
 }
 
-fn stamp_json(c: osis::Stamp) -> J {
-    J::obj([("commit", J::opt(c.id.commit().map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])
+fn stamp_json(c: osis::ThingStamp) -> J {
+    J::obj([("commit", J::opt(c.commit.map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])
 }
 
 fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {

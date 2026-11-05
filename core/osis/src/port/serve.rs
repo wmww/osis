@@ -566,8 +566,8 @@ impl Worker {
             method::GRANTS => c::grants_v(&db.grants(a.tid()?)?),
             method::ROLE_ON => c::opt(db.role_on(a.tid()?)?, c::role_v),
             method::OWNER_OF => c::opt(db.owner_of(a.tid()?)?, Value::Tid),
-            method::CREATED => c::opt(db.created(a.tid()?)?, |s| c::stamp_v(&s)),
-            method::CHANGED => c::opt(db.changed(a.tid()?)?, |s| c::stamp_v(&s)),
+            method::CREATED => c::opt(db.created(a.tid()?)?, |s| c::thing_stamp_v(&s)),
+            method::CHANGED => c::opt(db.changed(a.tid()?)?, |s| c::thing_stamp_v(&s)),
             method::WRITE => {
                 let nonce = a.uint()?;
                 let rest = a.rest();

@@ -457,7 +457,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let mk = |db: &Osis| db.batch(|w| w.create_durable(db.me())).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.batch(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, osis::Key::untyped(x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
-    let created = db.created(t).unwrap().unwrap().id.commit().map(ChangeId::Commit).unwrap();
+    let created = db.created(t).unwrap().unwrap().commit.map(ChangeId::Commit).unwrap();
     db.batch(|w| { w.group(f2).add(osis::Member::Item(t))?; w.group(f3).add(osis::Member::Subgroup(t)) }).unwrap();
     let edit = commit_with(&db, |w| w.at(t, osis::Key::untyped(y.clone())).set(&Value::Int(2))).id;
     let s = Scope::Thing(t);
@@ -521,7 +521,7 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     assert!(db.knows(e).unwrap() && db.at(e, osis::Key::untyped(k)).get().unwrap() == Some(Value::Int(1)));
     assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
     // still an ephemeral thing: nothing reached the store for it
-    assert_eq!(db.created(e).unwrap().unwrap().id.commit(), None);
+    assert_eq!(db.created(e).unwrap().unwrap().commit, None);
 }
 
 // notes/api.md Commits: `next` reports what undo and redo would revert, in a thing and in a
@@ -581,14 +581,14 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     alice.redo(&s).unwrap().unwrap();
     w.run();
     assert!(bob.knows(t).unwrap() && bob.at(t, osis::Key::untyped(x.clone())).get().unwrap() == Some(Value::Int(1)) && bob.groups_of(t).unwrap().item_of == vec![g]);
-    let c = ChangeId::Commit(alice.created(t).unwrap().unwrap().id.commit().unwrap());
+    let c = ChangeId::Commit(alice.created(t).unwrap().unwrap().commit.unwrap());
     bob.revert(c).unwrap();
     w.run();
     assert!(!alice.knows(t).unwrap() && alice.groups_of(t).unwrap().within.is_empty());
     let t3 = mk(alice.me());
     w.run();
     assert_eq!(bob.role_on(t3).unwrap(), None);
-    let c3 = ChangeId::Commit(alice.created(t3).unwrap().unwrap().id.commit().unwrap());
+    let c3 = ChangeId::Commit(alice.created(t3).unwrap().unwrap().commit.unwrap());
     assert!(matches!(bob.revert(c3), Err(Error::Permission { .. })));
     w.run();
     assert!(alice.knows(t3).unwrap() && alice.groups_of(t3).unwrap().item_of == vec![g]);
@@ -601,7 +601,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
 fn creation_revert_found_by_created_scope_api_commits() {
     let (da, db) = two_devices();
     let t = da.batch(|w| w.create_durable(da.me())).unwrap();
-    let c = da.created(t).unwrap().unwrap().id.commit().map(ChangeId::Commit).unwrap();
+    let c = da.created(t).unwrap().unwrap().commit.map(ChangeId::Commit).unwrap();
     commit_with(&da, |w| {
         w.at(t, osis::Key::untyped(ak("t:made.0"))).remove()?;
         w.at(t, osis::Key::untyped(ak("t:y.0"))).set(&Value::Int(1))

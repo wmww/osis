@@ -103,7 +103,7 @@ pub fn own_uid() -> Result<u32> {
     osis_transport::unix::own_uid().map_err(|e| Error::Storage(e.to_string()))
 }
 
-/// The node's person and node actors (`Osis::me`, `node` of an thin client).
+/// The node's person and node actors (`Osis::me`, `node` of a thin client).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Who {
     pub me: Tid,
@@ -172,6 +172,8 @@ pub(crate) struct Remote {
     limit: usize,
     /// By a secret (not the socket's client, which acts as the account).
     keyed: bool,
+    /// The secret it logs in with: `connect_node` tells a second login at this address from this one.
+    secret: Option<osis_crypto::Secret32>,
 }
 
 /// A call sent whose connection ended before its reply.
@@ -193,7 +195,7 @@ impl Remote {
         let (tx, _) = mpsc::unbounded_channel();
         let link = Arc::new(LinkState::default());
         lock(&link.m).ended = Some(e);
-        Arc::new(Remote { addr: addr.clone(), tx, link, limit: 0, keyed: false })
+        Arc::new(Remote { addr: addr.clone(), tx, link, limit: 0, keyed: false, secret: None })
     }
 
     /// Whether the connection is up now.
@@ -688,7 +690,7 @@ impl Drop for Io {
     }
 }
 
-/// How an connection dials its node: the daemon's unix socket, or a node address over the
+/// How a connection dials its node: the daemon's unix socket, or a node address over the
 /// in-process transport (tests) or QUIC (and iroh with that feature), the key pinned.
 enum Via {
     Unix,
@@ -772,7 +774,7 @@ fn spawn_remote(via: Via, addr: Address, shown: crate::HostAddr, secret: Option<
     let (tx, rx) = mpsc::unbounded_channel();
     let session = random();
     let link = Arc::new(LinkState::default());
-    let keyed = secret.is_some();
+    let (keyed, kept) = (secret.is_some(), secret.clone());
     let io = Io { cs: new_session(addr.key), peer_key: addr.key, secret, session, calls: BTreeMap::new(), writes: BTreeMap::new(), give_up: None, subs: BTreeMap::new(), schemas: Vec::new(), timer: None, taken: 0, nonce: 1, wait, clock, link: link.clone() };
     std::thread::Builder::new()
         .name("osis-port-client".into())
@@ -781,7 +783,7 @@ fn spawn_remote(via: Via, addr: Address, shown: crate::HostAddr, secret: Option<
             rt.block_on(run(via, addr, io, rx));
         })
         .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(Arc::new(Remote { addr: shown, tx, link, limit, keyed }))
+    Ok(Arc::new(Remote { addr: shown, tx, link, limit, keyed, secret: kept }))
 }
 
 /// A connection to the node at `login`'s address as the client its secret stands for.
@@ -876,11 +878,19 @@ impl Osis {
     /// `Network`: the node could not be reached within `timeout`; this keeps trying (`status` shows
     /// when it is up, calling this again says). `timeout` also bounds each later attempt and a
     /// write in flight across a drop, as for `connect_socket`. `Refused`: it refuses the secret, and
-    /// nothing stays. `Invalid` for a unix address; `Unsupported` on a thin client. Connected already: returns as that connection stands.
+    /// nothing stays. `Invalid` for a unix address, and for a login at an address connected now by another secret
+    /// (`disconnect_node` first); `Unsupported` on a thin client. Connected already by this one:
+    /// returns as that connection stands.
     pub fn connect_node(&self, login: &crate::NodeLogin, timeout: Duration) -> Result<()> {
         self.local_only("connect_node")?;
-        let known = self.locked(|l| l.remotes.iter().find(|r| r.addr == login.addr).cloned());
+        // one that is down by an old secret (rotated, say) may never come up: the new login replaces it
+        let same = |r: &Remote| r.secret.as_ref() == Some(&login.secret.0);
+        let known = self.locked(|l| {
+            l.remotes.retain(|r| r.addr != login.addr || r.ended().is_none() && (r.connected() || same(r)));
+            l.remotes.iter().find(|r| r.addr == login.addr).cloned()
+        });
         let r = match known {
+            Some(r) if !same(&r) => return Err(Error::Invalid(format!("connected to {} by another secret: `disconnect_node` first", login.addr))),
             Some(r) => r,
             None => {
                 let r = spawn_client(login, &self.inner.transport, self.inner.limit, timeout, self.inner.clock.clone())?;
