@@ -123,7 +123,7 @@
 - **Invite requests**: a recipient node applies the commit of an opened inbox blob, and follows what it names, only once it **admits** the blob.
   - It admits the blob when either:
     - the commit is already held (applied or pending; a sibling device that accepted it places its copy under the home label); or
-    - its sender is **connected**: the header's author is a key actor whose creation record the node holds and under whose key the commit's signature verifies, and the author has an effective role now (spec/permissions.md §1, as this node judges it) on a group the node syncs (§2), on a thing on such a group's owner chain, or on a person whose contact card the node imported.
+    - its sender is **connected**: the header's author is a key actor whose creation record the node holds and under whose key the commit's signature verifies, and the author has an effective role now (spec/permissions.md §1, as this node judges it) on a group the node syncs (§2), on a thing on such a group's owner chain, or on an account whose contact card the node imported.
   - A blob not admitted is an invite request: its commit is not applied, its chain certificates (spec/wire.md §9) are not ingested, and nothing it names is fetched, followed or dialed until the user accepts it.
   - It is judged again as the node's state changes.
   - Accepting admits it.
@@ -137,7 +137,7 @@
   - Nothing else an inbox blob carries is placed.
   - A node runs this whenever it opens an inbox blob, its commit held or not.
 - **Inbox blob order**: a sender still opening or registering a label an inbox blob names at a host it is connected to, open at none of them, deposits the blob after that ends. A node told a label is unknown at a host, with no step of it to register, opens it again after a back-off of `retry_ms` doubling per refusal up to `resync_ms` (local policy).
-- **Contact card**: a link (spec/permissions.md §8) with read role to a person's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the person's `created.0` and `keys.0` commits.
+- **Contact card**: a link (spec/permissions.md §8) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the account's `created.0` and `keys.0` commits.
 - **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied; then §6 decides.
 
 ## 4. Host state

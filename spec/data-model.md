@@ -107,7 +107,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - `placed.0~`, of `group.0`'s type, is the one ephemeral core aspect: the ephemeral placements into the group, written by group operations only.
 - **Group writes**:
   - Adding or removing an item or subgroup that is ephemeral after the write is a write of the group's `placed.0~`, needing write on the group.
-  - Any other write of an draft group's `group.0` is ephemeral too and goes to `placed.0~`.
+  - Any other write of a draft group's `group.0` is ephemeral too and goes to `placed.0~`.
   - Adding a durable item or subgroup is durable and persists the group (§1).
   - Removing a durable item or subgroup also removes it from `placed.0~`.
 - **When a thing persists**:

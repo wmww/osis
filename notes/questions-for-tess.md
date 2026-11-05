@@ -19,7 +19,7 @@ Say "realms as recommended" to build, or change any.
 ## 11. Limits kept after the requirements pass
 The pass (spec/requirements.md) dropped limits that follow from a stated property and moved mechanism to the subsystem specs. Three real limits stay; say if any should instead become a guarantee:
 1. A write mixing expiries, or mixing data nobody may purge with other data, becomes several changes, so it is not atomic. Keep as a stated limit (recommended: apps rarely mix them), or make one change carry per-part expiries (wire and host work).
-2. Removing a person whose kept writes number more than about 1.9 million fails. Keep (recommended: rare; it only bites on data whose history is kept forever), or require removals of any size.
+2. Removing an account whose kept writes number more than about 1.9 million fails. Keep (recommended: rare; it only bites on data whose history is kept forever), or require removals of any size.
 3. "Byte-identical everywhere" now reads "equal values compare equal on every node", since a large value's bytes carry random keys. Confirm that is the property you want (recommended).
 
 ## Decided (Tess)

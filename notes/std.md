@@ -20,7 +20,7 @@ Four kinds, three types:
 
 ## Contact (schemas/contact.osis)
 - Many aspects, so a thing with only emails is a contact; display name `name.0`, notes `body.0`, groups are tags.
-- A **profile** is the same aspects on the person's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), written by the person; everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(person)` gives the profile a card import brought.
+- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), written by the account; everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(person)` gives the profile a card import brought.
 - A contact of mine that is an osis user carries `contact:profile.0`; my aspects override the profile's values field by field (tests/it/contact.rs `view`). A contact without it is just my data.
 - Entries are keyed maps (`emails`, `phones`, `urls` by value; `addresses`, `dates` by label), not lists: concurrent additions merge and one entry's label is editable alone. `labeled { label, pref }` marks the preferred one of a kind.
 - Left out of vCard on purpose: photo (a file type later), gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
@@ -36,7 +36,7 @@ Four kinds, three types:
 - core/osis/tests/it/tags.rs: notes/tags.md end to end (per-item share through one roster, sub-tags chaining rosters, only what you may share, tag-owned cards with demotion and invites).
 - core/osis/tests/it/contact.rs: profile filled, read through the card and updated; a linked contact overriding it; a contact without a profile.
 - core/osis/tests/it/event.rs: the civil-date conversion; a timed series with a skip and an override, an all-day span, a flight across zones, all in a read-only shared calendar.
-- Tier-1 time (idle 4 cores, debug): about 10 s; persons and introductions cost about 1 s each, so the tags cases over 10 s are `#[ignore = "tier 2"]`.
+- Tier-1 time (idle 4 cores, debug): about 10 s; accounts and introductions cost about 1 s each, so the tags cases over 10 s are `#[ignore = "tier 2"]`.
 
 ## Open
 - Recurrence expansion and zone resolution as a shared library (an app concern today; worth one implementation).

@@ -257,7 +257,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 ## Core changes
 
 - **b** Delegated purge: retention names an actor whose admins may purge; binds only senders whose client wrote it.
-- **c** Keep-after-removal: whether a removed holder keeps what it held is what its removal says, filled from a default on the thing unless the remover overrides (spec/permissions.md §2, §3 Keep); chat sets keep at creation (Tess); a person holds none, so a device removal erases.
+- **c** Keep-after-removal: whether a removed holder keeps what it held is what its removal says, filled from a default on the thing unless the remover overrides (spec/permissions.md §2, §3 Keep); chat sets keep at creation (Tess); an account holds none, so a device removal erases.
 - **e** Sender card in invite requests (Tess: yes).
 - **f** Add-only member list (C only): a new core aspect read as a group's member list; a non-admin delta may hold only new elements, and resets and snapshots need admin. Assumed in every C cell.
 - **g** Entry-level API: key-range read, change events naming the keys touched, per-entry received time.
@@ -319,7 +319,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each host; until then the removed member reads ciphertext and can upload.
 42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated, and only with issues/keyset-names-placement-rosters.md fixed.
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
-44. Every syncing device places its chain (11.5 KB per person), card (1.5 KB) and four heartbeats a day under each label it reads: about 13 MB once and 2.4 MB a day at 1000; about 1.4 GB and 240 MB a day at 100,000 (e-realms-review.md §3).
+44. Every syncing device places its chain (11.5 KB per account), card (1.5 KB) and four heartbeats a day under each label it reads: about 13 MB once and 2.4 MB a day at 1000; about 1.4 GB and 240 MB a day at 100,000 (e-realms-review.md §3).
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
 46. Messages on a thing owned by the chat with an admin edge for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.

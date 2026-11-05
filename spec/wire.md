@@ -201,11 +201,11 @@ ClaimSet := [[claim+], {entry: box}]
 ```
 Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]
 peer := [dialable, [relay*]]
-Card := [1, seed, person, home_label, [address+]]
+Card := [1, seed, account, home_label, [address+]]
 ```
 - `Link` (spec/permissions.md §8): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`reach.0`, spec/data-model.md §9). A redeemer with no common host dials a peer, which serves K's label as a co-reader peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own edge, spec/permissions.md §8); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
-- `Card` (spec/permissions.md §8): format 1, the recovery key's 32-byte seed, the person actor's tid, its home label ID, host addresses.
-- The label a link or card names is the first label of K or of the person (index 0, spec/sync.md §2): both are created with it.
+- `Card` (spec/permissions.md §8): format 1, the recovery key's 32-byte seed, the account's tid, its home label ID, host addresses.
+- The label a link or card names is the first label of K or of the account (index 0, spec/sync.md §2): both are created with it.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes (§13).
 - Text forms: `osis://link/` or `osis://card/` followed by the unpadded base64url of the canonical bytes.
 
