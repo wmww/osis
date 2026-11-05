@@ -200,6 +200,9 @@ pub(crate) struct Inner {
     pub idle_commit: Duration,
     /// How this handle dials a node it connects to (`Osis::connect_node`).
     pub transport: Option<Transport>,
+    /// Whether this node can dial another by its key alone (`Config.peers`, over a transport that
+    /// can: QUIC takes feature `iroh`).
+    pub dials_peers: bool,
     /// How long a connection's attempt, or a write across a drop, lasts (`CONNECTION_WAIT`).
     pub connection_wait: Duration,
     pub clock: Arc<dyn Clock>,
@@ -465,7 +468,7 @@ impl Osis {
         let routing = !routes.is_empty();
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), remotes: Vec::new(), routes, status_failed: false };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.client.materialize_limit, idle_commit: cfg.client.idle_commit, transport: cfg.client.transport.clone(), connection_wait: cfg.client.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.client.materialize_limit, idle_commit: cfg.client.idle_commit, transport: cfg.client.transport.clone(), dials_peers: cfg.peers && (matches!(cfg.client.transport, Some(Transport::InProcess(_))) || cfg!(feature = "iroh")), connection_wait: cfg.client.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, store, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;

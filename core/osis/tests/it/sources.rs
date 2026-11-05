@@ -1870,3 +1870,47 @@ fn connect_node_keeps_trying_a_node_that_is_down() {
     assert!(x.p.status().unwrap().remotes.is_empty(), "nothing stays");
     drop(x.host);
 }
+
+// notes/client-port.md §6: `disconnect_node` ends the connection for whoever holds it: a move home waiting for the node to upload hears it is gone and goes on without it
+#[test]
+fn disconnecting_ends_a_wait_on_the_node() {
+    let x = world();
+    x.attach_p();
+    x.to_remote();
+    x.net.partition("n", "s");
+    x.net.disconnect("n", "s");
+    x.p.commit_set(x.t, osis::Key::untyped(title()), &s("only at n")).unwrap();
+    let (tx, rx) = channel();
+    let (p, g) = (x.p.clone(), x.g);
+    std::thread::spawn(move || {
+        let _ = tx.send(block_on(p.group_source(g, GroupSource::Local)));
+    });
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "the node has not uploaded");
+    assert!(x.p.disconnect_node(&x.nc).unwrap());
+    rx.recv_timeout(W).expect("still waiting on a node disconnected").unwrap();
+    assert!(x.p.routes().is_empty());
+    drop(x.host);
+}
+
+// notes/api.md Design rules, a future gives up when dropped: a node that says nothing does not hold up a caller's timeout
+#[test]
+fn giving_up_a_move_needs_no_answer_from_the_node() {
+    let x = world_waiting(Duration::from_millis(300));
+    x.attach_p();
+    let (release, released) = channel::<()>();
+    let (held_tx, held) = channel();
+    let n = x.n.clone();
+    let holder = std::thread::spawn(move || {
+        n.engine(|_| {
+            held_tx.send(()).unwrap();
+            let _ = released.recv_timeout(W);
+        })
+    });
+    held.recv().unwrap();
+    let r = x.move_group(x.g, GroupSource::Remote(x.nc.clone()));
+    assert!(release.send(()).is_ok(), "the caller's timeout had to wait for the node");
+    holder.join().unwrap();
+    assert!(matches!(r, Err(Error::Network(_))), "{r:?}");
+    assert!(x.p.routes().is_empty());
+    drop(x.host);
+}

@@ -29,6 +29,8 @@ pub trait Internals {
     fn sync_engine<R>(&self, f: impl FnOnce(&mut SyncEngine) -> R) -> R;
     /// Calls waiting for another node right now (a dropped future leaves none).
     fn waiting(&self) -> usize;
+    /// `wait_synced` holding no handle, as the client port runs it.
+    fn wait_synced_no_handle(&self, scope: crate::SyncScope) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::Result<()>> + Send>>;
     /// With `Runtime::Manual`: the network actions queued so far (the harness carries them).
     fn take_actions(&self) -> Vec<Action>;
     /// With `Runtime::Manual`: feeds a network event.
@@ -66,6 +68,10 @@ impl Internals for Osis {
         here(self);
         self.locked(|l| l.waiters.len())
     }
+    fn wait_synced_no_handle(&self, scope: crate::SyncScope) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::Result<()>> + Send>> {
+        Box::pin(self.wait_synced_pending(scope))
+    }
+
     fn take_actions(&self) -> Vec<Action> {
         here(self);
         self.inner.net.take()

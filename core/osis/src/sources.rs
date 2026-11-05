@@ -528,7 +528,7 @@ impl Osis {
         let Some(r) = self.locked(|l| l.remotes.iter().find(|r| r.addr == addr).cloned()) else { return Err(Error::Invalid(format!("not connected to {addr}"))) };
         r.first().await?;
         // Value::Bool(false): the node does not hold it, or the client's actor may not read it
-        if r.call(method::HOLDS, vec![Value::Tid(group)])? != Value::Bool(true) {
+        if r.call_pending(method::HOLDS, vec![Value::Tid(group)]).await? != Value::Bool(true) {
             return Err(Error::UnknownThing { tid: group });
         }
         let (held, live) = self.locked(|l| {
@@ -596,15 +596,17 @@ impl Osis {
         })
     }
 
-    /// Ends the connection to the node at `addr`. A route naming it stays and fails `Network` until
-    /// it is connected again or the group moves. `false`: no such connection. `Unsupported` on a
+    /// Ends the connection to the node at `addr`, and with it what waits on that node there. A route
+    /// naming it stays and fails `Network` until it is connected again or the group moves. `false`: no such connection. `Unsupported` on a
     /// handle with no store of its own.
     pub fn disconnect_node(&self, addr: &HostAddr) -> Result<bool> {
         self.local_only("disconnect_node")?;
         Ok(self.locked(|l| {
-            let n = l.remotes.len();
-            l.remotes.retain(|r| r.addr != *addr);
-            l.remotes.len() != n
+            let (gone, kept) = std::mem::take(&mut l.remotes).into_iter().partition::<Vec<_>, _>(|r| r.addr == *addr);
+            l.remotes = kept;
+            // a call or wait in flight holds it too: it ends now, and they hear so
+            gone.iter().for_each(|r| r.end());
+            !gone.is_empty()
         }))
     }
 

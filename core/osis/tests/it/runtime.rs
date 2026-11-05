@@ -682,3 +682,34 @@ fn driver_panic_fails_waiters() {
     assert!(d.contains("test: the sync driver panics"), "{d}");
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
 }
+
+// spec: none (API surface, notes/api.md Futures): a wait known never to finish fails: a link naming no host, on a node that dials nobody directly
+#[tokio::test]
+async fn direct_link_with_peers_off_fails_at_once() {
+    let net = osis_transport::Net::new(2);
+    let alice = osis::internals::create(cfg(1, vec![], Transport::InProcess(net.endpoint("a")))).unwrap().0;
+    let _ = reach_of(&alice).await;
+    let mut w = alice.write();
+    let g = w.create().unwrap();
+    w.commit().unwrap();
+    let link = alice.make_link(g, osis::Role::Read, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
+    let mut c = cfg(2, vec![], Transport::InProcess(net.endpoint("b")));
+    c.peers = false;
+    let bob = osis::internals::create(c).unwrap().0;
+    let r = tokio::time::timeout(GUARD, bob.redeem(&link)).await.expect("waits for what can never come");
+    assert!(matches!(r, Err(osis::Error::Network(_))), "{r:?}");
+}
+
+// spec: none (API surface, notes/api.md Futures): a wait holding no handle (the client port's) hears when the database goes
+#[tokio::test]
+async fn database_going_answers_a_wait_with_no_handle() {
+    let net = osis_transport::Net::new(2);
+    // a host nobody answers at: `wait_synced(All)` waits
+    let nobody = HostAddr::new(&"mem://nobody".parse().unwrap(), [7; 32]);
+    let db = osis::internals::create(cfg(1, vec![nobody], Transport::InProcess(net.endpoint("a")))).unwrap().0;
+    let f = db.wait_synced_no_handle(SyncScope::All);
+    assert_eq!(db.waiting(), 1);
+    drop(db);
+    let r = tokio::time::timeout(GUARD, f).await.expect("nothing answers it");
+    assert!(matches!(r, Err(osis::Error::Closed)), "{r:?}");
+}

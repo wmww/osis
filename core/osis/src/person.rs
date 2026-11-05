@@ -191,8 +191,9 @@ impl Osis {
     /// Restores the person of a recovery card on this fresh device (spec/permissions.md §8):
     /// claims the home label by the card's key, downloads it, then (signing as the recovery key)
     /// makes this node an admin of the person. Needs a runtime; the card's hosts are added
-    /// to `hosts`. `Invalid` when a host refuses the card's key, `Unsynced` when the home group
-    /// opens under no key at a host (`SyncState::Stranded`); with nobody answering it waits. On any
+    /// to `hosts`. `Invalid` when its hosts refuse the card's key; `Unsynced` when the home group stops
+    /// opening under this attempt's keys (changed at a host meanwhile: try again); with nobody
+    /// answering it waits. On any
     /// failure (or a dropped future) the recovery key is forgotten and the store gets no person
     /// record (it does not open as a database; use a fresh store for the next attempt).
     pub async fn restore(store: Store, hosts: &[HostAddr], card: &RecoveryCard, cfg: Config) -> Result<Osis> {
@@ -211,6 +212,8 @@ impl Osis {
             if s.static_entry_refused(&home) {
                 return Some(Err(Error::Invalid("this recovery card no longer works".into())));
             }
+            // `Stranded`: the head moved while this read the roster that lists the card's key, and
+            // nothing here opens it now. A fresh attempt opens the new head.
             match st.groups.get(&p).map(|g| g.state) {
                 Some(SyncState::Stranded) => Some(Err(Error::Unsynced { groups: vec![p] })),
                 Some(SyncState::Synced) if s.engine().knows(&p) => Some(Ok(())),
