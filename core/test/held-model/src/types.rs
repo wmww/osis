@@ -256,8 +256,9 @@ pub enum Body {
     Held(Delta),
     /// Never received (or counting as never received).
     Missing,
-    /// Dropped for its keep bounds or as covered: counts as held for atomic apply (spec/commits.md
-    /// §4), contributes nothing; its live writes, if any, are in [`Held::own_state`].
+    /// Dropped here for its keep bounds or as covered: never received from then on, contributes
+    /// nothing; its live writes, if any, are in [`Held::own_state`]. Its commit applied when it was
+    /// held, so it counts as a held part that does not wait (arrival order is not modeled).
     Dropped,
     /// Held as bytes the node cannot interpret (spec/versioning.md §2): the part waits.
     Parked,
@@ -409,4 +410,7 @@ pub struct Held {
     /// Commit IDs are unique.
     pub commits: Vec<Commit>,
     pub own_state: Vec<StateWrite>,
+    /// Snapshot parts this node dropped while valid (what they gave stays in `own_state`): one held
+    /// again and judged invalid takes it back (spec/permissions.md §5.2). `act` fills it.
+    pub dropped_valid: std::collections::BTreeSet<(CommitId, usize)>,
 }

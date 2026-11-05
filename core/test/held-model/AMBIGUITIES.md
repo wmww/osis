@@ -1,7 +1,9 @@
 # held-model: spec ambiguities
-> Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (all resolved; 25-40 from undo, roles beyond one edge, waits and required retention).
+> Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (1-40 resolved; 25-40 from undo, roles beyond one edge, waits and required retention; 41- from apply without atomicity).
 
 Each entry: the spec text, the problem, the model's choice (and where in the code), then **Resolved**: (a) spec fixed to the intended rule (the engine's), model matched; (b) engine wrong, issue filed; (c) a question for Tess (notes/questions-for-tess.md), model's choice kept. Engine tests the code reading found no test for: issues/held-model-unpinned-rules.md.
+
+Entries 8, 14, 19, 20, 35 and the "counted held" of 38 concern spec/commits.md §4 clauses (atomic apply, counts as held, a thing's wait holding the commit) that whole-commits step 3 deleted; the model dropped them with it (held-model-3).
 
 ## Headline
 
@@ -128,3 +130,13 @@ Each entry: the spec text, the problem, the model's choice (and where in the cod
 
 40. **Required retention prefix and in force.** spec/commits.md §5: "The entry governing an AK is the one with its longest prefix"; in force "the newest valid `required.0^` delta on the thing ordered before that key". Choice: an exact AK name beats the empty prefix; "ordered" by the §5.1 key `(ts, author, commit)`; a required delta's own validity is judged as admin-only at its key, so no cycle with the deltas it judges (`model.rs`, `in_force`, `breaks`).
    **Resolved** (a) The engine: longest prefix (`core_types::required_for`), strict key order (`validity::in_force`), each setting judged admin-only at its key by the normal timeline (`Judge::settings`; required.rs `setting_falls_through_acting_spec_perm_5_2`). spec/commits.md §5 in force reworded. Model unchanged.
+
+## held-model-3 (apply without atomicity, timing)
+
+41. **A dropped body and "holds parts of it".** spec/commits.md §4 Pending: "the node holds parts of it and every one waits"; §5 Never received: a body dropped for its keep bounds counts as never received. A commit whose joined part was dropped, with another part held later that waits, would then pend, un-applying what applied; §5 says "a commit such a part applied before T stays applied" only for expiry. Choice: a dropped body counts as a held part that does not wait (`applies`): the commit stays applied.
+
+42. **A waiting part past its expiry and Pending.** spec/commits.md §5: it "goes from the node at T"; §4 Pending counts the parts held. Choice: from T it is not held, so a commit whose held parts all waited and expired applies as its header alone (`applies`); before T it pends.
+
+43. **What a dropped-valid snapshot takes back.** spec/permissions.md §5.2: a copy of a snapshot dropped while valid, held again and judged invalid, takes back "what it gave ... exactly those writes"; "A valid snapshot's body dropped leaves what it gave in the state". When another body dropped here left the same write (another dropped-valid snapshot carrying it), did this one give it? Choice: literal, the write goes from the own state (it has one copy). Writes under dots of deltas dropped here stay; a delta dropped as covered counts as dropped otherwise (ASSUMPTIONS.md).
+
+44. **A waiting part of an applied commit under a purge.** spec/commits.md §5 Purge: "Every node applying it drops ... the named deltas" vs A waiting part under a purge: "held value-less ... it waits and applies as that". With apply no longer atomic, a part may wait alone in an applied commit. Choice: it is a waiting part (`Leftover(PendingPurged)`, its values not held, not in `purged`) until it joins.

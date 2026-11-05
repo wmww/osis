@@ -204,7 +204,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             r.below(NODES) as NodeId
         };
         let roll = r.below(100);
-        let prefix = |me: NodeId| Held { now: w, me, things: THINGS.to_vec(), commits: commits.clone(), own_state: vec![] };
+        let prefix = |me: NodeId| Held { now: w, me, things: THINGS.to_vec(), commits: commits.clone(), own_state: vec![], dropped_valid: Default::default() };
         let c = if roll < 15 {
             let (thing, chief) = r.pick(&TARGETS);
             let author = if r.chance(50) { chief } else { r.below(NODES) as NodeId };
@@ -269,8 +269,20 @@ pub fn history(seed: u64, n: usize) -> Held {
                 _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.actor },
             };
             let ws = vec![Write { stamp: stamp(ts, id, 1), op: Op::Set { value: Some(r.below(5) as Val) } }];
+            // the chief, else often a node an edge names on the thing: a grant or demotion between
+            // the delta and the request decides its right (judged at the request, spec/permissions.md §7)
+            let granted: Vec<NodeId> = commits
+                .iter()
+                .filter(|c| c.kind == CommitKind::Role && c.ts > target.ts)
+                .flat_map(|c| c.parts.iter())
+                .filter_map(|p| match &p.body {
+                    Body::Held(Delta::Edge(e)) if p.thing == tp.thing && e.holder < NODES as NodeId => Some(e.holder),
+                    _ => None,
+                })
+                .collect();
             let author = match CONTENT.iter().find(|x| x.0 == tp.thing) {
-                Some(&(_, chief)) if r.chance(60) => chief,
+                Some(&(_, chief)) if r.chance(50) => chief,
+                _ if !granted.is_empty() && r.chance(60) => r.pick(&granted),
                 _ => author,
             };
             Commit { purge: vec![item], parts: vec![plain_part(tp.thing, PURGE, Retention::PLAIN, Delta::Writes(ws))], ..base(id, author, ts) }
@@ -340,7 +352,7 @@ pub fn history(seed: u64, n: usize) -> Held {
         let gone = r.pick(&[3, PERSON, 12, 13, LINK_K, LINK_L]);
         things.retain(|t| t.id != gone);
     }
-    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits, own_state: vec![] }
+    Held { now: w + r.below(13) * HOUR / 2, me: r.below(NODES) as NodeId, things, commits, own_state: vec![], dropped_valid: Default::default() }
 }
 
 fn content_writes(r: &mut Rng, kind: AspectKind, ts: u64, id: CommitId, prior: &[Write]) -> Vec<Write> {
