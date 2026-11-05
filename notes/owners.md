@@ -31,10 +31,12 @@ An ex-holder signs two conflicting writes and controls everything in them (stamp
 
 Leaning (before F): base + C, D or E later if wanted. B's rule in the walk is untested: `core/test/roles-model` found loops in similar rules (removal rings), so model-check before building. Also touches spec/requirements.md Permissions (three concepts, fixed owner, owner's snapshot). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
 
-## Optional recovery key (Tess's idea; not decided, likely documented first)
+## Optional recovery key (Tess's idea; documented, not built first)
+Tess: having none must be a fully valid way to use the system, and a thief with an unlocked device taking control is accepted: the alternatives are no irrevocable actions for legit users, or a recovery system, which stays optional. So people get no recovery key by default and it is not in the first build. Lost-all-devices needs no new role: a recovery card can be a key actor holding a plain admin edge, listed by static entry as link keys are (spec/permissions.md §8); a thief can remove it. If built later, it is a separate section nothing else reads; every rule and test must work with none. "Owner" leaves the spec, code and API. Formats change freely until stability, so nothing needs reserving.
+
 At most one key actor per thing, named in the creation record, none by default. It holds boxes like an admin (it must see the log to write frontiers, seal to new admins and register steps at hosts), so "only changes grants" is a client rule: it could always grant itself read. No admin can remove it; its role writes always apply and settle disputes, so a split tid converges again. It acts on the named thing only, not on things below by path (no class-by-path logic).
 - **Hand-off**: it names a successor, then burns.
 - **Burn**: a signed list of its writes that count; any other write of it is void. Several burns intersect, so a thief with the key can only cancel recovery, never gain from it.
 - **Threshold**: split the seed outside the protocol, no format change.
 - **Adding later is the weak point**: an ex-admin could claim to have added one, stamped in the past, or void the honest grant by removing its granter earlier. So added-later is only as strong as a normal admin write. Start with record-only.
-- This is today's owner reduced to its one job that disputes cannot do; `Class::Chain` shrinks rather than goes. Today's recovery card relies on that power, so dropping it regresses stolen-phone recovery. Not modelled.
+- `Class::Chain` goes in the first build; a later recovery key adds back one small rule. Not modelled.
