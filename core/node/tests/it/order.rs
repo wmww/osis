@@ -814,6 +814,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     for pk in lp.packages(from).unwrap() {
                         if let Err(e) = lp.deliver(to, &pk) {
                             assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput, "{e}");
+                            assert!(forged.contains_key(&pk.id), "an honest commit refused: {e}");
                         }
                     }
                 }
