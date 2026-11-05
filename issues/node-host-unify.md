@@ -20,7 +20,7 @@ The code that serves data a node may not read cannot decrypt anything (`osis-hos
 Requirements: spec/requirements.md, Decentralization. Known departures, in order:
 1. **P2P is off in every build.** No manifest for the app, Android or CLI enables `iroh` or `lan`; only `cargo test-net` does. Turn both on by default, raising the Rust minimum to 1.91, and test real devices, Android included.
 2. **Direct sync between users is off by default.** `reach.0` goes out only where every reader is this account or a contact, so a chat joined by link has none. Default to on. An open audience (public, bearer read) is the case to think about, as is what a user can do about address exposure without losing P2P.
-3. **Recovery** is tied to having hosts (no card without them, key discarded), and is being reworked anyway: an explicit step, with `create` returning only the database.
+3. **Recovery** is tied to having hosts (no card without them, key discarded), and is being reworked anyway: an explicit step, with `create` returning only the handle.
 4. **Every feature with no hosts:** audited in issues/no-server-audit.md.
 
 ## Clients

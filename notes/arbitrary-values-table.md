@@ -13,7 +13,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_INBOX_TRIES` 8 | `node/sync/local.rs`, `inbound.rs` | a deposit refused for about 21 min (budget full while the recipient is offline) is dropped; resent only after `INBOX_LIFETIME` | fixed: retried at the capped back-off until taken or moot (delivery forgotten or re-sealed, label replaced); test `inbox_retry::inbox_deposit_retried_for_hours_spec_sync_5` |
 | `MAX_QUEUED` 64 MiB, host `max_queued_bytes` 32 MiB, `REQUEST_TIMEOUT_MS` 2 min | `node/sync/driver.rs`, `host/`, `proto/client.rs` | no send window: a large upload or fetch on a slow link closes the connection, the redial repeats it | fixed: request window `WINDOW` (spec/sync.md §6 Flow control) keeps both queues under `WINDOW_QUEUE`; `STALL_TIMEOUT_MS` from the last progress; pushes wait while the connection's unwritten bytes leave no room for one (`ServingInput::Taken`), so a subscriber's queue stays under `SEND_QUEUE`; tests `slow_link::*` |
 | `HANDSHAKE_TIMEOUT` 5 s (quic), 10 s (iroh) | `transport/quic.rs`, `iroh.rs` | a link that cannot finish a handshake in 5-10 s never connects | fixed: no deadline; QUIC's idle timeout ends a silent handshake, a listener drops its oldest handshake past `MAX_INCOMING` (`Handshakes`); test `quic::tests::handshakes_evict_oldest` |
-| `CLOSE_WAIT` 5 s | `osis/handle.rs` | `close` returns Ok with the database still held when a callback or engine call outlasts it | fixed: no cap; user handles counted, `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and for the driver task on the app's multi-thread runtime); test `api::close_waits_or_names_holders_spec_api_handle` |
+| `CLOSE_WAIT` 5 s | `osis/handle.rs` | `close` returns Ok with the store still held when a callback or engine call outlasts it | fixed: no cap; user handles counted, `close` fails `StillOpen` while others exist, else waits for the callback, engine call or timer to end (and for the driver task on the app's multi-thread runtime); test `api::close_waits_or_names_holders_spec_api_handle` |
 
 ## Table
 0 / ∞: what the value at 0 and at infinity would do.
@@ -172,7 +172,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | cli `DEFAULT_WAIT` 30 s (a command with no `--timeout`), app `JOIN_WAIT` 60 s | M (the caller gets an error) | every wait fails at once / a wait nobody answers lasts for good |
 | osis `DEFAULT_IDLE_COMMIT` 2 s | M (a crash loses at most that much typing) | |
 | osis `REFRESH_DIVISOR` 2: `KeepAlive` rewrites every half of its key's default expiry | M (past the other half's slack a holder sees the value blink off until the rewrite arrives) | 1: it blinks at every refresh / a write per moment; at 2 a holder holds about three writes per kept value |
-| osis `STOP_WAIT` 5 s | M (the database is already durable) | `close` on `Runtime::Own` waits up to twice this for the runtime to stop; 0: it returns while the host may still hold its store / a stuck task hangs `close` |
+| osis `STOP_WAIT` 5 s | M (the store is already durable) | `close` on `Runtime::Own` waits up to twice this for the runtime to stop; 0: it returns while the host may still hold its store / a stuck task hangs `close` |
 | osis `OFFER_LIFETIME_MS` 10 min | M | |
 
 ### Test oracles (`core/test/`)

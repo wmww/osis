@@ -1,5 +1,5 @@
 # Growth census
-> Summary: Every known cause of permanent or unbounded growth of stored or synced data, at nodes and hosts. Each row says what it grows with, an approximate size, whether it is inherent or closable, and the issue that tracks it. Rows are ordered by how badly a "plain database, no history, frequent overwrites" workload grows. Every change that adds a new kind of permanent data adds or updates a row here.
+> Summary: Every known cause of permanent or unbounded growth of stored or synced data, at nodes and hosts. Each row says what it grows with, an approximate size, whether it is inherent or closable, and the issue that tracks it. Rows are ordered by how badly a "plain data, no history, frequent overwrites" workload grows. Every change that adds a new kind of permanent data adds or updates a row here.
 
 Tess's session rule: no per-session growth where there would otherwise be no growth. A write that adds permanent data anyway may carry more, whether the first of a session or every write. A leak is something that should hold steady growing with each session: a steady aspect overwritten and compacted, or a session that writes nothing.
 Tests: `sessions::session_writing_nothing_leaves_nothing`, `sessions::steady_aspect_holds_steady_across_sessions` (M: 24 overwrites and compactions of a register and a map written whole cost the same store bytes over 24 launches as in one), `retention::frontier_bytes_per_launch_probe` (1000 launches, compacted each: 1 entry, 88 B delta).
@@ -10,7 +10,7 @@ The probe for the M rows: 400 overwrites of one register by one node, compacted 
 - Node store: 47 KB to 186 KB to 326 KB. That is about **690 B per overwrite, kept after compaction**. It is still there after 32 days, once tombstones and entry rows have gone.
 - Host store: 7.5 KB to 119 KB, then 66 KB after 32 days. That was about **146 B per overwrite after tombstones expire**, the log records (row 2), which the log trim by age now drops with them.
 
-## Plain database, frequent overwrites (worst first)
+## Plain data, frequent overwrites (worst first)
 | # | Cause | Where | Grows with, size | Kind | Issue |
 |---|---|---|---|---|---|
 | 1 | Commit header, meta, record and voided mark kept after the bodies drop (commits.md §5 "never headers") | Node, old devices only (new devices never fetch compacted headers) | Per commit ever applied: header + signature about 290 B (E, budget test ≤ 350 B with a small delta) + meta about 90 B + record ≥ 14 B; **about 690 B per commit in the store (M)** | Closable: header forgetting | issues/session-sources.md |
