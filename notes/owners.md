@@ -21,4 +21,12 @@ An ex-holder signs two conflicting writes and controls everything in them (stamp
 - D. Majority of the other admins on contested removals. Thief loses 2 to 1. Falls back to B below 3 admins; sock-puppet grants need a baseline. An add-on.
 - E. Optional witness a thing names, ordering its role changes. The only real prevention; conflicts with "no trusted coordinator" unless opt-in; the witness needs its own hand-off.
 
-Leaning: base + C, D or E later if wanted. B's rule in the walk is untested: `core/test/roles-model` found loops in similar rules (removal rings), so model-check before building. Also touches spec/requirements.md Permissions (three concepts, fixed owner, owner's snapshot). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
+- F (Tess's idea). Admins only; a fight goes to each user. Details below.
+
+## F: disputes
+- **Dispute**: an admin removal R of X, and a write W by X not listed in R's frontier that would void R. Every other conflict keeps today's rules, so honest histories prompt only when two admins really do remove each other (or knock out the other's grantor).
+- **Pick**: a user's local choice, written as a demotion of the loser with a frontier, applied only in that user's view. The walk takes it as one more input (a seed for D); a pick rejects the author, so that key cannot raise another prompt. Published so the user's devices and others can follow it. State becomes a function of held data plus own picks.
+- **Automatic pick**: own or own person's pick; else, if one side's write was stamped well before this node first received it and after the other side's, that side backdated and loses. Connected honest nodes all see this alike. Else, neither side gets new keys from this node and the user is prompted; a non-interactive node follows other admins' published picks or waits. Always warn.
+- **Costs**: users picking differently split one tid until someone re-picks (a social fork); contacts judge a person's dispute out of band, like a safety-number warning; a host follows one step chain, so the losing side needs a replacement label (notes/sync.md); first-seen evidence is local, so it only sets a pick; tests need convergence "given equal picks". Changes spec/requirements.md Deterministic and API. Not model-checked.
+
+Leaning (before F): base + C, D or E later if wanted. B's rule in the walk is untested: `core/test/roles-model` found loops in similar rules (removal rings), so model-check before building. Also touches spec/requirements.md Permissions (three concepts, fixed owner, owner's snapshot). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
