@@ -1,5 +1,5 @@
 # Removing immutable owners
-> Summary: In discussion with Tess, nothing decided or built. What owners do today, how to replace them with no immutable owner, the limit on any conflict rule, and the options compared.
+> Summary: Why owners go and the reasoning behind notes/owner-removal-plan.md: what owners do today, the limit on any conflict rule, options compared, dispute details, model results and review findings. Option F was chosen with Tess; nothing built.
 
 ## What an owner does today
 1. Fixes the tid (the record commits to it), so nobody can publish a competing creation. Needs only a genesis, not an owner.
@@ -46,7 +46,7 @@ About 41M exhaustive and random histories; roles other than admin, `until`, invi
 
 Review findings for the plan: label actor disputes split hosts (largest item: stamps and deposits under a disputed head, per-side labels both sides can find, nothing triggers replacement today); delete and re-upload loop between sides (no deletes at hosts resting on a disputed party's write); cover only under snapshots valid on both sides; a part sealed under a rejected epoch counts as held; leave both parties out of new keys, or accept the wrong-default leak; no synced pick decides a dispute on its own author or person; names need a new reset point once snapshots go; frontier growth needs measuring.
 
-Leaning (before F): base + C, D or E later if wanted. B's rule in the walk is untested: `core/test/roles-model` found loops in similar rules (removal rings), so model-check before building. Also touches spec/requirements.md Permissions (three concepts, fixed owner, owner's snapshot). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
+Chosen: base + F. Touches spec/requirements.md Permissions (three concepts, fixed owner, owner's snapshot). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
 
 ## Optional recovery key (Tess's idea; documented, not built first)
 Tess: having none must be a fully valid way to use the system, and a thief with an unlocked device taking control is accepted: the alternatives are no irrevocable actions for legit users, or a recovery system, which stays optional. So people get no recovery key by default and it is not in the first build. Lost-all-devices needs no new role: a recovery card can be a key actor holding a plain admin edge, listed by static entry as link keys are (spec/permissions.md §8); a thief can remove it. If built later, it is a separate section nothing else reads; every rule and test must work with none. "Owner" leaves the spec, code and API. Formats change freely until stability, so nothing needs reserving.

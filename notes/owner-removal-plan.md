@@ -1,0 +1,71 @@
+# Removing owners: plan
+> Summary: Build plan for replacing owners with first admins and disputes settled per node. Direction agreed with Tess, plan not yet approved, nothing built. Options, model results and review findings: notes/owners.md.
+
+## Decided (Tess)
+- No owner role, no hidden owner, nothing users may want to change baked into a thing. A tid and the first admin it names stay; the first admin is history, with no power once removed.
+- Admins fight: every node has a default side (first received), warns if it can, and can be overridden. Convergence is given up only there. Switching back and forth must work, may be slow.
+- Accepted: a thief with an unlocked device taking control; a wrong default sealing keys to the attacker; Q (a current admin Y left in place) voiding Y's removal silently, since Y should have removed Q too; a removed node erasing and re-syncing if that turns around, with data lost if no copy is left; role history growing; a kicked admin raising a warning; the limit on new nodes (notes/owners.md).
+- Recovery key: documented, not built; addable later if built.
+- "Contained" means code complexity, not blast radius: a fight may do wide damage, but its handling must not spread through the code. Fix the design rather than work around oddities.
+
+## The coherence rule
+A side is an ordinary view: a node runs the ordinary rules over held data plus its trust set. No rule names the other side or asks whether a dispute is open, except the short list below. A new corner case gets fixed by adjusting that list or the design, not by a new check at the site that hit it.
+
+Dispute-aware code, all of it:
+1. **Walk** (osis-perm): trust set input and dispute detection.
+2. **Trust store and API**: durable local defaults and choices, a dispute listener, choose. Synced choices are suggestions read outside the walk.
+3. **Hosts**: at most the rules of step 6.
+
+Everything else reads validity as it does now. Enforced: the dispute types are private to osis-perm and the API layer, plus named exceptions; review anything else as a design failure. If step 6 needs more than a few sites, stop and redesign.
+
+## Order
+Each step passes the gate alone and is useful alone. Spec changes go with each step; spec/requirements.md Permissions, Deterministic, API and Scale change in the steps that break them.
+
+### 0. Keys at depth 0 (issues/keys-depth0.md), needs Tess's question 8
+It deletes names below an actor, keyset names and the departure walk, which removes two review findings: names growing forever without snapshots, and a grant on one side leaving a holder out for good. Without it, step 1 needs a new reset point for names. Build first.
+
+### 1. Delete roster snapshots
+Delete §6, `tenures.0`, epoch starts and their rounds, `kind` 4, snapshot certificate projection, `MAX_LINKED_FRONTIERS`. Independent of owners and a pure removal. Then measure: frontier size at 10^3 and 10^4 role writes, joiner bytes, evaluation time. Frontiers that hurt can extend an earlier frontier by link. Scale requirement gets an exception for role history.
+
+### 2. Owner becomes first admin
+- Record: `{ first_admin, nonce }` or `{ key, nonce }`. Ownerless stops being a case: every non-key thing is one.
+- Implicit edge: stands until removed, stored nowhere, so plain things stay free. Needs a removal form naming a holder with no entry (today a creation commit writes one for ownerless things).
+- One authority class: delete `Class::Chain` and the rule that an edge cannot name the owner. Effective role is the path rule only.
+- Secrets: derive while the first admin's edge stands and nothing else holds a role; rotation to own secrets exists. Refuse a first admin removing itself from a plain thing with no other admin.
+- Rename the chain as a derivation chain where only keys use it (`[owner*]`, delete base). Rewrite `admit own`, inbox fallback, ephemeral rules, links, API `owner_of`.
+- Person: a device is first admin. A recovery card is a key actor with a plain admin edge. Moving: grant then remove; update notes/moves.md.
+- Remove the word: owner, ownerless and owning leave spec, code, API and CLI. Realms and tags resume once this is settled.
+
+### 3. Disputes in the walk
+Trust set as an input to `Timeline::evaluate`, D rebuilt from scratch. A trusted demotion T seeds D with its victim's unlisted writes. Void T lose their seeds and stay out, all at once ("shrink"). A dispute is a demotion R of X voided by X's unlisted write; contests listing R raise none. Prompts key on (R, X). Pure function of held data and trust set. Extend roles-model and the differential first, covering what the prototype did not: invites, `until`, other roles, clock skew. The prototype patch is one input, if kept.
+
+### 4. Defaults, choices, warnings
+Durable trust store per node. Default: first received, recorded at detection; a new node takes the side its own grant counts on, else host log order. On a switch, recorded defaults taken on the other side are dropped or redone (untested). A side's own party defaults to itself, as it holds its own write first. API: list disputes, listener, choose. Non-interactive nodes keep the default. CLI first, then one app warning. Devices follow their person's published choice except on a dispute about that person or the choice's author; on those each device asks.
+
+### 5. Coming back after erasing
+A removal whose frontier drops another's removal of G goes to G's inbox, like a grant. G then opens the label by its claim, or gets boxes by a rotation's inbox copy. A switch to a side that removed you is an ordinary loss; a switch back is this path.
+
+### 6. Hosts and storage: design this before building
+Goal: the fewest sites. Current thinking, unverified:
+- **Fork of an actor means fork of its labels.** A node refused a step on an actor with its own epochs replaces the label by the existing flow, keys from its side's secrets. No stamping under a captured head.
+- **Label discovery ignores validity**: read every label named by a possible admin's `label.0` that the node's keys open, so common members still reach both.
+- **Old content**: no delete of an old label's content while another side may need it.
+- **Delete and re-upload loop**: a body one side drops and the other holds live can bounce at a host without bound. Candidates: no deletes resting on a disputed party's write, or a holder re-uploads a body once and then keeps it local. Pick the one with fewer sites; prompt purge at hosts is what is at stake.
+- **One-side covers**: a snapshot valid on one side lets that side drop what the other needs. Candidate: accept it (a switch finds what is left) over running two walks.
+- **Stuck parts**: a part sealed under an epoch a node can never open must not block the commit's other parts (spec/commits.md §4). Worth fixing generally; it is not about disputes.
+- **Node cards**: `stale_card` must not delete a card over a one-sided departure (unverified).
+
+## Testing
+Oracles are the design's statement of itself; change them once in the harness, not per test.
+- **Alike**: same held data and same trust set read the same. The order, alike and sim oracles compare after equalizing trust sets; any other difference is a bug, as today.
+- **No dispute, no effect**: with no dispute held, results equal the walk with an empty trust set, and honest sim runs without two admins removing each other raise none.
+- **Switching**: for a node that dropped nothing, T then T' then T reads the same as a fresh node with those inputs. With drops: reads a subset, never invents.
+- **Other things**: things outside the disputed actor's reach read the same on both sides, and nodes on different sides still sync them. Tess's requirement, and it catches a dispute check leaking outward.
+- **Erase and return**: after a turned-around removal a node reads alike once a holder exists.
+- **Budget**: a test or lint fails if dispute types appear outside the allowed list.
+- Model: roles-model search with trust sets; `core/test/tla/roles` for shrink, plus a TLA spec for step 5 if it grows.
+
+## Open
+- Question 8 (notes/questions-for-tess.md), step 0.
+- Step 6 design.
+- Silent rejection after a removal has been held a while, warning only the parties: optional later, needs a value that passes notes/arbitrary-values.md.
