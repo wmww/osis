@@ -364,7 +364,7 @@ fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
     assert!(!db.has_content(t).unwrap());
 }
 
-// notes/api.md Attribution (required retention): `core::REQUIRED` and the engine's `ct::REQUIRED` are
+// spec: none (API surface); notes/api.md Attribution (required retention): `core::REQUIRED` and the engine's `ct::REQUIRED` are
 // one aspect in one form, each reading what the other wrote; a `Duration` past what the store counts
 // is refused, not stored as something else; `Bound::FOREVER` stands.
 #[test]
