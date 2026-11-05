@@ -919,7 +919,7 @@ impl Osis {
 
     /// The actors whose read-only copy this node keeps after losing them (spec/permissions.md §3,
     /// Keep), for a client with its own actor those it reads. The copy reads as before; nothing syncs or writes
-    /// it. `drop_kept` erases one (the database owner's call).
+    /// it. `drop_kept` erases one (for this node's main actor).
     pub fn kept_copies(&self) -> Result<Vec<Tid>> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::KEPT, vec![])?;

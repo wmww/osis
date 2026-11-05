@@ -503,6 +503,8 @@ fn restart_keeps_the_attachment_working() {
     x.net.partition("c1", "n");
     x.net.disconnect("c1", "n");
     until("down", || !c.status().unwrap().remotes[0].connected);
+    // the time is the node's: never this process's stand-in
+    assert!(matches!(c.now(), Err(Error::Network(_))));
     // calls while down are definite: not sent
     assert!(matches!(c2.commit_set(t, osis::Key::untyped(title()), &s("not sent")), Err(Error::Network(_))));
     // the node restarts on its store and listens again

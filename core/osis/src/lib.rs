@@ -146,7 +146,7 @@
 //! ```
 //!
 //! # Sync, hosts and the recovery card
-//! `create` makes a person (owned by a recovery key) whose home group is synced on the hosts
+//! `create` makes a person, with a recovery key, whose home group is synced on the hosts
 //! given; it returns the recovery card, the only copy of that key. Sync runs on a runtime
 //! (`Runtime::Own`, or the app's tokio handle); without one everything works locally, and hosts are
 //! refused. Status, waiting until synced and restoring from the card are the network-facing calls.

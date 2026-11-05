@@ -48,7 +48,7 @@ pub struct Global {
     /// for the groups `group source` routes there
     #[arg(long, global = true, value_name = "ADDR", requires = "remote_secret", conflicts_with = "node")]
     pub remote: Option<String>,
-    /// The file holding that thin client's secret (64 hex digits)
+    /// The file holding that client's secret (64 hex digits)
     #[arg(long = "remote-secret", global = true, value_name = "FILE", requires = "remote")]
     pub remote_secret: Option<PathBuf>,
 }
@@ -149,7 +149,7 @@ pub enum Cmd {
     Serve {
         #[command(flatten)]
         host: HostFlags,
-        /// Serve thin clients at this URL, with the client listener's own key (repeatable): a
+        /// Serve clients at this URL, with the client listener's own key (repeatable): a
         /// line `client URL#KEY` per listener prints after the host address
         #[arg(long = "client-listen", value_name = "URL")]
         client_listen: Vec<String>,
@@ -498,7 +498,7 @@ pub enum HostsCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum ClientsCmd {
-    /// Registers a thin client: prints `ACTOR SECRET`, the secret (64 hex digits) only here. Grant
+    /// Registers a client: prints `ACTOR SECRET`, the secret (64 hex digits) only here. Grant
     /// the actor what it may reach
     Add {
         /// When it ends (as `grant --until`)

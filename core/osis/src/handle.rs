@@ -551,9 +551,8 @@ impl Osis {
         self.inner.client.get().map_or(self.inner.node, |t| t.who.node)
     }
 
-    /// The person actor this database belongs to: the usual owner of what the app creates
-    /// (a thin client: the actor its node acts as for it). It is a group too: things placed in it reach every device of
-    /// the person.
+    /// The person actor this database belongs to (a thin client: the actor its node acts as for
+    /// it). It is a group too: things placed in it reach every device of the person.
     pub fn me(&self) -> Tid {
         self.acting.unwrap_or_else(|| self.inner.client.get().map_or(self.inner.me, |t| t.who.me))
     }

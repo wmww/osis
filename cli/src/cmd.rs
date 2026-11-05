@@ -1356,12 +1356,11 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
         h.replicate = hosts(ctx, &v)?;
     }
     if let Some(v) = given(&f.policy) {
-        let mut knobs = BTreeMap::new();
+        h.policy = osis::HostPolicy::default();
         for p in v {
             let (k, n) = p.split_once('=').ok_or_else(|| usage(format!("not NAME=N: {p}")))?;
-            knobs.insert(k.to_string(), n.parse::<u64>().map_err(|_| usage(format!("not NAME=N: {p}")))?);
+            h.policy.set(k, n.parse().map_err(|_| usage(format!("not NAME=N: {p}")))?).map_err(Error::Invalid)?;
         }
-        h.policy = osis::internals::node::sync::host_policy(&knobs).map_err(Error::Invalid)?;
     }
     if let Some(v) = given(&f.cap) {
         h.caps = BTreeMap::new();
