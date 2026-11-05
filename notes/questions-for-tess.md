@@ -3,7 +3,8 @@
 
 Background for all of these: notes/core-triage.md §2. The two below: notes/keys-requirements-study.md.
 
-## 5. Realms (design: notes/realms.md)
+## 5. Realms (design: notes/realms.md) — ON HOLD
+Tess (in discussion): realms and tags may be one concept unless clearly distinct; her current lean: a realm is how ownerless things are exposed to users (making a realm = making an organization you admin and can hand off; it owns things; a tag is a collection that shares, owns nothing; a realm may own tags). She is discussing ownerless things with another Claude; no realm/tag design work until then. Answered: 5.2 yes (members see the member list). Open with it: 5.1 (tied vs plain grants: shared tags let any writer unplace and so revoke; she finds that too much power), 5.3 (roles: edit details = admin, interact = write, view = read; details need admin-only aspects).
 A realm is an actor marked `realm.0` (plus `name.0`), as `tag.0` marks a group; members are its holders, "in the realm" is what it owns or holds a role on; nesting, overlap and per-person roles are plain grants. Eight small choices, each with a recommendation (details in notes/realms.md):
 1. A thing's realm grant: plain (only admins remove a thing from a realm; recommended) or tied to placement like shared tags (any writer could remove it).
 2. Members see the member list: yes, stated (recommended).
