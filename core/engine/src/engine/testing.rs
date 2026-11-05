@@ -467,10 +467,8 @@ impl Engine {
         let held = osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
             let mut cs: Vec<CommitId> = osis_perm::HeldSet::edge_commits(&ix.held, &t).iter().map(|x| x.id).collect();
-            let mut ss: Vec<CommitId> = osis_perm::HeldSet::roster_snapshots(&ix.held, &t).iter().map(|x| x.id).collect();
             cs.sort();
-            ss.sort();
-            (t, (cs, ss, ix.held.created(&t).is_some()))
+            (t, (cs, ix.held.created(&t).is_some()))
         }).collect();
         let mut snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>> = BTreeMap::new();
         for ((t, a), v) in ix.snapshots.iter() {
@@ -567,8 +565,7 @@ impl Engine {
         })
     }
 
-    /// The role timelines' verdicts per thing (rosters, ledgers, epoch starts, applied and
-    /// dropped edge writes): of the components as held (`false`) or of one from-scratch
+    /// The role timelines' verdicts per thing (rosters, applied and dropped edge writes): of the components as held (`false`) or of one from-scratch
     /// evaluation of the held set (tests: restored walks equal a from-scratch evaluation).
     #[doc(hidden)]
     pub fn perm_digest(&self, from_scratch: bool) -> String {
@@ -584,7 +581,7 @@ impl Engine {
                 let _ = writeln!(out, "{t:?} no timeline");
                 continue;
             };
-            let _ = writeln!(out, "{t:?} {:?} {:?} {:?}", tl.roster(&t, osis_perm::At::END), tl.roster_state(&t), tl.epoch_start(&t));
+            let _ = writeln!(out, "{t:?} {:?}", tl.roster(&t, osis_perm::At::END));
             applied.extend(tl.applied().iter().map(|(k, v)| (*k, *v)));
             dropped.extend(tl.dropped().iter().map(|(k, v)| (*k, *v)));
         }
@@ -592,27 +589,18 @@ impl Engine {
         out
     }
 
-    /// The epoch start of `thing` in its role timeline (spec/permissions.md §6; tests: judgment
-    /// vectors).
-    #[doc(hidden)]
-    pub fn epoch_start(&self, thing: &Tid) -> Option<CommitId> {
-        self.core.timelines.get(thing).and_then(|tl| tl.epoch_start(thing))
-    }
-
     /// The drop set D of every held thing's timeline (spec/permissions.md §5.1): each dropped
-    /// write with the point of the demotion whose audit dropped it and, for an edge op, the
-    /// edge it writes (target, holder). Tests: judgment vectors.
+    /// write with the point of the demotion whose audit dropped it and the edge it writes
+    /// (target, holder). Tests: judgment vectors.
     #[doc(hidden)]
     pub fn drop_set(&self) -> Vec<DropEntry> {
         let mut out = BTreeMap::new();
         for t in osis_perm::HeldSet::things(&self.core.ix.held) {
             let Some(tl) = self.core.timelines.get(&t) else { continue };
             for (w, p) in tl.dropped() {
-                let edge = match w {
-                    osis_perm::WriteId::Op(c, i) => tl.role_commit(c).and_then(|rc| rc.ops.get(*i as usize)).map(|o| (o.target, o.holder)),
-                    osis_perm::WriteId::Snapshot(_) => None,
-                };
-                out.insert(*w, (*p, edge));
+                if let Some(o) = tl.role_commit(&w.0).and_then(|rc| rc.ops.get(w.1 as usize)) {
+                    out.insert(*w, (*p, (o.target, o.holder)));
+                }
             }
         }
         out.into_iter().map(|(w, (p, e))| (w, p, e)).collect()
@@ -621,14 +609,13 @@ impl Engine {
     /// Whether an edge write of commit `c` applies in `t`'s timeline (tests).
     #[doc(hidden)]
     pub fn edge_applied(&self, t: &Tid, c: &CommitId) -> bool {
-        self.core.timelines.get(t).is_some_and(|tl| tl.applied().keys().any(|w| matches!(w, osis_perm::WriteId::Op(x, _) if x == c)))
+        self.core.timelines.get(t).is_some_and(|tl| tl.applied().keys().any(|w| w.0 == *c))
     }
 
-    /// Whether an edge write of commit `c` on `t` applies in the settled walk, or a roster
-    /// snapshot of `t` applied at its position, its start or not (spec/permissions.md §6) (tests).
+    /// Whether an edge write of commit `c` on `t` applies in the settled walk (tests).
     #[doc(hidden)]
     pub fn edge_write_applied(&self, t: &Tid, c: &CommitId) -> bool {
-        self.core.timelines.get(t).is_some_and(|tl| tl.snapshot_applied(c).is_some_and(|a| a.target == *t) || tl.applied().iter().any(|(w, a)| w.commit() == *c && a.target == *t))
+        self.core.timelines.get(t).is_some_and(|tl| tl.applied().iter().any(|(w, a)| w.commit() == *c && a.target == *t))
     }
 
     /// Sets the least component saved (`WALK_CACHE_MIN`) for this session (tests).
@@ -753,9 +740,9 @@ impl Engine {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexDigest {
     pub commits: BTreeMap<CommitId, CommitDigest>,
-    /// Per held thing: its edge commits and roster snapshots, sorted, and whether its creation
+    /// Per held thing: its edge commits, sorted, and whether its creation
     /// record is held.
-    pub held: BTreeMap<Tid, (Vec<CommitId>, Vec<CommitId>, bool)>,
+    pub held: BTreeMap<Tid, (Vec<CommitId>, bool)>,
     pub by_chunk: BTreeMap<osis_base::BlobId, std::collections::BTreeSet<CommitId>>,
     /// Per compaction snapshot: its `snapshots` entries, with their aspect.
     pub snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>>,
@@ -787,7 +774,7 @@ pub struct CommitDigest {
 #[doc(hidden)]
 /// A write of the drop set D, the point of the demotion that dropped it, and for an edge op
 /// its edge (target, holder) (`Engine::drop_set`).
-pub type DropEntry = (osis_perm::WriteId, osis_perm::Point, Option<(Tid, Tid)>);
+pub type DropEntry = (osis_perm::WriteId, osis_perm::Point, (Tid, Tid));
 
 /// One `carried` group of `IndexDigest::carried`.
 #[doc(hidden)]

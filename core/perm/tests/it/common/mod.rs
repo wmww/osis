@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
-use osis_perm::{Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, RosterSnapshot, Tenure, WriteId};
+use osis_perm::{Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ pub fn edge(role: Role) -> Option<Edge> {
 }
 
 pub fn edge_inv(role: Role, invite: Option<Role>, until: Option<u64>) -> Option<Edge> {
-    Some(Edge { role, until: until.map(WallMs), invite, since: None, tied: None })
+    Some(Edge { role, until: until.map(WallMs), invite, tied: None })
 }
 
 /// `n` key-actor records whose tids sort in index order (models order authors by index).
@@ -58,32 +58,11 @@ pub struct CSpec {
     pub recv: BTreeMap<Tid, u64>,
 }
 
-/// A ledger key (t, node, commit ID); `None`: the commit of that node at t (`World::key`).
-pub type KeySpec = (u64, Tid, Option<CommitId>);
-/// A ledger entry: (holder, role, since, until, audited).
-pub type LedgerSpec = (Tid, Role, Option<KeySpec>, KeySpec, bool);
-
-#[derive(Clone, Debug)]
-pub struct SSpec {
-    pub id: CommitId,
-    pub author: Tid,
-    pub t: u64,
-    pub thing: Tid,
-    pub roster: BTreeMap<Tid, Edge>,
-    /// (holder, role, since, until); the tenure's frontier is the until node's receipts before
-    /// the until time; `audited: false` leaves it without one.
-    pub ledger: Vec<LedgerSpec>,
-    pub recv: BTreeMap<Tid, u64>,
-}
-
 /// A history under construction.
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub created: BTreeMap<Tid, CreationRecord>,
     pub commits: Vec<CSpec>,
-    pub snaps: Vec<SSpec>,
-    /// Roster snapshots added verbatim (produced by perm).
-    pub raw: Vec<RosterSnapshot>,
     next: u32,
 }
 
@@ -111,8 +90,6 @@ impl World {
     pub fn merge(&mut self, o: World) {
         self.created.extend(o.created);
         self.commits.extend(o.commits);
-        self.snaps.extend(o.snaps);
-        self.raw.extend(o.raw);
     }
     pub fn fresh_id(&mut self) -> CommitId {
         self.next += 1;
@@ -142,81 +119,15 @@ impl World {
     pub fn set(&mut self, author: Tid, target: Tid, holder: Tid, e: Option<Edge>, t: u64, recv: &[(Tid, u64)]) -> CommitId {
         self.commit(author, t, &[(target, holder, e)], recv)
     }
-    pub fn snapshot(&mut self, author: Tid, thing: Tid, roster: &[(Tid, Edge)], t: u64, recv: &[(Tid, u64)]) -> CommitId {
-        self.snapshot_l(author, thing, roster, &[], t, recv)
-    }
-    pub fn snapshot_l(
-        &mut self,
-        author: Tid,
-        thing: Tid,
-        roster: &[(Tid, Edge)],
-        ledger: &[LedgerSpec],
-        t: u64,
-        recv: &[(Tid, u64)],
-    ) -> CommitId {
-        let id = self.fresh_id();
-        self.snapshot_id(id, author, thing, roster, ledger, t, recv)
-    }
-    /// A roster snapshot with a chosen ID.
-    #[allow(clippy::too_many_arguments)]
-    pub fn snapshot_id(
-        &mut self,
-        id: CommitId,
-        author: Tid,
-        thing: Tid,
-        roster: &[(Tid, Edge)],
-        ledger: &[LedgerSpec],
-        t: u64,
-        recv: &[(Tid, u64)],
-    ) -> CommitId {
-        let mut r: BTreeMap<Tid, u64> = recv.iter().copied().collect();
-        r.insert(author, t);
-        self.snaps.push(SSpec { id, author, t, thing, roster: roster.iter().copied().collect(), ledger: ledger.to_vec(), recv: r });
-        id
-    }
-
-    /// A roster snapshot carrying a produced state, received by everyone at once.
-    pub fn snapshot_state(&mut self, author: Tid, thing: Tid, state: osis_perm::RosterState, t: u64) -> CommitId {
-        let id = self.fresh_id();
-        self.raw.push(RosterSnapshot { id, ts: ts(t), author, actor: author, thing, roster: state.roster, ledger: state.ledger });
-        id
-    }
-
-    /// Without `thing`'s edge writes and roster snapshots other than `keep` (a node that
-    /// compacted `thing` at `keep`).
-    /// A commit that also writes other things keeps those writes.
-    pub fn compacted(&self, thing: Tid, keep: CommitId) -> MemoryHeldSet {
-        let mut w = self.clone();
-        for c in &mut w.commits {
-            c.ops.retain(|o| o.0 != thing);
-        }
-        let mut skip: BTreeSet<CommitId> = self.commits.iter().filter(|c| c.ops.iter().all(|o| o.0 == thing) && !c.ops.is_empty()).map(|c| c.id).collect();
-        skip.extend(self.snaps.iter().filter(|s| s.thing == thing && s.id != keep).map(|s| s.id));
-        skip.extend(self.raw.iter().filter(|s| s.thing == thing && s.id != keep).map(|s| s.id));
-        w.held_without(&skip)
-    }
-
-    fn recv_of(&self, id: &CommitId) -> Option<&BTreeMap<Tid, u64>> {
-        self.commits.iter().find(|c| c.id == *id).map(|c| &c.recv).or_else(|| self.snaps.iter().find(|s| s.id == *id).map(|s| &s.recv))
-    }
-
     /// Frontier of a demoter `node` at `t`: every commit it received before `t`.
     pub fn frontier(&self, node: Tid, t: u64) -> Frontier {
         let mut f = Frontier::default();
-        for (id, r) in self.commits.iter().map(|c| (c.id, &c.recv)).chain(self.snaps.iter().map(|s| (s.id, &s.recv))) {
-            if r.get(&node).copied().unwrap_or(LATE) < t {
-                f.commits.insert(id);
+        for c in &self.commits {
+            if c.recv.get(&node).copied().unwrap_or(LATE) < t {
+                f.commits.insert(c.id);
             }
         }
         f
-    }
-
-    /// A ledger key; without a commit ID, that of `node`'s commit at `t` (the first by ID;
-    /// the zero commit ID if none).
-    pub fn key(&self, (t, node, commit): KeySpec) -> osis_perm::Point {
-        let ids = self.commits.iter().map(|c| (c.id, c.author, c.t)).chain(self.snaps.iter().map(|s| (s.id, s.author, s.t)));
-        let found = || ids.filter(|&(_, a, ct)| a == node && ct == t).map(|x| x.0).min().unwrap_or(CommitId([0; 32]));
-        osis_perm::Point { ts: ts(t), node, commit: commit.unwrap_or_else(found) }
     }
 
     /// The held set, every commit carrying the frontier its receipts imply.
@@ -239,23 +150,6 @@ impl World {
                 ops: c.ops.iter().map(|&(target, holder, edge)| EdgeOp { target, holder, edge }).collect(),
             });
         }
-        for s in self.raw.iter().filter(|s| !skip.contains(&s.id)) {
-            h.add_snapshot(s.clone());
-        }
-        for s in self.snaps.iter().filter(|s| !skip.contains(&s.id)) {
-            let ledger = s
-                .ledger
-                .iter()
-                .map(|&(holder, role, since, until, audited)| Tenure {
-                    holder,
-                    role,
-                    since: since.map(|k| self.key(k)),
-                    until: self.key(until),
-                    frontier: audited.then(|| Arc::new(self.frontier(until.1, until.0))),
-                })
-                .collect();
-            h.add_snapshot(RosterSnapshot { id: s.id, ts: ts(s.t), author: s.author, actor: s.author, thing: s.thing, roster: s.roster.clone(), ledger });
-        }
         h
     }
 }
@@ -265,71 +159,25 @@ impl World {
 /// past the write's class (R was dropped, or with the write dropped R is no fall, or not
 /// through that class). The write's class is X's class on N just before it in the settled
 /// walk; a self-removal through a holder (§2: X's admin on the holder is its only authority)
-/// is audited on the holder, by X's class there (§5.1 step 3). They stay dropped
-/// since D only grows, so the answer depends on the order drops were found, and a roster
-/// snapshot can repair them.
+/// is audited on the holder, by X's class there (§5.1 step 3). They stay dropped since D only
+/// grows, so the answer depends on the order drops were found.
 pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
-    residue_with(tl, false)
-}
-
-/// `residue`, plus self-supported drops: a drop whose fall holds in the settled walk only with
-/// the write's own edge gone (OSIS_PERM_SEED=52011). For the neutrality check only: a perm bug
-/// that judged a fall without the audited write's own path would look the same, so the
-/// differential and query tests, which skip cases with residue, keep the narrower `residue`.
-pub fn resnapshot_residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
-    residue_with(tl, true)
-}
-
-fn residue_with(tl: &osis_perm::Timeline, self_supported_too: bool) -> BTreeSet<WriteId> {
-    let by = |w: &WriteId| match w {
-        WriteId::Op(c, k) => tl.role_commit(c).and_then(|m| Some((m.author, m.ops.get(usize::try_from(*k).ok()?)?.target, m.point()))),
-        WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| (s.author, s.thing, s.point())),
-    };
+    let by = |w: &WriteId| tl.role_commit(&w.0).and_then(|m| Some((m.author, m.ops.get(usize::try_from(w.1).ok()?)?.target, m.point())));
     // the thing whose class fall audits w: the holder for a self-removal through it
     let audited_on = |w: &WriteId, target: Tid| {
-        let WriteId::Op(c, k) = w else { return target };
-        let Some(m) = tl.role_commit(c) else { return target };
-        let Some(op) = m.ops.get(usize::try_from(*k).unwrap_or(usize::MAX)) else { return target };
+        let Some(m) = tl.role_commit(&w.0) else { return target };
+        let Some(op) = m.ops.get(usize::try_from(w.1).unwrap_or(usize::MAX)) else { return target };
         let at = osis_perm::At::before(m.point());
         let old = tl.edges_at(Some(m.point())).get(&op.holder, &op.target).copied();
-        let new = op.edge.map(|e| Edge { since: None, ..e });
         let class = tl.class(&m.author, &op.target, at);
-        let through = op.holder != m.author && osis_perm::types::lowers(new.as_ref(), old.as_ref()) && tl.role(&m.author, &op.holder, at) == Some(Role::Admin) && !matches!(class, osis_perm::Class::Chain | osis_perm::Class::Edge);
+        let through = op.holder != m.author && osis_perm::types::lowers(op.edge.as_ref(), old.as_ref()) && tl.role(&m.author, &op.holder, at) == Some(Role::Admin) && !matches!(class, osis_perm::Class::Chain | osis_perm::Class::Edge);
         if through { op.holder } else { target }
-    };
-    // The audit that dropped a write saw it in effect; the settled walk does not. A fall that
-    // holds only with the write's own edge gone justifies itself (OSIS_PERM_SEED=52011): with
-    // the edge set as the write set it (if nothing in the settled walk changed it up to just
-    // after R), X's class on N just after R must still be below the write's class.
-    let self_supported = |w: &WriteId, p: &osis_perm::Point, n: &Tid, class: osis_perm::Class| {
-        if !self_supported_too {
-            return false;
-        }
-        let WriteId::Op(c, k) = w else { return false };
-        let Some(m) = tl.role_commit(c) else { return false };
-        let Some(op) = m.ops.get(usize::try_from(*k).unwrap_or(usize::MAX)) else { return false };
-        let mut next = p.commit.0;
-        for b in next.iter_mut().rev() {
-            *b = b.wrapping_add(1);
-            if *b != 0 {
-                break;
-            }
-        }
-        let after = osis_perm::Point { commit: CommitId(next), ..*p };
-        let mut edges = tl.edges_at(Some(after));
-        if edges.get(&op.holder, &op.target) != tl.edges_at(Some(m.point())).get(&op.holder, &op.target) {
-            return false;
-        }
-        edges.set(op.holder, op.target, op.edge);
-        let view = osis_perm::graph::View::at(tl.owners(), &edges, Some(p.ts));
-        let x = m.author;
-        view.standing(&x, &view.roles_from(&x), n).class >= class
     };
     let audits = |w: &WriteId, p: &osis_perm::Point| {
         let Some((x, t, at)) = by(w) else { return false };
         let n = audited_on(w, t);
         let class = tl.class(&x, &n, osis_perm::At::before(at));
-        tl.falls(&x, &n).iter().any(|f| f.point == *p && f.now < class && class <= f.held) && !self_supported(w, p, &n, class)
+        tl.falls(&x, &n).iter().any(|f| f.point == *p && f.now < class && class <= f.held)
     };
     tl.dropped().iter().filter(|(w, p)| !audits(w, p)).map(|(w, _)| *w).collect()
 }
@@ -337,11 +185,6 @@ fn residue_with(tl: &osis_perm::Timeline, self_supported_too: bool) -> BTreeSet<
 /// Whether `tl` has sticky residue (`residue`).
 pub fn sticky_residue(tl: &osis_perm::Timeline) -> bool {
     !residue(tl).is_empty()
-}
-
-/// The commit IDs of dropped writes.
-pub fn dropped_commits(tl: &osis_perm::Timeline) -> BTreeSet<CommitId> {
-    tl.dropped().keys().map(WriteId::commit).collect()
 }
 
 pub fn model_role(r: roles_model::Role) -> Option<Role> {
@@ -422,7 +265,7 @@ pub fn joint_world(h: &roles_model::joint::JHist, salt: u8) -> (World, Vec<Tid>,
 /// An edges-model edge value (some marked tied: carried, never an authority).
 pub fn model_edge(e: Option<roles_model::edges::Edge>) -> Option<Edge> {
     use roles_model::edges::NEVER;
-    e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), since: None, tied: tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1) })
+    e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), tied: tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1) })
 }
 
 /// An edges-model history as a world: node 0 owns the one target.
@@ -452,72 +295,6 @@ pub fn gen_id(n: usize) -> CommitId {
     c.0[31] = 2;
     c
 }
-
-/// A snapshot-model history: key actor K (node 0) owns P, P owns G; genesis edges are K's
-/// writes at t=0; records (layer 2) are left out; writes on G for K are inert in the model and
-/// left out too.
-pub struct SnapWorld {
-    pub w: World,
-    pub nodes: Vec<Tid>,
-    pub p: Tid,
-    pub g: Tid,
-    /// Model write index -> commit ID (None: left out).
-    pub ids: Vec<Option<CommitId>>,
-}
-
-pub fn snap_world(h: &roles_model::snapshot::SHist) -> SnapWorld {
-    use roles_model::snapshot::Thing;
-    let mut w = World::new();
-    let nodes = w.nodes(h.n());
-    let k = nodes[0];
-    let p = w.thing(k);
-    let g = w.thing(p);
-    let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
-    let mut gi = 0;
-    for (thing, roles) in [(p, &h.gp), (g, &h.gg)] {
-        for (x, &r) in roles.iter().enumerate().skip(1) {
-            if let Some(r) = model_role(r) {
-                gi += 1;
-                w.commit_id(gen_id(gi), k, 0, &[(thing, nodes[x], Some(Edge::new(r)))], &all0);
-            }
-        }
-    }
-    // the model's write id stands for the commit ID (0: no write)
-    let mid = |id: usize| if id == 0 { CommitId([0; 32]) } else { cid(id as u32) };
-    let key = |k: (u32, usize, usize)| (k.0 as u64, nodes[k.1], Some(mid(k.2)));
-    let mut ids = Vec::new();
-    for (i, sw) in h.writes.iter().enumerate() {
-        let thing = if sw.thing == Thing::P { p } else { g };
-        let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, tn)| (*tn, h.recv[i][n] as u64)).collect();
-        if sw.rec || (sw.snap.is_none() && sw.target == 0) {
-            ids.push(None);
-            continue;
-        }
-        let author = nodes[sw.author];
-        let id = match &sw.snap {
-            None => {
-                let id = mid(sw.id);
-                w.commit_id(id, author, sw.t as u64, &[(thing, nodes[sw.target], model_role(sw.role).map(Edge::new))], &recv);
-                id
-            }
-            Some(roster) => {
-                let mut r: Vec<(Tid, Edge)> = Vec::new();
-                for (x, &rl) in roster.iter().enumerate().skip(1) {
-                    if let Some(rl) = model_role(rl) {
-                        let open = sw.ledger.iter().find(|e| e.holder == x && e.until.is_none());
-                        let since = open.and_then(|e| e.since).map(|k| w.key(key(k)));
-                        r.push((nodes[x], Edge { since: if rl == Role::Admin { since } else { None }, ..Edge::new(rl) }));
-                    }
-                }
-                let ledger: Vec<_> = sw.ledger.iter().filter_map(|e| e.until.map(|u| (nodes[e.holder], Role::Admin, e.since.map(key), key(u), true))).collect();
-                w.snapshot_id(mid(sw.id), author, thing, &r, &ledger, sw.t as u64, &recv)
-            }
-        };
-        ids.push(Some(id));
-    }
-    SnapWorld { w, nodes, p, g, ids }
-}
-
 
 /// A random run's seed: `seed`, or `seed` xor `OSIS_PERM_SEED` (decimal) to sample other
 /// histories (`OSIS_PERM_SEED=1 cargo test --workspace -- --ignored`).

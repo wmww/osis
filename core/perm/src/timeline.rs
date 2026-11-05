@@ -4,7 +4,7 @@
 use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View};
 use osis_base::Owner;
 use crate::held::HeldSet;
-use crate::types::{Edge, EdgeOp, RoleCommit, Point, RosterSnapshot, WriteId};
+use crate::types::{Edge, EdgeOp, RoleCommit, Point, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
@@ -44,10 +44,8 @@ pub struct Timeline {
     pub(crate) items: walk::Items,
     pub(crate) walked: walk::Walked,
     dropped: BTreeMap<WriteId, Point>,
-    epoch_starts: BTreeMap<Tid, CommitId>,
     passes: usize,
-    pub(crate) epoch_changed: bool,
-    /// The furthest point a walk under the final epoch starts other than the final one reached
+    /// The furthest point a walk other than the final one reached
     /// (the latest point of a drop in D; kept for the walk cache).
     pub(crate) reach: Option<Point>,
     /// Kept edge states `(i, state before history change i)`, `i` increasing from 0, about
@@ -158,8 +156,9 @@ pub enum EdgeEnd {
 }
 
 impl EdgeEnd {
-    /// The end of last value `e`, written at `at` (`None`: an epoch start's). An end by `until`
-    /// has the key (first `ts` at `until`, the zero tid and commit ID, §6), or its write's if later.
+    /// The end of last value `e`, written at `at` (`None`: a first admin's record edge). An end
+    /// by `until` has the key (first `ts` at `until`, the zero tid and commit ID, §3), or its
+    /// write's if later.
     fn of(e: &Edge, at: Option<Point>) -> EdgeEnd {
         if e.says_keep() {
             return EdgeEnd::Said(true);
@@ -185,9 +184,9 @@ impl Timeline {
     /// This timeline's walk and inputs without its memos, to append to (`demotion_scope`).
     pub(crate) fn copy(&self) -> Timeline {
         let (input, items, walked) = (self.input.clone(), self.items.clone(), self.walked.clone());
-        let (dropped, epoch_starts, checkpoints) = (self.dropped.clone(), self.epoch_starts.clone(), self.checkpoints.clone());
-        let Timeline { passes, epoch_changed, reach, .. } = *self;
-        Timeline { input, items, walked, dropped, epoch_starts, passes, epoch_changed, reach, checkpoints, memo: Memo::default(), placed: 0 }
+        let (dropped, checkpoints) = (self.dropped.clone(), self.checkpoints.clone());
+        let Timeline { passes, reach, .. } = *self;
+        Timeline { input, items, walked, dropped, passes, reach, checkpoints, memo: Memo::default(), placed: 0 }
     }
 
     pub(crate) fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
@@ -199,15 +198,13 @@ impl Timeline {
             Some(k) => k.carry(&out.walked, out.common),
             None => (checkpoints(&out.walked, Vec::new()), FirstHeld::new()),
         };
-        let items = out.items.unwrap_or_else(|| walk::items(&input, &out.epoch_starts));
+        let items = out.items.unwrap_or_else(|| walk::items(&input));
         Timeline {
             input,
             items,
             walked: out.walked,
             dropped: out.dropped,
-            epoch_starts: out.epoch_starts,
             passes: out.passes,
-            epoch_changed: out.epoch_changed,
             reach: out.reach,
             checkpoints,
             memo: Memo { first_held: Mutex::new(first_held), ..Memo::default() },
@@ -215,23 +212,19 @@ impl Timeline {
         }
     }
 
-    /// This timeline for `held`, which holds the same roster snapshots, every role commit
-    /// walked here, maybe more, and maybe new things, `created.0` records and nodes (equal to
-    /// `evaluate`). Before the first point `p` where the walk meets anything new (a new commit,
+    /// This timeline for `held`, which holds every role commit walked here, maybe more, and
+    /// maybe new things, `created.0` records and nodes (equal to `evaluate`). Before the first
+    /// point `p` where the walk meets anything new (a new commit,
     /// or an item naming a thing whose owner link is new, one below it, or a new node), the
     /// walk is the same but for the demotions on those things: they have no edges there, so a
     /// node's role on one is its role on its owner (`Walked::alias_leaves`); a new node reaches
     /// nothing walked there (it owns only such things). So the final walk takes those, is
     /// rolled back to `p` (or to the first write a drop found after it dropped, D keeping what
     /// was found before) and goes on from there instead of starting over. `None` when that
-    /// does not hold (other snapshots, a node gone that is not now owned, a new node owning a
-    /// thing walked before, a role cycle after epoch starts changed, a record changed
-    /// under its ID): evaluate.
+    /// does not hold (a node gone that is not now owned, a new node owning a thing walked
+    /// before, a record changed under its ID): evaluate.
     pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
-        if !input.snaps.keys().eq(self.input.snaps.keys()) {
-            return None;
-        }
         if !self.input.commits.keys().all(|k| input.commits.contains_key(k)) || !self.input.kept_in(&input) {
             return None;
         }
@@ -249,19 +242,14 @@ impl Timeline {
         if !below.is_empty() {
             kept.first_held.retain(|(_, t, _), v| !below.contains(t) && v.is_some_and(|q| q.is_none_or(|q| from.is_none_or(|f| q < f))));
         }
-        let Timeline { mut walked, dropped, epoch_starts, passes, epoch_changed, reach, .. } = self;
+        let Timeline { mut walked, dropped, passes, reach, .. } = self;
         walked.alias_leaves(&leaves, &input.nodes, cut)?;
         let Some(from) = from else {
             let common = Some((walked.history.len(), None));
-            let out = walk::Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach, items: None, common };
+            let out = walk::Outcome { walked, dropped, passes, reach, items: None, common };
             return Some(Timeline::from_kept(input, out, Some(kept)));
         };
-        // after epoch changes, going on from the old starts finds the same ones only when they
-        // have a unique fixed point (walk::drive)
-        if epoch_changed && input.cyclic() {
-            return None;
-        }
-        Some(Timeline::resumed(input, walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: None }, kept, joins))
+        Some(Timeline::resumed(input, walk::Resume { walked, dropped, from, items: None }, kept, joins))
     }
 
     /// `walk::resume` of `r` over `input`, carrying `kept`; debug builds check the walk
@@ -311,7 +299,7 @@ impl Timeline {
         if named.is_empty() {
             return Some((below, added));
         }
-        // (named by an epoch start's roster: from the start)
+        // (named by a first admin's record edge: from the start)
         if self.items.initial_names(&named) {
             return None;
         }
@@ -334,7 +322,7 @@ impl Timeline {
         if new.is_empty() {
             return Ok(self);
         }
-        if !self.input.can_append(new, self.epoch_changed) || keys.iter().any(|(t, r)| self.input.owners.owner(t).is_some() || r.tid() != *t || !matches!(r, CreationRecord::KeyActor { .. })) {
+        if !self.input.can_append(new) || keys.iter().any(|(t, r)| self.input.owners.owner(t).is_some() || r.tid() != *t || !matches!(r, CreationRecord::KeyActor { .. })) {
             return Err(Box::new(self));
         }
         for (t, r) in keys {
@@ -355,7 +343,7 @@ impl Timeline {
             let n0 = self.walked.history.len();
             let h = self.walked.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
             let before = self.edges_before(h);
-            let cx = walk::Place { input: &self.input, items: &self.items, dropped: &self.dropped, epoch: &self.epoch_starts, c };
+            let cx = walk::Place { input: &self.input, items: &self.items, dropped: &self.dropped, c };
             let pl = self.walked.insert(&cx, before, &first, &fresh);
             match pl {
                 walk::Placement::Idle => {
@@ -385,8 +373,8 @@ impl Timeline {
                     self.input.append(joined);
                     self.items.add(rest);
                     let kept = Kept::of(&mut self);
-                    let Timeline { input, items, walked, dropped, epoch_starts, epoch_changed, placed, .. } = self;
-                    let r = walk::Resume { walked, dropped, epoch_starts, epoch_changed, from, items: Some(items) };
+                    let Timeline { input, items, walked, dropped, placed, .. } = self;
+                    let r = walk::Resume { walked, dropped, from, items: Some(items) };
                     let tl = Timeline::resumed(input, r, kept, matches!(pl, walk::Placement::From(..)));
                     return Ok(Timeline { placed, ..tl });
                 }
@@ -424,12 +412,10 @@ impl Timeline {
         Ok(self)
     }
 
-    /// Whether the commits and snapshots `held` holds on `things` are the ones walked here,
-    /// with the same content (a record can grow under its ID: a part that arrives late).
+    /// Whether the commits `held` holds on `things` are the ones walked here, with the same
+    /// content (a record can grow under its ID: a part that arrives late).
     pub(crate) fn holds_same(&self, held: &dyn HeldSet, things: &BTreeSet<Tid>) -> bool {
-        things.iter().all(|t| {
-            held.edge_commits(t).iter().all(|c| self.input.holds_commit(c)) && held.roster_snapshots(t).iter().filter(|s| s.thing == *t).all(|s| self.input.holds_snapshot(s))
-        })
+        things.iter().all(|t| held.edge_commits(t).iter().all(|c| self.input.holds_commit(c)))
     }
 
     /// The edge state before history change `h`, from the newest kept state at or before it.
@@ -493,8 +479,7 @@ impl Timeline {
         self.memo = Memo { first_held: Mutex::new(fh), ..Memo::default() };
     }
 
-    /// Walks the last evaluation or `extend` made (1 when nothing was dropped and no epoch
-    /// start applied).
+    /// Walks the last evaluation or `extend` made (1 when nothing was dropped).
     pub fn passes(&self) -> usize {
         self.passes
     }
@@ -511,9 +496,8 @@ impl Timeline {
     }
     /// The commit and op of an edge write.
     fn edge_write(&self, w: &WriteId) -> Option<(&RoleCommit, &EdgeOp)> {
-        let WriteId::Op(c, i) = w else { return None };
-        let mc = self.input.commits.get(c)?;
-        Some((&**mc, mc.ops.get(*i as usize)?))
+        let mc = self.input.commits.get(&w.0)?;
+        Some((&**mc, mc.ops.get(w.1 as usize)?))
     }
     /// The edge writes applied on `t`, each with its commit and op, in `applied` order: not a walk
     /// of every write of the component per thing (a chat's members share one).
@@ -540,17 +524,6 @@ impl Timeline {
     pub fn is_applied(&self, w: &WriteId) -> bool {
         self.walked.applied.contains_key(w)
     }
-    /// A roster snapshot that applied at its position (§6), its thing's epoch start or not.
-    pub fn snapshot_applied(&self, c: &CommitId) -> Option<&Applied> {
-        self.walked.candidates.get(c)
-    }
-    /// The epoch start of `thing` (§6), if one applies.
-    pub fn epoch_start(&self, thing: &Tid) -> Option<CommitId> {
-        self.epoch_starts.get(thing).copied()
-    }
-    pub fn epoch_starts(&self) -> &BTreeMap<Tid, CommitId> {
-        &self.epoch_starts
-    }
     /// Explicit demotions of `node` on `thing` in timeline order (§5.2 input).
     pub fn demotions(&self, node: &Tid, thing: &Tid) -> &[Demotion] {
         self.walked.demotions.get(&(*node, *thing)).map_or(&[], |v| v.as_slice())
@@ -571,7 +544,7 @@ impl Timeline {
         let mut e = self.edges_at(None);
         for ((m, t), p) in last {
             let finalize = self.input.commits.get(&p.commit).is_some_and(|c| {
-                c.ops.iter().enumerate().any(|(k, o)| o.holder == m && o.target == t && u32::try_from(k).is_ok_and(|k| self.walked.applied.get(&WriteId::Op(c.id, k)).is_some_and(|a| a.attr == walk::Attr::Finalize)))
+                c.ops.iter().enumerate().any(|(k, o)| o.holder == m && o.target == t && u32::try_from(k).is_ok_and(|k| self.walked.applied.get(&WriteId(c.id, k)).is_some_and(|a| a.attr == walk::Attr::Finalize)))
             });
             if finalize {
                 let before = self.edges_at(Some(p)).get(&m, &t).copied();
@@ -602,16 +575,13 @@ impl Timeline {
     pub fn role_commit(&self, id: &CommitId) -> Option<&Arc<RoleCommit>> {
         self.input.commits.get(id)
     }
-    pub fn roster_snapshot(&self, id: &CommitId) -> Option<&Arc<RosterSnapshot>> {
-        self.input.snaps.get(id)
-    }
 
     /// The walk's edge changes, in order.
     pub(crate) fn history(&self) -> &[crate::walk::Change] {
         &self.walked.history
     }
 
-    /// The edge state before the walk's changes (an epoch start's roster, first admins).
+    /// The edge state before the walk's changes (first admins' record edges).
     pub(crate) fn initial(&self) -> &crate::graph::Edges {
         &self.walked.initial
     }
@@ -660,7 +630,7 @@ impl Timeline {
 
     /// Each holder of `thing` whose current edge does not say keep (spec/permissions.md §2), with
     /// the point of the change since which it has held such an edge without a break (`None`:
-    /// since before every change: the epoch start's roster or a first admin). O(the walk's
+    /// since before every change: a first admin's record edge). O(the walk's
     /// history of `thing`).
     pub fn standing_since(&self, thing: &Tid) -> BTreeMap<Tid, Option<Point>> {
         let mut out: BTreeMap<Tid, Option<Point>> = EdgesAt::new(&self.walked.initial).holders(thing).filter(|(_, e)| !e.says_keep()).map(|(m, _)| (*m, None)).collect();
@@ -675,7 +645,8 @@ impl Timeline {
     }
 
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: how each one's
-    /// edge ended and the point of its last write (`None`: unchanged since an epoch start).
+    /// edge ended and the point of its last write (`None`: a first admin's record edge, never
+    /// written).
     /// O(the walk's history): only a node that lost access asks (spec/permissions.md §3, Keep).
     pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (EdgeEnd, Option<Point>)> {
         let mut out: BTreeMap<Tid, (EdgeEnd, Option<Point>)> = EdgesAt::new(&self.walked.initial).holders(thing).map(|(m, e)| (*m, (EdgeEnd::of(e, None), None))).collect();

@@ -94,7 +94,7 @@ fn certificates_once_per_label_spec_permissions_4() {
     net.run();
     let l = net.label(a);
     let ids: BTreeSet<osis_base::BlobId> = net.host_ids(host, &l).into_iter().collect();
-    let mut held: std::collections::BTreeMap<osis_base::CommitId, Vec<(usize, usize)>> = Default::default();
+    let mut held: std::collections::BTreeMap<osis_base::CommitId, Vec<usize>> = Default::default();
     for (id, k) in net.sync(a).entries(&l) {
         if let EntryKind::Commit { commit, parts, .. } = k
             && ids.contains(&id)
@@ -393,68 +393,6 @@ fn label_replacement_spec_sync_2() {
     assert_eq!(net.host_ids(host, &old).into_iter().collect::<BTreeSet<_>>(), live, "nothing more under the old label");
 }
 
-// spec/permissions.md §4, §6; spec/sync.md §3: a node's chain to a group runs node → P → T → G
-// by ownership; T's roster snapshot names none of the chain (its holder is another node), so
-// the certificate copy under G's label carries T's reset-only deltas alone: the verifier, a
-// reader of G only, holds the snapshot as an epoch start with an empty roster, as perm's
-// certificate closure projects it, and never sees T's holder.
-#[test]
-fn nested_chain_empty_copy_spec_perm_6() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let x = net.node(2, &[host]);
-    let c = net.node(3, &[host]);
-    net.pair(x, a);
-    net.pair(c, a);
-    let me = net.tid(a);
-    let (xt, ct_) = (net.tid(x), net.tid(c));
-    let mk = |net: &mut Net, owner| {
-        let e = net.engine(a);
-        let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, owner);
-        m.set(t, &REG, &s("t")).unwrap();
-        e.commit(m).unwrap();
-        t
-    };
-    let p = mk(&mut net, me);
-    let r = recipients_of(net.engine(a), &[(me, Role::Admin)]);
-    rotation(net.engine(a), p, &r, 3, true);
-    let t = mk(&mut net, p);
-    set_edge(net.engine(a), t, xt, Role::Read);
-    let g = {
-        let e = net.engine(a);
-        let mut m = Mutation::new();
-        let g = e.new_thing(&mut m, t);
-        m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
-        e.commit(m).unwrap();
-        g
-    };
-    set_edge(net.engine(a), g, ct_, Role::Read);
-    let r = recipients_of(net.engine(a), &[(me, Role::Admin), (ct_, Role::Read)]);
-    rotation(net.engine(a), g, &r, 4, true);
-    let addr = net.address(host);
-    net.engine(a).create_label(&g, &[addr]).unwrap();
-    net.pair(a, c);
-    // the snapshot reaches c only as a certificate copy under G's label (T is outside its closure)
-    let done = net.engine(a).roster_snapshot(&t, None).unwrap();
-    let snap = *done.commits.last().unwrap();
-    let item = net.item(a, g, g, "by a");
-    net.run();
-    net.run();
-    assert_eq!(net.read(c, item), Some(s("by a")));
-    let certs = net.engine(a).certificates(&g);
-    let parts = certs.get(&snap).expect("T's snapshot is a chain certificate").clone();
-    let h = net.engine(a).header(&snap).unwrap();
-    assert_eq!(parts.len(), 2, "the two reset-only deltas: {parts:?}");
-    assert!(parts.iter().all(|(ai, _)| h.aspects[*ai].tid == t));
-    let held = osis_commit::CommitBlob::decode(&net.engine(c).commit_bytes(&snap).unwrap().expect("c holds the snapshot")).unwrap();
-    let held: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
-    assert_eq!(held, parts, "c holds the reset-only deltas alone");
-    assert!(net.engine(c).roster(&t).is_empty(), "T's holder is not shown to c");
-    let _ = x;
-}
-
 /// Whether label `l` at host `s` holds a commit carrying a `label.0` write the admin `n` made
 /// after `before`.
 fn label_commit_at(net: &mut Net, n: usize, s: usize, l: &osis_base::LabelId, before: &BTreeSet<osis_base::CommitId>) -> bool {
@@ -533,7 +471,7 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
     net.pair(b, a);
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let bt = net.tid(b);
-    let done = net.engine(a).grant(&g, &bt, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None, tied: None }).unwrap();
+    let done = net.engine(a).grant(&g, &bt, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, tied: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.pair(a, b);
@@ -584,7 +522,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -654,7 +592,7 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -895,7 +833,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
     let l = net.label(a);
     // the body under the label carries t2's part too (same reader actor)
     let h = net.engine(a).header(&both).unwrap();
-    let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if commit == both && parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t2)));
+    let t2_part = net.sync(a).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if commit == both && parts.iter().any(|ai| h.aspects[*ai].tid == t2)));
     assert!(t2_part, "the commit's body under the label touches t2");
     let under: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
     assert!(outside.is_disjoint(&under), "{} blobs of an outside thing under the label", outside.intersection(&under).count());
@@ -940,7 +878,7 @@ fn lazy_node_shreds_dropped_chunks_spec_sync_7() {
 
 /// Node `n`'s certificate commit by `author` touching `ak` among `n`'s chain certificates for
 /// `g`, with the aspect indexes to carry.
-fn chain_commit(net: &mut Net, n: usize, g: osis_base::Tid, author: osis_base::Tid, ak: &str) -> (osis_base::CommitId, BTreeSet<(usize, usize)>) {
+fn chain_commit(net: &mut Net, n: usize, g: osis_base::Tid, author: osis_base::Tid, ak: &str) -> (osis_base::CommitId, BTreeSet<usize>) {
     let certs = net.engine(n).certificates(&g);
     certs
         .into_iter()
@@ -1299,7 +1237,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let g = e.new_thing(&mut m, alice.person);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let blob = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
     // everything but the commits writing g's `keys.0` reaches b directly; the grant by inbox
@@ -1351,7 +1289,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let g = e.new_thing(&mut m, alice.person);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
     net.engine(a).grant(&g, &carl.person, &edge).unwrap();
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let genuine = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
@@ -1654,7 +1592,7 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     let kill = net.engine(b).package(&kill).unwrap().unwrap();
     assert_eq!(net.engine(a).get(&t, &gone).unwrap().is_some_and(|v| v == s("v0")), a_saw_kill);
     let holder = net.tid(b);
-    let new = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let new = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Backdated(cut), keep: None }).unwrap();
     let flip = done.commits.first().copied().unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -1722,7 +1660,7 @@ fn flip_after_drop_a_second_reader_dropped_the_repair_spec_sync_7() {
     let kill = net.engine(b).commit(m).unwrap().unwrap();
     let kill = net.engine(b).package(&kill).unwrap().unwrap();
     let holder = net.tid(b);
-    let new = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let new = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(x).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Backdated(cut), keep: None }).unwrap();
     let flip = done.commits.first().copied().unwrap();
     let flip = net.engine(x).package(&flip).unwrap().unwrap();

@@ -151,16 +151,16 @@ impl SyncEngine {
             }
             note.at(t);
         }
-        let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        if opened.iter().any(|p| m.body_gone(p.0)) {
+        let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+        if opened.iter().any(|p| m.body_gone(*p)) {
             // every delta's live writes count, the kept ones' too (spec/sync.md §7, `carried`)
-            let live = opened.iter().any(|p| self.part_live(&h, commit, p));
+            let live = opened.iter().any(|ai| self.part_live(&h, commit, *ai));
             return Ok(Some((Hold::MustNot(Why::Dropped), live, aspects)));
         }
         if e.cert {
             return Ok(Some((Hold::May, false, aspects)));
         }
-        let desired: Vec<&Vec<(usize, usize)>> = desired.get(commit).into_iter().flatten().collect();
+        let desired: Vec<&Vec<usize>> = desired.get(commit).into_iter().flatten().collect();
         let mut f = Facts { required: false, closure: true, covered: None, ..Facts::default() };
         if desired.contains(&parts) {
             f.required = true;
@@ -181,7 +181,7 @@ impl SyncEngine {
         } else {
             // one the label's actor reads nothing of (a certificate another node placed, a
             // blob sealed to this node) is a strict subset of nothing: judged by the rest
-            let others: Vec<(BlobId, Vec<(usize, usize)>)> = if parts.is_empty() {
+            let others: Vec<(BlobId, Vec<usize>)> = if parts.is_empty() {
                 Vec::new()
             } else {
                 self.state
@@ -195,7 +195,7 @@ impl SyncEngine {
                     })
                     .collect()
             };
-            let mut sups: Vec<Vec<(usize, usize)>> = Vec::new();
+            let mut sups: Vec<Vec<usize>> = Vec::new();
             for (b, _) in others {
                 // compared on what the label's actor reads of each (`readable`); a forged
                 // superset holds nothing (it would get the real blob deleted)
@@ -209,8 +209,8 @@ impl SyncEngine {
             // (spec/sync.md §6, §7)
             let mut sup = false;
             'sups: for p2 in sups {
-                for p in p2.iter().filter(|p| !parts.contains(p)) {
-                    if self.must_carry(&h, commit, p, snaps, note)? {
+                for ai in p2.iter().filter(|ai| !parts.contains(ai)) {
+                    if self.must_carry(&h, commit, *ai, snaps, note)? {
                         sup = true;
                         break 'sups;
                     }
@@ -236,7 +236,7 @@ impl SyncEngine {
                 // creation record's commit usually writes more (a group's first placement, a
                 // thing's first value)
                 let closure = self.engine.closure(g);
-                let card = opened.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| matches!(a.ak.as_str(), "keys.0" | "node.0" | "reach.0" | "seen.0") || a.ak.as_str() == "created.0" && !closure.contains(&a.tid));
+                let card = opened.iter().filter_map(|ai| h.aspects.get(*ai)).all(|a| matches!(a.ak.as_str(), "keys.0" | "node.0" | "reach.0" | "seen.0") || a.ak.as_str() == "created.0" && !closure.contains(&a.tid));
                 if h.kind.is_role() || card {
                     return Ok(None);
                 }
@@ -248,7 +248,7 @@ impl SyncEngine {
                 }
                 // only deltas this node holds can be judged outside the label
                 let c = *commit;
-                let held: Vec<(usize, usize)> = self.engine.run(|tx| Ok(tx.get_commit(&c)?.map(|b| b.parts.iter().map(|p| (p.ai, p.di)).collect()).unwrap_or_default()))?;
+                let held: Vec<usize> = self.engine.run(|tx| Ok(tx.get_commit(&c)?.map(|b| b.parts.iter().map(|p| p.ai).collect()).unwrap_or_default()))?;
                 // and only once the view is settled (a peer's placement this node cannot
                 // explain yet stays: a receiver keeps what a peer placed, spec/sync.md §3)
                 if !opened.iter().all(|p| held.contains(p)) || !settled {
@@ -272,9 +272,9 @@ impl SyncEngine {
     /// superseder covers it (`carried`), none otherwise. Judged again every pass until it goes
     /// (`unsure`: what it waits for is the carrier's presence at the host, no state change here).
     /// A superseded body is its author's to delete, nobody else's.
-    fn judge_forgotten(&mut self, commit: &CommitId, parts: &[(usize, usize)], note: &mut Note) -> Option<Judged> {
+    fn judge_forgotten(&mut self, commit: &CommitId, parts: &[usize], note: &mut Note) -> Option<Judged> {
         let f = self.memory.forgotten.get(commit)?;
-        let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|(ai, _)| f.header.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+        let aspects: Vec<(Tid, Ak)> = parts.iter().filter_map(|ai| f.header.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let live = match &f.why {
             MemoryDrop::Gone => false,
             MemoryDrop::Covered { .. } => true,
@@ -320,11 +320,11 @@ impl SyncEngine {
     /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
     /// `node.0` and `reach.0`, the node departed (a departed node is never dialed; its `keys.0`
     /// stays while chains of its old writes may need it).
-    fn stale_card(&mut self, at: &At, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> bool {
+    fn stale_card(&mut self, at: &At, c: &CommitId, h: &osis_commit::Header, parts: &[usize]) -> bool {
         let (g, l, host) = (&at.g, &at.l, at.host.as_ref());
         let me = self.engine.tid();
-        let aks: BTreeSet<&str> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
-        let all_card = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| a.tid == h.author && is_card(a.ak.as_str()));
+        let aks: BTreeSet<&str> = parts.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.tid == h.author).map(|a| a.ak.as_str()).collect();
+        let all_card = parts.iter().filter_map(|ai| h.aspects.get(*ai)).all(|a| a.tid == h.author && is_card(a.ak.as_str()));
         if h.author == me || aks.is_empty() || !all_card {
             return false;
         }
@@ -338,13 +338,12 @@ impl SyncEngine {
         let author = h.author;
         let departed = !core.may_read(&author, &actor)
             && core.timelines.get(&author).is_some_and(|tl| {
-                tl.applied().keys().any(|w| match w {
-                    osis_perm::WriteId::Op(x, i) => tl.role_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| {
+                tl.applied().keys().any(|w| {
+                    tl.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize)).is_some_and(|op| {
                         let ended = op.edge.is_none_or(|e| !e.alive_at(Some(now)));
                         let way = (op.holder == author || core.may_read(&author, &op.holder)) && (op.target == actor || core.may_read(&op.target, &actor));
                         ended && way
-                    }),
-                    osis_perm::WriteId::Snapshot(_) => false,
+                    })
                 })
             });
         aks.into_iter().all(|ak| {
@@ -445,8 +444,8 @@ impl SyncEngine {
         }
         // the blobs certificate copies link (`place_linked`) once this node knows no entry of
         // their commit under the label any more (deleted; one placed and not confirmed yet still
-        // counts), unless another present entry links them too (roster snapshots sharing tree
-        // pages): nothing under the label needs them
+        // counts), unless another present entry links them too (another copy of the commit):
+        // nothing under the label needs them
         if keys.delete.is_some() {
             let copied = self.copies_in(&l, scope);
             let mut gone = BTreeSet::new();
@@ -509,11 +508,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Whether a delta of commit `c` has a live write in this node's state (spec/commits.md §5): a
+    /// Whether the delta of commit `c` on aspect `ai` has a live write in this node's state (spec/commits.md §5): a
     /// dropped body keeps its live writes there (spec/crdt.md §4.6); a purged one holds none.
-    pub(super) fn part_live(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize)) -> bool {
-        let Some(a) = h.aspects.get(p.0) else { return false };
-        if self.engine.part_valueless(h, c, p.0) {
+    pub(super) fn part_live(&mut self, h: &osis_commit::Header, c: &CommitId, ai: usize) -> bool {
+        let Some(a) = h.aspects.get(ai) else { return false };
+        if self.engine.part_valueless(h, c, ai) {
             return false;
         }
         self.engine.body_live(c, &a.tid, &a.ak).unwrap_or(true)
@@ -545,22 +544,22 @@ impl SyncEngine {
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok((false, Vec::new(), None)) };
         let x = self.engine.group_actor(g);
         let (mut all, mut need, mut via) = (true, Vec::new(), None);
-        for p in parts {
-            let Some(a) = m.header.aspects.get(p.0) else { continue };
+        for &ai in parts {
+            let Some(a) = m.header.aspects.get(ai) else { continue };
             let (t, a) = (a.tid, a.ak.clone());
             // a delta the label's actor may not read is carried under its readers' labels
-            if !self.engine.core.may_read(&x, &self.engine.core.reader_of(&t)) || !self.part_live(&m.header, commit, p) {
+            if !self.engine.core.may_read(&x, &self.engine.core.reader_of(&t)) || !self.part_live(&m.header, commit, ai) {
                 continue;
             }
-            let dropped = m.body_gone(p.0);
-            if !dropped && self.carried_by(host, l, commit, &[*p]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
+            let dropped = m.body_gone(ai);
+            if !dropped && self.carried_by(host, l, commit, &[ai]) || self.snapshot_carries(at, commit, &t, &a, dropped)? {
                 continue;
             }
             // this node's rewrite, refused at the host for the label's cap: it goes up again
             // replacing this body, in the room it frees (else a full label would keep a purged
             // body for good)
             if !dropped
-                && let Some(q) = host.and_then(|s| self.rewrite_capped(s, l, commit, parts, p))
+                && let Some(q) = host.and_then(|s| self.rewrite_capped(s, l, commit, parts, ai))
             {
                 via = via.or(Some(q));
                 continue;
@@ -575,14 +574,14 @@ impl SyncEngine {
         Ok((all, need, via))
     }
 
-    /// A blob of commit `c` under `l` holding delta `p`, a strict subset of `parts` (so smaller
+    /// A blob of commit `c` under `l` holding its delta on aspect `ai`, a strict subset of `parts` (so smaller
     /// than the body it would carry), that is this node's upload `host` refused for the
     /// label's cap (`SyncEngine::capped`).
-    fn rewrite_capped(&mut self, host: &HostKey, l: &LabelId, c: &CommitId, parts: &[(usize, usize)], p: &(usize, usize)) -> Option<BlobId> {
+    fn rewrite_capped(&mut self, host: &HostKey, l: &LabelId, c: &CommitId, parts: &[usize], ai: usize) -> Option<BlobId> {
         let ids: Vec<BlobId> = self
             .state
             .entries_of(l, c)
-            .filter(|(id, e)| !e.cert && self.capped.contains(&(*host, *l, *id)) && matches!(&e.kind, Kind::Commit { parts: q, .. } if q.contains(p) && q.len() < parts.len() && q.iter().all(|x| parts.contains(x)) && !self.holds_nothing(c, q)))
+            .filter(|(id, e)| !e.cert && self.capped.contains(&(*host, *l, *id)) && matches!(&e.kind, Kind::Commit { parts: q, .. } if q.contains(&ai) && q.len() < parts.len() && q.iter().all(|x| parts.contains(x)) && !self.holds_nothing(c, q)))
             .map(|(id, _)| id)
             .collect();
         ids.into_iter().find(|id| self.genuine(id))
@@ -689,7 +688,7 @@ impl SyncEngine {
                     let class: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| a.keys == ch.keys).map(|(ai, _)| ai).collect();
                     let ais: Vec<usize> = if class.is_empty() { (0..h.aspects.len()).collect() } else { class };
                     let parts = parts_of(h, |i| ais.contains(&i));
-                    let dropped = !parts.is_empty() && parts.iter().all(|p| m.body_gone(p.0));
+                    let dropped = !parts.is_empty() && parts.iter().all(|p| m.body_gone(*p));
                     if dropped {
                         first.get_or_insert((id, ch.clone()));
                     } else {

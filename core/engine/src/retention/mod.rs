@@ -283,7 +283,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
-    if a.hashes.is_empty() || m.dropped.contains_key(&ai) || m.bare(ai) {
+    if m.dropped.contains_key(&ai) || m.bare(ai) {
         return Ok(());
     }
     let k = (a.tid, a.ak.clone());
@@ -314,7 +314,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::copies::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
-    let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragments(tx, c, ai)? } else { Vec::new() };
+    let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragment(tx, c, ai)?.into_iter().collect() } else { Vec::new() };
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
     let shown = tx.core.ix.shown.get(&(*c, ai)).cloned();
     if stripped {
@@ -338,7 +338,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         crate::apply::copies::uncarry(tx.core, c, &h, &|x| x == ai);
     }
     if let Some(blob) = tx.get_commit(c)? {
-        let rest = osis_commit::rewrite(&blob, |x, _| x == ai);
+        let rest = osis_commit::rewrite(&blob, |x| x == ai);
         tx.put_commit(c, &rest, &m, Shred::Yes, None)?;
     }
     let (body, _) = body_class(tx.core, &m.header, c, ai);
@@ -434,7 +434,7 @@ fn note_carried_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             }
             Ok(())
         })?;
-        if !held.is_empty() {
+        if held.is_some() {
             crate::apply::copies::note_carried_of(tx.core, tid, ak, &s, carried);
         }
     }
@@ -442,7 +442,7 @@ fn note_carried_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 }
 
 /// The parts of `(tid, ak)` dropped while invalid (`DropFor::Invalid`) that are valid now are
-/// missing again (spec/commits.md §5, spec/permissions.md §7): they give nothing until the body
+/// missing again (spec/commits.md §5, spec/permissions.md §6): they give nothing until the body
 /// arrives again (node-sync fetches it, `Changed::undropped`; a holder uploads it, it is must-hold
 /// there). Until each does this node may read less than one that kept it.
 pub(crate) fn valid_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
@@ -474,10 +474,7 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
     m.missing.insert(ai);
     tx.core.ix.rotation_role.remove(&(*c, ai));
     tx.core.ix.shown.remove(&(*c, ai));
-    let several = m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0" && a.hashes.len() != 1);
-    if !several {
-        tx.core.ix.grant_overreach.remove(&(*c, ai));
-    }
+    tx.core.ix.grant_overreach.remove(&(*c, ai));
     // those are inputs of its judgment (`validity::rejudge_all` judges it again)
     tx.core.stale_commits.insert(*c);
     if let Some(blob) = tx.get_commit(c)? {
@@ -648,7 +645,7 @@ fn make_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, o: &[Owned], extra: &
         body.get_or_insert_default().join(f);
         Ok(())
     })?;
-    gives = held.into_iter().flatten().next().or(gives);
+    gives = held.flatten().or(gives);
     for f in extra {
         body.get_or_insert_default().join(f.clone());
     }
@@ -714,7 +711,7 @@ pub(crate) fn strip_carried(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
     let Some(mut body) = body else { return Ok(()) };
     tx.core.touch();
     strip_leftover(tx.core, &m.header, c, ai, &mut body);
-    put_leftover(tx, c, ai, m, body, held.into_iter().flatten().next())
+    put_leftover(tx, c, ai, m, body, held.flatten())
 }
 
 /// The leftover of `body`, held part `ai` of `c` (spec/crdt.md §4.7), the one strip of purge,
@@ -757,7 +754,7 @@ fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::
     }
     if let Some(blob) = tx.get_commit(c)? {
         // its body goes: the blob without the slot, shredded
-        let (rest, shred) = if whole { (osis_commit::rewrite(&blob, |x, _| x == ai), Shred::Yes) } else { (blob, Shred::No) };
+        let (rest, shred) = if whole { (osis_commit::rewrite(&blob, |x| x == ai), Shred::Yes) } else { (blob, Shred::No) };
         tx.put_commit(c, &rest, &m, shred, None)?;
     }
     let (body_id, _) = body_class(tx.core, &m.header, c, ai);
@@ -1108,7 +1105,7 @@ impl Engine {
         })
     }
 
-    /// Drops what goes without a right (spec/permissions.md §7): the held deltas that break their
+    /// Drops what goes without a right (spec/permissions.md §6): the held deltas that break their
     /// thing's required retention and that this node received after the `required.0^`
     /// delta they break, so a backdated change takes no body it already held, and `required.0^`
     /// deltas by a node that never could set one: those of `only`, else all. Returns their
@@ -1168,7 +1165,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();
@@ -1239,7 +1236,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         let first = lp.peers[0].commit(m).unwrap().unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();

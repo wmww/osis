@@ -83,16 +83,15 @@
   - Each node tags commits with their things' `groups.0` and retags when group membership changes.
 - **Entitlement**: a thing's **reader actor** is the thing if it has secrets of its own, else the nearest actor up its owner chain that has them (a key actor is its own). G's actor is the group thing if it has secrets of its own, else its owner. G's actor may read a thing iff the thing's secrets derive from its own or it holds read or above on the thing's reader actor. A commit's blob belongs under G's label iff G's actor may read a part of it on a thing of the closure (or published there, §2).
   - Only a writer of G stamps entries (§5).
-  - A node that is not one deposits what it must place there (its chain certificates and node card, its invite grant or self-removal, its heartbeats, and the revokes and roster snapshots it must place by spec/permissions.md §4) and relays stamped entries it holds.
+  - A node that is not one deposits what it must place there (its chain certificates and node card, its invite grant or self-removal, its heartbeats, and the revokes it must place by spec/permissions.md §4) and relays stamped entries it holds.
 - **One blob per commit**: a commit is uploaded as one blob holding every part of it the uploader holds and can seal, each part in the section of its thing under the thing's read secret (spec/wire.md §4; a part of a thing whose read secret the uploader lacks, a key actor's own record or card, travels as a certificate copy). Every label of every thing the commit touches carries the one blob under its label's wrap; hosts and nodes syncing several of those labels dedup it by blob ID. No size split: a commit stays within `MAX_BLOB` by paging its deltas (spec/crdt.md §8), largest first, or is refused at the writer.
   - A node judges a blob by the parts the label's actor may read (§6); a section it cannot open it copies verbatim when it encrypts the commit again (a tombstoned entry, a purge rewrite).
   - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the owner chain the section lists from an owner it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through a label carrying it (§2 Route).
   - **Per-label copies**: besides certificate copies (below), a label whose readers could not open a part's section in the shared blob gets a fresh blob of the parts its actor may read, one section under the read secret of the label's group, never shared with another label; judged like any body of the commit. Exactly two cases: a role commit with such a part on a thing other than the label's actor (its boxes are what give the readers that thing's secrets: a rotation, a grant, a cross-published `label.0`, §2); a part on a thing whose read secret derives from neither the label's actor nor an actor in its closure (a cross-published `created.0`, §2; a thing placed from another actor's tree, read by role on a reader actor whose rotations the label does not carry). A blob a node opens only under the label group's secret for a section on another thing is such a copy: its sections are not copied into another encryption.
 - **Retag**: when a thing joins a group, any writer of the label that holds the thing's live blobs adds them under it; when it leaves, delete-key holders delete them under the old label as they see the change (§7).
-- **Certificate blobs**: chain certificates, node cards, heartbeats, revokes and roster snapshots (spec/permissions.md §4): copies of the parts of a role commit about one actor.
+- **Certificate blobs**: chain certificates, node cards, heartbeats and revokes (spec/permissions.md §4): copies of the parts of a role commit about one actor.
   - They go under a label as a fresh encryption per label, never as a blob shared with another label.
   - The chunk and tree-node blobs of a linked frontier or header list go under it too, as the same blobs (a link names them) with a filler wrap.
-  - A roster snapshot copied as a certificate carries the grant and ledger deltas the chain needs.
   - A writer promoting a deposited commit completes its author's chain under the label from what it holds (§5).
 - **Inbox blob** (spec/crypto.md §5; layout and payload spec/wire.md §9): the parts about actor G of a role commit, boxed to G, with the label IDs and host addresses of those things it names that have labels of their own.
   - **What it carries about G**, any of:
@@ -137,7 +136,7 @@
   - Nothing else an inbox blob carries is placed.
   - A node runs this whenever it opens an inbox blob, its commit held or not.
 - **Inbox blob order**: a sender still opening or registering a label an inbox blob names at a host it is connected to, open at none of them, deposits the blob after that ends. A node told a label is unknown at a host, with no step of it to register, opens it again after a back-off of `retry_ms` doubling per refusal up to `resync_ms` (local policy).
-- **Contact card**: a link (spec/permissions.md §8) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the account's `created.0` and `keys.0` commits.
+- **Contact card**: a link (spec/permissions.md §7) with read role to an account's profile thing P, a group of itself with no items: its label carries P's own aspects and, as certificate copies, the account's `created.0` and `keys.0` commits.
 - **Unjudged blobs**: a receiver keeps blobs a peer placed under a label even if its own closure disagrees, while it cannot judge them: a commit it holds pending (not parked) or an entry of the label it can open and has not applied; then §6 decides.
 
 ## 4. Host state
@@ -298,7 +297,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - purged;
     - expired (its blob's prefix expiry, §3, whatever of it the label's actor reads);
     - past keep-at-most;
-    - dropped without a right (spec/permissions.md §7);
+    - dropped without a right (spec/permissions.md §6);
     - outside the required set;
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label;
     - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
@@ -310,7 +309,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Reader**: relays the stamped must-hold entries it holds that the label lacks.
   - **Neither** uploads nor relays a body a delete removed from the label (an entry of it that is not a certificate copy, within `TOMBSTONE_LIFETIME`) while both of these hold:
     - each of its deltas only a blob carries (as for a strict subset above) is held there by another blob of the commit that is not must-not-hold;
-    - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §7).
+    - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §6).
     - So once a delete or a bad Replace took a delta covered by a snapshot under the label, no one places it again, even a node that dates its deaths later (spec/commits.md §5) and still keeps it: the host keeps the snapshot's live state, not that delta's history before its keep-at-least bound. Once no valid snapshot under the label covers it, its holders place it again.
   - **Delete-key holders** delete must-not-hold bodies.
   - **Dropped bodies**: a node that dropped a body keeps knowing its entries (not its key or wrap). When the body counts as never received again (spec/permissions.md §5.2) it fetches them again where present, and otherwise takes the body from a holder's upload (it is must-hold there: no valid snapshot covers it).

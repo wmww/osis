@@ -88,7 +88,7 @@ struct Laid {
 /// A played history as a bundle as the hosts hold it: the genesis path of the first label (group
 /// secrets read `0a`, write `0b`, admin `09`, deposit seed `0c`), then per commit the blobs it
 /// references, each under a filler wrap (left out where the case needs no bytes of them: the
-/// chunks of `t:blob.0`, which nothing waits for, and a demotion's linked frontier), and its
+/// chunks of `t:blob.0`, which nothing waits for), and its
 /// one blob (sections per label, each under that label's read secret, spec/wire.md §4) sealed
 /// and stamped under every label with a part of it, each blob before its entry. With `second`,
 /// every thing but G is under a second label (read `1a`, write `1b`, admin `19`, deposit seed
@@ -116,7 +116,6 @@ fn bundle(played: &Played, second: bool) -> Laid {
         // the referenced blobs under the first label the commit has a part under
         if let Some(r0) = readers.first().copied()
             && !cb.header.aspects.iter().any(|a| a.ak.as_str() == "t:blob.0")
-            && cb.header.links.frontier.is_none()
         {
             let lab = lab_of(r0);
             for (id, b) in &pk.blobs {
@@ -261,8 +260,8 @@ pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Ve
             aspects.insert((a.tid, a.ak.clone()));
             // an edge write has no content verdict: it applies in the walk or not (§5.1)
             let valid = match a.ak.as_str() {
-                "roles.0" | "tenures.0" if e.edge_write_applied(&a.tid, c) => "applied",
-                "roles.0" | "tenures.0" => "unapplied",
+                "roles.0" if e.edge_write_applied(&a.tid, c) => "applied",
+                "roles.0" => "unapplied",
                 _ if e.body_valid(c, &a.tid, &a.ak).unwrap() => "valid",
                 _ => "invalid",
             };
@@ -299,7 +298,6 @@ pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Ve
     pending.sort();
     out.push(("waiting".into(), if pending.is_empty() { "-".into() } else { pending.join(",") }));
     for t in &things {
-        let start = e.epoch_start(t).map_or("-".to_string(), |c| hex(&c));
         let roster: Vec<String> = e.roster(t).iter().map(|(h, ed)| {
             let mut s = format!("{h}:{}", role(ed.role));
             if let Some(u) = ed.until {
@@ -310,19 +308,15 @@ pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Ve
             }
             s
         }).collect();
-        out.push((format!("thing {t}"), format!("start={start} roster={}", roster.join(","))));
+        out.push((format!("thing {t}"), format!("roster={}", roster.join(","))));
     }
     let key = |c: &CommitId| e.header(c).map(|h| (h.ts, h.author));
     let mut drops: Vec<_> = e.drop_set().into_iter().filter(|(w, _, _)| ids.contains(&w.commit())).collect();
     drops.sort_by_key(|(w, p, edge)| ((p.ts, p.node, p.commit), key(&w.commit()), w.commit(), *edge));
     // a commit's ops on one edge count once
-    drops.dedup_by_key(|(w, p, edge)| (w.commit(), p.commit, *edge, matches!(w, osis_perm::WriteId::Snapshot(_))));
-    for (n, (w, p, edge)) in drops.iter().enumerate() {
-        let what = match edge {
-            Some((t, h)) => format!("{} {t} {h}", hex(&w.commit())),
-            None => format!("{} snapshot", hex(&w.commit())),
-        };
-        out.push((format!("drop {n}"), format!("{what} by {}", hex(&p.commit))));
+    drops.dedup_by_key(|(w, p, edge)| (w.commit(), p.commit, *edge));
+    for (n, (w, p, (t, h))) in drops.iter().enumerate() {
+        out.push((format!("drop {n}"), format!("{} {t} {h} by {}", hex(&w.commit()), hex(&p.commit))));
     }
     for (t, a) in &aspects {
         let state = e.state(t, a).unwrap().map_or("absent".to_string(), |f| hash_hex(&state_bytes(&f)));
@@ -398,10 +392,10 @@ fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
 
 fn files() -> Vec<(&'static str, String)> {
     vec![
-        ("judgment/models.vec", generate("spec/permissions.md §5-§6", models(), false).render()),
-        ("judgment/rules.vec", generate("spec/permissions.md §2, §5-§6, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(starts()).chain(chains()).chain(invites()).chain(remerges()).chain(found()).collect(), false).render()),
+        ("judgment/models.vec", generate("spec/permissions.md §5", models(), false).render()),
+        ("judgment/rules.vec", generate("spec/permissions.md §2, §5, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(edges()).chain(invites()).chain(remerges()).chain(found()).collect(), false).render()),
         ("judgment/labels.vec", generate("spec/commits.md §4, spec/sync.md §3, spec/wire.md §12", labels(), true).render()),
-        ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1, §6", blobs(), false).render()),
+        ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1", blobs(), false).render()),
     ]
 }
 
@@ -531,59 +525,11 @@ fn rules() -> Vec<Scenario> {
     ]
 }
 
-/// Whether commit `i` of the history writes an edge (`roles.0`), a roster snapshot included.
-fn edge_commit(played: &Played, i: usize) -> bool {
-    osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.aspects.iter().any(|a| a.ak.as_str() == "roles.0")
-}
-
-/// As made, and a late joiner's order: the setup without its edge writes, the roster snapshot,
-/// then every later commit but the edge writes, newest first (only the snapshot tells it who
-/// held what before it).
-fn late_joiner(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
-    let made = (0..of.len()).map(Tok::In).collect();
-    let kind = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.kind;
-    // the newest roster snapshot alone
-    let last = (0..played.packs.len()).rev().find(|c| kind(*c) == osis_commit::Kind::RosterSnapshot).expect("a roster snapshot");
-    let snap: Vec<usize> = (0..of.len()).filter(|e| of[*e] == last).collect();
-    let setup = (0..of.len()).filter(|e| of[*e] < played.base && !edge_commit(played, of[*e]));
-    let rest = (0..of.len()).rev().filter(|e| of[*e] >= played.base && !edge_commit(played, of[*e]));
-    vec![("as made", made), ("late joiner", setup.chain(snap).chain(rest).map(Tok::In).collect())]
-}
-
-/// `late_joiner`, and one that also holds the edge writes after the snapshot (its setup and
-/// everything else as there).
-fn late_joiner_after(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
-    let mut o = late_joiner(played, of, refs);
-    let kind = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.kind;
-    let last = (0..played.packs.len()).rev().find(|c| kind(*c) == osis_commit::Kind::RosterSnapshot).unwrap();
-    let after = (0..of.len()).filter(|e| of[*e] > last && edge_commit(played, of[*e])).map(Tok::In);
-    let order = o[1].1.iter().copied().chain(after).collect();
-    o.push(("late joiner with the edge writes after the start", order));
-    o
-}
-
-/// One hand-picked scenario per rule of epoch starts (roster snapshots), `until` and invite
-/// edges (spec/permissions.md §2, §6).
-fn starts() -> Vec<Scenario> {
+/// One hand-picked scenario per rule of `until` and invite edges (spec/permissions.md §2).
+fn edges() -> Vec<Scenario> {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
     vec![
-        // spec/permissions.md §6: before the start, the ledger's tenures and frontiers say who held what
-        Scenario {
-            name: "epoch start: pre-start writes judged by its ledger",
-            spec: "spec/permissions.md §6",
-            source: "hand-picked: W1 by 1 reaches 0, W2 does not; 0 removes 1 with its frontier, then snapshots the roster (the start); the late joiner holds neither the grants nor the removal: the ledger entry's frontier keeps W1 valid, W2 invalid",
-            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }, tick.clone(), Roster { by: 0, t: 0 }],
-            orders: Some(late_joiner),
-        },
-        // spec/permissions.md §6: at the start a thing's edges become the snapshot's roster
-        Scenario {
-            name: "epoch start after a removal: a late joiner",
-            spec: "spec/permissions.md §6",
-            source: "hand-picked: 0 removes 2, snapshots the roster (the start), then 1 and 2 (not knowing) write; the late joiner holds the start but not the removal: 1's write valid by the roster, 2's invalid",
-            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, tick.clone(), Roster { by: 0, t: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Write { by: 2, t: 0, op: 0, k: 0, v: 2 }],
-            orders: Some(late_joiner),
-        },
         // spec/permissions.md §2, §5.2: an edge counts as removed from `until` on
         Scenario {
             name: "until passes: the edge ends",
@@ -599,59 +545,6 @@ fn starts() -> Vec<Scenario> {
             spec: "spec/permissions.md §2, §5.1",
             source: "hand-picked: 0 removes 2 and grants 1 write with invite write; 1 grants 2 write by invite (applies); 2 writes (valid)",
             steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, invite: Some(Role::Write), flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Write, until: None, invite: None, flow: true }, Sync { from: 1, to: 2 }, tick.clone(), Write { by: 2, t: 0, op: 0, k: 0, v: 1 }],
-            orders: None,
-        },
-    ]
-}
-
-/// Epoch starts beyond one snapshot (spec/permissions.md §6): the ledger carried forward, audits
-/// after a start, a start that withdraws itself.
-fn chains() -> Vec<Scenario> {
-    use Step::*;
-    let tick = Advance { who: None, ms: 1000 };
-    vec![
-        // §6: the previous start's ledger is carried forward whole
-        Scenario {
-            name: "second start carries the ledger forward",
-            spec: "spec/permissions.md §6",
-            source: "hand-picked: W1 by 1 reaches 0, W2 does not; 0 removes 1 with its frontier, snapshots the roster (S1), writes, snapshots again (S2); the late joiner holds S2 alone of the edge history: its ledger entry from S1 keeps W1 valid, W2 invalid",
-            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }, tick.clone(), Roster { by: 0, t: 0 }, tick.clone(), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }, tick.clone(), Roster { by: 0, t: 0 }],
-            orders: Some(late_joiner),
-        },
-        // §6: a demotion of X after S audits X's writes before S too
-        Scenario {
-            name: "demotion after the start audits writes before it",
-            spec: "spec/permissions.md §5.2, §6",
-            source: "hand-picked: W1 by 1 reaches 0, W2 does not; 0 snapshots the roster (1 still writes), then removes 1 with its frontier: W1 valid, W2 invalid, also for a late joiner holding the start and the removal; without the removal both valid",
-            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }, tick.clone(), Roster { by: 0, t: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }],
-            orders: Some(late_joiner_after),
-        },
-        // §5.1, §6: a self-removal audits nothing and its ledger tenure has no frontier; the next
-        // explicit write on the edge audits against the edge as restored, the writes before the
-        // start included
-        Scenario {
-            name: "explicit removal after a start audits a tenure ended without a frontier",
-            spec: "spec/permissions.md §5.1, §6",
-            source: "hand-picked: W by 1, unseen by 0; 1 removes its own edge (audits nothing); 0 snapshots the roster (W valid: 1 held write, ledger tenure without a frontier); 0 writes a removal of the absent edge, frontier empty: it audits, W invalid; a late joiner without the grant holds no entry the removal's reset names (§2): unapplied, W valid",
-            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 1, role: None, invite: None }, Send { from: 1, to: 0, back: 0 }, tick.clone(), Roster { by: 0, t: 0 }, tick.clone(), Removal { by: 0, t: 0, holder: 1 }],
-            orders: Some(late_joiner_after),
-        },
-        // §6 rounds: B (owned by A) holds admin on A, 2 holds admin on B, so 2 has owner-chain
-        // authority on B through B's own edge; its snapshot leaving itself out applies only
-        // while it is not B's start
-        Scenario {
-            name: "start withdrawing its own authority is excluded",
-            spec: "spec/permissions.md §6",
-            source: "core/perm roster::self_withdrawing_start_excluded: 0 owns A, B owned by A holds admin on A, 2 holds admin on B; 2 snapshots B without itself: the rounds do not settle, the snapshot is excluded, B has no start and 2 stays admin",
-            steps: vec![NewTop { by: 0 }, New { by: 0, parent: 1, write: false }, EdgeTo { by: 0, t: 1, holder: 2, role: Role::Admin }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, tick.clone(), HostileRoster { by: 2, t: 2, keep: vec![(1, Role::Write)] }],
-            orders: None,
-        },
-        // as above, an older snapshot keeping 2: that one is the start
-        Scenario {
-            name: "excluded start falls back to the older snapshot",
-            spec: "spec/permissions.md §6",
-            source: "core/perm roster::self_withdrawing_start_excluded: as above, with an older snapshot by 2 keeping itself and 1: the newest is excluded, the older is B's start",
-            steps: vec![NewTop { by: 0 }, New { by: 0, parent: 1, write: false }, EdgeTo { by: 0, t: 1, holder: 2, role: Role::Admin }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, tick.clone(), HostileRoster { by: 2, t: 2, keep: vec![(1, Role::Write), (2, Role::Admin)] }, tick.clone(), HostileRoster { by: 2, t: 2, keep: vec![(1, Role::Write)] }],
             orders: None,
         },
     ]
@@ -691,13 +584,6 @@ fn invites() -> Vec<Scenario> {
             orders: None,
         },
         Scenario {
-            name: "roster snapshot holding an edge with an invite above its role",
-            spec: "spec/permissions.md §2, §6, spec/commits.md §4",
-            source: "hand-built: 0's roster snapshot of a thing of its own holds 2 at read with invite write: that delta is bad input, the snapshot's other parts stand",
-            steps: vec![New { by: 0, parent: 0, write: false }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Write) }, tick.clone(), OverInviteRoster { by: 0, t: 1, holder: 2, role: Role::Read, invite: Role::Write }],
-            orders: None,
-        },
-        Scenario {
             name: "invite grant within the invite, control",
             spec: "spec/permissions.md §2, §5.1",
             source: "hand-built: 1 (invite read) grants 2 read: applied, with no boxes (the edge is judged on its own); 2's write invalid (read)",
@@ -728,14 +614,14 @@ fn invites() -> Vec<Scenario> {
         // §5.1 step 4: an invite level is a class; losing it audits the grants made through it
         Scenario {
             name: "invite grant unseen by the invite's removal",
-            spec: "spec/permissions.md §5.1, §8",
+            spec: "spec/permissions.md §5.1, §7",
             source: "hand-picked: 1 (invite write) grants 2 write, unseen by 0; 0 removes 1 with its frontier: the grant goes to D",
             steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
             orders: None,
         },
         Scenario {
             name: "invite grant seen by the invite's removal",
-            spec: "spec/permissions.md §5.1, §8",
+            spec: "spec/permissions.md §5.1, §7",
             source: "hand-picked: 1 (invite write) grants 2 write and 0 receives it; 0 removes 1 with its frontier: the grant stands",
             steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, Sync { from: 1, to: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
             orders: None,
@@ -861,21 +747,26 @@ fn refs_orders(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'
     o
 }
 
-/// A late joiner's order for `LinkedDemote` then `Roster`: the setup without its edge writes, the
-/// other commits and the roster snapshot, without its frontier's blobs, with them last and first.
+/// For writes then `LinkedDemote`: the setup, the writes, the demotion without its frontier's
+/// blobs, with them last and first.
 fn linked_orders(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
-    let setup: Vec<Tok> = (0..of.len()).filter(|e| of[*e] < played.base && !edge_commit(played, of[*e])).map(Tok::In).collect();
+    let setup: Vec<Tok> = (0..of.len()).filter(|e| of[*e] < played.base).map(Tok::In).collect();
     let body_of = |c: usize| (0..of.len()).find(|e| of[*e] == c && !refs.contains(e)).unwrap();
     let last = played.packs.len() - 1;
-    let write: Vec<Tok> = (played.base..last - 1).map(|c| Tok::In(body_of(c))).collect();
-    let snapshot = [Tok::In(body_of(last))];
+    let write: Vec<Tok> = (played.base..last).map(|c| Tok::In(body_of(c))).collect();
+    let demotion = [Tok::In(body_of(last))];
     let blobs: Vec<Tok> = refs.iter().map(|e| Tok::In(*e)).collect();
     let cat = |xs: &[&[Tok]]| xs.concat();
     vec![
-        ("without the frontier's blobs", cat(&[&setup, &write, &snapshot])),
-        ("the frontier's blobs last", cat(&[&setup, &write, &snapshot, &blobs])),
-        ("the frontier's blobs first", cat(&[&setup, &blobs, &write, &snapshot])),
+        ("without the frontier's blobs", cat(&[&setup, &write, &demotion])),
+        ("the frontier's blobs last", cat(&[&setup, &write, &demotion, &blobs])),
+        ("the frontier's blobs first", cat(&[&setup, &blobs, &write, &demotion])),
     ]
+}
+
+/// A history of one body and what it references: its bodies alone, in the order made.
+fn bodies_only(_: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
+    vec![("as made", (0..of.len()).filter(|e| !refs.contains(e)).map(Tok::In).collect())]
 }
 
 /// A history of one body and what it references: only the order it was made in.
@@ -902,19 +793,19 @@ fn blobs() -> Vec<Scenario> {
             steps: vec![Large { by: 1, t: 0 }],
             orders: Some(made_only),
         },
-        // the demotion's own blobs are left out of the bundle: it only waits here
+        // the demotion's blobs are never delivered: it only waits here
         Scenario {
             name: "demotion with a linked frontier, its blobs not held",
             spec: "spec/commits.md §4, spec/wire.md §4",
             source: "hand-picked: 0 removes 1 with a frontier above CHUNK_THRESHOLD: the commit waits for the blobs, 1 stays",
             steps: vec![LinkedDemote { by: 0, t: 0, holder: 1 }],
-            orders: Some(made_only),
+            orders: Some(bodies_only),
         },
         Scenario {
-            name: "ledger with a linked frontier",
-            spec: "spec/commits.md §4, spec/permissions.md §5.1, §6",
-            source: "hand-picked: W by 1 reaches 0, W' does not; 0 removes 1 with a frontier above CHUNK_THRESHOLD and snapshots the roster; a late joiner's snapshot waits for the frontier's blobs, then the ledger keeps W valid, W' invalid",
-            steps: vec![Write { by: 1, t: 0, op: 1, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 1, k: 0, v: 2 }, tick.clone(), LinkedDemote { by: 0, t: 0, holder: 1 }, tick.clone(), Roster { by: 0, t: 0 }],
+            name: "frontier coverage with a linked frontier",
+            spec: "spec/commits.md §4, spec/permissions.md §5.1",
+            source: "hand-picked: W by 1 reaches 0, W' does not; 0 removes 1 with a frontier above CHUNK_THRESHOLD; the demotion waits for the frontier's blobs, then the frontier keeps W valid, W' invalid",
+            steps: vec![Write { by: 1, t: 0, op: 1, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 1, k: 0, v: 2 }, tick.clone(), LinkedDemote { by: 0, t: 0, holder: 1 }],
             orders: Some(linked_orders),
         },
     ]
@@ -933,13 +824,6 @@ fn blobs() -> Vec<Scenario> {
 fn found() -> Vec<Scenario> {
     use Step::*;
     vec![
-        Scenario {
-            name: "order seed 1558",
-            spec: "spec/permissions.md §5.1, §6",
-            source: "order harness seed 1558 (order.rs), played with seed 1038: C lowers its own edge (a nested write into A's roster snapshot's entry) with a clock behind A's, so it sorts before the snapshot",
-            steps: vec![Demote { by: 0, t: 5, holder: 1, at: 4, to_read: false }, Roster { by: 0, t: 4 }, Sync { from: 0, to: 1 }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Sync { from: 1, to: 2 }, Write { by: 0, t: 7, op: 7, k: 0, v: 4 }, Send { from: 0, to: 2, back: 0 }, Edge { by: 2, t: 4, holder: 2, role: Some(Role::Read) }],
-            orders: None,
-        },
         Scenario {
             name: "order seed 2700027",
             spec: "spec/commits.md §5",
@@ -1021,7 +905,7 @@ fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, Str
     Ok(f.live().count())
 }
 
-// spec/permissions.md §5-§6, spec/commits.md §5: every judgment vector (core/test/vectors,
+// spec/permissions.md §5, spec/commits.md §5: every judgment vector (core/test/vectors,
 // `judgment/`) replayed through a fresh engine judges as written, and the files are what the
 // generator writes now.
 #[test]

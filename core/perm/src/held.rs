@@ -1,7 +1,7 @@
 //! The held-set queries perm needs (notes/architecture.md §2): the node implements `HeldSet`
 //! over its store; `MemoryHeldSet` serves tests. perm holds no state between calls.
 
-use crate::types::{RoleCommit, RosterSnapshot};
+use crate::types::RoleCommit;
 use osis_base::{CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -11,12 +11,10 @@ use std::sync::Arc;
 /// commit ID (the node's are inline in the signed header or linked by content hash): a saved
 /// walk is matched to its input by everything else in full, frontiers by their sizes.
 pub trait HeldSet {
-    /// Things with a held edge write, roster snapshot or `created.0` record.
+    /// Things with a held edge write or `created.0` record.
     fn things(&self) -> Vec<Tid>;
-    /// Role commits with an edge write on `thing` (roster snapshots excluded).
+    /// Role commits with an edge write on `thing`.
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>>;
-    /// Roster snapshots of `thing`.
-    fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>>;
     /// The `created.0` record of `thing`, if held.
     fn created(&self, thing: &Tid) -> Option<CreationRecord>;
 }
@@ -25,7 +23,6 @@ pub trait HeldSet {
 #[derive(Clone, Debug, Default)]
 pub struct MemoryHeldSet {
     pub commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
-    pub snapshots: BTreeMap<Tid, Vec<Arc<RosterSnapshot>>>,
     pub created: BTreeMap<Tid, CreationRecord>,
 }
 
@@ -46,16 +43,10 @@ impl MemoryHeldSet {
             self.commits.entry(t).or_default().push(c.clone());
         }
     }
-    pub fn add_snapshot(&mut self, s: RosterSnapshot) {
-        self.snapshots.entry(s.thing).or_default().push(Arc::new(s));
-    }
-    /// Drops every held commit and snapshot with this ID (as a compacted node would).
+    /// Drops every held commit with this ID (as a compacted node would).
     pub fn remove(&mut self, id: &osis_base::CommitId) {
         for v in self.commits.values_mut() {
             v.retain(|c| c.id != *id);
-        }
-        for v in self.snapshots.values_mut() {
-            v.retain(|s| s.id != *id);
         }
     }
 }
@@ -63,15 +54,11 @@ impl MemoryHeldSet {
 impl HeldSet for MemoryHeldSet {
     fn things(&self) -> Vec<Tid> {
         let mut s: BTreeSet<Tid> = self.commits.keys().copied().collect();
-        s.extend(self.snapshots.keys().copied());
         s.extend(self.created.keys().copied());
         s.into_iter().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
         self.commits.get(thing).cloned().unwrap_or_default()
-    }
-    fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>> {
-        self.snapshots.get(thing).cloned().unwrap_or_default()
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
         self.created.get(thing).cloned()

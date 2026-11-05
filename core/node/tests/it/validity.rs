@@ -1063,16 +1063,13 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[osis_base::CommitId])
     }
 }
 
-// spec/permissions.md §5.1 step 4 (D only grows), §6 (epoch starts; a re-snapshot's roster):
-// osis-perm joint neutrality seed 6's shape (notes/permissions.md, sticky residue). n0 removes A2 from A0 (W,
-// unseen by n1) and grants n1 write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The
-// full walk drops W and G (R is a fall while W stands) and keeps them dropped after R stops being
-// one; n1's roster snapshot of A0 has A2 admin, so replayed R is no fall and G stands. Device A
-// (full history) and device B (n1, the compactor) disagree until B's snapshot reaches A; then A,
-// B and late joiners (with or without W) agree on the snapshot's answer.
+// spec/permissions.md §5.1 step 4 (D only grows): osis-perm joint neutrality seed 6's shape
+// (notes/permissions.md, sticky residue). n0 removes A2 from A0 (W, unseen by n1) and grants n1
+// write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The full walk drops W and G (R is
+// a fall while W stands) and keeps them dropped after R stops being one.
 #[test]
-fn resnapshot_residue_heals_on_sync_spec_perm_6() {
-    let mut lp = net(5, 61);
+fn sticky_residue_spec_perm_5_1() {
+    let mut lp = net(3, 61);
     lp.sync_all().unwrap();
     let (n0, n1) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     // A0 owned by n1, A1 by n0, A2 by A0; A1 admin on A0, A2 write on A1
@@ -1094,7 +1091,7 @@ fn resnapshot_residue_heals_on_sync_spec_perm_6() {
     step(&mut lp);
     let c1 = set_edge(&mut lp.peers[0].engine, a0, a2, Some(edge(Role::Admin)), None);
     step(&mut lp);
-    let w = set_edge(&mut lp.peers[0].engine, a0, a2, None, None);
+    set_edge(&mut lp.peers[0].engine, a0, a2, None, None);
     step(&mut lp);
     set_edge(&mut lp.peers[0].engine, a2, n1, Some(edge(Role::Write)), None);
     step(&mut lp);
@@ -1114,26 +1111,6 @@ fn resnapshot_residue_heals_on_sync_spec_perm_6() {
     let has_g = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&a2).contains_key(&n1);
     assert!(lp.peers[2].engine.roster(&a0).contains_key(&a2), "W dropped: A2 stays admin on A0");
     assert!(!has_g(&lp, 2) && !has_g(&lp, 1), "the full walk keeps G dropped (sticky)");
-    // B compacts A0: it judges from its own snapshot and G stands; A has not got it yet
-    let snap = *lp.peers[1].engine.roster_snapshot(&a0, None).unwrap().commits.last().unwrap();
-    assert!(has_g(&lp, 1), "B: G stands under its snapshot");
-    assert!(!has_g(&lp, 2), "A: G dropped until the snapshot arrives");
-    send(&mut lp, 1, 2, &[snap]);
-    assert!(has_g(&lp, 2), "A adopts the snapshot as A0's epoch start: G stands");
-    assert_eq!(lp.peers[2].engine.roster(&a0), lp.peers[1].engine.roster(&a0));
-    assert_eq!(lp.peers[2].engine.roster(&a2), lp.peers[1].engine.roster(&a2));
-    // late joiners: one gets everything, one everything but W (as a compacted relay serves it)
-    sync(&mut lp, 1, 3);
-    let all_but_w: Vec<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|c| *c != w).collect();
-    send(&mut lp, 1, 4, &all_but_w);
-    for i in [0, 3, 4] {
-        if i == 0 {
-            sync(&mut lp, 1, 0);
-        }
-        assert!(has_g(&lp, i), "device {i}: G stands");
-        assert_eq!(lp.peers[i].engine.roster(&a0), lp.peers[1].engine.roster(&a0), "device {i}");
-        assert_eq!(lp.peers[i].engine.roster(&a2), lp.peers[1].engine.roster(&a2), "device {i}");
-    }
 }
 
 fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_node::Result<Option<osis_base::CommitId>> {

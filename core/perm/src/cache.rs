@@ -2,21 +2,20 @@
 //! Implementation; notes/local-store.md). Local format, never on the wire. A saved walk is
 //! restored only over exactly the inputs it was walked from: the bytes carry a BLAKE3 tag over
 //! the format, the caller's salt (the rules), the walk's whole input (owner links, every
-//! role commit and roster snapshot, frontiers by their sizes: a record's frontier is
+//! role commit, frontiers by their sizes: a record's frontier is
 //! fixed by its commit ID, `HeldSet`) and the body, so anything else (other rules, other or
 //! changed inputs, damaged bytes) gives `None` and the caller evaluates from scratch. Commits
 //! added since go on through `Timeline::extend`, as at run time.
 //!
-//! Layout: tag (32) ‖ body; body = the component's things, held commit and snapshot IDs and
-//! `created.0` tids (`Inputs`), then the walk (`Walked` with its undo log, D, epoch starts,
-//! passes, `reach`). Frontiers are referenced by where the input holds them (a commit's, or
-//! a snapshot's ledger entry), not copied.
+//! Layout: tag (32) ‖ body; body = the component's things, held commit IDs and `created.0`
+//! tids (`Inputs`), then the walk (`Walked` with its undo log, D, passes, `reach`). Frontiers
+//! are referenced by the commit that holds them, not copied.
 
 use crate::graph::{Class, Edges, Owners};
 use osis_base::Owner;
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{Edge, Frontier, RoleCommit, Point, RosterSnapshot, Tie, TieSource, WriteId};
+use crate::types::{Edge, Frontier, RoleCommit, Point, Tie, TieSource, WriteId};
 use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Undo, Walked};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -24,16 +23,9 @@ use std::sync::Arc;
 
 const FORMAT: &[u8] = b"osis-perm walk cache";
 
-/// A component's exact inputs: its things, the IDs of its commits and snapshots, and its
+/// A component's exact inputs: its things, the IDs of its commits, and its
 /// held `created.0` records (by tid; a record's tid fixes its content).
 pub(crate) type Inputs = (BTreeSet<Tid>, BTreeSet<CommitId>, BTreeSet<Tid>);
-
-/// Where a frontier sits in the input.
-#[derive(Clone, Copy)]
-enum FRef {
-    Commit(CommitId),
-    Ledger(CommitId, u32),
-}
 
 /// Tids and commit IDs of a walk body by index: the component's things, then the other tids
 /// in first use (listed after the inputs); commit IDs among the inputs' (else 0 and raw).
@@ -115,7 +107,6 @@ impl W {
         self.role(e.role);
         self.opt(e.until, |w, u| w.n(u.0));
         self.opt(e.invite, W::role);
-        self.opt(e.since.as_ref(), W::point);
         self.opt(e.tied.as_ref(), W::tie);
     }
     fn tie(&mut self, t: &Tie) {
@@ -135,17 +126,8 @@ impl W {
         self.bool(t.subgroup);
     }
     fn wid(&mut self, w: &WriteId) {
-        match w {
-            WriteId::Op(c, k) => {
-                self.u8(0);
-                self.cid(c);
-                self.n(u64::from(*k));
-            }
-            WriteId::Snapshot(c) => {
-                self.u8(1);
-                self.cid(c);
-            }
-        }
+        self.cid(&w.0);
+        self.n(u64::from(w.1));
     }
     fn class(&mut self, c: Class) {
         match c {
@@ -203,7 +185,7 @@ impl W {
 }
 
 /// Hashes the walk's whole input, as the tag covers it.
-fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>) {
+fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit>>) {
     let mut w = W::default();
     let mut flush = |w: &mut W| {
         h.update(&w.out);
@@ -240,31 +222,13 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
         }
         flush(&mut w);
     }
-    w.len(snaps.len());
-    for s in snaps.values() {
-        w.cid(&s.id);
-        w.ts(s.ts);
-        w.tid(&s.author);
-        w.tid(&s.actor);
-        w.tid(&s.thing);
-        w.edge_map(&s.roster);
-        w.len(s.ledger.len());
-        for t in &s.ledger {
-            w.tid(&t.holder);
-            w.role(t.role);
-            w.opt(t.since.as_ref(), W::point);
-            w.point(&t.until);
-            w.opt(t.frontier.as_deref(), W::frontier_shape);
-        }
-        flush(&mut w);
-    }
     flush(&mut w);
 }
 
-fn tag(salt: &[u8], owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>, body: &[u8]) -> [u8; 32] {
+fn tag(salt: &[u8], owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit>>, body: &[u8]) -> [u8; 32] {
     let mut h = osis_base::hash::Hasher::new();
     h.update(FORMAT).update(&(salt.len() as u64).to_le_bytes()).update(salt);
-    put_input(&mut h, owners, commits, snaps);
+    put_input(&mut h, owners, commits);
     h.update(body);
     h.finalize()
 }
@@ -272,45 +236,11 @@ fn tag(salt: &[u8], owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit
 /// Encodes `tl`, walked over `inputs`; `None` if a frontier it holds is not in its input
 /// (never, by construction).
 pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8>> {
-    // A frontier the walk holds came from the commit at its point or from a ledger entry
-    // ending at it (a timeline continued over a held set handing out new Arcs holds equal
-    // frontiers in other Arcs).
-    let mut ledger_at: HashMap<Point, Vec<(FRef, &Arc<Frontier>)>> = HashMap::new();
-    for s in tl.input.snaps.values() {
-        for (i, t) in s.ledger.iter().enumerate() {
-            if let Some(f) = &t.frontier {
-                ledger_at.entry(t.until).or_default().push((FRef::Ledger(s.id, u32::try_from(i).ok()?), f));
-            }
-        }
-    }
-    let memo: std::cell::RefCell<HashMap<(*const Frontier, Point), FRef>> = Default::default();
-    let fref = |w: &mut W, f: &Arc<Frontier>, at: &Point| -> Option<()> {
-        let key = (Arc::as_ptr(f), *at);
-        let got = memo.borrow().get(&key).copied();
-        let r = match got {
-            Some(r) => r,
-            None => {
-                let commit = tl.input.commits.get(&at.commit).and_then(|c| c.frontier.as_ref()).map(|g| (FRef::Commit(at.commit), g));
-                let mut cands: Vec<(FRef, &Arc<Frontier>)> = commit.into_iter().chain(ledger_at.get(at).into_iter().flatten().copied()).collect();
-                // one candidate: that is where it came from; else by pointer, then by value
-                cands.sort_by_key(|(_, g)| !Arc::ptr_eq(g, f));
-                let one = cands.len() == 1;
-                let r = cands.into_iter().find(|(_, g)| one || Arc::ptr_eq(g, f) || ***g == **f)?.0;
-                memo.borrow_mut().insert(key, r);
-                r
-            }
-        };
-        match r {
-            FRef::Commit(c) => {
-                w.u8(0);
-                w.cid(&c);
-            }
-            FRef::Ledger(c, i) => {
-                w.u8(1);
-                w.cid(&c);
-                w.n(u64::from(i));
-            }
-        }
+    // A frontier the walk holds is the frontier of the commit at its point: referenced by that
+    // commit's ID.
+    let fref = |w: &mut W, _: &Arc<Frontier>, at: &Point| -> Option<()> {
+        tl.input.commits.get(&at.commit)?.frontier.as_ref()?;
+        w.cid(&at.commit);
         Some(())
     };
     let ofref = |w: &mut W, f: &Option<Arc<Frontier>>, at: &Point| -> Option<()> {
@@ -368,7 +298,6 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
             w.point(&d.point);
             w.role(d.below);
             ofref(&mut w, &d.frontier, &d.point)?;
-            w.bool(d.ledger);
         }
     }
     w.len(wk.falls.len());
@@ -408,11 +337,6 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
         w.pair(k);
         w.wid(id);
     }
-    w.len(wk.candidates.len());
-    for (c, a) in &wk.candidates {
-        w.cid(c);
-        w.applied(a);
-    }
     w.len(wk.log.len());
     for u in &wk.log {
         match u {
@@ -447,21 +371,16 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
                 w.wid(id);
                 w.opt(a.as_ref(), W::applied);
             }
-            Undo::Candidate(c, a) => {
-                w.u8(6);
-                w.cid(c);
-                w.opt(a.as_ref(), W::applied);
-            }
             Undo::ByAuthorTarget(k) => {
-                w.u8(7);
+                w.u8(6);
                 w.pair(k);
             }
             Undo::Demotion(k) => {
-                w.u8(8);
+                w.u8(7);
                 w.pair(k);
             }
             Undo::Fall(k) => {
-                w.u8(9);
+                w.u8(8);
                 w.pair(k);
             }
         }
@@ -477,13 +396,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
         w.wid(id);
         w.point(tl.dropped().get(id)?);
     }
-    w.len(tl.epoch_starts().len());
-    for (t, c) in tl.epoch_starts() {
-        w.tid(t);
-        w.cid(c);
-    }
     w.len(tl.passes());
-    w.bool(tl.epoch_changed);
     w.opt(tl.reach.as_ref(), W::point);
     let extra = w.dict.map(|d| d.extra).unwrap_or_default();
     head.len(extra.len());
@@ -492,7 +405,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
     }
     let mut body = head.out;
     body.extend_from_slice(&w.out);
-    let mut out = tag(salt, &tl.input.owners, &tl.input.commits, &tl.input.snaps, &body).to_vec();
+    let mut out = tag(salt, &tl.input.owners, &tl.input.commits, &body).to_vec();
     out.extend_from_slice(&body);
     Some(out)
 }
@@ -586,9 +499,8 @@ impl<'a> R<'a> {
         let role = self.role()?;
         let until = self.opt(|r| r.n().map(WallMs))?;
         let invite = self.opt(R::role)?;
-        let since = self.opt(R::point)?;
         let tied = self.opt(R::tie)?;
-        Some(Edge { role, until, invite, since, tied })
+        Some(Edge { role, until, invite, tied })
     }
     fn tie(&mut self) -> Option<Tie> {
         let ts = self.ts()?;
@@ -600,11 +512,7 @@ impl<'a> R<'a> {
         Some(Tie { ts, src, ctr: self.n()?, subgroup: self.bool()? })
     }
     fn wid(&mut self) -> Option<WriteId> {
-        match self.u8()? {
-            0 => Some(WriteId::Op(self.cid()?, u32::try_from(self.n()?).ok()?)),
-            1 => Some(WriteId::Snapshot(self.cid()?)),
-            _ => None,
-        }
+        Some(WriteId(self.cid()?, u32::try_from(self.n()?).ok()?))
     }
     fn class(&mut self) -> Option<Class> {
         match self.u8()? {
@@ -667,7 +575,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<Saved<'_>> {
 }
 
 /// The held set of `held` restricted to `things`, and to the `created.0` records of `created`
-/// and the commits and snapshots in `ids` where given (else all of `things`').
+/// and the commits in `ids` where given (else all of `things`').
 pub(crate) struct Only<'a> {
     pub held: &'a dyn HeldSet,
     pub things: &'a BTreeSet<Tid>,
@@ -689,16 +597,6 @@ impl HeldSet for Only<'_> {
         }
         v
     }
-    fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>> {
-        if !self.things.contains(thing) {
-            return Vec::new();
-        }
-        let mut v = self.held.roster_snapshots(thing);
-        if let Some(ids) = self.ids {
-            v.retain(|s| ids.contains(&s.id));
-        }
-        v
-    }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
         if self.created.unwrap_or(self.things).contains(thing) { self.held.created(thing) } else { None }
     }
@@ -709,7 +607,7 @@ impl HeldSet for Only<'_> {
 /// `held` gives for exactly those.
 pub(crate) fn restore(s: &Saved<'_>, held: &dyn HeldSet, salt: &[u8]) -> Option<Timeline> {
     let input = Input::gather(&Only { held, things: &s.inputs.0, created: Some(&s.inputs.2), ids: Some(&s.inputs.1) });
-    if tag(salt, &input.owners, &input.commits, &input.snaps, s.body)[..] != *s.tag {
+    if tag(salt, &input.owners, &input.commits, s.body)[..] != *s.tag {
         return None;
     }
     let mut r = R { b: s.walk, tids: s.tids.clone(), cids: s.inputs.1.iter().copied().collect() };
@@ -718,16 +616,7 @@ pub(crate) fn restore(s: &Saved<'_>, held: &dyn HeldSet, salt: &[u8]) -> Option<
 }
 
 fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
-    let fref = |r: &mut R<'_>| -> Option<Arc<Frontier>> {
-        match r.u8()? {
-            0 => input.commits.get(&r.cid()?)?.frontier.clone(),
-            1 => {
-                let s = input.snaps.get(&r.cid()?)?;
-                s.ledger.get(r.usize()?)?.frontier.clone()
-            }
-            _ => None,
-        }
-    };
+    let fref = |r: &mut R<'_>| -> Option<Arc<Frontier>> { input.commits.get(&r.cid()?)?.frontier.clone() };
     let ofref = |r: &mut R<'_>| -> Option<Option<Arc<Frontier>>> {
         match r.u8()? {
             0 => Some(None),
@@ -757,7 +646,7 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
         for _ in 0..r.len()? {
             let (point, below) = (r.point()?, r.role()?);
             let frontier = ofref(r)?;
-            v.push(Demotion { point, below, frontier, ledger: r.bool()? });
+            v.push(Demotion { point, below, frontier });
         }
         demotions.insert(k, v);
     }
@@ -768,7 +657,6 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
     let prior_node = (0..r.len()?).map(|_| Some((r.pair()?, r.edge_map()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let by_author_target = (0..r.len()?).map(|_| Some((r.pair()?, (0..r.len()?).map(|_| r.wid()).collect::<Option<Vec<_>>>()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let setter = (0..r.len()?).map(|_| Some((r.pair()?, r.wid()?))).collect::<Option<BTreeMap<_, _>>>()?;
-    let candidates = (0..r.len()?).map(|_| Some((r.cid()?, r.applied()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let mut log = Vec::new();
     for _ in 0..r.len()? {
         log.push(match r.u8()? {
@@ -778,10 +666,9 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
             3 => Undo::Prior(r.pair()?, r.opt(R::edge)?),
             4 => Undo::PriorNode(r.pair()?, r.opt(R::edge_map)?),
             5 => Undo::Applied(r.wid()?, r.opt(R::applied)?),
-            6 => Undo::Candidate(r.cid()?, r.opt(R::applied)?),
-            7 => Undo::ByAuthorTarget(r.pair()?),
-            8 => Undo::Demotion(r.pair()?),
-            9 => Undo::Fall(r.pair()?),
+            6 => Undo::ByAuthorTarget(r.pair()?),
+            7 => Undo::Demotion(r.pair()?),
+            8 => Undo::Fall(r.pair()?),
             _ => return None,
         });
     }
@@ -792,13 +679,11 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
         return None;
     }
     let found = found.into_iter().map(|f| f.0).collect();
-    let epoch_starts = (0..r.len()?).map(|_| Some((r.tid()?, r.cid()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let passes = r.usize()?;
-    let epoch_changed = r.bool()?;
     let reach = r.opt(R::point)?;
     if !r.b.is_empty() {
         return None;
     }
-    let walked = Walked { initial, history, edges, applied, demotions, falls, prior, dead, prior_node, by_author_target, setter, candidates, log, marks, found };
-    Some(Outcome { walked, dropped, epoch_starts, passes, epoch_changed, reach, items: None, common: None })
+    let walked = Walked { initial, history, edges, applied, demotions, falls, prior, dead, prior_node, by_author_target, setter, log, marks, found };
+    Some(Outcome { walked, dropped, passes, reach, items: None, common: None })
 }

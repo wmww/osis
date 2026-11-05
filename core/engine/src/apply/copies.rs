@@ -234,7 +234,7 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> R
         ix.add(&f);
         Ok(())
     })?
-    .is_empty()
+    .is_none()
     {
         return Ok(None);
     }

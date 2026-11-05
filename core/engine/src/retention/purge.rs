@@ -1,4 +1,4 @@
-//! Purge requests (spec/commits.md §5, spec/permissions.md §7). Every question about one comes down
+//! Purge requests (spec/commits.md §5, spec/permissions.md §6). Every question about one comes down
 //! to two: does it name a delta (`names`), and does it have the right? The right has two readings:
 //! `holds_right` by the role timeline, which what a request drops follows (`stands`,
 //! `rejudge_purges`), and `signers_could`, by roles of any validity at any time, for what must not
@@ -34,7 +34,7 @@ fn names(p: &Header, a: &AspectEntry, ch: &Header, c: &CommitId) -> bool {
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
-/// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §7): its author
+/// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §6): its author
 /// does, and the actor it acts for, neither by a role a demotion's frontier took from this commit.
 /// The actor holds a client to its own rights in any arrival order: its node's would reach a delta
 /// of the person it acts for that the node did not hold yet. A function of the role timeline, the
@@ -88,7 +88,7 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 
 /// Whether held commit `id` keeps a blob under a label whose things `on` says, for good (spec/commits.md
 /// §5, a lasting header): a permanent delta of it on such a thing is dropped (a broken one is no
-/// tombstone: spec/permissions.md §7), or its purge request
+/// tombstone: spec/permissions.md §6), or its purge request
 /// dropped one there (`purge_one` notes it: a new device needs the request to hold a copy of the
 /// delta that comes back as purged). Noted, not walked: a writer's aspect-wide request naming nothing it may purge
 /// would walk the aspect on every pass.
@@ -302,7 +302,7 @@ impl AspectRequests {
     }
 }
 
-/// Judges the held purge requests on `(tid, ak)` again (spec/permissions.md §7): a part one now
+/// Judges the held purge requests on `(tid, ak)` again (spec/permissions.md §6): a part one now
 /// drops is purged as on arrival; one held value-less for a purge that none drops any more
 /// counts as never received from here on: off the value-less list, its leftover set aside
 /// (`unstrip`) and its writes gone from the state until a copy comes (node-sync fetches it,
@@ -504,7 +504,7 @@ impl Engine {
     }
 
     /// Whether request `pc` drops delta `(tid, ak)` of `c` as the node now judges it (spec/permissions.md
-    /// §7), held or not.
+    /// §6), held or not.
     pub fn purge_stands(&self, pc: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let core = &self.core;
         let (Some(p), Some(m)) = (core.ix.commits.get(pc), core.ix.commits.get(c)) else { return false };
@@ -516,12 +516,12 @@ impl Engine {
     /// that could ever hold the right: a delete that took the body at a host may be that request's,
     /// not its keep bounds' (spec/sync.md §6). A request no signer ever had the right for took
     /// nothing: a plain writer's aspect-wide one must not reopen every delete on the aspect.
-    pub fn named_by_a_fallen_purge(&mut self, c: &CommitId, parts: &[(usize, usize)]) -> Result<bool> {
-        let (c, ais): (CommitId, BTreeSet<usize>) = (*c, parts.iter().map(|p| p.0).collect());
+    pub fn named_by_a_fallen_purge(&mut self, c: &CommitId, parts: &[usize]) -> Result<bool> {
+        let c = *c;
         self.run(|tx| {
             let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { return Ok(false) };
-            for ai in ais {
-                let Some(a) = h.aspects.get(ai) else { continue };
+            for ai in parts {
+                let Some(a) = h.aspects.get(*ai) else { continue };
                 let requests = requests_on(tx, a, &c)?;
                 if requests.iter().any(|(pc, p)| could_stand(tx.core, p, a, &h, &c) && !holds_right(tx.core, p, pc, a, &h)) {
                     return Ok(true);

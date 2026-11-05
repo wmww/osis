@@ -786,7 +786,7 @@ fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
     lp.peers[1].clock.advance(120_000);
     let mut b = osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:reg.0"), false)).unwrap();
     b.parts.extend(osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:brief.0"), true)).unwrap().parts);
-    b.parts.sort_by_key(|p| (p.ai, p.di));
+    b.parts.sort_by_key(|p| p.ai);
     let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
     assert!(!matches!(r, osis_node::Ingested::Pending(..)), "{r:?}");
     lp.peers[1].engine.reexamine().unwrap();
@@ -957,7 +957,7 @@ fn tombstone_alike_in_every_order_spec_commits_5() {
     lp.advance(5);
     let z = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
     let snap = lp.peers[0].engine.package(&z).unwrap().unwrap();
-    let header = |b: &[u8]| osis_commit::rewrite(&CommitBlob::decode(b).unwrap(), |_, _| true).encode();
+    let header = |b: &[u8]| osis_commit::rewrite(&CommitBlob::decode(b).unwrap(), |_| true).encode();
     let item = |pk: &osis_node::local_peer::Package| (pk.bytes.clone(), pk.blobs.clone());
     let (cw, ch, pw, ph, zw, rc) = (item(&whole), (header(&whole.bytes), Vec::new()), item(&request), (header(&request.bytes), Vec::new()), item(&snap), item(&rec[0]));
     let sets = [("body, header and request", vec![cw.clone(), ch.clone(), pw.clone(), rc.clone()]), ("header and request", vec![ch.clone(), pw, rc.clone()]), ("two headers and a snapshot", vec![ch, ph, zw, rc])];

@@ -71,7 +71,7 @@ fn purge_by_commit_names_one_aspect_spec_commits_5() {
     assert_eq!(read(&h, OTHER), Read::Reg(8));
 }
 
-// spec/commits.md §5 (Purge), spec/permissions.md §7: an author may not purge an `admin` delta
+// spec/commits.md §5 (Purge), spec/permissions.md §6: an author may not purge an `admin` delta
 #[test]
 fn purge_without_the_right_drops_nothing_spec_commits_5() {
     let cs = vec![
@@ -115,7 +115,7 @@ fn keep_at_most_zero_drops_after_first_death_spec_commits_5() {
     let zero = Retention { most_zero: true, ..Retention::WRITER };
     let cs = vec![reg(10, OWNER, 1, REG, zero, 1), reg(11, OWNER, 2, REG, Retention::PLAIN, 2)];
     assert_eq!(fate(&held(1, cs[..1].to_vec()), 10), Fate::Keep(KeepWhy::Plain));
-    // the kill goes at once, also stamped ahead of the clock (AMBIGUITIES.md 45)
+    // the kill goes at once, also stamped ahead of the clock (AMBIGUITIES.md 44)
     let none = DropWhy::AtMost { carrier: false };
     assert_eq!(fate(&held(1, cs.clone()), 10), Fate::MustDrop(none));
     assert_eq!(fate(&held(2, cs), 10), Fate::MustDrop(none));
@@ -235,7 +235,7 @@ fn expired_key_copy_in_another_body_is_stripped_spec_commits_6() {
     assert!(evaluate(&act(&h, &o, None)).forbidden.is_empty());
 }
 
-// spec/permissions.md §7 (Judgment): a leftover with no request dropping it counts as never received
+// spec/permissions.md §6 (Judgment): a leftover with no request dropping it counts as never received
 #[test]
 fn valueless_body_without_reason_is_never_received_spec_commits_5() {
     let mut c = reg(10, OWNER, 1, REG, Retention::PLAIN, 7);
@@ -299,10 +299,10 @@ fn copy_leftover_drops_at_its_bound_spec_commits_5() {
     assert!(matches!(fate(&held(3, cs), 15), Fate::MustDrop(DropWhy::AtMost { .. })));
 }
 
-// spec/permissions.md §7: a body stripped for a purge that no longer stands counts as never
+// spec/permissions.md §6: a body stripped for a purge that no longer stands counts as never
 // received; its stripped copy no longer joins
 #[test]
-fn stripped_copy_of_a_fallen_purge_is_never_received_spec_permissions_7() {
+fn stripped_copy_of_a_fallen_purge_is_never_received_spec_permissions_6() {
     let mut s = snap(15, OWNER, 2, REG, Retention::WRITER, vec![Write { stamp: st(1, 10, 1), op: Op::Set { value: None } }]);
     s.parts[0].stripped.insert(10);
     let h = held(3, vec![missing(reg(10, OWNER, 1, REG, Retention::PLAIN, 7), 0), s]);

@@ -189,10 +189,10 @@ impl PartRef<'_> {
 
 /// The parts by aspect, in the commit's part order.
 pub(super) fn in_order(parts: &Parts) -> Vec<(usize, PartRef<'_>)> {
-    let mut v: Vec<(usize, usize, PartRef<'_>)> = parts.whole.iter().map(|(ai, di, d)| (*ai, *di, PartRef::Whole(d))).collect();
-    v.extend(parts.streamed.iter().map(|s| (s.ai, s.di, PartRef::Streamed(s))));
-    v.sort_by_key(|x| (x.0, x.1));
-    v.into_iter().map(|x| (x.0, x.2)).collect()
+    let mut v: Vec<(usize, PartRef<'_>)> = parts.whole.iter().map(|(ai, d)| (*ai, PartRef::Whole(d))).collect();
+    v.extend(parts.streamed.iter().map(|s| (s.ai, PartRef::Streamed(s))));
+    v.sort_by_key(|x| x.0);
+    v
 }
 
 /// A streamed delta's pages, read through the transaction the code joining its pieces holds too
@@ -221,7 +221,7 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
         PartRef::Whole(d) => return f(tx, d.fragment().clone()),
         PartRef::Streamed(s) => s,
     };
-    let p = blob.parts.iter().find(|p| p.ai == s.ai && p.di == s.di).ok_or(Error::Corrupt("streamed part"))?;
+    let p = blob.parts.iter().find(|p| p.ai == s.ai).ok_or(Error::Corrupt("streamed part"))?;
     stream_stored(tx, h, id, p, &s.dedup, f).map(|_| ())
 }
 
@@ -556,7 +556,7 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
 /// commit's `created.0` parts, durable; an ephemeral one's beside its deltas, memory class);
 /// whether any was new. A durable record of a thing held as memory class persists it: its row
 /// moves to the store (rows stay in the class they were written in).
-fn note_created(tx: &mut Tx<'_>, h: &Header, blob: &CommitBlob, parts: &[(usize, usize, Decoded)]) -> Result<bool> {
+fn note_created(tx: &mut Tx<'_>, h: &Header, blob: &CommitBlob, parts: &[(usize, Decoded)]) -> Result<bool> {
     let mut any = false;
     if h.ephemeral.is_some() {
         let received = tx.now();
@@ -571,7 +571,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, blob: &CommitBlob, parts: &[(usize,
         }
         return Ok(any);
     }
-    for (ai, _, d) in parts {
+    for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() != osis_commit::retention::CREATED || tx.core.durable_created(&a.tid).is_some() {
             continue;
@@ -620,9 +620,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let view = Arc::new(crate::engine::View::of(&h));
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &parts.whole);
-        let mut all = parts.whole.clone();
-        all.extend(away_of(tx, &h, &id, &parts));
-        validity::add_role_commit(tx, &view, Some(&h), &id, &validity::EdgeParts::of(&h, &all))?;
+        validity::add_role_commit(tx.core, &view, &id, &validity::EdgeParts::of(&h, &parts.whole));
         held_changed = true;
     }
     if held_changed {
@@ -732,7 +730,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
 fn note_held_rules(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<()> {
     for ai in parts.ais() {
         if h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::REQUIRED) {
-            let held: Vec<(usize, usize, osis_commit::Decoded)> = super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)).collect();
+            let held: Vec<(usize, osis_commit::Decoded)> = super::held_part(tx, id, ai)?.into_iter().map(|d| (ai, d)).collect();
             validity::note_required_rules(tx.core, h, id, &held);
         }
     }
@@ -831,11 +829,6 @@ fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, Ak)>> {
     Ok(flipped)
 }
 
-/// The parts of `parts.waiting` that keep snapshot `id` out of the walk (`validity::away_parts`).
-fn away_of(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Vec<(usize, usize, osis_commit::Decoded)> {
-    parts.waiting.as_ref().map(|w| validity::away_parts(tx, h, id, &w.parts)).unwrap_or_default()
-}
-
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation
 /// records and edge writes reach perm as on apply (a certificate copy may bring a commit's
 /// `roles.0` delta after its `created.0` one), and held deltas are re-judged.
@@ -848,8 +841,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let uncarried = copies::uncarry(tx.core, id, &h, &|ai| parts.has(ai));
     let late = parts.ais();
     let mut held_changed = note_created(tx, &h, merged, &parts.whole)?;
-    let away = away_of(tx, &h, id, &parts);
-    let edges = h.kind.is_role() && (!away.is_empty() || late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str()))));
+    let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
     if h.kind.is_role() {
         held_changed |= judge_late(tx, &h, id, &parts, &mut meta)?;
     }
@@ -876,9 +868,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     crate::retention::on_late(tx, id, &late, &mut j.changed)?;
     if edges && let Some(all) = &all {
         tx.core.ix.held.remove(id);
-        let mut walked = all.clone();
-        walked.0.extend(validity::EdgeParts::of(&h, &away).0);
-        validity::add_role_commit(tx, &meta.view, Some(&h), id, &walked)?;
+        validity::add_role_commit(tx.core, &meta.view, id, all);
         held_changed = true;
     }
     if held_changed {
@@ -911,37 +901,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     }
     // a memory commit whose late parts went at once (expired, superseded)
     crate::retention::memory::forget_if_spent(tx, id)
-}
-
-/// Takes applied snapshot `id` out of the walk on a thing where a part of `waiting` is held with a
-/// linked frontier away, if it is still in. Nothing joins: `rejudged` and its events as a late part's.
-pub(crate) fn leave_walk(tx: &mut Tx<'_>, id: &CommitId, waiting: &[osis_commit::Part]) -> Result<()> {
-    let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
-    let h = meta.header.clone();
-    let away = validity::away_parts(tx, &h, id, waiting);
-    let out: BTreeSet<Tid> = away.iter().filter_map(|(ai, _, _)| h.aspects.get(*ai)).map(|a| a.tid).filter(|t| tx.core.ix.held.walks(id, t)).collect();
-    if out.is_empty() {
-        return Ok(());
-    }
-    tx.core.touch();
-    let mut all = super::edge_parts(tx, id)?;
-    all.0.extend(validity::EdgeParts::of(&h, &away).0);
-    tx.core.ix.held.remove(id);
-    validity::add_role_commit(tx, &meta.view, Some(&h), id, &all)?;
-    tx.core.update_timelines();
-    let flipped = rejudged(tx, true)?;
-    if meta.origin != Origin::Local {
-        crate::rotation::mark_lost_due(tx, out.iter().copied())?;
-    } else {
-        crate::rotation::arm_untils(tx, out.iter().copied())?;
-    }
-    for thing in out {
-        tx.core.events.queue(Event::Roster { thing });
-    }
-    if !flipped.is_empty() {
-        tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
-    }
-    Ok(())
 }
 
 /// The late parts of role commit `id` judged with the parts held before (a grant's `roles.0`
@@ -980,7 +939,7 @@ fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, meta: &
 /// keyed entries, and a write whose removed keys are unknown waits as usual). A late `keys.0`
 /// part likewise applies the held `secrets.0` of its thing again: applied without the keyset (a
 /// role commit applies from any held part), they made no rotation.
-fn with_keys(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<Vec<(usize, usize, Decoded)>> {
+fn with_keys(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<Vec<(usize, Decoded)>> {
     let mut out = parts.whole.clone();
     if h.kind != osis_commit::Kind::Role {
         return Ok(out);
@@ -995,7 +954,7 @@ fn with_keys(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Resul
             _ => false,
         };
         if want && !parts.has(ai) {
-            out.extend(super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)));
+            out.extend(super::held_part(tx, id, ai)?.map(|d| (ai, d)));
         }
     }
     Ok(out)

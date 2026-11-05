@@ -8,8 +8,6 @@ use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
 use osis_schema::PurgeBy;
 use osis_schema::core_types::is_role_class;
 
-const ROSTER_AKS: [&str; 2] = ["roles.0", "tenures.0"];
-
 impl Header {
     /// Checks every layout rule and every rule of spec/commits.md §2 a header shows: sort orders,
     /// indices, ranges, kinds and aspect classes, fixed retention, expiry, purge, frontier,
@@ -37,7 +35,7 @@ impl Header {
         }
         // edge writes are judged by the timeline, which never asks whom the author acts for
         // (spec/permissions.md §5.2)
-        if matches!(kind, Kind::Role | Kind::RosterSnapshot) && self.actor != self.author {
+        if kind == Kind::Role && self.actor != self.author {
             return Err(Error::Invalid("role commit acting for another actor"));
         }
         let wall = self.ts.wall_ms().0;
@@ -45,7 +43,6 @@ impl Header {
         for a in &self.aspects {
             let ak = a.ak.as_str();
             // indices and ranges
-            ord(!a.hashes.is_empty(), "aspect without delta hashes")?;
             let nums = [Some(a.lo), Some(a.hi), a.retention.at_least.abs, a.retention.at_least.rel, a.retention.at_most.abs, a.retention.at_most.rel];
             ord(nums.iter().flatten().all(|n| *n <= FOREVER), "integer above 2^63 - 1")?;
             ord(strictly_ascending(&a.keys, |i| *i), "aspect delete keys not ascending")?;
@@ -62,11 +59,6 @@ impl Header {
             } else {
                 ord(a.lo == 0 && a.hi == 0, "counter range of a commit without own writes")?;
             }
-            if kind.several_deltas() {
-                ord(strictly_ascending(&a.hashes, |h| *h), "delta hashes not sorted and distinct")?;
-            } else if a.hashes.len() != 1 {
-                return Err(Error::Invalid("more than one delta on an aspect of this kind"));
-            }
             // kinds and aspect classes
             if ak != CREATED && is_role_class(ak) != kind.is_role() {
                 return Err(Error::Invalid("aspect of the wrong class for the commit kind"));
@@ -81,10 +73,9 @@ impl Header {
             if ak == REQUIRED && !kind.has_own_writes() {
                 return Err(Error::Invalid("required.0^ in a commit without own writes"));
             }
-            match kind {
-                Kind::RosterSnapshot if !ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("roster snapshot of a non-roster aspect")),
-                Kind::RoleSnapshot if ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("compaction snapshot of roles.0 or tenures.0")),
-                _ => {}
+            // the role timeline walks every edge write (spec/commits.md §2)
+            if kind == Kind::RoleSnapshot && ak == "roles.0" {
+                return Err(Error::Invalid("compaction snapshot of roles.0"));
             }
             check_retention(&a.retention)?;
             if let Some(f) = fixed_retention(ak) {
@@ -122,9 +113,6 @@ impl Header {
             && classes.any(|n| n != first)
         {
             return Err(Error::Invalid("a nobody delta beside a delta of another purgeable-by"));
-        }
-        if kind == Kind::RosterSnapshot && self.aspects.windows(2).any(|w| matches!(w, [x, y] if x.tid != y.tid)) {
-            return Err(Error::Invalid("roster snapshot of several things"));
         }
         // one author chain: at most one level-2 key (header-list blobs commit to it alone)
         if self.keys.iter().filter(|k| k.level == DELETE_AUTHOR).count() > 1 {

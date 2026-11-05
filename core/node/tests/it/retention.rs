@@ -94,11 +94,11 @@ fn expiry_spec_commits_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
-// spec/commits.md §5, spec/permissions.md §7: rights are judged per delta in any arrival order:
+// spec/commits.md §5, spec/permissions.md §6: rights are judged per delta in any arrival order:
 // a request by the admin arriving before an `author` delta leaves it whole, the author's arriving
 // before it drops it on arrival; `nobody` keeps it from both.
 #[test]
-fn purge_sets_any_order_spec_perm_7() {
+fn purge_sets_any_order_spec_perm_6() {
     use osis_schema::{PurgeBy, Retention};
     for (by, by_admin, by_author) in [(PurgeBy::Author, false, true), (PurgeBy::Admin, true, false), (PurgeBy::AuthorOrAdmin, true, true), (PurgeBy::Nobody, false, false), (PurgeBy::Writer, true, true)] {
         for (who, dropped) in [(0, by_admin), (1, by_author)] {
@@ -136,18 +136,18 @@ fn purge_sets_any_order_spec_perm_7() {
     }
 }
 
-// spec/permissions.md §7: rights hold in every arrival order: among the delta, the request and a
+// spec/permissions.md §6: rights hold in every arrival order: among the delta, the request and a
 // demotion the requester had not heard of. Dropped iff the set holds the requester at the
 // request's time; with the demotion last a stale drop falls, the part missing until a copy comes.
 #[test]
-fn purge_rights_both_arrival_orders_spec_perm_7() {
+fn purge_rights_both_arrival_orders_spec_perm_6() {
     // each message before and after each other
     purge_rights(&[[0, 1, 2], [2, 1, 0]]);
 }
 
 #[test]
 #[ignore = "tier 2: every order of the three"]
-fn purge_rights_any_arrival_order_large_spec_perm_7() {
+fn purge_rights_any_arrival_order_large_spec_perm_6() {
     purge_rights(&[[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]);
 }
 
@@ -261,10 +261,10 @@ impl Backdated {
     }
 }
 
-// spec/permissions.md §7: a request a demotion's frontier leaves out, however early its `ts`, holds
+// spec/permissions.md §6: a request a demotion's frontier leaves out, however early its `ts`, holds
 // no right: a node holding the demotion drops nothing and shows no purge.
 #[test]
-fn request_outside_the_frontier_drops_nothing_spec_perm_7() {
+fn request_outside_the_frontier_drops_nothing_spec_perm_6() {
     let mut b = backdated(0x61);
     b.give(&[2, 0, 1]);
     let (t, c) = (b.t, b.c);
@@ -299,11 +299,11 @@ fn forged_role_class_purge_refused_spec_commits_5() {
     lp.peers[0].engine.ingest(&content, Vec::new()).unwrap();
 }
 
-// spec/permissions.md §7: a node that dropped the body before it heard of the demotion: the purge
+// spec/permissions.md §6: a node that dropped the body before it heard of the demotion: the purge
 // falls, the part counts as never received, and a copy brings the value back; as the order that had
 // the demotion first reads.
 #[test]
-fn fallen_purge_comes_back_spec_perm_7() {
+fn fallen_purge_comes_back_spec_perm_6() {
     let mut b = backdated(0x62);
     b.give(&[0, 1]);
     let (t, c, d) = (b.t, b.c, b.d);
@@ -327,10 +327,10 @@ fn fallen_purge_comes_back_spec_perm_7() {
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")));
 }
 
-// spec/permissions.md §7, spec/crdt.md §5.7 Live: a purge of a list element that falls lifts the
+// spec/permissions.md §6, spec/crdt.md §5.7 Live: a purge of a list element that falls lifts the
 // element's end: a copy shows it again.
 #[test]
-fn fallen_purge_of_list_element_comes_back_spec_perm_7() {
+fn fallen_purge_of_list_element_comes_back_spec_perm_6() {
     let mut lp = net(4, 0x6a2);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -366,10 +366,10 @@ fn fallen_purge_of_list_element_comes_back_spec_perm_7() {
     assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("kept")])), "the purge fell");
 }
 
-// spec/permissions.md §7: a demotion that itself falls gives the request its right back: the body
+// spec/permissions.md §6: a demotion that itself falls gives the request its right back: the body
 // drops, in either order.
 #[test]
-fn purge_stands_again_when_its_demotion_falls_spec_perm_7() {
+fn purge_stands_again_when_its_demotion_falls_spec_perm_6() {
     for fall_last in [true, false] {
         let mut lp = net(5, 0x63 + u64::from(fall_last));
         lp.sync_all().unwrap();
@@ -412,10 +412,10 @@ fn purge_stands_again_when_its_demotion_falls_spec_perm_7() {
     }
 }
 
-// spec/commits.md §5, spec/permissions.md §7: a snapshot dropped for carrying the purged value comes
+// spec/commits.md §5, spec/permissions.md §6: a snapshot dropped for carrying the purged value comes
 // back with the fall, and given again gives the value; the delta itself need not return.
 #[test]
-fn snapshot_dropped_for_a_fallen_purge_comes_back_spec_perm_7() {
+fn snapshot_dropped_for_a_fallen_purge_comes_back_spec_perm_6() {
     let mut lp = net(4, 0x66);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -460,10 +460,10 @@ fn snapshot_dropped_for_a_fallen_purge_comes_back_spec_perm_7() {
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "the snapshot carries it");
 }
 
-// spec/commits.md §5, spec/permissions.md §7: a part applied alone and dropped by a purge request whose
+// spec/commits.md §5, spec/permissions.md §6: a part applied alone and dropped by a purge request whose
 // right then falls comes back as any fallen drop, the commit's other part joining when it comes.
 #[test]
-fn part_of_a_fallen_purge_comes_back_spec_perm_7() {
+fn part_of_a_fallen_purge_comes_back_spec_perm_6() {
     let mut lp = net(4, 0x67);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -568,11 +568,11 @@ fn snapshot_right_any_arrival_order_spec_commits_5() {
     }
 }
 
-// spec/permissions.md §7: a purge acting for an actor drops only what that actor holds the right
+// spec/permissions.md §6: a purge acting for an actor drops only what that actor holds the right
 // to, also a delta its node holds later: of an `author` delta of node 1, node 0 (which has write on
 // node 1) acting for client C, an admin, drops nothing; acting for itself it drops it.
 #[test]
-fn purge_for_an_actor_reaches_no_unsynced_delta_spec_perm_7() {
+fn purge_for_an_actor_reaches_no_unsynced_delta_spec_perm_6() {
     use osis_schema::{PurgeBy, Retention};
     for (confined, dropped) in [(true, false), (false, true)] {
         let mut lp = net(2, 0x8a);
@@ -608,7 +608,7 @@ fn purge_for_an_actor_reaches_no_unsynced_delta_spec_perm_7() {
     }
 }
 
-// spec/commits.md §5, spec/permissions.md §7: a purge request drops the named deltas its author
+// spec/commits.md §5, spec/permissions.md §6: a purge request drops the named deltas its author
 // may purge, everywhere it applies, and later copies arrive value-less; a writer without the
 // right purges nothing.
 #[test]
@@ -2284,11 +2284,11 @@ fn stays_purged(lp: &mut LocalPeer, t: osis_base::Tid, c: osis_base::CommitId) {
     }
 }
 
-// spec/permissions.md §5.1, §7: a demotion lists the requests its author received, so a demotion
+// spec/permissions.md §5.1, §6: a demotion lists the requests its author received, so a demotion
 // by one that held them leaves every rightful purge standing: to a writer (whose frontier holds no
 // content commit otherwise), and out altogether, whatever aspect the request's own delta is on.
 #[test]
-fn honest_demotion_keeps_rightful_purges_spec_perm_7() {
+fn honest_demotion_keeps_rightful_purges_spec_perm_6() {
     for (seed, new, beside) in [(0x71, Some(Role::Write), false), (0x72, None, false), (0x73, Some(Role::Write), true), (0x74, None, true)] {
         let (mut lp, t, c, p) = rightful(seed, beside);
         let x = lp.peers[1].engine.tid();
@@ -2358,14 +2358,14 @@ fn a_writers_request_explains_no_delete_spec_sync_6() {
     lp.sync_all().unwrap();
     let e = &mut lp.peers[0].engine;
     assert!(e.body_not_dropped(&c2, &t, &k), "no right over another's delta");
-    assert!(!e.named_by_a_fallen_purge(&c2, &[(0, 0)]).unwrap());
+    assert!(!e.named_by_a_fallen_purge(&c2, &[0]).unwrap());
 }
 
-// spec/permissions.md §7: a snapshot dropped for carrying two purged deltas, one purge falling: it
+// spec/permissions.md §6: a snapshot dropped for carrying two purged deltas, one purge falling: it
 // is fetched again, and goes on arrival as it carries the other's value, which stays gone; given
 // the bodies again it all reads alike with a node that never saw the fallen purge stand.
 #[test]
-fn snapshot_of_two_purges_one_falls_spec_perm_7() {
+fn snapshot_of_two_purges_one_falls_spec_perm_6() {
     let mut lp = net(5, 0x79);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -2429,10 +2429,10 @@ fn snapshot_of_two_purges_one_falls_spec_perm_7() {
     assert!(!format!("{two:?}").contains("two"), "{two:?}");
 }
 
-// spec/permissions.md §7: the right held through another actor: `x` is admin of the thing only through
+// spec/permissions.md §6: the right held through another actor: `x` is admin of the thing only through
 // `via`, on which it holds admin, and the demotion of `via` or of `x` on it leaves the purge standing.
 #[test]
-fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_7() {
+fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_6() {
     for on_via in [false, true] {
         let mut lp = net(3, 0x7a);
         lp.sync_all().unwrap();
@@ -2462,12 +2462,12 @@ fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_7() {
     }
 }
 
-// spec/permissions.md §5.1, §7: a hostile current admin's frontier lists the demoted admin's message
+// spec/permissions.md §5.1, §6: a hostile current admin's frontier lists the demoted admin's message
 // and leaves its delete out: the delete is undone. Nodes that dropped the body read it as never
 // received; a node that still holds it keeps it and its copy brings the message back everywhere.
 // Left out too, the message itself stays invalid.
 #[test]
-fn demotion_lists_the_message_omits_the_delete_spec_perm_7() {
+fn demotion_lists_the_message_omits_the_delete_spec_perm_6() {
     for listed in [true, false] {
         let mut lp = net(4, 0x7b);
         lp.sync_all().unwrap();
@@ -2515,11 +2515,11 @@ fn demotion_lists_the_message_omits_the_delete_spec_perm_7() {
     }
 }
 
-// spec/permissions.md §7, spec/sync.md §6: a waiting commit's part stripped for a purge that falls
+// spec/permissions.md §6, spec/sync.md §6: a waiting commit's part stripped for a purge that falls
 // before the commit applies: the part counts as never received once it applies, and the change
 // names the commit, which is what makes node-sync fetch it again (`reopen_undropped`).
 #[test]
-fn stripped_while_waiting_purge_falls_is_fetched_again_spec_perm_7() {
+fn stripped_while_waiting_purge_falls_is_fetched_again_spec_perm_6() {
     let mut lp = net(4, 0x7c);
     let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
     for (a, b) in [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)] {
@@ -2570,11 +2570,11 @@ fn stripped_while_waiting_purge_falls_is_fetched_again_spec_perm_7() {
     assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(s("kept")));
 }
 
-// spec/permissions.md §5.1, §7: a request resting on the author class through a person: its signer
+// spec/permissions.md §5.1, §6: a request resting on the author class through a person: its signer
 // keeps a direct write edge on the thing, so its class falls only on the person (`on_person`), or the
 // person falls and the signer stays on it. An honest demotion lists the request either way.
 #[test]
-fn honest_demotion_keeps_a_request_resting_on_the_person_spec_perm_7() {
+fn honest_demotion_keeps_a_request_resting_on_the_person_spec_perm_6() {
     for on_person in [true, false] {
         let mut lp = net(3, 0x7c + u64::from(on_person));
         let (who, _) = lp.peers[0].engine.create_person(&crate::flows::hosts()).unwrap();
@@ -2614,10 +2614,10 @@ fn honest_demotion_keeps_a_request_resting_on_the_person_spec_perm_7() {
     }
 }
 
-// spec/permissions.md §7: a purge standing, falling and rising over a part dropped as covered, with
+// spec/permissions.md §6: a purge standing, falling and rising over a part dropped as covered, with
 // no copy left: it leaves what it left, as at a node that never saw the fall.
 #[test]
-fn covered_part_purged_fallen_and_purged_again_reads_alike_spec_perm_7() {
+fn covered_part_purged_fallen_and_purged_again_reads_alike_spec_perm_6() {
     let mut lp = net(6, 0x7e);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -2671,7 +2671,7 @@ fn covered_part_purged_fallen_and_purged_again_reads_alike_spec_perm_7() {
     assert_eq!(lp.peers[5].engine.get(&t, &k).unwrap(), None, "the delete stands");
 }
 
-// spec/permissions.md §5.1, §7: at the list bound a demotion goes through and leaves out the requests
+// spec/permissions.md §5.1, §6: at the list bound a demotion goes through and leaves out the requests
 // its author received last, as few as fit: each of those falls, rightful or not.
 #[test]
 fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
@@ -2978,12 +2978,12 @@ fn alike_4_5(lp: &mut LocalPeer, t: Tid, want: Option<Value>, what: &str) {
     assert_eq!(a.0, a.1, "{what}: peer 4's state is not the join of its bodies");
 }
 
-// spec/permissions.md §7 (held value-less again before a copy comes, it holds the leftover it set
+// spec/permissions.md §6 (held value-less again before a copy comes, it holds the leftover it set
 // aside), spec/crdt.md §4.7: peer 4 holds `c` whole, sees its purge stand (held as its leftover),
 // fall (set aside, the part missing, no copy comes) and rise; peer 5 never sees the fall. Both hold
 // the leftover: the same state bytes, and the value-less winner hides "older" at both.
 #[test]
-fn stripped_part_fallen_and_risen_holds_its_leftover_spec_perm_7() {
+fn stripped_part_fallen_and_risen_holds_its_leftover_spec_perm_6() {
     let (mut lp, t, [po, pc, pp, pdx, pdm]) = fall_rig(0x7e1, None);
     for pk in [&po, &pc, &pp] {
         lp.deliver(4, pk).unwrap();
@@ -3001,7 +3001,7 @@ fn stripped_part_fallen_and_risen_holds_its_leftover_spec_perm_7() {
     alike_4_5(&mut lp, t, None, "risen, restarted");
 }
 
-// spec/permissions.md §7, spec/commits.md §6: as above, but the purge stays fallen and `c` expires
+// spec/permissions.md §6, spec/commits.md §6: as above, but the purge stays fallen and `c` expires
 // at both: peer 4 adopts the leftover it set aside (the body missing, no copy came), peer 5 makes
 // its from the body. The same state bytes; "older" hidden at both.
 #[test]

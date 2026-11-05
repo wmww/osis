@@ -369,7 +369,7 @@ fn fallback_header(v: &View) -> Header {
         ts: v.ts,
         form: v.form,
         expires: None,
-        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hashes: Vec::new() }).collect(),
+        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), keys: Vec::new(), hash: [0; 32] }).collect(),
         chunks: Vec::new(),
         purge: Vec::new(),
         undoes: None,
@@ -482,7 +482,7 @@ macro_rules! indexes {
 }
 
 indexes! {
-    /// Perm inputs: applied role commits, roster snapshots, `created.0` records.
+    /// Perm inputs: applied role commits, `created.0` records.
     pub held: held::Held,
     pub commits: JMap<CommitId, Meta>,
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
@@ -524,7 +524,7 @@ indexes! {
     /// What the node was asked to sync (`Core::syncs` adds what these groups hold).
     pub syncing: JSet<Tid>,
     /// Link keys this node keeps reading as, their seed forgotten (`Engine::keep_bearer`,
-    /// spec/permissions.md §8, Bearer use).
+    /// spec/permissions.md §7, Bearer use).
     pub bearers: JSet<Tid>,
     pub void: JSet<CommitId>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
@@ -589,9 +589,6 @@ indexes! {
     pub departures: JMap<Tid, Vec<osis_keys::Departure>>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
-    /// Things and their roster snapshots kept out of perm for a linked frontier not held here
-    /// (`validity::add_role_commit`): no roster snapshot of those things is written.
-    pub frontier_unknown: JSetMap<Tid, CommitId>,
     /// Memory things freed while a memory commit on them also touches a thing still held: their
     /// records and data stay until every thing of those commits is freed (`apply::free`).
     pub freeing: JSet<Tid>,
@@ -744,9 +741,6 @@ pub struct Core {
     pub stale_under: BTreeSet<Tid>,
     pub stale_commits: BTreeSet<CommitId>,
     pub stale_all: bool,
-    /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
-    /// addressed, so never stale.
-    pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
     /// The local schema of each app AK, registered or written with here (`records::SCHEMAS`):
     /// typed views for undo and large-value write-back, also after a restart (snapshots need
     /// none). Never from the wire.
@@ -1261,7 +1255,6 @@ impl Core {
             key_salt,
             ix: Indexes::default(),
             waits: crate::apply::Waits::default(),
-            frontiers: BTreeMap::new(),
             schemas: BTreeMap::new(),
             events: Events::default(),
             written: Vec::new(),
@@ -2279,7 +2272,7 @@ mod tests {
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
         let (path, op) = match role {
-            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None }.to_value())),
+            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, tied: None }.to_value())),
             None => (Vec::new(), Op::Remove(Value::Tid(m))),
         };
         let mut mu = Mutation::new();
@@ -2385,7 +2378,7 @@ mod tests {
         let pks = lp.packages(0).unwrap();
         let tpk = pks.iter().find(|p| p.id == two).unwrap().clone();
         let blob = osis_commit::CommitBlob::decode(&tpk.bytes).unwrap();
-        let first = osis_commit::rewrite(&blob, |ai, _| ai != 0).encode();
+        let first = osis_commit::rewrite(&blob, |ai| ai != 0).encode();
         failing(&mut lp.peers[2], &mut failed, |e| e.defer_deaths(true));
         for pk in pks.iter().filter(|p| p.id != two) {
             failing(&mut lp.peers[2], &mut failed, |e| e.ingest(&pk.bytes, pk.blobs.clone()));

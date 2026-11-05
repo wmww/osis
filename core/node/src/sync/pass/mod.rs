@@ -32,7 +32,7 @@ pub struct Verdicts {
     pub writer: bool,
     /// Bodies it judges must-hold: (commit, the delta parts no snapshot under the label covers).
     /// A live entry of the commit holding those parts and no dropped delta holds the body.
-    pub must_hold: Vec<(CommitId, Vec<(usize, usize)>)>,
+    pub must_hold: Vec<(CommitId, Vec<usize>)>,
     /// Entries it knows under the label that it judges must-not-hold and may delete now with a
     /// delete item it can make: (blob, why).
     pub must_not: Vec<(BlobId, String)>,
@@ -66,7 +66,7 @@ struct Out {
 type DroppedChunks = BTreeMap<BlobId, (CommitId, osis_commit::ChunkEntry)>;
 
 /// The bodies wanted under a label, by commit (`judge`).
-type Desired = BTreeMap<CommitId, Vec<Vec<(usize, usize)>>>;
+type Desired = BTreeMap<CommitId, Vec<Vec<usize>>>;
 
 fn desired(bodies: &[Body]) -> Desired {
     let mut m: Desired = BTreeMap::new();
@@ -148,7 +148,7 @@ struct At<'a> {
 }
 
 /// A deposited entry due for promotion: (blob, entry, commit, its parts).
-type Deposit = (BlobId, Entry, CommitId, Vec<(usize, usize)>);
+type Deposit = (BlobId, Entry, CommitId, Vec<usize>);
 
 /// Whether a commit writes a heartbeat (`seen.0`).
 fn is_beat(h: &osis_commit::Header) -> bool {
@@ -170,8 +170,8 @@ pub(super) fn kept_when_replaced(ak: &str) -> bool {
 }
 
 /// Every part of `h` on the aspects `keep` admits.
-pub(crate) fn parts_of(h: &osis_commit::Header, keep: impl Fn(usize) -> bool) -> BTreeSet<(usize, usize)> {
-    h.aspects.iter().enumerate().filter(|(i, _)| keep(*i)).flat_map(|(i, a)| (0..a.hashes.len()).map(move |d| (i, d))).collect()
+pub(crate) fn parts_of(h: &osis_commit::Header, keep: impl Fn(usize) -> bool) -> BTreeSet<usize> {
+    (0..h.aspects.len()).filter(|i| keep(*i)).collect()
 }
 
 /// The aspect indexes of `h` on things of `closure` (what the label's closure bodies carry).
@@ -529,7 +529,7 @@ impl SyncEngine {
 
     /// Local passes over the labels this node syncs with nobody (no host in their `label.0`):
     /// this node is their host, so a peer that dials it (a direct link's redeemer,
-    /// spec/permissions.md §8) finds a complete state (spec/sync.md §5, co-reader peer). Passes
+    /// spec/permissions.md §7) finds a complete state (spec/sync.md §5, co-reader peer). Passes
     /// otherwise run only per dialed connection, and a node serves only the entries they placed.
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
@@ -694,10 +694,10 @@ impl SyncEngine {
         Ok(out)
     }
 
-    /// The blobs the commit entries among `ids` under `l` link (roster snapshots sharing tree
-    /// pages with a gone copy).
+    /// The blobs the commit entries among `ids` under `l` link (other copies sharing tree blobs
+    /// with a gone copy).
     fn linked_by(&mut self, l: &LabelId, ids: impl IntoIterator<Item = BlobId>) -> Result<BTreeSet<BlobId>> {
-        let commits: Vec<(CommitId, BTreeSet<(usize, usize)>)> = ids
+        let commits: Vec<(CommitId, BTreeSet<usize>)> = ids
             .into_iter()
             .filter_map(|id| match self.state.entries.get(&(*l, id)).map(|e| &e.kind) {
                 Some(Kind::Commit { commit, parts, .. }) => Some((*commit, parts.iter().copied().collect())),
@@ -730,7 +730,7 @@ impl SyncEngine {
     /// `scope` names. Dropped bodies join `scope`. Returns the label's snapshots by aspect.
     pub(super) fn drop_label_covered(&mut self, entries: &BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>, scope: &mut Scope, opened: bool, left: &mut Left) -> Result<Snaps> {
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = entries.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
-        // what goes without a right (spec/permissions.md §7), once every entry is open: what a
+        // what goes without a right (spec/permissions.md §6), once every entry is open: what a
         // setting broke may stand again with a role commit still to come (judged again when
         // settled, `deletions`)
         let only = match &*scope {

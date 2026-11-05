@@ -109,17 +109,17 @@ fn state_size(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// Per aspect: the deltas a node holds of it (commit, delta index) and its read.
-type AspectView = BTreeMap<(Tid, String), (BTreeSet<(osis_base::CommitId, usize)>, String)>;
+/// Per aspect: the commits whose delta on it a node holds, and its read.
+type AspectView = BTreeMap<(Tid, String), (BTreeSet<osis_base::CommitId>, String)>;
 
 fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
-    let mut deltas: BTreeMap<(Tid, String), BTreeSet<(osis_base::CommitId, usize)>> = BTreeMap::new();
+    let mut deltas: BTreeMap<(Tid, String), BTreeSet<osis_base::CommitId>> = BTreeMap::new();
     for c in e.commit_ids() {
         let Some(bytes) = e.commit_bytes(&c).map_err(|x| x.to_string())? else { continue };
         let Ok(b) = osis_commit::CommitBlob::decode(&bytes) else { continue };
         for p in &b.parts {
             if let Some(a) = b.header.aspects.get(p.ai) {
-                deltas.entry((a.tid, a.ak.as_str().to_string())).or_default().insert((c, p.di));
+                deltas.entry((a.tid, a.ak.as_str().to_string())).or_default().insert(c);
             }
         }
     }
@@ -466,7 +466,7 @@ fn purged(sim: &mut NetSim) -> Res<()> {
             }
         }
         let Some(ai) = ai else { continue };
-        let blobs: Vec<(LabelId, BlobId)> = sim.known.iter().filter(|(_, (kc, kp))| *kc == c && kp.iter().any(|p| p.0 == ai)).map(|(k, _)| *k).collect();
+        let blobs: Vec<(LabelId, BlobId)> = sim.known.iter().filter(|(_, (kc, kp))| *kc == c && kp.contains(&ai)).map(|(k, _)| *k).collect();
         for s in 0..sim.hosts.len() {
             if sim.dishonest.contains(&s) {
                 continue;
@@ -548,7 +548,7 @@ pub fn churn(sim: &NetSim, heads: &Heads) -> Vec<String> {
             };
             let kind = sim.known.get(&(l, b)).map(|(c, p)| {
                 let h = sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|s| s.engine().header(c)));
-                let aks: Vec<String> = h.as_ref().map(|h| p.iter().filter_map(|(ai, _)| h.aspects.get(*ai).map(|a| format!("{} {}", a.tid, a.ak.as_str()))).collect()).unwrap_or_default();
+                let aks: Vec<String> = h.as_ref().map(|h| p.iter().filter_map(|ai| h.aspects.get(*ai).map(|a| format!("{} {}", a.tid, a.ak.as_str()))).collect()).unwrap_or_default();
                 format!("{c:?} {p:?} {aks:?} kind {:?}", h.map(|h| h.kind))
             });
             out.push(format!("s{s} {l:?} {what} {b:?}: {}", kind.unwrap_or_else(|| "unknown".into())));

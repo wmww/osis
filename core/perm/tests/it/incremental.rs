@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::*;
-use roles_model::{edges, joint, snapshot, Rng};
+use roles_model::{edges, joint, Rng};
 use osis_base::Tid;
 use osis_perm::{At, HeldSet, Timeline, Timelines, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,18 +34,12 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
         }
         // the index `departures` reads, kept over this `inc`'s appends and resumes
         let on = |tl: &Timeline| tl.applied_on(&t).map(|(c, o)| (c.point(), o.clone())).collect::<Vec<_>>();
-        let scan: Vec<_> = full.applied().keys().filter_map(|w| match w {
-            osis_perm::WriteId::Op(c, i) => full.role_commit(c).and_then(|mc| mc.ops.get(*i as usize).map(|o| (mc.point(), o.clone()))),
-            _ => None,
-        }).filter(|(_, o)| o.target == t).collect();
+        let scan: Vec<_> = full.applied().keys().filter_map(|w| full.role_commit(&w.0).and_then(|mc| mc.ops.get(w.1 as usize).map(|o| (mc.point(), o.clone())))).filter(|(_, o)| o.target == t).collect();
         if on(part) != scan {
             return Some(format!("edge writes applied on {t:?}: part {:?} scan {scan:?}", on(part)));
         }
-        if part.epoch_start(&t) != full.epoch_start(&t) {
-            return Some(format!("epoch start of {t:?}"));
-        }
-        if part.roster_state(&t) != full.roster_state(&t) {
-            return Some(format!("roster state (ledger) of {t:?}"));
+        if part.standing_since(&t) != full.standing_since(&t) {
+            return Some(format!("standing since of {t:?}"));
         }
         // the edge history too: roles before every applied write
         for a in full.applied().values() {
@@ -53,7 +47,7 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
                 if part.role(n, &t, At::before(a.point)) != full.role(n, &t, At::before(a.point)) {
                     return Some(format!("role of {n:?} on {t:?} before {:?}", a.point));
                 }
-                // layer 2 there (re-grant's first tenure is carried over `extend`)
+                // layer 2 there (re-grant's `first_held` is carried over `extend`)
                 let p = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..a.point };
                 for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
                     if part.delta_valid(p, &t, r) != full.delta_valid(p, &t, r) {
@@ -112,8 +106,7 @@ fn touched(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeS
     all.extend(b.things());
     let key = |h: &osis_perm::MemoryHeldSet, t: &Tid| {
         let c: BTreeSet<_> = h.edge_commits(t).iter().map(|c| c.id).collect();
-        let s: BTreeSet<_> = h.roster_snapshots(t).iter().map(|s| s.id).collect();
-        (c, s, h.created(t))
+        (c, h.created(t))
     };
     all.into_iter().filter(|t| key(a, t) != key(b, t)).collect()
 }
@@ -129,17 +122,10 @@ fn run(samples: u64, seed: u64) -> usize {
     let seed = seeded(seed);
     let mut rng = Rng(seed);
     for s in 0..samples {
-        // Two or three independent histories in one held set: several components; or one
-        // snapshot-model history (its roster snapshots held from the start, epoch starts).
+        // Two or three independent histories in one held set: several components.
         let mut w = World::new();
         let mut nodes = Vec::new();
-        let snap = rng.below(3) == 0;
-        if snap {
-            let sw = snap_world(&snapshot::random_hist(&mut rng));
-            w = sw.w;
-            nodes = sw.nodes;
-        }
-        for k in 0..if snap { 0 } else { 2 + rng.below(2) } {
+        for k in 0..2 + rng.below(2) {
             let salt = 10 + k as u8;
             let (wk, nk) = if rng.below(2) == 0 {
                 let (wk, nk, _) = joint_world(&joint::random_hist(&mut rng), salt);
@@ -200,9 +186,9 @@ fn run(samples: u64, seed: u64) -> usize {
     appended
 }
 
-/// §5.1 step 5, §6: two sibling teams that are admins of each other (owner-chain authority on
-/// each may come through the other), with a snapshot that is never a start: each write in
-/// timeline order continues the walk (`extend`), equal to evaluating from scratch.
+/// §5.1 step 5: two sibling teams that are admins of each other (owner-chain authority on each
+/// may come through the other): each write in timeline order continues the walk (`extend`),
+/// equal to evaluating from scratch.
 #[test]
 fn mutual_admin_teams_extend() {
     use osis_base::Role::{Admin, Write};
@@ -214,8 +200,6 @@ fn mutual_admin_teams_extend() {
     w.set(k, a, b, edge(Admin), 0, &all);
     w.set(k, b, a, edge(Admin), 0, &all);
     w.set(k, a, n1, edge(Admin), 0, &all);
-    // n1 holds no owner-chain authority on A: never an epoch start
-    w.snapshot(n1, a, &[(n1, osis_perm::Edge::new(Admin))], 1, &all);
     w.set(n1, b, n2, edge(Admin), 2, &all);
     w.set(n2, a, n3, edge(Write), 3, &all);
     w.set(n1, a, n2, None, 4, &[]);
@@ -234,7 +218,6 @@ fn mutual_admin_teams_extend() {
             Some(t) => t.extend(&held).expect("the walk goes on"),
         };
         let full = Timeline::evaluate(&held);
-        assert_eq!(next.epoch_starts(), full.epoch_starts());
         assert_eq!(next.dropped(), full.dropped());
         assert_eq!(next.applied().keys().collect::<Vec<_>>(), full.applied().keys().collect::<Vec<_>>());
         for t in [a, b] {
@@ -242,7 +225,6 @@ fn mutual_admin_teams_extend() {
         }
         tl = Some(next);
     }
-    assert!(tl.unwrap().epoch_starts().is_empty());
 }
 
 /// §5.1 step 5: incremental equals from scratch.
@@ -360,8 +342,8 @@ fn leaves_and_appends_extend() {
 
 /// §5.1, §5.2: a write arriving late in the middle of a history longer than the timeline's kept
 /// edge states rolls the walk back there (`extend`); the states and the re-grant answers
-/// (first tenures) kept from before it, and those rebuilt after, equal an evaluation from
-/// scratch. Holder 1, admin at the end, has its first admin tenure moved earlier by the late
+/// (`first_held`) kept from before it, and those rebuilt after, equal an evaluation from
+/// scratch. Holder 1, admin at the end, has its first point holding admin moved earlier by the late
 /// write.
 #[test]
 fn late_write_mid_history_keeps_states_exact() {
@@ -486,22 +468,16 @@ fn run_restarts(samples: u64, seed: u64) {
     for s in 0..samples {
         let mut w = World::new();
         let mut nodes = Vec::new();
-        if rng.below(3) == 0 {
-            let sw = snap_world(&snapshot::random_hist(&mut rng));
-            w = sw.w;
-            nodes = sw.nodes;
-        } else {
-            for k in 0..1 + rng.below(2) {
-                let (wk, nk) = if rng.below(2) == 0 {
-                    let (wk, nk, _) = joint_world(&joint::random_hist(&mut rng), 10 + k as u8);
-                    (wk, nk)
-                } else {
-                    let (wk, nk, _) = edges_world(&edges::random_hist(&mut rng), 10 + k as u8);
-                    (wk, nk)
-                };
-                w.merge(wk);
-                nodes.extend(nk);
-            }
+        for k in 0..1 + rng.below(2) {
+            let (wk, nk) = if rng.below(2) == 0 {
+                let (wk, nk, _) = joint_world(&joint::random_hist(&mut rng), 10 + k as u8);
+                (wk, nk)
+            } else {
+                let (wk, nk, _) = edges_world(&edges::random_hist(&mut rng), 10 + k as u8);
+                (wk, nk)
+            };
+            w.merge(wk);
+            nodes.extend(nk);
         }
         let order = if rng.below(2) == 0 {
             rng.perm(w.commits.len())
@@ -698,10 +674,9 @@ fn late_write_before_a_drop_goes_on_spec_permissions_5_1() {
     assert!(inc.get(&g).unwrap().dropped().is_empty());
 }
 
-/// §5.1 step 2, §6: late writes in the middle of a history that apply nothing there (by a node
-/// with no authority at that point; on a thing before its epoch start) leave the walk as it is
-/// (`Timeline::append` judges them over the edge state at their place), equal to an evaluation
-/// from scratch.
+/// §5.1 step 2: late writes in the middle of a history that apply nothing there (by a node with
+/// no authority at that point) leave the walk as it is (`Timeline::append` judges them over the
+/// edge state at their place), equal to an evaluation from scratch.
 #[test]
 fn late_writes_applying_nothing_spec_permissions_5_1() {
     use osis_base::Role::{Admin, Read, Write};
@@ -719,14 +694,12 @@ fn late_writes_applying_nothing_spec_permissions_5_1() {
             w.set(x, g, n[3], edge(Write), 3 + 2 * i, &[]);
         }
     }
-    w.snapshot(k, h, &[(x, osis_perm::Edge::new(Read))], 50, &[]);
-    // late: x's writes in the middle (rejected), k's write on h before its epoch start
-    let late = [w.set(x, h, n[3], edge(Write), 41, &[]), w.set(x, g, n[2], edge(Admin), 43, &[]), w.set(k, h, n[2], edge(Write), 45, &[])];
+    // late: x's writes in the middle (rejected)
+    let late = [w.set(x, h, n[3], edge(Write), 41, &[]), w.set(x, g, n[2], edge(Admin), 43, &[])];
     let mut skip: BTreeSet<_> = late.into_iter().collect();
     let mut prev = w.held_without(&skip);
     let mut inc = Timelines::new();
     inc.update(&prev);
-    assert!(inc.get(&h).unwrap().epoch_start(&h).is_some());
     for id in late {
         skip.remove(&id);
         let held = w.held_without(&skip);
@@ -765,8 +738,8 @@ fn late_write_idle_only_in_final_walk_spec_permissions_5_1() {
 }
 
 /// Random small histories built to drop and un-drop (few nodes, every one an admin at first;
-/// grants, removals, demotions with partial frontiers, invites, `until`, a team, sometimes a
-/// roster snapshot held from the start; two nodes only some writes name, one with its
+/// grants, removals, demotions with partial frontiers, invites, `until`, a team; two nodes
+/// only some writes name, one with its
 /// `created.0` held, one without), the second half arriving late in random order through
 /// `update_touched`: equal to an evaluation from scratch after every arrival. Returns how many
 /// updates `Timelines::append` did alone.
@@ -787,9 +760,6 @@ fn adversarial(samples: u64, seed: u64) -> usize {
             w.set(k, if i == 4 { team } else { g }, *x, edge(Admin), 1, &[]);
         }
         w.set(k, g, team, edge(if rng.below(2) == 0 { Admin } else { Write }), 1, &[]);
-        if rng.below(4) == 0 {
-            w.snapshot(k, g, &[(n[1], osis_perm::Edge::new(Admin)), (n[2], osis_perm::Edge::new(Admin)), (team, osis_perm::Edge::new(Admin))], 2 + rng.below(20) as u64, &[]);
-        }
         let mut late = Vec::new();
         for _ in 0..10 + rng.below(10) {
             let author = if rng.below(10) == 0 { extra[rng.below(2)] } else { n[if rng.below(6) == 0 { 0 } else { 1 + rng.below(4) }] };
@@ -840,7 +810,7 @@ fn adversarial(samples: u64, seed: u64) -> usize {
     appended
 }
 
-/// §5.1 steps 4-5, §6: late arrivals through `update_touched` equal from scratch.
+/// §5.1 steps 4-5: late arrivals through `update_touched` equal from scratch.
 #[test]
 fn append_adversarial_equals_from_scratch() {
     assert!(adversarial(30, 0x5eed_0311) > 0);
@@ -1064,10 +1034,10 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
 
 /// Random histories over an owner chain (P owned by the key, Q by P, R by Q), two nested
 /// teams and a thing as holder, with `until` on every role, invites of every level, removals,
-/// widenings, two-op commits, sometimes a snapshot held from the start or arriving late; half
-/// the commits arrive late, one to three at a time, in random order through `update_touched`,
-/// with restarts from saved walks now and then; equal to an evaluation from scratch after every arrival. Returns (updates `append` did
-/// alone, commits placed without walking again).
+/// widenings, two-op commits; half the commits arrive late, one to three at a time, in random
+/// order through `update_touched`, with restarts from saved walks now and then; equal to an
+/// evaluation from scratch after every arrival. Returns (updates `append` did alone, commits
+/// placed without walking again).
 fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
     use osis_base::Role::{Admin, Read, Write};
     let seed = seeded(seed);
@@ -1100,13 +1070,6 @@ fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
             }
         }
         let mut late = Vec::new();
-        if rng.below(4) == 0 {
-            let thing = [g, p][rng.below(2)];
-            let id = w.snapshot(k, thing, &[(n[1], osis_perm::Edge::new(Admin)), (n[3], osis_perm::Edge::new(Admin)), (team, osis_perm::Edge::new(Write))], 3 + rng.below(30) as u64, &[]);
-            if rng.below(2) == 0 {
-                late.push(id);
-            }
-        }
         let op = |rng: &mut Rng, n: &[Tid]| {
             let target = targets[rng.below(targets.len())];
             let holder = match rng.below(12) {
@@ -1174,7 +1137,7 @@ fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
     (appended, placed)
 }
 
-/// §5.1 steps 2-5, §6: late arrivals over owner chains, teams, `until`, invites and removals
+/// §5.1 steps 2-5: late arrivals over owner chains, teams, `until`, invites and removals
 /// equal from scratch; the placement path runs.
 #[test]
 fn append_shapes_equals_from_scratch_spec_permissions_5_1() {
@@ -1191,60 +1154,51 @@ fn append_shapes_equals_from_scratch_large() {
     assert!(appended > 0 && placed > osis_base::testenv::large_n(1_000) as usize, "{appended} {placed}");
 }
 
-/// §5.1 step 5, §6: a held record replaced under its commit ID by a fuller one (a roster
-/// snapshot whose `tenures.0` part arrives after its `roles.0` part; a commit with more of its
-/// edge writes) changes the input: through `update_touched`, after a restart from walks saved
-/// before, and with a cached component of the same IDs, equal to an evaluation from scratch.
+/// §5.1 step 5: a held commit replaced under its ID by a fuller one (more of its edge writes)
+/// changes the input: through `update_touched`, after a restart from walks saved before, and
+/// with a cached component of the same IDs, equal to an evaluation from scratch.
 #[test]
-fn record_replaced_under_its_id_spec_permissions_6() {
+fn record_replaced_under_its_id_spec_permissions_5_1() {
     use osis_base::Role::{Admin, Read, Write};
-    for fuller in [true, false] {
-        let mut w = World::new();
-        let n = w.nodes(4);
-        let k = n[0];
-        let g = w.thing(k);
-        w.set(k, g, n[1], edge(Admin), 1, &[]);
-        w.set(k, g, n[2], edge(Write), 2, &[]);
-        w.set(n[1], g, n[2], None, 5, &[]);
-        let s = w.snapshot(k, g, &[(n[1], osis_perm::Edge::new(Admin))], 10, &[]);
-        let c = w.set(n[1], g, n[3], edge(Read), 12, &[]);
-        let mut part = w.clone();
-        if fuller {
-            // the snapshot's `tenures.0` part arrives late
-            w.snaps.iter_mut().find(|x| x.id == s).unwrap().ledger = vec![(n[2], Write, Some((2, k, None)), (5, n[1], None), true)];
-        } else {
-            // the commit's second edge write arrives late
-            w.commits.iter_mut().find(|x| x.id == c).unwrap().ops.push((g, n[2], edge(Admin)));
-            part.commits.iter_mut().find(|x| x.id == c).unwrap().ops.truncate(1);
-        }
-        let first = part.held();
-        let held = w.held();
-        // incrementally
-        let mut inc = Timelines::new();
-        inc.update(&first);
-        inc.update_touched(&held, &BTreeSet::from([g]));
-        assert!(check(&held, &inc, &n).is_none(), "{fuller}: {:?}", check(&held, &inc, &n));
-        // the general path (a cached component of the same IDs)
-        let mut inc = Timelines::new();
-        inc.update(&first);
-        inc.update(&held);
-        assert!(check(&held, &inc, &n).is_none(), "{fuller} (update): {:?}", check(&held, &inc, &n));
-        // a restart from walks saved over the partial records
-        let mut inc = Timelines::new();
-        inc.update(&first);
-        let mut disk = Disk::new();
-        store(&mut disk, inc.to_save(SALT, 1, true));
-        let inc = reopen(&held, &disk, SALT);
-        assert!(check(&held, &inc, &n).is_none(), "{fuller} (restart): {:?}", check(&held, &inc, &n));
-        // a walk continued over a new commit after the replacement
-        let mut more = w.clone();
-        more.set(n[1], g, n[3], None, 20, &[]);
-        let last = more.held();
-        let mut inc = Timelines::new();
-        inc.update(&first);
-        inc.update_touched(&last, &BTreeSet::from([g]));
-        assert!(check(&last, &inc, &n).is_none(), "{fuller} (with a new commit): {:?}", check(&last, &inc, &n));
-    }
+    let mut w = World::new();
+    let n = w.nodes(4);
+    let k = n[0];
+    let g = w.thing(k);
+    w.set(k, g, n[1], edge(Admin), 1, &[]);
+    w.set(k, g, n[2], edge(Write), 2, &[]);
+    w.set(n[1], g, n[2], None, 5, &[]);
+    let c = w.set(n[1], g, n[3], edge(Read), 12, &[]);
+    let mut part = w.clone();
+    // the commit's second edge write arrives late
+    w.commits.iter_mut().find(|x| x.id == c).unwrap().ops.push((g, n[2], edge(Admin)));
+    part.commits.iter_mut().find(|x| x.id == c).unwrap().ops.truncate(1);
+    let first = part.held();
+    let held = w.held();
+    // incrementally
+    let mut inc = Timelines::new();
+    inc.update(&first);
+    inc.update_touched(&held, &BTreeSet::from([g]));
+    assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+    // the general path (a cached component of the same IDs)
+    let mut inc = Timelines::new();
+    inc.update(&first);
+    inc.update(&held);
+    assert!(check(&held, &inc, &n).is_none(), "(update): {:?}", check(&held, &inc, &n));
+    // a restart from walks saved over the partial records
+    let mut inc = Timelines::new();
+    inc.update(&first);
+    let mut disk = Disk::new();
+    store(&mut disk, inc.to_save(SALT, 1, true));
+    let inc = reopen(&held, &disk, SALT);
+    assert!(check(&held, &inc, &n).is_none(), "(restart): {:?}", check(&held, &inc, &n));
+    // a walk continued over a new commit after the replacement
+    let mut more = w.clone();
+    more.set(n[1], g, n[3], None, 20, &[]);
+    let last = more.held();
+    let mut inc = Timelines::new();
+    inc.update(&first);
+    inc.update_touched(&last, &BTreeSet::from([g]));
+    assert!(check(&last, &inc, &n).is_none(), "(with a new commit): {:?}", check(&last, &inc, &n));
 }
 
 /// §5.1 steps 2-4: late writes in the middle that later items read, placed by walking those
@@ -1412,12 +1366,11 @@ fn saved_walk_under_old_root_deleted_after_restart() {
 }
 
 /// Random histories built for the placement paths' corners (spec/permissions.md §5.1 steps
-/// 2-5, §6): no writes before the late ones (a late write is often its author's first on its
+/// 2-5): no writes before the late ones (a late write is often its author's first on its
 /// target, so falls before the old first write appear), ties in ts, an owner chain through
 /// things (a doc owned by a team, a sub-doc by the doc) and things as holders, invites,
-/// `until`, removals, two-op commits, late writes by the key actor at the top, sometimes an
-/// epoch start with an audited ledger (virtual writes with a frontier) held from the start,
-/// and `created.0` records of named things and of new nodes arriving late, with commits or
+/// `until`, removals, two-op commits, late writes by the key actor at the top, and
+/// `created.0` records of named things and of new nodes arriving late, with commits or
 /// alone; restarts from saved walks now and then. Equal to an evaluation from scratch after
 /// every arrival. Returns (updates `append` did alone, commits placed without walking again).
 fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
@@ -1441,21 +1394,6 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
         w.set(k, team, n[3], edge(Admin), 1, &[]);
         w.set(k, g, team, edge([Admin, Write, Read][rng.below(3)]), 1, &[]);
         let mut late = Vec::new();
-        if rng.below(3) == 0 {
-            // an epoch start whose ledger records audited demotions before it
-            let thing = [g, team][rng.below(2)];
-            let a = n[1 + rng.below(3)];
-            let ledger: Vec<LedgerSpec> = (0..1 + rng.below(2)).map(|_| {
-                let t0 = 2 + rng.below(6) as u64;
-                (n[3 + rng.below(3)], [Write, Admin][rng.below(2)], (rng.below(2) == 0).then_some((t0, a, None)), (t0 + 1 + rng.below(6) as u64, a, None), rng.below(3) != 0)
-            }).collect();
-            let roster = [(n[1], osis_perm::Edge::new(Admin)), (n[3], osis_perm::Edge::new([Write, Admin][rng.below(2)])), (team, osis_perm::Edge::new(Write))];
-            let recv: Vec<(Tid, u64)> = n.iter().map(|x| (*x, rng.below(20) as u64)).collect();
-            let id = w.snapshot_l(k, thing, &roster, &ledger, 8 + rng.below(12) as u64, &recv);
-            if rng.below(4) == 0 {
-                late.push(id);
-            }
-        }
         let op = |rng: &mut Rng, n: &[Tid]| {
             let target = targets[rng.below(targets.len())];
             let holder = match rng.below(12) {
@@ -1554,7 +1492,7 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
     (appended, placed)
 }
 
-/// §5.1 steps 2-5, §6: late arrivals at the placement paths' corners equal from scratch.
+/// §5.1 steps 2-5: late arrivals at the placement paths' corners equal from scratch.
 #[test]
 fn append_corners_equals_from_scratch_spec_permissions_5_1() {
     let (appended, placed) = adversarial_corners(12, 0x5eed_0315);
@@ -1744,13 +1682,13 @@ fn created_late_for_a_dropped_write_spec_permissions_5_1() {
         let mut inc = Timelines::new();
         inc.update(&prev);
         let full = Timeline::evaluate(&prev);
-        assert!(full.dropped().contains_key(&WriteId::Op(dropped, 0)), "the fall drops it");
+        assert!(full.dropped().contains_key(&WriteId(dropped, 0)), "the fall drops it");
         let mut held = if with_commit { w.held() } else { w.held_without(&BTreeSet::from([late])) };
         held.created.insert(doc, w.created[&doc].clone());
         let c = inc.update_touched(&held, &touched(&prev, &held));
         assert!(c.evaluated.is_empty(), "{with_commit}: {c:?}");
         assert!(check(&held, &inc, &n).is_none(), "{with_commit}: {:?}", check(&held, &inc, &n));
-        assert!(Timeline::evaluate(&held).dropped().contains_key(&WriteId::Op(dropped, 0)));
+        assert!(Timeline::evaluate(&held).dropped().contains_key(&WriteId(dropped, 0)));
     }
 }
 
@@ -1794,7 +1732,7 @@ fn falls_before_old_first_write_spec_permissions_5_1() {
         assert!(check(&held, &inc, &n).is_none(), "{covered}: {:?}", check(&held, &inc, &n));
         let full = Timeline::evaluate(&held);
         assert_eq!(full.falls(&a, &doc).len(), 3, "{covered}: {:?}", full.falls(&a, &doc));
-        assert_eq!(full.dropped().contains_key(&WriteId::Op(late, 0)), !covered);
+        assert_eq!(full.dropped().contains_key(&WriteId(late, 0)), !covered);
     }
 }
 
@@ -1847,10 +1785,6 @@ fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut
         for c in held.edge_commits(&t) {
             all.insert(c.author);
             all.extend(c.ops.iter().flat_map(|o| [o.holder, o.target]));
-        }
-        for x in held.roster_snapshots(&t) {
-            all.insert(x.author);
-            all.extend(x.roster.keys().copied());
         }
     }
     let mut comps: BTreeMap<*const Timeline, Tid> = BTreeMap::new();
@@ -1919,10 +1853,6 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
             };
             w.commit(author, 2 + rng.below(40) as u64, &[(target, holder, e)], &[]);
         }
-        if rng.below(5) == 0 {
-            let t = named.first().copied().unwrap_or(base[0]);
-            w.snapshot(k, t, &[(n[1], osis_perm::Edge::new(Admin))], 2 + rng.below(40) as u64, &[]);
-        }
         // arrivals: each new `created.0` and each commit, in random order, 1-4 at a time
         #[derive(Clone, Copy)]
         enum Item {
@@ -1930,9 +1860,9 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
             Commit(osis_base::CommitId),
         }
         let mut items: Vec<Item> = w.created.keys().filter(|t| !start.contains_key(*t)).map(|t| Item::Created(*t)).collect();
-        items.extend(w.commits.iter().map(|c| c.id).chain(w.snaps.iter().map(|x| x.id)).filter(|id| !start_commits.contains(id)).map(Item::Commit));
+        items.extend(w.commits.iter().map(|c| c.id).filter(|id| !start_commits.contains(id)).map(Item::Commit));
         let order = rng.perm(items.len());
-        let all_ids: BTreeSet<_> = w.commits.iter().map(|c| c.id).chain(w.snaps.iter().map(|x| x.id)).collect();
+        let all_ids: BTreeSet<_> = w.commits.iter().map(|c| c.id).collect();
         let mut skip: BTreeSet<_> = all_ids.difference(&start_commits).copied().collect();
         let mut created: BTreeSet<Tid> = start.keys().copied().collect();
         let held_now = |skip: &BTreeSet<osis_base::CommitId>, created: &BTreeSet<Tid>| {
@@ -1980,7 +1910,7 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
                     }
                     match held.created(&cur) {
                         Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = owner,
-                        _ => return cur == *x && held.edge_commits(x).is_empty() && held.roster_snapshots(x).is_empty(),
+                        _ => return cur == *x && held.edge_commits(x).is_empty(),
                     }
                 }
                 false
@@ -2148,14 +2078,6 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
             link(o.holder, o.target);
         }
     }
-    for s in held.snapshots.values().flatten() {
-        nodes.insert(s.author);
-        points.insert(s.point());
-        for m in s.roster.keys().chain(s.ledger.iter().map(|l| &l.holder)) {
-            nodes.insert(*m);
-            link(*m, s.thing);
-        }
-    }
     for (x, r) in &held.created {
         match r.owner_link() {
             osis_base::Owner::Actor(o) => {
@@ -2199,15 +2121,9 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     let new = invite_grants(inc, &things);
     let old_ids: BTreeSet<osis_base::CommitId> = prev.commits.values().flatten().map(|c| c.id).collect();
     for (w, k) in grants.iter().filter(|(w, _)| !new.contains_key(*w)).chain(new.iter().filter(|(w, _)| !grants.contains_key(*w))) {
-        let held_before = match w {
-            WriteId::Op(id, _) => old_ids.contains(id),
-            WriteId::Snapshot(_) => true,
-        };
+        let held_before = old_ids.contains(&w.0);
         // the engine judges again the commits writing a reported edge (`Core::timelines_changed`)
-        let own = match w {
-            WriteId::Op(id, i) => held.commits.values().flatten().find(|c| c.id == *id).and_then(|c| c.ops.get(*i as usize)).is_some_and(|o| c.edges.contains(&(o.holder, o.target))),
-            WriteId::Snapshot(_) => false,
-        };
+        let own = held.commits.values().flatten().find(|x| x.id == w.0).and_then(|x| x.ops.get(w.1 as usize)).is_some_and(|o| c.edges.contains(&(o.holder, o.target)));
         assert!(!held_before || own || covered(&k.0, &k.1), "invite grant {w:?} of {:?} on {:?} moved unreported: edges {:?}", k.0, k.1, c.edges);
     }
     c
@@ -2272,7 +2188,7 @@ fn moves_on(samples: u64, seed: u64) {
     MOVES.set(false);
 }
 
-// spec/permissions.md §5, §5.2, §6: what the engine re-judges and a pass looks at follows `Changed`.
+// spec/permissions.md §5, §5.2: what the engine re-judges and a pass looks at follows `Changed`.
 #[test]
 fn role_moves_as_reported_spec_permissions_5_2() {
     moves_on(2, 0x5eed_0b01);

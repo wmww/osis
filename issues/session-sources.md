@@ -128,7 +128,7 @@ Merging this with the swap would put two intricate changes in one branch (notes/
 Step 1 is merged (item 219). Its review left two things for step 2:
 - The covered filter also leaves out role commits and snapshots, but rule 7 says they stay listed. A removed admin's rotation covered by a role snapshot then loses its record of which commit started the key epoch. That costs an extra safe rotation, not a security hole. Simplest fix: always list role commits. Square this with the lockout recovery (spec/permissions.md §3), which needs an admin to be able to leave a hostile rotation out.
 - A commit whose held parts are covered is left out even if it also touches a thing the demoter does not hold. The spec says it should be listed. Main did the same before.
-- Frontier size: 32 B per commit of the removed device. A roster snapshot past `MAX_LINKED_FRONTIERS` (64 MiB) is refused for good, so step 3 (compact before removing) or a cap rethink is needed.
+- Frontier size: 32 B per commit of the removed device. A frontier past `MAX_LIST_BYTES` (64 MiB, about 1.9 million commits) cannot be written, so step 3 (compact before removing) or a cap rethink is needed.
 
 ## Plan
 Each step merges alone, passes the gate, and updates the spec sections it changes. The verification lists targeted differentials; seed breadth comes from the periodic runs.

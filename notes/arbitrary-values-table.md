@@ -33,7 +33,6 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_HEARTBEAT_SUSPECTS` 32 | R | no repair at all / a heartbeat as long as the label's flagged aspects (a deposit, budgeted); past it the newest flags are reported and the rest wait for those to clear (repair a few intervals late, nothing lost: flags stay until repaired) |
 | `MAX_REQUIRED_ENTRIES` 64 | R | no setting can say anything / `MAX_VALUE_BYTES` of prefixes in every node's memory per `required.0^` delta; past it the delta requires nothing, a writer refuses it |
 | `MAX_OWNER_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |
-| `MAX_LINKED_FRONTIERS` 64 MiB | R | no linked frontiers / unbounded snapshot work |
 | `MAX_VALUE_DEPTH` 64, `MAX_OBJECT_DEPTH` 512, `MAX_AK_BYTES` 1024, `MAX_URL_BYTES` 256, `MAX_RUN` 2^12 (keeps a run, one page element, far below `MAX_PAGE_ITEMS`), `MAX_STEP_BYTES` | R (decoder limits, refuse) | nothing decodes / stack and memory on hostile input |
 | `MAX_MESSAGE` 9 MiB, `REPLY_BUDGET`/`MAX_CLAIM_SET` = it − 64 KiB | R (headroom derived) | no messages / unbounded frame buffers |
 | per-message caps (`MAX_ITEMS` 1024, `MAX_GAINED` 4096, `MAX_LABELS` 1024, reconcile ranges 256/4096, `MAX_PATH_STEPS` 1024, `MAX_OPEN_LABELS` 4096) | R | nothing per message / unbounded per-message work |
@@ -153,7 +152,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `PENDING_GRANT_WAIT_MS` 1 day (engine rotation) | M: past it a plausible granter's pending grant no longer keeps a node that lost access holding the actor; the node re-learns from the grant's boxes when it applies and re-fetches content. 0: every such grant waits that way; infinity: a grant that never applies keeps lost secrets for good | `rotation/mod.rs` |
 | `MAX_HINT_COMMITS` 64 | R (lowest commit ID evicted, not oldest; inbox spam can evict a genuine hint) | the grantee then writes once the thing's `keys.0` syncs, as after a restart (candidates are not persisted): a delay (checked) |
 | `UNDO_DEPTH` 16 | M | no undo / memory |
-| `ROSTER_SNAPSHOT_AFTER` 64, `WALK_CACHE_MIN` 64, `MAX_WAIT_BYTES` 64 KiB / 16 MiB, `COPY_CACHE_MAX` 2^20 | P | |
+| `WALK_CACHE_MIN` 64, `MAX_WAIT_BYTES` 64 KiB / 16 MiB, `COPY_CACHE_MAX` 2^20 | P | |
 | pages `PAGE_BYTES` 8 KiB, `SEQ_PAGE_BYTES` 3 KiB, `MIN_PAGED` 64, `GROUP` 32, `PREFETCH` 8, `OP_RUNS` 8, prefetch budget `max(1024)`, `SCAN_PAGE` 256, pending page 256 | P | |
 | pages run expansion `1 << 20` | R (corrupt local row) | |
 | `MAX_REUSE` 16 GiB | P | |

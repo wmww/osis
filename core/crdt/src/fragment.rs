@@ -363,28 +363,6 @@ impl Fragment {
         }
     }
 
-    /// Splits a root map or set delta into a delta carrying the root's reset and presence write
-    /// alone, then one delta per entry or element carrying them too (spec/commits.md §2: several
-    /// deltas of one aspect share the commit-level stamp); their join is `self`. Anything else,
-    /// or an empty collection: `self` alone.
-    pub fn split_entries(self) -> Vec<Fragment> {
-        match self {
-            Fragment::Map(m) if !m.entries.is_empty() => {
-                let Map { meta, entries, .. } = m;
-                let mut out = vec![Fragment::Map(Map::new(meta.clone(), BTreeMap::new()))];
-                out.extend(entries.into_iter().map(|(d, e)| Fragment::Map(Map::new(meta.clone(), BTreeMap::from([(d, e)])))));
-                out
-            }
-            Fragment::Set(s) if !s.elems.is_empty() => {
-                let Set { meta, elems } = s;
-                let mut out = vec![Fragment::Set(Set { meta: meta.clone(), elems: BTreeMap::new() })];
-                out.extend(elems.into_iter().map(|(d, e)| Fragment::Set(Set { meta: meta.clone(), elems: BTreeMap::from([(d, e)]) })));
-                out
-            }
-            f => vec![f],
-        }
-    }
-
     /// Whether joining `x` into this fragment changes nothing, judged on the part of it at
     /// `x`'s positions (`part_at`), so it costs about what `x` and those positions hold rather
     /// than the whole fragment. That part is a piece of `self` (joining it into `self` changes

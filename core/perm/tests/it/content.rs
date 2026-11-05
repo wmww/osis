@@ -1,5 +1,5 @@
-//! Layer 2 (spec/permissions.md §5.2, §6 ledger; spec/commits.md §4 overlap): scenarios of
-//! core/test/roles-model `content` and `snapshot` records.
+//! Layer 2 (spec/permissions.md §5.2; spec/commits.md §4 overlap): scenarios of
+//! core/test/roles-model `content`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -100,39 +100,8 @@ fn device_removal_reaches_owned_things() {
     }
 }
 
-/// §6 ledger, layer 2: the key actor re-snapshots P after D2 removed D1; the tenure carries
-/// the removal's frontier, so D1's record D2 had received stays valid and one it had not
-/// stays invalid, compacted or not. Without the ledger both would be disowned.
-#[test]
-fn p_resnapshot_keeps_former_device_records() {
-    let mut w = World::new();
-    let n = w.nodes(3);
-    let (k, d1, d2) = (n[0], n[1], n[2]);
-    let p = w.thing(k);
-    let g = w.thing(p);
-    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-    let g1 = w.set(k, p, d1, edge(Admin), 0, &all);
-    let g2 = w.set(k, p, d2, edge(Admin), 0, &all);
-    let seen = w.content(d1, 3, &[(d2, 3)]);
-    let unseen = w.content(d1, 4, &[]);
-    let rm = w.set(d2, p, d1, None, 5, &[]);
-    let tl = Timeline::evaluate(&w.held());
-    assert_eq!((valid(&tl, seen, g, Admin), valid(&tl, unseen, g, Admin)), (true, false));
-    let mut with = w.clone();
-    with.snapshot_l(k, p, &[(d2, Edge::new(Admin))], &[(d1, Admin, None, (5, d2, None), true)], 7, &[]);
-    let compacted = with.held_without(&[g1, g2, rm].into_iter().collect());
-    for held in [with.held(), compacted] {
-        let tl = Timeline::evaluate(&held);
-        assert_eq!((valid(&tl, seen, g, Admin), valid(&tl, unseen, g, Admin)), (true, false));
-    }
-    let mut bare = w.clone();
-    bare.snapshot(k, p, &[(d2, Edge::new(Admin))], 7, &[]);
-    let tl = Timeline::evaluate(&bare.held());
-    assert_eq!((valid(&tl, seen, g, Admin), valid(&tl, unseen, g, Admin)), (false, false));
-}
-
 /// §5.2: a re-grant validates a write made in the gap; a later removal judges it by its own
-/// frontier (the snapshot model's record rule, "admin at its point", is not §5.2's).
+/// frontier.
 #[test]
 fn regrant_validates_gap_until_next_removal() {
     for k_removes in [false, true] {
@@ -154,8 +123,8 @@ fn regrant_validates_gap_until_next_removal() {
     }
 }
 
-/// §5.2 re-grant makes writes valid *again*: a write before X's first tenure stays invalid
-/// after X is granted (review finding), one inside a later gap is restored.
+/// §5.2 re-grant makes writes valid *again*: a write before X first held the role stays
+/// invalid after X is granted (review finding), one inside a later gap is restored.
 #[test]
 fn pre_grant_write() {
     let mut w = World::new();
@@ -190,7 +159,7 @@ fn until_gap_write_finalized_by_frontier() {
     }
 }
 
-/// Re-grant's first tenure (`first_held`, a replay of the node's roles over the history) is
+/// Where a node first held a role (`first_held`, a replay of the node's roles over the history) is
 /// what a search at every change finds: random owner trees, actors as holders, edges with
 /// `until` and invites, most writes by the target's key actor. Debug builds compare the two at
 /// every call.
@@ -216,7 +185,7 @@ fn regrant_replay_equals_search() {
             let role = [Read, Write, Admin][rng.below(3)];
             let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
             let until = (rng.below(3) == 0).then(|| osis_base::WallMs(k + rng.below(10) as u64));
-            let e = (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None, tied: crate::common::tie_if(until.is_some() != invite.is_some()) });
+            let e = (rng.below(4) != 0).then_some(Edge { role, until, invite, tied: crate::common::tie_if(until.is_some() != invite.is_some()) });
             if holder != target {
                 w.set(author, target, holder, e, 1 + k, &[]);
             }

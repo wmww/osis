@@ -40,7 +40,7 @@ impl SyncEngine {
         for (c, p) in self.inbox_certificates(g, l)? {
             wanted.entry(c).or_default().extend(p);
         }
-        // revokes and roster snapshots about authors seen under the label (spec/permissions.md
+        // revokes about authors seen under the label (spec/permissions.md
         // §4), so its verifiers judge their writes as this node does: authors of an entry
         // judged invalid here or not judged yet (`Engine::judged_valid`); a revoke changes no
         // verdict on the writes its frontier covers (a joiner's home label holds the copy of its grant by
@@ -66,7 +66,7 @@ impl SyncEngine {
             // parts is a strict subset others delete), but a removal's own parts: no body carries
             // them once the label's actor reads the thing no more
             let inside = if own_removals.contains(&c) { Default::default() } else { self.engine.header(&c).map(|h| inside(&h, &closure)).unwrap_or_default() };
-            let missing: BTreeSet<(usize, usize)> = want.difference(&have).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
+            let missing: BTreeSet<usize> = want.difference(&have).filter(|ai| !inside.contains(ai)).copied().collect();
             // this node's own copy placed before and gone since (deleted at the host): not
             // placed again, but for its own card while it reads the label's actor (admins delete
             // a departed node's card; a re-grant wants it back, spec/permissions.md §4)
@@ -82,7 +82,7 @@ impl SyncEngine {
             let due = self.engine.core.ix.commits.get(&c).filter(|m| m.header.author != me).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
             if let Some(t) = due
                 && let Some(h) = self.engine.header(&c)
-                && (h.frontier.is_some() || missing.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0")))
+                && (h.frontier.is_some() || missing.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0")))
             {
                 let at = self.raw_now().saturating_add(t - now);
                 self.settle_by(at, l);
@@ -98,7 +98,7 @@ impl SyncEngine {
     /// Places `body` (of `parts` of `c`) as this node's certificate copy under `l` and records
     /// it; whether it was placed. With no current read secret nothing wraps it and nothing is
     /// recorded: a later pass places it.
-    pub(super) fn place_copy(&mut self, g: &Tid, l: LabelId, c: &CommitId, parts: &BTreeSet<(usize, usize)>, body: Body) -> Result<bool> {
+    pub(super) fn place_copy(&mut self, g: &Tid, l: LabelId, c: &CommitId, parts: &BTreeSet<usize>, body: Body) -> Result<bool> {
         let placed = self.place(g, l, &body, true)?.is_some();
         if placed {
             self.place_linked(l, c, parts)?;
@@ -109,10 +109,10 @@ impl SyncEngine {
 
     /// Whether `parts` of `c` are this node's own card (its `node.0`, `reach.0`, `keys.0` writes)
     /// and it currently reads `g`'s actor.
-    pub(super) fn own_card_read(&self, g: &Tid, c: &CommitId, parts: &BTreeSet<(usize, usize)>) -> bool {
+    pub(super) fn own_card_read(&self, g: &Tid, c: &CommitId, parts: &BTreeSet<usize>) -> bool {
         let me = self.engine.tid();
         let Some(h) = self.engine.header(c) else { return false };
-        h.author == me && parts.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.tid == me && is_card(a.ak.as_str()))) && self.engine.core.may_read(&me, &self.engine.group_actor(g))
+        h.author == me && parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid == me && is_card(a.ak.as_str()))) && self.engine.core.may_read(&me, &self.engine.group_actor(g))
     }
 
     /// Whether entries under `l` already hold every delta of `c` on aspects `ais` (another
@@ -139,8 +139,8 @@ impl SyncEngine {
     /// (`None`: this node's own served state, a label served with no host: every entry).
     pub(super) fn held_parts_at(&mut self, g: &Tid, l: LabelId, c: &CommitId, hosts: Option<&[HostKey]>) -> Result<(Parts, Parts)> {
         let newest = self.engine.wrap_secret(g, None)?;
-        let mut mine: BTreeSet<(usize, usize)> = BTreeSet::new();
-        let mut others: Vec<(BlobId, Vec<(usize, usize)>)> = Vec::new();
+        let mut mine: BTreeSet<usize> = BTreeSet::new();
+        let mut others: Vec<(BlobId, Vec<usize>)> = Vec::new();
         for (id, e) in self.state.entries_of(&l, c) {
             let Kind::Commit { parts, .. } = &e.kind else { continue };
             if e.cert {

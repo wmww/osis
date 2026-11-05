@@ -1,6 +1,6 @@
 [package]
 name = "roles-model"
-description = "Throwaway model of the role rules (spec/permissions.md §5-§6). Not the implementation."
+description = "Throwaway model of the role rules (spec/permissions.md §5). Not the implementation."
 version = "0.0.0"
 edition = "2021"
 publish = false

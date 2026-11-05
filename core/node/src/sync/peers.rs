@@ -401,7 +401,7 @@ impl SyncEngine {
     }
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
-    /// the link text only; spec/permissions.md §8). It is dialed like a co-reader (ephemeral key,
+    /// the link text only; spec/permissions.md §7). It is dialed like a co-reader (ephemeral key,
     /// no co-reader proof) for K's labels and the target's, and nothing else, until `forget_link`.
     /// This node shows the sharer its IP, never its dialable key.
     pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
@@ -653,7 +653,7 @@ impl SyncEngine {
 
     /// This node's chain certificates and node card for `g` (`Engine::certificates`), without
     /// its `reach.0` commit where `publishes_reach` says no (spec/permissions.md §4).
-    pub(crate) fn card_certificates(&mut self, g: &Tid) -> BTreeMap<osis_base::CommitId, std::collections::BTreeSet<(usize, usize)>> {
+    pub(crate) fn card_certificates(&mut self, g: &Tid) -> BTreeMap<osis_base::CommitId, std::collections::BTreeSet<usize>> {
         let mut certs = self.engine.certificates(g);
         if !self.publishes_reach(g) {
             let me = self.engine.tid();

@@ -22,8 +22,8 @@ fn tid() -> impl Strategy<Value = Tid> {
 }
 
 fn aspect() -> impl Strategy<Value = AspectEntry> {
-    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::collection::vec(0usize..8, 0..3), proptest::collection::vec(any::<[u8; 32]>(), 1..3))
-        .prop_map(|(tid, ak, lo, hi, retention, keys, hashes)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, keys, hashes })
+    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::collection::vec(0usize..8, 0..3), any::<[u8; 32]>())
+        .prop_map(|(tid, ak, lo, hi, retention, keys, hash)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, keys, hash })
 }
 
 fn link() -> impl Strategy<Value = Link> {
@@ -32,7 +32,7 @@ fn link() -> impl Strategy<Value = Link> {
 
 prop_compose! {
     fn header()(
-        author in tid(), actor in tid(), kind in 0u64..5, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
+        author in tid(), actor in tid(), kind in 0u64..4, wall in 0u64..1 << 46, form in any::<bool>(), expires in proptest::option::of(0u64..1 << 50),
         aspects in proptest::collection::vec(aspect(), 0..4),
         chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec(0usize..5, 0..3)), 0..3),
         purge in proptest::collection::vec((proptest::option::of(any::<[u8; 32]>()), tid()), 0..3),
@@ -68,8 +68,6 @@ prop_compose! {
         for a in &mut h.aspects {
             a.keys.sort();
             a.keys.dedup();
-            a.hashes.sort();
-            a.hashes.dedup();
         }
         h.aspects.sort_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));
         h.aspects.dedup_by_key(|a| crate::header::aspect_key(&a.tid, &a.ak));

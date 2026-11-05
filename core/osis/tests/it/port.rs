@@ -583,7 +583,7 @@ fn until(mut f: impl FnMut() -> bool, what: &str) {
     }
 }
 
-// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (rows that wait), spec/permissions.md §8: the flows that wait on other nodes run at the node with the node's outcomes, all through the socket: redeem, demote (a link joiner, a direct holder lowered, an error), revoke_link, revoke_joiner, import_contact
+// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (rows that wait), spec/permissions.md §7: the flows that wait on other nodes run at the node with the node's outcomes, all through the socket: redeem, demote (a link joiner, a direct holder lowered, an error), revoke_link, revoke_joiner, import_contact
 #[test]
 fn rows_that_wait_through_the_socket() {
     use crate::common::block_on;

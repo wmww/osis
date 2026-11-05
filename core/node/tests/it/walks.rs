@@ -77,8 +77,8 @@ fn reopen_equals_rebuild(e: &mut Engine, at: &str) {
 }
 
 /// Two nodes: peer 0 owns the docs and a team, makes peer 1 admin of some, both write edges,
-/// peer 0 demotes peer 1 now and then (dropping its unreceived writes) and snapshots rosters;
-/// commits travel late and out of order.
+/// peer 0 demotes peer 1 now and then (dropping its unreceived writes) and snapshots its own
+/// `keys.0`; commits travel late and out of order.
 /// Returns how many role snapshots it made.
 fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, &mut Rng)) -> usize {
     let mut rng = Rng(seed | 1);
@@ -102,7 +102,6 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
                 try_edge(&mut lp.peers[i].engine, doc, m, roles[rng.below(3) as usize]);
             }
             7 => {
-                let _ = lp.peers[0].engine.roster_snapshot(&doc, None);
                 // a role snapshot (of the node's `keys.0`) reaches perm's inputs too
                 let node = lp.peers[0].engine.tid();
                 if let Ok(Some(_)) = lp.peers[0].engine.snapshot(&node, &osis_base::Ak::new("keys.0").unwrap()) {
@@ -120,10 +119,9 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
     snapshots
 }
 
-// spec/permissions.md §5.1 step 5, §6: reopening from the saved walks (exact, or older and
-// continued over the commits since) gives the timelines a from-scratch evaluation gives, rosters
-// and ledgers included, over random two-node histories with late arrivals, demotions and roster
-// snapshots
+// spec/permissions.md §5.1 step 5: reopening from the saved walks (exact, or older and continued
+// over the commits since) gives the timelines a from-scratch evaluation gives, rosters included,
+// over random two-node histories with late arrivals and demotions
 #[test]
 fn reopen_from_saved_walks_equals_from_scratch() {
     let mut restored = 0;
@@ -138,10 +136,10 @@ fn reopen_from_saved_walks_equals_from_scratch() {
     assert!(restored > 0, "no walk was restored");
 }
 
-// spec/permissions.md §5.1 step 5, §6; spec: none (local store index, notes/node.md Open): an
-// open adapting perm's inputs from the index's per-commit rows gives what a rebuild from the
-// commit records gives (timelines, validity, the rows themselves) over random two-node histories
-// with late arrivals, demotions, roster snapshots and role snapshots
+// spec/permissions.md §5.1 step 5; spec: none (local store index, notes/node.md Open): an open
+// adapting perm's inputs from the index's per-commit rows gives what a rebuild from the commit
+// records gives (timelines, validity, the rows themselves) over random two-node histories with
+// late arrivals, demotions and role snapshots
 #[test]
 fn reopen_from_edge_rows_equals_rebuild() {
     let mut snapshots = 0;
@@ -169,9 +167,6 @@ fn damaged_edge_rows_are_rebuilt() {
     e.commit(m).unwrap();
     for i in 0..20u8 {
         try_edge(e, t, Tid::from_bytes([60 + i % 5; 15]), Some(if i % 2 == 0 { Role::Read } else { Role::Write }));
-        if i == 9 {
-            e.roster_snapshot(&t, None).unwrap();
-        }
     }
     let (perm, index) = (e.perm_digest(false), validity(e.index_digest()));
     let rows = e.edges_rows().unwrap();
@@ -261,7 +256,7 @@ impl Dev {
 }
 
 // spec/commits.md §4 (all or none); spec: none (local store cache, notes/local-store.md): a crash
-// at any durable write of edge writes (and a roster snapshot) that save their component's walk,
+// at any durable write of edge writes that save their component's walk,
 // then open: the open resumes a saved walk, its timelines equal a from-scratch evaluation of what
 // landed, and the index's `node/edges` rows equal a rebuild's
 #[test]
@@ -282,9 +277,6 @@ fn crash_at_every_write_keeps_saved_walks_exact() {
         for i in 0..6u8 {
             dev.clock.advance(1);
             try_edge(&mut e, t, Tid::from_bytes([70 + i; 15]), Some(Role::Write));
-            if i == 2 {
-                let _ = e.roster_snapshot(&t, None);
-            }
         }
         let crashed = dev.faults.crashed();
         drop(e);
@@ -338,15 +330,10 @@ fn new_things_between_opens_still_restore() {
 /// open decodes no header (`LazyHeader`; perm's adaptation reads the views and `node/edges`
 /// rows, a role commit's frontier among the view).
 pub(crate) fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
-    open_equals_rebuild_decoding(e, things, 0, at);
-}
-
-/// `open_equals_rebuild` where the open decodes `decoded` headers.
-fn open_equals_rebuild_decoding(e: &mut Engine, things: &[Tid], decoded: usize, at: &str) {
     assert!(e.index_current().unwrap(), "{at}: index not current");
     let had = (validity(e.index_digest()), e.perm_digest(false), states(e, things));
     e.reload().unwrap();
-    assert_eq!(e.headers_decoded(), decoded, "{at}: headers the open decoded");
+    assert_eq!(e.headers_decoded(), 0, "{at}: headers the open decoded");
     assert_eq!(had.0.first_diff(&validity(e.index_digest())), None, "{at}: index opened");
     assert_eq!((validity(e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: opened from the index");
     e.rebuild_index().unwrap();
@@ -670,13 +657,11 @@ fn listing(commits: &[osis_base::CommitId], big: bool) -> ct::Frontier {
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §5.1 (a demotion's frontier keeps
-// what the demoter had received), §6 (a roster snapshot's ledger, its large frontiers by link):
-// demotions with an inline and a linked frontier, then a roster snapshot whose ledger links one;
-// an open from the persisted index (perm's adaptation from the views, the frontier among them,
-// and the `node/edges` rows) computes what a rebuild computes and decodes only the snapshot's
-// header (its chunk list holds the linked tenure frontier)
+// what the demoter had received, a large one by link): demotions with an inline and a linked
+// frontier; an open from the persisted index (perm's adaptation from the views, the frontier
+// among them, and the `node/edges` rows) computes what a rebuild computes and decodes no header
 #[test]
-fn open_equals_rebuild_after_demotions_and_a_roster_snapshot() {
+fn open_equals_rebuild_after_demotions() {
     let mut lp = LocalPeer::new(2, 0xde70, T0).unwrap();
     lp.sync_all().unwrap();
     let (a, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
@@ -705,37 +690,7 @@ fn open_equals_rebuild_after_demotions_and_a_roster_snapshot() {
         let Some(Value::Set(tags)) = lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() else { panic!("demotion {n}: no tags") };
         assert!(tags.contains(&s(&format!("x{n}"))) && !tags.contains(&s(&format!("late{n}"))), "demotion {n}: the unreceived write dropped");
     }
-    let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
-    assert!(lp.peers[0].engine.header(&s).is_some_and(|h| !h.chunks.is_empty()), "the ledger links a frontier");
-    open_equals_rebuild_decoding(&mut lp.peers[0].engine, &[t], 1, "roster snapshot");
-    sync(&mut lp, 0, 1);
-    open_equals_rebuild_decoding(&mut lp.peers[1].engine, &[t], 1, "roster snapshot (receiver)");
-}
-
-/// `open_equals_rebuild` without the count of decoded headers (a roster snapshot linking a
-/// tenure frontier decodes its own).
-fn open_equals_rebuild_any(e: &mut Engine, things: &[Tid], at: &str) {
-    assert!(e.index_current().unwrap(), "{at}: index not current");
-    let take = |e: &mut Engine| (validity(e.index_digest()), e.perm_digest(false), states(e, things));
-    let had = take(e);
-    e.reload().unwrap();
-    same(&take(e), &had, &format!("{at}: opened from the index"));
-    e.rebuild_index().unwrap();
-    same(&take(e), &had, &format!("{at}: rebuilt"));
-}
-
-type Digest = (osis_node::engine::IndexDigest, String, Vec<(Tid, osis_base::Ak, Option<Value>)>);
-
-/// Equal digests, else the lines that differ.
-fn same(got: &Digest, want: &Digest, at: &str) {
-    if got == want {
-        return;
-    }
-    let diff = |a: &str, b: &str| -> Vec<String> {
-        let (x, y): (std::collections::BTreeSet<&str>, std::collections::BTreeSet<&str>) = (a.lines().collect(), b.lines().collect());
-        x.symmetric_difference(&y).map(|l| format!("{} {}", if x.contains(l) { "got " } else { "want" }, l.chars().take(600).collect::<String>())).collect()
-    };
-    panic!("{at}: index {:?}\nperm {:#?}\nstates equal {}", want.0.first_diff(&got.0), diff(&got.1, &want.1), got.2 == want.2);
+    open_equals_rebuild(&mut lp.peers[1].engine, &[t], "receiver");
 }
 
 /// A large blob: one of a few bases with a small tail (a rewrite reuses most chunks).
@@ -749,30 +704,29 @@ fn big_blob(rng: &mut Rng) -> Value {
 }
 
 /// What a random history reached on one node: commits with dropped parts, commits with an
-/// invalid part, roster snapshots, chunks indexed.
-fn reached(e: &Engine) -> [usize; 4] {
-    let d = e.index_digest();
+/// invalid part, chunks indexed.
+fn reached(e: &Engine) -> [usize; 3] {
     let [dropped, invalid, _] = e.drop_counts();
-    [dropped, invalid, d.commits.values().filter(|c| c.kind == osis_commit::Kind::RosterSnapshot).count(), d.by_chunk.len()]
+    [dropped, invalid, e.index_digest().by_chunk.len()]
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §5.2; spec/commits.md §5: random
 // three-node histories of large values, tags, keep-at-most-0 aspects (drops, large ones with
-// their chunks), compaction snapshots, revokes that flip validity and un-merge late writes,
-// roster snapshots and late, out-of-order deliveries: at random points a node
-// opened from its persisted index, and then rebuilt from its commit records, equals the running
-// node (views, `by_thing`, `by_chunk`, validity, perm, states). Seeds 0..4, which reach drops,
-// invalid parts, roster snapshots and chunks; more in `_large`.
+// their chunks), compaction snapshots, revokes that flip validity and un-merge late writes, and
+// late, out-of-order deliveries: at random points a node opened from its persisted index, and
+// then rebuilt from its commit records, equals the running node (views, `by_thing`, `by_chunk`,
+// validity, perm, states). Seeds 0..4, which reach drops, invalid parts and chunks; more in
+// `_large`.
 #[test]
 fn open_equals_rebuild_random_histories() {
     let seeds: Vec<u64> = (0..4).collect();
-    let mut most = [0usize; 4];
+    let mut most = [0usize; 3];
     for r in osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories", &seeds, false, walks_replay, |seed| random_history(seed, false)) {
-        for k in 0..4 {
+        for k in 0..3 {
             most[k] = most[k].max(r[k]);
         }
     }
-    assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, roster snapshots, chunks): {most:?}");
+    assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, chunks): {most:?}");
 }
 
 /// Seeds: OSIS_WALKS_START, OSIS_WALKS_SEEDS (default 0..200).
@@ -833,8 +787,8 @@ fn forged_replay(s: u64) -> String {
 
 /// One random history of `open_equals_rebuild_random_histories`; returns what it reached on any
 /// node (most of each `reached` count).
-fn random_history(seed: u64, forge: bool) -> [usize; 4] {
-    let mut most = [0usize; 4];
+fn random_history(seed: u64, forge: bool) -> [usize; 3] {
+    let mut most = [0usize; 3];
     let mut forged = 0usize;
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut lp = LocalPeer::new(3, 0x7a1c + seed, T0).unwrap();
@@ -850,7 +804,7 @@ fn random_history(seed: u64, forge: bool) -> [usize; 4] {
         let i = rng.below(3) as usize;
         let t = things[rng.below(things.len() as u64) as usize];
         let mut m = Mutation::new();
-        match rng.below(16) {
+        match rng.below(15) {
             0 => {
                 m.set(t, &BLOB, &big_blob(&mut rng)).unwrap();
             }
@@ -907,11 +861,8 @@ fn random_history(seed: u64, forge: bool) -> [usize; 4] {
                 let _ = lp.peers[2].commit(m);
                 m = Mutation::new();
             }
-            8 => {
-                let _ = lp.peers[i].engine.roster_snapshot(&t, None);
-            }
-            10 => lp.advance(1 + rng.below(1_200_000)),
-            11..=13 => {
+            8 => lp.advance(1 + rng.below(1_200_000)),
+            9..=11 => {
                 // some of i's commits, shuffled, to another node
                 let j = (i + 1 + rng.below(2) as usize) % 3;
                 let mut pk = lp.packages(i).unwrap();
@@ -927,10 +878,10 @@ fn random_history(seed: u64, forge: bool) -> [usize; 4] {
             _ => {
                 let e = &mut lp.peers[i].engine;
                 let r = reached(e);
-                for k in 0..4 {
+                for k in 0..3 {
                     most[k] = most[k].max(r[k]);
                 }
-                open_equals_rebuild_any(e, &things, &format!("seed {seed} step {step} peer {i}"));
+                open_equals_rebuild(e, &things, &format!("seed {seed} step {step} peer {i}"));
             }
         }
         if !m.is_empty() {
@@ -941,10 +892,10 @@ fn random_history(seed: u64, forge: bool) -> [usize; 4] {
     lp.sync_all().unwrap();
     for i in 0..3 {
         let r = reached(&lp.peers[i].engine);
-        for k in 0..4 {
+        for k in 0..3 {
             most[k] = most[k].max(r[k]);
         }
-        open_equals_rebuild_any(&mut lp.peers[i].engine, &things, &format!("seed {seed} end, peer {i}"));
+        open_equals_rebuild(&mut lp.peers[i].engine, &things, &format!("seed {seed} end, peer {i}"));
     }
     if forge {
         // every node holds every commit it has not dropped: the tags agree, a valid forger's

@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) fn deliver_without_secrets(lp: &mut LocalPeer, from: usize, to: usize, x: Tid) {
     for pk in lp.packages(from).unwrap() {
         let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-        let cut = osis_commit::rewrite(&b, |ai, _| b.header.aspects.get(ai).is_some_and(|a| a.tid == x && a.ak.as_str() == "secrets.0"));
+        let cut = osis_commit::rewrite(&b, |ai| b.header.aspects.get(ai).is_some_and(|a| a.tid == x && a.ak.as_str() == "secrets.0"));
         let _ = lp.peers[to].engine.ingest(&cut.encode(), pk.blobs.clone());
     }
 }
@@ -126,7 +126,7 @@ pub(super) fn group(lp: &mut LocalPeer, i: usize) -> Tid {
 }
 
 pub(super) fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, since: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None }
 }
 
 pub(super) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -1178,7 +1178,7 @@ fn withheld_departures(seed: u64, more: bool) {
                     if j != i
                         && let Some(r) = lp.peers[i].engine.core.role_now(&tids[j], &g)
                     {
-                        let e = ct::Edge { role: r, until: Some(until), invite: None, since: None, tied: None };
+                        let e = ct::Edge { role: r, until: Some(until), invite: None, tied: None };
                         if let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: Some(e), presync: PreSync::Synced, keep: None }) {
                             departing.extend(d.commits);
                         }
@@ -1258,7 +1258,7 @@ fn withheld_departures(seed: u64, more: bool) {
         .iter()
         .map(|d| {
             let applied = tl.applied().values().filter(|a| a.target == g && on_edge(&a.point.commit, d)).map(|a| a.point);
-            let dropped = tl.dropped().iter().filter(|(w, _)| matches!(w, osis_perm::WriteId::Op(c, _) if on_edge(c, d))).map(|(_, p)| *p);
+            let dropped = tl.dropped().iter().filter(|(w, _)| matches!(w, osis_perm::WriteId(c, _) if on_edge(c, d))).map(|(_, p)| *p);
             applied.chain(dropped).max().map(|p| p.commit)
         })
         .collect();
@@ -1341,14 +1341,12 @@ fn opened_by_invalid(lp: &mut LocalPeer, i: usize, g: Tid, holder: Tid, seed: &o
                 if m.valid_at(ai) {
                     continue;
                 }
-                for d in crate::apply::held_parts(tx, &id, ai)? {
-                    if let osis_commit::Decoded::Delta(d) = d {
-                        let to: Vec<_> = crate::apply::keys::secrets_write(&d.fragment).boxes.into_iter().filter(|(k, _)| k.holder == holder).collect();
-                        if !to.is_empty() {
-                            authors.insert(m.view.author);
-                        }
-                        boxes.extend(to);
+                if let Some(osis_commit::Decoded::Delta(d)) = crate::apply::held_part(tx, &id, ai)? {
+                    let to: Vec<_> = crate::apply::keys::secrets_write(&d.fragment).boxes.into_iter().filter(|(k, _)| k.holder == holder).collect();
+                    if !to.is_empty() {
+                        authors.insert(m.view.author);
                     }
+                    boxes.extend(to);
                 }
             }
             Ok((boxes, authors))
@@ -1484,7 +1482,7 @@ fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
     for pk in all.clone() {
         let bytes = if r_s.contains(&pk.id) {
             let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-            osis_commit::rewrite(&b, |ai, _| b.header.aspects.get(ai).is_some_and(|a| a.tid == g && a.ak.as_str() == "roles.0")).encode()
+            osis_commit::rewrite(&b, |ai| b.header.aspects.get(ai).is_some_and(|a| a.tid == g && a.ak.as_str() == "roles.0")).encode()
         } else {
             pk.bytes.clone()
         };
@@ -1639,7 +1637,7 @@ fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
     let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = lp.peers.iter().map(|p| p.engine.tid()).collect();
-    let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
+    let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap();
@@ -1663,7 +1661,7 @@ fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
         }
         let b = osis_commit::CommitBlob::decode(&forged).unwrap();
         let bytes = match (pk.id == forged_id, leave_out) {
-            (true, true) => osis_commit::rewrite(&b, |ai, _| bad.contains(&b.header.aspects[ai].ak.as_str())).encode(),
+            (true, true) => osis_commit::rewrite(&b, |ai| bad.contains(&b.header.aspects[ai].ak.as_str())).encode(),
             (true, false) => forged.clone(),
             _ => pk.bytes.clone(),
         };
@@ -1706,7 +1704,7 @@ fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut lp = LocalPeer::new(3, 3_391, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None };
+    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
     let mut m = Mutation::new();
     let o = lp.peers[0].engine.new_thing(&mut m, a);
     lp.peers[0].commit(m).unwrap();

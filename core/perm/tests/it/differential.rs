@@ -6,7 +6,7 @@ use crate::common;
 
 use common::*;
 use roles_model::shrink::{shrink, Shrink};
-use roles_model::{edges, joint, snapshot, Rng};
+use roles_model::{edges, joint, Rng};
 use osis_base::{CommitId, Role, Tid};
 use osis_perm::{At, Edge, Timeline, WriteId};
 
@@ -67,7 +67,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
         if owner_of(jwr.target) == Some(jwr.holder) {
             continue;
         }
-        let id = WriteId::Op(jw.ids[i], 0);
+        let id = WriteId(jw.ids[i], 0);
         let (ma, md) = (o.applied >> i & 1 == 1, o.dropped >> i & 1 == 1);
         let (pa, pd) = (tl.is_applied(&id), tl.dropped().contains_key(&id));
         if (ma, md) != (pa, pd) {
@@ -236,7 +236,7 @@ fn edges_diff(h: &edges::EHist) -> Option<String> {
             let op = o.base[i] + k;
             let ma = o.attr[op] != edges::Attr::Skipped;
             let md = o.dropped >> op & 1 == 1;
-            let id = WriteId::Op(ew.ids[i], k as u32);
+            let id = WriteId(ew.ids[i], k as u32);
             let (pa, pd) = (tl.is_applied(&id), tl.dropped().contains_key(&id));
             if (ma, md) != (pa, pd) {
                 return Some(format!("write {i} op {k}: model applied {ma} dropped {md}, perm applied {pa} dropped {pd}"));
@@ -259,111 +259,16 @@ fn edges_run(samples: u64, seed: u64) {
     model_run(samples, seed, edges::random_hist, edges_diff, |_| {});
 }
 
-/// spec/permissions.md §2, §5.1, §8: `until`, invite power, self-removal and links agree with
+/// spec/permissions.md §2, §5.1, §7: `until`, invite power, self-removal and links agree with
 /// core/test/roles-model `edges`, projections included.
 #[test]
 fn edges_model_agrees() {
     edges_run(300, 0x5eed_0003);
 }
 
-/// spec/permissions.md §2, §5.1, §8: as above, more samples (tier 2).
+/// spec/permissions.md §2, §5.1, §7: as above, more samples (tier 2).
 #[test]
 #[ignore]
 fn edges_model_agrees_large() {
     sharded(100_000, 0x5eed_0004, edges_run);
-}
-
-fn snap_diff(h: &snapshot::SHist) -> Option<String> {
-    let sw = snap_world(h);
-    let o = snapshot::walk(h);
-    let tl = Timeline::evaluate(&sw.w.held());
-    if residue(&tl) {
-        RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return None;
-    }
-    for (name, thing, out) in [("P", sw.p, &o.p), ("G", sw.g, &o.g)] {
-        let roster = tl.roster(&thing, At::END);
-        for x in 1..h.n() {
-            let (m, p) = (model_role(out.roles[x]), roster.get(&sw.nodes[x]).map(|e| e.role));
-            if m != p {
-                return Some(format!("{name} edge of {x}: model {m:?} perm {p:?}"));
-            }
-        }
-        let start = out.start.and_then(|s| sw.ids[s]);
-        if start != tl.epoch_start(&thing) {
-            return Some(format!("{name} epoch start: model {:?} perm {:?}", out.start, tl.epoch_start(&thing)));
-        }
-        for (i, wr) in h.writes.iter().enumerate() {
-            let Some(id) = sw.ids[i] else { continue };
-            if (wr.thing == snapshot::Thing::P) != (name == "P") {
-                continue;
-            }
-            let pid = if wr.snap.is_some() { WriteId::Snapshot(id) } else { WriteId::Op(id, 0) };
-            let (ma, pa) = (out.applied >> i & 1 == 1, tl.is_applied(&pid));
-            if ma != pa {
-                return Some(format!("{name} write {i}: model applied {ma}, perm {pa}"));
-            }
-        }
-    }
-    None
-}
-
-/// Sticky residue (`common::sticky_residue`): the two-level model, which settles P before
-/// walking G, may discover drops in another order than the joint walk the spec prescribes.
-static RESIDUE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn residue(tl: &Timeline) -> bool {
-    sticky_residue(tl)
-}
-
-/// A snapshot-model history without self-removal: no writes of an author's own edge, and
-/// ledger entries ended by the holder's own node given another ending node (that end is a
-/// self-removal, spec/permissions.md §2, never an audited end, §6; read as one, its author
-/// keeps its standing, §5.1 step 4). The snapshot model has no self-removal.
-fn snap_hist(rng: &mut Rng) -> snapshot::SHist {
-    let mut h = snapshot::random_hist(rng);
-    let keep: Vec<usize> = (0..h.writes.len()).filter(|&i| h.writes[i].snap.is_some() || h.writes[i].rec || h.writes[i].author != h.writes[i].target).collect();
-    h.writes = keep.iter().map(|&i| h.writes[i].clone()).collect();
-    h.recv = keep.iter().map(|&i| h.recv[i].clone()).collect();
-    let n = h.n();
-    for e in h.writes.iter_mut().flat_map(|w| w.ledger.iter_mut()) {
-        if let Some(u) = e.until.as_mut().filter(|u| u.1 == e.holder) {
-            u.1 = (e.holder + 1) % n;
-        }
-    }
-    h
-}
-
-/// The full history, compacted at every applied snapshot, and projected for every actor.
-fn snap_cases(h: &snapshot::SHist) -> Option<String> {
-    let o = snapshot::walk(h);
-    let mut cases = vec![("full".to_string(), h.clone())];
-    for thing in [snapshot::Thing::P, snapshot::Thing::G] {
-        for sn in h.snapshots(thing, &o, true) {
-            cases.push((format!("compacted {thing:?} at {sn}"), h.compacted(thing, sn).0));
-        }
-    }
-    for z in 1..h.n() {
-        cases.push((format!("projected {z}"), h.projected(z).0));
-    }
-    cases.into_iter().find_map(|(name, c)| snap_diff(&c).map(|d| format!("({name}) {d}")))
-}
-
-fn snap_run(samples: u64, seed: u64) {
-    model_run(samples, seed, snap_hist, snap_cases, |_| {});
-    eprintln!("snapshot model: {samples} histories, {} cases skipped as sticky residue", RESIDUE.load(std::sync::atomic::Ordering::Relaxed));
-}
-
-/// spec/permissions.md §6: epoch starts, ledgers, compaction and projections agree with
-/// core/test/roles-model `snapshot`.
-#[test]
-fn snapshot_model_agrees() {
-    snap_run(300, 0x5eed_0005);
-}
-
-/// spec/permissions.md §6: as above, more samples (tier 2).
-#[test]
-#[ignore]
-fn snapshot_model_agrees_large() {
-    sharded(50_000, 0x5eed_0006, snap_run);
 }

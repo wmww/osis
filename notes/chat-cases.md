@@ -306,7 +306,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 28. E: the header-only blob of a purged permanent delta is kept forever and reaches new devices, with its purge commit (spec/commits.md §5); E1 keeps the tid and time forever by design.
 29. E: per-year things owned by the chat, each synced under its own label.
 30. E: nothing is compacted; messages keep at least forever.
-31. E: a required retention on every aspect makes `nobody` junk invalid, dropped without a right (spec/permissions.md §7); junk under the required retention is what purge by author erases; a member from before a change can still backdate below it.
+31. E: a required retention on every aspect makes `nobody` junk invalid, dropped without a right (spec/permissions.md §6); junk under the required retention is what purge by author erases; a member from before a change can still backdate below it.
 32. E: the frontier is a few heads (frontier study), but un-merging a kicked member's deltas re-reads the year's aspect (about 70 s at 10^6, extrapolated, e-review §6); not measured in any design.
 33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. Works in every design, no core change; Tess's primary path is core n.
 34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and hosts live under its own label.
@@ -330,5 +330,5 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 52. Entry counts are drowned by heartbeats and certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
 54. A thing owned by the realm or holding a grant for it is in the realm; placed in the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain grants (notes/realms.md open question 1) a writer's unplacing only stops the auto-sync; removing it from the realm is an admin's grant removal.
-55. An ownerless actor has no roster snapshots, so its role history is kept forever and readable by its holders.
+55. Every thing's role history is kept forever and readable by its holders.
 56. Rights: demote the top realm on each child, one commit per child; one step only as a client-honored flag.

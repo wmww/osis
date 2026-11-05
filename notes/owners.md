@@ -6,7 +6,6 @@
 2. Inheritance: a role on an actor reaches what it owns, so a million things need no edges.
 3. Plain things derive secrets from the owner and store none.
 4. Irremovable top authority: the only thing that settles a backdating fight (issues/ownerless-first-admin-backdate.md).
-5. Roster snapshots: owner-chain only, so an ownerless thing's role history grows forever.
 
 ## Common base of every option: the first admin
 Every record names a first admin, as ownerless records do; its edge is implicit, costs no bytes and is removable. The chain walk follows these edges while they stand. 1-3 keep working: same tid forever, plain things stay free and derive secrets until they get another holder, then rotate (exists today). Owner chain authority class goes away or becomes a role level. A move is grant + remove with no tid change; a large set moves by handing over a shared actor (existing usage rule). Key actors stay: a device is its key, not an owned thing. Verifiers must now see a record edge's removal, with the eventual reach of any edge.
@@ -56,10 +55,10 @@ Trust sets on the `edges` walk (one thing: `until` with item 280's finalize, inv
 
 Review findings for the plan: label actor disputes split hosts (largest item: stamps and deposits under a disputed head, per-side labels both sides can find, nothing triggers replacement today); delete and re-upload loop between sides (no deletes at hosts resting on a disputed party's write); cover only under snapshots valid on both sides; a part sealed under a rejected epoch counts as held; leave both parties out of new keys, or accept the wrong-default leak; no synced pick decides a dispute on its own author or person; names need a new reset point once snapshots go; frontier growth needs measuring.
 
-Chosen: base + F. Touches spec/requirements.md Permissions (three concepts, fixed owner, owner's snapshot). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
+Chosen: base + F. Touches spec/requirements.md Permissions (three concepts, fixed owner). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
 
 ## Optional recovery key (Tess's idea; documented, not built first)
-Tess: having none must be a fully valid way to use the system, and a thief with an unlocked device taking control is accepted: the alternatives are no irrevocable actions for legit users, or a recovery system, which stays optional. So people get no recovery key by default and it is not in the first build. Lost-all-devices needs no new role: a recovery card can be a key actor holding a plain admin edge, listed by static entry as link keys are (spec/permissions.md §8); a thief can remove it. If built later, it is a separate section nothing else reads; every rule and test must work with none. "Owner" leaves the spec, code and API. Formats change freely until stability, so nothing needs reserving.
+Tess: having none must be a fully valid way to use the system, and a thief with an unlocked device taking control is accepted: the alternatives are no irrevocable actions for legit users, or a recovery system, which stays optional. So people get no recovery key by default and it is not in the first build. Lost-all-devices needs no new role: a recovery card can be a key actor holding a plain admin edge, listed by static entry as link keys are (spec/permissions.md §7); a thief can remove it. If built later, it is a separate section nothing else reads; every rule and test must work with none. "Owner" leaves the spec, code and API. Formats change freely until stability, so nothing needs reserving.
 
 At most one key actor per thing, named in the creation record, none by default. It holds boxes like an admin (it must see the log to write frontiers, seal to new admins and register steps at hosts), so "only changes grants" is a client rule: it could always grant itself read. No admin can remove it; its role writes always apply and settle disputes, so a split tid converges again. It acts on the named thing only, not on things below by path (no class-by-path logic).
 - **Hand-off**: it names a successor, then burns.

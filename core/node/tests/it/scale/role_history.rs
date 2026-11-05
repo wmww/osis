@@ -1,4 +1,4 @@
-//! Role history a joiner fetches with and without roster snapshots (notes/owner-removal-plan.md
+//! Role history a joiner fetches: every role commit on the thing (notes/owner-removal-plan.md
 //! step 1; spec/requirements.md, Scale). By hand, release, one shape and size at a time:
 //! `OSIS_SCALE_SHAPE=chat OSIS_SCALE_N=10000 cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::role_history::cost`.
 //! Shapes: `chat` (1000 writers, n/4 below 4000 writes, joining and leaving), `readers` (the same at read), `devices`
@@ -6,7 +6,7 @@
 //! revoked, joiners granted), `kicks` (`chat` whose leaves are kicks listing 1..10^3 commits,
 //! log-uniform). One node writes every edge on one thing its person owns, raw edge writes (no
 //! boxes or rotations: those are other aspects); holders are bare tids. A joiner gets the
-//! setup, then either every role commit or the one roster snapshot written at the end.
+//! setup, then every role commit.
 
 use super::{peak_kib, reset_peak};
 use crate::common::set_edge;
@@ -64,7 +64,7 @@ fn frontier(k: usize, rng: &mut Rng) -> (Value, usize) {
 }
 
 fn edge(role: Role, invite: Option<Role>) -> ct::Edge {
-    ct::Edge { role, until: None, invite, since: None, tied: None }
+    ct::Edge { role, until: None, invite, tied: None }
 }
 
 /// Joiner `j` gets `base`, then `pks`: CPU s, wall s, peak resident growth (KiB).
@@ -101,7 +101,7 @@ fn spans(what: &str) {
 fn cost() {
     let shape = std::env::var("OSIS_SCALE_SHAPE").unwrap_or_else(|_| "chat".into());
     let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|v| v.parse().ok()).unwrap_or(1_000);
-    let mut lp = LocalPeer::new(3, 91, WallMs(1_700_000_000_000)).unwrap();
+    let mut lp = LocalPeer::new(2, 91, WallMs(1_700_000_000_000)).unwrap();
     let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
     let things: Vec<Tid> = (0..if shape == "devices" { 3 } else { 1 }).map(|_| thing_of(&mut lp, 0, pa)).collect();
     let base = lp.packages(0).unwrap();
@@ -181,11 +181,11 @@ fn cost() {
     if fr_n > 0 {
         println!("  frontiers: {fr_n} removals, total {fr_total} B, largest {fr_max} B");
     }
-    // snapshots off: a joiner of thing 0 gets every role commit on it
+    // a joiner of thing 0 gets every role commit on it
     let mine: Vec<Package> = pks.iter().enumerate().filter(|(i, _)| i % things.len() == 0).map(|(_, p)| p.clone()).collect();
     let (c, w, peak) = join(&mut lp, 1, &base, &mine);
     spans("history ingest");
-    println!("  off: joiner ingests {} commits, {} B: {c:.2} CPU-s ({w:.2} s), peak +{} MiB", mine.len(), mine.iter().map(size).sum::<usize>(), peak / 1024);
+    println!("  joiner ingests {} commits, {} B: {c:.2} CPU-s ({w:.2} s), peak +{} MiB", mine.len(), mine.iter().map(size).sum::<usize>(), peak / 1024);
     let roster = lp.peers[1].engine.roster(&things[0]);
     assert_eq!(roster, lp.peers[0].engine.roster(&things[0]));
     // from scratch: the joiner's open with its saved walks gone
@@ -194,34 +194,6 @@ fn cost() {
     let before = peak_kib();
     let (c0, t0) = (cpu_s(), Instant::now());
     lp.peers[1].restart(7).unwrap();
-    println!("  off: open evaluating anew {:.2} CPU-s ({:.2} s), peak +{} MiB ({} restored)", cpu_s() - c0, t0.elapsed().as_secs_f64(), peak_kib().saturating_sub(before) / 1024, lp.peers[1].engine.walks_restored());
+    println!("  open evaluating anew {:.2} CPU-s ({:.2} s), peak +{} MiB ({} restored)", cpu_s() - c0, t0.elapsed().as_secs_f64(), peak_kib().saturating_sub(before) / 1024, lp.peers[1].engine.walks_restored());
     assert_eq!(lp.peers[1].engine.roster(&things[0]), roster);
-    // snapshots on: one roster snapshot after every write; a joiner gets it alone
-    osis_node::costs::take();
-    let (c0, t0) = (cpu_s(), Instant::now());
-    let done = lp.peers[0].engine.roster_snapshot(&things[0], None);
-    let done = match done {
-        Ok(d) => d,
-        Err(e) => {
-            println!("  on: no roster snapshot: {e:?}");
-            return;
-        }
-    };
-    let snap_cpu = cpu_s() - c0;
-    spans("snapshot write");
-    let snap_wall = t0.elapsed().as_secs_f64();
-    let spks: Vec<Package> = done.commits.iter().map(|id| lp.peers[0].engine.package(id).unwrap().unwrap()).collect();
-    let sbytes: usize = spks.iter().map(size).sum();
-    println!("  on: snapshot written in {snap_cpu:.2} CPU-s ({snap_wall:.2} s): {} commits, {sbytes} B ({} blobs)", spks.len(), spks.iter().map(|p| p.blobs.len()).sum::<usize>());
-    let (c, w, peak) = join(&mut lp, 2, &base, &spks);
-    spans("snapshot ingest");
-    println!("  on: joiner ingests the snapshot: {c:.2} CPU-s ({w:.2} s), peak +{} MiB", peak / 1024);
-    let r2 = lp.peers[2].engine.roster(&things[0]);
-    if r2 != roster {
-        println!("  on: joiner's roster differs: {} holders against {}", r2.len(), roster.len());
-    }
-    lp.peers[2].engine.damage_walks(0).unwrap();
-    let (c0, t0) = (cpu_s(), Instant::now());
-    lp.peers[2].restart(8).unwrap();
-    println!("  on: open evaluating anew {:.2} CPU-s ({:.2} s)", cpu_s() - c0, t0.elapsed().as_secs_f64());
 }

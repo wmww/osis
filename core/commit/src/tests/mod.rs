@@ -44,7 +44,7 @@ pub(crate) fn sample_header() -> Header {
             hi: 2,
             retention: Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: Some(5) }, at_most: Bound::default() },
             keys: vec![0, 1],
-            hashes: vec![[9; 32]],
+            hash: [9; 32],
         }],
         chunks: vec![],
         purge: vec![],
@@ -143,8 +143,13 @@ fn header_rejects_malformed() {
     let mut short = items.clone();
     short.pop();
     assert!(Header::decode(&osis_base::encode(&Value::List(short))).is_err());
-    // an aspect without hashes
-    let mut h = sample_header();
-    h.aspects[0].hashes.clear();
-    assert!(matches!(Header::decode(&h.encode()), Err(Error::Malformed(_))));
+    // an aspect's delta hash: one 32-byte string
+    let Value::List(aspects) = &items[7] else { unreachable!() };
+    let Value::List(aspect) = &aspects[0] else { unreachable!() };
+    let hash = aspect[6].clone();
+    for bad in [Value::Bytes(vec![0; 31]), Value::List(vec![hash])] {
+        let mut a = aspect.clone();
+        a[6] = bad;
+        assert_eq!(osis_base::Classified::class(&mutate(7, Value::List(vec![Value::List(a)]))), osis_base::ErrorClass::BadInput);
+    }
 }

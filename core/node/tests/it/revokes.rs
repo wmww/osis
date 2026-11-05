@@ -25,7 +25,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
     let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     net.pair(b, a);
     let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &x, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -79,7 +79,7 @@ fn nested_departure_removed_writer_waits_spec_crypto_4() {
     let r = net.node(4, &[host]);
     let x2 = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     let x1 = net.group_seeded(b, &[], vec![net.address(host)], 2);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
     let done = net.engine(b).grant(&x1, &x2, &edge).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -139,7 +139,7 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     let m = net.group_seeded(b, &[(w, Role::Read), (r, Role::Read)], vec![net.address(host)], 3);
     net.pair(b, a);
     let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &x, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -166,10 +166,10 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     assert!(net.engine(r).header(&rm).is_some(), "R holds the revoke");
     let ids = net.host_ids(host, &lg);
     let h = net.engine(r).header(&rm).unwrap();
-    let placed: Vec<Vec<(usize, usize)>> = net.sync(r).entries(&lg).into_iter().filter(|(id, _)| ids.contains(id)).filter_map(|(_, k)| match k {
+    let placed: Vec<Vec<usize>> = net.sync(r).entries(&lg).into_iter().filter(|(id, _)| ids.contains(id)).filter_map(|(_, k)| match k {
         EntryKind::Commit { commit, parts, .. } if commit == rm => Some(parts),
         _ => None,
     }).collect();
     assert!(!placed.is_empty(), "the revoke is under G's label");
-    assert!(placed.iter().flatten().all(|(ai, _)| h.aspects[*ai].ak.as_str() != "keys.0"), "no keyset of M");
+    assert!(placed.iter().flatten().all(|ai| h.aspects[*ai].ak.as_str() != "keys.0"), "no keyset of M");
 }

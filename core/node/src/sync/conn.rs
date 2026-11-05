@@ -245,7 +245,7 @@ impl SyncEngine {
             for (k, (a, _)) in self.peer_addresses() {
                 m.entry(k).or_insert((a, true));
             }
-            // a link's sharer node (first contact, spec/permissions.md §8) is dialed as a co-reader
+            // a link's sharer node (first contact, spec/permissions.md §7) is dialed as a co-reader
             for (k, (a, _)) in self.link_routes() {
                 m.entry(k).or_insert((a, true));
             }
@@ -350,7 +350,7 @@ impl SyncEngine {
                 Some(e) => match &e.kind {
                     state::Kind::Commit { commit, parts, .. } => {
                         let h = self.engine.header(commit);
-                        let aspects: Vec<String> = parts.iter().filter_map(|(ai, _)| h.as_ref().and_then(|h| h.aspects.get(*ai))).map(|a| format!("{}{}", t4(&a.tid), a.ak.as_str())).collect();
+                        let aspects: Vec<String> = parts.iter().filter_map(|ai| h.as_ref().and_then(|h| h.aspects.get(*ai))).map(|a| format!("{}{}", t4(&a.tid), a.ak.as_str())).collect();
                         let kind = h.as_ref().map(|h| format!("{:?}", h.kind)).unwrap_or_default();
                         let author = h.as_ref().map(|h| t4(&h.author)).unwrap_or_default();
                         format!("commit {} {kind} by {author}{} [{}]", short(&commit.0), if e.cert { " cert" } else { "" }, aspects.join(" "))

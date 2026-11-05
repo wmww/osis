@@ -539,7 +539,7 @@ impl SyncEngine {
         let mut own: BTreeMap<(Tid, osis_base::Ak), (Vec<CommitId>, bool)> = BTreeMap::new();
         let mut fresh = BTreeSet::new();
         for b in bodies.iter() {
-            let Some((plain, compaction, aspects)) = self.engine.core.ix.commits.get(&b.commit).filter(|m| m.view.memory).map(|m| (matches!(m.view.form, Form::Session(n) if n == nonce) && !m.view.kind.is_compaction(), m.view.kind.is_compaction(), b.parts.iter().filter_map(|(ai, _)| m.view.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>())) else { continue };
+            let Some((plain, compaction, aspects)) = self.engine.core.ix.commits.get(&b.commit).filter(|m| m.view.memory).map(|m| (matches!(m.view.form, Form::Session(n) if n == nonce) && !m.view.kind.is_compaction(), m.view.kind.is_compaction(), b.parts.iter().filter_map(|ai| m.view.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect::<Vec<_>>())) else { continue };
             if !self.own(&b.commit) || self.state.entries_of(&l, &b.commit).next().is_some() {
                 continue;
             }
@@ -706,7 +706,7 @@ impl SyncEngine {
     fn place_relay(&mut self, id: CommitId, blob: CommitBlob, out: &mut Vec<Action>) -> Result<()> {
         let body = Body {
             commit: id,
-            parts: blob.parts.iter().map(|p| (p.ai, p.di)).collect(),
+            parts: blob.parts.iter().map(|p| p.ai).collect(),
             expires: osis_commit::blob_expiry(&blob.header),
             blind: blob.header.blind,
             plaintext: blob.encode(),

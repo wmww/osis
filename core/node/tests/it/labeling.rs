@@ -29,7 +29,7 @@ fn shared_folder_entitlement_spec_sync_3() {
     let touched = |t: osis_base::Tid, e: &mut osis_node::Engine| {
         bodies.iter().any(|b| {
             let h = e.header(&b.commit).unwrap();
-            b.parts.iter().any(|(ai, _)| h.aspects[*ai].tid == t)
+            b.parts.iter().any(|ai| h.aspects[*ai].tid == t)
         })
     };
     assert!(touched(inside, e));
@@ -90,7 +90,7 @@ fn rotation_wrap_exception_spec_crypto_5() {
     let c = rotation(e, g, &rs, 9, false);
     let after = e.epochs(&g).unwrap().read.newest_held().map(|(_, s)| s.clone()).unwrap();
     assert_ne!(before.expose(), after.expose());
-    let parts: Vec<(usize, usize)> = (0..e.header(&c).unwrap().aspects.len()).map(|i| (i, 0)).collect();
+    let parts: Vec<usize> = (0..e.header(&c).unwrap().aspects.len()).collect();
     assert_eq!(e.wrap_secret(&g, Some((&c, &parts))).unwrap().unwrap().expose(), before.expose());
     assert_eq!(e.wrap_secret(&g, None).unwrap().unwrap().expose(), after.expose());
 }

@@ -26,7 +26,7 @@ mod types;
 mod view;
 
 pub use check::{Rule, Violation, check};
-pub use codec::{Chunked, Codec};
+pub use codec::Codec;
 pub use codegen::{Generated, generate, generate_file};
 pub use error::{Error, ParseError};
 pub use form::{META_SRC, meta_schema, read_type, type_value};

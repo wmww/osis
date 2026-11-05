@@ -31,7 +31,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
     net.pair(c, a);
     let ct_ = net.tid(c);
     let until = WallMs(net.now() + 1_000);
-    let done = net.engine(a).grant(&g, &ct_, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None }).unwrap();
+    let done = net.engine(a).grant(&g, &ct_, &ct::Edge { role: Role::Read, until: Some(until), invite: None, tied: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for (_, pks) in net.sync(a).take_direct() {
@@ -309,7 +309,7 @@ fn private_and_shared_split_spec_sync_3() {
             && commit == c
         {
             seen = true;
-            assert!(parts.iter().all(|(ai, _)| h.aspects[*ai].tid == t), "only the shared deltas open: {parts:?}");
+            assert!(parts.iter().all(|ai| h.aspects[*ai].tid == t), "only the shared deltas open: {parts:?}");
             assert!(ais.iter().any(|ai| h.aspects[*ai].tid != t), "the private section rides sealed: {ais:?}");
         }
     }
@@ -818,7 +818,7 @@ fn deleted_body_withholds_only_itself_spec_sync_6() {
     let reg_body = |net: &mut Net| {
         let h = net.engine(a).header(&c).unwrap();
         net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
-            EntryKind::Commit { commit, parts, .. } if commit == c && parts.iter().all(|(ai, _)| h.aspects[*ai].ak.as_str() == "t:reg.0") => Some(id),
+            EntryKind::Commit { commit, parts, .. } if commit == c && parts.iter().all(|ai| h.aspects[*ai].ak.as_str() == "t:reg.0") => Some(id),
             _ => None,
         }).collect::<Vec<_>>()
     };

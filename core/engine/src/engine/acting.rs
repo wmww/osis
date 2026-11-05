@@ -63,7 +63,7 @@ impl Engine {
     /// Fails `Permission` unless `actor` itself may do all of a confined `m`: every aspect's write,
     /// every creation (write on the owner), every thing it persists or frees. A purge needs write:
     /// what it drops receivers judge by this node's and the actor's rights together
-    /// (spec/permissions.md §7). `group.0` gains only what it may
+    /// (spec/permissions.md §6). `group.0` gains only what it may
     /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
     /// the answer would tell a hidden thing from an unknown one and its name would reach the
     /// group's readers (its data would not: spec/sync.md §3 entitlement judges the group's actor).

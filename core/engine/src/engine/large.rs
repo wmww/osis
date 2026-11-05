@@ -392,34 +392,6 @@ pub(crate) fn chunk_ops(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, ops: &mut [PathOp],
     Ok(blobs.written)
 }
 
-/// A roster snapshot's `tenures.0` value (spec/permissions.md §6, spec/data-model.md §6): a
-/// tenure's frontier above `CHUNK_THRESHOLD` becomes a link to a fresh chunk tree, so every
-/// blob it needs is in the commit's chunk list (receivers fetch frontiers by it before judging).
-/// Returns the blobs written.
-pub(crate) fn chunk_frontiers(tx: &mut Tx<'_>, ops: &mut [PathOp], framing: &Framing) -> Result<Vec<BlobId>> {
-    let mut blobs = TxBlobs::new(&mut tx.txn);
-    let rng = &mut *tx.rng;
-    let frontier_field = Value::Int(4);
-    for op in ops.iter_mut() {
-        let (Op::Set(Value::Set(s)) | Op::Replace(Value::Set(s))) = &mut op.op else { continue };
-        let mut out = osis_base::ValueSet::new();
-        for t in std::mem::take(s) {
-            let Value::Map(mut m) = t else {
-                out.insert(t);
-                continue;
-            };
-            if let Some(Value::Enum(1, Some(f))) = m.get_mut(&frontier_field) {
-                let mut bw = BlobWriter::new(framing, &mut blobs, rng);
-                let v = osis_label::chunk_value(&mut bw, LargeParams::FORMAT, f)?;
-                **f = v;
-            }
-            out.insert(Value::Map(m));
-        }
-        *s = out;
-    }
-    Ok(blobs.written)
-}
-
 /// Blob IDs a delta's canonical bytes link (its values' trees, its pages), through the held
 /// node and page blobs.
 pub(crate) fn delta_links(tx: &mut Tx<'_>, dedup: &Secret32, delta: &[u8]) -> Result<BTreeSet<BlobId>> {
@@ -620,7 +592,7 @@ impl Engine {
                 let mut roots = Vec::new();
                 // the delta's values, not its read: a write into another's entry reads as
                 // nothing alone (spec/crdt.md §5.6 Live)
-                for d in crate::apply::held_parts(tx, &c, ai)? {
+                if let Some(d) = crate::apply::held_part(tx, &c, ai)? {
                     d.fragment().values(&mut |v| links_in(v, &mut roots));
                 }
                 if !tree_hits(tx, &dedup, &roots, &held2)? {

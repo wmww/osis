@@ -74,7 +74,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
             }
             Ok(())
         })?;
-        if held.is_empty() {
+        if held.is_none() {
             live = tx.state(&a.tid, &a.ak)?.is_some_and(owns);
         }
         if live {
@@ -113,7 +113,7 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: 
         if live {
             return Ok(true);
         }
-        if !held.is_empty() || dropped.get(x) == Some(&false) {
+        if held.is_some() || dropped.get(x) == Some(&false) {
             continue;
         }
         let Some(st) = tx.state(&a.tid, &a.ak)? else { continue };

@@ -52,8 +52,8 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
     Ok(())
 }
 
-/// The parts of aspect `ai` of pending commit `id` (in `blob`, header `h`) that a held purge
-/// request names: held value-less from now on (spec/commits.md §5). Each is checked and decoded
+/// The part of aspect `ai` of pending commit `id` (in `blob`, header `h`) that a held purge
+/// request names: held value-less from now on (spec/commits.md §5). It is checked and decoded
 /// as `apply::examine` would, its value-carrying writes stripped (spec/crdt.md §4.7) and the
 /// result joined into the part's leftover (`records::LEFTOVER`); its slot in `blob` and the
 /// stored copy holds an empty delta (`emptied`). `examine` joins the leftover in its place, and
@@ -70,36 +70,28 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     }
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     let Some(dedup) = tx.core.dedup(&a.tid) else { return Ok(()) };
-    let (mut done, mut gone) = (BTreeSet::new(), BTreeSet::new());
-    let mut kept: Option<Fragment> = leftover::get(tx, &a.tid, &a.ak, id, ai)?.map(|l| l.fragment);
-    for p in blob.parts.iter_mut().filter(|p| p.ai == ai && p.delta != emptied()) {
-        let mut interner = osis_crdt::Interner::new();
-        let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
-        let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
-        let mut unpaged = osis_crdt::Unpaged;
-        let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
-        let mut d = match osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(reader)) {
-            Ok(Decoded::Delta(d)) => d,
-            // what cannot be stripped goes (spec/commits.md §5; parked: spec/versioning.md §2)
-            Err(e) if crate::apply::is_missing_page(&e) || osis_base::Classified::class(&e) == osis_base::ErrorClass::Parked => {
-                gone.insert(p.di);
-                continue;
-            }
-            _ => continue,
-        };
-        d.fragment.strip(&|x| o.iter().any(|y| y.owns(x)));
-        kept.get_or_insert_default().join(d.fragment);
-        p.delta = emptied();
-        done.insert(p.di);
-    }
-    if done.is_empty() && gone.is_empty() {
-        return Ok(());
-    }
-    if let Some(f) = kept.filter(|_| !done.is_empty()) {
-        leftover::put(tx, &a.tid, &a.ak, id, ai, &leftover::Leftover { fragment: f, gives: None })?;
-    }
-    blob.parts.retain(|p| !(p.ai == ai && gone.contains(&p.di)));
-    if !gone.is_empty() {
+    let Some(p) = blob.parts.iter_mut().find(|p| p.ai == ai && p.delta != emptied()) else { return Ok(()) };
+    let mut interner = osis_crdt::Interner::new();
+    let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
+    let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
+    let mut unpaged = osis_crdt::Unpaged;
+    let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
+    // done: stripped and emptied; else it goes
+    let done = match osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(reader)) {
+        Ok(Decoded::Delta(mut d)) => {
+            d.fragment.strip(&|x| o.iter().any(|y| y.owns(x)));
+            let mut kept = leftover::get(tx, &a.tid, &a.ak, id, ai)?.map(|l| l.fragment).unwrap_or_default();
+            kept.join(d.fragment);
+            p.delta = emptied();
+            leftover::put(tx, &a.tid, &a.ak, id, ai, &leftover::Leftover { fragment: kept, gives: None })?;
+            true
+        }
+        // what cannot be stripped goes (spec/commits.md §5; parked: spec/versioning.md §2)
+        Err(e) if crate::apply::is_missing_page(&e) || osis_base::Classified::class(&e) == osis_base::ErrorClass::Parked => false,
+        _ => return Ok(()),
+    };
+    if !done {
+        blob.parts.retain(|p| p.ai != ai);
         suspect::raise(tx, &a.tid, &a.ak, suspect::Why::Uncovered, &[(*id, ai)])?;
         tx.core.waits.pended(id);
     }
@@ -111,10 +103,13 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
         && let Some((kind, bytes)) = tx.txn.get_pending(id)?
         && let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes)
     {
-        for p in b.parts.iter_mut().filter(|p| p.ai == ai && done.contains(&p.di)) {
-            p.delta = emptied();
+        if done {
+            for p in b.parts.iter_mut().filter(|p| p.ai == ai) {
+                p.delta = emptied();
+            }
+        } else {
+            b.parts.retain(|p| p.ai != ai);
         }
-        b.parts.retain(|p| !(p.ai == ai && gone.contains(&p.di)));
         tx.txn.remove_pending(id, Shred::Yes)?;
         tx.txn.put_pending(id, kind, &b.encode())?;
     }

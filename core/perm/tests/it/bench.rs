@@ -134,9 +134,8 @@ fn bench_10k_edges() {
         let fresh = Timeline::evaluate(&held);
         let mut by_holders = Vec::new();
         for id in fresh.applied().keys() {
-            let osis_perm::WriteId::Op(c, k) = id else { continue };
-            let cm = fresh.role_commit(c).unwrap();
-            let o = &cm.ops[*k as usize];
+            let cm = fresh.role_commit(&id.0).unwrap();
+            let o = &cm.ops[id.1 as usize];
             if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.holder) {
                 let p = cm.point();
                 by_holders.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.holder, commit: osis_base::CommitId([0x11; 32]) }, o.target));
@@ -200,13 +199,12 @@ fn bench_10k_edges() {
         }
         eprintln!("{n} edge writes: walk saved {save:?} ({bytes} bytes), restored {restore:?}, restored and continued over {} more {restore_stale:?}", n / 100);
         eprintln!(
-            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?} (from scratch {scratch3:?}, {passes3} passes), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} holders' deltas cold {rejudge_holders:?} ({valid_holders} valid), chain certificates of an admin {cert:?} ({} commits, {} snapshots), of another {cert2:?}",
+            "{n} edge writes: from scratch {scratch:?} ({} passes, {} dropped), incremental first {first:?}, after one more write {again:?} ({evaluated} components), one more write around its thing {appends:?} (mean of 100, {appended} appended), a late write in the middle {late:?} (from scratch {scratch3:?}, {passes3} passes), one role query {query:?} ({r:?}), role at a mid point {point_query:?}, delta_valid {valid_cold:?} then {valid_warm:?} ({v:?}), {} deltas judged cold {rejudge:?}, {} holders' deltas cold {rejudge_holders:?} ({valid_holders} valid), chain certificates of an admin {cert:?} ({} commits), of another {cert2:?}",
             tl.passes(),
             tl.dropped().len(),
             deltas.len(),
             by_holders.len(),
-            certs.commits.len(),
-            certs.snapshots.len()
+            certs.commits.len()
         );
     }
 }
@@ -309,9 +307,8 @@ fn bench_deltas() {
     let fresh = Timeline::evaluate(&held);
     let mut by_holders = Vec::new();
     for id in fresh.applied().keys() {
-        let osis_perm::WriteId::Op(c, k) = id else { continue };
-        let cm = fresh.role_commit(c).unwrap();
-        let o = &cm.ops[*k as usize];
+        let cm = fresh.role_commit(&id.0).unwrap();
+        let o = &cm.ops[id.1 as usize];
         if o.edge.is_some_and(|e| e.role >= Write) && nodes.contains(&o.holder) {
             let p = cm.point();
             by_holders.push((osis_perm::Point { ts: ts(p.ts.wall_ms().0 + 1), node: o.holder, commit: osis_base::CommitId([0x11; 32]) }, o.target));

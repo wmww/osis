@@ -30,8 +30,7 @@ pub(crate) const LOST_DUE: &[u8] = b"l/";
 const TIMED_LOST: &[u8] = b"T/";
 
 /// Kept copies (spec/permissions.md §3, Keep): `K/` + lost actor; value: the tids of the holders
-/// its copy hangs on, concatenated. Not derived: a later roster snapshot may have taken the edge
-/// values that decided it out of the walk.
+/// its copy hangs on, concatenated, recorded at the drop (durably, spec/permissions.md §3).
 const KEPT_COPY: &[u8] = b"K/";
 
 /// The link keys this node keeps reading as (`Engine::keep_bearer`): `B/` + tid, no value.
@@ -354,13 +353,13 @@ fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>
 /// Whether `k` is a thing where a held single-use redemption granting one of ours stands void
 /// only because an applied redemption by the same signer removed the signer's edge first, with
 /// no explicit write on that edge since: a link race the sharer has not finalized
-/// (spec/permissions.md §3, §8). The finalization may drop the competing redemption and make
+/// (spec/permissions.md §3, §7). The finalization may drop the competing redemption and make
 /// ours stand, so until it arrives the loser keeps the secrets (and with them follows the
 /// labels) it would get back. A redemption is a commit removing its signer's own edge on `k`
 /// beside a grant: a plain leave followed by a void grant (a leaver's forgery) defers nothing.
 fn contested(core: &Core, k: &Tid) -> bool {
     let Some(tl) = core.timelines.get(k) else { return false };
-    let op = |mc: &osis_perm::RoleCommit, i: usize| osis_perm::WriteId::Op(mc.id, i as u32);
+    let op = |mc: &osis_perm::RoleCommit, i: usize| osis_perm::WriteId(mc.id, i as u32);
     // the index of the redemption's self-removal
     let leave = |mc: &osis_perm::RoleCommit| {
         let j = mc.ops.iter().position(|o| o.target == *k && o.holder == mc.author && o.edge.is_none())?;
@@ -446,7 +445,7 @@ pub(crate) fn without_frozen(core: &Core, blob: osis_commit::CommitBlob) -> osis
     if frozen.is_empty() {
         return blob;
     }
-    osis_commit::rewrite(&blob, |ai, _| frozen.contains(&ai))
+    osis_commit::rewrite(&blob, |ai| frozen.contains(&ai))
 }
 
 /// Drops the secrets of `lost` actors (diagnostic each) and forgets what only they read; keeps
@@ -494,7 +493,7 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
 }
 
 /// Drops the bearers named on something that no longer hold a role on any of it: the link ended,
-/// what they read went with it, and a new link is a new key (spec/permissions.md §8).
+/// what they read went with it, and a new link is a new key (spec/permissions.md §7).
 fn drop_ended_bearers(tx: &mut Tx<'_>) -> Result<()> {
     let core = &*tx.core;
     let ended: Vec<Tid> = core.ix.bearers.iter().filter(|l| core.ix.held.named_on(l).next().is_some() && !core.ix.held.named_on(l).any(|t| core.role_now(l, t).is_some())).copied().collect();
@@ -642,7 +641,7 @@ impl Engine {
         })
     }
 
-    /// Keeps reading as link key `l`, whose seed this node forgets (spec/permissions.md §8, Bearer
+    /// Keeps reading as link key `l`, whose seed this node forgets (spec/permissions.md §7, Bearer
     /// use: a contact card): what `l` reads stays held and followed for as long as `l` holds its
     /// role, and goes with it (`l`'s edge removed: the link ended).
     pub fn keep_bearer(&mut self, l: &Tid) -> Result<()> {

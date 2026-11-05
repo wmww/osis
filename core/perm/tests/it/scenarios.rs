@@ -1,5 +1,5 @@
 //! Named scenarios of notes/permissions.md and core/test/roles-model, layer 1 (spec/permissions.md
-//! §2, §5.1, §6, §8). Receipt times give each demoter's frontier.
+//! §1, §2, §3, §5.1, §7). Receipt times give each demoter's frontier.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -149,7 +149,7 @@ fn transitive_ownership_audit() {
         w.set(n[0], p, n[3], None, 3, &[]);
         let tl = eval(&w);
         assert_eq!(role(&tl, n[4], d), if keeps_q { Some(Admin) } else { None }, "keeps Q {keeps_q}");
-        assert_eq!(tl.dropped().contains_key(&WriteId::Op(grant, 0)), !keeps_q);
+        assert_eq!(tl.dropped().contains_key(&WriteId(grant, 0)), !keeps_q);
     }
 }
 
@@ -164,7 +164,7 @@ fn self_removal_finalized_by_explicit_removal() {
     assert_eq!(edge_role(&eval(&w), z, g), Some(Admin));
     w.set(n[0], g, n[1], None, 10, &[]);
     let tl = eval(&w);
-    assert!(tl.dropped().contains_key(&WriteId::Op(forged, 0)));
+    assert!(tl.dropped().contains_key(&WriteId(forged, 0)));
     assert_eq!(edge_role(&tl, z, g), None);
     assert!(tl.dropped().keys().all(|d| d.commit() == forged));
 }
@@ -178,8 +178,8 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     let r = w.set(n[1], g, n[2], None, 8, &[]);
     let forged = w.set(n[2], g, n[1], edge_inv(Admin, None, Some(9)), 6, &[]);
     let tl = eval(&w);
-    assert!(tl.dropped().contains_key(&WriteId::Op(forged, 0)));
-    assert!(tl.is_applied(&WriteId::Op(r, 0)));
+    assert!(tl.dropped().contains_key(&WriteId(forged, 0)));
+    assert!(tl.is_applied(&WriteId(r, 0)));
     assert_eq!(role(&tl, n[1], g), Some(Admin));
     assert_eq!(edge_role(&tl, n[2], g), None);
 }
@@ -198,8 +198,8 @@ fn grantor_cannot_backdate_removers_edge_spec_permissions_5_1() {
     let r = w.set(a, g, x, None, 8, &[]);
     let forged = w.set(x, g, a, edge_inv(Admin, None, Some(9)), 6, &[]);
     let tl = eval(&w);
-    assert!(tl.is_applied(&WriteId::Op(grant, 0)) && tl.is_applied(&WriteId::Op(r, 0)));
-    assert!(tl.dropped().contains_key(&WriteId::Op(forged, 0)));
+    assert!(tl.is_applied(&WriteId(grant, 0)) && tl.is_applied(&WriteId(r, 0)));
+    assert!(tl.dropped().contains_key(&WriteId(forged, 0)));
     assert_eq!(tl.roster(&g, At::END).get(&a).map(|e| (e.role, e.until)), Some((Admin, None)));
     assert_eq!(edge_role(&tl, x, g), None);
 }
@@ -212,7 +212,7 @@ fn received_chain_write_covered_spec_permissions_5_1() {
     let set = w.set(n[2], g, n[1], edge_inv(Admin, Some(Write), None), 3, &[(n[1], 3)]);
     let r = w.set(n[1], g, n[2], None, 8, &[]);
     let tl = eval(&w);
-    assert!(tl.is_applied(&WriteId::Op(set, 0)) && tl.is_applied(&WriteId::Op(r, 0)));
+    assert!(tl.is_applied(&WriteId(set, 0)) && tl.is_applied(&WriteId(r, 0)));
     assert!(tl.dropped().is_empty());
     assert_eq!(tl.roster(&g, At::END).get(&n[1]).and_then(|e| e.invite), Some(Write));
 }
@@ -228,7 +228,7 @@ fn link(l_edge: Option<Edge>) -> (World, Vec<Tid>, Tid) {
     (w, n, k)
 }
 
-/// §8 `until` finalization: a backdated join after expiry stands until the sharer's plain
+/// §7 `until` finalization: a backdated join after expiry stands until the sharer's plain
 /// removal of L drops it; the honest join stays.
 #[test]
 fn link_until_backdated_join_finalized() {
@@ -239,12 +239,12 @@ fn link_until_backdated_join_finalized() {
     assert_eq!(edge_role(&eval(&w), z, k), Some(Write));
     w.set(n[0], k, l, None, 10, &[]);
     let tl = eval(&w);
-    assert!(tl.dropped().contains_key(&WriteId::Op(forged, 0)));
+    assert!(tl.dropped().contains_key(&WriteId(forged, 0)));
     let r = tl.roster(&k, At::now(ts(20)));
     assert_eq!((r.get(&j).map(|e| e.role), r.get(&z), r.get(&l)), (Some(Write), None, None));
 }
 
-/// §8 single use: a forged earlier redemption burns the link until the sharer's removal of L
+/// §7 single use: a forged earlier redemption burns the link until the sharer's removal of L
 /// drops it with its self-removal; then the honest redemption applies.
 #[test]
 fn single_use_second_redemption_finalized() {
@@ -256,7 +256,7 @@ fn single_use_second_redemption_finalized() {
     assert_eq!((edge_role(&tl, j, k), edge_role(&tl, z, k)), (None, Some(Write)));
     w.set(n[0], k, l, None, 10, &[]);
     let tl = eval(&w);
-    assert!(tl.dropped().contains_key(&WriteId::Op(forged, 0)) && tl.dropped().contains_key(&WriteId::Op(forged, 1)));
+    assert!(tl.dropped().contains_key(&WriteId(forged, 0)) && tl.dropped().contains_key(&WriteId(forged, 1)));
     assert_eq!((edge_role(&tl, j, k), edge_role(&tl, z, k), edge_role(&tl, l, k)), (Some(Write), None, None));
 }
 
@@ -269,7 +269,7 @@ fn redemption_ops_judged_separately() {
     w.set(n[0], k, z, edge(Write), 2, &[]);
     let r = w.commit(l, 2, &[(k, z, edge(Read)), (k, l, None)], &[]);
     let tl = eval(&w);
-    assert!(!tl.is_applied(&WriteId::Op(r, 0)) && tl.is_applied(&WriteId::Op(r, 1)));
+    assert!(!tl.is_applied(&WriteId(r, 0)) && tl.is_applied(&WriteId(r, 1)));
     assert_eq!((edge_role(&tl, l, k), edge_role(&tl, z, k)), (None, Some(Write)));
 }
 
@@ -309,7 +309,7 @@ fn invite_holder_limits() {
         let before = eval(&w).roster(&k, At::END);
         let c = w.set(i, k, x, e, 2, &[(n[0], 2)]);
         let tl = eval(&w);
-        assert!(!tl.is_applied(&WriteId::Op(c, 0)), "{x:?} := {e:?}");
+        assert!(!tl.is_applied(&WriteId(c, 0)), "{x:?} := {e:?}");
         assert_eq!(tl.roster(&k, At::END), before);
     }
     let (mut w, _, k) = link(edge_inv(Write, Some(Write), None));
@@ -366,77 +366,6 @@ fn sticky_drop_outlives_its_cause() {
     }
 }
 
-/// §6: a stolen device's snapshot of G is undone by its backdated removal from P (G falls back
-/// to the walk); a removal after it, by a remover that had received it, leaves it standing.
-#[test]
-fn stolen_device_snapshot_undone_by_backdated_removal() {
-    for (removal_t, d2_saw, stands) in [(3, true, false), (7, true, true), (7, false, false)] {
-        let mut w = World::new();
-        let n = w.nodes(6);
-        let (d1, d2, a, b, z) = (n[1], n[2], n[3], n[4], n[5]);
-        let p = w.thing(n[0]);
-        let g = w.thing(p);
-        let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-        w.set(n[0], p, d1, edge(Admin), 0, &all);
-        w.set(n[0], p, d2, edge(Admin), 0, &all);
-        w.set(n[0], g, a, edge(Admin), 0, &all);
-        w.set(n[0], g, b, edge(Write), 0, &all);
-        let recv: Vec<(Tid, u64)> = if d2_saw { vec![(d2, 6)] } else { vec![] };
-        let s = w.snapshot(d1, g, &[(a, Edge::new(Admin)), (b, Edge::new(Write)), (z, Edge::new(Admin))], 5, &recv);
-        w.set(d2, p, d1, None, removal_t, &[]);
-        let tl = eval(&w);
-        assert_eq!(tl.epoch_start(&g), stands.then_some(s), "removal at {removal_t}, saw {d2_saw}");
-        assert_eq!(edge_role(&tl, z, g), stands.then_some(Admin));
-        assert_eq!((edge_role(&tl, a, g), edge_role(&tl, b, g)), (Some(Admin), Some(Write)));
-    }
-}
-
-/// §6: snapshots by an edge admin are never epoch starts; a forged one by a removed device
-/// neither (after its removal: no authority; backdated: dropped by the removal's frontier).
-#[test]
-fn snapshot_authority() {
-    let mut w = World::new();
-    let n = w.nodes(6);
-    let (d1, d2, a, z) = (n[1], n[2], n[3], n[5]);
-    let p = w.thing(n[0]);
-    let g = w.thing(p);
-    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-    w.set(n[0], p, d1, edge(Admin), 0, &all);
-    w.set(n[0], p, d2, edge(Admin), 0, &all);
-    w.set(n[0], g, a, edge(Admin), 0, &all);
-    w.snapshot(a, g, &[(z, Edge::new(Admin))], 2, &[]);
-    w.set(d2, p, d1, None, 4, &[(n[0], 4), (a, 4)]);
-    w.snapshot(d1, g, &[(z, Edge::new(Admin))], 8, &[]);
-    w.snapshot(d1, g, &[(z, Edge::new(Admin))], 3, &[]);
-    let tl = eval(&w);
-    assert_eq!(tl.epoch_start(&g), None);
-    assert_eq!((edge_role(&tl, a, g), edge_role(&tl, z, g)), (Some(Admin), None));
-    let s = w.snapshot(d2, g, &[(a, Edge::new(Admin))], 6, &[]);
-    assert_eq!(eval(&w).epoch_start(&g), Some(s));
-}
-
-/// §6: a pre-snapshot grant arriving after the snapshot is ignored; post-snapshot churn
-/// applies on top, and a verifier holding only the snapshot and later writes agrees.
-#[test]
-fn owner_snapshot_then_churn_and_compaction() {
-    let mut w = World::new();
-    let n = w.nodes(6);
-    let (a, b, z) = (n[3], n[4], n[5]);
-    let g = w.thing(n[0]);
-    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-    let g1 = w.set(n[0], g, a, edge(Admin), 0, &all);
-    let g2 = w.set(n[0], g, b, edge(Write), 0, &all);
-    let late = w.set(a, g, z, edge(Admin), 2, &[]);
-    let s = w.snapshot(n[0], g, &[(a, Edge::new(Admin)), (b, Edge::new(Write)), (z, Edge::new(Admin))], 5, &[]);
-    w.set(z, g, b, edge(Admin), 6, &[]);
-    w.set(a, g, z, None, 8, &[]);
-    let tl = eval(&w);
-    assert_eq!(tl.epoch_start(&g), Some(s));
-    assert_eq!((edge_role(&tl, a, g), edge_role(&tl, b, g), edge_role(&tl, z, g)), (Some(Admin), Some(Write), None));
-    let compacted = Timeline::evaluate(&w.held_without(&[g1, g2, late].into_iter().collect()));
-    assert_eq!(compacted.roster(&g, At::END), tl.roster(&g, At::END));
-}
-
 /// §5.1 step 5: the result is a function of the held set, not of its order.
 #[test]
 fn held_order_irrelevant() {
@@ -471,34 +400,9 @@ fn group_removal_by_owner_of_both() {
         let rm = w.set(a, t, g, None, 10, &[]);
         let tl = eval(&w);
         assert_eq!(role(&tl, y, t), None, "A owns G {a_owns_g}");
-        assert!(tl.dropped().contains_key(&WriteId::Op(grant, 0)));
-        assert_eq!(tl.applied()[&WriteId::Op(rm, 0)].attr, osis_perm::Attr::By(Class::Chain));
+        assert!(tl.dropped().contains_key(&WriteId(grant, 0)));
+        assert_eq!(tl.applied()[&WriteId(rm, 0)].attr, osis_perm::Attr::By(Class::Chain));
     }
-}
-
-/// §6 epoch starts: a snapshot of N whose author's owner-chain authority comes through a
-/// holder actor Q of N's owner is rejected while Q's start says the author was not in Q, and
-/// reconsidered when Q's start changes to one that lists it (Q is not N's owner ancestor).
-#[test]
-fn rejected_start_reconsidered_through_holder_actor() {
-    let mut w = World::new();
-    let n = w.nodes(5);
-    let (k, k2, d, e, z) = (n[0], n[1], n[2], n[3], n[4]);
-    let p = w.thing(k);
-    let nn = w.thing(p);
-    let r = w.thing(k2);
-    let q = w.thing(r);
-    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-    w.set(k, p, q, edge(Admin), 0, &all);
-    w.set(k2, q, d, edge(Admin), 0, &all);
-    w.snapshot(k2, r, &[(e, Edge::new(Admin))], 3, &all);
-    let s = w.snapshot(d, nn, &[(z, Edge::new(Write))], 5, &all);
-    w.snapshot(k2, q, &[], 8, &all);
-    let sq2 = w.snapshot(e, q, &[(d, Edge::new(Admin))], 9, &all);
-    let tl = eval(&w);
-    assert_eq!(tl.epoch_start(&q), Some(sq2));
-    assert_eq!(tl.epoch_start(&nn), Some(s));
-    assert_eq!(edge_role(&tl, z, nn), Some(Write));
 }
 
 /// §1: an actor's owner is implicitly its admin: other admins' removal or demotion edges for it
@@ -528,7 +432,7 @@ fn writer_cannot_write_edges() {
         let before = eval(&w).roster(&g, At::END);
         let c = w.set(n[4], g, x, e, 2, &[]);
         let tl = eval(&w);
-        assert!(!tl.is_applied(&WriteId::Op(c, 0)), "{x:?} := {e:?}");
+        assert!(!tl.is_applied(&WriteId(c, 0)), "{x:?} := {e:?}");
         assert_eq!(tl.roster(&g, At::END), before);
     }
 }
@@ -555,11 +459,116 @@ fn residue_classifies_sticky_and_genuine_spec_perm_5() {
     assert_eq!(residue(&tl).len(), 1);
 }
 
-// spec/permissions.md §1 (ownerless things), §6: O has no owner; its record names n0 as first
-// admin. n0 grants n1 admin; n1 removes n0. No node ever holds owner-chain class on O, so no
-// roster snapshot of O applies (n1's, or the removed first admin's), and n0's later grants and
-// re-grants through the record do nothing. On D, owned by O, n1 (admin of O) holds the owner
-// chain: its snapshot of D applies and is D's epoch start.
+/// §5.1 (OSIS_PERM_SEED=3313): n2 removes n1 from P unseen, so n1's grant of admin on G to n2
+/// does not apply and n2's own lowering of that edge to write is a raise through P, which k's
+/// removal of n2 audits. That removal also drops n2's removal of n1; on the restart n1's grant
+/// applies and n2's lowering is a self-removal, attributed to n2's class on G, which k's
+/// removal of n2 audits too: no residue.
+#[test]
+fn self_removal_dropped_without_residue_spec_permissions_5_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let k = n[0];
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(k, p, n[1], edge(Admin), 0, &all0);
+    w.set(k, p, n[2], edge(Admin), 0, &all0);
+    w.set(n[2], p, n[1], None, 2, &[]);
+    w.set(n[1], g, n[2], edge(Admin), 6, &[]);
+    let lower = w.set(n[2], g, n[2], edge(Write), 18, &[]);
+    w.set(k, p, n[2], None, 20, &[]);
+    let tl = eval(&w);
+    assert!(tl.dropped().contains_key(&WriteId(lower, 0)));
+    assert_eq!(edge_role(&tl, n[2], g), Some(Admin));
+    assert!(residue(&tl).is_empty());
+}
+
+/// §5.1 (OSIS_PERM_SEED=1900002, joint): n1's removal of n2's admin on A0 drops n2's grant of
+/// admin on A1 to n0, which made n0's grant of that admin on A0 apply: sticky residue, and
+/// n0's demotion of n2 on A1 does not apply.
+#[test]
+fn sticky_residue_of_dropped_grant_spec_permissions_5_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let a0 = w.thing(n[1]);
+    let a1 = w.thing(a0);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[1], a1, n[0], edge(Write), 0, &all0);
+    w.set(n[1], a0, n[1], edge(Write), 0, &all0);
+    w.set(n[1], a1, n[2], edge(Admin), 0, &all0);
+    w.set(n[1], a0, a1, edge(Admin), 0, &all0);
+    let r = |v: [u64; 3]| -> Vec<(Tid, u64)> { (0..3).map(|i| (n[i], v[i])).collect() };
+    w.set(n[0], a0, n[0], edge(Write), 1, &r([1, LATE, 1]));
+    let rm = w.set(n[2], a1, n[0], None, 2, &r([LATE, LATE, 2]));
+    let grant = w.set(n[2], a1, n[0], edge(Admin), 6, &r([5, 8, 6]));
+    w.set(n[0], a0, n[2], edge(Admin), 7, &r([7, 9, 9]));
+    let demote = w.set(n[0], a1, n[2], edge(Write), 8, &r([8, 9, 8]));
+    w.set(n[1], a0, n[2], None, 8, &r([11, 8, 11]));
+    let tl = eval(&w);
+    assert_eq!(residue(&tl), std::collections::BTreeSet::from([WriteId(rm, 0), WriteId(grant, 0)]));
+    assert!(!tl.is_applied(&WriteId(demote, 0)));
+}
+
+/// §5.1 (OSIS_PERM_SEED=52011, joint): n0 (admin on A0, so on A1 through A0's ownership)
+/// grants itself admin on A1, then removes A1 from A0; n1, seeing neither, demotes n0 on A0.
+/// That audit sees the removal in effect, so n0 falls on A0 and from the owner chain on A1, and
+/// drops both; the settled walk explains both drops (no residue).
+#[test]
+fn audit_drops_grant_and_removal_spec_permissions_5_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let a0 = w.thing(n[1]);
+    let a1 = w.thing(a0);
+    let a2 = w.thing(a0);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    w.set(n[1], a0, n[0], edge(Admin), 0, &all0);
+    w.set(n[1], a1, n[1], edge(Admin), 0, &all0);
+    w.set(n[1], a2, a0, edge(Admin), 0, &all0);
+    w.set(n[1], a0, a1, edge(Admin), 0, &all0);
+    w.set(n[1], a1, a2, edge(Admin), 0, &all0);
+    let r = |v: [u64; 3]| -> Vec<(Tid, u64)> { (0..3).map(|i| (n[i], v[i])).collect() };
+    let grant = w.set(n[0], a1, n[0], edge(Admin), 1, &r([1, LATE, 0]));
+    let rm = w.set(n[0], a0, a1, None, 2, &r([2, LATE, LATE]));
+    w.set(n[2], a0, n[2], edge(Write), 2, &r([LATE, LATE, 2]));
+    w.set(n[2], a2, n[1], edge(Admin), 3, &r([2, 1, 3]));
+    w.set(n[1], a0, n[0], edge(Write), 4, &r([3, 4, LATE]));
+    w.set(n[2], a2, n[2], None, 5, &r([LATE, LATE, 5]));
+    w.set(n[0], a0, n[1], edge(Admin), 7, &r([7, LATE, LATE]));
+    let tl = eval(&w);
+    assert!(tl.dropped().contains_key(&WriteId(grant, 0)) && tl.dropped().contains_key(&WriteId(rm, 0)));
+    assert!(residue(&tl).is_empty());
+}
+
+/// §5.1 (OSIS_PERM_SEED=89000): n1 (admin on P, so on G) grants n2 admin on P at 4, then sets
+/// n2's edge on G to write at 8, unaware of n2's leave of G at 2. n2 holds G through P at 8, so
+/// that write is no fall and audits nothing; k's removal of n1 at 12 drops both n1 writes, and
+/// n2's leave stands.
+#[test]
+fn unseen_leave_stands_spec_permissions_5_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let k = n[0];
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
+    let only = |i: usize, t: u64| -> Vec<(Tid, u64)> { vec![(n[i], t)] };
+    w.set(k, p, n[1], edge(Admin), 0, &all0);
+    w.set(k, g, n[2], edge(Admin), 0, &all0);
+    let leave = w.set(n[2], g, n[2], None, 2, &only(2, 2));
+    w.set(n[1], p, n[2], edge(Admin), 4, &only(1, 4));
+    let lower = w.set(n[1], g, n[2], edge(Write), 8, &only(1, 8));
+    w.set(k, p, n[1], None, 12, &only(0, 12));
+    let tl = eval(&w);
+    assert!(tl.is_applied(&WriteId(leave, 0)) && tl.dropped().contains_key(&WriteId(lower, 0)));
+    assert_eq!(role(&tl, n[2], g), None);
+    assert!(residue(&tl).is_empty());
+}
+
+// spec/permissions.md §1 (ownerless things): O has no owner; its record names n0 as first admin,
+// O's initial state. n0 grants n1 admin; n1 removes n0. No node ever holds owner-chain class on
+// O, so n0's later grants and re-grants through the record do nothing. On D, owned by O, n1
+// (admin of O) holds the owner chain: its grant on D applies.
 #[test]
 fn ownerless_has_no_owner_chain() {
     let mut w = World::new();
@@ -579,21 +588,16 @@ fn ownerless_has_no_owner_chain() {
     }
     let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 3)).collect();
     w.set(n[1], o, n[0], None, 2, &all);
-    let s_o = w.snapshot(n[1], o, &[(n[1], Edge::new(Admin)), (n[2], Edge::new(Admin))], 4, &all);
-    let s_o0 = w.snapshot(n[0], o, &[(n[0], Edge::new(Admin))], 5, &all);
     let g0 = w.set(n[0], o, n[2], edge(Write), 6, &all);
     let r0 = w.set(n[0], o, n[0], edge(Admin), 7, &all);
-    let s_d = w.snapshot(n[1], d, &[(n[2], Edge::new(Write))], 8, &all);
+    let gd = w.set(n[1], d, n[2], edge(Write), 8, &all);
     let tl = eval(&w);
     assert_eq!(role(&tl, n[0], o), None, "the first admin is removed like any");
     assert_eq!(role(&tl, n[1], o), Some(Admin));
     assert!(n.iter().all(|x| tl.class(x, &o, At::END) < Class::Chain));
-    assert!(!tl.is_applied(&WriteId::Snapshot(s_o)) && !tl.is_applied(&WriteId::Snapshot(s_o0)));
-    assert_eq!(tl.epoch_start(&o), None);
-    assert!(!tl.is_applied(&WriteId::Op(g0, 0)) && !tl.is_applied(&WriteId::Op(r0, 0)));
+    assert!(!tl.is_applied(&WriteId(g0, 0)) && !tl.is_applied(&WriteId(r0, 0)));
     assert_eq!(role(&tl, n[2], o), None);
-    assert!(tl.is_applied(&WriteId::Snapshot(s_d)));
-    assert_eq!(tl.epoch_start(&d), Some(s_d));
+    assert!(tl.is_applied(&WriteId(gd, 0)));
     assert_eq!(role(&tl, n[2], d), Some(Write));
 }
 

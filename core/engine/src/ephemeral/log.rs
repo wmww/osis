@@ -311,7 +311,7 @@ impl Engine {
                 let deltas: Vec<Delta> = inverse.iter().filter(|r| r.expires.is_some() == expiring).map(|r| {
                     let placed = if r.ak.as_str() == PLACED.ak() { super::def_of(&r.fragment).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default() } else { Vec::new() };
                     let records = crate::engine::write::memory_records(tx.core, &r.tid, &r.ak, placed.into_iter());
-                    Delta { tid: r.tid, ak: r.ak.clone(), fragment: r.fragment.clone(), lo: r.range.lo, hi: r.range.hi, schema: r.schema.clone(), retention: None, expires: r.expires, frontiers: None, chunks: Vec::new(), split: false, records }
+                    Delta { tid: r.tid, ak: r.ak.clone(), fragment: r.fragment.clone(), lo: r.range.lo, hi: r.range.hi, schema: r.schema.clone(), retention: None, expires: r.expires, frontiers: None, chunks: Vec::new(), records }
                 }).collect();
                 if deltas.is_empty() {
                     continue;

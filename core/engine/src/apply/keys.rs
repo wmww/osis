@@ -2,7 +2,7 @@
 //! `secrets.0` write is recorded with its `keys.0` write (`SecretsWrite::rotated`); a held
 //! `secrets.0` compaction snapshot keys its epochs (`snapshot_keyed`); a commit later found
 //! invalid no longer counts, valid again is recorded again. `Core::own_epochs` establishes from
-//! these and the held commits and epoch starts (the names).
+//! these and the held commits (the names).
 
 use crate::engine::{Core, KeysetRec, Tx};
 use crate::error::Result;
@@ -98,11 +98,9 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
         if m.header.kind != Kind::Role {
             continue;
         }
-        for d in super::held_parts(tx, &id, xi)? {
-            if let Decoded::Delta(d) = d {
-                for (bk, k) in written_boxes(&d.fragment) {
-                    gone.remove(&(bk.holder, k.clone()));
-                }
+        if let Some(Decoded::Delta(d)) = super::held_part(tx, &id, xi)? {
+            for (bk, k) in written_boxes(&d.fragment) {
+                gone.remove(&(bk.holder, k.clone()));
             }
         }
     }
@@ -183,7 +181,7 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
             if let Some(d) = m.dropped.get(&ai) {
                 note_keysets(tx.core, &m.header, a, &d.keysets);
             }
-            for d in super::held_parts(tx, &id, ai)? {
+            if let Some(d) = super::held_part(tx, &id, ai)? {
                 note_keysets(tx.core, &m.header, a, &keyset_recs(d.fragment()));
             }
         }
@@ -195,13 +193,13 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
 /// Notes the `keys.0` parts of role commit `h` whose bodies write a keyset, whatever their
 /// validity (`records::OWN_KEYS`: a fact of the body, kept once it drops or goes missing), then
 /// re-derives `own_keys` of their things.
-fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Result<()> {
     if !h.kind.is_role() {
         return Ok(());
     }
     let id = h.id();
     let mut things = std::collections::BTreeSet::new();
-    for (ai, _, d) in parts {
+    for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() != "keys.0" || keys_write(d.fragment()).keysets.is_empty() {
             continue;
@@ -371,10 +369,10 @@ pub(crate) struct Pending {
     keys: KeysWrite,
 }
 
-pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
+pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
     note_keyset_parts(tx, h, parts)?;
     let mut out = Vec::new();
-    for (ai, _, d) in parts {
+    for (ai, d) in parts {
         if let Some(a) = h.aspects.get(*ai)
             && a.ak.as_str() == "keys.0"
             && valid.get(*ai).copied().unwrap_or(false)
@@ -385,7 +383,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
     if h.kind != Kind::Role {
         return Ok(out);
     }
-    for (ai, _, d) in parts {
+    for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() != "secrets.0" {
             continue;
@@ -398,7 +396,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
         }
         let keys = parts
             .iter()
-            .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
+            .find_map(|(x, k)| match (h.aspects.get(*x), k) {
                 (Some(b), Decoded::Delta(k)) if b.tid == a.tid && b.ak.as_str() == "keys.0" => Some(keys_write(&k.fragment)),
                 _ => None,
             })
@@ -419,7 +417,7 @@ fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
 }
 
 /// After the joins: the applied rotations, and `secrets.0` compaction snapshots held.
-pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool], pending: Vec<Pending>) -> Result<()> {
+pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)], valid: &[bool], pending: Vec<Pending>) -> Result<()> {
     tx.core.touch();
     // per part, the write of all its held deltas at once
     let mut done = std::collections::BTreeSet::new();
@@ -428,10 +426,8 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
             continue;
         }
         let mut w = SecretsWrite::default();
-        for d in super::held_parts(tx, &p.id, p.ai)? {
-            if let Decoded::Delta(d) = d {
-                w.extend(secrets_write(&d.fragment));
-            }
+        if let Some(Decoded::Delta(d)) = super::held_part(tx, &p.id, p.ai)? {
+            w.extend(secrets_write(&d.fragment));
         }
         let actor = p.actor;
         let e = tx.core.ix.secrets.entry_or_default(actor);
@@ -442,7 +438,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
         }
     }
     if h.kind == Kind::RoleSnapshot {
-        for (ai, _, d) in parts {
+        for (ai, d) in parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
             if a.ak.as_str() != "secrets.0" || !valid.get(*ai).copied().unwrap_or(false) {
                 continue;
@@ -484,18 +480,14 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let Some(a) = h.aspects.get(ai).cloned() else { return Ok(()) };
     let mut secrets = SecretsWrite::default();
-    for d in super::held_parts(tx, c, ai)? {
-        if let Decoded::Delta(d) = d {
-            secrets.extend(secrets_write(&d.fragment));
-        }
+    if let Some(Decoded::Delta(d)) = super::held_part(tx, c, ai)? {
+        secrets.extend(secrets_write(&d.fragment));
     }
     let mut keys = KeysWrite::default();
-    if let Some(ki) = h.aspects.iter().position(|x| x.tid == a.tid && x.ak.as_str() == "keys.0") {
-        for d in super::held_parts(tx, c, ki)? {
-            if let Decoded::Delta(d) = d {
-                keys = keys_write(&d.fragment);
-            }
-        }
+    if let Some(ki) = h.aspects.iter().position(|x| x.tid == a.tid && x.ak.as_str() == "keys.0")
+        && let Some(Decoded::Delta(d)) = super::held_part(tx, c, ki)?
+    {
+        keys = keys_write(&d.fragment);
     }
     tx.core.touch();
     let e = tx.core.ix.secrets.entry_or_default(a.tid);
@@ -705,7 +697,7 @@ mod tests {
     #[test]
     fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
         let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         for seed in 0..4u64 {
             let mut lp = LocalPeer::new(4, 530 + seed, WallMs(1_700_000_000_000)).unwrap();
             let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_person(&hosts).unwrap().0.person).collect();
@@ -771,7 +763,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         let g2 = *lp.peers[0].engine.grant(&t, &c, &edge).unwrap().commits.last().unwrap();
         let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
@@ -804,7 +796,7 @@ mod tests {
             (t, c)
         };
         let ((t1, c1), (t2, _)) = (thing(&mut lp), thing(&mut lp));
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         let g1 = *lp.peers[0].engine.grant(&t1, &b, &edge).unwrap().commits.last().unwrap();
         let g2 = *lp.peers[0].engine.grant(&t2, &b, &edge).unwrap().commits.last().unwrap();
         let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
@@ -933,7 +925,7 @@ mod tests {
     fn removed_reader(seed: u64) -> (LocalPeer, Tid) {
         let (mut lp, t) = grantee_world(seed, 3);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), Some(Value::Int(1)));
@@ -949,7 +941,7 @@ mod tests {
         let (mut lp, t) = removed_reader(931);
         let c = lp.peers[2].engine.tid();
         lp.sync(2, 0).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
         let before = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
         lp.peers[0].engine.demote(&t, &Demotion { holder: c, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -987,7 +979,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut mu, me);
             mu.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
             lp.peers[0].commit(mu).unwrap();
-            let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
+            let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
             lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
             lp.peers[0].engine.grant(&t, &m, &edge(Role::Read)).unwrap();
             lp.peers[0].engine.demote(&t, &Demotion { holder: m, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -1122,7 +1114,7 @@ mod tests {
     fn late_regrant_keeps_its_boxes_spec_perm_3() {
         let (mut lp, t) = grantee_world(914, 2);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
         let removal = lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -1196,7 +1188,7 @@ mod tests {
     fn genuine_grant_applies_after_flood_spec_crypto_4() {
         let (mut lp, t) = grantee_world(910, 4);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         flood(&mut lp, t, 40);
         let before = candidates(&lp, &t);
@@ -1234,7 +1226,7 @@ mod tests {
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, a, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
         let y = tid(&mut lp, 3);
@@ -1298,7 +1290,7 @@ mod tests {
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), tid(&mut lp, 4));
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
@@ -1404,7 +1396,7 @@ mod tests {
         let mut lp = LocalPeer::new(2, 943, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (me, y) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let edge = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None };
+        let edge = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &y, &edge).unwrap();
         let t = thing_of(&mut lp, 0, g);

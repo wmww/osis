@@ -1,7 +1,7 @@
 //! `evaluate`: the whole judgment of a held set, recomputed from scratch.
 
 use crate::crdt::{self, Read, State};
-use crate::roles::{edge_events, namings, need, rosters, Timeline, World};
+use crate::roles::{edge_events, namings, need, Timeline, World};
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -58,7 +58,7 @@ pub enum Fate {
     /// It must have dropped it by now.
     MustDrop(DropWhy),
     /// Its own writes are held value-less with no reason left (a purge that fell): it counts as
-    /// never received and is fetched again (spec/permissions.md §7).
+    /// never received and is fetched again (spec/permissions.md §6).
     NeverReceived,
 }
 
@@ -150,8 +150,8 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
         applied = a;
         waiting = w;
     };
-    // Role timeline over the joined role commits, epoch starts chosen in rounds.
-    let tl = Timeline::settle(world, edge_events(view.iter()), rosters(view.iter()));
+    // Role timeline over the joined role commits.
+    let tl = Timeline::walk(world, edge_events(view.iter()));
     Joined { live, applied, waiting, view, tl }
 }
 
@@ -270,7 +270,6 @@ pub fn evaluate(h: &Held) -> Outcome {
         for (i, p) in c.parts.iter().enumerate() {
             let v = match c.kind {
                 CommitKind::Role => tl.applied_part(c.id, i),
-                CommitKind::Roster => tl.rosters_applied.contains(&c.id),
                 _ => {
                     let ok = tl.valid_delta(c.author, c.actor, p.thing, need(p.aspect), c.key(), c.id);
                     let breaks = c.kind == CommitKind::Content
@@ -288,7 +287,7 @@ pub fn evaluate(h: &Held) -> Outcome {
         .flat_map(|c| c.parts.iter().enumerate().map(|(i, p)| ((c.id, p.thing, p.aspect), o.valid[&(c.id, i)])))
         .collect();
 
-    // Purge (spec/commits.md §5, spec/permissions.md §7): an applied request drops the named
+    // Purge (spec/commits.md §5, spec/permissions.md §6): an applied request drops the named
     // joined or missing deltas of applied commits and marks waiting parts value-less.
     let mut pending_purged: BTreeSet<PartRef> = BTreeSet::new();
     for q in live.iter().filter(|q| !q.purge.is_empty() && is_applied(q)) {
@@ -323,7 +322,7 @@ pub fn evaluate(h: &Held) -> Outcome {
 
     // A body whose own writes are value-less with no reason, or that this node stripped of an
     // owner's values no longer held value-less (a purge that fell), counts as never received
-    // (spec/permissions.md §7): its stripped copy joins nothing until it is fetched again.
+    // (spec/permissions.md §6): its stripped copy joins nothing until it is fetched again.
     let never_received = |c: &Commit, p: &Part| -> bool {
         p.stripped.iter().any(|&own| !vl(own, p.thing, p.aspect))
             || (c.kind == CommitKind::Content
@@ -541,7 +540,7 @@ pub fn evaluate(h: &Held) -> Outcome {
 /// A joined body's keep-at-most and keep-at-least bounds, wall ms (spec/commits.md §5 Keep bounds),
 /// from its first and last deaths and whether it has a live write. Keep at most: T, or the first
 /// death plus `AT_MOST_GRACE` while it has a live write, the earlier; under 0 after replaced a body
-/// with a death and no live write goes at the kill, whatever the clock (0, AMBIGUITIES.md 45).
+/// with a death and no live write goes at the kill, whatever the clock (0, AMBIGUITIES.md 44).
 /// Keep at least: T and the last death plus D, the later; a body with no dead write is past a
 /// relative bound. A commit carrying a purge request is kept at least until `wall(ts) +
 /// ROLE_KEEP`, whatever its deltas' bounds (spec/commits.md §5 Purge): it raises both.

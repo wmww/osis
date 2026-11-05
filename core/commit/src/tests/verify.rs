@@ -62,9 +62,9 @@ pub(crate) fn one_commit() -> (CommitBlob, SigningSecret) {
     let mut h = sample_header();
     let at = h.ts;
     let delta = register_delta(h.author, at, 1, "hello");
-    h.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &h.aspects[0].tid), &delta)];
+    h.aspects[0].hash = delta_hash(&sec(0xd0, &h.aspects[0].tid), &delta);
     let signature = h.sign(&key);
-    (CommitBlob { header: h, signature, parts: vec![Part::new(0, 0, delta)] }, key)
+    (CommitBlob { header: h, signature, parts: vec![Part::new(0, delta)] }, key)
 }
 
 // spec/wire.md §4: the commit blob plaintext round-trips; a header-only rewrite is allowed.
@@ -77,7 +77,7 @@ fn commit_blob_round_trip() {
     let mut empty = b.clone();
     empty.parts.clear();
     assert_eq!(CommitBlob::decode(&empty.encode()).unwrap(), empty);
-    assert_eq!(empty.missing(), vec![(0, 0)]);
+    assert_eq!(empty.missing(), vec![0]);
     assert_eq!(empty.id(), b.id());
 }
 
@@ -132,7 +132,7 @@ fn verify_deltas() {
     // wrong dedup secret: hash mismatch
     let wrong = |_: &Tid| Some(Secret32::from_bytes([0; 32]));
     let e = verify_blob(&b, &key.verifying_key(), &wrong, None).unwrap_err();
-    assert!(matches!(e, Error::DeltaHash { ai: 0, di: 0 }));
+    assert!(matches!(e, Error::DeltaHash { ai: 0 }));
     // another key
     let other = SigningSecret::from_seed(&Secret32::from_bytes([0x42; 32]));
     assert!(matches!(verify_blob(&b, &other.verifying_key(), &dedup, None), Err(Error::BadSignature)));
@@ -145,7 +145,7 @@ fn verify_deltas() {
     let r = w.range();
     assert!(r.hi > 2);
     let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, r.lo, r.hi), None).unwrap();
-    b2.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &t(3)), &delta)];
+    b2.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), &delta);
     b2.parts[0].delta = delta;
     let mut i = Interner::new();
     let e = verify_part(&b2.header, &b2.id(), &b2.parts[0], &sec(0xd0, &t(3)), &mut i, None).unwrap_err();
@@ -153,7 +153,7 @@ fn verify_deltas() {
     assert_eq!(e.class(), ErrorClass::BadInput);
     // part index out of range
     let mut p = b.parts[0].clone();
-    p.di = 1;
+    p.ai = 1;
     assert!(matches!(verify_part(&b.header, &b.id(), &p, &sec(0xd0, &t(3)), &mut i, None), Err(Error::Malformed(_))));
     let _ = ts(0);
 }
@@ -166,7 +166,7 @@ fn verify_refuses_page_items_spec_crdt_8() {
     let n = osis_base::format::MAX_PAGE_ITEMS;
     let frag = Value::List(vec![Value::Int(0), Value::List(vec![]), Value::Int(0), Value::List(vec![Value::Int(0); n])]);
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), frag]));
-    b.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &b.header.aspects[0].tid), &delta)];
+    b.header.aspects[0].hash = delta_hash(&sec(0xd0, &b.header.aspects[0].tid), &delta);
     b.signature = b.header.sign(&key);
     b.parts[0].delta = delta;
     let s = TestSecrets { admin: true };
@@ -187,7 +187,7 @@ fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
         let fragment = osis_crdt::reset_entries(&w.clone().keyed_removals(keyed), &[(dot.clone(), Value::Tid(t(5)))]);
         let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, 1, 2), None).unwrap();
         b.header.aspects[0].ak = osis_base::Ak::new(ak).unwrap();
-        b.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &t(3)), &delta)];
+        b.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), &delta);
         b.parts[0].delta = delta;
         verify_part(&b.header, &b.id(), &b.parts[0], &sec(0xd0, &t(3)), &mut Interner::new(), None)
     };
@@ -207,7 +207,7 @@ fn unchunked_large_value_is_bad_input_spec_dm_6() {
     let fragment = |v: &Value| create(&mut Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1), &AnyView, v).unwrap();
     let check = |b: &mut CommitBlob, v: &Value| {
         let delta = encode_delta(&Delta { nonce: [5; 16], fragment: fragment(v) }, &writer_ctx(SESSION, Kind::Content, at, author, 1, b.header.aspects[0].hi), None).unwrap();
-        b.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &t(3)), &delta)];
+        b.header.aspects[0].hash = delta_hash(&sec(0xd0, &t(3)), &delta);
         b.parts[0].delta = delta;
         verify_part(&b.header, &b.id(), &b.parts[0], &sec(0xd0, &t(3)), &mut Interner::new(), None)
     };

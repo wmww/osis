@@ -26,9 +26,7 @@ Terms:
 - Every node that can read data verifies identity and authorization itself from what travels with the data. Nothing trusts a host's word.
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
-- Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order. Nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives. Limits:
-  - A holder may look removed on a node that joined late, until the rest of a roster snapshot arrives. Only a hiding host or lost author makes this last.
-  - On data with a keep-at-most bound or expiry, a body a node dropped before something that changes its effect arrived (a late write, a validity flip, a purge) can leave nodes reading differently until a writer next compacts or writes that data.
+- Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order. Nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives. Limit: on data with a keep-at-most bound or expiry, a body a node dropped before something that changes its effect arrived (a late write, a validity flip, a purge) can leave nodes reading differently until a writer next compacts or writes that data.
 - A change may touch any number of things, of any owners and reader sets, up to a fixed maximum size (about 140 GB). A node applies all the parts of a change it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
 - Each part of a change is authorized on its own thing. Revoking the author on one thing removes only that part.
 - A wrong local clock harms only that node's own writes.
@@ -93,6 +91,7 @@ Terms:
 ## Scale
 - Many GB per node, multi-GB single values, maps with millions of keys, millions of blobs per group. No operation is O(total data) or O(history). A change inside a huge value costs O(change).
 - State grows with the number of edits and removals ever made, a few bytes each, not only with live data. No horizon ever drops an edit.
+- Exception: a thing's role history. It keeps every role change ever made, a few hundred bytes each, and a node that starts holding the thing fetches and judges all of it.
 - Direct rosters hold thousands of holders; larger ones nest.
 - Every wire object has a fixed maximum size. Peer input never causes a panic or unbounded allocation, work, storage or diagnostics.
 - Large values stream; no whole value is ever needed in memory.
@@ -130,7 +129,6 @@ Binds released formats only; until a stable release formats change in place.
 - Rights held by different parties never combine into a right neither has alone.
 - Whether an edit by a revoked holder counts is judged by what the revoker had received, never by the author's own timestamps. Limit: edits the revoker had not received when it revoked may be lost until re-grant.
 - A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another holder publishes an explicit demotion, the removed holder's own timestamps decide, within the allowed clock drift.
-- The owner may restart a thing's role history at a roster snapshot; a role change ordered before the snapshot that it did not include is lost.
 - A share link is a bearer secret. One joiner is revoked only together with the link; the remaining joiners get a new one.
 - Removing a holder never re-encrypts existing content. The holder stops reading new content of an actor once a writer or admin of that actor has written after the removal; readers never rotate keys. Limit: what it could read before removal stays readable to it, from a copy it kept or from a dishonest node.
 - A role an actor M holds on A reaches the parties holding roles on M; A never depends on who they are. A party removed from M stops reading A's new content once M's keys were changed knowing the removal and a writer or admin of A has written since. Limit: until then it may read A's content written since the removal, not only new content.

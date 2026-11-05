@@ -22,11 +22,10 @@ pub enum Kind {
     Role = 1,
     ContentSnapshot = 2,
     RoleSnapshot = 3,
-    RosterSnapshot = 4,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [Kind::Content, Kind::Role, Kind::ContentSnapshot, Kind::RoleSnapshot, Kind::RosterSnapshot];
+    pub const ALL: [Kind; 4] = [Kind::Content, Kind::Role, Kind::ContentSnapshot, Kind::RoleSnapshot];
     pub fn id(self) -> u64 {
         self as u64
     }
@@ -35,15 +34,11 @@ impl Kind {
     }
     /// Deltas only on role-class aspects.
     pub fn is_role(self) -> bool {
-        matches!(self, Kind::Role | Kind::RoleSnapshot | Kind::RosterSnapshot)
+        matches!(self, Kind::Role | Kind::RoleSnapshot)
     }
     /// Carries own writes (a counter range); compaction snapshots do not.
     pub fn has_own_writes(self) -> bool {
         !self.is_compaction()
-    }
-    /// May carry several deltas per aspect.
-    pub fn several_deltas(self) -> bool {
-        matches!(self, Kind::Role | Kind::RosterSnapshot)
     }
     /// Compaction snapshot.
     pub fn is_compaction(self) -> bool {
@@ -53,7 +48,7 @@ impl Kind {
     pub fn delta_kind(self) -> DeltaKind {
         match self {
             Kind::ContentSnapshot | Kind::RoleSnapshot => DeltaKind::Snapshot,
-            Kind::Content | Kind::Role | Kind::RosterSnapshot => DeltaKind::Writer,
+            Kind::Content | Kind::Role => DeltaKind::Writer,
         }
     }
 }
@@ -127,7 +122,8 @@ pub struct AspectEntry {
     pub retention: Retention,
     /// Ascending indices into the header's delete keys.
     pub keys: Vec<usize>,
-    pub hashes: Vec<[u8; 32]>,
+    /// The delta hash of the aspect's one delta.
+    pub hash: [u8; 32],
 }
 
 /// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded.
@@ -276,7 +272,7 @@ fn aspect_value(a: &AspectEntry) -> Value {
         uint(a.hi),
         retention_value(&a.retention),
         Value::List(a.keys.iter().map(|i| uidx(*i)).collect()),
-        Value::List(a.hashes.iter().map(|h| Value::bytes(h)).collect()),
+        Value::bytes(&a.hash),
     ])
 }
 
@@ -459,11 +455,8 @@ fn read_aspect(r: &mut Reader<'_>) -> Result<AspectEntry, Error> {
     }
     let (tid, ak, lo, hi) = (read_tid(r)?, read_ak(r)?, r.uint()?, r.uint()?);
     let (retention, keys) = (read_retention(r)?, read_idxs(r)?);
-    let hashes = read_items(r, MIN_ID, |r| Ok(r.fixed::<32>()?))?;
-    if hashes.is_empty() {
-        return Err(Error::Malformed("aspect without delta hashes"));
-    }
-    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hashes })
+    let hash = r.fixed::<32>()?;
+    Ok(AspectEntry { tid, ak, lo, hi, retention, keys, hash })
 }
 
 fn read_key(r: &mut Reader<'_>, check: bool) -> Result<DeleteKey, Error> {

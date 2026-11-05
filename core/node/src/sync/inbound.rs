@@ -59,7 +59,7 @@ fn chain_commits(chain: Vec<osis_base::Value>) -> Vec<(Vec<u8>, osis_commit::Com
         drop(v);
         let mut c = osis_commit::CommitBlob::decode(&plain).ok()?;
         let aspects = &c.header.aspects;
-        let parts = c.parts.iter().filter(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0" | "created.0" | "keys.0"))).cloned().collect();
+        let parts = c.parts.iter().filter(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "created.0" | "keys.0"))).cloned().collect();
         c.parts = parts;
         (!c.parts.is_empty()).then(|| (c.encode(), c))
     }).collect()
@@ -630,11 +630,11 @@ impl SyncEngine {
                 let Some((_, payload)) = self.open_inbox(l, &bytes) else { continue };
                 let (pt, ..) = payload.split();
                 let Ok(blob) = osis_commit::CommitBlob::decode(&pt) else { continue };
-                if (!forced && blob.parts.iter().all(|p| held.contains(&(p.ai, p.di)))) || self.engine.parts_genuine(&blob) == Some(false) {
+                if (!forced && blob.parts.iter().all(|p| held.contains(&p.ai))) || self.engine.parts_genuine(&blob) == Some(false) {
                     continue;
                 }
                 self.ingest_again(&c, &pt);
-                held.extend(blob.parts.iter().map(|p| (p.ai, p.di)));
+                held.extend(blob.parts.iter().map(|p| p.ai));
             }
             self.engine.reexamine()?;
             todo.extend(self.engine.take_redeliver());
@@ -656,16 +656,14 @@ impl SyncEngine {
 
     /// A crash may have lost what the engine named (`redeliver`). Looked at once per start: what pends,
     /// a commit with an entry that is neither applied nor pending (gone with a junk signature or all its
-    /// junk), and an applied commit with an entry on an aspect it misses (a waiting part's junk slot gone)
-    /// or with several deltas on one aspect: `missing` is per aspect and such a commit (a roster snapshot,
-    /// spec/permissions.md §5.2) may hold some of them. The index cannot tell, so `redeliver` reads what
-    /// it holds. A blob of first deltas alone is not looked at: the commit's whole body is.
+    /// junk), and an applied commit with an entry on an aspect it misses (a waiting part's junk slot
+    /// gone). `redeliver` reads what it holds.
     fn name_after_crash(&mut self) {
         let ix = &self.engine.core.ix;
         let mut named: Vec<CommitId> = ix.pending.keys().copied().collect();
         named.extend(self.state.by_commit.iter().filter(|(c, blobs)| match ix.commits.get(c) {
             None => true,
-            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| p.1 > 0 || m.missing.contains(&p.0))),
+            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| m.missing.contains(p))),
         }).map(|(c, _)| *c));
         for c in named {
             self.engine.name_redeliver(c);
@@ -1274,7 +1272,7 @@ impl SyncEngine {
     fn dropped(&mut self, b: &BlobId, r: &BlobRec) -> Result<bool> {
         let pending = self.engine.core.ix.pending.contains_key(&r.commit);
         if let Some(m) = self.engine.core.ix.commits.get(&r.commit) {
-            if !r.parts.iter().any(|p| m.body_gone(p.0)) {
+            if !r.parts.iter().any(|p| m.body_gone(*p)) {
                 return Ok(false);
             }
             if !pending && !self.engine.redeliver_named(&r.commit) {
@@ -1302,7 +1300,7 @@ impl SyncEngine {
             return;
         }
         let ix = &self.engine.core.ix;
-        let again = |c: &osis_base::CommitId, parts: &[(usize, usize)]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing.contains(&p.0)));
+        let again = |c: &osis_base::CommitId, parts: &[usize]| commits.is_none_or(|cs| cs.contains(c)) && ix.commits.get(c).is_some_and(|m| parts.iter().any(|p| m.missing.contains(p)));
         let ids: Vec<(LabelId, BlobId)> = self.state.entries.iter().filter(|((_, b), e)| !self.state.blobs.contains_key(b) && matches!(&e.kind, Kind::Commit { commit, parts, .. } if again(commit, parts))).map(|(k, _)| *k).collect();
         for (l, b) in ids {
             if let Some(mut e) = self.state.entries.get(&(l, b)).cloned() {

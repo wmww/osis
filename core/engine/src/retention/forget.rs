@@ -6,7 +6,7 @@
 //! A thing is forgotten when its secret actor is one of the actors just lost and neither the
 //! node nor a held key actor may read it now. Of a forgotten thing only the certificate material
 //! perm judges others' writes by stays: `created.0`, and the role-class aspects except
-//! `secrets.0` (edges, ledger, public keysets, labels). Everything else goes, shredded:
+//! `secrets.0` (edges, public keysets, labels). Everything else goes, shredded:
 //! aspect units (state, undo buffer, pre-reset snapshots, tables, deaths), the deltas in commit
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects of a forgotten thing that stay: what perm judges others' writes by, no content and
 /// no secret.
-const KEPT: [&str; 6] = ["created.0", "required.0^", "roles.0", "tenures.0", "keys.0", "label.0"];
+const KEPT: [&str; 5] = ["created.0", "required.0^", "roles.0", "keys.0", "label.0"];
 
 /// What goes of a thing `forget` reaches.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -147,7 +147,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
             continue;
         }
         let Some(blob) = tx.get_commit(&id)? else { continue };
-        let rest = osis_commit::rewrite(&blob, |ai, _| ais.contains(&ai));
+        let rest = osis_commit::rewrite(&blob, |ai| ais.contains(&ai));
         if rest.parts.is_empty() {
             tx.remove_commit(&id)?;
             chunks.extend(m.header.chunks.iter().map(|c| c.blob));
@@ -197,7 +197,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         if ais.is_empty() || !blob.parts.iter().any(|p| ais.contains(&p.ai)) {
             continue;
         }
-        let rest = osis_commit::rewrite(&blob, |ai, _| ais.contains(&ai));
+        let rest = osis_commit::rewrite(&blob, |ai| ais.contains(&ai));
         for ai in &ais {
             if let Some(a) = blob.header.aspects.get(*ai) {
                 super::leftover::remove(tx, &a.tid, &a.ak, &id, *ai)?;

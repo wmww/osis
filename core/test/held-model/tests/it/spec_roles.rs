@@ -1,7 +1,7 @@
 //! spec/permissions.md §1 (ownership), §2 (self-removal, `until`, finalize, invites), §5.2 (acting),
-//! §6 (roster snapshots), §8 (links).
+//! §7 (links).
 use crate::util::*;
-use held_model::gen::{ADM, LINK_K, LINK_L, PERSON, REG};
+use held_model::gen::{LINK_K, LINK_L, PERSON, REG};
 use held_model::*;
 
 fn timed(holder: NodeId, role: Role, until_h: u64) -> EdgeWrite {
@@ -60,10 +60,10 @@ fn invite_grant_up_to_the_invite_spec_permissions_2() {
     assert!(!o.valid[&(6, 0)]);
 }
 
-// spec/permissions.md §8 (Redeem, Single use, Finalized): L invite-grants a node on K and removes its
+// spec/permissions.md §7 (Redeem, Single use, Finalized): L invite-grants a node on K and removes its
 // own edge; the sharer's explicit removal of L audits L's grants its frontier leaves out
 #[test]
-fn link_redeem_and_finalize_spec_permissions_8() {
+fn link_redeem_and_finalize_spec_permissions_7() {
     let l = EdgeWrite { holder: LINK_L, role: Some(Role::Write), invite: Some(Role::Write), until: None };
     let redeem = {
         let mut c = edge_on(7, LINK_L, 1, LINK_K, EdgeWrite::role(3, Some(Role::Write)), None);
@@ -134,59 +134,4 @@ fn acting_for_a_person_spec_permissions_5_2() {
     assert!(!o.valid.contains_key(&(11, 0)), "nothing leads from node 1 to thing 12: it waits");
     let o = evaluate(&held(5, vec![edge_on(5, 2, 0, PERSON, EdgeWrite::role(1, Some(Role::Write)), None), as_person(11, 1, 1)]));
     assert!(o.valid[&(11, 0)]);
-}
-
-fn roster(id: CommitId, author: NodeId, h: u64, items: Vec<RosterItem>) -> Commit {
-    let parts = items
-        .into_iter()
-        .map(|it| {
-            let aspect = if matches!(it, RosterItem::Edge { .. }) { Aspect::ROLES } else { Aspect::TENURES };
-            Part { thing: T, aspect, retention: Retention::ROLE, body: Body::Held(Delta::Roster(it)), stripped: Default::default() }
-        })
-        .collect();
-    Commit { kind: CommitKind::Roster, ..content(id, author, h, parts) }
-}
-
-// spec/permissions.md §6 (Under an epoch start): the thing's edges become the roster; its edge writes
-// before the start are ignored, and its roster and ledger answer who held what before it
-#[test]
-fn roster_start_replaces_edges_spec_permissions_6() {
-    let k5 = (ts(0), OWNER, 5);
-    let cs = |with: bool| {
-        let mut v = vec![
-            edge(5, OWNER, 0, 1, Some(Role::Write), None),
-            edge(6, OWNER, 0, 2, Some(Role::Write), None),
-            reg(10, 2, 1, REG, Retention::PLAIN, 1),
-            reg(11, 1, 3, Aspect::reg(5), Retention::PLAIN, 2),
-            reg(12, 2, 3, Aspect::reg(6), Retention::PLAIN, 3),
-        ];
-        if with {
-            v.push(roster(20, OWNER, 2, vec![RosterItem::Edge { edge: EdgeWrite::role(1, Some(Role::Write)), since: Some(k5) }]));
-        }
-        held(5, v)
-    };
-    let o = evaluate(&cs(false));
-    assert!(o.valid[&(10, 0)] && o.valid[&(11, 0)] && o.valid[&(12, 0)]);
-    let o = evaluate(&cs(true));
-    assert!(o.valid[&(20, 0)]);
-    assert!(o.valid[&(11, 0)]);
-    assert!(!o.valid[&(12, 0)], "node 2 is in no roster edge after the start");
-    assert!(!o.valid[&(10, 0)], "nor in the roster or ledger before it");
-}
-
-// spec/permissions.md §6 (Tenure ledger), §5.2: a ledger entry with a frontier is an explicit
-// demotion at its `until`
-#[test]
-fn ledger_entry_with_frontier_demotes_spec_permissions_6() {
-    let cs = |f: Vec<CommitId>| {
-        held(5, vec![
-            reg(10, 2, 1, ADM, Retention::PLAIN, 1),
-            roster(20, OWNER, 3, vec![
-                RosterItem::Edge { edge: EdgeWrite::role(1, Some(Role::Read)), since: None },
-                RosterItem::Tenure { holder: 2, role: Role::Admin, since: None, until: (ts(2), OWNER, 7), frontier: Some(f) },
-            ]),
-        ])
-    };
-    assert!(!evaluate(&cs(vec![])).valid[&(10, 0)]);
-    assert!(evaluate(&cs(vec![10])).valid[&(10, 0)]);
 }

@@ -127,7 +127,7 @@ impl Default for AppConfig {
     }
 }
 
-/// A share link this node made: K and L (spec/permissions.md §8).
+/// A share link this node made: K and L (spec/permissions.md §7).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MadeLink {
     pub l: Tid,

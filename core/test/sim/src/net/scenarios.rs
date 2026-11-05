@@ -433,7 +433,7 @@ pub fn grant_to_group(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Disk loss and recovery from the card (spec/permissions.md §8): one of a person's two devices
+/// Disk loss and recovery from the card (spec/permissions.md §7): one of a person's two devices
 /// loses its disk; a fresh device holding the card follows the home label, recovers (grants
 /// itself admin, removes the lost device with the person's rotation) and converges with the
 /// remaining device.
@@ -715,7 +715,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     // a guest: its edge ends by the clock
     let at = sim.engine(a)?.now().0 + 600_000;
-    let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(WallMs(at)), invite: None, since: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(WallMs(at)), invite: None, tied: None };
     let r = sim.engine(a)?.grant(&g, &pf, &edge);
     let done = r.map_err(|e| sim.fail(format!("guest: {e}")))?;
     sim.carry(a, done)?;
@@ -730,7 +730,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     sim.pair(c, extra, pc)?;
     sim.quiet(40)?;
     write(&mut sim, &mut d, extra, 40)?;
-    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None }), presync: PreSync::Synced, keep: None };
+    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None }), presync: PreSync::Synced, keep: None };
     let r = sim.engine(a)?.demote(&g, &lower);
     let done = r.map_err(|e| sim.fail(format!("lower: {e}")))?;
     sim.carry(a, done)?;
@@ -831,7 +831,7 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §7):
+/// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §6):
 /// the seed picks a purge set, a keep bound and a mix of compacters among an admin and two plain
 /// writers, under faults. A body stays at the host and reaches a device coming fresh unless a
 /// compacter holding the right over it wrote a snapshot after it; such a body leaves the host

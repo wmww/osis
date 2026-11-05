@@ -1,4 +1,4 @@
-//! Certificates (spec/permissions.md §4), purge rights (§7), rotation (§3).
+//! Certificates (spec/permissions.md §4), purge rights (§6), rotation (§3).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -56,7 +56,7 @@ fn certificates_carry_chain_at_demotion_spec_permissions_4() {
     w.set(k, g, x, None, 6, &[]);
     let held = w.held();
     let tl = Timeline::evaluate(&held);
-    let id = WriteId::Op(w.commits[2].id, 0);
+    let id = WriteId(w.commits[2].id, 0);
     assert!(tl.is_applied(&id) && tl.dropped().is_empty());
     let ct = Timeline::evaluate(&tl.certificate_set(&tl.write_certificates(&id).unwrap(), &held));
     assert!(ct.is_applied(&id) && !ct.dropped().contains_key(&id));
@@ -82,37 +82,10 @@ fn certificates_carry_chain_at_dropped_demotion_spec_permissions_4() {
     w.set(k, g, d, None, 8, &[]);
     let held = w.held();
     let tl = Timeline::evaluate(&held);
-    let id = WriteId::Op(w.commits[3].id, 0);
-    assert!(tl.is_applied(&id) && tl.dropped().contains_key(&WriteId::Op(r, 0)));
+    let id = WriteId(w.commits[3].id, 0);
+    assert!(tl.is_applied(&id) && tl.dropped().contains_key(&WriteId(r, 0)));
     let ct = Timeline::evaluate(&tl.certificate_set(&tl.write_certificates(&id).unwrap(), &held));
     assert!(ct.is_applied(&id) && !ct.dropped().contains_key(&id));
-}
-
-/// §4, §6: a ledger entry with a frontier is a demotion at its own key, before its snapshot:
-/// X's chain goes along at that key. X writes on H (owned by G) through its G edge; A then
-/// makes X an admin of P (G's owner) and removes it at 8, covering the write; G's snapshot at
-/// 10 ends X's G tenure at 6 with a frontier missing the write, while P still held X.
-#[test]
-fn certificates_carry_chain_at_ledger_end_spec_permissions_4() {
-    let mut w = World::new();
-    let n = w.nodes(4);
-    let (x, a, k) = (n[0], n[1], n[2]);
-    let p = w.thing(k);
-    let g = w.thing(p);
-    let h = w.thing(g);
-    let all: Vec<(Tid, u64)> = n.iter().map(|y| (*y, 0)).collect();
-    w.set(k, g, x, edge(Admin), 0, &all);
-    w.set(k, p, a, edge(Admin), 0, &all);
-    let wr = w.set(x, h, n[3], edge(Write), 2, &[(a, 3)]);
-    w.set(a, p, x, edge(Admin), 2, &[(x, 2), (k, 2)]);
-    w.set(a, p, x, None, 8, &[]);
-    w.snapshot_l(k, g, &[], &[(x, Admin, Some((0, k, None)), (6, k, None), true)], 10, &all);
-    let held = w.held();
-    let tl = Timeline::evaluate(&held);
-    let id = WriteId::Op(wr, 0);
-    assert!(tl.is_applied(&id) && !tl.dropped().contains_key(&id), "{:?}", tl.dropped());
-    let ct = Timeline::evaluate(&tl.certificate_set(&tl.write_certificates(&id).unwrap(), &held));
-    assert!(ct.is_applied(&id) && !ct.dropped().contains_key(&id), "{:?}", ct.dropped());
 }
 
 /// §4 projection: for every write of random joint and edges histories, its author's
@@ -140,27 +113,12 @@ fn cert_run_joint(samples: u64, seed: u64) {
         if let Some(d) = cert_check(&w) {
             panic!("seed {seed:#x} sample {s}: {d}\n{h}");
         }
-        // one actor compacted at a roster snapshot of the end: its history held only as
-        // roster and ledger tenures
-        // (an ownerless actor and those below it have no key actor at the top to write one)
-        let x = actors[s as usize % actors.len()];
-        let Some(tp) = top[s as usize % actors.len()] else { continue };
-        let tl = Timeline::evaluate(&w.held());
-        let mut w2 = w.clone();
-        let snap = w2.snapshot_state(tp, x, tl.roster_state(&x), LATE / 2);
-        if let Some(d) = cert_check_held(&w2.compacted(x, snap)) {
-            panic!("seed {seed:#x} sample {s}, {x:?} compacted: {d}\n{h}");
-        }
     }
 }
 
+/// Every edge write of `w`, judged from its certificates as from the full held set.
 fn cert_check(w: &World) -> Option<String> {
-    cert_check_held(&w.held())
-}
-
-/// Every edge write and roster snapshot of `held`, judged from its certificates as from
-/// `held`.
-fn cert_check_held(held: &osis_perm::MemoryHeldSet) -> Option<String> {
+    let held = &w.held();
     let tl = Timeline::evaluate(held);
     // drops found in another order on a projection (sticky residue) need not agree
     if sticky_residue(&tl) {
@@ -169,11 +127,8 @@ fn cert_check_held(held: &osis_perm::MemoryHeldSet) -> Option<String> {
     let mut writes: BTreeMap<WriteId, (Point, Tid, Tid)> = BTreeMap::new();
     for c in held.commits.values().flatten() {
         for (k, op) in c.ops.iter().enumerate() {
-            writes.insert(WriteId::Op(c.id, k as u32), (c.point(), c.author, op.target));
+            writes.insert(WriteId(c.id, k as u32), (c.point(), c.author, op.target));
         }
-    }
-    for s in held.snapshots.values().flatten() {
-        writes.insert(WriteId::Snapshot(s.id), (s.point(), s.author, s.thing));
     }
     // node cards: each node's certificates for a thing give its role there at every write's
     // point and at the end
@@ -232,37 +187,7 @@ fn certificates_carry_demotion_on_later_path_spec_permissions_4() {
     w.commit_id(cid(1006705973), n[2], 8, &[(a2, a0, None)], &r(LATE, LATE, 8));
     let held = w.held();
     let tl = Timeline::evaluate(&held);
-    let id = WriteId::Op(cid(1778379934), 0);
-    assert!(tl.dropped().contains_key(&id) && !sticky_residue(&tl), "{:?}", tl.dropped());
-    assert_eq!(cert_check(&w), None);
-}
-
-/// As above, n0's later admin edge on A1 held only as a ledger tenure of a roster snapshot of
-/// A1 (its commit compacted away): the later path runs over ledger edges too.
-#[test]
-fn certificates_carry_demotion_on_later_ledger_path_spec_permissions_4() {
-    let mut w = World::new();
-    let n = w.nodes(3);
-    let a0 = w.thing(n[0]);
-    let a1 = w.thing(n[1]);
-    let a2 = w.thing(n[1]);
-    let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
-    w.set(n[0], a0, n[0], edge(Write), 0, &all0);
-    w.set(n[0], a0, n[2], edge(Admin), 0, &all0);
-    w.set(n[1], a1, n[2], edge(Write), 0, &all0);
-    w.set(n[1], a2, n[2], edge(Admin), 0, &all0);
-    w.set(n[1], a2, a1, edge(Admin), 0, &all0);
-    let r = |a: u64, b: u64, c: u64| vec![(n[0], a), (n[1], b), (n[2], c)];
-    w.commit_id(cid(2782044695), n[1], 2, &[(a2, n[0], edge(Admin))], &r(1, 2, 1));
-    w.commit_id(cid(3096925279), n[2], 2, &[(a0, a2, edge(Write))], &r(1, 1, 2));
-    w.commit_id(cid(1778379934), n[0], 4, &[(a2, n[2], edge(Admin))], &r(4, LATE, 3));
-    w.commit_id(cid(527979467), n[2], 4, &[(a2, n[0], None)], &r(3, LATE, 4));
-    w.commit_id(cid(2482343703), n[1], 7, &[(a2, a1, None)], &r(5, 7, 6));
-    w.commit_id(cid(1006705973), n[2], 8, &[(a2, a0, None)], &r(LATE, LATE, 8));
-    w.snapshot_l(n[1], a1, &[(n[2], edge(Write).unwrap())], &[(n[0], Admin, Some((5, n[1], None)), (9, n[1], None), false)], 10, &r(10, 10, 10));
-    let held = w.held();
-    let tl = Timeline::evaluate(&held);
-    let id = WriteId::Op(cid(1778379934), 0);
+    let id = WriteId(cid(1778379934), 0);
     assert!(tl.dropped().contains_key(&id) && !sticky_residue(&tl), "{:?}", tl.dropped());
     assert_eq!(cert_check(&w), None);
 }
@@ -347,7 +272,6 @@ fn certificates_project_joint() {
     cert_run_joint(80, 0x5eed_0201);
 }
 
-/// 64k samples, each also with one actor compacted at a roster snapshot.
 #[test]
 #[ignore]
 fn certificates_project_joint_large() {
@@ -376,7 +300,7 @@ fn cert_run_edges(samples: u64, seed: u64) {
                     roles_model::Role::Write => Some(Write),
                     roles_model::Role::Admin => Some(Admin),
                 },
-                since: None, tied: crate::common::tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1),
+                tied: crate::common::tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1),
             })
         };
         let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
@@ -407,7 +331,7 @@ fn certificates_project_edges_large() {
     sharded(20_000, 0x5eed_0204, cert_run_edges);
 }
 
-/// §7: purge rights by retention, judged at the request's time.
+/// §6: purge rights by retention, judged at the request's time.
 #[test]
 fn purge_rights() {
     let mut w = World::new();
@@ -578,7 +502,7 @@ fn patched_view_equals_cloned_edges() {
         let role = [Read, Write, Admin][rng.below(3)];
         let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
         let until = (rng.below(3) == 0).then(|| osis_base::WallMs(rng.below(10) as u64));
-        (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None, tied: crate::common::tie_if(until.is_some() != invite.is_some()) })
+        (rng.below(4) != 0).then_some(Edge { role, until, invite, tied: crate::common::tie_if(until.is_some() != invite.is_some()) })
     };
     for _ in 0..2000 {
         let keys = key_actors(3, 11);
@@ -649,10 +573,10 @@ fn scope_check(w: &World, nodes: &[Tid], things: &[Tid], rng: &mut Rng) -> Optio
     let t = 500;
     // what the author had received: everything, nothing, or about half
     let mode = rng.below(3);
-    let writes: Vec<(osis_base::CommitId, Tid, Vec<Tid>)> = w.commits.iter().map(|c| (c.id, c.author, c.ops.iter().map(|o| o.0).collect())).chain(w.snaps.iter().map(|s| (s.id, s.author, vec![s.thing]))).collect();
+    let writes: Vec<(osis_base::CommitId, Tid, Vec<Tid>)> = w.commits.iter().map(|c| (c.id, c.author, c.ops.iter().map(|o| o.0).collect())).collect();
     let received: BTreeSet<osis_base::CommitId> = writes.iter().filter(|_| mode == 0 || (mode == 2 && rng.below(2) == 0)).map(|c| c.0).collect();
     let certs = tl.certificates(&author, &target);
-    let own: BTreeSet<osis_base::CommitId> = certs.commits.into_iter().chain(certs.snapshots.into_keys()).filter(|c| received.contains(c)).collect();
+    let own: BTreeSet<osis_base::CommitId> = certs.commits.into_iter().filter(|c| received.contains(c)).collect();
     let frontier = |s: &osis_perm::DemotionScope| {
         let mut f = Frontier { commits: own.clone() };
         for (id, by, on) in &writes {
@@ -679,7 +603,7 @@ fn scope_check(w: &World, nodes: &[Tid], things: &[Tid], rng: &mut Rng) -> Optio
     let mut held = held;
     held.add_commit(r(f));
     let tl2 = Timeline::evaluate(&held);
-    if !tl2.is_applied(&WriteId::Op(id, 0)) || !residue(&tl2).is_empty() {
+    if !tl2.is_applied(&WriteId(id, 0)) || !residue(&tl2).is_empty() {
         return None;
     }
     let p = Point { ts: ts(t), node: author, commit: id };

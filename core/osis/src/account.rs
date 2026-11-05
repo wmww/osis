@@ -1,4 +1,4 @@
-//! The account across nodes (spec/permissions.md §1, §8; notes/api.md Handle and lifecycle):
+//! The account across nodes (spec/permissions.md §1, §7; notes/api.md Handle and lifecycle):
 //! restoring from a recovery card on a fresh node, and pairing a new node. Pairing is
 //! transport-agnostic: the app carries two messages between the nodes (QR, clipboard, a local
 //! socket): the new node's request (its node card) and the existing node's reply (the grant

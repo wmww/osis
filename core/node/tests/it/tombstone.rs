@@ -39,7 +39,7 @@ fn purge(net: &mut Net, n: usize, t: Tid, c: CommitId, r: Retention) -> CommitId
 }
 
 /// The delta sets of commit `c`'s entries node `n` knows present at `host`.
-fn at_host(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId) -> Vec<Vec<(usize, usize)>> {
+fn at_host(net: &mut Net, n: usize, host: usize, l: &LabelId, c: CommitId) -> Vec<Vec<usize>> {
     let ids = net.host_ids(host, l);
     net.sync(n)
         .entries(l)
@@ -105,7 +105,7 @@ fn new_device_sees_a_purged_permanent_delta_spec_commits_5() {
         assert!(body.iter().all(|x| !x.is_empty()) && !body.is_empty());
         let p = purge(&mut net, b, t, c, r);
         net.run();
-        assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()], "its header alone at the host");
+        assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()], "its header alone at the host");
         net.set_online(n, true);
         net.run();
         let author = net.tid(b);
@@ -158,7 +158,7 @@ fn a_lost_tombstone_is_uploaded_again_spec_sync_6() {
     net.run();
     net.advance(120_000);
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()]);
+    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -234,8 +234,8 @@ fn the_purge_request_stays_as_its_header_spec_commits_5() {
     net.advance(3_600_000);
     net.run();
     assert!(!net.engine(a).body_not_dropped(&p, &t, &k()), "the purge commit's body is covered and gone");
-    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::new()], "its header stays");
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()]);
+    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::<usize>::new()], "its header stays");
+    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -280,7 +280,7 @@ fn other_live_parts_carry_the_header_spec_commits_5() {
     let h = net.engine(a).header(&c).unwrap();
     let held = at_host(&mut net, a, host, &l, c);
     assert_eq!(held.len(), 1, "{held:?}");
-    assert_eq!(h.aspects[held[0][0].0].ak, Ak::new(LIST.ak()).unwrap());
+    assert_eq!(h.aspects[held[0][0]].ak, Ak::new(LIST.ak()).unwrap());
     net.set_online(n, true);
     net.run();
     assert_eq!(net.engine(n).get(&t, &Ak::new(LIST.ak()).unwrap()).unwrap(), Some(osis_base::Value::List(vec![s("other")])));
@@ -291,7 +291,7 @@ fn other_live_parts_carry_the_header_spec_commits_5() {
     m.set(t, &LIST, &osis_base::Value::List(Vec::new())).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()]);
+    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.advance(1_000);
     net.run();
     assert!(net.engine(n).commit_ids().contains(&c));
@@ -314,7 +314,7 @@ fn the_other_part_on_another_label_is_not_waited_for_spec_commits_4() {
     net.run();
     let p = purge(&mut net, a, t, c, permanent());
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()], "under the purged delta's label");
+    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()], "under the purged delta's label");
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -333,7 +333,7 @@ fn a_flood_costs_a_header_per_write_spec_commits_5() {
     net.run();
     net.advance(1_000);
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()]);
+    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     for p in ps {
         assert_eq!(at_host(&mut net, a, host, &l, p).len(), 1);
     }
@@ -376,7 +376,7 @@ fn a_purged_value_leaves_its_chunks_spec_commits_5() {
     net.run();
     net.run();
     assert!(chunks.iter().all(|id| !net.host_ids(host, &l).contains(id)), "a purged chunk stayed");
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()]);
+    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     let author = net.tid(b);
@@ -421,7 +421,7 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()]);
+    assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::<usize>::new()]);
     // what `b` forgets, the note of what the purge dropped goes with
     net.engine(b).drop_lost_due().unwrap();
     assert_eq!(net.engine(b).named_permanent_count().unwrap(), 0);
@@ -438,7 +438,7 @@ fn header_only_prefix_is_checked_spec_sync_1() {
     let c = msg(&mut net, b, t, "y", permanent());
     let pk = net.engine(b).package(&c).unwrap().unwrap();
     let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let bare = osis_commit::rewrite(&blob, |_, _| true);
+    let bare = osis_commit::rewrite(&blob, |_| true);
     let mut rng = osis_crypto::SeededRng::from_u64(5);
     let read = net.engine(b).wrap_secret(&t, None).unwrap().unwrap();
     let env = osis_commit::seal_commit(&bare, |_| (), |_, _| Some((read.clone(), vec![])), &[], &mut rng).unwrap();
@@ -458,7 +458,7 @@ fn pending(net: &mut Net, n: usize) -> usize {
 
 fn bare_header(net: &mut Net, from: usize, c: &CommitId) -> Vec<u8> {
     let pk = net.engine(from).package(c).unwrap().unwrap();
-    osis_commit::rewrite(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap(), |_, _| true).encode()
+    osis_commit::rewrite(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap(), |_| true).encode()
 }
 
 // spec/commits.md §4, §5: a writer forging a header-only blob of another's message, alone or with a
@@ -490,11 +490,11 @@ fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
     assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty());
 }
 
-// spec/permissions.md §7, spec/commits.md §5: an admin's purge falls when its demotion stamped earlier
+// spec/permissions.md §6, spec/commits.md §5: an admin's purge falls when its demotion stamped earlier
 // arrives. Nodes that had dropped the body take it again from the holder that kept it, no purge is
 // shown, and a new device reads the message; nobody deletes it again, no upload and delete for good.
 #[test]
-fn a_fallen_purge_shows_no_tombstone_spec_perm_7() {
+fn a_fallen_purge_shows_no_tombstone_spec_perm_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, b, c2, n) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(3, &[host]));
@@ -583,7 +583,7 @@ fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
     net.run();
     net.advance(3_600_000);
     net.run();
-    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::new()]);
+    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::<usize>::new()]);
     net.set_online(n, true);
     net.run();
     assert_eq!(pending(&mut net, n), 0);
@@ -651,7 +651,7 @@ fn a_purge_purged_in_turn_spec_commits_5() {
         }
         net.advance(3_600_000);
         net.run();
-        assert_eq!(at_host(&mut net, a, host, &l, p1), vec![Vec::new()]);
+        assert_eq!(at_host(&mut net, a, host, &l, p1), vec![Vec::<usize>::new()]);
         assert!(at_host(&mut net, a, host, &l, p2).is_empty());
         net.set_online(n, true);
         net.run();
@@ -712,7 +712,7 @@ fn an_aspect_wide_request_lasts_by_what_it_dropped_spec_commits_5() {
         net.run();
         cover(&mut net, a, t);
         assert!(!net.engine(a).body_not_dropped(&p, &t, &k()));
-        assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::new()] } else { Vec::new() });
+        assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::<usize>::new()] } else { Vec::new() });
         net.set_online(n, true);
         net.run();
         // after a restart too: what it dropped is noted, not walked
@@ -720,7 +720,7 @@ fn an_aspect_wide_request_lasts_by_what_it_dropped_spec_commits_5() {
         net.run();
         net.advance(3_600_000);
         net.run();
-        assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::new()] } else { Vec::new() });
+        assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::<usize>::new()] } else { Vec::new() });
         assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), admin.then_some(&p));
         assert_eq!(net.engine(n).body_not_dropped(&c, &t, &k()), !admin);
     }
@@ -731,7 +731,7 @@ fn known_entries(net: &mut Net, n: usize, host: usize) -> usize {
     net.labels_at(host).into_iter().map(|l| net.sync(n).entries(&l).len()).sum()
 }
 
-// spec/sync.md §6, spec/permissions.md §7: a holder that held the demotion first comes back to find
+// spec/sync.md §6, spec/permissions.md §6: a holder that held the demotion first comes back to find
 // the purge's delete at the host: the message has no live write (a later write killed it), so a
 // delete would keep it out; but the request falls there, so the holder places it again and the
 // writer that dropped it takes it.
@@ -772,7 +772,7 @@ fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
     }
 }
 
-// spec/sync.md §6, spec/permissions.md §7: a purge that fell after every holder dropped the body: it
+// spec/sync.md §6, spec/permissions.md §6: a purge that fell after every holder dropped the body: it
 // is gone for good (no holder), the part missing at each, no purge shown. The header-only blobs up
 // by then stay, judged lasting by nobody: no upload and delete for good.
 #[test]
@@ -805,7 +805,7 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     }
     assert_eq!(known_entries(&mut net, a, host), before, "an upload and delete loop");
     let l = net.labels_at(host).into_iter().find(|l| !at_host(&mut net, a, host, l, p).is_empty()).expect("the holders' copy stays");
-    assert_eq!(at_host(&mut net, a, host, &l, m), vec![Vec::new()]);
+    assert_eq!(at_host(&mut net, a, host, &l, m), vec![Vec::<usize>::new()]);
 }
 
 // spec/commits.md §5: a device with a slow clock purges a message a fast device stamped ahead of
@@ -829,12 +829,12 @@ fn a_slow_clock_purges_a_message_stamped_ahead_spec_commits_5() {
     }
 }
 
-// spec/permissions.md §5.1, §7: a fresh device demotes an admin whose old purge it never held. Non
+// spec/permissions.md §5.1, §6: a fresh device demotes an admin whose old purge it never held. Non
 // permanent: the request went with compaction, so the frontier cannot list it. The purge falls where
 // it is held, but no node holds the body and the host has none: nothing comes back. Permanent: the
 // request lasts as a header, the fresh device lists it, and the tombstone stays.
 #[test]
-fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_7() {
+fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_6() {
     for lasting in [false, true] {
         let mut net = Net::new();
         let host = net.add_host();
@@ -920,7 +920,7 @@ fn a_lasting_request_applies_when_its_killer_left_spec_commits_4() {
         net.advance(120_000);
         net.run();
     }
-    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::new()], "its header alone at the host");
+    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::<usize>::new()], "its header alone at the host");
     assert!(at_host(&mut net, a, host, &l, killer).is_empty(), "the killer expired");
     net.set_online(n, true);
     net.run();

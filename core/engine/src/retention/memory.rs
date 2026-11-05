@@ -198,7 +198,7 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>
 /// Held part `ai` of `c` as one fragment.
 fn joined(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Fragment> {
     let mut f = Fragment::default();
-    for x in crate::apply::held_fragments(tx, c, ai)? {
+    if let Some(x) = crate::apply::held_fragment(tx, c, ai)? {
         f.join(x);
     }
     Ok(f)

@@ -21,23 +21,22 @@ pub struct AspectWrite {
     /// Counter range `[lo, hi)` of own writes; ignored for kinds without own writes.
     pub lo: u64,
     pub hi: u64,
-    /// Canonical delta (or snapshot) bytes, encoded against [`crate::writer_ctx`]: exactly one
-    /// for every kind but role and roster snapshots.
-    pub deltas: Vec<Vec<u8>>,
+    /// Canonical delta (or snapshot) bytes, encoded against [`crate::writer_ctx`].
+    pub delta: Vec<u8>,
     /// Resolved retention ([`crate::retention`] helpers: fixed, override, schema default,
     /// untyped default; snapshot).
     pub retention: Retention,
     /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
     /// keys, [`delete_keys`]).
     pub chunks: Vec<BlobId>,
-    /// Creation records each of its parts carries (an ephemeral commit, spec/commits.md §2).
+    /// Creation records its part carries (an ephemeral commit, spec/commits.md §2).
     pub records: Vec<osis_base::CreationRecord>,
 }
 
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, deltas: vec![delta], retention: Retention::default(), chunks: Vec::new(), records: Vec::new() }
+        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), chunks: Vec::new(), records: Vec::new() }
     }
 }
 
@@ -109,8 +108,7 @@ impl CommitBuilder {
             rs.dedup_by_key(|r| r.tid());
             records.push(rs);
             let dedup = secrets.dedup(&a.tid).ok_or(Error::Build("dedup secret not supplied"))?;
-            let mut hd: Vec<([u8; 32], Vec<u8>)> = a.deltas.into_iter().map(|d| (delta_hash(&dedup, &d), d)).collect();
-            hd.sort_by_key(|x| x.0);
+            let hash = delta_hash(&dedup, &a.delta);
             let (lo, hi) = if kind.has_own_writes() { (a.lo, a.hi) } else { (0, 0) };
             aspect_keys.push(delete_keys(secrets, &a.tid, &a.retention)?);
             entries.push((
@@ -121,11 +119,11 @@ impl CommitBuilder {
                     hi,
                     retention: a.retention,
                     keys: Vec::new(),
-                    hashes: hd.iter().map(|x| x.0).collect(),
+                    hash,
                 },
                 a.chunks,
             ));
-            deltas.push(hd.into_iter().map(|x| x.1).collect::<Vec<_>>());
+            deltas.push(a.delta);
         }
 
         // delete keys: one per distinct (level, key), sorted by canonical bytes
@@ -197,13 +195,11 @@ impl CommitBuilder {
 
         let signature = header.sign(key);
         let mut parts = Vec::new();
-        for (ai, (ds, rs)) in deltas.into_iter().zip(records).enumerate() {
-            if !rs.is_empty() && header.ephemeral.is_none() {
+        for (ai, (delta, records)) in deltas.into_iter().zip(records).enumerate() {
+            if !records.is_empty() && header.ephemeral.is_none() {
                 return Err(Error::Build("creation records beside a durable commit's delta"));
             }
-            for (di, delta) in ds.into_iter().enumerate() {
-                parts.push(Part { ai, di, delta, records: rs.clone() });
-            }
+            parts.push(Part { ai, delta, records });
         }
         let commit = CommitBlob { header, signature, parts };
         check_fits(&commit, self.max_blob)?;

@@ -29,7 +29,7 @@ fn r1_name(w: &World) -> osis_keys::Name {
     osis_keys::Name { thing: w.a, key: osis_keys::Key { ts: 4, node: tid(9), commit: cid(4) } }
 }
 
-/// Holds the commits listed (a departing commit by its `ts` as its ID's byte), and no epoch start.
+/// Holds the commits listed (a departing commit by its `ts` as its ID's byte).
 struct Holding(BTreeSet<osis_base::CommitId>);
 
 impl osis_keys::Held for Holding {

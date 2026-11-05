@@ -59,9 +59,9 @@ fn admin_only_aspect_needs_admin_spec_permissions_5_2() {
     assert_eq!(evaluate(&held(2, a)).valid[&(10, 0)], true);
 }
 
-// spec/permissions.md §7: a demotion not listing the request takes the purge right, however early
+// spec/permissions.md §6: a demotion not listing the request takes the purge right, however early
 #[test]
-fn demotion_takes_the_purge_right_spec_permissions_7() {
+fn demotion_takes_the_purge_right_spec_permissions_6() {
     let cs = |f: Vec<CommitId>| {
         vec![
             edge(5, OWNER, 0, 1, Some(Role::Write), None),
@@ -77,9 +77,9 @@ fn demotion_takes_the_purge_right_spec_permissions_7() {
     assert_eq!(read(&held(4, cs(vec![10])), REG), Read::Reg(7));
 }
 
-// spec/permissions.md §7: the right is judged at the request's time, not the delta's
+// spec/permissions.md §6: the right is judged at the request's time, not the delta's
 #[test]
-fn purge_right_judged_at_the_request_spec_permissions_7() {
+fn purge_right_judged_at_the_request_spec_permissions_6() {
     let cs = |grant_h: u64| {
         vec![
             reg(10, OWNER, 1, REG, Retention::PLAIN, 7),

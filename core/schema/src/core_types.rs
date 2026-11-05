@@ -2,7 +2,7 @@
 //! spec/wire.md §3) and their typed keys. Byte lengths the spec fixes are enforced here (a wrong
 //! length is a type mismatch); unknown agility cases are `UnknownCase` (parked).
 
-use crate::codec::{Chunked, Codec, rt};
+use crate::codec::{Codec, rt};
 use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
@@ -11,7 +11,7 @@ use osis_base::{CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs}
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
-pub const ROLE_CLASS: [&str; 5] = ["roles.0", "secrets.0", "keys.0", "label.0", "tenures.0"];
+pub const ROLE_CLASS: [&str; 4] = ["roles.0", "secrets.0", "keys.0", "label.0"];
 
 pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
@@ -110,11 +110,6 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Address { 0 url: String, 1 key: [u8; 32] }
 }
-codec_struct! {
-    /// (ts, author node, commit ID) of a write.
-    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub struct EdgeKey { 0 ts: Ts, 1 node: Tid, 2 commit: CommitId }
-}
 codec_enum! {
     /// A dot's source (spec/crdt.md §2.1); a session as `Sources` encodes it (spec/crdt.md
     /// §3.2): the node's tid, then its 16-byte nonce.
@@ -128,10 +123,10 @@ codec_struct! {
     pub struct Tie { 0 ts: Ts, 1 source: Source, 2 ctr: u64, 3 subgroup: bool }
 }
 codec_struct! {
-    /// A role edge; `since` only in roster snapshots (spec/permissions.md §6); `tied`: the
-    /// placement of the target in its holder, a group, the edge goes with (spec/permissions.md §2).
+    /// A role edge; `tied`: the placement of the target in its holder, a group, the edge goes
+    /// with (spec/permissions.md §2).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie> }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 tied: Option<Tie> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation
@@ -171,11 +166,6 @@ codec_struct! {
     /// Revoke frontier: the commit IDs the demoter received (spec/permissions.md §5.1).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Frontier { 0 commits: BTreeSet<CommitId> }
-}
-codec_struct! {
-    /// A tenure ledger entry; a large frontier is a link.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Tenure { 0 holder: Tid, 1 role: Role, 2 since: Option<EdgeKey>, 3 until: EdgeKey, 4 frontier: Option<Chunked<Frontier>> }
 }
 codec_struct! {
     /// Step and claim-set bytes (spec/wire.md §8).
@@ -353,23 +343,6 @@ codec_struct! {
     pub struct Tag { 0 color: Option<String> }
 }
 
-/// `tenures.0`: a set of tenures (kept as a list in canonical order: `Link` has no `Ord`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Tenures(pub Vec<Tenure>);
-
-#[doc(hidden)]
-impl Codec for Tenures {
-    fn to_value(&self) -> Value {
-        Value::Set(self.0.iter().map(Codec::to_value).collect())
-    }
-    fn from_value(v: &Value) -> Result<Tenures, PathError> {
-        match v {
-            Value::Set(s) => s.iter().map(|x| Tenure::from_value(x).map_err(|e| e.within(crate::Step::Elem(x.clone())))).collect::<Result<_, _>>().map(Tenures),
-            _ => Err(mismatch("set")),
-        }
-    }
-}
-
 pub type Holders = BTreeMap<Tid, Edge>;
 pub type Labels = BTreeMap<LabelId, Label>;
 
@@ -379,7 +352,6 @@ pub const CREATED: Aspect<CreationRecord> = Aspect::new("created.0", &CORE);
 pub const ROLES: Aspect<Holders> = Aspect::new("roles.0", &CORE);
 pub const KEYS: Aspect<Keys> = Aspect::new("keys.0", &CORE);
 pub const SECRETS: Aspect<Secrets> = Aspect::new("secrets.0", &CORE);
-pub const TENURES: Aspect<Tenures> = Aspect::new("tenures.0", &CORE);
 pub const LABEL: Aspect<Labels> = Aspect::new("label.0", &CORE);
 pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);

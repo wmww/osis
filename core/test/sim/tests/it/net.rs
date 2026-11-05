@@ -118,7 +118,7 @@ fn member_churn_seed_9() {
     ok("member_churn", 9);
 }
 
-// spec/permissions.md §8: disk loss and recovery from the card.
+// spec/permissions.md §7: disk loss and recovery from the card.
 #[test]
 #[ignore = "tier 2"]
 fn disk_loss() {
@@ -205,7 +205,7 @@ fn coverer_revoked() {
     ok("coverer_revoked", 1);
 }
 
-// spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §7: each purge set under a mix of
+// spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §6: each purge set under a mix of
 // compacters, a device coming fresh: kept bodies stay available, reads alike, the labels go quiet.
 #[test]
 fn snapshot_rights() {

@@ -1,7 +1,7 @@
-//! Role timeline and validity (spec/permissions.md §5.1, §5.2, §6, §7). Holders are actors (nodes or
+//! Role timeline and validity (spec/permissions.md §5.1, §5.2, §6). Holders are actors (nodes or
 //! things); effective roles are widest paths over edges and owner links; authority classes, invites,
-//! `until`, self-removals, finalizes, audits with the edge as restored, and roster snapshots with
-//! epoch starts chosen in rounds. Every query replays the settled walk.
+//! `until`, self-removals, finalizes and audits with the edge as restored. Every query replays the
+//! settled walk.
 
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -159,14 +159,12 @@ impl World {
     }
 }
 
-/// One edge write of an applied role commit, or one a roster snapshot's start stands for.
+/// One edge write of an applied role commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdgeEv {
     pub key: Key,
-    /// Order inside a key: 0 for a commit's writes, 1 for a roster value taking effect after it.
-    pub sub: u8,
     pub commit: CommitId,
-    /// The part index; `usize::MAX` for a value of an epoch start's roster or ledger.
+    /// The part index.
     pub part: usize,
     pub thing: ThingId,
     pub author: NodeId,
@@ -175,18 +173,7 @@ pub struct EdgeEv {
     pub frontier: Option<BTreeSet<CommitId>>,
 }
 
-/// A roster snapshot as held (spec/permissions.md §6).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Roster {
-    pub key: Key,
-    pub commit: CommitId,
-    pub thing: ThingId,
-    pub author: NodeId,
-    pub edges: Vec<(NodeId, Option<Edge>, Option<Key>)>,
-    pub tenures: Vec<(NodeId, Role, Option<Key>, Key, Option<BTreeSet<CommitId>>)>,
-}
-
-/// Every edge write held in a role commit of `commits` (roster snapshots apart), in walk order.
+/// Every edge write held in a role commit of `commits`, in walk order.
 pub fn edge_events<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<EdgeEv> {
     let mut evs = Vec::new();
     for c in commits {
@@ -198,7 +185,6 @@ pub fn edge_events<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Edg
             if let Body::Held(Delta::Edge(e)) = &p.body {
                 evs.push(EdgeEv {
                     key: c.key(),
-                    sub: 0,
                     commit: c.id,
                     part: i,
                     thing: p.thing,
@@ -210,35 +196,8 @@ pub fn edge_events<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Edg
             }
         }
     }
-    evs.sort_by(|a, b| (a.key, a.sub, a.holder, a.part).cmp(&(b.key, b.sub, b.holder, b.part)));
+    evs.sort_by(|a, b| (a.key, a.holder, a.part).cmp(&(b.key, b.holder, b.part)));
     evs
-}
-
-/// Every roster snapshot held in `commits`, from its held parts on its one thing. A snapshot whose
-/// held parts name one holder twice in `roles.0` takes no part in the walk (spec/permissions.md §6).
-pub fn rosters<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Roster> {
-    let mut out = Vec::new();
-    for c in commits {
-        if c.kind != CommitKind::Roster {
-            continue;
-        }
-        let Some(thing) = c.parts.first().map(|p| p.thing) else { continue };
-        let mut r = Roster { key: c.key(), commit: c.id, thing, author: c.author, edges: vec![], tenures: vec![] };
-        for p in c.parts.iter().filter(|p| p.thing == thing) {
-            match &p.body {
-                Body::Held(Delta::Roster(RosterItem::Edge { edge, since })) => r.edges.push((edge.holder, Edge::of(edge), *since)),
-                Body::Held(Delta::Roster(RosterItem::Tenure { holder, role, since, until, frontier })) => {
-                    r.tenures.push((*holder, *role, *since, *until, frontier.as_ref().map(|f| f.iter().copied().collect())))
-                }
-                _ => {}
-            }
-        }
-        let holders: BTreeSet<NodeId> = r.edges.iter().map(|e| e.0).collect();
-        if holders.len() == r.edges.len() {
-            out.push(r);
-        }
-    }
-    out
 }
 
 /// One applied edge write in the settled walk.
@@ -259,61 +218,14 @@ pub struct Timeline {
     pub world: World,
     pub initial: Edges,
     pub applied: Vec<Applied>,
-    /// Roster snapshots that applied in the settled walk, and the epoch starts.
-    pub rosters_applied: BTreeSet<CommitId>,
-    pub starts: BTreeMap<ThingId, CommitId>,
 }
 
 const LAST: Key = (u64::MAX, NodeId::MAX, CommitId::MAX);
 
-/// What one walk step does.
-enum Step<'a> {
-    Write(&'a EdgeEv),
-    Judge(&'a Roster),
-    Start(&'a Roster),
-}
-
 impl Timeline {
-    /// Epoch starts chosen in rounds (spec/permissions.md §6), each round a settled walk.
-    pub fn settle(world: World, evs: Vec<EdgeEv>, rosters: Vec<Roster>) -> Timeline {
-        let things: BTreeSet<ThingId> = rosters.iter().map(|r| r.thing).collect();
-        let t = things.len();
-        let mut excluded: BTreeSet<CommitId> = BTreeSet::new();
-        let mut starts: BTreeMap<ThingId, CommitId> = BTreeMap::new();
-        let mut round = 0;
-        loop {
-            round += 1;
-            let tl = Timeline::walk(&world, &evs, &rosters, &starts);
-            let mut new: BTreeMap<ThingId, CommitId> = BTreeMap::new();
-            for r in &rosters {
-                if tl.rosters_applied.contains(&r.commit) && !excluded.contains(&r.commit) {
-                    let newer = new.get(&r.thing).map_or(true, |c| rosters.iter().find(|x| x.commit == *c).is_some_and(|x| x.key < r.key));
-                    if newer {
-                        new.insert(r.thing, r.commit);
-                    }
-                }
-            }
-            if new == starts {
-                return tl;
-            }
-            if round == t + 1 {
-                // every snapshot a start in exactly one of the current and the new starts
-                for (&th, &c) in starts.iter().chain(new.iter()) {
-                    if starts.get(&th) != new.get(&th) {
-                        excluded.insert(c);
-                    }
-                }
-                starts.clear();
-                round = 0;
-                continue;
-            }
-            starts = new;
-        }
-    }
-
     /// The edge as restored on (n, h) before the walk's current point.
     fn restored(initial: &Edges, applied: &[Applied], n: ThingId, h: NodeId) -> Option<Edge> {
-        let on: Vec<&Applied> = applied.iter().filter(|p| p.ev.thing == n && p.ev.holder == h && p.ev.part != usize::MAX - 1).collect();
+        let on: Vec<&Applied> = applied.iter().filter(|p| p.ev.thing == n && p.ev.holder == h).collect();
         let from = on.iter().rposition(|p| p.explicit);
         let mut v = if from.is_none() { initial.get(&(n, h)).copied().map(|e| Edge { until: None, ..e }) } else { None };
         for p in &on[from.unwrap_or(0)..] {
@@ -322,185 +234,66 @@ impl Timeline {
         v
     }
 
-    /// One settled walk under the given starts (spec/permissions.md §5.1 steps 1-5).
-    fn walk(world: &World, evs: &[EdgeEv], rosters: &[Roster], starts: &BTreeMap<ThingId, CommitId>) -> Timeline {
-        let start_of = |t: ThingId| starts.get(&t).and_then(|c| rosters.iter().find(|r| r.commit == *c));
-        // the roster's word before its start: values at their keys, just after the commit there
-        let mut synth: Vec<EdgeEv> = Vec::new();
-        for r in starts.values().filter_map(|c| rosters.iter().find(|r| r.commit == *c)) {
-            let ev = |key: Key, holder: NodeId, value: Option<Edge>, author: NodeId, frontier: Option<BTreeSet<CommitId>>| EdgeEv {
-                key,
-                sub: 1,
-                commit: r.commit,
-                part: usize::MAX,
-                thing: r.thing,
-                author,
-                holder,
-                value,
-                frontier,
-            };
-            for (h, role, since, until, f) in &r.tenures {
-                let since = since.unwrap_or((0, 0, 0));
-                if since < r.key {
-                    synth.push(ev(since, *h, Some(Edge { role: *role, invite: None, until: None }), r.author, None));
-                }
-                if *until < r.key {
-                    synth.push(ev(*until, *h, None, until.1, f.clone()));
-                }
-            }
-            for (h, e, since) in &r.edges {
-                let since = since.unwrap_or((0, 0, 0));
-                if since < r.key {
-                    synth.push(ev(since, *h, *e, r.author, None));
-                }
-            }
-        }
-        // at one key a tenure's end comes before the next one's start (a role change ends one
-        // tenure and starts another at its key, spec/permissions.md §6)
-        synth.sort_by_key(|e| e.value.is_some());
-        let mut steps: Vec<(Key, u8, u8, NodeId, usize, Step)> = Vec::new();
-        for e in evs {
-            if start_of(e.thing).is_some_and(|s| e.key < s.key) {
-                continue;
-            }
-            steps.push((e.key, e.sub, 0, e.holder, e.part, Step::Write(e)));
-        }
-        for e in &synth {
-            steps.push((e.key, e.sub, 0, e.holder, e.part, Step::Write(e)));
-        }
-        for r in rosters {
-            steps.push((r.key, 0, 1, 0, 0, Step::Judge(r)));
-            if start_of(r.thing).is_some_and(|s| s.commit == r.commit) {
-                steps.push((r.key, 0, 2, 0, 0, Step::Start(r)));
-            }
-        }
-        steps.sort_by(|a, b| (a.0, a.1, a.2, a.3, a.4).cmp(&(b.0, b.1, b.2, b.3, b.4)));
-        let actors: BTreeSet<NodeId> = world
-            .owners
-            .keys()
-            .copied()
-            .chain(evs.iter().flat_map(|e| [e.author, e.holder]))
-            .chain(synth.iter().flat_map(|e| [e.author, e.holder]))
-            .collect();
+    /// The settled walk over `evs` (in walk order) from the ownerless things' record edges
+    /// (spec/permissions.md §5.1 steps 1-5).
+    pub fn walk(world: World, evs: Vec<EdgeEv>) -> Timeline {
+        let actors: BTreeSet<NodeId> = world.owners.keys().copied().chain(evs.iter().flat_map(|e| [e.author, e.holder])).collect();
         let initial = world.initial();
         let mut dropped: BTreeSet<(CommitId, usize)> = BTreeSet::new();
         'restart: loop {
             let mut edges = initial.clone();
             let mut applied: Vec<Applied> = Vec::new();
-            let mut rosters_applied = BTreeSet::new();
-            let mut i = 0;
-            while i < steps.len() {
-                // one commit's writes are judged against the state before the commit
-                let key = steps[i].0;
-                let sub = steps[i].1;
+            // one commit's writes are judged against the state before the commit
+            for group in evs.chunk_by(|a, b| a.key == b.key) {
                 let pre = edges.clone();
-                let mut j = i;
-                while j < steps.len() && steps[j].0 == key && steps[j].1 == sub {
-                    j += 1;
-                }
-                for (_, _, _, _, _, step) in &steps[i..j] {
-                    let wall_ = wall(key.0);
-                    match step {
-                        Step::Judge(r) => {
-                            if dropped.contains(&(r.commit, usize::MAX - 1)) {
-                                continue;
-                            }
-                            if world.class(&pre, r.author, r.thing, wall_) == Some(Class::Owner) {
-                                rosters_applied.insert(r.commit);
-                                let ev = EdgeEv {
-                                    key: r.key,
-                                    sub: 0,
-                                    commit: r.commit,
-                                    part: usize::MAX - 1,
-                                    thing: r.thing,
-                                    author: r.author,
-                                    holder: NodeId::MAX,
-                                    value: None,
-                                    frontier: None,
-                                };
-                                applied.push(Applied { ev, class: Some(Class::Owner), explicit: false, on: r.thing, before: edges.clone(), after: edges.clone() });
-                            }
-                        }
-                        Step::Start(r) => {
-                            let before = edges.clone();
-                            edges.retain(|&(t, _), _| t != r.thing);
-                            for (h, e, _) in &r.edges {
-                                if let Some(e) = e {
-                                    if *h != r.thing && world.owner(r.thing) != Some(*h) {
-                                        edges.insert((r.thing, *h), *e);
+                let wall_ = wall(group[0].key.0);
+                for ev in group {
+                    if dropped.contains(&(ev.commit, ev.part)) {
+                        continue;
+                    }
+                    let (n, h, a) = (ev.thing, ev.holder, ev.author);
+                    if h == n || world.owner(n) == Some(h) {
+                        continue;
+                    }
+                    let Some((class, explicit, on)) = decide(&world, &pre, ev, wall_) else { continue };
+                    let mut before = edges.clone();
+                    if explicit {
+                        match Timeline::restored(&initial, &applied, n, h) {
+                            Some(e) => before.insert((n, h), e),
+                            None => before.remove(&(n, h)),
+                        };
+                    }
+                    match ev.value {
+                        Some(v) => edges.insert((n, h), v),
+                        None => edges.remove(&(n, h)),
+                    };
+                    // step 4: audits by an explicit write
+                    if explicit {
+                        let mut added = false;
+                        for &x in actors.iter().filter(|&&x| x != a) {
+                            for m in world.below(n) {
+                                let cb = world.class(&before, x, m, wall_);
+                                let ca = world.class(&edges, x, m, wall_);
+                                if ca >= cb {
+                                    continue;
+                                }
+                                for p in &applied {
+                                    let fell_through = p.class.is_some_and(|c| Some(c) > ca && Some(c) <= cb);
+                                    let listed = ev.frontier.as_ref().is_some_and(|f| f.contains(&p.ev.commit));
+                                    if p.ev.author == x && p.on == m && fell_through && p.ev.key < ev.key && !listed {
+                                        added |= dropped.insert((p.ev.commit, p.ev.part));
                                     }
                                 }
                             }
-                            let ev = EdgeEv {
-                                key: r.key,
-                                sub: 0,
-                                commit: r.commit,
-                                part: usize::MAX - 2,
-                                thing: r.thing,
-                                author: r.author,
-                                holder: NodeId::MAX,
-                                value: None,
-                                frontier: None,
-                            };
-                            applied.push(Applied { ev, class: None, explicit: false, on: r.thing, before, after: edges.clone() });
                         }
-                        Step::Write(ev) => {
-                            if dropped.contains(&(ev.commit, ev.part)) {
-                                continue;
-                            }
-                            let (n, h, a) = (ev.thing, ev.holder, ev.author);
-                            if h == n || world.owner(n) == Some(h) {
-                                continue;
-                            }
-                            let decision = if ev.part == usize::MAX {
-                                // a value of the start's roster or ledger: the roster's word
-                                Some((None, ev.frontier.is_some(), n))
-                            } else {
-                                decide(world, &pre, ev, wall_)
-                            };
-                            let Some((class, explicit, on)) = decision else { continue };
-                            let mut before = edges.clone();
-                            if explicit {
-                                match Timeline::restored(&initial, &applied, n, h) {
-                                    Some(e) => before.insert((n, h), e),
-                                    None => before.remove(&(n, h)),
-                                };
-                            }
-                            match ev.value {
-                                Some(v) => edges.insert((n, h), v),
-                                None => edges.remove(&(n, h)),
-                            };
-                            // step 4: audits by an explicit write
-                            if explicit {
-                                let mut added = false;
-                                for &x in actors.iter().filter(|&&x| x != a) {
-                                    for m in world.below(n) {
-                                        let cb = world.class(&before, x, m, wall_);
-                                        let ca = world.class(&edges, x, m, wall_);
-                                        if ca >= cb {
-                                            continue;
-                                        }
-                                        for p in &applied {
-                                            let fell_through = p.class.is_some_and(|c| Some(c) > ca && Some(c) <= cb);
-                                            let listed = ev.frontier.as_ref().is_some_and(|f| f.contains(&p.ev.commit));
-                                            if p.ev.author == x && p.on == m && fell_through && p.ev.key < ev.key && !listed && p.ev.part != usize::MAX {
-                                                added |= dropped.insert((p.ev.commit, p.ev.part));
-                                            }
-                                        }
-                                    }
-                                }
-                                if added {
-                                    continue 'restart;
-                                }
-                            }
-                            applied.push(Applied { ev: (*ev).clone(), class, explicit, on, before, after: edges.clone() });
+                        if added {
+                            continue 'restart;
                         }
                     }
+                    applied.push(Applied { ev: ev.clone(), class, explicit, on, before, after: edges.clone() });
                 }
-                i = j;
             }
-            let starts = starts.clone();
-            return Timeline { world: world.clone(), initial, applied, rosters_applied, starts };
+            return Timeline { world, initial, applied };
         }
     }
 
@@ -526,8 +319,7 @@ impl Timeline {
     }
 
     /// Valid explicit demotions of X below `need` on the thing: explicit writes by another author
-    /// taking X's role there, the edge as restored, from `need` or above to below it (ledger
-    /// entries with a frontier included).
+    /// taking X's role there, the edge as restored, from `need` or above to below it.
     pub fn demotions(&self, thing: ThingId, x: NodeId, need: Role) -> Vec<&Applied> {
         self.applied
             .iter()
@@ -557,7 +349,7 @@ impl Timeline {
         if held && !demos.iter().any(|d| d.ev.key > key) {
             return true;
         }
-        if let Some(newest) = demos.iter().max_by_key(|d| (d.ev.key, d.ev.sub)) {
+        if let Some(newest) = demos.iter().max_by_key(|d| d.ev.key) {
             if newest.ev.frontier.as_ref().is_some_and(|f| f.contains(&c)) {
                 return true;
             }
@@ -584,7 +376,7 @@ impl Timeline {
         self.demotions(thing, x, need).iter().map(|d| wall(d.ev.key.0)).max().unwrap_or(ts).max(ts)
     }
 
-    /// spec/permissions.md §7: does a request (author `q`, actor `qa`, commit `qc` at `qkey`) hold
+    /// spec/permissions.md §6: does a request (author `q`, actor `qa`, commit `qc` at `qkey`) hold
     /// the right over a delta purgeable by `by`, of header actor `actor`, on the thing.
     #[allow(clippy::too_many_arguments)]
     pub fn right(&self, q: NodeId, qa: NodeId, qkey: Key, qc: CommitId, by: PurgeBy, actor: NodeId, thing: ThingId) -> bool {
@@ -645,21 +437,8 @@ pub fn namings<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Naming>
     let mut out = Vec::new();
     for c in commits {
         for p in &c.parts {
-            match &p.body {
-                Body::Held(Delta::Edge(e)) if c.kind == CommitKind::Role => {
-                    if let Some(r) = e.role {
-                        out.push((p.thing, c.author, e.holder, r));
-                    }
-                }
-                Body::Held(Delta::Roster(RosterItem::Edge { edge, .. })) if c.kind == CommitKind::Roster => {
-                    if let Some(r) = edge.role {
-                        out.push((p.thing, c.author, edge.holder, r));
-                    }
-                }
-                Body::Held(Delta::Roster(RosterItem::Tenure { holder, role, .. })) if c.kind == CommitKind::Roster => {
-                    out.push((p.thing, c.author, *holder, *role));
-                }
-                _ => {}
+            if let (CommitKind::Role, Body::Held(Delta::Edge(EdgeWrite { holder, role: Some(r), .. }))) = (c.kind, &p.body) {
+                out.push((p.thing, c.author, *holder, *r));
             }
         }
     }

@@ -6,7 +6,7 @@
 use osis_base::{CommitId, Tid, Value};
 use std::collections::BTreeSet;
 
-/// A commit's key (spec/permissions.md §6): its position in the role timeline's order.
+/// A commit's key (spec/permissions.md §5.1): its position in the role timeline's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key {
     pub ts: u64,
@@ -14,7 +14,7 @@ pub struct Key {
     pub commit: CommitId,
 }
 
-/// One named departure: the thing whose epoch start can stand in for it, and its commit's key.
+/// One named departure: the thing whose `roles.0` part of the commit is met, and its commit's key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name {
     pub thing: Tid,
@@ -91,11 +91,11 @@ impl Names {
 
 /// What a node holds for judging names (spec/crypto.md §4), for one actor.
 pub trait Held {
-    /// `n`'s commit is applied here, every entry its edge writes reset known, or its key is
-    /// ordered before this node's epoch start of `n.thing`.
+    /// `n`'s commit is applied here with its part on `n.thing`, every entry its edge writes reset
+    /// known.
     fn met(&self, n: &Name) -> bool;
     /// The commit `own` names (by `ts` and author) is applied here with its edge writes on the
-    /// actor, every entry they reset known, or lies before this node's epoch start of the actor.
+    /// actor, every entry they reset known.
     fn departed(&self, own: &Own) -> bool;
 }
 

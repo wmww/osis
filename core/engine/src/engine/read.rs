@@ -32,8 +32,7 @@ fn value_at(v: Value, path: &[osis_crdt::PathSeg]) -> Option<Value> {
 }
 
 fn edge_value(e: &Edge) -> Value {
-    let key = |k: osis_perm::Point| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit };
-    ct::Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(key), tied: e.tied.map(crate::flows::tied::tie_ct) }.to_value()
+    ct::Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(crate::flows::tied::tie_ct) }.to_value()
 }
 
 impl Core {
@@ -76,7 +75,7 @@ impl Engine {
         let Some(ai) = self.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak).filter(|ai| m.holds(*ai))) else { return Ok(None) };
         self.run(|tx| {
             let mut st: Option<Fragment> = None;
-            for f in crate::apply::held_fragments(tx, &c, ai)? {
+            if let Some(f) = crate::apply::held_fragment(tx, &c, ai)? {
                 st.get_or_insert_default().join(f);
             }
             Ok(st.as_ref().and_then(Fragment::read))

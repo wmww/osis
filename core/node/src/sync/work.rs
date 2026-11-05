@@ -529,11 +529,7 @@ impl SyncEngine {
                 }
             }
             for wid in tl.applied().keys() {
-                let ts = match wid {
-                    osis_perm::WriteId::Op(c, _) => tl.role_commit(c).map(|m| m.ts),
-                    osis_perm::WriteId::Snapshot(c) => tl.roster_snapshot(c).map(|s| s.ts),
-                };
-                if let Some(ts) = ts {
+                if let Some(ts) = tl.role_commit(&wid.0).map(|m| m.ts) {
                     later(ts.wall_ms().0);
                 }
             }
@@ -573,7 +569,7 @@ impl SyncEngine {
     fn aggregate(&mut self, g: &Tid, l: &LabelId, w: &mut Work, cs: &BTreeSet<CommitId>, bs: &BTreeSet<BlobId>) {
         let me = self.engine.tid();
         for c in cs {
-            let entries: Vec<Vec<(usize, usize)>> = self.state.entries_of(l, c).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect();
+            let entries: Vec<Vec<usize>> = self.state.entries_of(l, c).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).collect();
             let blobs: Vec<BlobId> = self.state.entries_of(l, c).map(|(b, _)| b).collect();
             let Some(h) = self.engine.header(c) else {
                 w.unjudged.remove(c);

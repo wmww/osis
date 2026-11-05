@@ -1,11 +1,11 @@
 //! perm's held set (notes/architecture.md §2: the node implements `HeldSet`): applied role
-//! commits by target, roster snapshots by thing, `created.0` records, indexed by commit and by
+//! commits by target, `created.0` records, indexed by commit and by
 //! holder, journaled for rollback, and remembering which things' inputs changed since perm last
 //! looked (`take_touched`), so the timelines re-partition only around them.
 
 use super::journal::Journaled;
 use osis_base::{CommitId, CreationRecord, Owner, Role, Tid};
-use osis_perm::{HeldSet, RoleCommit, RosterSnapshot};
+use osis_perm::{HeldSet, RoleCommit};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -13,13 +13,8 @@ use std::sync::Arc;
 enum Undo {
     Created(Tid, Option<Rec>),
     AddedCommit(Arc<RoleCommit>),
-    AddedSnapshot(Arc<RosterSnapshot>),
-    AddedWithheld(Arc<RosterSnapshot>),
-    Removed(Taken),
+    Removed(Arc<RoleCommit>),
 }
-
-/// A commit ID's edge commit, walked snapshots and withheld snapshots.
-type Taken = (Vec<Arc<RoleCommit>>, Vec<Arc<RosterSnapshot>>, Vec<Arc<RosterSnapshot>>);
 
 /// A held creation record and whether it is memory class (an ephemeral thing's, carried by a
 /// memory commit or made here; gone at restart, notes/ephemeral.md).
@@ -29,23 +24,18 @@ struct Rec {
     memory: bool,
 }
 
-/// What one commit ID holds: its edge commit, its roster snapshots (one per thing) and those withheld
-/// from the walk (`add_withheld`).
-type Records = (Option<Arc<RoleCommit>>, Vec<Arc<RosterSnapshot>>, Vec<Arc<RosterSnapshot>>);
-
 #[derive(Debug, Default)]
 pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
-    snapshots: BTreeMap<Tid, Vec<Arc<RosterSnapshot>>>,
     created: BTreeMap<Tid, Rec>,
-    /// Holder -> things it is named on (edge writes, rosters, ledgers, an ownerless record), with counts.
+    /// Holder -> things it is named on (edge writes, an ownerless record), with counts.
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Owner -> things it owns (by creation records).
     owned: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Commit -> what it holds here (an ID's edge commit and roster snapshots).
-    ids: BTreeMap<CommitId, Records>,
+    /// Commit -> its edge commit held here.
+    ids: BTreeMap<CommitId, Arc<RoleCommit>>,
     log: Vec<Undo>,
     touched: BTreeSet<Tid>,
     /// The same, for `take_moved`.
@@ -58,10 +48,6 @@ pub struct Held {
 
 fn named(c: &RoleCommit) -> Vec<(Tid, Tid)> {
     c.ops.iter().map(|o| (o.holder, o.target)).collect()
-}
-
-fn named_snapshot(s: &RosterSnapshot) -> Vec<(Tid, Tid)> {
-    s.roster.keys().chain(s.ledger.iter().map(|t| &t.holder)).map(|m| (*m, s.thing)).collect()
 }
 
 impl Held {
@@ -84,15 +70,12 @@ impl Held {
     pub fn commits_on(&self, t: &Tid) -> &[Arc<RoleCommit>] {
         self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
     }
-    pub fn snapshots_of(&self, t: &Tid) -> &[Arc<RosterSnapshot>] {
-        self.snapshots.get(t).map(Vec::as_slice).unwrap_or_default()
-    }
-    /// Things `holder` is named on as a holder (edge writes, rosters, ledgers).
+    /// Things `holder` is named on as a holder (edge writes, an ownerless record).
     pub fn named_on(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
         self.holders.get(holder).into_iter().flat_map(|m| m.keys())
     }
 
-    /// Holders named on `thing` (edge writes, rosters, ledgers).
+    /// Holders named on `thing` (edge writes, an ownerless record).
     pub fn holders_of(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
         self.named.get(thing).into_iter().flatten()
     }
@@ -151,19 +134,13 @@ impl Held {
     }
 
     /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
-    /// followed: edge writes, roster and ledger entries.
+    /// followed, by edge writes.
     fn named_with(&self, t: &Tid, role: Role) -> impl Iterator<Item = (Tid, Tid)> {
-        let edges = self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).map(|o| (r.author, o.holder)));
-        let snaps = self.snapshots_of(t).iter().flat_map(move |s| {
-            let roster = s.roster.iter().filter(move |(_, e)| e.role >= role).map(|(h, _)| *h);
-            roster.chain(s.ledger.iter().filter(move |l| l.role >= role).map(|l| l.holder)).map(|h| (s.author, h))
-        });
-        edges.chain(snaps)
+        self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).map(|o| (r.author, o.holder)))
     }
 
     /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
-    /// owner or first admin and any holder named with admin on it by an edge write, roster or ledger
-    /// entry a member signed; of any validity and whatever followed. So a forger is in it only if a
+    /// owner or first admin and any holder named with admin on it by an edge write a member signed; of any validity and whatever followed. So a forger is in it only if a
     /// member named it, and held inputs only grow, so it does, whatever the order: use it where
     /// "could this signer ever have been admin" must not depend on arrival (a timeline read does).
     /// A member need not hold admin on the thing it signs for: it could as well have named the holder
@@ -298,63 +275,25 @@ impl Held {
         self.moved.insert(c.author);
         self.count(named(&c), true);
         self.generation += 1;
-        let id = c.id;
-        self.ids.entry(id).or_default().0 = Some(c);
+        self.ids.insert(c.id, c);
     }
 
-    fn put_snapshot(&mut self, s: Arc<RosterSnapshot>) {
-        self.snapshots.entry(s.thing).or_default().push(s.clone());
-        self.touched.insert(s.thing);
-        self.moved.insert(s.thing);
-        self.count(named_snapshot(&s), true);
+    /// Takes out the commit with this ID (exactly this Arc).
+    fn take(&mut self, id: &CommitId) -> Option<Arc<RoleCommit>> {
+        let c = self.ids.remove(id)?;
         self.generation += 1;
-        self.ids.entry(s.id).or_default().1.push(s);
-    }
-
-    fn put_withheld(&mut self, s: Arc<RosterSnapshot>) {
-        self.touched.insert(s.thing);
-        self.moved.insert(s.thing);
-        self.count(named_snapshot(&s), true);
-        self.generation += 1;
-        self.ids.entry(s.id).or_default().2.push(s);
-    }
-
-    /// Takes out every commit and snapshot with this ID (exactly these Arcs).
-    fn take(&mut self, id: &CommitId) -> Taken {
-        let Some((c, ss, ws)) = self.ids.remove(id) else { return Taken::default() };
-        self.generation += 1;
-        let mut cs = Vec::new();
-        if let Some(c) = c {
-            for o in &c.ops {
-                if let Some(v) = self.commits.get_mut(&o.target) {
-                    v.retain(|x| !Arc::ptr_eq(x, &c));
-                    if v.is_empty() {
-                        self.commits.remove(&o.target);
-                    }
-                }
-                self.touched.insert(o.target);
-                self.moved.insert(o.target);
-            }
-            self.count(named(&c), false);
-            cs.push(c);
-        }
-        for s in &ss {
-            if let Some(v) = self.snapshots.get_mut(&s.thing) {
-                v.retain(|x| !Arc::ptr_eq(x, s));
+        for o in &c.ops {
+            if let Some(v) = self.commits.get_mut(&o.target) {
+                v.retain(|x| !Arc::ptr_eq(x, &c));
                 if v.is_empty() {
-                    self.snapshots.remove(&s.thing);
+                    self.commits.remove(&o.target);
                 }
             }
-            self.touched.insert(s.thing);
-            self.moved.insert(s.thing);
-            self.count(named_snapshot(s), false);
+            self.touched.insert(o.target);
+            self.moved.insert(o.target);
         }
-        for s in &ws {
-            self.touched.insert(s.thing);
-            self.moved.insert(s.thing);
-            self.count(named_snapshot(s), false);
-        }
-        (cs, ss, ws)
+        self.count(named(&c), false);
+        Some(c)
     }
 
     /// Adds a creation record under its tid, durable (a memory one held becomes durable:
@@ -387,8 +326,7 @@ impl Held {
 
     pub fn add_commit(&mut self, c: RoleCommit) {
         // an ID is held once: a re-derived commit replaces the earlier
-        let removed = self.take(&c.id);
-        if !removed.0.is_empty() || !removed.1.is_empty() || !removed.2.is_empty() {
+        if let Some(removed) = self.take(&c.id) {
             self.log.push(Undo::Removed(removed));
         }
         let c = Arc::new(c);
@@ -396,36 +334,16 @@ impl Held {
         self.log.push(Undo::AddedCommit(c));
     }
 
-    pub fn add_snapshot(&mut self, s: RosterSnapshot) {
-        let s = Arc::new(s);
-        self.put_snapshot(s.clone());
-        self.log.push(Undo::AddedSnapshot(s));
-    }
-
-    /// A held snapshot out of the walk (spec/permissions.md §6): perm does not see it, but the
-    /// holders it names stay named (`holders_of`): an applied part's holder leads the search of
-    /// `validity::reaches` whether the walk applies it or not (spec/commits.md §4), so what applies
-    /// never reads whether a snapshot is withheld.
-    pub fn add_withheld(&mut self, s: RosterSnapshot) {
-        let s = Arc::new(s);
-        self.put_withheld(s.clone());
-        self.log.push(Undo::AddedWithheld(s));
-    }
-
-    /// Whether snapshot `id` of `thing` is in the walk.
-    pub fn walks(&self, id: &CommitId, thing: &Tid) -> bool {
-        self.ids.get(id).is_some_and(|r| r.1.iter().any(|s| s.thing == *thing))
-    }
-
     /// The edge commit held under this ID.
     pub fn edge_commit(&self, id: &CommitId) -> Option<&RoleCommit> {
-        self.ids.get(id).and_then(|r| r.0.as_deref())
+        self.ids.get(id).map(|c| &**c)
     }
 
-    /// Drops every commit and snapshot with this ID.
+    /// Drops the commit with this ID.
     pub fn remove(&mut self, id: &CommitId) {
-        let taken = self.take(id);
-        self.log.push(Undo::Removed(taken));
+        if let Some(c) = self.take(id) {
+            self.log.push(Undo::Removed(c));
+        }
     }
 
     /// Things whose creation record was added since the last call.
@@ -444,24 +362,10 @@ impl Held {
     }
 }
 
-impl Held {
-    fn put_back(&mut self, (cs, ss, ws): Taken) {
-        for c in cs {
-            self.put_commit(c);
-        }
-        for s in ss {
-            self.put_snapshot(s);
-        }
-        for s in ws {
-            self.put_withheld(s);
-        }
-    }
-}
-
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.snapshots, self.created, self.holders, self.named, self.owned, self.ids)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.owned, self.ids)
     }
     fn commit(&mut self) {
         self.log.clear();
@@ -475,14 +379,7 @@ impl Journaled for Held {
                 Undo::AddedCommit(c) => {
                     self.take(&c.id);
                 }
-                Undo::AddedSnapshot(s) | Undo::AddedWithheld(s) => {
-                    // only this snapshot: others of the ID stay
-                    let (cs, mut ss, mut ws) = self.take(&s.id);
-                    ss.retain(|x| !Arc::ptr_eq(x, &s));
-                    ws.retain(|x| !Arc::ptr_eq(x, &s));
-                    self.put_back((cs, ss, ws));
-                }
-                Undo::Removed(taken) => self.put_back(taken),
+                Undo::Removed(c) => self.put_commit(c),
             }
         }
     }
@@ -491,15 +388,11 @@ impl Journaled for Held {
 impl HeldSet for Held {
     fn things(&self) -> Vec<Tid> {
         let mut s: BTreeSet<Tid> = self.commits.keys().copied().collect();
-        s.extend(self.snapshots.keys().copied());
         s.extend(self.created.keys().copied());
         s.into_iter().collect()
     }
     fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
         self.commits.get(thing).cloned().unwrap_or_default()
-    }
-    fn roster_snapshots(&self, thing: &Tid) -> Vec<Arc<RosterSnapshot>> {
-        self.snapshots.get(thing).cloned().unwrap_or_default()
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
         self.created.get(thing).map(|r| r.record.clone())
@@ -523,18 +416,6 @@ mod tests {
         c[..8].copy_from_slice(&id.to_be_bytes());
         RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), author: by, actor: by, frontier: None, ops: vec![EdgeOp { target: on, holder: to, edge: Some(Edge::new(role)) }] }
     }
-    fn roster(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RosterSnapshot {
-        let mut c = [1; 32];
-        c[..8].copy_from_slice(&id.to_be_bytes());
-        RosterSnapshot { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), author: by, actor: by, thing: on, roster: BTreeMap::from([(to, Edge::new(role))]), ledger: Vec::new() }
-    }
-
-    fn ledger(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RosterSnapshot {
-        let mut s = roster(id, by, on, to, Role::Read);
-        s.roster.clear();
-        s.ledger.push(osis_perm::Tenure { holder: to, role, since: None, until: osis_perm::Point { ts: s.ts, node: by, commit: s.id }, frontier: None });
-        s
-    }
 
     /// The definition (spec/commits.md §4) by brute force, to judge the worklist by.
     fn least(h: &Held, t: Tid) -> BTreeSet<Tid> {
@@ -548,10 +429,6 @@ mod tests {
                 for r in h.commits_on(c).iter().filter(|r| set.contains(&r.author)) {
                     next.extend(r.ops.iter().filter(|o| o.target == *c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).map(|o| o.holder));
                 }
-                for s in h.snapshots_of(c).iter().filter(|s| set.contains(&s.author)) {
-                    next.extend(s.roster.iter().filter(|(_, e)| e.role >= Role::Admin).map(|(x, _)| *x));
-                    next.extend(s.ledger.iter().filter(|l| l.role >= Role::Admin).map(|l| l.holder));
-                }
             }
             if next == set {
                 return set;
@@ -560,17 +437,6 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    enum In {
-        G(RoleCommit),
-        S(RosterSnapshot),
-    }
-    fn add(h: &mut Held, i: &In) {
-        match i {
-            In::G(c) => h.add_commit(c.clone()),
-            In::S(s) => h.add_snapshot(s.clone()),
-        }
-    }
 
     // spec/commits.md §4: a thing's possible admins are a function of what is held, in any order; more held only adds; what a signer outside them writes adds nothing, a chain of forgeries included.
     #[test]
@@ -588,14 +454,10 @@ mod tests {
             let g = thing(a[0], 10);
             let t = thing(g.tid(), 11);
             let ids = [t.tid(), g.tid(), a[0], a[1], a[2], a[3], a[4]];
-            let mut inputs: Vec<In> = (0..rng(14)).map(|i| {
+            let mut inputs: Vec<RoleCommit> = (0..rng(14)).map(|i| {
                 let (by, on, to) = (a[rng(5) as usize], ids[rng(4) as usize], ids[rng(7) as usize]);
                 let role = if rng(4) == 0 { Role::Write } else { Role::Admin };
-                match rng(6) {
-                    0 => In::S(roster(i, by, on, to, role)),
-                    1 => In::S(ledger(i, by, on, to, role)),
-                    _ => In::G(grant(i, by, on, to, role)),
-                }
+                grant(i, by, on, to, role)
             }).collect();
             let base = |h: &mut Held| {
                 for x in actors.iter().chain([&g, &t]) {
@@ -604,7 +466,7 @@ mod tests {
             };
             let mut one = Held::default();
             base(&mut one);
-            inputs.iter().for_each(|i| add(&mut one, i));
+            inputs.iter().for_each(|i| one.add_commit(i.clone()));
             let want = one.ever_admins(&t.tid());
             assert_eq!(want, least(&one, t.tid()));
             let writers = one.ever_writers(&t.tid());
@@ -617,7 +479,7 @@ mod tests {
             base(&mut h);
             let mut last = h.ever_admins(&t.tid());
             for i in &inputs {
-                add(&mut h, i);
+                h.add_commit(i.clone());
                 let now = h.ever_admins(&t.tid());
                 assert!(last.is_subset(&now));
                 last = now;
@@ -630,7 +492,6 @@ mod tests {
                 h.add_commit(grant(1000, out, t.tid(), out, Role::Admin));
                 h.add_commit(grant(1001, out, t.tid(), puppet, Role::Admin));
                 h.add_commit(grant(1002, puppet, t.tid(), a[0], Role::Admin));
-                h.add_snapshot(roster(1003, puppet, t.tid(), out, Role::Admin));
                 assert_eq!(h.ever_admins(&t.tid()), want);
                 if !writers.contains(&out) {
                     assert_eq!(h.ever_writers(&t.tid()), writers);
