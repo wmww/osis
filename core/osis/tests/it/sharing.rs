@@ -1312,6 +1312,55 @@ fn leave_of_no_grant_and_of_others() {
     assert!(alice.grants(g).unwrap().contains_key(&bob.me()));
 }
 
+// notes/api.md Sharing (`leave`): one holding only through a link's actor is told so, for nothing
+// would change: never a quiet success with the role still there. Leaving that actor ends it.
+#[test]
+fn leave_tells_of_another_way_in() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    w.run();
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.until(bob.redeem(&link), 1000, 30).unwrap();
+    w.run();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    assert!(bob.role_on(g).unwrap().is_some());
+    let r = bob.leave(bob.me(), g);
+    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains(&k.to_string())), "{r:?}");
+    bob.leave(bob.me(), k).unwrap();
+    assert!(bob.holders(g).unwrap().iter().all(|h| h.actor != bob.me()));
+    bob.leave(bob.me(), g).unwrap();
+}
+
+// spec/permissions.md §1 (effective role: the best path), notes/api.md Sharing (`holders`): a
+// member of an actor reached two ways gets the better one too, whichever was found first; the same
+// way again adds nothing.
+#[test]
+fn holders_finds_the_best_way_through_a_nested_actor() {
+    let mut w = World::new();
+    let (alice, bob, t) = alice_bob(&mut w, Role::Read);
+    let b = bob.me();
+    // walked in tid order: the worse ways come first
+    let mut gs = [group(&alice), group(&alice), group(&alice), group(&alice)];
+    gs.sort();
+    let team = group(&alice);
+    let soon = osis::WallMs(alice.now().0 + 1_000_000);
+    alice.grant(t, gs[0], Role::Read, Default::default()).unwrap();
+    alice.grant(t, gs[1], Role::Write, osis::GrantOpts { until: Some(soon), invite: None }).unwrap();
+    alice.grant(t, gs[2], Role::Write, Default::default()).unwrap();
+    alice.grant(t, gs[3], Role::Read, Default::default()).unwrap();
+    for g in gs {
+        alice.grant(g, team, Role::Admin, Default::default()).unwrap();
+    }
+    alice.grant(team, b, Role::Admin, Default::default()).unwrap();
+    let ways: Vec<(Role, Option<osis::WallMs>, Tid)> = alice.holders(t).unwrap().into_iter().filter(|h| h.actor == b && h.through.len() == 2).map(|h| (h.role, h.until, h.through[0])).collect();
+    assert_eq!(ways, [(Role::Read, None, gs[0]), (Role::Write, Some(soon), gs[1]), (Role::Write, None, gs[2])], "the last way beats none before it");
+    assert_eq!(alice.holders(t).unwrap().iter().filter(|h| h.actor == team).count(), 4, "each grant the team holds by");
+}
+
 // notes/api.md Sharing (`holders`), spec/permissions.md §2, §8: one entry per grant that makes an
 // actor a holder: direct and through a link both, the role the least along the way; `holders` of
 // the link's actor answers who holds through it.
@@ -1334,4 +1383,91 @@ fn holders_lists_every_grant_and_who_holds_through_a_link() {
     // a removal goes down both
     w.until(alice.set_role(g, bob.me(), None, skip_sync()), 1000, 10).unwrap();
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
+}
+
+// spec/permissions.md §5.1 step 4, notes/api.md Sharing (`grant`): a holder that left, or whose
+// grant ended and was finalized, keeps what it wrote; an explicit write below the role it lost
+// audits it, and with no frontier would undo all of it everywhere. So `grant` refuses (writing
+// nothing, as for a present role), `set_role` writes the frontier first, and at the old role or
+// above nothing is in question.
+#[test]
+fn a_role_below_one_lost_keeps_what_the_holder_wrote_spec_permissions_5_1() {
+    for ended in [false, true] {
+        let mut w = World::new();
+        let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+        let b = bob.me();
+        if ended {
+            alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(osis::WallMs(alice.now().0 + 5000)), invite: None }).unwrap();
+            w.run();
+        }
+        let mine = item(&bob, g, g, "by bob");
+        w.run();
+        assert_eq!(x(&alice, mine), Some(s("by bob")));
+        if ended {
+            w.advance(10_000);
+            w.run();
+            w.advance(70_000);
+            w.run();
+            assert!(alice.engine(|e| e.core.timelines.get(&g).is_some_and(|t| t.edges_at(None).get(&b, &g).is_none())), "finalized");
+        } else {
+            bob.leave(b, g).unwrap();
+            w.run();
+        }
+        assert!(!alice.grants(g).unwrap().contains_key(&b));
+        let before = alice.engine(|e| e.commit_ids().len());
+        let r = alice.grant(g, b, Role::Read, Default::default());
+        assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("set_role")), "{r:?}");
+        assert_eq!(alice.engine(|e| e.commit_ids().len()), before, "nothing written");
+        assert_eq!(x(&alice, mine), Some(s("by bob")));
+        w.until(alice.set_role(g, b, Some(Role::Read), skip_sync()), 1000, 10).unwrap();
+        assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Read);
+        assert_eq!(x(&alice, mine), Some(s("by bob")), "kept at the admin");
+        w.run();
+        w.advance(70_000);
+        w.run();
+        assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
+        assert_eq!(x(&bob, mine), Some(s("by bob")), "kept and readable at the holder");
+    }
+    // at the old role: no question, `grant` does it
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let mine = item(&bob, g, g, "by bob");
+    w.run();
+    bob.leave(bob.me(), g).unwrap();
+    w.run();
+    alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
+    assert_eq!(x(&alice, mine), Some(s("by bob")));
+}
+
+// spec/permissions.md §2: an invite grant over a grant that ended: one still in the state is a
+// removal to receivers, so `Permission` (it needs an admin), never a commit they would refuse; once
+// an admin's write took it away the grant counts as none, audits nothing, and goes through.
+#[test]
+fn invite_grant_over_an_ended_grant_spec_permissions_2() {
+    let mut w = World::new();
+    let (alice, carol, g) = alice_bob(&mut w, Role::Read);
+    alice.grant(g, carol.me(), Role::Read, osis::GrantOpts { invite: Some(Role::Read), ..Default::default() }).unwrap();
+    w.run();
+    let (dan, _) = w.person(3, &[0]);
+    w.run();
+    let card = dan.contact_card().unwrap();
+    w.run();
+    let d = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    w.until(carol.import_contact(&card), 1000, 10).unwrap();
+    alice.grant(g, d, Role::Write, osis::GrantOpts { until: Some(osis::WallMs(alice.now().0 + 1000)), invite: None }).unwrap();
+    w.run();
+    let by_dan = item(&dan, g, g, "by dan");
+    w.run();
+    w.advance(5000);
+    let r = carol.grant(g, d, Role::Read, Default::default());
+    assert!(matches!(r, Err(Error::Permission { .. })), "{r:?}");
+    // Alice's next write finalizes it
+    item(&alice, g, g, "by alice");
+    w.run();
+    w.advance(70_000);
+    w.run();
+    carol.grant(g, d, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(alice.grants(g).unwrap()[&d].role, Role::Read);
+    assert_eq!(x(&alice, by_dan), Some(s("by dan")));
 }

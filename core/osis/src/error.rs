@@ -23,7 +23,7 @@ pub enum Error {
     /// The newest change in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
     NotUndoable { commit: ChangeId, reason: DropReason },
-    /// A demotion's pre-sync could not reach these groups.
+    /// Catching up before lowering a role (`SyncFirst`) could not reach these groups.
     Unsynced { groups: Vec<Tid> },
     /// A malformed argument: value, link, card, path, op, retention.
     Invalid(String),

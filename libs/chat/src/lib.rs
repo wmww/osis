@@ -166,7 +166,8 @@ pub fn set_disappearing(db: &Osis, c: Tid, d: Option<Duration>) -> Result<()> {
 }
 
 /// Adds a participant (an admin's call): `Write` to post, `Admin` to moderate, `Read` for a channel.
-/// A chat is synced from `create`, so this only grants.
+/// A chat is synced from `create`, so this only grants. Below a role the person lost by leaving
+/// or an ending grant it is `Invalid`: `Osis::set_role` keeps what they wrote.
 pub fn add(db: &Osis, c: Tid, person: Tid, role: Role) -> Result<()> {
     db.grant(c, person, role, GrantOpts::default())
 }
