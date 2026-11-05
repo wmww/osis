@@ -25,11 +25,10 @@ fn create(a: &Osis) -> Tid {
     let msgs = ct::Required::new(Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(i64::MAX as u64), rel: None }, at_most: Bound::default() }, None);
     let rest = ct::Required::new(Retention::default(), None);
     let rules = ct::RequiredRules { rules: BTreeMap::from([("chat:msgs:".to_string(), msgs), (String::new(), rest)]), keep: true };
-    a.write_with(|w| {
-        w.at(c, ct::REQUIRED).set(&rules)?;
-        w.make_group(c)
-    })
-    .unwrap();
+    let mut w = a.write();
+    w.at(c, ct::REQUIRED).set(&rules).unwrap();
+    w.make_group(c).unwrap();
+    w.commit().unwrap();
     a.sync(c, &[]).unwrap();
     c
 }
@@ -396,12 +395,14 @@ fn joiner_reads_each_pending_commit_few_times() {
 const TEXT: &str = "app:text:y1.0";
 
 fn write(a: &Osis, t: Tid, i: usize) {
-    a.write_with(|w| w.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes()))).unwrap();
+    let mut w = a.write();
+    w.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+    w.commit().unwrap();
 }
 
 /// The one thing's text, as `b` reads it.
 fn read(b: &Osis, t: Tid) -> Option<Value> {
-    b.get(t, Ak::new(TEXT).unwrap()).unwrap()
+    b.at(t, Ak::new(TEXT).unwrap()).get().unwrap()
 }
 
 fn node(w: &mut World, seed: u64, host: usize) -> (Osis, MemStore) {
@@ -477,14 +478,11 @@ fn many_labels() {
     let mut things = Vec::with_capacity(n);
     phase(&mut w, "create", n, &[&a, &b], |w| {
         for i in 0..n {
-            let t = a
-                .write_with(|x| {
-                    let t = x.create(a.me())?;
-                    x.make_group(t)?;
-                    x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes()))?;
-                    Ok(t)
-                })
-                .unwrap();
+            let mut x = a.write();
+            let t = x.create(a.me()).unwrap();
+            x.make_group(t).unwrap();
+            x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+            x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             things.push(t);
             if (i + 1) % 100 == 0 {
@@ -560,14 +558,11 @@ fn labels_world(n: usize) -> (World, Osis, Osis, Tid, Vec<Tid>) {
 }
 
 fn share_new(w: &mut World, a: &Osis, p: Tid, i: usize) -> Tid {
-    let t = a
-        .write_with(|x| {
-            let t = x.create(a.me())?;
-            x.make_group(t)?;
-            x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes()))?;
-            Ok(t)
-        })
-        .unwrap();
+    let mut x = a.write();
+    let t = x.create(a.me()).unwrap();
+    x.make_group(t).unwrap();
+    x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+    x.commit().unwrap();
     a.sync(t, &[]).unwrap();
     a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
     w.run();
@@ -715,14 +710,11 @@ fn a_burst_of_shares_costs_each_about_once() {
     let (mut w, a, b, p, _) = labels_world(0);
     let burst = |w: &mut World, from: usize| {
         for i in 0..BURST {
-            let t = a
-                .write_with(|x| {
-                    let t = x.create(a.me())?;
-                    x.make_group(t)?;
-                    x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {}", from + i).into_bytes()))?;
-                    Ok(t)
-                })
-                .unwrap();
+            let mut x = a.write();
+            let t = x.create(a.me()).unwrap();
+            x.make_group(t).unwrap();
+            x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {}", from + i).into_bytes())).unwrap();
+            x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
         }
@@ -753,14 +745,11 @@ fn a_burst_past_the_budget_sends_each_body_about_once() {
     w.start_tally();
     let things: Vec<Tid> = (0..BURST)
         .map(|i| {
-            let t = a
-                .write_with(|x| {
-                    let t = x.create(a.me())?;
-                    x.make_group(t)?;
-                    x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes()))?;
-                    Ok(t)
-                })
-                .unwrap();
+            let mut x = a.write();
+            let t = x.create(a.me()).unwrap();
+            x.make_group(t).unwrap();
+            x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+            x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
             t

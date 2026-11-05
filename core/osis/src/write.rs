@@ -17,7 +17,7 @@ use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
 use osis_schema::core_types::{GROUP, PLACED, is_role_class};
-use osis_schema::{AspectKey, CaseId, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
+use osis_schema::{AspectKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
@@ -99,20 +99,20 @@ impl Osis {
     pub fn write(&self) -> Write<'_> {
         Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), alive: None, sharing: false }
     }
-
-    /// Runs `f` on a new batch and commits it if `f` succeeds; returns what `f` returned (the
-    /// commit itself: `write()` and `commit()`).
-    pub fn write_with<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R> {
-        let mut w = self.write();
-        let r = f(&mut w)?;
-        w.commit()?;
-        Ok(r)
-    }
 }
 
 /// Synthetic aspects and `created.0`: never written by ops.
 fn read_only(ak: &str) -> bool {
     matches!(ak, "tid.0" | "aspects.0" | "groups.0" | "created.0")
+}
+
+/// Why no op may name `ak`: the engine's, the sharing calls', or a group's members, which change
+/// by the group calls alone (they check sync and clean up tied edges).
+fn not_writable(ak: &str) -> Option<String> {
+    if ak == GROUP.ak() {
+        return Some(format!("{ak} is written only by the group calls (place, unplace, add_subgroup, remove_subgroup, make_group)"));
+    }
+    (read_only(ak) || is_role_class(ak)).then(|| format!("{ak} is written only by the engine or the sharing calls"))
 }
 
 pub(crate) fn segs(p: &Path) -> Result<Vec<PathSeg>> {
@@ -204,7 +204,7 @@ impl<'d> Write<'d> {
     /// placements, `placed.0~`).
     pub fn make_group(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
-        if !self.created.contains(&t) && (self.db.get(t, GROUP)?.is_some() || self.db.get(t, PLACED)?.is_some()) {
+        if !self.created.contains(&t) && (self.db.at(t, GROUP).get()?.is_some() || self.db.at(t, PLACED).get()?.is_some()) {
             return Ok(());
         }
         self.group_expiry(t, None)?;
@@ -283,6 +283,9 @@ impl<'d> Write<'d> {
     /// A raw path op through `key` (text sessions).
     pub(crate) fn raw_op(&mut self, tid: Tid, key: &Key, op: PathOp) -> Result<()> {
         let t = self.known(tid)?;
+        if let Some(why) = not_writable(key.ak.as_str()) {
+            return Err(Error::Invalid(why));
+        }
         let key = self.intern(key.ak.clone(), key);
         self.ops.push(WriteOp::Path { tid: t, key, op });
         Ok(())
@@ -292,8 +295,10 @@ impl<'d> Write<'d> {
     pub fn at<K: AspectKey>(&mut self, tid: Tid, key: K) -> AspectWrite<'_, 'd, K> {
         let ix = match ak_of(&key) {
             Err(e) => Err(e),
-            Ok(ak) if read_only(ak.as_str()) || is_role_class(ak.as_str()) => Err(Error::Invalid(format!("{ak} is written only by the engine or the sharing calls"))),
-            Ok(ak) => Ok(self.intern(ak, &key)),
+            Ok(ak) => match not_writable(ak.as_str()) {
+                Some(why) => Err(Error::Invalid(why)),
+                None => Ok(self.intern(ak, &key)),
+            },
         };
         AspectWrite { w: self, tid, key, ix }
     }
@@ -471,8 +476,9 @@ impl Osis {
             return Err(Error::Invalid("a client writes only as its own actor".into()));
         }
         let keys: Vec<Key> = a.list()?.iter().map(|v| crate::port::codec::ak(v).and_then(|ak| self.key(ak.as_str()))).collect::<Result<_>>()?;
-        if let Some(k) = keys.iter().find(|k| read_only(k.ak.as_str()) || is_role_class(k.ak.as_str())) {
-            return Err(Error::Invalid(format!("{} is written only by the engine or the sharing calls", k.ak)));
+        // `group.0` is in the table for a placement's expiry alone (`Write::group_expiry`)
+        if let Some(why) = keys.iter().filter(|k| k.ak.as_str() != GROUP.ak()).find_map(|k| not_writable(k.ak.as_str())) {
+            return Err(Error::Invalid(why));
         }
         let raw = a.list()?;
         a.end()?;
@@ -498,7 +504,7 @@ impl Osis {
                 }
                 1 => {
                     let g = w.known(o.tid()?)?;
-                    if !w.created.contains(&g) && (self.get(g, GROUP)?.is_some() || self.get(g, PLACED)?.is_some()) {
+                    if !w.created.contains(&g) && (self.at(g, GROUP).get()?.is_some() || self.at(g, PLACED).get()?.is_some()) {
                         continue;
                     }
                     WriteOp::MakeGroup(g)
@@ -526,6 +532,11 @@ impl Osis {
                 _ => return Err(bad("op kind")),
             };
             o.end()?;
+            if let WriteOp::Path { key: k, .. } | WriteOp::Retention { key: k, .. } | WriteOp::Purge { key: k, .. } | WriteOp::PurgeCommit { key: k, .. } | WriteOp::PurgeAuthor { key: k, .. } = &op
+                && let Some(why) = w.keys.get(*k as usize).and_then(|x| not_writable(x.ak.as_str()))
+            {
+                return Err(Error::Invalid(why));
+            }
             // a group written with an expiry: a `delete` of the batch removing a placement there
             // fails as it would locally (`note_expiry`)
             if let WriteOp::Group { g, .. } | WriteOp::MakeGroup(g) = &op {
@@ -715,11 +726,6 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.op(PathOp { path: Vec::new(), op: Op::RemoveAspect })
     }
 
-    /// Counter increment (or max/min observation) at the root.
-    pub fn inc<U: Codec>(&mut self, n: &U) -> Result<()> {
-        self.path(Path::root()).inc(n)
-    }
-
     /// Drops the aspect's whole history wherever the author may purge it (spec/commits.md §5,
     /// spec/permissions.md §7) and removes the aspect, in this commit.
     pub fn purge(&mut self) -> Result<()> {
@@ -843,20 +849,32 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
         crate::large::type_of(&self.a.key, &self.path)
     }
 
+    /// `Invalid` at the root: the aspect's own `set`, `replace` and `remove` write it whole.
+    pub(crate) fn not_root(&self, op: &str) -> Result<()> {
+        if self.path.0.is_empty() {
+            return Err(Error::Invalid(format!("{op} at the empty path: use {op} on the aspect itself")));
+        }
+        Ok(())
+    }
+
     /// `set` of an untyped value, checked against the schema.
     pub(crate) fn set_value(&mut self, v: Value) -> Result<()> {
         self.check(None, &v)?;
         self.at(None, Op::Set(v))
     }
 
-    /// Makes the position read `v` (structural diff).
+    /// Makes the position read `v` (structural diff). A map entry that does not exist yet is
+    /// made. Not at the empty path: `AspectWrite::set` is the whole value.
     pub fn set<U: Codec>(&mut self, v: &U) -> Result<()> {
+        self.not_root("set")?;
         let v = self.checked(None, v)?;
         self.at(None, Op::Set(v))
     }
 
-    /// Resets the position, then writes `v`.
+    /// Resets the position, then writes `v`. Not at the empty path: `AspectWrite::replace` is
+    /// the whole value.
     pub fn replace<U: Codec>(&mut self, v: &U) -> Result<()> {
+        self.not_root("replace")?;
         let v = self.checked(None, v)?;
         self.at(None, Op::Replace(v))
     }
@@ -872,11 +890,6 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
             _ => return Err(Error::Invalid("only a map entry, set element or list element can be removed (remove() the aspect, or set the field)".into())),
         };
         PathWrite { a: &mut *self.a, path: parent }.at(None, op)
-    }
-
-    /// Sets an enum position to `case` with an optional payload.
-    pub fn set_case(&mut self, case: CaseId, payload: Option<Value>) -> Result<()> {
-        self.set_value(Value::Enum(case.0, payload.map(Box::new)))
     }
 
     /// List: inserts `items` before visible index `at`.
@@ -913,30 +926,9 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
         self.at(None, Op::Add(v))
     }
 
-    /// Set: removes `v`.
-    pub fn remove_elem<U: Codec>(&mut self, v: &U) -> Result<()> {
-        self.at(None, Op::Remove(v.to_value()))
-    }
-
-    /// Map: makes entry `k` read `v`.
-    pub fn put<Kk: Codec, U: Codec>(&mut self, k: &Kk, v: &U) -> Result<()> {
-        let k = k.to_value();
-        let v = self.checked(Some(Step::Key(k.clone())), v)?;
-        self.at(Some(PathSeg::Key(k)), Op::Set(v))
-    }
-
-    /// Map: removes entry `k`.
-    pub fn remove_key<Kk: Codec>(&mut self, k: &Kk) -> Result<()> {
-        self.at(None, Op::Remove(k.to_value()))
-    }
-
-    /// Counter: adds `n` (int or float).
-    pub fn inc<U: Codec>(&mut self, n: &U) -> Result<()> {
-        self.at(None, Op::Inc(n.to_value()))
-    }
-
-    /// Max/min: observes `v`.
-    pub fn observe<U: Codec>(&mut self, v: &U) -> Result<()> {
+    /// Counter: adds `v` (int or float). Max or min: records `v` as an observation. Both are one
+    /// contribution: concurrent ones all count.
+    pub fn contribute<U: Codec>(&mut self, v: &U) -> Result<()> {
         self.at(None, Op::Inc(v.to_value()))
     }
 }

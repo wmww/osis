@@ -3,6 +3,7 @@
 //! it field by field; a contact without a profile is just my data. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::TestWrites as _;
 use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
@@ -24,19 +25,19 @@ struct View {
 }
 
 fn view(db: &Osis, contact: Tid) -> Result<View> {
-    let profile = db.get(contact, PROFILE)?;
+    let profile = db.at(contact, PROFILE).get()?;
     let own_or = |db: &Osis, key: osis::schema::Aspect<BTreeMap<String, Labeled>>| -> Result<BTreeMap<String, Labeled>> {
         let mut m = match profile {
-            Some(p) => db.get(p, key)?.unwrap_or_default(),
+            Some(p) => db.at(p, key).get()?.unwrap_or_default(),
             None => BTreeMap::new(),
         };
-        m.extend(db.get(contact, key)?.unwrap_or_default());
+        m.extend(db.at(contact, key).get()?.unwrap_or_default());
         Ok(m)
     };
-    let name = match db.get(contact, NAME)? {
+    let name = match db.at(contact, NAME).get()? {
         Some(n) => Some(n),
         None => match profile {
-            Some(p) => db.get(p, NAME)?,
+            Some(p) => db.at(p, NAME).get()?,
             None => None,
         },
     };
@@ -54,56 +55,48 @@ fn profile_and_contact_overlay() {
     let alice = person(&mut w, 1, host);
     let bob = person(&mut w, 2, host);
     let p = alice.profile().unwrap();
-    alice
-        .write_with(|wr| {
-            wr.at(p, NAME).set(&"Alice Example".to_string())?;
-            wr.at(p, NAMES).set(&Names { given: Some("Alice".into()), family: Some("Example".into()), middle: None, prefix: None, suffix: None })?;
-            wr.at(p, EMAILS).set(&BTreeMap::from([("alice@example.com".to_string(), labeled("home", true))]))
-        })
-        .unwrap();
+    let mut wr = alice.write();
+    wr.at(p, NAME).set(&"Alice Example".to_string()).unwrap();
+    wr.at(p, NAMES).set(&Names { given: Some("Alice".into()), family: Some("Example".into()), middle: None, prefix: None, suffix: None }).unwrap();
+    wr.at(p, EMAILS).set(&BTreeMap::from([("alice@example.com".to_string(), labeled("home", true))])).unwrap();
+    wr.commit().unwrap();
     let a = introduce(&mut w, &bob, &alice);
     assert_eq!(bob.profile_of(a).unwrap(), Some(p));
-    assert_eq!(bob.get(p, NAME).unwrap().as_deref(), Some("Alice Example"));
-    assert_eq!(bob.get(p, NAMES).unwrap().unwrap().family.as_deref(), Some("Example"));
+    assert_eq!(bob.at(p, NAME).get().unwrap().as_deref(), Some("Alice Example"));
+    assert_eq!(bob.at(p, NAMES).get().unwrap().unwrap().family.as_deref(), Some("Example"));
 
     // a later profile change reaches the card holder
-    alice.write_with(|wr| wr.at(p, PHONES).set(&BTreeMap::from([("+49 30 1".to_string(), labeled("work", false))]))).unwrap();
+    alice.commit_set(p, PHONES, &BTreeMap::from([("+49 30 1".to_string(), labeled("work", false))])).unwrap();
     w.run();
-    assert_eq!(bob.get(p, PHONES).unwrap().unwrap().len(), 1);
+    assert_eq!(bob.at(p, PHONES).get().unwrap().unwrap().len(), 1);
 
     // Bob's contact for Alice: linked, with his own name for her and an extra phone
     let contacts = private_tag(&bob, "Contacts").unwrap();
-    let c = bob
-        .write_with(|wr| {
-            let c = wr.create_in(bob.me(), &[contacts])?;
-            wr.at(c, PROFILE).set(&p)?;
-            wr.at(c, NAME).set(&"Al".to_string())?;
-            wr.at(c, PHONES).set(&BTreeMap::from([("+1 555 0100".to_string(), labeled("mobile", true))]))?;
-            Ok(c)
-        })
-        .unwrap();
+    let mut wr = bob.write();
+    let c = wr.create_in(bob.me(), &[contacts]).unwrap();
+    wr.at(c, PROFILE).set(&p).unwrap();
+    wr.at(c, NAME).set(&"Al".to_string()).unwrap();
+    wr.at(c, PHONES).set(&BTreeMap::from([("+1 555 0100".to_string(), labeled("mobile", true))])).unwrap();
+    wr.commit().unwrap();
     let v = view(&bob, c).unwrap();
     assert_eq!(v.name.as_deref(), Some("Al"), "own name overrides the profile's");
     assert_eq!(v.emails.keys().collect::<Vec<_>>(), ["alice@example.com"], "the profile's email shows through");
     assert_eq!(v.phones.len(), 2, "own phone plus the profile's");
-    assert_eq!(bob.get(c, PROFILE).unwrap(), Some(p));
+    assert_eq!(bob.at(c, PROFILE).get().unwrap(), Some(p));
     assert_eq!(tag_names(&bob, c).unwrap(), ["Contacts"]);
 
     // a contact who is not an osis user
-    let d = bob
-        .write_with(|wr| {
-            let d = wr.create_in(bob.me(), &[contacts])?;
-            wr.at(d, NAME).set(&"Dentist".to_string())?;
-            wr.at(d, ORG).set(&Org { name: "Smile Clinic".into(), department: String::new(), title: String::new() })?;
-            wr.at(d, DATES).set(&BTreeMap::from([("birthday".to_string(), Annual { month: 3, day: 14, year: None })]))?;
-            Ok(d)
-        })
-        .unwrap();
+    let mut wr = bob.write();
+    let d = wr.create_in(bob.me(), &[contacts]).unwrap();
+    wr.at(d, NAME).set(&"Dentist".to_string()).unwrap();
+    wr.at(d, ORG).set(&Org { name: "Smile Clinic".into(), department: String::new(), title: String::new() }).unwrap();
+    wr.at(d, DATES).set(&BTreeMap::from([("birthday".to_string(), Annual { month: 3, day: 14, year: None })])).unwrap();
+    wr.commit().unwrap();
     let v = view(&bob, d).unwrap();
     assert_eq!(v.name.as_deref(), Some("Dentist"));
     assert!(v.emails.is_empty() && v.phones.is_empty());
-    assert_eq!(bob.get(d, ORG).unwrap().unwrap().name, "Smile Clinic");
-    assert_eq!(bob.get(d, DATES).unwrap().unwrap()["birthday"].year, None);
+    assert_eq!(bob.at(d, ORG).get().unwrap().unwrap().name, "Smile Clinic");
+    assert_eq!(bob.at(d, DATES).get().unwrap().unwrap()["birthday"].year, None);
 }
 
 /// spec/sync.md §3: a contact card needs hosts; on a hostless database `contact_card` and

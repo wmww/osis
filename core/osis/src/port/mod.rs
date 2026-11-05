@@ -14,7 +14,7 @@ pub use client::socket_path;
 /// The method table (`Call.method`): each row's args and result in `codec` forms. A method number
 /// not listed is answered `Unsupported`; a row is Owner-only unless `for_client` lists it.
 pub(crate) mod method {
-    /// `[]` -> `[me, node, home]`
+    /// `[]` -> `[me, node]`
     pub const WHOAMI: u64 = 0;
     /// `[tid, ak, path]` -> read result (path `[]`: the aspect, else the typed position)
     pub const GET: u64 = 1;
@@ -81,10 +81,8 @@ pub(crate) mod method {
     pub const REACH: u64 = 31;
     /// `[target, actor]` -> `[[thing, holder]*]`
     pub const HOLDER_PATH: u64 = 32;
-    /// `[target]` -> `[[id, target, role, Opt(until), single_use]*]`
-    pub const LINKS: u64 = 33;
     /// `[]` -> `[[id, target, role, Opt(until), single_use]*]`
-    pub const ALL_LINKS: u64 = 68;
+    pub const LINKS: u64 = 33;
     /// `[Opt(until)]` -> `[actor, secret]` (`Osis::add_client`)
     pub const ADD_CLIENT: u64 = 34;
     /// `[]` -> `[[actor, Opt(until)]*]`

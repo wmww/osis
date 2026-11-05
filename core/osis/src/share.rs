@@ -80,7 +80,7 @@ pub struct Demotion {
     /// a device that merely lacks a re-seal would discard an honest rotation. A direct edge only.
     pub repudiate: bool,
     /// A removal's word (spec/permissions.md §3, Keep): the removed holder's devices keep a
-    /// read-only copy, or erase. `None`: the thing's default (`Osis::set_keep_default`); erase for a
+    /// read-only copy, or erase. `None`: the thing's default (`required.0^`'s `keep`, `core::RequiredRules`); erase for a
     /// device leaving this person.
     pub keep: Option<bool>,
 }
@@ -111,7 +111,7 @@ pub struct LinkOpts {
     pub direct: bool,
 }
 
-/// A link of this person (`links`, `all_links`).
+/// A link of this person (`links`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkInfo {
     /// The link's actor K: what `revoke_link` takes.
@@ -329,7 +329,7 @@ fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
 
 /// The status from the sync engine's labels (a group with several labels shows the worst) and
 /// the engine's routes; `me`: this database's person.
-pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Status {
+pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
     for s in sync.label_status() {
         let state = label_state(&s);
@@ -355,7 +355,8 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Status {
     // of its own held by no one else
     let e = sync.engine_mut();
     let node = e.tid();
-    let clients = e.get_typed(&node, &ct::CLIENTS).ok().flatten().unwrap_or_default();
+    // a store that cannot answer fails the status: none read here would list its clients as cut off
+    let clients = e.get_typed(&node, &ct::CLIENTS)?.unwrap_or_default();
     let served: BTreeSet<Tid> = [me].into_iter().chain(clients.into_keys()).collect();
     for (t, holders) in e.unrouted().iter() {
         let t = *t;
@@ -366,7 +367,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Status {
             groups.insert(t, GroupSync { state: SyncState::NoRoute, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted });
         }
     }
-    Status { connected: sync.connected(), groups, remotes: Vec::new(), split: BTreeSet::new() }
+    Ok(Status { connected: sync.connected(), groups, remotes: Vec::new(), split: BTreeSet::new() })
 }
 
 fn edge(role: Role, o: EdgeOpts) -> ct::Edge {
@@ -427,7 +428,10 @@ fn route_arriving(sync: &mut SyncEngine, t: &Tid) -> bool {
 /// deliveries about `t`, what it holds or those groups; `Unsynced` when none holds it and none
 /// will (`route_arriving`).
 fn group_synced(sync: &mut SyncEngine, me: Tid, t: Tid, late: bool) -> Option<Result<()>> {
-    let st = status_of(sync, me);
+    let st = match status_of(sync, me) {
+        Ok(st) => st,
+        Err(e) => return Some(Err(e)),
+    };
     let groups = groups_holding(sync, &st, &[t].into_iter().collect());
     if groups.is_empty() {
         return (!route_arriving(sync, &t)).then(|| Err(Error::Unsynced { groups: vec![t] }));
@@ -501,7 +505,7 @@ impl Osis {
     /// `holder` is this person or a client of this node: this node serves it, and the thing stays
     /// as local as it was.
     fn served_here(&self, holder: Tid) -> Result<bool> {
-        Ok(holder == self.me() || self.get(self.node(), ct::CLIENTS)?.unwrap_or_default().contains_key(&holder))
+        Ok(holder == self.me() || self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().contains_key(&holder))
     }
 
     /// Grants `holder` `role` on `target` (spec/permissions.md §2): needs admin on the target
@@ -595,10 +599,10 @@ impl Osis {
             self.persist(&[tid])?;
         }
         if !placed {
-            self.write_with(|w| {
-                w.sharing = true;
-                if opts.subgroup { w.add_subgroup(group, tid) } else { w.place(tid, group) }
-            })?;
+            let mut w = self.write();
+            w.sharing = true;
+            if opts.subgroup { w.add_subgroup(group, tid)? } else { w.place(tid, group)? }
+            w.commit()?;
         }
         if !grant {
             return Ok(existing.map_or(Share::Excluded, share_of));
@@ -837,13 +841,6 @@ impl Osis {
         self.carry(done)
     }
 
-    /// Sets whether a removal from `thing` keeps by default (spec/permissions.md §3, Keep): an
-    /// admin's setting, beside the retention `thing` requires; a removal's own word overrides it.
-    pub fn set_keep_default(&self, thing: Tid, keep: bool) -> Result<()> {
-        let rules = self.get(thing, ct::REQUIRED)?.unwrap_or_default();
-        self.write_with(|w| w.at(thing, ct::REQUIRED).set(&ct::RequiredRules { keep, ..rules }))
-    }
-
     /// The actors whose read-only copy this node keeps after losing them (spec/permissions.md §3,
     /// Keep), for a thin client those it reads. The copy reads as before; nothing syncs or writes
     /// it. `drop_kept` erases one (the database owner's call).
@@ -904,8 +901,9 @@ impl Osis {
         })?;
         // the seed thing in the home group: every device of this person holds it and may
         // finalize the link (spec/permissions.md §8)
-        let home = self.home();
-        self.write_with(|w| w.place(keep, home))?;
+        let mut w = self.write();
+        w.place(keep, self.me())?;
+        w.commit()?;
         let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
         self.locked(|x| {
             x.links.insert(link.k, MadeLink { l, target, single_use: opts.single_use, direct: opts.direct, ended: false });
@@ -1021,19 +1019,25 @@ impl Osis {
         Ok(KeyGuard { db: self.downgrade(), l, link: Some(link.k) })
     }
 
-    /// The person's links to `target` that still work, whichever device made them (each holds
-    /// the seed thing; one whose seed has not arrived is not listed).
-    pub fn links(&self, target: Tid) -> Result<Vec<LinkInfo>> {
-        if let crate::sources::Source::Remote(r) = self.route(target) {
-            return crate::port::codec::links(r.call(crate::port::method::LINKS, vec![Value::Tid(target)])?);
+    /// The person's links that still work, whichever device made them (each holds the seed thing;
+    /// one whose seed has not arrived is not listed), and those at each attached node; filter by
+    /// `LinkInfo::target`. `Unsupported` on a thin client; beside a store of its own, a node this
+    /// handle reaches as a thin client lists none. `Network` while an attached node cannot be reached.
+    pub fn links(&self) -> Result<Vec<LinkInfo>> {
+        let mut all = if self.is_attached() { Vec::new() } else { self.live_links()? };
+        for r in self.locked(|l| l.remotes.clone()) {
+            match r.call(crate::port::method::LINKS, vec![]).and_then(crate::port::codec::links) {
+                Err(Error::Unsupported(_)) if !self.is_attached() => {}
+                got => all.extend(got?),
+            }
         }
-        Ok(self.live_links()?.into_iter().filter(|i| i.target == target).collect())
+        Ok(all)
     }
 
-    /// All the person's links that still work (`links`). `Unsupported` on a thin client.
-    pub fn all_links(&self) -> Result<Vec<LinkInfo>> {
+    /// The links of this process's person at its own node.
+    pub(crate) fn own_links(&self) -> Result<Vec<LinkInfo>> {
         if self.is_attached() {
-            return crate::port::codec::links(self.rcall(crate::port::method::ALL_LINKS, vec![])?);
+            return crate::port::codec::links(self.rcall(crate::port::method::LINKS, vec![])?);
         }
         self.live_links()
     }
@@ -1165,11 +1169,10 @@ impl Osis {
         if hosts.is_empty() {
             return Err(Error::Invalid("this database has no hosts: a contact card needs one".into()));
         }
-        let p = self.write_with(|w| {
-            let p = w.create(me)?;
-            w.make_group(p)?;
-            Ok(p)
-        })?;
+        let mut w = self.write();
+        let p = w.create(me)?;
+        w.make_group(p)?;
+        w.commit()?;
         self.persist(&[p])?;
         self.locked(|x| -> Result<()> {
             // secrets of its own before the label, as `sync()` does
@@ -1334,7 +1337,7 @@ impl Osis {
         let me = self.me();
         let was = self.roster(me)?.contains_key(&node);
         self.demote(me, node, Lower::Remove, d).await?;
-        if was { self.all_links() } else { Ok(Vec::new()) }
+        if was { self.own_links() } else { Ok(Vec::new()) }
     }
 
     /// The hosts new labels go to (and kept connected). `Unsupported` on a thin client: they are
@@ -1511,12 +1514,12 @@ impl Osis {
         let acting = self.acting;
         let me = self.inner.me;
         let local = self.locked(|x| {
-            let mut s = status_of(&mut x.sync, me);
+            let mut s = status_of(&mut x.sync, me)?;
             if let Some(a) = acting {
                 s.groups.retain(|g, _| x.sync.engine().readable_by(&a, g));
             }
-            s
-        });
+            Ok::<_, Error>(s)
+        })?;
         if acting.is_some() {
             return Ok(local);
         }
@@ -1531,7 +1534,10 @@ impl Osis {
         }
         // a node with attachments shows them too: not a watch of them, a status at each change here
         let me = self.inner.me;
-        let first = self.status().unwrap_or_else(|_| self.locked(|x| status_of(&mut x.sync, me)));
+        let first = match self.status() {
+            Ok(s) => s,
+            Err(_) => self.locked(|x| status_of(&mut x.sync, me))?,
+        };
         Ok(self.subscribe(Filter::Status, true, move |_| {
             let mut first = Some(first);
             Box::new(move |db, d| match d {

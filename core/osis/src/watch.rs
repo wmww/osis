@@ -14,14 +14,10 @@ use crate::handle::{Inner, Osis};
 use osis_base::{Ak, Tid, Ts, Value, WallMs};
 use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, Event, Origin};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
-use std::task::{Context, Poll, Waker};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::ThreadId;
-use std::time::{Duration, Instant};
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
@@ -471,7 +467,7 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
 
 /// A registration; dropping it unsubscribes. Off the
 /// dispatcher thread, drop waits for a call in flight, so no call starts or runs after it
-/// returns; except when the dropping thread holds the engine lock (inside `Osis::read` or
+/// returns; except when the dropping thread holds the engine lock (inside
 /// `Internals::engine`), where it cannot wait: a call may still be running then.
 #[must_use = "dropping a Subscription unsubscribes at once; use detach() to keep it"]
 pub struct Subscription {
@@ -513,128 +509,5 @@ impl Drop for Subscription {
 impl std::fmt::Debug for Subscription {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Subscription({:?})", self.id)
-    }
-}
-
-pub(crate) struct WatchState {
-    m: Mutex<WState>,
-    cv: Condvar,
-}
-
-struct WState {
-    value: Result<Option<Value>>,
-    version: u64,
-    wakers: Vec<Waker>,
-}
-
-impl WatchState {
-    pub fn new(value: Result<Option<Value>>) -> Arc<WatchState> {
-        Arc::new(WatchState { m: Mutex::new(WState { value, version: 0, wakers: Vec::new() }), cv: Condvar::new() })
-    }
-
-    /// `update`, unless something newer was stored since this state was made (a remote watch's
-    /// first value: a Notify after it may already have run on the dispatcher).
-    pub fn first(&self, v: Result<Option<Value>>) {
-        if lock(&self.m).version == 0 {
-            self.update(v);
-        }
-    }
-
-    /// Stores a new value if it differs from the held one; an error counts every time.
-    pub fn update(&self, v: Result<Option<Value>>) {
-        let mut s = lock(&self.m);
-        if v.is_ok() && s.value == v {
-            return;
-        }
-        s.value = v;
-        s.version += 1;
-        for w in s.wakers.drain(..) {
-            w.wake();
-        }
-        self.cv.notify_all();
-    }
-}
-
-/// The typed view of a held value (`None`: it does not decode; the watch stores such a value
-/// as absent, so this is a fallback).
-type Decode<T> = Arc<dyn Fn(&Value) -> Option<T> + Send + Sync>;
-
-/// A watched aspect: the latest value, taken atomically with the subscription.
-/// Holds only the latest value; unsubscribes when dropped.
-pub struct Watch<T> {
-    state: Arc<WatchState>,
-    seen: AtomicU64,
-    decode: Decode<T>,
-    _sub: Subscription,
-}
-
-impl<T> Watch<T> {
-    pub(crate) fn new(state: Arc<WatchState>, decode: Decode<T>, sub: Subscription) -> Watch<T> {
-        Watch { state, seen: AtomicU64::new(0), decode, _sub: sub }
-    }
-
-    /// The latest value (`None`: absent).
-    pub fn current(&self) -> Result<Option<T>> {
-        let s = lock(&self.state.m);
-        match &s.value {
-            Ok(Some(v)) => Ok((self.decode)(v)),
-            Ok(None) => Ok(None),
-            Err(e) => Err(e.clone()),
-        }
-    }
-
-    /// Whether the value changed since the last `changed*` call returned (non-blocking; marks
-    /// it seen).
-    pub fn try_changed(&self) -> bool {
-        let v = lock(&self.state.m).version;
-        self.seen.swap(v, Ordering::AcqRel) < v
-    }
-
-    /// Blocks until the value changes or `d` passes; `true` if it changed.
-    pub fn changed_timeout(&self, d: Duration) -> bool {
-        let end = Instant::now() + d;
-        let mut s = lock(&self.state.m);
-        loop {
-            if s.version > self.seen.load(Ordering::Acquire) {
-                self.seen.store(s.version, Ordering::Release);
-                return true;
-            }
-            let now = Instant::now();
-            if now >= end {
-                return false;
-            }
-            s = self.state.cv.wait_timeout(s, end - now).map(|(g, _)| g).unwrap_or_else(|p| p.into_inner().0);
-        }
-    }
-
-    /// Resolves when the value changes (runtime-agnostic).
-    pub fn changed(&self) -> Changed<'_, T> {
-        Changed { w: self }
-    }
-}
-
-/// Future of `Watch::changed`.
-pub struct Changed<'a, T> {
-    w: &'a Watch<T>,
-}
-
-impl<T> Future for Changed<'_, T> {
-    type Output = ();
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        let mut s = lock(&self.w.state.m);
-        if s.version > self.w.seen.load(Ordering::Acquire) {
-            self.w.seen.store(s.version, Ordering::Release);
-            return Poll::Ready(());
-        }
-        if !s.wakers.iter().any(|w| w.will_wake(cx.waker())) {
-            s.wakers.push(cx.waker().clone());
-        }
-        Poll::Pending
-    }
-}
-
-impl<T> std::fmt::Debug for Watch<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Watch")
     }
 }

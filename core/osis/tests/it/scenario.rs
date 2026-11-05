@@ -2,6 +2,7 @@
 //! (osis-sim's `World`: manual clock, in-memory hubs, no sleeps, no network).
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::common::TestWrites as _;
 use crate::common::CreateIn;
 use osis::core::{NAME, TAG, Tag};
 use osis::{Osis, Result, Tid};
@@ -23,13 +24,12 @@ pub fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
 
 /// A tag owned by the person, synced under its own label (a shareable root, not placed in home).
 pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
-    let t = db.write_with(|w| {
-        let t = w.create(db.me())?;
-        w.make_group(t)?;
-        w.at(t, TAG).set(&Tag::default())?;
-        w.at(t, NAME).set(&name.to_string())?;
-        Ok(t)
-    })?;
+    let mut w = db.write();
+    let t = w.create(db.me())?;
+    w.make_group(t)?;
+    w.at(t, TAG).set(&Tag::default())?;
+    w.at(t, NAME).set(&name.to_string())?;
+    w.commit()?;
     db.sync(t, &[])?;
     Ok(t)
 }
@@ -37,10 +37,10 @@ pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
 /// A person's private tag: a tag group in its home, an item (its own aspects sync) and a
 /// subgroup (its items sync), so every device has it and nobody else does.
 pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
-    db.write_with(|w| {
-        let t = w.create_in(db.me(), &[db.home()])?;
+    db.batch(|w| {
+        let t = w.create_in(db.me(), &[db.me()])?;
         w.make_group(t)?;
-        w.add_subgroup(db.home(), t)?;
+        w.add_subgroup(db.me(), t)?;
         w.at(t, TAG).set(&Tag::default())?;
         w.at(t, NAME).set(&name.to_string())?;
         Ok(t)
@@ -51,8 +51,8 @@ pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
 pub fn tag_names(db: &Osis, thing: Tid) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for g in db.groups_of(thing).unwrap().within {
-        if db.get(g, TAG)?.is_some() {
-            out.push(db.get(g, NAME)?.unwrap_or_default());
+        if db.at(g, TAG).get()?.is_some() {
+            out.push(db.at(g, NAME).get()?.unwrap_or_default());
         }
     }
     out.sort();

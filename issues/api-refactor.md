@@ -30,12 +30,9 @@ db.set_role(note, friend, None, SetRole::default()).await?;      // no access
 ## Decided
 Tess answered; the refactor is now in progress (Execution, below).
 1. **`grant` and `share`: not bundled.** A role says who may; `sync` says where the data goes. `share` goes; `grant` only grants, as before, and refuses to lower. Chat's one `share` is on an already synced chat and the app only grants, so real callers lose nothing; tests and the CLI call `sync` then `grant`. `grant`'s doc and `status` (`NoRoute`) must make a holder with no way to the data obvious. `make_link` keeps syncing its target, as a link can't work otherwise. Revisit if the app finds this awkward.
-2. **One spelling**: `db.get` and `write_with` go. The agent makes such calls without asking.
-3. **`Watch` goes.** `on_change` gives the current value atomically, then changes, and works with any async runtime by forwarding to a channel. Show that in the docs. Revisit only if using it from async code proves clumsy.
-4. **`db.read(|r| ..)`** moves to `internals`.
-5. **`Tid` stays**: a tid is a concept and is not called a thing ID. **`Ak` stays**: renaming it would sweep every crate for little gain.
-6. **Member**: a thing is a member of a group. `osis-chat`'s members become participants.
-7. **Layout**: top-level `libs/` holds `chat` and `kit`, and whatever else is useful to some but not all users of osis. `app/` and `cli/` stay where they are.
+2. **`Tid` stays**: a tid is a concept and is not called a thing ID. **`Ak` stays**: renaming it would sweep every crate for little gain.
+3. **Member**: a thing is a member of a group. `osis-chat`'s members become participants.
+4. **Layout**: top-level `libs/` holds `chat` and `kit`, and whatever else is useful to some but not all users of osis. `app/` and `cli/` stay where they are.
 
 ### Owner removal is in progress elsewhere
 Design for the world after it:
@@ -44,29 +41,11 @@ Design for the world after it:
 - **Don't touch engine or perm internals** for renames: the owner work is in there. Rename at the `osis` API, CLI and docs; leave engine names, and spec prose the owner work is rewriting, for a last sweep.
 
 ## A. Remove: a second way to do the same thing
-1. `Osis::get` duplicates `at(t, k).get()`. `at` is the one that extends to paths, streams and watches.
-2. `write_with` duplicates `write()` + `commit()` and hides the `Committed`. Dropping a `Write` already discards it.
-3. `AspectRef::watch`, `Watch` and `Changed`: `on_change` covers these with a channel (decision 3). `Watch` alone has three wait methods (`changed`, `try_changed`, `changed_timeout`).
-4. `read` and `Reader`: a second copy of about ten read calls with different argument styles (decision 4).
-5. `get_value` on `AspectRef` and `PathRef`: use an untyped key, or `path(p).get::<Value>()` (`Value` is `Codec`).
-6. `home()`: verified always the same tid as `me()`, locally, attached and acting. Document that an account is a group.
-7. `AspectWrite::inc`: same as `path(Path::root()).inc`.
-8. `PathWrite` ops that are verified the same op under another name:
-   - `observe` is `inc` (both `Op::Inc`). Keep one, named for both uses, say `add_to`? Pick when building, avoiding a clash with set `add`.
-   - `put(k, v)` is `path(k).set(v)`.
-   - `remove_key(k)` and `remove_elem(v)` are `path(k).remove()`.
-   - `set_case` is a `set` of a `Value::Enum`.
-9. Whole-value ops at an empty path (`at(k).path(p![]).set`, `.replace`, `.remove`) duplicate `at(k).set` and friends. Refuse them, or make `AspectWrite` the only route to them; the collection ops still take an empty path.
-10. Writing `core::GROUP` directly: `w.at(g, GROUP)` path ops and `.set` bypass `place`'s sync check and tied-edge cleanup (tests do it). Refuse it as role-class aspects are refused, and add `items(g)` and `subgroups(g)` for reading. Today's way to list a group's items is `get(g, GROUP)` (notes/api.md, tests), so callers move to those.
-11. `TextSession::insert` and `delete` are `replace` with an empty side. Keep `replace(range, text)`.
-12. `all_links` and `links(target)`: keep `links()` returning all; `LinkInfo.target` filters.
-13. `Config::at` duplicates `memory`, `dir` and the struct (see D1).
-14. `set_keep_default`: a one-line wrapper over `at(t, REQUIRED).set`, while required retention itself has no call of its own. One rule for both: pick typed calls for all required rules, or none.
-15. `materialize_limit()` getter: no callers.
-16. `ShareOpts.place_anyway` is `place` itself (see B3).
-17. `demote` following a link joiner into `revoke_joiner`: keep one route (see B2).
-18. `attach_client` is `attach_remotes` with one entry (see D2).
-19. `register_schema_file` and `register_schema_source`: parse then register. Worse than a duplicate, they differ: only `_source` mirrors the schema to an attached node, so `register_schema(Schema)` silently doesn't (verified). One `register_schema(source)`; `Schema` stays out of the API if the parsed form has no other use. Reading a file is the app's job.
+Done but for what later steps own:
+- `Config::at` duplicates `memory`, `dir` and the struct: D1.
+- `ShareOpts.place_anyway` is `place` itself: B3.
+- `demote` following a link joiner into `revoke_joiner`: keep one route: B2.
+- `attach_client` is `attach_remotes` with one entry: D2.
 
 ## B. Sharing: one verb per intent
 All of this speaks of granting a role (F, Vocabulary). Today: `grant`, `share`, `share_into`, `change_edge`, `demote(Lower)`, `leave`, `remove_edge_of`, `remove_device`, `remove_client`, `revoke_link`, `revoke_joiner`.
@@ -102,7 +81,7 @@ Change:
 14. **`SyncScope::Group(t)`** takes any thing → `SyncScope::{All, Thing(t)}`, matching `Scope`.
 15. **Waiting**: `wait_synced` takes a timeout, `redeem` and others use `Config.wait_timeout`, demotions use constant `PRESYNC_WAIT` or `Try(d)`. Every `async` call takes one explicit timeout, and the constant and config field go. Check the attach dial, which needs a value too.
 16. **`edit_text(tid, key, path)` and `keep_alive(tid, key, path, v)`** take positions differently from everything else → `at(t, k).path(p).edit_text()` and `.keep_alive(v)`.
-17. **Callback naming**: `watch_*` take a callback here but `watch()` returns a handle there. All callbacks are `on_*`: `on_thing_change`, `on_roster_change`, `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
+17. **Callback naming**: `watch_*` take a callback under another word. All callbacks are `on_*`: `on_thing_change`, `on_roster_change`, `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
 18. **`AspectKey`**: three implementations (`Aspect<T>`, `Ak`, `Key`) plus `db.key`. `Key` with no schema is `Ak`. One dynamic key: `db.key(name)` typed when a schema is registered, else untyped. `Ak` becomes a name only, if the examples stay readable. The trait's methods exist for generated code and the crate: seal it or hide them.
 19. **`LinkOpts`, `GrantOpts` and `SetRole`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
 20. **`now()`** on an attached handle that cannot reach its node falls back to this process's clock, unsaid. A time is no decision-maker's default, but it should say so or return `Result`.
@@ -119,7 +98,7 @@ Keep as they are:
 - **Exported implementation numbers**: `MAX_CONNS_PER_CLIENT`, `HISTORY_DIRTY_BYTES`, `HISTORY_SEND`, `MAX_SCHEMA_BYTES`, `SIGNAL_BYTES`, `STREAM_CHUNK`, `WRITE_NONCES`, `REFRESH_DIVISOR`, `OFFER_LIFETIME_MS`, `PRESYNC_WAIT`, `DEFAULT_*`. Make them private or move them to `internals` for tests. `HISTORY_PAGE` stays only if a page limit is the caller's business.
 - **Socket helpers**: `socket_path`, `SOCK_FILE`, `own_uid`, `socket_dir`: the CLI's needs, not an app's. `connect_socket(store_dir)` can resolve the path itself.
 - **Test tools in app API**: `MemStore::{held_bytes, rows, held_split, backup}`, `Transport::InProcess`, `ManualClock`, `Clock`, `Config.seed`, `Config.clock`, `Joining::node`. `Transport` itself may go, leaving what the app really chooses.
-- **`osis::core`**: re-exports `KEYS`, `SECRETS`, `LABEL`, `ROLES`, `TENURES`, `REACH`, `SEEN`, `NODE`, `PLACED`, `GROUPS`, `ASPECTS`, `TID`, `group::{ITEMS, SUBGROUPS}`. Keep `NAME`, `BODY`, `TAG`, whatever else apps truly write, and required-retention if decided in A14.
+- **`osis::core`**: re-exports `KEYS`, `SECRETS`, `LABEL`, `ROLES`, `TENURES`, `REACH`, `SEEN`, `NODE`, `PLACED`, `GROUPS`, `ASPECTS`, `TID`, `group::{ITEMS, SUBGROUPS}`. Keep `NAME`, `BODY`, `TAG`, whatever else apps truly write, and the required-retention keys (`REQUIRED`, `Required`, `RequiredRules`: no typed calls, one rule for all of it).
 - **`pub use osis_schema as schema`** exports the whole crate for generated code. Give generated code a narrow doc-hidden path.
 - **`CreationRecord`, `Cause`, `EphemeralId`, `CommitId` beside `ChangeId`, `LabelId`**:
   - One opaque `ChangeId`.
@@ -128,7 +107,7 @@ Keep as they are:
 - **`CommitKind::{Role, Snapshot}`**, `HistoryBody::Dropped`, `CommitEntry.dropped`: "snapshot" is compaction. Keep what an app must see to explain history (notes/api.md Attribution), and rename it in plain words.
 - **Sync status**: `GroupSync.labels`, `not_admitted`, `Stranded`, `ReceiptsOnly`, `NoRoute`, `unrouted`, `Status.split`. Labels are needed to configure hosts, so call them what they are for hosts (`host_ids`?) and keep them with hosting.
 - **Other words to translate or hide**: `rotate_reach`, `publish_reach`, `rotate_client_key`, `backdate`, `repudiate`, `materialize_limit`, `tied`, "pre-sync", "co-reader", "K", "L".
-- **`Key::new(ak, schema)`** and `Schema` in the public API: see A19 and D18.
+- **`Key::new(ak, schema)`** and `Schema` in the public API (`register_schema` takes a source now): see D18.
 - **`KeepAlive::writes`** doc-hidden on an app type: move to `internals`.
 
 ## F. Names
@@ -150,7 +129,7 @@ Keep as they are:
 | `make_link`, `redeem`, `import_contact` | keep | Clear |
 | `hosts()`, `hosting()`, `host_address()` | `hosts()` and `own_host_*` | The hosts this account uses vs the host this node runs |
 | `create_ownerless`, `owner_of`, `create(owner)` | `create(first_admin)` or `create()` | Owner removal; don't design twice |
-| `place*`, `unplace`, `placed.0~`, `PlacementNotPersisted`, `place_plan` | `add`, `remove`, membership words | decision 6 |
+| `place*`, `unplace`, `placed.0~`, `PlacementNotPersisted`, `place_plan` | `add`, `remove`, membership words | Decided 3 |
 | `demote`, `Demotion` | `set_role`, `SyncFirst` | B2 |
 | `roster`, `Roster`, `watch_roster` | `grants(target)` | The word for a list of grants |
 
@@ -180,7 +159,6 @@ Keep as they are:
 
 ## Execution
 One branch per step, in order; each merges before the next starts.
-- **2. Removals**: A.
 - **3. Sharing**: B.
 - **4. Shapes**: D.
 - **5. Leaks**: E, once `internals` has what tests need.

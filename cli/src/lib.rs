@@ -390,7 +390,10 @@ impl Ctx<'_> {
         };
         paths.extend(g.schemas.iter().cloned());
         for p in paths {
-            db.register_schema_file(&p).map_err(|e| exit(7, format!("schema {}: {e}", p.display())))?;
+            let fail = |e: &dyn std::fmt::Display| exit(7, format!("schema {}: {e}", p.display()));
+            let src = std::fs::read_to_string(&p).map_err(|e| fail(&e))?;
+            let name = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            db.register_schema(&name, &src).map_err(|e| fail(&e))?;
         }
         Ok(Ctx { g, db, out, stdin, tty, sel, vars: BTreeMap::new(), pending: Default::default() })
     }
@@ -425,7 +428,7 @@ impl Ctx<'_> {
         timeout_of(&self.g, default)
     }
 
-    /// Resolves a tid argument: `osis://…`, bare, `me`, `node`, `home`, `$var`.
+    /// Resolves a tid argument: `osis://…`, bare, `me`, `node`, `$var`.
     pub fn tid(&self, s: &str) -> anyhow::Result<Tid> {
         self.alias(s).or_else(|| Tid::parse(s).ok()).ok_or_else(|| usage(format!("not a tid: {s}")))
     }
@@ -434,7 +437,6 @@ impl Ctx<'_> {
         match s {
             "me" => Some(self.db.me()),
             "node" => Some(self.db.node()),
-            "home" => Some(self.db.home()),
             _ => s.strip_prefix('$').and_then(|v| self.vars.get(v).copied()),
         }
     }

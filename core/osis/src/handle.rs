@@ -549,20 +549,10 @@ impl Osis {
     }
 
     /// The person actor this database belongs to: the usual owner of what the app creates
-    /// (attached: the node's person).
+    /// (attached: the node's person). It is a group too, synced under its home label
+    /// (spec/sync.md §2): things placed in it reach every device of the person.
     pub fn me(&self) -> Tid {
         self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.who.me))
-    }
-
-    /// The person's home group: the person actor itself, synced under its home label
-    /// (spec/sync.md §2); things placed in it reach every device of the person.
-    pub fn home(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.who.home))
-    }
-
-    /// The materialization bound in bytes.
-    pub fn materialize_limit(&self) -> usize {
-        self.inner.limit
     }
 
     /// Runs `f` on the engine under the database lock, then queues its events for the
@@ -632,8 +622,10 @@ impl Osis {
             return;
         }
         self.upkeep_links(l);
-        let status = crate::share::status_of(&mut l.sync, self.inner.me);
-        if status != l.status {
+        // a store that cannot answer: `status` says so; nothing new to tell a watch of it
+        if let Ok(status) = crate::share::status_of(&mut l.sync, self.inner.me)
+            && status != l.status
+        {
             for (g, s) in &status.groups {
                 if s.state == crate::share::SyncState::Stranded && l.status.groups.get(g).is_none_or(|o| o.state != s.state) {
                     l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Stranded, tids: vec![*g], commit: None, peer: None, detail: "stranded: waiting for a re-seal".into() });
@@ -675,7 +667,7 @@ impl Osis {
     /// `Dispatcher::Thread` it waits for the dispatcher thread (tests and scripts wait this
     /// way without sleeping); with `Dispatcher::Pump` it runs them on this thread, which is
     /// how the app pumps (after its wake callback). Returns at once inside a callback. Never
-    /// call it inside an `Osis::read` or `Internals::engine` closure: a callback may need the lock
+    /// call it inside an `Internals::engine` closure: a callback may need the lock
     /// that closure holds (deadlock).
     pub fn settle(&self) {
         // attached nodes' deliveries so far reach the queue first (not from a callback: the reply
@@ -686,36 +678,24 @@ impl Osis {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
-    /// Registers a schema: typed views for its AKs (`key`, this session), undo and large-value
-    /// write-back (the engine keeps those in the store). Generated keys carry their schema and
-    /// need no registration. This session's newest registration of an AK types its `key`; the
-    /// engine keeps the highest version. An app schema declares no
-    /// core AK.
-    pub fn register_schema(&self, s: Schema) -> Result<Arc<Schema>> {
+    /// Registers a `*.osis` source: typed views for its AKs (`key`, this session), undo and
+    /// large-value write-back (the engine keeps those in the store), here and at any attached node.
+    /// `name` is for errors (file:line:col). Generated keys carry their schema and need no
+    /// registration. This session's newest registration of an AK types its `key`; the engine keeps
+    /// the highest version. An app schema declares no core AK.
+    pub fn register_schema(&self, name: &str, source: &str) -> Result<()> {
+        let s = osis_schema::parse(name, source).map_err(|e| Error::Invalid(e.to_string()))?;
         if s.declares_core() {
             return Err(Error::Invalid("an app schema declares no core AK".into()));
         }
+        // the nodes need it for structural diffs and undo write-back
+        self.mirror_schema(name, source)?;
         let s = Arc::new(s);
         self.engine(|e| e.register_schema(s.clone()))?;
         let mut v = lock(&self.inner.schemas);
         v.retain(|x| x.aspects.keys().any(|k| !s.aspects.contains_key(k)));
-        v.push(s.clone());
-        Ok(s)
-    }
-
-    /// Parses and registers a `*.osis` source (errors carry file:line:col).
-    pub fn register_schema_source(&self, file: &str, src: &str) -> Result<Arc<Schema>> {
-        let s = osis_schema::parse(file, src).map_err(|e| Error::Invalid(e.to_string()))?;
-        // the nodes need it for structural diffs and undo write-back
-        self.mirror_schema(file, src)?;
-        self.register_schema(s)
-    }
-
-    /// Reads, parses and registers a `*.osis` file.
-    pub fn register_schema_file(&self, path: &std::path::Path) -> Result<Arc<Schema>> {
-        let src = std::fs::read_to_string(path).map_err(|e| Error::Invalid(format!("{}: {e}", path.display())))?;
-        let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-        self.register_schema_source(&file, &src)
+        v.push(s);
+        Ok(())
     }
 
     /// The key for `ak`: typed by the registered schema that declares it, else untyped.

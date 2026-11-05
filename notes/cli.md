@@ -34,7 +34,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 |---|---|---|
 | `init [--host A]` | `create` (prints the recovery card first) | now |
 | `restore CARD` (or `@FILE`, `-`) | `restore` | now |
-| `whoami` | `me`, `node`, `home`, `hosts` | now |
+| `whoami` | `me`, `node`, `hosts` | now |
 | `pair offer` / `pair join OFFER` | `pair_offer`, `pair_accept` / `pair`, `Joining::finish` (the two devices exchange one line each over stdin/stdout: request, reply) | now |
 | `device ls` / `device rm N [--end-links]` | `devices` / `remove_device`, then `revoke_link` each | now |
 | `hosts ls/add/rm` | `hosts`, `add_host`, `remove_host` | now |
@@ -45,10 +45,10 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `clients rotate-key` (prints the new addresses; through a daemon its listeners move at once) | `rotate_client_key` | now |
 | `group source G local\|ADDR`, with `--remote ADDR --remote-secret FILE` on this and every later command on that store (no secret is stored; without it a routed group exits 1 `Network`); not through a daemon (exit 1) | `group_source`, `Config.remotes`, `attach_node`, `detach_node`, `await_remotes`, `routes`, `attach_remotes` | now |
 | `create --owner A [--in G\|--in-all G,G] [--group] [AK V]…` (nothing durable: exit 2, the thing would vanish at exit; `--in`/`--group` alone are ephemeral writes) | `write`, `Write::create`, `place`, `make_group`, `set`, `commit` | now |
-| `get T AK [PATH]` | `get`, `at().path().get_value()`; `--stream` / `--len`: `stream()` (raw bytes to stdout) / its `len` | now |
+| `get T AK [PATH]` | `at().get()`, `at().path().get()`; `--stream` / `--len`: `stream()` (raw bytes to stdout) / its `len` | now |
 | `set` / `replace` / `rm T AK [PATH] [V]` | `AspectWrite::set/replace/remove`, path ops; `set --stream` (value on stdin): `set_stream` | now |
 | `op T AK PATH OP ARGS` | `PathWrite` ops | now (`undelete` 2nd; untyped sequence ops fail in the crdt) |
-| `edit T AK --base V` (stdin) | `write_with`, `edit` | now |
+| `edit T AK --base V` (stdin) | `Write`, `edit` | now |
 | (none: interactive editors only) | `edit_text` (text sessions) | |
 | (none: a CLI process is not there to keep a value alive) | `keep_alive` | |
 | `write` (stdin) | one `write` batch | now |
@@ -60,11 +60,12 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `purge T AK [--commit C \| --author A]` | `AspectWrite::purge`, `purge_commit`, `purge_author` | now |
 | `commits [SCOPE] [--actor A] [--kind K] [--reverts C] [--reverted-by C] [--in-effect B] [--since/--until TS] [--after C] [--max N] [--next undo\|redo]` / `undo` / `redo` / `revert C` | `commits` / `undo` / `redo` / `revert` | now |
 | `place` / `unplace` / `sub add/rm` / `groups` | `Write::place/unplace/add_subgroup/remove_subgroup`, `groups_of` (lines `item`/`subgroup`/`within` TAB group) | now |
+| `members G` (lines `item`/`subgroup` TAB thing) | `items`, `subgroups` | now |
 | `roster T [--watch]` / `role T` / `via T HOLDER` | `roster`, `watch_roster` / `role_on` / `holder_path` | now |
 | `now` | `now` | now |
-| `grant` / `share` / `edge` / `demote [--keep B]` / `leave` / `keep-default T B` / `kept [--drop A]` | `grant` (the role alone) / `share` (`sync` when the holder has no route, then `grant`) / `change_edge` / `demote` / `leave` / `set_keep_default` / `kept_copies`, `drop_kept` | now |
+| `grant` / `share` / `edge` / `demote [--keep B]` / `leave` / `kept [--drop A]` | `grant` (the role alone) / `share` (`sync` when the holder has no route, then `grant`) / `change_edge` / `demote` / `leave` / `kept_copies`, `drop_kept` | now |
 | `share-into T G ROLE [--subgroup] [--place-anyway]` / `remove-edge-of G T` / `reach T` | `share_into` / `remove_edge_of` / `reach` | now |
-| `link make/redeem` / `link ls [T]/revoke [--joiner A]` | `make_link` / `redeem` / `links`, `all_links`, `revoke_link`, `revoke_joiner` | now |
+| `link make/redeem` / `link ls [T]/revoke [--joiner A]` | `make_link` / `redeem` / `links` (T filters by target), `revoke_link`, `revoke_joiner` | now |
 | `chat create/add/link/join/kick/post/read/watch/edit/resend/delete/leave/members/disappear` (notes/chat.md; `read --after ID`, `watch --after ID --count N`; `--json` lines) | osis-chat over `create_ownerless`, `share`, `make_link`, `redeem`, `demote`, `history`, `on_history`, `purge_commit`, `purge_author`, `leave` | now (through a daemon too; `join` there waits a moment for the first messages, a `read` there does not pull) |
 | `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |
 | `invite ls/accept/decline` | `invite_requests` / `accept_invite` / `decline_invite` | 2nd (`InviteId` has no text form yet) |
@@ -74,9 +75,9 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `bundle export/import` | `export_bundle` / `import_bundle` | now |
 | `inspect thing/group/actor/commit` | `Internals::engine` (`osis::internals`, doc-hidden), `read`, `knows` | now |
 | `diag [--follow]` | `on_diagnostic`, `settle` | now (no stored log yet) |
-| `schema add/rm/ls` / `check` / `gen` | `register_schema_file` (each run) / osis-schema `check_lock` / `generate_file` | now |
+| `schema add/rm/ls` / `check` / `gen` | `register_schema` of each file (each run) / osis-schema `check_lock` / `generate_file` | now |
 | (any command while `serve` runs) | `attach`, `is_attached`, `listen_unix` (by `serve`), `node_epoch` (tests) | now |
-| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write_with`, `materialize_limit` (`--limit`), `register_schema`, `register_schema_source`; test hooks `sync_engine`, `take_actions`, `feed`, `waiting` live on `osis::internals::Internals` | |
+| (internal) | `open`, `close`, `downgrade`, `key`, `at`, `write`, `Config::materialize_limit` (`--limit`), `register_schema`; test hooks `sync_engine`, `take_actions`, `feed`, `waiting` live on `osis::internals::Internals` | |
 
 ## Value syntax
 CBOR diagnostic notation narrowed to one printed form per value. Printer: `cli/src/text.rs` `print`; parser `parse`; property test: `parse(print(v)) == v`, numbered and named.

@@ -335,7 +335,7 @@ impl Ui {
     /// One watch per thing shown anywhere (and home and the app groups, whose items are lists).
     fn watch(&mut self) -> osis::Result<()> {
         let mut want: BTreeSet<Tid> = self.data.things()?;
-        want.insert(self.data.db.home());
+        want.insert(self.data.db.me());
         want.extend(self.data.groups()?);
         self.subs.retain(|t, _| want.contains(t));
         for t in want {

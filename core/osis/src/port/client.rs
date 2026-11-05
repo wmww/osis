@@ -27,7 +27,7 @@ use super::codec::{self as c, outcome_err, u};
 use super::method;
 use crate::error::{Error, Result};
 use crate::handle::{Config, Osis, WeakOsis};
-use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Source, Subscription, WatchState, lock};
+use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Source, Subscription, lock};
 use osis_base::{Clock, Tid, Value};
 use osis_proto::client::SMALL_REPLY;
 use osis_proto::serving::REPLY_BUDGET;
@@ -103,12 +103,11 @@ pub fn own_uid() -> Result<u32> {
     osis_transport::unix::own_uid().map_err(|e| Error::Storage(e.to_string()))
 }
 
-/// The node's person and node actors (`Osis::me`, `node`, `home` of an attached handle).
+/// The node's person and node actors (`Osis::me`, `node` of an attached handle).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Who {
     pub me: Tid,
     pub node: Tid,
-    pub home: Tid,
 }
 
 type CallReply = std::sync::mpsc::Sender<std::result::Result<Outcome, Code>>;
@@ -371,7 +370,7 @@ fn not_authed(r: std::result::Result<Outcome, Code>, keyed: bool) -> Started {
 /// A `whoami` reply.
 fn who_of(r: std::result::Result<Outcome, Code>) -> Result<Who> {
     match r {
-        Ok(Outcome::Ok { value }) => c::Args::new(value).and_then(|mut a| Ok(Who { me: a.tid()?, node: a.tid()?, home: a.tid()? })),
+        Ok(Outcome::Ok { value }) => c::Args::new(value).and_then(|mut a| Ok(Who { me: a.tid()?, node: a.tid()? })),
         Ok(Outcome::Err { code, detail }) => Err(c::error_of(code, detail)),
         Err(c) => Err(net(format!("node answered error {}", c.0))),
     }
@@ -797,9 +796,8 @@ pub(crate) fn spawn_client(addr: &crate::HostAddr, secret: &crate::ClientSecret,
 impl Osis {
     /// Attaches to the node serving the unix socket at `socket`:
     /// every call addressed by a tid or group goes there as Owner (the socket's peer has this
-    /// process's uid), `me`/`node`/`home` are the node's; `settle` waits for the node's
-    /// deliveries too. What needs this process to be the node (`read(|r| ..)`, `Internals`)
-    /// fails `Unsupported`. `cfg` gives the
+    /// process's uid), `me`/`node` are the node's; `settle` waits for the node's
+    /// deliveries too. What needs this process to be the node fails `Unsupported`. `cfg` gives the
     /// clock, dispatcher and materialization bound; its store is not used (a scratch memory
     /// database stands in until the no-store profile, step (f)).
     pub fn attach(socket: &Path, cfg: Config) -> Result<Osis> {
@@ -1131,32 +1129,6 @@ impl Osis {
         });
         let filter = Value::List(vec![u(super::filter::HISTORY), Value::Tid(tid), c::ak_v(&ak)]);
         Ok(self.remote_sub(r, Some(tid), filter, true, cb)?.0)
-    }
-
-    /// `AspectRef::watch` at the attached node: the state holds the latest value that `valid`
-    /// accepts (else absent), set from the Sub's reply before this returns.
-    pub(crate) fn remote_watch(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, valid: Box<dyn Fn(&Value) -> bool + Send>) -> Result<(Arc<crate::watch::WatchState>, Subscription)> {
-        let st = WatchState::new(Ok(None));
-        let s2 = st.clone();
-        let check = move |r: Result<Option<Value>>| r.map(|v| v.filter(|x| valid(x)));
-        let cb: Callback = Box::new(move |_, d| {
-            let Delivery::Port(ev) = d else { return };
-            match ev {
-                PortEvent::Initial(v) => s2.update(check(c::read(v).unwrap_or_else(Err))),
-                PortEvent::Notify(Payload::Delivery { value }) => {
-                    if let Ok((_, _, v, _, false)) = delivery(value) {
-                        s2.update(check(v));
-                    }
-                }
-                PortEvent::Notify(Payload::TooLarge { .. }) => s2.update(Err(Error::TooLarge { limit: REPLY_BUDGET })),
-                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => s2.update(Err(sub_ended())),
-            }
-        });
-        let (sub, initial) = self.remote_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?;
-        // the value at registration, before this returns (the dispatcher's copy is the same, and
-        // what it already ran after that is newer)
-        st.first(c::read(initial)?);
-        Ok((st, sub))
     }
 
     /// `watch_thing` at the attached node.

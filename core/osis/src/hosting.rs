@@ -37,7 +37,7 @@ impl Osis {
         if self.thin_client() {
             return Err(Error::Unsupported("a thin client: hosting is its node's".into()));
         }
-        let Some(h) = self.get(self.node(), ct::HOST)? else { return Ok(None) };
+        let Some(h) = self.at(self.node(), ct::HOST).get()? else { return Ok(None) };
         Ok(Some(Hosting {
             listen: h.listen,
             admit: h.admit,

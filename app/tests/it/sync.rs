@@ -73,7 +73,7 @@ fn two_devices_race_the_app_group() {
         assert_eq!(d.view_items(&View::Tags).unwrap().len(), 0);
         // everything the app shows is a member of home, so it syncs to every device
         for t in d.things().unwrap() {
-            assert!(d.db.groups_of(t).unwrap().within.contains(&d.db.home()), "{t} not under home");
+            assert!(d.db.groups_of(t).unwrap().within.contains(&d.db.me()), "{t} not under home");
         }
     }
     a.toggle_favorite(n).unwrap();
@@ -169,7 +169,7 @@ fn remote_delete_of_the_open_thing() {
     a.main_group().unwrap();
     let n = a.create_note().unwrap();
     let s = a.db.edit_text(n, BODY, Path::root()).unwrap();
-    s.insert(0, "hello").unwrap();
+    s.replace(0..0, "hello").unwrap();
     s.commit().unwrap();
     sync(&a, &b);
     b.delete(n).unwrap();
@@ -177,7 +177,7 @@ fn remote_delete_of_the_open_thing() {
     assert_eq!(a.opened().unwrap(), None, "a deleted thing is not open");
     assert!(!a.things().unwrap().contains(&n));
     drop(s);
-    assert_eq!(a.db.get(n, BODY).unwrap(), None, "no resurrection");
+    assert_eq!(a.db.at(n, BODY).get().unwrap(), None, "no resurrection");
 }
 
 /// A synced thing may hold anything: wrong types, unknown enum cases. Every read the screens
@@ -194,26 +194,24 @@ fn malformed_aspects_do_not_break_reads() {
         w.at(t, Ak::new(ak).unwrap()).set(&v)?;
         Ok(())
     };
-    a.db.write_with(|w| {
-        bad(w, "osis_app:view.0", Value::Enum(9, None))?;
-        bad(w, "osis_app:color.0", Value::Int(1))?;
-        bad(w, "event:start.0", Value::Str("tomorrow".into()))?;
-        bad(w, "event:start.0", Value::Enum(1, Some(Box::new(Value::Int(i64::MAX)))))?;
-        bad(w, "event:end.0", Value::Enum(2, Some(Box::new(Value::Int(i64::MAX)))))?;
-        bad(w, "contact:org.0", Value::Str("Acme".into()))?;
-        bad(w, "contact:emails.0", Value::List(vec![]))?;
-        Ok(())
-    })
-    .unwrap();
+    let mut w = a.db.write();
+    bad(&mut w, "osis_app:view.0", Value::Enum(9, None)).unwrap();
+    bad(&mut w, "osis_app:color.0", Value::Int(1)).unwrap();
+    bad(&mut w, "event:start.0", Value::Str("tomorrow".into())).unwrap();
+    bad(&mut w, "event:start.0", Value::Enum(1, Some(Box::new(Value::Int(i64::MAX))))).unwrap();
+    bad(&mut w, "event:end.0", Value::Enum(2, Some(Box::new(Value::Int(i64::MAX))))).unwrap();
+    bad(&mut w, "contact:org.0", Value::Str("Acme".into())).unwrap();
+    bad(&mut w, "contact:emails.0", Value::List(vec![])).unwrap();
+    w.commit().unwrap();
     // an event with a far start and a huge duration
-    a.db.write_with(|w| {
-        let t = w.create(a.db.me())?;
-        w.place(t, g)?;
-        w.at(t, osis_app::event::START).set(&osis_app::event::Start::At(osis_app::event::Wall { time: i64::MAX - 1, zone: None }))?;
-        w.at(t, osis_app::event::END).set(&osis_app::event::End::After(i64::MAX))?;
-        Ok(())
-    })
-    .unwrap();
+    {
+        let mut w = a.db.write();
+        let t = w.create(a.db.me()).unwrap();
+        w.place(t, g).unwrap();
+        w.at(t, osis_app::event::START).set(&osis_app::event::Start::At(osis_app::event::Wall { time: i64::MAX - 1, zone: None })).unwrap();
+        w.at(t, osis_app::event::END).set(&osis_app::event::End::After(i64::MAX)).unwrap();
+        w.commit().unwrap();
+    }
     let things = a.things().unwrap();
     assert!(things.len() > 40);
     for t in &things {
@@ -229,7 +227,7 @@ fn malformed_aspects_do_not_break_reads() {
     for q in ["a", "acme", "tomorrow", "7"] {
         a.search(q).unwrap();
     }
-    assert!(a.db.get(g, GROUP).unwrap().is_some());
+    assert!(a.db.at(g, GROUP).get().unwrap().is_some());
 }
 
 /// One device empties the other's group into the main one while that device, not yet knowing
@@ -325,11 +323,10 @@ fn look_merges_and_tolerates_odd_values() {
     let want = if ga < gb { "cel" } else { "slate" };
     assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main group's theme, the other's mode");
     let main = a.main_group().unwrap();
-    a.db.write_with(|w| {
-        w.at(main, Ak::new("osis_app:theme.0").unwrap()).set(&Value::Int(3))?;
-        w.at(main, Ak::new("osis_app:mode.0").unwrap()).set(&Value::Enum(7, None))
-    })
-    .unwrap();
+    let mut w = a.db.write();
+    w.at(main, Ak::new("osis_app:theme.0").unwrap()).set(&Value::Int(3)).unwrap();
+    w.at(main, Ak::new("osis_app:mode.0").unwrap()).set(&Value::Enum(7, None)).unwrap();
+    w.commit().unwrap();
     // the other group's choice shows through (b's mode lived on gb)
     let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("cel".into()), Mode::Auto) };
     assert_eq!(a.look().unwrap(), other, "odd values on the main group read as unset");
@@ -378,7 +375,9 @@ fn contact_fields_of_an_absent_struct_race() {
         let (a, b, clock) = two_clocked();
         a.main_group().unwrap();
         let c = a.create(NewKind::Contact).unwrap();
-        a.db.write_with(|w| w.at(c, NAMES).remove()).unwrap();
+        let mut w = a.db.write();
+        w.at(c, NAMES).remove().unwrap();
+        w.commit().unwrap();
         sync(&a, &b);
         let act = |d: &Data, label: &str| d.contact_form(c).unwrap().into_iter().find(|r: &FormRow| r.label == label).unwrap().act;
         let (first, second) = if later_is_b { (&a, &b) } else { (&b, &a) };
@@ -389,9 +388,9 @@ fn contact_fields_of_an_absent_struct_race() {
         second.form_apply(c, &act(second, "Family name"), "Lind").unwrap();
         sync(&a, &b);
         for d in [&a, &b] {
-            let org = d.get(c, ORG).unwrap().unwrap();
+            let org = d.db.at(c, ORG).get().unwrap().unwrap();
             assert_eq!((org.title.as_str(), org.name.as_str()), ("Gardener", "Acme"));
-            let n = d.get(c, NAMES).unwrap().unwrap();
+            let n = d.db.at(c, NAMES).get().unwrap().unwrap();
             assert_eq!((n.given.as_deref(), n.family.as_deref()), (Some("Theo"), Some("Lind")));
         }
     }
@@ -417,7 +416,7 @@ fn email_rename_against_concurrent_edits() {
     clock.advance(10);
     b.form_apply(c, &email(&b, "x@a.org"), "z@a.org").unwrap();
     sync(&a, &b);
-    let keys = |d: &Data| d.get(c, EMAILS).unwrap().unwrap_or_default().into_keys().collect::<Vec<_>>();
+    let keys = |d: &Data| d.db.at(c, EMAILS).get().unwrap().unwrap_or_default().into_keys().collect::<Vec<_>>();
     assert_eq!(keys(&a), keys(&b));
     assert_eq!(keys(&a), vec!["y@a.org".to_string(), "z@a.org".to_string()]);
     // a stale row (its address removed elsewhere meanwhile) saved: the new address is added
@@ -439,7 +438,7 @@ fn field_edit_and_nudge_merge() {
     a.main_group().unwrap();
     let e = a.create(NewKind::Event).unwrap();
     sync(&a, &b);
-    let Some(Start::At(w0)) = a.get(e, START).unwrap() else { panic!() };
+    let Some(Start::At(w0)) = a.db.at(e, START).get().unwrap() else { panic!() };
     let rows = a.field_rows(e).unwrap();
     let zone = rows.iter().find(|r| r.ak == "event:start.0" && r.label == "zone").unwrap().clone();
     a.set_field(e, &zone, "Europe/Berlin").unwrap();
@@ -447,7 +446,7 @@ fn field_edit_and_nudge_merge() {
     b.nudge(e, osis_app::time::HOUR, 0).unwrap();
     sync(&a, &b);
     for d in [&a, &b] {
-        let Some(Start::At(w)) = d.get(e, START).unwrap() else { panic!() };
+        let Some(Start::At(w)) = d.db.at(e, START).get().unwrap() else { panic!() };
         assert_eq!((w.time, w.zone.as_deref()), (w0.time + osis_app::time::HOUR, Some("Europe/Berlin")));
     }
 }

@@ -2,6 +2,7 @@
 //! its notes. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::TestWrites as _;
 use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
@@ -12,7 +13,7 @@ use std::time::Duration;
 
 /// A new note in `notebook`, owned by it (so the notebook's holders read and write it).
 fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
-    db.write_with(|w| {
+    db.batch(|w| {
         let note = w.create_in(notebook, &[notebook])?;
         w.at(note, NAME).set(&title.to_string())?;
         Ok(note)
@@ -20,25 +21,25 @@ fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
 }
 
 fn notes(db: &Osis, notebook: Tid) -> Result<Vec<Tid>> {
-    Ok(db.get(notebook, GROUP)?.map(|g| g.items.into_iter().filter(|t| *t != notebook).collect()).unwrap_or_default())
+    Ok(db.at(notebook, GROUP).get()?.map(|g| g.items.into_iter().filter(|t| *t != notebook).collect()).unwrap_or_default())
 }
 
 fn title(db: &Osis, note: Tid) -> Result<Option<String>> {
-    db.get(note, NAME)
+    db.at(note, NAME).get()
 }
 
 fn rename(db: &Osis, note: Tid, shown: &str, new: &str) -> Result<()> {
-    db.write_with(|w| w.at(note, NAME).edit(&shown.to_string(), &new.to_string()))
+    db.batch(|w| w.at(note, NAME).edit(&shown.to_string(), &new.to_string()))
 }
 
 fn body(db: &Osis, note: Tid) -> Result<String> {
-    Ok(db.get(note, BODY)?.unwrap_or_default())
+    Ok(db.at(note, BODY).get()?.unwrap_or_default())
 }
 
 /// Types `text` into the body at char `at` in one editing session: one commit for the pause.
 fn type_text(db: &Osis, note: Tid, at: usize, text: &str) -> Result<()> {
     let s = db.edit_text(note, BODY, Path::root())?;
-    s.insert(at, text)?;
+    s.replace(at..at, text)?;
     s.commit()?;
     Ok(())
 }
@@ -117,7 +118,7 @@ fn share_notebook_with_a_second_person() {
 
     rename(&bob, plan, "Plan", "Plan: Lisbon").unwrap();
     let travel = private_tag(&alice, "travel").unwrap();
-    alice.write_with(|w| w.place(plan, travel)).unwrap();
+    alice.batch(|w| w.place(plan, travel)).unwrap();
     type_text(&alice, plan, 0, "flights").unwrap();
     w.run();
     for db in [&alice, &bob] {
@@ -153,9 +154,9 @@ fn large_body_streams() {
     let note = new_note(&laptop, nb, "Draft").unwrap();
     // just above `CHUNK_THRESHOLD`: a large value
     let doc: String = (0..13_000).map(|i| format!("line {i}\n")).collect();
-    laptop.write_with(|w| w.at(note, BODY).set_stream(doc.as_bytes())).unwrap();
+    laptop.batch(|w| w.at(note, BODY).set_stream(doc.as_bytes())).unwrap();
     w.run();
-    assert!(matches!(phone.get(note, BODY), Err(Error::TooLarge { .. })));
+    assert!(matches!(phone.at(note, BODY).get(), Err(Error::TooLarge { .. })));
     let mut s = phone.at(note, BODY).stream().unwrap().expect("synced");
     assert_eq!(s.len(), doc.len() as u64);
     let mut got = String::new();

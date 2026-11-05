@@ -2,6 +2,7 @@
 //! same state as the same ops committed one batch each, for random op lists.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::common::TestWrites as _;
 use crate::common::*;
 use osis::{Osis, Tid, Value, core, p};
 use std::collections::BTreeMap;
@@ -129,7 +130,7 @@ struct World {
 fn world() -> World {
     let db = db(7);
     let (things, groups) = db
-        .write_with(|w| {
+        .batch(|w| {
             let things: Vec<Tid> = (0..SETUP).map(|_| w.create_durable(db.me())).collect::<osis::Result<_>>()?;
             for t in &things {
                 w.at(*t, ak(AKS[2])).set(&Value::Map(osis_base::ValueMap::new()))?;
@@ -154,11 +155,11 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
         Call::SetExpiring(t, k, v) => w.at(things[*t], key(*k)).expires_in(HOUR).set(&Value::Int(*v)),
         Call::Replace(t, k, v) => w.at(things[*t], key(*k)).replace(&Value::Int(*v)),
         Call::Remove(t, k) => w.at(things[*t], key(*k)).remove(),
-        Call::Put(t, k, v) => w.at(things[*t], key(2)).path(p!()).put(&Value::Int(*k), &Value::Int(*v)),
-        Call::RemoveKey(t, k) => w.at(things[*t], key(2)).path(p!()).remove_key(&Value::Int(*k)),
+        Call::Put(t, k, v) => w.at(things[*t], key(2)).path(p!(Value::Int(*k))).set(&Value::Int(*v)),
+        Call::RemoveKey(t, k) => w.at(things[*t], key(2)).path(p!(Value::Int(*k))).remove(),
         Call::Edit(t, b, n) => w.at(things[*t], key(2)).edit(&m(b), &m(n)),
         Call::Title(t, s) => w.at(things[*t], notes::TITLE).set(s),
-        Call::Views(t, n) => w.at(things[*t], notes::VIEWS).inc(n),
+        Call::Views(t, n) => w.at(things[*t], notes::VIEWS).path(osis::Path::root()).contribute(n),
         Call::Opened(t, v) => w.at(things[*t], notes::LAST_OPENED).set(v),
         Call::Place(t, 0) => w.place(things[*t], g0),
         Call::Place(t, _) => w.place_expiring(things[*t], g1, Some(HOUR)),
@@ -188,10 +189,10 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
         id = w.commit().unwrap().map(|c| c.id);
     } else {
         for _ in 0..creates {
-            things.push(db.write_with(|w| w.create(db.me())).unwrap());
+            things.push(db.batch(|w| w.create(db.me())).unwrap());
         }
         for c in calls {
-            db.write_with(|w| apply(w, &wd, &things, c)).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+            db.batch(|w| apply(w, &wd, &things, c)).unwrap_or_else(|e| panic!("{c:?}: {e}"));
         }
     }
     (wd, things, id)
@@ -212,9 +213,9 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
             if a.as_str() == "created.0" || a.as_str() == "placed.0~" {
                 continue;
             }
-            vals.push(format!("{a}={:?}", db.get(*t, a.clone()).unwrap()));
+            vals.push(format!("{a}={:?}", db.at(*t, a.clone()).get().unwrap()));
         }
-        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t).unwrap(), db.get(*t, core::GROUP).unwrap(), db.groups_of(*t).unwrap(), vals.join(" "))));
+        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t).unwrap(), db.at(*t, core::GROUP).get().unwrap(), db.groups_of(*t).unwrap(), vals.join(" "))));
     }
     out
 }
