@@ -23,7 +23,7 @@ aspect tag.0: struct { 0 color: option<string> };   // marks a group as a user-f
 
 ## Tags
 - A tag is a group thing with `tag.0` and usually `name.0`. Membership of a thing in a tag is placement (`group.0` items), nesting is `group.0` subgroups. Graph, cycles allowed, a thing or tag may be in many tags.
-- Why placement and not a `tags.0: set<tid>` on the thing: placement is written on the tag, so a reader can tag a thing it cannot write, and one person's tags of a shared thing never reach the thing's other readers. Each reader's tags are private by construction.
+- Why placement and not a `tags.0: set<tid>` on the thing: placement is written on the tag, so a reader can tag a thing it cannot write, and one account's tags of a shared thing never reach the thing's other readers. Each reader's tags are private by construction.
 - Placement is also what syncs a thing (spec/requirements.md, Offline and network): a thing in no tag and no internal group stays local. Apps keep an internal synced group for "all my notes" or similar; tags are extra.
 - Internal groups (buckets, app indexes) have no `tag.0`; generic tools list only tags.
 
@@ -50,7 +50,7 @@ A thing made of parts (a presentation of slides) owns its parts and is a group o
 
 ## Other conventions settled
 - Shared roots (a shared tag, a chat) are created unplaced and synced under their own label, not placed in the home group (notes/api.md `create`).
-- "Shared with me": a foreign thing placed in a home-private group mirrors to all my devices through entitlement (I hold an edge). The home group should hold small person-private index things, not shared roots.
+- "Shared with me": a foreign thing placed in a home-private group mirrors to all my devices through entitlement (I hold an edge). The home group should hold small account-private index things, not shared roots.
 - Timestamps come from commits (`Osis::created`, commit `ts`), never from aspects.
 - Files: `blob` plus a mime string on a file thing.
 

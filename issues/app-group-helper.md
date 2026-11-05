@@ -1,4 +1,4 @@
-# Per-person app groups: every app reimplements the convention
+# Per-account app groups: every app reimplements the convention
 > Summary: Tess's convention for an app's own data (a marked group among home's subgroups, union read, smallest tid written) leaves each app to find or create the group correctly and to merge duplicates from devices that started offline, per piece of data. Ask: a helper in the `osis` crate that does both.
 > Tags: core-ask, api
 

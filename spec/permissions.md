@@ -54,7 +54,7 @@
   - Its entry reset with the edge written anew with `until` 0 (role read, no invite, no `tied`, the standing edge's `keyset`), gone at every clock, says keep, and is a removal all the same (§5.1, §6), in one commit with its rotation. A client writes `until` 0 for nothing else.
   - It says what its remover wants, or else what the thing's default says: `keep` of the `required.0^` setting in force (spec/commits.md §5), none erasing.
   - A self-removal says what its node wants, whatever the default.
-  - A client removing a node from its person writes erase unless its user says otherwise, whatever the default.
+  - A client removing a node from its account writes erase unless its user says otherwise, whatever the default.
   - A receiver reads what the removal says, never the default.
   - An invite grant gone when written does not apply (§5.1).
 - An edge may carry `invite: role`, at most its role. A `roles.0` delta putting a value that breaks this or reads as no edge, in a role commit or a roster snapshot, is bad by itself (spec/commits.md §4), and so applies nothing, its entry resets included.
@@ -87,7 +87,7 @@
 - A plain thing uses derived role secrets until it gets a non-owner holder. It then gets random secrets of its own by a rotation from the derived epochs (spec/crypto.md §3), boxed to its owner and each holder, and a `keys.0`.
   - A thing that is to be granted a role on anything gets secrets of its own first.
   - An admin node that sees a current non-owner holder of a plain thing (left so by its only keyset part turning invalid, spec/crypto.md §3) SHOULD give it secrets of its own the same way, boxing every current holder, deciding at the end of a complete sync pass (below) of the labels of the actor its secrets derive from. Concurrent ones fork (spec/crypto.md §4).
-- **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, finalize) of holder M from actor A (a device removal is one, on the person actor) requires rotating every role secret M could open through A:
+- **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, finalize) of holder M from actor A (a device removal is one, on the account) requires rotating every role secret M could open through A:
   - on A, the roles M left;
   - on every thing with secrets of its own that A's roles open (what A owns, the targets of A's edges, and so on transitively), the roles A holds there among those the roles M left open through A (a role secret opens only boxes of that role, spec/crypto.md §4).
   - Content is not re-encrypted.
@@ -381,7 +381,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - `until` on L's edge expires the link. **Single use** (the link's `flags` bit 0, spec/wire.md §10) = the redemption also removes L's own edge in the same commit (a self-removal).
 - **Finalized**: L's edge past `until` is finalized like any ended edge (§2), by any writer of K: that removal rotates K and audits nothing. Besides, an expired or self-removed L is finalized by a sharer device writing an explicit removal of L (§5.1), which audits L's invite grants: a node that holds the link's seed thing and admin on K MUST write it once L's edge expired or was self-removed (or finalized) with no explicit write on it since, after a complete pass of K's labels (§3) that ended, for an expiry, after `until` (when K's labels have no host, at once and only by the node that wrote the seed thing; with hosts it waits for that pass however long it takes).
   - An invite grant as L that the removal's frontier does not cover is dropped (§5.1 step 4); one received before it stands.
-- The sharer's link seed thing is placed in the sharer's home group, so every device of the sharer holds it. A device removal does not end a link: the removed device reads through L until L is removed from K. An implementation MUST tell the one removing a device which of the person's links still work, and let any device of the sharer remove their L.
+- The sharer's link seed thing is placed in the sharer's home group, so every device of the sharer holds it. A device removal does not end a link: the removed device reads through L until L is removed from K. An implementation MUST tell the one removing a device which of the account's links still work, and let any device of the sharer remove their L.
 - **Bearer use**: act as L without writing anything. Read only. A node that read as L may forget the seed and keep what L reads and follow it (a contact card, spec/sync.md §3): it counts as read access while L holds a role on it (§3).
 - A joiner that may still hold the seed is revoked only together with L, both removals in one commit with one rotation of K (spec/commits.md §2); a new link is a new L.
 - The sharer keeps the seed on a thing only its own actor reads (the seed thing: aspect `link:seed.0`, a map {0: K's tid, 1: the seed, 2: the target's tid, 3: single use}) and writes L's `keys.0` and K's deposit seed.
