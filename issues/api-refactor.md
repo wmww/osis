@@ -115,7 +115,7 @@ Keep as they are:
 | `placed.0~`, `PlacementNotPersisted`, `place_plan`, "placed" in prose | membership words | Decided 3 |
 
 ### Vocabulary
-- **Nodes** (Tess; spec/requirements.md Terms, issues/node-host-unify.md): `node` in the API, never `device`: `devices()` and `remove_device` become `nodes()` and `remove_node`; apps may say device to their users. Host is a role. "Blind node" goes. "Thin client" and "Owner" go: a **client** is a program using a node out of process, local or remote, and a **remote client** one on another machine; neither name says what actor it acts as. `is_attached` and `attach*` follow (D2).
+- **Nodes** (Tess; spec/requirements.md Terms, issues/node-host-unify.md): `node` in the API, never `device`: `devices()` and `remove_device` become `nodes()` and `remove_node`; apps may say device to their users. Host is a role. "Blind node" goes. "Owner" goes. A **client** is anything using the client protocol, a node included; a **thin client** is one that is not a node. Neither says what actor it acts as. `is_attached` and `attach*` follow (D2).
 - **Host, not relay**: unless Tess decides otherwise. Relay already means forwarding without storing (iroh relays, relay-only commits).
 - **Account**, not person or user: an account may be a team, a bot or a shared identity. `me()` keeps its name.
 - **Roles**: one sentence for all of it: an actor is *granted a role* on a thing, and is then a *holder* of that role. A role can be set, or removed. Clean out older words wherever API, CLI, spec and notes use them:

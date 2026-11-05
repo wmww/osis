@@ -17,13 +17,13 @@ The code that serves data a node may not read cannot decrypt anything (`osis-hos
 5. **`osis-proto` session names.** `ClientSession` means the dialing side of a connection, unrelated to a client of the API. `ServingSession::port_only` and friends likewise.
 
 ## Clients
-A **client** is a program using a node out of process, local or remote; a **remote client** is one whose node is on another machine. Which actor it acts as is a separate matter. Today the two are tied:
-- Unix socket: same uid, acts as the node's account (`attach`, "Owner").
-- Secret over a keyed transport: acts as an actor minted for it (`add_client`).
+A **client** is anything using the client protocol; a node may be one too (a phone syncing its private data and using a server's node for bigger, less sensitive data). A **thin client** is a client that is not a node. Neither says what actor it acts as, and the model doesn't couple machine, transport and actor: there are many threat models, and which fits is a node's policy.
 
-To decide: a credential names the actor it acts as, so transport and actor are independent. The hard part is a remote client acting as the account: a bearer secret would then carry the account's full power, and notes/client-port.md Rejected ("Thin devices") argued against that. Grants to its own actor may remain the recommended way even if the shape allows both.
+Default policy (Tess):
+- **Unix socket**: open without authentication to the current user, as the node's main actor. There is no security boundary there anyway.
+- **Localhost or network listener**: a client may act only as actors it has cryptographically authenticated for.
 
-In-process acting as several actors is issues/grant-rename-multi-actor.md (public `act_as`).
+To build: a credential names the actor it acts as, the main one included if the node's owner chooses. Today the transport decides (socket: main actor; secret: an actor minted for it), and notes/client-port.md Rejected ("Thin devices") argues from a threat model it shouldn't impose: reword it as a default. Today's credential is a bearer secret inside TLS; decide whether "cryptographically authenticated" needs a signature by the actor's key instead. Also: acting as several actors in process, issues/grant-rename-multi-actor.md (public `act_as`).
 
 ## Words to sweep
-"Blind node", "untrusted node" as a kind, "thin client", "Owner" session, "device" as a term of the model. notes/networking.md "Blind always-on nodes are the backbone", notes/client-port.md §0 "Two kinds of process", notes/sync.md, notes/convergence-study.md, notes/overview.md. API part: issues/api-refactor.md, Names.
+"Blind node", "untrusted node" as a kind, "Owner" session, "device" as a term of the model. notes/networking.md "Blind always-on nodes are the backbone", notes/client-port.md §0 "Two kinds of process", notes/sync.md, notes/convergence-study.md, notes/overview.md. API part: issues/api-refactor.md, Names.
