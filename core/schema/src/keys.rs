@@ -1,6 +1,6 @@
 //! Typed aspect keys (notes/api.md Keys). `Aspect<T>` are constants
 //! (generated per declared AK, or the core ones in `core_types`); `Ak` is the
-//! untyped key with `T = Value`.
+//! untyped key with `T = Value`, for the engine: an app's key is an `ApiKey`.
 
 use crate::codec::Codec;
 use crate::path::{Path, PathError, PathErrorKind};
@@ -12,30 +12,40 @@ use osis_base::{Ak, Value};
 use std::marker::PhantomData;
 
 pub trait AspectKey {
+    /// The Rust type its values read as.
     type T;
+    #[doc(hidden)]
     fn ak(&self) -> &str;
+    #[doc(hidden)]
     /// The writer's schema; `None` for an untyped write (untyped defaults).
     fn schema(&self) -> Option<&Schema>;
+    #[doc(hidden)]
     /// `schema` as a shared copy (a key holding an `Arc` shares it instead of copying).
     fn shared_schema(&self) -> Option<std::sync::Arc<Schema>> {
         self.schema().map(|s| std::sync::Arc::new(s.clone()))
     }
+    #[doc(hidden)]
     /// Typed read (reader defaults, open structs), then into `T`.
     fn decode(&self, v: &Value) -> Result<Self::T, PathError>;
+    #[doc(hidden)]
     fn encode(&self, t: &Self::T) -> Value;
 
+    #[doc(hidden)]
     /// The aspect's type in its schema.
     fn ty(&self) -> Option<&Type> {
         self.schema()?.aspects.get(self.ak()).map(|a| &a.ty)
     }
+    #[doc(hidden)]
     /// Retention and expiry a write puts into its delta (untyped: `author`, no bounds, no expiry).
     fn defaults(&self) -> AspectDefaults {
         self.schema().and_then(|s| s.defaults(self.ak())).unwrap_or_default()
     }
+    #[doc(hidden)]
     /// Where its writes go: the AK's lifetime marker (spec/data-model.md §2), typed or not.
     fn lifetime(&self) -> Lifetime {
         Ak::markers_of(self.ak()).1
     }
+    #[doc(hidden)]
     /// Validates a write against the writer's schema (spec/versioning.md §5); untyped writes
     /// always pass.
     fn validate(&self, v: &Value) -> Result<(), PathError> {
@@ -45,6 +55,12 @@ pub trait AspectKey {
         }
     }
 }
+
+/// What a call of the `osis` API takes as an aspect's key: generated keys and `osis::Key`, not a
+/// bare name.
+pub trait ApiKey: AspectKey {}
+
+impl<T: Codec> ApiKey for Aspect<T> {}
 
 fn undeclared(ak: &str) -> PathError {
     PathError::new(Path::root(), PathErrorKind::Schema(format!("{ak} is not declared by its schema")))

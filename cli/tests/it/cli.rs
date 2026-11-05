@@ -153,7 +153,7 @@ fn store_dir_init_lock_plan_cli_2() {
     let (c, t, _) = call(&["create", "a:b.0", "1"]);
     assert_eq!(c, 0);
     assert_eq!(call(&["get", t.trim(), "a:b.0"]).1, "1\n");
-    let held = osis::Osis::open(osis::Config::dir(&d)).unwrap();
+    let held = osis::internals::open(osis::internals::Opening::dir(&d)).unwrap();
     let (c, _, err) = call(&["whoami"]);
     assert_eq!(c, 8, "{err}");
     assert!(err.contains("store in use"), "{err}");
@@ -321,7 +321,7 @@ fn stream_and_len_plan_cli_4() {
 #[test]
 fn group_sync_without_hosts_keeps_the_label() {
     let s = S::mem();
-    let (a, b) = (osis::HostAddr::new("mem://a", [1; 32]).to_string(), osis::HostAddr::new("mem://b", [2; 32]).to_string());
+    let (a, b) = (osis::HostAddr::new(&"mem://a".parse().unwrap(), [1; 32]).to_string(), osis::HostAddr::new(&"mem://b".parse().unwrap(), [2; 32]).to_string());
     s.ok(&["hosts", "add", &a]);
     let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();
     // 6: done, and no host to deliver to in this test
@@ -667,14 +667,14 @@ fn sock_pointer_must_be_the_stores() {
         (code, String::from_utf8(e).unwrap())
     };
     assert_eq!(call(&["init"]).0, 0);
-    let held = osis::Osis::open(osis::Config::dir(&d)).unwrap();
+    let held = osis::internals::open(osis::internals::Opening::dir(&d)).unwrap();
     // another node of this uid serving a socket of its own
     // (a short path: `sun_path`)
     let other = std::env::temp_dir().join(format!("osis-cli-sockptr-{}", std::process::id()));
     std::fs::create_dir_all(&other).unwrap();
-    let mut c = osis::Config::memory();
+    let mut c = osis::internals::Opening::memory();
     c.runtime = osis::Runtime::Own;
-    let (n, _) = osis::Osis::create(c).unwrap();
+    let (n, _) = osis::internals::create(c).unwrap();
     let sock = other.join("n.sock");
     n.listen_unix(&sock).unwrap();
     std::fs::write(d.join(osis::SOCK_FILE), format!("{}\n", sock.display())).unwrap();

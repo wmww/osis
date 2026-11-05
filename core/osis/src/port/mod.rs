@@ -1,7 +1,7 @@
 //! The client port (notes/client-port.md): the `osis` API over the node-to-node protocol's
 //! client-port kinds (spec/wire.md §11.2). `serve`: a node answers the requests its served
-//! sessions make, on a worker thread off the handle lock; `client`: a process attached to such
-//! a node (`Osis::attach`, `Osis::attach_client`) routes its tid-addressed calls there
+//! sessions make, on a worker thread off the handle lock; `client`: a process connected to such
+//! a node (`Osis::connect_socket`, `Osis::connect`) routes its tid-addressed calls there
 //! (`Source::Remote`). Sessions: the Owner (the unix socket, `Peer::Unix`) and thin clients (a
 //! bearer secret matching `clients.0^`), whose rows run as the client's actor (`serve`).
 
@@ -54,7 +54,7 @@ pub(crate) mod method {
     pub const STREAM_READ: u64 = 18;
     /// `[]` -> `[]` once every Notify for changes before it went (`Osis::settle`). The worker
     /// runs the node's `settle`, waiting for its dispatcher: a callback in the node's process
-    /// that waits on the port worker (an attached handle of its own node) deadlocks it.
+    /// that waits on the port worker (an thin client of its own node) deadlocks it.
     pub const SETTLE: u64 = 19;
     /// `[]` -> wall ms
     pub const NOW: u64 = 20;
@@ -116,12 +116,15 @@ pub(crate) mod method {
     /// `[invite id bytes]` -> `[]`
     pub const ACCEPT_INVITE: u64 = 53;
     pub const DECLINE_INVITE: u64 = 54;
-    /// `[group]` -> `[Opt(publish_reach), receipts_only]`
-    pub const GROUP_POLICY: u64 = 55;
-    /// `[group, Opt(publish_reach), receipts_only]` -> `[]`
-    pub const SYNC_POLICY: u64 = 56;
+    /// `[group]` -> `[Opt(reach), headers_only]`
+    pub const SYNC_OPTIONS: u64 = 55;
+    /// `[group, Opt(reach), headers_only]` -> `[]`
+    pub const SET_SYNC_OPTIONS: u64 = 56;
     /// `[]` -> `[]`
     pub const ROTATE_REACH: u64 = 57;
+    /// `[scope]` -> Opt(entry)
+    pub const UNDO_TARGET: u64 = 70;
+    pub const REDO_TARGET: u64 = 71;
     /// `[[group*]]` -> length: the bundle waits on this connection for `BUNDLE_READ`, replacing one
     /// waiting there, until its last page was read. A bundle does not fit a frame; held per
     /// connection, it goes with it.
@@ -137,22 +140,23 @@ pub(crate) mod method {
     // Rows that wait on other nodes: a `[5, method, [arg*]]` subscription, never a Call (`filter`).
     /// `[sync scope, timeout ms]` -> `[]`
     pub const WAIT_SYNCED: u64 = 62;
-    /// `[link text]` -> tid
+    /// `[link text, timeout ms]` -> tid
     pub const REDEEM: u64 = 63;
-    /// `[target, holder, Opt(role), set role]` -> `[]` (no role: removed)
+    /// `[target, holder, Opt(role), set role, timeout ms]` -> `[]` (no role: removed)
     pub const SET_ROLE: u64 = 64;
-    /// `[link id, sync first]` -> `[]`
+    /// `[link id, sync first, timeout ms]` -> `[]`
     pub const REVOKE_LINK: u64 = 65;
-    /// `[target, holder, Opt(role), set role]` -> `[]`
+    /// `[target, holder, Opt(role), set role, timeout ms]` -> `[]`
     pub const REPUDIATE: u64 = 66;
-    /// `[card text]` -> person
+    /// `[card text, timeout ms]` -> person
     pub const IMPORT_CONTACT: u64 = 67;
 
-    /// The rows a thin client's session may call, each running on a handle acting as its actor.
-    /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this
-    /// node's authority and take no actor (they would be a confused deputy).
+    /// The rows a client's session by a secret may call, each running on a handle acting as its
+    /// actor. Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with
+    /// this node's authority and take no actor (they would be a confused deputy). `LEAVE` is such a
+    /// flow, and only ever on the actor's own grant (`Osis::leave`).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | HOLDS | GROUPS_OF | GRANTS | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
+        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
     }
 }
 

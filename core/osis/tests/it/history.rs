@@ -26,13 +26,13 @@ fn thing(db: &Osis) -> Tid {
 
 fn say(db: &Osis, t: Tid, x: &str) -> ChangeId {
     let mut w = db.write();
-    w.at(t, msgs()).set(&s(x)).unwrap();
+    w.at(t, osis::Key::untyped(msgs())).set(&s(x)).unwrap();
     w.commit().unwrap().unwrap().id
 }
 
 fn watch(db: &Osis, t: Tid, k: osis::Ak) -> (osis::Subscription, Receiver<HistoryEvent<Value>>) {
     let (tx, rx) = channel();
-    let sub = db.at(t, k).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let sub = db.at(t, osis::Key::untyped(k)).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
     (sub, rx)
 }
 
@@ -55,7 +55,7 @@ fn page_and_watch() {
     assert_eq!(*id, a);
     assert_eq!((e.body.clone(), e.valid, e.commit.actor, e.kind), (HistoryBody::Held(Some(s("one"))), true, db.me(), CommitKind::Change));
     say(&db, t, "two");
-    let page = db.at(t, msgs()).history(HistoryFrom::Newest, 10).unwrap();
+    let page = db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 10).unwrap();
     assert_eq!(page.entries.iter().map(|e| e.body.clone()).collect::<Vec<_>>(), vec![HistoryBody::Held(Some(s("two"))), HistoryBody::Held(Some(s("one")))]);
     assert!(!page.more);
     assert!(page.entries[0].commit.received.0 > 0);
@@ -63,13 +63,13 @@ fn page_and_watch() {
     for i in 0..osis::HISTORY_PAGE {
         say(&db, t, &format!("m{i}"));
     }
-    let page = db.at(t, msgs()).history(HistoryFrom::Newest, usize::MAX).unwrap();
+    let page = db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, usize::MAX).unwrap();
     assert_eq!(page.entries.len(), osis::HISTORY_PAGE);
     assert!(page.more);
-    let next = db.at(t, msgs()).history(HistoryFrom::Before(page.entries.last().unwrap().pos()), 1).unwrap();
+    let next = db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Before(page.entries.last().unwrap().pos()), 1).unwrap();
     assert_eq!(next.entries.len(), 1);
     // an unknown thing: empty, not an error
-    let none = db.at(Tid::from_bytes([7; 15]), msgs()).history(HistoryFrom::Newest, 5).unwrap();
+    let none = db.at(Tid::from_bytes([7; 15]), osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 5).unwrap();
     assert!(none.entries.is_empty() && !none.more);
 }
 
@@ -84,19 +84,19 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     let b = say(&db, t, "next");
     let (_sub, rx) = watch(&db, t, msgs());
     let mut w = db.write();
-    w.at(t, msgs()).purge(osis::Purge::Change(a)).unwrap();
+    w.at(t, osis::Key::untyped(msgs())).purge(osis::Purge::Change(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
-    let page = db.at(t, msgs()).history(HistoryFrom::Oldest, 10).unwrap();
+    let page = db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Oldest, 10).unwrap();
     assert_eq!(page.entries.len(), 2, "no entry for the request");
     assert_eq!(page.entries[0].commit.id, a);
     assert_eq!(page.entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
     assert_eq!(page.entries[1].commit.id, b);
-    assert_eq!(db.at(t, msgs()).get().unwrap(), Some(s("next")));
+    assert_eq!(db.at(t, osis::Key::untyped(msgs())).get().unwrap(), Some(s("next")));
     let got = heard(&db, &rx);
     assert!(got.iter().any(|e| matches!(e, HistoryEvent::Commit { id, entry: Some(e) } if *id == a && matches!(e.body, HistoryBody::Purged { .. }))), "{got:?}");
     // an ephemeral batch has no delta to purge; a memory aspect takes none
     let mut w = db.write();
-    assert!(matches!(w.at(t, ak("t:x.0~")).purge(osis::Purge::Author(db.me())), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, osis::Key::untyped(ak("t:x.0~"))).purge(osis::Purge::Author(db.me())), Err(Error::Invalid(_))));
 }
 
 // spec/permissions.md §7: a purge by author through the API: an admin's request drops a writer's
@@ -111,7 +111,7 @@ fn purge_author_through_the_api_spec_perm_7() {
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
     let mut x = alice.write();
     let g = x.create().unwrap();
     x.group(alice.me()).add(osis::Member::Item(g)).unwrap();
@@ -124,7 +124,7 @@ fn purge_author_through_the_api_spec_perm_7() {
     }
     w.run();
     let mut x = bob.write();
-    x.at(g, msgs()).purge(osis::Purge::Author(alice.me())).unwrap();
+    x.at(g, osis::Key::untyped(msgs())).purge(osis::Purge::Author(alice.me())).unwrap();
     assert!(matches!(x.commit(), Err(Error::Permission { needs: Role::Write, .. })), "a reader");
     alice.grant(g, b, Role::Write, Default::default()).unwrap();
     w.run();
@@ -132,11 +132,11 @@ fn purge_author_through_the_api_spec_perm_7() {
     let own = say(&alice, g, "mine");
     w.run();
     let mut x = alice.write();
-    x.at(g, msgs()).purge(osis::Purge::Author(bob.me())).unwrap();
+    x.at(g, osis::Key::untyped(msgs())).purge(osis::Purge::Author(bob.me())).unwrap();
     let rq = x.commit().unwrap().unwrap().id;
     w.run();
     for db in [&alice, &bob] {
-        let page = db.at(g, msgs()).history(HistoryFrom::Oldest, 10).unwrap();
+        let page = db.at(g, osis::Key::untyped(msgs())).history(HistoryFrom::Oldest, 10).unwrap();
         let of = |c: ChangeId| page.entries.iter().find(|e| e.commit.id == c).unwrap().body.clone();
         assert_eq!(of(flood), HistoryBody::Purged { by: rq, actor: Some(alice.me()) });
         assert_eq!(of(own), HistoryBody::Held(Some(s("mine"))));
@@ -157,14 +157,14 @@ fn page_says_when_it_may_miss_entries() {
     });
     let t = t.unwrap();
     say(&db, t, "x");
-    assert!(!db.at(t, msgs()).history(HistoryFrom::Newest, 1).unwrap().complete, "still syncing");
+    assert!(!db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 1).unwrap().complete, "still syncing");
     w.until(db.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
     w.run();
-    assert!(db.at(t, msgs()).history(HistoryFrom::Newest, 1).unwrap().complete);
+    assert!(db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 1).unwrap().complete);
     // a thing in no label: nothing to wait for
     let alone = db_at(4);
     let u = thing(&alone);
-    assert!(alone.at(u, msgs()).history(HistoryFrom::Newest, 1).unwrap().complete);
+    assert!(alone.at(u, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 1).unwrap().complete);
 }
 
 // spec/sync.md §6: a new device reads the newest messages while older ones are on their way:
@@ -185,12 +185,12 @@ fn a_new_device_reads_newest_first_spec_sync_6() {
         say(&db, t, &format!("{i:05}"));
     }
     w.run();
-    let join = Osis::pair(w.cfg(2, &[]), &db.pair_offer().unwrap()).unwrap();
+    let join = osis::internals::pair(w.cfg(2, &[]), &db.pair_offer().unwrap()).unwrap();
     let (_, reply) = db.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
     let mut part = false;
     for _ in 0..100_000 {
-        let page = phone.at(t, msgs()).history(HistoryFrom::Newest, 10).unwrap();
+        let page = phone.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 10).unwrap();
         if !page.entries.is_empty() {
             let shown = page.entries.iter().filter(|e| e.body != HistoryBody::Held(Some(s("first"))));
             for (i, e) in shown.enumerate() {
@@ -208,7 +208,7 @@ fn a_new_device_reads_newest_first_spec_sync_6() {
     }
     assert!(part, "seen before it was complete");
     w.run();
-    assert!(phone.at(t, msgs()).history(HistoryFrom::Newest, 1).unwrap().complete);
+    assert!(phone.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 1).unwrap().complete);
 }
 
 // spec/sync.md §9, notes/api.md History, notes/ephemeral.md: memory data has a history too: own batches at once,
@@ -222,7 +222,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
-    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
     let mut x = alice.write();
     let g = x.create().unwrap();
     x.group(alice.me()).add(osis::Member::Item(g)).unwrap();
@@ -233,26 +233,26 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     let typing = ak("t:typing.0~");
     let (_sub, rx) = watch(&bob, g, typing.clone());
     let mut x = alice.write();
-    x.at(g, typing.clone()).expires(osis::Expiry::In(Duration::from_secs(5))).set(&s("alice types")).unwrap();
+    x.at(g, osis::Key::untyped(typing.clone())).expires(osis::Expiry::In(Duration::from_secs(5))).set(&s("alice types")).unwrap();
     x.commit().unwrap();
     // at once for its writer
-    let own = alice.at(g, typing.clone()).history(HistoryFrom::Newest, 5).unwrap();
+    let own = alice.at(g, osis::Key::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap();
     assert_eq!(own.entries.len(), 1);
     assert_eq!(own.entries[0].body, HistoryBody::Held(Some(s("alice types"))));
     assert_eq!(own.entries[0].kind, CommitKind::Ephemeral);
     w.run();
-    let got = bob.at(g, typing.clone()).history(HistoryFrom::Newest, 5).unwrap();
+    let got = bob.at(g, osis::Key::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap();
     assert_eq!(got.entries.len(), 1, "{got:?}");
     assert_eq!((got.entries[0].commit.actor, got.entries[0].valid, got.entries[0].body.clone()), (alice.me(), true, HistoryBody::Held(Some(s("alice types")))));
     let id = got.entries[0].commit.id;
     assert!(heard(&bob, &rx).iter().any(|e| matches!(e, HistoryEvent::Commit { id: i, entry: Some(_) } if *i == id)));
     // its own batch and its commit are one entry at its writer
-    assert_eq!(alice.at(g, typing.clone()).history(HistoryFrom::Newest, 5).unwrap().entries.len(), 1);
+    assert_eq!(alice.at(g, osis::Key::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap().entries.len(), 1);
     w.advance(6_000);
     w.run();
-    assert!(bob.at(g, typing.clone()).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty());
+    assert!(bob.at(g, osis::Key::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty());
     assert!(heard(&bob, &rx).iter().any(|e| matches!(e, HistoryEvent::Commit { id: i, entry: None } if *i == id)), "gone");
-    assert!(alice.at(g, typing).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty(), "its writer too");
+    assert!(alice.at(g, osis::Key::untyped(typing)).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty(), "its writer too");
 }
 
 // spec/data-model.md §6 (large values), notes/api.md History: a page is bounded in the bytes of its values, a link's once materialized, so
@@ -260,27 +260,27 @@ fn memory_commits_read_and_tell_spec_sync_9() {
 // the bound alone reads as too large, its entry in its place.
 #[test]
 fn page_bound_counts_large_values() {
-    let mut c = osis::Config::memory();
+    let mut c = osis::internals::Opening::memory();
     c.materialize_limit = 3 << 20;
-    let db = Osis::create(c).unwrap().0;
+    let db = osis::internals::create(c).unwrap().0;
     let t = thing(&db);
     let k = ak("t:big.0");
     let put = |n: usize, b: u8| {
-        db.commit_set(t, k.clone(), &Value::Bytes(vec![b; n])).unwrap();
+        db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Bytes(vec![b; n])).unwrap();
     };
     put(2 << 20, 1);
     put(2 << 20, 2);
     put(2 << 20, 3);
-    let page = db.at(t, k.clone()).history(HistoryFrom::Oldest, 10).unwrap();
+    let page = db.at(t, osis::Key::untyped(k.clone())).history(HistoryFrom::Oldest, 10).unwrap();
     assert_eq!(page.entries.len(), 2, "stops past the bound");
     assert!(page.more);
     assert_eq!(page.entries[0].body, HistoryBody::Held(Some(Value::Bytes(vec![1; 2 << 20]))), "its bytes, no link");
-    let next = db.at(t, k.clone()).history(HistoryFrom::After(page.entries[1].pos()), 10).unwrap();
+    let next = db.at(t, osis::Key::untyped(k.clone())).history(HistoryFrom::After(page.entries[1].pos()), 10).unwrap();
     assert_eq!(next.entries.len(), 1);
     assert!(!next.more);
     let last = next.entries[0].pos();
     put(4 << 20, 4);
-    let huge = db.at(t, k.clone()).history(HistoryFrom::After(last), 10).unwrap();
+    let huge = db.at(t, osis::Key::untyped(k.clone())).history(HistoryFrom::After(last), 10).unwrap();
     assert_eq!(huge.entries[0].body, HistoryBody::TooLarge { limit: 3 << 20 });
 }
 
@@ -296,9 +296,9 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     let rules: ct::RequiredRules = [(String::new(), ct::Required::new(osis::Retention::default(), Some(60_000)))].into_iter().collect();
     db.commit_set(t, ct::REQUIRED, &rules).unwrap();
     let mut w = db.write();
-    w.at(t, msgs()).purge(osis::Purge::Change(a)).unwrap();
+    w.at(t, osis::Key::untyped(msgs())).purge(osis::Purge::Change(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
-    assert_eq!(db.at(t, msgs()).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
+    assert_eq!(db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
 }
 
 // spec/commits.md §5 (a writer does not undo `required.0^`), notes/api.md `knows`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
@@ -317,7 +317,7 @@ fn required_is_no_content_spec_commits_5() {
     assert_eq!(db.at(t, ct::REQUIRED).get().unwrap(), Some(rules.clone()), "still in force");
     let mut w = db.write();
     let u = w.create().unwrap();
-    w.at(u, msgs()).set(&s("x")).unwrap();
+    w.at(u, osis::Key::untyped(msgs())).set(&s("x")).unwrap();
     w.at(u, ct::REQUIRED).set(&rules).unwrap();
     w.commit().unwrap();
     db.undo(&osis::Scope::Thing(u)).unwrap();

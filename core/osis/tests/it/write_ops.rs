@@ -131,7 +131,7 @@ fn world() -> World {
         .batch(|w| {
             let things: Vec<Tid> = (0..SETUP).map(|_| w.create_durable(db.me())).collect::<osis::Result<_>>()?;
             for t in &things {
-                w.at(*t, ak(AKS[2])).set(&Value::Map(osis_base::ValueMap::new()))?;
+                w.at(*t, osis::Key::untyped(ak(AKS[2]))).set(&Value::Map(osis_base::ValueMap::new()))?;
             }
             let g0 = w.create_durable(db.me())?;
             let g1 = w.create_durable(db.me())?;
@@ -147,13 +147,13 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
     let m = |v: &[(i64, i64)]| Value::Map(v.iter().map(|(k, x)| (Value::Int(*k), Value::Int(*x))).collect::<BTreeMap<_, _>>().into_iter().collect());
     let [g0, g1] = wd.groups;
     match c {
-        Call::Set(t, k, v) => w.at(things[*t], key(*k)).set(&Value::Int(*v)),
-        Call::SetExpiring(t, k, v) => w.at(things[*t], key(*k)).expires(osis::Expiry::In(HOUR)).set(&Value::Int(*v)),
-        Call::Replace(t, k, v) => w.at(things[*t], key(*k)).overwrite(&Value::Int(*v)),
-        Call::Remove(t, k) => w.at(things[*t], key(*k)).remove(),
-        Call::Put(t, k, v) => w.at(things[*t], key(2)).path(p!(Value::Int(*k))).set(&Value::Int(*v)),
-        Call::RemoveKey(t, k) => w.at(things[*t], key(2)).path(p!(Value::Int(*k))).remove(),
-        Call::Edit(t, b, n) => w.at(things[*t], key(2)).edit(&m(b), &m(n)),
+        Call::Set(t, k, v) => w.at(things[*t], osis::Key::untyped(key(*k))).set(&Value::Int(*v)),
+        Call::SetExpiring(t, k, v) => w.at(things[*t], osis::Key::untyped(key(*k))).expires(osis::Expiry::In(HOUR)).set(&Value::Int(*v)),
+        Call::Replace(t, k, v) => w.at(things[*t], osis::Key::untyped(key(*k))).overwrite(&Value::Int(*v)),
+        Call::Remove(t, k) => w.at(things[*t], osis::Key::untyped(key(*k))).remove(),
+        Call::Put(t, k, v) => w.at(things[*t], osis::Key::untyped(key(2))).path(p!(Value::Int(*k))).set(&Value::Int(*v)),
+        Call::RemoveKey(t, k) => w.at(things[*t], osis::Key::untyped(key(2))).path(p!(Value::Int(*k))).remove(),
+        Call::Edit(t, b, n) => w.at(things[*t], osis::Key::untyped(key(2))).edit(&m(b), &m(n)),
         Call::Title(t, s) => w.at(things[*t], notes::TITLE).set(s),
         Call::Views(t, n) => w.at(things[*t], notes::VIEWS).path(osis::Path::root()).contribute(n),
         Call::Opened(t, v) => w.at(things[*t], notes::LAST_OPENED).set(v),
@@ -208,7 +208,7 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
             if a.as_str() == "created.0" || a.as_str() == "placed.0~" {
                 continue;
             }
-            vals.push(format!("{a}={:?}", db.at(*t, a.clone()).get().unwrap()));
+            vals.push(format!("{a}={:?}", db.at(*t, osis::Key::untyped(a.clone())).get().unwrap()));
         }
         out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t).unwrap(), db.at(*t, core::GROUP).get().unwrap(), db.groups_of(*t).unwrap(), vals.join(" "))));
     }
@@ -234,4 +234,16 @@ fn batch_equals_single_op_batches() {
         // with --nocapture and compare)
         eprintln!("write_ops seed {seed}: {id:?}");
     }
+}
+
+// spec: none (notes/api.md Writes): a backward range moves nothing and says so
+#[test]
+fn a_backward_move_range_is_invalid() {
+    let db = db(1);
+    let k = ak("app:m.0");
+    let mut w = db.write();
+    let t = w.create().unwrap();
+    #[allow(clippy::reversed_empty_ranges)]
+    let back = 2..1;
+    assert!(matches!(w.at(t, osis::Key::untyped(k)).path(p![]).move_range(back, 0), Err(osis::Error::Invalid(_))));
 }

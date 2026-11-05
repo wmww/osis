@@ -1,5 +1,5 @@
 //! The client side of the client port (notes/client-port.md §1, §2, §6): a `Remote` is one
-//! attachment to a node: a proto `ClientSession` on a thread of its own that a call blocks on until
+//! connection to a node: a proto `ClientSession` on a thread of its own that a call blocks on until
 //! its Reply. A handle routes tid-addressed calls to it (`crate::sources`). Watches are
 //! subscriptions whose Reply and Notifies enter the handle's dispatcher queue in wire order, so
 //! remote callbacks run on the dispatcher like local ones. Writes carry a nonce from 1 per session.
@@ -13,10 +13,10 @@
 //! - a read in flight when it drops: `Network`;
 //! - a write in flight when it drops: blocks until reconnected, then its one result;
 //!   `OutcomeUnknown` if the node restarted, forgot the nonce, refused the session or
-//!   `Config::wait_timeout` passed with no connection;
+//!   the connection's timeout passed with no connection;
 //! - a watch: `Err(Network)` while down, then the value again as a new `Source::Initial`;
 //! - a watch started while down: `Err(Network)` from the call, except what does not need the node
-//!   to answer: `watch_status`, which reports it down, and `on_diagnostic`, quiet until it is up
+//!   to answer: `on_status_change`, which reports it down, and `on_diagnostic`, quiet until it is up
 //!   (`Refused` once the node has ended the session: it will never be up).
 //!
 //! `OutcomeUnknown` means the write may or may not have applied. Repeating it is a new write (a
@@ -26,12 +26,12 @@
 use super::codec::{self as c, outcome_err, u};
 use super::method;
 use crate::error::{Error, Result};
-use crate::handle::{Config, Osis, WeakOsis};
+use crate::handle::{ClientConfig, Config, Osis, WeakOsis};
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Source, Subscription, lock};
 use osis_base::{Clock, Tid, Value};
 use osis_proto::client::SMALL_REPLY;
 use osis_proto::serving::REPLY_BUDGET;
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome, Payload};
+use osis_proto::{ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome, Payload};
 use osis_transport::{Address, Unix};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -46,14 +46,14 @@ use tokio::time::Instant;
 const MAX_QUEUED: usize = 64 * 1024 * 1024;
 /// First pause before a redial, doubled after each failure up to `RETRY_MAX`. Minor: 0 redials in
 /// a tight loop (each dial is real work on both sides); infinity never redials, so a dropped
-/// attachment stays `Network`; `RETRY_MAX` is how late a client notices its node came back.
+/// connection stays `Network`; `RETRY_MAX` is how late a client notices its node came back.
 const RETRY_MIN: Duration = Duration::from_millis(100);
 const RETRY_MAX: Duration = Duration::from_secs(30);
 /// The tokens of a connection's own Auth and `whoami`; every other comes from `TOKENS`.
 const AUTH_TOKEN: u64 = 0;
 const WHO_TOKEN: u64 = 1;
 /// Subscription and call tokens, unique in the process (the dispatcher's `Filter::Port` holds
-/// subscriptions of every attachment).
+/// subscriptions of every connection).
 static TOKENS: AtomicU64 = AtomicU64::new(16);
 
 fn next_token() -> u64 {
@@ -103,7 +103,7 @@ pub fn own_uid() -> Result<u32> {
     osis_transport::unix::own_uid().map_err(|e| Error::Storage(e.to_string()))
 }
 
-/// The node's person and node actors (`Osis::me`, `node` of an attached handle).
+/// The node's person and node actors (`Osis::me`, `node` of an thin client).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Who {
     pub me: Tid,
@@ -134,7 +134,7 @@ struct LinkInner {
     up: bool,
     /// How the latest connection attempt ended (none yet).
     tried: Option<Result<()>>,
-    /// Never up again: the node refused this session, or there is no attachment.
+    /// Never up again: the node refused this session, or there is no connection.
     ended: Option<Error>,
     who: Option<Who>,
 }
@@ -162,15 +162,15 @@ impl LinkState {
     }
 }
 
-/// One attachment: the connection's command channel and the session's state.
+/// One connection: its command channel and the session's state.
 pub(crate) struct Remote {
-    /// `url#key`: what routes name.
-    pub addr: String,
+    /// What routes name.
+    pub addr: crate::HostAddr,
     tx: mpsc::UnboundedSender<Cmd>,
     link: Arc<LinkState>,
     /// The materialization bound of reads.
     limit: usize,
-    /// As a thin client, by a secret (not the socket's Owner).
+    /// By a secret (not the socket's client, which acts as the account).
     keyed: bool,
 }
 
@@ -182,18 +182,18 @@ fn net(m: impl std::fmt::Display) -> Error {
 }
 
 impl Remote {
-    /// A route's stand-in for a node no attachment names (notes/client-port.md §6): every call
+    /// A route's stand-in for a node no connection names (notes/client-port.md §6): every call
     /// fails `Network`, never reaches another source.
-    pub fn absent(addr: &str) -> Arc<Remote> {
-        Remote::failing(addr, net(format!("no attachment to node {addr}")))
+    pub fn absent(addr: &crate::HostAddr) -> Arc<Remote> {
+        Remote::failing(addr, net(format!("not connected to node {addr}")))
     }
 
     /// A stand-in whose every call fails `e`.
-    pub fn failing(addr: &str, e: Error) -> Arc<Remote> {
+    pub fn failing(addr: &crate::HostAddr, e: Error) -> Arc<Remote> {
         let (tx, _) = mpsc::unbounded_channel();
         let link = Arc::new(LinkState::default());
         lock(&link.m).ended = Some(e);
-        Arc::new(Remote { addr: addr.to_string(), tx, link, limit: 0, keyed: false })
+        Arc::new(Remote { addr: addr.clone(), tx, link, limit: 0, keyed: false })
     }
 
     /// Whether the connection is up now.
@@ -201,7 +201,7 @@ impl Remote {
         lock(&self.link.m).up
     }
 
-    /// Why this attachment will never come up again, if so.
+    /// Why this connection will never come up again, if so.
     fn ended(&self) -> Option<Error> {
         lock(&self.link.m).ended.clone()
     }
@@ -215,8 +215,8 @@ impl Remote {
         Some(g.ended.clone().unwrap_or_else(|| net(format!("node {} not connected", self.addr))))
     }
 
-    /// Waits for the first connection attempt's outcome (each is bounded by the attachment's
-    /// `wait_timeout`).
+    /// Waits for the first connection attempt's outcome (each is bounded by the connection's
+    /// timeout).
     pub fn first(&self) -> Result<()> {
         let g = lock(&self.link.m);
         let g = crate::net::blocking(|| self.link.cv.wait_while(g, |x| x.tried.is_none()).unwrap_or_else(|e| e.into_inner()));
@@ -353,7 +353,7 @@ fn random<const N: usize>() -> [u8; N] {
 }
 
 fn new_session(peer_static_key: [u8; 32]) -> ClientSession {
-    ClientSession::new(ClientConfig { peer_static_key, challenge: random() })
+    ClientSession::new(osis_proto::ClientConfig { peer_static_key, challenge: random() })
 }
 
 /// How a session ends when its Auth is not answered by a Reply. `keyed`: it sent a secret.
@@ -573,13 +573,13 @@ impl Io {
                 };
                 {
                     let mut g = lock(&self.link.m);
-                    // the pinned key answers as someone else: never mix two identities in one attachment
+                    // the pinned key answers as someone else: never mix two identities in one connection
                     if g.who.is_some_and(|w| w != who) {
                         return Started::Refused(Error::Invalid("the node at this address now answers as another identity".into()));
                     }
                     g.who = Some(who);
                 }
-                self.reattach(tx);
+                self.reconnect_state(tx);
                 return Started::Up;
             }
             if !up {
@@ -633,7 +633,7 @@ impl Io {
     }
 
     /// On a new connection, once Auth answered: schemas, subscriptions and unanswered writes again.
-    fn reattach(&mut self, tx: &osis_transport::link::LinkTx) {
+    fn reconnect_state(&mut self, tx: &osis_transport::link::LinkTx) {
         self.give_up = None;
         for (file, src) in self.schemas.clone() {
             let (rtx, _) = std::sync::mpsc::channel();
@@ -688,7 +688,7 @@ impl Drop for Io {
     }
 }
 
-/// How an attachment dials its node: the daemon's unix socket, or a node address over the
+/// How an connection dials its node: the daemon's unix socket, or a node address over the
 /// in-process transport (tests) or QUIC (and iroh with that feature), the key pinned.
 enum Via {
     Unix,
@@ -718,7 +718,7 @@ async fn dial_via(via: &Via, addr: &Address, wait: Duration) -> std::result::Res
     }
 }
 
-/// Keeps the attachment connected until the handle ends (module comment).
+/// Keeps the connection connected until the handle ends (module comment).
 async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceiver<Cmd>) {
     let mut backoff = RETRY_MIN;
     let wait = io.wait;
@@ -762,8 +762,13 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
     }
 }
 
-/// Starts an attachment's thread; the connection comes up behind it.
-fn spawn_remote(via: Via, addr: Address, shown: String, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+/// A timer's stand-in for "no limit" (`Duration::MAX` from the caller: instants cannot hold it).
+/// Longer than anyone waits, so its size does not matter.
+const NEVER: Duration = Duration::from_secs(100 * 365 * 86_400);
+
+/// Starts a connection's thread; the connection comes up behind it.
+fn spawn_remote(via: Via, addr: Address, shown: crate::HostAddr, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+    let wait = wait.min(NEVER);
     let (tx, rx) = mpsc::unbounded_channel();
     let session = random();
     let link = Arc::new(LinkState::default());
@@ -779,116 +784,128 @@ fn spawn_remote(via: Via, addr: Address, shown: String, secret: Option<osis_cryp
     Ok(Arc::new(Remote { addr: shown, tx, link, limit, keyed }))
 }
 
-/// An attachment to the thin client `secret` stands for at `addr`.
-pub(crate) fn spawn_client(addr: &crate::HostAddr, secret: &crate::ClientSecret, cfg: &Config, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+/// A connection to the node at `login`'s address as the client its secret stands for.
+pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<crate::Transport>, limit: usize, timeout: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+    let addr = &login.addr;
     // the secret goes only over a transport pinned to the node's key
     if addr.0.url.starts_with("unix://") {
         return Err(Error::Invalid("a client secret goes only to a key-pinned transport, not a unix socket".into()));
     }
-    let via = match &cfg.transport {
+    let via = match transport {
         Some(crate::Transport::InProcess(t)) => Via::Mem(t.clone()),
         _ => Via::Net,
     };
     let a = Address { url: addr.0.url.clone(), key: addr.0.key };
-    spawn_remote(via, a, addr.to_string(), Some(secret.0.clone()), cfg.materialize_limit, cfg.wait_timeout, clock)
+    spawn_remote(via, a, addr.clone(), Some(login.secret.0.clone()), limit, timeout, clock)
 }
 
 impl Osis {
-    /// Attaches to the node serving the unix socket at `socket`:
-    /// every call addressed by a tid or group goes there as Owner (the socket's peer has this
-    /// process's uid), `me`/`node` are the node's; `settle` waits for the node's
-    /// deliveries too. What needs this process to be the node fails `Unsupported`. `cfg` gives the
-    /// clock, dispatcher and materialization bound; its store is not used (a scratch memory
-    /// database stands in until the no-store profile, step (f)).
-    pub fn attach(socket: &Path, cfg: Config) -> Result<Osis> {
+    /// Makes a thin client of the node serving the unix socket at `socket`. A node offers its
+    /// socket to its own user, by default, with no authentication and as its main actor, so `me()`
+    /// and `node()` are the node's. Every call addressed by a tid or group goes there, and `settle`
+    /// waits for the node's deliveries too. What needs this process to be the node fails
+    /// `Unsupported`.
+    ///
+    /// `timeout` bounds each attempt to reach the node, and how long a write in flight waits for a
+    /// dropped connection to come back before it is `OutcomeUnknown`: at 0 nothing connects
+    /// (`Network`), at `Duration::MAX` a node that takes the connection and never answers blocks
+    /// the caller for good.
+    pub fn connect_socket(socket: &Path, timeout: Duration, cfg: ClientConfig) -> Result<Osis> {
         let uid = own_uid()?;
         let url = osis_transport::unix::url_of(socket);
         let addr = Address { url: url.clone(), key: osis_transport::unix::uid_key(uid) };
-        let (limit, wait) = (cfg.materialize_limit, cfg.wait_timeout);
+        let shown = crate::HostAddr(osis_label::Address { url, key: addr.key });
+        let limit = cfg.materialize_limit;
         let db = Osis::scratch(cfg)?;
-        let r = spawn_remote(Via::Unix, addr, url, None, limit, wait, db.inner.clock.clone())?;
-        db.thin_over(vec![r])?;
+        let r = spawn_remote(Via::Unix, addr, shown, None, limit, timeout, db.inner.clock.clone())?;
+        db.client_over(vec![r])?;
         Ok(db)
     }
 
-    /// Attaches to the node at `addr` (`url#key`: a URL it listens on with that transport key,
-    /// which the transport pins) as the thin client `secret` stands for:
-    /// the node acts as the client's actor, so `me()` is that actor, what it may not read
-    /// reads as unknown, process-wide calls fail `Unsupported`. Dials with `cfg.transport` (default
-    /// QUIC). A unix address is `Invalid`: the secret goes only over a keyed transport. Fails
-    /// `Refused` when the node refuses the secret, `Network` past its connection cap or when
-    /// it cannot be reached (within `cfg.wait_timeout`). Reconnects by itself afterwards (module
-    /// comment).
-    pub fn attach_client(addr: &crate::HostAddr, secret: &crate::ClientSecret, mut cfg: Config) -> Result<Osis> {
-        cfg.remotes = vec![crate::RemoteConfig { addr: addr.clone(), secret: secret.clone() }];
-        Osis::attach_remotes(cfg)
-    }
-
-    /// A process with no store: every group is at `cfg.remotes`, in that
-    /// order for a thing the routes do not place. All must answer as one actor (`Invalid`
-    /// otherwise: `me()` is one actor per process); failures as `attach_client`'s. `cfg.store` is
-    /// not used.
-    pub fn attach_remotes(mut cfg: Config) -> Result<Osis> {
-        let remotes = std::mem::take(&mut cfg.remotes);
-        if remotes.is_empty() {
-            return Err(Error::Invalid("attach_remotes needs Config.remotes".into()));
+    /// Makes a thin client of the nodes it logs in to, each dialed at its address with
+    /// `cfg.transport` (default QUIC), which pins the address's key. Every call goes to them: the
+    /// first in `logins` that holds a thing answers for it, the first for what is not about one
+    /// thing. A listener lets a client act, by default, only as actors it has authenticated for: a
+    /// node says which actor a login makes this program, `me()` (one made for its secret by
+    /// `add_client`). What that actor may not read reads as unknown, and calls only the node's main
+    /// actor may make fail `Unsupported`. All must answer as one actor (`Invalid`; no login is
+    /// `Invalid` too). Reconnects by itself afterwards.
+    ///
+    /// Fails `Refused` when a node refuses the secret, `Invalid` for a unix address (the secret
+    /// goes only over a keyed transport), `Network` past its connection cap or when it cannot be
+    /// reached. `timeout` as for `connect_socket`.
+    pub fn connect(logins: &[crate::NodeLogin], timeout: Duration, cfg: ClientConfig) -> Result<Osis> {
+        if logins.is_empty() {
+            return Err(Error::Invalid("connect needs a node to log in to".into()));
         }
-        let keep = cfg.clone();
+        let (transport, limit) = (cfg.transport.clone(), cfg.materialize_limit);
         let db = Osis::scratch(cfg)?;
-        let list = remotes.iter().map(|x| spawn_client(&x.addr, &x.secret, &keep, db.inner.clock.clone())).collect::<Result<Vec<_>>>()?;
-        db.thin_over(list)?;
+        let list = logins.iter().map(|x| spawn_client(x, &transport, limit, timeout, db.inner.clock.clone())).collect::<Result<Vec<_>>>()?;
+        db.client_over(list)?;
         Ok(db)
     }
 
     /// The stand-in database of a process without a store.
-    fn scratch(cfg: Config) -> Result<Osis> {
-        let scratch = Config { store: crate::StoreAt::Memory(crate::MemStore::new()), runtime: crate::Runtime::None, hosts: Vec::new(), transport: None, remotes: Vec::new(), ..cfg };
-        Ok(Osis::create(scratch)?.0)
+    fn scratch(cfg: ClientConfig) -> Result<Osis> {
+        let scratch = Config { materialize_limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, dispatch: cfg.dispatch, internals: cfg.internals, ..Config::default() };
+        Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], scratch)?.0)
     }
 
     /// Makes this handle a process with no store of its own over `list`, each up.
-    fn thin_over(&self, list: Vec<Arc<Remote>>) -> Result<()> {
+    fn client_over(&self, list: Vec<Arc<Remote>>) -> Result<()> {
         let mut who = None;
         for r in &list {
             r.first()?;
             let w = r.who().ok_or_else(|| net("no connection"))?;
             if who.is_some_and(|x| x != w) {
-                return Err(Error::Invalid("attached nodes answer as different actors: one acting actor per process".into()));
+                return Err(Error::Invalid("connected nodes answer as different actors: one acting actor per process".into()));
             }
             who = Some(w);
         }
         let (Some(primary), Some(who)) = (list.first().cloned(), who) else { return Err(net("no connection")) };
         self.locked(|l| l.remotes = list);
-        let _ = self.inner.thin.set(crate::handle::Thin { primary, who });
+        let _ = self.inner.client.set(crate::handle::ClientOf { primary, who });
         self.inner.routing.store(true, Ordering::Release);
         Ok(())
     }
 
-    /// Attaches this node's handle to the node at `addr` as the thin client `secret` stands for,
-    /// beside its own store: `group_source` can then route groups there,
-    /// and a thing known nowhere here goes there. Reconnects by itself. Fails as `attach_client`,
-    /// not attached then; `Invalid` when already attached to it. `Unsupported` on a handle with no
-    /// store of its own.
-    pub fn attach_node(&self, addr: &crate::HostAddr, secret: &crate::ClientSecret, cfg: &Config) -> Result<()> {
-        self.local_only("attach_node")?;
-        let text = addr.to_string();
-        if self.locked(|l| l.remotes.iter().any(|r| r.addr == text)) {
-            return Err(Error::Invalid(format!("already attached to {text}")));
+    /// Makes this node a client of the node at `login`'s address, beside its own store:
+    /// `group_source` can then route groups there, and a thing known nowhere here goes there.
+    /// Stays connected, reconnecting by itself, until `disconnect_node`.
+    ///
+    /// `Network`: the node could not be reached within `timeout`; this keeps trying (`status` shows
+    /// when it is up, calling this again says). `timeout` also bounds each later attempt and a
+    /// write in flight across a drop, as for `connect_socket`. `Refused`: it refuses the secret, and
+    /// nothing stays. `Invalid` for a unix address; `Unsupported` on a thin client. Connected already: returns as that connection stands.
+    pub fn connect_node(&self, login: &crate::NodeLogin, timeout: Duration) -> Result<()> {
+        self.local_only("connect_node")?;
+        let known = self.locked(|l| l.remotes.iter().find(|r| r.addr == login.addr).cloned());
+        let r = match known {
+            Some(r) => r,
+            None => {
+                let r = spawn_client(login, &self.inner.transport, self.inner.limit, timeout, self.inner.clock.clone())?;
+                self.locked(|l| l.remotes.push(r.clone()));
+                self.inner.routing.store(true, Ordering::Release);
+                r
+            }
+        };
+        match r.first().and_then(|()| r.down().map_or(Ok(()), Err)) {
+            Err(e @ Error::Refused(_)) => {
+                self.locked(|l| l.remotes.retain(|x| x.addr != login.addr));
+                Err(e)
+            }
+            x => x,
         }
-        let r = spawn_client(addr, secret, cfg, self.inner.clock.clone())?;
-        r.first()?;
-        self.locked(|l| l.remotes.push(r));
-        self.inner.routing.store(true, Ordering::Release);
-        Ok(())
     }
 
-    /// Whether this handle has no store of its own (`Osis::attach`, `attach_client`).
+    /// Whether this handle has a store of its own: `false` on a thin client (`connect`,
+    /// `connect_socket`).
     #[inline]
-    pub fn is_attached(&self) -> bool {
-        self.inner.thin.get().is_some()
+    pub fn has_store(&self) -> bool {
+        self.inner.client.get().is_none()
     }
 
-    /// A test's way to panic the attachment's connection thread: a subscription whose sink
+    /// A test's way to panic the connection thread: a subscription whose sink
     /// panics at its first event (its reply, or `Closed` while down).
     #[allow(clippy::panic)]
     pub(crate) fn panic_client_thread(&self) {
@@ -896,17 +913,16 @@ impl Osis {
         let _ = self.primary().tx.send(Cmd::Sub { token: next_token(), filter: Value::List(Vec::new()), again: false, sink });
     }
 
-    /// The attachment process-wide calls go to on a handle with no store of its own.
-    /// Whether this handle is a thin client: no store, a secret, an actor of its own at the node.
-    pub(crate) fn thin_client(&self) -> bool {
-        self.inner.thin.get().is_some_and(|t| t.primary.keyed)
+    /// Whether this handle is a client by a secret: no store, an actor of its own at the node.
+    pub(crate) fn secret_client(&self) -> bool {
+        self.inner.client.get().is_some_and(|t| t.primary.keyed)
     }
 
     fn primary(&self) -> &Arc<Remote> {
-        self.inner.thin.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
+        self.inner.client.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
     }
 
-    /// A process-wide call at the attached node.
+    /// A process-wide call at the node of a handle with no store.
     pub(crate) fn rcall(&self, m: u64, args: Vec<Value>) -> Result<Value> {
         self.primary().call(m, args)
     }
@@ -916,9 +932,9 @@ impl Osis {
         self.primary().call_big(m, args, max_reply)
     }
 
-    /// Fails `Unsupported` on an attached handle: a call that needs this process to be the node.
+    /// Fails `Unsupported` on a thin client: a call that needs this process to be the node.
     pub(crate) fn local_only(&self, what: &str) -> Result<()> {
-        if self.is_attached() { Err(Error::Unsupported(format!("{what} on a handle attached to a node"))) } else { Ok(()) }
+        if !self.has_store() { Err(Error::Unsupported(format!("{what} on a thin client"))) } else { Ok(()) }
     }
 
     /// A write batch at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
@@ -929,7 +945,7 @@ impl Osis {
         o.map(c::committed).transpose()
     }
 
-    /// Registers `cb` for a subscription at the attached node: its Reply (`PortEvent::Initial`)
+    /// Registers `cb` for a subscription at the connected node: its Reply (`PortEvent::Initial`)
     /// and Notifies reach `cb` through the dispatcher, in wire order. Returns the subscription
     /// and the initial value (or the Sub's error).
     pub(crate) fn remote_sub(&self, r: &Arc<Remote>, on: Option<Tid>, filter: Value, again: bool, cb: Callback) -> Result<(Subscription, Value)> {
@@ -999,7 +1015,7 @@ impl Osis {
         Ok(sub)
     }
 
-    /// Waits for the attached node's deliveries for changes made so far to reach the
+    /// Waits for the connected node's deliveries for changes made so far to reach the
     /// dispatcher queue (`settle` then runs them).
     pub(crate) fn remote_settle(&self) {
         for r in self.locked(|l| l.remotes.clone()) {
@@ -1052,7 +1068,7 @@ impl Osis {
         c::read(v)?
     }
 
-    /// The length of a string or blob at the attached node (`None`: absent).
+    /// The length of a string or blob at the connected node (`None`: absent).
     pub(crate) fn remote_len(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
         let v = r.call(method::LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
         c::Args::of(vec![v]).opt()?.map(|n| n.as_uint().ok_or_else(|| c::bad("length"))).transpose()
@@ -1064,7 +1080,7 @@ impl Osis {
         c::Args::of(vec![v]).bytes()
     }
 
-    /// `AspectRef::on_change` at the attached node: the initial value, then each change that
+    /// `AspectRef::on_change` at a connected node: the initial value, then each change that
     /// differs from the last delivered (an error always), signals as they fire.
     pub(crate) fn remote_on_change(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, mut f: ChangeFn) -> Result<Subscription> {
         let mut last: Option<Result<Option<Value>>> = None;
@@ -1099,7 +1115,7 @@ impl Osis {
         Ok(self.remote_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?.0)
     }
 
-    /// A page of history at the attached node, within what one reply carries.
+    /// A page of history at the connected node, within what one reply carries.
     pub(crate) fn remote_history(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, from: crate::HistoryFrom, limit: usize) -> Result<crate::HistoryPage<Value>> {
         // a page ends past this, so it holds up to twice it, and every entry's header: it must fit
         // one reply, or nothing could page past those entries
@@ -1107,7 +1123,7 @@ impl Osis {
         c::hist_page(r.call(method::HISTORY, vec![Value::Tid(tid), c::ak_v(ak), c::from_v(&from), u(limit as u64), u(bytes as u64)])?)
     }
 
-    /// `AspectRef::on_history` at the attached node. A reconnect's Reply says `Reread`: what changed
+    /// `AspectRef::on_history` at the connected node. A reconnect's Reply says `Reread`: what changed
     /// in the gap was not told.
     pub(crate) fn remote_on_history(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, mut f: CallbackOf<crate::HistoryEvent<Value>>) -> Result<Subscription> {
         let mut first = true;
@@ -1131,8 +1147,8 @@ impl Osis {
         Ok(self.remote_sub(r, Some(tid), filter, true, cb)?.0)
     }
 
-    /// `watch_thing` at the attached node.
-    pub(crate) fn remote_watch_thing(&self, r: &Arc<Remote>, tid: Tid, mut f: ChangeFn) -> Result<Subscription> {
+    /// `on_thing_change` at the connected node.
+    pub(crate) fn remote_on_thing_change(&self, r: &Arc<Remote>, tid: Tid, mut f: ChangeFn) -> Result<Subscription> {
         let mut last: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
@@ -1174,7 +1190,7 @@ impl Osis {
         Ok(self.remote_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
     }
 
-    /// `on_grants_change` at the attached node.
+    /// `on_grants_change` at the connected node.
     pub(crate) fn remote_on_grants_change(&self, r: &Arc<Remote>, thing: Tid, mut f: CallbackOf<Result<crate::read::Grants>>) -> Result<Subscription> {
         let mut last = None;
         let cb: Callback = Box::new(move |db, d| {
@@ -1199,8 +1215,8 @@ impl Osis {
         Ok(self.remote_sub(r, Some(thing), Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)]), true, cb)?.0)
     }
 
-    /// `on_diagnostic` at the attached node (its diagnostics; this process's own go nowhere).
-    pub(crate) fn remote_on_diagnostic(&self, mut f: CallbackOf<osis_node::Diagnostic>) -> Result<Subscription> {
+    /// `on_diagnostic` at the connected node (its diagnostics; this process's own go nowhere).
+    pub(crate) fn remote_on_diagnostic(&self, mut f: CallbackOf<crate::Diagnostic>) -> Result<Subscription> {
         if let Some(e) = self.primary().ended() {
             return Err(e);
         }
@@ -1208,20 +1224,18 @@ impl Osis {
             if let Delivery::Port(PortEvent::Notify(Payload::Delivery { value })) = d
                 && let Ok(x) = c::diag(value)
             {
-                f(db, x);
+                f(db, x.into());
             }
         });
         self.remote_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb)
     }
 
-    /// `watch_status` at the attached node.
-    pub(crate) fn remote_watch_status(&self, mut f: CallbackOf<crate::share::Status>) -> Result<Subscription> {
-        // every change, and the attachment going down or up, shows as the merged status now
+    /// `on_status_change` at the node of a handle with no store.
+    pub(crate) fn remote_on_status_change(&self, mut f: CallbackOf<Result<crate::share::Status>>) -> Result<Subscription> {
+        // every change, and the connection going down or up, shows as the merged status now
         let cb: Callback = Box::new(move |db, d| {
-            if matches!(d, Delivery::Port(_))
-                && let Ok(s) = db.status()
-            {
-                f(db, s);
+            if matches!(d, Delivery::Port(_)) {
+                f(db, db.status());
             }
         });
         self.remote_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
@@ -1259,12 +1273,12 @@ impl Osis {
         out
     }
 
-    /// `remote_task` at the attached node of a handle with no store. A thin client has no such
+    /// `remote_task` at the node of a handle with no store. A client by a secret has no such
     /// rows: refused here too (the node's gate is `Worker::sub`), so a link's or card's secret never
     /// goes to a node that would only refuse it.
     pub(crate) async fn rtask(&self, m: u64, args: Vec<Value>) -> Result<Value> {
         if self.primary().keyed {
-            return Err(Error::Unsupported("a thin client: only its node's owner runs this".into()));
+            return Err(Error::Unsupported("a client with an actor of its own: only the node's main actor runs this".into()));
         }
         self.remote_task(self.primary(), m, args).await
     }

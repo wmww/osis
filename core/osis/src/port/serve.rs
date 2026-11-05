@@ -304,36 +304,39 @@ fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
     let db = Osis::internal(db.inner.clone());
     let t: Task = match m {
         method::WAIT_SYNCED => {
-            let (scope, ms) = (c::sync_scope(a.next()?)?, a.uint()?);
+            let (scope, t) = (c::sync_scope(a.next()?)?, c::timeout(a.uint()?));
             a.end()?;
-            let p = db.wait_synced_pending(scope, std::time::Duration::from_millis(ms));
+            let p = db.wait_synced_pending(scope, t);
             Box::pin(async move { p.await.map(|()| nothing()) })
         }
         method::REDEEM => {
             let link: crate::ShareLink = a.text()?.parse()?;
+            let t = c::timeout(a.uint()?);
             a.end()?;
-            Box::pin(async move { Ok(Value::Tid(db.redeem(&link).await?)) })
+            Box::pin(async move { Ok(Value::Tid(db.redeem(&link, t).await?)) })
         }
         method::SET_ROLE | method::REPUDIATE => {
             let (target, holder) = (a.tid()?, a.tid()?);
             let role = a.opt()?.map(|r| c::role(&r)).transpose()?;
             let o = c::set_role(a.next()?)?;
+            let t = c::timeout(a.uint()?);
             a.end()?;
             if m == method::SET_ROLE {
-                Box::pin(async move { db.set_role(target, holder, role, o).await.map(|()| nothing()) })
+                Box::pin(async move { db.set_role(target, holder, role, o, t).await.map(|()| nothing()) })
             } else {
-                Box::pin(async move { db.repudiate(target, holder, role, o).await.map(|()| nothing()) })
+                Box::pin(async move { db.repudiate(target, holder, role, o, t).await.map(|()| nothing()) })
             }
         }
         method::REVOKE_LINK => {
-            let (id, sync) = (crate::share::LinkId(a.tid()?), c::sync_first(a.next()?)?);
+            let (id, sync, t) = (crate::share::LinkId(a.tid()?), c::sync_first(a.next()?)?, c::timeout(a.uint()?));
             a.end()?;
-            Box::pin(async move { db.revoke_link(id, sync).await.map(|()| nothing()) })
+            Box::pin(async move { db.revoke_link(id, sync, t).await.map(|()| nothing()) })
         }
         method::IMPORT_CONTACT => {
             let card: crate::ContactCard = a.text()?.parse()?;
+            let t = c::timeout(a.uint()?);
             a.end()?;
-            Box::pin(async move { Ok(Value::Tid(db.import_contact(&card).await?)) })
+            Box::pin(async move { Ok(Value::Tid(db.import_contact(&card, t).await?)) })
         }
         _ => return Err(unsupported(&format!("method {m} as a row that waits"))),
     };
@@ -553,7 +556,7 @@ impl Worker {
             method::GET => {
                 let (tid, ak, path) = (a.tid()?, a.ak()?, c::path(a.next()?)?);
                 let key = db.key(ak.as_str())?;
-                let r = if path.0.is_empty() { db.at(tid, ak).get() } else { db.at(tid, key).path(path).get() };
+                let r = if path.0.is_empty() { db.at(tid, crate::Key::untyped(ak)).get() } else { db.at(tid, key).path(path).get() };
                 c::read_v(&r)
             }
             method::ASPECTS => Value::List(db.aspects(a.tid()?)?.iter().map(c::ak_v).collect()),
@@ -571,6 +574,8 @@ impl Worker {
                 return self.once(db, conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::committed_v(&x))));
             }
             method::COMMITS => Value::List(db.commits(&c::query(a.next()?)?)?.iter().map(c::entry_v).collect()),
+            method::UNDO_TARGET => c::opt(db.undo_target(&c::scope(a.next()?)?)?.as_ref(), c::entry_v),
+            method::REDO_TARGET => c::opt(db.redo_target(&c::scope(a.next()?)?)?.as_ref(), c::entry_v),
             method::UNDO | method::REDO => {
                 let nonce = a.uint()?;
                 let scope = c::scope(a.next()?)?;
@@ -608,7 +613,7 @@ impl Worker {
             }
             method::LEN | method::STREAM_READ => {
                 let (tid, ak, path) = (a.tid()?, a.ak()?, c::path(a.next()?)?);
-                let s = db.at(tid, ak).path(path).stream()?;
+                let s = db.at(tid, crate::Key::untyped(ak)).path(path).stream()?;
                 if m == method::LEN {
                     c::opt(s, |s| u(s.len()))
                 } else {
@@ -620,7 +625,7 @@ impl Worker {
                     Value::Bytes(buf)
                 }
             }
-            method::NOW => u(db.now().0),
+            method::NOW => u(db.now()?.0),
             method::ADD_CLIENT => {
                 let until = a.opt_wall()?;
                 let (actor, secret) = db.add_client(until)?;
@@ -683,10 +688,10 @@ impl Worker {
                 db.decline_invite(crate::InviteId::from_bytes(&a.bytes()?)?)?;
                 nothing()
             }
-            method::GROUP_POLICY => Value::List(c::policy_v(&db.group_policy(a.tid()?)?)),
-            method::SYNC_POLICY => {
+            method::SYNC_OPTIONS => Value::List(c::sync_options_v(&db.sync_options(a.tid()?)?)),
+            method::SET_SYNC_OPTIONS => {
                 let g = a.tid()?;
-                db.sync_policy(g, c::policy(&mut a)?)?;
+                db.set_sync_options(g, c::sync_options(&mut a)?)?;
                 nothing()
             }
             method::ROTATE_REACH => {

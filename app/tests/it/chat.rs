@@ -2,16 +2,16 @@
 //! replies and the sender's name. Joining a new chat by link needs a host: checked by hand (notes/app.md
 //! Chat); a link to a chat already here does not.
 use osis::internals::Internals as _;
-use osis::{Config, ManualClock, MemStore, Osis, Role, StoreAt, WallMs};
+use osis::{ManualClock, MemStore, Osis, Role, Store, WallMs};
 use osis_app::chat;
 use std::sync::Arc;
 
-fn cfg(seed: u64, clock: &Arc<ManualClock>) -> Config {
-    let mut c = Config::at(StoreAt::Memory(MemStore::new()));
-    c.seed = Some(seed);
-    c.clock = Some(clock.clone());
+fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
+    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
+    c.internals.seed = Some(seed);
+    c.internals.clock = Some(clock.clone());
     // a host that never runs: a profile (where the sender's name lives) needs one named
-    c.hosts = vec![osis::HostAddr::new("quic://127.0.0.1:9", [7; 32])];
+    c.hosts = vec![osis::HostAddr::new(&"quic://127.0.0.1:9".parse().unwrap(), [7; 32])];
     c.runtime = osis::Runtime::Manual(osis::internals::ManualNet::new());
     c
 }
@@ -33,8 +33,8 @@ fn sync(a: &Osis, b: &Osis) {
 #[test]
 fn two_people_chat() {
     let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
-    let a = Osis::create(cfg(1, &clock)).unwrap().0;
-    let b = Osis::create(cfg(2, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
+    let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options { name: "channel".into(), ..Default::default() }).unwrap();
     osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
@@ -72,8 +72,8 @@ fn two_people_chat() {
 #[test]
 fn edited_deleted_and_nameless() {
     let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
-    let a = Osis::create(cfg(1, &clock)).unwrap().0;
-    let b = Osis::create(cfg(2, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
+    let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
@@ -109,7 +109,7 @@ fn hostless_store_sends_without_a_name() {
     let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
     let mut cfg = cfg(1, &clock);
     cfg.hosts.clear();
-    let a = Osis::create(cfg).unwrap().0;
+    let a = osis::internals::create(cfg).unwrap().0;
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     let before = a.engine(|e| e.commit_ids().len());
     chat::my_name(&a).unwrap();
@@ -124,8 +124,8 @@ fn hostless_store_sends_without_a_name() {
 #[test]
 fn join_held_chat_opens_it() {
     let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
-    let a = Osis::create(cfg(1, &clock)).unwrap().0;
-    let b = Osis::create(cfg(2, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
+    let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
     sync(&a, &b);
     let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
     osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
@@ -138,6 +138,6 @@ fn join_held_chat_opens_it() {
         std::thread::spawn(move || tx.send(chat::join(&db, &format!(" {l}\n")).map_err(|e| e.to_string())));
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).expect("join returns at once"), Ok(c));
     }
-    let a = Osis::create(cfg(3, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(3, &clock)).unwrap().0;
     assert!(chat::join(&a, "osis://nonsense").unwrap_err().to_string().contains("not a chat link"));
 }

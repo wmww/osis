@@ -8,7 +8,8 @@ use crate::handle::Osis;
 use crate::read::{AspectRef, PathRef, ak_of};
 use crate::watch::lock;
 use osis_base::{Tid, Value};
-use osis_schema::{AspectKey, Codec, Path};
+use osis_schema::ApiKey;
+use osis_schema::{Codec, Path};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -43,7 +44,7 @@ impl std::fmt::Debug for KeepAlive {
 }
 
 /// Validates `v` at `path` of `key` against its schema (untyped keys: anything).
-fn check<K: AspectKey>(key: &K, path: &Path, v: &Value) -> Result<()> {
+fn check<K: ApiKey>(key: &K, path: &Path, v: &Value) -> Result<()> {
     let (Some(s), Some(ty)) = (key.schema(), key.ty()) else { return Ok(()) };
     let (t, _) = osis_schema::type_at(s, ty, path)?;
     osis_schema::validate_write(s, v, &t)?;
@@ -79,7 +80,7 @@ fn arm(db: &Osis, st: Weak<Mutex<Kept>>, every: Duration) -> bool {
     )
 }
 
-impl<K: AspectKey> PathRef<'_, '_, K> {
+impl<K: ApiKey> PathRef<'_, '_, K> {
     /// Writes `value` here (a map key, such as this device's key `node()` in a cursor map, or a
     /// register position) and writes it again every half of the key's default expiry while the
     /// returned `KeepAlive` lives. Two devices keeping one position alive (a person's key)
@@ -87,11 +88,11 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// a default expiry (schema `[expires: ...]`) well above the network delay and the clock
     /// differences between nodes; the database needs its runtime (a `Config::transport`) for the
     /// timer. Nothing outlives the process: after a restart the app calls this again.
-    /// `Unsupported` through an attached node.
+    /// `Unsupported` through a connected node.
     pub fn keep_alive<U: Codec>(&self, value: &U) -> Result<KeepAlive> {
         let (db, tid, key, path) = self.parts();
         if let crate::sources::Source::Remote(_) = db.route(tid) {
-            return Err(Error::Unsupported("keep_alive through the attached node".into()));
+            return Err(Error::Unsupported("keep_alive through a connected node".into()));
         }
         let d = key.defaults();
         let Some(exp) = d.expires.filter(|_| key.lifetime() == osis_schema::Lifetime::Ephemeral) else {
@@ -111,7 +112,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     }
 }
 
-impl<K: AspectKey> AspectRef<'_, K> {
+impl<K: ApiKey> AspectRef<'_, K> {
     /// The same as `path(Path::root()).keep_alive(value)`, but for checking `value`'s type at
     /// compile time.
     pub fn keep_alive(&self, value: &K::T) -> Result<KeepAlive> {

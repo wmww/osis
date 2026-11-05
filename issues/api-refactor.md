@@ -46,62 +46,44 @@ Design for the world after it:
 - **Don't touch engine or perm internals** for renames: the owner work is in there. Rename at the `osis` API, CLI and docs; leave engine names, and spec prose the owner work is rewriting, for a last sweep.
 
 ## A. Remove: a second way to do the same thing
-Done but for what later steps own:
-- `Config::at` duplicates `memory`, `dir` and the struct: D1.
-- `attach_client` is `attach_remotes` with one entry: D2.
+Done.
 
 ## D. Shape, re-decided
-Each is a fresh verdict by the tests in notes/api-design.md, including those that stay.
+Done (step 4), notes/api.md has the shapes. Where they left the proposal: a thin client takes `ClientConfig`, not `Config`; `db.connect_node` and `disconnect_node` in place of `attach_node` and `detach_node`; `Stamp.id` is a plain `ChangeId` (an ephemeral thing's creation names no batch: see below); `Ak` stays a key to the engine, `ApiKey` is what the API takes.
 
-Change:
-1. **`Config` as one struct for every constructor** → required inputs become arguments. `hosts` is read only by `create`, `restore` and `pair`; `store` is ignored by every `attach*`; `remotes` by most. `Osis::create(Store, hosts, Config)`, `open(Store, Config)`, and so on; `Config` holds only what applies everywhere, with `Default`. `clock` and `seed` move to `internals`.
-2. **`attach`, `attach_client`, `attach_remotes`, `attach_node`** → `Osis::connect_socket(path, Config)` and `Osis::connect(&[NodeLogin], Config)`, plus `db.attach_node` and `detach_node` for a handle with a store. `is_attached` is misnamed: it is false on a handle with `attach_node` attachments (verified). Rename it `has_store`, inverted.
-7. Done with sharing (`SyncFirst`).
-8. **`CommitQuery`**: builder and public fields are two ways, and `next` changes the contract ("needs a scope", "not with `after`", new failure). Plain struct with `Default`, like the other options. `next` becomes `undo_target(&scope)` and `redo_target(&scope)`; `Next` goes. `actor(a)` adds to `actors`: one spelling.
-10. **`GroupPolicy`**: a whole-replacement struct with `publish_reach: Option<bool>`. `None` is a third state, so make it `Reach::{Auto, Always, Never}`. Getter and setter have unrelated names (`group_policy`, `sync_policy`): `sync_options` and `set_sync_options`. `receipts_only` → `SyncMode::{Full, HeadersOnly}`.
-11. **`Hosting.policy: BTreeMap<String, u64>`** → a typed struct; unknown names then cannot exist at run time. `listen: Vec<String>`, `client_listen(&[String])` and `relays` → a URL type, or at least consistent with `Address`.
-12. **`Diagnostic { kind, tids, commit, peer, detail }`**: the meaning of `tids` depends on `kind` (documented positionally: "`tids`: item, group") → an enum with named fields per kind.
-13. **`Stamp` and `CommitInfo`**: verified the same fields but for `Option<CommitId>` vs `ChangeId`, and only `Stamp` has `shown()`. One type.
-14. **`SyncScope::Group(t)`** takes any thing → `SyncScope::{All, Thing(t)}`, matching `Scope`.
-15. **Waiting**: `wait_synced` takes a timeout, `redeem` and others use `Config.wait_timeout`, demotions use constant `PRESYNC_WAIT` or `Try(d)`. Every `async` call takes one explicit timeout, and the constant and config field go. Check the attach dial, which needs a value too.
-17. **Callback naming**: `watch_*` take a callback under another word. All callbacks are `on_*`: `on_thing_change`, `on_grants_change` (done), `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
-18. **`AspectKey`**: three implementations (`Aspect<T>`, `Ak`, `Key`) plus `db.key`. `Key` with no schema is `Ak`. One dynamic key: `db.key(name)` typed when a schema is registered, else untyped. `Ak` becomes a name only, if the examples stay readable. The trait's methods exist for generated code and the crate: seal it or hide them.
-19. **`LinkOpts`, `GrantOpts` and `SetRoleOpts`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
-20. **`now()`** on an attached handle that cannot reach its node falls back to this process's clock, unsaid. A time is no decision-maker's default, but it should say so or return `Result`.
-
-Added by step 2's review (agent's call):
-- **`on_status_change`** gets `Result<Status>`, like the roster watch (with D17): today a store failure at a status change is told to nobody.
+Left over:
+- **Client socket path**: `connect_socket(path)` is still a path, E's socket helpers can make it `store_dir`.
+- **Stamp of an ephemeral thing's creation**: the engine keeps no batch id for it, so `osis` shows an id no call finds (`read.rs` `UNNAMED_BATCH`). If the engine ever names it, the constant goes.
+- **`Key::schema` for apps**: app/src/fields.rs builds forms from `key.schema()`, through the hidden trait method (`osis::schema::AspectKey`). E takes `Schema` out of the API: it needs a plain way to ask an aspect's type, or the app's forms stay on internals.
 
 Keep as they are:
 - `undo` and `redo` as two functions: different results, no shared target to enum over.
-- `Dispatcher`, `Runtime`, `StoreAt` (renamed `Store`), `HistoryFrom`, `HistoryBody`, `HistoryEvent`, `Scope`, `SyncState` as enums.
+- `Dispatcher`, `Runtime`, `Store`, `HistoryFrom`, `HistoryBody`, `HistoryEvent`, `Scope`, `SyncState` as enums.
 - Signals as a lifetime marker on an aspect key: no extra call, the simplest thing in the API.
 - One `Osis` type with `Unsupported` on calls a kind of handle doesn't carry (Tess's decision against a second client type). Each such call's doc must say so.
 - A flat method list on `Osis` rather than namespaces (`db.sharing()`, ...): that would add concepts.
 - `settle` for both pump and test wait: same operation, though `run_callbacks` may read better.
 
 ## E. Leaks
-- **Exported implementation numbers**: `MAX_CONNS_PER_CLIENT`, `HISTORY_DIRTY_BYTES`, `HISTORY_SEND`, `MAX_SCHEMA_BYTES`, `SIGNAL_BYTES`, `STREAM_CHUNK`, `WRITE_NONCES`, `REFRESH_DIVISOR`, `OFFER_LIFETIME_MS`, `PRESYNC_WAIT`, `DEFAULT_*`. Make them private or move them to `internals` for tests. `HISTORY_PAGE` stays only if a page limit is the caller's business.
+- **Exported implementation numbers**: `MAX_CONNS_PER_CLIENT`, `HISTORY_DIRTY_BYTES`, `HISTORY_SEND`, `MAX_SCHEMA_BYTES`, `SIGNAL_BYTES`, `STREAM_CHUNK`, `WRITE_NONCES`, `REFRESH_DIVISOR`, `OFFER_LIFETIME_MS`, `DEFAULT_*`. Make them private or move them to `internals` for tests. `HISTORY_PAGE` stays only if a page limit is the caller's business.
 - **Socket helpers**: `socket_path`, `SOCK_FILE`, `own_uid`, `socket_dir`: the CLI's needs, not an app's. `connect_socket(store_dir)` can resolve the path itself.
-- **Test tools in app API**: `MemStore::{held_bytes, rows, held_split, backup}`, `Transport::InProcess`, `ManualClock`, `Clock`, `Config.seed`, `Config.clock`, `Joining::node`. `Transport` itself may go, leaving what the app really chooses.
+- **Test tools in app API**: `MemStore::{held_bytes, rows, held_split, backup}`, `Transport::InProcess`, `ManualClock`, `Clock`, `Joining::node`. `Transport` itself may go, leaving what the app really chooses.
 - **`osis::core`**: re-exports `KEYS`, `SECRETS`, `LABEL`, `ROLES`, `TENURES`, `REACH`, `SEEN`, `NODE`, `PLACED`, `GROUPS`, `ASPECTS`, `TID`, `group::{ITEMS, SUBGROUPS}`. Keep `NAME`, `BODY`, `TAG`, whatever else apps truly write, and the required-retention keys (`REQUIRED`, `Required`, `RequiredRules`: no typed calls, one rule for all of it).
 - **`pub use osis_schema as schema`** exports the whole crate for generated code. Give generated code a narrow doc-hidden path.
 - **`CreationRecord`, `Cause`, `EphemeralId`, `CommitId` beside `ChangeId`, `LabelId`**:
   - One opaque `ChangeId`.
   - `Source::Derived(Cause)` has `LateDelta`, `Validity` and so on: keep `Derived` with a small plain reason, or none.
-- **`Ts`** is a hybrid clock value, exposed in `Stamp`, `CommitInfo`, `Committed` and `CommitQuery.since` next to `WallMs`. One `Time` type for apps; ordering is opaque in `HistoryPos`.
+- **`Ts`** is a hybrid clock value, exposed in `Stamp`, `Committed` and `CommitQuery.since` next to `WallMs`. One `Time` type for apps; ordering is opaque in `HistoryPos`.
 - **`CommitKind::{Role, Snapshot}`**, `HistoryBody::Dropped`, `CommitEntry.dropped`: "snapshot" is compaction. Keep what an app must see to explain history (notes/api.md Attribution), and rename it in plain words.
 - **Sync status**: `GroupSync.labels`, `not_admitted`, `Stranded`, `ReceiptsOnly`, `NoRoute`, `unrouted`, `Status.split`. Labels are needed to configure hosts, so call them what they are for hosts (`host_ids`?) and keep them with hosting.
 - **Other words to translate or hide**: `rotate_reach`, `publish_reach`, `rotate_client_key`, `materialize_limit`, "pre-sync", "co-reader", "K", "L".
-- **`Key::new(ak, schema)`** and `Schema` in the public API (`register_schema` takes a source now): see D18.
+- **`Schema`** in the public API (`register_schema` takes a source now): see `Key::schema` under D.
 - **`KeepAlive::writes`** doc-hidden on an app type: move to `internals`.
 
 ## F. Names
 | Now | Proposed | Why |
 |---|---|---|
-| `HostAddr` (also names nodes: `attach_client`, `client_listen`, `RemoteConfig`) | `Address` | It is not always a host. This is Tess's server/host example turned around. |
-| `RemoteStatus.address: String`, `routes() -> map<Tid, String>` | `Address` | One type |
-| `RemoteConfig` | `NodeLogin` | It is an address and a secret |
+| `HostAddr` (also names nodes: `connect`, `client_listen`, `NodeLogin`) | `Address` | It is not always a host. This is Tess's server/host example turned around. |
 | remote, attachment, route, source | "attached node", "route" | Four words for two ideas |
 | `Device.node`, `node()`, `devices()`, `remove_device(node)` | pick `device` for the API | Same thing, two words |
 | `Source` (why a watch fired) | `Origin` | Collides with sources per group; notes already say `Origin` |
@@ -144,7 +126,7 @@ Keep as they are:
 
 ## Execution
 One branch per step, in order; each merges before the next starts.
-- **4. Shapes**: D. 4a (writing and addressing data) done; 4b: D1, D2, D8, D10 to D15, D17 to D20.
+- **4. Shapes**: D. Done.
 - **5. Leaks**: E, once `internals` has what tests need.
 - **6. Names and docs**: F, the Vocabulary, and H's doc rewrite.
 

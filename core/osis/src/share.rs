@@ -14,9 +14,6 @@ use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-/// How long `SyncFirst::Required` waits.
-pub const PRESYNC_WAIT: Duration = Duration::from_secs(30);
-
 /// When a grant ends and what its holder may grant others (`Osis::grant`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GrantOpts {
@@ -69,11 +66,11 @@ pub struct Holder {
 /// or removing its role. Work not seen by then is undone everywhere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SyncFirst {
-    /// Catch up first; fail `Unsynced` when that cannot be done soon.
+    /// Catch up first; fail `Unsynced` when that cannot be done in the call's timeout.
     #[default]
     Required,
-    /// Try to catch up for this long, then go ahead with a diagnostic.
-    Try(Duration),
+    /// Try to catch up for the call's timeout, then go ahead with a diagnostic.
+    Try,
     /// Go ahead now, keeping what this device has seen: for a stolen device or a hostile holder.
     Skip,
     /// Go ahead now, keeping only what this device had seen by this time.
@@ -219,7 +216,44 @@ text_type!(
     RecoveryCard, osis_label::RecoveryCard, osis_label::RecoveryCard::from_text, "recovery card"
 );
 
-/// A host: transport URL plus its key (`<url>#<base64url key>`).
+/// A transport URL, such as `quic://example.org:4040`: where something listens or is dialed.
+/// `FromStr` checks it; a `quic://` URL without a port gets `:4040` spelled out.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Url(String);
+
+impl Url {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::str::FromStr for Url {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Url> {
+        let s = s.trim();
+        let bad = |why: &str| Err(Error::Invalid(format!("URL {s:?}: {why}")));
+        if s.split_once("://").is_none_or(|(scheme, rest)| scheme.is_empty() || rest.is_empty()) {
+            return bad("needs scheme://");
+        }
+        // `#` starts an address's key
+        if s.contains('#') || s.contains(char::is_whitespace) {
+            return bad("no `#` or spaces");
+        }
+        let url = osis_transport::quic::explicit_port(s);
+        if url.len() > osis_base::format::MAX_URL_BYTES {
+            return bad("too long");
+        }
+        Ok(Url(url))
+    }
+}
+
+impl std::fmt::Display for Url {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Where a node is reached: transport URL plus its key (`<url>#<base64url key>`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct HostAddr(pub(crate) osis_label::Address);
 
@@ -244,19 +278,17 @@ impl std::fmt::Display for HostAddr {
 }
 
 impl HostAddr {
-    /// From a transport URL and the host's 32-byte key.
-    /// From a transport URL and the host's 32-byte key (a `quic://` URL's port spelled out,
-    /// as `FromStr`).
-    pub fn url(&self) -> &str {
-        &self.0.url
+    /// From a transport URL and the node's 32-byte key.
+    pub fn new(url: &Url, key: [u8; 32]) -> HostAddr {
+        HostAddr(osis_label::Address { url: url.0.clone(), key })
+    }
+
+    pub fn url(&self) -> Url {
+        Url(self.0.url.clone())
     }
 
     pub fn key(&self) -> [u8; 32] {
         self.0.key
-    }
-
-    pub fn new(url: &str, key: [u8; 32]) -> HostAddr {
-        HostAddr(osis_label::Address { url: osis_transport::quic::explicit_port(url), key })
     }
 }
 
@@ -280,8 +312,8 @@ pub enum SyncState {
     /// Waiting for a re-seal (spec/permissions.md §3). Ranks above `NoHosts` (a group shows
     /// its worst label's state; `wait_synced` judges each label on its own).
     Stranded,
-    /// Held for receipts only (`GroupPolicy::receipts_only`): not synced, what is here is stale.
-    ReceiptsOnly,
+    /// Held for commit headers only (`SyncMode::HeadersOnly`): not synced, what is here is stale.
+    HeadersOnly,
     /// No label carries the thing to one of its holders (`GroupSync::unrouted`): it holds a role
     /// and reads nothing until `sync` gives the thing a label or a synced group it reads takes
     /// the thing in. Only on things with no label of their own, so never beside another state.
@@ -314,7 +346,7 @@ pub struct GroupSync {
 pub struct Status {
     pub connected: usize,
     pub groups: BTreeMap<Tid, GroupSync>,
-    /// This process's attachments to other nodes, and the nodes its routes name.
+    /// The nodes this process is connected to, and those its routes name.
     pub remotes: Vec<crate::sources::RemoteStatus>,
     /// Things read at a route and also in a group that carries them elsewhere: writes on them are
     /// refused until one of the groups moves (`Osis::group_source`).
@@ -326,9 +358,9 @@ pub enum SyncScope {
     /// Every synced label with hosts (a hostless one has nothing to wait for) and every
     /// pending delivery.
     All,
-    /// The labels holding this thing (the group's own, or those of groups containing it; a
-    /// hostless one fails `Unsynced`) and the deliveries about it, what it holds or those groups.
-    Group(Tid),
+    /// The labels holding this thing (its own, or those of groups containing it; a hostless one
+    /// fails `Unsynced`) and the deliveries about it, what it holds or those groups.
+    Thing(Tid),
 }
 
 /// One synced label's state.
@@ -370,7 +402,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
         }
     }
     for g in sync.receipts_only() {
-        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted: Vec::new() });
+        groups.insert(*g, GroupSync { state: SyncState::HeadersOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted: Vec::new() });
     }
     // things a holder has a role on and no route to (spec/sync.md §2): none has a label of its
     // own, so none is listed above. On a thing this person administers (it can `sync` it) nobody
@@ -434,7 +466,7 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
 
 /// Synced groups holding any of `things` (the thing itself or its closure).
 fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>) -> Vec<Tid> {
-    status.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::ReceiptsOnly | SyncState::NoRoute)).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
+    status.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::HeadersOnly | SyncState::NoRoute)).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
 }
 
 /// Whether a route to `t`, which no group here holds yet, may still arrive: a hint names its label,
@@ -547,7 +579,7 @@ impl Osis {
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
     /// and the holder's keys here (a contact card, a shared group, pairing), else `UnknownActor`.
     /// Each grant costs about 2.6 KB of keys: to share with many, grant one group. `Unsupported` on
-    /// a thin client.
+    /// a client with its own actor.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::grant_opts_v(&opts)]).map(drop);
@@ -582,7 +614,7 @@ impl Osis {
     ///
     /// Needs write on the group and admin on the thing (or an `invite` of at least `role`, the
     /// group having no grant yet), else `Permission` before anything is written. `Invalid`, as for
-    /// `grant`, below a role the group lost. To add without granting: `Write::group`. `Unsupported` on a thin client.
+    /// `grant`, below a role the group lost. To add without granting: `Write::group`. `Unsupported` on a client with its own actor.
     pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
         let (tid, subgroup) = member.parts();
         if let crate::sources::Source::Remote(r) = self.route_write_all(&[tid, group])? {
@@ -655,7 +687,8 @@ impl Osis {
     /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
     /// gives more, so its best role and latest end are among its entries. Who holds through an actor:
     /// `holders` of that actor, or those here with it in `through`. Grants one level down, with
-    /// `invite` and whether a grant goes with a membership: `grants`. `Unsupported` on a thin client.
+    /// `invite` and whether a grant goes with a membership: `grants`. On a client with its own actor,
+    /// what that actor may read: nothing behind an actor it may not read.
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
         if let crate::sources::Source::Remote(r) = self.route(target) {
             return crate::port::codec::holders(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
@@ -697,11 +730,11 @@ impl Osis {
 
     /// Runs the pre-sync of a demotion (spec/permissions.md §5.3) over the labels holding
     /// `things`, as `sync` says.
-    async fn presync(&self, things: BTreeSet<Tid>, sync: SyncFirst) -> Result<PreSync> {
+    async fn presync(&self, things: BTreeSet<Tid>, sync: SyncFirst, wait: Duration) -> Result<PreSync> {
         match sync {
             SyncFirst::Backdate(t) => return Ok(PreSync::Backdated(t)),
             SyncFirst::Skip => return Ok(PreSync::Unsynced { proceed: true }),
-            SyncFirst::Required | SyncFirst::Try(_) => {}
+            SyncFirst::Required | SyncFirst::Try => {}
         }
         // groups held here are synced; those held for receipts only are read for receipts
         // (their commit headers, notes/sync.md Receipts-only reads)
@@ -716,17 +749,13 @@ impl Osis {
         // ended on a dropped future too: a daemon outlives a client gone midway
         let reading = ReceiptsGuard { db: self.downgrade(), groups: reads.clone() };
         self.sync_labels();
-        let wait = match sync {
-            SyncFirst::Try(t) => t,
-            _ => PRESYNC_WAIT,
-        };
         let r = self.groups_synced(Some(groups.clone()), reads.clone(), wait, None).await;
         drop(reading);
         let mut all = groups;
         all.extend(reads);
         match (r, sync) {
             (Ok(()), _) => Ok(PreSync::Synced),
-            (Err(_), SyncFirst::Try(_)) => {
+            (Err(_), SyncFirst::Try) => {
                 self.engine(|e| e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Unsynced, tids: all, commit: None, peer: None, detail: "demotion proceeded without its pre-sync".into() }));
                 Ok(PreSync::Unsynced { proceed: true })
             }
@@ -740,7 +769,7 @@ impl Osis {
     /// stranded (refused: at `wait`), `Network` after `wait`. The scope: every label of `groups` (a hostless one
     /// fails `Unsynced`), or for `None` every label with hosts of a synced group.
     fn groups_synced(&self, groups: Option<Vec<Tid>>, reads: Vec<Tid>, wait: Duration, deliveries: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
-        self.wait_until(Some(wait), Box::new(move |sync, _, late| synced(sync, groups.as_deref(), &reads, deliveries.as_ref(), late)))
+        self.wait_until(wait, Box::new(move |sync, _, late| synced(sync, groups.as_deref(), &reads, deliveries.as_ref(), late)))
     }
 
     /// Makes `holder`'s role on `target` this one: raises, lowers, or with `None` removes. The usual
@@ -749,8 +778,9 @@ impl Osis {
     /// written. `until` and `invite` stay as they are (`invite` capped at the new role): `grant` sets
     /// those.
     ///
-    /// A raise waits for nothing. Lowering or removing first does as `SetRoleOpts::sync` says, so that
-    /// what the holder did while it could is kept; so does a role below one the holder lost when its
+    /// A raise waits for nothing. Lowering or removing first does as `SetRoleOpts::sync` says, within
+    /// `timeout` (at 0 only what is already synced counts), so that what the holder did while it
+    /// could is kept; so does a role below one the holder lost when its
     /// grant ended or it left, which ends the old grant in a commit of its own (a failure between
     /// the two leaves the holder with no role, as it had: call again). `SetRoleOpts::keep` with a role
     /// is `Invalid`.
@@ -763,21 +793,22 @@ impl Osis {
     /// another actor (a team, a link of another account): `Invalid`, naming the actor to set
     /// the role on.
     ///
-    /// `Unsupported` on a thin client, and on a thing this node reads at another node: move its group
+    /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its group
     /// home first. A removal written to the copy here would never leave it.
-    pub async fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
+    pub async fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts, timeout: Duration) -> Result<()> {
         keep_only_on_removal(role, o)?;
-        if self.is_attached() {
-            return self.rtask(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
+        if !self.has_store() {
+            return self.rtask(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o), crate::port::codec::timeout_v(timeout)]).await.map(drop);
         }
         self.not_routed("set_role", target)?;
+        let budget = self.budget(timeout);
         // each round removes one way in; the bound only guards against grants that never settle
         for _ in 0..16 {
             let Some(way) = self.holders(target)?.into_iter().find(|h| h.actor == holder) else {
                 let Some(r) = role else { return Ok(()) };
                 // a role lost above `r`: its end made explicit first, with what that takes
                 if self.engine(|e| below_lost(e, &target, &holder, r)) {
-                    self.lower(target, holder, None, o, false).await?;
+                    self.lower(target, holder, None, o, self.left(budget), false).await?;
                 }
                 return self.grant(target, holder, r, GrantOpts::default());
             };
@@ -787,14 +818,14 @@ impl Osis {
                     match role {
                         Some(r) if r == cur.role => return Ok(()),
                         Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, invite: cur.invite }),
-                        _ => self.lower(target, holder, role, o, false).await?,
+                        _ => self.lower(target, holder, role, o, self.left(budget), false).await?,
                     }
                 }
                 [k] if self.held_links()?.iter().any(|h| h.k == *k && h.target == target) => {
                     if role.is_some() {
                         return Err(Error::Invalid(format!("{holder} joined {target} by a link: it can only be removed")));
                     }
-                    self.remove_joiner(*k, holder, o).await?;
+                    self.remove_joiner(*k, holder, o, self.left(budget)).await?;
                 }
                 [k, ..] => return Err(Error::Invalid(format!("{holder} reaches {target} through {k}: set its role there"))),
             }
@@ -814,10 +845,10 @@ impl Osis {
     /// discards an honest change. `holder` must hold a grant on `target` itself (else `Invalid`), and
     /// only that grant is touched; `role` can lower or remove, not raise. Nothing to undo: that grant
     /// changes as `set_role` would change it. `Unsupported` as for `set_role`.
-    pub async fn repudiate(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
+    pub async fn repudiate(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts, timeout: Duration) -> Result<()> {
         keep_only_on_removal(role, o)?;
-        if self.is_attached() {
-            return self.rtask(crate::port::method::REPUDIATE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
+        if !self.has_store() {
+            return self.rtask(crate::port::method::REPUDIATE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o), crate::port::codec::timeout_v(timeout)]).await.map(drop);
         }
         self.not_routed("repudiate", target)?;
         match (self.holders(target)?.into_iter().find(|h| h.actor == holder), role) {
@@ -827,13 +858,13 @@ impl Osis {
             (Some(way), Some(r)) if r > way.role => return Err(Error::Invalid("repudiating cannot raise a role".into())),
             _ => {}
         }
-        self.lower(target, holder, role, o, true).await
+        self.lower(target, holder, role, o, timeout, true).await
     }
 
     /// Lowers or removes the grant of `m` on `t`: the pre-sync of every label the lost authority
     /// wrote under, then the demotion with this node's frontier and the target's rotation, in one
     /// commit (spec/permissions.md §2, §3, §5).
-    async fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts, repudiate: bool) -> Result<()> {
+    async fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts, wait: Duration, repudiate: bool) -> Result<()> {
         let new = match role {
             Some(role) => {
                 let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
@@ -842,7 +873,7 @@ impl Osis {
             None => None,
         };
         let things = self.engine(|e| e.presync_scope(&t, &m, new.as_ref()));
-        let presync = self.presync(things, o.sync).await?;
+        let presync = self.presync(things, o.sync, wait).await?;
         // a person's default does not reach its devices (spec/permissions.md §2)
         let keep = o.keep.or((t == self.inner.me).then_some(false));
         let fd = flows::Demotion { holder: m, new, presync, keep };
@@ -858,10 +889,14 @@ impl Osis {
     /// `Invalid` when `holder` has no such grant but holds `target` through another actor (a team, a
     /// link's actor), naming it: leaving that actor is what ends the role. `Invalid` for another
     /// actor when this node is an admin of `target`: taking that role away is `set_role`'s, with its
-    /// catching up. `Permission` when this node is no admin of `holder`. `Unsupported` on a thin
-    /// client.
+    /// catching up. `Permission` when this node is no admin of `holder`; on a client with its own
+    /// actor, for any `holder` but that actor.
     pub fn leave(&self, holder: Tid, target: Tid) -> Result<()> {
         let own = holder == self.me();
+        // the flow below runs with the node's authority: a client ends only its own actor's role
+        if self.acting.is_some() && !own {
+            return Err(Error::Permission { tid: holder, needs: Role::Admin });
+        }
         let route = if own { self.route_write(target)? } else { self.route_write_all(&[holder, target])? };
         if let crate::sources::Source::Remote(r) = route {
             return r.call(crate::port::method::LEAVE, vec![Value::Tid(holder), Value::Tid(target)]).map(drop);
@@ -883,10 +918,10 @@ impl Osis {
     }
 
     /// The actors whose read-only copy this node keeps after losing them (spec/permissions.md §3,
-    /// Keep), for a thin client those it reads. The copy reads as before; nothing syncs or writes
+    /// Keep), for a client with its own actor those it reads. The copy reads as before; nothing syncs or writes
     /// it. `drop_kept` erases one (the database owner's call).
     pub fn kept_copies(&self) -> Result<Vec<Tid>> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::KEPT, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).tid()).collect();
         }
@@ -902,7 +937,7 @@ impl Osis {
 
     /// Erases kept copy `actor`, and what it alone kept: its disk space is this user's.
     pub fn drop_kept(&self, actor: Tid) -> Result<()> {
-        if self.is_attached() {
+        if !self.has_store() {
             return self.rcall(crate::port::method::DROP_KEPT, vec![Value::Tid(actor)]).map(drop);
         }
         self.locked(|l| l.sync.drop_kept(&[actor]))?;
@@ -975,25 +1010,25 @@ impl Osis {
     /// grant on the target is here, joins K as this person (removing the link key in the same
     /// commit when the link is single use). Returns the target. A link known to have ended (used,
     /// revoked, expired, its hosts no longer listing its key, K off the target) fails `Invalid` at
-    /// once; so does, at `Config::wait_timeout`, one whose K's label, read to its end, shows no
+    /// once; so does, at `timeout`, one whose K's label, read to its end, shows no
     /// grant on the target (the target is the link text's word: such a link joins nothing). Other
     /// waits fail `Network` then, nobody having answered in time. The link key is forgotten on
     /// every outcome, a dropped future included.
-    pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
-        if self.is_attached() {
+    pub async fn redeem(&self, link: &ShareLink, timeout: Duration) -> Result<Tid> {
+        if !self.has_store() {
             link.parse()?;
-            let v = self.rtask(crate::port::method::REDEEM, vec![Value::Str(link.0.clone())]).await?;
+            let v = self.rtask(crate::port::method::REDEEM, vec![Value::Str(link.0.clone()), crate::port::codec::timeout_v(timeout)]).await?;
             return crate::port::codec::Args::of(vec![v]).tid();
         }
         let link = link.parse()?;
         let (k, target) = (link.k, link.target);
         let key = self.follow_link(&link)?;
         let l = key.l;
-        let t = Some(self.inner.wait_timeout);
+        let budget = self.budget(timeout);
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
         let label = link.k_label;
-        self.wait_until(t, Box::new(move |s, _, late| {
+        self.wait_until(timeout, Box::new(move |s, _, late| {
             if s.static_entry_refused(&label) {
                 return Some(Err(link_ended()));
             }
@@ -1036,7 +1071,7 @@ impl Osis {
         drop(key);
         self.carry(done)?;
         // joined: the grant stands in a view with nothing on K pending
-        self.wait_until(t, Box::new(move |s, _, _| {
+        self.wait_until(self.left(budget), Box::new(move |s, _, _| {
             let e = s.engine_mut();
             (e.roster(&k).contains_key(&me) && !pending_on(e, &k)).then_some(Ok(()))
         }))
@@ -1062,9 +1097,9 @@ impl Osis {
 
     /// The person's links that still work, whichever device made them (each holds the seed thing;
     /// one whose seed has not arrived is not listed); filter by `LinkInfo::target`. `Unsupported` on
-    /// a thin client, which is also why a node attached with a client secret adds none.
+    /// a client with its own actor, which is also why a node connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
-        if self.is_attached() {
+        if !self.has_store() {
             return crate::port::codec::links(self.rcall(crate::port::method::LINKS, vec![])?);
         }
         self.live_links()
@@ -1094,21 +1129,22 @@ impl Osis {
     }
 
     /// Ends a link: nobody can use it from now on. Those who joined by it keep their role; to remove
-    /// one, `set_role`. `sync` as for `set_role`: anyone holding the link's text may have used it.
-    /// `Unsupported` on a thin client.
-    pub async fn revoke_link(&self, id: LinkId, sync: SyncFirst) -> Result<()> {
-        if self.is_attached() {
-            return self.rtask(crate::port::method::REVOKE_LINK, vec![Value::Tid(id.0), crate::port::codec::sync_first_v(sync)]).await.map(drop);
+    /// one, `set_role`. `sync` and `timeout` as for `set_role`: anyone holding the link's text may
+    /// have used it.
+    /// `Unsupported` on a client with its own actor.
+    pub async fn revoke_link(&self, id: LinkId, sync: SyncFirst, timeout: Duration) -> Result<()> {
+        if !self.has_store() {
+            return self.rtask(crate::port::method::REVOKE_LINK, vec![Value::Tid(id.0), crate::port::codec::sync_first_v(sync), crate::port::codec::timeout_v(timeout)]).await.map(drop);
         }
         self.not_routed("revoke_link", id.0)?;
         let l = self.link_key(id.0)?;
-        self.lower(id.0, l, None, SetRoleOpts { sync, keep: None }, false).await
+        self.lower(id.0, l, None, SetRoleOpts { sync, keep: None }, timeout, false).await
     }
 
     /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
     /// (spec/permissions.md §8: a joiner may keep the seed); the other joiners stay holders of K and
     /// need a new link to invite anyone. After the pre-sync.
-    async fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
+    async fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts, wait: Duration) -> Result<()> {
         self.not_routed("set_role", k)?;
         let l = self.link_key(k)?;
         let things = self.engine(|e| {
@@ -1116,7 +1152,7 @@ impl Osis {
             s.extend(e.presync_scope(&k, &l, None));
             s
         });
-        let presync = self.presync(things, o.sync).await?;
+        let presync = self.presync(things, o.sync, wait).await?;
         let done = self.guarded(&[k], |e| e.revoke_joiner(&k, &l, &joiner, presync, o.keep).map_err(needs_admin))?;
         self.carry(done)
     }
@@ -1178,7 +1214,7 @@ impl Osis {
     /// itself under its own label carrying the person's `created.0` and `keys.0` as certificates.
     /// Made once; later calls return the same card. `Invalid` on a database without hosts.
     pub fn contact_card(&self) -> Result<ContactCard> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::CONTACT_CARD, vec![])?;
             return Ok(ContactCard(crate::port::codec::Args::of(vec![v]).text()?));
         }
@@ -1236,7 +1272,7 @@ impl Osis {
 
     /// The profile thing of a person whose card this database imported, if any.
     pub fn profile_of(&self, person: Tid) -> Result<Option<Tid>> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(person)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::Args::of(vec![t]).tid()).transpose();
         }
@@ -1248,12 +1284,12 @@ impl Osis {
     /// Imports a contact card: reads the profile by the card's link key (bearer use, nothing
     /// written) until the person's `keys.0` is here and the key's actor K has its grant on the
     /// profile (as in `redeem`, the card's target is its text's word). Returns the person, usable
-    /// in `grant`. Fails `Network` after `Config::wait_timeout`; the card's key is forgotten on
+    /// in `grant`. Fails `Network` after `timeout`; the card's key is forgotten on
     /// every outcome.
-    pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
-        if self.is_attached() {
+    pub async fn import_contact(&self, card: &ContactCard, timeout: Duration) -> Result<Tid> {
+        if !self.has_store() {
             card.parse()?;
-            let v = self.rtask(crate::port::method::IMPORT_CONTACT, vec![Value::Str(card.0.clone())]).await?;
+            let v = self.rtask(crate::port::method::IMPORT_CONTACT, vec![Value::Str(card.0.clone()), crate::port::codec::timeout_v(timeout)]).await?;
             return crate::port::codec::Args::of(vec![v]).tid();
         }
         let link = card.parse()?;
@@ -1263,7 +1299,7 @@ impl Osis {
         let f2 = found.clone();
         let r = self
             .wait_until(
-                Some(self.inner.wait_timeout),
+                timeout,
                 Box::new(move |s, _, _| {
                     let e = s.engine_mut();
                     let owner = e.owner(&p)?;
@@ -1292,7 +1328,7 @@ impl Osis {
 
     /// The invite requests waiting for the user (`InviteId`).
     pub fn invite_requests(&self) -> Result<Vec<InviteId>> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::INVITE_REQUESTS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|b| InviteId::from_bytes(&crate::port::codec::Args::of(vec![b]).bytes()?)).collect();
         }
@@ -1303,7 +1339,7 @@ impl Osis {
     /// joined as for any invite). `Invalid` when no such request waits (accepted, declined or
     /// expired).
     pub fn accept_invite(&self, id: InviteId) -> Result<()> {
-        if self.is_attached() {
+        if !self.has_store() {
             return self.rcall(crate::port::method::ACCEPT_INVITE, vec![Value::Bytes(id.bytes().to_vec())]).map(drop);
         }
         self.try_act(|x| {
@@ -1318,7 +1354,7 @@ impl Osis {
     /// Declines an invite request: it is forgotten and never shown again (re-sends included).
     /// `Invalid` when no such request waits.
     pub fn decline_invite(&self, id: InviteId) -> Result<()> {
-        if self.is_attached() {
+        if !self.has_store() {
             return self.rcall(crate::port::method::DECLINE_INVITE, vec![Value::Bytes(id.bytes().to_vec())]).map(drop);
         }
         if !self.locked(|x| x.sync.decline_invite(id.0))? {
@@ -1329,7 +1365,7 @@ impl Osis {
 
     /// The person's devices: nodes holding a role on the person actor.
     pub fn devices(&self) -> Result<Vec<Device>> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::DEVICES, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|d| {
                 let mut a = crate::port::codec::Args::new(d)?;
@@ -1353,18 +1389,18 @@ impl Osis {
     /// `SyncFirst::Backdate`). This is `set_role(me, node, None, o)`, here because of what it
     /// returns, which is easy to forget: this account's links still working. The device keeps their
     /// keys, so whoever holds it can read and join through each until `revoke_link`, and ending
-    /// them is the caller's choice. None when `node` was no device. `Unsupported` on a thin client.
-    pub async fn remove_device(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
+    /// them is the caller's choice. None when `node` was no device. `Unsupported` on a client with its own actor.
+    pub async fn remove_device(&self, node: Tid, o: SetRoleOpts, timeout: Duration) -> Result<Vec<LinkInfo>> {
         let me = self.me();
         let was = self.grants(me)?.contains_key(&node);
-        self.set_role(me, node, None, o).await?;
+        self.set_role(me, node, None, o, timeout).await?;
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
-    /// The hosts new labels go to (and kept connected). `Unsupported` on a thin client: they are
+    /// The hosts new labels go to (and kept connected). `Unsupported` on a client with its own actor: they are
     /// its node's.
     pub fn hosts(&self) -> Result<Vec<HostAddr>> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::HOSTS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
         }
@@ -1383,7 +1419,7 @@ impl Osis {
     /// reachable once one is added. With `Runtime::None` the list is only stored, for the next open
     /// with a runtime: until then `status` shows nothing connected and `wait_synced` fails `Network`.
     pub fn add_host(&self, s: &HostAddr) -> Result<()> {
-        if self.is_attached() {
+        if !self.has_store() {
             return self.rcall(crate::port::method::ADD_HOST, vec![Value::Str(s.to_string())]).map(drop);
         }
         let mut v = self.hosts()?;
@@ -1396,7 +1432,7 @@ impl Osis {
     /// Removes a host, from the database's list and the labels that follow it (`add_host`);
     /// a group with holders besides the person's devices keeps its last host.
     pub fn remove_host(&self, s: &HostAddr) -> Result<()> {
-        if self.is_attached() {
+        if !self.has_store() {
             return self.rcall(crate::port::method::REMOVE_HOST, vec![Value::Str(s.to_string())]).map(drop);
         }
         let mut v = self.hosts()?;
@@ -1447,7 +1483,7 @@ impl Osis {
     // Removed with owners (issues/api-refactor.md Decided).
     #[doc(hidden)]
     pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::CREATE_OWNERLESS, vec![Value::Tid(admin)])?;
             return crate::port::codec::tid(&v);
         }
@@ -1550,26 +1586,23 @@ impl Osis {
     }
 
     /// Calls `f` with the status now (through the dispatcher) and on every change, a node that
-    /// cannot be reached shown as such (`Status::remotes`) rather than failing the watch.
-    pub fn watch_status(&self, mut f: impl FnMut(&Osis, Status) + Send + 'static) -> Result<Subscription> {
-        if self.is_attached() {
-            return self.remote_watch_status(Box::new(f));
+    /// cannot be reached shown as such (`Status::remotes`). `Err`: the store could not say; the
+    /// next status that can be read follows.
+    pub fn on_status_change(&self, mut f: impl FnMut(&Osis, Result<Status>) + Send + 'static) -> Result<Subscription> {
+        if !self.has_store() {
+            return self.remote_on_status_change(Box::new(f));
         }
-        // a node with attachments shows them too: not a watch of them, a status at each change here
-        let me = self.inner.me;
-        let first = match self.status() {
-            Ok(s) => s,
-            Err(_) => self.locked(|x| status_of(&mut x.sync, me))?,
-        };
+        // a node with connections shows them too: not a watch of them, a status at each change here
+        let first = self.status()?;
         Ok(self.subscribe(Filter::Status, true, move |_| {
             let mut first = Some(first);
             Box::new(move |db, d| match d {
                 Delivery::Initial => {
                     if let Some(s) = first.take() {
-                        f(db, s)
+                        f(db, Ok(s))
                     }
                 }
-                Delivery::Status(s) => f(db, db.merged_status(s.clone()).unwrap_or(s)),
+                Delivery::Status(s) => f(db, s.and_then(|s| db.merged_status(s))),
                 _ => {}
             })
         }))
@@ -1580,18 +1613,17 @@ impl Osis {
     /// taken (a grant to a recipient whose inbox host refuses it for now keeps it waiting);
     /// fails `Unsynced` for a stranded label in scope (a refused one: at `timeout`), `Network`
     /// after `timeout` or without a
-    /// runtime. `Group(t)`: the labels of the groups holding `t` (a hostless one fails
+    /// runtime. `Thing(t)`: the labels of the groups holding `t` (a hostless one fails
     /// `Unsynced`, unless replaced beside another) and the deliveries about `t`, a thing it holds or one of those groups (a
     /// grant on one, a non-writer's write under its label). With no group holding `t` it fails
     /// `Unsynced` at once, unless a route may still arrive: a grant named its label, or this node
     /// does not administer `t` and a label of its own has more to bring (a first sync). `All`:
     /// every label with hosts (`status` shows the `NoHosts` ones) and every delivery.
     ///
-    /// On an attached handle the node waits with the
-    /// same outcomes.
+    /// On a thin client the node waits with the same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
         let r = match scope {
-            SyncScope::Group(t) => self.route(t),
+            SyncScope::Thing(t) => self.route(t),
             SyncScope::All => self.route_scope(None)?,
         };
         if let crate::sources::Source::Remote(r) = r {
@@ -1618,14 +1650,14 @@ impl Osis {
                 self.sync_labels();
                 self.groups_synced(None, Vec::new(), timeout, Some(BTreeSet::new()))
             }
-            SyncScope::Group(t) => {
+            SyncScope::Thing(t) => {
                 // first, so that a label with more to bring counts as such
                 self.sync_labels();
                 // a failure at once needs no runtime
                 if let Some(Err(e)) = self.locked(|x| group_synced(&mut x.sync, me, t, false)).filter(Result::is_err) {
                     return Pending::ready(Err(e));
                 }
-                self.wait_until(Some(timeout), Box::new(move |sync, _, late| group_synced(sync, me, t, late)))
+                self.wait_until(timeout, Box::new(move |sync, _, late| group_synced(sync, me, t, late)))
             }
         }
     }
@@ -1634,7 +1666,7 @@ impl Osis {
     /// pushes what it gets) judge again what is left to send. Cheap at any rate, so an app may
     /// poll it. To wait until this node's writes are at a host: `wait_synced`.
     pub fn sync_now(&self) -> Result<()> {
-        if self.is_attached() {
+        if !self.has_store() {
             return self.rcall(crate::port::method::SYNC_NOW, vec![]).map(drop);
         }
         self.act(|x| x.sync.refresh());
@@ -1648,7 +1680,7 @@ impl Osis {
 
     /// Writes a bundle of `groups`' labels (spec/sync.md §11) to `out`.
     pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
-        if self.is_attached() {
+        if !self.has_store() {
             use crate::port::{STREAM_CHUNK, codec::{Args, tids_v}, method};
             let len = Args::of(vec![self.rcall(method::EXPORT_BUNDLE, vec![tids_v(groups)])?]).uint()?;
             let mut off = 0;
@@ -1678,7 +1710,7 @@ impl Osis {
     pub fn import_bundle(&self, mut input: impl std::io::Read) -> Result<()> {
         let mut b = Vec::new();
         input.read_to_end(&mut b).map_err(|e| Error::Storage(e.to_string()))?;
-        if self.is_attached() {
+        if !self.has_store() {
             use crate::port::{STREAM_CHUNK, method};
             for page in b.chunks(STREAM_CHUNK) {
                 self.rcall(method::BUNDLE_WRITE, vec![Value::Bytes(page.to_vec())])?;

@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Transport, Waiter};
-use crate::share::{RecoveryCard, HostAddr, Status};
+use crate::share::{HostAddr, RecoveryCard, Status, Url};
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
@@ -22,8 +22,6 @@ use std::time::Duration;
 
 /// Default materialization bound: 64 MiB.
 pub const DEFAULT_LIMIT: usize = 64 << 20;
-/// Default wait for another node (`Config::wait_timeout`).
-pub const DEFAULT_WAIT: Duration = Duration::from_secs(60);
 /// Default inactivity before a text session commits.
 pub const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 
@@ -64,24 +62,19 @@ impl MemStore {
 
 /// Where the database lives.
 #[derive(Clone, Debug)]
-pub enum StoreAt {
+pub enum Store {
     Memory(MemStore),
     /// A directory: `db.redb`, the key root `root` and, while it hosts, the host's own store
     /// `host.redb` with its key root `host.root`.
     Dir(std::path::PathBuf),
 }
 
-/// How to open a database.
+/// How a database with a store of its own runs (`Osis::create`, `open`, `restore`, `pair`).
 #[derive(Clone)]
 pub struct Config {
-    pub store: StoreAt,
     /// Reads of values larger than this many canonical bytes fail `TooLarge`.
     pub materialize_limit: usize,
-    /// Wall clock (default the system clock); tests pass a `ManualClock`.
-    pub clock: Option<Arc<dyn Clock>>,
-    /// Seed for a deterministic rng (tests only; default OS randomness).
-    pub seed: Option<u64>,
-    /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with `hosts` set).
+    /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with hosts given).
     pub runtime: Runtime,
     /// How hosts and co-reader nodes are dialed (default: QUIC).
     pub transport: Option<Transport>,
@@ -91,50 +84,61 @@ pub struct Config {
     pub peers: bool,
     /// Relay URLs published in `reach.0` (self-hosted `iroh-relay`s; feature `iroh`, without it
     /// `Invalid`).
-    pub relays: Vec<String>,
-    /// Hosts for `create`, `restore` and `pair`; an opened database keeps its stored list.
-    pub hosts: Vec<HostAddr>,
+    pub relays: Vec<Url>,
     /// A text session commits after this much inactivity.
     pub idle_commit: Duration,
-    /// How long a call that waits for another node (`redeem`, `import_contact`, `restore`)
-    /// waits before failing `Network`.
-    pub wait_timeout: Duration,
     /// Bytes of this session's ephemeral changes kept for undo (default 16 MiB); older ones are
     /// `NotUndoable{Compacted}`.
     pub ephemeral_history: usize,
     /// Where watch callbacks run (default: a dispatcher thread).
     pub dispatch: Dispatcher,
-    /// Nodes this process is attached to as a thin client (`Osis::attach_remotes` without a store;
-    /// with one, the credentials for the routes its `sources` record names: no secret is
-    /// ever stored, and a route naming a node not listed here fails `Network`).
-    pub remotes: Vec<crate::sources::RemoteConfig>,
+    /// Test hooks.
+    #[doc(hidden)]
+    pub internals: crate::internals::Knobs,
+}
+
+impl Default for Config {
+    fn default() -> Config {
+        let c = ClientConfig::default();
+        Config { materialize_limit: c.materialize_limit, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), idle_commit: c.idle_commit, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY, dispatch: c.dispatch, internals: c.internals }
+    }
 }
 
 impl Config {
-    /// A fresh in-memory store.
-    pub fn memory() -> Config {
-        Config::at(StoreAt::Memory(MemStore::new()))
-    }
-
-    pub fn at(store: StoreAt) -> Config {
-        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), hosts: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY, dispatch: Dispatcher::Thread, remotes: Vec::new() }
-    }
-
-    pub fn dir(path: impl Into<std::path::PathBuf>) -> Config {
-        Config::at(StoreAt::Dir(path.into()))
-    }
-
     /// `Invalid` for what would silently do nothing: hosts with no runtime to reach them, relays
     /// in a build with no transport to use them.
-    pub(crate) fn check(&self) -> Result<()> {
-        if !self.hosts.is_empty() && matches!(self.runtime, Runtime::None) {
-            return Err(Error::Invalid("Config.hosts with Runtime::None: nothing would sync; set Config.runtime".into()));
+    pub(crate) fn check(&self, hosts: &[HostAddr]) -> Result<()> {
+        if !hosts.is_empty() && matches!(self.runtime, Runtime::None) {
+            return Err(Error::Invalid("hosts with Runtime::None: nothing would sync; set Config.runtime".into()));
         }
         let quic = matches!(self.transport, None | Some(crate::Transport::Quic));
         if !self.relays.is_empty() && quic && !cfg!(feature = "iroh") {
             return Err(Error::Invalid("Config.relays needs feature `iroh`".into()));
         }
         Ok(())
+    }
+}
+
+/// How a thin client runs (`Osis::connect`, `connect_socket`): what `Config` holds but for what
+/// only a store of its own needs. Sync and undo logs are the node's.
+#[derive(Clone)]
+pub struct ClientConfig {
+    /// Reads of values larger than this many canonical bytes fail `TooLarge`.
+    pub materialize_limit: usize,
+    /// How a node is dialed by its address (default: QUIC).
+    pub transport: Option<Transport>,
+    /// A text session commits after this much inactivity.
+    pub idle_commit: Duration,
+    /// Where watch callbacks run (default: a dispatcher thread).
+    pub dispatch: Dispatcher,
+    /// Test hooks.
+    #[doc(hidden)]
+    pub internals: crate::internals::Knobs,
+}
+
+impl Default for ClientConfig {
+    fn default() -> ClientConfig {
+        ClientConfig { materialize_limit: DEFAULT_LIMIT, transport: None, idle_commit: DEFAULT_IDLE_COMMIT, dispatch: Dispatcher::Thread, internals: Default::default() }
     }
 }
 
@@ -162,11 +166,13 @@ pub(crate) struct Locked {
     pub offers: Vec<([u8; 32], u64)>,
     /// Links made here, by K.
     pub links: BTreeMap<Tid, MadeLink>,
-    /// This process's attachments to other nodes, in the order they were attached.
+    /// This process's connections to other nodes, in the order they connected.
     pub remotes: Vec<Arc<crate::port::client::Remote>>,
-    /// Groups this node reads and writes at another node: its address (`url#key`), persisted as
-    /// the `sources` record (notes/client-port.md §6). See `crate::sources`.
-    pub routes: BTreeMap<Tid, String>,
+    /// Groups this node reads and writes at another node: its address, persisted as the `sources`
+    /// record (notes/client-port.md §6). See `crate::sources`.
+    pub routes: BTreeMap<Tid, HostAddr>,
+    /// The store failure the last status change met, told to status watches once.
+    pub status_failed: bool,
 }
 
 impl Locked {
@@ -190,7 +196,7 @@ impl Inner {
 }
 
 /// A process with no store of its own: where its process-wide calls go, and who it is there.
-pub(crate) struct Thin {
+pub(crate) struct ClientOf {
     pub primary: Arc<crate::port::client::Remote>,
     pub who: crate::port::client::Who,
 }
@@ -202,7 +208,8 @@ pub(crate) struct Inner {
     pub me: Tid,
     pub limit: usize,
     pub idle_commit: Duration,
-    pub wait_timeout: Duration,
+    /// How this handle dials a node it connects to (`Osis::connect_node`).
+    pub transport: Option<Transport>,
     pub clock: Arc<dyn Clock>,
     pub schemas: Mutex<Vec<Arc<Schema>>>,
     /// Serializes undo and redo: candidate selection and commit.
@@ -210,9 +217,9 @@ pub(crate) struct Inner {
     pub net: Net,
     /// The client port this node serves (notes/client-port.md): requests its served sessions make.
     pub port: crate::port::serve::Port,
-    /// A process with no store of its own (`Osis::attach`): the scratch database stands in.
-    pub thin: std::sync::OnceLock<Thin>,
-    /// Any attachment or route exists: only then is a route looked up (no cost on a local path).
+    /// A process with no store of its own (`Osis::connect`): the scratch database stands in.
+    pub client: std::sync::OnceLock<ClientOf>,
+    /// Any connection or route exists: only then is a route looked up (no cost on a local path).
     pub routing: std::sync::atomic::AtomicBool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
@@ -322,10 +329,10 @@ pub(crate) const PERSON: &str = "person";
 pub(crate) const HOSTS: &str = "hosts";
 pub(crate) const LINKS: &str = "links";
 
-fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
-    match &cfg.store {
-        StoreAt::Memory(m) => Ok((Box::new(m.backend.clone()), Box::new(m.root.clone()))),
-        StoreAt::Dir(p) => {
+fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>)> {
+    match store {
+        Store::Memory(m) => Ok((Box::new(m.backend.clone()), Box::new(m.root.clone()))),
+        Store::Dir(p) => {
             let mut d = std::fs::DirBuilder::new();
             d.recursive(true);
             #[cfg(unix)]
@@ -338,7 +345,7 @@ fn parts(cfg: &Config) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_sto
 }
 
 fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
-    match cfg.seed {
+    match cfg.internals.seed {
         Some(s) => Box::new(SeededRng::from_u64(s.wrapping_add(salt))),
         None => Box::new(OsRng),
     }
@@ -347,13 +354,13 @@ fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
 /// The rng salt of an open under a test seed: differs per open of a store, or every open would
 /// draw one session nonce and void its earlier commits (spec/crdt.md §2.1). Deterministic per
 /// store, kept beside it. Without a seed the rng is the OS's, so nothing is counted.
-fn open_salt(cfg: &Config) -> Result<u64> {
-    if cfg.seed.is_none() {
+fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
+    if cfg.internals.seed.is_none() {
         return Ok(0);
     }
-    let n = match &cfg.store {
-        StoreAt::Memory(m) => m.opens.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        StoreAt::Dir(p) => {
+    let n = match store {
+        Store::Memory(m) => m.opens.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        Store::Dir(p) => {
             let f = p.join("seeded-opens");
             let n = std::fs::read_to_string(&f).ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
             std::fs::write(&f, n.wrapping_add(1).to_string()).map_err(|e| Error::Storage(e.to_string()))?;
@@ -364,7 +371,7 @@ fn open_salt(cfg: &Config) -> Result<u64> {
 }
 
 fn clock(cfg: &Config) -> Arc<dyn Clock> {
-    cfg.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
+    cfg.internals.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
 }
 
 fn engine_cfg(cfg: &Config) -> osis_node::Config {
@@ -402,8 +409,8 @@ fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, hosts: &[Host
 }
 
 /// A new store's sync engine (its hosts set later by `set_hosts` where they change).
-pub(crate) fn fresh_engine(cfg: &Config, hosts: &[HostAddr]) -> Result<Fresh> {
-    let (b, r) = parts(cfg)?;
+pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[HostAddr]) -> Result<Fresh> {
+    let (b, r) = parts(store)?;
     let clock = clock(cfg);
     let engine = Engine::create(b, r, engine_cfg(cfg), clock.clone(), rng(cfg, 0))?;
     Ok(Fresh { sync: sync_over(engine, &clock, cfg, hosts)?, clock })
@@ -412,44 +419,44 @@ pub(crate) fn fresh_engine(cfg: &Config, hosts: &[HostAddr]) -> Result<Fresh> {
 impl Osis {
     /// Creates a database (spec/permissions.md §1): a new node and a new person
     /// actor owned by a fresh recovery key, this node its admin, its home group (the person
-    /// itself, spec/sync.md §2) labeled on `Config.hosts`. Returns the recovery card, the only
-    /// copy of the recovery key: show or store it, osis keeps none of it. Without hosts there
-    /// is nothing to restore from: no card (the key is discarded).
-    pub fn create(cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
-        cfg.check()?;
-        let Fresh { mut sync, clock } = fresh_engine(&cfg, &cfg.hosts)?;
+    /// itself, spec/sync.md §2) synced on `hosts`. Returns the recovery card, the only copy of the
+    /// recovery key: show or store it, osis keeps none of it. Without hosts there is nothing to
+    /// restore from: no card (the key is discarded). Hosts need `Config::runtime` (`Invalid`).
+    pub fn create(store: Store, hosts: &[HostAddr], cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
+        cfg.check(hosts)?;
+        let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, hosts)?;
         let engine = sync.engine_mut();
-        let hosts: Vec<osis_label::Address> = cfg.hosts.iter().map(|s| s.0.clone()).collect();
-        let (p, done) = engine.create_person(&hosts)?;
+        let addrs: Vec<osis_label::Address> = hosts.iter().map(|s| s.0.clone()).collect();
+        let (p, done) = engine.create_person(&addrs)?;
         let mut m = osis_node::Mutation::new();
         m.set(p.person, &ct::GROUP, &ct::Group::default())?;
         engine.commit(m)?;
         engine.set_app_record(PERSON, p.person.as_bytes())?;
-        save_hosts(engine, &cfg.hosts)?;
-        let card = if hosts.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
-        let db = Osis::start(sync, clock, &cfg, p.person)?;
+        save_hosts(engine, hosts)?;
+        let card = if addrs.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
+        let db = Osis::start(sync, clock, store, &cfg, p.person)?;
         db.carry(done)?;
         Ok((db, card))
     }
 
-    /// Opens an existing database.
-    pub fn open(cfg: Config) -> Result<Osis> {
-        cfg.check()?;
-        let (b, r) = parts(&cfg)?;
+    /// Opens an existing database. Its hosts are the stored ones (`add_host`, `remove_host`).
+    pub fn open(store: Store, cfg: Config) -> Result<Osis> {
+        cfg.check(&[])?;
+        let (b, r) = parts(&store)?;
         let clock = clock(&cfg);
-        let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, open_salt(&cfg)?))?;
+        let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, open_salt(&store, &cfg)?))?;
         let me = tid_record(&mut e, PERSON)?;
-        let hosts = load_hosts(&mut e)?.unwrap_or_else(|| cfg.hosts.clone());
+        let hosts = load_hosts(&mut e)?.unwrap_or_default();
         let sync = sync_over(e, &clock, &cfg, &hosts)?;
-        let db = Osis::start(sync, clock, &cfg, me)?;
+        let db = Osis::start(sync, clock, store, &cfg, me)?;
         db.load_links()?;
         Ok(db)
     }
 
-    pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, cfg: &Config, me: Tid) -> Result<Osis> {
+    pub(crate) fn start(mut sync: SyncEngine, clock: Arc<dyn Clock>, store: Store, cfg: &Config, me: Tid) -> Result<Osis> {
         // store files open to group or others: tightened where possible (best effort), else
         // reported
-        if let StoreAt::Dir(p) = &cfg.store {
+        if let Store::Dir(p) = &store {
             for f in [p.clone(), p.join("db.redb"), p.join("root")] {
                 if let Some(why) = osis_store::restrict_to_owner(&f) {
                     sync.engine_mut().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: why });
@@ -463,17 +470,13 @@ impl Osis {
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let routes = crate::sources::load_routes(sync.engine_mut())?;
         sync.engine_mut().core.routed_away = routes.keys().copied().collect();
-        let routing = !routes.is_empty() || !cfg.remotes.is_empty();
-        let mut remotes = Vec::new();
-        for x in &cfg.remotes {
-            remotes.push(crate::port::client::spawn_client(&x.addr, &x.secret, cfg, clock.clone())?);
-        }
-        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), remotes, routes };
+        let routing = !routes.is_empty();
+        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), remotes: Vec::new(), routes, status_failed: false };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, thin: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, transport: cfg.transport.clone(), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
-            inner.net.spawn_driver(ctl, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
+            inner.net.spawn_driver(ctl, store, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
         }
         let db = Osis::user(inner);
         if let Runtime::Manual(m) = &cfg.runtime {
@@ -543,16 +546,16 @@ impl Osis {
         Ok(Close::Closed)
     }
 
-    /// This device's node tid (attached: the node's).
+    /// This device's node tid (a thin client: its node's).
     pub fn node(&self) -> Tid {
-        self.inner.thin.get().map_or(self.inner.node, |t| t.who.node)
+        self.inner.client.get().map_or(self.inner.node, |t| t.who.node)
     }
 
     /// The person actor this database belongs to: the usual owner of what the app creates
-    /// (attached: the node's person). It is a group too: things placed in it reach every device of
+    /// (a thin client: the actor its node acts as for it). It is a group too: things placed in it reach every device of
     /// the person.
     pub fn me(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.who.me))
+        self.acting.unwrap_or_else(|| self.inner.client.get().map_or(self.inner.me, |t| t.who.me))
     }
 
     /// Runs `f` on the engine under the database lock, then queues its events for the
@@ -622,18 +625,26 @@ impl Osis {
             return;
         }
         self.upkeep_links(l);
-        // a store that cannot answer: `status` says so; nothing new to tell a watch of it
-        if let Ok(status) = crate::share::status_of(&mut l.sync, self.inner.me)
-            && status != l.status
-        {
-            for (g, s) in &status.groups {
-                if s.state == crate::share::SyncState::Stranded && l.status.groups.get(g).is_none_or(|o| o.state != s.state) {
-                    l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Stranded, tids: vec![*g], commit: None, peer: None, detail: "stranded: waiting for a re-seal".into() });
+        match crate::share::status_of(&mut l.sync, self.inner.me) {
+            Ok(status) if status != l.status || l.status_failed => {
+                for (g, s) in &status.groups {
+                    if s.state == crate::share::SyncState::Stranded && l.status.groups.get(g).is_none_or(|o| o.state != s.state) {
+                        l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Stranded, tids: vec![*g], commit: None, peer: None, detail: "stranded: waiting for a re-seal".into() });
+                    }
                 }
+                l.status = status.clone();
+                l.status_failed = false;
+                l.seq += 1;
+                self.inner.dispatch.send(l.seq, Msg::Status(Ok(status)));
             }
-            l.status = status.clone();
-            l.seq += 1;
-            self.inner.dispatch.send(l.seq, Msg::Status(status));
+            Ok(_) => {}
+            // once: a store that cannot answer fails every call that asks it anyway
+            Err(e) if !l.status_failed => {
+                l.status_failed = true;
+                l.seq += 1;
+                self.inner.dispatch.send(l.seq, Msg::Status(Err(e)));
+            }
+            Err(_) => {}
         }
         self.drain(l);
         let now = self.inner.clock.now_wall_ms().0;
@@ -670,7 +681,7 @@ impl Osis {
     /// call it inside an `Internals::engine` closure: a callback may need the lock
     /// that closure holds (deadlock).
     pub fn settle(&self) {
-        // attached nodes' deliveries so far reach the queue first (not from a callback: the reply
+        // connected nodes' deliveries so far reach the queue first (not from a callback: the reply
         // would wait for this very dispatcher)
         if self.routing() && self.may_wait() {
             self.remote_settle();
@@ -678,7 +689,7 @@ impl Osis {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
-    /// Registers a `*.osis` schema source, here and at any attached node: `key` then types its
+    /// Registers a `*.osis` schema source, here and at any connected node: `key` then types its
     /// aspects, and undo and large values follow the schema. `name` appears in its errors
     /// (name:line:col). Generated keys carry their schema and need no registration. The newest
     /// registration of an aspect types `key` for this session; the store keeps the highest version.
@@ -698,7 +709,7 @@ impl Osis {
         Ok(())
     }
 
-    /// The key for `ak`: typed by the registered schema that declares it, else untyped.
+    /// The key named `ak`: typed by the registered schema that declares it, else untyped.
     pub fn key(&self, ak: &str) -> Result<crate::Key> {
         let ak = osis_base::Ak::new(ak).map_err(|_| Error::Invalid(format!("bad AK {ak:?}")))?;
         let core = crate::keys::core_schema();

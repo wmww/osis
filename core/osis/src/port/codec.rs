@@ -1,11 +1,11 @@
 //! Values of the client port's method table (notes/client-port.md §2): API types to and from
 //! untyped `Value`s, and API errors to and from Reply error codes (`osis_proto::ApiCode`).
 
-use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
+use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp};
 use crate::share::{GrantOpts, GroupSync, Holder, HostAddr, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncFirst, SyncScope, SyncState};
-use crate::watch::{CommitInfo, Source};
+use crate::watch::Source;
 use crate::write::Committed;
 use osis_base::{Ak, CommitId, LabelId, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
@@ -223,16 +223,15 @@ pub(crate) fn committed(v: Value) -> Result<Committed> {
     Ok(c)
 }
 
-pub(crate) fn stamp_v(s: &Stamp) -> Value {
-    Value::List(vec![opt(s.commit, |c| Value::bytes(&c.0)), ts_v(s.ts), Value::Tid(s.node), Value::Tid(s.actor), u(s.received.0)])
+pub(crate) fn stamp_v(i: &Stamp) -> Value {
+    Value::List(vec![change_v(&i.id), Value::Tid(i.actor), Value::Tid(i.node), ts_v(i.ts), u(i.received.0)])
 }
 
 pub(crate) fn stamp(v: Value) -> Result<Stamp> {
     let mut a = Args::new(v)?;
-    let commit = a.opt()?.map(commit_id).transpose()?;
-    let s = Stamp { commit, ts: ts(&a.next()?)?, node: a.tid()?, actor: a.tid()?, received: wall(&a.next()?)? };
+    let i = Stamp { id: change(a.next()?)?, actor: a.tid()?, node: a.tid()?, ts: ts(&a.next()?)?, received: wall(&a.next()?)? };
     a.end()?;
-    Ok(s)
+    Ok(i)
 }
 
 pub(crate) fn groups_v(g: &GroupsOf) -> Value {
@@ -272,22 +271,11 @@ fn causes_listed(c: Cause) {
     }
 }
 
-fn info_v(i: &CommitInfo) -> Value {
-    Value::List(vec![change_v(&i.id), Value::Tid(i.actor), Value::Tid(i.node), ts_v(i.ts), u(i.received.0)])
-}
-
-fn info(v: Value) -> Result<CommitInfo> {
-    let mut a = Args::new(v)?;
-    let i = CommitInfo { id: change(a.next()?)?, actor: a.tid()?, node: a.tid()?, ts: ts(&a.next()?)?, received: wall(&a.next()?)? };
-    a.end()?;
-    Ok(i)
-}
-
 pub(crate) fn source_v(s: &Source) -> Value {
     Value::List(match s {
         Source::Initial => vec![u(0)],
-        Source::Local(i) => vec![u(1), info_v(i)],
-        Source::Remote(i) => vec![u(2), info_v(i)],
+        Source::Local(i) => vec![u(1), stamp_v(i)],
+        Source::Remote(i) => vec![u(2), stamp_v(i)],
         Source::Derived(c) => vec![u(3), u(CAUSES.iter().position(|x| x == c).unwrap_or(0) as u64)],
     })
 }
@@ -296,8 +284,8 @@ pub(crate) fn source(v: Value) -> Result<Source> {
     let mut a = Args::new(v)?;
     let s = match a.uint()? {
         0 => Source::Initial,
-        1 => Source::Local(info(a.next()?)?),
-        2 => Source::Remote(info(a.next()?)?),
+        1 => Source::Local(stamp(a.next()?)?),
+        2 => Source::Remote(stamp(a.next()?)?),
         3 => Source::Derived(*usize::try_from(a.uint()?).ok().and_then(|i| CAUSES.get(i)).ok_or_else(|| bad("cause"))?),
         _ => return Err(bad("source")),
     };
@@ -329,7 +317,7 @@ pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
     }
 }
 
-const STATES: [SyncState; 8] = [SyncState::Synced, SyncState::Syncing, SyncState::Unreachable, SyncState::NoHosts, SyncState::Refused, SyncState::Stranded, SyncState::ReceiptsOnly, SyncState::NoRoute];
+const STATES: [SyncState; 8] = [SyncState::Synced, SyncState::Syncing, SyncState::Unreachable, SyncState::NoHosts, SyncState::Refused, SyncState::Stranded, SyncState::HeadersOnly, SyncState::NoRoute];
 
 pub(crate) fn status_v(s: &Status) -> Value {
     let groups = s
@@ -476,7 +464,6 @@ pub(crate) fn query_v(q: &CommitQuery) -> Value {
         opt(q.until, ts_v),
         opt(q.after.as_ref(), change_v),
         opt(q.limit, |n| u(n as u64)),
-        opt(q.next, |n| u(u64::from(n == Next::Redo))),
     ])
 }
 
@@ -493,11 +480,6 @@ pub(crate) fn query(v: Value) -> Result<CommitQuery> {
         until: a.opt()?.map(|t| ts(&t)).transpose()?,
         after: a.opt()?.map(change).transpose()?,
         limit: a.opt()?.map(|n| n.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("limit"))).transpose()?,
-        next: a.opt()?.map(|n| match n.as_uint() {
-            Some(0) => Ok(Next::Undo),
-            Some(1) => Ok(Next::Redo),
-            _ => Err(bad("next")),
-        }).transpose()?,
     };
     a.end()?;
     Ok(q)
@@ -539,13 +521,13 @@ pub(crate) fn hist_entry_v(e: &crate::HistoryEntry<Value>) -> Value {
         B::Dropped => vec![u(3)],
         B::NotFetched => vec![u(4)],
     };
-    Value::List(vec![info_v(&e.commit), ckind_v(&e.kind), Value::Bool(e.valid), Value::List(body)])
+    Value::List(vec![stamp_v(&e.commit), ckind_v(&e.kind), Value::Bool(e.valid), Value::List(body)])
 }
 
 pub(crate) fn hist_entry(v: Value) -> Result<crate::HistoryEntry<Value>> {
     use crate::HistoryBody as B;
     let mut a = Args::new(v)?;
-    let (commit, kind, valid) = (info(a.next()?)?, ckind(&a.next()?)?, a.bool()?);
+    let (commit, kind, valid) = (stamp(a.next()?)?, ckind(&a.next()?)?, a.bool()?);
     let mut b = Args::new(a.next()?)?;
     a.end()?;
     let body = match b.uint()? {
@@ -574,7 +556,7 @@ pub(crate) fn hist_page(v: Value) -> Result<crate::HistoryPage<Value>> {
 
 pub(crate) fn entry_v(e: &CommitEntry) -> Value {
     Value::List(vec![
-        info_v(&e.commit),
+        stamp_v(&e.commit),
         ckind_v(&e.kind),
         opt(e.reverts.as_ref(), change_v),
         Value::List(e.reverted_by.iter().map(change_v).collect()),
@@ -595,7 +577,7 @@ fn purged_one(v: Value) -> Result<(Tid, Ak, ChangeId)> {
 pub(crate) fn entry(v: Value) -> Result<CommitEntry> {
     let mut a = Args::new(v)?;
     let e = CommitEntry {
-        commit: info(a.next()?)?,
+        commit: stamp(a.next()?)?,
         kind: ckind(&a.next()?)?,
         reverts: a.opt()?.map(change).transpose()?,
         reverted_by: a.list()?.into_iter().map(change).collect::<Result<_>>()?,
@@ -762,7 +744,7 @@ pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
 pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
     Value::List(match s {
         SyncScope::All => vec![],
-        SyncScope::Group(t) => vec![Value::Tid(t)],
+        SyncScope::Thing(t) => vec![Value::Tid(t)],
     })
 }
 
@@ -770,17 +752,26 @@ pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     let mut a = Args::new(v)?;
     let s = match a.opt_tid()? {
         None => SyncScope::All,
-        Some(t) => SyncScope::Group(t),
+        Some(t) => SyncScope::Thing(t),
     };
     a.end()?;
     Ok(s)
 }
 
-/// A `SyncFirst`: `[0]` required, `[1, ms]` try, `[2]` skip, `[3, time]` backdate.
+/// A wait's timeout in ms, past `u64::MAX` as that: no deadline (`Osis::wait_until`).
+pub(crate) fn timeout_v(t: std::time::Duration) -> Value {
+    u(u64::try_from(t.as_millis()).unwrap_or(u64::MAX))
+}
+
+pub(crate) fn timeout(ms: u64) -> std::time::Duration {
+    std::time::Duration::from_millis(ms)
+}
+
+/// A `SyncFirst`: `[0]` required, `[1]` try, `[2]` skip, `[3, time]` backdate.
 pub(crate) fn sync_first_v(s: SyncFirst) -> Value {
     Value::List(match s {
         SyncFirst::Required => vec![u(0)],
-        SyncFirst::Try(t) => vec![u(1), u(u64::try_from(t.as_millis()).unwrap_or(u64::MAX))],
+        SyncFirst::Try => vec![u(1)],
         SyncFirst::Skip => vec![u(2)],
         SyncFirst::Backdate(w) => vec![u(3), u(w.0)],
     })
@@ -790,7 +781,7 @@ pub(crate) fn sync_first(v: Value) -> Result<SyncFirst> {
     let mut a = Args::new(v)?;
     let s = match a.uint()? {
         0 => SyncFirst::Required,
-        1 => SyncFirst::Try(std::time::Duration::from_millis(a.uint()?)),
+        1 => SyncFirst::Try,
         2 => SyncFirst::Skip,
         3 => SyncFirst::Backdate(osis_base::WallMs(a.uint()?)),
         _ => return Err(bad("sync first")),
@@ -812,14 +803,23 @@ pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
     Ok(SetRoleOpts { sync, keep })
 }
 
-/// A sync policy's fields.
-pub(crate) fn policy_v(p: &crate::GroupPolicy) -> Vec<Value> {
-    vec![opt(p.publish_reach, Value::Bool), Value::Bool(p.receipts_only)]
+/// `SyncOptions`' fields.
+pub(crate) fn sync_options_v(o: &crate::SyncOptions) -> Vec<Value> {
+    let reach = match o.reach {
+        crate::Reach::Auto => None,
+        crate::Reach::Always => Some(true),
+        crate::Reach::Never => Some(false),
+    };
+    vec![opt(reach, Value::Bool), Value::Bool(o.mode == crate::SyncMode::HeadersOnly)]
 }
 
-pub(crate) fn policy(a: &mut Args) -> Result<crate::GroupPolicy> {
-    let publish_reach = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
-    Ok(crate::GroupPolicy { publish_reach, receipts_only: a.bool()? })
+pub(crate) fn sync_options(a: &mut Args) -> Result<crate::SyncOptions> {
+    let reach = match a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()? {
+        None => crate::Reach::Auto,
+        Some(true) => crate::Reach::Always,
+        Some(false) => crate::Reach::Never,
+    };
+    Ok(crate::SyncOptions { reach, mode: if a.bool()? { crate::SyncMode::HeadersOnly } else { crate::SyncMode::Full } })
 }
 
 /// An outcome carried as a value (a row that waits): the Reply's own forms.

@@ -1,12 +1,13 @@
-//! `Key`: an aspect key typed by a schema registered at run time (CLIs, tools; `Osis::key`), and
-//! the core keys. Typed `Aspect<T>` come from codegen (osis-schema).
+//! `Key`: an aspect key by name, typed by a schema registered at run time (`Osis::key`), and the
+//! core keys. Typed `Aspect<T>` come from codegen (osis-schema).
 
 use osis_base::{Ak, Value};
 use osis_schema::{AspectKey, Codec, PathError, Schema, typed_read};
 use std::sync::Arc;
 
-/// An aspect key whose schema is known only at run time. Reads are typed reads projected back
-/// to `Value` (reader defaults, failures with the path); writes are validated.
+/// An aspect key by name (`Osis::key`), its values plain `Value`s. Under a registered schema reads
+/// are typed reads projected back to `Value` (reader defaults, failures with the path) and writes
+/// are validated.
 #[derive(Clone, Debug)]
 pub struct Key {
     pub(crate) ak: Ak,
@@ -20,12 +21,18 @@ pub(crate) fn core_schema() -> Arc<Schema> {
 }
 
 impl Key {
-    /// A key typed by `schema` if it declares `ak`, else untyped.
-    pub fn new(ak: Ak, schema: Option<Arc<Schema>>) -> Key {
-        let schema = schema.filter(|s| s.aspects.contains_key(ak.as_str()));
-        Key { ak, schema }
+    /// The key named `ak` with no schema, even where one is registered: any stored value as it is.
+    pub fn untyped(ak: Ak) -> Key {
+        Key { ak, schema: None }
+    }
+
+    /// Its name.
+    pub fn name(&self) -> &Ak {
+        &self.ak
     }
 }
+
+impl osis_schema::ApiKey for Key {}
 
 impl AspectKey for Key {
     type T = Value;

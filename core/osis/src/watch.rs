@@ -11,6 +11,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis};
+use crate::read::Stamp;
 use osis_base::{Ak, Tid, Ts, Value, WallMs};
 use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, Event, Origin};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -23,30 +24,15 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// The commit behind a change, as its signed header says: a snapshot applied is
-/// reported as itself, never as the writes it carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommitInfo {
-    /// The commit, or the ephemeral batch for a change with no durable half.
-    pub id: ChangeId,
-    /// The actor the author acted for.
-    pub actor: Tid,
-    /// The authoring node.
-    pub node: Tid,
-    pub ts: Ts,
-    /// When this node received it. Display time for feeds is `min(ts, received)`.
-    pub received: WallMs,
-}
-
 /// Why a watched value changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     /// The first call of `on_change`, with the value at registration.
     Initial,
     /// A change made on this node.
-    Local(CommitInfo),
+    Local(Stamp),
     /// A change received from another node.
-    Remote(CommitInfo),
+    Remote(Stamp),
     /// No commit: validity, expiry, purge or a late part of a commit changed the read.
     Derived(Cause),
 }
@@ -72,11 +58,13 @@ pub(crate) enum Filter {
     History(Tid, Ak),
     Diagnostics,
     Status,
-    /// A subscription at an attached node, by its token (`port::client`), and the thing it is on.
+    /// A text session's `on_remote`: called by the session, no message reaches it.
+    Text,
+    /// A subscription at a connected node, by its token (`port::client`), and the thing it is on.
     Port(u64, Option<Tid>),
 }
 
-/// What a subscription at the attached node delivers (`port::client`), in wire order.
+/// What a subscription at the connected node delivers (`port::client`), in wire order.
 #[derive(Clone, Debug)]
 pub(crate) enum PortEvent {
     /// The Sub's reply: the initial value.
@@ -101,8 +89,10 @@ pub(crate) enum Delivery {
     /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise.
     History { tid: Tid, id: ChangeId },
     Diagnostic(Diagnostic),
-    Status(crate::share::Status),
+    Status(Result<crate::share::Status>),
     Port(PortEvent),
+    /// A text session's merged text.
+    Text { text: String, edits: Vec<crate::text::Splice> },
     /// The group's source moved (`Osis::group_source`): the last call of this subscription, which
     /// would otherwise go silent.
     Moved,
@@ -111,7 +101,7 @@ pub(crate) enum Delivery {
 pub(crate) enum Msg {
     Event(Event),
     Initial(u64),
-    Status(crate::share::Status),
+    Status(Result<crate::share::Status>),
     Port(u64, PortEvent),
     /// This subscription's source moved.
     Moved(u64),
@@ -266,6 +256,14 @@ impl Dispatch {
         Subscription { shared: Arc::downgrade(&self.shared), id: Some(id), port: None }
     }
 
+    /// Calls subscription `id` on this thread, which must be running callbacks.
+    pub fn call_now(&self, db: &Osis, id: u64, d: Delivery) {
+        let s = lock(&self.shared.registry).subs.get(&id).cloned();
+        if let Some(s) = s {
+            call(db, &s, d);
+        }
+    }
+
     /// Returns once every message queued so far has been dispatched: waits for the thread,
     /// or pumps on this one (after another thread's pump in progress). At once on the
     /// dispatcher.
@@ -298,7 +296,7 @@ impl Dispatch {
 }
 
 fn source(id: ChangeId, origin: Origin, node: Tid, actor: Tid, ts: Ts, received: WallMs) -> Source {
-    let i = CommitInfo { id, actor, node, ts, received };
+    let i = Stamp { id, actor, node, ts, received };
     if origin == Origin::Local { Source::Local(i) } else { Source::Remote(i) }
 }
 
@@ -473,7 +471,7 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
 pub struct Subscription {
     shared: Weak<Shared>,
     id: Option<u64>,
-    /// A subscription at the attached node: unsubscribed there on drop.
+    /// A subscription at the connected node: unsubscribed there on drop.
     pub(crate) port: Option<(Weak<crate::port::client::Remote>, u64)>,
 }
 

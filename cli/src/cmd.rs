@@ -8,8 +8,9 @@ use crate::write::{self, Did};
 use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
+use osis_schema::AspectKey as _;
 use osis::{
-    AspectKey, Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, Schema, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Ts,
+    Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, Schema, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Ts,
     Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -85,49 +86,28 @@ fn deadline(d: Option<Duration>) -> Option<Instant> {
     d.and_then(|d| Instant::now().checked_add(d))
 }
 
-/// What the API's `Duration`-taking waits get for "no timeout" (`--timeout 0`): the CLI's own
-/// deadline (none) ends the wait first.
-const FOREVER: Duration = Duration::from_secs(100 * 365 * 86_400);
-
-/// Polls `f` on this thread until it is ready or `timeout` passes (`None`: timed out).
-fn block_on<F: Future>(f: F, timeout: Option<Duration>) -> Option<F::Output> {
+/// Polls `f` on this thread until it is ready: the call's own timeout ends it.
+fn block_on<F: Future>(f: F) -> F::Output {
     let mut f = std::pin::pin!(f);
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
-    let end = deadline(timeout);
     loop {
         if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return Some(v);
+            return v;
         }
-        match end {
-            None => std::thread::park(),
-            Some(e) => {
-                let now = Instant::now();
-                if now >= e {
-                    return None;
-                }
-                std::thread::park_timeout(e - now);
-            }
-        }
+        std::thread::park();
     }
 }
 
-pub(crate) fn wait<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
-    match block_on(f, ctx.timeout()?) {
-        Some(r) => Ok(r?),
-        None => Err(exit(6, "timed out")),
-    }
+pub(crate) fn wait<T>(f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
+    Ok(block_on(f)?)
 }
 
 /// `wait_synced` on its own deadline `t` (a label a host does not admit fails it `Unsynced`
 /// then, saying which host).
 fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, t: Duration) -> anyhow::Result<()> {
     let db = ctx.db.clone();
-    match block_on(db.wait_synced(s, t), None) {
-        Some(Ok(())) => Ok(()),
-        Some(Err(e)) => Err(not_admitted(&db, e)),
-        None => Err(exit(6, "timed out")),
-    }
+    block_on(db.wait_synced(s, t)).map_err(|e| not_admitted(&db, e))
 }
 
 /// `e` with the hosts that do not admit the groups it names (state `Refused`), if any.
@@ -145,20 +125,20 @@ fn links_j(ls: &[osis::LinkInfo]) -> J {
     J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
 }
 
-fn sync_first(d: &SyncFlags, ctx: &Ctx<'_>) -> anyhow::Result<SyncFirst> {
+fn sync_first(d: &SyncFlags) -> anyhow::Result<SyncFirst> {
     if let Some(t) = opt_ts(&d.backdate)? {
         return Ok(SyncFirst::Backdate(t));
     }
     match d.sync.as_deref() {
         None | Some("required") => Ok(SyncFirst::Required),
-        Some("try") => Ok(SyncFirst::Try(ctx.timeout()?.unwrap_or(crate::DEFAULT_WAIT))),
+        Some("try") => Ok(SyncFirst::Try),
         Some("skip") => Ok(SyncFirst::Skip),
         Some(o) => Err(usage(format!("--sync: required, try or skip (got {o:?})"))),
     }
 }
 
-fn set_role_opts(d: &SetRoleFlags, ctx: &Ctx<'_>) -> anyhow::Result<SetRoleOpts> {
-    Ok(SetRoleOpts { sync: sync_first(&d.sync, ctx)?, keep: d.keep })
+fn set_role_opts(d: &SetRoleFlags) -> anyhow::Result<SetRoleOpts> {
+    Ok(SetRoleOpts { sync: sync_first(&d.sync)?, keep: d.keep })
 }
 
 /// A role, or `none`.
@@ -256,14 +236,13 @@ fn own_hosts(db: &Osis) -> osis::Result<Vec<osis::HostAddr>> {
 pub(crate) fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     db.sync_now()?;
-    let t = ctx.timeout()?.unwrap_or(FOREVER);
-    let end = std::time::Instant::now() + t;
+    let end = deadline(ctx.timeout()?);
     let mut scopes = vec![SyncScope::All];
     if let Some(x) = shared {
-        scopes.insert(0, SyncScope::Group(ctx.tid(&x)?));
+        scopes.insert(0, SyncScope::Thing(ctx.tid(&x)?));
     }
     for s in scopes {
-        let left = end.saturating_duration_since(std::time::Instant::now());
+        let left = end.map_or(Duration::MAX, |e| e.saturating_duration_since(Instant::now()));
         wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at the hosts: {e:#}")))?;
     }
     Ok(())
@@ -297,21 +276,16 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             db
         }
         Cmd::Restore { card, host } => {
-            let mut cfg = crate::config(&sel, &g, true);
-            cfg.hosts = seed(host)?;
+            let cfg = crate::config(&g, true);
             let card: osis::RecoveryCard = crate::arg_text(&mut *stdin, card)?.parse()?;
-            let t = crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?;
-            match block_on(Osis::restore(cfg, &card), t) {
-                Some(r) => r?,
-                None => return Err(exit(6, "timed out")),
-            }
+            let t = crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?.unwrap_or(Duration::MAX);
+            block_on(Osis::restore(crate::store_of(&sel), &seed(host)?, &card, t, cfg))?
         }
         Cmd::Pair(PairCmd::Join { offer, host }) => {
             // the app carries two messages: print the request, read the reply
-            let mut cfg = crate::config(&sel, &g, true);
-            cfg.hosts = seed(host)?;
+            let cfg = crate::config(&g, true);
             let offer: osis::PairOffer = offer.parse()?;
-            let join = Osis::pair(cfg, &offer)?;
+            let join = Osis::pair(crate::store_of(&sel), &seed(host)?, &offer, cfg)?;
             writeln!(out, "{}", join.request())?;
             out.flush()?;
             let mut line = String::new();
@@ -367,7 +341,7 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     let created = did.created.first().map(|(_, t)| *t);
     // a new thing with no durable data lives in this process's memory only
     let unsaved = match created {
-        Some(t) => db.created(t)?.is_some_and(|c| c.commit.is_none()),
+        Some(t) => db.created(t)?.is_some_and(|c| c.id.commit().is_none()),
         None => false,
     };
     if unsaved {
@@ -411,13 +385,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Device(DeviceCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
-            let d = set_role_opts(&d, ctx)?;
-            let open = wait(ctx, db.remove_device(n, d))?;
+            let d = set_role_opts(&d)?;
+            let t = ctx.wait_for()?;
+            let open = wait(db.remove_device(n, d, t))?;
             if end_links {
                 // not backdated: joiners since that time stay joiners, as with any link revoked
                 let end = if matches!(d.sync, SyncFirst::Backdate(_)) { SyncFirst::Skip } else { d.sync };
                 for l in &open {
-                    wait(ctx, db.revoke_link(l.id, end))?;
+                    wait(db.revoke_link(l.id, end, t))?;
                 }
             }
             let say = |l: &osis::LinkInfo| {
@@ -468,13 +443,21 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             q.after = after.as_deref().map(parse_commit).transpose()?.map(osis::ChangeId::Commit);
             q.since = opt_ts(&since)?.and_then(|ms| Ts::make(ms, 0));
             q.until = opt_ts(&until)?.and_then(|ms| Ts::make(ms, 0));
-            q.next = match next.as_deref() {
-                None => None,
-                Some("undo") => Some(osis::Next::Undo),
-                Some("redo") => Some(osis::Next::Redo),
-                Some(x) => return Err(usage(format!("--next takes undo or redo, not {x:?}"))),
-            };
-            commits(ctx, &q)
+            // the one change undo or redo would revert: a question of its own, about a scope
+            if let Some(n) = next {
+                if q != (CommitQuery { scope: q.scope.clone(), ..CommitQuery::default() }) {
+                    return Err(usage("--next takes only a scope"));
+                }
+                let scope = q.scope.ok_or_else(|| Error::Invalid("--next needs a scope".into()))?;
+                let e = match n.as_str() {
+                    "undo" => db.undo_target(&scope)?,
+                    "redo" => db.redo_target(&scope)?,
+                    x => return Err(usage(format!("--next takes undo or redo, not {x:?}"))),
+                };
+                return commit_lines(ctx, &e.into_iter().collect::<Vec<_>>());
+            }
+            let cs = ctx.db.commits(&q)?;
+            commit_lines(ctx, &cs)
         }
         Cmd::History { t, ak, oldest, before, after, max } => {
             let from = match (before, after) {
@@ -553,7 +536,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&lines, j)
         }
         Cmd::Now => {
-            let n = db.now().0;
+            let n = db.now()?.0;
             ctx.emit(&[ts_text(ctx.g.raw, n)], J::obj([("now", J::int(n))]))
         }
         Cmd::Role { t } => {
@@ -569,12 +552,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(db.grant(t, m, role, grant_opts(&until, &invite)?)?)
         }
         Cmd::SetRole { t, holder, role, d } => {
-            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d, ctx)?);
-            wait(ctx, db.set_role(t, m, role, d))
+            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d)?);
+            let w = ctx.wait_for()?;
+            wait(db.set_role(t, m, role, d, w))
         }
         Cmd::Repudiate { t, holder, role, d } => {
-            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d, ctx)?);
-            wait(ctx, db.repudiate(t, m, role, d))
+            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d)?);
+            let w = ctx.wait_for()?;
+            wait(db.repudiate(t, m, role, d, w))
         }
         Cmd::Leave { t, holder } => {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
@@ -599,7 +584,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
-            let t = wait(ctx, db.redeem(&l))?;
+            let t = wait(db.redeem(&l, ctx.wait_for()?))?;
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
         Cmd::Link(LinkCmd::Ls { t }) => {
@@ -613,8 +598,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Link(LinkCmd::Revoke { id, d }) => {
             let id: osis::LinkId = id.parse()?;
-            let sync = sync_first(&d, ctx)?;
-            wait(ctx, db.revoke_link(id, sync))
+            let sync = sync_first(&d)?;
+            wait(db.revoke_link(id, sync, ctx.wait_for()?))
         }
         Cmd::Card(CardCmd::Show) => {
             let c = db.contact_card()?;
@@ -632,7 +617,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Card(CardCmd::Import { card }) => {
             let c: osis::ContactCard = ctx.arg_text(&card)?.parse()?;
-            let a = wait(ctx, db.import_contact(&c))?;
+            let a = wait(db.import_contact(&c, ctx.wait_for()?))?;
             ctx.emit(&[a.to_uri()], J::obj([("actor", J::tid(a))]))
         }
         Cmd::Ownerless { admin } => {
@@ -642,7 +627,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Status { watch: false } => status(ctx),
         Cmd::Status { watch: true } => {
             let (tx, rx) = mpsc::channel::<String>();
-            let _sub = db.watch_status(move |_, st| {
+            let _sub = db.on_status_change(move |_, st| {
+                let st = match st {
+                    Ok(st) => st,
+                    Err(e) => {
+                        let _ = tx.send(format!("error {e}"));
+                        return;
+                    }
+                };
                 let l = st.groups.iter().map(|(g, x)| format!("{} {:?}", g.to_uri(), x.state)).chain(st.split.iter().map(|t| format!("{} split", t.to_uri()))).collect::<Vec<_>>().join(", ");
                 let _ = tx.send(format!("connected {} {l}", st.connected));
             })?;
@@ -652,10 +644,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         // `wait_synced` asks the hosts to sync first: `sync` and `wait` are one call
         Cmd::Sync { group } | Cmd::Wait { group } => {
             let s = match group {
-                Some(g) => SyncScope::Group(ctx.tid(&g)?),
+                Some(g) => SyncScope::Thing(ctx.tid(&g)?),
                 None => SyncScope::All,
             };
-            let t = ctx.timeout()?.unwrap_or(FOREVER);
+            let t = ctx.wait_for()?;
             wait_sync(ctx, s, t)
         }
         Cmd::Group(GroupCmd::Sync { g, host }) => {
@@ -665,18 +657,15 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
         Cmd::Group(GroupCmd::Source { g, to }) => {
-            // the route's attachment and its secret are in the process that holds the store
-            if db.is_attached() {
+            // the route's connection and its secret are in the process that holds the store
+            if !db.has_store() {
                 return Err(exit(1, "group source needs the store itself: stop `osis serve` on this store, run it with --remote, start `serve` again"));
             }
             let g = ctx.tid(&g)?;
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Remote(to.parse()?) };
-            match block_on(db.group_source(g, to), ctx.timeout()?) {
-                Some(r) => Ok(r?),
-                None => Err(exit(6, "timed out: where it was, unless the move finished")),
-            }
+            Ok(block_on(db.group_source(g, to, ctx.wait_for()?))?)
         }
-        Cmd::Group(GroupCmd::Policy { .. }) => Err(not_built("sync_policy (issues/api-deferred.md)")),
+        Cmd::Group(GroupCmd::Policy { .. }) => Err(not_built("set_sync_options (issues/api-deferred.md)")),
         Cmd::Bundle(BundleCmd::Export { groups }) => {
             let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;
             db.export_bundle(&gs, &mut *ctx.out)?;
@@ -857,7 +846,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         let (s, j) = match db.at(t, key.clone()).get() {
             Ok(Some(v)) => show_value(ctx, &v, key_ty(&key)),
             // a value its schema does not read (a `Mismatch` diagnostic): shown untyped
-            Ok(None) => match db.at(t, ak.clone()).get() {
+            Ok(None) => match db.at(t, Key::untyped(ak.clone())).get() {
                 Ok(Some(v)) => show_value(ctx, &v, None),
                 _ => ("(absent)".to_string(), J::Null),
             },
@@ -894,7 +883,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
 }
 
 fn stamp_json(c: osis::Stamp) -> J {
-    J::obj([("commit", J::opt(c.commit.map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])
+    J::obj([("commit", J::opt(c.id.commit().map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])
 }
 
 fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
@@ -973,12 +962,12 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
     let (tx, rx) = mpsc::channel::<Change<Value>>();
     let _sub = match ak {
         Some(ak) => {
-            let key = Key::new(parse_ak(ak, "AK")?, None);
+            let key = Key::untyped(parse_ak(ak, "AK")?);
             db.at(t, key).on_change(move |_, c| {
                 let _ = tx.send(c);
             })?
         }
-        None => db.watch_thing(t, move |_, c| {
+        None => db.on_thing_change(t, move |_, c| {
             let _ = tx.send(c);
         })?,
     };
@@ -1007,7 +996,7 @@ fn parse_pos(s: &str) -> anyhow::Result<osis::HistoryPos> {
 fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: usize) -> anyhow::Result<()> {
     let tid = ctx.tid(t)?;
     let key = osis::Ak::new(ak).map_err(|e| usage(format!("{ak}: {e:?}")))?;
-    let page = ctx.db.at(tid, key).history(from, max)?;
+    let page = ctx.db.at(tid, Key::untyped(key)).history(from, max)?;
     let raw = ctx.g.raw;
     let body = |b: &osis::HistoryBody<osis::Value>| match b {
         osis::HistoryBody::Held(Some(v)) => format!("{v:?}"),
@@ -1038,8 +1027,7 @@ fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: u
 }
 
 /// One line per commit: id, ts, actor, node, kind, in-effect or reverted, flags, aspects.
-fn commits(ctx: &mut Ctx<'_>, q: &CommitQuery) -> anyhow::Result<()> {
-    let cs = ctx.db.commits(q)?;
+fn commit_lines(ctx: &mut Ctx<'_>, cs: &[osis::CommitEntry]) -> anyhow::Result<()> {
     let raw = ctx.g.raw;
     let lines = cs
         .iter()
@@ -1130,20 +1118,38 @@ fn status_json(s: &osis::Status) -> J {
     J::obj([("groups", J::Arr(groups.collect())), ("split", J::Arr(s.split.iter().map(|t| J::tid(*t)).collect()))])
 }
 
-/// One diagnostic as `diag` prints it (text or a JSON line).
+/// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
 fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
+    use osis::Diagnostic as D;
+    let (kind, tids, commit, peer, detail): (&str, Vec<Tid>, Option<osis::ChangeId>, Option<Tid>, &str) = match d {
+        D::NotSynced { thing, group, detail } => ("NotSynced", std::iter::once(*thing).chain(*group).collect(), None, None, detail),
+        D::MembershipNotSaved { item, group, detail } => ("MembershipNotSaved", vec![*item, *group], None, None, detail),
+        D::Uncommitted { thing, detail } => ("Uncommitted", vec![*thing], None, None, detail),
+        D::OwnWriteInvalid { commit, things, detail } => ("OwnWriteInvalid", things.clone(), Some(*commit), None, detail),
+        D::Mismatch { thing, detail } => ("Mismatch", vec![*thing], None, None, detail),
+        D::Unreadable { thing, detail } => ("Unreadable", vec![*thing], None, None, detail),
+        D::LostAccess { actor, detail } => ("LostAccess", vec![*actor], None, None, detail),
+        D::RoleLoweredUnsynced { groups, detail } => ("RoleLoweredUnsynced", groups.clone(), None, None, detail),
+        D::Stranded { group, detail } => ("Stranded", vec![*group], None, None, detail),
+        D::EphemeralRefused { things, detail } => ("EphemeralRefused", things.clone(), None, None, detail),
+        D::Storage { detail } => ("Storage", vec![], None, None, detail),
+        D::Callback { detail } => ("Callback", vec![], None, None, detail),
+        D::SyncStopped { detail } => ("SyncStopped", vec![], None, None, detail),
+        D::Handled { things, commit, peer, detail } => ("Handled", things.clone(), *commit, *peer, detail),
+        other => ("Other", vec![], None, None, Box::leak(other.to_string().into_boxed_str())),
+    };
     if json {
         J::obj([
-            ("kind", J::str(format!("{:?}", d.kind))),
-            ("tids", J::Arr(d.tids.iter().map(|t| J::tid(*t)).collect())),
-            ("commit", J::opt(d.commit.as_ref().map(|c| J::str(commit_text(c))))),
-            ("peer", J::opt(d.peer.map(J::tid))),
-            ("detail", J::str(d.detail.clone())),
+            ("kind", J::str(kind)),
+            ("tids", J::Arr(tids.iter().map(|t| J::tid(*t)).collect())),
+            ("commit", J::opt(commit.as_ref().map(|c| J::str(change_text(c))))),
+            ("peer", J::opt(peer.map(J::tid))),
+            ("detail", J::str(detail)),
         ])
         .text()
     } else {
-        let tids: Vec<String> = d.tids.iter().map(Tid::to_uri).collect();
-        format!("{:?} {} {}", d.kind, tids.join(","), d.detail)
+        let tids: Vec<String> = tids.iter().map(Tid::to_uri).collect();
+        format!("{kind} {} {detail}", tids.join(","))
     }
 }
 
@@ -1161,7 +1167,7 @@ fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>, best_effort: bool) -> anyh
         if let Some(t) = &tx {
             let _ = t.send(diag_line(&d, json_out));
         }
-        if d.kind == osis::DiagnosticKind::SyncStopped {
+        if matches!(d, osis::Diagnostic::SyncStopped { .. }) {
             st.store(true, std::sync::atomic::Ordering::Release);
             tx = None;
         }
@@ -1286,6 +1292,7 @@ const HOST_START_WAIT: Duration = Duration::from_secs(30);
 const DEFAULT_LISTEN: &str = "quic://0.0.0.0:4040";
 
 fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow::Result<()> {
+    let client_listen = client_listen.iter().map(|u| u.parse()).collect::<osis::Result<Vec<osis::Url>>>()?;
     let db = ctx.db.clone();
     // other invocations on this store become its clients (notes/cli.md Design)
     let _sock = crate::listen(&ctx.sel, &db)?;
@@ -1294,7 +1301,7 @@ fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow
     }
     if let Some(mut h) = db.hosting()? {
         if h.listen.is_empty() {
-            h.listen = vec![DEFAULT_LISTEN.into()];
+            h.listen = vec![DEFAULT_LISTEN.parse()?];
             db.set_hosting(Some(h))?;
         }
         let until = std::time::Instant::now() + HOST_START_WAIT;
@@ -1311,7 +1318,7 @@ fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow
         ctx.out.flush()?;
     }
     if !client_listen.is_empty() {
-        for a in db.client_listen(client_listen)? {
+        for a in db.client_listen(&client_listen)? {
             let a = a.to_string();
             ctx.emit(&[format!("client {a}")], J::obj([("client", J::str(a.clone()))]))?;
         }
@@ -1331,7 +1338,7 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
     // a flag given once as '' clears its field; otherwise its values replace it
     let given = |v: &[String]| (!v.is_empty()).then(|| v.iter().filter(|x| !(v.len() == 1 && x.is_empty())).cloned().collect::<Vec<_>>());
     if let Some(v) = given(&f.listen) {
-        h.listen = v;
+        h.listen = v.iter().map(|u| u.parse()).collect::<osis::Result<_>>()?;
     }
     if let Some(a) = f.admit {
         h.admit = match a {
@@ -1349,11 +1356,12 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
         h.replicate = hosts(ctx, &v)?;
     }
     if let Some(v) = given(&f.policy) {
-        h.policy = BTreeMap::new();
+        let mut knobs = BTreeMap::new();
         for p in v {
             let (k, n) = p.split_once('=').ok_or_else(|| usage(format!("not NAME=N: {p}")))?;
-            h.policy.insert(k.to_string(), n.parse().map_err(|_| usage(format!("not NAME=N: {p}")))?);
+            knobs.insert(k.to_string(), n.parse::<u64>().map_err(|_| usage(format!("not NAME=N: {p}")))?);
         }
+        h.policy = osis::internals::node::sync::host_policy(&knobs).map_err(Error::Invalid)?;
     }
     if let Some(v) = given(&f.cap) {
         h.caps = BTreeMap::new();
@@ -1421,15 +1429,16 @@ fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     lines.push(format!("admit {admit}"));
     lines.extend(h.labels.iter().map(|l| format!("label {}", hex(l))));
     lines.extend(h.replicate.iter().map(|a| format!("replicate {a}")));
-    lines.extend(h.policy.iter().map(|(k, n)| format!("policy {k} {n}")));
+    let knobs = h.policy.knobs();
+    lines.extend(knobs.iter().map(|(k, n)| format!("policy {k} {n}")));
     lines.extend(h.caps.iter().map(|(l, c)| format!("cap {} {} {}", hex(l), c.entries, c.bytes)));
     let j = J::obj([
-        ("listen", J::Arr(h.listen.iter().map(|u| J::str(u.clone())).collect())),
+        ("listen", J::Arr(h.listen.iter().map(|u| J::str(u.to_string())).collect())),
         ("addresses", J::Arr(addrs.iter().map(|a| J::str(a.clone())).collect())),
         ("admit", J::str(admit)),
         ("labels", J::Arr(h.labels.iter().map(|l| J::str(hex(l))).collect())),
         ("replicate", J::Arr(h.replicate.iter().map(|a| J::str(a.to_string())).collect())),
-        ("policy", J::Obj(h.policy.iter().map(|(k, n)| (k.clone(), J::int(*n))).collect())),
+        ("policy", J::Obj(knobs.iter().map(|(k, n)| (k.clone(), J::int(*n))).collect())),
         ("caps", J::Obj(h.caps.iter().map(|(l, c)| (hex(l), J::obj([("entries", J::int(c.entries)), ("bytes", J::int(c.bytes))]))).collect())),
     ]);
     ctx.emit(&lines, j)
@@ -1559,6 +1568,5 @@ mod tests {
     fn deadline_never_overflows_plan_cli_2() {
         assert_eq!(super::deadline(None), None);
         assert_eq!(super::deadline(Some(std::time::Duration::MAX)), None);
-        assert!(super::deadline(Some(super::FOREVER)).is_some());
     }
 }

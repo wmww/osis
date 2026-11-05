@@ -2,12 +2,13 @@
 //! §7, spec/crdt.md §4.6). Everything is derived from the held commits and this session's
 //! ephemeral undo log (notes/ephemeral.md), nothing is stored: a revert is a change naming the
 //! change it reverts; a change is in effect while no revert in effect names it; undo and redo
-//! pick a change by query (`CommitQuery::next`) and revert it. Reverting a thing's creation
+//! pick a change (`undo_target`, `redo_target`) and revert it. Reverting a thing's creation
 //! deletes the thing (spec/crdt.md §4.6).
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::watch::{CommitInfo, lock};
+use crate::read::Stamp;
+use crate::watch::lock;
 use crate::write::Committed;
 use osis_base::{Ak, Tid, Ts};
 use osis_commit::Kind;
@@ -45,13 +46,6 @@ pub enum CommitKind {
     Ephemeral,
 }
 
-/// The change `undo` or `redo` would revert (`CommitQuery::next`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Next {
-    Undo,
-    Redo,
-}
-
 /// A filter over the held commits and this session's ephemeral changes. Empty fields match
 /// everything; results are newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -73,60 +67,6 @@ pub struct CommitQuery {
     /// Paging: only changes after this one in result order (older).
     pub after: Option<ChangeId>,
     pub limit: Option<usize>,
-    /// Only the change `undo` (or `redo`) of `scope` would revert now: none or one. Fails as
-    /// that call would without choosing one (`NotUndoable`: the newest own ephemeral change in
-    /// scope left the undo log). Needs `scope`; not with `after`.
-    pub next: Option<Next>,
-}
-
-impl CommitQuery {
-    pub fn new() -> CommitQuery {
-        CommitQuery::default()
-    }
-    pub fn scope(mut self, s: Scope) -> Self {
-        self.scope = Some(s);
-        self
-    }
-    pub fn actor(mut self, a: Tid) -> Self {
-        self.actors.push(a);
-        self
-    }
-    pub fn kind(mut self, k: CommitKind) -> Self {
-        self.kinds.push(k);
-        self
-    }
-    pub fn reverts(mut self, c: impl Into<ChangeId>) -> Self {
-        self.reverts = Some(c.into());
-        self
-    }
-    pub fn reverted_by(mut self, c: impl Into<ChangeId>) -> Self {
-        self.reverted_by = Some(c.into());
-        self
-    }
-    pub fn in_effect(mut self, b: bool) -> Self {
-        self.in_effect = Some(b);
-        self
-    }
-    pub fn since(mut self, ts: Ts) -> Self {
-        self.since = Some(ts);
-        self
-    }
-    pub fn until(mut self, ts: Ts) -> Self {
-        self.until = Some(ts);
-        self
-    }
-    pub fn after(mut self, c: impl Into<ChangeId>) -> Self {
-        self.after = Some(c.into());
-        self
-    }
-    pub fn limit(mut self, n: usize) -> Self {
-        self.limit = Some(n);
-        self
-    }
-    pub fn next(mut self, n: Next) -> Self {
-        self.next = Some(n);
-        self
-    }
 }
 
 /// Why a change cannot be reverted.
@@ -144,7 +84,7 @@ pub enum DropReason {
 /// session; with its relations among them. A batch with both halves is its commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitEntry {
-    pub commit: CommitInfo,
+    pub commit: Stamp,
     pub kind: CommitKind,
     /// The change it reverts.
     pub reverts: Option<ChangeId>,
@@ -260,7 +200,7 @@ impl Osis {
                 entries.insert(
                     (h.ts, id),
                     CommitEntry {
-                        commit: CommitInfo { id, actor: h.actor, node: h.author, ts: h.ts, received: c.received },
+                        commit: Stamp { id, actor: h.actor, node: h.author, ts: h.ts, received: c.received },
                         kind: kind_of(h),
                         reverts: undoes(h),
                         reverted_by: Vec::new(),
@@ -290,7 +230,7 @@ impl Osis {
                     ChangeId::Ephemeral(_) => (CommitKind::Ephemeral, l.actor, e.tid(), l.ts),
                 };
                 at.insert(l.id, ts);
-                entries.insert((ts, l.id), CommitEntry { commit: CommitInfo { id: l.id, actor, node, ts, received: l.received }, kind, reverts: l.reverts, reverted_by: Vec::new(), in_effect: true, dropped: false, purged: Vec::new(), aspects: asp });
+                entries.insert((ts, l.id), CommitEntry { commit: Stamp { id: l.id, actor, node, ts, received: l.received }, kind, reverts: l.reverts, reverted_by: Vec::new(), in_effect: true, dropped: false, purged: Vec::new(), aspects: asp });
             }
             // acting as an actor: only the aspects it may read; a change touching none is unknown
             if let Some(a) = self.acting {
@@ -372,13 +312,7 @@ impl Osis {
             let v = r.call(crate::port::method::COMMITS, vec![crate::port::codec::query_v(q)])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(crate::port::codec::entry).collect();
         }
-        let (mut found, aks) = self.found(q.scope.as_ref())?;
-        if let Some(n) = q.next {
-            if q.scope.is_none() || q.after.is_some() {
-                return Err(Error::Invalid("`next` needs a scope and takes no `after`".into()));
-            }
-            found = self.pick(found, aks.as_deref().unwrap_or_default(), n)?.into_iter().collect();
-        }
+        let (mut found, _) = self.found(q.scope.as_ref())?;
         if let Some(a) = q.after {
             match found.iter().position(|f| f.entry.commit.id == a) {
                 Some(i) => drop(found.drain(..=i)),
@@ -399,6 +333,27 @@ impl Osis {
             })
             .take(q.limit.unwrap_or(usize::MAX))
             .collect())
+    }
+
+    /// The change `undo` of `scope` would revert now: none or one. Fails as `undo` would, choosing
+    /// none (`NotUndoable`: the newest own ephemeral change in scope left the undo log).
+    pub fn undo_target(&self, scope: &Scope) -> Result<Option<CommitEntry>> {
+        self.target(scope, false)
+    }
+
+    /// The change `redo` of `scope` would revert now: none or one, as `undo_target`.
+    pub fn redo_target(&self, scope: &Scope) -> Result<Option<CommitEntry>> {
+        self.target(scope, true)
+    }
+
+    fn target(&self, scope: &Scope, redo: bool) -> Result<Option<CommitEntry>> {
+        if let crate::sources::Source::Remote(r) = self.route_scope(Some(scope))? {
+            let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
+            let v = r.call(m, vec![crate::port::codec::scope_v(scope)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::entry).transpose();
+        }
+        let (found, aks) = self.found(Some(scope))?;
+        Ok(self.pick(found, aks.as_deref().unwrap_or_default(), redo)?.map(|f| f.entry))
     }
 
     /// Undoes this actor's newest change in effect in `scope` (a redo counts as a change): reverts
@@ -437,16 +392,14 @@ impl Osis {
     /// Undo or redo, serialized under one lock: choose by query, then revert.
     fn step(&self, scope: &Scope, redo: bool) -> Result<Option<Committed>> {
         let _g = lock(&self.inner.undo);
-        let q = CommitQuery::new().scope(scope.clone()).next(if redo { Next::Redo } else { Next::Undo });
-        self.commits(&q)?.first().map(|e| self.revert_one(e.commit.id)).transpose()
+        self.target(scope, redo)?.map(|e| self.revert_one(e.commit.id)).transpose()
     }
 
     /// The change undo (redo) of the scope of `found` (with aspects `aks`) reverts: this
     /// actor's newest change in effect (a redo counts as a change); for redo its newest undo in
     /// effect, unless a new change of this actor came after it.
-    fn pick(&self, found: Vec<Found>, aks: &[(Tid, Ak)], n: Next) -> Result<Option<Found>> {
+    fn pick(&self, found: Vec<Found>, aks: &[(Tid, Ak)], redo: bool) -> Result<Option<Found>> {
         let me = self.me();
-        let redo = n == Next::Redo;
         let mut mine = found.into_iter().filter(|f| f.entry.commit.actor == me && matches!(f.entry.kind, CommitKind::Change | CommitKind::Revert | CommitKind::Ephemeral));
         let target = if redo {
             mine.take_while(|f| f.depth > 0).find(|f| f.entry.in_effect && f.depth % 2 == 1)

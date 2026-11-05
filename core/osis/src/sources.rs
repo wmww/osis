@@ -1,5 +1,5 @@
 //! Sources per group (notes/client-port.md §1, §6): a process's calls go to its own engine or to a
-//! node it is attached to, group by group.
+//! node it is connected to, group by group.
 //!
 //! **Routing invariant.** Each call goes to exactly one source, decided once, under the one lock
 //! that also orders every change of the table (`eng`), and never falls back to another source: an
@@ -7,10 +7,10 @@
 //! membership is cached outside that table; a thing's groups are read from the engine's own index
 //! at each decision. The rule (`decide_in`), for a thing `t` and S = `t` and the groups holding it
 //! here:
-//! 1. a process with no store: its attachments;
-//! 2. a routed group in S: the node of the route, attached or not, whatever else holds `t`;
+//! 1. a process with no store: its connections;
+//! 2. a routed group in S: the node of the route, connected or not, whatever else holds `t`;
 //! 3. `t` known here: this engine;
-//! 4. else the attachments, in order: the first that holds `t`, the first unreachable one stopping
+//! 4. else the connections, in order: the first that holds `t`, the first unreachable one stopping
 //!    the search (a later one must not answer for it); none: this engine, which says unknown.
 //!
 //! A local write is decided twice for one reason: a route decided Local before a move may run
@@ -30,7 +30,7 @@
 //! refused step: the next write says so, `Status::split` lists it, and moving either group ends it.
 //!
 //! The port worker (`port::serve`) serves every client of its node one call at a time, so it never
-//! waits on another node: an Owner's call that routes there fails `Unsupported`.
+//! waits on another node: a socket client's call that routes there fails `Unsupported`.
 
 use crate::error::{Error, Result};
 use crate::handle::{Locked, Osis};
@@ -43,26 +43,27 @@ use osis_node::{ChangeId, Engine};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 /// The local record of `routes`: a line `tid url#key` per routed group.
 const SOURCES: &str = "sources";
 
 /// How often `group_source` asks a node whether its writes reached a host. Minor: 0 spins on the
-/// node's worker, infinity never finishes the move (`wait_timeout` ends it).
+/// node's worker, infinity never finishes the move (the caller's timeout ends it).
 const UPLOAD_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
-/// A node to attach to as a thin client (`Config::remotes`).
+/// How to log in to a node (`Osis::connect`, `Osis::connect_node`): where it is and what proves
+/// who this client is there. The node says which actor that makes it (`Osis::me`).
 #[derive(Clone, Debug)]
-pub struct RemoteConfig {
+pub struct NodeLogin {
     pub addr: HostAddr,
     pub secret: crate::ClientSecret,
 }
 
-/// One attachment or routed node in `Status::remotes`.
+/// One connected or routed node in `Status::remotes`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemoteStatus {
-    /// `url#key`.
-    pub address: String,
+    pub address: HostAddr,
     pub connected: bool,
 }
 
@@ -71,7 +72,7 @@ pub struct RemoteStatus {
 pub enum GroupSource {
     /// This node's engine: it syncs the group.
     Local,
-    /// The node at this address, which must be attached.
+    /// The node at this address, which must be connected (`Osis::connect_node`).
     Remote(HostAddr),
 }
 
@@ -80,7 +81,7 @@ pub enum GroupSource {
 pub(crate) enum Source {
     /// This process's engine.
     Local,
-    /// The node at this attachment.
+    /// The node at this connection.
     Remote(Arc<Remote>),
 }
 
@@ -124,13 +125,13 @@ fn scope_of(e: &Engine, t: Tid) -> BTreeSet<Tid> {
     s
 }
 
-fn remote_named(l: &Locked, addr: &str) -> Arc<Remote> {
-    l.remotes.iter().find(|r| r.addr == addr).cloned().unwrap_or_else(|| Remote::absent(addr))
+fn remote_named(l: &Locked, addr: &HostAddr) -> Arc<Remote> {
+    l.remotes.iter().find(|r| r.addr == *addr).cloned().unwrap_or_else(|| Remote::absent(addr))
 }
 
 /// The module comment's rule.
-fn decide_in(l: &mut Locked, thin: bool, tid: Tid) -> Decided {
-    if !thin {
+fn decide_in(l: &mut Locked, client: bool, tid: Tid) -> Decided {
+    if !client {
         let s = scope_of(l.sync.engine(), tid);
         if let Some(addr) = s.iter().find_map(|g| l.routes.get(g)) {
             return Decided::Remote(remote_named(l, addr));
@@ -169,7 +170,7 @@ fn split_things(l: &mut Locked) -> BTreeSet<Tid> {
     inside.into_iter().filter(|t| split_in(l, *t).is_some()).collect()
 }
 
-/// The attachment that answers for a thing known here to none (rule 4).
+/// The connection that answers for a thing known here to none (rule 4).
 fn ask(first: &Arc<Remote>, rs: &[Arc<Remote>], tid: Tid) -> Arc<Remote> {
     for r in rs {
         match r.call(method::HOLDS, vec![Value::Tid(tid)]) {
@@ -183,9 +184,9 @@ fn ask(first: &Arc<Remote>, rs: &[Arc<Remote>], tid: Tid) -> Arc<Remote> {
 
 impl Osis {
     fn decide(&self, tid: Tid) -> Decided {
-        let thin = self.is_attached();
+        let client = !self.has_store();
         let mut g = crate::watch::lock(&self.inner.eng);
-        decide_in(&mut g, thin, tid)
+        decide_in(&mut g, client, tid)
     }
 
     /// `r`, unless this thread must not wait on another node.
@@ -203,14 +204,14 @@ impl Osis {
     }
 
     /// Whether routing applies: an acting handle (the port worker's, for a client of this node)
-    /// is never routed on: reading through this node's attachment would run as this node's
+    /// is never routed on: reading through this node's connection would run as this node's
     /// actor there, and it reads only what this engine syncs (`Engine::readable_by`).
     #[inline]
     fn routed(&self) -> bool {
         self.acting.is_none() && self.routing()
     }
 
-    /// Any attachment or route exists.
+    /// Any connection or route exists.
     #[inline]
     pub(crate) fn routing(&self) -> bool {
         self.inner.routing.load(Ordering::Acquire)
@@ -272,7 +273,7 @@ impl Osis {
     pub(crate) fn route_write_change(&self, id: ChangeId) -> Result<Source> {
         let s = self.route_change(id)?;
         self.after_route();
-        if self.routed() && !self.is_attached() {
+        if self.routed() && self.has_store() {
             match self.locked(|l| touched_by(l.engine(), id)) {
                 Some(touched) => self.check_split(&touched)?,
                 None => {
@@ -286,7 +287,7 @@ impl Osis {
     }
 
     fn check_split(&self, things: &[Tid]) -> Result<()> {
-        if !self.routed() || self.is_attached() {
+        if !self.routed() || !self.has_store() {
             return Ok(());
         }
         let mut l = crate::watch::lock(&self.inner.eng);
@@ -305,7 +306,7 @@ impl Osis {
 
     /// `is_local` under the lock.
     pub(crate) fn local_in(&self, l: &mut Locked, t: Tid) -> bool {
-        !self.routed() || matches!(decide_in(l, self.is_attached(), t), Decided::Local)
+        !self.routed() || matches!(decide_in(l, !self.has_store(), t), Decided::Local)
     }
 
     /// The one source of calls on all of `things`; `Invalid` when they resolve to two. None: as
@@ -333,7 +334,7 @@ impl Osis {
         Ok(match scope {
             Some(crate::commits::Scope::Thing(t) | crate::commits::Scope::Group(t)) => self.route(*t),
             Some(crate::commits::Scope::Aspects(a)) => return self.route_all(&a.iter().map(|(t, _)| *t).collect::<Vec<_>>()),
-            None => match self.inner.thin.get() {
+            None => match self.inner.client.get() {
                 Some(t) if self.acting.is_none() => Source::Remote(t.primary.clone()),
                 _ => Source::Local,
             },
@@ -341,18 +342,18 @@ impl Osis {
     }
 
     /// The source holding change `id`: of what it touched when this engine holds it; else an
-    /// only attachment. `Invalid` among several: a change id does not say whose it is.
+    /// only connection. `Invalid` among several: a change id does not say whose it is.
     pub(crate) fn route_change(&self, id: ChangeId) -> Result<Source> {
         if !self.routed() {
             return Ok(Source::Local);
         }
-        let thin = self.is_attached();
-        let (known, remotes) = self.locked(|l| (if thin { None } else { touched_by(l.engine(), id) }, l.remotes.clone()));
+        let client = !self.has_store();
+        let (known, remotes) = self.locked(|l| (if client { None } else { touched_by(l.engine(), id) }, l.remotes.clone()));
         match (known, remotes.as_slice()) {
             (Some(ts), _) => self.route_all(&ts),
             (None, []) => Ok(Source::Local),
             (None, [r]) => Ok(Source::Remote(self.reachable(r.clone()))),
-            (None, _) => Err(Error::Invalid("a change this node does not hold, with several nodes attached: revert it through a handle with one".into())),
+            (None, _) => Err(Error::Invalid("a change this node does not hold, with several nodes connected: revert it through a handle with one".into())),
         }
     }
 
@@ -361,9 +362,9 @@ impl Osis {
         if !self.routing() {
             return Ok(());
         }
-        let thin = self.is_attached();
+        let client = !self.has_store();
         for t in things {
-            if !matches!(decide_in(l, thin, *t), Decided::Local) {
+            if !matches!(decide_in(l, client, *t), Decided::Local) {
                 // a client of this node, or a write that lost a race with a move: nothing written
                 return Err(if self.acting.is_some() { Error::UnknownThing { tid: *t } } else { moved() });
             }
@@ -400,14 +401,14 @@ impl Osis {
         self.guard_local(l, &things)
     }
 
-    /// A status of this engine `local`, with what the attachments add: each attachment and routed
+    /// A status of this engine `local`, with what the connections add: each connected and routed
     /// node with whether it is up, the groups a connected one reports where this node does not
     /// sync them. A disconnected node takes nothing away and adds no group.
     pub(crate) fn merged_status(&self, mut local: Status) -> Result<Status> {
         if !self.routing() {
             return Ok(local);
         }
-        let thin = self.is_attached();
+        let client = !self.has_store();
         let (remotes, routes, split) = self.locked(|l| {
             let mut all = l.remotes.clone();
             for a in l.routes.values() {
@@ -415,10 +416,10 @@ impl Osis {
                     all.push(Remote::absent(a));
                 }
             }
-            let split = if thin { BTreeSet::new() } else { split_things(l) };
+            let split = if client { BTreeSet::new() } else { split_things(l) };
             (all, l.routes.clone(), split)
         });
-        if thin {
+        if client {
             local = Status::default();
         }
         local.split = split;
@@ -441,18 +442,18 @@ impl Osis {
         Ok(local)
     }
 
-    /// Mirrors a schema's source to the attached nodes (notes/client-port.md §1), now and on each
-    /// reconnect. A thin client's node takes none from it (`Unsupported`, issues/cli-proxy.md):
+    /// Mirrors a schema's source to the connected nodes (notes/client-port.md §1), now and on each
+    /// reconnect. A secret client's node takes none from it (`Unsupported`, issues/cli-proxy.md):
     /// that is the caller's error on a process with no store, nothing on a node's own handle,
     /// whose schema stays local for what it reads.
     pub(crate) fn mirror_schema(&self, file: &str, src: &str) -> Result<()> {
         if !self.routing() || crate::port::serve::on_worker() {
             return Ok(());
         }
-        let thin = self.is_attached();
+        let client = !self.has_store();
         for r in self.locked(|l| l.remotes.clone()) {
             match r.call(method::REGISTER_SCHEMA, vec![Value::Str(file.into()), Value::Str(src.into())]) {
-                Err(e) if thin => return Err(e),
+                Err(e) if client => return Err(e),
                 Err(Error::Unsupported(_)) => {}
                 // down: registered when it is up again
                 _ => r.remember_schema(file, src),
@@ -464,17 +465,17 @@ impl Osis {
     /// Ends the watch of every subscription whose source this table change changed: `change` runs
     /// between looking at each before and after, all under this one lock.
     fn moving<R>(&self, l: &mut Locked, change: impl FnOnce(&mut Locked) -> Result<R>) -> Result<R> {
-        let thin = self.is_attached();
+        let client = !self.has_store();
         let key = |d: Decided| match d {
             Decided::Local => "local".to_string(),
-            Decided::Remote(r) => r.addr.clone(),
+            Decided::Remote(r) => r.addr.to_string(),
             Decided::Ask(..) => "ask".to_string(),
         };
         let subs = self.inner.dispatch.subs_on();
-        let before: Vec<String> = subs.iter().map(|(_, _, t)| key(decide_in(l, thin, *t))).collect();
+        let before: Vec<String> = subs.iter().map(|(_, _, t)| key(decide_in(l, client, *t))).collect();
         let r = change(l)?;
         for ((id, token, t), was) in subs.iter().zip(before) {
-            if key(decide_in(l, thin, *t)) == was {
+            if key(decide_in(l, client, *t)) == was {
                 continue;
             }
             l.seq += 1;
@@ -490,20 +491,20 @@ impl Osis {
         Ok(r)
     }
 
-    /// Moves `group` between this node's engine and a node it is attached to
+    /// Moves `group` between this node's engine and a node it is connected to
     /// one group at a time, never losing a write.
     ///
-    /// To `Remote(addr)`: the attachment must be up and know the group (else `Network` or
+    /// To `Remote(addr)`: the connection must be up and the node know the group (else `Network` or
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a host
-    /// (within `Config::wait_timeout`, else `Network` or `Unsynced`, nothing changed); then this
-    /// node stops syncing it, for itself alone (`GroupPolicy::receipts_only`, not `unsync`, which
+    /// (within `timeout`, else `Network` or `Unsynced`, nothing changed); then this
+    /// node stops syncing it, for itself alone (`SyncMode::HeadersOnly`, not `unsync`, which
     /// stops it for every holder), and calls go there. `Invalid`: the person's home group, or a
     /// group still synced here through a parent (all of it would be split: move the parent). A write made
     /// during the wait fails the move `Unsynced` rather than strand it: call it again.
     ///
-    /// To `Local`: this node must hold the group (a thin client has no keys: `Unsupported`; a node
+    /// To `Local`: this node must hold the group (a program with no store has no keys: `Unsupported`; a node
     /// without it: `Invalid`). It syncs the group again and, until the node's writes are at a host
-    /// and this engine caught up (`wait_timeout`, else `Network` or `Unsynced`, syncing goes on and
+    /// and this engine caught up (`timeout`, else `Network` or `Unsynced`, syncing goes on and
     /// calling this again finishes the move), calls keep going to the node, so nothing reads this
     /// engine's old copy. Works with the node gone (what only it held arrives if it returns).
     /// `Unsynced` here means a label of the group opens under no key at a host (`status`:
@@ -517,20 +518,19 @@ impl Osis {
     ///
     /// Every watch whose source this changes gets one last `Err(Network)` and ends: watch again.
     /// The route survives a restart (the `sources` record); a store-less process has none.
-    pub async fn group_source(&self, group: Tid, to: GroupSource) -> Result<()> {
+    pub async fn group_source(&self, group: Tid, to: GroupSource, timeout: Duration) -> Result<()> {
         self.local_only("group_source")?;
         match to {
-            GroupSource::Remote(addr) => self.source_remote(group, addr).await,
-            GroupSource::Local => self.source_local(group).await,
+            GroupSource::Remote(addr) => self.source_remote(group, addr, timeout).await,
+            GroupSource::Local => self.source_local(group, timeout).await,
         }
     }
 
-    async fn source_remote(&self, group: Tid, addr: HostAddr) -> Result<()> {
-        let text = addr.to_string();
+    async fn source_remote(&self, group: Tid, addr: HostAddr, timeout: Duration) -> Result<()> {
         if group == self.me() {
             return Err(Error::Invalid("the home group stays on this node".into()));
         }
-        let Some(r) = self.locked(|l| l.remotes.iter().find(|r| r.addr == text).cloned()) else { return Err(Error::Invalid(format!("not attached to {text}"))) };
+        let Some(r) = self.locked(|l| l.remotes.iter().find(|r| r.addr == addr).cloned()) else { return Err(Error::Invalid(format!("not connected to {addr}"))) };
         crate::net::blocking(|| r.first())?;
         // Value::Bool(false): the node does not hold it, or the client's actor may not read it
         if r.call(method::HOLDS, vec![Value::Tid(group)])? != Value::Bool(true) {
@@ -541,7 +541,7 @@ impl Osis {
             (held, syncs_here(l, &group))
         });
         if live {
-            self.wait_synced_pending(SyncScope::Group(group), self.inner.wait_timeout).await?;
+            self.wait_synced_pending(SyncScope::Thing(group), timeout).await?;
         }
         self.locked(|l| {
             let parents: Vec<Tid> = l.engine().groups_of(&group).into_iter().filter(|p| *p != group && !l.routes.contains_key(p)).collect();
@@ -554,7 +554,7 @@ impl Osis {
                 return Err(Error::Unsynced { groups: vec![group] });
             }
             self.moving(l, |l| {
-                l.routes.insert(group, text.clone());
+                l.routes.insert(group, addr.clone());
                 save_routes(l)?;
                 self.inner.routing.store(true, Ordering::Release);
                 if held && !l.sync.receipts_only().contains(&group) {
@@ -566,7 +566,8 @@ impl Osis {
         })
     }
 
-    async fn source_local(&self, group: Tid) -> Result<()> {
+    async fn source_local(&self, group: Tid, timeout: Duration) -> Result<()> {
+        let budget = self.budget(timeout);
         let (held, role, stopped, has_label, route) = self.locked(|l| {
             let held = l.engine().knows(&group);
             let limit = self.inner.limit;
@@ -590,9 +591,9 @@ impl Osis {
         // what was written at the node reaches a host first, else this engine would catch up
         // without it; not asked of a node that is gone
         if let Some(r) = route.as_ref().map(|a| self.locked(|l| remote_named(l, a))) {
-            self.node_uploaded(&r, group)?;
+            self.node_uploaded(&r, group, budget)?;
         }
-        self.wait_synced_pending(SyncScope::Group(group), self.inner.wait_timeout).await?;
+        self.wait_synced_pending(SyncScope::Thing(group), self.left(budget)).await?;
         self.locked(|l| {
             self.moving(l, |l| {
                 l.routes.remove(&group);
@@ -601,45 +602,35 @@ impl Osis {
         })
     }
 
-    /// Waits (within `wait_timeout`, else `Network`) until `r` reports `g` synced: nothing it was
+    /// Waits (within `budget`, else `Network`) until `r` reports `g` synced: nothing it was
     /// written waits there. Done at once when it is down or does not report the group (a client's
     /// actor no longer reads it): nothing more can be learned from it.
-    fn node_uploaded(&self, r: &Remote, g: Tid) -> Result<()> {
-        let end = std::time::Instant::now() + self.inner.wait_timeout;
+    fn node_uploaded(&self, r: &Remote, g: Tid, budget: crate::net::Budget) -> Result<()> {
         loop {
             let Ok(there) = r.call(method::STATUS, vec![]).and_then(crate::port::codec::status) else { return Ok(()) };
             match there.groups.get(&g).map(|s| s.state) {
                 Some(crate::share::SyncState::Synced) | None => return Ok(()),
-                Some(_) if std::time::Instant::now() >= end => return Err(Error::Network(format!("{} has not uploaded this group yet", r.addr))),
+                Some(_) if self.left(budget).is_zero() => return Err(Error::Network(format!("{} has not uploaded this group yet", r.addr))),
                 Some(_) => crate::net::blocking(|| std::thread::sleep(UPLOAD_POLL)),
             }
         }
     }
 
-    /// Lets go of the attachment to `addr`. A route naming it stays and fails `Network` until it is
-    /// attached again or the group moves. `false`: no such attachment. `Unsupported` on a handle
-    /// with no store of its own.
-    pub fn detach_node(&self, addr: &HostAddr) -> Result<bool> {
-        self.local_only("detach_node")?;
-        let text = addr.to_string();
+    /// Ends the connection to the node at `addr`. A route naming it stays and fails `Network` until
+    /// it is connected again or the group moves. `false`: no such connection. `Unsupported` on a
+    /// handle with no store of its own.
+    pub fn disconnect_node(&self, addr: &HostAddr) -> Result<bool> {
+        self.local_only("disconnect_node")?;
         Ok(self.locked(|l| {
             let n = l.remotes.len();
-            l.remotes.retain(|r| r.addr != text);
+            l.remotes.retain(|r| r.addr != *addr);
             l.remotes.len() != n
         }))
     }
 
-    /// Waits for each attachment's first connection attempt (`Config::remotes` come up behind
-    /// `open`, within `wait_timeout` each); a node down then still fails its calls `Network`.
-    pub fn await_remotes(&self) {
-        for r in self.locked(|l| l.remotes.clone()) {
-            let _ = crate::net::blocking(|| r.first());
-        }
-    }
-
     /// The groups this node reads and writes at another node, with its address: this process's own
     /// table, so it cannot fail, and a handle with no store has none.
-    pub fn routes(&self) -> BTreeMap<Tid, String> {
+    pub fn routes(&self) -> BTreeMap<Tid, HostAddr> {
         self.locked(|l| l.routes.clone())
     }
 }
@@ -660,7 +651,7 @@ impl Locked {
 }
 
 /// The `sources` record.
-pub(crate) fn load_routes(e: &mut Engine) -> Result<BTreeMap<Tid, String>> {
+pub(crate) fn load_routes(e: &mut Engine) -> Result<BTreeMap<Tid, HostAddr>> {
     let bad = || Error::Storage("sources record".into());
     let Some(b) = e.app_record(SOURCES)? else { return Ok(BTreeMap::new()) };
     let s = String::from_utf8(b).map_err(|_| bad())?;
@@ -668,7 +659,7 @@ pub(crate) fn load_routes(e: &mut Engine) -> Result<BTreeMap<Tid, String>> {
         .filter(|l| !l.is_empty())
         .map(|l| {
             let (g, a) = l.split_once(' ').ok_or_else(bad)?;
-            Ok((Tid::parse(g).map_err(|_| bad())?, a.to_string()))
+            Ok((Tid::parse(g).map_err(|_| bad())?, a.parse().map_err(|_| bad())?))
         })
         .collect()
 }

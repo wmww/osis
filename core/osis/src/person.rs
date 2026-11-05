@@ -7,7 +7,7 @@
 use crate::error::{Error, Result};
 use crate::handle::{Fresh, Osis, PERSON, fresh_engine, save_hosts};
 use crate::share::{RecoveryCard, HostAddr, SyncState};
-use crate::Config;
+use crate::{Config, Store};
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::{BlobId, CommitId, Tid, Value, base64url};
 use osis_node::flows::PreSync;
@@ -95,9 +95,9 @@ fn tag_ok(secret: &[u8; 32], purpose: &str, items: &[Value]) -> bool {
     same(&mac(secret, purpose, &Value::List(body.to_vec())), tag)
 }
 
-/// `cfg.hosts` plus those of `more` it lacks.
-fn with_hosts(cfg: &Config, more: Vec<HostAddr>) -> Vec<HostAddr> {
-    let mut hosts = cfg.hosts.clone();
+/// `hosts` plus those of `more` it lacks.
+fn with_hosts(hosts: &[HostAddr], more: Vec<HostAddr>) -> Vec<HostAddr> {
+    let mut hosts = hosts.to_vec();
     for a in more {
         if !hosts.contains(&a) {
             hosts.push(a);
@@ -191,22 +191,22 @@ impl Osis {
     /// Restores the person of a recovery card on this fresh device (spec/permissions.md §8):
     /// claims the home label by the card's key, downloads it, then (signing as the recovery key)
     /// makes this node an admin of the person. Needs a runtime; the card's hosts are added
-    /// to `Config.hosts`. Fails `Network` after `Config::wait_timeout`; on any failure (or a
-    /// dropped future) the recovery key is forgotten and the store gets no person record (it
-    /// does not open as a database; use a fresh store for the next attempt).
-    pub async fn restore(cfg: Config, card: &RecoveryCard) -> Result<Osis> {
-        cfg.check()?;
+    /// to `hosts`. Fails `Network` after `timeout`; on any failure (or a dropped future) the
+    /// recovery key is forgotten and the store gets no person record (it does not open as a
+    /// database; use a fresh store for the next attempt).
+    pub async fn restore(store: Store, hosts: &[HostAddr], card: &RecoveryCard, timeout: std::time::Duration, cfg: Config) -> Result<Osis> {
+        cfg.check(hosts)?;
         let c = card.parse()?;
-        let hosts = with_hosts(&cfg, c.hosts.iter().cloned().map(HostAddr).collect());
-        let Fresh { mut sync, clock } = fresh_engine(&cfg, &hosts)?;
+        let hosts = with_hosts(hosts, c.hosts.iter().cloned().map(HostAddr).collect());
+        let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, &hosts)?;
         let engine = sync.engine_mut();
         let r = engine.hold_key_actor(c.seed.clone())?;
         save_hosts(engine, &hosts)?;
-        let db = Osis::start(sync, clock, &cfg, c.person)?;
+        let db = Osis::start(sync, clock, store, &cfg, c.person)?;
         let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
         db.act(|x| x.sync.follow(r, c.person, c.home_label, c.hosts.clone()));
         let p = c.person;
-        db.wait_until(Some(db.inner.wait_timeout), Box::new(move |s, st, _| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
+        db.wait_until(timeout, Box::new(move |s, st, _| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
         let done = db.engine(|e| e.recover(&c, &[], PreSync::Synced))?;
         drop(key);
         db.carry(done)?;
@@ -220,7 +220,7 @@ impl Osis {
     /// the offer can make their device a full admin device of this person until it is used or
     /// expires (10 minutes): show it only to the new device.
     pub fn pair_offer(&self) -> Result<PairOffer> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::PAIR_OFFER, vec![])?;
             return crate::port::codec::Args::of(vec![v]).text()?.parse();
         }
@@ -241,7 +241,7 @@ impl Osis {
     /// person (or re-seals a device already one) and returns its node tid
     /// with the reply to carry back.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
-        if self.is_attached() {
+        if !self.has_store() {
             // once: a `TooLarge` retry would find the offer used
             let v = self.primary_call_big(crate::port::method::PAIR_ACCEPT, vec![Value::Str(req.to_string())], osis_proto::serving::REPLY_BUDGET)?;
             let mut a = crate::port::codec::Args::new(v)?;
@@ -275,16 +275,17 @@ impl Osis {
     }
 
     /// Starts pairing this fresh store as a new device of the person that made `offer`: returns
-    /// the request to carry to the offering device and, with its reply, `Joining::finish`.
-    pub fn pair(cfg: Config, offer: &PairOffer) -> Result<Joining> {
-        cfg.check()?;
+    /// the request to carry to the offering device and, with its reply, `Joining::finish`. The
+    /// offer's hosts are added to `hosts`.
+    pub fn pair(store: Store, hosts: &[HostAddr], offer: &PairOffer, cfg: Config) -> Result<Joining> {
+        cfg.check(hosts)?;
         let items = unpack(&offer.0, OFFER)?;
         let [_, Value::Tid(person), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
         let addrs = addrs.iter().map(|a| if let Value::Str(s) = a { s.parse() } else { Err(Error::Invalid("malformed pairing offer".into())) }).collect::<Result<_>>()?;
-        let hosts = with_hosts(&cfg, addrs);
-        let Fresh { sync, clock } = fresh_engine(&cfg, &hosts)?;
-        let db = Osis::start(sync, clock, &cfg, *person)?;
+        let hosts = with_hosts(hosts, addrs);
+        let Fresh { sync, clock } = fresh_engine(&store, &cfg, &hosts)?;
+        let db = Osis::start(sync, clock, store, &cfg, *person)?;
         let node = db.node();
         let pks = db.engine(|e| -> Result<Vec<Package>> {
             let ids = e.commit_ids();
