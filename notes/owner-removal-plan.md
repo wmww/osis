@@ -1,5 +1,5 @@
 # Removing owners: plan
-> Summary: Build plan for replacing owners with first admins and disputes settled per node. Direction agreed with Tess, plan not yet approved, nothing built. Options, model results and review findings: notes/owners.md.
+> Summary: Build plan for replacing owners with first admins and disputes settled per node. Approved by Tess; step 3's model done. Options, model results and review findings: notes/owners.md.
 
 ## Decided (Tess)
 - No owner role, no hidden owner, nothing users may want to change baked into a thing. A tid and the first admin it names stay; the first admin is history, with no power once removed.
@@ -59,7 +59,13 @@ Delete §6, `tenures.0`, epoch starts and their rounds, `kind` 4, snapshot certi
 - Remove the word: owner, ownerless and owning leave spec, code, API and CLI. Realms and tags resume once this is settled.
 
 ### 3. Disputes in the walk
-Trust set as an input to `Timeline::evaluate`, D rebuilt from scratch. A trusted demotion T seeds D with its victim's unlisted writes. Void T lose their seeds and stay out, all at once ("shrink"). A dispute is a demotion R of X voided by X's unlisted write; contests listing R raise none. Prompts key on (R, X). Pure function of held data and trust set. Extend roles-model and the differential first, covering what the prototype did not: invites, `until`, other roles, clock skew. The prototype patch is one input, if kept.
+Trust set as an input to `Timeline::evaluate`, D rebuilt from scratch. A trusted demotion R of X seeds D with X's writes ordered before R that R's frontier does not list, other than X's writes on its own edges. Void trusted ops lose their seeds and stay out, all at once ("shrink"). A dispute is an unapplied demotion R of X that applies as an explicit demotion once its seeds are in D; contests listing R raise none. Prompts key on (R, X). Pure function of held data and trust set. Model done (`core/test/roles-model` `trust`; notes/owners.md, Model results, committed): invites, `until` with finalizes, read and write roles, skew, actor holders and the post-owner shape hold every property. Next: osis-perm's differential against it.
+
+Rule problems the model found:
+1. **Seeds stop at R** (the prototype seeded every unlisted write of X): seeding X's later writes made a pick reject X for good, ignoring a re-grant by a third admin, and raised disputes from X's later audits. The cost: "a pick rejects the author" no longer holds. Picking the side that already wins (X's contest W ordered before R) cannot be a trust entry, since W's seeds do not reach R: the trust store (step 4) records that answer to (R, X) and hides it, rather than trusting W.
+2. **Who X is** for an actor holder: the frontier rule's X (every node whose class falls) depends on the walk, so seeds would too and shrink could loop. The model uses a static set: nodes that ever reach the holder by admin edges, the demoter excluded. It over-approximates (an edge that never applied counts), so trusting a demotion that applies anyway still changes the state in 2.7% of joint tries. Harmless while trust sets hold only disputed ops; the implementation must pick one static definition and say so.
+3. **Trust drops more than the audit**: R's seeds take every unlisted write of X before R, while R's own audit drops only writes of a class X fell through. A node trusting R can read less than one where R applies anyway (0.02-0.05% of edge tries). Accepted unless trust sets hold more than disputed ops.
+4. Trusting both sides of one fight keeps the later-stamped one (the earlier one's seeds are empty, so its op turns void); a store never writes both, but it is the defined result.
 
 ### 4. Defaults, choices, warnings
 Durable trust store per node. Default: first received, recorded at detection; a new node takes the side its own grant counts on, else host log order. On a switch, recorded defaults taken on the other side are dropped or redone (untested). A side's own party defaults to itself, as it holds its own write first. API: list disputes, listener, choose. Non-interactive nodes keep the default. CLI first, then one app warning. Devices follow their person's published choice except on a dispute about that person or the choice's author; on those each device asks.
