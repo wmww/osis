@@ -83,6 +83,23 @@ fn work_sets_two_devices_host_seed_412300013() {
     same("two_devices_host", 412300013);
 }
 
+// spec/sync.md §3, §5: a blob of an expiring commit of which the label's actor reads no part
+// expires at the host by its prefix; the nodes judge it expired by the same prefix
+// expiry, not Dropped, and send no delete the host refuses each pass (the extra refused delete
+// of a full pass moved a write). A seed, so it lasts until the sim's dice change.
+#[test]
+fn work_sets_revocation_bob_seed_9461() {
+    same("revocation_bob", 9461);
+}
+
+// spec/sync.md §6 (oracle): a must-hold body held at the host is checked whatever deletes took
+// other copies of it (the duplicate a pass drew): the held-check count does not part. A seed.
+#[test]
+#[ignore = "tier 2"]
+fn work_sets_member_churn_seed_9473() {
+    same("member_churn", 9473);
+}
+
 // spec/sync.md §6, §7, notes/sync.md Receipts-only reads: a node reading a label for receipts
 // only runs no pass there, with work sets or full passes alike.
 #[test]

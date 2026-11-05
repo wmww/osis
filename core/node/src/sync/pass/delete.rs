@@ -143,8 +143,9 @@ impl SyncEngine {
         let parts = &self.readable(g, commit, opened);
         let Some(m) = self.engine.core.ix.commits.get(commit).cloned() else { return Ok(self.judge_forgotten(commit, opened, note)) };
         let h = m.header.clone();
-        // a blob expires whole with its class (spec/sync.md §3)
-        if let Some(t) = parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).and(h.expires) {
+        // a blob expires whole at its prefix's expiry, as the host drops it (spec/sync.md §3, §5),
+        // whatever of it the label's actor still reads
+        if let Some(t) = osis_commit::blob_expiry(&h) {
             if t <= now {
                 return Ok(Some((Hold::MustNot(Why::Expired), false, Vec::new())));
             }
