@@ -1,7 +1,7 @@
 //! A small random history generator (for this crate's properties and for an engine adapter), and a
 //! shuffle of a held set's order. Dependency-free PRNG so a seed means the same history everywhere.
 
-use crate::model::{evaluate, timeline};
+use crate::model::evaluate;
 use crate::types::*;
 use std::collections::BTreeSet;
 
@@ -101,44 +101,11 @@ fn plain_part(thing: ThingId, aspect: Aspect, retention: Retention, d: Delta) ->
     Part { thing, aspect, retention, body: Body::Held(d), stripped: Default::default() }
 }
 
-/// The roster snapshot of `n` an owner-chain author writes from its own timeline (spec/permissions.md
-/// §6): the standing edges with `since`, and a ledger entry per ended tenure of write or above.
-pub fn roster_parts(h: &Held, n: ThingId) -> Vec<Part> {
-    let tl = timeline(h);
-    let mut cur: std::collections::BTreeMap<NodeId, (Role, Key)> = Default::default();
-    let mut parts = Vec::new();
-    for p in tl.applied.iter().filter(|p| p.ev.thing == n && p.ev.holder != NodeId::MAX) {
-        let new = p.ev.value.filter(|v| v.role >= Role::Write && v.alive(wall(p.ev.key.0))).map(|v| v.role);
-        let old = cur.get(&p.ev.holder).copied();
-        if old.map(|o| o.0) == new {
-            continue;
-        }
-        if let Some((role, since)) = old {
-            let frontier = if p.explicit { p.ev.frontier.as_ref().map(|f| f.iter().copied().collect()) } else { None };
-            let t = RosterItem::Tenure { holder: p.ev.holder, role, since: Some(since), until: p.ev.key, frontier };
-            parts.push(Part { aspect: Aspect::TENURES, ..plain_part(n, Aspect::TENURES, Retention::ROLE, Delta::Roster(t)) });
-        }
-        match new {
-            Some(r) => cur.insert(p.ev.holder, (r, p.ev.key)),
-            None => cur.remove(&p.ev.holder),
-        };
-    }
-    for (&(t, holder), e) in tl.state_at((u64::MAX, NodeId::MAX, CommitId::MAX)) {
-        if t != n {
-            continue;
-        }
-        let edge = EdgeWrite { holder, role: Some(e.role), invite: e.invite, until: e.until };
-        let since = cur.get(&holder).map(|c| c.1);
-        parts.push(plain_part(n, Aspect::ROLES, Retention::ROLE, Delta::Roster(RosterItem::Edge { edge, since })));
-    }
-    parts
-}
-
 /// A random history of `n` commits on `THINGS`: content, compaction snapshots, purges, undos,
 /// required retention, acting for the person, edge writes (grants, `until`, invites, self-removals,
-/// finalizes, link redemptions) and roster snapshots; every body held but about one in ten missing
-/// and a few parked; sometimes a creation record unknown; `now` up to six hours after the last
-/// commit. Snapshots, undos and rosters are written from the author's model state.
+/// finalizes, link redemptions); every body held but about one in ten missing and a few parked;
+/// sometimes a creation record unknown; `now` up to six hours after the last commit. Snapshots and
+/// undos are written from the author's model state.
 pub fn history(seed: u64, n: usize) -> Held {
     let mut r = Rng::new(seed);
     let mut commits: Vec<Commit> = Vec::new();
@@ -243,12 +210,9 @@ pub fn history(seed: u64, n: usize) -> Held {
                 }
                 Commit { kind: CommitKind::Role, parts, ..base(id, LINK_L, ts) }
             } else {
-                let parts = if thing == 13 { vec![] } else { roster_parts(&prefix(chief), thing) };
-                if parts.is_empty() {
-                    Commit { kind: CommitKind::Role, parts: vec![role_part(thing, EdgeWrite::role(r.pick(&HOLDERS), Some(Role::Read)))], ..base(id, chief, ts) }
-                } else {
-                    Commit { kind: CommitKind::Roster, parts, ..base(id, chief, ts) }
-                }
+                // an owner-chain grant
+                let e = EdgeWrite::role(r.pick(&HOLDERS), Some(r.pick(&[Role::Read, Role::Write, Role::Admin])));
+                Commit { kind: CommitKind::Role, parts: vec![role_part(thing, e)], ..base(id, chief, ts) }
             }
         } else if roll < 23 && !commits.is_empty() {
             let aspect = r.pick(&ASPECTS);
@@ -270,7 +234,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             };
             let ws = vec![Write { stamp: stamp(ts, id, 1), op: Op::Set { value: Some(r.below(5) as Val) } }];
             // the chief, else often a node an edge names on the thing: a grant or demotion between
-            // the delta and the request decides its right (judged at the request, spec/permissions.md §7)
+            // the delta and the request decides its right (judged at the request, spec/permissions.md §6)
             let granted: Vec<NodeId> = commits
                 .iter()
                 .filter(|c| c.kind == CommitKind::Role && c.ts > target.ts)

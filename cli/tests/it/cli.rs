@@ -349,7 +349,7 @@ fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
     let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();
     s.ok(&["group", "sync", &g]);
-    // spec/permissions.md §8: without peers a link reaches nobody unless direct (opt-in)
+    // spec/permissions.md §7: without peers a link reaches nobody unless direct (opt-in)
     assert_eq!(s.code(&["link", "make", &g, "write", "--single-use"]), 7);
     assert_eq!(s.code(&["card", "show"]), 7);
     assert_eq!(s.ok(&["--json", "link", "ls", &g]).line(), "[]");

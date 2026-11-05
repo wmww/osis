@@ -82,7 +82,7 @@ fn record(name: &str, spec: &str, c: &CommitBlob) -> Record {
         .with("delete-secrets", format!("1:{} 2:{} 3:{}", hex(s32(0x31).expose()), hex(s32(0x32).expose()), hex(s32(0x33).expose())))
         .with("blind", hex(&BLIND));
     for p in &c.parts {
-        r = r.with(&format!("delta-{}-{}", p.ai, p.di), hex(&p.delta));
+        r = r.with(&format!("delta-{}", p.ai), hex(&p.delta));
     }
     r.with("header", hex(&c.header.encode()))
         .with("commit-id", hex(&c.id().0))
@@ -101,7 +101,6 @@ fn role_commit() -> CommitBlob {
     let at = ts(1_700_000_001_000);
     let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x41, 1), 2));
-    a.deltas.push(core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x42, 1), 3));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     built(b)
@@ -167,7 +166,7 @@ pub fn headers() -> VecFile {
     let mut cases = Vec::new();
     let c = content();
     cases.push(record("minimal content commit", "spec/wire.md §4; spec/commits.md §1", &c));
-    cases.push(record("role commit, two deltas on one aspect", "spec/wire.md §4; spec/commits.md §2", &role_commit()));
+    cases.push(record("role commit", "spec/wire.md §4; spec/commits.md §2", &role_commit()));
     cases.push(record("content compaction snapshot", "spec/wire.md §4; spec/commits.md §2, §5", &snapshot()));
     let e = ephemeral(osis_commit::EphClass::Plain);
     cases.push(record("ephemeral commit", "spec/wire.md §4; spec/commits.md §2", &e));
@@ -311,15 +310,9 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.aspects[0].ak = Ak::new("secrets.0").unwrap();
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
-    x.aspects[0].hashes.truncate(1);
-    x.validate().unwrap();
-    x.frontier = frontier.clone();
-    out.push(reject("frontier on a role compaction snapshot", "spec/wire.md §4", &x, "frontier"));
-    let mut x = m.clone();
-    x.kind = Kind::RosterSnapshot;
     x.validate().unwrap();
     x.frontier = frontier;
-    out.push(reject("frontier on a roster snapshot", "spec/wire.md §4", &x, "frontier"));
+    out.push(reject("frontier on a role compaction snapshot", "spec/wire.md §4", &x, "frontier"));
     let mut x = content.clone();
     x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![1, 0] });
     out.push(reject("chunk delete keys out of order", "spec/wire.md §4", &x, "chunk-keys"));

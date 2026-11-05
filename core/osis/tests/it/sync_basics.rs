@@ -322,9 +322,9 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     assert_eq!(says(&c, u), Some(s("by bob")), "pending {:?}", c.engine(|e| e.pending()));
 }
 
-// notes/std.md (profile: everyone holding the card keeps receiving changes), spec/permissions.md §3, §8 (Bearer use): an account adding a client or node changes their roles: a contact keeps reading their profile and hears no loss; the link ended, it goes
+// notes/std.md (profile: everyone holding the card keeps receiving changes), spec/permissions.md §3, §7 (Bearer use): an account adding a client or node changes their roles: a contact keeps reading their profile and hears no loss; the link ended, it goes
 #[test]
-fn contact_outlives_the_persons_role_changes_spec_permissions_8() {
+fn contact_outlives_the_persons_role_changes_spec_permissions_7() {
     let mut w = World::new();
     let h0 = w.add_host();
     let store = MemStore::new();

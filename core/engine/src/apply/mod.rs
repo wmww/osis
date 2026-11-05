@@ -14,8 +14,6 @@ pub(crate) mod validity;
 #[cfg(test)]
 mod tests_validity;
 #[cfg(test)]
-mod tests_linked;
-#[cfg(test)]
 mod tests_order;
 #[cfg(test)]
 mod oracle;
@@ -87,12 +85,12 @@ pub(crate) enum Exam {
 struct Aside {
     reason: Option<Reason>,
     others: Vec<Reason>,
-    keys: BTreeSet<(usize, usize)>,
+    keys: BTreeSet<usize>,
 }
 
 impl Aside {
     /// `keys` wait for `r`.
-    fn add(&mut self, r: Reason, keys: impl IntoIterator<Item = (usize, usize)>) {
+    fn add(&mut self, r: Reason, keys: impl IntoIterator<Item = usize>) {
         let before = self.keys.len();
         self.keys.extend(keys);
         if self.keys.len() > before {
@@ -131,7 +129,6 @@ impl Waiting {
 /// time (issues/durable-decode-bound.md).
 pub(crate) struct Streamed {
     pub ai: usize,
-    pub di: usize,
     /// Its thing's dedup secret (its hash, its pages' keys).
     pub dedup: osis_crypto::Secret32,
     /// A snapshot's frontiers and `Absorbed`.
@@ -143,7 +140,7 @@ pub(crate) struct Streamed {
 /// rosters of thousands, not millions; the rest are streamed.
 #[derive(Default)]
 pub(crate) struct Parts {
-    pub whole: Vec<(usize, usize, Decoded)>,
+    pub whole: Vec<(usize, Decoded)>,
     pub streamed: Vec<Streamed>,
     /// Held parts that wait alone (spec/commits.md §4).
     pub waiting: Option<Waiting>,
@@ -158,7 +155,7 @@ pub(crate) struct Parts {
 impl Parts {
     /// The parts joined from stripped deltas (`stripped`): aspect and fragment.
     pub(crate) fn stripped_joined(&self) -> Vec<(usize, osis_crdt::Fragment)> {
-        self.whole.iter().filter(|x| self.stripped.contains(&x.0)).map(|(ai, _, d)| (*ai, d.fragment().clone())).collect()
+        self.whole.iter().filter(|x| self.stripped.contains(&x.0)).map(|(ai, d)| (*ai, d.fragment().clone())).collect()
     }
 
     /// Whether a part of aspect `ai` is held.
@@ -280,7 +277,7 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
 /// Every wait only ends as the held set grows, so the applied parts are the least fixpoint of a
 /// monotone rule, one result for every order (`parts::split_delivery_*`, `parts::parts_differential_*`
 /// play them).
-pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<(usize, usize)>) -> Result<Exam> {
+pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<usize>) -> Result<Exam> {
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
@@ -320,12 +317,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     // the slots a held purge request emptied while they waited (`retention::strip_purged`; perhaps just
     // now, before the commit is first stored): the part's leftover, checked when kept, joins in
-    // their place, once per aspect
+    // their place
     let emptied = crate::retention::emptied();
     let mut stripped: BTreeMap<usize, Decoded> = BTreeMap::new();
     for p in blob.parts.iter().filter(|p| p.delta == emptied) {
         if let Some(a) = h.aspects.get(p.ai)
-            && !stripped.contains_key(&p.ai)
             && let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, p.ai)?
         {
             stripped.insert(p.ai, Decoded::Delta(osis_crdt::Delta { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment }));
@@ -336,27 +332,26 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // a part that does not hash to its header entry is no part of this commit, and one on an aspect
     // of the wrong storage class (core keys are unmarked but `placed.0~`) is never applied: dropped
     // alone, before anything reads what is held (spec/commits.md §4)
-    let junk: Vec<(usize, usize)> = blob
+    let junk: Vec<usize> = blob
         .parts
         .iter()
         .filter(|p| !kept(p))
         .filter(|p| {
             let Some(a) = h.aspects.get(p.ai) else { return true };
-            let Some(want) = a.hashes.get(p.di) else { return true };
-            a.ak.lifetime() != class_of(&h) || record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != *want)
+            a.ak.lifetime() != class_of(&h) || record(&a.tid).is_some_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash)
         })
-        .map(|p| (p.ai, p.di))
+        .map(|p| p.ai)
         .collect();
     // a copy holding only what does not hash is no copy of it: refused, as if it never came
     let only_junk = !blob.parts.is_empty() && junk.len() == blob.parts.len() && blob.parts.iter().any(|p| h.aspects.get(p.ai).is_none_or(|a| a.ak.lifetime() == class_of(&h)));
     if !junk.is_empty() {
         // a slot's stored first copy, kept while it could not be checked: a true copy may be held. Not a
         // copy just come (it kept nothing out), nor a part of the wrong class (it has no true copy)
-        let kept_out = |p: &osis_commit::Part| junk.contains(&(p.ai, p.di)) && h.aspects.get(p.ai).is_none_or(|a| a.ak.lifetime() == class_of(&h));
+        let kept_out = |p: &osis_commit::Part| junk.contains(&p.ai) && h.aspects.get(p.ai).is_none_or(|a| a.ak.lifetime() == class_of(&h));
         if tx.core.ix.pending.contains_key(id) && tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok()).is_some_and(|b| b.parts.iter().any(kept_out)) {
             tx.core.redeliver.insert(*id);
         }
-        blob.parts.retain(|p| !junk.contains(&(p.ai, p.di)));
+        blob.parts.retain(|p| !junk.contains(&p.ai));
         let now = tx.now();
         tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail: "delta hash".into() }, now);
     }
@@ -366,12 +361,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // a part waits alone, for its thing's record, owner chain or the author's reach
     let mut aside = Aside::default();
     for (ai, a) in h.aspects.iter().enumerate() {
-        let keys: Vec<(usize, usize)> = blob.parts.iter().filter(|p| p.ai == ai).map(|p| (p.ai, p.di)).filter(|x| !skip.contains(x)).collect();
-        if keys.is_empty() {
+        if skip.contains(&ai) || !blob.parts.iter().any(|p| p.ai == ai) {
             continue;
         }
         if let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) {
-            aside.add(wait, keys);
+            aside.add(wait, [ai]);
         }
     }
     for (t, rec) in &carried {
@@ -386,15 +380,15 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
     let rules = !(tx.core.skip_writer_rules && h.author == tx.core.id.tid());
-    let mut bad: Vec<(usize, usize)> = Vec::new();
+    let mut bad: Vec<usize> = Vec::new();
     for p in &blob.parts {
-        if skip.contains(&(p.ai, p.di)) || aside.keys.contains(&(p.ai, p.di)) {
+        if skip.contains(&p.ai) || aside.keys.contains(&p.ai) {
             continue;
         }
         let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part index"))?;
         if kept(p) {
             if let Some(d) = stripped.remove(&p.ai) {
-                out.whole.push((p.ai, p.di, d));
+                out.whole.push((p.ai, d));
                 out.stripped.push(p.ai);
             }
             continue;
@@ -402,23 +396,23 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         let dedup = record(&a.tid).map(|r| dedup_secret(r.nonce())).ok_or(Error::UnknownThing(a.tid))?;
         let wait = match judge_part(tx, &h, id, p, a, &dedup, rules, &mut interner, &mut out) {
             Ok(Judged::Good) => continue,
-            Ok(Judged::Blobs | Judged::Frontier) => Reason::WaitBlobs,
+            Ok(Judged::Blobs) => Reason::WaitBlobs,
             Err(e) if e.class() == ErrorClass::Parked => Reason::Parked,
             Err(e) if e.class() == ErrorClass::BadInput => {
-                bad.push((p.ai, p.di));
+                bad.push(p.ai);
                 out.bad.get_or_insert(e);
                 continue;
             }
             Err(e) => return Err(e),
         };
-        aside.add(wait, [(p.ai, p.di)]);
+        aside.add(wait, [p.ai]);
     }
     if !bad.is_empty() {
         // only bad parts: refused, nothing stored
         if rules && out.ais().is_empty() && aside.keys.is_empty() {
             return Err(out.bad.take().unwrap_or(Error::BadInput("a bad part")));
         }
-        blob.parts.retain(|p| !bad.contains(&(p.ai, p.di)));
+        blob.parts.retain(|p| !bad.contains(&p.ai));
         let detail = out.bad.as_ref().map(|e| e.to_string()).unwrap_or_default();
         let now = tx.now();
         tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: Some(h.author), detail }, now);
@@ -428,7 +422,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         return Ok(aside.verdict());
     }
     if let Some(reason) = aside.reason {
-        let (parts, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut blob.parts).into_iter().partition(|p| aside.keys.contains(&(p.ai, p.di)));
+        let (parts, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut blob.parts).into_iter().partition(|p| aside.keys.contains(&p.ai));
         blob.parts = rest;
         out.waiting = Some(Waiting { parts, reason, others: aside.others });
     }
@@ -443,8 +437,6 @@ enum Judged {
     Good,
     /// A page is not held.
     Blobs,
-    /// A linked frontier's blob is not held.
-    Frontier,
 }
 
 /// Judges part `p` by itself, from the signed header, its bytes and held data; a good one goes in
@@ -479,7 +471,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
             Ok(())
         };
         osis_commit::stream_part(h, id, p, dedup, interner, Some(reader), &mut each).map(|gives| {
-            out.streamed.push(Streamed { ai: p.ai, di: p.di, dedup: dedup.clone(), gives: gives.map(|x| (x.frontiers, x.absorbed.into_iter().collect())) });
+            out.streamed.push(Streamed { ai: p.ai, dedup: dedup.clone(), gives: gives.map(|x| (x.frontiers, x.absorbed.into_iter().collect())) });
             None
         })
     };
@@ -491,16 +483,13 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
         Err(e) => return Err(e.into()),
     };
     if late {
-        out.streamed.retain(|s| (s.ai, s.di) != (p.ai, p.di));
+        out.streamed.retain(|s| s.ai != p.ai);
         return Err(Error::BadInput("carried write stamped after its commit"));
     }
     let Some(d) = decoded else { return Ok(Judged::Good) };
-    let part = (p.ai, p.di, d);
+    let part = (p.ai, d);
     if rules {
         validity::check_holders_parts(h, id, std::slice::from_ref(&part))?;
-        if !validity::linked_frontiers(tx, h, &validity::EdgeParts::of(h, std::slice::from_ref(&part)))?.waiting.is_empty() {
-            return Ok(Judged::Frontier);
-        }
     }
     out.whole.push(part);
     Ok(Judged::Good)
@@ -667,12 +656,12 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         // a slot the header does not list has no true copy: a sender could grow the blob by them
         if old.header.is_resolved() {
             let h = old.header.clone();
-            blob.parts.retain(|p| h.aspects.get(p.ai).is_some_and(|a| a.hashes.get(p.di).is_some()));
+            blob.parts.retain(|p| p.ai < h.aspects.len());
         }
         let mut others: Vec<osis_commit::Part> = Vec::new();
         let mut rest = Vec::new();
         for p in std::mem::take(&mut blob.parts) {
-            match old.parts.binary_search_by_key(&(p.ai, p.di), |x| (x.ai, x.di)).ok().and_then(|i| old.parts.get_mut(i)) {
+            match old.parts.binary_search_by_key(&p.ai, |x| x.ai).ok().and_then(|i| old.parts.get_mut(i)) {
                 Some(x) if x.delta == p.delta => {}
                 // a true `created.0` part proves itself: it is what any other part here waits for
                 Some(x) if proves_itself(&old.header, id, &p) => *x = p,
@@ -707,19 +696,13 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
 /// record's nonce keys the hash in the signed header. Needs nothing else held.
 fn proves_itself(h: &Header, id: &CommitId, p: &osis_commit::Part) -> bool {
     let Some(a) = h.aspects.get(p.ai).filter(|a| h.ephemeral.is_none() && a.ak.as_str() == osis_commit::retention::CREATED) else { return false };
-    let Some(want) = a.hashes.get(p.di) else { return false };
-    minted_record(h, id, p, &a.tid, &mut Interner::new()).is_ok_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) == *want)
-}
-
-/// Every slot of aspect `ai`.
-fn out_of(h: &Header, ai: usize) -> impl Iterator<Item = (usize, usize)> {
-    (0..h.aspects.get(ai).map_or(0, |a| a.hashes.len())).map(move |di| (ai, di))
+    minted_record(h, id, p, &a.tid, &mut Interner::new()).is_ok_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) == a.hash)
 }
 
 /// `a` with the parts of `b` on slots it lacks.
 fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
     for p in b.parts {
-        if let Err(i) = a.parts.binary_search_by_key(&(p.ai, p.di), |x| (x.ai, x.di)) {
+        if let Err(i) = a.parts.binary_search_by_key(&p.ai, |x| x.ai) {
             a.parts.insert(i, p);
         }
     }
@@ -734,7 +717,7 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
     let (held, skip) = held_and_skip(tx, id)?;
     blob = with_pending(tx, id, blob)?;
-    blob.parts.retain(|p| !skip.contains(&(p.ai, p.di)));
+    blob.parts.retain(|p| !skip.contains(&p.ai));
     if blob.parts.is_empty() {
         crate::retention::forget_waiting_leftovers(tx, id)?;
         unpend(tx, id)?;
@@ -766,7 +749,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
         }
         Exam::Pending(r, others) => {
             // what `examine` dropped of the waiting parts goes from the stored copy too
-            blob.parts.retain(|p| merged.parts.binary_search_by_key(&(p.ai, p.di), |x| (x.ai, x.di)).is_ok());
+            blob.parts.retain(|p| merged.parts.binary_search_by_key(&p.ai, |x| x.ai).is_ok());
             let n = blob.parts.len();
             crate::retention::pending_drops(tx, id, &mut blob, &merged.header)?;
             if blob.parts.len() != n {
@@ -776,9 +759,6 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             keys::read_pending_boxes(tx, &blob, id)?;
             let now = tx.now().0;
             waits::note(tx.core, *id, &merged, true, &r, &others, now);
-            // a late `tenures.0` part alone, its linked frontier away, takes its snapshot out of
-            // the walk as it would have with the part applied beside it
-            atomic::leave_walk(tx, id, &blob.parts)?;
             Ingested::Pending(*id, r)
         }
         Exam::Parked => {
@@ -796,13 +776,13 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
 
 /// Applied commit `id`'s stored blob (its resolved header), and the parts a late copy brings
 /// nothing for: those held, those dropped for good.
-fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet<(usize, usize)>)> {
+fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet<usize>)> {
     let mut held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
     let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
-    let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
+    let mut skip: BTreeSet<usize> = held.parts.iter().map(|p| p.ai).collect();
     for ai in meta.dropped.keys().chain(meta.stripped.iter()) {
         if !crate::retention::takes_late(tx, id, *ai)? {
-            skip.extend((0..meta.header.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(|di| (*ai, di)));
+            skip.insert(*ai);
         }
     }
     held.header = (*meta.header).clone();
@@ -876,9 +856,8 @@ impl Engine {
         let mut known = true;
         for p in &blob.parts {
             let Some(a) = h.aspects.get(p.ai) else { return Some(false) };
-            let Some(want) = a.hashes.get(p.di) else { return Some(false) };
             match record(&self.core, &a.tid) {
-                Some(r) if osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != *want => return Some(false),
+                Some(r) if osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash => return Some(false),
                 Some(_) => {}
                 None => known = false,
             }
@@ -910,28 +889,21 @@ impl Engine {
     /// The slots of commit `id` no copy need bring here: those held, applied or pending, and those
     /// counting as never received (spec/commits.md §5), its body dropped or past its expiry, which
     /// only a new copy brings back (`SyncEngine::redeliver`).
-    pub fn settled_slots(&mut self, id: &CommitId) -> Result<BTreeSet<(usize, usize)>> {
+    pub fn settled_slots(&mut self, id: &CommitId) -> Result<BTreeSet<usize>> {
         let id = *id;
         self.run(|tx| {
             let now = tx.now().0;
-            let mut out: BTreeSet<(usize, usize)> = BTreeSet::new();
+            let mut out: BTreeSet<usize> = BTreeSet::new();
             let pending = tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok());
             if let Some(b) = &pending {
-                out.extend(b.parts.iter().map(|p| (p.ai, p.di)));
-                for ai in 0..b.header.aspects.len() {
-                    if crate::retention::pending_expired(tx, &b.header, ai) {
-                        out.extend(out_of(&b.header, ai));
-                    }
-                }
+                out.extend(b.parts.iter().map(|p| p.ai));
+                out.extend((0..b.header.aspects.len()).filter(|ai| crate::retention::pending_expired(tx, &b.header, *ai)));
             }
             if let Some(b) = tx.get_commit(&id)? {
-                out.extend(b.parts.iter().map(|p| (p.ai, p.di)));
+                out.extend(b.parts.iter().map(|p| p.ai));
             }
             if let Some(m) = tx.core.ix.commits.get(&id) {
-                let ais: Vec<usize> = (0..m.header.aspects.len()).filter(|ai| m.dropped.contains_key(ai) || m.header.aspects.get(*ai).and(m.header.expires).is_some_and(|t| t <= now)).collect();
-                for ai in ais {
-                    out.extend(out_of(&m.header, ai));
-                }
+                out.extend((0..m.header.aspects.len()).filter(|ai| m.dropped.contains_key(ai) || m.header.expires.is_some_and(|t| t <= now)));
             }
             Ok(out)
         })
@@ -953,8 +925,8 @@ impl Engine {
             let meta = tx.core.ix.commits.get(id).cloned();
             let pending = if tx.core.ix.pending.contains_key(id) { tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok()) } else { None };
             let Some(h) = meta.as_ref().map(|m| (*m.header).clone()).or_else(|| pending.as_ref().map(|b| b.header.clone())) else { return Ok(false) };
-            let applied: BTreeSet<(usize, usize)> = match &meta {
-                Some(_) => tx.get_commit(id)?.map(|b| b.parts.iter().map(|p| (p.ai, p.di)).collect()).unwrap_or_default(),
+            let applied: BTreeSet<usize> = match &meta {
+                Some(_) => tx.get_commit(id)?.map(|b| b.parts.iter().map(|p| p.ai).collect()).unwrap_or_default(),
                 None => BTreeSet::new(),
             };
             let mut gone = false;
@@ -964,14 +936,14 @@ impl Engine {
                     continue;
                 }
                 // applied, or nothing of the commit waits: no copy of it is needed
-                let Some(held) = pending.as_ref().filter(|_| !applied.contains(&(p.ai, p.di))) else { continue };
-                if held.parts.iter().any(|q| (q.ai, q.di) == (p.ai, p.di) && q.delta == p.delta) {
+                let Some(held) = pending.as_ref().filter(|_| !applied.contains(&p.ai)) else { continue };
+                if held.parts.iter().any(|q| q.ai == p.ai && q.delta == p.delta) {
                     continue;
                 }
-                let junk = match h.aspects.get(p.ai).map(|a| (a.hashes.get(p.di), tx.core.created(&a.tid))) {
-                    None | Some((None, _)) => true,
-                    Some((Some(want), Some(r))) => osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != *want,
-                    Some((Some(_), None)) => false,
+                let junk = match h.aspects.get(p.ai).map(|a| (a, tx.core.created(&a.tid))) {
+                    None => true,
+                    Some((a, Some(r))) => osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != a.hash,
+                    Some((_, None)) => false,
                 };
                 if !junk {
                     return Ok(false);
@@ -1400,13 +1372,13 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role()).map(|(id, m)| (m.view.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
-            // the view, not the header (decoded only for a roster snapshot's linked frontiers)
+            // the view, not the header
             let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
             let parts = edges.remove(&id).ok_or(Error::Corrupt("edges row missing"))?;
             // every row is what its record reads now (rewritten with it: late parts, drops)
             #[cfg(debug_assertions)]
             debug_assert_eq!(parts, edge_parts(tx, &id)?, "node/edges row of {id:?} is stale");
-            validity::add_role_commit(tx, &v, None, &id, &parts)?;
+            validity::add_role_commit(tx.core, &v, &id, &parts);
         }
         drop(_s);
     } else {
@@ -1466,7 +1438,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 let Some(a) = blob.header.aspects.get(ai) else { continue };
                 let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
                 let keys = a.ak.as_str() == "keys.0";
-                for g in each_held_piece(tx, &id, ai, &mut |tx, f| {
+                if let Some(g) = each_held_piece(tx, &id, ai, &mut |tx, f| {
                     if keys {
                         keys::note_keysets(tx.core, &blob.header, &a.tid, &keys::keysets_of(&blob.header, ai, std::slice::from_ref(&f)));
                     }
@@ -1475,7 +1447,6 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     }
                     Ok(())
                 })?
-                .into_iter()
                 .flatten()
                 {
                     copies::note_carried_of(tx.core, &a.tid, &a.ak, &id, std::mem::take(&mut carried));
@@ -1494,7 +1465,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if !b.header.kind.is_role() {
                 continue;
             }
-            for (ai, _, d) in &parts {
+            for (ai, d) in &parts {
                 if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
                     match a.ak.as_str() {
                         "secrets.0" => keys::note_boxes_to(tx.core, &a.tid, &d.fragment),
@@ -1504,7 +1475,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
             let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
-            validity::add_role_commit(tx, &v, Some(&b.header), &id, &validity::EdgeParts::of(&b.header, &parts))?;
+            validity::add_role_commit(tx.core, &v, &id, &validity::EdgeParts::of(&b.header, &parts));
         }
     }
     // a commit read before the record it needs (a nested edge write `ts`-ordered before its
@@ -1592,7 +1563,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
 }
 
 /// Decodes a stored (already verified) commit's parts whole.
-fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<Vec<(usize, usize, Decoded)>> {
+fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<Vec<(usize, Decoded)>> {
     let h = blob.header.clone();
     let mut out = Vec::new();
     let mut interner = Interner::new();
@@ -1603,13 +1574,12 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<V
         let mut paged = BlobReader::new(&dedup, &mut blobs);
         let mut unpaged = osis_crdt::Unpaged;
         let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
-        out.push((p.ai, p.di, verify_part(&h, id, p, &dedup, &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
+        out.push((p.ai, verify_part(&h, id, p, &dedup, &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }
     Ok(out)
 }
 
-/// What perm's adaptation reads of a held role commit: its held `roles.0` and `tenures.0`
-/// parts.
+/// What perm's adaptation reads of a held role commit: its held `roles.0` parts.
 pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::EdgeParts> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
     let Some(blob) = tx.get_commit(id)? else { return Ok(validity::EdgeParts::default()) };
@@ -1623,41 +1593,34 @@ pub(crate) fn edge_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, mut blob
     Ok(validity::EdgeParts::of(h, &examine_stored(tx, &blob, id)?))
 }
 
-/// Decoded parts of a held commit on aspect `ai`.
-pub(crate) fn held_parts(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Vec<Decoded>> {
-    Ok(held_parts_at(tx, id, &|x| x == ai)?.into_iter().map(|x| x.2).collect())
+/// The decoded part of a held commit on aspect `ai`.
+pub(crate) fn held_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Option<Decoded>> {
+    Ok(held_parts_at(tx, id, &|x| x == ai)?.pop().map(|x| x.1))
 }
 
-/// The fragments of a held commit's parts on aspect `ai`.
-pub(crate) fn held_fragments(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Vec<osis_crdt::Fragment>> {
-    Ok(held_parts(tx, id, ai)?.into_iter().map(Decoded::into_fragment).collect())
+/// The fragment of a held commit's part on aspect `ai`.
+pub(crate) fn held_fragment(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Option<osis_crdt::Fragment>> {
+    Ok(held_part(tx, id, ai)?.map(Decoded::into_fragment))
 }
 
-/// Streams the held parts of commit `id` on aspect `ai`, in part order, a piece at a time
-/// (`atomic::stream_stored`: the skeleton, then its pages; joining the pieces is joining the
-/// part): what reads a part element by element holds about one page of it. Per part streamed,
-/// a snapshot's frontiers and `Absorbed`. A stripped part (`Meta::stripped`) is its leftover,
-/// one piece (`retention::leftover`).
-pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Fragment) -> Result<()>) -> Result<Vec<Option<crate::engine::Gives>>> {
-    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(Vec::new()) };
+/// Streams the held part of commit `id` on aspect `ai` a piece at a time (`atomic::stream_stored`:
+/// the skeleton, then its pages; joining the pieces is joining the part): what reads a part
+/// element by element holds about one page of it. `None` when no part is held, else a snapshot's
+/// frontiers and `Absorbed`. A stripped part (`Meta::stripped`) is its leftover, one piece
+/// (`retention::leftover`).
+pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Fragment) -> Result<()>) -> Result<Option<Option<crate::engine::Gives>>> {
+    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(None) };
     let h = m.header.clone();
-    let Some(a) = h.aspects.get(ai) else { return Ok(Vec::new()) };
+    let Some(a) = h.aspects.get(ai) else { return Ok(None) };
     if m.stripped.contains(&ai) {
         let Some(l) = crate::retention::leftover::get(tx, &a.tid, &a.ak, id, ai)? else { return Err(Error::Corrupt("leftover missing")) };
         f(tx, l.fragment)?;
-        return Ok(vec![l.gives]);
+        return Ok(Some(l.gives));
     }
-    let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
-    blob.parts.retain(|p| p.ai == ai);
-    if blob.parts.is_empty() {
-        return Ok(Vec::new());
-    }
+    let Some(blob) = tx.get_commit(id)? else { return Ok(None) };
+    let Some(p) = blob.parts.iter().find(|p| p.ai == ai) else { return Ok(None) };
     let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
-    let mut out = Vec::new();
-    for p in &blob.parts {
-        out.push(atomic::stream_stored(tx, &h, id, p, &dedup, f)?);
-    }
-    Ok(out)
+    Ok(Some(atomic::stream_stored(tx, &h, id, p, &dedup, f)?))
 }
 
 /// Whether commit `id` holds a body on aspect `ai` to read (what `each_held_piece` reads): a
@@ -1669,9 +1632,9 @@ pub(crate) fn stores_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<b
     Ok(tx.get_commit(id)?.is_some_and(|b| b.parts.iter().any(|p| p.ai == ai)))
 }
 
-/// Decoded parts of a held commit on the aspects `keep` selects, with their indexes (a
-/// stripped part as its leftover, at delta index 0).
-pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, usize, Decoded)>> {
+/// Decoded parts of a held commit on the aspects `keep` selects, with their aspect indexes (a
+/// stripped part as its leftover).
+pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, Decoded)>> {
     let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(Vec::new()) };
     blob.header = (*m.header).clone();
@@ -1684,8 +1647,8 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
             None => Decoded::Delta(osis_crdt::Delta { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment }),
             Some((frontiers, absorbed)) => Decoded::Snapshot(osis_crdt::Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: l.fragment, frontiers, absorbed: absorbed.into_iter().collect() }),
         };
-        let at = out.partition_point(|x| (x.0, x.1) < (ai, 0));
-        out.insert(at, (ai, 0, d));
+        let at = out.partition_point(|x| x.0 < ai);
+        out.insert(at, (ai, d));
     }
     Ok(out)
 }
@@ -1727,7 +1690,7 @@ mod tests {
         let c = osis_base::Tid::from_bytes([7; 15]);
         let mut m = Mutation::new();
         for x in [b, c] {
-            let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+            let e = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
             m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(e.to_value()) }).unwrap();
         }
         lp.peers[0].engine.core.skip_writer_rules = true;
@@ -1763,7 +1726,7 @@ mod tests {
         }
         let (x, y) = (things[0], things[1]);
         let mut m = Mutation::new();
-        let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+        let e = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
         m.op(x, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(e.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
@@ -1799,7 +1762,7 @@ mod tests {
         let levels: Vec<u8> = wf.keys.iter().map(|i| h.keys[*i].level).collect();
         assert_eq!(levels, [1, 2, 3]);
         // a writer of X gets no admin on what it creates below X: no edges there
-        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None };
+        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, tied: None };
         for depth in [1, 3] {
             let p1 = &mut lp.peers[1];
             let mut m = Mutation::new();

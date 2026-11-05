@@ -3,7 +3,7 @@
 //! encodings are core/test/vectors/schema/core.vec (osis-vectors).
 
 use osis_base::format::ROLE_KEEP_MS;
-use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Link, BlobId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Role, Tid, Ts, Value, WallMs};
 use osis_schema::core_types::*;
 use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,15 +14,12 @@ fn tid(n: u8) -> Tid {
 fn epoch(n: u64) -> Epoch {
     Epoch { n, nonce: [8; 32] }
 }
-fn edge_key() -> EdgeKey {
-    EdgeKey { ts: Ts::make(WallMs(1_700_000_000_000), 3).unwrap(), node: tid(6), commit: osis_base::CommitId([7; 32]) }
-}
 
 /// (vector name, AK, encoded sample) per core aspect a commit can write.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), since: Some(edge_key()), tied: Some(Tie { ts: edge_key().ts, source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }) }),
-        (tid(7), Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }),
+        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), tied: Some(Tie { ts: Ts::make(WallMs(1_700_000_000_000), 3).unwrap(), source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }) }),
+        (tid(7), Edge { role: Role::Admin, until: None, invite: None, tied: None }),
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), possession_key: SigningKey::Ed25519(vec![7; 32]) }),
@@ -40,8 +37,6 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
-    let frontier = Frontier { commits: BTreeSet::from([CommitId([21; 32])]) };
-    let tenures = Tenures(vec![Tenure { holder: tid(18), role: Role::Write, since: None, until: edge_key(), frontier: Some(Chunked::Inline(frontier)) }]);
     let labels: Labels = BTreeMap::from([(
         LabelId([22; 16]),
         Label { index: 0, steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![], replaced: false },
@@ -52,7 +47,6 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("holders", "roles.0", ROLES.encode(&holders)),
         ("keys", "keys.0", KEYS.encode(&keys)),
         ("secrets", "secrets.0", SECRETS.encode(&secrets)),
-        ("tenures", "tenures.0", TENURES.encode(&tenures)),
         ("label", "label.0", LABEL.encode(&labels)),
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
@@ -90,7 +84,6 @@ fn core_aspects_round_trip_spec_data_model_9() {
             "roles.0" => ROLES.encode(&ROLES.decode(v).unwrap()),
             "keys.0" => KEYS.encode(&KEYS.decode(v).unwrap()),
             "secrets.0" => SECRETS.encode(&SECRETS.decode(v).unwrap()),
-            "tenures.0" => TENURES.encode(&TENURES.decode(v).unwrap()),
             "label.0" => LABEL.encode(&LABEL.decode(v).unwrap()),
             "node.0" => NODE.encode(&NODE.decode(v).unwrap()),
             "reach.0" => REACH.encode(&REACH.decode(v).unwrap()),
@@ -116,7 +109,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     let e = KemKey::from_value(&Value::Enum(2, Some(Box::new(Value::Bytes(vec![]))))).unwrap_err();
     assert_eq!((e.kind.clone(), e.class()), (PathErrorKind::UnknownCase(2), ErrorClass::Parked));
     // An unknown role case in a holder edge: parked, with the path.
-    let mut m = ROLES.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, since: None, tied: None })]));
+    let mut m = ROLES.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, tied: None })]));
     if let Value::Map(mm) = &mut m {
         let e = mm.get_mut(&Value::Tid(tid(1))).unwrap();
         if let Value::Map(f) = e {
@@ -137,15 +130,6 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     // Reader defaults: an keys.0 written with only some fields reads with none for the rest.
     let k = KEYS.decode(&Value::Map(osis_base::ValueMap::new())).unwrap();
     assert_eq!(k, Keys::default());
-}
-
-#[test]
-fn tenure_frontier_may_be_a_link_spec_data_model_6() {
-    let link = Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] };
-    let t = Tenures(vec![Tenure { holder: tid(1), role: Role::Admin, since: Some(edge_key()), until: edge_key(), frontier: Some(Chunked::Link(link)) }]);
-    let v = TENURES.encode(&t);
-    TENURES.validate(&v).unwrap();
-    assert_eq!(TENURES.decode(&v).unwrap(), t);
 }
 
 #[test]

@@ -70,7 +70,7 @@ impl SyncEngine {
     /// at `host` (`chain_missing`) as this node's certificate copies, when it holds them all.
     /// Returns whether the chain is complete under `l` now (`None` host: this node's served
     /// state, where a copy is in place once placed); `None` for a commit not applied here.
-    pub(super) fn complete_chain(&mut self, host: Option<HostKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[(usize, usize)]) -> Result<Option<bool>> {
+    pub(super) fn complete_chain(&mut self, host: Option<HostKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<bool>> {
         let Some(missing) = self.chain_missing(host, g, l, c, parts)? else { return Ok(None) };
         if missing.is_empty() {
             return Ok(Some(true));
@@ -78,7 +78,7 @@ impl SyncEngine {
         let mut bodies = Vec::new();
         for (x, p) in &missing {
             let Some(b) = self.engine.part_body(x, p)? else { return Ok(Some(false)) };
-            let got: BTreeSet<(usize, usize)> = b.parts.iter().copied().collect();
+            let got: BTreeSet<usize> = b.parts.iter().copied().collect();
             if !p.is_subset(&got) {
                 return Ok(Some(false));
             }
@@ -151,7 +151,7 @@ impl SyncEngine {
         let author = self.engine.header(c)?.author;
         for (x, q) in chain.iter_mut() {
             let Some(hx) = self.engine.header(x) else { continue };
-            q.retain(|(ai, _)| hx.aspects.get(*ai).is_none_or(|a| a.ak.as_str() != "keys.0" || a.tid == author));
+            q.retain(|ai| hx.aspects.get(*ai).is_none_or(|a| a.ak.as_str() != "keys.0" || a.tid == author));
         }
         chain.retain(|_, q| !q.is_empty());
         Some(chain)
@@ -161,7 +161,7 @@ impl SyncEngine {
     /// no entry under `l` holds at `host` (`held_parts_at`: the promotion or deletion is
     /// that host's; `None`: this node's served state); `None` when this node has not applied
     /// `c`.
-    pub(super) fn chain_missing(&mut self, host: Option<HostKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[(usize, usize)]) -> Result<Option<BTreeMap<CommitId, Parts>>> {
+    pub(super) fn chain_missing(&mut self, host: Option<HostKey>, g: &Tid, l: LabelId, c: &CommitId, parts: &[usize]) -> Result<Option<BTreeMap<CommitId, Parts>>> {
         let Some(chain) = self.chain_under(c, &parts.iter().copied().collect()) else { return Ok(None) };
         let closure = self.engine.closure(g);
         let mut out = BTreeMap::new();
@@ -169,7 +169,7 @@ impl SyncEngine {
             let (_, held) = self.held_parts_at(g, l, &x, host.as_ref().map(std::slice::from_ref))?;
             // closure bodies carry what is on the label's own things
             let inside = self.engine.header(&x).map(|h| inside(&h, &closure)).unwrap_or_default();
-            let missing: Parts = want.difference(&held).filter(|(ai, _)| !inside.contains(ai)).copied().collect();
+            let missing: Parts = want.difference(&held).filter(|ai| !inside.contains(ai)).copied().collect();
             if !missing.is_empty() {
                 out.insert(x, missing);
             }

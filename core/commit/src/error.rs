@@ -15,7 +15,7 @@ pub enum Error {
     /// The signature does not verify. BadInput.
     BadSignature,
     /// A delta does not hash to its header entry (spec/commits.md §4). BadInput.
-    DeltaHash { ai: usize, di: usize },
+    DeltaHash { ai: usize },
     /// A delta failed to decode against its header facts.
     Delta(osis_crdt::Error),
     /// A signature or key failed to parse (an unknown agility case parks).
@@ -40,7 +40,7 @@ osis_base::impl_error!(Error {
     Invalid(m) => ("invalid commit: {m}"),
     UnknownVersion(v) => ("unknown format version {v}"),
     BadSignature => ("commit signature does not verify"),
-    DeltaHash { ai, di } => ("delta {ai}/{di} does not match its hash"),
+    DeltaHash { ai } => ("delta of aspect {ai} does not match its hash"),
     Delta(e) => ("{e}"),
     Crypto(e) => ("{e}"),
     Missing => ("blob not held"),

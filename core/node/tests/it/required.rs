@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A thing's required retention (spec/commits.md §5, spec/permissions.md §5.2, §7): judged at the
+//! A thing's required retention (spec/commits.md §5, spec/permissions.md §5.2, §6): judged at the
 //! delta's key on the role timeline, in any arrival order; what goes without a right.
 
 use crate::common;
@@ -350,11 +350,11 @@ fn required_after_reopen_spec_commits_5() {
     assert!(!valid(&lp.peers[2], &bad, &d, MSGS));
 }
 
-// spec/permissions.md §7: a delta received after the setting it breaks goes without a right; one
+// spec/permissions.md §6: a delta received after the setting it breaks goes without a right; one
 // held before a (backdated) change stays, so the change takes nothing a node holds; when the
 // setting falls the dropped body is missing, as never received, and joins when it comes again
 #[test]
-fn broken_bodies_drop_without_right_spec_perm_7() {
+fn broken_bodies_drop_without_right_spec_perm_6() {
     let (mut lp, d) = setup(323);
     let carol = lp.peers[2].engine.tid();
     // Bob's clock runs ahead, so Carol's change, made after his write reached Alice and stamped
@@ -526,11 +526,11 @@ fn settle(net: &mut Net) {
     net.run();
 }
 
-// spec/permissions.md §7: a `required.0^` delta by a node that never held admin binds nothing and
+// spec/permissions.md §6: a `required.0^` delta by a node that never held admin binds nothing and
 // goes without a right, from nodes and hosts, whatever its size; it comes back as missing if it
 // turns valid, as any delta dropped so
 #[test]
-fn writers_setting_goes_without_right_spec_perm_7() {
+fn writers_setting_goes_without_right_spec_perm_6() {
     let (mut lp, d) = setup(401);
     let big: RequiredRules = (0..2_000).map(|i| (format!("t:{i:0>40}"), Required::new(permanent(), None))).collect();
     let mut m = Mutation::new();
@@ -601,12 +601,12 @@ fn undo_after_change_fills_spec_commits_5() {
     assert!(valid(&lp.peers[0], &u, &d, "t:a.0"));
 }
 
-// spec/permissions.md §7, spec/sync.md §6: a setting with a key below a body already written. The
+// spec/permissions.md §6, spec/sync.md §6: a setting with a key below a body already written. The
 // nodes holding the body keep it; one that gets it after the setting drops it and, with the
 // delete key, deletes it at the host; a new device then never receives it; all read alike. When
 // the setting falls a holder uploads it again and everyone reads it, the new device too.
 #[test]
-fn setting_below_a_body_erases_nothing_held_spec_perm_7() {
+fn setting_below_a_body_erases_nothing_held_spec_perm_6() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, b, c, d, g, t) = on_host(&mut net, host);
@@ -891,10 +891,10 @@ fn reopen_char_after_drop_healed_by_repair_spec_crdt_5_7() {
     }
 }
 
-// spec/permissions.md §7: a setting signed by one not a possible admin goes without a right, nor does
+// spec/permissions.md §6: a setting signed by one not a possible admin goes without a right, nor does
 // naming an admin as actor save it; a commit beside it shows what is held, the rest when it comes.
 #[test]
-fn writers_setting_goes_without_a_right_spec_perm_7() {
+fn writers_setting_goes_without_a_right_spec_perm_6() {
     let (mut lp, d) = setup(433);
     let alice = lp.peers[0].engine.tid();
     let base = base_of(&mut lp);
@@ -934,7 +934,7 @@ fn writers_setting_goes_without_a_right_spec_perm_7() {
     assert_eq!(read(&mut p, d, "t:bad.0"), Some(s("bad")));
 }
 
-// spec/commits.md §4, spec/permissions.md §7: a setting's signer whose grant falls is still a
+// spec/commits.md §4, spec/permissions.md §6: a setting's signer whose grant falls is still a
 // possible admin. Which parts show is a function of what is held in every order, a late grant
 // included; a pass dropping what it may drops no setting a possible admin signed.
 #[test]
@@ -1020,7 +1020,7 @@ fn unmeetable_entry_refused_spec_commits_5() {
     assert!(lp.peers[0].commit(m).unwrap().is_some());
 }
 
-// spec/commits.md §4, spec/permissions.md §7: a setting by one not a possible admin leaves as if never
+// spec/commits.md §4, spec/permissions.md §6: a setting by one not a possible admin leaves as if never
 // seen: every order of the other inputs, a pass after each, reads as a node that never saw it and runs
 // no pass, a pass taking the signer's setting before its late grant included, and alike once the rest
 // arrives
@@ -1099,11 +1099,11 @@ fn dropped_setting_reads_as_never_seen_spec_commits_4() {
     }
 }
 
-// spec/permissions.md §7: an honest late grant. Bob, granted by Carol at one host, sets at both; an
+// spec/permissions.md §6: an honest late grant. Bob, granted by Carol at one host, sets at both; an
 // admin on the other host sees the setting first, drops it and deletes it there; the grant comes,
 // the setting is back at the host and the node, and stands everywhere
 #[test]
-fn setting_before_its_grant_comes_back_spec_perm_7() {
+fn setting_before_its_grant_comes_back_spec_perm_6() {
     let mut net = Net::new();
     let (h1, h2) = (net.add_host(), net.add_host());
     let a = net.node(1, &[h1, h2]);

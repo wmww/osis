@@ -133,21 +133,6 @@ fn delete_levels_strict() {
     assert_eq!(c.commit.header.keys.iter().map(|k| k.level).collect::<Vec<_>>(), vec![1]);
 }
 
-// spec/wire.md §4: every aspect lists at least one delta hash; the builder refuses an aspect
-// without deltas.
-#[test]
-fn zero_deltas_refused() {
-    let mut h = role_header("roles.0");
-    h.aspects[0].hashes.clear();
-    assert!(matches!(h.validate(), Err(Error::Malformed(_))));
-    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(1), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, vec![]);
-    a.deltas.clear();
-    a.retention = retention::ROLE_RETENTION;
-    b.aspects.push(a);
-    assert!(matches!(b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()), Err(Error::Build(_))));
-}
-
 // spec/wire.md §1: integers in structures stay below 2^63; an oversized schema default expiry
 // is refused rather than clamped.
 #[test]
@@ -246,7 +231,7 @@ fn hostile_list_refused_by_shape() {
 fn held(h: &Header) -> usize {
     use std::mem::size_of_val as size;
     let ak = |a: &Ak| a.as_str().len();
-    h.aspects.capacity() * size_of::<AspectEntry>() + h.aspects.iter().map(|a| ak(&a.ak) + size(a.keys.as_slice()) + size(a.hashes.as_slice())).sum::<usize>()
+    h.aspects.capacity() * size_of::<AspectEntry>() + h.aspects.iter().map(|a| ak(&a.ak) + size(a.keys.as_slice())).sum::<usize>()
         + h.chunks.capacity() * size_of::<ChunkEntry>() + h.chunks.iter().map(|c| size(c.keys.as_slice())).sum::<usize>()
         + h.purge.capacity() * size_of::<PurgeItem>() + h.purge.iter().map(|p| ak(p.ak())).sum::<usize>()
 }
@@ -271,7 +256,7 @@ fn list_items_cost_at_most_their_bytes_times_six() {
         b
     };
     let lists = [
-        (ListField::Aspects, array(n / 59, |i| [&[0x87][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0x83, 0, 0xa0, 0xa0, 0x80, 0x81], &id(0)].concat())),
+        (ListField::Aspects, array(n / 59, |i| [&[0x87][..], &tid(i), &[0x63, b'a', b'.', b'0', 1, 2, 0x83, 0, 0xa0, 0xa0, 0x80], &id(0)].concat())),
         (ListField::Chunks, array(n / 36, |i| [&[0x82][..], &id(i), &[0x80]].concat())),
         (ListField::Purge, array(n / 21, |i| [&[0x82][..], &tid(i), &[0x63, b'a', b'.', b'0']].concat())),
     ];
@@ -357,7 +342,7 @@ fn list_forms_refused() {
         b.push(2);
         b.extend([0x83, 0]);
         b.extend(bound);
-        b.extend([0xa0, 0x80, 0x81, 0x58, 32]);
+        b.extend([0xa0, 0x80, 0x58, 32]);
         b.extend([3; 32]);
         b
     };

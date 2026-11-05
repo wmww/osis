@@ -51,9 +51,8 @@ pub fn writer_ctx(form: Form, kind: crate::Kind, ts: osis_base::Ts, author: Tid,
 /// header facts (range check, spec/crdt.md §2.3). Pages of a paged delta come from `pages`.
 pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Decoded, Error> {
     let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
-    let want = a.hashes.get(part.di).ok_or(Error::Malformed("part delta index out of range"))?;
-    if delta_hash(dedup, &part.delta) != *want {
-        return Err(Error::DeltaHash { ai: part.ai, di: part.di });
+    if delta_hash(dedup, &part.delta) != a.hash {
+        return Err(Error::DeltaHash { ai: part.ai });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
     let d = match cx.kind {
@@ -69,9 +68,8 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
 /// already handed over stay valid only if the whole call succeeds.
 pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, each: &mut dyn FnMut(osis_crdt::Fragment) -> Result<(), osis_crdt::Error>) -> Result<Option<osis_crdt::Head>, Error> {
     let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
-    let want = a.hashes.get(part.di).ok_or(Error::Malformed("part delta index out of range"))?;
-    if delta_hash(dedup, &part.delta) != *want {
-        return Err(Error::DeltaHash { ai: part.ai, di: part.di });
+    if delta_hash(dedup, &part.delta) != a.hash {
+        return Err(Error::DeltaHash { ai: part.ai });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
     // `check_fragment` holds of the whole iff of every piece (per record, per position); a bad

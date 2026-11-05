@@ -120,7 +120,7 @@ pub(crate) fn kind_of_commit(k: Kind) -> CommitKind {
     match k {
         Kind::Content => CommitKind::Content,
         Kind::Role => CommitKind::Role,
-        Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot => CommitKind::Snapshot,
+        Kind::ContentSnapshot | Kind::RoleSnapshot => CommitKind::Snapshot,
     }
 }
 

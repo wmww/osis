@@ -26,7 +26,7 @@ pub fn shrink<H: Shrink>(mut h: H, mut fails: impl FnMut(&H) -> bool) -> H {
 pub const LATE: u32 = 1000;
 
 /// Order-preserving renumbering of `vals` (times compared with one another: write times,
-/// receipts, `until`s, ledger keys) onto 0.. or 1.. (0 stays 0, so a write never moves to the
+/// receipts, `until`s) onto 0.. or 1.. (0 stays 0, so a write never moves to the
 /// genesis time). `LATE` and anything above it (`NEVER`) are left alone. None if nothing
 /// changes.
 pub fn compact_times(vals: &[u32]) -> Option<impl Fn(u32) -> u32> {
@@ -55,7 +55,7 @@ pub fn without<T: Clone>(v: &[T], k: usize) -> Vec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{edges, joint, snapshot, Rng};
+    use crate::{edges, joint, Rng};
 
     /// Shrinks to a 1-minimal history: it still fails and no single step smaller does.
     fn minimal<H: Shrink + Clone + std::fmt::Display>(h: H, fails: impl Fn(&H) -> bool) -> H {
@@ -83,14 +83,6 @@ mod tests {
         assert!(m.writes.len() <= 2, "{m}");
     }
 
-    #[test]
-    fn snapshot_drop_shrinks() {
-        let mut rng = Rng(9);
-        let h = std::iter::repeat_with(|| snapshot::random_hist(&mut rng)).find(|h| snapshot::walk(h).g.dropped != 0 && h.writes.len() >= 5).unwrap();
-        let m = minimal(h, |c: &snapshot::SHist| snapshot::walk(c).g.dropped != 0);
-        assert!(m.writes.len() <= 3, "{m}");
-    }
-
     /// After every delivery every node agrees, in every model (§5: validity is a deterministic
     /// function of the held commits).
     #[test]
@@ -101,8 +93,6 @@ mod tests {
             assert_eq!(joint::quiescent(&h), Ok(()), "{h}");
             let h = edges::random_hist(&mut rng);
             assert_eq!(edges::quiescent(&h, edges::Drops::Sticky), Ok(()), "{h}");
-            let h = snapshot::random_hist(&mut rng);
-            assert_eq!(snapshot::quiescent(&h), Ok(()), "{h}");
         }
     }
 

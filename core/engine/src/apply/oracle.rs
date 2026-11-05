@@ -21,7 +21,7 @@ fn fragment(d: Decoded) -> (Fragment, Option<Gives>) {
 }
 
 pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, valid: &[bool], j: &mut Joins) -> Result<()> {
-    for (ai, _, d) in &parts.whole {
+    for (ai, d) in &parts.whole {
         let (ai, d) = (*ai, d.clone());
         let Some(a) = h.aspects.get(ai) else { continue };
         let (f, fr) = fragment(d);

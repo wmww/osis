@@ -73,8 +73,8 @@ Enc(x) == sec[x]
 \* and, if x holds its secret, its names are met: x holds every removal its
 \* rotator held (ep[i].nm, rotation commits; the commit itself carries its own:
 \* the departs mark). Own rotations are in kn at once; no rotation commit is
-\* invalid; the actor has no epoch starts (roster snapshots) nor secrets.0
-\* snapshots (ASSUMPTIONS.md). Epoch 0 is the derived epoch.
+\* invalid; the actor has no secrets.0 snapshots (ASSUMPTIONS.md). Epoch 0
+\* is the derived epoch.
 Est(x) == {0} \cup {i \in kn[x] : i \notin Enc(x) \/ ep[i].nm \subseteq kn[x]}
 \* crypto §4: current = established, and no established rotation supersedes it.
 Cur(x) == LET E == Est(x) IN {e \in E : ~\E f \in E : e \in ep[f].sup}

@@ -5,10 +5,10 @@
 Encoding: spec/wire.md §4. Fields:
 - Format version (spec/versioning.md §1).
 - Author node tid and the actor tid it acts for (checked: spec/permissions.md §5.2).
-- Kind: content or role (§2); compaction-snapshot marker; roster-snapshot marker (role only).
+- Kind: content or role (§2); compaction-snapshot marker.
 - `ts` (spec/crdt.md §2.2) and the dot form, commit or session (§3).
 - Optional `expires` (§6), the expiry of every delta of the commit.
-- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5) and the delta hashes of its deltas. A content commit has one delta per aspect; a role commit may have several (§2), all sharing the aspect's range.
+- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5) and the delta hash of its one delta.
 - Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with the indices of the delete keys of the delta that created it (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.
@@ -29,21 +29,19 @@ Encoding: spec/wire.md §4. Fields:
 - **Content**: deltas on aspects that are not role-class.
 - **Role**: deltas only on role-class aspects (spec/data-model.md §9).
   - A role commit changes at most one `roles.0` grant, except:
-    - a single-use link redemption (the grant plus L's self-removal, both on K, spec/permissions.md §8);
-    - a removal of several holders' grants on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own grant or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §8), or a finalize of several ended grants (spec/permissions.md §2);
-    - a roster snapshot (spec/permissions.md §6).
+    - a single-use link redemption (the grant plus L's self-removal, both on K, spec/permissions.md §7);
+    - a removal of several holders' grants on one target, each gone or saying keep (spec/permissions.md §2), none of them the author's own grant or a self-removal, with one rotation: an explicit one with one frontier (revoking a link joiner together with L, spec/permissions.md §7), or a finalize of several ended grants (spec/permissions.md §2).
   - A removal of another holder's grant with no frontier (a finalize, spec/permissions.md §2) removes only grants past their `until` at its `ts`; an explicit removal always carries a frontier.
   - These shape rules bind the writer; a receiver does not check them and judges each edge write on its own (spec/permissions.md §5.1).
   - A grant also carries the grantee's `secrets.0` boxes; a removal or demotion carries the rotation of the target's roles it requires, except while Seal waits (spec/permissions.md §3); other rotations, re-seals and `keys.0` and `label.0` writes change no grant; all may cover many things.
   - Role commits MUST NOT carry `expires`; their retention is fixed (§5) and a purge request never names them.
-  - A role commit MAY carry several deltas for one `(tid, ak)` (a roster snapshot one per grant or ledger entry, plus one per aspect carrying the reset alone): they share the aspect's counter range, their commit-level writes share the stamp `(ts, source, lo)`, and their creations use distinct counters; the aspect's delta is their join.
 - **`created.0`** is carried by the thing's first durable commit, of either kind.
   - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required.0^` is bad input likewise.
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
   - The first content commit with a durable delta on an ephemeral thing (spec/data-model.md §1) also carries `created.0` of each ephemeral thing on that thing's owner chain and the durable adds of its ephemeral placements (spec/data-model.md §8).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its author, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
-  - `roles.0` and `tenures.0` are never compaction-snapshotted: a roster snapshot resets and rewrites them under its own stamps (spec/permissions.md §6).
+  - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
 - **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), `placed.0~` among them, one of:
   - a session-form content commit (its author's own writes under one of its sessions, §3);
   - a commit-form content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
@@ -69,7 +67,7 @@ Encoding: spec/wire.md §4. Fields:
 
 ## 3. Dot forms
 - **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any content commit but an ephemeral one may use it.
-  - A key actor whose key is used from more than one node (link key, recovery key) MUST use it, and every role commit (roster snapshots included) and every compaction snapshot MUST use it.
+  - A key actor whose key is used from more than one node (link key, recovery key) MUST use it, and every role commit and every compaction snapshot MUST use it.
 - **Session form**: dots `(Session(author node, nonce), counter)` (spec/crdt.md §2.1), counters per (aspect, session), contiguous from 1; the header carries the 16-byte nonce.
   - Content commits (§2) with own writes otherwise use it, durable and ephemeral alike; an ephemeral content commit MUST use it.
   - Session form on any other kind (§2: role, compaction snapshot) is bad input.
@@ -88,28 +86,26 @@ Encoding: spec/wire.md §4. Fields:
 - A held **part waits** while any of these holds:
   - its thing's `created.0` record is unknown;
   - a `created.0` record on its thing's owner chain is unknown;
-  - the author is not on that chain and no owner link, ownerless thing's first admin (its record, spec/permissions.md §1) or holder named by an applied part's edge write, roster or ledger tenure, whether the walk applies it or not, leads from the author to it;
+  - the author is not on that chain and no owner link, ownerless thing's first admin (its record, spec/permissions.md §1) or holder named by an applied part's edge write, whether the walk applies it or not, leads from the author to it;
   - a page of it is not held (spec/crdt.md §8);
-  - it is a roster snapshot's `tenures.0` delta linking a frontier whose blobs are not held (spec/permissions.md §6);
   - it is parked (spec/versioning.md §2).
 - **Apply**: a node applies in one storage transaction every part it holds that does not wait, and fires listeners after. Nothing waits for a part: a waiting part waits alone, counts as not received and joins when its wait ends, and a delta the node does not hold (stripped from the blob, in a section it does not open, never come) is absent, the commit reading as one without that delta's body (§5). Chunk blobs of large atomic values (spec/data-model.md §6) are not waited for.
 - **Order independence**: which parts apply is a function of the parts and other data held, never of arrival order or of which parts came together.
-- A thing's **possible admins**, by the role commits the node has applied (a pending one, parked included, gives nothing), of any validity and whatever followed: the least set holding the thing and, with each member, its owner or first admin and any holder named with admin on that member by an edge write, roster or ledger entry a member signed.
+- A thing's **possible admins**, by the role commits the node has applied (a pending one, parked included, gives nothing), of any validity and whatever followed: the least set holding the thing and, with each member, its owner or first admin and any holder named with admin on that member by an edge write a member signed.
 - A thing's **possible writers**, by the same data: the least set holding the possible admins of the thing and of each member, and any holder named with write or above on the thing or on a member by one of that thing's or that member's possible admins.
 - A request's signers **could hold the right** of a delta's purgeable-by when its author and its actor each could, by any role any held write ever gave, whatever that role's validity: for `admin`, a possible admin of the thing; for `writer`, a possible writer of it; for `author`, the delta's actor or a possible writer of that actor, the actor being a possible writer of the thing; for `author_or_admin`, either of the `admin` and `author` cases.
 - A delta of an already applied commit that arrives later (a blob of the commit holding more parts than the node applied: the node began syncing its label after applying, or its body counts as never received, §5) is joined on arrival, a live one past its keep at most included; a blob holding fewer changes nothing.
 - Role commits are applied before content.
 - Two commits of one session whose counter ranges on one aspect overlap are both invalid.
 - **Judged alone**: a fault of the header or signature refuses the commit, in any copy. Each delta is judged by itself, from the signed header, its bytes and held data; its fault never refuses another delta:
-  - Bytes that do not match the header's delta hash, or a part index naming no delta, are not that delta: dropped, and any copy matching the hash is taken as if they never came. A blob holding nothing else is bad input.
+  - Bytes that do not match the header's delta hash, or a part index naming no aspect, are not that delta: dropped, and any copy matching the hash is taken as if they never came. A blob holding nothing else is bad input.
   - A part on an aspect of the wrong storage class (§2) is dropped.
   - A delta that matches and is bad by itself never applies. Only those bytes can match, so nothing marks it: it is judged again if it comes again. Bad by itself means:
     - it does not decode;
     - a `created.0` delta that is not one minting of its record;
     - a `roles.0` write inside an entry it did not create, or a value that is no well-formed grant (spec/permissions.md §2);
     - a value held unchunked that spec/data-model.md §6 chunks;
-    - a carried write stamped after its commit;
-    - a linked frontier that spec/permissions.md §6 calls bad input by itself.
+    - a carried write stamped after its commit.
   - A blob holding only such deltas, none of its parts waiting, is bad input.
   - Where such a delta, or its commit, waits, the delta is judged when that wait ends.
 - **Copies**: before a thing's `created.0` record is known the hash of a delta on it cannot be checked, and before its author's the signature.
@@ -125,7 +121,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - **Purgeable by**: a set, not a scale: `nobody` (none), `admin` (the thing's admins), `author` (the delta's author), `author_or_admin` (both), `writer` (every writer, so both too).
   - A `nobody` delta shares a commit only with `nobody` deltas, `created.0` and `required.0^` aside, which go with any (§6).
   - No exception widens it: a body whose set has no holder stays until a keep-at-most bound or expiry, if any.
-  - A member of the set may drop the delta's body: by purge request (spec/permissions.md §7), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
+  - A member of the set may drop the delta's body: by purge request (spec/permissions.md §6), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
   - A **right holder** is a node that holds the right now.
 - **Keep at least** and **keep at most**: each optional. Keep at least is an absolute time, a duration after the body is replaced, or both (the later counts). Keep at most is an absolute time T, **0 after replaced** (a relative bound of 0; no other duration), or both (the earlier counts); 0 after replaced exists only under `writer`. Where the two bounds disagree, keep at most wins.
 
@@ -174,7 +170,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - A snapshot part has no values of its own: it waits unstripped and drops once applied.
 - For any dropped delta (here or below), a received blob holding it that may also hold the only true copy of a waiting part of the same commit (one whose slot a copy not yet checkable holds, §4 Copies) is kept until that copy is judged.
 - Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).
-- **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §7), and the node itself holds it now. A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
+- **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §6), and the node itself holds it now. A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
 - **Carrier only**: a compaction snapshot whose retention (on the wire) has a keep at least (an absolute bound, or a relative one above 0) and a keep at most (either component).
   - It is valid and its writes join, and it carries the live writes of bodies dropped at their keep-at-most bounds (above, spec/sync.md §7), but no body is dropped as covered by it and it covers none for must-hold (spec/sync.md §6).
   - Each node judges this from the snapshot's retention alone, so alike; a delta's retention is immutable, so a later schema or default change re-judges nothing.
@@ -195,7 +191,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 ### Purge
 - **Purge request**: a header field naming earlier deltas (of commits with a smaller `ts`; a later one is not named) by commit, by a whole aspect history (its compaction snapshots included), or by author on an aspect (spec/wire.md §4). A named snapshot's right is judged by its own retention and header. It MUST NOT name role-class deltas.
   - A later-arriving delta an applied request names falls under it as one held does.
-  - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §7): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and holds each named delta's own body and every body carrying their values as its leftover (spec/crdt.md §4.7 Copies: snapshots, and deltas carrying a copy under the named delta's dots, an undelete's char or an entry's key a later write repeats), whatever the order the request, the named delta's commit and the carrying body arrive in. A snapshot a request names itself has no values of its own: its body is dropped, and comes back with a fall. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
+  - Every node applying it drops, at any time, the named deltas its author may purge (spec/permissions.md §6): from then on it holds their value-carrying writes value-less (spec/crdt.md §4.7) and holds each named delta's own body and every body carrying their values as its leftover (spec/crdt.md §4.7 Copies: snapshots, and deltas carrying a copy under the named delta's dots, an undelete's char or an entry's key a later write repeats), whatever the order the request, the named delta's commit and the carrying body arrive in. A snapshot a request names itself has no values of its own: its body is dropped, and comes back with a fall. A node judges a named delta once it holds the request and that commit's header (which the right and the writes it names depend on).
   - A writer that, after applying it, holds no covering snapshot of the aspect under a label it writes re-snapshots there (duplicates are harmless, spec/sync.md §7).
   - A request SHOULD name dead writes; the writer resets live content in the same commit.
   - A commit carrying a request has a delta (it is what places the commit under the thing's labels): where no reset is wanted, a write of `purge.0` (spec/data-model.md §9).
@@ -206,8 +202,8 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - A **header-only blob** goes under a label only as a lasting header (below); its prefix has no expiry and no commitments.
 - A delta is **permanent** when it is durable, its aspect has no fixed retention, its retention has keep at least `abs` forever and no keep at most, and its commit has no `expires`. Only a purge request removes its body.
 - A commit is **lasting** on thing t when either:
-  - a permanent delta of it on t is dropped (other than for breaking a required retention, spec/permissions.md §7);
-  - its purge request has dropped a permanent delta on t at this node (spec/permissions.md §7: its author held the right, as the node then judged; a request that falls stays lasting there).
+  - a permanent delta of it on t is dropped (other than for breaking a required retention, spec/permissions.md §6);
+  - its purge request has dropped a permanent delta on t at this node (spec/permissions.md §6: its author held the right, as the node then judged; a request that falls stays lasting there).
 
   A lasting commit's header is never forgotten, and every label of a group with t in its closure, whose actor may read t, holds a blob of the commit for good (spec/sync.md §6): a body of it, else a header-only blob. A purge of any other delta leaves nothing at a label. The commit reads as a held commit without that delta's body: its author, actor, `ts` and retention stay, and whether to show it is the reader's choice.
 - **Dropping a body** means destroying every local copy (undo buffers and pre-reset snapshots included), its delta nonce and every local index entry derived from it. Holding one as its leftover destroys every copy of its values the same way; the leftover is a local body (never uploaded, deleted at hosts as a dropped one).
@@ -218,7 +214,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 
 ### Fixed retention
 - **Fixed retention**:
-  - role-class deltas: `admin`, keep at least `ROLE_KEEP` after replaced (a roster snapshot replaces `roles.0` and `tenures.0` deltas, compaction snapshots or later writes the other role-class aspects, spec/permissions.md §6);
+  - role-class deltas: `admin`, keep at least `ROLE_KEEP` after replaced (compaction snapshots or later writes replace them; `roles.0` is never compaction-snapshotted, §2, so its deltas stay);
   - `created.0` and `required.0^`: `nobody`, kept forever (`abs` forever); they are never snapshotted (§2);
   - `purge.0`: `author_or_admin` with no keep bounds, its snapshots too;
   - a certificate copy carries its commit's;

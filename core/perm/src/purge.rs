@@ -1,4 +1,4 @@
-//! Purge rights (spec/permissions.md §7) and who may rotate (§3).
+//! Purge rights (spec/permissions.md §6) and who may rotate (§3).
 
 use crate::content::Validity;
 use crate::timeline::{At, Timeline};
@@ -6,7 +6,7 @@ use crate::types::Point;
 use osis_base::{PurgeBy, Role, Tid};
 
 impl Timeline {
-    /// §7: may `requester` purge a delta of `thing` with retention `by` at `at`? `actor` is the
+    /// §6: may `requester` purge a delta of `thing` with retention `by` at `at`? `actor` is the
     /// actor its commit acted for (header field 2, checked by validity). Each member of the set
     /// `by` names gives the right alone: the thing's current admins; any node acting for `actor`
     /// (write on it) while `actor` holds write on the thing; any current writer.
@@ -17,7 +17,7 @@ impl Timeline {
             || (by.author() && self.role(requester, actor, at) >= Some(Role::Write) && self.role(actor, thing, at) >= Some(Role::Write))
     }
 
-    /// §7: whether the commit at `at` holds, for its signer `who`, what `may_purge` asks at its own
+    /// §6: whether the commit at `at` holds, for its signer `who`, what `may_purge` asks at its own
     /// key. Invariant: each role it rests on counts exactly when a delta of that node needing the
     /// role at that key is valid (§5.2), nothing more: a demotion whose frontier leaves the commit
     /// out takes the right however early its `ts`, and a re-grant gives back the right of a request

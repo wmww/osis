@@ -79,7 +79,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 
 ## 6. Large atomic values
 - A blob, a string in register encoding, or a set element or map key whose canonical encoding exceeds `CHUNK_THRESHOLD` (format constant, spec/wire.md §2) MUST be chunked; one at or below it MUST NOT be. Only durable content answers to this:
-  - A role-class aspect's values (§9) stay inline, whatever their size (a `label.0` claim set, a `secrets.0` history box), except a `tenures.0` frontier above the threshold, which is chunked (spec/permissions.md §6).
+  - A role-class aspect's values (§9) stay inline, whatever their size (a `label.0` claim set, a `secrets.0` history box).
   - An ephemeral commit has no chunks (spec/commits.md §2), so its values stay inline within its blob.
   - A durable delta on any other aspect holding such a value unchunked is bad by itself (spec/commits.md §4), judged without its type: a `Str` or `Bytes` in a register value, a set or bag element's whole value, a map key.
 - Chunking: content-defined boundaries over the canonical bytes, chunker of spec/wire.md §6, giving a tree: leaves are chunks, interior nodes hold links with the plaintext length under each; the value's place in the enclosing CBOR holds the root link. Chunker, tree shape and node layout: spec/wire.md §6.
@@ -124,10 +124,9 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `tid.0` | the thing's tid |
 | `aspects.0` | AKs present on the thing |
 | `created.0` | the creation record (spec/commits.md §2, §5) |
-| `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `since`: only in roster snapshots (spec/permissions.md §6). `tied`: the placement the grant goes with (spec/permissions.md §2). `until` 0: a removal saying keep (spec/permissions.md §2) |
+| `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `tied`: the placement the grant goes with (spec/permissions.md §2). `until` 0: a removal saying keep (spec/permissions.md §2) |
 | `keys.0` | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
 | `secrets.0` | an actor's boxes and history boxes (spec/crypto.md §4) |
-| `tenures.0` | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
 | `label.0` | labels of a synced group (spec/sync.md §2) |
 | `node.0` | on a node thing: its software version |
 | `reach.0` | on a node thing (spec/sync.md §10); never direct addresses |
@@ -151,17 +150,16 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
   - The client actor is a thing the node's account owns, with secrets of its own, and what the client may do is that actor's roles.
 
-**Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`, `tenures.0`. Their rules: spec/commits.md §2, spec/permissions.md.
+**Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`. Their rules: spec/commits.md §2, spec/permissions.md.
 
 ```
 type role = enum { 0 read, 1 write, 2 admin };
 type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 32 bytes (spec/crypto.md §4)
 type address = struct { 0 url: string, 1 key: blob };            // transport URL, 32-byte host static key
-type edge_key = struct { 0 ts: int, 1 node: tid, 2 commit: blob };   // (ts, author node, 32-byte commit ID) of a write
 type source = enum { 0 commit(blob), 1 session(blob) };   // a dot's source (spec/crdt.md §2.1); commit: 32-byte commit ID; session: 31 bytes, the node's tid then its nonce (spec/crdt.md §3.2)
 type suspect = struct { 0 thing: tid, 1 ak: string, 2 digest: blob };   // digest: 16 bytes (spec/permissions.md §4)
 type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };   // creation stamp of a group.0 element and its set
-type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie> };
+type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 tied: option<tie> };
 type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch>, 5 possession_key: signing_key };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7; supersedes: superseded epochs, possession key: spec/crypto.md §4
 type inbox = struct { 0 label: blob, 1 hosts: list<address> };  // label ID: 16 bytes
 type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };
@@ -171,7 +169,6 @@ type box = enum {
 };
 type history_key = struct { 0 role: role, 1 epoch: epoch };
 type frontier = struct { 0 commits: set<blob> };   // 32-byte commit IDs the demoter lists (spec/permissions.md §5.1)
-type tenure = struct { 0 holder: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };
 type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
 type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };
 type admit = enum { 0 own, 1 open };
@@ -191,7 +188,6 @@ aspect keys.0: struct {
     4 inbox: option<inbox>, 5 deposit_seed: option<blob>,                        // deposit seed: 32 bytes
 };
 aspect secrets.0: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> };
-aspect tenures.0: set<tenure>;
 aspect label.0: map<blob, label>;                                // label ID -> label
 aspect node.0: struct { 0 software: string };
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes

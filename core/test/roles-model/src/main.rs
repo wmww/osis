@@ -1,6 +1,6 @@
-//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|snapshot|edges|edges-prov|joint|disputes|disputes-random|digest]`.
+//! Search driver for the roles model: `[samples] [as|exempt|strat|stratw|frontier|edges|edges-prov|joint|disputes|disputes-random|digest]`.
 
-use roles_model::{edges, joint, single, snapshot};
+use roles_model::{edges, joint, single};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -14,7 +14,6 @@ fn main() {
         Some("disputes") => roles_model::trust::run(samples, false),
         Some("disputes-random") => roles_model::trust::run(samples, true),
         Some("joint") => joint::random(samples, 0x5eed).print(),
-        Some("snapshot") => snapshot::random(samples, 0x5eed).print(),
         Some("edges") => edges::run(samples, edges::Drops::Sticky),
         Some("edges-prov") => edges::run(samples, edges::Drops::Provenance),
         rule => single::run(samples, rule),

@@ -58,8 +58,8 @@ const MIN_WAKE_MS: u64 = 1_000;
 /// for the next event, as all of it did at 0; unbounded, a pass marking itself would spin).
 const PASS_AGAIN: usize = 8;
 
-/// A body: its commit and parts `(ai, di)`.
-type BodyKey = (osis_base::CommitId, Vec<(usize, usize)>);
+/// A body: its commit and parts by aspect index.
+type BodyKey = (osis_base::CommitId, Vec<usize>);
 
 /// First back-off after re-encrypting an aspect's deleted chunks, and its cap (local policy:
 /// a host deleting each fresh chunk drives at most this rate of commits).
@@ -581,7 +581,7 @@ impl SyncEngine {
                 }
             }
         }
-        // links expired or used: a removal of the link key (spec/permissions.md §8)
+        // links expired or used: a removal of the link key (spec/permissions.md §7)
         self.finalize_links()?;
         // tied edges whose placement is gone (spec/permissions.md §2)
         self.untie_unplaced()?;

@@ -1,11 +1,11 @@
 //! Rust types to and from values (notes/api.md Keys): `Codec`, its impls for standard types, the
-//! `codec_struct!` macro used by the core types and generated code, `Chunked<T>`.
+//! `codec_struct!` macro used by the core types and generated code.
 //!
 //! `from_value` takes a typed-read value (reader defaults filled, spec/versioning.md §5), so a
 //! missing field is an error here; typed keys run the typed read first.
 
 use crate::path::{PathError, PathErrorKind, Step};
-use osis_base::{BlobId, CommitId, Float, LabelId, Link, Role, Tid, Ts, Value, WallMs};
+use osis_base::{BlobId, CommitId, Float, LabelId, Role, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A type a key's value or a path's position reads and writes as: `Value` for any value, the plain
@@ -225,29 +225,6 @@ impl<T: Codec> Codec for Box<T> {
     }
     fn from_value(v: &Value) -> Result<Box<T>, PathError> {
         T::from_value(v).map(Box::new)
-    }
-}
-
-/// A large atomic value: inline, or the root link of its chunk tree (spec/data-model.md §6).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Chunked<T> {
-    Inline(T),
-    Link(Link),
-}
-
-#[doc(hidden)]
-impl<T: Codec> Codec for Chunked<T> {
-    fn to_value(&self) -> Value {
-        match self {
-            Chunked::Inline(t) => t.to_value(),
-            Chunked::Link(l) => Value::link(*l),
-        }
-    }
-    fn from_value(v: &Value) -> Result<Chunked<T>, PathError> {
-        match v {
-            Value::Link(l) => Ok(Chunked::Link(**l)),
-            _ => T::from_value(v).map(Chunked::Inline),
-        }
     }
 }
 

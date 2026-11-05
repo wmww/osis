@@ -410,63 +410,6 @@ fn a_holder_leaving_says_its_own_word_spec_perm_2() {
     }
 }
 
-// spec/permissions.md §3, Keep; §6: a roster snapshot carries the removal's word as an edge with `until`
-// 0: a node given the snapshot alone reads the same, a read or write holder's, and an erasing one's is gone.
-#[test]
-fn a_snapshot_carries_the_word_spec_perm_6() {
-    for (role, say, kept_first, seed) in [(Role::Read, true, false, 9240), (Role::Read, true, true, 9250), (Role::Write, true, false, 9252), (Role::Read, false, false, 9254), (Role::Write, false, false, 9256)] {
-        let mut x = setup(seed, erasing(role));
-        let (d, pb) = (x.d, x.pb);
-        let rm = *remove_saying(&mut x.lp, d, pb, say).commits.last().unwrap();
-        let snap = *x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap().commits.last().unwrap();
-        if kept_first {
-            send(&mut x.lp, 0, 1, &[rm]);
-            x.lp.peers[1].engine.drop_lost_due().unwrap();
-            assert_kept(&mut x);
-        }
-        send(&mut x.lp, 0, 1, &[snap]);
-        x.lp.peers[1].engine.drop_lost_due().unwrap();
-        assert_eq!(x.lp.peers[1].engine.epoch_start(&d), Some(snap));
-        assert_eq!(x.lp.peers[1].engine.role_on(&d), None);
-        if say {
-            assert_kept(&mut x);
-        } else {
-            assert_erased(&mut x);
-        }
-    }
-}
-
-// spec/permissions.md §3, Keep; §6: the word goes through a second snapshot, and a later plain removal
-// after a re-grant replaces it; a record held already changes by no snapshot.
-#[test]
-fn a_second_snapshot_goes_on_saying_spec_perm_6() {
-    let mut x = setup(9258, erasing(Role::Read));
-    let (d, pb) = (x.d, x.pb);
-    remove_saying(&mut x.lp, d, pb, true);
-    x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap();
-    x.lp.peers[0].clock.advance(1_000);
-    let snap = *x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap().commits.last().unwrap();
-    send(&mut x.lp, 0, 1, &[snap]);
-    x.lp.peers[1].engine.drop_lost_due().unwrap();
-    assert_kept(&mut x);
-    x.lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
-    remove_saying(&mut x.lp, d, pb, false);
-    let again = *x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap().commits.last().unwrap();
-    send(&mut x.lp, 0, 1, &[again]);
-    x.lp.peers[1].engine.drop_lost_due().unwrap();
-    assert_kept(&mut x);
-
-    let mut x = setup(9259, erasing(Role::Read));
-    let (d, pb) = (x.d, x.pb);
-    remove_saying(&mut x.lp, d, pb, true);
-    x.lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
-    remove_saying(&mut x.lp, d, pb, false);
-    let snap = *x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap().commits.last().unwrap();
-    send(&mut x.lp, 0, 1, &[snap]);
-    x.lp.peers[1].engine.drop_lost_due().unwrap();
-    assert_erased(&mut x);
-}
-
 /// Alice's C and her actor P, bob's node holding admin on P, P holding write on C; each thing's
 /// default as `(on P, on C)`.
 fn nested(seed: u64, (on_p, on_c): (bool, bool)) -> (LocalPeer, Tid, Tid, Tid) {
@@ -781,18 +724,6 @@ fn a_stripped_waiting_part_stays_out_spec_perm_3() {
     assert!(!found(&mut x.lp, LATE_MARK));
 }
 
-// spec/permissions.md §3, Keep; §6: a roster snapshot before the removal changes nothing of the default.
-#[test]
-fn a_snapshot_keeps_the_default_spec_perm_6() {
-    let mut x = setup(9430, keeping(Role::Read));
-    let d = x.d;
-    x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap();
-    spread(&mut x.lp);
-    assert!(x.lp.peers[1].engine.epoch_start(&d).is_some(), "the walk starts at the snapshot");
-    removed(&mut x);
-    assert_kept(&mut x);
-}
-
 // spec/permissions.md §3, Keep: a restart between the removal's apply and the trigger reads the same word.
 #[test]
 fn restart_before_the_trigger_keeps_spec_perm_3() {
@@ -897,10 +828,10 @@ fn copy_is_not_synced_spec_perm_3() {
     assert_eq!(net.read(a, t), Some(s("after")));
 }
 
-// spec/permissions.md §3, Keep; §8: K takes the target's default when made, so a joiner removal keeps
+// spec/permissions.md §3, Keep; §7: K takes the target's default when made, so a joiner removal keeps
 // under it; the link key goes plain in the same commit.
 #[test]
-fn a_links_key_takes_the_targets_default_spec_perm_8() {
+fn a_links_key_takes_the_targets_default_spec_perm_7() {
     for (keep, seed) in [(true, 9410), (false, 9415)] {
         let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &osis_store::Faults::new())], seed);
         let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;

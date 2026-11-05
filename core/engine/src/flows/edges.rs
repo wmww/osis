@@ -50,11 +50,11 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
         };
     }
     let keep = old.is_some() && d.keep.unwrap_or_else(|| crate::apply::validity::keep_now(core, target));
-    Ok(keep.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, since: None, tied: None }))
+    Ok(keep.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, tied: None }))
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm) }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.map(super::tied::tie_perm) }
 }
 
 /// Which parts of a commit an inbox blob carries.
@@ -128,7 +128,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
 /// signing), with the grantee's boxes for every granted role at each current epoch
 /// (spec/crypto.md §4). An admin's grant, or an invite grant (spec/permissions.md §2) where
 /// `who`'s effective invite allows it and the holder has no current edge. `leave`: the signer's
-/// own edge removed in the same commit (a single-use redemption, spec/permissions.md §8).
+/// own edge removed in the same commit (a single-use redemption, spec/permissions.md §7).
 pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder: Tid, edge: &Edge, leave: bool) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     if edge.invite.is_some_and(|i| i > edge.role) {
@@ -465,7 +465,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, since: None, tied: None })?;
+            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, tied: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
@@ -638,7 +638,7 @@ impl Engine {
                 // received after its cutoff; spec/permissions.md §5.1, §4)
                 let certs = tl.certificates(&who, &t);
                 let by_then = |c: &CommitId| self.core.ix.commits.get(c).is_some_and(|m| m.received.0 <= as_of.0);
-                let own: BTreeSet<CommitId> = certs.commits.into_iter().chain(certs.snapshots.into_keys()).filter(|c| by_then(c)).collect();
+                let own: BTreeSet<CommitId> = certs.commits.into_iter().filter(|c| by_then(c)).collect();
                 let new = written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?;
                 let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new.as_ref().map(perm_edge))).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
                 // what this node received on the aspects the demotion puts in question with

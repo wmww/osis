@@ -6,7 +6,7 @@
 //! received as of T).
 
 use crate::timeline::Timeline;
-use crate::types::{Frontier, RoleCommit, WriteId};
+use crate::types::{Frontier, RoleCommit};
 use crate::walk;
 use osis_base::{Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -88,10 +88,7 @@ impl Timeline {
             }
         }
         for (w, _) in tl.dropped().iter().filter(|(_, at)| **at == p) {
-            let on = match w {
-                WriteId::Op(c, k) => tl.input.commits.get(c).and_then(|c| Some((c.author, c.ops.get(usize::try_from(*k).ok()?)?.target))),
-                WriteId::Snapshot(c) => tl.input.snaps.get(c).map(|s| (s.author, s.thing)),
-            };
+            let on = tl.input.commits.get(&w.0).and_then(|c| Some((c.author, c.ops.get(usize::try_from(w.1).ok()?)?.target)));
             if let Some((x, t)) = on {
                 out.roles.entry(x).or_default().insert(t);
             }
@@ -102,6 +99,6 @@ impl Timeline {
     /// A frontier listing every edge write held here (`demotion_scope` as if the demoter had
     /// received them all).
     pub fn all_held(&self) -> Frontier {
-        Frontier { commits: self.input.commits.keys().chain(self.input.snaps.keys()).copied().collect() }
+        Frontier { commits: self.input.commits.keys().copied().collect() }
     }
 }

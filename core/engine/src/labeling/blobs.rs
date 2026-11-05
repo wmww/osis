@@ -16,9 +16,9 @@ use std::collections::BTreeSet;
 #[derive(Clone, Debug)]
 pub struct Body {
     pub commit: CommitId,
-    /// `(ai, di)`, sorted: the parts a judgment reads. From `commit_bodies_under` those the
+    /// Aspect indices, sorted: the parts a judgment reads. From `commit_bodies_under` those the
     /// label's actor may read; from `body` every held part; from `part_bodies` the copied ones.
-    pub parts: Vec<(usize, usize)>,
+    pub parts: Vec<usize>,
     pub expires: Option<u64>,
     /// The header's blind (spec/crypto.md §7).
     pub blind: [u8; 16],
@@ -52,7 +52,7 @@ pub struct Sealed {
     pub key: Secret32,
     pub salt: [u8; 16],
     pub ais: Vec<usize>,
-    pub parts: Vec<(usize, usize)>,
+    pub parts: Vec<usize>,
 }
 
 /// A commit blob opened (`Engine::open_commit`): the opened form of the parts this node could
@@ -69,9 +69,9 @@ pub struct OpenedBlob {
 }
 
 impl OpenedBlob {
-    /// `(ai, di)` of the opened parts.
-    pub fn parts(&self) -> Vec<(usize, usize)> {
-        self.commit.parts.iter().map(|p| (p.ai, p.di)).collect()
+    /// The aspect indices of the opened parts.
+    pub fn parts(&self) -> Vec<usize> {
+        self.commit.parts.iter().map(|p| p.ai).collect()
     }
 }
 
@@ -91,7 +91,7 @@ pub fn frame_envelope(env: &Envelope, resolved: &osis_commit::Header, class: osi
     let salt = osis_label::Prefix::random_salt(rng);
     let prefix = osis_label::Prefix::for_delete_keys(salt, &env.header.blind, osis_commit::blob_expiry(resolved).map(WallMs), &groups)?.with_class(class);
     let (key, blob) = osis_label::frame(&prefix, &env.encode(), rng)?;
-    let parts = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| (p.ai, p.di)).collect();
+    let parts = from.parts.iter().filter(|p| ais.contains(&p.ai)).map(|p| p.ai).collect();
     Ok(Sealed { id: osis_label::blob_id(&blob), blob, key, salt, ais, parts })
 }
 
@@ -158,7 +158,7 @@ impl Engine {
         let resolved = self.resolved_header(&blob);
         Ok(Some(Body {
             commit: id,
-            parts: blob.parts.iter().map(|p| (p.ai, p.di)).collect(),
+            parts: blob.parts.iter().map(|p| p.ai).collect(),
             expires: osis_commit::blob_expiry(&resolved),
             blind: blob.header.blind,
             plaintext: blob.encode(),
@@ -184,7 +184,7 @@ impl Engine {
         let resolved = self.resolved_header(&c);
         let b = Body {
             commit: c.id(),
-            parts: c.parts.iter().map(|p| (p.ai, p.di)).collect(),
+            parts: c.parts.iter().map(|p| p.ai).collect(),
             expires: osis_commit::blob_expiry(&resolved),
             blind: c.header.blind,
             plaintext: plaintext.to_vec(),
@@ -203,7 +203,7 @@ impl Engine {
         if pt.is_empty() {
             return Ok(None);
         }
-        let c = osis_commit::rewrite(&CommitBlob::decode_stored(&pt)?, |ai, di| !b.parts.contains(&(ai, di)));
+        let c = osis_commit::rewrite(&CommitBlob::decode_stored(&pt)?, |ai| !b.parts.contains(&ai));
         let resolved = self.resolved_header(&c);
         let env = osis_commit::seal_commit(&c, |_| (), |_, _| Some((secret.clone(), Vec::new())), &[], rng)?;
         frame_envelope(&env, &resolved, class, rng, &c).map(Some)
@@ -371,7 +371,7 @@ impl Engine {
         let Some(c) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
         // a lasting header (`commit_bodies_under`) carries no part
         if b.parts.is_empty() {
-            return Ok(osis_commit::rewrite(&c, |_, _| true).encode());
+            return Ok(osis_commit::rewrite(&c, |_| true).encode());
         }
         Ok(c.encode())
     }
@@ -407,10 +407,10 @@ impl Engine {
 
     /// The parts of commit `id` (its held parts, or `parts`) the actor of `ctx` may read
     /// (spec/sync.md §3): those on things whose reader actor it may read.
-    pub fn readable_parts(&self, ctx: &BodyCtx, id: &CommitId, parts: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    pub fn readable_parts(&self, ctx: &BodyCtx, id: &CommitId, parts: &[usize]) -> Vec<usize> {
         let Some(m) = self.core.ix.commits.get(id) else { return Vec::new() };
         let h = &m.header;
-        parts.iter().filter(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| self.core.may_read(&ctx.actor, &self.core.reader_of(&a.tid)))).copied().collect()
+        parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| self.core.may_read(&ctx.actor, &self.core.reader_of(&a.tid)))).copied().collect()
     }
 
     /// The body of commit `id` a label of the group of `ctx` must hold (`label_bodies_meta`):
@@ -444,7 +444,7 @@ impl Engine {
         if let Some(mut b) = body {
             let published = |ai: usize| h.aspects.get(ai).is_some_and(|a| !ctx.closure.contains(&a.tid) && ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "label.0" | "created.0"));
             let inside = |ai: usize| h.aspects.get(ai).is_some_and(|a| touches && ctx.closure.contains(&a.tid)) || published(ai);
-            let parts: Vec<(usize, usize)> = b.parts.iter().filter(|(ai, _)| inside(*ai)).copied().collect();
+            let parts: Vec<usize> = b.parts.iter().copied().filter(|ai| inside(*ai)).collect();
             let readable = self.readable_parts(ctx, &id, &parts);
             if !readable.is_empty() {
                 // judged on what the actor reads; the blob carries every held part (`body_plaintext`),
@@ -455,8 +455,8 @@ impl Engine {
                 // (certificate blobs are copies for the same reason), or a part whose thing's
                 // secret neither derives from the actor's nor comes through the closure
                 let derivable = |ai: usize| h.aspects.get(ai).is_some_and(|a| self.core.secret_actor(&a.tid).is_some_and(|x| x == ctx.actor || ctx.closure.contains(&x)));
-                let role_elsewhere = h.kind.is_role() && readable.iter().any(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.tid != ctx.actor));
-                b.to_label = role_elsewhere || readable.iter().any(|(ai, _)| !derivable(*ai));
+                let role_elsewhere = h.kind.is_role() && readable.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| a.tid != ctx.actor));
+                b.to_label = role_elsewhere || readable.iter().any(|ai| !derivable(*ai));
                 b.parts = readable;
                 out.push(b);
             }
@@ -496,7 +496,7 @@ impl Engine {
     /// newest current read epoch held, except a rotation commit of the actor `g`'s secrets
     /// derive from, which goes under the newest epoch its rotation supersedes. `None`: no
     /// current secret held (only a stranded heartbeat may be placed).
-    pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[(usize, usize)])>) -> Result<Option<Secret32>> {
+    pub fn wrap_secret(&mut self, g: &Tid, c: Option<(&CommitId, &[usize])>) -> Result<Option<Secret32>> {
         let Some(e) = self.epochs(g) else { return Ok(None) };
         if let Some((c, parts)) = c
             && self.carries_secrets(g, c, parts)
@@ -535,10 +535,10 @@ impl Engine {
 
     /// Whether these deltas of `c` hold the `secrets.0` or `keys.0` of the actor `g`'s secrets derive
     /// from (only a blob carrying the boxes takes the rotation's wrap exception).
-    pub fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    pub fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[usize]) -> bool {
         let Some(a) = self.core.secret_actor(g) else { return false };
         let Some(h) = self.header(c) else { return false };
-        parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "secrets.0" | "keys.0"))
+        parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "secrets.0" | "keys.0"))
     }
 
     /// The newest established read secret held, current or not (a stranded heartbeat's wrap,
@@ -561,20 +561,11 @@ impl Engine {
             return Ok(None);
         }
         let id = *c;
-        let parts = self.run(|tx| crate::apply::held_parts(tx, &id, ai))?;
+        let Some(f) = self.run(|tx| crate::apply::held_fragment(tx, &id, ai))? else { return Ok(None) };
         let Some(epochs) = self.epochs(&a) else { return Ok(None) };
-        let mut best: Option<Epoch> = None;
-        for d in parts {
-            let f = d.into_fragment();
-            let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { continue };
-            let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { continue };
-            if let Some((s, _)) = epochs.read.wrapped_under(&e)
-                && best.is_none_or(|b| osis_keys::is_newer(&s, &b))
-            {
-                best = Some(s);
-            }
-        }
-        Ok(best)
+        let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { return Ok(None) };
+        let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { return Ok(None) };
+        Ok(epochs.read.wrapped_under(&e).map(|(s, _)| s))
     }
 
     /// The deposit seed of `g`'s actor (its `keys.0`).

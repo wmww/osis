@@ -1,4 +1,4 @@
-//! Abstract edge-write records the node hands perm (spec/permissions.md §5.1, §6; core types of
+//! Abstract edge-write records the node hands perm (spec/permissions.md §5.1; core types of
 //! spec/data-model.md §9). The node adapts commit headers and deltas into these; perm parses no
 //! bytes. Every record is untrusted: perm never panics on one.
 
@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Position in the joint order (spec/permissions.md §5.1 step 1): (`ts`, author node, commit
-/// ID). Also the key of a write in rosters and ledgers: `edge_key` (spec/data-model.md §9).
+/// ID): the write's key.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Point {
     pub ts: Ts,
@@ -16,8 +16,8 @@ pub struct Point {
 }
 
 impl Point {
-    /// The key of an expiry by `until` at its first `ts` (spec/permissions.md §6): the zero
-    /// tid and commit ID order it before every write at that `ts`.
+    /// The key of an expiry by `until` at its first `ts` (spec/permissions.md §3, Keep): the
+    /// zero tid and commit ID order it before every write at that `ts`.
     pub fn expiry(ts: Ts) -> Point {
         Point { ts, node: Tid::from_bytes([0; 15]), commit: CommitId([0; 32]) }
     }
@@ -30,8 +30,6 @@ pub struct Edge {
     /// The edge counts as removed from `wall_ms(t) >= until` (spec/permissions.md §2).
     pub until: Option<WallMs>,
     pub invite: Option<Role>,
-    /// Roster snapshots only: key of the write that established a write+ edge.
-    pub since: Option<Point>,
     /// The placement of the target in its holder group this edge is tied to
     /// (spec/permissions.md §2): carried, never an authority.
     pub tied: Option<Tie>,
@@ -57,7 +55,7 @@ pub enum TieSource {
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, since: None, tied: None }
+        Edge { role, until: None, invite: None, tied: None }
     }
     /// The value a removal saying keep writes (spec/permissions.md §3): `until` 0, gone at every
     /// clock.
@@ -118,7 +116,7 @@ pub struct EdgeOp {
     pub edge: Option<Edge>,
 }
 
-/// The edge writes of a role commit (spec/commits.md §2), roster snapshots excluded.
+/// The edge writes of a role commit (spec/commits.md §2).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RoleCommit {
     pub id: CommitId,
@@ -154,54 +152,13 @@ fn same_frontier(a: &Option<Arc<Frontier>>, b: &Option<Arc<Frontier>>) -> bool {
     }
 }
 
-/// A tenure ledger entry (spec/data-model.md §9 `tenure`; spec/permissions.md §6).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Tenure {
-    pub holder: Tid,
-    pub role: Role,
-    pub since: Option<Point>,
-    pub until: Point,
-    pub frontier: Option<Arc<Frontier>>,
-}
-
-/// A roster snapshot of `thing` (spec/permissions.md §6): its `roles.0` and `tenures.0` state.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct RosterSnapshot {
-    pub id: CommitId,
-    pub ts: Ts,
-    pub author: Tid,
-    pub actor: Tid,
-    pub thing: Tid,
-    pub roster: BTreeMap<Tid, Edge>,
-    pub ledger: Vec<Tenure>,
-}
-
-impl RosterSnapshot {
-    pub fn point(&self) -> Point {
-        Point { ts: self.ts, node: self.author, commit: self.id }
-    }
-
-    /// `RoleCommit::same_input` for a roster snapshot (its `tenures.0` part may arrive
-    /// after its `roles.0` part).
-    pub(crate) fn same_input(&self, o: &RosterSnapshot) -> bool {
-        (self.id, self.ts, self.author, self.actor, self.thing, &self.roster) == (o.id, o.ts, o.author, o.actor, o.thing, &o.roster)
-            && self.ledger.len() == o.ledger.len()
-            && self.ledger.iter().zip(&o.ledger).all(|(a, b)| (a.holder, a.role, a.since, a.until) == (b.holder, b.role, b.since, b.until) && same_frontier(&a.frontier, &b.frontier))
-    }
-}
-
-/// An edge write's identity: op `index` of a role commit, or a roster snapshot.
+/// An edge write's identity: op `.1` of role commit `.0`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum WriteId {
-    Op(CommitId, u32),
-    Snapshot(CommitId),
-}
+pub struct WriteId(pub CommitId, pub u32);
 
 impl WriteId {
     pub fn commit(&self) -> CommitId {
-        match self {
-            WriteId::Op(c, _) | WriteId::Snapshot(c) => *c,
-        }
+        self.0
     }
 }
 

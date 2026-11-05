@@ -8,5 +8,4 @@ mod differential;
 mod incremental;
 mod queries;
 mod robust;
-mod roster;
 mod scenarios;

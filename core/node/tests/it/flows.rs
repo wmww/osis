@@ -141,7 +141,7 @@ fn person_two_devices(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
     (lp, p.person, p.card)
 }
 
-// spec/permissions.md §1, §8; spec/crypto.md §3: a person actor owned by its recovery key, the
+// spec/permissions.md §1, §7; spec/crypto.md §3: a person actor owned by its recovery key, the
 // node its admin, secrets of its own, `keys.0` with inbox and deposit seed, home label genesis
 // with the key listed by static entry; a paired device opens the person's secrets.
 #[test]
@@ -183,7 +183,7 @@ pub(crate) fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
 }
 
 pub(crate) fn edge_of(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, since: None, tied: None }
+    ct::Edge { role, until: None, invite: None, tied: None }
 }
 
 pub(crate) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -657,7 +657,7 @@ fn invite_power_spec_perm_2() {
     let (mut lp, ps) = people(3, 504);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&d, &pb, &ct::Edge { role: Role::Write, until: None, invite: Some(Role::Read), since: None, tied: None }).unwrap();
+    lp.peers[0].engine.grant(&d, &pb, &ct::Edge { role: Role::Write, until: None, invite: Some(Role::Read), tied: None }).unwrap();
     spread(&mut lp);
     // bob invites carol with read, not with write
     assert!(lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Write)).is_err());
@@ -806,7 +806,7 @@ fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
     assert!(g.iter().all(|c| frontier_ids(&mut lp, 1, &r).contains(c)), "Bob lists the grant he holds");
     let until = osis_base::WallMs(lp.peers[0].clock.as_ref().now_wall_ms().0 + 3_600_000);
     let before = ids(&lp, 2);
-    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None, tied: None }).unwrap();
+    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, tied: None }).unwrap();
     let forged = new_ids(&lp, 2, &before);
     assert!(lp.peers[2].engine.header(&forged[0]).unwrap().ts < lp.peers[1].engine.header(&r).unwrap().ts, "backdated");
     spread(&mut lp);
@@ -837,7 +837,7 @@ fn future_stamped_setter_spec_perm_5_1() {
     // a rewrite of Bob's edge stamped half an hour ahead
     lp.peers[2].clock.advance(1_800_000);
     let before = ids(&lp, 2);
-    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: None, invite: Some(Role::Read), since: None, tied: None }).unwrap();
+    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: None, invite: Some(Role::Read), tied: None }).unwrap();
     let f = new_ids(&lp, 2, &before);
     send(&mut lp, 2, 1, &f);
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -889,12 +889,12 @@ fn intermediate_grantor_covered_spec_perm_5_1() {
 }
 
 // spec/crdt.md §8 (absorbed commits count only with a held header), spec/permissions.md §5.1,
-// §5.2 (a valid snapshot vouches for what it carries): X's removal of M (with X's rotation) is
-// compacted away: Alice snapshots `secrets.0` and `keys.0` and writes a roster snapshot, so hosts
-// drop its blobs, header included, and late joiner Bob gets only the snapshots. Bob cannot tell
-// the absorbed commit from one X signed ahead, so his removal of X does not list it; Alice, still
-// holding it, judges its deltas invalid, but her snapshots vouch for its writes: she, Bob and
-// fresh nodes agree, M stays removed.
+// §5.2 (a valid snapshot vouches for what it carries): reader M leaves and X rotates M away; X's
+// rotation is compacted away: Alice snapshots `secrets.0` and `keys.0`, so hosts drop its blobs,
+// header included, and late joiner Bob gets only the snapshots. Bob cannot tell the absorbed
+// commit from one X signed ahead, so his removal of X does not list it; Alice, still holding it,
+// judges its deltas invalid, but her snapshots vouch for its writes: she, Bob and fresh nodes
+// agree, M stays removed.
 #[test]
 fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     let (mut lp, ps) = people(4, 512);
@@ -903,22 +903,24 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Admin)).unwrap();
     lp.peers[0].engine.grant(&t, &pm, &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
-    // X removes M: its commit carries X's rotation of t
+    // M leaves; X rotates it away
+    lp.peers[3].engine.demote(&t, &Demotion { holder: pm, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    spread(&mut lp);
     let before = ids(&lp, 2);
-    lp.peers[2].engine.demote(&t, &Demotion { holder: pm, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = lp.peers[2].engine.ensure_rotated(&t).unwrap().0;
+    assert_eq!(done.commits.len(), 1, "the rotation");
     let xr = new_ids(&lp, 2, &before);
     send(&mut lp, 2, 0, &xr);
     lp.advance(1000);
     let snap = lp.peers[0].engine.snapshot(&t, &ak("secrets.0")).unwrap().unwrap();
     assert_eq!(lp.peers[0].engine.header(&snap).unwrap().form, osis_commit::Form::Commit);
     lp.peers[0].engine.snapshot(&t, &ak("keys.0")).unwrap().unwrap();
-    lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
-    // Bob joins late: everything Alice holds but X's removal itself
+    // Bob joins late: everything Alice holds but X's rotation itself
     lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
     let to_b: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().filter(|c| !xr.contains(c)).collect();
     send(&mut lp, 0, 1, &to_b);
     assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
-    assert!(xr.iter().all(|c| lp.peers[1].engine.header(c).is_none()), "Bob never got X's removal");
+    assert!(xr.iter().all(|c| lp.peers[1].engine.header(c).is_none()), "Bob never got X's rotation");
     assert!(!lp.peers[1].engine.roster(&t).contains_key(&pm));
     lp.advance(1000);
     let before = ids(&lp, 1);
@@ -999,7 +1001,7 @@ fn cascade_two_hops_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, t, "after"), BTreeSet::from([2]), "nor on T");
 }
 
-// spec/permissions.md §2, §8: recovery removes a device with erase, whatever the person's default.
+// spec/permissions.md §2, §7: recovery removes a device with erase, whatever the person's default.
 #[test]
 fn recovery_erases_whatever_the_default_spec_perm_2() {
     let (mut lp, p, _pa, card) = devices_and_alice(5081);
@@ -1018,11 +1020,11 @@ fn recovery_erases_whatever_the_default_spec_perm_2() {
     assert!(!lp.peers[0].engine.kept_copies().contains(&p));
 }
 
-// spec/permissions.md §8 (recovery card), §5.1: a fresh device holding the card claims the
+// spec/permissions.md §7 (recovery card), §5.1: a fresh device holding the card claims the
 // person (as the recovery key: grants itself admin) and removes the stolen device with the
 // person's rotation; the stolen device's later removal of the honest device is invalid.
 #[test]
-fn stolen_device_recovery_spec_perm_8() {
+fn stolen_device_recovery_spec_perm_7() {
     let (mut lp, p, _pa, card) = devices_and_alice(508);
     let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let mut fresh = net(1, 509);
@@ -1071,11 +1073,11 @@ fn commit_form_redemption_canonical_spec_crdt_3_2() {
     }
 }
 
-// spec/permissions.md §8: a stranger redeems a read link: signing as L it invite-grants its
+// spec/permissions.md §7: a stranger redeems a read link: signing as L it invite-grants its
 // own actor to K (deposited: read), single use removes L's edge in the same commit, so a
 // second redeemer finds no link; the redeemer reads the target through K.
 #[test]
-fn link_redeem_single_use_spec_perm_8() {
+fn link_redeem_single_use_spec_perm_7() {
     let (mut lp, ps) = people(3, 510);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
@@ -1103,15 +1105,15 @@ fn link_redeem_single_use_spec_perm_8() {
     assert!(lp.peers[2].engine.redeem(&link, &ps2, true).is_err());
     assert_eq!(lp.peers[2].engine.role_on(&d), None);
     // the sharer finalizes the used link: a removal of the absent edge, with its frontier
-    // (spec/permissions.md §2, §8)
+    // (spec/permissions.md §2, §7)
     let fin = lp.peers[0].engine.finalize_link(&link.k, &l).unwrap();
     assert!(lp.peers[0].engine.header(&fin.commits[0]).unwrap().frontier.is_some());
 }
 
-// spec/permissions.md §8, §5.1: a forged redemption by a second seed holder, stamped before the
+// spec/permissions.md §7, §5.1: a forged redemption by a second seed holder, stamped before the
 // one the sharer saw, stands until the sharer finalizes; its frontier does not cover it.
 #[test]
-fn single_use_finalization_audits_spec_perm_8() {
+fn single_use_finalization_audits_spec_perm_7() {
     let (mut lp, ps) = people(3, 518);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
@@ -1132,13 +1134,13 @@ fn single_use_finalization_audits_spec_perm_8() {
     }
 }
 
-// spec/permissions.md §8, §5.1, §3: the race flipped by the finalization. Peer 2 redeems first,
+// spec/permissions.md §7, §5.1, §3: the race flipped by the finalization. Peer 2 redeems first,
 // peer 1 later; peer 1 sees both and loses by its view, but keeps K's and the target's secrets
 // (so it keeps following their labels) while L's self-removal is not finalized. The sharer saw
 // only peer 1's redemption: its finalization drops peer 2's and peer 1 is in. Peer 2, the loser
 // once the finalization arrives, drops them.
 #[test]
-fn single_use_loser_keeps_secrets_until_finalized_spec_perm_8() {
+fn single_use_loser_keeps_secrets_until_finalized_spec_perm_7() {
     let (mut lp, ps) = people(3, 522);
     let (pa, ps1, ps2) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
@@ -1175,7 +1177,7 @@ fn single_use_loser_keeps_secrets_until_finalized_spec_perm_8() {
     assert!(dropped.contains(&link.k), "{dropped:?}");
 }
 
-// spec/permissions.md §8, spec/commits.md §2: revoking a joiner of a multi-use link removes it
+// spec/permissions.md §7, spec/commits.md §2: revoking a joiner of a multi-use link removes it
 // and L in one commit with one rotation of K; the other joiner keeps K's new secrets, the
 // revoked one and a seed holder acting as L (bearer use) get none; every peer applies the
 // two-edge commit.
@@ -1215,7 +1217,7 @@ fn revoke_joiner_one_rotation_spec_commits_2() {
     assert!(lp.peers[3].engine.epochs(&link.k).unwrap().read.secret(&k1).is_none(), "the seed reads nothing new");
 }
 
-// spec/permissions.md §8, spec/commits.md §2: revoking the joiner of a used single-use link
+// spec/permissions.md §7, spec/commits.md §2: revoking the joiner of a used single-use link
 // (L already gone) is a plain removal of the joiner alone.
 #[test]
 fn revoke_joiner_after_single_use_spec_commits_2() {
@@ -1239,9 +1241,9 @@ fn revoke_joiner_after_single_use_spec_commits_2() {
     }
 }
 
-// spec/permissions.md §8: bearer use reads without writing; `until` expires the link.
+// spec/permissions.md §7: bearer use reads without writing; `until` expires the link.
 #[test]
-fn link_bearer_and_until_spec_perm_8() {
+fn link_bearer_and_until_spec_perm_7() {
     let (mut lp, ps) = people(2, 511);
     let (pa, ps1) = (ps[0], ps[1]);
     let d = thing_of(&mut lp, 0, pa);
@@ -1272,14 +1274,14 @@ fn link_bearer_and_until_spec_perm_8() {
     assert!(sealed_write(&mut lp, 0, d, "after").is_empty(), "and reads nothing new on the target");
 }
 
-// spec/permissions.md §8 (link finalized), §5.1: an expired link is due for finalization on both of the sharer's
+// spec/permissions.md §7 (link finalized), §5.1: an expired link is due for finalization on both of the sharer's
 // devices (the seed thing is the person's); both finalize concurrently without conflict. A seed
 // holder whose clock lags signs an invite grant as L dated before `until`, after both removals:
 // their frontiers do not cover it, so it is void at every peer, whether it arrives before or
 // after the removals (until they arrive it stands: the window the removal closes); the joiner
 // that redeemed while the link worked stays.
 #[test]
-fn until_link_backdated_grant_void_spec_perm_8() {
+fn until_link_backdated_grant_void_spec_perm_7() {
     let (mut lp, p, _) = person_two_devices(530);
     let mut more = net(3, 531);
     lp.peers.append(&mut more.peers);
@@ -1417,7 +1419,7 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
     let (pa, pb) = (ps[0], ps[1]);
     let t = thing_of(&mut lp, 0, pa);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 5_000);
-    lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None }).unwrap();
+    lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, tied: None }).unwrap();
     let e0 = newest_read(&lp, 0, t);
     lp.advance(10_000);
     assert!(lp.peers[0].engine.departures(&t).unwrap().is_empty(), "the clock alone departs nobody");
@@ -1719,143 +1721,6 @@ fn refreshed_deposit_seed_issues_step_spec_sync_5() {
     assert!(lp.peers[1].engine.issue_step(&p, &card.home_label, &step.id(), false).unwrap().0.is_none(), "registered: nothing due");
 }
 
-// spec/permissions.md §6: an owner-chain node's roster snapshot carries the timeline's roster
-// with `since` and the tenure ledger (the removed writer's ended tenure with its frontier);
-// rosters and content validity are unchanged by it; an edge admin may not write one.
-#[test]
-fn roster_snapshot_spec_perm_6() {
-    let (mut lp, ps) = people(3, 515);
-    let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
-    let t = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&t, &pb, &edge_of(Role::Admin)).unwrap();
-    lp.peers[0].engine.grant(&t, &pc, &edge_of(Role::Write)).unwrap();
-    spread(&mut lp);
-    add_tag(&mut lp, 2, t, "carol");
-    spread(&mut lp);
-    lp.peers[0].engine.demote(&t, &Demotion { holder: pc, new: None, presync: PreSync::Synced, keep: None }).unwrap();
-    assert!(!lp.peers[0].engine.roster_snapshot_due(&t, None), "few deltas: not due");
-    assert!(lp.peers[1].engine.roster_snapshot(&t, None).is_err(), "edge admin");
-    let before = lp.peers[0].engine.roster(&t);
-    let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
-    let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
-    assert_eq!(h.kind, osis_commit::Kind::RosterSnapshot);
-    spread(&mut lp);
-    for i in 0..3 {
-        assert_eq!(lp.peers[i].engine.roster(&t), before, "peer {i}");
-        assert_eq!(tags(&mut lp, i, t), BTreeSet::from(["carol".to_string()]), "peer {i}");
-    }
-    let ledger = lp.peers[1].engine.get_typed(&t, &ct::TENURES).unwrap().unwrap();
-    assert!(ledger.0.iter().any(|x| x.holder == pc && x.role == Role::Write && x.frontier.is_some()), "{ledger:?}");
-    let raw = lp.peers[1].engine.state(&t, &ak("roles.0")).unwrap().unwrap().read().unwrap();
-    let roster = osis_schema::RawKey::decode(&ct::ROLES, &raw).unwrap();
-    assert!(roster.get(&pb).unwrap().since.is_some(), "{roster:?}");
-    add_tag(&mut lp, 1, t, "bob");
-    spread(&mut lp);
-    assert!(tags(&mut lp, 0, t).contains("bob"));
-}
-
-// spec/commits.md §4 (a part waits alone; what the node syncs decides nothing): a roster snapshot
-// held in part shows the part, with its reset, whether the node synced its thing first or not; the
-// rest joins when it comes.
-#[test]
-fn roster_snapshot_part_applies_alone_spec_commits_4() {
-    let read = |sync_first: bool| {
-        let (mut lp, ps) = people(2, 516);
-        let t = thing_of(&mut lp, 0, ps[0]);
-        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
-        spread(&mut lp);
-        let c = lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits[0];
-        let h = lp.peers[0].engine.header(&c).unwrap();
-        assert_eq!(h.kind, osis_commit::Kind::RosterSnapshot);
-        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
-        let mut part = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-        // one holder's delta on `roles.0` and the reset; the rest stays away
-        let first = part.parts.iter().position(|p| h.aspects[p.ai].ak.as_str() == "roles.0").unwrap();
-        let (ai, di) = (part.parts[first].ai, part.parts[first].di);
-        part.parts.retain(|p| (p.ai, p.di) == (ai, di));
-        let e = &mut lp.peers[1].engine;
-        if sync_first {
-            e.set_syncing(t, true).unwrap();
-        }
-        let r = e.ingest(&part.encode(), Vec::new()).unwrap();
-        assert_eq!(r, osis_node::Ingested::Applied(c));
-        e.set_syncing(t, true).unwrap();
-        let shown = e.roster(&t);
-        e.ingest(&pk.bytes, Vec::new()).unwrap();
-        assert!(e.pending().is_empty(), "{:?}", e.pending());
-        (shown, e.roster(&t))
-    };
-    let (first, late) = (read(true), read(false));
-    assert_eq!(first, late);
-}
-
-// spec/requirements.md (a holder may look removed until the rest of a roster snapshot arrives),
-// spec/commits.md §4: a holder's certificate copy of a roster snapshot, naming that holder, and the
-// rest away. The node shows only the holder named, the other's writes gone, old and new, whether it
-// synced the thing first or not. The rest, or a later whole snapshot, ends it.
-#[test]
-fn roster_copy_reads_at_each_node_spec_commits_4() {
-    let strs = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
-    let all = strs(&["bob", "carol", "bob2", "carol2", "owner2"]);
-    // (syncs first, ends with a later snapshot)
-    for (sync_first, later) in [(true, false), (false, false), (false, true)] {
-        let (mut lp, ps) = people(4, 601);
-        let t = thing_of(&mut lp, 0, ps[0]);
-        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
-        lp.peers[0].engine.grant(&t, &ps[2], &edge_of(Role::Write)).unwrap();
-        spread(&mut lp);
-        add_tag(&mut lp, 1, t, "bob");
-        add_tag(&mut lp, 2, t, "carol");
-        spread(&mut lp);
-        lp.advance(1000);
-        let c = lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits[0];
-        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
-        lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).unwrap();
-        let named = lp.peers[1].engine.certificates(&t).remove(&c).unwrap();
-        let mut copy = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-        copy.parts.retain(|p| named.contains(&(p.ai, p.di)));
-        let holders = |lp: &LocalPeer| lp.peers[3].engine.roster(&t).into_keys().collect::<BTreeSet<Tid>>();
-        let (both, bob) = (BTreeSet::from([ps[1], ps[2]]), BTreeSet::from([ps[1]]));
-        assert_eq!(holders(&lp), both);
-
-        let e = &mut lp.peers[3].engine;
-        if sync_first {
-            e.set_syncing(t, true).unwrap();
-        }
-        let r = e.ingest(&copy.encode(), Vec::new()).unwrap();
-        assert_eq!(r, osis_node::Ingested::Applied(c));
-        e.set_syncing(t, true).unwrap();
-        assert_eq!(holders(&lp), bob);
-        assert_eq!(tags(&mut lp, 3, t), strs(&["bob"]));
-
-        // new writes, by holders that have not the snapshot (carol) or have (bob), and the owner
-        lp.advance(1000);
-        add_tag(&mut lp, 1, t, "bob2");
-        add_tag(&mut lp, 2, t, "carol2");
-        add_tag(&mut lp, 0, t, "owner2");
-        for i in 0..3 {
-            for id in lp.peers[i].engine.commit_ids().into_iter().filter(|id| *id != c) {
-                let p = lp.peers[i].engine.package(&id).unwrap().unwrap();
-                lp.peers[3].engine.ingest(&p.bytes, p.blobs).unwrap();
-            }
-        }
-        assert_eq!(holders(&lp), bob);
-        assert_eq!(tags(&mut lp, 3, t), strs(&["bob", "bob2", "owner2"]));
-
-        if later {
-            lp.advance(1000);
-            let c2 = lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits[0];
-            let p = lp.peers[0].engine.package(&c2).unwrap().unwrap();
-            lp.peers[3].engine.ingest(&p.bytes, p.blobs).unwrap();
-        } else {
-            lp.peers[3].engine.ingest(&pk.bytes, Vec::new()).unwrap();
-        }
-        assert!(lp.peers[3].engine.pending().is_empty());
-        assert_eq!(holders(&lp), both);
-        assert_eq!(tags(&mut lp, 3, t), all);
-    }
-}
-
 // spec/crypto.md §4 (forks): two admins removing different holders concurrently fork the read
 // epoch; each fork boxes a holder the other removed, so the next node to encrypt under it
 // rotates again, and that epoch covers both departures; both admins converge on it.
@@ -1968,10 +1833,10 @@ fn removed_device_backdated_leave_dropped_spec_perm_5_1() {
     }
 }
 
-// spec/crypto.md §4, spec/permissions.md §6: departures are also read from state (a box at a
-// current epoch its holder no longer may hold); a roster snapshot first rotates them away.
+// spec/crypto.md §4: departures are also read from state (a box at a current epoch its holder no
+// longer may hold): after a reader's self-removal, the next node that may rotate does.
 #[test]
-fn reader_leaves_then_snapshot_spec_perm_6() {
+fn reader_leaves_then_rotation_spec_crypto_4() {
     let (mut lp, ps) = people(3, 521);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let t = thing_of(&mut lp, 0, pa);
@@ -1980,8 +1845,8 @@ fn reader_leaves_then_snapshot_spec_perm_6() {
     spread(&mut lp);
     lp.peers[2].engine.demote(&t, &Demotion { holder: pc, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     spread(&mut lp);
-    let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
-    assert_eq!(done.commits.len(), 2, "the rotation, then the snapshot");
+    let done = lp.peers[0].engine.ensure_rotated(&t).unwrap().0;
+    assert_eq!(done.commits.len(), 1, "the rotation");
     let e1 = newest_read(&lp, 0, t).unwrap();
     spread(&mut lp);
     assert!(lp.peers[2].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()));
@@ -2106,7 +1971,7 @@ fn raced_grant_read_box_after_until_spec_crypto_4() {
     spread(&mut lp);
     lp.advance(1000);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
-    lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, since: None, tied: None }).unwrap();
+    lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, tied: None }).unwrap();
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced, keep: None }).unwrap();
     spread(&mut lp);
     let r0 = newest_read(&lp, 1, t).unwrap();
@@ -2155,84 +2020,15 @@ fn edge_change_and_removal_by_inbox_spec_perm_2() {
     assert_eq!(to_pb(&gone), 1, "removal");
 }
 
-/// The deltas of commit `c` on `(t, a)`, their bytes.
-fn aspect_deltas(e: &mut osis_node::Engine, c: &CommitId, t: Tid, a: &str) -> Vec<Vec<u8>> {
-    let h = e.header(c).unwrap();
-    let ai = h.aspects.iter().position(|x| x.tid == t && x.ak.as_str() == a).unwrap();
-    let blob = osis_commit::CommitBlob::decode(&e.commit_bytes(c).unwrap().unwrap()).unwrap();
-    blob.parts.into_iter().filter(|p| p.ai == ai).map(|p| p.delta).collect()
-}
-
-// spec/permissions.md §6, spec/commits.md §2: a roster snapshot carries one reset-plus-state
-// delta per edge (and per ledger entry), each the size of one edge whatever the roster's size,
-// so a large roster never approaches `MAX_BLOB` as one delta.
+// spec/permissions.md §5.1; spec/data-model.md §6: a demotion's frontier above `CHUNK_THRESHOLD`
+// goes by link; a node holding the demotion waits for the frontier's blobs, then judges the
+// demoted writer's covered writes by it (valid, not dropped as by an empty frontier).
 #[test]
-fn roster_snapshot_one_delta_per_edge_spec_perm_6() {
-    let mut lp = net(2, 530);
-    let t = new_thing(&mut lp, 0);
-    let n = 60;
-    for i in 0..n {
-        let m = Tid::from_bytes([u8::try_from(i % 250).unwrap(), 1, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9]);
-        set_edge(&mut lp.peers[0].engine, t, m, Some(edge(Role::Read)), None);
-    }
-    let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
-    let c = *done.commits.last().unwrap();
-    let holders = aspect_deltas(&mut lp.peers[0].engine, &c, t, "roles.0");
-    assert_eq!(holders.len(), n + 1, "the reset alone, then one delta per edge");
-    assert!(holders.iter().all(|d| d.len() < 300), "{:?}", holders.iter().map(Vec::len).max());
-    assert_eq!(aspect_deltas(&mut lp.peers[0].engine, &c, t, "tenures.0").len(), 1, "an empty ledger: the reset alone");
-    // a receiver joins the deltas back into the whole roster
-    sync(&mut lp, 0, 1);
-    assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[0].engine.roster(&t));
-    assert_eq!(lp.peers[1].engine.roster(&t).len(), n);
-}
-
-// spec/permissions.md §4, §6; spec/sync.md §3: a certificate copy of a person actor's roster
-// snapshot under a co-reader's label carries only the chain's edge (the device that writes),
-// never the person's other devices.
-#[test]
-fn roster_snapshot_certificate_projected_spec_perm_6() {
-    let mut lp = net(3, 531);
-    let (p, done) = lp.peers[0].engine.create_person(&hosts()).unwrap();
-    assert_eq!(done.commits.len(), 1);
-    let n1 = lp.peers[1].engine.tid();
-    let card1: Vec<CommitId> = lp.peers[1].engine.commit_ids();
-    send(&mut lp, 1, 0, &card1);
-    let paired = lp.peers[0].engine.pair(&p.person, &n1).unwrap();
-    carry(&mut lp, 0, &paired);
-    let bob = lp.peers[2].engine.create_person(&hosts()).unwrap().0.person;
-    spread(&mut lp);
-    let g = thing_of(&mut lp, 0, p.person);
-    lp.peers[0].engine.grant(&g, &bob, &edge_of(Role::Read)).unwrap();
-    spread(&mut lp);
-    let r = lp.peers[0].engine.hold_key_actor(p.card.seed.clone()).unwrap();
-    let done = lp.peers[0].engine.roster_snapshot(&p.person, Some(&r)).unwrap();
-    let s = *done.commits.last().unwrap();
-    assert_eq!(aspect_deltas(&mut lp.peers[0].engine, &s, p.person, "roles.0").len(), 3, "the reset, both devices");
-    let certs = lp.peers[0].engine.certificates(&g);
-    let parts = certs.get(&s).expect("the snapshot is a chain certificate");
-    let h = lp.peers[0].engine.header(&s).unwrap();
-    let holders_ai = h.aspects.iter().position(|a| a.ak.as_str() == "roles.0").unwrap();
-    assert_eq!(parts.iter().filter(|(ai, _)| *ai == holders_ai).count(), 2, "the reset and one edge: {parts:?}");
-    let copy = lp.peers[0].engine.part_body(&s, parts).unwrap().unwrap();
-    let carried: BTreeSet<(usize, usize)> = copy.parts.iter().copied().collect();
-    assert_eq!(&carried, parts);
-    // the copy names this device only
-    let me = lp.peers[0].engine.tid();
-    assert!(copy.parts.iter().any(|(ai, _)| *ai == holders_ai));
-    assert!(contains(&copy.plaintext, me.as_bytes()) && !contains(&copy.plaintext, n1.as_bytes()));
-}
-
-// spec/permissions.md §5.1, §6; spec/data-model.md §6: a demotion's frontier above
-// `CHUNK_THRESHOLD` goes by link, the roster snapshot's ledger carries it by link, and a node
-// holding only the snapshot waits for the frontier's blobs, then judges the demoted writer's
-// covered writes by it (valid, not dropped as by an empty frontier).
-#[test]
-fn linked_tenure_frontier_spec_perm_6() {
+fn linked_frontier_spec_perm_5_1() {
     let mut lp = net(3, 532);
     let t = new_thing(&mut lp, 0);
     let x = lp.peers[1].engine.tid();
-    let grant = set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
     add_tag(&mut lp, 1, t, "by x");
     sync(&mut lp, 1, 0);
@@ -2247,22 +2043,19 @@ fn linked_tenure_frontier_spec_perm_6() {
     assert!(osis_base::encode(&frontier).len() > osis_base::format::CHUNK_THRESHOLD);
     let demotion = set_edge(&mut lp.peers[0].engine, t, x, None, Some(frontier));
     assert!(lp.peers[0].engine.header(&demotion).unwrap().links.frontier.is_some(), "the header frontier goes by link");
-    let done = lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
-    let s = *done.commits.last().unwrap();
-    let ledger = lp.peers[0].engine.get_typed(&t, &ct::TENURES).unwrap().unwrap();
-    assert!(matches!(ledger.0.as_slice(), [ct::Tenure { frontier: Some(osis_schema::Chunked::Link(_)), .. }]), "{ledger:?}");
-    // peer 2: everything but the grant and the demotion; the snapshot first without its blobs
+    // peer 2: everything but the demotion; then the demotion without its blobs
     let mut ids = lp.peers[0].engine.commit_ids();
-    ids.retain(|c| *c != grant && *c != demotion && *c != s);
+    ids.retain(|c| *c != demotion);
     for id in ids {
         let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
         lp.deliver(2, &pk).unwrap();
     }
-    let pk = lp.peers[0].engine.package(&s).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&demotion).unwrap().unwrap();
     assert!(!pk.blobs.is_empty());
     let before = lp.peers[2].engine.roster(&t);
+    assert!(before.contains_key(&x));
     lp.peers[2].engine.ingest(&pk.bytes, Vec::new()).unwrap();
-    assert_eq!(lp.peers[2].engine.pending(), vec![(s, osis_node::Reason::WaitBlobs)]);
+    assert_eq!(lp.peers[2].engine.pending(), vec![(demotion, osis_node::Reason::WaitBlobs)]);
     assert_eq!(lp.peers[2].engine.roster(&t), before, "out of the walk while its frontier is away");
     lp.deliver(2, &pk).unwrap();
     assert!(lp.peers[2].engine.pending().is_empty());
@@ -2680,7 +2473,7 @@ fn lockout_bundled_with_own_rotation_recovered_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
 
-// spec/permissions.md §5.1, §7: an admin demoter leaves out of its frontier only what it could drop:
+// spec/permissions.md §5.1, §6: an admin demoter leaves out of its frontier only what it could drop:
 // a covered `author` or `nobody` delta of the demoted writer is listed and stays valid, an
 // `author_or_admin` one is left out, unless the snapshot covering it is a plain writer's, which
 // holds no right over it.
@@ -2723,11 +2516,11 @@ fn frontier_lists_what_the_demoter_may_not_purge_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §1 (ownerless things), §3 (lockout recovery), §6; spec/wire.md §3: person 0
+// spec/permissions.md §1 (ownerless things), §3 (lockout recovery); spec/wire.md §3: person 0
 // creates ownerless O (an ownerless chat) with itself as first admin and grants person 1 admin,
 // persons 2 and 3 write. Nobody owns O; its admins are equal: person 1 removes person 0. Writer 2
-// rotates O to itself; the remaining admin recovers. A thing O owns compacts its roster (O's
-// admin acts through its owner chain); O's own roster never does.
+// rotates O to itself; the remaining admin recovers. O's admin grants on a thing O owns through
+// its owner chain.
 #[test]
 fn ownerless_chat_spec_perm_1() {
     let (mut lp, ps) = people(4, 581);
@@ -2746,10 +2539,6 @@ fn ownerless_chat_spec_perm_1() {
     for (i, r) in [Role::Admin, Role::Admin, Role::Write, Role::Write].into_iter().enumerate() {
         assert_eq!(lp.peers[i].engine.role_on(&o), Some(r), "peer {i}");
         assert_eq!(lp.peers[i].engine.roster(&o).get(&ps[0]).map(|e| e.role), Some(Role::Admin), "peer {i}: the record's edge");
-    }
-    // no owner chain: nobody may write a roster snapshot of O
-    for i in 0..2 {
-        assert!(matches!(lp.peers[i].engine.roster_snapshot(&o, None), Err(osis_node::Error::Permission { .. })), "peer {i}");
     }
     // equal admins: the first admin is removed like any
     lp.peers[1].engine.demote(&o, &remove(ps[0])).unwrap();
@@ -2784,16 +2573,10 @@ fn ownerless_chat_spec_perm_1() {
     assert_eq!(newest_read(&lp, 3, o), Some(e1));
     assert_eq!(lp.peers[2].engine.role_on(&o), None);
     assert_eq!(sealed_write(&mut lp, 3, o, "member"), BTreeSet::from([1]));
-    // a thing O owns: O's admin compacts its roster
+    // a thing O owns: O's admin grants on it
     let t = thing_of(&mut lp, 1, o);
     lp.peers[1].engine.grant(&t, &ps[3], &edge_of(Role::Write)).unwrap();
-    let done = lp.peers[1].engine.roster_snapshot(&t, None).unwrap();
-    let snap = *done.commits.last().unwrap();
     spread(&mut lp);
-    for i in [1, 3] {
-        assert_eq!(lp.peers[i].engine.epoch_start(&t), Some(snap), "peer {i}");
-        assert_eq!(lp.peers[i].engine.epoch_start(&o), None, "peer {i}");
-    }
     assert_eq!(lp.peers[3].engine.role_on(&t), Some(Role::Write));
 }
 

@@ -174,11 +174,11 @@ impl SyncEngine {
         for (l, hosts) in labels {
             // by part: a chain may have copied this commit's edge here, and a later copy wants its
             // boxes. A copy placed and gone since is not placed again
-            let mine: BTreeSet<(usize, usize)> = self.state.entries_of(&l, c).filter(|(_, e)| e.cert).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).flatten().collect();
+            let mine: BTreeSet<usize> = self.state.entries_of(&l, c).filter(|(_, e)| e.cert).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).flatten().collect();
             if self.state.certs.contains(&(l, *c)) && (mine.is_empty() || want.is_subset(&mine)) {
                 continue;
             }
-            let parts: BTreeSet<(usize, usize)> = want.difference(&mine).copied().collect();
+            let parts: BTreeSet<usize> = want.difference(&mine).copied().collect();
             let deposit = seed.as_ref().map(|s| osis_crypto::deposit_key(s, &l));
             // nothing to place once its parts are dropped here (`State::sweep_certs`)
             let Some(b) = self.engine.part_body(c, &parts)? else { continue };
@@ -232,7 +232,7 @@ impl SyncEngine {
         for b in self.state.present_at(&host, &l) {
             let Some(Kind::Commit { commit, parts, .. }) = self.state.entries.get(&(l, b)).map(|e| &e.kind) else { continue };
             let Some(h) = self.engine.header(commit) else { return Ok(()) };
-            if parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| !super::pass::kept_when_replaced(a.ak.as_str())) {
+            if parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|a| !super::pass::kept_when_replaced(a.ak.as_str())) {
                 return Ok(());
             }
         }
@@ -249,7 +249,7 @@ impl SyncEngine {
     /// The blobs a certificate copy of `parts` of `c` links (header lists, linked frontiers) as
     /// certificate entries under `l` (spec/sync.md §3), so a verifier that syncs nothing else
     /// under the label resolves them.
-    pub(crate) fn place_linked(&mut self, l: LabelId, c: &CommitId, parts: &BTreeSet<(usize, usize)>) -> Result<()> {
+    pub(crate) fn place_linked(&mut self, l: LabelId, c: &CommitId, parts: &BTreeSet<usize>) -> Result<()> {
         for b in self.engine.linked_blobs(c, parts)? {
             if !self.state.entries.contains_key(&(l, b)) {
                 let wrap = osis_crypto::filler_wrap(&mut *self.rng);
@@ -266,7 +266,7 @@ impl SyncEngine {
     pub fn deliver_inbox(&mut self, recipient: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
         let id = *c;
         let blob = self.engine.run(|tx| tx.get_commit(&id))?.ok_or(Error::UnknownCommit(id))?;
-        let cut = osis_commit::rewrite(&blob, |ai, _| !aspects.contains(&ai));
+        let cut = osis_commit::rewrite(&blob, |ai| !aspects.contains(&ai));
         let keys = self.engine.get_typed(recipient, &ct::KEYS)?.ok_or(Error::UnknownThing(*recipient))?;
         let ks = keys.read.as_ref().ok_or(Error::Misuse("recipient has no read keyset"))?;
         let ct::KemKey::X25519MlKem768(kb) = &ks.kem_key;
@@ -408,7 +408,7 @@ impl SyncEngine {
     /// boxes the recipient on: it reads them, and judges them by their keyset) as plaintext commit
     /// values, each projected to those deltas: an inbox payload's `chain` (spec/wire.md §9).
     /// Empty for a commit not applied here.
-    fn inbox_chain(&mut self, c: &CommitId, parts: &BTreeSet<(usize, usize)>, keys_of: &[Tid]) -> Result<Vec<osis_base::Value>> {
+    fn inbox_chain(&mut self, c: &CommitId, parts: &BTreeSet<usize>, keys_of: &[Tid]) -> Result<Vec<osis_base::Value>> {
         let mut out = Vec::new();
         let mut chain = self.chain_under(c, parts).unwrap_or_default();
         for t in keys_of {
@@ -419,7 +419,7 @@ impl SyncEngine {
         }
         for (x, q) in chain {
             let Some(mut blob) = self.engine.run(|tx| tx.get_commit(&x))? else { continue };
-            blob.parts.retain(|p| q.contains(&(p.ai, p.di)));
+            blob.parts.retain(|p| q.contains(&p.ai));
             if blob.parts.is_empty() {
                 continue;
             }

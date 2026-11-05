@@ -15,10 +15,8 @@ pub(crate) mod labels;
 pub(crate) mod links;
 mod ownerless;
 pub(crate) mod person;
-pub(crate) mod roster;
 pub mod tied;
 
-pub use roster::ROSTER_SNAPSHOT_AFTER;
 
 pub use edges::{Demotion, PreSync};
 pub use links::{HeldLink, LINK_SEED, LinkSpec};
@@ -415,7 +413,7 @@ impl Engine {
         self.core.key_actors.len()
     }
 
-    /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §8).
+    /// Forgets a held key actor (a redeemer discards the seed, spec/permissions.md §7).
     pub fn drop_key_actor(&mut self, tid: &Tid) {
         self.core.key_actors.remove(tid);
         self.core.role_changed();

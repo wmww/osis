@@ -1,6 +1,6 @@
 //! Untrusted records never panic perm (notes/architecture.md §3): seeded junk held sets with
-//! self edges, owner edges, invites above roles, inverted ranges, ledgers out of order,
-//! unknown things, then every query.
+//! self edges, owner edges, ownerless things, invites above roles, inverted ranges, unknown
+//! things, then every query.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -8,7 +8,7 @@ use crate::common;
 use common::*;
 use roles_model::Rng;
 use osis_base::{Role, Tid, WallMs};
-use osis_perm::{At, Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, Point, RosterSnapshot, Tenure, Timeline};
+use osis_perm::{At, Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, Point, Timeline};
 use std::sync::Arc;
 
 fn pick<T: Copy>(rng: &mut Rng, v: &[T]) -> T {
@@ -23,7 +23,13 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
     }).collect();
     for i in 0..4 {
         let owner = pick(rng, &tids);
-        let (t, r) = thing_record(owner, rng.next() ^ i);
+        let (t, r) = if rng.below(4) == 0 {
+            // an ownerless thing: its record's first admin is its initial state
+            let r = osis_base::CreationRecord::Ownerless { admin: owner, nonce: [rng.next() as u8 ^ i as u8; 32] };
+            (r.tid(), r)
+        } else {
+            thing_record(owner, rng.next() ^ i)
+        };
         if rng.below(4) != 0 {
             h.created.insert(t, r);
         }
@@ -36,7 +42,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             role: pick(rng, &roles),
             until: (rng.below(3) == 0).then(|| WallMs(rng.below(12) as u64)),
             invite: (rng.below(2) == 0).then(|| pick(rng, &roles)),
-            since: (rng.below(3) == 0).then(|| Point { ts: ts(rng.below(12) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) }), tied: None,
+            tied: None,
         })
     };
     let frontier = |rng: &mut Rng| -> Option<Arc<Frontier>> {
@@ -54,25 +60,6 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
         }
         let author = pick(rng, &tids);
         h.add_commit(RoleCommit { id: cid(i as u32), ts: ts(rng.below(12) as u64), author, actor: author, frontier: frontier(rng), ops });
-    }
-    for i in 0..rng.below(4) {
-        let mut roster = std::collections::BTreeMap::new();
-        for _ in 0..rng.below(4) {
-            if let Some(e) = any_edge(rng) {
-                roster.insert(pick(rng, &tids), e);
-            }
-        }
-        let ledger = (0..rng.below(4))
-            .map(|_| Tenure {
-                holder: pick(rng, &tids),
-                role: pick(rng, &roles),
-                since: (rng.below(2) == 0).then(|| Point { ts: ts(rng.below(14) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) }),
-                until: Point { ts: ts(rng.below(14) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) },
-                frontier: frontier(rng),
-            })
-            .collect();
-        let author = pick(rng, &tids);
-        h.add_snapshot(RosterSnapshot { id: cid(100 + i as u32), ts: ts(rng.below(12) as u64), author, actor: author, thing: pick(rng, &tids), roster, ledger });
     }
     (h, tids)
 }

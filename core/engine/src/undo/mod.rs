@@ -163,8 +163,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         if m.dropped.contains_key(&ai) || !m.valid_at(ai) || a.ak.as_str() == "created.0" || a.ak.as_str() == osis_commit::retention::REQUIRED || made.contains(&a.tid) {
             continue;
         }
-        let parts = crate::apply::held_parts(tx, &target, ai)?;
-        let Some(Decoded::Delta(d)) = parts.into_iter().next() else { continue };
+        let Some(Decoded::Delta(d)) = crate::apply::held_part(tx, &target, ai)? else { continue };
         let source = h.form.own_source(h.author, target);
         let buffer = decode_buffer(&tx.unit(&a.tid, &a.ak)?.undo)?.into_iter().find(|x| x.0 == target).map(|x| x.1);
         let pre = match buffer {
@@ -181,14 +180,14 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
                     let Some(m) = tx.core.ix.commits.get(&c) else { continue };
                     let Some(ci) = m.valid.iter().zip(&m.header.aspects).position(|(v, x)| *v && x.tid == a.tid && x.ak == a.ak) else { continue };
                     if (cts, c) > (h.ts, target) {
-                        complete &= !matches!(m.header.kind, Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot);
+                        complete &= !matches!(m.header.kind, Kind::ContentSnapshot | Kind::RoleSnapshot);
                         continue;
                     }
                     if c == target {
                         continue;
                     }
                     complete &= !m.dropped.contains_key(&ci) && !m.missing.contains(&ci);
-                    for d in crate::apply::held_parts(tx, &c, ci)? {
+                    if let Some(d) = crate::apply::held_part(tx, &c, ci)? {
                         let d = d.into_fragment();
                         match &mut f {
                             Some(f) => {
@@ -226,7 +225,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         if let Some((f, r, expires)) = undo_expiring(w, &undone, state, pre, schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)? {
             // tests: a writer predating the copy expiry rule (spec/crdt.md §4.7)
             let expires = expires.filter(|_| !tx.core.skip_writer_rules);
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires, frontiers: None, chunks: Vec::new(), records: Vec::new() });
             // joined into the delta just pushed, so its counters stay the last allocated
             if let Some(ops) = unmade.remove(&(a.tid, a.ak.clone())) {
                 unmake_one(tx, (a.tid, a.ak.clone()), ops, ts, &own, &mut deltas)?;
@@ -327,7 +326,7 @@ fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, o
             d.fragment.join(f);
             d.hi = r.hi;
         }
-        _ => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() }),
+        _ => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), records: Vec::new() }),
     }
     Ok(())
 }

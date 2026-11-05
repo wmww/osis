@@ -297,11 +297,11 @@ fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
     assert_eq!((c.at(x.t, osis::DynamicAspectKey::untyped(name)).get().unwrap(), c.at(x.t, osis::DynamicAspectKey::untyped(brief)).get().unwrap()), (Some(Value::Int(1)), Some(Value::Int(2))));
 }
 
-// spec/permissions.md §7, notes/client-port.md §3 (Acting as the actor): a purge acting for a
+// spec/permissions.md §6, notes/client-port.md §3 (Acting as the actor): a purge acting for a
 // client drops what its node and the client both have the right to: a client admin drops no
 // `author` delta of its account, though the node alone may; a write client drops its own
 #[test]
-fn client_purge_is_judged_by_the_actor_spec_perm_7() {
+fn client_purge_is_judged_by_the_actor_spec_perm_6() {
     let x = node();
     let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Admin);

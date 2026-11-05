@@ -447,7 +447,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
 }
 
 fn edge(role: Role, o: GrantOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.may_grant, since: None, tied: None }
+    ct::Edge { role, until: o.until, invite: o.may_grant, tied: None }
 }
 
 /// Whether a grant of `role` to `h`, with no grant on `t` now, would be written by an admin below
@@ -685,7 +685,7 @@ impl Osis {
                 true => Some(e.placement(&tid, &group, subgroup)?.ok_or_else(|| Error::Invalid(format!("{tid} is not in {group} here")))?),
                 false => None,
             };
-            let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct) };
+            let edge = ct::Edge { role, until: None, invite: None, tied: tie.map(flows::tied::tie_ct) };
             e.grant(&tid, &group, &edge).map_err(needs_admin)
         })?;
         self.carry(done)
@@ -899,7 +899,7 @@ impl Osis {
         let new = match role {
             Some(role) => {
                 let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
-                Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct) })
+                Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct) })
             }
             None => None,
         };
@@ -999,14 +999,14 @@ impl Osis {
             let label = !l.engine().labeled(&target);
             let made = l.engine().create_link(&me, &flows::LinkSpec { target, role, until: opts.until, hosts: hosts.clone(), peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin)?;
             // K is on it before the label's first pass: this node's `reach.0` never goes under
-            // it, and nothing rotates (spec/permissions.md §4, §8)
+            // it, and nothing rotates (spec/permissions.md §4, §7)
             if label {
                 self.make_label(l, target, hosts)?;
             }
             Ok::<_, Error>(made)
         })?;
         // the seed thing in the home group: every node of this account holds it and may
-        // finalize the link (spec/permissions.md §8)
+        // finalize the link (spec/permissions.md §7)
         let mut w = self.write();
         w.group(self.me()).add(Member::Item(keep))?;
         w.commit()?;
@@ -1019,7 +1019,7 @@ impl Osis {
         // spec/permissions.md §4): the link carries the key it listens with after that
         self.carry(done)?;
         if opts.direct {
-            // only the dialable key and relays, never the lan secret (spec/permissions.md §8)
+            // only the dialable key and relays, never the lan secret (spec/permissions.md §7)
             let r = self.locked(|x| x.sync.own_reach()).ok_or(Error::Invalid("this node's reach is gone".into()))?;
             link.peers = vec![osis_label::Peer { dialable: r.dialable, relays: r.relays }];
             if let Some(until) = opts.until {
@@ -1104,7 +1104,7 @@ impl Osis {
     }
 
     /// Holds a link's key and follows K's label at its hosts and at the sharer's node when
-    /// the link names it (first contact, spec/permissions.md §8: dialed at the link's dialable
+    /// the link names it (first contact, spec/permissions.md §7: dialed at the link's dialable
     /// key and relays like a co-reader, for K and the target only, `follow_link_peer`); the key
     /// goes with the guard, and with it the follow unless the redemption went through.
     fn follow_link(&self, link: &osis_label::ShareLink) -> Result<KeyGuard> {
@@ -1168,7 +1168,7 @@ impl Osis {
     }
 
     /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
-    /// (spec/permissions.md §8: a joiner may keep the seed); the other joiners stay holders of K and
+    /// (spec/permissions.md §7: a joiner may keep the seed); the other joiners stay holders of K and
     /// need a new link to invite anyone. After the pre-sync.
     async fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
         self.not_routed("set_role", k)?;
@@ -1184,12 +1184,12 @@ impl Osis {
     }
 
     /// Rotates this node's dialable key when a direct link it made ended (spec/permissions.md
-    /// §8): after every change, at open and at the link's expiry. Finalizing links is
+    /// §7): after every change, at open and at the link's expiry. Finalizing links is
     /// node-sync's (`SyncEngine::finalize_links`). `ended` is persisted.
     pub(crate) fn upkeep_links(&self, l: &mut Locked) {
         let mut any = false;
         // a direct link that ended (its key left K, or its edge expired) gave out this node's
-        // dialable key: rotate it (spec/permissions.md §8), unless a single-use link ended by its
+        // dialable key: rotate it (spec/permissions.md §7), unless a single-use link ended by its
         // redemption (the one who could use it is now a holder and keeps the direct path)
         let now = l.engine().now();
         let direct: Vec<(Tid, MadeLink)> = l.links.iter().filter(|(_, m)| m.direct && !m.ended).map(|(k, m)| (*k, *m)).collect();

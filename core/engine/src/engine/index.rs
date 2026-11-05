@@ -41,8 +41,7 @@ const DELETE_HINTS: &[u8] = b"node/delete hints";
 const REQUIRED: &[u8] = b"node/required";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
-/// Per role commit, what perm's adaptation reads of its held `roles.0` and `tenures.0`
-/// parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
+/// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
 pub(super) const EDGES: &[u8] = b"node/edges";
 /// Saved role walks (osis-perm `Timelines::to_save`), by component root: a cache unit
@@ -305,17 +304,17 @@ impl<T: Rec> Rec for Option<T> {
 }
 impl Rec for osis_perm::Edge {
     fn to(&self) -> Value {
-        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.since.to(), self.tied.map(crate::flows::tied::tie_ct).as_ref().map(Codec::to_value).to()])
+        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.tied.map(crate::flows::tied::tie_ct).as_ref().map(Codec::to_value).to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [role, until, invite, since, tied] = x.as_slice() else { return None };
+        let [role, until, invite, tied] = x.as_slice() else { return None };
         let until = <Option<u64> as Rec>::from(until)?.map(WallMs);
         let tied = match <Option<Value> as Rec>::from(tied)? {
             None => None,
             Some(t) => Some(crate::flows::tied::tie_perm(osis_schema::core_types::Tie::from_value(&t).ok()?)),
         };
-        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, since: Rec::from(since)?, tied })
+        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, tied })
     }
 }
 impl Rec for u64 {
@@ -332,60 +331,44 @@ impl Rec for u64 {
 
 impl Rec for crate::apply::validity::EdgeParts {
     fn to(&self) -> Value {
-        use crate::apply::validity::EdgePart;
         Value::List(
             self.0
                 .iter()
-                .map(|(ai, p)| match p {
-                    EdgePart::Holders(es) => Value::List(vec![
-                        Value::uint(*ai as u64),
-                        Value::Int(0),
-                        Value::List(
-                            es.iter()
-                                .map(|(d, k, v)| {
-                                    let v = match v {
-                                        None => Value::Int(0),
-                                        Some(v) => v.to(),
-                                    };
-                                    Value::List(vec![records::dot_value(d), k.to(), v])
-                                })
-                                .collect(),
-                        ),
-                    ]),
-                    EdgePart::Tenures(ts) => Value::List(vec![Value::uint(*ai as u64), Value::Int(1), Value::List(ts.clone())]),
+                .map(|(ai, es)| {
+                    let es = es
+                        .iter()
+                        .map(|(d, k, v)| {
+                            let v = match v {
+                                None => Value::Int(0),
+                                Some(v) => v.to(),
+                            };
+                            Value::List(vec![records::dot_value(d), k.to(), v])
+                        })
+                        .collect();
+                    Value::List(vec![Value::uint(*ai as u64), Value::List(es)])
                 })
                 .collect(),
         )
     }
     fn from(v: &Value) -> Option<Self> {
-        use crate::apply::validity::EdgePart;
         let Value::List(x) = v else { return None };
         let mut out = Vec::with_capacity(x.len());
         for p in x {
             let Value::List(p) = p else { return None };
-            let [ai, kind, Value::List(items)] = p.as_slice() else { return None };
-            let ai = <usize as Rec>::from(ai)?;
-            out.push((
-                ai,
-                match kind {
-                    Value::Int(0) => EdgePart::Holders(
-                        items
-                            .iter()
-                            .map(|e| {
-                                let Value::List(e) = e else { return None };
-                                let [d, k, v] = e.as_slice() else { return None };
-                                let v = match v {
-                                    Value::Int(0) => None,
-                                    v => Some(Rec::from(v)?),
-                                };
-                                Some((records::dot_of(d).ok()?, Rec::from(k)?, v))
-                            })
-                            .collect::<Option<Vec<_>>>()?,
-                    ),
-                    Value::Int(1) => EdgePart::Tenures(items.clone()),
-                    _ => return None,
-                },
-            ));
+            let [ai, Value::List(items)] = p.as_slice() else { return None };
+            let es = items
+                .iter()
+                .map(|e| {
+                    let Value::List(e) = e else { return None };
+                    let [d, k, v] = e.as_slice() else { return None };
+                    let v = match v {
+                        Value::Int(0) => None,
+                        v => Some(Rec::from(v)?),
+                    };
+                    Some((records::dot_of(d).ok()?, Rec::from(k)?, v))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            out.push((<usize as Rec>::from(ai)?, es));
         }
         Some(crate::apply::validity::EdgeParts(out))
     }

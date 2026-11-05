@@ -53,7 +53,7 @@ fn alice_and_bob_on(net: &mut Net, host: usize, a: usize, b: usize, extra: Vec<o
 }
 
 fn grant(net: &mut Net, a: usize, g: Tid, to: Tid) {
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &to, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -228,7 +228,7 @@ fn removed_holder_gets_no_resent_grant_spec_sync_3() {
     assert_eq!(fresh, 1, "only the removal notice is sent again");
 }
 
-// spec/sync.md §3 (an inbox blob's label hints are the sender's word), spec/permissions.md §8
+// spec/sync.md §3 (an inbox blob's label hints are the sender's word), spec/permissions.md §7
 // (only a followed link names a node to dial): a `peer://` address in a granted label's host
 // list is never dialed by the grantee, neither from the inbox hint nor from the `label.0`.
 #[test]
@@ -303,7 +303,7 @@ fn grant_undelivered(net: &mut Net, a: usize, b: usize, host: usize, home: &Labe
     use osis_node::flows::Delivery;
     net.set_online(b, false);
     let before = net.host_ids(host, home);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -371,7 +371,7 @@ fn holds(net: &mut Net, n: usize, c: &osis_base::CommitId) -> bool {
 /// Alice's grant on `g` to `bob`; the grant commit.
 fn grant_commit(net: &mut Net, a: usize, g: Tid, bob: Tid) -> osis_base::CommitId {
     use osis_node::flows::Delivery;
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -1020,7 +1020,7 @@ fn hint_turns_reach_the_group_large_spec_sync_3() {
 fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
     let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
     let t = persisted_item(&mut net, a, g);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     let names = |on: Tid, net: &mut Net| {
         let done = net.engine(a).grant(&on, &bob, &edge).unwrap();
@@ -1038,7 +1038,7 @@ fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
 #[test]
 fn junk_copy_keeps_out_no_inbox_blob_spec_commits_4() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob_at(Vec::new());
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = *done.commits.iter().find(|i| net_is_role(&mut net, a, i, &g)).unwrap();
     let body = net.engine(a).body(&c).unwrap().unwrap();
@@ -1404,7 +1404,7 @@ fn pending_grants_are_not_cleared_spec_sync_5() {
     net.set_online(a, false);
     net.set_online(b, false);
     let n = osis_base::format::INBOX_WAITING as u64;
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let t = |i: u64| vec![osis_label::InboxThing { tid: osis_base::Tid::from_bytes([i as u8; 15]), label: None, delete_keys: None }];
     let mut near = Vec::new();
     let mut far = Vec::new();
@@ -1567,7 +1567,7 @@ fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
     let (l, acts) = net.sync(a).create_label(&o, vec![addr.clone()]).unwrap();
     net.actions(a, acts);
     net.run();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let mut readers = Vec::new();
     for i in 0..4 {
         let r = net.node(10 + i, &[host]);

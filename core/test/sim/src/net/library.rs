@@ -54,7 +54,7 @@ fn expect_tags(sim: &mut NetSim, ns: &[usize], t: Tid, story: &[&str], want: &[&
 }
 
 fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role>, presync: PreSync) -> Res<()> {
-    let new = new.map(|role| ct::Edge { role, until: None, invite: None, since: None, tied: None });
+    let new = new.map(|role| ct::Edge { role, until: None, invite: None, tied: None });
     let r = sim.engine(n)?.demote(&target, &Demotion { holder, new, presync, keep: None });
     let done = r.map_err(|e| sim.fail(format!("node {n} demote: {e}")))?;
     sim.carry(n, done)
@@ -300,7 +300,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A person on node `n` follows a link's label and redeems it (spec/permissions.md §8), as the
+/// A person on node `n` follows a link's label and redeems it (spec/permissions.md §7), as the
 /// osis crate does: hold L, follow K's label, wait, redeem, drop L. Err when the redemption is
 /// refused (a used single-use link).
 fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid) -> Res<Result<(), String>> {
@@ -319,7 +319,7 @@ fn redeem(sim: &mut NetSim, n: usize, link: &osis_label::ShareLink, person: Tid)
     }
 }
 
-/// Link redemption race and single use (spec/permissions.md §8, §5.1): two strangers redeem one
+/// Link redemption race and single use (spec/permissions.md §7, §5.1): two strangers redeem one
 /// single-use link concurrently; the sharer and the winner agree on exactly one joiner (the
 /// first by the timeline's order; the loser, rotated out of K, may not learn it); the sharer
 /// finalizes; a third redeemer is refused.
@@ -327,7 +327,7 @@ pub fn link_race(seed: u64) -> Res<Report> {
     links("link_race", seed, true)
 }
 
-/// Concurrent redemptions of a multi-use link (spec/permissions.md §8): both strangers join and
+/// Concurrent redemptions of a multi-use link (spec/permissions.md §7): both strangers join and
 /// read the target; the sharer then revokes the link (removes L); a later redeemer is refused.
 pub fn link_redeem(seed: u64) -> Res<Report> {
     links("link_redeem", seed, false)
@@ -619,7 +619,7 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
                 continue;
             }
             let Some(h) = sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|x| x.engine().header(c))) else { continue };
-            if parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| !kept(a.ak.as_str())) {
+            if parts.iter().filter_map(|ai| h.aspects.get(*ai)).any(|a| !kept(a.ak.as_str())) {
                 content += 1;
             }
         }
@@ -732,7 +732,7 @@ fn expired_absent(sim: &mut NetSim, commits: &[CommitId], ak: &osis_base::Ak) ->
         }
         let h = sim.nodes.iter().find_map(|n| n.sync.as_ref().and_then(|s| s.engine().header(&c)));
         let Some(h) = h else { continue };
-        if !parts.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|x| x.ak == *ak)) {
+        if !parts.iter().all(|ai| h.aspects.get(*ai).is_some_and(|x| x.ak == *ak)) {
             continue;
         }
         for s in 0..sim.hosts.len() {
@@ -916,7 +916,7 @@ pub fn purge_tombstones(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A purge that falls through a host (spec/permissions.md §7): admin `a` is cut off holding a
+/// A purge that falls through a host (spec/permissions.md §6): admin `a` is cut off holding a
 /// permanent message and removes admin `x`; `x`, not knowing, purges it (the seed: stamped before or
 /// after the removal); the others drop the body and it goes from the host. `a` comes back: every
 /// node left takes the body again and shows no purge, and nobody deletes it again (`sim.finish`
@@ -1045,7 +1045,7 @@ pub fn concurrent_writers(seed: u64) -> Res<Report> {
     for (n, l, b) in std::mem::take(&mut sim.uploads) {
         by_blob.entry((l, b)).or_default().insert(n);
     }
-    type BodyKey = (osis_base::LabelId, CommitId, Vec<(usize, usize)>);
+    type BodyKey = (osis_base::LabelId, CommitId, Vec<usize>);
     let mut per_body: std::collections::BTreeMap<BodyKey, BTreeSet<osis_base::BlobId>> = Default::default();
     // the wait is a spread, not an election: a writer whose view of a promotion lags (its
     // session reopened for a new step) may send too; rare. Every writer's point may fall in

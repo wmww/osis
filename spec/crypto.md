@@ -93,16 +93,15 @@ Terms in this section depend on each other; each is defined once, under its bold
 
 ### Names
 - **Names**: a rotation of actor A names the departures from A its rotator holds, read from its own role timeline (spec/permissions.md §5.1), never copied from another history box:
-  - A's epoch start at the rotator (a roster snapshot, spec/permissions.md §6), if any;
-  - every applied commit ordered after it that applies an edge write on A lowering a grant (a removal, demotion, self-removal or finalize);
-  - every applied commit ordered after the start whose demotion's audit dropped (spec/permissions.md §5.1) an edge write on A, named once per thing its edge writes target.
-- A name is that thing and the commit's key (spec/permissions.md §6).
+  - every applied commit that applies an edge write on A lowering a grant (a removal, demotion, self-removal or finalize), named on A;
+  - every applied commit whose demotion's audit dropped (spec/permissions.md §5.1) an edge write on A, named once per thing its edge writes target.
+- A name is that thing and the commit's key (spec/permissions.md §5.1).
 - **Departs mark**: when the rotation commit itself writes such a grant on A it cannot name itself. The names then carry its departs mark, its `ts` and signing node.
 - Every history box of one rotation carries the same names.
 - The rotator places every named commit under each label it places the rotation commit under (spec/sync.md §5).
 - **Met**: the names of a history box entry are met at a node when both hold:
-  - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a copy of the commit lacking it does not) and resolved (spec/permissions.md §2: every entry its removals reset known, so its edge writes take part in the walk; a finalize held without the write it ends removes nobody), or its key is ordered before the node's epoch start (spec/permissions.md §6) of the name's thing.
-  - its departs mark, if any, is met: the node holds that commit (by those two) or its epoch start of A is ordered after them.
+  - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a copy of the commit lacking it does not) and resolved (spec/permissions.md §2: every entry its removals reset known, so its edge writes take part in the walk; a finalize held without the write it ends removes nobody).
+  - its departs mark, if any, is met: the node holds that commit (by those two).
 
 ### Established and current
 - **Established**: an epoch e of r is established at a node in either of two cases.
@@ -120,9 +119,9 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Holders for keys**: the holders of A by the role timeline (spec/permissions.md §5.1) with every applied edge write in effect and `until` disregarded, a removal's value saying keep (`until` 0, spec/permissions.md §2) counting as no edge; the owner holds admin. Keys read no clock: an edge past its `until` stays a holder until its finalize (spec/permissions.md §2). "Current holder" in this section and in spec/permissions.md §3 means a holder for keys.
 - **Departure** from role r of actor A: an applied edge write removing a holder M or demoting it below r, as holders for keys see it (a finalize is a removal). It **concerns** the roles of A that M left. A departure from a holder actor of A, or below one, is none of A's (Holder actors, below).
 - **Attributes**: a node attributes a departure of holder H from A it knows of to the name of the newest (by key; one commit named on two things by the greater thing) of:
-  - an applied commit ordered after its epoch start of A whose edge write lowered H's grant on A;
-  - an applied commit ordered after that start whose demotion's audit dropped an edge write putting H's grant on A (named on the first of the things its edge writes target).
-  - A holder with a box (Boxes) at a current epoch of A whose role it no longer holds and no such commit is attributed to its epoch start of A, or, with none, to nothing.
+  - an applied commit whose edge write lowered H's grant on A;
+  - an applied commit whose demotion's audit dropped an edge write putting H's grant on A (named on the first of the things its edge writes target).
+  - A holder with a box (Boxes) at a current epoch of A whose role it no longer holds and no such commit is attributed to nothing.
 - **Covers**: an epoch e of role r of A **covers** a departure that concerns r when some live entry of e's history box whose names are met at the node names it: its name is among the names, or it is a departure from A by the rotation commit itself (its departs mark). Boxes decide nothing: an epoch is relied on only for what its rotator held.
 
 ### Encrypting under
@@ -149,7 +148,7 @@ A **holder actor** of A is a holder for keys of A (its owner included) that is a
 - **Descends**: a held valid keyset k descends from epoch j when k's supersedes list names j, or names a held valid keyset that descends from j. A held invalid keyset passes nothing on (a forged keyset lists every keyset).
 - **Key access** (no key cycles):
   - An **actor grant** on A is a holder actor H's standing on A: its grant, or its owning A, which counts as a grant ordered before every grant (an owner's key yields A's from A's creation, so it is never the one left keyless).
-  - Actor grants are ordered by the key (spec/permissions.md §6) of the write that started H's present standing on A: the earliest applied edge write since which H has held a role on A for keys without a break. One standing since the node's epoch start of A or since A's creation (a first admin) is ordered before every write. Ties go by A's tid, then H's.
+  - Actor grants are ordered by the key (spec/permissions.md §5.1) of the write that started H's present standing on A: the earliest applied edge write since which H has held a role on A for keys without a break. One standing since A's creation (a first admin) is ordered before every write. Ties go by A's tid, then H's.
   - A node takes the actor grants it holds in that order and gives each **key access** unless A's key already yields H's over the grants given key access before it (the grant would close a cycle): X's key **yields** Y's when X holds such a grant on Y, or on an actor whose key yields Y's. Such a grant is **keyless**: the earlier grant wins, the later reads nothing.
   - A rotation, grant or re-seal of A boxes no actor without key access to A. A keyless grant is a role all the same (spec/permissions.md §5).
 - **Tainted**: a keyset k of role r of actor M is tainted at a node when M's boxes include one at epoch k to a holder whose actor grant on M is keyless (a box to a departed holder is a departure from M, not a taint).

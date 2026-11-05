@@ -326,7 +326,7 @@ impl SyncEngine {
     /// `secrets.0` boxes the label's readers cannot open).
     pub(crate) fn place_chain(&mut self, g: &Tid, c: &CommitId, owed: Option<[u8; 32]>) -> Result<()> {
         let closure = self.engine.closure(g);
-        self.place_aspects(g, c, owed, |a| matches!(a.ak.as_str(), "roles.0" | "tenures.0" | "keys.0" | "created.0") && !closure.contains(&a.tid))
+        self.place_aspects(g, c, owed, |a| matches!(a.ak.as_str(), "roles.0" | "keys.0" | "created.0") && !closure.contains(&a.tid))
     }
 
     /// Places the aspects of `c` that `keep` admits as a certificate copy under the labels of
@@ -389,7 +389,7 @@ impl SyncEngine {
                 continue;
             }
             let ctx = self.engine.body_ctx(&g);
-            let inside: Vec<(usize, usize)> = body.parts.iter().filter(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| ctx.closure.contains(&a.tid))).copied().collect();
+            let inside: Vec<usize> = body.parts.iter().filter(|ai| h.aspects.get(**ai).is_some_and(|a| ctx.closure.contains(&a.tid))).copied().collect();
             let parts = self.engine.readable_parts(&ctx, c, &inside);
             if parts.is_empty() {
                 continue;
@@ -406,8 +406,8 @@ impl SyncEngine {
     /// one host. Not `held_parts` (`pass/`), which asks whether another node's entries spare
     /// this node a certificate copy, and so counts them only genuine, at every host and, with
     /// a rotation, readable under the newest secret.
-    fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[(usize, usize)]>, present: bool) -> bool {
-        let mut held: BTreeSet<(usize, usize)> = BTreeSet::new();
+    fn held_at(&self, l: &LabelId, c: &CommitId, parts: Option<&[usize]>, present: bool) -> bool {
+        let mut held: BTreeSet<usize> = BTreeSet::new();
         for (id, e) in self.state.entries_of(l, c) {
             if let super::state::Kind::Commit { parts: p, .. } = &e.kind
                 && (!present || self.state.held_anywhere(l, &id))
@@ -465,7 +465,7 @@ impl SyncEngine {
 }
 
 impl SyncEngine {
-    /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §8) after a
+    /// Finalizes the links due here (`Engine::links_due`, spec/permissions.md §7) after a
     /// complete pass of K's labels (`complete_pass`) that, for an expired link, ended at every
     /// host after `until` (a pass from before going offline does not count); at once when K's
     /// labels have no host (`peer://` nodes only count as none) and this node made the link (the redeemers reached it directly;

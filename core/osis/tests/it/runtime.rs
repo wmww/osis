@@ -132,17 +132,17 @@ async fn redeem_over(host_ep: Option<osis::internals::InProcess>, url: &str, a: 
     drop(host_db);
 }
 
-// spec/permissions.md §8 (links), spec/sync.md §10: a link redeemed over the tokio driver.
+// spec/permissions.md §7 (links), spec/sync.md §10: a link redeemed over the tokio driver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn redeem_in_process_spec_permissions_8() {
+async fn redeem_in_process_spec_permissions_7() {
     let net = osis_transport::Net::new(4);
     redeem_over(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b"))).await;
 }
 
-// spec/permissions.md §8, spec/sync.md §10: the same over localhost QUIC (tier 2).
+// spec/permissions.md §7, spec/sync.md §10: the same over localhost QUIC (tier 2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
-async fn redeem_quic_localhost_spec_permissions_8() {
+async fn redeem_quic_localhost_spec_permissions_7() {
     redeem_over(None, "quic://127.0.0.1:0", None, None).await;
 }
 
@@ -230,12 +230,12 @@ async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
     .unwrap()
 }
 
-// spec/permissions.md §8 (first contact: the link carries the sharer's dialable key and relays),
+// spec/permissions.md §7 (first contact: the link carries the sharer's dialable key and relays),
 // spec/sync.md §5 (co-reader peer): Bob cannot reach Alice's peer; he redeems her direct link at
 // her node, opening the link's label there by the link key, and then syncs the target with
 // her node though neither publishes `reach.0` to the other's groups by default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn redeem_direct_in_process_spec_permissions_8() {
+async fn redeem_direct_in_process_spec_permissions_7() {
     let net = osis_transport::Net::new(6);
     let host_ep = Some(net.endpoint("s"));
     let (host_db, host) = host_node(host_ep, "mem://s").await;
@@ -343,11 +343,11 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     drop(host_db);
 }
 
-// spec/permissions.md §8 (a node without peers makes only direct links), spec/sync.md §5
+// spec/permissions.md §7 (a node without peers makes only direct links), spec/sync.md §5
 // (co-reader peer: a label synced with nobody is served complete): Alice has no peer and no
 // other node; Bob redeems her direct link at her node and the two sync the target there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn redeem_direct_no_peer_in_process_spec_permissions_8() {
+async fn redeem_direct_no_peer_in_process_spec_permissions_7() {
     let net = osis_transport::Net::new(9);
     let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap().0;
     let mut c = cfg(2, vec![], Some(net.endpoint("b")));
@@ -453,11 +453,11 @@ async fn peers_lists_what_a_group_saved() {
     assert!(db.saved_peers().unwrap().is_empty());
 }
 
-// spec/permissions.md §8 (a single-use link finalized by its redemption does not rotate): Bob
+// spec/permissions.md §7 (a single-use link finalized by its redemption does not rotate): Bob
 // redeems Alice's single-use direct link with no peer between them; once Alice finalizes it,
 // her key is the one the link carried and Bob's writes still reach her directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn single_use_direct_keeps_key_in_process_spec_permissions_8() {
+async fn single_use_direct_keeps_key_in_process_spec_permissions_7() {
     let net = osis_transport::Net::new(8);
     let host_ep = Some(net.endpoint("s"));
     let (host_db, host) = host_node(host_ep, "mem://s").await;
@@ -507,7 +507,7 @@ async fn rotate_reach_relistens_in_process_spec_sync_10() {
     let net = osis_transport::Net::new(7);
     let db = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap().0;
     let old = reach_of(&db).await.reach;
-    // spec/permissions.md §8: direct is opt-in; without peers a link must be direct
+    // spec/permissions.md §7: direct is opt-in; without peers a link must be direct
     assert!(matches!(db.make_link(db.me(), osis::Role::Read, Default::default()), Err(osis::Error::Invalid(_))));
     let probe = net.endpoint("probe");
     let dial = |key: [u8; 32]| {

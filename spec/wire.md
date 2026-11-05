@@ -40,7 +40,6 @@ Format version 1, spec/versioning.md §1:
 | `MAX_OWNER_DEPTH` | 64 owner links from a thing to the top of its owner chain, a key actor or an ownerless thing (spec/permissions.md §1) |
 | `MAX_REQUIRED_ENTRIES` | 64 entries of one `required.0^` delta (spec/commits.md §5) |
 | `MAX_AUTHOR_ITEMS` | 32 items by author in one commit's `purge` (§4) |
-| `MAX_LINKED_FRONTIERS` | 64 MiB (67 108 864 bytes): canonical bytes of the distinct linked tenure frontiers of one roster snapshot (spec/permissions.md §6) |
 
 ### Protocol version 1 limits
 Not format constants (§11). Per-message caps: §11.2.
@@ -75,7 +74,7 @@ Not format constants. A value marked recommended is advice.
 ```
 Header    := [version, author, actor, kind, ts, form, expires, aspects, chunks,
               purge, undoes, blind, keys, frontier, ephemeral]
-Aspect    := [tid, ak, lo, hi, Retention, keys, hashes]
+Aspect    := [tid, ak, lo, hi, Retention, keys, hash]
 Retention := [by, at_least, at_most]
 Bound     := {? 0: abs, ? 1: rel}
 DeleteKey := [level, pk]
@@ -83,37 +82,36 @@ Chunk     := [blob_id, [ki*]]
 PurgeItem := [commit_id, tid, ak] | [tid, ak] | [tid, ak, actor]
 CommitBlobPlaintext := [Header, signature, [Section*]]
 Section   := [[ai*], [owner*], wrap, ciphertext]
-Part      := [ai, di, delta, [creation*]]
+Part      := [ai, delta, [creation*]]
 ```
 Header fields by position:
 0. `version`: uint, the format version (1).
-1. `author`: tid of the signing key actor. 2. `actor`: tid of the actor it acts for (spec/permissions.md §5.2); in a role commit or roster snapshot (`kind` 1, 4) equal to `author`, else bad input.
-3. `kind`: 0 content, 1 role, 2 content compaction snapshot, 3 role compaction snapshot, 4 roster snapshot (spec/commits.md §2).
+1. `author`: tid of the signing key actor. 2. `actor`: tid of the actor it acts for (spec/permissions.md §5.2); in a role commit (`kind` 1) equal to `author`, else bad input.
+3. `kind`: 0 content, 1 role, 2 content compaction snapshot, 3 role compaction snapshot (spec/commits.md §2).
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 commit form, or `[1, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `expires`: `Opt(T)`, the commit's expiry, wall ms (spec/commits.md §6).
 7. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
 8. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce; `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob.
-9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §7: the actor its header names). The second place tells the three-item forms apart: a tid, or an AK's text.
+9. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §6: the actor its header names). The second place tells the three-item forms apart: a tid, or an AK's text.
 10. `undoes`: `Opt(commit_id)`.
 11. `blind`: 16 random bytes (spec/crypto.md §7).
 12. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
 13. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a role commit carrying an explicit demotion (spec/permissions.md §5; a writer rule: a receiver checks only that it sits on a role commit). A value that does not decode as a `frontier` is bad input.
 14. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 0, or `kind` 0 and session form, no `chunks`, no `purge`, no `undoes`, no list by link and no `created.0` aspect; every aspect's retention is `writer` with no bounds, with the levels it calls for; a relay-only commit has no `expires`. Anything else is bad input.
 
-Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced; in `at_most` only 0), `{}` for no bound; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hashes`: `[delta_hash+]` (32 bytes each), exactly one for kinds 0, 2, 3, sorted and distinct for kinds 1 and 4.
+Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`); `lo`, `hi`: the counter range (`lo = hi = 0` for kinds 2, 3; else `1 <= lo < hi`); `Retention`: `by` (purgeable-by class), `at_least` and `at_most` bounds, each a map with optional `0: abs` (wall ms; `2^63 - 1` means forever) and `1: rel` (ms after the body is replaced; in `at_most` only 0), `{}` for no bound; `keys`: `[ki*]`, ascending indices into the header's `keys`: one per level the retention calls for (spec/crypto.md §7), exactly those levels, else bad input; `hash`: the 32-byte delta hash of its one delta.
 
 - **Inline or link**: `aspects`, `chunks`, `purge`, `keys` and the frontier are each inline iff their canonical encoding is at most `CHUNK_THRESHOLD` bytes; otherwise the position holds a LINK value (`Opt(LINK)` for the frontier) to a chunk tree (§6) of that canonical encoding, its content hashes keyed by the dedup secret of the header's `actor`. A decoder rejects an inline list above the threshold or a link to one at or below it or above `MAX_LIST_BYTES`; a writer refuses such a commit. A linked frontier's encoding is exactly `{0: set<32-byte commit ID>}`; anything else is bad input. Header-list chunks carry the commitments of §5.
 - **Commit ID** = BLAKE3(canonical bytes of `Header`). The signature is the `signature` value of the author's key under `"osis v1 commit" || commit ID`.
 - **Commit blob** plaintext: `CommitBlobPlaintext`: one blob carries the whole commit, every part sealed to its thing's readers (spec/sync.md §3).
   - A `Section` holds the parts of one thing: `[ai*]` the aspect indices of its parts, ascending, distinct, each with a part inside; `[owner*]` the thing's owner chain as the writer knows it, nearest owner first, up to and including the first actor with secrets of its own (empty for such an actor, a key actor or an ownerless thing; at most `MAX_OWNER_DEPTH`, no tid twice: else bad input); `ciphertext` = XChaCha20-Poly1305 of the canonical `[Part*]` list under a fresh random 32-byte section key, nonce 24 zero bytes (the key encrypts this one plaintext and nothing else), AD = the commit ID; `wrap` = a random 24-byte nonce `||` XChaCha20-Poly1305 of the section key under `kdf("section", read secret of the thing)` (its own, or derived from its owner's by tid, spec/crypto.md §3) at the newest epoch the writer holds (a rotation's section under the epoch it supersedes, spec/crypto.md §5), that nonce, AD = the commit ID: 72 bytes. Sections sorted by their first `ai`; an aspect in two sections is bad input; zero sections is allowed (every delta purged). A per-label copy (spec/sync.md §3) is one section of its parts, with an empty owner chain, under the read secret of the label's group.
   - A reader tries, per section, the read secrets it holds of the section's thing, those derived by tid through the listed owner chain from the epochs it holds of any member of it (the thing's record may be inside the section; a member given secrets of its own since holds the derived epoch in its history), and the read secret of the group of the label the blob came under, newest first. Parts that open on an aspect the section does not list, or a listed aspect with no part, are bad input. A section no held secret opens is kept as it is: a non-reader learns nothing of it beyond its size, `ai` list and owner chain, and copies it verbatim into a fresh encryption of the commit.
-  - A `Part` holds one delta: `ai` indexes `aspects`, `di` that aspect's `hashes`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that delta hash, then the creation records (§3) carried beside it (spec/commits.md §2), sorted by tid, distinct; empty in a commit without the ephemeral marker, else bad input. Records are outside the header and delta hash: each hashes to its tid. Within a section parts sorted by `(ai, di)`, distinct.
+  - A `Part` holds one delta: `ai` indexes `aspects`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that aspect's `hash`, then the creation records (§3) carried beside it (spec/commits.md §2), sorted by tid, distinct; empty in a commit without the ephemeral marker, else bad input. Records are outside the header and delta hash: each hashes to its tid. Within a section parts sorted by `ai`, distinct.
   - The blob's prefix commitment groups are those of the delete keys its sections' aspects list (§5); its expiry is the header's `expires`. The whole commit stays within `MAX_BLOB` (a writer pages its deltas, spec/crdt.md §8, and refuses a commit that still does not fit).
 - A header violating a rule of spec/commits.md §2, §5 or §6 is bad input:
   - an aspect of the wrong class for its kind (`created.0` fits either kind);
   - `created.0` in a kind without own writes or with the ephemeral marker;
-  - a roster snapshot on an aspect other than `roles.0` and `tenures.0` or on more than one thing;
-  - a role compaction snapshot of `roles.0` or `tenures.0`;
+  - a role compaction snapshot of `roles.0`;
   - a role-class, `created.0`, `required.0^` or `purge.0` aspect whose retention is not its fixed one (spec/commits.md §5);
   - `expires` on a commit with such an aspect;
   - a `nobody` aspect beside an aspect of another purgeable-by, `created.0` and `required.0^` aside (spec/commits.md §5);
@@ -123,8 +121,7 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
   - `expires` on a commit with a purge request (spec/commits.md §5);
   - a purge item naming a role-class aspect;
   - more than `MAX_AUTHOR_ITEMS` purge items by author;
-  - a frontier outside a role commit (kind 1);
-  - more than one hash for a kind with one delta per aspect.
+  - a frontier outside a role commit (kind 1).
 
 ## 5. Blob framing
 A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixed byte layout:
@@ -195,7 +192,7 @@ ClaimSet := [[claim+], {entry: box}]
   - **Position 2**: empty unless a thing the commit touches has no label of its own. Then it holds, a chain that would not fit the blob left out:
     - the author's chain certificates for the carried parts (spec/permissions.md §4), each projected to its chain deltas and without any `keys.0` but the author's own;
     - when the commit boxes the recipient (a grant, a re-seal), the current `keys.0` commit of each thing it boxes it on, projected to that delta.
-- A recipient ingests the chain before the commit, only once the blob is admitted (spec/sync.md §3), and only its `roles.0`, `tenures.0`, `created.0` and `keys.0` deltas.
+- A recipient ingests the chain before the commit, only once the blob is admitted (spec/sync.md §3), and only its `roles.0`, `created.0` and `keys.0` deltas.
 
 ## 10. Links and recovery cards
 ```
@@ -203,8 +200,8 @@ Link := [1, seed, target, k, k_label, [address*], [peer*], ? flags]
 peer := [dialable, [relay*]]
 Card := [1, seed, account, home_label, [address+]]
 ```
-- `Link` (spec/permissions.md §8): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`reach.0`, spec/data-model.md §9). A redeemer with no common host dials a peer, which serves K's label as a co-reader peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §8); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
-- `Card` (spec/permissions.md §8): format 1, the recovery key's 32-byte seed, the account's tid, its home label ID, host addresses.
+- `Link` (spec/permissions.md §7): format 1, L's 32-byte seed, the target tid, K's tid, K's label ID, host addresses of K's label, and the sharer node's P2P reach for first contact: `dialable` its 32-byte dialable key, `relay` relay URLs (`reach.0`, spec/data-model.md §9). A redeemer with no common host dials a peer, which serves K's label as a co-reader peer (spec/sync.md §5). `flags` (uint): bit 0 single use (the redemption removes L's own grant, spec/permissions.md §7); other bits are reserved and MUST be zero; present only when nonzero (a link with `flags` 0 or a reserved bit set is malformed).
+- `Card` (spec/permissions.md §7): format 1, the recovery key's 32-byte seed, the account's tid, its home label ID, host addresses.
 - The label a link or card names is the first label of K or of the account (index 0, spec/sync.md §2): both are created with it.
 - Caps: at most 8 addresses, 4 peers, 4 relays per peer; URLs at most 256 bytes (§13).
 - Text forms: `osis://link/` or `osis://card/` followed by the unpadded base64url of the canonical bytes.

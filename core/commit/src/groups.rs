@@ -63,13 +63,13 @@ pub(crate) fn check_fits(c: &CommitBlob, max: usize) -> Result<(), Error> {
     Ok(())
 }
 
-/// Whether delta set `a` is a strict subset of `b` (both sorted).
-pub fn strict_subset(a: &[(usize, usize)], b: &[(usize, usize)]) -> bool {
+/// Whether part set `a` is a strict subset of `b` (aspect indices, both sorted).
+pub fn strict_subset(a: &[usize], b: &[usize]) -> bool {
     a.len() < b.len() && a.iter().all(|x| b.binary_search(x).is_ok())
 }
 
 /// Purge rewrite: the same header and signature without the deltas `drop` names (header-only
 /// when none remain). Its prefix groups are those of its remaining aspects (`prefix_groups`).
-pub fn rewrite(c: &CommitBlob, drop: impl Fn(usize, usize) -> bool) -> CommitBlob {
-    CommitBlob { header: c.header.clone(), signature: c.signature, parts: c.parts.iter().filter(|p| !drop(p.ai, p.di)).cloned().collect() }
+pub fn rewrite(c: &CommitBlob, drop: impl Fn(usize) -> bool) -> CommitBlob {
+    CommitBlob { header: c.header.clone(), signature: c.signature, parts: c.parts.iter().filter(|p| !drop(p.ai)).cloned().collect() }
 }

@@ -623,30 +623,27 @@ fn diff_steps(rng: &mut Rng) -> Vec<Step> {
         let (a, b, c) = (rng.below(5) as usize, rng.below(5) as usize, rng.below(5) as usize);
         let by = rng.below(3) as usize;
         let holder = rng.pick(&[1, 2]);
-        out.push(match rng.below(17) {
+        out.push(match rng.below(14) {
             0 | 1 => aim(Edge { by: 0, t: a, holder, role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)]) }),
             2 => aim(New { by: 0, parent: a, write: rng.below(2) == 0 }),
             3 => Forged { by, a, b, how: 1, op: rng.below(30) as u8, k: 0, v: rng.below(9) as u8 },
             4 | 5 => Forged { by, a, b, how: 2, op: 0, k: 0, v: rng.below(9) as u8 },
             6 => Forged { by, a, b, how: 3, op: 0, k: 0, v: 0 },
-            7 => Forged { by, a, b, how: 4, op: 0, k: 0, v: 0 },
-            8 => {
+            7 => {
                 let from = rng.below(3) as usize;
                 Sync { from, to: (from + 1 + rng.below(2) as usize) % 3 }
             }
-            9 => Send { from: by, to: holder, back: rng.below(3) as u8 },
-            10 => Three { by: 0, a: a % 3, b: (a + 1) % 3, c: (a + 2) % 3, v: c as u8 },
-            11 => aim(Demote { by: 0, t: a, holder, at: rng.below(4) as u8, to_read: rng.below(2) == 0 }),
-            12 => aim(Roster { by: 0, t: a }),
-            13 => BadPart { by, a, b, how: rng.below(4) as u8 },
-            14 => BigDemote { by: 0, t: a, holder },
-            15 => Roster { by: 0, t: a },
+            8 => Send { from: by, to: holder, back: rng.below(3) as u8 },
+            9 => Three { by: 0, a: a % 3, b: (a + 1) % 3, c: (a + 2) % 3, v: c as u8 },
+            10 => aim(Demote { by: 0, t: a, holder, at: rng.below(4) as u8, to_read: rng.below(2) == 0 }),
+            11 => BadPart { by, a, b, how: rng.below(2) as u8 },
+            12 => BigDemote { by: 0, t: a, holder },
             _ => Advance { who: None, ms: 1000 },
         });
     }
     // a linked frontier for the variants that keep its blobs away
     let holder = rng.pick(&[1, 2]);
-    out.extend([BadPart { by: 0, a: 0, b: 1, how: rng.below(4) as u8 }, Advance { who: None, ms: 1000 }, BigDemote { by: 0, t: 0, holder }, Advance { who: None, ms: 1000 }, Roster { by: 0, t: 0 }]);
+    out.extend([BadPart { by: 0, a: 0, b: 1, how: rng.below(2) as u8 }, Advance { who: None, ms: 1000 }, BigDemote { by: 0, t: 0, holder }, Advance { who: None, ms: 1000 }]);
     out
 }
 
@@ -746,7 +743,7 @@ fn parts_seed(seed: u64) -> PartsSeed {
     };
     for pk in &played.packs {
         let b = CommitBlob::decode(&pk.bytes).unwrap();
-        linked += usize::from(b.header.kind == osis_commit::Kind::RosterSnapshot && !b.header.chunks.is_empty());
+        linked += usize::from(b.header.links.frontier.is_some());
         bad_parts += usize::from(b.parts.iter().any(|p| matches!(osis_base::decode(&p.delta, &osis_base::Limits { max_depth: 8, max_bytes: p.delta.len() }), Ok(Value::List(l)) if matches!(l.as_slice(), [Value::Int(1)]))));
     }
     let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
@@ -755,12 +752,13 @@ fn parts_seed(seed: u64) -> PartsSeed {
         let hidden: Vec<usize> = later.iter().copied().filter(|_| variant > 0 && rng.below(5) == 0).collect();
         let sync: Vec<Tid> = played.things.iter().copied().filter(|_| variant % 2 == 1 && rng.below(2) == 0).collect();
         let keep: Vec<usize> = later.iter().copied().filter(|i| !hidden.contains(i)).collect();
-        // the blobs of the roster snapshots' linked frontiers stay away, then come
+        // the blobs of the demotions' linked frontiers stay away, then come
         let away = variant % 3 == 2;
         let away_from = |i: usize| -> Vec<(osis_base::BlobId, Vec<u8>)> {
             let pk = &played.packs[i];
             let h = CommitBlob::decode(&pk.bytes).unwrap().header;
-            let frontier: std::collections::BTreeSet<_> = if away && h.kind == osis_commit::Kind::RosterSnapshot { h.chunks.iter().map(|c| c.blob).collect() } else { Default::default() };
+            // a role commit references no blobs but its linked frontier's
+            let frontier: std::collections::BTreeSet<_> = if away && h.links.frontier.is_some() { pk.blobs.iter().map(|b| b.0).collect() } else { Default::default() };
             pk.blobs.iter().filter(|(b, _)| !frontier.contains(b)).cloned().collect()
         };
         let held_of = |p: &mut Peer| {
@@ -862,7 +860,7 @@ fn parts_differential_large_spec_commits_4() {
     // what the histories hold of the hostile cases
     let (bad_parts, linked): (usize, usize) = (all.iter().map(|s| s.bad_parts).sum(), all.iter().map(|s| s.linked).sum());
     let bad: Vec<&String> = all.iter().flat_map(|s| &s.bad).collect();
-    eprintln!("{played_n} of {n} histories played, {bad_parts} commits with a bad part, {linked} snapshots linking a frontier");
+    eprintln!("{played_n} of {n} histories played, {bad_parts} commits with a bad part, {linked} demotions linking a frontier");
     for b in &bad {
         eprintln!("failure: {b}");
     }
@@ -872,14 +870,13 @@ fn parts_differential_large_spec_commits_4() {
 }
 
 // spec/commits.md §4: the differential's histories play through a write that changes nothing (no
-// commit) and a sync carrying a hostile roster snapshot the receiver refuses (a frontier linked
-// outside its chunk list, at the second last sync), so no seed is left out for either (seeds
-// 9350000+: 16 and 1 were; this is seed 9350074's prefix). `play` panics on either.
+// commit), so no seed is left out for it (seeds 9350000+: 16 was; this is seed 9350074's prefix).
+// `play` panics on it.
 #[test]
-fn history_plays_past_a_no_op_write_and_a_refused_commit_spec_commits_4() {
+fn history_plays_past_a_no_op_write_spec_commits_4() {
     use Step::*;
     let a = |s: Step| Aim(Box::new(s));
-    let steps = [NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, a(Roster { by: 0, t: 2 }), Advance { who: None, ms: 1000 }, Forged { by: 1, a: 4, b: 4, how: 1, op: 6, k: 0, v: 1 }, Sync { from: 0, to: 1 }, BadPart { by: 0, a: 0, b: 0, how: 2 }, BadPart { by: 0, a: 2, b: 2, how: 3 }, Roster { by: 0, t: 2 }, Sync { from: 0, to: 1 }, a(New { by: 0, parent: 4, write: true }), a(New { by: 0, parent: 1, write: true }), a(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Read) }), Roster { by: 0, t: 3 }, Sync { from: 1, to: 0 }, Sync { from: 0, to: 1 }];
+    let steps = [NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Advance { who: None, ms: 1000 }, Forged { by: 1, a: 4, b: 4, how: 1, op: 6, k: 0, v: 1 }, Sync { from: 0, to: 1 }, Sync { from: 0, to: 1 }, a(New { by: 0, parent: 4, write: true }), a(New { by: 0, parent: 1, write: true }), a(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Read) }), Sync { from: 1, to: 0 }, Sync { from: 0, to: 1 }];
     play(SEED, &steps);
 }
 
@@ -954,13 +951,13 @@ fn shapes(played: &Played, i: usize) -> Vec<Vec<Vec<u8>>> {
     out
 }
 
-// spec/commits.md §4: a part that hashes right and is bad by itself, beside good ones, on content, a
-// role commit and a roster snapshot, synced or not: in every shape of delivery the node reads alike,
-// the good parts stand and nothing waits for the bad one.
+// spec/commits.md §4: a part that hashes right and is bad by itself, beside good ones, on content and
+// a role commit, synced or not: in every shape of delivery the node reads alike, the good parts stand
+// and nothing waits for the bad one.
 #[test]
 fn bad_part_every_shape_reads_alike_spec_commits_4() {
     use Step::*;
-    for how in 0..4u8 {
+    for how in 0..2u8 {
         let tick = || Advance { who: None, ms: 1000 };
         let played = play(SEED, &[NewTop { by: 0 }, NewTop { by: 0 }, tick(), BadPart { by: 0, a: 1, b: 2, how }]);
         let last = played.packs.len() - 1;
@@ -1274,7 +1271,7 @@ fn false_signature_refused_before_linked_lists() {
     assert!(!lp.peers[1].engine.pending().is_empty());
 }
 
-// Reviewer's differential (spec/permissions.md §6, spec/commits.md §4): a role's standing does not
+// Reviewer's differential (spec/permissions.md §5.1, spec/commits.md §4): a role's standing does not
 // read what a node syncs: one held set, with linked frontiers away and after they come, reads one
 // roster under every sync set, in random shapes and orders, a restart among them.
 fn rosters_alike(seeds: impl Iterator<Item = u64>) {
@@ -1285,8 +1282,9 @@ fn rosters_alike(seeds: impl Iterator<Item = u64>) {
         let steps = diff_steps(&mut rng);
         let Ok(played) = std::panic::catch_unwind(|| play(seed, &steps)) else { continue };
         let frontier_of = |i: usize| -> std::collections::BTreeSet<osis_base::BlobId> {
+            // a role commit references no blobs but its linked frontier's
             let h = CommitBlob::decode(&played.packs[i].bytes).unwrap().header;
-            if h.kind == osis_commit::Kind::RosterSnapshot { h.chunks.iter().map(|c| c.blob).collect() } else { Default::default() }
+            if h.links.frontier.is_some() { played.packs[i].blobs.iter().map(|b| b.0).collect() } else { Default::default() }
         };
         linked += (0..played.packs.len()).filter(|i| !frontier_of(*i).is_empty()).count();
         let rosters = |p: &mut Peer| -> Vec<String> { played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect() };
@@ -1341,17 +1339,9 @@ fn rosters_alike(seeds: impl Iterator<Item = u64>) {
 
 #[test]
 #[ignore]
-fn rosters_alike_across_sync_sets_large_spec_permissions_6() {
+fn rosters_alike_across_sync_sets_large_spec_permissions_5_1() {
     let (from, n) = (std::env::var("OSIS_ROSTERS_START").ok().and_then(|x| x.parse().ok()).unwrap_or(1u64), std::env::var("OSIS_ROSTERS_SEEDS").ok().and_then(|x| x.parse().ok()).unwrap_or(60u64));
     rosters_alike(from..from + n);
-}
-
-// The histories that found it: a removal names an entry of a snapshot whose frontier is away. Unsynced
-// the snapshot's roster part applied and its entries are known, so one wait holding it whole on a
-// synced thing left the holder an admin there and removed elsewhere.
-#[test]
-fn removal_of_a_withheld_entry_alike_across_sync_sets_spec_permissions_6() {
-    rosters_alike([63044, 63055].into_iter());
 }
 
 // spec/commits.md §4: a bad part on a synced thing beside a part waiting alone: dropped, the commit
@@ -1618,8 +1608,8 @@ fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_spec_commits_4() 
     }
 }
 
-/// Random histories of writers' commits on two things, demotions (some with frontiers), re-grants,
-/// rosters and demotions of the demoter: what a part away and its late join meet.
+/// Random histories of writers' commits on two things, demotions (some with frontiers), re-grants
+/// and demotions of the demoter: what a part away and its late join meet.
 fn away_steps(rng: &mut Rng) -> Vec<Step> {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
@@ -1631,17 +1621,16 @@ fn away_steps(rng: &mut Rng) -> Vec<Step> {
     for _ in 0..(6 + rng.below(10)) {
         let t = rng.below(2) as usize;
         let writer = 1 + rng.below(2) as usize;
-        out.push(match rng.below(12) {
+        out.push(match rng.below(11) {
             0..=2 => Two { by: writer, a: t, b: 1 - t, v: rng.below(9) as u8 },
             3 => Demote { by: 2, t, holder: 1, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
             4 => Demote { by: 0, t, holder: writer, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
             5 => Edge { by: 0, t, holder: writer, role: Some(Role::Write) },
-            6 => Roster { by: 0, t },
-            7 => Sync { from: rng.below(3) as usize, to: rng.below(3) as usize },
+            6 => Sync { from: rng.below(3) as usize, to: rng.below(3) as usize },
             // Carol makes Bob an admin, he lowers her: a signer's grant that may fall
-            8 => Edge { by: 2, t, holder: 1, role: Some(Role::Admin) },
-            9 => Demote { by: 1, t, holder: 2, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
-            10 => Edge { by: 1, t, holder: 2, role: Some(Role::Write) },
+            7 => Edge { by: 2, t, holder: 1, role: Some(Role::Admin) },
+            8 => Demote { by: 1, t, holder: 2, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
+            9 => Edge { by: 1, t, holder: 2, role: Some(Role::Write) },
             _ => tick.clone(),
         });
         out.push(tick.clone());

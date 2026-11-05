@@ -1,15 +1,15 @@
 //! Chain certificates (spec/permissions.md §4): every held record on an edge between two
-//! things on any path that ever existed from a node to a thing, every roster snapshot of those
-//! things, closed under authors; and verification from certificates alone.
+//! things on any path that ever existed from a node to a thing, closed under authors; and
+//! verification from certificates alone.
 //!
-//! "Ever existed" is over every edge any held write, roster or ledger tenure can set
+//! "Ever existed" is over every edge any held write or first admin record can set
 //! (`Input::ever`) and owner links (`Input::ever_forward`, `ever_back`), whatever the walk
-//! applied or when: a superset of the paths any walk of any round had at any point, so no
-//! point and no replay is needed.
+//! applied or when: a superset of the paths any walk had at any point, so no point and no
+//! replay is needed.
 
 use crate::held::{HeldSet, MemoryHeldSet};
 use crate::timeline::{At, Timeline};
-use crate::types::{RoleCommit, Point, RosterSnapshot, WriteId};
+use crate::types::{RoleCommit, Point, WriteId};
 use osis_base::{CommitId, Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -21,18 +21,14 @@ pub struct Certificates {
     pub created: BTreeSet<Tid>,
     /// Role commits (edge writes) that go along whole.
     pub commits: BTreeSet<CommitId>,
-    /// Roster snapshots, projected to these holders' roster and ledger entries.
-    pub snapshots: BTreeMap<CommitId, BTreeSet<Tid>>,
     /// Actors whose current `keys.0` commit goes along.
     pub keys: BTreeSet<Tid>,
 }
 
-/// Held role commits by the holder and target of their edge writes and roster snapshots
-/// by thing.
+/// Held role commits by the holder and target of their edge writes.
 #[derive(Default)]
 pub(crate) struct CertIndex {
     by_edge: BTreeMap<Tid, BTreeMap<Tid, Vec<Arc<RoleCommit>>>>,
-    by_thing: BTreeMap<Tid, Vec<Arc<RosterSnapshot>>>,
 }
 
 impl Timeline {
@@ -43,9 +39,6 @@ impl Timeline {
                 for o in &cm.ops {
                     x.by_edge.entry(o.holder).or_default().entry(o.target).or_default().push(cm.clone());
                 }
-            }
-            for s in self.input.snaps.values() {
-                x.by_thing.entry(s.thing).or_default().push(s.clone());
             }
             x
         })
@@ -73,23 +66,10 @@ impl Timeline {
     /// chains to the target and to the holder (a self-removal's authority) and the holder's
     /// chain to the target with that edge's history.
     pub fn write_certificates(&self, id: &WriteId) -> Option<Certificates> {
-        let (seeds, own) = match id {
-            WriteId::Op(c, k) => {
-                let cm = self.input.commits.get(c)?;
-                let op = cm.ops.get(usize::try_from(*k).ok()?)?;
-                (vec![(cm.author, op.target), (cm.author, op.holder), (op.holder, op.target)], cm.id)
-            }
-            WriteId::Snapshot(c) => {
-                let s = self.input.snaps.get(c)?;
-                (vec![(s.author, s.thing)], s.id)
-            }
-        };
-        let mut out = self.closure(seeds);
-        if self.input.commits.contains_key(&own) {
-            out.commits.insert(own);
-        } else if let Some(s) = self.input.snaps.get(&own) {
-            out.snapshots.entry(own).or_default().extend(s.roster.keys().chain(s.ledger.iter().map(|t| &t.holder)).copied());
-        }
+        let cm = self.input.commits.get(&id.0)?;
+        let op = cm.ops.get(usize::try_from(id.1).ok()?)?;
+        let mut out = self.closure(vec![(cm.author, op.target), (cm.author, op.holder), (op.holder, op.target)]);
+        out.commits.insert(cm.id);
         Some(out)
     }
 
@@ -138,17 +118,11 @@ impl Timeline {
                     }
                 }
             }
-            for s in things.iter().filter_map(|x| index.by_thing.get(x)).flatten() {
-                let holders = s.roster.keys().chain(s.ledger.iter().map(|x| &x.holder)).filter(|m| things.contains(m));
-                out.snapshots.entry(s.id).or_default().extend(holders);
-                todo.insert((s.author, s.thing));
-            }
         }
         out
     }
 
-    /// The certificate records as a held set (snapshots projected); `created` supplies the
-    /// creation records.
+    /// The certificate records as a held set; `created` supplies the creation records.
     pub fn certificate_set(&self, certs: &Certificates, created: &dyn HeldSet) -> MemoryHeldSet {
         let mut h = MemoryHeldSet::new();
         for t in &certs.created {
@@ -161,21 +135,8 @@ impl Timeline {
                 h.add_commit((**c).clone());
             }
         }
-        for (id, holders) in &certs.snapshots {
-            if let Some(s) = self.input.snaps.get(id) {
-                h.add_snapshot(project(s, holders));
-            }
-        }
         h
     }
-}
-
-/// A roster snapshot projected to some holders' entries (§6: a certificate copy).
-pub fn project(s: &Arc<RosterSnapshot>, holders: &BTreeSet<Tid>) -> RosterSnapshot {
-    let mut p = (**s).clone();
-    p.roster.retain(|m, _| holders.contains(m));
-    p.ledger.retain(|t| holders.contains(&t.holder));
-    p
 }
 
 /// Verifies from certificates alone (§4) that `node`, a key actor whose tid commits to its

@@ -68,13 +68,11 @@ impl Aspect {
     pub const fn admin_reg(name: u32) -> Aspect {
         Aspect { name, kind: AspectKind::Register, admin_only: true }
     }
-    /// `tenures.0`: roster snapshots' ledger entries only.
-    pub const TENURES: Aspect = Aspect { name: 7, kind: AspectKind::Map, admin_only: true };
     /// `required.0^` (spec/commits.md §5 Required retention).
     pub const REQUIRED: Aspect = Aspect { name: 8, kind: AspectKind::Register, admin_only: true };
     /// Role-class or fixed retention: answers to no required retention (spec/commits.md §5).
     pub fn fixed(&self) -> bool {
-        self.name == 0 || self.name == 7 || self.name == 8 || self.name == 9
+        self.name == 0 || self.name == 8 || self.name == 9
     }
 }
 
@@ -223,14 +221,6 @@ impl EdgeWrite {
     }
 }
 
-/// One delta of a roster snapshot (spec/permissions.md §6): a `roles.0` edge with its `since`, or a
-/// `tenures.0` ledger entry. Keys are §5.1 keys; `None` since counts from the beginning.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RosterItem {
-    Edge { edge: EdgeWrite, since: Option<Key> },
-    Tenure { holder: NodeId, role: Role, since: Option<Key>, until: Key, frontier: Option<Vec<CommitId>> },
-}
-
 /// One entry of a `required.0^` setting (spec/commits.md §5 Required retention): `prefix` None is
 /// the empty prefix (every AK), else an aspect name (the model's AKs have no longer prefixes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -245,7 +235,6 @@ pub struct Rule {
 pub enum Delta {
     Writes(Vec<Write>),
     Edge(EdgeWrite),
-    Roster(RosterItem),
     /// A whole `required.0^` setting (its `rules`; `keep` is not modeled).
     Required(Vec<Rule>),
 }
@@ -311,7 +300,7 @@ pub struct Part {
     pub retention: Retention,
     pub body: Body,
     /// Owners whose values this node stripped from the held body (it holds its leftover); one
-    /// no longer held value-less makes the body count as never received (spec/permissions.md §7).
+    /// no longer held value-less makes the body count as never received (spec/permissions.md §6).
     pub stripped: std::collections::BTreeSet<CommitId>,
 }
 
@@ -321,8 +310,6 @@ pub enum CommitKind {
     Role,
     /// A compaction snapshot: its writes are copies under their own stamps.
     Snapshot,
-    /// A roster snapshot (spec/permissions.md §6): a role commit whose parts are `RosterItem`s.
-    Roster,
 }
 
 /// spec/commits.md §5 Purge: what a request names (deltas of commits with a smaller `ts`).
@@ -355,7 +342,7 @@ pub struct Commit {
     pub undoes: Option<CommitId>,
 }
 
-/// A position in the role timeline's order: `(ts, author node, commit ID)` (spec/permissions.md §6).
+/// A position in the role timeline's order: `(ts, author node, commit ID)` (spec/permissions.md §5.1).
 pub type Key = (u64, NodeId, CommitId);
 
 impl Commit {
@@ -366,7 +353,7 @@ impl Commit {
         self.frontier.as_ref().is_some_and(|f| f.contains(&c))
     }
     pub fn is_role(&self) -> bool {
-        matches!(self.kind, CommitKind::Role | CommitKind::Roster)
+        self.kind == CommitKind::Role
     }
 }
 

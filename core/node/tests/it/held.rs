@@ -7,9 +7,9 @@
 //! as `stripped`), as own state the writes its state holds that no held body does, and every
 //! creation record it holds of an actor or thing the input names. Ids, dots and values are
 //! relabelled: commits ordered as their dots order (spec/crdt.md §2.2: source kind, source bytes,
-//! then counter, a session's commits in `ts` order), values interned. Applied role commits and
-//! roster snapshots are given as the node's role input holds them (`ix.held`), one model part per
-//! edge write, roster edge or ledger entry; `required.0^` as its rules; undo, acting and purge
+//! then counter, a session's commits in `ts` order), values interned. Applied role commits
+//! are given as the node's role input holds them (`ix.held`), one model part per edge write;
+//! `required.0^` as its rules; undo, acting and purge
 //! actors as headers name them.
 //!
 //! Scope (held-model ASSUMPTIONS.md): aspects of a register, a map of registers or a text (`IN`);
@@ -20,9 +20,8 @@
 //! suspect (spec/requirements.md Deterministic: a flip after a drop), or a `required.0^` on its
 //! thing names a prefix the model cannot (it matches some compared aspects, not all). No aspect
 //! is compared when the role input is outside the model (`Scope::roles`: a role-class
-//! compaction snapshot, a role commit with another aspect or two deltas on a thing, a roster
-//! snapshot withheld or on several things, a role frontier not inline, a role commit outside
-//! the model as above): actors make every thing's roles depend on others'.
+//! compaction snapshot, a role commit with another aspect, a role frontier not inline, a role
+//! commit outside the model as above): actors make every thing's roles depend on others'.
 //!
 //! Compared on in-scope aspects: which commits applied (role commits too, not the node's own from
 //! outside the history), each content part's validity, reads, no held body the model says must be
@@ -37,7 +36,7 @@
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
 //! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
 //! §4), is missing; a leftover's value-less owners are taken as stripped by the node, also for
-//! a value that arrived value-less; an edge's `since`, `tied` and `keyset` are dropped (carried,
+//! a value that arrived value-less; an edge's `tied` and `keyset` are dropped (carried,
 //! never an authority); a keep-at-most-0 snapshot body the node dropped with no live write
 //! (`Dropped::live`) past a death is let go (liveness is judged at the drop, `compare`).
 
@@ -73,7 +72,7 @@ pub(crate) struct Coverage {
     pub(crate) skipped: BTreeMap<&'static str, u64>,
     /// Of the compared aspects: reads present; parts invalid, purged, dropped, held as leftovers;
     /// value-less deltas. Of nodes with a compared aspect: the commits and edges fed of each
-    /// feature (undo, acting, roster snapshots, `required.0^`, invites, `until`, self-removals).
+    /// feature (undo, acting, `required.0^`, invites, `until`, self-removals).
     pub(crate) reached: BTreeMap<&'static str, u64>,
 }
 
@@ -154,9 +153,6 @@ impl Conv<'_> {
             None => self.extra(format!("{c:?}")),
         }
     }
-    fn point(&mut self, p: &osis_perm::Point) -> hm::Key {
-        (p.ts.to_u64(), self.id(&p.node), self.commit(&p.commit))
-    }
     /// Values apart from chars (text elements are their code points).
     fn val(&mut self, v: &Value) -> hm::Val {
         let n = self.vals.len() as u32;
@@ -166,7 +162,6 @@ impl Conv<'_> {
     fn aspect(&mut self, ak: &str) -> hm::Aspect {
         match ak {
             "roles.0" => return hm::Aspect::ROLES,
-            "tenures.0" => return hm::Aspect::TENURES,
             "required.0^" => return hm::Aspect::REQUIRED,
             osis_commit::retention::PURGE => return hm::Aspect::reg(9),
             _ => {}
@@ -234,7 +229,7 @@ impl Conv<'_> {
             (Some(v), _) => hm::Read::Reg(self.val(v)),
         }
     }
-    /// A role edge write (`since`, `tied`, `keyset` dropped: carried, never an authority).
+    /// A role edge write (`tied`, `keyset` dropped: carried, never an authority).
     fn edge(&mut self, holder: &Tid, e: Option<&osis_perm::Edge>) -> hm::EdgeWrite {
         hm::EdgeWrite { holder: self.id(holder), role: e.map(|e| role_of(e.role)), invite: e.and_then(|e| e.invite).map(role_of), until: e.and_then(|e| e.until).map(|u| u.0) }
     }
@@ -355,16 +350,6 @@ fn scope(e: &mut Engine, held: &[(CommitId, Arc<Header>, bool)]) -> Scope {
         if h.kind == Kind::Role && h.aspects.iter().any(|a| !matches!(a.ak.as_str(), "roles.0" | "keys.0")) {
             role_out(&mut s, "role commit beyond roles.0");
         }
-        if h.kind.several_deltas() && h.aspects.iter().enumerate().any(|(i, a)| h.aspects[..i].iter().any(|b| b.tid == a.tid && b.ak == a.ak)) {
-            role_out(&mut s, "two role deltas on one aspect");
-        }
-        if h.kind == Kind::RosterSnapshot {
-            if h.aspects.iter().any(|a| a.tid != h.aspects[0].tid) {
-                role_out(&mut s, "roster snapshot on several things");
-            } else if *applied && !e.core.ix.held.walks(id, &h.aspects[0].tid) {
-                role_out(&mut s, "roster snapshot withheld");
-            }
-        }
         for a in &h.aspects {
             if retention(&a.retention).is_err() {
                 s.aspects.entry((a.tid, a.ak.clone())).or_insert("keep at most after replaced above 0");
@@ -462,7 +447,6 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         let meta = e.core.ix.commits.get(id).cloned();
         let waiting = if *applied { None } else { e.pending_parts(id).unwrap() };
         let edges = if *applied && h.kind == Kind::Role { e.core.ix.held.edge_commit(id).cloned() } else { None };
-        let roster = if *applied && h.kind == Kind::RosterSnapshot { e.core.ix.held.snapshots_of(&h.aspects[0].tid).iter().find(|s| s.id == *id).cloned() } else { None };
         let mut parts = Vec::new();
         for (ai, a) in h.aspects.iter().enumerate() {
             let thing = cv.id(&a.tid);
@@ -489,7 +473,6 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                     // a waiting part: held, its content unread
                     Some(hm::Body::Held(match h.kind {
                         Kind::Role => hm::Delta::Edge(hm::EdgeWrite::role(NOBODY, None)),
-                        Kind::RosterSnapshot => hm::Delta::Roster(hm::RosterItem::Edge { edge: hm::EdgeWrite::role(NOBODY, None), since: None }),
                         _ if aspect == hm::Aspect::REQUIRED => hm::Delta::Required(Vec::new()),
                         _ => hm::Delta::Writes(Vec::new()),
                     }))
@@ -512,35 +495,6 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                         parts.push(part(hm::Body::Held(hm::Delta::Edge(cv.edge(&o.holder, o.edge.as_ref())))));
                     }
                 }
-                Kind::RosterSnapshot => {
-                    let Some(r) = &roster else {
-                        sc.roles.get_or_insert("roster snapshot not in the role input");
-                        parts.push(part(hm::Body::Missing));
-                        continue;
-                    };
-                    let n = parts.len();
-                    if a.ak.as_str() == "roles.0" {
-                        for (holder, edge) in &r.roster {
-                            let since = edge.since.as_ref().map(|p| cv.point(p));
-                            parts.push(part(hm::Body::Held(hm::Delta::Roster(hm::RosterItem::Edge { edge: cv.edge(holder, Some(edge)), since }))));
-                        }
-                        if parts.len() == n {
-                            // an empty roster: still a held part
-                            parts.push(part(hm::Body::Held(hm::Delta::Roster(hm::RosterItem::Edge { edge: hm::EdgeWrite::role(NOBODY, None), since: None }))));
-                        }
-                    } else {
-                        for t in &r.ledger {
-                            let item = hm::RosterItem::Tenure {
-                                holder: cv.id(&t.holder),
-                                role: role_of(t.role),
-                                since: t.since.as_ref().map(|p| cv.point(p)),
-                                until: cv.point(&t.until),
-                                frontier: t.frontier.as_ref().map(|f| f.commits.iter().map(|c| cv.commit(c)).collect()),
-                            };
-                            parts.push(part(hm::Body::Held(hm::Delta::Roster(item))));
-                        }
-                    }
-                }
                 _ if aspect == hm::Aspect::REQUIRED => {
                     parts.push(part(hm::Body::Held(hm::Delta::Required(required.get(&(*id, ai)).cloned().unwrap_or_default()))));
                 }
@@ -557,7 +511,6 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         }
         let kind = match h.kind {
             Kind::Role => hm::CommitKind::Role,
-            Kind::RosterSnapshot => hm::CommitKind::Roster,
             Kind::ContentSnapshot => hm::CommitKind::Snapshot,
             _ => hm::CommitKind::Content,
         };
@@ -694,7 +647,6 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         });
         reach("undo commits", cs.iter().filter(|c| c.undoes.is_some()).count());
         reach("acting commits", cs.iter().filter(|c| c.actor != c.author).count());
-        reach("roster snapshots", cs.iter().filter(|c| c.kind == hm::CommitKind::Roster).count());
         reach("required settings", cs.iter().flat_map(|c| c.parts.iter()).filter(|p| matches!(&p.body, hm::Body::Held(hm::Delta::Required(r)) if !r.is_empty())).count());
         reach("invites", edges().filter(|(_, e)| e.invite.is_some()).count());
         reach("untils", edges().filter(|(_, e)| e.until.is_some()).count());
@@ -753,40 +705,22 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             }
         }
     }
-    // the role input: which edge writes and roster snapshots apply on each thing, and its epoch start
+    // the role input: which edge writes apply on each thing
     if !by_part.is_empty() {
-        let tl = hm::timeline(&input.held);
-        let mut rostered = BTreeSet::new();
         for c in input.held.commits.iter().filter(|c| c.is_role() && input.commits[&c.id].1) {
             let id = input.commits[&c.id].0;
             let mut on: BTreeMap<hm::ThingId, bool> = BTreeMap::new();
             for (i, p) in c.parts.iter().enumerate() {
-                let named = match &p.body {
-                    hm::Body::Held(hm::Delta::Edge(w)) => w.holder != NOBODY,
-                    hm::Body::Held(hm::Delta::Roster(_)) => true,
-                    _ => false,
-                };
-                if named {
+                if matches!(&p.body, hm::Body::Held(hm::Delta::Edge(w)) if w.holder != NOBODY) {
                     *on.entry(p.thing).or_default() |= o.valid.get(&(c.id, i)) == Some(&true);
                 }
             }
             for (th, model) in on {
                 let t = input.ids[&th];
-                if c.kind == hm::CommitKind::Roster {
-                    rostered.insert(th);
-                }
                 let node = e.edge_write_applied(&t, &id);
                 if node != model {
-                    return differ(format!("role commit {id:?} (#{}) on {t:?} applies: model {model}, node {node}; node's roster {:?}, epoch start {:?}", c.id, e.roster(&t), e.epoch_start(&t)), &[th]);
+                    return differ(format!("role commit {id:?} (#{}) on {t:?} applies: model {model}, node {node}; node's roster {:?}", c.id, e.roster(&t)), &[th]);
                 }
-            }
-        }
-        for th in rostered {
-            let t = input.ids[&th];
-            let node = e.epoch_start(&t).map(|c| input.commits.iter().find(|x| x.1.0 == c).map_or(0, |x| *x.0));
-            let model = tl.starts.get(&th).copied();
-            if node != model {
-                return differ(format!("epoch start of {t:?}: model {model:?}, node {node:?}"), &[th]);
             }
         }
     }

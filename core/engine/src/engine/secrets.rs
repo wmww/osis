@@ -8,7 +8,7 @@ use osis_base::CommitId;
 use crate::error::{Error, Result};
 use osis_base::{ChainStep, CreationRecord, Owner, OwnerChain, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
-use osis_keys::{ActorEpochs, HistoryAlts, Key, Name, Opener, Own, Provenance, ROLES, Unchecked};
+use osis_keys::{ActorEpochs, HistoryAlts, Name, Opener, Own, Provenance, ROLES, Unchecked};
 use osis_schema::RawKey;
 use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
@@ -102,7 +102,7 @@ impl Core {
     }
 
     /// `own_record` established (spec/crypto.md §4): a function of what this node holds now (its
-    /// applied commits and epoch starts, `NamesHeld`), so nothing about establishment is stored
+    /// applied commits, `NamesHeld`), so nothing about establishment is stored
     /// or invalidated.
     pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let mut e = self.own_record(tid)?.clone();
@@ -113,13 +113,6 @@ impl Core {
     /// What this node holds for judging the names of `actor`'s epochs (spec/crypto.md §4).
     pub(crate) fn names_held(&self, actor: &Tid) -> NamesHeld<'_> {
         NamesHeld { core: self, actor: *actor }
-    }
-
-    /// The key (spec/permissions.md §6) of this node's epoch start of `thing`, if any.
-    fn start_key(&self, thing: &Tid) -> Option<Key> {
-        let id = self.timelines.get(thing)?.epoch_start(thing)?;
-        let m = self.ix.commits.get(&id)?;
-        Some(Key { ts: m.view.ts.to_u64(), node: m.view.author, commit: id })
     }
 
     /// The opened epochs of `tid` when they make it an actor with secrets of its own here: it is
@@ -397,14 +390,13 @@ impl osis_keys::Held for NamesHeld<'_> {
             let part = |ak: &str| m.header.aspects.iter().position(|a| a.tid == n.thing && a.ak.as_str() == ak);
             part("roles.0").or_else(|| part("keys.0")).is_none_or(|ai| !m.missing.contains(&ai))
         });
-        applied && self.resolved(&n.key.commit) || self.core.start_key(&n.thing).is_some_and(|s| n.key < s)
+        applied && self.resolved(&n.key.commit)
     }
     fn departed(&self, own: &Own) -> bool {
-        let applied = osis_base::Ak::new("roles.0").ok().and_then(|ak| self.core.ix.by_aspect.get(&(self.actor, ak))).is_some_and(|set| {
+        osis_base::Ak::new("roles.0").ok().and_then(|ak| self.core.ix.by_aspect.get(&(self.actor, ak))).is_some_and(|set| {
             let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
             set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node) && self.resolved(c))
-        });
-        applied || self.core.start_key(&self.actor).is_some_and(|s| (own.ts, own.node) < (s.ts, s.node))
+        })
     }
 }
 
@@ -786,7 +778,7 @@ mod tests {
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(1));
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(2));
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
-        let k = |n: u8| Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
+        let k = |n: u8| osis_keys::Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2);
         a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
         a.write.set_established(e1, Provenance::Derived);

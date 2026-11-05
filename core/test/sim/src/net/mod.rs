@@ -274,7 +274,7 @@ struct Msg {
 }
 
 /// (label, blob) -> (commit, delta parts) of every commit blob a node opened.
-pub type Known = BTreeMap<(LabelId, osis_base::BlobId), (CommitId, Vec<(usize, usize)>)>;
+pub type Known = BTreeMap<(LabelId, osis_base::BlobId), (CommitId, Vec<usize>)>;
 
 /// A labeled group the scenario writes to, and the things written.
 #[derive(Clone, Debug)]
@@ -1604,7 +1604,7 @@ impl NetSim {
 
     /// Node `n` grants `holder` `role` on `target` (spec/permissions.md §2).
     pub fn grant(&mut self, n: usize, target: Tid, holder: Tid, role: Role) -> Res<()> {
-        let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None };
+        let edge = ct::Edge { role, until: None, invite: None, tied: None };
         let r = self.engine(n)?.grant(&target, &holder, &edge);
         let done = r.map_err(|e| self.fail(format!("node {n} grant: {e}")))?;
         self.carry(n, done)

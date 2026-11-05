@@ -99,11 +99,11 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0~"))).purge(osis::Purge::Author(db.me())), Err(Error::Invalid(_))));
 }
 
-// spec/permissions.md §7: a purge by author through the API: an admin's request drops a writer's
+// spec/permissions.md §6: a purge by author through the API: an admin's request drops a writer's
 // bodies on every node, its own stay; and no write on the thing, no request (it could never hold a
 // right, and nothing else in the commit would check).
 #[test]
-fn purge_author_through_the_api_spec_perm_7() {
+fn purge_author_through_the_api_spec_perm_6() {
     let mut w = World::new();
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);

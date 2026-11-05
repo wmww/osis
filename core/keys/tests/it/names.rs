@@ -2,12 +2,12 @@
 //! Establishment by names (spec/crypto.md §4): random rotation histories of one role (forks,
 //! departures in plain commits and in the rotation commits themselves, keyset lists, rotators
 //! each holding a random part of what came before, writers' forged history entries, invalid
-//! rotation commits, snapshots, an epoch start), observed by a node holding a random part of it
+//! rotation commits, snapshots), observed by a node holding a random part of it
 //! (withheld commits, secrets held or reading-only, verdicts flipping on the way, any order).
 //! Checked: the established set and current epochs equal a direct reading of the rule over the
 //! final held set, and the invariant: a node uses (holds the secret of an established epoch) no
-//! epoch made by an honest rotator unless it holds every departure that rotator held, or the
-//! departure lies before its epoch start; a departed holder thus never gets a later epoch from it.
+//! epoch made by an honest rotator unless it holds every departure that rotator held; a departed
+//! holder thus never gets a later epoch from it.
 
 use osis_base::{CommitId, Tid};
 use osis_crypto::{Epoch, Secret32};
@@ -60,8 +60,6 @@ struct History {
     reading: BTreeSet<Epoch>,
     /// Epochs a held `secrets.0` snapshot keys.
     snapshots: BTreeSet<Epoch>,
-    /// Its epoch start: names ordered before commit `start` are met.
-    start: usize,
 }
 
 impl History {
@@ -83,7 +81,7 @@ impl History {
     }
 
     fn met(&self, k: usize) -> bool {
-        self.held.contains(&k) || k < self.start
+        self.held.contains(&k)
     }
 
     fn entry_met(&self, n: &Names) -> bool {
@@ -106,8 +104,8 @@ const LEVELS: u64 = 4;
 
 fn history() -> impl Strategy<Value = History> {
     let commit = (any::<bool>(), 1..=LEVELS, 0u8..2, proptest::collection::btree_set((0..LEVELS, 0u8..2), 0..3), any::<bool>(), proptest::bool::weighted(0.85), proptest::collection::btree_set(0usize..12, 0..12), proptest::option::weighted(0.2, proptest::collection::btree_set(0usize..12, 0..3)));
-    let rest = (proptest::collection::btree_set(0usize..12, 0..12), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..6), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..2), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..2), 0usize..6);
-    (proptest::collection::vec(commit, 1..12), rest).prop_map(|(cs, (held, secrets, reading, snaps, start))| {
+    let rest = (proptest::collection::btree_set(0usize..12, 0..12), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..6), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..2), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..2));
+    (proptest::collection::vec(commit, 1..12), rest).prop_map(|(cs, (held, secrets, reading, snaps))| {
         let mut commits: Vec<Commit> = Vec::new();
         for (i, (rot, n, k, list, departs, valid, knew, forged)) in cs.into_iter().enumerate() {
             let departing: Vec<usize> = (0..i).filter(|j| matches!(commits[*j].kind, Kind::Departure | Kind::Rotation { departs: true, .. })).collect();
@@ -124,7 +122,6 @@ fn history() -> impl Strategy<Value = History> {
             secrets: secrets.iter().map(|(n, k)| ep(*n, *k)).collect(),
             reading: reading.iter().map(|(n, k)| ep(*n, *k)).filter(|e| !secrets.contains(&(e.n(), e.nonce()[0]))).collect(),
             snapshots: snaps.into_iter().map(|(n, k)| ep(n, k)).collect(),
-            start: start.min(len),
         }
     })
 }
@@ -310,7 +307,7 @@ fn forged_entry_by_a_holder_is_accepted() {
     let mut r = RoleEpochs::default();
     r.set_rotation(e, cid(1), BTreeSet::new());
     r.set_secret(e, Secret32::from_bytes([1; 32]));
-    let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new(), start: 0 };
+    let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new() };
     r.add_names(e, Names { list: [Name { thing: THING, key: key(0) }].into(), ..Names::default() });
     r.establish(&Observer(&h));
     assert!(!r.is_established(&e));

@@ -1,9 +1,9 @@
 -------------------------------- MODULE Roles ---------------------------------
-(* The role timeline and the tenure ledger (spec/permissions.md §1, §2,  *)
-(* §5.1, §5.2, §6). A state is a history: a sequence of commits in generation  *)
-(* order, each with a ts that may lie anywhere (clock skew, backdating) and a   *)
-(* frontier taken from the commits generated before it. The invariants run     *)
-(* the walk over the history and check its verdicts.                           *)
+(* The role timeline (spec/permissions.md §1, §2, §5.1, §5.2). A state is a  *)
+(* history: a sequence of commits in generation order, each with a ts that   *)
+(* may lie anywhere (clock skew, backdating) and a frontier taken from the    *)
+(* commits generated before it. The invariants run the walk over the history *)
+(* and check its verdicts.                                                    *)
 (* Things: actor A owned by key actor node 1; actor B owned by A. Edge holders: *)
 (* nodes, and B on A. Roles 0 none, 1 read, 2 write, 3 admin. Classes 0 none,  *)
 (* 2 edge admin, 3 owner chain; a write is audited by its author's class on   *)
@@ -14,9 +14,6 @@ CONSTANTS NN,           \* nodes 1..NN; node 1 is the key actor owning A
           Scenario,     \* picks Genesis and Menu below
           MaxLen,       \* commits in a history, genesis included
           TsSet,        \* ts a free commit may take (even)
-          SnapTs,       \* ts (odd) at which Neutral takes a roster snapshot
-          SnapThings,   \* things Neutral snapshots ({} : none)
-          SnapAu,       \* candidate authors of a snapshot of B (A: node 1)
           MaxDepth,     \* MAX_OWNER_DEPTH (A is 1 link below node 1, B 2)
           FrMode,       \* "all": a frontier is every commit received;
                         \* "subset": any subset of the commits generated before,
@@ -33,9 +30,7 @@ EdgeDom == ({B} \cup Nodes) \X Things
 Depth(n) == IF n = A THEN 1 ELSE 2
 DepthOK(n) == Depth(n) <= MaxDepth
 Inf == 1000
-NONE == <<-1, -1, -1>>
 Absent == [r |-> 0, u |-> 0]
-NoOpen == [r |-> 0, s |-> NONE]
 
 Mx(a, b) == IF a > b THEN a ELSE b
 Mn(a, b) == IF a < b THEN a ELSE b
@@ -46,9 +41,8 @@ LexLT(a, b, i) == IF i > Len(a) THEN FALSE
                   ELSE IF a[i] < b[i] THEN TRUE
                   ELSE IF a[i] > b[i] THEN FALSE
                   ELSE LexLT(a, b, i + 1)
+\* Keys (§5.1): <<ts, node, commit ID>>, a commit's ID its generation index.
 Before(a, b) == LexLT(a, b, 1)
-\* Keys (§6): <<ts, node, commit ID>>, a commit's ID its generation index.
-KLT(a, b) == LexLT(a, b, 1)
 
 (***************************************************************************)
 (* Scenarios. A template is [kind, au, ops, tg]; an op is [tg, mb, r, u]    *)
@@ -63,8 +57,6 @@ G(tpl, ts) == [tpl |-> tpl, ts |-> ts]
 Genesis ==
   CASE Scenario = "core" -> <<G(E1(1, A, 2, 3, 0), 2), G(E1(1, A, 3, 3, 0), 4)>>
     [] Scenario = "group" -> <<G(E1(1, A, B, 3, 0), 2), G(E1(1, B, 2, 3, 0), 4)>>
-    [] Scenario = "snapA" -> <<G(E1(1, A, 2, 3, 0), 2)>>
-    [] Scenario = "snapB" -> <<G(E1(1, A, 2, 3, 0), 2)>>
     [] Scenario = "until" -> <<G(E1(1, A, 2, 3, 7), 2)>>
     [] Scenario = "samets" -> <<G(E1(1, A, 2, 3, 0), 2)>>
     [] Scenario = "multi" -> <<G(E1(1, A, B, 3, 0), 2), G(E1(1, B, 2, 3, 0), 4)>>
@@ -77,10 +69,6 @@ Menu ==
          <<E1(2, A, 3, 0, 0), E1(3, A, 2, 0, 0), E1(3, B, 3, 3, 0), E1(3, A, 2, 2, 0), Cn(3, B), Cn(3, A)>>
     [] Scenario = "group" ->
          <<E1(2, A, 3, 3, 0), E1(2, A, B, 0, 0), E1(1, A, B, 0, 0), E1(1, A, B, 3, 0), E1(1, B, 2, 0, 0), Cn(3, A)>>
-    [] Scenario = "snapA" ->
-         <<E1(2, B, 3, 3, 0), E1(2, A, 3, 2, 0), E1(1, A, 2, 0, 0), E1(2, A, 2, 2, 0), Cn(3, A), Cn(2, B)>>
-    [] Scenario = "snapB" ->
-         <<E1(2, B, 3, 2, 0), E1(2, B, 3, 0, 0), E1(1, A, 2, 0, 0), Cn(3, B), E1(3, B, 3, 0, 0)>>
     [] Scenario = "until" ->
          <<E1(1, A, 2, 0, 0), E1(2, B, 3, 3, 0), E1(1, A, 2, 3, 0), E1(2, A, 2, 2, 0), Cn(2, A), Cn(3, B)>>
     [] Scenario = "samets" ->
@@ -96,8 +84,7 @@ Menu ==
 
 MkCommit(tpl, ts, fr, i) ==
   [kind |-> tpl.kind, id |-> i, gen |-> i, ts |-> ts, au |-> tpl.au,
-   key5 |-> <<ts, tpl.au, i, 1, 0>>, ops |-> tpl.ops, tg |-> tpl.tg, fr |-> fr,
-   ex |-> FALSE, ro |-> {}]
+   key |-> <<ts, tpl.au, i>>, ops |-> tpl.ops, tg |-> tpl.tg, fr |-> fr]
 
 RECURSIVE GenHist(_)
 GenHist(i) == IF i = 0 THEN <<>>
@@ -158,20 +145,22 @@ Reaches(R, x, m) == x = m \/ (m = B /\ R[x].b >= 1)
 UntilLE(a, b) == b = 0 \/ (a # 0 /\ a <= b)
 Lowers(nv, old, t) ==
   Alive(old, t) /\ (nv.r = 0 \/ (nv.r <= old.r /\ UntilLE(nv.u, old.u) /\ nv # old))
-\* §6 "audits": the edge as restored exceeds the new value
+\* The write lowers the edge as restored (role r): removes it, lowers the role
+\* or gives it an `until`.
 Exceeds(r, nv, t) == r > 0 /\ (~Alive(nv, t) \/ nv.r < r \/ nv.u # 0)
 Norm(v, t) == IF v.r = 0 \/ (v.u # 0 /\ v.u <= t) THEN Absent ELSE v
 
 (***************************************************************************)
 (* The walk (§5.1).                                                         *)
 (***************************************************************************)
-Key0 == <<0, 0, 0, 0, 0>>
-St0(E0, D) ==
-  [E |-> E0, P |-> [p \in EdgeDom |-> 0], K |-> [p \in EdgeDom |-> [x \in Nodes |-> 0]],
-   S |-> [p \in EdgeDom |-> 0], D |-> D,
-   app |-> {}, dem |-> {}, fall |-> {}, ex |-> {}, chg |-> <<>>, cinfo |-> {},
-   grow |-> {}, drec |-> {}, cands |-> <<>>, rej |-> FALSE,
-   everW |-> {q \in Nodes \X Things : DepthOK(q[2]) /\ RoleOn(Roles(E0, 0), q[1], q[2]) >= 2},
+Key0 == <<0, 0, 0>>
+\* No edges before the history (its genesis commits set them).
+E00 == [p \in EdgeDom |-> Absent]
+St0(D) ==
+  [E |-> E00, P |-> [p \in EdgeDom |-> 0], K |-> [p \in EdgeDom |-> [x \in Nodes |-> 0]],
+   D |-> D, app |-> {}, dem |-> {}, fall |-> {}, ex |-> {}, cinfo |-> {},
+   grow |-> {}, drec |-> {}, cands |-> <<>>,
+   everW |-> {q \in Nodes \X Things : DepthOK(q[2]) /\ RoleOn(Roles(E00, 0), q[1], q[2]) >= 2},
    lastW |-> [q \in Nodes \X Things |-> Key0]]
 
 UpdW(st, key, t) ==
@@ -185,12 +174,8 @@ UpdW(st, key, t) ==
 \* demoter's chain writes too, §5.1 Frontier).
 Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
   LET old == st.E[e]
-      ck == <<key[1], key[2], key[3]>>
   IN
-  IF ~explicit THEN
-    [st EXCEPT !.E[e] = nv, !.P[e] = Mx(@, old.r), !.S[e] = cid,
-       !.chg = Append(@, [m |-> e[1], t |-> e[2], key |-> ck, nv |-> nv, ex |-> FALSE,
-                          aud |-> 0, fr |-> {}])]
+  IF ~explicit THEN [st EXCEPT !.E[e] = nv, !.P[e] = Mx(@, old.r)]
   ELSE
     LET base == Mx(st.P[e], old.r)
         kept == st.K[e]
@@ -212,13 +197,11 @@ Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
                     /\ \E f \in falls : f.x = a.au /\ f.n = a.on /\ f.ca < a.attr /\ a.attr <= f.cb}
         own == au \in reach /\ base > 0
         K1 == [x \in Nodes |-> IF KeepStanding /\ own /\ x = au THEN Mx(base, kept[au]) ELSE 0]
-    IN [st EXCEPT !.E = E1x, !.P[e] = 0, !.K[e] = K1, !.S[e] = cid,
+    IN [st EXCEPT !.E = E1x, !.P[e] = 0, !.K[e] = K1,
           !.fall = @ \cup falls, !.dem = @ \cup dems,
           !.grow = @ \cup {a.w : a \in drops},
-          !.drec = @ \cup {[w |-> a.w, au |-> a.au, attr |-> a.attr, tg |-> a.tg, byau |-> au,
-                             bycid |-> cid] : a \in drops},
-          !.chg = Append(@, [m |-> e[1], t |-> e[2], key |-> ck, nv |-> nv, ex |-> TRUE,
-                             aud |-> IF lowered THEN rAll ELSE 0, fr |-> fr]),
+          !.drec = @ \cup {[w |-> a.w, au |-> a.au, attr |-> a.attr, tg |-> a.tg, byau |-> au]
+                            : a \in drops},
           !.ex = @ \cup {[cid |-> cid, au |-> au, m |-> e[1], t |-> e[2], key |-> key, gen |-> gen,
                           fr |-> fr, nv |-> nv, reach |-> reach,
                           reachAdmin |-> {x \in Nodes : x = e[1] \/ (e[1] = B /\ Rb[x].b = 3)},
@@ -248,20 +231,10 @@ ApplyOps(st, c, js, k, t) ==
            e == <<o.mb, o.tg>>
            nv == Norm([r |-> o.r, u |-> o.u], t)
            rec == [w |-> <<c.id, k>>, cid |-> c.id, au |-> c.au, tg |-> o.tg, attr |-> js[k].a, on |-> js[k].on,
-                   key |-> c.key5, gen |-> c.gen]
+                   key |-> c.key, gen |-> c.gen]
            st1 == [st EXCEPT !.app = @ \cup {rec}]
-       IN ApplyOps(Change(st1, e, nv, t, c.key5, c.au, js[k].a >= 2 /\ ~js[k].s, c.fr, c.id, c.gen),
+       IN ApplyOps(Change(st1, e, nv, t, c.key, c.au, js[k].a >= 2 /\ ~js[k].s, c.fr, c.id, c.gen),
                    c, js, k + 1, t)
-
-RECURSIVE ApplyRo(_, _, _, _, _)
-ApplyRo(st, ev, ms, i, t) ==
-  IF i > Len(ms) THEN st
-  ELSE LET p == <<ms[i], ev.tg>>
-           q == {x \in ev.ro : x.m = ms[i]}
-           v == IF q = {} THEN Absent ELSE (CHOOSE x \in q : TRUE).v
-       IN ApplyRo(IF st.E[p] = v THEN st ELSE Change(st, p, v, t, ev.key5, ev.au, FALSE, {}, ev.id, 0),
-                  ev, ms, i + 1, t)
-MemSeq(n) == IF n = A THEN <<B>> \o [i \in 1..NN - 1 |-> i + 1] ELSE [i \in 1..NN |-> i]
 
 Step(ev, st) ==
   LET t == ev.ts
@@ -269,23 +242,12 @@ Step(ev, st) ==
   IN
   CASE ev.kind = "e" ->
          LET js == [k \in 1..Len(ev.ops) |-> Judge(st, R, ev, k)]
-         IN UpdW(ApplyOps(st, ev, js, 1, t), ev.key5, t)
+         IN UpdW(ApplyOps(st, ev, js, 1, t), ev.key, t)
     [] ev.kind = "c" ->
          LET ra == IF DepthOK(ev.tg) THEN RoleOn(R, ev.au, ev.tg) ELSE 0
-         IN [st EXCEPT !.cinfo = @ \cup {[cid |-> ev.id, au |-> ev.au, tg |-> ev.tg, key |-> ev.key5,
+         IN [st EXCEPT !.cinfo = @ \cup {[cid |-> ev.id, au |-> ev.au, tg |-> ev.tg, key |-> ev.key,
                 gen |-> ev.gen, roleAt |-> ra, cls |-> Class(R, ev.au, ev.tg),
                 ever |-> <<ev.au, ev.tg>> \in st.everW \/ ra >= 2]}]
-    [] ev.kind = "v" ->
-         LET o == ev.ops[1]
-         IN UpdW(Change(st, <<o.mb, o.tg>>, [r |-> o.r, u |-> o.u], t, ev.key5, ev.au, ev.ex,
-                        ev.fr, 0, 0), ev.key5, t)
-    \* The epoch start: its roster applies either way; whether the snapshot applies
-    \* (rej) counts only in the walk where D settles (§6).
-    [] ev.kind = "s" ->
-         LET st1 == IF Class(R, ev.au, ev.tg) < 3 \/ <<ev.id, 1>> \in st.D THEN [st EXCEPT !.rej = TRUE]
-                    ELSE [st EXCEPT !.app = @ \cup {[w |-> <<ev.id, 1>>, cid |-> ev.id, au |-> ev.au,
-                            tg |-> ev.tg, attr |-> 3, on |-> ev.tg, key |-> ev.key5, gen |-> ev.gen]}]
-         IN UpdW(ApplyRo(st1, ev, MemSeq(ev.tg), 1, t), ev.key5, t)
 
 \* One walk. stop: restart at the first write that adds to D (the spec);
 \* else record each such write's additions in cands and go on.
@@ -298,16 +260,15 @@ Pass(evs, i, st, stop) ==
           ELSE Pass(evs, i + 1, [s2 EXCEPT !.cands = Append(@, s2.grow), !.grow = {}], stop)
 
 \* §5.1 step 5: walk until a walk adds nothing to D. drecAll: every drop.
-RECURSIVE WalkD(_, _, _, _)
-WalkD(evs, E0, D, acc) ==
-  LET p == Pass(evs, 1, St0(E0, D), TRUE)
+RECURSIVE WalkD(_, _, _)
+WalkD(evs, D, acc) ==
+  LET p == Pass(evs, 1, St0(D), TRUE)
   IN IF p.grow = {} THEN [p EXCEPT !.drec = acc \cup @]
-     ELSE WalkD(evs, E0, D \cup p.grow, acc \cup p.drec)
+     ELSE WalkD(evs, D \cup p.grow, acc \cup p.drec)
 
-LTev(a, b) == Before(a.key5, b.key5)
+LTev(a, b) == Before(a.key, b.key)
 Evs(h) == SortSeq(h, LTev)
-E00 == [p \in EdgeDom |-> Absent]
-W0 == WalkD(Evs(hist), E00, {}, {})
+W0 == WalkD(Evs(hist), {}, {})
 
 (***************************************************************************)
 (* Layer 2 (§5.2): content validity of a content commit c.                  *)
@@ -326,129 +287,21 @@ Verd(W) == [edges |-> {a.w : a \in W.app},
             roles |-> [q \in Nodes \X Things |-> RoleEnd(W, q[1], q[2])]]
 
 (***************************************************************************)
-(* Roster snapshot production (§6) from walk W, for thing N at key sk.     *)
-(***************************************************************************)
-RECURSIVE Led(_, _, _, _, _, _, _)
-Led(chs, i, m, cur, open, ents, setKey) ==
-  IF i > Len(chs) THEN [ents |-> ents, cur |-> cur, open |-> open, setKey |-> setKey]
-  ELSE LET ch == chs[i] IN
-  IF ch.m # m THEN Led(chs, i + 1, m, cur, open, ents, setKey)
-  ELSE
-    LET t == ch.key[1]
-        exp == cur.u # 0 /\ cur.u <= t /\ open.r > 0
-        ents1 == IF exp THEN ents \cup {[m |-> m, r |-> open.r, s |-> open.s, u |-> <<cur.u, 0, 0>>,
-                                         hf |-> FALSE, fr |-> {}]} ELSE ents
-        open1 == IF exp THEN NoOpen ELSE open
-        newR == IF Alive(ch.nv, t) /\ ch.nv.r >= 2 THEN ch.nv.r ELSE 0
-        aud == ch.aud >= 2
-        split == ch.aud > 0 /\ open1.r > 0 /\ open1.r < ch.aud
-        ends == open1.r # newR \/ split
-        ents2 == IF ends /\ open1.r > 0
-                 THEN ents1 \cup {[m |-> m, r |-> open1.r, s |-> open1.s, u |-> ch.key,
-                                   hf |-> aud, fr |-> IF aud THEN ch.fr ELSE {}]}
-                 ELSE ents1
-        open2 == IF ends THEN (IF newR >= 2 THEN [r |-> newR, s |-> ch.key] ELSE NoOpen) ELSE open1
-        ents3 == IF aud /\ open1.r = 0
-                 THEN ents2 \cup {[m |-> m, r |-> ch.aud, s |-> ch.key, u |-> ch.key, hf |-> TRUE, fr |-> ch.fr]}
-                 ELSE ents2
-    IN Led(chs, i + 1, m, ch.nv, open2, ents3, ch.key)
-
-Production(W, N, sk) ==
-  LET chs == SelectSeq(W.chg, LAMBDA ch : ch.t = N /\ KLT(ch.key, sk))
-      ms == {MemSeq(N)[i] : i \in 1..Len(MemSeq(N))}
-      per == [m \in ms |-> Led(chs, 1, m, Absent, NoOpen, {}, NONE)]
-  IN [ledger |-> UNION {per[m].ents : m \in ms},
-      roster |-> {[m |-> m, v |-> per[m].cur,
-                   s |-> IF per[m].cur.r >= 2
-                         THEN (IF per[m].open.r > 0 THEN per[m].open.s ELSE per[m].setKey)
-                         ELSE NONE] : m \in {m \in ms : per[m].cur # Absent}}]
-
-(***************************************************************************)
-(* Replay (§6 epoch start): N's edges before S as virtual writes at their   *)
-(* keys just after the commit a key names, an entry with a frontier an     *)
-(* explicit demotion by its key's node.                                    *)
-(***************************************************************************)
-RECURSIVE SortKeys(_)
-SortKeys(S) == IF S = {} THEN <<>>
-               ELSE LET k == CHOOSE k \in S : \A y \in S : ~KLT(y, k)
-                    IN <<k>> \o SortKeys(S \ {k})
-
-ValueAt(Lm, ro, b, wr) ==
-  LET inside == {e.r : e \in {e \in Lm : b # NONE /\ ~KLT(b, e.s) /\ KLT(b, e.u)}}
-  IN IF inside # {} THEN [r |-> MaxS(inside), u |-> 0]
-     ELSE IF \E q \in ro : /\ (wr \/ (q.s # NONE /\ q.s = b))
-                           /\ (q.s = NONE \/ (b # NONE /\ ~KLT(b, q.s)))
-                           /\ \A e \in Lm : b # NONE /\ ~KLT(b, e.u)
-          THEN (CHOOSE q \in ro : TRUE).v ELSE Absent
-
-VEv(N, m, b, j, v, ex, fr) ==
-  [kind |-> "v", id |-> j, gen |-> 0, ts |-> b[1], au |-> b[2], key5 |-> <<b[1], b[2], b[3], j + 2, m>>,
-   ops |-> <<Op(N, m, v.r, v.u)>>, tg |-> N, fr |-> fr, ex |-> ex, ro |-> {}]
-
-RECURSIVE VFold(_, _, _, _, _, _, _, _)
-VFold(N, m, Lm, ro, ks, i, prev, out) ==
-  IF i > Len(ks) THEN out
-  ELSE LET b == ks[i]
-           fe == {e \in Lm : e.u = b /\ e.hf}
-           v1 == ValueAt(Lm, ro, b, FALSE)
-           out1 == IF fe # {} THEN Append(out, VEv(N, m, b, 0, v1, TRUE, (CHOOSE e \in fe : TRUE).fr)) ELSE out
-           prev1 == IF fe # {} THEN v1 ELSE prev
-           v2 == ValueAt(Lm, ro, b, TRUE)
-           out2 == IF v2 # prev1 THEN Append(out1, VEv(N, m, b, 1, v2, FALSE, {})) ELSE out1
-       IN VFold(N, m, Lm, ro, ks, i + 1, v2, out2)
-
-Virtuals(N, P, sk) ==
-  LET ms == {MemSeq(N)[i] : i \in 1..Len(MemSeq(N))}
-      Lm(m) == {e \in P.ledger : e.m = m}
-      ro(m) == {q \in P.roster : q.m = m}
-      ks(m) == SortKeys({k \in ({e.s : e \in Lm(m)} \cup {e.u : e \in Lm(m)} \cup {q.s : q \in ro(m)}) \ {NONE}
-                         : KLT(k, sk)})
-      seqs == [m \in ms |-> VFold(N, m, Lm(m), ro(m), ks(m), 1, ValueAt(Lm(m), ro(m), NONE, TRUE), <<>>)]
-      E0 == [p \in EdgeDom |-> IF p[2] = N /\ p[1] \in ms THEN ValueAt(Lm(p[1]), ro(p[1]), NONE, TRUE)
-                               ELSE Absent]
-  IN [evs |-> UNION {{seqs[m][i] : i \in 1..Len(seqs[m])} : m \in ms}, E0 |-> E0]
-
-RECURSIVE SetToSeq(_)
-SetToSeq(S) == IF S = {} THEN <<>> ELSE LET x == CHOOSE x \in S : TRUE IN <<x>> \o SetToSeq(S \ {x})
-\* The walk of hist with a roster snapshot of N by au at ts s, produced from W0.
-WithSnap(N, s, au) ==
-  LET sk == <<s, au, 99>>
-      sk5 == <<s, au, 99, 1, 0>>
-      P == Production(W0, N, sk)
-      V == Virtuals(N, P, sk)
-      S == [kind |-> "s", id |-> 99, gen |-> 99, ts |-> s, au |-> au, key5 |-> sk5, ops |-> <<>>,
-            tg |-> N, fr |-> {}, ex |-> FALSE, ro |-> {q \in P.roster : TRUE}]
-      kept == {c \in HSet : ~(c.kind = "e" /\ c.tg = N /\ Before(c.key5, sk5))}
-      evs == SortSeq(SetToSeq(kept \cup V.evs \cup {S}), LTev)
-  IN [w |-> WalkD(evs, V.E0, {}, {}), kept |-> kept, P |-> P]
-
-(***************************************************************************)
 (* Properties.                                                              *)
 (***************************************************************************)
 TypeOK == /\ Len(hist) <= MaxLen
           /\ \A c \in HSet : c.ts \in Nat
 
-\* (2) Neutrality: a roster snapshot of N taken at any point, with the roster
-\* and ledger the timeline computes, changes no verdict (§6).
-NeutralAt(N, s, au) ==
-  LET X == WithSnap(N, s, au)
-      cmp == {<<c.id, k>> : c \in {c \in X.kept : c.kind = "e"}, k \in 1..2}
-      V0 == Verd(W0)
-      V1 == Verd(X.w)
-  IN X.w.rej \/ (V0.edges \cap cmp = V1.edges \cap cmp /\ V0.content = V1.content /\ V0.roles = V1.roles)
-Neutral == \A N \in SnapThings, s \in SnapTs :
-             \A au \in (IF N = A THEN {1} ELSE SnapAu) : NeutralAt(N, s, au)
-
 \* (1) Determinism: the verdicts do not depend on the order in which drops are
 \* found (every write that adds to D may be taken first).
-RECURSIVE WalkAll(_, _, _)
-WalkAll(evs, E0, D) ==
-  LET p == Pass(evs, 1, St0(E0, D), FALSE)
+RECURSIVE WalkAll(_, _)
+WalkAll(evs, D) ==
+  LET p == Pass(evs, 1, St0(D), FALSE)
   IN IF p.cands = <<>> THEN {Verd(p)}
-     ELSE UNION {WalkAll(evs, E0, D \cup p.cands[j]) : j \in 1..Len(p.cands)}
-DropOrderFree == Chaos => WalkAll(Evs(hist), E00, {}) = {Verd(W0)}
+     ELSE UNION {WalkAll(evs, D \cup p.cands[j]) : j \in 1..Len(p.cands)}
+DropOrderFree == Chaos => WalkAll(Evs(hist), {}) = {Verd(W0)}
 
-\* (3) A holder whose class (or role) a valid explicit demotion R took away:
+\* (2) A holder whose class (or role) a valid explicit demotion R took away:
 \* its edge writes generated after R and ordered before R are dropped; its
 \* content generated after its newest demotion, with no regain, is invalid.
 LateEdge == \A f \in W0.fall : \A a \in W0.app :
@@ -459,20 +312,20 @@ LateContent == \A c \in W0.cinfo :
   IN (ds # {} /\ c.gen > Newest(ds).gen /\ ~Before(Newest(ds).key, W0.lastW[<<c.au, c.tg>>])
       /\ RoleEnd(W0, c.au, c.tg) < 2) => ~CValid(W0, c)
 
-\* (4) A demotion never drops its author's writes; a demoter that reached the
+\* (3) A demotion never drops its author's writes; a demoter that reached the
 \* holder keeps its standing until the next explicit write on that edge,
 \* which audits it.
 NoSelfDrop == \A r \in W0.drec : r.au # r.byau
 StandingAudited ==
   \A r1, r2 \in W0.ex :
     ( /\ r1.m = B /\ r2.m = B /\ r1.t = r2.t /\ Before(r1.key, r2.key) /\ r1.au # r2.au
-      /\ r1.cid # 0 /\ r2.cid # 0 /\ r1.auReach /\ r1.was = 3 /\ r2.nv = Absent
+      /\ r1.auReach /\ r1.was = 3 /\ r2.nv = Absent
       /\ r1.au \in r2.reachAdmin /\ r2.after[r1.au] < 2
       /\ ~\E r3 \in W0.ex : r3.m = B /\ r3.t = r1.t /\ Before(r1.key, r3.key) /\ Before(r3.key, r2.key) )
     => ~\E a \in W0.app : a.au = r1.au /\ a.on = r1.t /\ a.attr = 2 /\ Before(a.key, r1.key)
                            /\ a.cid \notin r2.fr
 
-\* (5) Owner chain: chain authority confers write wherever the chain reaches
+\* (4) Owner chain: chain authority confers write wherever the chain reaches
 \* (content by a chain node stands unless a later demotion); nothing on a thing
 \* beyond MAX_OWNER_DEPTH is valid.
 ChainContent == \A c \in W0.cinfo :
@@ -487,15 +340,6 @@ ProbeNoDrop == W0.drec = {}
 ProbeNoDem == W0.dem = {}
 ProbeNoKept == ~\E r \in W0.ex : r.auReach /\ r.was = 3 /\ r.m = B
 ProbeNoInvalidContent == \A c \in W0.cinfo : CValid(W0, c)
-ProbeNoRestart == Cardinality(WalkAll(Evs(hist), E00, {})) = 1 /\ Len(Pass(Evs(hist), 1, St0(E00, {}), FALSE).cands) <= 1
-ProbeNoLedger == \A N \in SnapThings, s \in SnapTs : Production(W0, N, <<s, 1, 99>>).ledger = {}
-ProbeNoLedgerFr == \A N \in SnapThings, s \in SnapTs : \A e \in Production(W0, N, <<s, 1, 99>>).ledger : ~e.hf
-ProbeSnapRejected == \A N \in SnapThings, s \in SnapTs :
-  \A au \in (IF N = A THEN {1} ELSE SnapAu) : WithSnap(N, s, au).w.rej
-\* a snapshot that applies while an earlier tenure's frontier drops a write on B
-ProbeLedgerDrops == \A N \in SnapThings, s \in SnapTs :
-  \A au \in (IF N = A THEN {1} ELSE SnapAu) :
-    LET X == WithSnap(N, s, au) IN X.w.rej \/ ~\E r \in X.w.drec : r.bycid = 0
-ProbeNoAuditOnly ==\A N \in SnapThings, s \in SnapTs : \A e \in Production(W0, N, <<s, 1, 99>>).ledger : e.s # e.u
+ProbeNoRestart == Cardinality(WalkAll(Evs(hist), {})) = 1 /\ Len(Pass(Evs(hist), 1, St0({}), FALSE).cands) <= 1
 
 =============================================================================

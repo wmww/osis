@@ -192,7 +192,7 @@ fn junk_signature_with_the_author_away_spec_commits_4() {
         let (a, g, b) = (x.a, x.g, x.b);
         let t = x.h;
         let mut m = osis_node::Mutation::new();
-        m.op(t, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(dt))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None })) }).unwrap();
+        m.op(t, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(dt))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, tied: None })) }).unwrap();
         x.net.engine(a).commit(m).unwrap();
         for id in x.net.engine(a).commit_ids() {
             let pk = x.net.engine(a).package(&id).unwrap().unwrap();
@@ -264,7 +264,7 @@ fn no_repeated_redelivery_spec_commits_4() {
 }
 
 fn edge_op(holder: Tid) -> osis_crdt::PathOp {
-    osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None })) }
+    osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, tied: None })) }
 }
 
 // spec/commits.md §4 (copies), crash: a role commit applied, its part on a thing whose record is away
@@ -421,7 +421,7 @@ fn purged_part_leaves_its_blob_spec_commits_5() {
     // sealed before the purge drops it at its author: the `t:reg.0` part alone
     let body = x.net.engine(a).body(&c).unwrap().unwrap();
     let hdr = x.net.engine(a).header(&c).unwrap();
-    let reg = osis_commit::rewrite(&CommitBlob::decode(&body.plaintext).unwrap(), |ai, _| hdr.aspects[ai].ak.as_str() != "t:reg.0");
+    let reg = osis_commit::rewrite(&CommitBlob::decode(&body.plaintext).unwrap(), |ai| hdr.aspects[ai].ak.as_str() != "t:reg.0");
     assert_eq!(reg.parts.len(), 1);
     let (id, e) = entry(&mut x.net, a, a, g, reg.encode(), &c, 100);
     x.net.advance(10);
@@ -476,8 +476,8 @@ fn junk_first_in_one_body_keeps_out_no_entry_spec_commits_4() {
         assert_eq!(whole.parts.len(), 2, "two retention classes in one blob");
         let reg_ai = x.net.engine(a).header(&c).unwrap().aspects.iter().position(|y| y.ak.as_str() == "t:reg.0").unwrap();
         // the blob split by hand into one per class (a rewrite's shape, spec/sync.md §5)
-        let on_reg = osis_commit::rewrite(&whole, |ai, _| ai != reg_ai).encode();
-        let other = osis_commit::rewrite(&whole, |ai, _| ai == reg_ai).encode();
+        let on_reg = osis_commit::rewrite(&whole, |ai| ai != reg_ai).encode();
+        let other = osis_commit::rewrite(&whole, |ai| ai == reg_ai).encode();
         let give = |x: &mut Case, plaintext: Vec<u8>, seed: u64| {
             let (g, l, host) = (x.g, x.l, x.host);
             let secret = x.net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
@@ -491,7 +491,7 @@ fn junk_first_in_one_body_keeps_out_no_entry_spec_commits_4() {
         give(&mut x, junk_parts(&on_reg, 7), 100);
         give(&mut x, on_reg, 101);
         x.give_record(300);
-        let reg_slots: Vec<(usize, usize)> = x.net.engine(a).body(&c).unwrap().unwrap().parts.into_iter().filter(|p| p.0 == reg_ai).collect();
+        let reg_slots: Vec<usize> = x.net.engine(a).body(&c).unwrap().unwrap().parts.into_iter().filter(|ai| *ai == reg_ai).collect();
         assert!(reg_slots.iter().all(|p| x.net.engine(b).settled_slots(&c).unwrap().contains(p)), "other first {other_first}: the true copy came");
         assert!(x.net.engine(b).take_redeliver().is_empty());
         assert!(x.holds(c), "other first {other_first}");
@@ -501,50 +501,6 @@ fn junk_first_in_one_body_keeps_out_no_entry_spec_commits_4() {
         assert_eq!(x.read(), Some(Value::Str("third".into())), "other first {other_first}");
         assert!(x.net.engine(b).pending().is_empty());
     }
-}
-
-/// A roster snapshot of `t`, one delta per edge, by `by`, whatever its rights.
-fn roster_snapshot(net: &mut Net, by: usize, t: Tid, holders: [Tid; 2]) -> CommitId {
-    let mut m = osis_node::Mutation::new();
-    let edge = || osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None });
-    m.op(t, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Replace(Value::Map(holders.into_iter().map(|h| (Value::Tid(h), edge())).collect())) }).unwrap();
-    m.op(t, &osis_schema::core_types::TENURES, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Replace(Value::Set(Default::default())) }).unwrap();
-    m.roster_for_tests();
-    net.engine(by).core.skip_writer_rules = true;
-    let c = net.engine(by).commit(m).unwrap().unwrap();
-    net.engine(by).core.skip_writer_rules = false;
-    c
-}
-
-// spec/commits.md §4 (copies), crash: a roster snapshot on a thing not synced, one delta's first copy
-// junk: the record comes, the junk goes, the commit applies with a hole in one aspect, and the crash
-// takes the name. `missing` is per aspect, so only the entry's several deltas say to look.
-#[test]
-fn restart_with_a_hole_in_an_aspect_spec_commits_4() {
-    let mut x = case();
-    let (a, b, h, r) = (x.a, x.b, x.h, x.r);
-    let holders = [x.net.tid(a), x.net.tid(b)];
-    let c = roster_snapshot(&mut x.net, a, h, holders);
-    let good = x.net.engine(a).package(&c).unwrap().unwrap().bytes;
-    let mut junk = CommitBlob::decode(&good).unwrap();
-    let hole = junk.parts.iter().map(|p| (p.ai, p.di)).find(|p| p.1 > 0).expect("an aspect with several deltas");
-    junk.parts.iter_mut().find(|p| (p.ai, p.di) == hole).unwrap().delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![3; 40])]));
-    x.give(junk.encode(), c, 100);
-    x.give(good, c, 101);
-    // of `r`, only `h`'s record: `h` is in no synced group yet, so the roster snapshot applies with its hole
-    let pk = x.net.engine(a).package(&r).unwrap().unwrap();
-    let mut record = CommitBlob::decode(&pk.bytes).unwrap();
-    let rh = record.header.clone();
-    record.parts.retain(|p| rh.aspects[p.ai].tid == h && rh.aspects[p.ai].ak.as_str() == "created.0");
-    x.net.engine(b).ingest(&record.encode(), pk.blobs).unwrap();
-    x.net.engine(b).reexamine().unwrap();
-    assert!(!x.net.engine(b).take_redeliver().is_empty(), "named");
-    assert!(x.holds(c), "applied with the hole: {:?}", x.net.engine(b).pending());
-    assert!(!x.net.engine(b).settled_slots(&c).unwrap().contains(&hole));
-    x.net.restart(b, 77);
-    x.net.feed(b, Event::Local);
-    x.net.settle(10_000);
-    assert!(x.net.engine(b).settled_slots(&c).unwrap().contains(&hole), "the true delta came");
 }
 
 struct Rng(u64);
@@ -598,9 +554,6 @@ fn relay_seed(seed: u64) {
     m.set(h2, &REG, &Value::Str("two bodies".into())).unwrap();
     sources.push((a, x.net.engine(a).commit(m).unwrap().unwrap()));
     x.net.advance(10);
-    // several deltas on one aspect: a junk one leaves a hole in an aspect the commit holds
-    let other = x.net.tid(b);
-    sources.push((a, roster_snapshot(&mut x.net, a, h2, [holder, other])));
     for id in x.net.engine(a).commit_ids() {
         let pk = x.net.engine(a).package(&id).unwrap().unwrap();
         let _ = x.net.engine(d).ingest(&pk.bytes, pk.blobs);

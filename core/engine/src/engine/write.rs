@@ -56,8 +56,6 @@ pub struct Mutation {
     pub(crate) unchecked: bool,
     /// A held key actor that signs instead of the node (commit form).
     pub(crate) signer: Option<Tid>,
-    /// A roster snapshot (spec/permissions.md §6): role kind with the marker.
-    pub(crate) roster: bool,
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
     /// of an edge already removed (role flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<(osis_crdt::Dot, Value)>>,
@@ -87,7 +85,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), first: BTreeMap::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), first: BTreeMap::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -239,24 +237,17 @@ impl Mutation {
         self
     }
 
-    /// Tests: marks the commit a roster snapshot, whatever roster its writes hold.
-    #[doc(hidden)]
-    pub fn roster_for_tests(&mut self) -> &mut Self {
-        self.roster = true;
-        self
-    }
-
     pub fn is_empty(&self) -> bool {
         self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.undoes.is_none() && self.free.is_empty()
     }
 }
 
 /// The role a write of `ak` needs (spec/permissions.md §1, §3, §5.2): admin for edges,
-/// `label.0`, `tenures.0` and admin-only (`^`) aspects; write for rotations
+/// `label.0` and admin-only (`^`) aspects; write for rotations
 /// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
-        "roles.0" | "label.0" | "tenures.0" => Role::Admin,
+        "roles.0" | "label.0" => Role::Admin,
         _ if Ak::markers_of(ak).0 => Role::Admin,
         _ => Role::Write,
     }
@@ -373,8 +364,6 @@ pub(crate) struct Resolved {
     pub frontiers: Option<(osis_crdt::Frontiers, std::collections::BTreeMap<osis_base::CommitId, Tid>)>,
     /// Chunk blobs of large values the delta introduces.
     pub chunks: Vec<osis_base::BlobId>,
-    /// Written as one delta per root map entry or set element (a roster snapshot).
-    pub split: bool,
     /// Creation records carried beside the delta (a memory commit, `memory_records`).
     pub records: Vec<CreationRecord>,
 }
@@ -542,38 +531,30 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         let framing = framing_for(tx.core, &plan, &published, &d.tid, &retention)?;
         let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
-        // a roster snapshot: one delta per edge and per ledger entry (spec/commits.md §2)
-        let fragments = if d.split { d.fragment.split_entries() } else { vec![d.fragment] };
         let memory = tx.txn.is_memory();
         let mut blobs = TxBlobs::new(&mut tx.txn);
-        let mut bytes = Vec::with_capacity(fragments.len());
-        let mut frontiers = d.frontiers;
-        for fragment in fragments {
-            let mut nonce = [0u8; osis_crdt::NONCE_LEN];
-            tx.rng.fill_bytes(&mut nonce);
-            // a memory delta is never paged (spec/crdt.md §8): it must fit a blob alone
-            let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
-            let (fr, sink): (_, &mut dyn osis_crdt::PageSink) = (frontiers.take(), if memory { &mut Unpaged } else { &mut bw });
-            let encoded = match fr {
-                Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(sink)),
-                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(sink)),
-            };
-            bytes.push(match encoded {
-                Ok(b) => b,
-                // past what one unpaged delta may hold (spec/commits.md §2): refused
-                Err(_) if memory => return Err(Error::Misuse("an ephemeral delta does not fit a blob")),
-                Err(e) => return Err(e.into()),
-            });
-        }
+        let mut nonce = [0u8; osis_crdt::NONCE_LEN];
+        tx.rng.fill_bytes(&mut nonce);
+        // a memory delta is never paged (spec/crdt.md §8): it must fit a blob alone
+        let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
+        let sink: &mut dyn osis_crdt::PageSink = if memory { &mut Unpaged } else { &mut bw };
+        let fragment = d.fragment;
+        let encoded = match d.frontiers {
+            Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(sink)),
+            None => encode_delta(&Delta { nonce, fragment }, &cx, Some(sink)),
+        };
+        let bytes = match encoded {
+            Ok(b) => b,
+            // past what one unpaged delta may hold (spec/commits.md §2): refused
+            Err(_) if memory => return Err(Error::Misuse("an ephemeral delta does not fit a blob")),
+            Err(e) => return Err(e.into()),
+        };
         let mut chunks = std::mem::take(&mut blobs.written);
         // trees written for values the resolved delta does not hold (an edit's item paired
         // with one deleted concurrently) are neither listed nor kept
         let mut own = d.chunks;
         if !own.is_empty() {
-            let mut linked = std::collections::BTreeSet::new();
-            for b in &bytes {
-                linked.extend(super::large::delta_links(tx, &framing.dedup, b)?);
-            }
+            let linked = super::large::delta_links(tx, &framing.dedup, &bytes)?;
             let (keep, drop): (Vec<_>, Vec<_>) = own.into_iter().partition(|id| linked.contains(id));
             for id in &drop {
                 tx.txn.delete_blob(id);
@@ -588,8 +569,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             }
         }
         // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
-        let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { bytes.iter().map(|_| osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)]))).collect() } else { bytes };
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, chunks, records: d.records });
+        let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)])) } else { bytes };
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, delta: bytes, retention, chunks, records: d.records });
     }
     if !plan.purge.is_empty() && plan.expires.is_some() {
         return Err(Error::Misuse("a commit with a purge request cannot carry expires (spec/commits.md §5)"));
@@ -709,12 +690,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if role_commit && content {
         return Err(Error::Misuse("a commit is either a content or a role commit"));
     }
-    let kind = match m.roster {
-        true if role_commit => Kind::RosterSnapshot,
-        true => return Err(Error::Misuse("a roster snapshot writes roles.0 and tenures.0 only")),
-        false if role_commit => Kind::Role,
-        false => Kind::Content,
-    };
+    let kind = if role_commit { Kind::Role } else { Kind::Content };
     // edge writes are judged without the actor, so a role commit acts for its signer
     // (spec/wire.md §4)
     if kind != Kind::Content && m.actor.is_some_and(|a| a != node) {
@@ -814,9 +790,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if memory {
         } else if let Some(framing) = &framing {
             chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), framing, &m.fresh)?;
-        } else if kind == Kind::RosterSnapshot && ak.as_str() == "tenures.0" {
-            let framing = framing_for(tx.core, &plan, &published, &tid, &retention)?;
-            chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
         }
         let lo = match form {
             Form::Commit => next_ctr,
@@ -862,7 +835,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         } else {
             Vec::new()
         };
-        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot, records };
+        let r = Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, records };
         deltas.push(r);
     }
     if deltas.is_empty() && plan.purge.is_empty() {

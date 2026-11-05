@@ -110,9 +110,6 @@ pub const MAX_HEARTBEAT_SUSPECTS: usize = 32;
 /// Most owner links from a thing up to its key actor (spec/wire.md §2, spec/permissions.md
 /// §1). fixed.
 pub const MAX_OWNER_DEPTH: usize = 64;
-/// Canonical bytes of the distinct linked tenure frontiers of one roster snapshot (spec/wire.md
-/// §2, spec/permissions.md §6). fixed.
-pub const MAX_LINKED_FRONTIERS: usize = 64 * MIB;
 
 /// Host policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;

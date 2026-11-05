@@ -529,7 +529,7 @@ fn log_aspects(tx: &mut Tx<'_>, ids: &[CommitId]) -> Result<Vec<log::LogAspect>>
         let src = h.form.own_source(h.author, *c);
         for (ai, a) in h.aspects.iter().enumerate() {
             let mut delta = Fragment::default();
-            for f in crate::apply::held_fragments(tx, c, ai)? {
+            if let Some(f) = crate::apply::held_fragment(tx, c, ai)? {
                 delta.join(f);
             }
             let pre = crate::undo::remembered(tx, c, &a.tid, &a.ak)?.unwrap_or_default();

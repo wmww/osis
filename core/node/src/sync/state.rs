@@ -63,7 +63,7 @@ const RECEIPTS_ONLY: &[u8] = b"y/w";
 /// (`owe_tx`, `SyncEngine::take_done`).
 const OWED: &[u8] = b"y/y";
 
-/// A followed link's sharer node (spec/permissions.md §8): dialed at the link's `peer://`
+/// A followed link's sharer node (spec/permissions.md §7): dialed at the link's `peer://`
 /// addresses for K's labels and the target's, nothing else.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkPeer {
@@ -80,7 +80,7 @@ pub enum Kind {
     /// A commit blob: the parts this node opened, the aspects every section of it lists (sealed
     /// ones included: its prefix groups and delete signatures follow them, spec/wire.md §5),
     /// and its prefix salt (a delete-key signature is made for it, spec/crypto.md §7).
-    Commit { commit: CommitId, parts: Vec<(usize, usize)>, ais: Vec<usize>, salt: [u8; 16] },
+    Commit { commit: CommitId, parts: Vec<usize>, ais: Vec<usize>, salt: [u8; 16] },
     /// An inbox blob this node opened, with the commit it carried (`None`: opened by an older
     /// build).
     Inbox(Option<CommitId>),
@@ -127,7 +127,7 @@ impl Entry {
 pub struct BlobRec {
     pub commit: CommitId,
     /// The parts this node opened.
-    pub parts: Vec<(usize, usize)>,
+    pub parts: Vec<usize>,
     /// The aspects every section lists (`Kind::Commit`).
     pub ais: Vec<usize>,
     pub key: Secret32,
@@ -137,8 +137,8 @@ pub struct BlobRec {
     pub memory: bool,
 }
 
-/// A body under a label: (label, commit, its `(ai, di)` delta set, sorted).
-pub type DeletedBody = (LabelId, CommitId, Vec<(usize, usize)>);
+/// A body under a label: (label, commit, its parts by aspect index, sorted).
+pub type DeletedBody = (LabelId, CommitId, Vec<usize>);
 
 /// A deposit (an inbox blob, a non-writer's role write) sealed, wrapped and signed, kept
 /// until its host answers (spec/sync.md §3, §5).
@@ -363,23 +363,6 @@ fn key(prefix: &[u8], parts: &[&[u8]]) -> Vec<u8> {
     k
 }
 
-fn encode_parts(w: Wr, parts: &[(usize, usize)]) -> Wr {
-    let mut w = w.u32(parts.len() as u32);
-    for (a, d) in parts {
-        w = w.u32(*a as u32).u32(*d as u32);
-    }
-    w
-}
-
-fn decode_parts(r: &mut Rd<'_>) -> Result<Vec<(usize, usize)>> {
-    let n = r.u32()?;
-    let mut v = Vec::new();
-    for _ in 0..n {
-        v.push((r.u32()? as usize, r.u32()? as usize));
-    }
-    Ok(v)
-}
-
 fn encode_ais(w: Wr, ais: &[usize]) -> Wr {
     let mut w = w.u32(ais.len() as u32);
     for a in ais {
@@ -399,8 +382,8 @@ fn decode_ais(r: &mut Rd<'_>) -> Result<Vec<usize>> {
 
 /// Whether a blob record has a section this node did not open (an aspect listed by no opened
 /// part).
-pub fn sealed(ais: &[usize], parts: &[(usize, usize)]) -> bool {
-    ais.iter().any(|a| !parts.iter().any(|p| p.0 == *a))
+pub fn sealed(ais: &[usize], parts: &[usize]) -> bool {
+    ais.iter().any(|a| !parts.contains(a))
 }
 
 fn encode_addrs(w: Wr, addrs: &[Address]) -> Wr {
@@ -442,7 +425,7 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
     };
     match &e.kind {
         Kind::Unknown => w.u8(0),
-        Kind::Commit { commit, parts, ais, salt } => encode_ais(encode_parts(w.u8(6).raw(&commit.0).raw(salt), parts), ais),
+        Kind::Commit { commit, parts, ais, salt } => encode_ais(encode_ais(w.u8(6).raw(&commit.0).raw(salt), parts), ais),
         Kind::Inbox(None) => w.u8(2),
         Kind::Inbox(Some(c)) => w.u8(5).raw(&c.0),
         Kind::Bad => w.u8(3),
@@ -464,7 +447,7 @@ fn decode_entry(b: &[u8]) -> Result<Entry> {
         6 => {
             let commit = CommitId(r.arr()?);
             let salt = r.arr()?;
-            let parts = decode_parts(&mut r)?;
+            let parts = decode_ais(&mut r)?;
             Kind::Commit { commit, parts, ais: decode_ais(&mut r)?, salt }
         }
         0 => Kind::Unknown,
@@ -524,7 +507,7 @@ impl State {
                     let commit = CommitId(x.arr()?);
                     let key = Secret32::from_bytes(x.arr()?);
                     let cert = x.u8()? == 1;
-                    let parts = decode_parts(&mut x)?;
+                    let parts = decode_ais(&mut x)?;
                     let ais = decode_ais(&mut x)?;
                     s.by_commit.entry(commit).or_default().insert(id);
                     s.blobs.insert(id, BlobRec { commit, parts, ais, key, cert, memory: false });
@@ -849,7 +832,7 @@ impl State {
     /// purge rewrite of it.
     /// Whether a delete took a blob of `c` holding exactly `parts` from `l` (spec/sync.md §6): a
     /// deleted blob holding more (a rewrite replaced it for a dropped part) was another body.
-    pub fn body_deleted(&self, l: LabelId, c: CommitId, parts: &[(usize, usize)]) -> bool {
+    pub fn body_deleted(&self, l: LabelId, c: CommitId, parts: &[usize]) -> bool {
         self.deleted.range((l, c, Vec::new())..).take_while(|((x, y, _), _)| *x == l && *y == c).any(|((_, _, p), _)| p == parts)
     }
 
@@ -1052,7 +1035,7 @@ impl State {
 
     pub fn add_blob(&mut self, id: BlobId, rec: BlobRec) {
         if !rec.memory {
-            let v = encode_ais(encode_parts(Wr::new().raw(&rec.commit.0).raw(rec.key.expose()).u8(u8::from(rec.cert)), &rec.parts), &rec.ais).take();
+            let v = encode_ais(encode_ais(Wr::new().raw(&rec.commit.0).raw(rec.key.expose()).u8(u8::from(rec.cert)), &rec.parts), &rec.ais).take();
             self.put(key(BLOB, &[&id.0]), v);
         }
         self.by_commit.entry(rec.commit).or_default().insert(id);
@@ -1062,7 +1045,7 @@ impl State {
 
     /// More parts of blob `id` opened (a section under a secret learned since): the record and
     /// every entry of it now list them; `copy`: it proved a per-label copy (`OpenedBlob::copy`).
-    pub fn note_opened(&mut self, id: &BlobId, parts: &[(usize, usize)], copy: bool) {
+    pub fn note_opened(&mut self, id: &BlobId, parts: &[usize], copy: bool) {
         let Some(mut rec) = self.blobs.remove(id) else { return };
         if let Some(s) = self.by_commit.get_mut(&rec.commit) {
             s.remove(id);
@@ -1391,7 +1374,7 @@ impl State {
 
     /// The blob this node holds for exactly these parts of a commit (not a certificate
     /// encryption), if any.
-    pub fn blob_for(&self, c: &CommitId, needed: &[(usize, usize)], held: &[(usize, usize)], skip: impl Fn(&BlobId) -> bool) -> Option<BlobId> {
+    pub fn blob_for(&self, c: &CommitId, needed: &[usize], held: &[usize], skip: impl Fn(&BlobId) -> bool) -> Option<BlobId> {
         self.by_commit.get(c)?.iter().filter(|b| !skip(b)).filter_map(|b| self.blobs.get(b).filter(|r| !r.cert && needed.iter().all(|p| r.parts.contains(p)) && r.parts.iter().all(|p| held.contains(p))).map(|r| (r.parts.len(), *b))).max().map(|x| x.1)
     }
 }
@@ -1441,8 +1424,8 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
                 let c = CommitId(x.arr()?);
                 let _key: [u8; 32] = x.arr()?;
                 let _cert = x.u8()?;
-                let ps = decode_parts(&mut x)?;
-                let gone = commits.contains(&c) || parts.get(&c).is_some_and(|s| ps.iter().any(|(ai, _)| s.contains(ai)));
+                let ps = decode_ais(&mut x)?;
+                let gone = commits.contains(&c) || parts.get(&c).is_some_and(|s| ps.iter().any(|ai| s.contains(ai)));
                 if gone {
                     freed.insert(b);
                 } else {
@@ -1626,7 +1609,7 @@ mod tests {
     // spec: none (local store format): a commit entry keeps its blob's salt and round trips.
     #[test]
     fn commit_entry_salt_round_trips() {
-        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![(0, 1)], ais: vec![0, 2], salt: [9; 16] }, memory: false };
+        let e = Entry { wrap: [3; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: CommitId([1; 32]), parts: vec![0], ais: vec![0, 2], salt: [9; 16] }, memory: false };
         let back = decode_entry(&encode_entry(&e)).unwrap();
         assert!(matches!(&back.kind, Kind::Commit { salt, ais, .. } if *salt == [9; 16] && *ais == vec![0, 2]));
     }
@@ -1751,7 +1734,7 @@ mod tests {
         s.set_present(h, l, b, true);
         s.set_doubtful(h, l, b, [3; WRAP_LEN]);
         // body carried by mid, itself dropped and carried by snap; other's carrier stands alone
-        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: body, parts: vec![(0, 0)], ais: vec![0], salt: [0; 16] }, memory: false });
+        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: body, parts: vec![0], ais: vec![0], salt: [0; 16] }, memory: false });
         s.set_carrier(body, mid);
         s.set_carrier(mid, snap);
         s.set_carrier(other, snap);

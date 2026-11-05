@@ -8,7 +8,7 @@ use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
 use crate::engine::{Engine, Owned, Tx, Core};
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
-use osis_commit::{Decoded, Form, Header, Kind};
+use osis_commit::{Form, Header, Kind};
 use osis_crdt::{Fragment, Frontiers};
 use osis_schema::core_types::is_role_class;
 use std::collections::BTreeSet;
@@ -213,15 +213,14 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     {
         return Ok(Some(false));
     }
-    let held = crate::apply::held_parts(tx, c, cai)?;
     let is_snapshot = m.header.kind.is_compaction();
-    let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
+    let mut body: Option<Fragment> = crate::apply::held_fragment(tx, c, cai)?;
     // a valid snapshot body's copies all count (spec/permissions.md §5.2): it must carry them
     // all; an invalid one gives nothing, its copies of writes a received valid delta supplies
     // are left out
     if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;
-        for b in &mut body {
+        if let Some(b) = &mut body {
             b.strip_copies(&|d| crate::apply::copies::any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
         }
     }
@@ -236,9 +235,9 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     };
     ranges.sort();
     ranges.dedup();
-    let held = !body.is_empty();
+    let held = body.is_some();
     let mut joined = Fragment::default();
-    for b in body {
+    if let Some(b) = body {
         joined.join(b);
     }
     let mut part = Fragment::default();
@@ -250,7 +249,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         Ok(())
     })?;
     // the snapshot not held: nothing is established
-    let [g] = gives.as_slice() else { return Ok(None) };
+    let Some(g) = &gives else { return Ok(None) };
     if let Some((fr, abs)) = g {
         let h = &m.header;
         // a held body is judged by the join below whatever the tables say; its session listed
@@ -309,8 +308,9 @@ impl Engine {
 
     fn snapshot_if(&mut self, tid: &Tid, ak: &Ak, compaction: bool) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
-        if ak.as_str() == "roles.0" || ak.as_str() == "tenures.0" {
-            return Err(Error::Misuse("roles.0 and tenures.0 are compacted by roster snapshots"));
+        // the role timeline walks every edge write (spec/commits.md §2)
+        if ak.as_str() == "roles.0" {
+            return Err(Error::Misuse("roles.0 is never compacted"));
         }
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is kept forever, never compacted"));
@@ -417,7 +417,7 @@ impl Engine {
                 Vec::new()
             };
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }
@@ -445,7 +445,7 @@ impl Engine {
                     return Err(Error::Misuse("coalescing takes this session's plain commits"));
                 }
                 hi = hi.max(m.header.aspects.get(ai).map_or(0, |a| a.hi));
-                for f in crate::apply::held_fragments(tx, c, ai)? {
+                if let Some(f) = crate::apply::held_fragment(tx, c, ai)? {
                     st.get_or_insert_with(Fragment::default).join(f);
                 }
             }
@@ -461,7 +461,7 @@ impl Engine {
             let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
             let records = crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter());
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new(), split: false, records };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new(), records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

@@ -13,7 +13,7 @@ use osis_schema::core_types as ct;
 fn invite(net: &mut Net, host: usize) -> (osis_base::Tid, osis_base::LabelId, osis_base::CommitId, osis_node::flows::Done) {
     let g = net.group(0, &[(1, Role::Read)], &[host]);
     let b = net.tid(1);
-    let raise = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None, tied: None };
+    let raise = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), tied: None };
     let done = net.engine(0).grant(&g, &b, &raise).unwrap();
     let acts = net.sync(0).carry_out(done).unwrap();
     net.actions(0, acts);
@@ -21,7 +21,7 @@ fn invite(net: &mut Net, host: usize) -> (osis_base::Tid, osis_base::LabelId, os
     net.pair(2, 1);
     let l = net.engine(0).group_labels(&g).unwrap()[0].id;
     let c = net.tid(2);
-    let grant = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let grant = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(1).grant(&g, &c, &grant).unwrap();
     let commit = *done.commits.last().unwrap();
     (g, l, commit, done)
@@ -313,7 +313,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     // K (label at s1) with holder b, a holder of T (label at s0)
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
     let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&t, &k, &edge).unwrap();
     carry(&mut net, a, done);
     net.run();
@@ -349,7 +349,7 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let (g, l, c, done) = invite(&mut net, host);
     net.pair(3, 0);
     let d = net.tid(3);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let grant = net.engine(0).grant(&g, &d, &edge).unwrap();
     carry(&mut net, 0, grant);
     net.run();
@@ -421,7 +421,7 @@ fn holder_group(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_base::Tid)
     let b = net.node(41, &[s0, s1]);
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
     let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(a).grant(&t, &k, &edge).unwrap();
     carry(net, a, done);
     net.run();
@@ -433,7 +433,7 @@ fn copy_at(net: &mut Net, n: usize, s: usize, l: &osis_base::LabelId, c: &osis_b
     let at = net.host_ids(s, l);
     let h = net.engine(n).header(c).unwrap();
     let on = |ai: &usize| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == ak);
-    net.sync(n).entries(l).iter().any(|(id, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if commit == c && parts.iter().any(|(ai, _)| on(ai))) && at.contains(id))
+    net.sync(n).entries(l).iter().any(|(id, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if commit == c && parts.iter().any(&on)) && at.contains(id))
 }
 
 // spec/permissions.md §3 (a removal or lowering goes under the labels the removed party could
@@ -452,7 +452,7 @@ fn first_copy_survives_a_crash_spec_permissions_3() {
         let b2 = net.node(42, &[s0, s1]);
         let k = net.group(a, &[(b, Role::Write), (b2, Role::Write)], &[s1]);
         let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
-        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
         let done = net.engine(a).grant(&t, &k, &read).unwrap();
         carry(&mut net, a, done);
         net.run();
@@ -518,10 +518,10 @@ fn removal_copy_survives_a_crash_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §8, §4 (verifiers of L's commits need its card): a crash before carrying
+// spec/permissions.md §7, §4 (verifiers of L's commits need its card): a crash before carrying
 // out a link's creation still places L's card under K's label once the node restarts.
 #[test]
-fn link_card_survives_a_crash_spec_permissions_8() {
+fn link_card_survives_a_crash_spec_permissions_7() {
     use osis_node::Mutation;
     for crash in [false, true] {
         let mut net = Net::new();

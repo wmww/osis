@@ -129,8 +129,8 @@ impl EpochInfo {
 
     /// Invariant (R9): an epoch whose secret is held is used (encrypted under, boxed, put in a
     /// history box) only once some history entry of it has every name met: every departure from
-    /// the actor its rotator held is applied here, or lies before this node's epoch start, so this
-    /// node's roster has those holders departed and its holder computation boxes none of them.
+    /// the actor its rotator held is applied here, so this node's roster has those holders
+    /// departed and its holder computation boxes none of them.
     /// The rotator names from its own
     /// timeline, so the epochs its history box carries had their names met there, and those names
     /// are among its own: no chain of other rotators' word is followed. An entry is written under

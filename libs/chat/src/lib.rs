@@ -204,7 +204,7 @@ pub fn leave(db: &Osis, c: Tid) -> Result<()> {
 }
 
 /// Whether `h` is an actor accounts hold the chat through, as a link's actor K (spec/permissions.md
-/// §8) or a team: owned by an actor that has an owner itself. An account's owner is a key, and the
+/// §7) or a team: owned by an actor that has an owner itself. An account's owner is a key, and the
 /// holders of an account are its nodes.
 fn held_through(db: &Osis, h: Tid) -> Result<bool> {
     let Some(o) = db.owner_of(h)? else { return Ok(false) };

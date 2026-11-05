@@ -348,7 +348,7 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "one blob, two retention classes");
     let h = net.engine(a).header(&c1).unwrap();
     let ai = h.aspects.iter().position(|x| x.ak == gone).unwrap();
-    let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c1 && parts.iter().any(|p| p.0 == ai))).map(|(id, _)| id).collect();
+    let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c1 && parts.contains(&ai))).map(|(id, _)| id).collect();
     assert_eq!(hide.len(), 1);
     net.hide_blobs.insert(b, hide);
     net.set_online(b, true);
@@ -435,7 +435,7 @@ fn first_sync_waits_across_things_spec_commits_4() {
     net.run();
     let h = net.engine(a).header(&c).unwrap();
     let ai = h.aspects.iter().position(|x| x.ak == gone).unwrap();
-    let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c && parts.iter().any(|p| p.0 == ai))).map(|(id, _)| id).collect();
+    let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c && parts.contains(&ai))).map(|(id, _)| id).collect();
     assert_eq!(hide.len(), 1);
     net.hide_blobs.insert(b, hide);
     net.set_online(b, true);

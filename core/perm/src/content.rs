@@ -30,8 +30,7 @@ impl Timeline {
     /// valid? `required` is the role its aspect needs: write for content, the aspect's role for
     /// `secrets.0`, `keys.0`, `label.0`. A re-grant (the author holds
     /// `required` at the end of the timeline) validates every write; otherwise a write made
-    /// while holding the role stands unless a valid explicit demotion below it (a ledger tenure
-    /// with a frontier included) follows, and else only if the newest such demotion's frontier
+    /// while holding the role stands unless a valid explicit demotion below it follows, and else only if the newest such demotion's frontier
     /// lists its commit.
     pub fn delta_valid(&self, at: Point, thing: &Tid, required: Role) -> Validity {
         let key = (at, *thing, required);
@@ -55,8 +54,8 @@ impl Timeline {
 
     fn delta_valid_uncached(&self, at: Point, thing: &Tid, required: Role) -> Validity {
         let x = at.node;
-        // A re-grant makes valid *again*: only writes from the start of X's first tenure of
-        // `required` on the thing.
+        // A re-grant makes valid *again*: only writes from the first point X held `required`
+        // on the thing.
         if self.valid_from(&x, thing, required).is_some_and(|s| s.is_none_or(|p| p <= at)) {
             return Validity::Valid;
         }

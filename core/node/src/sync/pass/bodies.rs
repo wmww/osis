@@ -89,14 +89,14 @@ impl SyncEngine {
     /// (`b.parts`): a part kept (`part_kept`) or established uncovered by the label's
     /// snapshots. Must-hold: the parts a blob of the commit must hold to hold the body (those
     /// kept, and those of the aspects no snapshot covers).
-    pub(super) fn must_hold(&mut self, b: &Body, snaps: &Snaps, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
+    pub(super) fn must_hold(&mut self, b: &Body, snaps: &Snaps, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<usize>>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
-        let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+        let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         let mut before = false;
         let mut covered = !aspects.is_empty();
         let mut needed = Vec::new();
-        for (p, (t, a)) in b.parts.iter().zip(&aspects) {
-            let kept = self.part_kept(&h, &b.commit, p, note)?;
+        for (ai, (t, a)) in b.parts.iter().zip(&aspects) {
+            let kept = self.part_kept(&h, &b.commit, *ai, note)?;
             before |= kept;
             let mut c = false;
             for s in snaps.get(&(*t, a.clone())).into_iter().flatten() {
@@ -111,7 +111,7 @@ impl SyncEngine {
             }
             covered &= c;
             if kept || !c {
-                needed.push(*p);
+                needed.push(*ai);
             }
         }
         let known = !unsettled.contains(&None) && !aspects.iter().any(|k| unsettled.contains(&Some(k.clone())));
@@ -126,8 +126,8 @@ impl SyncEngine {
     /// to `MAX_DRIFT` may already have dropped a part past keep-at-most and deleted its blob;
     /// this node then neither holds it must-hold nor heals it, so the two never delete and
     /// re-upload in turn. The cost: a must-hold part goes unhealed in its last `MAX_DRIFT`.
-    fn part_kept(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize), note: &mut Note) -> Result<bool> {
-        let Some(a) = h.aspects.get(p.0) else { return Ok(false) };
+    fn part_kept(&mut self, h: &osis_commit::Header, c: &CommitId, ai: usize, note: &mut Note) -> Result<bool> {
+        let Some(a) = h.aspects.get(ai) else { return Ok(false) };
         let k = self.engine.body_keep(c, &a.tid, &a.ak)?;
         let until = if a.retention.by == osis_base::PurgeBy::Nobody { u64::MAX } else { k.at_least };
         let until = k.at_most.map_or(until, |m| until.min(m.saturating_sub(osis_base::format::MAX_DRIFT_MS)));
@@ -138,7 +138,7 @@ impl SyncEngine {
         Ok(kept)
     }
 
-    /// Whether only a blob of commit `c` can carry part `p` under the label (spec/sync.md §6):
+    /// Whether only a blob of commit `c` can carry its part on aspect `ai` under the label (spec/sync.md §6):
     /// kept (`part_kept`) or holding a live write, and no snapshot under the label (`snaps`)
     /// covers it. A blob missing such a part (a junk Replace's victim, a rewrite that dropped it)
     /// is healed by an upload.
@@ -147,23 +147,23 @@ impl SyncEngine {
     /// drop a covered body as past keep-at-least (no death yet, or an earlier one) while a holder
     /// dates a later death and judges it kept. Both sides read the covering snapshot under the
     /// label alike, so a covered part is never one only a blob carries.
-    pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize), snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        if !self.part_kept(h, c, p, note)? && !self.part_live(h, c, p) {
+    pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, ai: usize, snaps: &Snaps, note: &mut Note) -> Result<bool> {
+        if !self.part_kept(h, c, ai, note)? && !self.part_live(h, c, ai) {
             return Ok(false);
         }
-        Ok(!self.parts_covered(snaps, c, h, &[*p], note)?)
+        Ok(!self.parts_covered(snaps, c, h, &[ai], note)?)
     }
 
     /// Whether a delete took body `b` from `l` and it stays out: every one of its `parts` only a
     /// blob can carry (`must_carry`) is held there (at `host`) by another genuine blob of the
     /// commit, and no purge that fell may have been what took it (spec/sync.md §6).
-    pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+    pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[usize], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         if !self.state.body_deleted(l, b.commit, &b.parts) {
             return Ok(false);
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
-        for p in parts {
-            if self.must_carry(&h, &b.commit, p, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*p]) {
+        for ai in parts {
+            if self.must_carry(&h, &b.commit, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) {
                 return Ok(false);
             }
         }
@@ -171,9 +171,9 @@ impl SyncEngine {
     }
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under `l`.
-    pub(in crate::sync) fn parts_covered_at(&mut self, l: &LabelId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)]) -> Result<bool> {
+    pub(in crate::sync) fn parts_covered_at(&mut self, l: &LabelId, c: &CommitId, h: &osis_commit::Header, parts: &[usize]) -> Result<bool> {
         let mut snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = BTreeMap::new();
-        for (ai, _) in parts {
+        for ai in parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
             let k = (a.tid, a.ak.clone());
             let on: Vec<CommitId> = self.engine.core.ix.by_aspect.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| self.engine.header(s).is_some_and(|x| is_snapshot(x.kind)) && self.state.entries_of(l, s).next().is_some()).collect();
@@ -192,8 +192,8 @@ impl SyncEngine {
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under the label
     /// (`snaps`).
-    pub(super) fn parts_covered(&mut self, snaps: &Snaps, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)], note: &mut Note) -> Result<bool> {
-        for (ai, _) in parts {
+    pub(super) fn parts_covered(&mut self, snaps: &Snaps, c: &CommitId, h: &osis_commit::Header, parts: &[usize], note: &mut Note) -> Result<bool> {
+        for ai in parts {
             let Some(a) = h.aspects.get(*ai) else { return Ok(false) };
             let mut ok = false;
             for s in snaps.get(&(a.tid, a.ak.clone())).into_iter().flatten() {
@@ -212,7 +212,7 @@ impl SyncEngine {
     /// Whether an entry of commit `c` holding `parts` is present at `host` under `l` (any
     /// entry when `None`: this node's own served state), checked genuine: a forged blob listing
     /// the parts holds nothing, nor a must-not-hold one (`holds_nothing`).
-    pub(super) fn carried_by(&mut self, host: Option<&HostKey>, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    pub(super) fn carried_by(&mut self, host: Option<&HostKey>, l: &LabelId, c: &CommitId, parts: &[usize]) -> bool {
         let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(c, p)) && host.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
         ids.into_iter().any(|id| self.genuine(&id))
     }
@@ -220,21 +220,21 @@ impl SyncEngine {
     /// Whether a blob of commit `c` holding `parts` (those this node opened) is must-not-hold
     /// whatever its siblings: it holds a delta this node dropped (purge, expiry, keep-at-most,
     /// compaction). It holds no body and makes no other blob a strict subset (spec/sync.md §6).
-    pub(super) fn holds_nothing(&self, c: &CommitId, parts: &[(usize, usize)]) -> bool {
+    pub(super) fn holds_nothing(&self, c: &CommitId, parts: &[usize]) -> bool {
         let Some(m) = self.engine.core.ix.commits.get(c) else { return false };
-        parts.iter().any(|p| m.body_gone(p.0))
+        parts.iter().any(|p| m.body_gone(*p))
     }
 
     /// The parts of an entry of commit `c` under a label of `g` that `g`'s actor may read
     /// (`Engine::readable_parts`): what judgments compare with the label's bodies, so every
     /// node syncing the label judges alike whatever else it holds secrets for.
-    pub(super) fn readable(&mut self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> Vec<(usize, usize)> {
+    pub(super) fn readable(&mut self, g: &Tid, c: &CommitId, parts: &[usize]) -> Vec<usize> {
         let ctx = self.engine.body_ctx(g);
         self.engine.readable_parts(&ctx, c, parts)
     }
 
     /// `readable` of what entry `b` under `l` (of `g`) opened; empty for no commit entry.
-    pub(super) fn others_readable(&mut self, g: &Tid, l: &LabelId, b: &BlobId) -> Vec<(usize, usize)> {
+    pub(super) fn others_readable(&mut self, g: &Tid, l: &LabelId, b: &BlobId) -> Vec<usize> {
         let Some(Entry { kind: Kind::Commit { commit, parts, .. }, .. }) = self.state.entries.get(&(*l, *b)).cloned() else { return Vec::new() };
         self.readable(g, &commit, &parts)
     }
@@ -269,7 +269,7 @@ impl SyncEngine {
     /// duplicate for the tiebreak of §7 to delete. `None`: any entry (this node's served state).
     pub(super) fn entry_for(&mut self, host: Option<&HostKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
         let g = self.group_of(l, None)?;
-        let cands: Vec<(BlobId, Vec<(usize, usize)>)> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { .. }) && host.is_none_or(|s| !self.state.is_gone_at(s, l, id))).filter_map(|(id, e)| if let Kind::Commit { parts, .. } = &e.kind { Some((id, parts.clone())) } else { None }).collect();
+        let cands: Vec<(BlobId, Vec<usize>)> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { .. }) && host.is_none_or(|s| !self.state.is_gone_at(s, l, id))).filter_map(|(id, e)| if let Kind::Commit { parts, .. } = &e.kind { Some((id, parts.clone())) } else { None }).collect();
         let mut ids: Vec<BlobId> = cands.into_iter().filter(|(_, parts)| self.readable(&g, &b.commit, parts) == b.parts).map(|(id, _)| id).collect();
         if let Some(host) = host {
             ids.sort_by_key(|id| !self.state.is_present(host, l, id));
@@ -321,7 +321,7 @@ impl SyncEngine {
         // a per-label copy (a certificate, a cross-published `label.0`) is sealed in one section
         // under the label's wrap secret and shared with no other label (spec/sync.md §3)
         let own = cert || b.to_label;
-        let held: Vec<(usize, usize)> = if own { b.parts.clone() } else { self.engine.body(&b.commit)?.map(|x| x.parts).unwrap_or_default() };
+        let held: Vec<usize> = if own { b.parts.clone() } else { self.engine.body(&b.commit)?.map(|x| x.parts).unwrap_or_default() };
         // a held encryption carrying the body's parts and nothing not held any more (the
         // fullest; one sealed here may lack parts this node holds no secret for)
         let reuse = if own { None } else { self.state.blob_for(&b.commit, &b.parts, &held, |id| self.state.is_gone(&l, id) || self.state.entries.contains_key(&(l, *id))) };
@@ -354,7 +354,7 @@ impl SyncEngine {
             self.state.memory_in_closure.insert((l, id));
         }
         if memory && let Some(h) = self.engine.header(&b.commit) {
-            let things: Vec<Tid> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid).collect();
+            let things: Vec<Tid> = b.parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| a.tid).collect();
             self.engine.note_memory_synced(things);
         }
         Ok(Some(id))

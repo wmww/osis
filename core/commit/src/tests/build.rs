@@ -53,8 +53,8 @@ fn build_content() {
     assert_eq!(verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap().len(), 3);
 }
 
-// spec/commits.md §2, §6: a role commit may carry several deltas on one aspect sharing
-// its range, and `expires` there is refused; so is `expires` beside a purge request.
+// spec/commits.md §2, §6: a role commit's `expires` is refused; so is `expires` beside a purge
+// request.
 #[test]
 fn build_role_commit_and_refusals() {
     let at = ts(1_000_000);
@@ -66,12 +66,10 @@ fn build_role_commit_and_refusals() {
         encode_delta(&Delta { nonce: [nonce; 16], fragment }, &writer_ctx(Form::Commit, Kind::Role, at, t(1), 1, 2), None).unwrap()
     };
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, roles(1));
-    a.deltas.push(roles(2));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     let mut sink = MemoryBlobs::default();
     let built = build(b.clone(), &mut sink).unwrap();
-    assert_eq!(built.commit.header.aspects[0].hashes.len(), 2);
     assert_eq!(built.commit.header.keys.len(), 1);
     verify_blob(&built.commit, &key().verifying_key(), &dedup, None).unwrap();
     let mut bad = b.clone();
@@ -203,7 +201,7 @@ fn sections_per_reader_actor() {
     assert_eq!(back, env);
     // reader 1 opens its section alone; reader 0 (the other secret) its own; nobody neither
     let o1 = env.open(|_| vec![secret(&1)]).unwrap();
-    assert_eq!(o1.commit.parts.iter().map(|p| (p.ai, p.di)).collect::<Vec<_>>(), vec![(0, 0), (3, 0)]);
+    assert_eq!(o1.commit.parts.iter().map(|p| p.ai).collect::<Vec<_>>(), vec![0, 3]);
     assert_eq!(o1.sealed.len(), 1);
     verify_blob(&o1.commit, &key().verifying_key(), &dedup, None).unwrap();
     assert_eq!(CommitBlob::decode(&o1.commit.encode()).unwrap(), o1.commit);
@@ -239,8 +237,8 @@ fn sections_per_reader_actor() {
     assert_eq!(prefix_groups(&c.header, [1, 0]).unwrap(), groups);
     assert!(prefix_groups(&c.header, []).unwrap().is_empty());
     assert!(prefix_groups(&c.header, [6]).is_err());
-    assert!(strict_subset(&[], &[(0, 0)]));
-    assert!(!strict_subset(&[(0, 0)], &[(0, 0)]));
+    assert!(strict_subset(&[], &[0]));
+    assert!(!strict_subset(&[0], &[0]));
 }
 
 // spec/wire.md §4: sections sorted by first aspect, no aspect twice, a wrap of its length.
@@ -275,7 +273,7 @@ fn envelope_rejections() {
     let extra = env.sections[1].clone();
     let one = seal_commit(&c, |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), std::slice::from_ref(&extra), &mut rng).unwrap();
     assert_eq!(one.sections.len(), 1);
-    assert!(seal_commit(&rewrite(&c, |_, _| true), |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), &[extra.clone(), extra], &mut rng).is_err());
+    assert!(seal_commit(&rewrite(&c, |_| true), |_| (), |_, _| Some((Secret32::from_bytes([2; 32]), vec![])), &[extra.clone(), extra], &mut rng).is_err());
 }
 
 fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
@@ -368,10 +366,10 @@ fn wide_struct_delta_fits_spec_commits_1() {
 #[test]
 fn purge_rewrite() {
     let c = mixed();
-    let r = rewrite(&c, |ai, _| ai == 5);
+    let r = rewrite(&c, |ai| ai == 5);
     assert_eq!(r.id(), c.id());
-    assert_eq!(r.missing(), vec![(5, 0)]);
-    let all = rewrite(&c, |_, _| true);
+    assert_eq!(r.missing(), vec![5]);
+    let all = rewrite(&c, |_| true);
     assert!(all.parts.is_empty());
     let back = CommitBlob::decode(&all.encode()).unwrap();
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();

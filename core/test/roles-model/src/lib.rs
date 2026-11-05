@@ -1,4 +1,4 @@
-//! Throwaway model of the role rules (spec/permissions.md §5-§6; findings in
+//! Throwaway model of the role rules (spec/permissions.md §5; findings in
 //! notes/permissions.md). Independent of any real implementation: a differential oracle for
 //! osis-perm. Patched only to follow the spec where it had simplified it (osis-perm's
 //! differential runs exposed each): `joint` judges a demotion against the edge restored as
@@ -9,9 +9,8 @@
 //! - `single`: §5.1 on one actor, the adopted demoter-frontier rule and rejected variants.
 //! - `joint`: §5.1 steps 1-5 over several actors (owner chains, actor holders, mutual
 //!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`.
-//! - `edges`: §2 (`until`, invite power, self-removal) and §8 (links) on one target, with
+//! - `edges`: §2 (`until`, invite power, self-removal) and §7 (links) on one target, with
 //!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
-//! - `snapshot`: §6 roster snapshots, epoch starts and the tenure ledger on two levels.
 //! - `content`: §5.2 per-delta content validity.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
 //! - `trust`: disputes and trust sets over `edges` and `joint` (notes/owner-removal-plan.md
@@ -49,7 +48,6 @@ pub mod edges;
 pub mod joint;
 pub mod shrink;
 pub mod single;
-pub mod snapshot;
 pub mod trust;
 
 /// Roles, `None` below read.
@@ -141,13 +139,12 @@ impl Rng {
 }
 
 
-/// Digest of every walk verdict (edges, roles, applied and dropped sets, attributions, passes,
-/// epoch starts) over `samples` random histories of each model, and for snapshot histories
-/// their projections and compactions too. A refactor of the rule code must leave it unchanged
-/// (`roles-model -- N digest`).
-pub fn digest(samples: u64, seed: u64) -> [(&'static str, u64); 4] {
+/// Digest of every walk verdict (edges, roles, applied and dropped sets, attributions, passes)
+/// over `samples` random histories of each model. A refactor of the rule code must leave it
+/// unchanged (`roles-model -- N digest`).
+pub fn digest(samples: u64, seed: u64) -> [(&'static str, u64); 3] {
     use std::hash::{Hash, Hasher};
-    let mut hs: [std::collections::hash_map::DefaultHasher; 4] = Default::default();
+    let mut hs: [std::collections::hash_map::DefaultHasher; 3] = Default::default();
     let mut rng = Rng(seed);
     for _ in 0..samples {
         let h = joint::random_hist(&mut rng);
@@ -155,18 +152,7 @@ pub fn digest(samples: u64, seed: u64) -> [(&'static str, u64); 4] {
         let h = edges::random_hist(&mut rng);
         format!("{:?}", edges::walk(&h)).hash(&mut hs[1]);
         format!("{:?}", h.eval_mode(edges::Drops::Provenance)).hash(&mut hs[2]);
-        let h = snapshot::random_hist(&mut rng);
-        let o = h.eval(true);
-        format!("{o:?}").hash(&mut hs[3]);
-        for thing in [snapshot::Thing::P, snapshot::Thing::G] {
-            for s in h.snapshots(thing, &o, true) {
-                format!("{:?}", h.compacted(thing, s).0.eval(true)).hash(&mut hs[3]);
-            }
-        }
-        for z in 1..h.n() {
-            format!("{:?}", h.projected(z).0.eval(true)).hash(&mut hs[3]);
-        }
     }
-    let [a, b, c, d] = hs;
-    [("joint", a.finish()), ("edges", b.finish()), ("edges-prov", c.finish()), ("snapshot", d.finish())]
+    let [a, b, c] = hs;
+    [("joint", a.finish()), ("edges", b.finish()), ("edges-prov", c.finish())]
 }

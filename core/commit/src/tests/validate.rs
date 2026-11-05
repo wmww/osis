@@ -32,17 +32,13 @@ fn validate_layout() {
     assert!(invalid(&x).to_string().contains("counter range"));
 }
 
-// spec/commits.md §2: kinds and aspect classes; snapshots have empty ranges;
-// one delta per aspect except role and roster snapshots.
+// spec/commits.md §2: kinds and aspect classes; snapshots have empty ranges.
 #[test]
 fn validate_kinds() {
     let h = sample_header();
     let mut x = h.clone();
     x.kind = Kind::Role;
     assert!(matches!(invalid(&x), Error::Invalid(_)), "content aspect in a role commit");
-    let mut x = h.clone();
-    x.aspects[0].hashes.push([10; 32]);
-    assert!(matches!(invalid(&x), Error::Invalid(_)));
     let mut x = h.clone();
     x.kind = Kind::ContentSnapshot;
     x.form = Form::Commit;
@@ -65,15 +61,14 @@ pub(crate) fn role_header(ak: &str) -> Header {
     a.ak = Ak::new(ak).unwrap();
     a.retention = retention::ROLE_RETENTION;
     a.keys = vec![0];
-    a.hashes = vec![[1; 32], [2; 32]];
+    a.hash = [1; 32];
     h.expires = None;
     h.keys.truncate(1);
     h
 }
 
-// spec/commits.md §2, §5: role commits carry no expires, keep fixed retention, may carry
-// several sorted delta hashes per aspect, may touch secrets.0 and keys.0 of several things; a
-// frontier only on role commits; roster snapshots only roles.0 and tenures.0 of one thing.
+// spec/commits.md §2, §5: role commits carry no expires, keep fixed retention, may touch secrets.0 and keys.0 of several things; a frontier only on role
+// commits; roles.0 is never compaction-snapshotted.
 // spec/commits.md §2 (role commit no expires); spec/commits.md §3 (commit form kinds): a role
 // commit in session form is bad input.
 #[test]
@@ -81,26 +76,19 @@ fn validate_role_commit() {
     let h = role_header("roles.0");
     h.validate().unwrap();
     // spec/commits.md §3 (commit form kinds), §4: a session-form role commit is bad input
-    for k in [Kind::Role, Kind::RosterSnapshot] {
-        let mut x = h.clone();
-        x.kind = k;
-        x.form = crate::tests::SESSION;
-        assert!(invalid(&x).to_string().contains("session form outside a content commit"));
-        // spec/wire.md §4: a role commit's or roster snapshot's actor is its author
-        let mut x = h.clone();
-        x.kind = k;
-        x.actor = t(9);
-        assert!(invalid(&x).to_string().contains("acting for another actor"));
-    }
+    let mut x = h.clone();
+    x.form = crate::tests::SESSION;
+    assert!(invalid(&x).to_string().contains("session form outside a content commit"));
+    // spec/wire.md §4: a role commit's actor is its author
+    let mut x = h.clone();
+    x.actor = t(9);
+    assert!(invalid(&x).to_string().contains("acting for another actor"));
     let mut x = h.clone();
     x.expires = Some(9_999_999_999);
     assert!(invalid(&x).to_string().contains("expires"));
     let mut x = h.clone();
     x.aspects[0].retention.by = PurgeBy::Writer;
     assert!(matches!(invalid(&x), Error::Malformed(_) | Error::Invalid(_)));
-    let mut x = h.clone();
-    x.aspects[0].hashes.reverse();
-    assert!(matches!(invalid(&x), Error::Malformed(_)));
     let mut x = h.clone();
     x.frontier = Some(Value::Map(Default::default()));
     x.validate().unwrap();
@@ -116,17 +104,9 @@ fn validate_role_commit() {
     }
     x.validate().unwrap();
     let mut x = h.clone();
-    x.kind = Kind::RosterSnapshot;
-    x.validate().unwrap();
-    let mut a = x.aspects[0].clone();
-    a.ak = Ak::new("secrets.0").unwrap();
-    x.aspects.push(a);
-    assert!(invalid(&x).to_string().contains("roster"));
-    let mut x = h.clone();
     x.kind = Kind::RoleSnapshot;
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
-    x.aspects[0].hashes.truncate(1);
     assert!(invalid(&x).to_string().contains("roles.0"));
 }
 

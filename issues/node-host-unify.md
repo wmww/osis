@@ -37,7 +37,7 @@ Rule text still says "host" here, waiting on this issue and owner removal. Swapp
 - spec/overview.md Conventions: a label's hosts are "the addresses in its `label.0` record": a fixed list admins write, so a node is reachable as one only at a stable address.
 - spec/sync.md §2, §10, spec/wire.md §10 (`Link`, `Card`): `label.0`, link and card host lists hold fixed addresses; `peer://` is never one (issues/no-server-audit.md rows 26, 27).
 - spec/sync.md §4, §5, §6: two serving paths with different rules: host state and operations against a co-reader peer "serving it as its own host", with proof 3 refused at hosts. Item 2 above.
-- spec/permissions.md §3 (complete pass waits on hosts, and on peers only for a bounded time) and §8 (recovery card and links name hosts): issues/no-server-audit.md rows 13-19.
+- spec/permissions.md §3 (complete pass waits on hosts, and on peers only for a bounded time) and §7 (recovery card and links name hosts): issues/no-server-audit.md rows 13-19.
 - spec/data-model.md §9 (`host.0^`, `own`): admission by owner, also waiting on owner removal.
 - spec/requirements.md: "a hiding host", "Nothing trusts a host's word", an inbox's budget "at a host": each is about a node serving data it cannot read.
 

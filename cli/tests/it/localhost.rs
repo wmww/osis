@@ -82,7 +82,7 @@ fn pair(old: &Path, new: &Path, host: Option<&str>) {
     assert!(offer.wait().unwrap().success(), "pair offer");
 }
 
-// spec/sync.md §10 (QUIC to a known address), spec/permissions.md §8 (links), notes/api.md
+// spec/sync.md §10 (QUIC to a known address), spec/permissions.md §7 (links), notes/api.md
 // (Nodes, Sync), notes/cli.md Tests (tier 2): two accounts and three nodes meet only through
 // one peer process.
 #[test]
@@ -515,7 +515,7 @@ fn daemon_clients_localhost() {
             assert_eq!(ls.lines().count(), 2);
             let node = field(&osis(&s, &["--json", "whoami"]), "node").to_string();
             let other = ls.lines().find(|l| *l != node).unwrap().to_string();
-            // spec/permissions.md §8: the removed node keeps the seeds: `node rm` says so, or
+            // spec/permissions.md §7: the removed node keeps the seeds: `node rm` says so, or
             // with --end-links ends them
             osis(&s, &["link", "make", &sg, "read"]);
             let open = osis(&s, &["node", "rm", &other, "--sync", "skip"]);

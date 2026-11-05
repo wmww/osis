@@ -905,7 +905,7 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     }
 }
 
-// spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §7: a thing's admin who is no admin of
+// spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §6: a thing's admin who is no admin of
 // its group deletes a write-only holder's blobs at a host by the level-1 delete key the writer
 // listed from the thing's published `keys.0` (the gap hashed tokens left), after a
 // rotation of the thing too (it holds the old epoch); the writer's own keys delete none of the
@@ -1149,7 +1149,7 @@ impl OneGroup {
     }
 }
 
-// spec/sync.md §5 (Replace), §6 (must-hold), spec/crypto.md §7, spec/permissions.md §7: w, a
+// spec/sync.md §5 (Replace), §6 (must-hold), spec/crypto.md §7, spec/permissions.md §6: w, a
 // writer of the label, uploads a junk entry replacing c's blob across t and u, signed for t's
 // commitment group alone: the stated exposure (notes/whole-commits.md §11). c, online then or
 // back later (`away`), uploads the body again as a fresh encryption, so a reader that comes later
