@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the TLC model instances. Usage: run.sh small|all [name-filter]
-#   small: the CI-sized instance of each model (about a minute in total)
+#   small: the CI-sized instances, each under ~2 min at one worker (about 6 min in total)
 #   all:   every instance (the large ones take up to ~20 min each)
 # TLC_KEEP_LOGS=<dir> copies each TLC log there.
 # Downloads tla2tools.jar into ~/.cache/tla/ if missing. Exits non-zero if
@@ -52,7 +52,7 @@ instances=(
   "sides MC concede.cfg small pass"           # a concession ends the fork: no loss, no loop
   "sides MC tidy_touch.cfg small fail"        # per-reason rule: one-side superseded writes stay
   "sides MC tidy_need.cfg small pass"         # need rule: they go
-  "rotation Lockout L_list.cfg small pass"            # lockout recovery by listing (notes/lockout-recovery.md)
+  "rotation Lockout L_list.cfg all pass"              # lockout recovery by listing (notes/lockout-recovery.md)
   "rotation Lockout L_list_honest.cfg all pass"      # ... the rotator boxed h too (an honest rotation missing a)
   "rotation Lockout L_fork.cfg small fail"           # negative control: a fork from a's own epochs
   "rotation Lockout L_none.cfg small fail"           # negative control: today's refusal, no repudiation
@@ -74,10 +74,10 @@ instances=(
   "rotation Depth0MC D0_rm_possess.cfg all pass"
   "rotation Depth0MC D0_box_rule.cfg small fail"      # the dropped Box rule hides a key cycle's box (cycle harness seed 1032)
   "rotation Depth0MC D0_box_ok.cfg all pass"          # ... no Box rule
-  "rotation Depth0MC D0_fork_old.cfg small fail"      # two knowing forks of a holder never merged (cycle harness seed 1838)
+  "rotation Depth0MC D0_fork_old.cfg all fail"        # two knowing forks of a holder never merged (cycle harness seed 1838)
   "rotation Depth0MC D0_fork_old_safety.cfg all fail" # ... and a rotation over forked anchors drops them (leak)
   "rotation Depth0MC D0_fork_out.cfg small fail"      # merging forks, leaving the holder out: the same leak
-  "rotation Depth0MC D0_fork_live.cfg small pass"     # the fork's merger merges; Seal waits while anchors fork
+  "rotation Depth0MC D0_fork_live.cfg all pass"       # the fork's merger merges; Seal waits while anchors fork
   "rotation Depth0MC D0_fork_wait.cfg all pass"
   "rotation Depth0MC D0_fork_rm.cfg all pass"         # a removal goes alone while Seal waits
   "rotation Finalize F_named_seed3.cfg small pass"       # a finalize names the writes it ends (issues/withheld-departures-seeds.md)
@@ -100,7 +100,7 @@ instances=(
   "roles Roles MC_sticky.cfg small fail"      # AMBIGUITIES.md M2: drop order
   "roles Roles MC_sticky_snap.cfg small fail" # M2: a snapshot repairs a sticky drop
   "roles Roles MC_forge.cfg small pass"       # AMBIGUITIES.md M1 (fixed)
-  "roles Roles MC_samets.cfg small pass"      # AMBIGUITIES.md M3 (fixed)
+  "roles Roles MC_samets.cfg all pass"        # AMBIGUITIES.md M3 (fixed)
 )
 
 mode=${1:-}
