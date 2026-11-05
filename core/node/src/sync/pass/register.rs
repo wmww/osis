@@ -40,9 +40,7 @@ impl SyncEngine {
     pub(super) fn keys_caught_up(&mut self, g: &Tid, l: &LabelId) -> bool {
         let secrets = self.read_secrets(g);
         let fetchable: BTreeSet<BlobId> = self.conns.values().filter(|c| c.up).flat_map(|c| self.state.present_at(&c.host, l).into_iter().filter(|b| !c.req.missing.contains(b))).collect();
-        let unopened = fetchable.into_iter().any(|b| {
-            self.state.entries.get(&(*l, b)).is_some_and(|e| e.kind == Kind::Unknown && (e.shredded() || osis_label::unwrap_any(secrets.iter(), &b, &e.wrap).is_some()))
-        });
+        let unopened = fetchable.into_iter().any(|b| self.state.entries.get(&(*l, b)).is_some_and(|e| e.unopened(&b, &secrets)));
         if unopened {
             return false;
         }

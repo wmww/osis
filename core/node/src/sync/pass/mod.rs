@@ -788,7 +788,7 @@ impl SyncEngine {
     /// while something is fetched or opened.
     fn read_first(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
         let secrets = self.read_secrets(g);
-        let ids: Vec<BlobId> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|((_, b), e)| e.kind == Kind::Unknown && (e.shredded() || osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).map(|((_, b), _)| *b).collect();
+        let ids: Vec<BlobId> = self.state.of_kind(&l, Kind::TAG_UNKNOWN).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.unopened(b, &secrets))).collect();
         let busy = ids.iter().any(|b| self.fetching(b));
         Ok(self.open_or_fetch(conn, host, l, ids, out)? || busy)
     }
