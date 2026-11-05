@@ -119,7 +119,6 @@ fn hosting_own_then_open_spec_sync_5() {
 fn group_of(db: &Osis, owner: Tid, within: Tid, hosts: &[HostAddr]) -> Tid {
     let mut w = db.write();
     let g = w.create_in(owner, &[within]).unwrap();
-    w.make_group(g).unwrap();
     w.commit().unwrap();
     db.sync(g, hosts).unwrap();
     g

@@ -1,7 +1,7 @@
 //! Writes (notes/api.md Writes): a `Write` batch becomes one atomic commit over every touched
 //! thing, of any size, or one per expiry and per `nobody` or other purgeable-by among its writes
 //! (spec/commits.md §5, §6), the creating one first. `set` makes a value equal (structural diff, spec/crdt.md §9), `edit`
-//! writes only what changed between what the app showed and what the user produced, `replace`
+//! writes only what changed between what the app showed and what the user produced, `overwrite`
 //! resets then writes, path ops change one position. Rights are checked locally before signing.
 //!
 //! A batch records its API ops in wire-ready form (`WriteOp`, notes/client-port.md §1), checking
@@ -9,6 +9,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
+use crate::share::Member;
 use crate::sources::Source;
 use crate::keys::Key;
 use crate::read::{Reader, ak_of};
@@ -22,16 +23,39 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
 
-/// A written batch: its commit, or its ephemeral batch when it had no durable half.
+/// A written batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Committed {
-    /// The first commit (it carries the records of the things the batch creates).
+    /// Its first change, which creates the things the batch creates.
     pub id: ChangeId,
     pub ts: Ts,
-    /// The batch's other commits: its durable writes go as one commit per expiry and per
-    /// `nobody` or other purgeable-by (spec/commits.md §5, §6). Each is a change of its own:
-    /// history lists it, `revert` takes it alone.
-    pub also: Vec<osis_base::CommitId>,
+    /// Its other changes: writes with different expiries or retention go separately. History
+    /// lists each, and `revert` takes each alone.
+    pub also: Vec<ChangeId>,
+}
+
+/// When a write stops counting: it goes from every node that holds it, by itself. Without one a
+/// write expires as its key says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expiry {
+    /// At this time.
+    At(WallMs),
+    /// This long from now.
+    In(Duration),
+}
+
+/// What `AspectWrite::purge` drops, for everyone. Each write goes only where the writer may purge
+/// it: under retention `author` or `nobody` an admin's request drops nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purge {
+    /// The aspect's whole history, and the aspect itself with it.
+    All,
+    /// One change's write. Its entry stays in the history as purged. If it is what the aspect
+    /// reads now the value goes with it: `set` in the same batch to keep one.
+    Change(ChangeId),
+    /// Every write by this actor stamped before this commit, those arriving later too. What the
+    /// actor writes later stays.
+    Author(Tid),
 }
 
 /// One API op of a batch in wire-ready form: tids resolved, aspects by index into the batch's
@@ -85,7 +109,9 @@ pub struct Write<'d> {
     created: Vec<Tid>,
     /// Per group whose `group.0` this batch writes through the group calls: the expiry those
     /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
-    group_exp: BTreeMap<Tid, Option<Duration>>,
+    group_exp: BTreeMap<Tid, Option<Expiry>>,
+    /// The groups a member was added to in this batch, each looked at once (`first_member`).
+    grown: BTreeSet<Tid>,
     /// A thing that must still be known (`Osis::knows`) when the batch commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
@@ -94,10 +120,21 @@ pub struct Write<'d> {
     pub(crate) sharing: bool,
 }
 
+impl Committed {
+    pub(crate) fn of(w: osis_node::Written) -> Committed {
+        Committed { id: w.id, ts: w.ts, also: w.also.into_iter().map(ChangeId::Commit).collect() }
+    }
+}
+
 impl Osis {
+    /// Whether `g` holds `group.0` or `placed.0~`, read without its members: a group may be large.
+    fn is_group(&self, g: Tid) -> Result<bool> {
+        Ok(self.aspects(g)?.iter().any(|a| a.as_str() == GROUP.ak() || a.as_str() == PLACED.ak()))
+    }
+
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), alive: None, sharing: false }
+        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), grown: BTreeSet::new(), alive: None, sharing: false }
     }
 }
 
@@ -110,7 +147,7 @@ fn read_only(ak: &str) -> bool {
 /// by the group calls alone (they check sync and clean up grants made with the membership).
 fn not_writable(ak: &str) -> Option<String> {
     if ak == GROUP.ak() {
-        return Some(format!("{ak} is written only by the group calls (place, unplace, add_subgroup, remove_subgroup, make_group)"));
+        return Some(format!("{ak} is written only by Write::group"));
     }
     (read_only(ak) || is_role_class(ak)).then(|| format!("{ak} is written only by the engine or the sharing calls"))
 }
@@ -133,13 +170,17 @@ pub(crate) fn group_op(items: bool, member: Tid, add: bool) -> PathOp {
     PathOp { path: vec![PathSeg::Field(f.0)], op: if add { Op::Add(v) } else { Op::Remove(v) } }
 }
 
-/// The wall time `d` from now; `Invalid` for a zero duration (an expiry must be in the future).
-fn expiry_in(db: &Osis, d: Duration) -> Result<WallMs> {
-    let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
-    if ms == 0 {
-        return Err(Error::Invalid("expiry 0 ms is not in the future".into()));
+/// The wall time of `e`; `Invalid` unless it is in the future.
+fn expiry_at(db: &Osis, e: Expiry) -> Result<WallMs> {
+    let now = db.now();
+    let at = match e {
+        Expiry::At(t) => t,
+        Expiry::In(d) => WallMs(now.0.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))),
+    };
+    if at <= now {
+        return Err(Error::Invalid(format!("expiry {e:?} is not in the future")));
     }
-    Ok(WallMs(db.now().0.saturating_add(ms)))
+    Ok(at)
 }
 
 /// `group.0` as a key of the shared core schema.
@@ -149,10 +190,10 @@ fn group_key() -> Key {
 
 /// Records that a batch writes `g`'s `group.0` with expiry `d`; `Invalid` when another write
 /// of it in the batch asked for a different one. `true` when this is its first.
-fn note_expiry(exp: &mut BTreeMap<Tid, Option<Duration>>, g: Tid, d: Option<Duration>) -> Result<bool> {
+fn note_expiry(exp: &mut BTreeMap<Tid, Option<Expiry>>, g: Tid, d: Option<Expiry>) -> Result<bool> {
     match exp.get(&g) {
         Some(x) if *x == d => Ok(false),
-        Some(_) => Err(Error::Invalid(format!("this batch writes the groups of {g} with different expiries (expiry is per aspect write): use one batch each"))),
+        Some(_) => Err(Error::Invalid(format!("this batch writes the members of {g} with different expiries: a batch's writes of a group's members are one write, so use one batch each"))),
         None => {
             exp.insert(g, d);
             Ok(true)
@@ -187,11 +228,17 @@ impl<'d> Write<'d> {
         i
     }
 
-    /// A new thing owned by `owner` (fixed forever; needs write on it). It is ephemeral (in
-    /// memory, gone at restart) until its first durable write, which persists it with its owner
-    /// chain and its placements, keeping its tid. Group ops in the same batch place it
-    /// atomically; placing an ephemeral thing is an ephemeral write of the group.
-    pub fn create(&mut self, owner: Tid) -> Result<Tid> {
+    /// A new thing, the acting actor its first admin. It is held in memory, and gone at restart,
+    /// until its first durable write, which keeps it with its tid and its memberships. `Invalid`
+    /// at commit on a thin client's handle: its actor goes with the client.
+    pub fn create(&mut self) -> Result<Tid> {
+        self.create_owned_by(self.actor)
+    }
+
+    /// A new thing owned by `owner` (fixed forever; needs write on it).
+    // Removed with owners (issues/api-refactor.md Decided).
+    #[doc(hidden)]
+    pub fn create_owned_by(&mut self, owner: Tid) -> Result<Tid> {
         let owner = self.known(owner)?;
         let rec = self.db.engine(|e| e.thing_record(owner));
         let t = rec.tid();
@@ -200,74 +247,48 @@ impl<'d> Write<'d> {
         Ok(t)
     }
 
-    /// Gives `tid` an empty `group.0` if it is no group yet (neither `group.0` nor ephemeral
-    /// placements, `placed.0~`).
-    pub fn make_group(&mut self, tid: Tid) -> Result<()> {
-        let t = self.known(tid)?;
-        if !self.created.contains(&t) && (self.db.at(t, GROUP).get()?.is_some() || self.db.at(t, PLACED).get()?.is_some()) {
-            return Ok(());
-        }
-        self.group_expiry(t, None)?;
-        self.ops.push(WriteOp::MakeGroup(t));
-        Ok(())
+    /// The members of `group`: what it contains, to add or remove.
+    pub fn group(&mut self, group: Tid) -> GroupWrite<'_, 'd> {
+        GroupWrite { w: self, group }
     }
 
-    /// Records that this batch writes `g`'s `group.0` with expiry `d`; `Invalid` when another
+    /// Records that this batch writes `g`'s `group.0` with expiry `e`; `Invalid` when another
     /// write of it in this batch asked for a different one.
-    fn group_expiry(&mut self, g: Tid, d: Option<Duration>) -> Result<()> {
-        if !note_expiry(&mut self.group_exp, g, d)? {
+    fn group_expiry(&mut self, g: Tid, e: Option<Expiry>) -> Result<()> {
+        if !note_expiry(&mut self.group_exp, g, e)? {
             return Ok(());
         }
-        if let Some(d) = d {
-            let at = expiry_in(self.db, d)?;
+        if let Some(e) = e {
+            let at = expiry_at(self.db, e)?;
             let key = self.intern(group_key().ak, &group_key());
             self.ops.push(WriteOp::Expires { tid: g, key, at });
         }
         Ok(())
     }
 
-    fn group(&mut self, g: Tid, items: bool, member: Tid, add: bool, exp: Option<Duration>) -> Result<()> {
-        let g = self.known(g)?;
-        self.group_expiry(g, exp)?;
-        // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
-        // placements): `Engine::write` splits the group ops by what persists
-        self.ops.push(WriteOp::Group { g, member, items, add });
+    /// A thing with no members yet becomes a group here: `group.0` needs both its fields, or it
+    /// decodes as none and the member is lost.
+    fn first_member(&mut self, g: Tid) -> Result<()> {
+        if !self.grown.insert(g) {
+            return Ok(());
+        }
+        if self.created.contains(&g) || !self.db.is_group(g)? {
+            self.ops.push(WriteOp::MakeGroup(g));
+        }
         Ok(())
     }
 
-    /// Adds `tid` to the items of group `g`: an ephemeral write while `tid` stays ephemeral
-    /// (made durable when it persists), else a durable one (persisting `g`). A group's items
-    /// sync only through groups listing it as a subgroup (its members are its items and its
-    /// subgroups' members, not its items' items). So when `tid` is durable after the commit and
-    /// reaches no synced group while `g`'s own aspects sync (`g` is an item of a synced group,
-    /// not a subgroup of one), the commit fails `Invalid` before anything applies: add `g` as a
-    /// subgroup too. A placement only in groups that do not sync at all (device-local data) is
-    /// allowed and reported by a `NotSynced` diagnostic, as is a placement in a synced group
-    /// whose holders may not read `tid` (owned by someone else, with no grant: it does not reach
-    /// them; own it by the group, or `Osis::add_with_grant`).
-    pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
-        self.place_expiring(tid, g, None)
-    }
-    /// `place` whose placement expires after `expires` (`None`: never). Expiry is per commit,
-    /// and a batch's writes of one aspect are one delta, so every group call on `g` in this batch
-    /// must ask for the same expiry (else `Invalid`); a placement expiring otherwise than the
-    /// batch's other writes goes in a commit of its own (`Committed::also`).
-    pub fn place_expiring(&mut self, tid: Tid, g: Tid, expires: Option<Duration>) -> Result<()> {
-        self.group(g, true, tid, true, expires)
-    }
-    /// Removes `tid` from the items of `g`. A grant of `g` on `tid` made with the membership (`Osis::add_with_grant`)
-    /// goes in a commit right after when this node may remove it as a self-removal (admin on `g`
-    /// only); otherwise a node that may remove it does so later (spec/permissions.md §2).
-    pub fn unplace(&mut self, tid: Tid, g: Tid) -> Result<()> {
-        self.group(g, true, tid, false, None)
-    }
-    pub fn add_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
-        self.group(g, false, sub, true, None)
-    }
-    /// Removes `sub` from the subgroups of `g`; a grant made with the membership as `unplace`'s. Items of `sub` this
-    /// was the last way into a synced group for stop syncing, each reported `NotSynced`.
-    pub fn remove_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
-        self.group(g, false, sub, false, None)
+    fn member(&mut self, g: Tid, m: Member, add: bool, e: Option<Expiry>) -> Result<()> {
+        let g = self.known(g)?;
+        self.group_expiry(g, e)?;
+        if add {
+            self.first_member(g)?;
+        }
+        let (member, subgroup) = m.parts();
+        // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
+        // placements): `Engine::write` splits the group ops by what persists
+        self.ops.push(WriteOp::Group { g, member, items: !subgroup, add });
+        Ok(())
     }
 
     /// Removes every aspect the node knows of `tid` and its placements and subgroup memberships in
@@ -355,7 +376,7 @@ impl<'d> Write<'d> {
                         not_synced(e, &placed, sharing);
                         cut_off(e, carried);
                     }
-                    Some(Committed { id: w.id, ts: w.ts, also: w.also })
+                    Some(Committed::of(w))
                 }
                 None => None,
             };
@@ -410,7 +431,7 @@ impl<'d> Write<'d> {
                     if let (Some(a), CreationRecord::Thing { owner, .. }) = (acting, &rec)
                         && *owner == a
                     {
-                        return Err(Error::Invalid("an acting actor owns nothing: a thing it creates has another owner".into()));
+                        return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name another owner (create_owned_by)".into()));
                     }
                     b.m.create(rec);
                 }
@@ -448,7 +469,7 @@ impl<'d> Write<'d> {
                     let items: Vec<Tid> = gs.item_of.into_iter().filter(|g| *g != t && writable(r, g)).collect();
                     let subs: Vec<Tid> = gs.subgroup_of.into_iter().filter(|g| *g != t && writable(r, g)).collect();
                     for (g, items) in items.into_iter().map(|g| (g, true)).chain(subs.into_iter().map(|g| (g, false))) {
-                        // as `unplace` / `remove_subgroup` would record it
+                        // as `GroupWrite::remove` would record it
                         if !created.contains(&g) && !r.holds(g) {
                             return Err(Error::UnknownThing { tid: g });
                         }
@@ -466,8 +487,8 @@ impl<'d> Write<'d> {
 
 impl Osis {
     /// Commits a batch received in wire form (`Write::wire`) as this node's own: tids resolved
-    /// and checked as the recorder checks them locally, keys typed by this node's schemas, a
-    /// `make_group` of what already is a group dropped.
+    /// and checked as the recorder checks them locally, keys typed by this node's schemas, an
+    /// empty `group.0` for what already is a group dropped.
     pub(crate) fn replay(&self, args: Vec<Value>) -> Result<Option<Committed>> {
         use crate::port::codec::{Args, bad, op, retention};
         let mut a = Args::of(args);
@@ -504,7 +525,7 @@ impl Osis {
                 }
                 1 => {
                     let g = w.known(o.tid()?)?;
-                    if !w.created.contains(&g) && (self.at(g, GROUP).get()?.is_some() || self.at(g, PLACED).get()?.is_some()) {
+                    if !w.created.contains(&g) && self.is_group(g)? {
                         continue;
                     }
                     WriteOp::MakeGroup(g)
@@ -546,7 +567,7 @@ impl Osis {
         }
         for g in expiring {
             if let Some(e) = w.group_exp.get_mut(&g) {
-                *e = Some(Duration::MAX);
+                *e = Some(Expiry::In(Duration::MAX));
             }
         }
         for t in w.ops.iter().filter_map(WriteOp::tid).collect::<Vec<_>>() {
@@ -650,10 +671,63 @@ fn not_synced(e: &mut osis_node::Engine, placed: &[(Tid, Tid)], sharing: bool) {
             if sharing {
                 continue;
             }
-            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "placed in a group whose holders may not read it: it does not reach them (own it by the group, or add_with_grant)".into() });
+            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "placed in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
         } else if !(labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g))) {
             e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "placed only in groups no synced group holds: it stays on this device".into() });
         }
+    }
+}
+
+/// The members of one group inside a `Write`.
+pub struct GroupWrite<'w, 'd> {
+    w: &'w mut Write<'d>,
+    group: Tid,
+}
+
+impl<'w, 'd> GroupWrite<'w, 'd> {
+    /// Membership that expires: the member leaves by itself at that time (a disappearing message
+    /// leaves its group). A batch's writes of one group's members are one write with one expiry,
+    /// so all of them must ask for the same one, else `Invalid`; a removal, which never expires,
+    /// goes in another batch. Writes expiring otherwise than the batch's others are a change of
+    /// their own (`Committed::also`).
+    pub fn expires(self, e: Expiry) -> ExpiringGroupWrite<'w, 'd> {
+        ExpiringGroupWrite { w: self.w, group: self.group, e }
+    }
+
+    /// Adds a member. A thing becomes a group with its first member. A new thing still in memory
+    /// joins in memory, and for good when it is kept; else the add is durable, and keeps the group.
+    ///
+    /// A group's items sync only through groups listing it as a subgroup: its members are its
+    /// items and its subgroups' members, not its items' items. So when an item stays durable, is
+    /// in no synced group, and the group's own aspects sync (the group is an item of a synced
+    /// group, no subgroup of one), the commit fails `Invalid` before anything applies: add the
+    /// group as a subgroup too. An item only in groups that do not sync at all (device-local
+    /// data) is allowed and reported by a `NotSynced` diagnostic, as is one in a synced group
+    /// whose holders may not read it: it does not reach them (`Osis::add_with_grant`).
+    pub fn add(&mut self, member: Member) -> Result<()> {
+        self.w.member(self.group, member, true, None)
+    }
+
+    /// Removes a member. A grant made with the membership (`Osis::add_with_grant`) goes in a
+    /// commit right after when this node may remove it as a self-removal; otherwise a node that
+    /// may remove it does so later. What a removed subgroup was the last way into a synced group
+    /// for stops syncing, each reported `NotSynced`.
+    pub fn remove(&mut self, member: Member) -> Result<()> {
+        self.w.member(self.group, member, false, None)
+    }
+}
+
+/// A group's members, added with an expiry (`GroupWrite::expires`).
+pub struct ExpiringGroupWrite<'w, 'd> {
+    w: &'w mut Write<'d>,
+    group: Tid,
+    e: Expiry,
+}
+
+impl ExpiringGroupWrite<'_, '_> {
+    /// Adds a member, as `GroupWrite::add`, until the expiry.
+    pub fn add(&mut self, member: Member) -> Result<()> {
+        self.w.member(self.group, member, true, Some(self.e))
     }
 }
 
@@ -689,10 +763,13 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.op(PathOp { path: Vec::new(), op: op(v) })
     }
 
-    /// Makes the aspect read `v` (structural diff against the current state: a concurrent
-    /// edit inside the value survives, but a field the app did not touch is written back if
-    /// it differs from the current state). For "must be exactly this"; interactive edits use
-    /// `edit`.
+    /// Makes the aspect read `v`, writing only what differs from what it reads now: a value equal
+    /// to it writes nothing and tells no one, and a concurrent change inside the value survives,
+    /// though a field the app did not touch is written back if it differs. For "must be exactly
+    /// this"; what users edit takes `edit`; what must count as written each time, such as a
+    /// message in a log, takes `overwrite`.
+    ///
+    /// The same as `path(Path::root()).set(v)`, but for checking `v`'s type at compile time.
     pub fn set(&mut self, v: &K::T) -> Result<()> {
         self.whole(v, Op::Set)
     }
@@ -716,8 +793,12 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         Ok(())
     }
 
-    /// Resets the aspect, then writes `v` (discards concurrent edits inside it).
-    pub fn replace(&mut self, v: &K::T) -> Result<()> {
+    /// Writes `v` whole, always, in place of all the aspect holds: an equal value still counts
+    /// as a write, and a concurrent change inside it is lost. A write of a map costs what the
+    /// aspect's earlier writes left behind: on an aspect written over and over, write a scalar.
+    ///
+    /// The same as `path(Path::root()).overwrite(v)`, but for checking `v`'s type at compile time.
+    pub fn overwrite(&mut self, v: &K::T) -> Result<()> {
         self.whole(v, Op::Replace)
     }
 
@@ -726,77 +807,37 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.op(PathOp { path: Vec::new(), op: Op::RemoveAspect })
     }
 
-    /// Drops the aspect's whole history wherever the author may purge it (spec/commits.md §5,
-    /// spec/permissions.md §7) and removes the aspect, in this commit.
-    pub fn purge(&mut self) -> Result<()> {
-        if !self.key.lifetime().is_durable() {
-            return Err(Error::Invalid("purge applies to durable aspects only".into()));
-        }
-        self.remove()?;
-        let key = self.ok()?;
-        self.push(WriteOp::Purge { tid: self.tid, key });
-        Ok(())
-    }
-
-    /// Drops this commit's delta on the aspect wherever the author may purge it (spec/commits.md §5,
-    /// spec/permissions.md §7): delete for everyone. Its entry stays in the history as purged. If
-    /// its write is the aspect's live one the read goes with it: `set` in the same batch to keep
-    /// a value. Carries a `purge.0` write, so `Permission` without write on the thing (no purgeable-by
-    /// class gives the right without it); whose right decides is judged per delta, as for every purge.
-    pub fn purge_commit(&mut self, id: ChangeId) -> Result<()> {
-        if !self.key.lifetime().is_durable() {
-            return Err(Error::Invalid("purge applies to durable aspects only".into()));
-        }
-        let ChangeId::Commit(commit) = id else { return Err(Error::Invalid("an ephemeral batch has no delta to purge".into())) };
-        let key = self.ok()?;
-        self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit });
-        Ok(())
-    }
-
-    /// Drops every delta on the aspect by `actor` stamped before this commit, those arriving later
-    /// too, each only where the author may purge it: under `author` or `nobody` retention an admin's
-    /// request drops nothing. As `purge_commit` otherwise; what `actor` writes later stays.
-    pub fn purge_author(&mut self, actor: Tid) -> Result<()> {
+    /// Drops writes on the aspect for everyone (`Purge`). A request for one change or one author
+    /// is itself a write on the thing, so it fails `Permission` without write on the thing.
+    pub fn purge(&mut self, what: Purge) -> Result<()> {
         if !self.key.lifetime().is_durable() {
             return Err(Error::Invalid("purge applies to durable aspects only".into()));
         }
         let key = self.ok()?;
-        self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor });
+        match what {
+            Purge::All => {
+                self.remove()?;
+                self.push(WriteOp::Purge { tid: self.tid, key });
+            }
+            Purge::Change(ChangeId::Commit(commit)) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
+            Purge::Change(ChangeId::Ephemeral(_)) => return Err(Error::Invalid("an ephemeral batch has no write to purge".into())),
+            Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
+        }
         Ok(())
     }
 
-    /// This write's delta expires at `t` (spec/commits.md §6); default from the key. Writes of
-    /// one batch with different expiries go as different commits (`Committed::also`): creating
-    /// a thing with expiring content takes two, its record first.
-    /// Fails the following op with `Invalid` when `t` is not in the future.
-    pub fn expires_at(mut self, t: WallMs) -> Self {
+    /// When this write expires instead of when the key says. Writes of one batch with different
+    /// expiries go as different changes (`Committed::also`): creating a thing with expiring
+    /// content takes two, its record first. The following op fails `Invalid` when the time is not
+    /// in the future.
+    pub fn expires(mut self, e: Expiry) -> Self {
         if let Ok(key) = self.ix {
-            if t <= self.w.db.now() {
-                self.ix = Err(Error::Invalid(format!("expiry {} ms is not in the future", t.0)));
-            } else {
-                self.push(WriteOp::Expires { tid: self.tid, key, at: t });
+            match expiry_at(self.w.db, e) {
+                Ok(at) => self.push(WriteOp::Expires { tid: self.tid, key, at }),
+                Err(x) => self.ix = Err(x),
             }
         }
         self
-    }
-
-    /// This write's delta expires `d` from now.
-    pub fn expires_in(self, d: Duration) -> Self {
-        self.expires(Some(d))
-    }
-
-    /// `expires_in(d)` for `Some(d)`; `None` keeps the key's default.
-    pub fn expires(mut self, d: Option<Duration>) -> Self {
-        match d.map(|d| expiry_in(self.w.db, d)) {
-            None => self,
-            Some(Ok(t)) => self.expires_at(t),
-            Some(Err(e)) => {
-                if self.ix.is_ok() {
-                    self.ix = Err(e);
-                }
-                self
-            }
-        }
     }
 
     /// Retention of this write's delta instead of the key's default (spec/commits.md §5);
@@ -808,7 +849,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self
     }
 
-    /// A position inside the value, for path ops. Index paths resolve at commit time.
+    /// A position inside the value, for path ops; the empty path is the whole value. Index paths
+    /// resolve at commit time.
     pub fn path(&mut self, p: Path) -> PathWrite<'_, 'w, 'd, K> {
         PathWrite { a: self, path: p }
     }
@@ -849,41 +891,32 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
         crate::large::type_of(&self.a.key, &self.path)
     }
 
-    /// `Invalid` at the root: the aspect's own `set`, `replace` and `remove` write it whole.
-    pub(crate) fn not_root(&self, op: &str) -> Result<()> {
-        if self.path.0.is_empty() {
-            return Err(Error::Invalid(format!("{op} at the empty path: use {op} on the aspect itself")));
-        }
-        Ok(())
-    }
-
     /// `set` of an untyped value, checked against the schema.
     pub(crate) fn set_value(&mut self, v: Value) -> Result<()> {
         self.check(None, &v)?;
         self.at(None, Op::Set(v))
     }
 
-    /// Makes the position read `v` (structural diff). A map entry that does not exist yet is
-    /// made. Not at the empty path: `AspectWrite::set` is the whole value.
+    /// Makes the position read `v`, writing only what differs (`AspectWrite::set`). A map entry
+    /// that does not exist yet is made.
     pub fn set<U: Codec>(&mut self, v: &U) -> Result<()> {
-        self.not_root("set")?;
         let v = self.checked(None, v)?;
         self.at(None, Op::Set(v))
     }
 
-    /// Resets the position, then writes `v`. Not at the empty path: `AspectWrite::replace` is
-    /// the whole value.
-    pub fn replace<U: Codec>(&mut self, v: &U) -> Result<()> {
-        self.not_root("replace")?;
+    /// Writes `v` whole, always, in place of all the position holds (`AspectWrite::overwrite`).
+    pub fn overwrite<U: Codec>(&mut self, v: &U) -> Result<()> {
         let v = self.checked(None, v)?;
         self.at(None, Op::Replace(v))
     }
 
-    /// Removes the position: a map entry, a set element or a list element.
+    /// Removes the position: the aspect at the empty path, else a map entry, a set element or a
+    /// list element.
     pub fn remove(&mut self) -> Result<()> {
         let mut parent = self.path.clone();
         let last = parent.0.pop();
         let op = match last {
+            None => Op::RemoveAspect,
             Some(Step::Key(k)) => Op::Remove(k),
             Some(Step::Elem(e)) => Op::Remove(e),
             Some(Step::Index(i)) => Op::Delete { at: i, len: 1 },
@@ -892,31 +925,46 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
         PathWrite { a: &mut *self.a, path: parent }.at(None, op)
     }
 
-    /// List: inserts `items` before visible index `at`.
-    pub fn insert<U: Codec>(&mut self, at: usize, items: &[U]) -> Result<()> {
-        let items = items.iter().map(|x| self.checked(Some(Step::Index(0)), x)).collect::<Result<Vec<_>>>()?;
-        self.at(None, Op::Insert { at, items })
+    /// Replaces the visible range of a list or text with `items`: a slice of items in a list, a
+    /// `&str` in text, `()` for nothing. An empty range inserts.
+    pub fn splice(&mut self, r: Range<usize>, items: impl SpliceItems) -> Result<()> {
+        if r.start > r.end {
+            return Err(Error::Invalid(format!("bad range {r:?}")));
+        }
+        let items = match items.items() {
+            Items::Text(s) if s.is_empty() => Vec::new(),
+            Items::Text(s) => {
+                self.not_a_list()?;
+                vec![Value::Str(s)]
+            }
+            Items::List(l) => {
+                for v in &l {
+                    self.check(Some(Step::Index(0)), v)?;
+                }
+                l
+            }
+        };
+        if !r.is_empty() {
+            self.at(None, Op::Delete { at: r.start, len: r.len() })?;
+        }
+        if items.is_empty() {
+            return Ok(());
+        }
+        self.at(None, Op::Insert { at: r.start, items })
     }
 
-    /// List or text: deletes the visible range.
-    pub fn delete(&mut self, r: Range<usize>) -> Result<()> {
-        self.at(None, Op::Delete { at: r.start, len: r.len() })
+    /// `Invalid` where the key's schema says a list: its items are no text.
+    fn not_a_list(&self) -> Result<()> {
+        let (Some(s), Some(t)) = (self.a.key.schema(), self.position_type()?) else { return Ok(()) };
+        if matches!(s.expand(&t).as_deref(), Ok(osis_schema::Type::List(_))) {
+            return Err(Error::Invalid("a list takes a slice of items, not a string".into()));
+        }
+        Ok(())
     }
 
     /// List or text: moves the range so it starts at index `to` of the sequence without it.
     pub fn move_range(&mut self, r: Range<usize>, to: usize) -> Result<()> {
         self.at(None, Op::Move { at: r.start, len: r.len(), to })
-    }
-
-    /// Text: replaces the range with `s`.
-    pub fn splice(&mut self, r: Range<usize>, s: &str) -> Result<()> {
-        if !r.is_empty() {
-            self.delete(r.clone())?;
-        }
-        if s.is_empty() {
-            return Ok(());
-        }
-        self.at(None, Op::Insert { at: r.start, items: vec![Value::Str(s.into())] })
     }
 
     /// Set: adds `v`.
@@ -930,5 +978,57 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
     /// contribution: concurrent ones all count.
     pub fn contribute<U: Codec>(&mut self, v: &U) -> Result<()> {
         self.at(None, Op::Inc(v.to_value()))
+    }
+}
+
+/// What `PathWrite::splice` puts into a sequence: a slice of items in a list, a `&str` in text,
+/// `()` for nothing.
+pub trait SpliceItems: seal::Sealed {
+    #[doc(hidden)]
+    fn items(self) -> Items;
+}
+
+mod seal {
+    pub trait Sealed {}
+}
+
+#[doc(hidden)]
+pub enum Items {
+    Text(String),
+    List(Vec<Value>),
+}
+
+fn list<U: Codec>(items: &[U]) -> Items {
+    Items::List(items.iter().map(Codec::to_value).collect())
+}
+
+impl seal::Sealed for () {}
+impl SpliceItems for () {
+    fn items(self) -> Items {
+        Items::List(Vec::new())
+    }
+}
+impl seal::Sealed for &str {}
+impl SpliceItems for &str {
+    fn items(self) -> Items {
+        Items::Text(self.to_string())
+    }
+}
+impl<U: Codec> seal::Sealed for &[U] {}
+impl<U: Codec> SpliceItems for &[U] {
+    fn items(self) -> Items {
+        list(self)
+    }
+}
+impl<U: Codec, const N: usize> seal::Sealed for &[U; N] {}
+impl<U: Codec, const N: usize> SpliceItems for &[U; N] {
+    fn items(self) -> Items {
+        list(self)
+    }
+}
+impl<U: Codec> seal::Sealed for &Vec<U> {}
+impl<U: Codec> SpliceItems for &Vec<U> {
+    fn items(self) -> Items {
+        list(self)
     }
 }

@@ -7,7 +7,7 @@ use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
 use osis::core::{BODY, GROUP, NAME};
-use osis::{Error, Osis, Path, Result, Role, SyncScope, Tid, Scope};
+use osis::{Error, Osis, Result, Role, SyncScope, Tid, Scope};
 use osis_sim::world::World;
 use std::time::Duration;
 
@@ -38,7 +38,7 @@ fn body(db: &Osis, note: Tid) -> Result<String> {
 
 /// Types `text` into the body at char `at` in one editing session: one commit for the pause.
 fn type_text(db: &Osis, note: Tid, at: usize, text: &str) -> Result<()> {
-    let s = db.edit_text(note, BODY, Path::root())?;
+    let s = db.at(note, BODY).edit_text()?;
     s.replace(at..at, text)?;
     s.commit()?;
     Ok(())
@@ -118,7 +118,7 @@ fn share_notebook_with_a_second_person() {
 
     rename(&bob, plan, "Plan", "Plan: Lisbon").unwrap();
     let travel = private_tag(&alice, "travel").unwrap();
-    alice.batch(|w| w.place(plan, travel)).unwrap();
+    alice.batch(|w| w.group(travel).add(osis::Member::Item(plan))).unwrap();
     type_text(&alice, plan, 0, "flights").unwrap();
     w.run();
     for db in [&alice, &bob] {

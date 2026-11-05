@@ -169,7 +169,7 @@ fn delete_for_everyone_spec_commits_5() {
     assert!(matches!(delete(&b, c, &at(&b, &mine)), Err(osis::Error::Permission { .. })));
     // past the library: the request drops nothing
     let mut x = b.write();
-    x.at(c, osis::Ak::new(format!("{MSGS}y{}.0", mine.year)).unwrap()).purge_commit(mine.pos.id).unwrap();
+    x.at(c, osis::Ak::new(format!("{MSGS}y{}.0", mine.year)).unwrap()).purge(osis::Purge::Change(mine.pos.id)).unwrap();
     x.commit().unwrap();
     w.run();
     assert!(matches!(at(&a, &mine).body, Body::Text(_)));
@@ -256,7 +256,7 @@ fn required_and_stale_writer_spec_commits_5() {
     let k = osis::Ak::new(format!("{MSGS}y{year}.0")).unwrap();
     let mut x = b.write();
     let bad = osis::Retention { by: PurgeBy::Nobody, ..Default::default() };
-    assert!(x.at(c, k.clone()).retention(bad).replace(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
+    assert!(x.at(c, k.clone()).retention(bad).overwrite(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
     let (tx, rx) = std::sync::mpsc::channel();
     let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     // Bob offline: the timer changes, he posts under the old rule
@@ -433,7 +433,7 @@ fn no_forged_sender_spec_perm_5() {
     let k = osis::Ak::new(format!("{MSGS}y2023.0")).unwrap();
     let mut x = b.write();
     x.act_as(a.me());
-    x.at(c, k).replace(&Value::Str("as alice".into())).unwrap();
+    x.at(c, k).overwrite(&Value::Str("as alice".into())).unwrap();
     assert!(matches!(x.commit(), Err(osis::Error::Permission { .. })));
 }
 

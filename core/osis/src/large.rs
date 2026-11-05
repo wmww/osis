@@ -235,22 +235,16 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
 }
 
 impl<K: AspectKey> AspectWrite<'_, '_, K> {
-    /// Sets a string or blob aspect from a reader (a string must be UTF-8).
+    /// `path(Path::root()).set_stream(r)`: the whole aspect, as `AspectRef::stream` reads it.
     pub fn set_stream(&mut self, r: impl Read) -> Result<()> {
-        self.path(Path::root()).stream_in(r)
+        self.path(Path::root()).set_stream(r)
     }
 }
 
 impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
     /// Sets the string or blob at the path from a reader: a string when the key's schema says
-    /// so (UTF-8 checked), else a blob. The value is read whole before the commit for now. Not at
-    /// the empty path: `AspectWrite::set_stream` is the whole value.
-    pub fn set_stream(&mut self, r: impl Read) -> Result<()> {
-        self.not_root("set_stream")?;
-        self.stream_in(r)
-    }
-
-    fn stream_in(&mut self, mut r: impl Read) -> Result<()> {
+    /// so (UTF-8 checked), else a blob. The value is read whole before the commit for now.
+    pub fn set_stream(&mut self, mut r: impl Read) -> Result<()> {
         let mut b = Vec::new();
         r.read_to_end(&mut b).map_err(|e| Error::Invalid(format!("reading the value: {e}")))?;
         let text = match self.position_type()? {

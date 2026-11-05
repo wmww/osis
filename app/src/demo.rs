@@ -6,7 +6,7 @@ use crate::data::Data;
 use crate::event::{END, End, LOCATION, START, Start, Wall};
 use crate::schema::{COLOR, DEMO, FAVORITES};
 use osis::core::{BODY, NAME, TAG, Tag};
-use osis::{Result, Tid, Write};
+use osis::{Member, Result, Tid, Write};
 use std::collections::BTreeMap;
 
 const DAY_MS: i64 = 86_400_000;
@@ -14,19 +14,18 @@ const HOUR_MS: i64 = 3_600_000;
 
 struct Ctx<'a, 'w> {
     w: &'a mut Write<'w>,
-    me: Tid,
     group: Tid,
     names: BTreeMap<&'static str, Tid>,
 }
 
 impl Ctx<'_, '_> {
     fn thing(&mut self, key: &'static str, name: &str, tags: &[&str]) -> Result<Tid> {
-        let t = self.w.create(self.me)?;
+        let t = self.w.create()?;
         self.w.at(t, NAME).set(&name.to_string())?;
-        self.w.place(t, self.group)?;
+        self.w.group(self.group).add(Member::Item(t))?;
         for g in tags {
             if let Some(g) = self.names.get(g).copied() {
-                self.w.place(t, g)?;
+                self.w.group(g).add(Member::Item(t))?;
             }
         }
         self.names.insert(key, t);
@@ -35,12 +34,11 @@ impl Ctx<'_, '_> {
 
     fn tag(&mut self, key: &'static str, name: &str, color: &str, parent: Option<&str>) -> Result<Tid> {
         let t = self.thing(key, name, &[])?;
-        self.w.make_group(t)?;
         self.w.at(t, TAG).set(&Tag { color: Some(color.into()) })?;
         // a subgroup of the app group, so its items sync
-        self.w.add_subgroup(self.group, t)?;
+        self.w.group(self.group).add(Member::Subgroup(t))?;
         if let Some(p) = parent.and_then(|p| self.names.get(p).copied()) {
-            self.w.add_subgroup(p, t)?;
+            self.w.group(p).add(Member::Subgroup(t))?;
         }
         Ok(t)
     }
@@ -95,7 +93,7 @@ pub fn add(data: &Data) -> Result<bool> {
     let had = data.favorites()?;
     let base = data.db.at(group, FAVORITES).get()?.unwrap_or_default();
     let mut w = db.write();
-    let mut c = Ctx { w: &mut w, me: db.me(), group, names: BTreeMap::new() };
+    let mut c = Ctx { w: &mut w, group, names: BTreeMap::new() };
     c.tag("home", "Home", "#f59e0b", None)?;
     c.tag("work", "Work", "#3b82f6", None)?;
     c.tag("garden", "Garden", "#22c55e", Some("home"))?;

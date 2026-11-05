@@ -5,7 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::read::ak_of;
+use crate::read::{AspectRef, PathRef, ak_of};
 use crate::watch::lock;
 use osis_base::{Tid, Value};
 use osis_schema::{AspectKey, Codec, Path};
@@ -29,7 +29,7 @@ struct Kept {
     writes: u64,
 }
 
-/// A value its author keeps alive (`Osis::keep_alive`): rewritten until this is dropped.
+/// A value its author keeps alive (`PathRef::keep_alive`): rewritten until this is dropped.
 pub struct KeepAlive {
     db: Osis,
     st: Arc<Mutex<Kept>>,
@@ -79,17 +79,17 @@ fn arm(db: &Osis, st: Weak<Mutex<Kept>>, every: Duration) -> bool {
     )
 }
 
-impl Osis {
-    /// Writes `value` at `path` of an aspect (a map key, such as this device's key `node()` in a
-    /// cursor map, or a register position) and rewrites it every half of the key's default
-    /// expiry while the returned `KeepAlive` lives. Two devices keeping one path alive (a
-    /// person's key) overwrite each other at every rewrite: key by device. The key must be
-    /// ephemeral (`~`) with a default expiry (schema `[expires: ...]`) well above the
-    /// network delay and the clock differences between nodes; the database needs its runtime (a
-    /// `Config::transport`) for the timer. Nothing outlives the process: after a restart the app
-    /// calls this again.
-    pub fn keep_alive<K: AspectKey, U: Codec>(&self, tid: Tid, key: K, path: Path, value: &U) -> Result<KeepAlive> {
-        if let crate::sources::Source::Remote(_) = self.route(tid) {
+impl<K: AspectKey> PathRef<'_, '_, K> {
+    /// Writes `value` here (a map key, such as this device's key `node()` in a cursor map, or a
+    /// register position) and writes it again every half of the key's default expiry while the
+    /// returned `KeepAlive` lives. Two devices keeping one position alive (a person's key)
+    /// overwrite each other at every rewrite: key by device. The key must be ephemeral (`~`) with
+    /// a default expiry (schema `[expires: ...]`) well above the network delay and the clock
+    /// differences between nodes; the database needs its runtime (a `Config::transport`) for the
+    /// timer. Nothing outlives the process: after a restart the app calls this again.
+    pub fn keep_alive<U: Codec>(&self, value: &U) -> Result<KeepAlive> {
+        let (db, tid, key, path) = self.parts();
+        if let crate::sources::Source::Remote(_) = db.route(tid) {
             return Err(Error::Unsupported("keep_alive through the attached node".into()));
         }
         let d = key.defaults();
@@ -97,16 +97,24 @@ impl Osis {
             return Err(Error::Invalid(format!("{} is not an ephemeral key with a default expiry", key.ak())));
         };
         let value = value.to_value();
-        check(&key, &path, &value)?;
-        let key = crate::Key { ak: ak_of(&key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
-        let mut k = Kept { tid, key, path, value, writes: 0 };
-        write(self, &mut k)?;
+        check(key, path, &value)?;
+        let key = crate::Key { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
+        let mut k = Kept { tid, key, path: path.clone(), value, writes: 0 };
+        write(db, &mut k)?;
         let st = Arc::new(Mutex::new(k));
         let every = Duration::from_millis((exp / u64::from(REFRESH_DIVISOR)).max(1));
-        if !arm(self, Arc::downgrade(&st), every) {
+        if !arm(db, Arc::downgrade(&st), every) {
             return Err(Error::Invalid("keep_alive needs the database's runtime".into()));
         }
-        Ok(KeepAlive { db: self.clone(), st })
+        Ok(KeepAlive { db: db.clone(), st })
+    }
+}
+
+impl<K: AspectKey> AspectRef<'_, K> {
+    /// `path(Path::root()).keep_alive(value)`: the whole aspect, with `value`'s type checked at
+    /// compile time.
+    pub fn keep_alive(&self, value: &K::T) -> Result<KeepAlive> {
+        self.path(Path::root()).keep_alive(&self.key.encode(value))
     }
 }
 

@@ -18,7 +18,7 @@ use crate::edit::{map_byte, shown_edits, splice};
 use crate::schema::Mode as ModeChoice;
 use content::Content;
 use osis::core::{BODY, NAME};
-use osis::{Path, Splice, Subscription, TextSession, Tid};
+use osis::{Splice, Subscription, TextSession, Tid};
 use osis_kit::marshal::{Inbox, Mailbox};
 use osis_kit::masonry::core::{ErasedAction, NewWidget, Widget, WidgetId, WidgetTag};
 use osis_kit::masonry::widgets::{Prose, SizedBox, TextAction, TextArea};
@@ -496,9 +496,9 @@ impl Ui {
         let mut fields = Vec::new();
         for key in keys {
             let session = match key {
-                FieldKey::Name => db.edit_text(t, NAME, Path::root())?,
-                FieldKey::Body => db.edit_text(t, BODY, Path::root())?,
-                FieldKey::Location => db.edit_text(t, crate::event::LOCATION, Path::root())?,
+                FieldKey::Name => db.at(t, NAME).edit_text()?,
+                FieldKey::Body => db.at(t, BODY).edit_text()?,
+                FieldKey::Location => db.at(t, crate::event::LOCATION).edit_text()?,
             };
             let mb = self.mb.clone();
             let reported = Arc::new(Mutex::new(Vec::new()));

@@ -96,11 +96,7 @@ impl Data {
             if row.optional { Value::Enum(1, Some(Box::new(inner))) } else { inner }
         };
         let mut w = self.db.write();
-        if row.path.0.is_empty() {
-            w.at(t, key).set(&v)?;
-        } else {
-            w.at(t, key).path(row.path.clone()).set(&v)?;
-        }
+        w.at(t, key).path(row.path.clone()).set(&v)?;
         w.commit()?;
         Ok(())
     }

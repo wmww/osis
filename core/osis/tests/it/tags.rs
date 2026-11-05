@@ -15,13 +15,12 @@ use osis_sim::world::World;
 fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
     let mut w = db.write();
     let t = w.create_in(owner, &[parent])?;
-    w.make_group(t)?;
     w.at(t, TAG).set(&Tag::default())?;
     w.at(t, NAME).set(&name.to_string())?;
     w.commit()?;
     if owner == parent {
         let mut w = db.write();
-        w.add_subgroup(parent, t)?;
+        w.group(parent).add(osis::Member::Subgroup(t))?;
         w.commit()?;
     } else {
         db.add_with_grant(Member::Subgroup(t), parent, role)?;
@@ -32,7 +31,7 @@ fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Re
 /// A card: a thing with a body, owned by `owner`, placed nowhere yet.
 fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
     db.batch(|w| {
-        let c = w.create(owner)?;
+        let c = w.create_owned_by(owner)?;
         w.at(c, BODY).set(&text.to_string())?;
         Ok(c)
     })
@@ -48,13 +47,13 @@ fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
 }
 
 fn place(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
-    db.batch(|w| w.place(thing, tag))
+    db.batch(|w| w.group(tag).add(osis::Member::Item(thing)))
 }
 
 /// Removes a thing from a tag; the tag's tied edge on it goes once the unplace synced (the
 /// thing's admin removes it with a rotation, spec/permissions.md §2).
 fn remove(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
-    db.batch(|w| w.unplace(thing, tag))
+    db.batch(|w| w.group(tag).remove(osis::Member::Item(thing)))
 }
 
 fn edit(db: &Osis, card: Tid, shown: &str, new: &str) -> Result<()> {

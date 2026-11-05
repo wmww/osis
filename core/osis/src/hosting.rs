@@ -66,7 +66,7 @@ impl Osis {
                     policy: h.policy,
                     caps: h.caps,
                 };
-                w.at(node, ct::HOST).replace(&v)?;
+                w.at(node, ct::HOST).overwrite(&v)?;
             }
             None => w.at(node, ct::HOST).remove()?,
         }

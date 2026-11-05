@@ -1,11 +1,11 @@
 //! Write commands (notes/cli.md Command table, Things and aspects): each applies to a `Write` batch, so a
 //! single command and a `write` script line share one implementation.
 
-use crate::args::{CreateArgs, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, SubCmd, WriteFlags};
+use crate::args::{CreateArgs, MemberCmd, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
 use crate::text::{self, PStep};
 use crate::{Ctx, key_ty, parse_dur, parse_ts, ty_in, usage};
 use clap::Parser;
-use osis::{AspectKey, AspectWrite, Key, Path, Retention, Step, Tid, Value, WallMs};
+use osis::{AspectKey, AspectWrite, Expiry, Key, Member, Path, Retention, Step, Tid, Value, WallMs};
 use osis_schema::{Bound, PurgeBy, Type};
 use std::ops::Range;
 
@@ -63,12 +63,17 @@ fn type_at(key: &Key, p: &Path) -> Option<Type> {
     text::type_at_path(s, key.ty()?, &p.0)
 }
 
+fn expiry(within: &Option<String>, at: &Option<String>) -> anyhow::Result<Option<Expiry>> {
+    Ok(match (within, at) {
+        (Some(d), _) => Some(Expiry::In(parse_dur(d)?)),
+        (_, Some(t)) => Some(Expiry::At(WallMs(parse_ts(t)?))),
+        _ => None,
+    })
+}
+
 fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key) -> anyhow::Result<AspectWrite<'w, 'd, Key>> {
-    if let Some(d) = &f.expires_in {
-        a = a.expires_in(parse_dur(d)?);
-    }
-    if let Some(t) = &f.expires_at {
-        a = a.expires_at(WallMs(parse_ts(t)?));
+    if let Some(e) = expiry(&f.expires_in, &f.expires_at)? {
+        a = a.expires(e);
     }
     if let Some(r) = &f.retention {
         let base = key.schema().and_then(|s| s.defaults(key.ak())).map(|d| d.retention).unwrap_or_default();
@@ -113,17 +118,17 @@ fn index(s: &str) -> anyhow::Result<usize> {
 }
 
 pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &mut Did) -> anyhow::Result<()> {
-    let owner = ctx.tid(&a.owner)?;
+    let owner = a.owner.as_deref().map(|o| ctx.tid(o)).transpose()?;
     let place = place(ctx, &a.place)?;
     if !a.pairs.len().is_multiple_of(2) {
         return Err(usage("create takes AK VALUE pairs"));
     }
-    let t = w.create(owner)?;
+    let t = match owner {
+        Some(o) => w.create_owned_by(o)?,
+        None => w.create()?,
+    };
     for g in place {
-        w.place(t, g)?;
-    }
-    if a.group {
-        w.make_group(t)?;
+        w.group(g).add(Member::Item(t))?;
     }
     for pair in a.pairs.chunks(2) {
         let key = ctx.key(&pair[0])?;
@@ -137,7 +142,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     Ok(())
 }
 
-fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, replace: bool) -> anyhow::Result<()> {
+fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, overwrite: bool) -> anyhow::Result<()> {
     let t = ctx.tid(&a.t)?;
     let key = ctx.key(&a.ak)?;
     if a.stream {
@@ -146,12 +151,7 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, replace: bool) -
             [p] => path(ctx, t, &key, p, true)?,
             _ => return Err(usage("--stream takes [PATH] and the value on stdin")),
         };
-        let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
-        if p.0.is_empty() {
-            aw.set_stream(&mut *ctx.stdin)?;
-        } else {
-            aw.path(p).set_stream(&mut *ctx.stdin)?;
-        }
+        with_flags(w.at(t, key.clone()), &a.w, &key)?.path(p).set_stream(&mut *ctx.stdin)?;
         return Ok(());
     }
     let (p, val) = match a.rest.as_slice() {
@@ -162,25 +162,19 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, replace: bool) -
     let pt = type_at(&key, &p);
     let v = ctx.value(val, ty_in(&key, pt.as_ref()))?;
     let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
-    match (p.0.is_empty(), replace) {
-        (true, false) => aw.set(&v)?,
-        (true, true) => aw.replace(&v)?,
-        (false, false) => aw.path(p).set(&v)?,
-        (false, true) => aw.path(p).replace(&v)?,
-    }
+    let mut pw = aw.path(p);
+    if overwrite { pw.overwrite(&v)? } else { pw.set(&v)? }
     Ok(())
 }
 
 fn rm(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &RmArgs) -> anyhow::Result<()> {
     let t = ctx.tid(&a.t)?;
     let key = ctx.key(&a.ak)?;
-    match a.path.as_deref() {
-        None | Some("") => w.at(t, key).remove()?,
-        Some(s) => {
-            let p = path(ctx, t, &key, s, true)?;
-            w.at(t, key).path(p).remove()?
-        }
-    }
+    let p = match a.path.as_deref() {
+        None | Some("") => Path::root(),
+        Some(s) => path(ctx, t, &key, s, true)?,
+    };
+    w.at(t, key).path(p).remove()?;
     Ok(())
 }
 
@@ -202,33 +196,31 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
     let mut pw = aw.path(p);
     match a.op.as_str() {
-        "insert" => {
-            if args.len() < 2 {
-                return Err(usage("insert I V..."));
-            }
-            let vs = args[1..].iter().map(|v| ctx.value(v, ety)).collect::<anyhow::Result<Vec<_>>>()?;
-            pw.insert(index(&args[0])?, &vs)?
-        }
-        "delete" => {
-            n(1)?;
-            pw.delete(range(&args[0])?)?
-        }
         "move" => {
             n(2)?;
             pw.move_range(range(&args[0])?, index(&args[1])?)?
         }
         "splice" => {
-            n(2)?;
-            let s = ctx.arg_text(&args[1])?;
-            let s = if s.starts_with('"') {
-                match text::parse(&s, None, &text::no_aliases) {
-                    Ok(Value::Str(s)) => s,
-                    _ => return Err(usage("splice text: a string")),
-                }
+            if args.is_empty() {
+                return Err(usage("splice A..B [V...]"));
+            }
+            let r = range(&args[0])?;
+            if matches!(pt, Some(Type::Text)) {
+                n(2)?;
+                let s = ctx.arg_text(&args[1])?;
+                let s = if s.starts_with('"') {
+                    match text::parse(&s, None, &text::no_aliases) {
+                        Ok(Value::Str(s)) => s,
+                        _ => return Err(usage("splice text: a string")),
+                    }
+                } else {
+                    s
+                };
+                pw.splice(r, s.as_str())?
             } else {
-                s
-            };
-            pw.splice(range(&args[0])?, &s)?
+                let vs = args[1..].iter().map(|v| ctx.value(v, ety)).collect::<anyhow::Result<Vec<_>>>()?;
+                pw.splice(r, &vs)?
+            }
         }
         "undelete" => return Err(crate::cmd::not_built("undelete (issues/api-deferred.md)")),
         "add" => {
@@ -249,7 +241,7 @@ pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
     apply_one(ctx, w, c, did)?;
     // Record what this batch wrote (path resolution must not trust the saved state there).
     let touched = match c {
-        ScriptCmd::Set(SetArgs { t, ak, .. }) | ScriptCmd::Replace(SetArgs { t, ak, .. }) | ScriptCmd::Rm(RmArgs { t, ak, .. }) | ScriptCmd::Op(OpArgs { t, ak, .. }) => {
+        ScriptCmd::Set(SetArgs { t, ak, .. }) | ScriptCmd::Overwrite(SetArgs { t, ak, .. }) | ScriptCmd::Rm(RmArgs { t, ak, .. }) | ScriptCmd::Op(OpArgs { t, ak, .. }) => {
             Some((ctx.tid(t)?, ak.clone()))
         }
         ScriptCmd::Delete { t } => Some((ctx.tid(t)?, String::new())),
@@ -260,17 +252,26 @@ pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
     Ok(())
 }
 
+fn member(t: osis::Tid, subgroup: bool) -> Member {
+    if subgroup { Member::Subgroup(t) } else { Member::Item(t) }
+}
+
 fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
     match c {
         ScriptCmd::Create(a) => create(ctx, w, a, did),
         ScriptCmd::Set(a) => set(ctx, w, a, false),
-        ScriptCmd::Replace(a) => set(ctx, w, a, true),
+        ScriptCmd::Overwrite(a) => set(ctx, w, a, true),
         ScriptCmd::Rm(a) => rm(ctx, w, a),
         ScriptCmd::Op(a) => op(ctx, w, a),
-        ScriptCmd::Place { t, g } => Ok(w.place(ctx.tid(t)?, ctx.tid(g)?)?),
-        ScriptCmd::Unplace { t, g } => Ok(w.unplace(ctx.tid(t)?, ctx.tid(g)?)?),
-        ScriptCmd::Sub(SubCmd::Add { g, sub }) => Ok(w.add_subgroup(ctx.tid(g)?, ctx.tid(sub)?)?),
-        ScriptCmd::Sub(SubCmd::Rm { g, sub }) => Ok(w.remove_subgroup(ctx.tid(g)?, ctx.tid(sub)?)?),
+        ScriptCmd::Group(MemberCmd::Add { g, t, subgroup, expires_in, expires_at }) => {
+            let (g, m) = (ctx.tid(g)?, member(ctx.tid(t)?, *subgroup));
+            match expiry(expires_in, expires_at)? {
+                Some(e) => w.group(g).expires(e).add(m)?,
+                None => w.group(g).add(m)?,
+            }
+            Ok(())
+        }
+        ScriptCmd::Group(MemberCmd::Rm { g, t, subgroup }) => Ok(w.group(ctx.tid(g)?).remove(member(ctx.tid(t)?, *subgroup))?),
         ScriptCmd::Delete { t } => Ok(w.delete(ctx.tid(t)?)?),
     }
 }

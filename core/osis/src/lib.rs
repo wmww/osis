@@ -3,17 +3,18 @@
 //! people it is shared with, and tells apps when it changes.
 //!
 //! # Open a database
-//! The owner of a new thing is always explicit; `me()` is the usual owner, and is also a group,
-//! synced to all your devices. Placement is a group op in the same batch. A new thing lives in
-//! memory until its first durable write.
+//! You are the first admin of a thing you create. Things sync through groups: `me()` is a group
+//! synced to all your devices, and any thing becomes a group with its first member. A new thing
+//! lives in memory until its first durable write.
 //! ```
-//! use osis::{Config, Osis};
+//! use osis::{Ak, Config, Member, Osis, Value};
 //! let db = Osis::create(Config::memory())?.0;
 //! let mut w = db.write();
-//! let note = w.create(db.me())?;
-//! w.place(note, db.me())?;
+//! let note = w.create()?;
+//! w.group(db.me()).add(Member::Item(note))?;
+//! w.at(note, Ak::new("note:title.0").unwrap()).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
-//! assert!(db.items(db.me())?.contains(&note));
+//! assert!(db.members(db.me())?.contains(&Member::Item(note)));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -25,7 +26,7 @@
 //! # let db = Osis::create(Config::memory())?.0;
 //! let title = Ak::new("note:title.0").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me())?;
+//! let t = w.create()?;
 //! w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
 //! assert_eq!(db.at(t, title.clone()).get()?, Some(Value::Str("Groceries".into())));
@@ -41,7 +42,7 @@
 //! # let db = Osis::create(Config::memory())?.0;
 //! let tags = Ak::new("note:tags.0").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me())?;
+//! let t = w.create()?;
 //! w.at(t, tags.clone()).path(p!["color"]).set(&"red".to_string())?;
 //! w.commit()?;
 //! let c: Option<String> = db.at(t, tags).path(p!["color"]).get()?;
@@ -49,10 +50,12 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
-//! # Edit, not set, for what users edit
-//! `set` makes the value equal to what you pass (fields you did not touch are written back);
-//! `edit(base, new)` writes only what the user changed since `base`, so a concurrent change to
-//! another field survives.
+//! # Set, edit, overwrite
+//! `set` makes the value equal to what you pass, writing only what differs (fields you did not
+//! touch are written back, and an equal value writes nothing). `edit(base, new)` writes only what
+//! the user changed since `base`, so a concurrent change to another field survives: use it for
+//! what users edit. `overwrite` always writes, the whole value: use it where each write counts,
+//! such as a message in a log, where a set equal to the last one would be lost.
 //! ```
 //! # use osis::{Config, Osis, Ak, Value};
 //! # use osis::ValueMap;
@@ -60,7 +63,7 @@
 //! let form = Ak::new("app:form.0").unwrap();
 //! let shown = Value::Map(ValueMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
-//! let t = w.create(db.me())?;
+//! let t = w.create()?;
 //! w.at(t, form.clone()).set(&shown)?;
 //! w.commit()?;
 //! let mut edited = shown.clone();
@@ -81,7 +84,7 @@
 //! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("app:count.0").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me())?;
+//! let t = w.create()?;
 //! w.commit()?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let sub = db.at(t, k.clone()).on_change(move |_db, c| { let _ = tx.send(c); })?;
@@ -104,7 +107,7 @@
 //! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("app:count.0").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me())?;
+//! let t = w.create()?;
 //! w.commit()?;
 //! let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 //! let _sub = db.at(t, k.clone()).on_change(move |_db, c| { let _ = tx.send(c.value); })?;
@@ -126,7 +129,7 @@
 //! # let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("app:x.0").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me())?;
+//! let t = w.create()?;
 //! w.at(t, k.clone()).set(&Value::Int(1))?;
 //! w.commit()?;
 //! let mut w = db.write();
@@ -187,16 +190,16 @@
 //! A role says who may; sync says where the data goes. `grant` records a role and needs the
 //! holder's keys (a contact card, a shared group); the holder reads once a synced group it reads
 //! holds the thing, or the thing's own `sync` carries it. `set_role` changes or removes a role. A
-//! link needs no keys and syncs its thing. Things a group owns are what its holders read: create
-//! shared things with the group as owner.
+//! link needs no keys and syncs its thing. Being in a group grants nothing: `add_with_grant` adds
+//! a member and lets the group's holders read it.
 //! ```
-//! # use osis::{Config, GrantOpts, Osis, Role, LinkOpts, HostAddr};
+//! # use osis::{Config, GrantOpts, Osis, Role, LinkOpts, HostAddr, Value};
 //! // a link names hosts (or is direct, `LinkOpts::direct`)
 //! let db = Osis::create(Config::memory())?.0;
 //! db.add_host(&HostAddr::new("quic://example.org:4433", [7; 32]))?;
 //! let mut w = db.write();
-//! let g = w.create(db.me())?;
-//! w.make_group(g)?;
+//! let g = w.create()?;
+//! w.at(g, osis::core::NAME).set(&"Trip".to_string())?;
 //! w.commit()?;
 //! db.sync(g, &[])?;
 //! let link = db.make_link(g, Role::Write, LinkOpts { until: None, single_use: true, direct: false })?;
@@ -218,7 +221,7 @@
 //! # use osis::{Config, Osis, Ak, Value};
 //! let db = Osis::create(Config::memory())?.0;
 //! let mut w = db.write();
-//! let t = w.create(db.me())?;
+//! let t = w.create()?;
 //! w.commit()?;
 //! let ring = Ak::new("app:ring.0*").unwrap();
 //! let (tx, rx) = std::sync::mpsc::channel();
@@ -236,19 +239,19 @@
 //! A string or blob above the bound streams; text edited by a user goes through a session that
 //! commits once per pause.
 //! ```
-//! # use osis::{Config, Osis, Ak, Path};
+//! # use osis::{Config, Osis, Ak};
 //! # use std::io::Read;
 //! let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("app:body.0").unwrap();
 //! let mut w = db.write();
-//! let t = w.create(db.me())?;
+//! let t = w.create()?;
 //! w.at(t, k.clone()).set_stream(&b"some bytes"[..])?;
 //! w.commit()?;
 //! let mut s = String::new();
 //! db.at(t, k.clone()).stream()?.unwrap().read_to_string(&mut s).unwrap();
 //! assert_eq!(s, "some bytes");
 //! let title = Ak::new("app:title.0").unwrap();
-//! let ed = db.edit_text(t, title.clone(), Path::root())?;
+//! let ed = db.at(t, title.clone()).edit_text()?;
 //! ed.replace(0..0, "Hello")?;
 //! ed.replace(5..5, " world")?;
 //! ed.commit()?; // one commit for the whole pause
@@ -263,7 +266,8 @@
 //! let a = Osis::create(Config::memory())?.0;
 //! let b = Osis::create(Config::memory())?.0;
 //! let mut w = a.write();
-//! assert!(matches!(w.create(b.me()), Err(Error::UnknownThing { .. })));
+//! w.at(b.me(), osis::Ak::new("app:x.0").unwrap()).set(&osis::Value::Int(1))?;
+//! assert!(matches!(w.commit(), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -272,7 +276,7 @@
 //!   is for "must be exactly this".
 //! - Out of memory on a huge value: reads fail `TooLarge` past `Config::materialize_limit`;
 //!   read by path instead.
-//! - A thing that never syncs, or owned by the device: the owner is always explicit, placement a group op (`NotSynced` diagnostic).
+//! - A thing that never syncs: membership is a group op (`NotSynced` diagnostic).
 //! - A forgotten unsubscribe: `Subscription` is RAII, and dropping it at once is a lint:
 //! ```compile_fail
 //! #![deny(unused_must_use)]
@@ -329,7 +333,7 @@ pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
 pub use history::{HISTORY_PAGE, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPage, HistoryPos};
 pub use watch::{Change, CommitInfo, Dispatcher, Source, Subscription};
-pub use write::{AspectWrite, Committed, PathWrite, Write};
+pub use write::{AspectWrite, Committed, ExpiringGroupWrite, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
 
 /// Keep at least this, as an absolute time: for good (`Retention.at_least.abs`).
 pub use osis_commit::FOREVER;

@@ -495,7 +495,7 @@ impl Osis {
                 None => e.revert_change(target, me)?,
             };
             match r {
-                Reverted::Written(w) => Ok(Committed { id: w.id, ts: w.ts, also: w.also }),
+                Reverted::Written(w) => Ok(Committed::of(w)),
                 Reverted::Superseded => Err(blocked(DropReason::Superseded)),
                 Reverted::Compacted => Err(blocked(DropReason::Compacted)),
             }

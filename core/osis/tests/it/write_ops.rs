@@ -37,7 +37,6 @@ enum Call {
     Unplace(usize),
     AddSubgroup(usize),
     RemoveSubgroup(usize),
-    MakeGroup(usize),
     Delete(usize),
 }
 
@@ -46,7 +45,7 @@ impl Call {
     fn things(&self) -> Vec<usize> {
         match self {
             Call::Set(t, ..) | Call::SetExpiring(t, ..) | Call::Replace(t, ..) | Call::Remove(t, _) | Call::Put(t, ..) | Call::RemoveKey(t, _) | Call::Edit(t, ..) => vec![*t],
-            Call::Title(t, _) | Call::Views(t, _) | Call::Opened(t, _) | Call::Place(t, _) | Call::Unplace(t) | Call::AddSubgroup(t) | Call::RemoveSubgroup(t) | Call::MakeGroup(t) | Call::Delete(t) => vec![*t],
+            Call::Title(t, _) | Call::Views(t, _) | Call::Opened(t, _) | Call::Place(t, _) | Call::Unplace(t) | Call::AddSubgroup(t) | Call::RemoveSubgroup(t) | Call::Delete(t) => vec![*t],
         }
     }
 }
@@ -103,7 +102,6 @@ fn case(seed: u64) -> (usize, Vec<Call>) {
             11 => Call::Unplace(t),
             12 => Call::AddSubgroup(t),
             13 => Call::RemoveSubgroup(t),
-            14 => Call::MakeGroup(t),
             _ => Call::Delete(r.below(SETUP)),
         });
     }
@@ -137,9 +135,7 @@ fn world() -> World {
             }
             let g0 = w.create_durable(db.me())?;
             let g1 = w.create_durable(db.me())?;
-            w.make_group(g0)?;
-            w.make_group(g1)?;
-            w.place(things[0], g0)?;
+            w.group(g0).add(osis::Member::Item(things[0]))?;
             Ok((things, [g0, g1]))
         })
         .unwrap();
@@ -152,8 +148,8 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
     let [g0, g1] = wd.groups;
     match c {
         Call::Set(t, k, v) => w.at(things[*t], key(*k)).set(&Value::Int(*v)),
-        Call::SetExpiring(t, k, v) => w.at(things[*t], key(*k)).expires_in(HOUR).set(&Value::Int(*v)),
-        Call::Replace(t, k, v) => w.at(things[*t], key(*k)).replace(&Value::Int(*v)),
+        Call::SetExpiring(t, k, v) => w.at(things[*t], key(*k)).expires(osis::Expiry::In(HOUR)).set(&Value::Int(*v)),
+        Call::Replace(t, k, v) => w.at(things[*t], key(*k)).overwrite(&Value::Int(*v)),
         Call::Remove(t, k) => w.at(things[*t], key(*k)).remove(),
         Call::Put(t, k, v) => w.at(things[*t], key(2)).path(p!(Value::Int(*k))).set(&Value::Int(*v)),
         Call::RemoveKey(t, k) => w.at(things[*t], key(2)).path(p!(Value::Int(*k))).remove(),
@@ -161,12 +157,11 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
         Call::Title(t, s) => w.at(things[*t], notes::TITLE).set(s),
         Call::Views(t, n) => w.at(things[*t], notes::VIEWS).path(osis::Path::root()).contribute(n),
         Call::Opened(t, v) => w.at(things[*t], notes::LAST_OPENED).set(v),
-        Call::Place(t, 0) => w.place(things[*t], g0),
-        Call::Place(t, _) => w.place_expiring(things[*t], g1, Some(HOUR)),
-        Call::Unplace(t) => w.unplace(things[*t], g0),
-        Call::AddSubgroup(t) => w.add_subgroup(g0, things[*t]),
-        Call::RemoveSubgroup(t) => w.remove_subgroup(g0, things[*t]),
-        Call::MakeGroup(t) => w.make_group(things[*t]),
+        Call::Place(t, 0) => w.group(g0).add(osis::Member::Item(things[*t])),
+        Call::Place(t, _) => w.group(g1).expires(osis::Expiry::In(HOUR)).add(osis::Member::Item(things[*t])),
+        Call::Unplace(t) => w.group(g0).remove(osis::Member::Item(things[*t])),
+        Call::AddSubgroup(t) => w.group(g0).add(osis::Member::Subgroup(things[*t])),
+        Call::RemoveSubgroup(t) => w.group(g0).remove(osis::Member::Subgroup(things[*t])),
         Call::Delete(t) => w.delete(things[*t]),
     }
 }
@@ -181,7 +176,7 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
     if batched {
         let mut w = db.write();
         for _ in 0..creates {
-            things.push(w.create(db.me()).unwrap());
+            things.push(w.create().unwrap());
         }
         for c in calls {
             apply(&mut w, &wd, &things, c).unwrap_or_else(|e| panic!("{c:?}: {e}"));
@@ -189,7 +184,7 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
         id = w.commit().unwrap().map(|c| c.id);
     } else {
         for _ in 0..creates {
-            things.push(db.batch(|w| w.create(db.me())).unwrap());
+            things.push(db.batch(|w| w.create()).unwrap());
         }
         for c in calls {
             db.batch(|w| apply(w, &wd, &things, c)).unwrap_or_else(|e| panic!("{c:?}: {e}"));
@@ -226,7 +221,7 @@ const CASES: u64 = 64;
 
 // notes/client-port.md §1: a `Write` records API ops and builds the engine mutation at
 // commit; a random op list (sets, edits, path ops, typed writes with schema defaults, expiry,
-// group ops, `make_group`, `delete`, creates) commits to the state its ops reach one batch each.
+// group ops, `delete`, creates) commits to the state its ops reach one batch each.
 // spec: none (API surface, notes/api.md Writes)
 #[test]
 fn batch_equals_single_op_batches() {

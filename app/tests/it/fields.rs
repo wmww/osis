@@ -68,7 +68,7 @@ fn edits_are_well_typed() {
     let d = Data::new(Osis::create(Config::memory()).unwrap().0);
     let e = d.create(NewKind::Event).unwrap();
     d.set_repeat(e, Some(osis_app::event::RepeatFreq::Weekly)).unwrap();
-    let s = d.db.edit_text(e, BODY, osis::Path::root()).unwrap();
+    let s = d.db.at(e, BODY).edit_text().unwrap();
     s.replace(0..0, "line one\nline two\n").unwrap();
     s.commit().unwrap();
     drop(s);

@@ -71,16 +71,15 @@ fn chat(edge: GrantOpts, role: Role) -> Chat {
     block_on(b.wait_synced(SyncScope::All, W)).unwrap();
     let bob = block_on(a.import_contact(&card)).unwrap();
     let mut w = a.write();
-    let g = w.create(a.me()).unwrap();
-    w.place(g, a.me()).unwrap();
-    w.make_group(g).unwrap();
+    let g = w.create().unwrap();
+    w.group(a.me()).add(osis::Member::Item(g)).unwrap();
     w.commit().unwrap();
     a.sync(g, &[]).unwrap();
     block_on(a.wait_synced(SyncScope::All, W)).unwrap();
     block_on(b.wait_synced(SyncScope::All, W)).unwrap();
     let mut w = a.write();
-    let m = w.create(g).unwrap();
-    w.place(m, g).unwrap();
+    let m = w.create_owned_by(g).unwrap();
+    w.group(g).add(osis::Member::Item(m)).unwrap();
     w.at(m, text()).set(&s("hello")).unwrap();
     w.at(m, file()).set(&Value::Bytes(big())).unwrap();
     w.commit().unwrap();
@@ -159,8 +158,8 @@ impl Chat {
             .a
             .batch(|w| {
                 w.at(self.m, text()).set(&s("edited"))?;
-                let n = w.create(self.g)?;
-                w.place(n, self.g)?;
+                let n = w.create_owned_by(self.g)?;
+                w.group(self.g).add(osis::Member::Item(n))?;
                 w.at(n, text()).set(&s("after the kick"))?;
                 Ok(n)
             })
@@ -236,14 +235,14 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
             let big_page = app.at(x.m, file()).history(osis::HistoryFrom::Newest, 5).unwrap();
             assert_eq!(big_page.entries[0].body, osis::HistoryBody::Held(Some(Value::Bytes(big()))));
             let mut w = app.write();
-            w.at(x.m, text()).purge_commit(page.entries[0].commit.id).unwrap();
+            w.at(x.m, text()).purge(osis::Purge::Change(page.entries[0].commit.id)).unwrap();
             assert!(w.commit().is_err(), "a copy takes no purge");
             assert!(!app.status().unwrap().groups.contains_key(&x.g), "nothing syncs it");
             assert_eq!(watch.current().unwrap(), Some(s("hello")), "the watch goes on");
             assert_eq!(app.kept_copies().unwrap(), vec![x.g]);
             assert_eq!(app.role_on(x.m).unwrap(), None, "no role: this is how an app tells");
             assert!(refused(&app, x.m), "read-only");
-            assert!(app.batch(|w| { let n = w.create(x.g)?; w.place(n, x.g) }).is_err(), "no new message");
+            assert!(app.batch(|w| { let n = w.create_owned_by(x.g)?; w.group(x.g).add(osis::Member::Item(n)) }).is_err(), "no new message");
             assert!(matches!(app.undo(&Scope::Thing(x.m)), Err(Error::Permission { .. })), "undo writes nothing");
             assert_eq!(app.at(x.m, ak("msg:seen.0")).get().unwrap(), Some(s("by the app")));
             assert!(hidden(&app, new), "not seen");
@@ -303,8 +302,8 @@ fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
     let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = sim_group(&a);
     let mut x = a.write();
-    let m = x.create(g).unwrap();
-    x.place(m, g).unwrap();
+    let m = x.create_owned_by(g).unwrap();
+    x.group(g).add(osis::Member::Item(m)).unwrap();
     x.at(m, text()).set(&s("hello")).unwrap();
     x.commit().unwrap();
     if let Some(k) = keep {
@@ -318,9 +317,8 @@ fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
 
 fn sim_group(a: &Osis) -> Tid {
     let mut x = a.write();
-    let g = x.create(a.me()).unwrap();
-    x.place(g, a.me()).unwrap();
-    x.make_group(g).unwrap();
+    let g = x.create().unwrap();
+    x.group(a.me()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     a.sync(g, &[]).unwrap();
     g
@@ -345,8 +343,8 @@ fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
     let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = sim_group(&a);
     let mut x = a.write();
-    let m = x.create(g).unwrap();
-    x.place(m, g).unwrap();
+    let m = x.create_owned_by(g).unwrap();
+    x.group(g).add(osis::Member::Item(m)).unwrap();
     x.at(m, text()).set(&s("hello")).unwrap();
     x.commit().unwrap();
     if let Some(k) = keep {
@@ -384,8 +382,8 @@ fn an_until_passing_offline_loses_nothing_spec_permissions_2() {
         let (mut w, a, b, bob, g, m, t0, hour) = timed(keep);
         w.set_online(&b, false);
         let mut x = b.write();
-        let n = x.create(g).unwrap();
-        x.place(n, g).unwrap();
+        let n = x.create_owned_by(g).unwrap();
+        x.group(g).add(osis::Member::Item(n)).unwrap();
         x.at(n, text()).set(&s("unsent")).unwrap();
         let own = n;
         x.commit().unwrap();
@@ -416,8 +414,8 @@ fn an_until_ended_offline_goes_when_heard_out_spec_permissions_2() {
         w.set_online(&b, false);
         w.set_online(&a, false);
         let mut x = b.write();
-        let n = x.create(g).unwrap();
-        x.place(n, g).unwrap();
+        let n = x.create_owned_by(g).unwrap();
+        x.group(g).add(osis::Member::Item(n)).unwrap();
         x.at(n, text()).set(&s("unsent")).unwrap();
         let own = n;
         x.commit().unwrap();
@@ -491,7 +489,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     let (reader, leaves_after, left_before, none) = (mk(Some(Role::Read)), mk(Some(Role::Write)), mk(Some(Role::Read)), mk(None));
     let elsewhere = mk(None);
     let mut x = b.write();
-    let t = x.create(bob).unwrap();
+    let t = x.create_owned_by(bob).unwrap();
     x.at(t, text()).set(&s("side")).unwrap();
     let side = t;
     x.commit().unwrap();
@@ -552,8 +550,8 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     let (a, b, bob, f, in_f) = sim(&mut w, Some(true));
     let chat = sim_group(&a);
     let mut x = a.write();
-    let m = x.create(chat).unwrap();
-    x.place(m, chat).unwrap();
+    let m = x.create_owned_by(chat).unwrap();
+    x.group(chat).add(osis::Member::Item(m)).unwrap();
     x.at(m, text()).set(&s("in the chat")).unwrap();
     x.commit().unwrap();
     a.set_keep_default(chat, true).unwrap();
@@ -607,8 +605,8 @@ fn a_client_reads_through_a_kept_holder_spec_permissions_3() {
     let (a, b, bob, f, _) = sim(&mut w, Some(true));
     let chat = sim_group(&a);
     let mut x = a.write();
-    let m = x.create(chat).unwrap();
-    x.place(m, chat).unwrap();
+    let m = x.create_owned_by(chat).unwrap();
+    x.group(chat).add(osis::Member::Item(m)).unwrap();
     x.at(m, text()).set(&s("in the chat")).unwrap();
     x.commit().unwrap();
     a.grant(chat, f, Role::Read, Default::default()).unwrap();
@@ -639,13 +637,12 @@ fn an_ownerless_chat_keeps_spec_permissions_3() {
     let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = a.create_ownerless(a.me()).unwrap();
     let mut x = a.write();
-    x.place(g, a.me()).unwrap();
-    x.make_group(g).unwrap();
+    x.group(a.me()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
     a.sync(g, &[]).unwrap();
     let mut x = a.write();
-    let m = x.create(g).unwrap();
-    x.place(m, g).unwrap();
+    let m = x.create_owned_by(g).unwrap();
+    x.group(g).add(osis::Member::Item(m)).unwrap();
     x.at(m, text()).set(&s("hello")).unwrap();
     x.commit().unwrap();
     a.set_keep_default(g, true).unwrap();
@@ -671,8 +668,8 @@ fn a_commit_beside_a_copy_spec_permissions_3() {
     let (a, b, bob, g, m) = sim(&mut w, Some(true));
     let live = sim_group(&a);
     let mut x = a.write();
-    let u = x.create(live).unwrap();
-    x.place(u, live).unwrap();
+    let u = x.create_owned_by(live).unwrap();
+    x.group(live).add(osis::Member::Item(u)).unwrap();
     x.at(u, text()).set(&s("live")).unwrap();
     x.commit().unwrap();
     a.grant(live, bob, Role::Read, Default::default()).unwrap();
@@ -685,7 +682,7 @@ fn a_commit_beside_a_copy_spec_permissions_3() {
     let mut x = a.write();
     x.at(u, text()).set(&s("live 2")).unwrap();
     x.at(m, text()).set(&s("edited")).unwrap();
-    x.at(m, second.clone()).purge().unwrap();
+    x.at(m, second.clone()).purge(osis::Purge::All).unwrap();
     x.commit().unwrap();
     w.run();
     assert_eq!(b.at(u, text()).get().unwrap(), Some(s("live 2")));
@@ -708,8 +705,8 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     b.grant(own, carol, Role::Read, Default::default()).unwrap();
     let live = sim_group(&a);
     let mut x = a.write();
-    let u = x.create(live).unwrap();
-    x.place(u, live).unwrap();
+    let u = x.create_owned_by(live).unwrap();
+    x.group(live).add(osis::Member::Item(u)).unwrap();
     x.at(u, text()).set(&s("live")).unwrap();
     x.commit().unwrap();
     a.grant(live, bob, Role::Write, Default::default()).unwrap();
@@ -731,11 +728,11 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     assert_eq!(a.at(m, text()).get().unwrap(), Some(s("hello")));
     assert_eq!(b.at(m, text()).get().unwrap(), Some(s("hello")), "past the kick's frontier: validity follows what the node holds");
     let mut x = b.write();
-    x.place(m, own).unwrap();
+    x.group(own).add(osis::Member::Item(m)).unwrap();
     x.commit().unwrap();
     let mut x = b.write();
-    let i = x.create(own).unwrap();
-    x.place(i, own).unwrap();
+    let i = x.create_owned_by(own).unwrap();
+    x.group(own).add(osis::Member::Item(i)).unwrap();
     x.at(i, text()).set(&s("in own")).unwrap();
     let item = i;
     x.commit().unwrap();
@@ -749,12 +746,12 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
 fn a_client_places_no_copy_spec_permissions_3() {
     let c = chat(GrantOpts::default(), Role::Write);
     let (actor, _, app) = c.app(Role::Admin);
-    let own = c.b.batch(|w| { let o = w.create(c.b.me())?; w.place(o, c.b.me())?; w.make_group(o)?; Ok(o) }).unwrap();
+    let own = c.b.batch(|w| { let o = w.create()?; w.group(c.b.me()).add(osis::Member::Item(o))?; Ok(o) }).unwrap();
     c.b.grant(own, actor, Role::Write, Default::default()).unwrap();
     c.kick(c.bob, Some(true));
     until("the app reads the copy", || app.at(c.m, text()).get().ok().flatten().is_some());
-    until("the app writes its group", || app.batch(|w| { let n = w.create(own)?; w.place(n, own) }).is_ok());
-    assert!(matches!(app.batch(|w| w.place(c.m, own)), Err(Error::Permission { .. })));
+    until("the app writes its group", || app.batch(|w| { let n = w.create_owned_by(own)?; w.group(own).add(osis::Member::Item(n)) }).is_ok());
+    assert!(matches!(app.batch(|w| w.group(own).add(osis::Member::Item(c.m))), Err(Error::Permission { .. })));
 }
 
 // spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issues/ephemeral-data.md): an ephemeral write reaches no copy, and neither the node nor its client writes one; a client reads no ephemeral thing of the chat
@@ -767,8 +764,8 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
     let e = ak("t:e.0~");
     a.commit_set(m, e.clone(), &s("before")).unwrap();
     let mut x = a.write();
-    let t = x.create(g).unwrap();
-    x.place(t, g).unwrap();
+    let t = x.create_owned_by(g).unwrap();
+    x.group(g).add(osis::Member::Item(t)).unwrap();
     x.at(t, e.clone()).set(&s("before")).unwrap();
     let thing = t;
     x.commit().unwrap();
@@ -797,17 +794,16 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     let x0 = chat(GrantOpts::default(), Role::Write);
     let (h, a, b) = (x0.g, &x0.a, &x0.b);
     let mut w = a.write();
-    let g = w.create(a.me()).unwrap();
-    w.place(g, a.me()).unwrap();
-    w.make_group(g).unwrap();
+    let g = w.create().unwrap();
+    w.group(a.me()).add(osis::Member::Item(g)).unwrap();
     let xg = g;
     w.commit().unwrap();
     a.sync(xg, &[]).unwrap();
     a.set_keep_default(xg, true).unwrap();
     a.grant(xg, h, Role::Read, GrantOpts::default()).unwrap();
     let mut w = a.write();
-    let t = w.create(xg).unwrap();
-    w.place(t, h).unwrap();
+    let t = w.create_owned_by(xg).unwrap();
+    w.group(h).add(osis::Member::Item(t)).unwrap();
     w.at(t, text()).set(&s("before")).unwrap();
     w.commit().unwrap();
     let nudge = Nudge::default();
@@ -819,8 +815,8 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     assert!(b.role_on(h).unwrap().is_some() && b.role_on(xg).unwrap().is_none());
     a.commit_set(t, text(), &s("after")).unwrap();
     let mut w = a.write();
-    let u = w.create(h).unwrap();
-    w.place(u, h).unwrap();
+    let u = w.create_owned_by(h).unwrap();
+    w.group(h).add(osis::Member::Item(u)).unwrap();
     w.at(u, text()).set(&s("live")).unwrap();
     w.commit().unwrap();
     let nudge = Nudge::default();
@@ -845,7 +841,7 @@ fn a_thin_client_sees_the_missing_route_and_the_thing_once_synced() {
     let t = x
         .a
         .batch(|w| {
-            let t = w.create(x.a.me())?;
+            let t = w.create()?;
             w.at(t, text()).set(&s("plain"))?;
             Ok(t)
         })

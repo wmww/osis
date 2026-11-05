@@ -22,7 +22,7 @@ mod notes {
 
 fn thing(db: &Osis) -> osis::Tid {
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     t
 }
@@ -177,7 +177,7 @@ fn derived_change_on_expiry() {
     let k = ak("t:x.0");
     let t = thing(&db);
     let mut w = db.write();
-    w.at(t, k.clone()).expires_in(Duration::from_secs(5)).set(&Value::Int(1)).unwrap();
+    w.at(t, k.clone()).expires(osis::Expiry::In(Duration::from_secs(5))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let (tx, rx) = channel();
     let _s = db.at(t, k).on_change(move |_, c| tx.send(c).unwrap()).unwrap();

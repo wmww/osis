@@ -116,7 +116,6 @@ async fn redeem_over(host_ep: Transport, url: &str, a: Transport, b: Transport) 
     let bob = Osis::create(cfg(2, vec![host.clone()], b)).unwrap().0;
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
-    w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
@@ -159,9 +158,9 @@ async fn text_idle_commit_api_text_sessions() {
     let db = Osis::create(c).unwrap().0;
     let k = ak("t:body.0");
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
-    let s = db.edit_text(t, k.clone(), osis::Path::root()).unwrap();
+    let s = db.at(t, k.clone()).edit_text().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let _watch = db.at(t, k.clone()).on_change(move |_, c| tx.send(c.value.unwrap()).unwrap()).unwrap();
     assert_eq!(tokio::time::timeout(GUARD, rx.recv()).await.unwrap(), Some(None), "the current value first");
@@ -182,12 +181,12 @@ async fn keep_alive_rewrites_until_dropped() {
     db.register_schema("c.osis", "version 1;\naspect c:cursor.0~: map<tid, int> [expires: 60ms];\naspect c:flag.0~: map<tid, int>;\n").unwrap();
     let k = db.key("c:cursor.0~").unwrap();
     let mut w = db.write();
-    let t = w.create(db.me()).unwrap();
+    let t = w.create().unwrap();
     w.commit().unwrap();
     let me = osis::Path(vec![osis::Step::Key(Value::Tid(db.node()))]);
     let mine = |db: &Osis| db.at(t, k.clone()).get().unwrap().and_then(|v| if let Value::Map(m) = v { m.get(&Value::Tid(db.node())).cloned() } else { None });
-    assert!(db.keep_alive(t, db.key("c:flag.0~").unwrap(), me.clone(), &Value::Int(1)).is_err(), "no default expiry");
-    let ka = db.keep_alive(t, k.clone(), me, &Value::Int(1)).unwrap();
+    assert!(db.at(t, db.key("c:flag.0~").unwrap()).path(me.clone()).keep_alive(&Value::Int(1)).is_err(), "no default expiry");
+    let ka = db.at(t, k.clone()).path(me).keep_alive(&Value::Int(1)).unwrap();
     assert_eq!(mine(&db), Some(Value::Int(1)));
     // rewritten every 30 ms: four writes besides the first come (GUARD only against a hang: no
     // wall-time assertion; expiry runs on the sync engine's ticks, so the gap is not watched)
@@ -244,7 +243,6 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     let me = reach_of(&alice).await;
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
-    w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let mut w = alice.write();
@@ -354,7 +352,6 @@ async fn redeem_direct_no_host_in_process_spec_permissions_8() {
     reach_of(&alice).await;
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
-    w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let mut w = alice.write();
@@ -422,7 +419,6 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_8() {
     reach_of(&alice).await;
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
-    w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, single_use: true, ..Default::default() }).unwrap();
@@ -627,7 +623,6 @@ async fn own_host_device_in_process_spec_data_model_9() {
 
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
-    w.make_group(g).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();

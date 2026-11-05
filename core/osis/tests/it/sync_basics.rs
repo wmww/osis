@@ -23,9 +23,8 @@ fn says(db: &Osis, t: Tid) -> Option<Value> {
 /// A shared group of `a`'s under its own label at `hosts` (none: `a`'s hosts).
 fn chat(a: &Osis, hosts: &[HostAddr]) -> Tid {
     let mut w = a.write();
-    let g = w.create(a.me()).unwrap();
-    w.place(g, a.me()).unwrap();
-    w.make_group(g).unwrap();
+    let g = w.create().unwrap();
+    w.group(a.me()).add(osis::Member::Item(g)).unwrap();
     w.commit().unwrap();
     a.sync(g, hosts).unwrap();
     g
@@ -34,8 +33,8 @@ fn chat(a: &Osis, hosts: &[HostAddr]) -> Tid {
 /// A message in `g`.
 fn message(db: &Osis, g: Tid, v: &str) -> Tid {
     db.batch(|w| {
-        let m = w.create(g)?;
-        w.place(m, g)?;
+        let m = w.create_owned_by(g)?;
+        w.group(g).add(osis::Member::Item(m))?;
         w.at(m, text()).set(&s(v))?;
         Ok(m)
     })
@@ -120,9 +119,9 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     // one commit across both, each thing new and placed in it
     let (m1, m2) = a
         .batch(|x| {
-            let (m1, m2) = (x.create(g1)?, x.create(g2)?);
-            x.place(m1, g1)?;
-            x.place(m2, g2)?;
+            let (m1, m2) = (x.create_owned_by(g1)?, x.create_owned_by(g2)?);
+            x.group(g1).add(osis::Member::Item(m1))?;
+            x.group(g2).add(osis::Member::Item(m2))?;
             x.at(m1, text()).set(&s("one"))?;
             x.at(m2, text()).set(&s("two"))?;
             Ok((m1, m2))
@@ -139,9 +138,8 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     assert_eq!((says(&b, m1), says(&c, m2)), (Some(s("one more")), Some(s("two more"))));
     // a group under the first with a label of its own: a message in it is in both labels
     let mut x = a.write();
-    let t = x.create(g1).unwrap();
-    x.make_group(t).unwrap();
-    x.add_subgroup(g1, t).unwrap();
+    let t = x.create_owned_by(g1).unwrap();
+    x.group(g1).add(osis::Member::Subgroup(t)).unwrap();
     let sub = t;
     x.commit().unwrap();
     a.sync(sub, &[]).unwrap();
@@ -155,9 +153,8 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     assert_eq!((says(&b, both), says(&c, both)), (Some(s("both again")), Some(s("both again"))));
     // a nested group without one, then a message in it
     let mut x = a.write();
-    let t = x.create(g2).unwrap();
-    x.make_group(t).unwrap();
-    x.add_subgroup(g2, t).unwrap();
+    let t = x.create_owned_by(g2).unwrap();
+    x.group(g2).add(osis::Member::Subgroup(t)).unwrap();
     let nested = t;
     x.commit().unwrap();
     w.run();
@@ -382,8 +379,8 @@ fn placing_where_holders_may_not_read_is_reported_spec_sync_3() {
     let t2 = told.clone();
     let _sub = b.on_diagnostic(move |_, d| t2.lock().unwrap().push((d.kind, d.tids.clone()))).unwrap();
     let mut x = b.write();
-    let t = x.create(b.me()).unwrap();
-    x.place(t, g).unwrap();
+    let t = x.create().unwrap();
+    x.group(g).add(osis::Member::Item(t)).unwrap();
     x.at(t, text()).set(&s("mine")).unwrap();
     let mine = t;
     x.commit().unwrap();
@@ -392,7 +389,7 @@ fn placing_where_holders_may_not_read_is_reported_spec_sync_3() {
     assert_eq!(says(&a, mine), None);
     assert!(told.lock().unwrap().iter().any(|(k, ts)| *k == osis_node::DiagnosticKind::NotSynced && ts.contains(&mine)), "{:?}", told.lock().unwrap());
     let mut x = b.write();
-    let t = x.create(b.me()).unwrap();
+    let t = x.create().unwrap();
     x.at(t, text()).set(&s("given")).unwrap();
     let shared = t;
     x.commit().unwrap();

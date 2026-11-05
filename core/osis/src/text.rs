@@ -12,7 +12,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::read::ak_of;
+use crate::read::{AspectRef, PathRef, ak_of};
 use crate::watch::{Source, Subscription, lock};
 use crate::write::Committed;
 use osis_base::{Tid, Value};
@@ -145,24 +145,24 @@ fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Committed>> {
     Ok(c)
 }
 
-impl Osis {
-    /// Opens a text session on the string at `path` of an aspect (`Path::root()` for the whole
-    /// aspect). An absent position starts empty.
-    pub fn edit_text<K: AspectKey>(&self, tid: Tid, key: K, path: Path) -> Result<TextSession> {
-        if let crate::sources::Source::Remote(_) = self.route(tid) {
+impl<K: AspectKey> PathRef<'_, '_, K> {
+    /// Opens a text session on the string here. An absent position starts empty.
+    pub fn edit_text(&self) -> Result<TextSession> {
+        let (db, tid, key, path) = self.parts();
+        if let crate::sources::Source::Remote(_) = db.route(tid) {
             return Err(Error::Unsupported("edit_text through the attached node".into()));
         }
-        let seq = matches!(crate::large::type_of(&key, &path)?, Some(Type::Text));
-        let key = crate::Key { ak: ak_of(&key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
-        let now = match self.read_local(|r| r.get_path(tid, &key, &path))? {
+        let seq = matches!(crate::large::type_of(key, path)?, Some(Type::Text));
+        let key = crate::Key { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
+        let now = match db.read_local(|r| r.get_path(tid, &key, path))? {
             Some(Value::Str(s)) => s,
             None => String::new(),
             Some(_) => return Err(Error::Invalid("not a string".into())),
         };
-        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None, known: self.knows(tid)? }));
-        let b = Bind { tid, key, path, seq };
+        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None, known: db.knows(tid)? }));
+        let b = Bind { tid, key, path: path.clone(), seq };
         let (st2, b2) = (st.clone(), b.clone());
-        let sub = self.at(tid, b.key.clone()).on_change(move |db, c| {
+        let sub = db.at(tid, b.key.clone()).on_change(move |db, c| {
             if !matches!(c.source, Source::Remote(_) | Source::Derived(_)) {
                 return;
             }
@@ -185,7 +185,14 @@ impl Osis {
                 }
             }
         })?;
-        Ok(TextSession { db: self.clone(), b, st, _sub: Some(sub) })
+        Ok(TextSession { db: db.clone(), b, st, _sub: Some(sub) })
+    }
+}
+
+impl<K: AspectKey> AspectRef<'_, K> {
+    /// `path(Path::root()).edit_text()`: the whole aspect.
+    pub fn edit_text(&self) -> Result<TextSession> {
+        self.path(Path::root()).edit_text()
     }
 }
 
