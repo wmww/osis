@@ -2161,7 +2161,7 @@ fn text_on_remote_is_a_subscription() {
     assert!(sa.text().starts_with(">>"), "the session still merges");
 }
 
-// notes/api.md Handle (restore), issues/restore-head-moved.md: a head that moves in the moments a fresh device reads the home group leaves it no key to reopen with, for good: `Unsynced` at once, not a wait nothing answers, and a fresh attempt restores. Each round moves the head at another point.
+// spec/permissions.md §8, notes/api.md Handle (restore), issues/restore-head-moved.md: a head that moves in the moments a fresh device reads the home group leaves it no key to reopen with, for good: `Unsynced` at once, not a wait nothing answers, and a fresh attempt restores. Each round moves the head at another point.
 #[test]
 fn restore_fails_when_the_head_moves_under_it_and_a_fresh_attempt_works() {
     use std::future::Future as _;

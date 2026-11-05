@@ -1497,7 +1497,7 @@ fn waits_have_no_deadline_and_try_goes_ahead() {
 
 }
 
-// notes/api.md set_role: `SyncFirst::Try` gives the whole call its time: a holder with two ways in, offline, does not cost it twice
+// spec/permissions.md §5.3, notes/api.md set_role: `SyncFirst::Try` gives the whole call its time: a holder with two ways in, offline, does not cost it twice
 #[test]
 fn try_is_for_the_call_not_each_way_in() {
     let mut w = World::new();
