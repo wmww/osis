@@ -86,6 +86,11 @@ Change:
 19. **`LinkOpts`, `GrantOpts` and `SetRole`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
 20. **`now()`** on an attached handle that cannot reach its node falls back to this process's clock, unsaid. A time is no decision-maker's default, but it should say so or return `Result`.
 
+Added by step 2's review (agent's call):
+- **Empty path is the whole value.** A path names a position; `set`, `replace` and `set_stream` work at the empty path, undoing step 2's refusal (it was a magic value: `insert`, `contribute` and `get` already work there, and it forced branches at `app/src/fields.rs:99` and `cli/src/write.rs:150,165`). `at(k).set(&K::T)` stays as the compile-time typed call; say so at its definition. Removes `not_root` and the `stream_in` split.
+- **`members(g) -> Vec<Member>`** replaces `items` and `subgroups` (with D4): one call, one read, round-trips with `add` and `remove`. A tid that is both item and subgroup appears twice.
+- **`on_status_change`** gets `Result<Status>`, like the roster watch (with D17): today a store failure at a status change is told to nobody.
+
 Keep as they are:
 - `undo` and `redo` as two functions: different results, no shared target to enum over.
 - `Dispatcher`, `Runtime`, `StoreAt` (renamed `Store`), `HistoryFrom`, `HistoryBody`, `HistoryEvent`, `Scope`, `SyncState` as enums.
