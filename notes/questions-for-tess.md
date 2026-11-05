@@ -26,6 +26,13 @@ A removal's frontier lists the removed person's writes it had seen, and each lis
 - A: keep it, and have clients leave out of a frontier the writes made before the person first held the role. Recommended (receivers unchanged).
 - B: receivers also require the role "as restored" at the write (more rules in validity).
 
+## 10. Deleting while removed, then re-granted (linked to 6 and 7)
+The requirement says the right to delete is judged at the time of the request. Now a delete request someone made while removed counts once they get the role back, like their edits from that gap do (spec/permissions.md §7; needed so a re-grant cannot bring back an edit's value its own request deleted, order seed 3001). They could delete the same things right after the re-grant anyway, so this gives no new power, but the requirement's wording no longer says what happens.
+- Proposed sentence for spec/requirements.md Deletion: "A re-grant counts for deletes as for edits: a request made while removed takes effect once the role is back."
+Side effect, from 7: a delete request made before the person ever held the role (a reader's, the admin happened to receive it) takes effect when that person is later granted and then removed, because the removal lists it. The removal itself then deletes data. Mostly no new power (while granted they could have asked again), but in a rare case (acting for another person's device) it may delete what they never could. Choices:
+- A: answer 7 with A and extend it: clients also leave out of a removal the delete requests made before the person first held the role (receivers unchanged). Recommended.
+- B: receivers also require that the person had held the role at some point at or before the request (one condition in the purge right).
+
 ## 9. Owner removal step 6: what hosts do during a dispute
 A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) settled most of step 6. Hosts need one gate: while two admins are in a dispute, nobody deletes data at a host when the reason rests on a write only one side accepts. Without it the two sides delete and re-upload forever, or a body is lost before the other side ever fetched it. The plan's other candidates failed. What the gate costs, and a choice:
 - **Cost, either way:** while a dispute lasts, deletes only one side agrees with (a purge, an old version being replaced, compaction) don't reach hosts: the encrypted data stays and hosts grow until the dispute is settled.
