@@ -1871,7 +1871,7 @@ fn connect_node_keeps_trying_a_node_that_is_down() {
     drop(x.host);
 }
 
-// notes/client-port.md §6: `disconnect_node` ends the connection for whoever holds it: a move home waiting for the node to upload hears it is gone and goes on without it
+// spec: none (API surface); notes/client-port.md §6: `disconnect_node` ends the connection for whoever holds it: a move home waiting for the node to upload hears it is gone and goes on without it
 #[test]
 fn disconnecting_ends_a_wait_on_the_node() {
     let x = world();
@@ -1892,7 +1892,7 @@ fn disconnecting_ends_a_wait_on_the_node() {
     drop(x.host);
 }
 
-// notes/api.md Design rules, a future gives up when dropped: a node that says nothing does not hold up a caller's timeout
+// spec: none (API surface); notes/api.md Design rules, a future gives up when dropped: a node that says nothing does not hold up a caller's timeout
 #[test]
 fn giving_up_a_move_needs_no_answer_from_the_node() {
     let x = world_waiting(Duration::from_millis(300));

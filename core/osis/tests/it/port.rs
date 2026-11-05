@@ -943,7 +943,7 @@ fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     assert!(matches!(r, Err(osis::Error::Network(_))), "{:?}", r.map(|_| ()));
 }
 
-// notes/client-port.md §2 (rows that wait): a client's wait dropped is the node's dropped: no waiter and no link key stay there
+// spec: none (API surface); notes/client-port.md §2 (rows that wait): a client's wait dropped is the node's dropped: no waiter and no link key stay there
 #[test]
 fn a_dropped_client_wait_leaves_nothing_at_the_node() {
     use osis::internals::Internals as _;
