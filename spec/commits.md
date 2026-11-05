@@ -53,7 +53,7 @@ Encoding: spec/wire.md §4. Fields:
   - **Shape**: every delta has retention `writer` with no bounds. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
-    - a session-form one as a content commit, with pending, atomic apply and un-merge;
+    - a session-form one as a content commit, with pending, apply and un-merge;
     - a snapshot one as a compaction snapshot, covering held bodies (§5, spec/sync.md §9);
     - a relay-only one is delivered and never held (spec/sync.md §9).
 - An **ephemeral snapshot** is a compaction snapshot like any (spec/crdt.md §8, §5).
@@ -83,49 +83,21 @@ Encoding: spec/wire.md §4. Fields:
   - the author's `created.0` record is unknown;
   - its `ts` is more than `MAX_DRIFT` ahead (spec/crdt.md §2.2);
   - a header list or frontier given by link (spec/wire.md §4) is not resolved;
-  - atomic apply waits;
-  - a part waits and holds it (below);
-  - every part of it the node holds waits;
-  - the node holds no part of it, and a thing of it waits or a delta of it is missing and not counted as held (synced or not). A permanent delta (§5) of it or an item of its purge request on a thing the node syncs counts here as a held part, so its other things and deltas gate it as those of a commit with a held part do.
+  - the node holds parts of it and every one waits.
 
-  A part past its expiry decides none of this: a commit that would wait without it waits, and the part goes (§5). A content commit with no part held and every delta counted held applies as its header alone, and counts as a commit on each aspect its header lists.
-- A **thing waits** while any of these holds:
-  - its `created.0` record is unknown;
-  - a `created.0` record on its owner chain is unknown;
-  - the author is not on that chain and no owner link, ownerless thing's first admin (its record, spec/permissions.md §1) or holder named by an applied part's edge write, roster or ledger tenure, whether the walk applies it or not, leads from the author to it.
+  A commit with no part held applies as its header alone, and counts as a commit on each aspect its header lists.
 - A held **part waits** while any of these holds:
-  - its thing waits;
+  - its thing's `created.0` record is unknown;
+  - a `created.0` record on its thing's owner chain is unknown;
+  - the author is not on that chain and no owner link, ownerless thing's first admin (its record, spec/permissions.md §1) or holder named by an applied part's edge write, roster or ledger tenure, whether the walk applies it or not, leads from the author to it;
   - a page of it is not held (spec/crdt.md §8);
   - it is a roster snapshot's `tenures.0` delta linking a frontier whose blobs are not held (spec/permissions.md §6);
   - it is parked (spec/versioning.md §2).
-- **What a wait holds**:
-  - The wait of a thing the node syncs, or of a part on one, holds the whole commit, whether a part on that thing is held or not.
-  - Except the wait of a part that atomic apply counts as held when missing (below), and that of a linked frontier: they hold nothing back.
-  - Any other part waits alone, as does every part of a role commit (not a snapshot) once the node holds any delta of it and every late part of an applied commit. The commit's other parts apply, its waiting parts count as not received and each joins when its wait ends.
-- A **thing's content** is its parts on aspects neither role-class nor `created.0` (of a commit other than an ephemeral snapshot). Once a part of it is held, the thing's content applies whole or not at all, synced or not: a waiting part or a delta missing, neither counted as held (below), holds the rest of it.
-- A held `created.0` part never waits for the commit's other parts: it applies when its thing does not wait, and the commit still waits whole, or its parts alone, as if nothing of it had applied.
-- **Order independence**: which parts apply is a function of the parts and other data held and of what the node was asked to sync, never of arrival order or of which parts came together. One exception, which lasts while a part stays away: parts that applied before a thing of the commit entered what the node syncs stay applied, on things other than that one and, of a role-class snapshot, on that thing too.
+- **Apply**: a node applies in one storage transaction every part it holds that does not wait, and fires listeners after. Nothing waits for a part: a waiting part waits alone, counts as not received and joins when its wait ends, and a delta the node does not hold (stripped from the blob, in a section it does not open, never come) is absent, the commit reading as one without that delta's body (§5). Chunk blobs of large atomic values (spec/data-model.md §6) are not waited for.
+- **Order independence**: which parts apply is a function of the parts and other data held, never of arrival order or of which parts came together.
 - A thing's **possible admins**, by the role commits the node has applied (a pending one, parked included, gives nothing), of any validity and whatever followed: the least set holding the thing and, with each member, its owner or first admin and any holder named with admin on that member by an edge write, roster or ledger entry a member signed.
 - A thing's **possible writers**, by the same data: the least set holding the possible admins of the thing and of each member, and any holder named with write or above on the thing or on a member by one of that thing's or that member's possible admins.
-- **Atomic apply**: a node applies a commit only once it holds every delta of it on a thing it syncs (above), with the pages of every paged delta (spec/crdt.md §8). Chunk blobs of large atomic values (spec/data-model.md §6) are not waited for. It then joins all those deltas in one storage transaction and fires listeners after. Pending commits are re-examined when a thing enters or leaves what the node syncs. A delta counts as held when any of these holds:
-  - **Dropped or expired**: it was dropped (spec/crdt.md §8) or expired.
-  - **Purged**: an applied purge request stamped after it names it, and each of the request's author and actor could hold the right of the delta's purgeable-by by any role any held write ever gave, whatever that role's validity:
-    - for `admin`, a possible admin of the thing;
-    - for `writer`, a possible writer of the thing;
-    - for `author`, the delta's actor or a possible writer of it, and the actor a possible writer of the thing;
-    - for `author_or_admin`, either of the `admin` and `author` cases.
-  - **Past keep at most**: it is under a keep at most, the node has applied another commit with a delta on the aspect (the delta held or not), of any validity, stamped no earlier than its commit, and its bound by §5 for a body with no live write has passed on the node's corrected clock, the first death taken at the earliest such commit's `ts`, whether or not that commit supersedes a write of the delta.
-    - An absolute bound passing with no such commit counts for nothing: a body with a live write leaves only with a carrier (§5).
-    - This clause does not read whether the delta holds a live write, so it also applies a commit without a live delta still on its way.
-    - With no such commit the commit waits, also for a delta that left with no carrier when every commit on its aspect as late has left (expired, purged) or none was (its write's superseder is stamped before it).
-  - **Breaks a required retention**: it breaks an entry governing it of a held `required.0^` delta on its thing ordered before its commit, whatever that delta's validity, signed by a possible admin of the thing (§5).
-  - **Under a later snapshot**: the node holds a compaction snapshot of its aspect stamped after the commit, whatever the snapshot's validity, signed by a possible writer of the thing (a possible admin where spec/permissions.md §5.2 has the snapshot need admin), while the node holds the snapshot's body or dropped it other than as covered (§5; spec/crdt.md §8).
-  - **Author lowered**: the node holds one of the following on the delta's thing or a thing up its owner chain, signed by a possible admin of that thing, with a frontier that does not list the delta's commit, whatever follows them and whatever their order against the delta's commit:
-    - a role commit with a frontier, of any validity, by another actor, whose edge write on that thing removes the edge of the delta's author or its header's actor or sets it below the role the delta needs;
-    - a roster snapshot's ledger entry, in a snapshot whose held parts show at least one roster edge, with a frontier, of the delta's author or its header's actor with that role or above, that no roster edge or later-ending entry of that role or above in the snapshot starts at the end of.
-  - **Role commit**: it is a delta of a role commit (not a snapshot) and the node holds any delta of that commit (it may hold only a copy of some parts: a certificate copy or an inbox blob, spec/sync.md §3). The commit applies without the missing ones and each joins if it arrives later.
-  - **Wrong storage class**: it is on a key of another storage class than its commit's (§2).
-- A delta of an already applied commit that arrives later (the node began syncing its label after applying, the delta counted as held, or its body counts as never received, §5) is joined on arrival, a live one past its keep at most included.
+- A delta of an already applied commit that arrives later (a blob of the commit holding more parts than the node applied: the node began syncing its label after applying, or its body counts as never received, §5) is joined on arrival, a live one past its keep at most included; a blob holding fewer changes nothing.
 - Role commits are applied before content.
 - Two commits of one session whose counter ranges on one aspect overlap are both invalid.
 - **Judged alone**: a fault of the header or signature refuses the commit, in any copy. Each delta is judged by itself, from the signed header, its bytes and held data; its fault never refuses another delta:
@@ -138,9 +110,8 @@ Encoding: spec/wire.md §4. Fields:
     - a value held unchunked that spec/data-model.md §6 chunks;
     - a carried write stamped after its commit;
     - a linked frontier that spec/permissions.md §6 calls bad input by itself.
-  - While the commit is pending such a delta stays held and counts as held for atomic apply.
-  - A blob holding only such deltas, of a commit that is a role commit, is applied, or has none of them on a thing the node syncs, is bad input; otherwise the commit applies without them.
-  - Where such a delta's thing's content, or the commit, waits, the delta is judged when that wait ends.
+  - A blob holding only such deltas, none of its parts waiting, is bad input.
+  - Where such a delta, or its commit, waits, the delta is judged when that wait ends.
 - **Copies**: before a thing's `created.0` record is known the hash of a delta on it cannot be checked, and before its author's the signature.
   - A pending commit keeps the first copy of each such delta and of the signature.
   - A copy that proves not to match goes, and a node then judges again the copies of the commit it holds as blobs; this brings back no delta counting as never received (§5).
@@ -159,7 +130,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - **Keep at least** and **keep at most**: each optional. Keep at least is an absolute time, a duration after the body is replaced, or both (the later counts). Keep at most is an absolute time T, **0 after replaced** (a relative bound of 0; no other duration), or both (the earlier counts); 0 after replaced exists only under `writer`. Where the two bounds disagree, keep at most wins.
 
 ### Bodies and deaths
-- A **body** is a blob of a commit (spec/sync.md §3): its held deltas, each in the section of its thing's reader actor; a rewrite holds fewer. Keep bounds and deaths are read per retention class (retention and delete keys) of its deltas.
+- A **body** is the commit's blob (spec/sync.md §3): its held deltas, each in its thing's section; a rewrite holds fewer. Keep bounds and deaths are read per retention class (retention and delete keys) of its deltas.
 - A write **dies** when a later write supersedes it or at its delta's expiry (spec/crdt.md §4.8). A body is **replaced** as its writes die.
 - Each node dates deaths for itself, per body the first and last so far:
   - a superseded write's death at the `ts` of the first superseder the node held, so never earlier than its death (spec/crdt.md §4.8); a superseder held later with a lower `ts` moves no date;
@@ -189,18 +160,18 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - A node judges an absolute bound from the header (T, or the purge floor below) and its corrected clock alone, deaths aside, and drops a body applied at or past it only after its apply, so that a carrier can go first (below). A held part of a waiting commit keeps its body until its commit applies.
   - **Carrier**: a node that may write the aspect and holds no snapshot covering a body with live writes writes one before dropping the body (it is held and uploaded like any must-hold body). A body with live writes is deleted at a label only while another entry under it carries them (spec/sync.md §7).
   - A body with no live write needs no carrier: under 0 after replaced, the node applying the kill that leaves it none drops it in that transaction and deletes it at hosts in the same sync.
-- **Never received**: a body dropped for its keep bounds (at its bound or as its writes died) counts as never received from then on, as a missing delta counted as held does (§4).
+- **Never received**: a body dropped for its keep bounds (at its bound or as its writes died) counts as never received from then on.
   - Its live writes stay in the state.
   - The node does not fetch it on its own, but for a part dropped while invalid that turns valid: it is missing again and fetched, and until it arrives the node may read less, the aspect suspect.
   - A copy that arrives again joins as a late part and is judged again (dropped at once past its bound or purged; held when a write that killed it, or one of its own, has turned invalid or valid).
   - Its holders upload it while it is must-hold (spec/sync.md §6), so nodes holding the same bodies read alike.
-- **A waiting part past its expiry**: a part that waits (§4) when its expiry passes goes from the node at T, and one arriving past T goes if it waits or its commit would wait without it. Either counts as never received: its non-value writes join only through snapshots. Every local copy goes with it. That node may read what came before the part until a writer next compacts (spec/sync.md §7); a commit such a part applied before T stays applied.
+- **A waiting part past its expiry**: a part that waits (§4) when its expiry passes goes from the node at T, and one arriving past T goes if it waits. Either counts as never received: its non-value writes join only through snapshots. Every local copy goes with it. That node may read what came before the part until a writer next compacts (spec/sync.md §7); a commit such a part applied before T stays applied.
 - **A waiting part under a purge**: a waiting part that an applied purge request names whose author may purge it (judged once the node holds the request and the commit's header) is held value-less from then on.
   - The node keeps it as its leftover (spec/crdt.md §4.7) and no other local copy of it; it waits and applies as that, so nodes holding the same commits read alike.
   - With a page of it not held it cannot be stripped: it goes at once with every local copy, as a part missing when purged.
   - If the request no longer drops it when its commit applies, it is fetched again like any missing delta.
   - While its thing's record is unknown no right can be judged, so such a part keeps its values in the pending copy, for good if the record never comes; a request on that thing waits with it.
-  - A snapshot part has no values of its own: it waits whole and drops once applied.
+  - A snapshot part has no values of its own: it waits unstripped and drops once applied.
 - For any dropped delta (here or below), a received blob holding it that may also hold the only true copy of a waiting part of the same commit (one whose slot a copy not yet checkable holds, §4 Copies) is kept until that copy is judged.
 - Where such a drop may leave a node reading less than one that kept the data, it reports the aspect suspect (spec/permissions.md §4).
 - **Between the bounds** a right holder may drop a covered body (compaction, spec/sync.md §7) when the covering snapshot's own commit holds the right over it, as a purge request would at that snapshot's key (spec/permissions.md §7), and the node itself holds it now. A snapshot without the right carries the body's live writes and covers it for must-hold (spec/sync.md §6) but drops nothing, at any node. `nobody` makes that window empty. Snapshot bodies follow the same rules.
@@ -238,11 +209,11 @@ Every delta carries **retention** on the wire: who may purge it and how long its
   - a permanent delta of it on t is dropped (other than for breaking a required retention, spec/permissions.md §7);
   - its purge request has dropped a permanent delta on t at this node (spec/permissions.md §7: its author held the right, as the node then judged; a request that falls stays lasting there).
 
-  A device coming later, with no snapshot of the aspect stamped after its commit, counts a purged delta as held only by an applied request (§4). A lasting commit's header is never forgotten, and every label of a group with t in its closure, whose actor may read t, holds a blob of the commit for good (spec/sync.md §6): a body of it, else a header-only blob. A purge of any other delta leaves nothing at a label. The commit reads as a held commit without that delta's body: its author, actor, `ts` and retention stay, and whether to show it is the reader's choice.
+  A lasting commit's header is never forgotten, and every label of a group with t in its closure, whose actor may read t, holds a blob of the commit for good (spec/sync.md §6): a body of it, else a header-only blob. A purge of any other delta leaves nothing at a label. The commit reads as a held commit without that delta's body: its author, actor, `ts` and retention stay, and whether to show it is the reader's choice.
 - **Dropping a body** means destroying every local copy (undo buffers and pre-reset snapshots included), its delta nonce and every local index entry derived from it. Holding one as its leftover destroys every copy of its values the same way; the leftover is a local body (never uploaded, deleted at hosts as a dropped one).
   - What the part was judged stays: its validity, the role its writes needed, and for a `secrets.0` or `keys.0` delta the epochs it boxed or keyed, whose introducing commit spec/crypto.md §4 asks for, and the sealed names of its boxes to the holders its edge writes put, a grant's.
   - A leftover holding no value of its own writes (expired, purged) is never dropped, for keep bounds or as covered; it goes only with its thing (spec/permissions.md §3) or for a copy of its body that holds values again (a fallen purge). A body held as its leftover only for the copies it carries is a body like a whole one for keep bounds, deaths and covering.
-  - Exception: a compaction snapshot's part dropped other than as covered (for its keep bounds) still counts for atomic apply (§4) and suspect flags (spec/permissions.md §4) from its header alone; a part dropped as covered need not (its coverer is valid and stamped no earlier). One held as its leftover is held.
+  - Exception: a compaction snapshot's part dropped other than as covered (for its keep bounds) still counts for suspect flags (spec/permissions.md §4) from its header alone; a part dropped as covered need not (its coverer is valid and stamped no earlier). One held as its leftover is held.
 - A dropped body cannot be undone (§7); under at most 0 others' resets beat undo.
 
 ### Fixed retention

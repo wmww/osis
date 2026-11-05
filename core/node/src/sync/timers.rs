@@ -178,9 +178,6 @@ impl SyncEngine {
         if let Ok(Some(x)) = self.engine.next_timer() {
             at(raw(x));
         }
-        if let Some(x) = self.engine.next_wait_due() {
-            at(raw(x));
-        }
         if let Ok(Some(x)) = self.engine.next_link_expiry() {
             at(raw(x));
         }

@@ -250,13 +250,13 @@ fn grant_to_group() {
     ok("grant_to_group", 1);
 }
 
-// spec/commits.md §4, spec/sync.md §6: what a device does with what phase A's oracle relayed in
-// parts: a reader of two labels, one host out of reach, holds the commit back whole (atomic
-// apply, things it syncs), across a restart, and applies it whole once that host is back.
+// spec/commits.md §4, spec/sync.md §3, §6: a reader of two labels, one host out of reach, applies a
+// commit across them whole from the other label's blob, across a restart, and stays so once that
+// host is back.
 #[test]
-fn commit_across_labels_waits_whole_across_restart_spec_commits_4() {
+fn commit_across_labels_applies_from_one_label_across_restart_spec_commits_4() {
     use osis_base::{Role, Value};
-    use osis_node::{Mutation, Reason};
+    use osis_node::Mutation;
     use osis_sim::dice::Dice;
     use osis_sim::net::Party;
     use osis_sim::net::scenarios::{clock, persons, shared_group, sim};
@@ -274,7 +274,6 @@ fn commit_across_labels_waits_whole_across_restart_spec_commits_4() {
     let g1 = shared_group(&mut s, a, pa, &[s1], &[(pr, Role::Read), (pb, Role::Read)]).unwrap();
     let (i0, i1) = (s.item(a, g0).unwrap(), s.item(a, g1).unwrap());
     s.quiet(40).unwrap();
-    let before = s.engine(r).unwrap().get_typed(&i0, &REG).unwrap();
 
     s.partition(Party::N(r), Party::S(s1));
     let word = Value::Str("both".into());
@@ -296,7 +295,6 @@ fn commit_across_labels_waits_whole_across_restart_spec_commits_4() {
         assert_eq!(e.get_typed(&i0, &REG).unwrap(), Some(word.clone()), "restart {restart}: both parts read");
         assert_eq!(e.get_typed(&i1, &REG).unwrap(), Some(word.clone()), "restart {restart}: both parts read");
     }
-    let _ = (before, Reason::WaitDeltas);
 
     s.heal(Party::N(r), Party::S(s1));
     s.run_until_quiescent(60).unwrap();

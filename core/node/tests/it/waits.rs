@@ -16,55 +16,24 @@ fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool)
     b.encode()
 }
 
-// spec/commits.md §4: a commit waiting for deltas, then a thing of it whose `created.0` is
-// unknown starts syncing: it waits for that record now (examined in full, not only its
-// missing deltas).
-#[test]
-fn syncing_on_reexamines_in_full_spec_commits_4() {
-    let mut lp = net(2, 26);
-    let t = new_thing(&mut lp, 0);
-    let u = new_thing(&mut lp, 0);
-    let pks = packages(&mut lp, 0);
-    for p in &pks[..3] {
-        lp.deliver(1, p).unwrap();
-    }
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("r")).unwrap();
-    m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
-    m.set(u, &REG, &s("u")).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-    let partial = only(&pk.bytes, &h, |x, a| x == t && a == "t:reg.0");
-    let r = lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
-    lp.peers[1].engine.set_syncing(u, true).unwrap();
-    // another reexamine: the debug check examines the skipped commit
-    lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(id, Reason::UnknownCreated(u))]);
-}
-
-// spec/commits.md §4; spec/crdt.md §2.2: a delta wait examined at a later clock than
+// spec/commits.md §4; spec/crdt.md §2.2: a record wait examined at a later clock than
 // `reexamine` last looked; the clock goes back: the commit is more than MAX_DRIFT ahead again.
 #[test]
 fn clock_back_after_ingest_reexamines_spec_commits_4() {
     let mut lp = net(2, 27);
-    let t = new_thing(&mut lp, 0);
+    new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    // created now: its record never reaches peer 1
+    let t = new_thing(&mut lp, 0);
     let t0 = lp.peers[1].engine.now().0;
     lp.peers[0].clock.advance(2 * 3_600_000);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
-    m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-    let partial = only(&pk.bytes, &h, |_, a| a == "t:reg.0");
     lp.peers[1].clock.advance(2 * 3_600_000);
-    let r = lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
+    let r = lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).unwrap();
+    assert_eq!(r, Ingested::Pending(id, Reason::UnknownCreated(t)));
     lp.peers[1].clock.set(WallMs(t0 + 1_800_000));
     lp.peers[1].engine.tick().unwrap();
     assert_eq!(lp.peers[1].engine.pending(), vec![(id, Reason::Drift)]);
@@ -139,17 +108,16 @@ fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
     only(&p.bytes, &h, |_, a| a == "t:reg.0")
 }
 
-// spec/commits.md §4 (a delta past its keep-at-most bound counts as held): c1's
-// `k` part and c2 at a node syncing t, c1's at-most-0 body deleted at hosts with no
-// carrier: c1 applies; the body, should a copy still come, joins as a late part and drops on
-// arrival, ending as a node that got c1 whole.
+// spec/commits.md §4 (a node never waits for a part): c1's `k` part and c2 at a node syncing t,
+// c1's at-most-0 body deleted at hosts with no carrier: c1 applies; the body, should a copy still
+// come, joins as a late part and drops on arrival, ending as a node that got c1 whole.
 #[test]
-fn part_past_at_most_counts_as_held_spec_commits_4() {
+fn part_past_at_most_joins_late_spec_commits_4() {
     let (mut lp, t, c) = carrierless(0x7c01, vec![mixed("x", Some("1"), None), mixed("y", None, None)]);
     let gone = ak("t:gone.0");
     let e = |lp: &mut LocalPeer| lp.peers[1].engine.pending();
     let r = lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
+    assert_eq!(r, Ingested::Applied(c[0].id));
     lp.deliver(1, &c[1]).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
     assert!(e(&mut lp).is_empty(), "{:?}", e(&mut lp));
@@ -162,60 +130,9 @@ fn part_past_at_most_counts_as_held_spec_commits_4() {
     assert_eq!(lp.peers[1].engine.state(&t, &ak("t:reg.0")).unwrap(), lp.peers[0].engine.state(&t, &ak("t:reg.0")).unwrap());
 }
 
-// spec/commits.md §4: with no later commit on the aspect nothing shows the delta could have left
-// (its write is live, or dead by a commit not here yet): it waits at any clock, also under at
-// most 0. So a keep at most alone never releases a live part still on its way.
-#[test]
-fn live_part_keeps_waiting_spec_commits_4() {
-    let (mut lp, t, c) = carrierless(0x7c02, vec![mixed("x", Some("1"), at_most(Some(0), None))]);
-    lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
-    lp.peers[1].clock.advance(30 * 24 * 3_600_000);
-    lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)]);
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
-    // the part arrives: applied whole
-    lp.deliver(1, &c[0]).unwrap();
-    assert!(lp.peers[1].engine.pending().is_empty());
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:gone.0")).unwrap(), Some(s("x")));
-}
-
-// spec/commits.md §4, §5 (an absolute keep at most): T passing alone shows nothing, the part is
-// live or its killer is yet to come, and a live body leaves only with a carrier. With a later commit
-// on the aspect it counts from T on this node's clock, and a clock going back unapplies nothing. A
-// copy arriving later joins, as at the writer.
-#[test]
-fn part_past_absolute_bound_spec_commits_4() {
-    let t_abs = T0.0 + 3_600_000;
-    let (mut lp, t, c) = carrierless(0x7c04, vec![mixed("x", Some("1"), at_most(None, Some(t_abs))), mixed("y", None, None)]);
-    let gone = ak("t:gone.0");
-    lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
-    lp.peers[1].clock.set(WallMs(t_abs + 1));
-    lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "past T, nothing later here");
-    lp.peers[1].clock.set(WallMs(T0.0 + 1_000));
-    lp.deliver(1, &c[1]).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "a later commit, its clock before T");
-    lp.peers[1].clock.set(WallMs(t_abs - 1));
-    lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "just before T");
-    lp.peers[1].clock.set(WallMs(t_abs));
-    lp.peers[1].engine.tick().unwrap();
-    assert!(lp.peers[1].engine.pending().is_empty());
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
-    lp.peers[1].clock.set(WallMs(t_abs - 1));
-    lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")), "a clock going back unapplies nothing");
-    lp.deliver(1, &c[0]).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &gone).unwrap(), Some(s("y")));
-    assert_eq!(lp.peers[1].engine.state(&t, &gone).unwrap(), lp.peers[0].engine.state(&t, &gone).unwrap());
-    assert_eq!(lp.peers[1].engine.state(&t, &ak("t:reg.0")).unwrap(), lp.peers[0].engine.state(&t, &ak("t:reg.0")).unwrap());
-}
-
-// spec/commits.md §4, §5: the rule loosens atomic wait for a commit's own author only as far as
-// writing the parts apart would: a commit whose author may not write gains nothing (its part stays
-// invalid), and a later commit of any validity counts (validity may differ between nodes; a drop
-// is final). Fixed retention has no keep at most, on the wire or off: a role-class part cannot use it.
+// spec/commits.md §4, §5: a commit whose author may not write, one part withheld under at most 0,
+// gains nothing by it: the part held applies invalid, as does a later write. Fixed retention has no
+// keep at most, on the wire or off: a role-class part cannot use it.
 #[test]
 fn forged_at_most_class_gives_no_rights_spec_commits_4() {
     let mut lp = net(3, 0x7c05);
@@ -251,31 +168,6 @@ fn forged_at_most_class_gives_no_rights_spec_commits_4() {
     assert!(osis_commit::retention::fixed_retention("roles.0").is_some_and(|r| r.at_most.abs.is_none() && r.at_most.rel.is_none()));
 }
 
-// spec/commits.md §4; `apply/waits.rs`: a later commit whose part on the aspect is not held (its
-// own part counts as held, expired) writes no receipt there, and still wakes the wait (the debug
-// check would panic on the stale answer).
-#[test]
-fn later_commit_without_part_wakes_wait_spec_commits_4() {
-    let t_exp = T0.0 + 60_000;
-    let expiring: Mutate = Box::new(move |m, t| {
-        m.set(t, &GONE, &s("y")).unwrap();
-        m.expires(t, &GONE, WallMs(t_exp)).unwrap();
-        m.set(t, &REG, &s("2")).unwrap();
-        // one expiry per commit (spec/commits.md §6)
-        m.expires(t, &REG, WallMs(t_exp)).unwrap();
-    });
-    let (mut lp, t, c) = carrierless(0x7c07, vec![mixed("x", Some("1"), at_most(Some(0), None)), expiring]);
-    lp.peers[1].clock.set(WallMs(t_exp + 1));
-    lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)]);
-    lp.peers[1].engine.ingest(&reg_only(&c[1]), Vec::new()).unwrap();
-    lp.peers[1].engine.reexamine().unwrap();
-    assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
-    // the later write expired with its commit, value-less, the winner (spec/crdt.md §4.7)
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
-}
-
 // spec/crdt.md §8 (a frontier reaches only writes the fragment reflects), spec/commits.md §4: a
 // node that applied a commit without a live part and then snapshots the aspect claims nothing
 // of that part, so its snapshot does not cover the body and the body still joins when it comes.
@@ -303,7 +195,7 @@ fn snapshot_after_release_leaves_part_to_join_spec_crdt_8() {
     lp.deliver(1, &c[1]).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
     let e = &mut lp.peers[1].engine;
-    assert!(e.pending().is_empty(), "released by c2: {:?}", e.pending());
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
     let snap = e.snapshot(&t, &map).unwrap().unwrap();
     assert_eq!(e.covered(&snap, &c[0].id, &t, &map).unwrap(), Some(false), "the snapshot lacks the part's write");
     assert_eq!(e.covered(&snap, &c[1].id, &t, &map).unwrap(), Some(true), "c2 is in the snapshot, though the frontier stops at the gap");
@@ -469,7 +361,7 @@ fn gap_snapshot_run(name: &str, seeds: std::ops::Range<u64>, len: u64) {
 }
 
 // spec/crdt.md §8 (a frontier reaches only writes the fragment reflects), spec/commits.md §4 (a
-// part counted as held joins on arrival, or never): `gap_snapshot_check`.
+// part away joins on arrival, or never): `gap_snapshot_check`.
 #[test]
 fn gap_snapshots_converge_spec_crdt_8() {
     gap_snapshot_run("gap_snapshots_converge_spec_crdt_8", 0..4, 14);
@@ -481,54 +373,6 @@ fn gap_snapshots_converge_spec_crdt_8() {
 fn gap_snapshots_converge_large_spec_crdt_8() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", osis_base::testenv::large(1000..1300));
     gap_snapshot_run("gap_snapshots_converge_large_spec_crdt_8", seeds.range, 30);
-}
-
-// spec/commits.md §4: a commit whose part under a keep at most a node never gets waits with nothing
-// on the aspect as late, an earlier-stamped commit there not counting, and goes at the aspect's
-// next write.
-#[test]
-fn missing_part_waits_for_a_later_commit_spec_commits_4() {
-    let map = ak("t:map.0");
-    let r = at_most(Some(0), None).unwrap();
-    let mut lp = net(3, 0x7e06);
-    let t = new_thing(&mut lp, 0);
-    let w = lp.peers[1].engine.tid();
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
-    let mut m = Mutation::new();
-    m.retention(t, &map, r).unwrap();
-    m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(item("x", 1)) }).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    for (from, to) in [(0, 1), (0, 2), (1, 2)] {
-        sync(&mut lp, from, to);
-    }
-    lp.peers[2].engine.set_syncing(t, true).unwrap();
-    lp.peers[1].clock.advance(60_000);
-    let mut m = Mutation::new();
-    m.retention(t, &map, r).unwrap();
-    m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k")), osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Set(Value::Int(9)) }).unwrap();
-    m.set(t, &REG, &s("b")).unwrap();
-    let c1 = lp.peers[1].commit(m).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.retention(t, &map, r).unwrap();
-    m.op(t, &map, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s("k")) }).unwrap();
-    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
-    let p1 = packages(&mut lp, 1).into_iter().find(|p| p.id == c1).unwrap();
-    let p2 = packages(&mut lp, 0).into_iter().find(|p| p.id == c2).unwrap();
-    assert!(lp.peers[0].engine.header(&c2).unwrap().ts < lp.peers[1].engine.header(&c1).unwrap().ts);
-    lp.peers[2].engine.ingest(&reg_only(&p1), Vec::new()).unwrap();
-    lp.peers[2].engine.ingest(&p2.bytes, p2.blobs.clone()).unwrap();
-    lp.peers[2].clock.advance(30 * 24 * 3_600_000);
-    lp.peers[2].engine.tick().unwrap();
-    assert_eq!(lp.peers[2].engine.pending(), vec![(c1, Reason::WaitDeltas)]);
-    lp.peers[0].clock.advance(120_000);
-    let mut m = Mutation::new();
-    m.retention(t, &map, r).unwrap();
-    m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("j"))], op: osis_crdt::Op::Set(item("y", 2)) }).unwrap();
-    let c3 = lp.peers[0].commit(m).unwrap().unwrap();
-    let p3 = packages(&mut lp, 0).into_iter().find(|p| p.id == c3).unwrap();
-    lp.peers[2].engine.ingest(&p3.bytes, p3.blobs.clone()).unwrap();
-    lp.peers[2].engine.reexamine().unwrap();
-    assert!(lp.peers[2].engine.pending().is_empty(), "{:?}", lp.peers[2].engine.pending());
 }
 
 // spec/commits.md §5, spec/crdt.md §8 (a delta with an expiry is never covered): a snapshot lists
@@ -670,40 +514,6 @@ fn parts_waiting_on_two_records_are_kept_spec_commits_4() {
     }
 }
 
-// spec/commits.md §4: what a node syncs follows the `group.0` it holds at once, with no pass in
-// between: a wait for a thing leaving the synced group ends, one for a thing entering it starts.
-#[test]
-fn sync_set_follows_held_group_spec_commits_4() {
-    let mut lp = net(2, 88);
-    let (g, t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let group = |items: &[Tid]| osis_schema::core_types::Group { items: items.iter().copied().collect(), subgroups: Default::default() };
-    let mut m = Mutation::new();
-    m.set(g, &osis_schema::core_types::GROUP, &group(&[t, u])).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    sync(&mut lp, 0, 1);
-    lp.peers[1].engine.set_syncing(g, true).unwrap();
-    assert!(lp.peers[1].engine.core.syncs(&u));
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("r")).unwrap();
-    m.set(u, &REG, &s("u")).unwrap();
-    let id = lp.peers[0].commit(m).unwrap().unwrap();
-    let h = lp.peers[0].engine.header(&id).unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-    let partial = only(&pk.bytes, &h, |x, _| x == t);
-    let r = lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
-    // the group lets `u` go: nothing here syncs it now, so its part is no longer waited for
-    lp.peers[0].clock.advance(10);
-    let mut m = Mutation::new();
-    m.set(g, &osis_schema::core_types::GROUP, &group(&[t])).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk2 = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
-    lp.deliver(1, &pk2).unwrap();
-    assert!(!lp.peers[1].engine.core.syncs(&u));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
-    assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
-}
-
 // spec/commits.md §4: a creation record applies alone, synced or not: whichever the node learned
 // first, the thing's next commit shows, and the part away holds only its own commit.
 #[test]
@@ -743,10 +553,10 @@ fn creation_record_applies_alone_spec_commits_4() {
     }
 }
 
-// spec/commits.md §4: a creation record applied alone holds nothing back for the commit's other
-// things: the commit still waits whole for a synced thing's part.
+// spec/commits.md §4: a creation record applied alone, then the thing's other part, then the rest
+// of the commit: each joins as it comes, the commit's other thing synced or not.
 #[test]
-fn creation_record_alone_keeps_the_wait_spec_commits_4() {
+fn creation_record_then_the_rest_join_spec_commits_4() {
     let mut lp = net(2, 91);
     let u = new_thing(&mut lp, 0);
     let mut m = Mutation::new();
@@ -765,18 +575,19 @@ fn creation_record_alone_keeps_the_wait_spec_commits_4() {
     e.set_syncing(u, true).unwrap();
     assert!(matches!(e.ingest(&only(&pk.bytes, &h, |x, a| x == t && a == "created.0"), Vec::new()).unwrap(), Ingested::Applied(_)));
     let r = e.ingest(&only(&pk.bytes, &h, |x, a| x == t && a != "created.0"), Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None, "the synced thing's part is away");
+    assert_eq!(r, Ingested::Applied(c));
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")));
+    assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("new")), "the synced thing's part is away");
     e.ingest(&pk.bytes, Vec::new()).unwrap();
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")));
     assert_eq!(e.get(&u, &ak("t:reg.0")).unwrap(), Some(s("u")));
     assert!(e.pending().is_empty(), "{:?}", e.pending());
 }
 
-// spec/commits.md §4 (a part's wait is its thing's): a page away holds the thing's other part,
-// synced or not.
+// spec/commits.md §4 (a part waits alone): a page away holds back only its part, not the thing's
+// other part, synced or not.
 #[test]
-fn pages_away_hold_the_things_other_part_spec_commits_4() {
+fn pages_away_hold_back_only_their_part_spec_commits_4() {
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     for (seed, synced) in [(92, false), (93, true)] {
         let mut lp = net(2, seed);
@@ -793,20 +604,22 @@ fn pages_away_hold_the_things_other_part_spec_commits_4() {
             e.set_syncing(t, true).unwrap();
         }
         let r = e.ingest(&pk.bytes, Vec::new()).unwrap();
-        assert!(matches!(r, Ingested::Pending(_, Reason::WaitBlobs)), "synced {synced}: {r:?}");
-        assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "synced {synced}");
+        assert_eq!(r, Ingested::Applied(id), "synced {synced}");
+        assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")), "synced {synced}");
+        assert_eq!(e.pending(), vec![(id, Reason::WaitBlobs)]);
+        assert_eq!(e.get_typed(&t, &BIG).unwrap(), None);
         e.put_blobs(pk.blobs.clone()).unwrap();
         e.reexamine().unwrap();
-        assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
+        assert_eq!(e.get_typed(&t, &BIG).unwrap(), Some(Value::Map(map.clone())));
         assert!(e.pending().is_empty(), "{:?}", e.pending());
     }
 }
 
-// spec/commits.md §4 (the exception, issues/sync-learned-after-apply.md): a commit across things,
-// one thing's part away. A node syncing that thing first holds the commit; one learning it after
-// the other part applied shows that part. They agree once the part comes.
+// spec/commits.md §4 (what a node syncs decides nothing): a commit across things, one thing's part
+// away. A node syncing that thing first and one learning it after the other part applied both show
+// that part; the part away joins when it comes.
 #[test]
-fn cross_thing_learned_late_stays_until_the_part_comes_spec_commits_4() {
+fn cross_thing_part_shows_whatever_is_synced_spec_commits_4() {
     let read = |sync_first: bool| {
         let mut lp = net(2, 94);
         let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
@@ -827,14 +640,14 @@ fn cross_thing_learned_late_stays_until_the_part_comes_spec_commits_4() {
         e.ingest(&pk.bytes, Vec::new()).unwrap();
         (away, e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&u, &ak("t:reg.0")).unwrap())
     };
-    assert_eq!(read(true), (Some(s("new")), Some(s("t")), Some(s("u"))));
-    assert_eq!(read(false), (Some(s("t")), Some(s("t")), Some(s("u"))));
+    assert_eq!(read(true), (Some(s("t")), Some(s("t")), Some(s("u"))));
+    assert_eq!(read(false), read(true));
 }
 
-// spec/commits.md §4 (the limit in notes/whole-commits.md, Moved from the spec): a writer of a synced group lists a thing the node never
-// reads. A commit across it and a held thing waits whole for its part, until the listing goes.
+// spec/commits.md §4 (a node never waits for a part): a writer of a synced group lists a thing the
+// node never reads. A commit across it and a held thing shows the held thing's part at once.
 #[test]
-fn listed_thing_never_read_holds_a_commit_across_it_spec_commits_4() {
+fn listed_thing_never_read_holds_nothing_back_spec_commits_4() {
     let mut lp = net(2, 97);
     let (g, t) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     sync(&mut lp, 0, 1);
@@ -853,58 +666,14 @@ fn listed_thing_never_read_holds_a_commit_across_it_spec_commits_4() {
     m.set(v, &REG, &s("v")).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
-    let unlisted = write_group(&mut lp, &[t]);
     let pks = packages(&mut lp, 0);
     let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap();
     let e = &mut lp.peers[1].engine;
     e.ingest(&pk(&listed).bytes, Vec::new()).unwrap();
-    e.ingest(&only(&pk(&id).bytes, &h, |x, _| x == t), Vec::new()).unwrap();
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "waits whole");
-    assert!(e.pending().iter().any(|(c, _)| *c == id));
-    e.ingest(&pk(&unlisted).bytes, Vec::new()).unwrap();
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")), "the listing gone");
+    assert!(e.core.syncs(&v));
+    assert_eq!(e.ingest(&only(&pk(&id).bytes, &h, |x, _| x == t), Vec::new()).unwrap(), Ingested::Applied(id));
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")));
     assert!(e.pending().is_empty(), "{:?}", e.pending());
-}
-
-// spec/commits.md §4, apply/waits.rs: a part of an applied commit waiting for a delta is left out of
-// `reexamine` as a whole commit's wait is: its wait ends with the delta's expiry, not by being
-// examined each time anything applies.
-#[test]
-fn applied_commits_delta_wait_is_kept_spec_commits_4() {
-    let mut lp = net(2, 98);
-    let now = lp.peers[0].engine.now().0;
-    // the records first: an expiring commit carries none (spec/commits.md §6); `u`'s part
-    // applies the commit while `t`'s content waits
-    let mut m = Mutation::new();
-    let me = lp.peers[0].engine.tid();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
-    let u = lp.peers[0].engine.new_thing(&mut m, me);
-    lp.peers[0].commit(m).unwrap().unwrap();
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("r")).unwrap();
-    m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
-    m.set(u, &REG, &s("u")).unwrap();
-    for (x, k) in [(t, &REG), (t, &TAGS), (u, &REG)] {
-        m.expires(x, k, WallMs(now + 1_000)).unwrap();
-    }
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pks = packages(&mut lp, 0);
-    for pk in pks.iter().filter(|p| p.id != c) {
-        lp.deliver(1, pk).unwrap();
-    }
-    let h = lp.peers[0].engine.header(&c).unwrap();
-    let pk = pks.iter().find(|p| p.id == c).unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(matches!(e.ingest(&only(&pk.bytes, &h, |_, a| a != "t:tags.0"), Vec::new()).unwrap(), Ingested::Applied(_)));
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None, "its thing's other part is away");
-    assert_eq!(e.pending(), vec![(c, Reason::WaitDeltas)]);
-    assert!(e.waits_bytes() > 0, "the wait is kept");
-    lp.peers[1].clock.advance(2_000);
-    let e = &mut lp.peers[1].engine;
-    e.tick().unwrap();
-    // its wait ended at the delta's expiry, the commit's: its own part went value-less with it
-    assert!(e.pending().is_empty(), "{:?}", e.pending());
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
 // spec/commits.md §4: what a node syncs is a function of the `group.0` it holds, so with a thing

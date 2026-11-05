@@ -7,7 +7,7 @@ use osis_commit::{CommitBlob, PurgeItem};
 use osis_base::{Role, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::local_peer::Package;
-use osis_node::{Ingested, Mutation, Reason};
+use osis_node::{Ingested, Mutation};
 use osis_perm::DemotionScope;
 use osis_schema::Codec;
 
@@ -61,10 +61,10 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     }
 }
 
-// spec/commits.md §4: a missing delta whose expiry has passed counts as held (the commit's
-// expiry: its held part goes too).
+// spec/commits.md §4, §6: an expiring commit with a delta missing applies what is held at once; at
+// the commit's expiry its held part goes.
 #[test]
-fn expired_missing_delta_counts_as_held_spec_commits_4() {
+fn expiring_commit_applies_without_missing_delta_spec_commits_4() {
     let mut lp = net(2, 72);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
@@ -79,17 +79,18 @@ fn expired_missing_delta_counts_as_held_spec_commits_4() {
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
     let partial = strip_parts(&pk, |a| a != "t:brief.0", &h);
-    assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitDeltas)));
+    assert_eq!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("held")));
     lp.advance(3_600_001);
     lp.peers[1].engine.tick().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
     assert!(lp.peers[1].engine.commit_ids().contains(&id));
-    // the expired write vanished: the earlier one shows (spec/crdt.md §4.7)
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
+    // the expired write applied before T stays its value-less winner (spec/crdt.md §4.7)
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
 // spec/commits.md §4: a part that does not hash to its header entry is dropped alone; the
-// commit waits for (or applies without) that delta and takes the good copy later.
+// commit applies without that delta and takes the good copy later.
 #[test]
 fn bad_part_dropped_alone_spec_commits_4() {
     let mut lp = net(2, 73);
@@ -106,7 +107,7 @@ fn bad_part_dropped_alone_spec_commits_4() {
     b.parts[last].delta[n - 1] ^= 1;
     lp.peers[1].engine.set_syncing(t, true).unwrap();
     let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
+    assert_eq!(r, Ingested::Applied(id));
     assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("k")));
 }
@@ -175,7 +176,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     lp.peers[i].engine.set_syncing(t, true).unwrap();
     lp.peers[i].engine.reexamine().unwrap();
     check(&mut lp.peers[i].engine, "named delta last");
-    // the snapshot's header (it waits for its part, spec/commits.md §4), then its part
+    // the snapshot's header (applied alone, spec/commits.md §4), then its part
     let j = lp.peers.len();
     lp.peers.push(osis_node::local_peer::Peer::new(0x5b03, lp.peers[0].engine.now()).unwrap());
     for p in rest.iter().chain([&secret_pk]) {
@@ -183,15 +184,9 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     }
     let sh = lp.peers[0].engine.header(&snap).unwrap();
     let r = lp.peers[j].engine.ingest(&strip_parts(&spk, |_| false, &sh), Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
+    assert_eq!(r, Ingested::Applied(snap));
     lp.peers[j].engine.set_syncing(t, true).unwrap();
-    lp.peers[j].engine.reexamine().unwrap();
     assert!(!lp.peers[j].engine.body_not_dropped(&secret, &t, &reg));
-    // its part counted as held (a later snapshot lists it): applied, and the part comes late
-    let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
-    let lister = forge_snapshot_absorbing(&mut lp, 0, t, &reg, ts, osis_crdt::Fragment::default(), osis_crdt::Frontiers::default(), std::collections::BTreeMap::from([(snap, sh.author)]));
-    assert!(matches!(lp.peers[j].engine.ingest(&lister, Vec::new()).unwrap(), Ingested::Applied(_)));
-    assert!(lp.peers[j].engine.commit_ids().contains(&snap));
     lp.deliver(j, &spk).unwrap();
     check(&mut lp.peers[j].engine, "snapshot part last");
     lp.peers[j].restart(0x5b04).unwrap();

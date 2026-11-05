@@ -265,7 +265,7 @@ fn offline_write_reaches_the_peer_at_the_redial_spec_sync_6() {
     assert_eq!(says(&a, t), Some(s("by bob")));
 }
 
-// spec/commits.md §4 (atomic apply: a delta its author's removal leaves invalid counts as held): an unsent commit across a live thing and one of a group its author was removed from: the author cannot place the second delta any more, and the reader no longer waits for it
+// spec/commits.md §4 (a node never waits for a part): an unsent commit across a live thing and one of a group its author was removed from: the author cannot place the second delta any more, and the reader shows the first
 #[test]
 fn write_beside_a_removed_thing_reaches_the_peer_spec_commits_4() {
     let mut w = World::new();
@@ -291,9 +291,9 @@ fn write_beside_a_removed_thing_reaches_the_peer_spec_commits_4() {
     assert!(a.engine(|e| e.pending()).is_empty());
 }
 
-// spec/commits.md §4: arrival order: a reader holds the live part first and waits as ever (its author may yet place the rest); the removal arriving ends the wait; a re-grant's late part is not needed for it
+// spec/commits.md §4: arrival order: a reader holding the live part shows it at once, the rest away, before and after the removal arrives
 #[test]
-fn removal_arriving_later_ends_the_wait_spec_commits_4() {
+fn live_part_shows_whatever_the_removal_spec_commits_4() {
     let mut w = World::new();
     let h0 = w.add_host();
     let h1 = w.add_host();
@@ -325,7 +325,7 @@ fn removal_arriving_later_ends_the_wait_spec_commits_4() {
     w.run();
     back_online(&mut w, &a, u);
     assert_eq!(says(&a, u), Some(s("by bob")));
-    assert_eq!(says(&c, u), Some(s("live")), "the rest may yet come");
+    assert_eq!(says(&c, u), Some(s("by bob")), "the rest away");
     w.set_reachable(&c, h1, true);
     for _ in 0..10 {
         w.advance(1000);

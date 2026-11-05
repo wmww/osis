@@ -1746,11 +1746,11 @@ fn roster_snapshot_spec_perm_6() {
     assert!(tags(&mut lp, 0, t).contains("bob"));
 }
 
-// spec/commits.md §4 (the exception, issues/sync-learned-after-apply.md): a roster snapshot held in
-// part. A node syncing its thing first holds it whole; one learning that after the part applied
-// shows the part, with its reset. They agree once the rest comes.
+// spec/commits.md §4 (a part waits alone; what the node syncs decides nothing): a roster snapshot
+// held in part shows the part, with its reset, whether the node synced its thing first or not; the
+// rest joins when it comes.
 #[test]
-fn roster_snapshot_learned_late_stays_until_the_rest_comes_spec_commits_4() {
+fn roster_snapshot_part_applies_alone_spec_commits_4() {
     let read = |sync_first: bool| {
         let (mut lp, ps) = people(2, 516);
         let t = thing_of(&mut lp, 0, ps[0]);
@@ -1770,23 +1770,21 @@ fn roster_snapshot_learned_late_stays_until_the_rest_comes_spec_commits_4() {
             e.set_syncing(t, true).unwrap();
         }
         let r = e.ingest(&part.encode(), Vec::new()).unwrap();
-        assert_eq!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitDeltas)), sync_first, "{r:?}");
+        assert_eq!(r, osis_node::Ingested::Applied(c));
         e.set_syncing(t, true).unwrap();
-        let shown = e.commit_ids().contains(&c);
+        let shown = e.roster(&t);
         e.ingest(&pk.bytes, Vec::new()).unwrap();
         assert!(e.pending().is_empty(), "{:?}", e.pending());
         (shown, e.roster(&t))
     };
     let (first, late) = (read(true), read(false));
-    assert!(!first.0, "held whole");
-    assert!(late.0, "its part stays applied");
-    assert_eq!(first.1, late.1);
+    assert_eq!(first, late);
 }
 
-// spec/commits.md §4 (the exception's impact, notes/whole-commits.md, Moved from the spec): a holder's certificate copy of a roster snapshot,
-// naming that holder, and the rest away. The node syncing the thing first keeps the earlier roster,
-// its holders' writes and new writes; the one that applied the copy first shows only the holder
-// named, the other's writes gone, old and new. The rest, or a later whole snapshot, ends it.
+// spec/requirements.md (a holder may look removed until the rest of a roster snapshot arrives),
+// spec/commits.md §4: a holder's certificate copy of a roster snapshot, naming that holder, and the
+// rest away. The node shows only the holder named, the other's writes gone, old and new, whether it
+// synced the thing first or not. The rest, or a later whole snapshot, ends it.
 #[test]
 fn roster_copy_reads_at_each_node_spec_commits_4() {
     let strs = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
@@ -1817,10 +1815,10 @@ fn roster_copy_reads_at_each_node_spec_commits_4() {
             e.set_syncing(t, true).unwrap();
         }
         let r = e.ingest(&copy.encode(), Vec::new()).unwrap();
-        assert_eq!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitDeltas)), sync_first, "{r:?}");
+        assert_eq!(r, osis_node::Ingested::Applied(c));
         e.set_syncing(t, true).unwrap();
-        assert_eq!(holders(&lp), if sync_first { both.clone() } else { bob.clone() });
-        assert_eq!(tags(&mut lp, 3, t), if sync_first { strs(&["bob", "carol"]) } else { strs(&["bob"]) });
+        assert_eq!(holders(&lp), bob);
+        assert_eq!(tags(&mut lp, 3, t), strs(&["bob"]));
 
         // new writes, by holders that have not the snapshot (carol) or have (bob), and the owner
         lp.advance(1000);
@@ -1833,8 +1831,8 @@ fn roster_copy_reads_at_each_node_spec_commits_4() {
                 lp.peers[3].engine.ingest(&p.bytes, p.blobs).unwrap();
             }
         }
-        assert_eq!(holders(&lp), if sync_first { both.clone() } else { bob.clone() });
-        assert_eq!(tags(&mut lp, 3, t), if sync_first { all.clone() } else { strs(&["bob", "bob2", "owner2"]) });
+        assert_eq!(holders(&lp), bob);
+        assert_eq!(tags(&mut lp, 3, t), strs(&["bob", "bob2", "owner2"]));
 
         if later {
             lp.advance(1000);

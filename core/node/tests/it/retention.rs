@@ -460,10 +460,10 @@ fn snapshot_dropped_for_a_fallen_purge_comes_back_spec_perm_7() {
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")), "the snapshot carries it");
 }
 
-// spec/commits.md §5, spec/permissions.md §7: a part held value-less while its commit waits, whose
-// request's right falls before it applies: it applies and comes back as any fallen drop.
+// spec/commits.md §5, spec/permissions.md §7: a part applied alone and dropped by a purge request whose
+// right then falls comes back as any fallen drop, the commit's other part joining when it comes.
 #[test]
-fn stripped_part_of_a_fallen_purge_comes_back_spec_perm_7() {
+fn part_of_a_fallen_purge_comes_back_spec_perm_7() {
     let mut lp = net(4, 0x67);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -478,7 +478,7 @@ fn stripped_part_of_a_fallen_purge_comes_back_spec_perm_7() {
     m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
     let c = lp.peers[2].commit(m).unwrap().unwrap();
     let pc = lp.peers[2].engine.package(&c).unwrap().unwrap();
-    // `c`'s parts as two copies: with the first alone it waits for the second
+    // `c`'s parts as two copies
     let part = |ak: &osis_base::Ak| {
         let mut pk = pc.clone();
         let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
@@ -506,8 +506,8 @@ fn stripped_part_of_a_fallen_purge_comes_back_spec_perm_7() {
     lp.deliver(3, &reg_part).unwrap();
     lp.deliver(3, &pp).unwrap();
     lp.peers[3].engine.reexamine().unwrap();
-    assert!(lp.peers[3].engine.pending().iter().any(|x| x.0 == c), "it waits: {:?}", lp.peers[3].engine.pending());
-    assert_eq!(lp.peers[3].engine.stripped_count(&c).unwrap(), 1, "held value-less");
+    assert!(lp.peers[3].engine.commit_ids().contains(&c), "it waits for nothing: {:?}", lp.peers[3].engine.pending());
+    assert!(!lp.peers[3].engine.body_not_dropped(&c, &t, &k), "purged");
     lp.deliver(3, &pd).unwrap();
     lp.deliver(3, &list_part).unwrap();
     lp.peers[3].engine.reexamine().unwrap();
@@ -518,57 +518,6 @@ fn stripped_part_of_a_fallen_purge_comes_back_spec_perm_7() {
     lp.deliver(3, &reg_part).unwrap();
     let e = &mut lp.peers[3].engine;
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("kept")));
-}
-
-// spec/commits.md §4: a held request names a missing delta and its right is judged later: the commit
-// stops waiting on the signer's standing as a possible holder, not on the right, so the demotion's
-// place in the order decides nothing.
-#[test]
-fn missing_delta_counts_alike_however_the_right_ends_spec_commits_4() {
-    use std::collections::BTreeSet;
-    let mut applied = BTreeSet::new();
-    for demotion_first in [false, true] {
-        let mut lp = net(4, 0x65);
-        lp.sync_all().unwrap();
-        let t = new_thing(&mut lp, 0);
-        let u = new_thing(&mut lp, 0);
-        let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-        for th in [t, u] {
-            set_edge(&mut lp.peers[0].engine, th, x, Some(edge(Role::Admin)), None);
-            set_edge(&mut lp.peers[0].engine, th, w, Some(edge(Role::Write)), None);
-        }
-        lp.sync_all().unwrap();
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.set(t, &REG, &s("a")).unwrap();
-        m.set(u, &REG, &s("b")).unwrap();
-        let c = lp.peers[2].commit(m).unwrap().unwrap();
-        sync(&mut lp, 2, 1);
-        lp.advance(5);
-        let mut m = Mutation::new();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
-        m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
-        let p = lp.peers[1].commit(m).unwrap().unwrap();
-        lp.advance(5);
-        let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
-        let pks = lp.packages(0).unwrap();
-        for pk in pks.iter().filter(|pk| ![c, p, d].contains(&pk.id)) {
-            let _ = lp.deliver(3, pk);
-        }
-        lp.peers[3].engine.set_syncing(t, true).unwrap();
-        lp.peers[3].engine.set_syncing(u, true).unwrap();
-        let (pd, pp) = (lp.peers[0].engine.package(&d).unwrap().unwrap(), lp.peers[1].engine.package(&p).unwrap().unwrap());
-        // `c` with only its part on `u`
-        let mut only = lp.peers[2].engine.package(&c).unwrap().unwrap();
-        let mut blob = osis_commit::CommitBlob::decode(&only.bytes).unwrap();
-        blob.parts.retain(|x| blob.header.aspects[x.ai].tid == u);
-        only.bytes = blob.encode();
-        for pk in if demotion_first { [&pd, &pp, &only] } else { [&only, &pp, &pd] } {
-            let _ = lp.deliver(3, pk);
-        }
-        applied.insert(lp.peers[3].engine.commit_ids().contains(&c));
-    }
-    assert_eq!(applied, BTreeSet::from([true]), "the commit applies in both orders");
 }
 
 // spec/commits.md §5: whether a snapshot may drop a covered body is judged from held data: in every

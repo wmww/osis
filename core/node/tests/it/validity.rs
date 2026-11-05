@@ -2620,7 +2620,7 @@ fn latest_of(lp: &mut LocalPeer, i: usize) -> osis_base::CommitId {
 
 /// Delivers commits `ids` held by peer `from` to peer `i`, syncing `t`, without their parts on
 /// `(t, a)`: `i` holds their headers, their writes there only through snapshots (spec/crdt.md §8:
-/// a snapshot's frontier counts only on held headers, and stands in for a part it absorbed).
+/// a snapshot's frontier counts only on held headers).
 fn deliver_stripped(lp: &mut LocalPeer, from: usize, i: usize, ids: &BTreeSet<osis_base::CommitId>, t: Tid, a: &osis_base::Ak) -> Vec<Ingested> {
     lp.peers[i].engine.set_syncing(t, true).unwrap();
     let pks: Vec<_> = packages(lp, from).into_iter().filter(|p| ids.contains(&p.id)).collect();
@@ -2863,10 +2863,9 @@ fn listed_part_peer(lp: &mut LocalPeer, d: Tid, pks: &[osis_node::local_peer::Pa
     i
 }
 
-// spec/commits.md §4 (atomic apply), spec/permissions.md §5.2: a held snapshot of any validity
-// listing a missing part stands in for it. Carol's S lists Bob's X (its frontier, or its
-// `Absorbed` for a commit-form X); a node that got Carol's removal first (S invalid) and X
-// without its tags part applies the rest of X; the part joins once it arrives.
+// spec/commits.md §4, spec/permissions.md §5.2: Carol's S lists Bob's X (its frontier, or its
+// `Absorbed` for a commit-form X); a node that got Carol's removal first (S invalid) and X without
+// its tags part applies the rest of X; the part joins once it arrives.
 #[test]
 fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
     for commit_form in [false, true] {
@@ -2881,7 +2880,7 @@ fn part_listed_by_invalid_snapshot_applies_spec_commits_4() {
     }
 }
 
-// spec/commits.md §4 (atomic apply): whether X (without its tags part) arrives before S, while
+// spec/commits.md §4: whether X (without its tags part) arrives before S, while
 // S is valid, or after Carol's removal made it invalid, it applies alike: the register shows,
 // the tag does not, also after a restart.
 #[test]
@@ -2926,13 +2925,9 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     let h = lp.peers[i].engine.header(&snap).or_else(|| lp.peers[0].engine.header(&snap)).unwrap();
     let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     blob.parts.retain(|p| h.aspects[p.ai].ak.as_str() != "t:tags.0");
-    assert!(matches!(lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Pending(_, osis_node::Reason::WaitDeltas)));
-    // its part counted as held (a later snapshot lists it), the commit applies without it
+    // the commit applies without its part (spec/commits.md §4)
+    assert_eq!(lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(snap));
     lp.advance(1_000);
-    let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
-    let lister = forge_snapshot_absorbing(&mut lp, 0, d, &ak("t:tags.0"), ts, osis_crdt::Fragment::default(), osis_crdt::Frontiers::default(), BTreeMap::from([(snap, h.author)]));
-    assert!(matches!(lp.peers[i].engine.ingest(&lister, Vec::new()).unwrap(), Ingested::Applied(_)));
-    assert!(lp.peers[i].engine.commit_ids().contains(&snap));
     assert!(!tags(&mut lp, i, d).contains("bob"));
     lp.advance(DAY);
     let before = lp.peers[i].engine.now();
@@ -2953,8 +2948,8 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
 // commit nobody holds. Alice, holding S and Bob's one tag (S before or after it), removes Bob:
 // her frontier lists S (it covers the tag, so the tag is left out), never the ghost. Bob's later
 // tag, at a counter S
-// claims, is invalid at Alice and at fresh nodes getting it before or after the removal, and S
-// does not let it apply without its part.
+// claims, is invalid at Alice and at fresh nodes getting it before or after the removal, and its
+// header alone shows nothing of it.
 #[test]
 fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
     let tags_ak = ak("t:tags.0");
@@ -2987,14 +2982,15 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let before: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().collect();
         add_tag(&mut lp, 1, d, "late");
         let late: BTreeSet<_> = lp.peers[1].engine.commit_ids().into_iter().filter(|c| !before.contains(c)).collect();
-        // S claims the late tag's counter, but was stamped before it: no stand-in for its part
+        // S claims the late tag's counter, but was stamped before it: the header alone shows nothing
         let i = lp.peers.len();
         lp.peers.push(osis_node::local_peer::Peer::new(0x6110 + n as u64, lp.peers[0].engine.now()).unwrap());
         for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != rv) {
             lp.deliver(i, &p).unwrap();
         }
         let got = deliver_stripped(&mut lp, 1, i, &late, d, &tags_ak);
-        assert!(got.iter().all(|g| matches!(g, Ingested::Pending(..))), "snap first {snap_first}: {got:?}");
+        assert!(got.iter().all(|g| matches!(g, Ingested::Applied(..))), "snap first {snap_first}: {got:?}");
+        assert!(!tags(&mut lp, i, d).contains("late"), "snap first {snap_first}");
         sync(&mut lp, 1, 0);
         assert_eq!(tags(&mut lp, 0, d), BTreeSet::from(["mon".to_string()]), "snap first {snap_first}: Alice");
         let all = packages(&mut lp, 0);

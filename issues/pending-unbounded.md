@@ -4,7 +4,7 @@
 
 Bytes kept follow bytes delivered: each fresh header is a fresh commit ID, so per-commit limits bound nothing overall. An entry leaving the host does not free its pending row.
 
-A commit with no part held (its header-only blob, or its part gone at its expiry) waits for its deltas synced or not, so one naming another's private part pends for good: its row is the signed header, one header's size, as an applied commit's would be, and shows nothing. A commit whose every delivered part is bad by itself pends the same way when split over blobs (the first waits for its thing's other part, the second is refused, the first stays), where the whole blob is refused and leaves no row: alike in what reads, the row costing what was delivered.
+What can pend for good since whole-commits step 3 (a node never waits for a part; a commit with no part held applies as its header): a commit whose author's record never comes, and parts waiting alone for a thing's record (or a chain record) that never comes, beside an applied commit or with every held part waiting. Both are label entries the node holds, under the host's per-label cap and the deposit budget, so the bound wanted is per label with oldest-first eviction.
 
 To decide: total bytes per label or author class, what is evicted (oldest unsigned first keeps a flood from pushing out what can verify), how a true commit evicted comes back (`SyncEngine::redeliver` can ingest its entry again).
 

@@ -722,11 +722,11 @@ fn broken_delta_falls_alone_spec_commits_5() {
     }
 }
 
-// spec/commits.md §4: a broken delta a node never gets counts as held once its setting is held,
-// whatever the setting's validity: a new device reads the commit's other delta in any order of
-// the setting, the part and the setting's fall, and the broken one once it comes
+// spec/commits.md §4: a broken delta a node never gets holds nothing back: a new device reads the
+// commit's other delta once it holds it, in any order of the setting, the part and the setting's
+// fall, and the broken one once it comes
 #[test]
-fn missing_broken_part_reads_alike_spec_commits_4() {
+fn missing_broken_part_holds_nothing_back_spec_commits_4() {
     let (mut lp, d) = setup(411);
     let carol = lp.peers[2].engine.tid();
     let base = base_of(&mut lp);
@@ -752,13 +752,11 @@ fn missing_broken_part_reads_alike_spec_commits_4() {
     for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         let mut p = fresh(&mut lp, &base, &[]);
         p.engine.set_syncing(d, true).unwrap();
-        // the part alone, no setting held: it waits for its other delta
-        let setting_held = |done: &[usize]| done.contains(&0);
         for (n, i) in order.iter().enumerate() {
             let (x, b) = &items[*i];
             p.engine.ingest(x, b.clone()).unwrap();
             let done = &order[..=n];
-            let want = (done.contains(&1) && setting_held(done)).then(|| s("good"));
+            let want = done.contains(&1).then(|| s("good"));
             assert_eq!(read(&mut p, d, "t:good.0"), want, "{order:?} after {n}");
         }
         assert_eq!(read(&mut p, d, "t:bad.0"), None, "{order:?}");
@@ -893,11 +891,10 @@ fn reopen_char_after_drop_healed_by_repair_spec_crdt_5_7() {
     }
 }
 
-// spec/commits.md §4: a setting signed by one not a possible admin counts nothing as held, so a
-// writer's setting plus a host hiding a part shows no commit part by part; nor does naming an
-// admin as actor save it. Both go without a right.
+// spec/permissions.md §7: a setting signed by one not a possible admin goes without a right, nor does
+// naming an admin as actor save it; a commit beside it shows what is held, the rest when it comes.
 #[test]
-fn writers_setting_splits_no_commit_spec_commits_4() {
+fn writers_setting_goes_without_a_right_spec_perm_7() {
     let (mut lp, d) = setup(433);
     let alice = lp.peers[0].engine.tid();
     let base = base_of(&mut lp);
@@ -929,7 +926,7 @@ fn writers_setting_splits_no_commit_spec_commits_4() {
         p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
     }
     p.engine.ingest(&part, whole.blobs.clone()).unwrap();
-    assert_eq!(read(&mut p, d, "t:good.0"), None, "waits for what the host hides");
+    assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")), "waits for nothing the host hides");
     assert_eq!(p.engine.drop_broken(None).unwrap().into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([s1, s2]));
     assert!(p.engine.core.ix.required.get(&d).is_none());
     p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
@@ -939,7 +936,7 @@ fn writers_setting_splits_no_commit_spec_commits_4() {
 
 // spec/commits.md §4, spec/permissions.md §7: a setting's signer whose grant falls is still a
 // possible admin. Which parts show is a function of what is held in every order, a late grant
-// included; a pass dropping what it may drops no setting that counts.
+// included; a pass dropping what it may drops no setting a possible admin signed.
 #[test]
 fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
     let (mut lp, d) = setup(437);
@@ -989,7 +986,7 @@ fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
                     p.engine.drop_broken(None).unwrap();
                 }
                 let done = &order[..=n];
-                let want = (done.contains(&0) && done.contains(&1) && done.contains(&2)).then(|| s("good"));
+                let want = done.contains(&2).then(|| s("good"));
                 assert_eq!(read(&mut p, d, "t:good.0"), want, "{order:?} after {n}, passes {passes}");
             }
             assert_eq!(read(&mut p, d, "t:bad.0"), None, "{order:?}");
@@ -1023,10 +1020,10 @@ fn unmeetable_entry_refused_spec_commits_5() {
     assert!(lp.peers[0].commit(m).unwrap().is_some());
 }
 
-// spec/commits.md §4: a setting by one not a possible admin leaves as if never seen: every order of
-// the other inputs, a pass after each, reads as a node that never saw it and runs no pass, until a
-// pass took the signer's setting before its late grant; then that node waits for the hidden part
-// and reads alike once the rest arrives
+// spec/commits.md §4, spec/permissions.md §7: a setting by one not a possible admin leaves as if never
+// seen: every order of the other inputs, a pass after each, reads as a node that never saw it and runs
+// no pass, a pass taking the signer's setting before its late grant included, and alike once the rest
+// arrives
 #[test]
 fn dropped_setting_reads_as_never_seen_spec_commits_4() {
     let mut lp = net(4, 441);
@@ -1065,7 +1062,7 @@ fn dropped_setting_reads_as_never_seen_spec_commits_4() {
     let ai = part.header.aspects.iter().position(|a| a.ak == bad).unwrap();
     part.parts.retain(|x| x.ai != ai);
     let part = part.encode();
-    let (gr, st, wr, pa) = (0, 1, 2, 3);
+    let (gr, wr, pa) = (0, 2, 3);
     let items = [(grant.bytes.clone(), grant.blobs.clone()), (setting.bytes.clone(), setting.blobs.clone()), (writers.bytes.clone(), writers.blobs.clone()), (part, whole.blobs.clone()), (demotion.bytes.clone(), demotion.blobs.clone())];
     let mut orders = vec![Vec::new()];
     for _ in 0..items.len() {
@@ -1076,7 +1073,6 @@ fn dropped_setting_reads_as_never_seen_spec_commits_4() {
         let (mut x, mut y) = (fresh(&mut lp, &base, &[]), fresh(&mut lp, &base, &[]));
         x.engine.set_syncing(d, true).unwrap();
         y.engine.set_syncing(d, true).unwrap();
-        let mut took = false;
         for (n, i) in order.iter().enumerate() {
             let (bytes, blobs) = &items[*i];
             x.engine.ingest(bytes, blobs.clone()).unwrap();
@@ -1085,16 +1081,11 @@ fn dropped_setting_reads_as_never_seen_spec_commits_4() {
             }
             let dropped = x.engine.drop_broken(None).unwrap();
             assert!(!dropped.contains(&s1) || !order[..=n].contains(&gr), "{order:?} after {n}: a possible admin's setting never goes");
-            took |= dropped.contains(&s1);
             let (gx, gy) = (read(&mut x, d, "t:good.0"), read(&mut y, d, "t:good.0"));
-            if took {
-                assert_eq!(gx, None, "{order:?} after {n}: waits for the hidden part");
-            } else {
-                assert_eq!(gx, gy, "{order:?} after {n}");
-            }
+            assert_eq!(gx, gy, "{order:?} after {n}");
             assert_eq!(read(&mut x, d, "t:bad.0"), read(&mut y, d, "t:bad.0"), "{order:?} after {n}");
             let done = &order[..=n];
-            assert_eq!(gy, [gr, st, pa].iter().all(|i| done.contains(i)).then(|| s("good")), "{order:?} after {n}, the node that saw no drop");
+            assert_eq!(gy, done.contains(&pa).then(|| s("good")), "{order:?} after {n}, the node that saw no drop");
         }
         for (bytes, blobs) in [(&whole.bytes, &whole.blobs), (&setting.bytes, &setting.blobs)] {
             x.engine.ingest(bytes, blobs.clone()).unwrap();
@@ -1137,8 +1128,9 @@ fn setting_before_its_grant_comes_back_spec_perm_7() {
     assert!(net.engine(d).core.ix.commits.get(&grant).is_none());
     // the grant gave `t` secrets of its own: the setting's section is under them, so the admin
     // on the other host cannot read the setting before the grant reaches it (spec/wire.md §4);
-    // it holds the blob sealed and judges nothing
-    assert!(net.engine(d).body_valid(&st, &t, &ra).is_none(), "unreadable before the grant");
+    // it holds the blob sealed, the setting's part missing, and judges nothing
+    assert!(net.engine(d).core.ix.commits.get(&st).is_none_or(|m| !m.missing.is_empty()), "unreadable before the grant");
+    assert!(net.engine(d).core.ix.required.get(&t).is_none_or(|v| !v.iter().any(|x| x.0.commit == st)));
     assert!(net.host_ids(h2, &l).len() >= at_host, "nothing deleted from the host");
     net.set_online(a, true);
     for _ in 0..10 {

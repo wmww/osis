@@ -598,7 +598,6 @@ Principle: deltas, state and snapshots are the same grammar, so any fragment's e
   - `Commit` sources have no frontier. `Absorbed` (commit ID, then the author node as a TID-tagged value, spec/data-model.md §5), sorted by commit ID, lists every commit-form commit whose writes in this aspect the writer had applied and whose source occurs in the fragment.
   - **Absence.** A session or commit-form commit the tables do not name left no write in the fragment: a reader takes its absence for that, never for "not received". An entry of 0 says the writer applied none of the source's writes contiguously, though some of them are in the fragment.
   - Frontiers and `Absorbed` are no receipts (spec/permissions.md §5.1): they serve covering (spec/commits.md §5).
-  - **Atomic apply** (spec/commits.md §4): a commit's delta counts as dropped, and held, when the node holds a snapshot of the aspect, of any validity, stamped after the commit, signed by a possible holder of the role it needs (spec/commits.md §4; held, or dropped other than as covered).
 - **Values.** Snapshots never carry the values of writes from deltas with an expiry, expired or not, or of writes named by a purge request the writer holds (§4.7): those writes go value-less and their deltas are never covered. Live content of any other delta is carried as usual, whatever its retention.
 
 ## 9. Structural diff

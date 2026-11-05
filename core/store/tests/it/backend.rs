@@ -67,7 +67,7 @@ fn memory_backend_suite() {
     suite(&mut b);
 }
 
-// spec/commits.md §4: one storage transaction per atomic apply; a failed or crashed batch has no effect.
+// spec/commits.md §4: one storage transaction per commit applied; a failed or crashed batch has no effect.
 #[test]
 fn memory_faults() {
     let faults = Faults::new();

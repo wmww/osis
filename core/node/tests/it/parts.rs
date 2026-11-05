@@ -1,6 +1,6 @@
 //! Which parts of a commit apply and which wait (spec/commits.md §4). Invariant under test: what a
-//! node applies is a function of the parts it holds, what else it holds and what it syncs, never
-//! of which part came first, however the commit's parts are split over deliveries.
+//! node applies is a function of the parts it holds and what else it holds, never of which part
+//! came first or what it syncs, however the commit's parts are split over deliveries.
 
 use crate::judgment::observe;
 use crate::order::{Played, Rng, Step, play};
@@ -142,12 +142,11 @@ fn v(x: &str) -> Option<Value> {
     Some(Value::Str(x.into()))
 }
 
-// spec/commits.md §4: a part on a thing the node does not sync, its chain away, waits alone and
-// the rest applies; once the thing is synced the commit waits whole; a chain arriving later ends
-// in-order's state (`split_delivery_*` compares every order to it). Three things: only the chainless
-// part waits.
+// spec/commits.md §4: a part whose chain is away waits alone and the rest applies, whatever the node
+// syncs; a chain arriving later ends in-order's state (`split_delivery_*` compares every order to it).
+// Three things: only the chainless part waits.
 #[test]
-fn chainless_part_waits_alone_unless_synced_spec_commits_4() {
+fn chainless_part_waits_alone_whatever_is_synced_spec_commits_4() {
     let hs = histories();
     let (content, three) = (&hs[0].played, &hs[2].played);
     let (g, h) = (content.things[0], content.things[1]);
@@ -155,7 +154,7 @@ fn chainless_part_waits_alone_unless_synced_spec_commits_4() {
     let (got, pending) = reads(content, &[], &[edge]);
     assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 1), "unsynced: G applied, H waits");
     let (got, pending) = reads(content, &[h], &[edge]);
-    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("g"), v("top"), 1), "H synced: nothing of it shows");
+    assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 1), "H synced: G applied, H waits");
     let (got, pending) = reads(content, &[g, h], &[]);
     assert_eq!((got[0].clone(), got[1].clone(), pending), (v("v1"), v("top"), 0), "the chain held: 1 only reads H, its write there judged invalid");
     let (g3, h3, c3) = (three.things[0], three.things[1], three.things[2]);
@@ -163,12 +162,12 @@ fn chainless_part_waits_alone_unless_synced_spec_commits_4() {
     assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "{g3} {h3} {c3}: only H's part waits");
     assert_eq!(pending, 1);
     let (got, _) = reads(three, &[h3], &[three.base + 2]);
-    assert_eq!(got, vec![v("g"), v("top"), v("top")], "H synced: the commit waits whole");
+    assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "H synced: only H's part waits");
     let (got, _) = reads(three, &[c3], &[three.base + 2]);
     assert_eq!(got, vec![v("v1"), v("top"), v("v1")], "C synced, its chain held: only H's part waits");
 }
 
-// spec/commits.md §4: a role commit's parts always wait alone, so what it does to one thing's
+// spec/commits.md §4: a commit's parts wait alone, so what a role commit does to one thing's
 // roster reads alike however the other part came and whichever things are synced: authority does
 // not depend on the sync set.
 #[test]
@@ -212,11 +211,10 @@ fn on(pk: &osis_node::local_peer::Package, t: Tid) -> Vec<u8> {
     b.encode()
 }
 
-// spec/commits.md §4, §8: a paged part whose pages are away is one more wait of its thing: alone
-// when not synced, in either order, and it joins when they come; the commit waits whole when
-// synced.
+// spec/commits.md §4, §8: a paged part whose pages are away waits alone, synced or not, in either
+// order, and it joins when they come.
 #[test]
-fn part_missing_pages_waits_like_a_chainless_one_spec_commits_4() {
+fn part_missing_pages_waits_alone_spec_commits_4() {
     use crate::common::*;
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     let big = Value::Map(map);
@@ -235,7 +233,7 @@ fn part_missing_pages_waits_like_a_chainless_one_spec_commits_4() {
             let _ = e.ingest(&on(&pk, t), Vec::new());
         }
         e.reexamine().unwrap();
-        assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap() == Some(s("small")), !synced, "first_g {first_g} synced {synced}");
+        assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("small")), "first_g {first_g} synced {synced}");
         assert_eq!(e.pending(), vec![(pk.id, Reason::WaitBlobs)]);
         assert_eq!(e.get(&h, &ak("t:big.0")).unwrap(), None);
         e.put_blobs(pk.blobs.clone()).unwrap();
@@ -246,11 +244,10 @@ fn part_missing_pages_waits_like_a_chainless_one_spec_commits_4() {
     }
 }
 
-// spec/versioning.md §2, spec/commits.md §4: a parked part on a thing not synced waits alone,
-// together or split, either order, and is kept to relay; synced, it parks the commit whole, its
-// other part kept with it.
+// spec/versioning.md §2, spec/commits.md §4: a parked part waits alone, synced or not, together or
+// split, either order, and is kept to relay.
 #[test]
-fn parked_part_waits_like_a_chainless_one_spec_versioning_2() {
+fn parked_part_waits_alone_spec_versioning_2() {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Writer, create, encode_delta};
@@ -288,12 +285,7 @@ fn parked_part_waits_like_a_chainless_one_spec_versioning_2() {
     e.set_syncing(h, true).unwrap();
     let _ = e.ingest(&part(g), Vec::new());
     e.reexamine().unwrap();
-    assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("new")), "synced: parked whole");
-    let held = CommitBlob::decode(&e.commit_bytes(&id).unwrap().unwrap()).unwrap();
-    assert_eq!(held.parts.len(), 2, "the parked part kept with the other");
-    e.set_syncing(h, false).unwrap();
-    e.reexamine().unwrap();
-    assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")), "not synced: the rest applies");
+    assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("ok")), "synced: the rest applies");
     assert_eq!(e.pending(), vec![(id, Reason::Parked)], "the parked part stays");
     // the same from the other order, and together
     let (mut other, mut together) = (net(2, 62), net(2, 62));
@@ -313,7 +305,7 @@ fn parked_part_waits_like_a_chainless_one_spec_versioning_2() {
 
 // spec/commits.md §4, §5: a part under keep at most 0 whose thing's record is away, a later write
 // on it superseding it: in every order of its parts, the later commit and the record, and synced or
-// not, the node reads alike, past the kill included (`apply::at_most_bound`).
+// not, the node reads alike, past the kill included.
 #[test]
 fn chainless_part_under_at_most_any_order_spec_commits_4() {
     use crate::common::*;
@@ -519,12 +511,11 @@ fn bad_part_together_or_split_spec_commits_4() {
     assert_eq!(read(vec![blob.encode()]), read(vec![part(g), part(h)]));
 }
 
-// spec/commits.md §4: a part bad by itself beside its thing's other parts, one away. Its author stalls
-// only that commit: nothing of the thing's content shows, another commit on the thing does, a junk copy
-// of the bad slot changes nothing; when the last part comes, the good parts apply in every order, synced
-// or not, as from the whole blob.
+// spec/commits.md §4: a part bad by itself beside its thing's other parts. Each good part shows as it
+// comes, in every order, synced or not, ending as from the whole blob; the bad part alone, or a junk
+// copy of its slot, is refused and keeps nothing.
 #[test]
-fn bad_part_under_a_unit_wait_stalls_only_its_commit_spec_commits_4() {
+fn bad_part_beside_good_ones_holds_nothing_back_spec_commits_4() {
     use crate::common::*;
     use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Writer, create, encode_delta};
@@ -588,15 +579,13 @@ fn bad_part_under_a_unit_wait_stalls_only_its_commit_spec_commits_4() {
         for order in permutations(3) {
             let seq: Vec<&[u8]> = order.iter().map(|i| parts[*i]).collect();
             assert_eq!(read(synced, &seq), got, "synced {synced}, order {order:?}");
-            // the first two alone: the commit waits, nothing of it shows
+            // the first two alone: what is good of them shows
             let held = read(synced, &seq[..2]);
-            let bad_only_left = order[2] == 2;
-            if !bad_only_left {
-                assert_eq!((&held.0, &held.1, held.2), (&None, &None, false), "synced {synced}, held {:?}", &order[..2]);
-            }
-            assert_eq!(held.3, vec![(id, Reason::WaitDeltas)], "synced {synced}, held {:?}", &order[..2]);
+            let has = |i: usize| order[..2].contains(&i);
+            assert_eq!((&held.0, &held.1, held.2), (&has(0).then(|| s("one")), &has(1).then(|| s("two")), true), "synced {synced}, held {:?}", &order[..2]);
+            assert!(held.3.is_empty(), "synced {synced}, held {:?}", &order[..2]);
         }
-        // a junk copy of the bad slot: refused, the stored copy stays, and the rest comes
+        // the bad part alone, and a junk copy of its slot: refused, nothing kept
         let mut lp2 = net(2, 66);
         for pk in &setup {
             lp2.deliver(1, pk).unwrap();
@@ -605,18 +594,17 @@ fn bad_part_under_a_unit_wait_stalls_only_its_commit_spec_commits_4() {
             lp2.peers[1].engine.set_syncing(g, true).unwrap();
         }
         let e = &mut lp2.peers[1].engine;
-        let r = e.ingest(&p_bad, Vec::new()).unwrap();
-        assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
+        assert!(e.ingest(&p_bad, Vec::new()).is_err());
         let mut junk = CommitBlob::decode(&p_bad).unwrap();
         junk.parts[0].delta = osis_base::encode(&Value::List(vec![Value::Int(2)]));
-        assert!(e.ingest(&junk.encode(), Vec::new()).is_ok_and(|x| matches!(x, Ingested::Pending(..))) || e.pending().len() == 1);
-        assert!(e.take_redeliver().is_empty(), "the stored copy was checked: it kept nothing out");
-        // another commit on the thing shows
+        assert!(e.ingest(&junk.encode(), Vec::new()).is_err());
+        assert!(e.pending().is_empty() && !e.commit_ids().contains(&id));
+        assert!(e.take_redeliver().is_empty());
         lp2.deliver(1, &beside).unwrap();
         let e = &mut lp2.peers[1].engine;
         assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("beside")));
         e.ingest(&p_one, Vec::new()).unwrap();
-        assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), None);
+        assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), Some(s("one")));
         e.ingest(&p_two, Vec::new()).unwrap();
         assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), Some(s("one")));
         assert_eq!(e.get(&g, &ak("t:bad.0")).unwrap(), None);
@@ -626,8 +614,7 @@ fn bad_part_under_a_unit_wait_stalls_only_its_commit_spec_commits_4() {
 
 // Reviewer's differential: random histories with role commits granting across things, commits on
 // three things and hostile spans; every part split by aspect, in random orders. Each fixed sync set
-// and hidden set must read alike. With a sync set that changes during delivery, content may differ
-// (issues/sync-learned-after-apply.md); rosters may not (`role_part_applies_whatever_is_synced`).
+// and hidden set must read alike; with a sync set that changes during delivery, rosters are checked.
 fn diff_steps(rng: &mut Rng) -> Vec<Step> {
     use Step::*;
     let aim = |s: Step| Aim(Box::new(s));
@@ -896,11 +883,10 @@ fn junk_part_keeps_out_no_true_part_spec_commits_4() {
     assert_eq!(p.engine.get(&h, &reg()).unwrap(), v("v7"));
 }
 
-// spec/commits.md §4 (`examine`'s invariant): a commit on two synced things, the H part expired
-// (counts as held) with its pages away. It holds nothing back, in either order: a missing one would
-// not.
+// spec/commits.md §4: a commit on two synced things, the H part expired with its pages away. It holds
+// nothing back, in either order.
 #[test]
-fn counted_as_held_part_order_spec_commits_4() {
+fn expired_part_with_pages_away_order_spec_commits_4() {
     use crate::common::*;
     let map: osis_base::ValueMap = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
     let big = Value::Map(map);
@@ -945,8 +931,7 @@ fn shapes(played: &Played, i: usize) -> Vec<Vec<Vec<u8>>> {
 
 // spec/commits.md §4: a part that hashes right and is bad by itself, beside good ones, on content, a
 // role commit and a roster snapshot, synced or not: in every shape of delivery the node reads alike,
-// and the good parts stand wherever a synced thing does not hold them back: a bad part answers its
-// delta's wait (no copy can differ from it, so no later true copy exists to wait for).
+// the good parts stand and nothing waits for the bad one.
 #[test]
 fn bad_part_every_shape_reads_alike_spec_commits_4() {
     use Step::*;
@@ -1141,7 +1126,7 @@ fn flood_of_copies_keeps_out_nothing_spec_commits_4() {
 }
 
 // spec/commits.md §4: a part of a role commit that does not hash holds no delta: the commit is not
-// held as any part of it is, and waits whole on a synced thing with nothing applied.
+// held as any part of it is, nothing of it applied.
 #[test]
 fn role_commit_of_junk_holds_nothing_spec_commits_4() {
     let hs = histories();
@@ -1162,8 +1147,8 @@ fn role_commit_of_junk_holds_nothing_spec_commits_4() {
     assert!(p.engine.commit_ids().contains(&id));
 }
 
-// spec/commits.md §2, §4: a delta on an aspect of the wrong storage class is never applied, by anyone,
-// so a node syncing the thing does not wait for it: the rest applies whether the part came or not.
+// spec/commits.md §2, §4: a delta on an aspect of the wrong storage class is never applied, by anyone:
+// the rest applies whether the part came or not.
 #[test]
 fn wrong_class_delta_is_not_waited_for_spec_commits_4() {
     use crate::common::*;
@@ -1344,10 +1329,10 @@ fn removal_of_a_withheld_entry_alike_across_sync_sets_spec_permissions_6() {
     rosters_alike([63044, 63055].into_iter());
 }
 
-// spec/commits.md §4: a bad part on a synced thing answers its wait with the commit's other part
-// waiting alone: applied whichever came first or came together.
+// spec/commits.md §4: a bad part on a synced thing beside a part waiting alone: dropped, the commit
+// pending on the other part, whichever came first or came together.
 #[test]
-fn bad_part_answers_beside_a_waiting_part_spec_commits_4() {
+fn bad_part_beside_a_waiting_part_alike_spec_commits_4() {
     use Step::*;
     let played = play(SEED, &[New { by: 0, parent: 0, write: true }, New { by: 0, parent: 0, write: true }, Advance { who: None, ms: 1000 }, BadPart { by: 0, a: 1, b: 2, how: 0 }]);
     let (hidden, last) = (played.base, played.packs.len() - 1);
@@ -1367,7 +1352,7 @@ fn bad_part_answers_beside_a_waiting_part_spec_commits_4() {
     };
     let (whole, on_a, on_b) = (played.packs[last].bytes.clone(), part(&played, last, Some(a)), part(&played, last, Some(b)));
     let want = read(std::slice::from_ref(&whole));
-    assert!(want.1, "applied without its bad part, its other part waiting");
+    assert!(!want.1, "its one good part waits");
     assert_eq!(read(&[on_a.clone(), on_b.clone()]), want);
     assert_eq!(read(&[on_b, on_a]), want);
 }
@@ -1472,9 +1457,8 @@ fn cut(b: &CommitBlob, things: &[Tid]) -> Vec<u8> {
 }
 
 // spec/versioning.md §2, spec/commits.md §5: a part this build cannot read goes at its expiry like any
-// other pending part, whatever its copy waits as: T passing under a parked copy, then what the node syncs
-// changing (it recursed for ever, its copy merged back each time). Its commit's other parts expire with
-// it (one expiry per commit): nothing is left to wait for.
+// other pending part: past T when it came, or parked before T, alone or beside a part that applied, by
+// its timer or at the next look. Its commit's other parts expire with it (one expiry per commit).
 #[test]
 fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let mut f = forge_setup(82);
@@ -1483,46 +1467,37 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     let live = f.lp.peers[0].engine.now();
     let late = osis_base::WallMs(live.0 + 5000);
     let copy_held = |p: &mut Peer| p.engine.commit_bytes(&b.id()).unwrap().is_some_and(|c| !CommitBlob::decode(&c).unwrap().parts.is_empty());
-    let new = |now, syncs: &[Tid]| {
+    let new = |now| {
         let mut p = Peer::new(FRESH, now).unwrap();
-        for t in syncs {
-            p.engine.set_syncing(*t, true).unwrap();
-        }
         for pk in &f.setup {
             let _ = p.engine.ingest(&pk.bytes, Vec::new());
         }
         p
     };
     // past T when it came: gone at once, flagged
-    let mut p = new(late, &[]);
+    let mut p = new(late);
     let _ = p.engine.ingest(&cut(&b, &[x]), Vec::new());
     assert!(!copy_held(&mut p), "no copy past T");
     assert!(p.engine.suspects().unwrap().iter().any(|f| f.0 == x), "flagged");
-    p.engine.set_syncing(z, true).unwrap();
-    assert_eq!(p.engine.pending(), vec![], "every part past T counts as held");
-    // parked alone before T, past it the sync set changes
-    let mut p = new(live, &[]);
-    assert!(matches!(p.engine.ingest(&cut(&b, &[x]), Vec::new()), Ok(Ingested::Parked(_))));
-    assert!(copy_held(&mut p));
-    p.clock.advance(5000);
-    p.engine.set_syncing(z, true).unwrap();
-    assert!(!copy_held(&mut p), "no copy past T");
-    assert_eq!(p.engine.pending(), vec![], "every part past T counts as held");
-    // parked whole before T, by its synced thing; its timer takes it
-    let mut p = new(live, &[x]);
-    assert!(matches!(p.engine.ingest(&cut(&b, &[x, y]), Vec::new()), Ok(Ingested::Parked(_))));
-    assert!(copy_held(&mut p));
-    p.clock.advance(5000);
-    p.engine.tick().unwrap();
-    assert!(!copy_held(&mut p), "no copy past T");
-    assert_eq!(p.engine.pending(), vec![], "every part past T counts as held");
+    assert_eq!(p.engine.pending(), vec![]);
+    // parked before T, alone or beside a part that applied; its timer takes it
+    for things in [&[x][..], &[x, y]] {
+        let mut p = new(live);
+        let r = p.engine.ingest(&cut(&b, things), Vec::new()).unwrap();
+        assert_eq!(matches!(r, Ingested::Parked(_)), things.len() == 1, "{r:?}");
+        assert_eq!(p.engine.pending(), vec![(b.id(), Reason::Parked)]);
+        p.clock.advance(5000);
+        p.engine.tick().unwrap();
+        assert!(!copy_held(&mut p), "no copy past T");
+        assert_eq!(p.engine.pending(), vec![]);
+    }
     // the same with the clock alone, no tick: judged at the next look
-    let mut p = new(live, &[x]);
-    let _ = p.engine.ingest(&cut(&b, &[x, y]), Vec::new());
+    let mut p = new(live);
+    let _ = p.engine.ingest(&cut(&b, &[x]), Vec::new());
     p.clock.advance(5000);
     p.engine.reexamine().unwrap();
     assert!(!copy_held(&mut p), "no copy past T");
-    assert_eq!(p.engine.pending(), vec![], "every part past T counts as held");
+    assert_eq!(p.engine.pending(), vec![]);
 }
 
 // spec/commits.md §4, §5: beside a part past its expiry, a part bad by itself or parked and a true one,
@@ -1573,416 +1548,5 @@ fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_spec_commits_4() 
             }
             assert_eq!(seen.len(), 1, "made {n}, sync {:?}: {seen:#?}", sync.map(|t| t == x));
         }
-    }
-}
-
-// spec/commits.md §4: a commit on two synced things, one part away. Its author's removal on the other
-// thing ends the wait in every order, whatever follows (a re-grant, the remover's own demotion making it
-// fall: the commit that applied stays applied, so a node learning of them first applies it too); a
-// removal whose frontier lists the commit leaves the delta valid: it waits.
-#[test]
-fn missing_delta_of_a_removed_author_any_order_spec_commits_4() {
-    use crate::common::*;
-    use osis_schema::Codec as _;
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    enum Case {
-        Regrant,
-        Falls,
-        Covered,
-    }
-    for case in [Case::Regrant, Case::Falls, Case::Covered] {
-        let mut lp = net(3, 77);
-        let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-        let (bob, carol) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-        for (t, who, r) in [(g, bob, Role::Write), (h, bob, Role::Write), (h, carol, Role::Admin)] {
-            set_edge(&mut lp.peers[0].engine, t, who, Some(edge(r)), None);
-        }
-        lp.sync_all().unwrap();
-        let base: Vec<_> = packages(&mut lp, 0);
-        lp.advance(1_000);
-        let mut m = Mutation::new();
-        m.set(g, &REG, &s("by bob")).unwrap();
-        m.set(h, &REG, &s("by bob")).unwrap();
-        let c = lp.peers[1].commit(m).unwrap().unwrap();
-        let cp = packages(&mut lp, 1).into_iter().find(|p| p.id == c).unwrap();
-        if case == Case::Covered {
-            sync(&mut lp, 1, 2);
-        }
-        lp.advance(1_000);
-        let revoke = |lp: &mut osis_node::local_peer::LocalPeer, by: usize, who: Tid| {
-            let scope = osis_perm::DemotionScope { roles: [(who, [h].into())].into(), content: [(who, [h].into())].into() };
-            let now = lp.peers[by].engine.now();
-            let f = lp.peers[by].engine.frontier(&scope, now).unwrap();
-            set_edge(&mut lp.peers[by].engine, h, who, None, Some(f.to_value()))
-        };
-        let d = revoke(&mut lp, 2, bob);
-        let dp = packages(&mut lp, 2).into_iter().find(|p| p.id == d).unwrap();
-        lp.advance(1_000);
-        let after = match case {
-            Case::Falls => revoke(&mut lp, 0, carol),
-            _ => set_edge(&mut lp.peers[0].engine, h, bob, Some(edge(Role::Write)), None),
-        };
-        let ap = packages(&mut lp, 0).into_iter().find(|p| p.id == after).unwrap();
-        let items = [on(&cp, g), dp.bytes.clone(), ap.bytes.clone()];
-        for (k, order) in permutations(3).into_iter().enumerate() {
-            let mut p = Peer::new(7000 + k as u64, lp.peers[0].engine.now()).unwrap();
-            p.engine.set_syncing(g, true).unwrap();
-            p.engine.set_syncing(h, true).unwrap();
-            for pk in &base {
-                p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-            }
-            for i in order.iter() {
-                let _ = p.engine.ingest(&items[*i], Vec::new());
-                p.engine.reexamine().unwrap();
-            }
-            let want = if case == Case::Covered { "new" } else { "by bob" };
-            assert_eq!(p.engine.get(&g, &reg()).unwrap(), Some(s(want)), "{case:?} {order:?}");
-            assert_eq!(p.engine.get(&h, &reg()).unwrap(), Some(s("new")), "{case:?} {order:?}");
-        }
-    }
-}
-
-/// Random histories of writers' commits on two things, demotions, re-grants and demotions of the
-/// demoter: what the removed-author rule of spec/commits.md §4 turns on.
-fn removed_steps(rng: &mut Rng) -> Vec<Step> {
-    use Step::*;
-    let tick = Advance { who: None, ms: 1000 };
-    let mut out = vec![NewTop { by: 0 }, tick.clone()];
-    for (t, holder, role) in [(1, 1, Role::Write), (1, 2, Role::Admin), (2, 1, Role::Write)] {
-        out.push(Edge { by: 0, t, holder, role: Some(role) });
-    }
-    out.extend([Sync { from: 0, to: 1 }, Sync { from: 0, to: 2 }, tick.clone()]);
-    for _ in 0..(6 + rng.below(10)) {
-        let t = rng.below(2) as usize;
-        let writer = 1 + rng.below(2) as usize;
-        out.push(match rng.below(12) {
-            0..=2 => Two { by: writer, a: t, b: 1 - t, v: rng.below(9) as u8 },
-            3 => Demote { by: 2, t, holder: 1, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
-            4 => Demote { by: 0, t, holder: writer, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
-            5 => Edge { by: 0, t, holder: writer, role: Some(Role::Write) },
-            6 => Roster { by: 0, t },
-            7 => Sync { from: rng.below(3) as usize, to: rng.below(3) as usize },
-            // Carol makes Bob an admin, he lowers her: a signer's grant that may fall
-            8 => Edge { by: 2, t, holder: 1, role: Some(Role::Admin) },
-            9 => Demote { by: 1, t, holder: 2, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
-            10 => Edge { by: 1, t, holder: 2, role: Some(Role::Write) },
-            _ => tick.clone(),
-        });
-        out.push(tick.clone());
-    }
-    out
-}
-
-/// What one seed of `removed_author_differential` found.
-#[derive(Default)]
-struct RemovedSeed {
-    played: bool,
-    /// Commits a reader syncing all applied with a part of theirs away.
-    released: usize,
-    /// Those that wait instead.
-    waiting: usize,
-    bad: Vec<String>,
-}
-
-fn removed_seed(seed: u64) -> RemovedSeed {
-    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    let steps = removed_steps(&mut rng);
-    let Ok(played) = std::panic::catch_unwind(|| play(seed, &steps)) else { return RemovedSeed::default() };
-    let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
-    let mut out = RemovedSeed { played: true, ..Default::default() };
-    // a part of each commit on two things stays away, on one of them
-    let away: Vec<(usize, Tid)> = (0..played.packs.len())
-        .filter_map(|i| {
-            let ts = things_of(&played, i);
-            let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
-            (b.header.kind == osis_commit::Kind::Content && ts.len() == 2 && rng.below(4) != 0).then(|| (i, ts[rng.below(2) as usize]))
-        })
-        .collect();
-    if away.is_empty() {
-        return out;
-    }
-    let cut = |i: usize| -> Vec<Vec<u8>> {
-        let Some((_, t)) = away.iter().find(|x| x.0 == i) else { return vec![played.packs[i].bytes.clone()] };
-        let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
-        let mut x = b.clone();
-        x.parts.retain(|p| b.header.aspects[p.ai].tid != *t);
-        vec![x.encode()]
-    };
-    let read = |toks: &[(usize, Vec<u8>)], late: bool| {
-        let mut p = Peer::new(FRESH, played.now).unwrap();
-        for t in &played.things {
-            p.engine.set_syncing(*t, true).unwrap();
-        }
-        for (i, b) in toks {
-            let _ = p.engine.ingest(b, played.packs[*i].blobs.clone());
-            p.engine.reexamine().unwrap();
-        }
-        let held = p.engine.pending();
-        let pending = away.iter().filter(|(i, _)| held.iter().any(|x| x.0 == played.packs[*i].id)).count();
-        if late {
-            for (i, _) in &away {
-                let _ = p.engine.ingest(&played.packs[*i].bytes, Vec::new());
-                p.engine.reexamine().unwrap();
-            }
-        }
-        let seen: Vec<(String, String)> = observe(&mut p.engine, &ids).into_iter().map(|(k, v)| (k, v.split(' ').filter(|w| !w.starts_with("deaths=")).collect::<Vec<_>>().join(" "))).collect();
-        (seen, played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect::<Vec<_>>(), pending)
-    };
-    let toks: Vec<(usize, Vec<u8>)> = (0..played.packs.len()).flat_map(|i| cut(i).into_iter().map(move |b| (i, b))).collect();
-    let whole: Vec<(usize, Vec<u8>)> = (0..played.packs.len()).map(|i| (i, played.packs[i].bytes.clone())).collect();
-    let want = read(&toks, false);
-    let joined = read(&whole, false);
-    out.waiting = want.2;
-    out.released = away.len() - want.2;
-    let mut differs = |what: &str, got: &(Vec<(String, String)>, Vec<String>, usize), w: &(Vec<(String, String)>, Vec<String>, usize)| {
-        if (&got.0, &got.1) != (&w.0, &w.1) {
-            let first = got.0.iter().filter(|x| !w.0.contains(x)).map(|x| format!("got {x:?}")).chain(w.0.iter().filter(|x| !got.0.contains(x)).map(|x| format!("want {x:?}"))).collect::<Vec<_>>().join("; ");
-            out.bad.push(format!("seed {seed} {what}: {}", first.chars().take(300).collect::<String>()));
-        }
-    };
-    for _ in 0..8 {
-        let mut order = toks.clone();
-        for i in (1..order.len()).rev() {
-            order.swap(i, rng.below(i as u64 + 1) as usize);
-        }
-        let got = read(&order, false);
-        differs("any order, a part away", &got, &want);
-        // the part arriving late: what they join to is the same as whole
-        let got = read(&order, true);
-        differs("the part comes", &got, &joined);
-    }
-    out
-}
-
-fn removed_replay(s: u64) -> String {
-    format!("OSIS_REMOVED_START={s} OSIS_REMOVED_SEEDS=1 cargo test --workspace --test it parts::removed_author_differential_large_spec_commits_4 -- --ignored --exact")
-}
-
-// spec/commits.md §4: with a part of a commit on two things away, what a reader syncing both applies is
-// alike in every order; the part coming late leaves what a reader holding it whole has. Reaches the
-// removed-author rule: without it nothing is released.
-#[test]
-#[ignore]
-fn removed_author_differential_large_spec_commits_4() {
-    let seeds = osis_base::testenv::Seeds::from_env("OSIS_REMOVED_START", "OSIS_REMOVED_SEEDS", osis_base::testenv::large(1..61));
-    let n = seeds.range.end - seeds.range.start;
-    let all = seeds.run("parts::removed_author_differential_large_spec_commits_4", removed_replay, removed_seed);
-    let played_n = all.iter().filter(|s| s.played).count() as u64;
-    let (released, waiting): (usize, usize) = (all.iter().map(|s| s.released).sum(), all.iter().map(|s| s.waiting).sum());
-    let bad: Vec<&String> = all.iter().flat_map(|s| &s.bad).collect();
-    eprintln!("{played_n} of {n} histories played, {released} commits released with a part away, {waiting} waiting");
-    assert!(played_n > n / 2);
-    assert!(n < 10 || (released > 0 && waiting > 0), "the histories reach the rule");
-    assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).map(|x| x.as_str()).collect::<Vec<_>>().join("\n"));
-}
-
-
-/// A lowering of `who` on `t` by peer `by` with a frontier listing nothing, as no writer here makes it.
-fn forge_lowering(lp: &mut osis_node::local_peer::LocalPeer, by: usize, t: Tid, who: Tid) -> Vec<u8> {
-    use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
-    use osis_schema::Codec as _;
-    let roles = ak("roles.0");
-    let v = Value::Map(osis_base::ValueMap::from([(Value::Tid(who), edge(Role::Read).to_value())]));
-    let author = lp.peers[by].engine.tid();
-    let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
-    let own = Source::commit(osis_base::CommitId([0; 32]));
-    let mut w = Writer::new(ts, own.clone(), 1 << 40);
-    let f = create(&mut w, &osis_schema::core_schema().view(roles.as_str()).unwrap(), &v).unwrap();
-    let r = w.range();
-    let mut cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
-    cx.own = own;
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
-    let mut aw = AspectWrite::new(t, roles.clone(), r.lo, r.hi, bytes);
-    aw.retention = osis_commit::retention::write_retention(roles.as_str(), None, None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
-    cb.aspects.push(aw);
-    cb.frontier = Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value());
-    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    cb.build(&lp.peers[by].engine.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
-}
-
-// spec/commits.md §4: a lowering ends the wait for a removed author's delta only when signed by a
-// possible admin of its thing. A plain holder's forgery on the thing or up its owner chain, after granting
-// itself admin or not, tears no commit; an ex-admin's, and an admin through a group's or an owner's, ends
-// it, before or after the commit, on the thing or on its owner.
-#[test]
-fn lowering_ends_a_wait_only_by_a_possible_admin_spec_commits_4() {
-    use crate::common::*;
-    use osis_schema::Codec as _;
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    enum Who {
-        Writer,
-        Reader,
-        OwnerReader,
-        SelfGranted,
-        Puppet,
-        Stranger,
-        ExAdmin,
-        ByGroup,
-        OnOwner,
-    }
-    let empty = || Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value());
-    for who in [Who::Writer, Who::Reader, Who::OwnerReader, Who::SelfGranted, Who::Puppet, Who::Stranger, Who::ExAdmin, Who::ByGroup, Who::OnOwner] {
-        for before in [true, false] {
-            let mut lp = net(5, 77);
-            let (x, o) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-            let y = {
-                let p = lp.peer(0).unwrap();
-                let mut m = Mutation::new();
-                let t = p.engine.new_thing(&mut m, o);
-                m.set(t, &REG, &s("new")).unwrap();
-                p.commit(m).unwrap();
-                t
-            };
-            let (bob, att, admin) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
-            for (t, w, r) in [(x, bob, Role::Write), (y, bob, Role::Write), (y, admin, Role::Admin)] {
-                set_edge(&mut lp.peers[0].engine, t, w, Some(edge(r)), None);
-            }
-            let e = &mut lp.peers[0].engine;
-            match who {
-                Who::Writer | Who::SelfGranted => drop(set_edge(e, y, att, Some(edge(Role::Write)), None)),
-                Who::Reader | Who::Puppet => drop(set_edge(e, y, att, Some(edge(Role::Read)), None)),
-                Who::Stranger => {}
-                Who::OwnerReader => drop(set_edge(e, o, att, Some(edge(Role::Read)), None)),
-                Who::ExAdmin => {
-                    set_edge(e, y, att, Some(edge(Role::Admin)), None);
-                    set_edge(e, y, att, None, empty());
-                }
-                // the group is an actor the owner made admin of `y`, `att` an admin of the group
-                Who::ByGroup => {
-                    set_edge(e, y, x, Some(edge(Role::Admin)), None);
-                    set_edge(e, x, att, Some(edge(Role::Admin)), None);
-                }
-                Who::OnOwner => {
-                    set_edge(e, o, bob, Some(edge(Role::Write)), None);
-                    set_edge(e, o, att, Some(edge(Role::Admin)), None);
-                }
-            }
-            lp.sync_all().unwrap();
-            let base: Vec<_> = (0..5).flat_map(|i| packages(&mut lp, i)).collect();
-            lp.advance(1_000);
-            let mut extra = Vec::new();
-            if who == Who::SelfGranted {
-                let v = Value::Map(osis_base::ValueMap::from([(Value::Tid(att), edge(Role::Admin).to_value())]));
-                extra.push(crate::validity::forge_role_commit(&mut lp, 2, y, &ak("roles.0"), &v, 1 << 39));
-                lp.advance(1_000);
-            }
-            // a reader names a sockpuppet admin, the sockpuppet does the lowering
-            let by = if who == Who::Puppet {
-                let v = Value::Map(osis_base::ValueMap::from([(Value::Tid(lp.peers[4].engine.tid()), edge(Role::Admin).to_value())]));
-                extra.push(crate::validity::forge_role_commit(&mut lp, 2, y, &ak("roles.0"), &v, 1 << 39));
-                lp.advance(1_000);
-                4
-            } else {
-                2
-            };
-            let forged = forge_lowering(&mut lp, by, if who == Who::OnOwner { o } else { y }, bob);
-            lp.advance(1_000);
-            let mut m = Mutation::new();
-            m.set(x, &REG, &s("by bob")).unwrap();
-            m.set(y, &REG, &s("by bob")).unwrap();
-            let c = lp.peers[1].commit(m).unwrap().unwrap();
-            let cp = packages(&mut lp, 1).into_iter().find(|p| p.id == c).unwrap();
-            let mut p = Peer::new(7000, lp.peers[0].engine.now()).unwrap();
-            p.engine.set_syncing(x, true).unwrap();
-            p.engine.set_syncing(y, true).unwrap();
-            for pk in &base {
-                let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-            }
-            for b in &extra {
-                let _ = p.engine.ingest(b, Vec::new());
-            }
-            let part = on(&cp, x);
-            for b in if before { [&forged, &part] } else { [&part, &forged] } {
-                let _ = p.engine.ingest(b, Vec::new());
-                p.engine.reexamine().unwrap();
-            }
-            let want = if matches!(who, Who::ExAdmin | Who::ByGroup | Who::OnOwner) { "by bob" } else { "new" };
-            assert_eq!(p.engine.get(&x, &reg()).unwrap(), Some(s(want)), "{who:?} before={before}");
-        }
-    }
-}
-
-// spec/commits.md §4: the signer's admin may fall with its grant left out by the frontier that fells its
-// granter, so that on the final timeline it never held admin: a possible admin all the same, in every order.
-#[test]
-fn lowering_by_one_whose_grant_fell_alike_in_every_order_spec_commits_4() {
-    use crate::common::*;
-    use osis_schema::Codec as _;
-    let mut lp = net(4, 91);
-    let (x, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-    let (bob, carol, z) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
-    for (t, w, r) in [(x, bob, Role::Write), (y, bob, Role::Write), (y, z, Role::Admin)] {
-        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(r)), None);
-    }
-    lp.sync_all().unwrap();
-    let base: Vec<_> = (0..4).flat_map(|i| packages(&mut lp, i)).collect();
-    lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(x, &REG, &s("by bob")).unwrap();
-    m.set(y, &REG, &s("by bob")).unwrap();
-    let c = lp.peers[1].commit(m).unwrap().unwrap();
-    let cp = packages(&mut lp, 1).into_iter().find(|p| p.id == c).unwrap();
-    lp.advance(1_000);
-    let g = set_edge(&mut lp.peers[3].engine, y, carol, Some(edge(Role::Admin)), None);
-    let gp = packages(&mut lp, 3).into_iter().find(|p| p.id == g).unwrap();
-    sync(&mut lp, 3, 2);
-    lp.advance(1_000);
-    let lowering = forge_lowering(&mut lp, 2, y, bob);
-    lp.advance(1_000);
-    let fall = set_edge(&mut lp.peers[0].engine, y, z, None, Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value()));
-    let fp = packages(&mut lp, 0).into_iter().find(|p| p.id == fall).unwrap();
-    let items = [on(&cp, x), gp.bytes.clone(), lowering, fp.bytes.clone()];
-    for (k, order) in permutations(4).into_iter().enumerate() {
-        let mut p = Peer::new(7000 + k as u64, lp.peers[0].engine.now()).unwrap();
-        p.engine.set_syncing(x, true).unwrap();
-        p.engine.set_syncing(y, true).unwrap();
-        for pk in &base {
-            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-        }
-        for i in order.iter() {
-            let _ = p.engine.ingest(&items[*i], Vec::new());
-            p.engine.reexamine().unwrap();
-        }
-        assert_eq!(p.engine.get(&x, &reg()).unwrap(), Some(s("by bob")), "{order:?}");
-    }
-}
-
-// spec/commits.md §4: a ledger entry that lowers its holder only as far as the role the delta needs lowers nothing here, as with the role commit; one below it does.
-#[test]
-fn ledger_entry_counts_only_below_the_role_needed_spec_commits_4() {
-    use crate::common::*;
-    use osis_schema::Codec as _;
-    for (to, want) in [(Role::Write, "new"), (Role::Read, "by bob")] {
-        let mut lp = net(2, 79);
-        let (x, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
-        let bob = lp.peers[1].engine.tid();
-        set_edge(&mut lp.peers[0].engine, x, bob, Some(edge(Role::Write)), None);
-        set_edge(&mut lp.peers[0].engine, y, bob, Some(edge(Role::Admin)), None);
-        lp.sync_all().unwrap();
-        let base: Vec<_> = (0..2).flat_map(|i| packages(&mut lp, i)).collect();
-        lp.advance(1_000);
-        let mut m = Mutation::new();
-        m.set(x, &REG, &s("by bob")).unwrap();
-        m.set(y, &REG, &s("by bob")).unwrap();
-        let c = lp.peers[1].commit(m).unwrap().unwrap();
-        let cp = packages(&mut lp, 1).into_iter().find(|p| p.id == c).unwrap();
-        lp.advance(1_000);
-        set_edge(&mut lp.peers[0].engine, y, bob, Some(edge(to)), Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value()));
-        lp.advance(1_000);
-        let snap = *lp.peers[0].engine.roster_snapshot(&y, None).unwrap().commits.last().unwrap();
-        let sp = packages(&mut lp, 0).into_iter().find(|p| p.id == snap).unwrap();
-        let mut p = Peer::new(7000, lp.peers[0].engine.now()).unwrap();
-        p.engine.set_syncing(x, true).unwrap();
-        p.engine.set_syncing(y, true).unwrap();
-        for pk in &base {
-            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-        }
-        let _ = p.engine.ingest(&sp.bytes, sp.blobs.clone());
-        let _ = p.engine.ingest(&on(&cp, x), Vec::new());
-        p.engine.reexamine().unwrap();
-        assert_eq!(p.engine.get(&x, &reg()).unwrap(), Some(s(want)), "to {to:?}");
     }
 }

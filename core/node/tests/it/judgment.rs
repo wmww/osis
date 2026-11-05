@@ -825,7 +825,7 @@ fn labels() -> Vec<Scenario> {
         Scenario {
             name: "content commit over two labels",
             spec: "spec/commits.md §4, spec/sync.md §3",
-            source: "hand-built: 1 writes both G (it holds write) and H (it holds read) in one commit: each delta judged alone; atomic apply waits for a part only under a thing the node syncs",
+            source: "hand-built: 1 writes both G (it holds write) and H (it holds read) in one commit: each delta judged alone; nothing waits for a part",
             steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
             orders: Some(orders),
         },
@@ -839,7 +839,7 @@ fn labels() -> Vec<Scenario> {
         Scenario {
             name: "content commit, its author's chain to H away",
             spec: "spec/commits.md §4, spec/requirements.md Decentralization",
-            source: "hand-built: 1 writes both G and H, the edge giving it a path to H withheld: H's part waits alone in either order; syncing H the commit waits whole in either order; the edge arriving ends as in order",
+            source: "hand-built: 1 writes both G and H, the edge giving it a path to H withheld: H's part waits alone in either order, H synced or not; the edge arriving ends as in order",
             steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
             orders: Some(chainless),
         },

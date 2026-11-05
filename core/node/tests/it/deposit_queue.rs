@@ -195,11 +195,9 @@ fn missing(net: &mut Net, n: usize, c: &osis_base::CommitId) -> usize {
     net.engine(n).commit_bytes(c).unwrap().map_or(0, |b| osis_commit::CommitBlob::decode(&b).unwrap().missing().len())
 }
 
-// spec/commits.md §4 (atomic apply: a role commit held in part applies, the rest joins on
-// arrival), spec/sync.md §3, §5: a redeemer whose redemption never reaches K's host sends its
+// spec/commits.md §4 (a commit held in part applies, the rest joins on arrival), spec/sync.md §3, §5: a redeemer whose redemption never reaches K's host sends its
 // copies at once (its chain copy under the target's label, the inbox blob to its own
-// person); the sharer, who syncs K, applies the redemption from them (without the rule it waits
-// for the rest from K's label) and stays converged
+// person); the sharer, who syncs K, applies the redemption from them and stays converged
 // while the redeemer is gone; once the redeemer is back and reaches K's host, its deposit
 // lands and the sharer holds the whole commit.
 #[test]

@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The receiving path: verification, dedup, pending reasons, parking, atomic apply, late
+//! The receiving path: verification, dedup, pending reasons, parking, apply, late
 //! deltas, events, and convergence under random delivery.
 
 use crate::common;
@@ -168,10 +168,10 @@ fn without_parts(bytes: &[u8], keep: impl Fn(&str) -> bool, h: &osis_commit::Hea
     b.encode()
 }
 
-// spec/commits.md §4: atomic apply waits for every delta of a thing with a part held, or a synced
-// one; a delta of an applied commit arriving later is joined on arrival.
+// spec/commits.md §4: a node applies the parts it holds and never waits for one, synced or not, on
+// one thing or across things; a delta of an applied commit arriving later is joined on arrival.
 #[test]
-fn atomic_wait_and_late_delta_spec_commits_4() {
+fn applies_what_is_held_and_late_delta_spec_commits_4() {
     let mut lp = net(2, 26);
     let t = new_thing(&mut lp, 0);
     let u = new_thing(&mut lp, 0);
@@ -191,7 +191,7 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
     assert!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap().is_some());
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: osis_node::Cause::LateDelta, .. })));
-    // the same thing, synced or not: waits
+    // the same thing, synced: applies what is held too
     let mut lp = net(2, 27);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
@@ -203,12 +203,12 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
-    assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitDeltas)));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
-    // stopping to sync the thing changes nothing: when it learned that is no input
-    lp.peers[1].engine.set_syncing(t, false).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
-    // across things: stopping to sync the thing away re-examines the commit, which applies
+    assert_eq!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), None);
+    assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
+    assert!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap().is_some());
+    // across things, the other one synced: applies what is held
     let mut lp = net(2, 28);
     let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     sync(&mut lp, 0, 1);
@@ -220,9 +220,9 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
-    assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitDeltas)));
-    lp.peers[1].engine.set_syncing(u, false).unwrap();
+    assert_eq!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(id));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
+    assert!(lp.peers[1].engine.pending().is_empty());
 }
 
 /// Secrets for hand-built commits: dedup, and made-up delete keys (hosts' business).

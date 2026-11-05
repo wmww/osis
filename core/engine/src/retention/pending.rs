@@ -24,10 +24,7 @@ pub(crate) fn pending_expired(tx: &Tx<'_>, h: &Header, ai: usize) -> bool {
 /// same at T (`hold_valueless`). One a held purge request names is held value-less instead
 /// (`strip_purged`), as an applied one is: the request is a held commit, so nodes holding the same
 /// commits read alike; one applied later wakes the commit (`on_apply`). A header whose aspects
-/// are not resolved yet is judged once they are. The commit's other parts apply when they would
-/// have with the part held, but a part past its expiry never decides that
-/// (`apply::waits_without_expired`): a commit left with no part waits for its things like one with
-/// a held part (`apply::examine`).
+/// are not resolved yet is judged once they are.
 pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header) -> Result<()> {
     let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
     for ai in ais {
@@ -123,9 +120,9 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     Ok(())
 }
 
-/// Commit `id` (header `h`) applies without parts `missing`. One a request still counts as held for
-/// (`counts_as_purged`) but does not drop may have gone with a page away, its request falling while the
-/// commit waited (`strip_purged`): a live part, so node-sync fetches it (`Changed::undropped`).
+/// Commit `id` (header `h`) applies without parts `missing`. One a request names (`counts_as_purged`)
+/// but does not drop may have gone with a page away, its request falling while the commit waited
+/// (`strip_purged`): a live part, so node-sync fetches it (`Changed::undropped`).
 pub(crate) fn fetch_fallen(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: &BTreeSet<usize>) -> Result<()> {
     for ai in missing {
         if !known_purged(tx, h, id, *ai)? && counts_as_purged(tx, h, id, *ai)? {

@@ -26,7 +26,7 @@ fn three_nodes_random_delivery() {
     assert!(r.writes > 20 && r.dropped > 0 && r.parked > 0, "{r:?}");
 }
 
-// spec/commits.md §4 (atomic apply in one transaction); spec/crdt.md §2.2, §2.3: a crash at any
+// spec/commits.md §4 (a commit applies in one transaction); spec/crdt.md §2.2, §2.3: a crash at any
 // durable write recovers, the HLC and counters continue without reuse, nodes converge. Also
 // checks seed replay: the same seed gives the same run.
 #[test]

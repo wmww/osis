@@ -1847,18 +1847,16 @@ fn purge_flips(played: &Played, want: &Judged, got: &Judged) -> BTreeSet<String>
 
 const FRESH: u64 = 0x5eed_f00d;
 
-/// What the fresh nodes sync, and when they learn it (spec/commits.md §4: atomic apply waits for
-/// deltas of things a node syncs, which `deliver` reaches only with a thing synced and a delta
-/// missing). Both end at one set, so every order must judge alike.
+/// What the fresh nodes sync, and when they learn it: apply reads nothing of it (spec/commits.md
+/// §4), so every order must judge alike.
 #[derive(Clone, Debug)]
 enum Syncs {
     None,
     /// `on` from before the first commit, some commits' other parts never held (`withhold`);
-    /// `prefix` synced only for a stretch of each delivery: a wait it causes ends when it stops.
+    /// `prefix` synced only for a stretch of each delivery.
     Early { on: Vec<Tid>, prefix: Vec<Tid> },
     /// Nothing at first, `on` from a point of each delivery, some stopping and starting again;
-    /// some commits' other parts never held. A held set with a commit waiting across things goes
-    /// without syncs (`learned_late_wait`).
+    /// some commits' other parts never held.
     Late { on: Vec<Tid> },
 }
 
@@ -2302,8 +2300,6 @@ struct Seen {
     invalid: u64,
     /// Commits with a part on each aspect, the whole set held.
     aspects: BTreeMap<String, u64>,
-    /// Commits the reference node held for missing deltas while it learned its syncs late.
-    late_waits: u64,
     /// The reference node's parts breaking a required retention, and its `required.0^` parts
     /// fallen invalid, over the held sets.
     broken: u64,
@@ -2329,7 +2325,6 @@ impl Seen {
         self.orders += o.orders;
         self.tally.add(&o.tally);
         self.invalid += o.invalid;
-        self.late_waits += o.late_waits;
         self.broken += o.broken;
         self.fallen += o.fallen;
         self.tombstones += o.tombstones;
@@ -2353,8 +2348,8 @@ impl Seen {
     /// oracle would pass while testing nothing. Most steps commit, over 20 or more of them (one
     /// short history, a replay, may be mostly refused); 20 seeds or more reach an invalid part
     /// (no window of 2000 focused or 1000 short histories lacked one). `broad`: long `history`s
-    /// reach every shape too (over 500 such seeds, no window lacked one; `focused_history` reaches
-    /// `WaitDeltas` on 3% of seeds, none in 22% of 40-seed windows; 8-step histories rarely reach any).
+    /// reach every shape too (over 500 such seeds, no window lacked one; 8-step histories rarely
+    /// reach any).
     fn floors(&self, name: &str, seeds: usize, broad: bool) {
         let (n, m) = self.tally.totals();
         // `settled` tries every compaction, most refused
@@ -2381,35 +2376,12 @@ impl Seen {
         // a history setting required retentions reaches a delta breaking one
         assert!(!self.tally.kinds.contains_key("Require") || self.broken > 0, "order::{name}: no delta broke a required retention: {self:?}");
         if broad {
-            assert!(self.pending.contains_key("WaitDeltas"), "order::{name}: nothing waited for deltas: {self:?}");
-            assert!(self.late_waits > 0, "order::{name}: nothing waited for deltas with syncs learned late: {self:?}");
             for a in ["t:text.0", "t:docs.0", "t:list.0", "t:count.0", "t:map.0"] {
                 assert!(self.aspects.contains_key(a), "order::{name}: no write on {a}: {self:?}");
             }
             assert!(self.pending.contains_key("MissingChain"), "order::{name}: no commit without its chain: {self:?}");
         }
     }
-}
-
-/// Whether this held set leaves, with every `Late` thing synced from the start, a commit on several
-/// things or a role-class snapshot waiting whole: the cases where when the node learned it syncs a
-/// thing still decides the read (issues/sync-learned-after-apply.md).
-fn learned_late_wait(played: &Played, held: &[usize]) -> bool {
-    let mut p = Peer::new(FRESH, played.now).unwrap();
-    for t in played.sync.things() {
-        p.engine.set_syncing(*t, true).unwrap();
-    }
-    for &i in held {
-        let pk = &played.packs[i];
-        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
-    }
-    p.engine.pending().iter().any(|(id, _)| {
-        played.packs.iter().find(|x| x.id == *id).is_some_and(|pk| {
-            let h = osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header;
-            let several = h.aspects.iter().any(|a| a.tid != h.aspects[0].tid);
-            (h.kind != osis_commit::Kind::Role && several) || matches!(h.kind, osis_commit::Kind::RosterSnapshot | osis_commit::Kind::RoleSnapshot)
-        })
-    })
 }
 
 /// Checks one history: what it reached, or the first mismatch found, described (a panic counts,
@@ -2430,16 +2402,13 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let split = played.packs.iter().any(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai)));
     // `OSIS_ORDER_ALL_HELD`: every held set in exhaustive mode (about 2.3x the time)
     let subsets = if cfg.every_held && std::env::var("OSIS_ORDER_ALL_HELD").is_ok() { usize::MAX } else { cfg.subsets };
-    let unsynced = Played { sync: Syncs::None, ..played.clone() };
     let synced = Played { settled: cfg.settled, ..played };
-    // which of the two the whole set was judged under: only that one's held sets are compared to it
-    let mut full_of: Option<&Played> = None;
     for held in held_sets(&synced, subsets, &mut rng).into_iter().take(if cfg.settled { 1 } else { usize::MAX }) {
-        let played = if matches!(synced.sync, Syncs::Late { .. }) && learned_late_wait(&synced, &held) { &unsynced } else { &synced };
+        let played = &synced;
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
         let o = oracle(played, &held);
         // a partial set, then the rest (both ways), ends where the whole set does
-        if let Some(f) = full.as_ref().filter(|_| std::ptr::eq(played, full_of.unwrap_or(played))) {
+        if let Some(f) = full.as_ref() {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(played, &order);
@@ -2473,7 +2442,6 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         for l in now.part("pending").lines() {
             let why = l.split(' ').nth(1).unwrap_or(l).split('(').next().unwrap_or("");
             *seen.pending.entry(why.to_string()).or_default() += 1;
-            seen.late_waits += u64::from(why == "WaitDeltas" && matches!(played.sync, Syncs::Late { .. }));
         }
         if full.is_none() {
             for id in p.engine.commit_ids() {
@@ -2512,7 +2480,6 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         }
         if full.is_none() {
             full = Some(want.clone());
-            full_of = Some(played);
         }
         // order `k` alike (and alike after a reopen), or with late parts (split by `rng`) alike
         let one = |k: usize, split_rng: Option<&mut Rng>| -> Result<(), String> {
@@ -3293,11 +3260,11 @@ fn without(pk: &Package, gone: &BTreeSet<(CommitId, usize)>) -> Option<Vec<u8>> 
     (b.parts.len() + usize::from(!had) > 0).then(|| b.encode())
 }
 
-/// The invariant `apply::at_most_bound` relies on (spec/commits.md §4): whether a part under keep
-/// at most arrives never, or after its commit applied, or with the rest, in any order, the node
-/// ends alike and nothing pends, for every part a holder dropped with no live write (what hosts
-/// delete with no carrier). A part with no commit on its aspect stamped as late keeps its commit
-/// waiting at any clock.
+/// spec/commits.md §4 (a node never waits for a part), §5: whether a part under keep at most
+/// arrives never, or after its commit applied, or with the rest, in any order, the node ends alike
+/// and nothing pends, for every part a holder dropped with no live write (what hosts delete with no
+/// carrier). A part with no commit on its aspect stamped as late, live or not, is waited for by
+/// nothing: its commit applies without it, and it joins when it comes.
 fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
     let played = play(seed, &carrierless_history(seed, len));
     let n = played.packs.len();
@@ -3308,7 +3275,6 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
         p.clock.set(later);
         p.engine.tick().unwrap();
     };
-    // only a synced thing's missing part makes its commit wait
     let syncing_node = || {
         let mut p = Peer::new(FRESH, played.now).unwrap();
         p.engine.set_syncing(played.things[0], true).unwrap();
@@ -3389,8 +3355,17 @@ fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
             }
         }
         settle(&mut p);
-        if !p.engine.pending().iter().any(|(c, r)| *c == id && *r == osis_node::Reason::WaitDeltas) {
-            return Err(format!("{id:?} part {ai} is live or may be, nothing on its aspect as late, and did not wait: {:?}", p.engine.pending()));
+        if !p.engine.pending().is_empty() || !p.engine.commit_ids().contains(&id) {
+            return Err(format!("{id:?} part {ai} away, nothing on its aspect as late: its commit did not apply: {:?}", p.engine.pending()));
+        }
+        let pk = played.packs.iter().find(|pk| pk.id == id).unwrap();
+        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        let _ = p.engine.reexamine();
+        let got = dump(&mut p);
+        for part in ["reads", "states", "pending"] {
+            if got.part(part) != want.part(part) {
+                return Err(format!("{id:?} part {ai} late: {part} differ:\n{}\nvs\n{}", want.part(part), got.part(part)));
+            }
         }
     }
     Ok(tried)
@@ -3407,7 +3382,7 @@ fn carrierless_run(name: &str, seeds: std::ops::Range<u64>, len: usize) {
     assert!(fails.is_empty(), "{} of {} failing:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
 }
 
-// spec/commits.md §4 (a delta past its keep-at-most bound counts as held), §5: `carrierless_check`.
+// spec/commits.md §4 (a node never waits for a part), §5: `carrierless_check`.
 #[test]
 fn carrierless_part_alike_small_spec_commits_4() {
     carrierless_run("carrierless_part_alike_small_spec_commits_4", 0..12, 14);
@@ -3441,7 +3416,7 @@ fn device_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 /// parts the first node finds covered by a held snapshot, or not at all when none is left) read
 /// every aspect and roster alike. Both keep every body past its keep-at-most bound, so only
 /// coverage tells them apart. The one limit: an aspect a node flags for a part that went at its
-/// expiry while its commit waited (here, for a covered part not yet counted as held) may read
+/// expiry while it waited may read
 /// differently, as in `alike`: that part counts as never received (spec/commits.md §5).
 fn check_new_device(seed: u64, steps: &[Step]) -> Result<(usize, usize), String> {
     let played = play(seed, steps);

@@ -462,8 +462,8 @@ fn bare_header(net: &mut Net, from: usize, c: &CommitId) -> Vec<u8> {
 }
 
 // spec/commits.md §4, §5: a writer forging a header-only blob of another's message, alone or with a
-// request it has no right to make, hides nothing: the delta is missing and not counted as held, no
-// purge shows, and the body applies once it comes.
+// request it has no right to make, hides nothing: the commit applies as its header, no purge shows,
+// and the body joins once it comes.
 #[test]
 fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
     let mut net = Net::new();
@@ -477,12 +477,11 @@ fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
     net.run();
     let bare = bare_header(&mut net, b, &c);
     net.engine(n).ingest(&bare, Vec::new()).unwrap();
-    assert!(!net.engine(n).commit_ids().contains(&c));
+    assert!(net.engine(n).commit_ids().contains(&c), "its header alone");
     let p = purge(&mut net, b, t, c, Retention::default());
     let pp = net.engine(b).package(&p).unwrap().unwrap();
     net.engine(n).ingest(&pp.bytes, pp.blobs.clone()).unwrap();
-    assert!(!net.engine(n).commit_ids().contains(&c), "held by a request without the right");
-    assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty());
+    assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty(), "a request without the right");
     net.set_online(n, true);
     net.run();
     net.advance(120_000);
@@ -592,10 +591,11 @@ fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
     sees_tombstone(&mut net, n, t, c, p, author);
 }
 
-// spec/commits.md §4: atomic apply holds across a lasting header: a message beside a part on a second
-// thing the device syncs too, the message purged and the other part withheld, waits for that part.
+// spec/commits.md §4: a lasting header applies alone: a message beside a part on a second thing the
+// device syncs too, the message purged and the other part withheld, applies as its header and the
+// other part joins when it comes.
 #[test]
-fn a_lasting_header_does_not_tear_a_commit_spec_commits_4() {
+fn a_lasting_header_applies_and_the_rest_joins_spec_commits_4() {
     let mut chat = chat();
     let u = second_label(&mut chat, true);
     let Chat { mut net, a, b, n, t, .. } = chat;
@@ -616,7 +616,8 @@ fn a_lasting_header_does_not_tear_a_commit_spec_commits_4() {
     net.engine(n).ingest(&pp.bytes, pp.blobs.clone()).unwrap();
     net.engine(n).ingest(&bare, Vec::new()).unwrap();
     assert!(net.engine(n).commit_ids().contains(&p));
-    assert!(!net.engine(n).commit_ids().contains(&c), "applied without its part on a synced thing");
+    assert!(net.engine(n).commit_ids().contains(&c), "its header alone");
+    assert_eq!(net.engine(n).get(&u, &Ak::new(LIST.ak()).unwrap()).unwrap(), None);
     net.set_online(n, true);
     net.run();
     net.advance(120_000);
@@ -625,9 +626,9 @@ fn a_lasting_header_does_not_tear_a_commit_spec_commits_4() {
     assert_eq!(net.engine(n).get(&u, &Ak::new(LIST.ak()).unwrap()).unwrap(), Some(osis_base::Value::List(vec![s("card")])));
 }
 
-// spec/commits.md §5: a purge commit's own delta purged in turn. Covered by a snapshot, the snapshot
-// lists it, so the tombstone shows at a new device; gone by a keep at most with no snapshot, the
-// message waits there for good: no tombstone and nothing shown wrongly (notes/sync.md).
+// spec/commits.md §4, §5: a purge commit's own delta purged in turn, covered by a snapshot or gone by a
+// keep at most with no snapshot: the request applies as its lasting header at a new device, so the
+// tombstone shows there and nothing is shown wrongly.
 #[test]
 fn a_purge_purged_in_turn_spec_commits_5() {
     for snap in [true, false] {
@@ -654,8 +655,8 @@ fn a_purge_purged_in_turn_spec_commits_5() {
         assert!(at_host(&mut net, a, host, &l, p2).is_empty());
         net.set_online(n, true);
         net.run();
-        assert_eq!(net.engine(n).commit_ids().contains(&c), snap);
-        assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), snap.then_some(&p1));
+        assert!(net.engine(n).commit_ids().contains(&c), "snap {snap}");
+        assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), Some(&p1), "snap {snap}");
         assert_ne!(net.engine(n).get(&t, &k()).unwrap(), Some(s("SECRET")));
     }
 }
@@ -886,14 +887,12 @@ fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_7() {
     }
 }
 
-// spec/commits.md §4 (a delta that left with no carrier when every commit on its aspect as late has
-// left waits), §5 (a lasting commit's header stays under its labels): a request whose one delta is
-// dead stays as a header-only blob; its killer expires, so a new device gets the header from the
-// host with nothing later on the aspect. Both headers wait, and the aspect's next write releases
-// them, the request's bound (its floor, then that write under keep at most 0) passed
-// (issues/atomic-wait-no-later-commit.md).
+// spec/commits.md §4 (a node never waits for a part), §5 (a lasting commit's header stays under its
+// labels): a request whose one delta is dead stays as a header-only blob; its killer expires, so a
+// new device gets the header from the host with nothing later on the aspect. Both headers apply at
+// once, the request standing.
 #[test]
-fn a_lasting_request_waits_when_its_killer_left_spec_commits_4() {
+fn a_lasting_request_applies_when_its_killer_left_spec_commits_4() {
     let Chat { mut net, host, a, b, n, t, l } = chat();
     let c = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
@@ -927,18 +926,7 @@ fn a_lasting_request_waits_when_its_killer_left_spec_commits_4() {
     net.run();
     net.advance(120_000);
     net.run();
-    let mut want = vec![(p, osis_node::Reason::WaitDeltas), (c, osis_node::Reason::WaitDeltas)];
-    want.sort_by_key(|x| x.0);
-    let mut got = net.engine(n).pending();
-    got.sort_by_key(|x| x.0);
-    assert_eq!(got, want);
-    net.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(t, &GONE, &s("g3")).unwrap();
-    net.engine(a).commit(m).unwrap().unwrap();
-    net.run();
-    net.advance(120_000);
-    net.run();
-    assert_eq!(pending(&mut net, n), 0, "the request's floor passed: released by that write");
+    assert_eq!(pending(&mut net, n), 0);
+    assert!(net.engine(n).header(&p).is_some() && net.engine(n).header(&c).is_some());
     assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), Some(&p));
 }

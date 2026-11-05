@@ -26,7 +26,6 @@ Terms:
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order. Nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives. Limits:
-  - Parts of a change across things that applied before one of those things entered what the node syncs stay applied, while the other parts stay away.
   - A holder may look removed on a node that joined late, until the rest of a roster snapshot arrives. Only a hiding host or lost author makes this last.
   - On an aspect with a keep-at-most bound or expiry, if a validity flip or purge lands after a body was dropped, nodes may read it differently until a writer holding it next compacts, or the next write of that data.
   - A part that expires before a node applies it counts as never received there: that node may read what came before it until a writer next compacts. The expired value itself never shows.
@@ -137,6 +136,6 @@ Binds released formats only; until a stable release formats change in place.
 
 ## API
 - Plain values and listeners. No CRDT concepts, no conflict UI, no correctness that depends on "surfacing it to the user". Diagnostics are informational.
-- Atomic, not isolated: concurrent changes merge, so app invariants must hold under merge. Exception: a node may show a commit without a part that is still to arrive when a later snapshot of that part's aspect, by a possible writer of it, is held.
+- Atomic, not isolated: concurrent changes merge, so app invariants must hold under merge. A change is one unit: every label of every thing it touches carries all of it, each part readable by its thing's readers. A node applies all the parts it may read on things it holds at once; a part on a thing it holds later joins then.
 - Untyped access always works on any stored data.
 - Large values are usable both materialized and streamed.

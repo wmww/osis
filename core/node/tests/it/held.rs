@@ -9,8 +9,8 @@
 //! source kind, source bytes, then counter, a session's commits in `ts` order), values interned.
 //!
 //! Scope (held-model ASSUMPTIONS.md): aspects of a register, a map of registers or a text
-//! (`IN`) on things a node owns; anything else is in the input as a placeholder (its parts keep
-//! atomic apply, carry nothing) and is not compared. An in-scope aspect is not compared either
+//! (`IN`) on things a node owns; anything else is in the input as a placeholder (its parts
+//! carry nothing) and is not compared. An in-scope aspect is not compared either
 //! (`Coverage::skipped`, by reason) when a commit on it is outside the model (undo, acting for,
 //! roster snapshots, paged, ephemeral), a held body or its state has another shape
 //! (`Fragment::flat`), the node flags it suspect (spec/requirements.md Deterministic: a flip after
@@ -300,7 +300,7 @@ fn scope(e: &mut Engine, hist: &History, held: &[(CommitId, Arc<Header>, bool)])
             Some("paged")
         } else if h.ephemeral.is_some() {
             Some("ephemeral")
-        } else if !applied && !matches!(pending.get(id), Some(osis_node::Reason::WaitDeltas | osis_node::Reason::Drift)) {
+        } else if !applied && !matches!(pending.get(id), Some(osis_node::Reason::Drift)) {
             Some("waits for a reason outside the model")
         } else if h.kind == Kind::Role && !applied {
             Some("role commit waiting")

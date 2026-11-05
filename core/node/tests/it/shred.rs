@@ -106,7 +106,8 @@ fn purged_after_pending_unrecoverable_spec_commits_5() {
 }
 
 /// Node 0 writes `marker` on `t` and a value on `t2` in commit `c` (`whole`: its package), then purges
-/// `c`'s part on `t` (`request`). Node 1 knows `t`, syncs both, and lacks `t2`'s record: `c` waits whole.
+/// `c`'s part on `t` (`request`). Node 1 knows `t`, syncs both, and lacks `t2`'s record: `c`'s part there
+/// waits.
 fn pending_purge(seed: u64, marker: &str) -> (LocalPeer, Tid, osis_base::CommitId, osis_node::local_peer::Package, osis_node::local_peer::Package) {
     let mut lp = net2(seed);
     let t = new_thing(&mut lp, 0);
@@ -129,10 +130,10 @@ fn pending_purge(seed: u64, marker: &str) -> (LocalPeer, Tid, osis_base::CommitI
     (lp, t, c, whole, request)
 }
 
-// spec/commits.md §5: a part of a commit held pending that a held purge request names is held value-less:
-// its values go from the pending copy, whether the request comes first or after
+// spec/commits.md §5: a part a held purge request names, beside a part pending for its thing's record, is
+// held value-less: its values are in no copy, whether the request comes first or after
 #[test]
-fn purged_while_pending_unrecoverable_spec_commits_5() {
+fn purged_beside_a_pending_part_unrecoverable_spec_commits_5() {
     for request_first in [true, false] {
         let marker = "PENDING-PURGE-3f1a";
         let (mut lp, t, c, whole, request) = pending_purge(75 + 10 * u64::from(request_first), marker);
@@ -148,7 +149,7 @@ fn purged_while_pending_unrecoverable_spec_commits_5() {
     }
 }
 
-// spec/commits.md §4 (copies), §5: a copy of a pending commit holding a purged part is spent (node-sync
+// spec/commits.md §4 (copies), §5: a copy of a commit with a part pending, holding a purged part, is spent (node-sync
 // forgets its blob) once the pending copy holds its other parts alike; while a junk copy holds another
 // part's slot (its thing's record away, the hash uncheckable) it may hold the only true copy: not spent.
 #[test]
@@ -464,13 +465,12 @@ fn pending_part_dropped_at_expiry_spec_commits_5() {
     assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|(x, a, _, _)| *x == t && a.as_str() == "t:brief.0"), "flagged suspect");
 }
 
-// spec/commits.md §4 (a commit no part of which is held waits whole for its things, synced or
-// not): peer 1 gets peer 0's expiring write on a thing whose creation record it lacks, past T.
-// The part goes (counts as never received, §5) and the commit, left with no part, pends on the
-// record whether peer 1 syncs the thing or not (it applied header-only where the thing was not
-// synced: order seeds 1007, 1046); the record come, it applies.
+// spec/commits.md §4 (a commit with no part held applies as its header alone): peer 1 gets peer 0's
+// expiring write on a thing whose creation record it lacks, past T. The part goes (counts as never
+// received, §5) and the commit, left with no part, applies header-only whether peer 1 syncs the
+// thing or not; the record coming changes nothing.
 #[test]
-fn partless_commit_pends_on_its_thing_spec_commits_4() {
+fn partless_commit_applies_as_its_header_spec_commits_4() {
     for syncing in [false, true] {
         let mut lp = net2(81);
         lp.sync_all().unwrap();
@@ -482,11 +482,11 @@ fn partless_commit_pends_on_its_thing_spec_commits_4() {
         let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
         lp.peers[1].engine.set_syncing(t, syncing).unwrap();
         lp.advance(120_000);
-        assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::UnknownCreated(x)) if x == t), "syncing {syncing}");
-        assert!(!lp.peers[1].engine.commit_ids().contains(&c), "syncing {syncing}: applied header-only");
+        assert_eq!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Applied(c), "syncing {syncing}");
         assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == ak("t:brief.0")), "flagged");
         lp.sync(0, 1).unwrap();
-        assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().iter().all(|x| x.0 != c), "syncing {syncing}: applied once the record came");
+        assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().iter().all(|x| x.0 != c), "syncing {syncing}");
+        assert_eq!(lp.peers[1].engine.get_typed(&t, &BRIEF).unwrap(), None, "syncing {syncing}");
     }
 }
 
@@ -722,8 +722,8 @@ fn part_on(pk: &osis_node::local_peer::Package, t: Tid, a: &osis_base::Ak, empty
     b.encode()
 }
 
-// spec/commits.md §5: a part held value-less, past its expiry when its commit applies beside it, goes
-// with its kept stripped delta: nothing is left for a relay's empty slot to bring back.
+// spec/commits.md §5: a part a held request purges, past its expiry when its commit's other part
+// comes, goes: nothing is left for a relay's empty slot to bring back.
 #[test]
 fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     let mut lp = net2(301);
@@ -749,7 +749,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
     let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
     lp.deliver(1, &request).unwrap();
     lp.peers[1].engine.ingest(&part_on(&pk, t, &ak("t:reg.0"), false), Vec::new()).unwrap();
-    assert_eq!(lp.peers[1].engine.stripped_count(&c).unwrap(), 1);
+    assert!(!lp.peers[1].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "purged");
     lp.peers[1].clock.advance(120_000);
     lp.peers[1].engine.ingest(&part_on(&pk, y, &ak("t:reg.0"), false), Vec::new()).unwrap();
     assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
@@ -761,7 +761,7 @@ fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
 
 // spec/commits.md §4, §5, §6, spec/crdt.md §4.7: a commit past its expiry, every part of it (one
 // expiry per commit), given with a true part and a relay's junk (a stripped slot) and without its
-// third part: nothing waits (every part past T counts as held), so it applies at once, no aspect is
+// third part: nothing waits for it, so it applies at once, no aspect is
 // flagged (no part went while pending), and the true part joins value-less: the older value is
 // superseded, as at a node that held the commit before T.
 #[test]
@@ -1125,7 +1125,7 @@ fn part_gone_with_a_page_away_comes_back_when_its_request_fell_spec_commits_5() 
     lp.sync_all().unwrap();
     lp.peers[1].engine.set_syncing(t, true).unwrap();
     lp.advance(5);
-    // `c` also writes `t2`, whose record node 1 lacks: it waits whole after its part on `t` goes
+    // `c` also writes `t2`, whose record node 1 lacks: its part there waits after its part on `t` goes
     let had: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
     let t2 = new_thing(&mut lp, 0);
     let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
