@@ -726,6 +726,36 @@ fn group_aspect_ops_place_only_what_it_reads() {
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
 }
 
+// spec/wire.md §11.2, notes/api.md Writes, notes/client-port.md §3: a batch sent by hand names `group.0` for nothing but a placement's expiry, even with only what the actor reads in it; a placement that expires still goes
+#[test]
+fn a_batch_by_hand_writes_group_0_by_no_op() {
+    let x = node();
+    let (a, sec, c) = x.client(Role::Write);
+    let mut raw = x.raw(&sec);
+    let invalid = |o: Outcome, what: &str| assert!(matches!(&o, Outcome::Err { detail, .. } if format!("{detail:?}").contains("group calls")), "{what}: {o:?}");
+    let readable = ct::Group { items: [x.t].into_iter().collect(), subgroups: Default::default() };
+    invalid(raw.call_at(1, WRITE, set_batch(1, a, x.g, &ak("group.0"), osis::Codec::to_value(&readable))), "set");
+    let batch = |nonce: u64, op: Vec<Value>| vec![Value::uint(nonce), Value::Tid(a), Value::List(vec![Value::Str("group.0".into())]), Value::List(vec![Value::List(op)])];
+    let (key, g) = (Value::Int(0), Value::Tid(x.g));
+    invalid(raw.call_at(2, WRITE, batch(2, vec![Value::Int(6), g.clone(), key.clone()])), "purge");
+    invalid(raw.call_at(3, WRITE, batch(3, vec![Value::Int(9), g.clone(), key.clone(), Value::Tid(a)])), "purge an author");
+    invalid(raw.call_at(4, WRITE, batch(4, vec![Value::Int(8), g.clone(), key.clone(), Value::bytes(&[0; 32])])), "purge a commit");
+    let none = Value::List(vec![Value::opt(None), Value::opt(None)]);
+    invalid(raw.call_at(5, WRITE, batch(5, vec![Value::Int(5), g, key, Value::List(vec![Value::Int(0), none.clone(), none])])), "retention");
+    assert_eq!(x.n.items(x.g).unwrap().len(), 2, "nothing written");
+    // an expiry on `group.0` alone writes nothing
+    let at = Value::uint(T0 + 60_000);
+    assert!(matches!(raw.call_at(6, WRITE, batch(6, vec![Value::Int(4), Value::Tid(x.g), Value::Int(0), at])), Outcome::Ok { .. }));
+    assert_eq!(x.n.items(x.g).unwrap().len(), 2);
+    // the call an expiry in the table is for
+    let mut w = c.write();
+    let m = w.create(x.g).unwrap();
+    w.at(m, ak("t:name.0")).set(&Value::Int(1)).unwrap();
+    w.place_expiring(m, x.g, Some(Duration::from_secs(60))).unwrap();
+    w.commit().unwrap();
+    assert!(x.n.items(x.g).unwrap().contains(&m));
+}
+
 // spec/wire.md §11.2 (a thing the actor may not read answers as unknown), spec/commits.md §7: a group it may not read scopes nothing, even an item it reads: no membership oracle, and no undo through it
 #[test]
 fn hidden_group_scopes_nothing() {
@@ -1043,6 +1073,8 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
         read(c.at(t, ak("groups.0")).get().map(|v| format!("{v:?}"))),
         read(c.at(t, ct::GROUP).get().map(|v| format!("{v:?}"))),
         read(c.at(t, ak("placed.0~")).get().map(|v| format!("{v:?}"))),
+        read(c.items(t).map(|v| format!("{v:?}"))),
+        read(c.subgroups(t).map(|v| format!("{v:?}"))),
     ];
     out.join("\n").replace(&format!("{t:?}"), "T")
 }

@@ -54,7 +54,7 @@ fn attached_handle_works_at_the_node() {
     let n = node(&MemStore::new(), &net, &sock, true);
     let c = attach(&sock);
     assert!(c.is_attached());
-    assert_eq!((c.me(), c.me(), c.node()), (n.me(), n.me(), n.node()));
+    assert_eq!((c.me(), c.node()), (n.me(), n.node()));
     let title = ak("note:title.0");
     // a batch naming no existing thing goes to the node too
     c.batch(|w| w.create(c.me())).unwrap();

@@ -741,7 +741,7 @@ impl Worker {
             }
             method::REACH => c::reach_v(&db.reach(a.tid()?)?),
             method::HOLDER_PATH => c::pairs_v(&db.holder_path(a.tid()?, a.tid()?)?),
-            method::LINKS => c::links_v(&db.own_links()?),
+            method::LINKS => c::links_v(&db.links()?),
             method::MAKE_LINK => {
                 let (t, r) = (a.tid()?, c::role(&a.next()?)?);
                 let until = a.opt_wall()?;

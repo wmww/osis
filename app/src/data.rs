@@ -391,8 +391,10 @@ impl Data {
             },
             Kind::Contact => {
                 let org = self.db.at(t, crate::contact::ORG).get()?.map(|o| if o.title.is_empty() { o.name } else { o.title }).filter(|s| !s.is_empty());
-                let email = || self.db.at(t, crate::contact::EMAILS).get().ok().flatten().and_then(|m| m.keys().next().cloned());
-                org.or_else(email).unwrap_or_else(|| "Contact".into())
+                match org {
+                    Some(o) => o,
+                    None => self.db.at(t, crate::contact::EMAILS).get()?.and_then(|m| m.into_keys().next()).unwrap_or_else(|| "Contact".into()),
+                }
             }
             Kind::Tag => {
                 let (s, i) = self.tag_contents(t)?;

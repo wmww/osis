@@ -549,8 +549,8 @@ impl Osis {
     }
 
     /// The person actor this database belongs to: the usual owner of what the app creates
-    /// (attached: the node's person). It is a group too, synced under its home label
-    /// (spec/sync.md §2): things placed in it reach every device of the person.
+    /// (attached: the node's person). It is a group too: things placed in it reach every device of
+    /// the person.
     pub fn me(&self) -> Tid {
         self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.who.me))
     }
@@ -678,11 +678,11 @@ impl Osis {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
-    /// Registers a `*.osis` source: typed views for its AKs (`key`, this session), undo and
-    /// large-value write-back (the engine keeps those in the store), here and at any attached node.
-    /// `name` is for errors (file:line:col). Generated keys carry their schema and need no
-    /// registration. This session's newest registration of an AK types its `key`; the engine keeps
-    /// the highest version. An app schema declares no core AK.
+    /// Registers a `*.osis` schema source, here and at any attached node: `key` then types its
+    /// aspects, and undo and large values follow the schema. `name` appears in its errors
+    /// (name:line:col). Generated keys carry their schema and need no registration. The newest
+    /// registration of an aspect types `key` for this session; the store keeps the highest version.
+    /// A schema of an app declares no core aspect.
     pub fn register_schema(&self, name: &str, source: &str) -> Result<()> {
         let s = osis_schema::parse(name, source).map_err(|e| Error::Invalid(e.to_string()))?;
         if s.declares_core() {
