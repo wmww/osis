@@ -1,7 +1,7 @@
 # Questions for Tess
 > Summary: Open requirement and edge-case decisions, written for Tess to answer when she has time; each with a recommendation. Coordinators append; remove an entry once answered (record the answer in spec or notes).
 
-Background for all of these: notes/core-triage.md §2. The two below: notes/keys-requirements-study.md.
+Background for all of these: notes/core-triage.md §2.
 
 ## 5. Realms (design: notes/realms.md) — ON HOLD
 Tess (in discussion): realms and tags may be one concept unless clearly distinct; her current lean: a realm is how ownerless things are exposed to users (making a realm = making an organization you admin and can hand off; it owns things; a tag is a collection that shares, owns nothing; a realm may own tags). Ownerless things are being replaced by first admins (notes/owner-removal-plan.md, step 2); no realm/tag design work until that settles. Answered: 5.2 yes (members see the member list). Open with it: 5.1 (tied vs plain grants: shared tags let any writer unplace and so revoke; she finds that too much power), 5.3 (roles: edit details = admin, interact = write, view = read; details need admin-only aspects).
@@ -26,20 +26,8 @@ A removal's frontier lists the removed person's writes it had seen, and each lis
 - A: keep it, and have clients leave out of a frontier the writes made before the person first held the role. Recommended (receivers unchanged).
 - B: receivers also require the role "as restored" at the write (more rules in validity).
 
-## 8. Q2 follow-up: the model check changed the picture (please re-confirm)
-Now also the first step of notes/owner-removal-plan.md: removing owners and roster snapshots wants the depth-0 keys built first.
-The short model check you asked for before building Q2 A (a group never looks inside its member actors) found two things. Details: notes/keys-requirements-study.md §4.
-- **The downside is bigger than I told you.** In the rare cases (an out-of-date device of Alice makes her new key including the removed tablet, or the stolen tablet forges one while the removal news is held back), the tablet can read the group's messages written *since the removal*, not only messages written after that moment. Today the same cases lock Alice out instead. Two small extra rules (Team only accepts an Alice key that builds on the ones it already used; Alice's devices fix any of her keys that misses a removal they know of) close the simple version of this, and the model found no leak with them.
-- **Cycles have no simple rule.** When two groups each hold a role on the other (X in Y and Y in X), every simple rule the model tried either leaks to a removed device, keeps re-keying back and forth forever, or locks one group out of the other for good. Today's design handles cycles only through the machinery Q2 A deletes.
-Options for cycles:
-- **A (recommended): no key cycles.** A role that would let X read Y while Y can already read X (directly or through others) gives no key access; the earlier grant in the agreed order wins. Plain data check over grants, no key machinery; realms nest and overlap without cycles. Changes the requirement "groupings may be cyclic" for reading through each other.
-- **B:** keep today's machinery for cycle members only (most of the 2k lines stay).
-- **C:** accept that in a cycle a removed device may keep reading until the next knowing re-key (a further stated limit).
-- **D:** go back to Q2 B (keep today's design everywhere).
-With A, I'd build Q2 A with the two extra rules. If the bigger downside above changes your mind on Q2 itself, say D.
-
 ## Decided (Tess)
 - Q1: option A (any writer finalizes an ended timed share), built as item 280.
-- Q2: option A, a group never looks inside its member actors. Model check done: reopened as question 8 (bigger downside, cycles).
+- Q2: option A, a group never looks inside its member actors, with the two extra rules of notes/keys-requirements-study.md §4. Role cycles (Q8): Tess left it to us: no key cycles (the earlier grant in the agreed order gets keys, the later one none), model-check first, fall back to accepting a leak in cycles until the next knowing re-key if a hidden cycle leaks. Nested shared tags can be one-way. Plan: issues/keys-depth0.md.
 - Q3: Tess's wording in spec/requirements.md (no values of another thing; only metadata, and only when one commit touches both); the exact metadata (thing ID, `ai` list, owner chain, size) is stated in spec/wire.md §4 and changes there deliberately, without her sign-off. Built as is (whole-2b).
 - Q4: option A, written into spec/requirements.md Deletion (an undo made before the device saw the purge is its own change). Nothing to build.
