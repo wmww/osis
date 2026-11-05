@@ -339,6 +339,17 @@ fn client_purge_is_judged_by_the_actor_spec_perm_7() {
     assert_eq!(c.me(), a);
 }
 
+// notes/api.md Sync status: `connected` counts sync connections: a client's session is none.
+#[test]
+fn a_client_session_is_no_sync_connection() {
+    let x = node();
+    let before = x.n.status().unwrap().connected;
+    let (_, _, c) = x.client(Role::Read);
+    assert_eq!(c.at(x.t, osis::DynamicAspectKey::untyped(ak("t:none.0"))).get().unwrap(), None, "the session is up");
+    x.n.settle();
+    assert_eq!(x.n.status().unwrap().connected, before);
+}
+
 // spec/commits.md §5, notes/api.md Commits: a purged delta reads as a tombstone in the commit query:
 // author, time, the purge that dropped it. A thin client reads it as it reads other history: of what
 // it may read only, and nothing of what it may not.

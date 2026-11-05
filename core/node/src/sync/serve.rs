@@ -189,7 +189,7 @@ impl Served {
 
     /// Whether it syncs at all (a client's session opens no label).
     pub(crate) fn syncing(&self) -> bool {
-        !self.conn.none_opened()
+        self.conn.opened().next().is_some()
     }
 }
 
