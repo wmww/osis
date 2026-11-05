@@ -9,7 +9,7 @@ use osis_base::format::INBOX_LIFETIME_MS;
 use osis_base::{Ak, BlobId, LabelId, Role, Tid, WallMs};
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use std::collections::BTreeSet;
 
 static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(

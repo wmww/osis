@@ -17,7 +17,7 @@ use osis_base::{Ak, Tid, Ts, WallMs};
 use osis_commit::{Form, Kind};
 use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, Source, Stamp, Undone, Writer};
 use osis_schema::core_types::{CREATED, PLACED, is_content};
-use osis_schema::{AspectKey, Schema};
+use osis_schema::{RawKey, Schema};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 

@@ -25,7 +25,7 @@ impl SyncEngine {
         let mut roots: BTreeSet<Tid> = BTreeSet::new();
         let mut own = false;
         let me = self.engine.tid();
-        let clients = osis_schema::AspectKey::ak(&osis_schema::core_types::CLIENTS);
+        let clients = osis_schema::RawKey::ak(&osis_schema::core_types::CLIENTS);
         let moved_clients = |aspects: &[(Tid, Ak)]| aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
         while let Ok(e) = self.events.try_recv() {
             match e {
@@ -75,7 +75,7 @@ impl SyncEngine {
                     }
                 }
                 // an expiry of ephemeral state only: nothing to sync
-                crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(_, a)| !osis_schema::AspectKey::lifetime(a).is_durable()) => {}
+                crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(_, a)| !osis_schema::RawKey::lifetime(a).is_durable()) => {}
                 crate::Event::Changed { cause, changed: aspects } => {
                     changed = true;
                     narrow.extend(aspects.iter().cloned());

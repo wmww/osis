@@ -2651,6 +2651,7 @@ dependencies = [
  "osis-chat",
  "osis-kit",
  "osis-schema",
+ "tokio",
 ]
 
 [[package]]

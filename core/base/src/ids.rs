@@ -310,7 +310,7 @@ impl Ak {
         self.parsed().lifetime
     }
     /// The markers of a valid AK's text, read from its tail (`^`, `~` and `*` occur nowhere else
-    /// in one): admin-only, lifetime. For keys held as text (`AspectKey::ak`).
+    /// in one): admin-only, lifetime. For keys held as text (`RawKey::ak`).
     pub fn markers_of(s: &str) -> (bool, Lifetime) {
         let (lifetime, rest) = match s.as_bytes() {
             [r @ .., b'~'] => (Lifetime::Ephemeral, r),

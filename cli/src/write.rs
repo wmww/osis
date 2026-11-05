@@ -5,7 +5,7 @@ use crate::args::{CreateArgs, MemberCmd, OpArgs, PlaceArgs, RmArgs, ScriptCmd, S
 use crate::text::{self, PStep};
 use crate::{Ctx, key_ty, parse_dur, parse_ts, ty_in, usage};
 use clap::Parser;
-use osis_schema::AspectKey as _;
+use osis_schema::RawKey as _;
 use osis::{AspectWrite, Expiry, Key, Member, Path, Retention, Step, Tid, Value, WallMs};
 use osis_schema::{Bound, PurgeBy, Type};
 use std::ops::Range;

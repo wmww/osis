@@ -18,7 +18,7 @@ struct Room {
 fn meet(w: &mut World, a: &Osis, b: &Osis) -> Tid {
     let card = b.contact_card().unwrap();
     w.run();
-    w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap()
+    w.until(a.import_contact(&card), 1000, 10).unwrap()
 }
 
 fn room(o: Options) -> Room {
@@ -224,7 +224,7 @@ fn kick_keep_erase_purge_spec_perm_3() {
     post(&b, c, "before").unwrap();
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c).len(), 2, "kept");
@@ -240,7 +240,7 @@ fn kick_keep_erase_purge_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(b.kept_copies().unwrap().is_empty());
     assert!(texts(&b, c).is_empty(), "erased");
@@ -447,7 +447,7 @@ fn kicked_while_offline_spec_perm_5() {
     let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     w.set_online(&b, false);
     w.advance(1000);
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     let late = post(&b, c, "late").unwrap();
     w.set_online(&b, true);
@@ -503,7 +503,7 @@ fn new_device_of_a_participant_sees_history_spec_sync_6() {
     assert_eq!(newest(&a, c).sender, bob, "one sender across devices");
     assert_eq!(newest(&a, c).body, Body::Text("from the new device".into()));
     // a device removed erases, a kicked person's new device gets nothing
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     let late = new_device(&mut w, 8);
     assert!(texts(&late, c).is_empty(), "known forced no: notes/chat-cases.md");
@@ -515,7 +515,7 @@ fn kept_copy_still_disappears_spec_commits_6() {
     let Room { mut w, a, b, c, bob } = room(Options { disappear: Some(Duration::from_secs(60)), ..Options::default() });
     post(&a, c, "short").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c), ["short"]);
@@ -531,7 +531,7 @@ fn admins_are_equal_spec_perm_1() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     add(&a, c, bob, Role::Admin).unwrap();
     w.run();
-    w.until(kick(&b, c, a.me(), None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&b, c, a.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(post(&a, c, "no").is_err());
     post(&b, c, "mine now").unwrap();
@@ -541,8 +541,8 @@ fn admins_are_equal_spec_perm_1() {
     add(&a, c, bob, Role::Admin).unwrap();
     w.run();
     w.set_online(&b, false);
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
-    w.until(kick(&b, c, a.me(), None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
+    w.until(kick(&b, c, a.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.set_online(&b, true);
     w.advance(60_000);
     w.run();
@@ -555,7 +555,7 @@ fn erased_then_added_again_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     post(&a, c, "one").unwrap();
     w.run();
-    w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(texts(&b, c).is_empty());
     post(&a, c, "two").unwrap();
@@ -578,7 +578,7 @@ fn creator_on_a_new_device_spec_sync_3() {
     let c = create(&a, &Options::default()).unwrap();
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(a.wait_synced(osis::SyncScope::All, Duration::from_secs(60)), 1000, 60).unwrap();
+    w.until(a.wait_synced(osis::SyncScope::All), 1000, 60).unwrap();
     let offer = a.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(2, &[]), &offer).unwrap();
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();
@@ -607,7 +607,7 @@ fn turned_invalid_at_a_reader_spec_perm_5() {
     w.run();
     w.advance(1000);
     w.set_online(&a, false);
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.advance(1000);
     let m = find(&b, c, &old).unwrap().unwrap();
     let edit_id = edit(&b, c, &m, "rewritten").unwrap();
@@ -691,8 +691,8 @@ fn link_joiner_leaves_spec_perm_8() {
     let l = link(&a, c, Role::Write, false).unwrap();
     post(&a, c, "hi").unwrap();
     w.run();
-    w.until(join(&b, &l, osis::internals::WAIT), 1000, 30).unwrap();
-    w.until(join(&d, &l, osis::internals::WAIT), 1000, 30).unwrap();
+    w.until(join(&b, &l), 1000, 30).unwrap();
+    w.until(join(&d, &l), 1000, 30).unwrap();
     w.run();
     leave(&b, c).unwrap();
     w.run();
@@ -719,33 +719,33 @@ fn link_after_leave_and_kick_spec_perm_8() {
     let l = link(&a, c, Role::Write, false).unwrap();
     post(&a, c, "hi").unwrap();
     w.run();
-    w.until(join(&b, &l, osis::internals::WAIT), 1000, 30).unwrap();
+    w.until(join(&b, &l), 1000, 30).unwrap();
     w.run();
     leave(&b, c).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
     assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1, "a leave ends no link");
-    w.until(join(&d, &l, osis::internals::WAIT), 1000, 30).unwrap();
+    w.until(join(&d, &l), 1000, 30).unwrap();
     w.run();
     assert_eq!(texts(&d, c), ["hi"]);
     post(&d, c, "joined after the leave").unwrap();
     w.run();
     assert_eq!(texts(&a, c), ["hi", "joined after the leave"]);
     assert!(!texts(&b, c).contains(&"joined after the leave".to_string()), "what the leave protects");
-    w.until(join(&b, &l, osis::internals::WAIT), 1000, 30).unwrap();
+    w.until(join(&b, &l), 1000, 30).unwrap();
     w.run();
     assert!(texts(&b, c).contains(&"joined after the leave".to_string()), "the link text brings a leaver back");
-    w.until(kick(&a, c, d.me(), None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, d.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
     assert!(osis_chat::links(&a, c).unwrap().is_empty(), "a kick ends the link");
-    assert!(matches!(w.until(join(&e, &l, osis::internals::WAIT), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
-    assert!(matches!(w.until(join(&d, &l, osis::internals::WAIT), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked person stays out");
+    assert!(matches!(w.until(join(&e, &l), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
+    assert!(matches!(w.until(join(&d, &l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked person stays out");
     let fresh = link(&a, c, Role::Write, false).unwrap();
     w.run();
-    w.until(join(&e, &fresh, osis::internals::WAIT), 1000, 30).unwrap();
+    w.until(join(&e, &fresh), 1000, 30).unwrap();
     w.run();
     post(&e, c, "by the new link").unwrap();
     post(&b, c, "still here").unwrap();
@@ -782,9 +782,9 @@ fn link_joiners_are_participants_spec_perm_8() {
     w.run();
     assert_eq!(osis_chat::links(&a, c).unwrap().len(), 2);
     assert_eq!(participants(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob]), "a link no one used is nobody");
-    w.until(join(&d, &l, osis::internals::WAIT), 1000, 30).unwrap();
-    w.until(join(&e, &l, osis::internals::WAIT), 1000, 30).unwrap();
-    w.until(join(&f, &once, osis::internals::WAIT), 1000, 30).unwrap();
+    w.until(join(&d, &l), 1000, 30).unwrap();
+    w.until(join(&e, &l), 1000, 30).unwrap();
+    w.until(join(&f, &once), 1000, 30).unwrap();
     w.run();
     assert_eq!(participants(&a, c).unwrap().into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob, d.me(), e.me(), f.me()]));
     assert!(participants(&d, c).unwrap().contains_key(&e.me()), "a joiner sees the link's other joiners");
@@ -794,7 +794,7 @@ fn link_joiners_are_participants_spec_perm_8() {
     post(&f, c, "from a joiner").unwrap();
     w.run();
     assert!(participants(&b, c).unwrap().contains_key(&f.me()), "a direct participant, from the post");
-    w.until(kick(&a, c, d.me(), None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, d.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     let left = participants(&a, c).unwrap();
     assert!(!left.contains_key(&d.me()) && left.contains_key(&e.me()), "{left:?}");
@@ -804,7 +804,7 @@ fn link_joiners_are_participants_spec_perm_8() {
     let gid = meet(&mut w, &a, &g);
     add(&a, c, gid, Role::Write).unwrap();
     w.run();
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     post(&g, c, "after the rotation").unwrap();
     post(&f, c, "and from a joiner").unwrap();
@@ -828,8 +828,8 @@ fn link_join_name_reply_cursor_spec_perm_8() {
     let l = link(&a, c, Role::Write, false).unwrap();
     let first = send(&a, c, &Draft { text: "hi".into(), name: Some("alice".into()), reply_to: None }).unwrap();
     w.run();
-    assert_eq!(w.until(join(&b, &l, osis::internals::WAIT), 1000, 30).unwrap(), c);
-    assert_eq!(w.until(join(&d, &l, osis::internals::WAIT), 1000, 30).unwrap(), c);
+    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c);
+    assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c);
     w.run();
     assert_eq!(texts(&b, c), ["hi"]);
     w.advance(10);
@@ -849,7 +849,7 @@ fn link_join_name_reply_cursor_spec_perm_8() {
     let again = since(&b, c, Some(&cursor), 10).unwrap();
     assert_eq!(again.messages.len(), 1);
     assert_eq!((again.messages[0].id, again.messages[0].name.as_deref(), &again.messages[0].body), (first, Some("alice"), &Body::Text("hi!".into())));
-    w.until(kick(&a, c, b.me(), None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, b.me(), None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(post(&b, c, "after").is_err());
     post(&d, c, "still here").unwrap();
@@ -947,7 +947,7 @@ fn scale(n_participants: u64, n_msgs: usize) {
     eprintln!("newcomer fetch: {:?}, down {} MB; first page complete {}", t.elapsed(), (after.down - before.down) / 1_000_000, Timeline::new(&new, c).unwrap().older(&new, 1).unwrap().complete);
     let t = Instant::now();
     let kicked = participants(&a, c).unwrap().into_keys().find(|k| *k != a.me()).unwrap();
-    w.until(kick(&a, c, kicked, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, kicked, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     eprintln!("kick: {:?}", t.elapsed());
 }
@@ -986,7 +986,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     w.run();
     assert!(!texts(&b, c).contains(&"unseen".to_string()));
     // the kick's pre-sync on a live chat
-    w.until(kick(&a, c, dee, None, SyncFirst::Required, osis::internals::PRESYNC), 1000, 60).unwrap();
+    w.until(kick(&a, c, dee, None, SyncFirst::Required), 1000, 60).unwrap();
     w.run();
     assert_eq!(participants(&a, c).unwrap().len(), 1);
 }
@@ -1041,7 +1041,7 @@ fn chats_lists_held_chats() {
     assert!(chats(&r.b).unwrap().is_empty());
 
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
     assert!(chats(&b).unwrap().is_empty());
@@ -1056,15 +1056,15 @@ fn join_held_chat() {
     let (d, _) = w.person(3, &[0]);
     let (e, _) = w.person(4, &[0]);
     w.run();
-    assert_eq!(w.until(join(&a, &l, osis::internals::WAIT), 1000, 30).unwrap(), c, "its maker");
-    assert_eq!(w.until(join(&b, &l, osis::internals::WAIT), 1000, 30).unwrap(), c, "a participant");
-    assert_eq!(w.until(join(&d, &one, osis::internals::WAIT), 1000, 30).unwrap(), c);
+    assert_eq!(w.until(join(&a, &l), 1000, 30).unwrap(), c, "its maker");
+    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c, "a participant");
+    assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c);
     w.run();
-    assert_eq!(w.until(join(&d, &one, osis::internals::WAIT), 1000, 30).unwrap(), c, "used up, by this person");
-    assert_eq!(w.until(join(&d, &l, osis::internals::WAIT), 1000, 30).unwrap(), c);
+    assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c, "used up, by this person");
+    assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c);
     w.run();
-    assert_eq!(w.until(join(&d, &l, osis::internals::WAIT), 1000, 30).unwrap(), c, "again");
-    assert!(matches!(w.until(join(&e, &one, osis::internals::WAIT), 1000, 30), Err(osis::Error::Invalid(_))), "used up, for someone else");
+    assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c, "again");
+    assert!(matches!(w.until(join(&e, &one), 1000, 30), Err(osis::Error::Invalid(_))), "used up, for someone else");
 }
 
 // spec: none. notes/chat.md: a link whose target names a held chat but whose key is another chat's opens the held chat and redeems nothing; once kicked with a kept copy the chat is not held, so that link fails and joins nothing, and an honest one rejoins
@@ -1078,17 +1078,17 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
     let mut crafted = osis_label::ShareLink::from_text(&l2.to_string()).unwrap();
     crafted.target = c;
     let crafted: osis::ShareLink = crafted.to_text().unwrap().parse().unwrap();
-    assert_eq!(w.until(join(&b, &crafted, osis::internals::WAIT), 1000, 30).unwrap(), c);
+    assert_eq!(w.until(join(&b, &crafted), 1000, 30).unwrap(), c);
     w.run();
     assert_eq!(chats(&b).unwrap(), vec![c], "c2 not joined");
 
-    w.until(kick(&a, c, bob, None, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
-    assert!(matches!(w.until(join(&b, &crafted, osis::internals::WAIT), 1000, 200), Err(osis::Error::Invalid(_))), "known, not held: the link's own key does not reach it");
+    assert!(matches!(w.until(join(&b, &crafted), 1000, 200), Err(osis::Error::Invalid(_))), "known, not held: the link's own key does not reach it");
     w.run();
     assert!(chats(&b).unwrap().is_empty(), "c2 not joined");
-    assert_eq!(w.until(join(&b, &l, osis::internals::WAIT), 1000, 30).unwrap(), c);
+    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c);
     w.run();
     assert_eq!(chats(&b).unwrap(), vec![c], "rejoined");
     assert!(b.kept_copies().unwrap().is_empty());

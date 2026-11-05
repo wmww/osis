@@ -15,7 +15,7 @@ use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Sourc
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_schema::core_types::{CREATED, is_role_class};
-use osis_schema::{AspectKey, Lifetime, Retention, Schema};
+use osis_schema::{RawKey, Lifetime, Retention, Schema};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -81,7 +81,7 @@ impl Default for Mutation {
     }
 }
 
-fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
+fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
     Ak::new(key.ak()).map_err(|_| Error::Misuse("invalid AK"))
 }
 
@@ -131,7 +131,7 @@ impl Mutation {
         t
     }
 
-    fn entry<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<&mut AspectMut> {
+    fn entry<K: RawKey>(&mut self, tid: Tid, key: &K) -> Result<&mut AspectMut> {
         let ak = ak_of(key)?;
         let defaults = key.defaults();
         let e = self.aspects.entry((tid, ak)).or_insert_with(|| AspectMut { default_expiry: defaults.expires, ..AspectMut::default() });
@@ -163,27 +163,27 @@ impl Mutation {
     }
 
     /// An op at a path (validated by the crdt against the writer's view).
-    pub fn op<K: AspectKey>(&mut self, tid: Tid, key: &K, op: PathOp) -> Result<&mut Self> {
+    pub fn op<K: RawKey>(&mut self, tid: Tid, key: &K, op: PathOp) -> Result<&mut Self> {
         self.entry(tid, key)?.ops.push(op);
         Ok(self)
     }
 
     /// Makes the aspect read `v` (structural diff, spec/crdt.md §9).
-    pub fn set<K: AspectKey>(&mut self, tid: Tid, key: &K, v: &K::T) -> Result<&mut Self> {
+    pub fn set<K: RawKey>(&mut self, tid: Tid, key: &K, v: &K::T) -> Result<&mut Self> {
         let v = key.encode(v);
         key.validate(&v)?;
         self.op(tid, key, PathOp { path: Vec::new(), op: Op::Set(v) })
     }
 
     /// Resets the aspect, then writes `v`.
-    pub fn replace<K: AspectKey>(&mut self, tid: Tid, key: &K, v: &K::T) -> Result<&mut Self> {
+    pub fn replace<K: RawKey>(&mut self, tid: Tid, key: &K, v: &K::T) -> Result<&mut Self> {
         let v = key.encode(v);
         key.validate(&v)?;
         self.op(tid, key, PathOp { path: Vec::new(), op: Op::Replace(v) })
     }
 
     /// Removes the aspect (spec/crdt.md §4.3: absent afterwards).
-    pub fn remove_aspect<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<&mut Self> {
+    pub fn remove_aspect<K: RawKey>(&mut self, tid: Tid, key: &K) -> Result<&mut Self> {
         self.op(tid, key, PathOp { path: Vec::new(), op: Op::RemoveAspect })
     }
 
@@ -194,14 +194,14 @@ impl Mutation {
     }
 
     /// Retention for this aspect's delta, instead of the schema default (spec/commits.md §5).
-    pub fn retention<K: AspectKey>(&mut self, tid: Tid, key: &K, r: Retention) -> Result<&mut Self> {
+    pub fn retention<K: RawKey>(&mut self, tid: Tid, key: &K, r: Retention) -> Result<&mut Self> {
         self.entry(tid, key)?.retention = Some(r);
         Ok(self)
     }
 
     /// Expiry T (wall ms) for this aspect's delta, raised to just after the commit's `ts` if that
     /// has passed it (spec/commits.md §6).
-    pub fn expires<K: AspectKey>(&mut self, tid: Tid, key: &K, t: WallMs) -> Result<&mut Self> {
+    pub fn expires<K: RawKey>(&mut self, tid: Tid, key: &K, t: WallMs) -> Result<&mut Self> {
         self.entry(tid, key)?.expires = Some(t.0);
         Ok(self)
     }

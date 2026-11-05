@@ -8,7 +8,7 @@ use osis_commit::PurgeItem;
 use osis_base::{Ak, Role, Value, WallMs};
 use osis_node::Mutation;
 use osis_node::sync::{EntryKind, Event, SyncConfig};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_schema::core_types as ct;
 
 /// Blob IDs node `n` knows under `l` holding commit `c`.

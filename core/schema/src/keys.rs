@@ -1,6 +1,6 @@
 //! Typed aspect keys (notes/api.md Keys). `Aspect<T>` are constants
 //! (generated per declared AK, or the core ones in `core_types`); `Ak` is the
-//! untyped key with `T = Value`, for the engine: an app's key is an `ApiKey`.
+//! untyped key with `T = Value`, for the engine: an app's key is an `AspectKey`, a `RawKey` too.
 
 use crate::codec::Codec;
 use crate::path::{Path, PathError, PathErrorKind};
@@ -11,7 +11,8 @@ use crate::types::Type;
 use osis_base::{Ak, Value};
 use std::marker::PhantomData;
 
-pub trait AspectKey {
+#[doc(hidden)]
+pub trait RawKey {
     /// The Rust type its values read as.
     type T;
     #[doc(hidden)]
@@ -58,15 +59,15 @@ pub trait AspectKey {
 
 /// What a call of the `osis` API takes as an aspect's key: generated keys and `osis::Key`, not a
 /// bare name.
-pub trait ApiKey: AspectKey {}
+pub trait AspectKey: RawKey {}
 
-impl<T: Codec> ApiKey for Aspect<T> {}
+impl<T: Codec> AspectKey for Aspect<T> {}
 
 fn undeclared(ak: &str) -> PathError {
     PathError::new(Path::root(), PathErrorKind::Schema(format!("{ak} is not declared by its schema")))
 }
 
-impl AspectKey for Ak {
+impl RawKey for Ak {
     type T = Value;
     fn ak(&self) -> &str {
         self.as_str()
@@ -109,7 +110,7 @@ impl<T> std::fmt::Debug for Aspect<T> {
     }
 }
 
-impl<T: Codec> AspectKey for Aspect<T> {
+impl<T: Codec> RawKey for Aspect<T> {
     type T = T;
     fn ak(&self) -> &str {
         self.ak

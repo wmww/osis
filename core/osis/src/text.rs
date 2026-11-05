@@ -17,7 +17,7 @@ use crate::watch::{Delivery, Filter, Source, Subscription, lock};
 use crate::write::Committed;
 use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
-use osis_schema::ApiKey;
+use osis_schema::AspectKey;
 use osis_schema::{Path, Type};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
@@ -145,7 +145,7 @@ fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Committed>> {
     Ok(c)
 }
 
-impl<K: ApiKey> PathRef<'_, '_, K> {
+impl<K: AspectKey> PathRef<'_, '_, K> {
     /// Opens a text session on the string here. An absent position starts empty. `Unsupported`
     /// through a connected node.
     pub fn edit_text(&self) -> Result<TextSession> {

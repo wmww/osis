@@ -43,14 +43,9 @@ use osis_node::{ChangeId, Engine};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 /// The local record of `routes`: a line `tid url#key` per routed group.
 const SOURCES: &str = "sources";
-
-/// How often `group_source` asks a node whether its writes reached a host. Minor: 0 spins on the
-/// node's worker, infinity never finishes the move (the caller's timeout ends it).
-const UPLOAD_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// How to log in to a node (`Osis::connect`, `Osis::connect_node`): where it is and what proves
 /// who this client is there. The node says which actor that makes it (`Osis::me`).
@@ -496,7 +491,7 @@ impl Osis {
     ///
     /// To `Remote(addr)`: the connection must be up and the node know the group (else `Network` or
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a host
-    /// (within `timeout`, else `Network` or `Unsynced`, nothing changed); then this
+    /// (`wait_synced`'s outcomes; failed or dropped, nothing changed); then this
     /// node stops syncing it, for itself alone (`SyncMode::HeadersOnly`, not `unsync`, which
     /// stops it for every holder), and calls go there. `Invalid`: the person's home group, or a
     /// group still synced here through a parent (all of it would be split: move the parent). A write made
@@ -504,7 +499,7 @@ impl Osis {
     ///
     /// To `Local`: this node must hold the group (a program with no store has no keys: `Unsupported`; a node
     /// without it: `Invalid`). It syncs the group again and, until the node's writes are at a host
-    /// and this engine caught up (`timeout`, else `Network` or `Unsynced`, syncing goes on and
+    /// and this engine caught up (`wait_synced`'s outcomes; failed or dropped, syncing goes on and
     /// calling this again finishes the move), calls keep going to the node, so nothing reads this
     /// engine's old copy. Works with the node gone (what only it held arrives if it returns).
     /// `Unsynced` here means a label of the group opens under no key at a host (`status`:
@@ -518,20 +513,20 @@ impl Osis {
     ///
     /// Every watch whose source this changes gets one last `Err(Network)` and ends: watch again.
     /// The route survives a restart (the `sources` record); a store-less process has none.
-    pub async fn group_source(&self, group: Tid, to: GroupSource, timeout: Duration) -> Result<()> {
+    pub async fn group_source(&self, group: Tid, to: GroupSource) -> Result<()> {
         self.local_only("group_source")?;
         match to {
-            GroupSource::Remote(addr) => self.source_remote(group, addr, timeout).await,
-            GroupSource::Local => self.source_local(group, timeout).await,
+            GroupSource::Remote(addr) => self.source_remote(group, addr).await,
+            GroupSource::Local => self.source_local(group).await,
         }
     }
 
-    async fn source_remote(&self, group: Tid, addr: HostAddr, timeout: Duration) -> Result<()> {
+    async fn source_remote(&self, group: Tid, addr: HostAddr) -> Result<()> {
         if group == self.me() {
             return Err(Error::Invalid("the home group stays on this node".into()));
         }
         let Some(r) = self.locked(|l| l.remotes.iter().find(|r| r.addr == addr).cloned()) else { return Err(Error::Invalid(format!("not connected to {addr}"))) };
-        crate::net::blocking(|| r.first())?;
+        r.first().await?;
         // Value::Bool(false): the node does not hold it, or the client's actor may not read it
         if r.call(method::HOLDS, vec![Value::Tid(group)])? != Value::Bool(true) {
             return Err(Error::UnknownThing { tid: group });
@@ -541,7 +536,7 @@ impl Osis {
             (held, syncs_here(l, &group))
         });
         if live {
-            self.wait_synced_pending(SyncScope::Thing(group), timeout).await?;
+            self.wait_synced_pending(SyncScope::Thing(group)).await?;
         }
         self.locked(|l| {
             let parents: Vec<Tid> = l.engine().groups_of(&group).into_iter().filter(|p| *p != group && !l.routes.contains_key(p)).collect();
@@ -566,8 +561,7 @@ impl Osis {
         })
     }
 
-    async fn source_local(&self, group: Tid, timeout: Duration) -> Result<()> {
-        let budget = self.budget(timeout);
+    async fn source_local(&self, group: Tid) -> Result<()> {
         let (held, role, stopped, has_label, route) = self.locked(|l| {
             let held = l.engine().knows(&group);
             let limit = self.inner.limit;
@@ -591,29 +585,15 @@ impl Osis {
         // what was written at the node reaches a host first, else this engine would catch up
         // without it; not asked of a node that is gone
         if let Some(r) = route.as_ref().map(|a| self.locked(|l| remote_named(l, a))) {
-            self.node_uploaded(&r, group, budget)?;
+            self.node_uploaded(&r, group).await?;
         }
-        self.wait_synced_pending(SyncScope::Thing(group), self.left(budget)).await?;
+        self.wait_synced_pending(SyncScope::Thing(group)).await?;
         self.locked(|l| {
             self.moving(l, |l| {
                 l.routes.remove(&group);
                 save_routes(l)
             })
         })
-    }
-
-    /// Waits (within `budget`, else `Network`) until `r` reports `g` synced: nothing it was
-    /// written waits there. Done at once when it is down or does not report the group (a client's
-    /// actor no longer reads it): nothing more can be learned from it.
-    fn node_uploaded(&self, r: &Remote, g: Tid, budget: crate::net::Budget) -> Result<()> {
-        loop {
-            let Ok(there) = r.call(method::STATUS, vec![]).and_then(crate::port::codec::status) else { return Ok(()) };
-            match there.groups.get(&g).map(|s| s.state) {
-                Some(crate::share::SyncState::Synced) | None => return Ok(()),
-                Some(_) if self.left(budget).is_zero() => return Err(Error::Network(format!("{} has not uploaded this group yet", r.addr))),
-                Some(_) => crate::net::blocking(|| std::thread::sleep(UPLOAD_POLL)),
-            }
-        }
     }
 
     /// Ends the connection to the node at `addr`. A route naming it stays and fails `Network` until

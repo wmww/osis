@@ -143,8 +143,8 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
     let c = clock();
     let at = |seed: u64| {
         let mut x = osis::internals::Opening::at(Store::Dir(dir.clone()));
-        x.internals.seed = Some(seed);
-        x.internals.clock = Some(c.clone());
+        x.client.internals.seed = Some(seed);
+        x.client.internals.clock = Some(c.clone());
         x
     };
     let db = osis::internals::create(at(1)).unwrap().0;
@@ -420,7 +420,7 @@ fn bench_btreemap_sets() {
 fn shared_two(role: Role, role2: Role) -> (World, Osis, Osis, osis::Tid, osis::Tid) {
     let (mut w, alice, bob, g) = shared(role);
     let card = bob.contact_card().unwrap();
-    let b = w.until(alice.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut wr = alice.write();
     let g2 = wr.create().unwrap();
     wr.group(alice.me()).add(osis::Member::Item(g2)).unwrap();
@@ -439,7 +439,7 @@ fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
-    let b = w.until(alice.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut wr = alice.write();
     let g = wr.create().unwrap();
     wr.group(alice.me()).add(osis::Member::Item(g)).unwrap();
@@ -698,8 +698,8 @@ fn restart_leaves_no_dead_tids_in_groups_spec_data_model_8() {
     let c = clock();
     let at = |seed: u64| {
         let mut x = osis::internals::Opening::at(Store::Dir(dir.clone()));
-        x.internals.seed = Some(seed);
-        x.internals.clock = Some(c.clone());
+        x.client.internals.seed = Some(seed);
+        x.client.internals.clock = Some(c.clone());
         x
     };
     let db = osis::internals::create(at(1)).unwrap().0;
@@ -851,8 +851,8 @@ fn persistence_through_group_cycles_spec_data_model_8() {
     let c = clock();
     let at = |seed: u64| {
         let mut x = osis::internals::Opening::at(Store::Dir(dir.clone()));
-        x.internals.seed = Some(seed);
-        x.internals.clock = Some(c.clone());
+        x.client.internals.seed = Some(seed);
+        x.client.internals.clock = Some(c.clone());
         x
     };
     let db = osis::internals::create(at(1)).unwrap().0;

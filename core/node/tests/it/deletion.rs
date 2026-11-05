@@ -7,7 +7,7 @@ use net::*;
 use osis_base::{Ak, Role};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_schema::core_types as ct;
 
 // spec/sync.md §3 (retag), §5 (deletion by delete key), §6: a thing leaving the folder takes its own

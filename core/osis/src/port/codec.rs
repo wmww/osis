@@ -769,20 +769,11 @@ pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     Ok(s)
 }
 
-/// A wait's timeout in ms, past `u64::MAX` as that: no deadline (`Osis::wait_until`).
-pub(crate) fn timeout_v(t: std::time::Duration) -> Value {
-    u(u64::try_from(t.as_millis()).unwrap_or(u64::MAX))
-}
-
-pub(crate) fn timeout(ms: u64) -> std::time::Duration {
-    std::time::Duration::from_millis(ms)
-}
-
-/// A `SyncFirst`: `[0]` required, `[1]` try, `[2]` skip, `[3, time]` backdate.
+/// A `SyncFirst`: `[0]` required, `[1, ms]` try (`u64::MAX`: as long as it takes), `[2]` skip, `[3, time]` backdate.
 pub(crate) fn sync_first_v(s: SyncFirst) -> Value {
     Value::List(match s {
         SyncFirst::Required => vec![u(0)],
-        SyncFirst::Try => vec![u(1)],
+        SyncFirst::Try(d) => vec![u(1), u(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))],
         SyncFirst::Skip => vec![u(2)],
         SyncFirst::Backdate(w) => vec![u(3), u(w.0)],
     })
@@ -792,7 +783,7 @@ pub(crate) fn sync_first(v: Value) -> Result<SyncFirst> {
     let mut a = Args::new(v)?;
     let s = match a.uint()? {
         0 => SyncFirst::Required,
-        1 => SyncFirst::Try,
+        1 => SyncFirst::Try(std::time::Duration::from_millis(a.uint()?)),
         2 => SyncFirst::Skip,
         3 => SyncFirst::Backdate(osis_base::WallMs(a.uint()?)),
         _ => return Err(bad("sync first")),

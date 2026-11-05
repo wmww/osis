@@ -5,7 +5,7 @@ use crate::net;
 use net::*;
 use osis_base::{Ak, Value};
 use osis_node::Mutation;
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 
 static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",

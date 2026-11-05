@@ -25,6 +25,7 @@ osis.workspace = true
 osis-chat.workspace = true
 osis-kit.workspace = true
 jiff.workspace = true
+tokio.workspace = true
 
 [build-dependencies]
 osis-schema.workspace = true

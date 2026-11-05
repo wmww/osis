@@ -15,7 +15,7 @@ use osis_crypto::{Epoch, KemPublicKey, LabelRole, Secret32, VerifyingKey, label_
 use osis_keys::{ActorEpochs, registration_epochs};
 use osis_label::{Address, ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, label_steps, register_with, step_record};
 use osis_schema::core_types::{self as ct, KemKey};
-use osis_schema::{AspectKey, Codec};
+use osis_schema::{RawKey, Codec};
 
 /// A reader of a group's read epoch as the registrar lists it.
 pub(crate) enum ReaderKey {

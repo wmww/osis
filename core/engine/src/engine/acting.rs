@@ -15,7 +15,7 @@ use osis_base::{Ak, Role, Tid, Ts, Value};
 use osis_crdt::Op;
 use osis_perm::At;
 use osis_schema::core_types::GROUP;
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use std::collections::BTreeSet;
 
 impl Engine {

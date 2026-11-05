@@ -138,17 +138,17 @@ pub(crate) mod method {
     pub const IMPORT_BUNDLE: u64 = 61;
 
     // Rows that wait on other nodes: a `[5, method, [arg*]]` subscription, never a Call (`filter`).
-    /// `[sync scope, timeout ms]` -> `[]`
+    /// `[sync scope]` -> `[]`
     pub const WAIT_SYNCED: u64 = 62;
-    /// `[link text, timeout ms]` -> tid
+    /// `[link text]` -> tid
     pub const REDEEM: u64 = 63;
-    /// `[target, holder, Opt(role), set role, timeout ms]` -> `[]` (no role: removed)
+    /// `[target, holder, Opt(role), set role]` -> `[]` (no role: removed)
     pub const SET_ROLE: u64 = 64;
-    /// `[link id, sync first, timeout ms]` -> `[]`
+    /// `[link id, sync first]` -> `[]`
     pub const REVOKE_LINK: u64 = 65;
-    /// `[target, holder, Opt(role), set role, timeout ms]` -> `[]`
+    /// `[target, holder, Opt(role), set role]` -> `[]`
     pub const REPUDIATE: u64 = 66;
-    /// `[card text, timeout ms]` -> person
+    /// `[card text]` -> person
     pub const IMPORT_CONTACT: u64 = 67;
 
     /// The rows a client's session by a secret may call, each running on a handle acting as its

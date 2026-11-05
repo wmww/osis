@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.internals.seed = Some(seed);
-    c.internals.clock = Some(clock.clone());
+    c.client.internals.seed = Some(seed);
+    c.client.internals.clock = Some(clock.clone());
     c
 }
 

@@ -15,6 +15,8 @@ pub struct Knobs {
     pub clock: Option<std::sync::Arc<dyn osis_base::Clock>>,
     /// Seed for a deterministic rng in place of OS randomness.
     pub seed: Option<u64>,
+    /// In place of `CONNECTION_WAIT`.
+    pub connection_wait: Option<std::time::Duration>,
 }
 
 /// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a thin client
@@ -113,19 +115,12 @@ fn here(db: &Osis) {
     assert!(db.has_store(), "Internals on a thin client: Unsupported (its engine is a stand-in)");
 }
 
-/// How long test harnesses wait when a test names no time of its own.
-pub const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
-/// The same, for catching up before a role is lowered.
-pub const PRESYNC: std::time::Duration = std::time::Duration::from_secs(30);
-
 /// A store, its hosts and its config in one value, for test harnesses that build all three in one
-/// helper: the fields of `Config` read through it. A client takes its transport, limits and
-/// dispatcher from it, and `wait_timeout` is what its connection and a `restore` wait.
+/// helper: the fields of `Config` read through it.
 #[derive(Clone)]
 pub struct Opening {
     pub store: crate::Store,
     pub hosts: Vec<crate::HostAddr>,
-    pub wait_timeout: std::time::Duration,
     pub cfg: crate::Config,
 }
 
@@ -144,7 +139,7 @@ impl std::ops::DerefMut for Opening {
 
 impl Opening {
     pub fn at(store: crate::Store) -> Opening {
-        Opening { store, hosts: Vec::new(), wait_timeout: WAIT, cfg: crate::Config::default() }
+        Opening { store, hosts: Vec::new(), cfg: crate::Config::default() }
     }
 
     pub fn memory() -> Opening {
@@ -155,10 +150,6 @@ impl Opening {
         Opening::at(crate::Store::Dir(path.into()))
     }
 
-    fn client(self) -> crate::ClientConfig {
-        let c = self.cfg;
-        crate::ClientConfig { materialize_limit: c.materialize_limit, transport: c.transport, idle_commit: c.idle_commit, dispatch: c.dispatch, internals: c.internals }
-    }
 }
 
 pub fn create(o: Opening) -> crate::Result<(Osis, Option<crate::RecoveryCard>)> {
@@ -174,19 +165,17 @@ pub fn pair(o: Opening, offer: &crate::PairOffer) -> crate::Result<crate::Joinin
 }
 
 pub async fn restore(o: Opening, card: &crate::RecoveryCard) -> crate::Result<Osis> {
-    Osis::restore(o.store, &o.hosts, card, o.wait_timeout, o.cfg).await
+    Osis::restore(o.store, &o.hosts, card, o.cfg).await
 }
 
-pub fn connect_socket(socket: &std::path::Path, o: Opening) -> crate::Result<Osis> {
-    let t = o.wait_timeout;
-    Osis::connect_socket(socket, t, o.client())
+pub async fn connect_socket(socket: &std::path::Path, o: Opening) -> crate::Result<Osis> {
+    Osis::connect_socket(socket, o.cfg.client).await
 }
 
-pub fn connect(addr: &crate::HostAddr, secret: &crate::ClientSecret, o: Opening) -> crate::Result<Osis> {
-    connect_all(&[crate::NodeLogin { addr: addr.clone(), secret: secret.clone() }], o)
+pub async fn connect(addr: &crate::HostAddr, secret: &crate::ClientSecret, o: Opening) -> crate::Result<Osis> {
+    connect_all(&[crate::NodeLogin { addr: addr.clone(), secret: secret.clone() }], o).await
 }
 
-pub fn connect_all(logins: &[crate::NodeLogin], o: Opening) -> crate::Result<Osis> {
-    let t = o.wait_timeout;
-    Osis::connect(logins, t, o.client())
+pub async fn connect_all(logins: &[crate::NodeLogin], o: Opening) -> crate::Result<Osis> {
+    Osis::connect(logins, o.cfg.client).await
 }

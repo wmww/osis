@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use osis_base::{ChainStep, CreationRecord, Owner, OwnerChain, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Key, Name, Opener, Own, Provenance, ROLES, Unchecked};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
 

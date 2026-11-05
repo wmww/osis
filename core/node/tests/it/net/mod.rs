@@ -11,7 +11,7 @@ use osis_label::Address;
 use osis_node::sync::{Action, ConnId, Event, SyncConfig, SyncEngine};
 use osis_node::{Config, Engine, Mutation};
 use osis_schema::core_types as ct;
-use osis_schema::{AspectKey, Codec};
+use osis_schema::{RawKey, Codec};
 use osis_proto::LabelStore;
 use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
 use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};

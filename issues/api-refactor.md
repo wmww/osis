@@ -49,11 +49,11 @@ Design for the world after it:
 Done.
 
 ## D. Shape, re-decided
-Done (step 4), notes/api.md has the shapes. Where they left the proposal: a thin client takes `ClientConfig`, not `Config`; `db.connect_node` and `disconnect_node` in place of `attach_node` and `detach_node`; `Stamp.id` is a plain `ChangeId`, and `created` and `changed` return a `ThingStamp` with `commit: Option<CommitId>` (an ephemeral thing's creation names no batch, and no id stands in for one); `Ak` stays a key to the engine, `ApiKey` is what the API takes.
+Done (step 4), notes/api.md has the shapes. Where they left the proposal: async calls and connecting take no timeout (a caller's runtime races them; `SyncFirst::Try(Duration)` alone holds one), `Config` nests `ClientConfig`, a thin client takes `ClientConfig`, not `Config`; `db.connect_node` and `disconnect_node` in place of `attach_node` and `detach_node`; `Stamp.id` is a plain `ChangeId`, and `created` and `changed` return a `ThingStamp` with `commit: Option<CommitId>` (an ephemeral thing's creation names no batch, and no id stands in for one); `Ak` stays a key to the engine, `AspectKey` is what the API takes (`RawKey` beneath it, hidden).
 
 Left over:
 - **Client socket path**: `connect_socket(path)` is still a path, E's socket helpers can make it `store_dir`.
-- **`Key::schema` for apps**: app/src/fields.rs builds forms from `key.schema()`, through the hidden trait method (`osis::schema::AspectKey`). E takes `Schema` out of the API: it needs a plain way to ask an aspect's type, or the app's forms stay on internals.
+- **`Key::schema` for apps**: app/src/fields.rs builds forms from `key.schema()`, through the hidden trait method (`osis::schema::RawKey`). E takes `Schema` out of the API: it needs a plain way to ask an aspect's type, or the app's forms stay on internals.
 
 Keep as they are:
 - `undo` and `redo` as two functions: different results, no shared target to enum over.

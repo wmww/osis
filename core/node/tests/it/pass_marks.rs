@@ -130,7 +130,7 @@ fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
     assert_eq!(at_host(&mut net, a, host, &l, &b), 1);
     map_op(&mut net, a, t, &GONEMAP, osis_crdt::Op::Remove(s("k1")));
     net.run();
-    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&GONEMAP)).unwrap();
+    let ak = osis_base::Ak::new(osis_schema::RawKey::ak(&GONEMAP)).unwrap();
     assert!(!net.engine(a).body_not_dropped(&b, &t, &ak) && !net.engine(a).body_live(&b, &t, &ak).unwrap(), "dropped with the removal, no live write");
     assert_eq!(at_host(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted in the same sync");
 }

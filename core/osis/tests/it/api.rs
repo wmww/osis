@@ -2,7 +2,7 @@
 //! Writes, Errors, Footguns closed).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis::schema::AspectKey as _;
+use osis::schema::RawKey as _;
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
@@ -87,7 +87,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
     assert_eq!(d, osis::Diagnostic::Mismatch { thing: n, detail: "note:title.0: type error at (root): expected string".into() });
     assert_eq!(db.at(n, osis::Key::untyped(ak("note:title.0"))).get().unwrap(), Some(Value::Int(3)));
     // one element of another shape (as a newer version's enum case would be)
-    let Value::List(mut l) = osis::schema::AspectKey::encode(&notes::TASKS, &vec![task("milk"), task("eggs")]) else { panic!() };
+    let Value::List(mut l) = osis::schema::RawKey::encode(&notes::TASKS, &vec![task("milk"), task("eggs")]) else { panic!() };
     let Some(Value::Map(m)) = l.get_mut(1) else { panic!() };
     m.insert(Value::Int(1), Value::Int(7));
     db.commit_set(n, osis::Key::untyped(ak("note:tasks.0")), &Value::List(l)).unwrap();
@@ -380,7 +380,7 @@ fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
 fn materialization_bound_spec_data_model_6() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.materialize_limit = 64 * 1024;
+    cf.client.materialize_limit = 64 * 1024;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:doc.0");
     let big = Value::Bytes(vec![7u8; osis::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
@@ -624,7 +624,7 @@ fn local_sync_surface_spec_api_sync() {
     assert_eq!(d.to_string().replace(":4040", "").parse::<osis::HostAddr>().unwrap(), d);
     assert_eq!(osis::HostAddr::new(&"quic://h".parse().unwrap(), [7; 32]), d);
     db.add_host(&a).unwrap();
-    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(1))), Err(Error::Network(_))));
+    assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All)), Err(Error::Network(_))));
     drop(db);
     let db = osis::internals::open(cfg(1, store, &c)).unwrap();
     assert_eq!(db.hosts().unwrap(), vec![a]);
@@ -649,7 +649,7 @@ fn stream_len_set_stream_spec_data_model_6() {
     use std::io::{Read, Seek, SeekFrom};
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.materialize_limit = 64 * 1024;
+    cf.client.materialize_limit = 64 * 1024;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:blob.0");
     let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
@@ -1685,4 +1685,24 @@ fn urls_and_host_policy_are_typed() {
     assert_eq!(db.hosting().unwrap().unwrap().policy, policy);
     let bad = osis::HostPolicy { max_queued_bytes: 1, ..Default::default() };
     assert!(matches!(db.set_hosting(Some(osis::Hosting { policy: bad, ..Default::default() })), Err(Error::Invalid(_))));
+}
+
+// spec: none (API surface); notes/api.md Futures: what waits can go on any runtime's spawn
+#[test]
+fn waiting_calls_are_send() {
+    fn send<T: Send>(_: T) {}
+    fn all(db: Osis, login: osis::NodeLogin, link: osis::ShareLink, card: osis::ContactCard, recovery: osis::RecoveryCard, t: osis::Tid, o: osis::SetRoleOpts) {
+        send(db.wait_synced(osis::SyncScope::All));
+        send(db.redeem(&link));
+        send(db.import_contact(&card));
+        send(db.set_role(t, t, None, o));
+        send(db.repudiate(t, t, None, o));
+        send(db.remove_device(t, o));
+        send(db.connect_node(&login));
+        send(db.group_source(t, osis::GroupSource::Local));
+        send(Osis::connect(std::slice::from_ref(&login), osis::ClientConfig::default()));
+        send(Osis::connect_socket(std::path::Path::new("x"), osis::ClientConfig::default()));
+        send(Osis::restore(osis::Store::Memory(MemStore::new()), &[], &recovery, osis::Config::default()));
+    }
+    let _ = all;
 }

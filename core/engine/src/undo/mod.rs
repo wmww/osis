@@ -10,7 +10,7 @@ use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Kind};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_schema::core_types::GROUP;
 use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, PathSeg, Stamp, UndoBuffer, Undone, Writer};
 use osis_store::Shred;

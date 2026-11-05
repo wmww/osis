@@ -2,7 +2,7 @@
 //! core keys. Typed `Aspect<T>` come from codegen (osis-schema).
 
 use osis_base::{Ak, Value};
-use osis_schema::{AspectKey, Codec, PathError, Schema, typed_read};
+use osis_schema::{RawKey, Codec, PathError, Schema, typed_read};
 use std::sync::Arc;
 
 /// An aspect key by name (`Osis::key`), its values plain `Value`s. Under a registered schema reads
@@ -32,9 +32,9 @@ impl Key {
     }
 }
 
-impl osis_schema::ApiKey for Key {}
+impl osis_schema::AspectKey for Key {}
 
-impl AspectKey for Key {
+impl RawKey for Key {
     type T = Value;
     fn ak(&self) -> &str {
         self.ak.as_str()

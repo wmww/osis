@@ -6,7 +6,7 @@ use crate::file::{Record, VecFile};
 use crate::hex;
 use osis_base::{CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs, encode};
 use osis_schema::core_types::*;
-use osis_schema::{AspectKey, Chunked, core_schema};
+use osis_schema::{RawKey, Chunked, core_schema};
 use std::collections::{BTreeMap, BTreeSet};
 
 const SPEC: &str = "spec/data-model.md §9";

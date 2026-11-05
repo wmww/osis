@@ -12,7 +12,7 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, NAME, TAG};
-use osis::{ChangeId, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Store, Tid, Transport, p};
+use osis::{ChangeId, ClientConfig, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Store, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -20,7 +20,7 @@ use std::path::Path;
 /// none; an existing store adds the `hosts` it lacks. Sync runs on osis's own runtime over QUIC
 /// while the app runs.
 pub fn open(dir: &Path, hosts: Vec<HostAddr>) -> Result<Osis> {
-    let cfg = Config { runtime: Runtime::Own, transport: Some(Transport::Quic), ..Config::default() };
+    let cfg = Config { runtime: Runtime::Own, client: ClientConfig { transport: Some(Transport::Quic), ..ClientConfig::default() }, ..Config::default() };
     let store = Store::Dir(dir.to_path_buf());
     if dir.join("db.redb").exists() {
         let db = Osis::open(store, cfg)?;

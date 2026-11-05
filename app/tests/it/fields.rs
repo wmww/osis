@@ -100,7 +100,7 @@ fn edits_are_well_typed() {
 #[test]
 fn a_tile_tells_of_emails_it_cannot_read() {
     let mut cfg = osis::internals::Opening::memory();
-    cfg.materialize_limit = 1000;
+    cfg.client.materialize_limit = 1000;
     let d = Data::new(osis::internals::create(cfg).unwrap().0);
     let c = d.create(NewKind::Contact).unwrap();
     let many = (0..100).map(|i| (format!("someone{i}@example.org"), osis_app::contact::Labeled { label: String::new(), pref: false })).collect();
@@ -114,7 +114,7 @@ fn a_tile_tells_of_emails_it_cannot_read() {
 #[test]
 fn a_value_too_large_to_read_is_no_empty_row() {
     let mut cfg = osis::internals::Opening::memory();
-    cfg.materialize_limit = 1000;
+    cfg.client.materialize_limit = 1000;
     let d = Data::new(osis::internals::create(cfg).unwrap().0);
     let n = d.create(NewKind::Note).unwrap();
     let mut w = d.db.write();

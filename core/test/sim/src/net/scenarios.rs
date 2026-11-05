@@ -13,7 +13,7 @@ use osis_base::{Ak, Role, Tid, Value, WallMs};
 use osis_node::Mutation;
 use osis_node::flows::PreSync;
 use osis_node::sync::Event;
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use std::collections::BTreeSet;
 
 pub const DAY_MS: u64 = 86_400_000;

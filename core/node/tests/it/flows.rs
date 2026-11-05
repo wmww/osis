@@ -1739,7 +1739,7 @@ fn roster_snapshot_spec_perm_6() {
     let ledger = lp.peers[1].engine.get_typed(&t, &ct::TENURES).unwrap().unwrap();
     assert!(ledger.0.iter().any(|x| x.holder == pc && x.role == Role::Write && x.frontier.is_some()), "{ledger:?}");
     let raw = lp.peers[1].engine.state(&t, &ak("roles.0")).unwrap().unwrap().read().unwrap();
-    let roster = osis_schema::AspectKey::decode(&ct::ROLES, &raw).unwrap();
+    let roster = osis_schema::RawKey::decode(&ct::ROLES, &raw).unwrap();
     assert!(roster.get(&pb).unwrap().since.is_some(), "{roster:?}");
     add_tag(&mut lp, 1, t, "bob");
     spread(&mut lp);

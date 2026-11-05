@@ -13,7 +13,7 @@ use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Tid, Value};
 use osis_node::ChangeId;
 use osis_node::engine::history::{HistoryRow, RowBody};
-use osis_schema::ApiKey;
+use osis_schema::AspectKey;
 
 pub use osis_node::engine::history::{HistoryFrom, HistoryPos};
 
@@ -103,7 +103,7 @@ fn entry_of(r: &mut Reader<'_>, tid: &Tid, ak: &Ak, row: HistoryRow, limit: usiz
 }
 
 /// `e` through the key's type.
-pub(crate) fn typed<K: ApiKey>(db: &Osis, tid: Tid, ak: &Ak, key: &K, e: HistoryEntry<Value>) -> HistoryEntry<K::T> {
+pub(crate) fn typed<K: AspectKey>(db: &Osis, tid: Tid, ak: &Ak, key: &K, e: HistoryEntry<Value>) -> HistoryEntry<K::T> {
     let body = match e.body {
         HistoryBody::Held(v) => HistoryBody::Held(v.and_then(|v| lenient(tid, ak, key.decode(&v), |d| db.engine(|e| e.report(d))))),
         HistoryBody::TooLarge { limit } => HistoryBody::TooLarge { limit },
@@ -162,7 +162,7 @@ impl Osis {
     }
 }
 
-impl<K: ApiKey> AspectRef<'_, K> {
+impl<K: AspectKey> AspectRef<'_, K> {
     /// A page of the aspect's history here: at most `limit` entries (`HISTORY_PAGE` at most) from
     /// `from`, in its direction, fewer past the materialization bound. No walk: a page costs its
     /// entries. An unknown thing, or one the caller may not read, has none.
@@ -177,7 +177,7 @@ impl<K: ApiKey> AspectRef<'_, K> {
     }
 }
 
-impl<K: ApiKey + Clone + Send + 'static> AspectRef<'_, K> {
+impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` for each commit whose entry in the aspect's history reads otherwise, one call per
     /// commit, with the entry as it reads then: no recompute of the aspect, no re-read of a page.
     /// Subscribe first, then read pages: nothing after the subscription is missed, and an event

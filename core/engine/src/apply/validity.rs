@@ -220,7 +220,7 @@ fn tenures(f: &Fragment) -> Vec<ct::Tenure> {
 }
 
 fn tenures_of(s: &[Value]) -> Vec<ct::Tenure> {
-    s.iter().filter_map(|t| osis_schema::AspectKey::decode(&ct::TENURES, &Value::Set([t.clone()].into())).ok()).flat_map(|x| x.0).collect()
+    s.iter().filter_map(|t| osis_schema::RawKey::decode(&ct::TENURES, &Value::Set([t.clone()].into())).ok()).flat_map(|x| x.0).collect()
 }
 
 /// A roster snapshot's parts on one thing: roster, ledger, `roles.0` dots.

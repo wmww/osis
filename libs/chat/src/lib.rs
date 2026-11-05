@@ -173,8 +173,8 @@ pub fn add(db: &Osis, c: Tid, person: Tid, role: Role) -> Result<()> {
 
 /// Removes a participant, a read-only copy left to them or not by `keep` (`None`: the chat's
 /// default).
-pub async fn kick(db: &Osis, c: Tid, person: Tid, keep: Option<bool>, sync: SyncFirst, timeout: Duration) -> Result<()> {
-    db.set_role(c, person, None, SetRoleOpts { sync, keep }, timeout).await
+pub async fn kick(db: &Osis, c: Tid, person: Tid, keep: Option<bool>, sync: SyncFirst) -> Result<()> {
+    db.set_role(c, person, None, SetRoleOpts { sync, keep }).await
 }
 
 /// A link anyone holding it can join by, as `role`.
@@ -187,13 +187,13 @@ pub fn link(db: &Osis, c: Tid, role: Role, single_use: bool) -> Result<osis::Sha
 /// may be used up, or its maker or a participant pasted it. So a link never raises a participant's role, and
 /// one whose target names a held chat opens that chat and joins nothing, whatever its key is. One
 /// naming a chat not held joins only if its key is on that chat (`Osis::redeem`).
-pub async fn join(db: &Osis, l: &osis::ShareLink, timeout: Duration) -> Result<Tid> {
+pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
     let c = l.target()?;
     let held = || chats(db).is_ok_and(|x| x.contains(&c));
     if held() {
         return Ok(c);
     }
-    db.redeem(l, timeout).await.or_else(|e| if held() { Ok(c) } else { Err(e) })
+    db.redeem(l).await.or_else(|e| if held() { Ok(c) } else { Err(e) })
 }
 
 /// Removes this person: every grant it holds the chat through (a link joiner's is on the link's

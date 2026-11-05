@@ -11,9 +11,9 @@ const W: Duration = Duration::from_secs(20);
 fn on(net: &osis_transport::Net, ep: &str, hosts: Vec<HostAddr>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.runtime = Runtime::Own;
-    c.transport = Some(Transport::InProcess(net.endpoint(ep)));
+    c.client.transport = Some(Transport::InProcess(net.endpoint(ep)));
     c.hosts = hosts;
-    c.wait_timeout = W;
+    c.client.internals.connection_wait = Some(W);
     c.peers = false;
     c
 }
@@ -49,15 +49,15 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     let addr = host.host_address().unwrap().unwrap();
     let n = osis::internals::create(on(&net, "n", vec![addr])).unwrap().0;
     let c = create(&n, &Options::default()).unwrap();
-    block_on(n.wait_synced(SyncScope::All, W)).unwrap();
+    block_on(n.wait_synced(SyncScope::All)).unwrap();
     post(&n, c, "first").unwrap();
     let nc = n.client_listen(&["mem://clients".parse().unwrap()]).unwrap().remove(0);
     let (actor, secret) = n.add_client(None).unwrap();
     n.grant(c, actor, Role::Read, Default::default()).unwrap();
     let mut cfg = osis::internals::Opening::memory();
-    cfg.transport = Some(Transport::InProcess(net.endpoint("app")));
-    cfg.wait_timeout = W;
-    let app = osis::internals::connect(&nc, &secret, cfg).unwrap();
+    cfg.client.transport = Some(Transport::InProcess(net.endpoint("app")));
+    cfg.client.internals.connection_wait = Some(W);
+    let app = block_on(osis::internals::connect(&nc, &secret, cfg)).unwrap();
     assert_eq!(app.me(), actor);
     assert_eq!(newest_text(&app, c), Some(Body::Text("first".into())));
     let (tx, rx) = channel();
