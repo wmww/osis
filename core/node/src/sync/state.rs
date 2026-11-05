@@ -114,6 +114,12 @@ impl Entry {
     pub fn shredded(&self) -> bool {
         self.wrap == [0; WRAP_LEN]
     }
+
+    /// Not opened, though it opens under one of `secrets` (a shredded one: the fetch brings
+    /// its wrap back).
+    pub fn unopened(&self, b: &BlobId, secrets: &[Secret32]) -> bool {
+        self.kind == Kind::Unknown && (self.shredded() || osis_label::unwrap_any(secrets, b, &self.wrap).is_some())
+    }
 }
 
 /// A commit blob this node holds the key of (received, or sealed here).
