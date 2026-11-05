@@ -30,3 +30,11 @@ An ex-holder signs two conflicting writes and controls everything in them (stamp
 - **Costs**: users picking differently split one tid until someone re-picks (a social fork); contacts judge a person's dispute out of band, like a safety-number warning; a host follows one step chain, so the losing side needs a replacement label (notes/sync.md); first-seen evidence is local, so it only sets a pick; tests need convergence "given equal picks". Changes spec/requirements.md Deterministic and API. Not model-checked.
 
 Leaning (before F): base + C, D or E later if wanted. B's rule in the walk is untested: `core/test/roles-model` found loops in similar rules (removal rings), so model-check before building. Also touches spec/requirements.md Permissions (three concepts, fixed owner, owner's snapshot). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
+
+## Optional recovery key (Tess's idea; not decided, likely documented first)
+At most one key actor per thing, named in the creation record, none by default. It holds boxes like an admin (it must see the log to write frontiers, seal to new admins and register steps at hosts), so "only changes grants" is a client rule: it could always grant itself read. No admin can remove it; its role writes always apply and settle disputes, so a split tid converges again. It acts on the named thing only, not on things below by path (no class-by-path logic).
+- **Hand-off**: it names a successor, then burns.
+- **Burn**: a signed list of its writes that count; any other write of it is void. Several burns intersect, so a thief with the key can only cancel recovery, never gain from it.
+- **Threshold**: split the seed outside the protocol, no format change.
+- **Adding later is the weak point**: an ex-admin could claim to have added one, stamped in the past, or void the honest grant by removing its granter earlier. So added-later is only as strong as a normal admin write. Start with record-only.
+- This is today's owner reduced to its one job that disputes cannot do; `Class::Chain` shrinks rather than goes. Today's recovery card relies on that power, so dropping it regresses stolen-phone recovery. Not modelled.
