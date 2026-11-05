@@ -139,14 +139,19 @@ impl SyncEngine {
     }
 
     /// Whether only a blob of commit `c` can carry part `p` under the label (spec/sync.md §6):
-    /// kept (`part_kept`), or holding a live write no snapshot under the label (`snaps`)
-    /// covers. A blob missing such a part (a junk Replace's victim, a rewrite that dropped it)
+    /// kept (`part_kept`) or holding a live write, and no snapshot under the label (`snaps`)
+    /// covers it. A blob missing such a part (a junk Replace's victim, a rewrite that dropped it)
     /// is healed by an upload.
+    /// Invariant: what one honest node deletes at a host no other's `must_carry` puts back.
+    /// Kept-ness is dated by each node's own deaths (spec/commits.md §5), so a right holder may
+    /// drop a covered body as past keep-at-least (no death yet, or an earlier one) while a holder
+    /// dates a later death and judges it kept. Both sides read the covering snapshot under the
+    /// label alike, so a covered part is never one only a blob carries.
     pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize), snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        if self.part_kept(h, c, p, note)? {
-            return Ok(true);
+        if !self.part_kept(h, c, p, note)? && !self.part_live(h, c, p) {
+            return Ok(false);
         }
-        Ok(self.part_live(h, c, p) && !self.parts_covered(snaps, c, h, &[*p], note)?)
+        Ok(!self.parts_covered(snaps, c, h, &[*p], note)?)
     }
 
     /// Whether a delete took body `b` from `l` and it stays out: every one of its `parts` only a
@@ -417,8 +422,9 @@ impl SyncEngine {
         let mut note = Note::default();
         for b in &bodies {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
-                // not placed again (`body_sends`)
-                if self.delete_stands(Some(host), *l, b, &needed, &snaps, &mut note)? {
+                // not placed again (`body_sends`); one held there is checked whatever deletes of
+                // other copies of it took (a duplicate's, the luck of the order a pass drew)
+                if !self.carried_by(Some(host), l, &b.commit, &needed) && self.delete_stands(Some(host), *l, b, &needed, &snaps, &mut note)? {
                     continue;
                 }
                 v.must_hold.push((b.commit, needed));

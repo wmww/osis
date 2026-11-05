@@ -12,9 +12,11 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 version 1;
 aspect k:kept.0: string [by: writer, keep_at_least: 1d];
+aspect k:admin.0: string [by: admin, keep_at_least: 1d];
 "#,
 );
 const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:kept.0", &KEEP);
+const ADMIN_KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:admin.0", &KEEP);
 
 // spec/commits.md §5 (keep at least): a compaction before the bound neither drops the covered
 // bodies nor deletes them at the host; once the bound has passed (by MAX_DRIFT) it does both.
@@ -201,8 +203,9 @@ fn at_most_across_skew_no_churn_spec_sync_6() {
 // spec/commits.md §5 (deaths dated per node), spec/sync.md §6: X < Y < Z on a kept register;
 // right holder A held Y before Z (X dies at Y), B held Z before Y (X dies at Z, two hours later).
 // Once A's bound has passed it deletes X at the host (covered by its compaction); B, still before
-// its own bound, does not place it again (it has no live write): one deletion, no fresh
-// encryption, and B drops it by its own bound.
+// its own bound, does not place it again (A's snapshot covers it): one deletion, no fresh
+// encryption, and B drops it by its own bound. Both end up dating X at Y here; dates still apart
+// at the delete: `covered_drop_stays_out_across_local_dating_*`.
 #[test]
 fn deletion_across_local_dating_no_churn_spec_sync_6() {
     assert_eq!(local_dating_churn(), (1, 1), "deletions, blobs of X");
@@ -275,4 +278,59 @@ fn local_dating_churn() -> (usize, usize) {
     let recs = net.hosts[host].hub.store().log_after(&l, 0, 1 << 20).unwrap().unwrap_or_default();
     let of_x = recs.iter().filter(|(_, r)| matches!(r, LogRecord::Deleted(id) if seen.contains(id))).count();
     (of_x, seen.len())
+}
+
+// spec/sync.md §6 (a covered delta is no blob's alone), spec/commits.md §5 (deaths dated per
+// node): admin A compacts a register while X, B's write, is live (no death: past its relative
+// keep-at-least), drops X and deletes it at the host. Then C overwrites X: B, still holding X,
+// dates its death now and judges it kept. X is covered by A's snapshot under the label, so B
+// does not place it again; else A deletes each fresh encryption and B uploads another, for a
+// day (sim `snapshot_rights` seed 9317).
+#[test]
+fn covered_drop_stays_out_across_local_dating_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, osis_base::Role::Write), (c, osis_base::Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let k = &ADMIN_KEPT;
+    let set = |net: &mut Net, n: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, k, &s(v)).unwrap();
+        net.engine(n).commit(m).unwrap().unwrap()
+    };
+    let x = set(&mut net, b, "x");
+    net.run();
+    let l = net.label(a);
+    let ak = Ak::new(k.ak()).unwrap();
+    // past MAX_DRIFT since X: a node's compaction may drop a body with no death then
+    net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    let acts = net.sync(a).compact(&t, &ak).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&x, &t, &ak), "A dropped X as covered");
+    let x_ids = |net: &mut Net| -> std::collections::BTreeSet<osis_base::BlobId> {
+        let mut out = std::collections::BTreeSet::new();
+        for n in [a, b, c] {
+            for (id, e) in net.sync(n).entries(&l) {
+                if matches!(e, osis_node::sync::EntryKind::Commit { commit, .. } if commit == x) {
+                    out.insert(id);
+                }
+            }
+        }
+        out
+    };
+    let before = x_ids(&mut net);
+    assert!(net.host_ids(host, &l).iter().all(|id| !before.contains(id)), "X deleted at the host");
+    set(&mut net, c, "y");
+    net.run();
+    assert!(net.engine(b).deaths(&x, &t, &ak).unwrap().is_some(), "B dated X's death");
+    assert!(net.engine(b).body_not_dropped(&x, &t, &ak), "B still holds X, kept");
+    let after = x_ids(&mut net);
+    assert_eq!(after, before, "no fresh encryption of X");
+    assert_eq!(deletions_of(&net, host, &l, &after), before.len(), "one deletion per blob of X");
+    assert!(net.host_ids(host, &l).iter().all(|id| !after.contains(id)), "X stays out of the host");
 }

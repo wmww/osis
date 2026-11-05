@@ -299,7 +299,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - past keep-at-most;
     - dropped without a right (spec/permissions.md §7);
     - outside the required set;
-    - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept, or holding a live write no snapshot under the label covers;
+    - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label;
     - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
     - another node's node-card commit, for `node.0` and `reach.0`, once that node reads the label's actor no more after an applied edge write on its way to the actor ended an edge (removed it, or its `until` passed).
   - **may-hold**: the rest: covered, between bounds, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
