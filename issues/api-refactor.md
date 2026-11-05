@@ -10,7 +10,7 @@ Every data operation is addressed the same way, groups read like aspects, and sh
 let db = Osis::open(Store::Dir(path), Config::default())?;
 
 let mut w = db.write();
-let note = w.create()?;                                    // first admin: this account (owner removal)
+let note = w.create()?;                                    // first admin: the acting actor
 w.group(folder).add(Member::Item(note))?;
 w.at(note, notes::TITLE).set(&title)?;
 w.at(note, notes::TAGS).path(p![&tag]).set(&true)?;
@@ -21,19 +21,27 @@ let title = db.at(note, notes::TITLE).get()?;
 let sub = db.at(note, notes::TITLE).on_change(|db, c| ..)?;
 let text = db.at(note, notes::BODY).edit_text()?;
 
+db.sync(note, &[])?;                                       // only if no synced group carries it
 db.grant(note, friend, Role::Write, GrantOpts::default())?;
 db.lower_role(note, friend, Role::Read, SyncFirst::Required).await?;
 db.revoke(note, friend, Revocation::default()).await?;
 ```
 
-## Decisions for Tess
-Recommendation first in each. Everything else below is the agent's call unless she objects.
-1. **`grant` and `share`** (B1). Make `grant` always ensure a route, and remove today's route-less `grant`. This reverses "records the permission and nothing else" (her decision, notes/api.md Sharing). Alternative: keep both.
-2. **Read and write entry points** (A1, A2). Remove `db.get` and `write_with`: one spelling, slightly longer. Alternative: keep one convenience as a named exception.
-3. **Pull-style `Watch`** (A3). Remove it, leaving callbacks only. Alternative: keep it if async apps want `changed().await`; then it needs a stated reason.
-4. **`db.read(|r| ..)`** (A4). Move it to `internals`. No first-party app, chat or CLI code calls it, and it fails on attached handles. Alternative: keep it and give it the same methods as `Osis`.
-5. **ID names** (F). `Tid` to `ThingId`, `Ak` to `AspectName`. High churn, clearer to read. Alternative: keep the short names and document them.
-6. **"Placement" wording** (F, Vocabulary). "A thing is a member of a group", with `add` and `remove` as the verbs and `Item` and `Subgroup` as the two kinds. Needs `member` kept away from role holders, so `osis-chat`'s members become participants. Alternative: no noun at all, only "in a group" and "a group contains"; plainer, but the kinds and diagnostics still want a word.
+## Decided
+Tess answered; the refactor is now in progress (Execution, below).
+1. **`grant` and `share`: not bundled.** A role says who may; `sync` says where the data goes. `share` goes; `grant` only grants, as before, and refuses to lower. Chat's one `share` is on an already synced chat and the app only grants, so real callers lose nothing; tests and the CLI call `sync` then `grant`. `grant`'s doc and `status` (`NoRoute`) must make a holder with no way to the data obvious. `make_link` keeps syncing its target, as a link can't work otherwise. Revisit if the app finds this awkward.
+2. **One spelling**: `db.get` and `write_with` go. The agent makes such calls without asking.
+3. **`Watch` goes.** `on_change` gives the current value atomically, then changes, and works with any async runtime by forwarding to a channel. Show that in the docs. Revisit only if using it from async code proves clumsy.
+4. **`db.read(|r| ..)`** moves to `internals`.
+5. **`Tid` stays**: a tid is a concept and is not called a thing ID. **`Ak` stays**: renaming it would sweep every crate for little gain.
+6. **Member**: a thing is a member of a group. `osis-chat`'s members become participants.
+7. **Layout**: top-level `libs/` holds `chat` and `kit`, and whatever else is useful to some but not all users of osis. `app/` and `cli/` stay where they are.
+
+### Owner removal is in progress elsewhere
+Design for the world after it:
+- **`create()` takes no owner and `owner_of` goes.** The first admin is the acting actor. Until owners are gone, whatever still needs one is doc-hidden and marked for removal: `create_owned_by(owner)`, `create_ownerless(admin)`, `owner_of`.
+- **Leave room for dispute calls** (list, listen, choose). They are per-node trust choices, not data writes: plain calls on `Osis` (`disputes()`, `on_dispute(f)`, `choose_side(..)`), nothing on `Write`. Not built here, but nothing should block them.
+- **Don't touch engine or perm internals** for renames: the owner work is in there. Rename at the `osis` API, CLI and docs; leave engine names, and spec prose the owner work is rewriting, for a last sweep.
 
 ## A. Remove: a second way to do the same thing
 1. `Osis::get` duplicates `at(t, k).get()`. `at` is the one that extends to paths, streams and watches.
@@ -62,7 +70,7 @@ Recommendation first in each. Everything else below is the agent's call unless s
 
 ## B. Sharing: one verb per intent
 All of this speaks of granting a role (F, Vocabulary). Today: `grant`, `share`, `share_into`, `change_edge`, `demote(Lower)`, `leave`, `remove_edge_of`, `remove_device`, `remove_client`, `revoke_link`, `revoke_joiner`.
-1. **`grant(target, holder, role, GrantOpts)`** is the one call that adds, raises or changes `until` and `invite`, and it ensures a route as `share` does today (decision 1). Removes `share` and `change_edge`. `change_edge` is `grant` plus a refusal to lower. `grant` itself should refuse lowering too. From reading `Osis::grant` and `grant_in`, neither checks, so a `grant` at a lower role looks like it lowers with no pre-sync and no rotation. Not run: write a failing test first. If confirmed, it is a bug whichever way decision 1 goes.
+1. **`grant(target, holder, role, GrantOpts)`** is the one call that adds, raises or changes `until` and `invite`, and nothing else (Decided 1). Removes `share` and `change_edge`. `grant` refuses lowering: from reading `Osis::grant` and `grant_in`, neither checks today, so a `grant` at a lower role looks like it lowers with no pre-sync and no rotation. Not run: write a failing test first.
 2. **Demote and remove become separate functions.** `demote(.., Lower::{To, Remove}, Demotion)` is centered wrongly: the two cases differ in what is allowed (a joiner can only be removed) and what applies (`keep` only on removal).
    - `lower_role(target, holder, role, SyncFirst)`.
    - `revoke(target, holder, Revocation { sync: SyncFirst, keep })`, the natural opposite of `grant`.
@@ -155,7 +163,6 @@ Keep as they are:
 | `place*`, `unplace`, `placed.0~`, `PlacementNotPersisted`, `place_plan` | `add`, `remove`, membership words | decision 6 |
 | `demote`, `Demotion` | `lower_role`, `SyncFirst` | B2 |
 | `roster`, `Roster`, `watch_roster` | `grants(target)` | The word for a list of grants |
-| `Tid`, `Ak` | decision 5 | |
 
 ### Vocabulary
 - **Account**, not person or user: an account may be a team, a bot or a shared identity. `me()` keeps its name.
@@ -174,7 +181,7 @@ Keep as they are:
 - `HistoryBody::Purged { by }` once needed a commit query with no by-id filter; check it's solved by `actor`.
 
 ## H. Docs and crate layout
-- `core/chat` should leave core: plenty of core users don't need chat, and notes/build.md already says further projects are top-level directories depending only on `osis`. Recommend top-level `chat/`, unless more helper libraries appear (then a directory for them). `core/*` in the workspace members and paths in notes, gate and policy tools change with it.
+- `core/chat` moves to `libs/chat`, `kit` to `libs/kit` (Decided 7). Workspace members, the GUI workspace's paths, `tools/gate.sh`, its selection test, `scripts/wt-mark`, the Android build and notes change with it.
 - Crate docs after the refactor: rewrite `lib.rs` sections to the Public docs rules in notes/api-design.md, since most examples change anyway. "Footguns closed" is the first to go or become plain advice. Module-level jargon in the first lines of each section ("placement is a group op") likewise.
 - Rendered docs still cite `spec/` as plain text (about 90 lines, 38 in `share.rs`). Keep those that help a reader, drop the rest. To make them links, a doc-only module could embed the spec with `#[doc = include_str!(..)]`; not tried. Links between spec files would need rewriting, and `tools/gate.sh` runs its full gate on spec edits once Rust reads `spec/`, unless that file joins its docs step.
 
@@ -183,13 +190,20 @@ Keep as they are:
 - issues/api-deferred.md stays for what isn't built, but its shapes should follow this design. `Unsupported` shouldn't cover unbuilt calls: an unbuilt call isn't in the API.
 
 ## Execution
-- **Timing**: owner removal (notes/owner-removal-plan.md) removes `owner`, `owner_of`, `create_ownerless` and `Class::Chain`, and whole commits is in flight. Coordinate with notes/handoff.md. Skip the owner names here if that work hasn't landed, and don't rename what it deletes.
-- **Order**, one branch per step, each passing `tools/gate.sh`:
-  1. C and the `grant`-lowering bug, the only behavior fixes.
-  2. A (removals).
-  3. B (sharing).
-  4. D (shapes).
-  5. E (leaks), once `internals` has what tests need.
-  6. F (renames), last, as one mechanical branch, since they conflict with everything.
-- **Each step also updates**: the port rows and codec (`core/osis/src/port`; formats change in place, no compatibility), `cli/`, `core/chat`, `app/` and `kit/` (own workspace), `core/test/sim`, tests, `lib.rs` doc examples, notes/api.md, notes/client-port.md and spec words where the spec uses a renamed term.
-- Check each result against notes/api-design.md, and have a fresh reviewer read the final export list in `lib.rs` as a whole.
+One branch per step, in order; each merges before the next starts. `libs` can run beside step 1.
+- **libs**: H's layout move.
+- **1. Robustness**: C and the `grant` lowering bug.
+- **2. Removals**: A.
+- **3. Sharing**: B.
+- **4. Shapes**: D.
+- **5. Leaks**: E, once `internals` has what tests need.
+- **6. Names and docs**: F, the Vocabulary, and H's doc rewrite.
+
+Rules for each step's worker:
+- Read notes/api-design.md and this issue. The issue is a strong proposal, not a contract: when a change turns out wrong in use, do what the philosophy says and say so in your report. Update this issue: delete what is done.
+- **Every consumer moves in the same branch**: `cli/`, chat, `app/` and `kit/` (their own workspace, `kit/Cargo.toml`; see `tools/gate.sh` for its build and test steps), `core/test/sim`, `core/bench`, tests, `lib.rs` doc examples. Port rows and codec change in place: no compatibility. Update notes/api.md, notes/cli.md and notes/client-port.md where they state what changed.
+- The CLI mirrors the API: it follows these changes in commands and output too.
+- **Using the API from the app and CLI is the test of it.** If a new shape makes them clumsy, fix the shape and report it.
+- **Do not loosen an existing test's meaning**: port it. Report any that can't be ported.
+- **Behavior bugs**: validate with a test. Fix if simple and low risk, or if it is mostly about implementing the API and doesn't reach deep into core or the apps. Otherwise open an issue.
+- Stay out of engine and perm internals (owner removal is working there).
