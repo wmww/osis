@@ -491,7 +491,7 @@ impl Osis {
     }
 
     /// Moves `group` between this node's engine and a node it is attached to
-    /// (notes/client-port.md §6), one group at a time, never losing a write.
+    /// one group at a time, never losing a write.
     ///
     /// To `Remote(addr)`: the attachment must be up and know the group (else `Network` or
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a host

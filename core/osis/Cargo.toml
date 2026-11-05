@@ -1,6 +1,6 @@
 [package]
 name = "osis"
-description = "Public API; the only crate apps depend on"
+description = "A decentralized, reactive data layer for interconnected applications"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

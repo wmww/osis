@@ -591,7 +591,7 @@ impl crate::Osis {
         Ok(())
     }
 
-    /// Serves the client port at the unix socket `path` (notes/client-port.md §5): processes of
+    /// Serves the client port at the unix socket `path`: processes of
     /// this uid that connect there are Owner clients (`Osis::attach`); others are refused by the
     /// kernel's word for their uid. A path sockets only; a stale socket file is replaced, one in
     /// use is `Network`. Needs a runtime.
@@ -602,7 +602,7 @@ impl crate::Osis {
         self.inner.net.listen(url)
     }
 
-    /// Serves thin clients at `urls` (`quic://host:port`, notes/client-port.md §5) with a key of
+    /// Serves thin clients at `urls` (`quic://host:port`) with a key of
     /// the client listener's own, made on first use and kept in the store: it never rotates with
     /// `rotate_reach` and links to neither the dialable key nor the signing key. Returns each
     /// `url#key` to hand clients (with its real port). Replaces the listeners of an earlier call
@@ -615,7 +615,7 @@ impl crate::Osis {
         Ok(a.into_iter().map(|a| crate::HostAddr::new(&a.url, a.key)).collect())
     }
 
-    /// A new client listener key (by hand only, notes/client-port.md §5): the old one is shredded,
+    /// A new client listener key (by hand only): the old one is shredded,
     /// its listeners and sessions end, and the same addresses listen under the new one, returned
     /// here. A client holding the old address sees `Network` on every call and `connected: false`
     /// until it attaches to a new address, handed to it out of band. No listener up (a process

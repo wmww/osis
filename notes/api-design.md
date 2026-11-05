@@ -16,6 +16,14 @@ Applies to any change to what the `osis` crate exports, and to whatever else app
 - **Name what a thing is, not its common use.** A host is a host, even when it is a sometimes-on laptop with no public IP; never a "server". An address that can name a node is not a `HostAddr`. Spell words out over abbreviations.
 - **Churn is good.** Until Tess opens the stability discussion, renames and reshaping are cheap and welcome. Call counts in tests are never a reason to keep a shape.
 
+## Public docs
+What `cargo doc` shows is for someone who has never seen this project.
+- Say what a thing is and does, in plain words. Don't restate its name or where it sits ("the public API" of the crate you just opened; "layer 8").
+- Don't lean on internals to explain ("over the node engine").
+- No lists of undefined terms: they tell a new reader nothing.
+- Rendered docs never cite notes/ or issues/; ordinary comments may. A spec reference is fine when it actually helps the reader, as a link if possible.
+- Less is more. Don't define every word; often the fix is to say less. Judge each case.
+
 ## Patterns to flag and fix
 - `do_x()` beside `do_y()`, where Y is a superset of X: remove `do_x()`.
 - Two functions that should be one generic one.

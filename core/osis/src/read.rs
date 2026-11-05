@@ -356,7 +356,7 @@ impl Reader<'_> {
     /// When the thing's content last changed: of the held changes and reverts writing its aspects (not `created.0`, `group.0` or role-class ones: placement and
     /// sharing are no content change; not ephemeral writes), the one with the latest
     /// `shown()`, else its creation. A delete is a change. A change known here only from a
-    /// snapshot is not seen (notes/api.md Attribution).
+    /// snapshot is not seen.
     pub fn changed(&self, tid: Tid) -> Option<Stamp> {
         if self.hidden(tid) {
             return None;

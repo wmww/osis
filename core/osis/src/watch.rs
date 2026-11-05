@@ -28,7 +28,7 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// The commit behind a change, as its signed header says: a snapshot applied is
-/// reported as itself, never as the writes it carries (notes/api.md Attribution).
+/// reported as itself, never as the writes it carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommitInfo {
     /// The commit, or the ephemeral batch for a change with no durable half.
@@ -138,7 +138,7 @@ pub(crate) struct Registry {
     subs: BTreeMap<u64, Arc<Sub>>,
 }
 
-/// Where watch callbacks run (`Config::dispatch`, notes/api.md Watching).
+/// Where watch callbacks run (`Config::dispatch`).
 #[derive(Clone, Default)]
 pub enum Dispatcher {
     /// On a dispatcher thread the database starts (the default).
@@ -469,7 +469,7 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
     }
 }
 
-/// A registration; dropping it unsubscribes (notes/api.md: RAII, no ids to remember). Off the
+/// A registration; dropping it unsubscribes. Off the
 /// dispatcher thread, drop waits for a call in flight, so no call starts or runs after it
 /// returns; except when the dropping thread holds the engine lock (inside `Osis::read` or
 /// `Internals::engine`), where it cannot wait: a call may still be running then.
@@ -559,8 +559,8 @@ impl WatchState {
 /// as absent, so this is a fallback).
 type Decode<T> = Arc<dyn Fn(&Value) -> Option<T> + Send + Sync>;
 
-/// A watched aspect: the latest value, taken atomically with the subscription (notes/api.md
-/// Watching). Holds only the latest value; unsubscribes when dropped.
+/// A watched aspect: the latest value, taken atomically with the subscription.
+/// Holds only the latest value; unsubscribes when dropped.
 pub struct Watch<T> {
     state: Arc<WatchState>,
     seen: AtomicU64,

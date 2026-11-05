@@ -34,7 +34,7 @@ pub enum Error {
     /// A write through another node may or may not have applied (its reply was lost and the node
     /// cannot tell). Repeating it is a new write: read first, repeat only if it is not there.
     OutcomeUnknown,
-    /// Not provided by this build yet (issues/api-deferred.md).
+    /// Not provided by this build yet.
     Unsupported(String),
     /// The database is closed.
     Closed,

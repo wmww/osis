@@ -237,7 +237,7 @@ impl Osis {
     }
 
     /// Accepts a new device's request to an offer of this device: makes it an admin of the
-    /// person (or re-seals a device already one, notes/sync.md Limits) and returns its node tid
+    /// person (or re-seals a device already one) and returns its node tid
     /// with the reply to carry back.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
         if self.is_attached() {

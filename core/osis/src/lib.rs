@@ -1,7 +1,6 @@
-//! osis: the public API, the only crate apps depend on. A synchronous local data API over the
-//! node engine: typed aspect keys, reads with paths and a materialization bound, RAII watches
-//! on one dispatcher (its own thread or the app's), the `Write` batch, undo and history, signals, diagnostics, one
-//! `Error`. Layer 8 (notes/architecture.md). Design: notes/api.md.
+//! osis is a decentralized, reactive data layer for interconnected applications. Apps read and
+//! write structured data locally, online or not; osis syncs it between a user's devices and the
+//! people it is shared with, and tells apps when it changes.
 //!
 //! # Open a database
 //! The owner of a new thing is always explicit; `me()` is the usual owner. Placement is a group
