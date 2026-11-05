@@ -1,5 +1,13 @@
-# Sim member_churn seed 9390: a scenario commit on an unknown thing
-> Summary: `member_churn` seed 9390 fails at step 113: "node 5 commit: unknown thing 6ZlFObgFEUKGRpzl5rl8". Fails on main at 768707845 as well (not from 2b-regress). Not triaged.
-> Tags: sim
+# Sim member_churn seed 9390: an admin's commits never leave it after concurrent rotations
+> Summary: `member_churn` seed 9390 fails at step 113 ("node 5 commit: unknown thing"): node a (admin) holds g's label open and idle, yet none of its commits on g since the scripted partition (grant to ph, removal of pb, writes) reached the host; h waits on a's chain for good. Concurrent epochs on g (four of n 3, two of n 4, two different n 5) are involved. Diagnosed to here, not fixed: label registration under forked rotations (depth0's area).
+> Tags: sim, sync, keys
 
-Repro: `cargo run --bin sim-sweep -- --seeds 1 --from 9390 --only member_churn --jobs 1` (or `osis_sim::replay("member_churn", 9390)`). Found by the 2b-regress sweep (`--seeds 30 --from 9370 --only snapshot_rights,revocation_bob,member_churn`, the only failure of 90).
+Repro: `cargo run --bin sim-sweep -- --seeds 1 --from 9390 --only member_churn --jobs 1` (2 s); `OSIS_SIM_TRACE=1` for the wire. Probe (prints below, before `write(h, 60)`): /tmp/claude-1003/-home-ai-osis/0c01718c-5ac0-4855-88f9-7d590e437bf8/scratchpad/leftovers-j8r2/i3probe.diff (not committed).
+
+Found (main after items 283-292, plus the leftovers branch):
+- h (node 5) knows neither g nor t; it holds one pending commit, bd3b6271 (a's grant to ph, from its inbox), `MissingChain(a)`. It opens g's label only by superseded sync keys (from the pending commit's boxes) and its claims at every step are refused (code 1): no registered step lists ph.
+- a's roster of g lists ph (keyset point 1800c5de), so a applied the grant. But a's commits on g or t since step 51 (2120c10c, 54e8efd6, 2b0ab4ce, bd3b6271, the removal, ...) are held by no other node after `quiet(40)`, and `label_status` at a says g's label is open, idle, not refused, `deliveries_pending` 0.
+- The wire: a's last traffic on g's label before the quiet is a pushed `Head` (b's `Register` of a step under prev 167b... at step 51). a sends no `Upload` and no `Register` on g's label from then on. After the quiet's restart it reopens by a claim at that head (refused 17 times first) and syncs, still with no upload or register.
+- g's read epochs: a holds n 0-2, four of n 3, n 4 (20,136.. and 79,244..), n 5 (160,64..) and n 6. c holds n 4 (20,136..) only and a different n 5 (238,105..). So the head the host serves registers an epoch a does not hold (or does not take as valid), and a's own rotations are never registered.
+
+Likely class: a node whose newest epochs fork from the host head's (a concurrent rotation by another admin landed first) neither registers a child of the head (it would need the head's delete key, from an epoch it does not hold) nor counts its commits under unregistered epochs as outstanding, so it reports idle while holding them. Spec/sync.md §3 "Role keys in use" covers opening in that state, not uploading or re-registering. Next: print a's `label.0` steps for g and which epoch each registers, and why the upload pass picks none of a's new commits (what `is_idle` checks). The fix belongs with the rotation/registration rewrite (branch depth0); the note in notes/sync.md on "An inbox chain only for a thing without a label" is a different path (h would still lack g's label).
