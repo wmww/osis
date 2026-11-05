@@ -22,7 +22,7 @@ Written from `spec/` alone, depending on no osis crate, so it is an independent 
 ## Output (`src/model.rs`, `evaluate(&Held) -> Outcome`)
 - `parked`, `applied`, `valid` (per part of an applied commit; role parts: whether the edge write applied; roster parts: whether the snapshot applied), `purged` (part to request).
 - `reads` per `(thing, aspect)`: `Read::{Absent, Reg, Map, Text}`; `states`: canonical writes.
-- `at_most`: each held body's keep-at-most bound where keep bounds decide its fate (the node drops it no earlier and by then); `deadlines`: every clock value after `now` at which the output may change with the held set unchanged.
+- `at_most`: each held body's keep-at-most bound where keep bounds decide its fate (the node drops it no earlier and by then; 0: at the kill); `deadlines`: every clock value after `now` at which the output may change with the held set unchanged.
 - `fates` per held or parked body: `Keep(why)`, `Leftover(why)` (strip values), `MayDrop(why)` (covered), `MustDrop(why)` (keep at most from its bound, a purged snapshot, `Gone`: a waiting part past its expiry or an unjoinable body expired or purged, which counts as never received), `NeverReceived`; `keep_in_state`: the live writes a keep-at-most drop leaves in the state; `deaths`: first and last death.
 - `valueless`: deltas held value-less (expired, purged); `forbidden`: every value of theirs still held, with where (body or own state). An engine holding the same set must hold none of them once it has acted.
 

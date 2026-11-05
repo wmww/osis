@@ -114,8 +114,10 @@ fn snapshot_copy_of_a_purged_value_is_a_leftover_spec_commits_5() {
 fn keep_at_most_zero_drops_after_first_death_spec_commits_5() {
     let zero = Retention { most_zero: true, ..Retention::WRITER };
     let cs = vec![reg(10, OWNER, 1, REG, zero, 1), reg(11, OWNER, 2, REG, Retention::PLAIN, 2)];
-    assert_eq!(fate(&held(1, cs.clone()), 10), Fate::Keep(KeepWhy::Plain));
+    assert_eq!(fate(&held(1, cs[..1].to_vec()), 10), Fate::Keep(KeepWhy::Plain));
+    // the kill goes at once, also stamped ahead of the clock (AMBIGUITIES.md 45)
     let none = DropWhy::AtMost { carrier: false };
+    assert_eq!(fate(&held(1, cs.clone()), 10), Fate::MustDrop(none));
     assert_eq!(fate(&held(2, cs), 10), Fate::MustDrop(none));
 }
 
@@ -135,9 +137,9 @@ fn keep_at_most_zero_bound_adds_grace_for_a_live_write_spec_commits_5() {
     assert!(o.deadlines.contains(&(at(2) + AT_MOST_GRACE)));
     let o = evaluate(&held(3, vec![a, b]));
     assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::AtMost { carrier: true }));
-    // a register write superseded has no live write: its bound is the death itself
+    // a register write superseded has no live write: it goes at the kill
     let cs = vec![reg(20, OWNER, 1, REG, zero, 1), reg(21, OWNER, 2, REG, Retention::PLAIN, 2)];
-    assert_eq!(evaluate(&held(1, cs)).at_most[&(20, 0)], at(2));
+    assert_eq!(evaluate(&held(1, cs)).at_most[&(20, 0)], 0);
 }
 
 // spec/commits.md §5 (Keep at most, Carrier): live writes stay in the state

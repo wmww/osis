@@ -24,17 +24,18 @@
 //! snapshot withheld or on several things, a role frontier not inline, a role commit outside
 //! the model as above): actors make every thing's roles depend on others'.
 //!
-//! Compared on in-scope aspects: which commits applied (role commits too), each content part's
-//! validity, reads, no held body the model says must be gone (`MustDrop`) or counts as never
-//! received, no forbidden value (expired or purged), and every body the node dropped, given back
-//! as the order harness's keep-everything node holds it, one the model lets go (`MayDrop`,
-//! `MustDrop`; a leftover is a held body, spec/crdt.md §4.7).
+//! Compared on in-scope aspects: which commits applied (role commits too, not the node's own from
+//! outside the history), each content part's validity, reads, no held body the model says must be
+//! gone (`MustDrop`; at keep at most only once the node has recomputed the aspect's deaths, which
+//! it does at its next tick, before any read) or counts as never received, no forbidden value
+//! (expired or purged), and every body the node dropped, given back as the order harness's
+//! keep-everything node holds it (a snapshot dropped while valid as `Held::dropped_valid`), one
+//! the model lets go (`MayDrop`, `MustDrop`; a leftover is a held body, spec/crdt.md §4.7). The
+//! order harness also compares after every ingest of its clocked deliveries, between ticks.
 //!
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
-//! that they are held); a part an applied commit misses counts as dropped (the model syncs
-//! everything, and spec/commits.md §4 waits only for things synced when the commit came: whether
-//! the node applied too early is not judged here, only too late; a part waiting alone, spec/commits.md
-//! §4, is such a part); a leftover's value-less owners are taken as stripped by the node, also for
+//! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
+//! §4), is missing; a leftover's value-less owners are taken as stripped by the node, also for
 //! a value that arrived value-less; an edge's `since`, `tied` and `keyset` are dropped (carried,
 //! never an authority); a keep-at-most-0 snapshot body the node dropped with no live write
 //! (`Dropped::live`) past a death is let go (liveness is judged at the drop, `compare`).
@@ -383,7 +384,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     let applied: Vec<CommitId> = e.commit_ids();
     let mut held: Vec<(CommitId, Arc<Header>, bool)> = applied.iter().filter_map(|id| Some((*id, e.header(id)?, true))).collect();
     // an applied commit with a part waiting alone (spec/commits.md §4) is listed once, as applied:
-    // the waiting part is missing from its record (fed as dropped, below)
+    // the waiting part is missing from its record (fed as missing, below)
     for (id, _) in e.pending() {
         if let Some(h) = hist.headers.get(&id).filter(|_| !applied.contains(&id)) {
             held.push((id, h.clone(), false));
@@ -451,6 +452,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     }
     let mut commits = Vec::new();
     let mut dropped = Vec::new();
+    let mut gave = BTreeSet::new();
     let mut labels = BTreeMap::new();
     let mut inside = BTreeMap::new();
     for (id, h, applied) in &held {
@@ -471,10 +473,13 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             let retention = retention(&a.retention).unwrap_or(hm::Retention::PLAIN);
             let part = |body| hm::Part { thing, aspect, retention, body, stripped: BTreeSet::new() };
             let state = match &meta {
-                Some(m) if m.missing.contains(&ai) => Some(hm::Body::Dropped),
+                Some(m) if m.missing.contains(&ai) => Some(hm::Body::Missing),
                 Some(m) if m.dropped.contains_key(&ai) => {
                     if ok {
                         dropped.push((label, parts.len(), *id, a.tid, a.ak.clone()));
+                    }
+                    if m.dropped[&ai].gave {
+                        gave.insert((label, parts.len()));
                     }
                     Some(hm::Body::Dropped)
                 }
@@ -617,7 +622,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
             }
         }
     }
-    let held = hm::Held { now: e.now().0, me, things, commits, own_state };
+    let held = hm::Held { now: e.now().0, me, things, commits, own_state, dropped_valid: gave };
     let ids = cv.ids.iter().map(|(t, i)| (*i, *t)).collect();
     let mut input = Input { held, inside, skipped, commits: labels, vals: cv.vals, extra: cv.extra, dropped, ids };
     input.held.commits.sort_by_key(|c| c.id);
@@ -711,7 +716,10 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
     for c in &input.held.commits {
         let (id, applied) = input.commits[&c.id];
         let touches = c.parts.iter().any(|p| by_part.contains_key(&(p.thing, p.aspect))) || (c.is_role() && !by_part.is_empty());
-        if touches && o.applied.contains(&c.id) != applied {
+        // the node's own commits from outside the history (its creation, carriers) are its own
+        // writes, never received: the order harness may set its clock back before them (no drift)
+        let own = !hist.headers.contains_key(&id);
+        if touches && !own && o.applied.contains(&c.id) != applied {
             let h = &hist.headers[&id];
             let parts: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {} syncs {} owner {:?}", a.tid, a.ak.as_str(), e.core.syncs(&a.tid), e.owner(&a.tid))).collect();
             let missing = e.core.ix.commits.get(&id).map(|m| m.missing.clone());
@@ -727,8 +735,12 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             if node != model {
                 return differ(format!("validity of commit {id:?} (#{}) on {t:?} {}: model {model:?}, node {node:?}; node's roster {:?}, role commits {:?}", c.id, a.as_str(), e.roster(t), role_commits(e, t)), &[p.thing]);
             }
+            // deaths the node has yet to recompute (at its next tick, before any read) are not
+            // learned: a bound they pass is not yet one it knows (spec/commits.md §5)
+            let unlearned = |f: &hm::Fate| matches!(f, hm::Fate::MustDrop(hm::DropWhy::AtMost { .. })) && e.core.ix.deaths_due.contains(&(*t, a.clone()));
             if let Some(f) = o.fates.get(&(c.id, i))
                 && matches!(f, hm::Fate::MustDrop(_) | hm::Fate::NeverReceived)
+                && !unlearned(f)
             {
                 return differ(format!("commit {id:?} (#{}) on {t:?} {}: the node holds its body, the model's fate is {f:?}", c.id, a.as_str()), &[p.thing]);
             }
@@ -814,7 +826,9 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
                 && ob.deaths.get(&(*label, *i)).is_some_and(|d| d.0.is_some())
                 && e.core.ix.commits.get(id).and_then(|m| m.dropped.get(i)).is_some_and(|d| !d.live);
             if !lets_go && !dropped_dead {
-                return differ(format!("commit {id:?} (#{label}) on {t:?} {}: the node dropped its body, the model's fate for it is {f:?}", a.as_str()), &[input.inside[&(*t, a.clone())].0]);
+                let bound = ob.at_most.get(&(*label, *i));
+                let why = e.core.ix.commits.get(id).and_then(|m| m.dropped.get(i)).map(|d| (d.why, d.covered_by.clone(), d.live));
+                return differ(format!("commit {id:?} (#{label}) on {t:?} {}: the node dropped its body ({why:?}), the model's fate for it is {f:?} (keep-at-most bound {bound:?}, deaths {:?}, valid {:?} at the node {:?})", a.as_str(), ob.deaths.get(&(*label, *i)), ob.valid.get(&(*label, *i)), e.body_valid(id, t, a)), &[input.inside[&(*t, a.clone())].0]);
             }
         }
     }
