@@ -16,11 +16,6 @@ A realm is an actor marked `realm.0` (plus `name.0`), as `tag.0` marks a group; 
 8. Host admission for realms: left to the host admission work (recommended).
 Say "realms as recommended" to build, or change any.
 
-## 7. A removal can make writes valid that were never allowed
-A removal's frontier lists the removed person's writes it had seen, and each listed write is valid, whether or not the person had the role when writing (spec/permissions.md §5.2). Writes made after an `until` expiry rely on this, as intended. Side effect: a write made before the person was ever granted (an outsider's write the admin happened to receive) becomes valid when that person is later granted and removed. Rare, needs a hostile writer.
-- A: keep it, and have clients leave out of a frontier the writes made before the person first held the role. Recommended (receivers unchanged).
-- B: receivers also require the role "as restored" at the write (more rules in validity).
-
 ## 10. Deleting while removed, then re-granted (linked to 6 and 7)
 The requirement says the right to delete is judged at the time of the request. Now a delete request someone made while removed counts once they get the role back, like their edits from that gap do (spec/permissions.md §7; needed so a re-grant cannot bring back an edit's value its own request deleted, order seed 3001). They could delete the same things right after the re-grant anyway, so this gives no new power, but the requirement's wording no longer says what happens.
 - Proposed sentence for spec/requirements.md Deletion: "A re-grant counts for deletes as for edits: a request made while removed takes effect once the role is back."
@@ -42,3 +37,4 @@ A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) settled most o
 - Q3: Tess's wording in spec/requirements.md (no values of another thing; only metadata, and only when one commit touches both); the exact metadata (thing ID, `ai` list, owner chain, size) is stated in spec/wire.md §4 and changes there deliberately, without her sign-off. Built as is (whole-2b).
 - Q4: option A, written into spec/requirements.md Deletion (an undo made before the device saw the purge is its own change). Nothing to build.
 - Q6: A (Tess): a re-grant revives all the person's writes; no special case. Her point: leaving writes out of a removal on purpose as a recovery tool is depending on a side effect; an admin who wants something gone should revert it explicitly, not as a side effect of a kick. Don't extend that side effect to new uses (bears on Q7, Q10 and on notes that describe deliberate omission as lockout or purge recovery).
+- Q7: simplest (Tess: "this would be a strange thing for an admin to do"): no change; a removal's listed writes are valid as today; stated limit only. Lockout recovery by deliberate omission (`--repudiate`) to be re-studied as a key fork from the last epoch held (Q6 principle).
