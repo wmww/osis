@@ -23,7 +23,7 @@ let text = db.at(note, notes::BODY).edit_text()?;
 
 db.sync(note, &[])?;                                       // only if no synced group carries it
 db.grant(note, friend, Role::Write, GrantOpts::default())?;
-db.lower_role(note, friend, Role::Read, SyncFirst::Required).await?;
+db.set_role(note, friend, Role::Read, SetRole::default()).await?;
 db.revoke(note, friend, Revocation::default()).await?;
 ```
 
@@ -72,7 +72,8 @@ Design for the world after it:
 All of this speaks of granting a role (F, Vocabulary). Today: `grant`, `share`, `share_into`, `change_edge`, `demote(Lower)`, `leave`, `remove_edge_of`, `remove_device`, `remove_client`, `revoke_link`, `revoke_joiner`.
 1. **`grant(target, holder, role, GrantOpts)`** is the one call that adds, raises or changes `until` and `invite`, and nothing else (Decided 1). Removes `share` and `change_edge`. `grant` refuses lowering: from reading `Osis::grant` and `grant_in`, neither checks today, so a `grant` at a lower role looks like it lowers with no pre-sync and no rotation. Not run: write a failing test first.
 2. **Demote and remove become separate functions.** `demote(.., Lower::{To, Remove}, Demotion)` is centered wrongly: the two cases differ in what is allowed (a joiner can only be removed) and what applies (`keep` only on removal).
-   - `lower_role(target, holder, role, SyncFirst)`.
+   - `set_role(target, holder, role, SetRole { sync: SyncFirst, until, invite })`, async: makes the holder's role this one, raising or lowering. The usual call (Tess). Replaces lowering by `demote`; a link joiner's role still can't be lowered (`Invalid`).
+   - `grant` stays beside it, the one justified overlap: it never waits and never takes anything away, for sync code and for callers that mean only that. Say so at its definition.
    - `revoke(target, holder, Revocation { sync: SyncFirst, keep })`, the natural opposite of `grant`.
    - `repudiate(target, holder)` as its own call: today's `Demotion.repudiate` is a rare recovery with its own rules ("a direct edge only", "only after a lockout").
    - Decide whether removing a link joiner stays in `revoke` or is only `revoke_joiner`; one route.
@@ -161,12 +162,12 @@ Keep as they are:
 | `hosts()`, `hosting()`, `host_address()` | `hosts()` and `own_host_*` | The hosts this account uses vs the host this node runs |
 | `create_ownerless`, `owner_of`, `create(owner)` | `create(first_admin)` or `create()` | Owner removal; don't design twice |
 | `place*`, `unplace`, `placed.0~`, `PlacementNotPersisted`, `place_plan` | `add`, `remove`, membership words | decision 6 |
-| `demote`, `Demotion` | `lower_role`, `SyncFirst` | B2 |
+| `demote`, `Demotion` | `set_role`, `SyncFirst` | B2 |
 | `roster`, `Roster`, `watch_roster` | `grants(target)` | The word for a list of grants |
 
 ### Vocabulary
 - **Account**, not person or user: an account may be a team, a bot or a shared identity. `me()` keeps its name.
-- **Roles**: one sentence for all of it: an actor is *granted a role* on a thing, and is then a *holder* of that role. A grant can be lowered or revoked. Clean out older words wherever API, CLI, spec and notes use them:
+- **Roles**: one sentence for all of it: an actor is *granted a role* on a thing, and is then a *holder* of that role. A role can be set, or revoked. Clean out older words wherever API, CLI, spec and notes use them:
   - *edge* for a grant (70 lines in `core/osis/src`, 131 in `spec/`), including "tied edge", `EdgeKey` and the CLI's `edge`.
   - *rights* where a role is meant, *demotion* and *removal* for a revocation (55 and more lines). `Error::Permission` may stay as the general word, or become `NeedsRole`.
   - *entitlement* and *tenure*: internal, keep them out of anything public; the spec may keep what it must define.
