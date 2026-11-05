@@ -25,3 +25,4 @@
 - merge/held boxes: a probe disabling "merge any fork" with `&& false` made seed 1838 pass (the wait then hid the lockout as "nothing due"); the honest probe restores the old rule, not no rule.
 - merge/held boxes: a `pkill -f <test binary>` in front of a cargo command matched its own shell and killed the run (the footer says never `pkill -f`; use TaskStop).
 - merge/held boxes: plain "merge any fork" passed every engine harness yet hung an osis World-sim test (two devices merging alike each round); run the osis tests before trusting a liveness rule the engine harnesses pass.
+- rv5: `run.sh small` lists `D0_fork_live` (liveness, 4 min at 12 workers) as small; at run.sh's default 1 worker it takes most of the run's half hour. The rebase onto main conflicted in osis share.rs/sharing.rs/spec/crypto.md (main's API renames vs the branch's dropped `keyset`).
