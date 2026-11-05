@@ -89,8 +89,8 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 /// Whether held commit `id` keeps a blob under a label whose things `on` says, for good (spec/commits.md
 /// §5, a lasting header): a permanent delta of it on such a thing is dropped (a broken one is no
 /// tombstone: spec/permissions.md §7), or its purge request
-/// dropped one there (`purge_one` notes it: a new device needs the request to count the missing
-/// delta as held). Noted, not walked: a writer's aspect-wide request naming nothing it may purge
+/// dropped one there (`purge_one` notes it: a new device needs the request to hold a copy of the
+/// delta that comes back as purged). Noted, not walked: a writer's aspect-wide request naming nothing it may purge
 /// would walk the aspect on every pass.
 pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };

@@ -657,7 +657,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
 
-
     if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
         let order = in_order(&parts);
         for (ai, a) in h.aspects.iter().enumerate() {
