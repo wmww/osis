@@ -45,7 +45,8 @@ pub fn host_policy(knobs: &BTreeMap<String, u64>) -> Result<HostPolicy, String> 
 }
 
 /// `host_policy` of what can be run by: the limits a stored `host.0^` names that this build cannot
-/// (another node's newer ones) stay out of the policy, and are returned.
+/// (another node's: a newer name, or a value out of a known limit's range, whose default then runs)
+/// stay out of the policy, and are returned.
 pub fn host_policy_known(knobs: &BTreeMap<String, u64>) -> (HostPolicy, BTreeMap<String, u64>) {
     let mut p = HostPolicy::default();
     let mut unknown = BTreeMap::new();
@@ -119,7 +120,7 @@ impl SyncEngine {
         let key = SigningSecret::from_seed(&self.host_secret()).verifying_key().to_bytes();
         let (policy, unknown) = host_policy_known(&h.policy);
         if !unknown.is_empty() {
-            self.diag(format!("host.0^ policy: limits not run by: {:?}", unknown.keys().collect::<Vec<_>>()));
+            self.diag(format!("host.0^ policy: limits not run by, the defaults apply: {unknown:?}"));
         }
         let admission = match h.admit {
             Admit::Open => Admission::Open,

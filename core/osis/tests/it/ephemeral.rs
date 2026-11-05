@@ -346,6 +346,24 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     w.at(b.me(), osis::Key::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("one expiry")));
     assert_eq!(durable_marks(&b), before + 1, "only the group's commit applied");
+    // a delete is no way past it: what it ends follows the durable commit, what is asked beside it
+    // does not, a durable thing's delete with an ephemeral write elsewhere or a signal on it
+    let gone = b.batch(|w| {
+        let g = w.create()?;
+        w.at(g, osis::Key::untyped(kept.clone())).set(&Value::Int(1))?;
+        Ok(g)
+    })
+    .unwrap();
+    let marks = durable_marks(&b);
+    let mut w = b.write();
+    w.delete(gone).unwrap();
+    w.at(b.me(), osis::Key::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:draft.0~") && m.contains("app:kept.0")));
+    let mut w = b.write();
+    w.delete(gone).unwrap();
+    w.at(gone, osis::Key::untyped(ak("app:ring.0*"))).set(&Value::Int(1)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:ring.0*")));
+    assert_eq!((durable_marks(&b), b.knows(gone).unwrap()), (marks, true), "nothing applied");
     // apart: the durable one a commit, the ephemeral one with an id of its own, each what its watch names
     let (tx, rx) = channel();
     let _sub = b.at(b.me(), osis::Key::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
@@ -1000,4 +1018,47 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
     w.commit().unwrap();
     let after = db.engine(|e| e.core.acting());
     assert!(after.contains(&db.me()), "{after:?}");
+}
+
+// spec/commits.md §6, notes/api.md Writes: a disappearing thing end to end. The commit expiring cannot
+// keep the thing, and says how; the first commit holds no value when it removes an aspect; the
+// expiring one then writes and places it, undo and redo work, and at T only the record is left.
+#[test]
+fn a_thing_with_only_expiring_content_spec_commits_6() {
+    let (db, c) = setup(40);
+    let (body, hour) = (osis::Key::untyped(ak("app:body.0")), Duration::from_secs(3600));
+    let g = db.batch(|w| {
+        let g = w.create()?;
+        w.at(g, osis::Key::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
+        Ok(g)
+    })
+    .unwrap();
+    let mut w = db.write();
+    w.expires(osis::Expiry::In(hour));
+    let lost = w.create().unwrap();
+    w.at(lost, body.clone()).set(&s("x")).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("removing an aspect") && m.contains(&lost.to_string())));
+    let mut w = db.write();
+    let t = w.create().unwrap();
+    w.at(t, body.clone()).remove().unwrap();
+    let kept = w.commit().unwrap().unwrap();
+    let h = db.engine(|e| e.header(&kept.id.commit().unwrap())).unwrap();
+    assert_eq!(h.aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), ["created.0", "app:body.0"], "the record, and a reset holding no value");
+    assert_eq!(h.expires, None);
+    let mut w = db.write();
+    w.expires(osis::Expiry::In(hour));
+    w.at(t, body.clone()).set(&s("x")).unwrap();
+    w.group(g).add(osis::Member::Item(t)).unwrap();
+    let msg = w.commit().unwrap().unwrap();
+    assert_eq!(db.engine(|e| e.header(&msg.id.commit().unwrap())).unwrap().expires, Some(T0 + 3_600_000));
+    let scope = osis::Scope::Thing(t);
+    db.undo(&scope).unwrap().unwrap();
+    assert_eq!(db.at(t, body.clone()).get().unwrap(), None);
+    db.redo(&scope).unwrap().unwrap();
+    assert_eq!(db.at(t, body.clone()).get().unwrap(), Some(s("x")));
+    assert!(durable_items(&db, g).contains(&t));
+    c.advance(3_700_000);
+    db.engine(|e| e.tick().unwrap());
+    assert_eq!(db.at(t, body).get().unwrap(), None);
+    assert!(!durable_items(&db, g).contains(&t), "out of its group");
 }

@@ -246,7 +246,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     if confined {
         crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None };
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng), expires: None, restores: false };
     build_one(tx, plan, deltas)
 }
 

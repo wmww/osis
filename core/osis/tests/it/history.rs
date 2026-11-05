@@ -325,3 +325,41 @@ fn required_is_no_content_spec_commits_5() {
     assert!(!db.knows(u).unwrap(), "undone");
     assert_eq!(db.at(u, ct::REQUIRED).get().unwrap(), Some(rules));
 }
+
+// spec/commits.md §5, §6: a delta answers to its thing's required retention, its reset too, so a delete
+// of a thing whose aspects (or groups) fall under different rules is several commits' work: refused,
+// telling the app to do the rest first, and then the delete goes through. Each rule alike: expiry, `nobody`.
+#[test]
+fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
+    use osis::internals::schema::core_types as ct;
+    let nobody = osis::Retention { by: osis::PurgeBy::Nobody, ..Default::default() };
+    let rule = [ct::Required::new(osis::Retention::default(), Some(60_000)), ct::Required::new(nobody, None)];
+    for (i, r) in rule.into_iter().enumerate() {
+        let db = db_at(50 + i as u64);
+        let t = db.create_ownerless(db.me()).unwrap();
+        let rules: ct::RequiredRules = [("app:m".to_string(), r), (String::new(), ct::Required::new(osis::Retention::default(), None))].into_iter().collect();
+        db.commit_set(t, ct::REQUIRED, &rules).unwrap();
+        let (m, plain) = (osis::Key::untyped(osis::Ak::new("app:m.0").unwrap()), osis::Key::untyped(osis::Ak::new("app:s.0").unwrap()));
+        db.commit_set(t, m.clone(), &s("x")).unwrap();
+        db.commit_set(t, plain.clone(), &s("y")).unwrap();
+        assert!(matches!(db.batch(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("first") && !e.contains("separate")));
+        assert!(db.knows(t).unwrap(), "nothing applied");
+        db.batch(|w| w.at(t, m).remove()).unwrap();
+        db.batch(|w| w.delete(t)).unwrap();
+        assert!(!db.knows(t).unwrap());
+    }
+    // the group's removal goes first likewise, when the thing's own writes expire
+    let db = db_at(52);
+    let g = thing(&db);
+    let t = thing(&db);
+    db.commit_set(g, osis::Key::untyped(osis::Ak::new("app:s.0").unwrap()), &s("y")).unwrap();
+    db.commit_set(t, osis::Key::untyped(osis::Ak::new("app:s.0").unwrap()), &s("y")).unwrap();
+    db.batch(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
+    let rules: ct::RequiredRules = [(String::new(), ct::Required::new(osis::Retention::default(), Some(60_000)))].into_iter().collect();
+    db.commit_set(t, ct::REQUIRED, &rules).unwrap();
+    db.commit_set(t, osis::Key::untyped(osis::Ak::new("app:s.0").unwrap()), &s("z")).unwrap();
+    assert!(matches!(db.batch(|w| w.delete(t)), Err(Error::Invalid(e)) if e.contains("delete") && e.contains("group.0")));
+    db.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
+    db.batch(|w| w.delete(t)).unwrap();
+    assert!(!db.knows(t).unwrap());
+}

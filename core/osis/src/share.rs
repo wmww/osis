@@ -611,6 +611,9 @@ impl Osis {
     /// Already a member, nothing more is written to the group. A grant of the group at `role` or
     /// above stays as it is, tied or not, and a raise of a grant made by hand stays untied.
     ///
+    /// Several commits, not one: keeping a draft, the membership, the grant. A crash between them
+    /// leaves the earlier ones, and calling this again finishes the rest.
+    ///
     /// Needs write on the group and admin on the thing (or an `invite` of at least `role`, the
     /// group having no grant yet), else `Permission` before anything is written. `Invalid`, as for
     /// `grant`, below a role the group lost. To add without granting: `Write::group`. `Unsupported` on a client with its own actor.

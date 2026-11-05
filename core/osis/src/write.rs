@@ -25,7 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
 
-/// A commit just made: an atomic write, whole at every node that applies it.
+/// A commit just made: an atomic write, whole at every node that applies it. A write that made or
+/// freed only a draft has nothing for other nodes to apply, and an id all the same.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub id: CommitId,
@@ -103,11 +104,16 @@ impl WriteOp {
 /// to the app:
 /// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing's
 ///   record never expires, so the commit that first keeps a thing has none: expiring content goes
-///   in a later commit.
+///   in a later commit (for no content before it, have the first commit `remove` an aspect: that
+///   stores no value).
 /// - A write under retention `nobody` shares a commit only with others like it.
 /// - A commit is durable or ephemeral (keys marked `~`), and a signal (keys marked `*`) is a commit
-///   of its own. A `delete` is the one exception: it ends all a thing holds, and the part of that
-///   held in memory reaches other nodes on its own.
+///   of its own. Two things follow a durable commit in memory, asking for nothing of their own: a
+///   `delete`'s removal of what the thing holds in memory, and a kept draft's memberships becoming
+///   durable. Each reaches other nodes on its own.
+///
+/// This is judged on what the ops ask, not on what they turn out to write: a `set` of the value
+/// already there still counts.
 #[must_use = "a Write does nothing until commit()"]
 pub struct Write<'d> {
     db: &'d Osis,
@@ -195,7 +201,9 @@ impl<'d> Write<'d> {
 
     /// When this commit expires, in place of what its keys say. A later call replaces it. `commit`
     /// fails `Invalid` when the time is not in the future, or beside what cannot expire: a removal
-    /// from a group, a `delete`, a purge, or a thing this commit first keeps.
+    /// from a group, a `delete`, a purge, or a thing this commit first keeps. A commit writing into
+    /// a value that expires sooner (a reaction to a disappearing message) expires with that value,
+    /// whatever this says: it means nothing once the value is gone.
     pub fn expires(&mut self, e: Expiry) -> &mut Self {
         self.expires = Some(e);
         self

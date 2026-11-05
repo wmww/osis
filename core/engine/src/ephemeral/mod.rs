@@ -210,8 +210,8 @@ impl Engine {
             m.aspects.insert((g, gak.clone()), am);
         }
         // one commit: a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
-        let asked = eph_ops.iter().find(|o| !m.free.contains(&o.tid)).map(|o| format!("{} {}", o.tid, o.ak)).or(plan.asked.map(|g| format!("the members of {g}")));
-        if let (Some(a), Some(((t, k), _))) = (&asked, m.aspects.iter().find(|((t, _), _)| !m.free.contains(t))) {
+        let asked = eph_ops.iter().find(|o| o.ak.lifetime() == Lifetime::Signal || !m.free.contains(&o.tid)).map(|o| format!("{} {}", o.tid, o.ak)).or(plan.asked.map(|g| format!("the members of {g}")));
+        if let (Some(a), Some(((t, k), _))) = (&asked, m.aspects.iter().next()) {
             return Err(Error::Clash(format!("a commit is durable or ephemeral, and this write is both: {a} is ephemeral, {t} {k} is not. Write them as separate commits")));
         }
         eph_ops.extend(plan.eph);
@@ -285,10 +285,10 @@ impl Engine {
         // tombstones while held: an older copy elsewhere would revive the values), with the
         // ephemeral things they own
         let unplaced: BTreeSet<(Tid, Tid)> = eph_ops.iter().filter(|op| op.ak.as_str() == PLACED.ak()).flat_map(|op| op.am.ops.iter().filter_map(|o| place::member_removal(o).map(|x| (op.tid, x)))).chain(m.aspects.iter().filter(|((_, ak), _)| ak.as_str() == GROUP.ak()).flat_map(|((g, _), am)| am.ops.iter().filter_map(|o| place::member_removal(o).map(|x| (*g, x))))).collect();
-        let free = std::mem::take(&mut m.free);
+        let free = m.free.clone();
         let gone = self.freeable(&free, &unplaced);
         // a signal is a relay-only commit of its own (spec/sync.md §9)
-        if let Some(op) = (!signals.is_empty()).then(|| eph_ops.iter().find(|o| o.ak.lifetime() != Lifetime::Signal && !m.free.contains(&o.tid))).flatten() {
+        if let Some(op) = (!signals.is_empty()).then(|| eph_ops.iter().find(|o| o.ak.lifetime() != Lifetime::Signal)).flatten() {
             return Err(Error::Clash(format!("a signal is a commit of its own, and this write also writes {} {}. Write them as separate commits", op.tid, op.ak)));
         }
         // one memory commit (spec/sync.md §9; spec/crdt.md §2.1: plain writes under this open's

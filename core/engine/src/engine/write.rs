@@ -399,6 +399,8 @@ pub(crate) struct CommitPlan {
     pub blind: [u8; 16],
     /// The commit's expiry (spec/commits.md §6): every delta's.
     pub expires: Option<u64>,
+    /// An undo's: `expires` stands, whatever its keys' defaults (`build_one`).
+    pub restores: bool,
 }
 
 /// A fresh header blind.
@@ -453,8 +455,8 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
 /// The one expiry of a commit of these deltas (`entries`: thing, AK, retention, expiry; spec/commits.md
 /// §5, §6), or `Clash` naming what cannot share a commit: different expiries, a `nobody` delta beside
 /// others (a thing's record and `required.0^` go with any), or an expiry beside a record,
-/// `required.0^` or a purge request, which carry none.
-fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool) -> Result<Option<u64>> {
+/// `required.0^` or a purge request, which carry none. `way`: what the caller can do about it.
+fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool, way: &str) -> Result<Option<u64>> {
     let free = |ak: &Ak| ak.as_str() == CREATED.ak() || ak.as_str() == osis_commit::retention::REQUIRED;
     let name = |t: &Tid, ak: &Ak, e: Option<u64>| match e {
         Some(e) => format!("{t} {ak} (expires at {e})"),
@@ -464,37 +466,42 @@ fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool) -> R
     let first = bound.next();
     if let Some(a) = first {
         if let Some(b) = bound.clone().find(|b| b.3 != a.3) {
-            return Err(Error::Clash(format!("a commit has one expiry, and this write has two: {} and {}. Write them as separate commits", name(&a.0, a.1, a.3), name(&b.0, b.1, b.3))));
+            return Err(Error::Clash(format!("a commit has one expiry, and this write has two: {} and {}. {way}", name(&a.0, a.1, a.3), name(&b.0, b.1, b.3))));
         }
         let nobody = |e: &&(Tid, &Ak, &Retention, Option<u64>)| e.2.by == osis_schema::PurgeBy::Nobody;
         if let (Some(n), Some(o)) = (entries.iter().filter(|e| !free(e.1)).find(nobody), entries.iter().filter(|e| !free(e.1)).find(|e| !nobody(e))) {
-            return Err(Error::Clash(format!("a write nobody may purge shares a commit only with others like it: {} {} is one, {} {} is not. Write them as separate commits", n.0, n.1, o.0, o.1)));
+            return Err(Error::Clash(format!("a write nobody may purge shares a commit only with others like it: {} {} is one, {} {} is not. {way}", n.0, n.1, o.0, o.1)));
         }
     }
     let expires = first.and_then(|e| e.3);
     if let Some(at) = expires {
         if let Some(r) = entries.iter().find(|e| e.1.as_str() == CREATED.ak()) {
-            return Err(Error::Clash(format!("a thing's record never expires, and this write creates or first keeps {}, in a commit expiring at {at}. First commit the thing with a write that does not expire", r.0)));
+            return Err(Error::Clash(format!("a thing's record never expires, and this write creates or first keeps {}, in a commit expiring at {at}. First commit the thing without an expiry: removing an aspect is enough, and stores no value", r.0)));
         }
         if let Some(r) = entries.iter().find(|e| free(e.1)) {
-            return Err(Error::Clash(format!("{} {} never expires, and this commit expires at {at}. Write them as separate commits", r.0, r.1)));
+            return Err(Error::Clash(format!("{} {} never expires, and this commit expires at {at}. {way}", r.0, r.1)));
         }
         if purge {
-            return Err(Error::Clash(format!("a purge request never expires, and this commit expires at {at}. Write them as separate commits")));
+            return Err(Error::Clash(format!("a purge request never expires, and this commit expires at {at}. {way}")));
         }
     }
     Ok(expires)
 }
 
-/// `build_and_apply` of deltas a write resolved (an undo): with `plan`'s inputs and the one expiry
-/// they share (`one_commit`).
+/// `build_and_apply` of an undo's deltas: with `plan`'s inputs and the one expiry they share
+/// (`one_commit`). A delta's expiry is what it copies back or what its thing requires, never its
+/// key's default (spec/crdt.md §4.6: none if none expires): the undone commit may have overridden
+/// that, and undoing it must not need what it did not.
 pub(crate) fn build_one(tx: &mut Tx<'_>, mut plan: CommitPlan, mut deltas: Vec<Resolved>) -> Result<CommitId> {
     let mut settled = Vec::with_capacity(deltas.len());
     for d in &deltas {
-        settled.push(settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?);
+        let (r, _) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
+        let (_, e) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, None, Some(r), d.expires)?;
+        settled.push((r, e));
     }
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = deltas.iter().zip(&settled).map(|(d, (r, e))| (d.tid, &d.ak, r, *e)).collect();
-    plan.expires = one_commit(&entries, !plan.purge.is_empty())?;
+    plan.expires = one_commit(&entries, !plan.purge.is_empty(), "An undo is one commit, so this cannot be undone while both stand")?;
+    plan.restores = true;
     for (d, (r, e)) in deltas.iter_mut().zip(settled) {
         (d.retention, d.expires) = (Some(r), e);
     }
@@ -530,7 +537,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     for d in deltas {
         let (retention, expires) = settle(tx.core, tx.txn.is_memory(), plan.kind, plan.ts, plan.signer, &d.tid, &d.ak, d.schema.as_deref(), d.retention, d.expires)?;
         // one expiry per commit (spec/commits.md §6): `one_commit` saw to it
-        if expires != plan.expires {
+        if expires != plan.expires && !plan.restores {
             return Err(Error::Misuse("a commit's deltas share one expiry"));
         }
         let framing = framing_for(tx.core, &plan, &published, &d.tid, &retention)?;
@@ -719,7 +726,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             e => Err(e),
         });
     }
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), first: std::mem::take(&mut m.first), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: draw_blind(&mut *tx.rng), expires: None };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), first: std::mem::take(&mut m.first), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: draw_blind(&mut *tx.rng), expires: None, restores: false };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }
@@ -750,7 +757,8 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         aspects.push(((tid, ak), am));
     }
     let entries: Vec<(Tid, &Ak, &Retention, Option<u64>)> = aspects.iter().filter_map(|((t, ak), am)| Some((*t, ak, am.retention.as_ref()?, am.expires))).collect();
-    let expires = one_commit(&entries, !base.purge.is_empty())?;
+    let way = if m.free.is_empty() { "Write them as separate commits" } else { "A delete removes every aspect of its thing and takes it out of its groups: do these in commits of their own first, then delete" };
+    let expires = one_commit(&entries, !base.purge.is_empty(), way)?;
     // role commits use commit form: a later commit by the same node can never void them by
     // reusing their counters; content commits write under this open's session unless asked
     // for commit form (spec/commits.md §3); expiring memory writes under its second session
@@ -759,7 +767,6 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     plan.expires = expires;
     plan.form = if kind != Kind::Content || m.commit_form { Form::Commit } else { Form::Session(if memory && expires.is_some() { tx.core.expiring.nonce } else { tx.core.session.nonce }) };
     let form = plan.form;
-    let plan = plan;
     let mut next_ctr = 1u64;
     let mut deltas: Vec<Resolved> = Vec::new();
     let published = super::secrets::published_keys(tx, &plan.creates, aspects.iter().map(|k| k.0.0))?;
