@@ -144,10 +144,10 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         }
         ChatCmd::Join { link } => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
-            let t = wait(ctx, osis_chat::join(&db, &l))?;
+            let t = wait(osis_chat::join(&db, &l, ctx.wait_for()?))?;
             send_out(ctx, None)?;
             // a `read` through the daemon does not pull: the first messages are here when this ends
-            if db.is_attached() {
+            if !db.has_store() {
                 catch_up(ctx, t);
             }
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
@@ -161,7 +161,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             } else {
                 None
             };
-            wait(ctx, osis_chat::kick(&db, t, p, word, if no_sync { SyncFirst::Skip } else { SyncFirst::Required }))?;
+            wait(osis_chat::kick(&db, t, p, word, if no_sync { SyncFirst::Skip } else { SyncFirst::Required }, ctx.wait_for()?))?;
             if purge {
                 osis_chat::purge_participant(&db, t, p)?;
             }
@@ -306,7 +306,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
 
 /// A store this command just opened brings what the hosts have (best effort: reading works offline).
 fn pull(ctx: &mut Ctx<'_>, t: Tid) {
-    if !ctx.db.is_attached() {
+    if ctx.db.has_store() {
         catch_up(ctx, t);
     }
 }
@@ -316,13 +316,13 @@ fn catch_up(ctx: &mut Ctx<'_>, t: Tid) {
     let db = ctx.db.clone();
     if db.hosts().is_ok_and(|h| !h.is_empty()) {
         let _ = db.sync_now();
-        let _ = wait(ctx, db.wait_synced(osis::SyncScope::Group(t), crate::DEFAULT_WAIT.min(std::time::Duration::from_secs(10))));
+        let _ = wait(db.wait_synced(osis::SyncScope::Thing(t), crate::DEFAULT_WAIT.min(std::time::Duration::from_secs(10))));
     }
 }
 
 /// What this command wrote reaches the hosts before the process exits; a daemon sees to it itself.
 fn send_out(ctx: &mut Ctx<'_>, shared: Option<Tid>) -> anyhow::Result<()> {
-    if ctx.db.is_attached() || ctx.db.hosts()?.is_empty() {
+    if !ctx.db.has_store() || ctx.db.hosts()?.is_empty() {
         return Ok(());
     }
     deliver(ctx, shared.map(|t| t.to_uri()))

@@ -2,15 +2,15 @@
 //! path of core's tests) and over malformed synced data.
 use osis::internals::Internals as _;
 use osis::core::{BODY, GROUP};
-use osis::{Ak, Config, ManualClock, MemStore, Osis, StoreAt, Tid, Value, WallMs};
+use osis::{Ak, ManualClock, MemStore, Osis, Store, Tid, Value, WallMs};
 use osis_app::data::{Data, Kind};
 use osis_app::schema::View;
 use std::sync::Arc;
 
-fn cfg(seed: u64, clock: &Arc<ManualClock>) -> Config {
-    let mut c = Config::at(StoreAt::Memory(MemStore::new()));
-    c.seed = Some(seed);
-    c.clock = Some(clock.clone());
+fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
+    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
+    c.internals.seed = Some(seed);
+    c.internals.clock = Some(clock.clone());
     c
 }
 
@@ -23,8 +23,8 @@ fn two() -> (Data, Data) {
 /// `two`, with the clock both read.
 fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
     let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
-    let a = Osis::create(cfg(1, &clock)).unwrap().0;
-    let j = Osis::pair(cfg(2, &clock), &a.pair_offer().unwrap()).unwrap();
+    let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
+    let j = osis::internals::pair(cfg(2, &clock), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
     (Data::new(a), Data::new(b), clock)
@@ -191,7 +191,7 @@ fn malformed_aspects_do_not_break_reads() {
     let bad = |w: &mut osis::Write<'_>, ak: &str, v: Value| -> osis::Result<()> {
         let t = w.create()?;
         w.group(g).add(osis::Member::Item(t))?;
-        w.at(t, Ak::new(ak).unwrap()).set(&v)?;
+        w.at(t, osis::Key::untyped(Ak::new(ak).unwrap())).set(&v)?;
         Ok(())
     };
     let mut w = a.db.write();
@@ -324,8 +324,8 @@ fn look_merges_and_tolerates_odd_values() {
     assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main group's theme, the other's mode");
     let main = a.main_group().unwrap();
     let mut w = a.db.write();
-    w.at(main, Ak::new("osis_app:theme.0").unwrap()).set(&Value::Int(3)).unwrap();
-    w.at(main, Ak::new("osis_app:mode.0").unwrap()).set(&Value::Enum(7, None)).unwrap();
+    w.at(main, osis::Key::untyped(Ak::new("osis_app:theme.0").unwrap())).set(&Value::Int(3)).unwrap();
+    w.at(main, osis::Key::untyped(Ak::new("osis_app:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
     w.commit().unwrap();
     // the other group's choice shows through (b's mode lived on gb)
     let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("cel".into()), Mode::Auto) };

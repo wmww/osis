@@ -13,16 +13,15 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{PathRef, ak_of};
-use crate::watch::{Source, Subscription, lock};
+use crate::watch::{Delivery, Filter, Source, Subscription, lock};
 use crate::write::Committed;
 use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
-use osis_schema::{AspectKey, Path, Type};
+use osis_schema::ApiKey;
+use osis_schema::{Path, Type};
 use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
-
-type OnRemote = Box<dyn FnMut(&str, &[Splice]) + Send>;
 
 /// One edit of a session's text by a remote change, in chars: `del` chars at `at` replaced by
 /// `text`, at the text as it was before this edit (a list applies in order).
@@ -62,7 +61,8 @@ struct State {
     last_edit: Option<Instant>,
     /// An idle-commit timer is pending.
     armed: bool,
-    on_remote: Option<OnRemote>,
+    /// The `on_remote` subscriptions, by id (a dropped one is simply gone).
+    on_remote: Vec<u64>,
     /// The thing was known at open or at a commit here: its absence now means it was deleted.
     known: bool,
 }
@@ -145,13 +145,13 @@ fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Committed>> {
     Ok(c)
 }
 
-impl<K: AspectKey> PathRef<'_, '_, K> {
+impl<K: ApiKey> PathRef<'_, '_, K> {
     /// Opens a text session on the string here. An absent position starts empty. `Unsupported`
-    /// through an attached node.
+    /// through a connected node.
     pub fn edit_text(&self) -> Result<TextSession> {
         let (db, tid, key, path) = self.parts();
         if let crate::sources::Source::Remote(_) = db.route(tid) {
-            return Err(Error::Unsupported("edit_text through the attached node".into()));
+            return Err(Error::Unsupported("edit_text through a connected node".into()));
         }
         let seq = matches!(crate::large::type_of(key, path)?, Some(Type::Text));
         let key = crate::Key { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
@@ -160,7 +160,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
             None => String::new(),
             Some(_) => return Err(Error::Invalid("not a string".into())),
         };
-        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: None, known: db.knows(tid)? }));
+        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: Vec::new(), known: db.knows(tid)? }));
         let b = Bind { tid, key, path: path.clone(), seq };
         let (st2, b2) = (st.clone(), b.clone());
         let sub = db.at(tid, b.key.clone()).on_change(move |db, c| {
@@ -181,8 +181,11 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
                 let edits = splices(&s.buf, &merged);
                 s.base = merged.clone();
                 s.buf = merged.clone();
-                if let Some(f) = s.on_remote.as_mut() {
-                    f(&merged, &edits);
+                let subs = s.on_remote.clone();
+                // no callback under a lock: it may ask this session anything
+                drop(s);
+                for id in subs {
+                    db.inner.dispatch.call_now(db, id, Delivery::Text { text: merged.clone(), edits: edits.clone() });
                 }
             }
         })?;
@@ -196,10 +199,16 @@ impl TextSession {
         lock(&self.st).buf.clone()
     }
 
-    /// Calls `f` with the merged text and the edits from the buffer before (on the dispatcher
-    /// thread), after a remote change.
-    pub fn on_remote(&self, f: impl FnMut(&str, &[Splice]) + Send + 'static) {
-        lock(&self.st).on_remote = Some(Box::new(f));
+    /// Calls `f` with the merged text and the edits from the buffer before, after a remote change.
+    pub fn on_remote(&self, mut f: impl FnMut(&Osis, &str, &[Splice]) + Send + 'static) -> Result<Subscription> {
+        let cb: crate::watch::Callback = Box::new(move |db, d| {
+            if let Delivery::Text { text, edits } = d {
+                f(db, &text, &edits);
+            }
+        });
+        let sub = self.db.locked(|l| self.db.inner.dispatch.register(l.seq + 1, Filter::Text, cb));
+        lock(&self.st).on_remote.extend(sub.id());
+        Ok(sub)
     }
 
     /// Commits after an idle pause, then runs `f` on the buffer.

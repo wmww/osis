@@ -47,6 +47,7 @@ use std::sync::mpsc::Receiver;
 
 pub(crate) use conn::{Conn, LConn, Phase, UNTAGGED, in_flight};
 pub use host::{HostStatus, host_policy};
+pub use osis_host::HostPolicy;
 pub use io::{Action, ConnId, Event, LabelStatus, MAX_CONNS_PER_CLIENT, PassStats, SyncConfig, Tier};
 pub use pass::Verdicts;
 pub use state::Kind as EntryKind;

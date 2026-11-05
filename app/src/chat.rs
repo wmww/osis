@@ -47,11 +47,15 @@ pub fn name(db: &Osis, c: Tid) -> Result<String> {
     Ok(if n.trim().is_empty() { "Chat".into() } else { n })
 }
 
+/// How long the app waits for a link's host to answer: it runs off the UI thread, and a person is
+/// watching. Minor: at 0 every join fails, at infinity one that nobody answers spins for good.
+const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Joins by an `osis://` link (`osis chat link`): the chat, once here. Blocks until the link's
-/// host answers (each of the redemption's waits ends at the store's `wait_timeout`).
+/// host answers or `JOIN_WAIT` passes.
 pub fn join(db: &Osis, link: &str) -> Result<Tid> {
     let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a chat link: {e}")))?;
-    block_on(osis_chat::join(db, &l))
+    block_on(osis_chat::join(db, &l, JOIN_WAIT))
 }
 
 /// The profile, made on first use; `None` on a store without hosts.

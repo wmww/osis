@@ -3,7 +3,7 @@
 use crate::common::TestWrites as _;
 use crate::common::ak;
 use osis::internals::Internals as _;
-use osis::{SetRoleOpts, SyncFirst, Member, HostAddr, MemStore, Osis, Role, StoreAt, SyncScope, SyncState, Tid, Value};
+use osis::{SetRoleOpts, SyncFirst, Member, HostAddr, MemStore, Osis, Role, Store, SyncScope, SyncState, Tid, Value};
 use osis_sim::world::World;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,7 +17,7 @@ fn text() -> osis::Ak {
 }
 
 fn says(db: &Osis, t: Tid) -> Option<Value> {
-    db.at(t, text()).get().unwrap()
+    db.at(t, osis::Key::untyped(text())).get().unwrap()
 }
 
 /// A shared group of `a`'s under its own label at `hosts` (none: `a`'s hosts).
@@ -35,7 +35,7 @@ fn message(db: &Osis, g: Tid, v: &str) -> Tid {
     db.batch(|w| {
         let m = w.create_owned_by(g)?;
         w.group(g).add(osis::Member::Item(m))?;
-        w.at(m, text()).set(&s(v))?;
+        w.at(m, osis::Key::untyped(text())).set(&s(v))?;
         Ok(m)
     })
     .unwrap()
@@ -48,7 +48,7 @@ fn pair(w: &mut World, hosts: &[usize]) -> (Osis, Osis, Tid) {
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
-    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let bob = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
     (a, b, bob)
 }
 
@@ -111,7 +111,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
-    let carol = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let carol = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
     let (g1, g2) = (chat(&a, &[]), chat(&a, &[]));
     a.grant(g1, bob, Role::Write, Default::default()).unwrap();
     a.grant(g2, carol, Role::Write, Default::default()).unwrap();
@@ -122,8 +122,8 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
             let (m1, m2) = (x.create_owned_by(g1)?, x.create_owned_by(g2)?);
             x.group(g1).add(osis::Member::Item(m1))?;
             x.group(g2).add(osis::Member::Item(m2))?;
-            x.at(m1, text()).set(&s("one"))?;
-            x.at(m2, text()).set(&s("two"))?;
+            x.at(m1, osis::Key::untyped(text())).set(&s("one"))?;
+            x.at(m2, osis::Key::untyped(text())).set(&s("two"))?;
             Ok((m1, m2))
         })
         .unwrap();
@@ -131,8 +131,8 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     assert_eq!((says(&b, m1), says(&c, m2)), (Some(s("one")), Some(s("two"))));
     // no placement in the next ones, so only the labels holding them pass
     let mut x = a.write();
-    x.at(m1, text()).set(&s("one more")).unwrap();
-    x.at(m2, text()).set(&s("two more")).unwrap();
+    x.at(m1, osis::Key::untyped(text())).set(&s("one more")).unwrap();
+    x.at(m2, osis::Key::untyped(text())).set(&s("two more")).unwrap();
     x.commit().unwrap();
     w.run();
     assert_eq!((says(&b, m1), says(&c, m2)), (Some(s("one more")), Some(s("two more"))));
@@ -148,7 +148,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     let both = message(&a, sub, "both");
     w.run();
     assert_eq!((says(&b, both), says(&c, both)), (Some(s("both")), Some(s("both"))));
-    a.commit_set(both, text(), &s("both again")).unwrap();
+    a.commit_set(both, osis::Key::untyped(text()), &s("both again")).unwrap();
     w.run();
     assert_eq!((says(&b, both), says(&c, both)), (Some(s("both again")), Some(s("both again"))));
     // a nested group without one, then a message in it
@@ -161,11 +161,11 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     let inner = message(&a, nested, "inner");
     w.run();
     assert_eq!(says(&c, inner), Some(s("inner")));
-    a.commit_set(inner, text(), &s("inner again")).unwrap();
+    a.commit_set(inner, osis::Key::untyped(text()), &s("inner again")).unwrap();
     w.run();
     assert_eq!(says(&c, inner), Some(s("inner again")));
     // a member's write
-    b.commit_set(m1, text(), &s("by bob")).unwrap();
+    b.commit_set(m1, osis::Key::untyped(text()), &s("by bob")).unwrap();
     w.run();
     assert_eq!(says(&a, m1), Some(s("by bob")));
     // a profile rename reaches who holds the card
@@ -229,8 +229,8 @@ fn back_online(w: &mut World, db: &Osis, t: Tid) {
 /// Bob, offline, writes one commit across a thing of `live` and one of `g`.
 fn write_across(b: &Osis, u: Tid, m: Tid) {
     let mut x = b.write();
-    x.at(u, text()).set(&s("by bob")).unwrap();
-    x.at(m, text()).set(&s("by bob, unsent")).unwrap();
+    x.at(u, osis::Key::untyped(text())).set(&s("by bob")).unwrap();
+    x.at(m, osis::Key::untyped(text())).set(&s("by bob, unsent")).unwrap();
     x.commit().unwrap();
 }
 
@@ -270,7 +270,7 @@ fn write_beside_a_removed_thing_reaches_the_peer_spec_commits_4() {
     assert_eq!(says(&b, u), Some(s("live")));
     w.set_online(&b, false);
     write_across(&b, u, m);
-    w.until(a.set_role(g, bob, None, skip()), 1000, 10).unwrap();
+    w.until(a.set_role(g, bob, None, skip(), osis::internals::PRESYNC), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -291,7 +291,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
-    let carol = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let carol = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
     let g = chat(&a, &[w.addr(h1).unwrap()]);
     let m = message(&a, g, "hello");
     let live = chat(&a, &[w.addr(h0).unwrap()]);
@@ -308,7 +308,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     w.run();
     w.set_online(&b, false);
     write_across(&b, u, m);
-    w.until(a.set_role(g, bob, None, skip()), 1000, 10).unwrap();
+    w.until(a.set_role(g, bob, None, skip(), osis::internals::PRESYNC), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -331,38 +331,38 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_8() {
     let store = MemStore::new();
     let at = |w: &World, seed| {
         let mut c = w.cfg(seed, &[h0]);
-        c.store = StoreAt::Memory(store.clone());
+        c.store = Store::Memory(store.clone());
         c
     };
-    let a = Osis::create(at(&w, 1)).unwrap().0;
+    let a = osis::internals::create(at(&w, 1)).unwrap().0;
     let (b, _) = w.person(2, &[h0]);
     w.run();
     let card = b.contact_card().unwrap();
     let p = b.profile().unwrap();
     let name = ak("name.0");
-    b.commit_set(p, name.clone(), &s("Bob")).unwrap();
+    b.commit_set(p, osis::Key::untyped(name.clone()), &s("Bob")).unwrap();
     w.run();
-    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let bob = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
     w.run();
-    assert_eq!(a.at(p, name.clone()).get().unwrap(), Some(s("Bob")));
+    assert_eq!(a.at(p, osis::Key::untyped(name.clone())).get().unwrap(), Some(s("Bob")));
     assert_eq!(a.engine(|e| e.core.ix.bearers.len()), 1);
     // what it reads as survives a restart
     assert_eq!(a.close().unwrap(), osis::Close::Closed);
-    let a = Osis::open(at(&w, 3)).unwrap();
+    let a = osis::internals::open(at(&w, 3)).unwrap();
     w.run();
     let (client, _) = b.add_client(None).unwrap();
     b.grant(bob, client, Role::Write, Default::default()).unwrap();
     w.run();
-    assert_eq!(a.at(p, name.clone()).get().unwrap(), Some(s("Bob")), "{:?}", w.diagnostics(&a));
-    assert!(!w.diagnostics(&a).iter().any(|d| d.starts_with("Removed")));
-    b.commit_set(p, name.clone(), &s("Robert")).unwrap();
+    assert_eq!(a.at(p, osis::Key::untyped(name.clone())).get().unwrap(), Some(s("Bob")), "{:?}", w.diagnostics(&a));
+    assert!(!w.diagnostics(&a).iter().any(|d| d.starts_with("lost access")));
+    b.commit_set(p, osis::Key::untyped(name.clone()), &s("Robert")).unwrap();
     w.run();
-    assert_eq!(a.at(p, name.clone()).get().unwrap(), Some(s("Robert")));
+    assert_eq!(a.at(p, osis::Key::untyped(name.clone())).get().unwrap(), Some(s("Robert")));
     let link = b.links_of(p).unwrap().remove(0).id;
-    w.until(b.revoke_link(link, SyncFirst::Skip), 1000, 10).unwrap();
+    w.until(b.revoke_link(link, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
     w.run();
-    assert_eq!(a.at(p, name.clone()).get().unwrap(), None, "the link ended: what it read goes (spec/permissions.md §3)");
-    assert!(w.diagnostics(&a).iter().any(|d| d.starts_with("Removed")));
+    assert_eq!(a.at(p, osis::Key::untyped(name.clone())).get().unwrap(), None, "the link ended: what it read goes (spec/permissions.md §3)");
+    assert!(w.diagnostics(&a).iter().any(|d| d.starts_with("lost access")));
     assert_eq!(a.engine(|e| e.core.ix.bearers.len()), 0, "and its record");
 }
 
@@ -377,25 +377,25 @@ fn placing_where_holders_may_not_read_is_reported_spec_sync_3() {
     w.run();
     let told = Arc::new(Mutex::new(Vec::new()));
     let t2 = told.clone();
-    let _sub = b.on_diagnostic(move |_, d| t2.lock().unwrap().push((d.kind, d.tids.clone()))).unwrap();
+    let _sub = b.on_diagnostic(move |_, d| t2.lock().unwrap().push(d)).unwrap();
     let mut x = b.write();
     let t = x.create().unwrap();
     x.group(g).add(osis::Member::Item(t)).unwrap();
-    x.at(t, text()).set(&s("mine")).unwrap();
+    x.at(t, osis::Key::untyped(text())).set(&s("mine")).unwrap();
     let mine = t;
     x.commit().unwrap();
     w.run();
     b.settle();
     assert_eq!(says(&a, mine), None);
-    assert!(told.lock().unwrap().iter().any(|(k, ts)| *k == osis_node::DiagnosticKind::NotSynced && ts.contains(&mine)), "{:?}", told.lock().unwrap());
+    assert!(told.lock().unwrap().iter().any(|d| matches!(d, osis::Diagnostic::NotSynced { thing, .. } if *thing == mine)), "{:?}", told.lock().unwrap());
     let mut x = b.write();
     let t = x.create().unwrap();
-    x.at(t, text()).set(&s("given")).unwrap();
+    x.at(t, osis::Key::untyped(text())).set(&s("given")).unwrap();
     let shared = t;
     x.commit().unwrap();
     b.add_with_grant(Member::Item(shared), g, Role::Read).unwrap();
     w.run();
     b.settle();
     assert_eq!(says(&a, shared), Some(s("given")));
-    assert!(!told.lock().unwrap().iter().any(|(_, ts)| ts.contains(&shared)), "{:?}", told.lock().unwrap());
+    assert!(!told.lock().unwrap().iter().any(|d| matches!(d, osis::Diagnostic::NotSynced { thing, .. } if *thing == shared)), "{:?}", told.lock().unwrap());
 }

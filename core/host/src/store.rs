@@ -46,10 +46,10 @@ pub const DEPOSIT_ENTRY_BYTES: u64 = 32 * 1024;
 /// Host policy (spec/sync.md §5: caps, budget, rate limits; notes/sync.md Policy defaults).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostPolicy {
-    /// Live entries per label beyond which new entries get code 12.
+    /// Live entries per label beyond which new entries are refused.
     pub cap_entries: u64,
     /// Bytes per label (live entries, steps, held claim sets) beyond which new entries and
-    /// steps get code 12.
+    /// steps are refused.
     pub cap_bytes: u64,
     /// Deposit budget = this × (64 + 4 × head claim slots) entries, × 32 KiB bytes; at least 1.
     pub deposit_factor: u64,
@@ -67,18 +67,18 @@ pub struct HostPolicy {
     /// the byte caps): 0 registers nothing, unlimited leaves only the byte caps.
     pub registers: u32,
     /// A child step past a byte cap even without its claim set is taken at most once per this
-    /// per label; another in that time gets code 12 (the registrar retries). Resource bound:
+    /// per label; another in that time is refused (the registrar retries). Resource bound:
     /// growth past the caps is at most `max_labels` steps per this; 0 leaves only `registers`,
     /// infinity takes one such step per label until room appears (a later rotation waits there).
     pub over_cap_step_ms: u64,
     /// Ephemeral memory charged per label, and over all labels: an ephemeral upload beyond the
-    /// label's gets code 12; past the total, the label charged most gives way (notes/ephemeral.md).
+    /// label's is refused; past the total, the label charged most gives way (notes/ephemeral.md).
     pub ephemeral_bytes: u64,
     pub ephemeral_total: u64,
     /// Relay-only uploads pushed per label and window, and their bytes (`osis_proto::RelayLimits`).
     pub relays: u32,
     pub relay_bytes: u64,
-    /// Host-wide caps: new entries beyond them get code 12, new labels and steps Error 12.
+    /// Host-wide caps: new entries, labels and steps beyond them are refused.
     pub max_labels: u64,
     pub max_entries: u64,
     pub max_bytes: u64,
@@ -161,6 +161,41 @@ impl HostPolicy {
             _ => return Err(format!("unknown host policy knob {name}")),
         }
         Ok(())
+    }
+
+    /// The knobs differing from the defaults, by the names `set` takes: `set` of each over the
+    /// defaults gives this policy back.
+    pub fn knobs(&self) -> std::collections::BTreeMap<String, u64> {
+        let d = HostPolicy::default();
+        let mut out = std::collections::BTreeMap::new();
+        let mut put = |name: &str, v: u64, was: u64| {
+            if v != was {
+                out.insert(name.to_string(), v);
+            }
+        };
+        put("cap_entries", self.cap_entries, d.cap_entries);
+        put("cap_bytes", self.cap_bytes, d.cap_bytes);
+        put("deposit_factor", self.deposit_factor, d.deposit_factor);
+        put("claim_keep_ms", self.claim_keep_ms, d.claim_keep_ms);
+        put("tombstone_ms", self.tombstone_ms, d.tombstone_ms);
+        put("log_keep", self.log_keep, d.log_keep);
+        put("window_ms", self.window_ms, d.window_ms);
+        put("deletes", self.deletes.into(), d.deletes.into());
+        put("deposits", self.deposits.into(), d.deposits.into());
+        put("registers", self.registers.into(), d.registers.into());
+        put("over_cap_step_ms", self.over_cap_step_ms, d.over_cap_step_ms);
+        put("ephemeral_bytes", self.ephemeral_bytes, d.ephemeral_bytes);
+        put("ephemeral_total", self.ephemeral_total, d.ephemeral_total);
+        put("relays", self.relays.into(), d.relays.into());
+        put("relay_bytes", self.relay_bytes, d.relay_bytes);
+        put("max_labels", self.max_labels, d.max_labels);
+        put("max_entries", self.max_entries, d.max_entries);
+        put("max_bytes", self.max_bytes, d.max_bytes);
+        put("max_connections", self.max_connections as u64, d.max_connections as u64);
+        put("hello_ms", self.hello_ms, d.hello_ms);
+        put("max_queued_bytes", self.max_queued_bytes as u64, d.max_queued_bytes as u64);
+        put("max_buffered_bytes", self.max_buffered_bytes as u64, d.max_buffered_bytes as u64);
+        out
     }
 
     /// No limits beyond the spec's minimum budget (tests comparing with `MemoryLabelStore`).

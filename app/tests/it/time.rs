@@ -1,5 +1,4 @@
 //! Local wall time for calendar views, and the week and nudge actions.
-use osis::{Config, Osis};
 use osis_app::data::{Data, NewKind, fmt_when};
 use osis_app::event::{End, START, Start, Wall};
 use osis_app::time::{DAY, HOUR, MINUTE, monday_of, span, to_local};
@@ -36,7 +35,7 @@ fn zones() {
 #[test]
 fn week_and_nudge() {
     use osis_app::event::END;
-    let d = Data::new(Osis::create(Config::memory()).unwrap().0);
+    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap().0);
     let e = d.create(NewKind::Event).unwrap();
     let Some(Start::At(w0)) = d.db.at(e, START).get().unwrap() else { panic!("a new event has a wall start") };
     assert_eq!((w0.time % HOUR, w0.zone), (0, None), "on the hour, floating");
@@ -228,7 +227,7 @@ fn durations_and_series_over_a_dst_change() {
 #[test]
 fn nudge_keeps_the_end_form() {
     use osis_app::event::END;
-    let d = Data::new(Osis::create(Config::memory()).unwrap().0);
+    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap().0);
     let e = d.create(NewKind::Event).unwrap();
     let t = 20_752 * DAY + 9 * HOUR;
     let mut w = d.db.write();

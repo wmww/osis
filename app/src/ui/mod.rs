@@ -140,6 +140,8 @@ enum FieldKey {
 
 struct Field {
     key: FieldKey,
+    /// Kept for its life: `reported` fills through it.
+    _remote: osis::Subscription,
     session: TextSession,
     id: Option<WidgetId>,
     /// The text as the widget shows it (a remote merge may be newer).
@@ -206,12 +208,12 @@ impl Ui {
         let mode = kit_mode(&mode);
         let m = mb.clone();
         let diag_sub = data.db.on_diagnostic(move |_, d| {
-            m.post(Msg::Diagnostic(format!("{:?}: {}", d.kind, d.detail)));
+            m.post(Msg::Diagnostic(d.to_string()));
         })?;
         let look = Arc::new(Look::new(&theme, mode == Mode::Dark, None));
         // a chat joined or left elsewhere on this store comes and goes with the synced groups
         let m = mb.clone();
-        let status_sub = data.db.watch_status(move |_, _| {
+        let status_sub = data.db.on_status_change(move |_, _| {
             m.post(Msg::Changed);
         })?;
         Ok(Ui {
@@ -341,7 +343,7 @@ impl Ui {
         for t in want {
             if !self.subs.contains_key(&t) {
                 let mb = self.mb.clone();
-                let s = self.data.db.watch_thing(t, move |_, _| {
+                let s = self.data.db.on_thing_change(t, move |_, _| {
                     mb.post(Msg::Changed);
                 })?;
                 self.subs.insert(t, s);
@@ -503,11 +505,11 @@ impl Ui {
             let mb = self.mb.clone();
             let reported = Arc::new(Mutex::new(Vec::new()));
             let r = reported.clone();
-            session.on_remote(move |_, edits| {
+            let remote = session.on_remote(move |_, _, edits| {
                 r.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(edits);
                 mb.post(Msg::Remote(t));
-            });
-            fields.push(Field { key: *key, shown: session.text(), session, id: None, reported });
+            })?;
+            fields.push(Field { key: *key, shown: session.text(), session, _remote: remote, id: None, reported });
         }
         self.editor = Some(Editor { tid: t, fields });
         Ok(())

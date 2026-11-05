@@ -34,8 +34,9 @@ pub enum Error {
     /// A write through another node may or may not have applied (its reply was lost and the node
     /// cannot tell). Repeating it is a new write: read first, repeat only if it is not there.
     OutcomeUnknown,
-    /// This kind of handle does not carry this call: an attached handle asked for what needs its
-    /// process to be the node, a thin client for an owner's call. Trying again will not help.
+    /// This kind of handle does not carry this call: a handle with no store asked for what needs
+    /// its process to be the node, or a client with its own actor for what only the node's account
+    /// may do. Trying again will not help.
     Unsupported(String),
     /// The node at the other end will not take this session: it refused the client secret or the
     /// uid, or the address serves no client port.

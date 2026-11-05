@@ -1,11 +1,10 @@
 //! The schema fallback view: rows from schema types, edits written at their paths.
-use osis::{Config, Osis};
 use osis_app::data::{Data, NewKind};
 use osis_app::fields::Edit;
 
 #[test]
 fn rows_and_edits() {
-    let d = Data::new(Osis::create(Config::memory()).unwrap().0);
+    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap().0);
     let c = d.create(NewKind::Contact).unwrap();
     let rows = d.field_rows(c).unwrap();
     let find = |rows: &[osis_app::fields::Row], ak: &str, label: &str| rows.iter().find(|r| r.ak == ak && r.label == label).cloned().unwrap_or_else(|| panic!("{ak} {label} in {rows:#?}"));
@@ -38,7 +37,7 @@ fn rows_and_edits() {
 fn contact_form() {
     use osis_app::contact::{EMAILS, NAMES, ORG};
     use osis_app::fields::FormAct;
-    let d = Data::new(Osis::create(Config::memory()).unwrap().0);
+    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap().0);
     // a contact with no names or org yet: fields still save
     let c = d.create(NewKind::Note).unwrap();
     let form = d.contact_form(c).unwrap();
@@ -65,7 +64,7 @@ fn contact_form() {
 #[test]
 fn edits_are_well_typed() {
     use osis::core::BODY;
-    let d = Data::new(Osis::create(Config::memory()).unwrap().0);
+    let d = Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap().0);
     let e = d.create(NewKind::Event).unwrap();
     d.set_repeat(e, Some(osis_app::event::RepeatFreq::Weekly)).unwrap();
     let s = d.db.at(e, BODY).path(osis::p![]).edit_text().unwrap();
@@ -100,9 +99,9 @@ fn edits_are_well_typed() {
 /// A contact's tile reads its emails for its subtitle: one that cannot be read is told, not shown as no email.
 #[test]
 fn a_tile_tells_of_emails_it_cannot_read() {
-    let mut cfg = Config::memory();
+    let mut cfg = osis::internals::Opening::memory();
     cfg.materialize_limit = 1000;
-    let d = Data::new(Osis::create(cfg).unwrap().0);
+    let d = Data::new(osis::internals::create(cfg).unwrap().0);
     let c = d.create(NewKind::Contact).unwrap();
     let many = (0..100).map(|i| (format!("someone{i}@example.org"), osis_app::contact::Labeled { label: String::new(), pref: false })).collect();
     let mut w = d.db.write();
@@ -114,9 +113,9 @@ fn a_tile_tells_of_emails_it_cannot_read() {
 /// A value that cannot be read shows as such, read-only: an empty editable row could overwrite it.
 #[test]
 fn a_value_too_large_to_read_is_no_empty_row() {
-    let mut cfg = Config::memory();
+    let mut cfg = osis::internals::Opening::memory();
     cfg.materialize_limit = 1000;
-    let d = Data::new(Osis::create(cfg).unwrap().0);
+    let d = Data::new(osis::internals::create(cfg).unwrap().0);
     let n = d.create(NewKind::Note).unwrap();
     let mut w = d.db.write();
     w.at(n, osis::core::BODY).set(&"x".repeat(2000)).unwrap();

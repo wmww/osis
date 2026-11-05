@@ -44,7 +44,7 @@ pub struct Global {
     /// The file holding the thin client's secret (64 hex digits, as `clients add` printed it)
     #[arg(long = "client-secret", global = true, value_name = "FILE", requires = "node")]
     pub client_secret: Option<PathBuf>,
-    /// Beside this store, be attached to this node as a thin client (URL#KEY; needs --remote-secret):
+    /// Beside this store, be a client of this node (URL#KEY; needs --remote-secret):
     /// for the groups `group source` routes there
     #[arg(long, global = true, value_name = "ADDR", requires = "remote_secret", conflicts_with = "node")]
     pub remote: Option<String>,
@@ -728,7 +728,7 @@ pub enum GroupCmd {
         host: Vec<String>,
     },
     Unsync { g: String },
-    /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node attached by --remote; held in the
+    /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node connected by --remote; held in the
     /// store. Local: this store syncs it, and it is caught up before calls come home
     Source { g: String, to: String },
     Policy {

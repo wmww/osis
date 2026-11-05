@@ -52,8 +52,8 @@ fn redo(db: &Osis, note: Tid) -> Result<bool> {
     Ok(db.redo(&Scope::Thing(note))?.is_some())
 }
 
-fn add_device(existing: &Osis, cfg: osis::Config) -> Result<Osis> {
-    let joining = Osis::pair(cfg, &existing.pair_offer()?)?;
+fn add_device(existing: &Osis, cfg: osis::internals::Opening) -> Result<Osis> {
+    let joining = osis::internals::pair(cfg, &existing.pair_offer()?)?;
     let (_, reply) = existing.pair_accept(joining.request())?;
     joining.finish(&reply)
 }
@@ -131,7 +131,7 @@ fn share_notebook_with_a_second_person() {
     w.run();
     assert!(notes(&alice, nb).unwrap().contains(&packing));
 
-    w.until(alice.set_role(nb, b, None, Default::default()), 1000, 20).unwrap();
+    w.until(alice.set_role(nb, b, None, Default::default(), osis::internals::PRESYNC), 1000, 20).unwrap();
     let secret = new_note(&alice, nb, "Surprise").unwrap();
     w.run();
     assert_eq!(title(&bob, secret).unwrap(), None, "removed: nothing new");
@@ -169,7 +169,7 @@ fn large_body_streams() {
 // here walks two aspects.
 #[test]
 fn local_undo_redo_and_history() {
-    let db = Osis::create(osis::Config::memory()).unwrap().0;
+    let db = osis::internals::create(osis::internals::Opening::memory()).unwrap().0;
     let nb = new_tag(&db, "Local").unwrap();
     let note = new_note(&db, nb, "a").unwrap();
     rename(&db, note, "a", "b").unwrap();
@@ -182,6 +182,6 @@ fn local_undo_redo_and_history() {
     assert_eq!(title(&db, note).unwrap().as_deref(), Some("b"));
     type_text(&db, note, 0, "y").unwrap();
     assert!(!redo(&db, note).unwrap(), "a new change clears redo");
-    let h = db.commits(&osis::CommitQuery::new().scope(Scope::Thing(note))).unwrap();
+    let h = db.commits(&osis::CommitQuery { scope: Some(Scope::Thing(note)), ..Default::default() }).unwrap();
     assert!(h.len() >= 4, "{h:?}");
 }

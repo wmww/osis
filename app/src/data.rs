@@ -12,7 +12,7 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, NAME, TAG};
-use osis::{ChangeId, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Tid, Transport, p};
+use osis::{ChangeId, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Store, Tid, Transport, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -20,18 +20,16 @@ use std::path::Path;
 /// none; an existing store adds the `hosts` it lacks. Sync runs on osis's own runtime over QUIC
 /// while the app runs.
 pub fn open(dir: &Path, hosts: Vec<HostAddr>) -> Result<Osis> {
-    let mut cfg = Config::dir(dir);
-    cfg.runtime = Runtime::Own;
-    cfg.transport = Some(Transport::Quic);
+    let cfg = Config { runtime: Runtime::Own, transport: Some(Transport::Quic), ..Config::default() };
+    let store = Store::Dir(dir.to_path_buf());
     if dir.join("db.redb").exists() {
-        let db = Osis::open(cfg)?;
+        let db = Osis::open(store, cfg)?;
         for h in &hosts {
             db.add_host(h)?;
         }
         Ok(db)
     } else {
-        cfg.hosts = hosts;
-        Ok(Osis::create(cfg)?.0)
+        Ok(Osis::create(store, &hosts, cfg)?.0)
     }
 }
 
@@ -362,7 +360,7 @@ impl Data {
     /// `min(ts, received)` (a device whose clock runs ahead cannot date a change into the future).
     /// Works around issues/api-change-time.md.
     pub fn changed(&self, t: Tid) -> Result<Option<u64>> {
-        let q = CommitQuery::new().scope(Scope::Thing(t)).kind(CommitKind::Change).kind(CommitKind::Revert).limit(1);
+        let q = CommitQuery { scope: Some(Scope::Thing(t)), kinds: vec![CommitKind::Change, CommitKind::Revert], limit: Some(1), ..Default::default() };
         let newest = self.db.commits(&q)?.first().map(|e| (e.commit.ts, e.commit.received));
         let at = match newest {
             Some(x) => Some(x),
@@ -464,7 +462,7 @@ impl Data {
     pub fn reach(&self, t: Tid) -> Result<Reach> {
         let db = &self.db;
         let me = db.me();
-        let now = db.now();
+        let now = db.now()?;
         let mine: BTreeSet<Tid> = db.grants(me)?.into_keys().chain([me, db.node()]).collect();
         let mut r = Reach::default();
         let mut seen = BTreeSet::new();
@@ -543,7 +541,7 @@ impl Data {
     /// Works around issues/undo-creation-unplaces.md (with `next_undo`).
     pub fn undo(&self, t: Tid) -> Result<bool> {
         let scope = Scope::Thing(t);
-        if let Some(c) = self.db.created(t)?.and_then(|c| c.commit)
+        if let Some(c) = self.db.created(t)?.and_then(|c| c.id.commit())
             && self.next_undo(&scope)? == Some(ChangeId::Commit(c))
         {
             return Ok(false);
@@ -554,7 +552,7 @@ impl Data {
     /// The change `Osis::undo` would revert in `scope`: my newest change in effect that is not
     /// itself an undo (an even number of reverts deep).
     fn next_undo(&self, scope: &Scope) -> Result<Option<ChangeId>> {
-        let mine = self.db.commits(&CommitQuery::new().scope(scope.clone()).actor(self.db.me()))?;
+        let mine = self.db.commits(&CommitQuery { scope: Some(scope.clone()), actors: vec![self.db.me()], ..Default::default() })?;
         let reverts: BTreeMap<ChangeId, ChangeId> = mine.iter().filter_map(|e| e.reverts.map(|r| (e.commit.id, r))).collect();
         let depth = |mut id: ChangeId| {
             let mut d = 0usize;
@@ -573,7 +571,7 @@ impl Data {
     /// "Edited 5 min ago" for `t` (its newest change).
     pub fn edited(&self, t: Tid) -> Result<String> {
         Ok(match self.changed(t)? {
-            Some(ms) => format!("Edited {}", ago(self.db.now().0.saturating_sub(ms))),
+            Some(ms) => format!("Edited {}", ago(self.db.now()?.0.saturating_sub(ms))),
             None => "Not saved yet".into(),
         })
     }

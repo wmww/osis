@@ -6,10 +6,11 @@ use crate::handle::Osis;
 use crate::port::method as m;
 use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription};
-use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, Role, Tid, Ts, Value, WallMs};
 use osis_node::{ChangeId, Diagnostic, Engine};
+use osis_schema::ApiKey;
 use osis_schema::core_types::{GROUP, PLACED};
-use osis_schema::{AspectKey, Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
+use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 
 /// A role granted to one holder (`Osis::grants`).
@@ -25,17 +26,20 @@ pub struct Grant {
     pub with_membership: bool,
 }
 
-/// A thing's time (`Osis::created`, `Osis::changed`): the commit, its author and when.
+/// A change's author and time, as its signed header says (a snapshot applied is reported as
+/// itself, never as the writes it carries): `Osis::created`, `Osis::changed`, why a watch fired, a
+/// commit or history entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
-    /// The commit (never a compaction snapshot); `None` for an ephemeral thing's creation
-    /// (`ts`, `node`, `actor` then from the creating batch).
-    pub commit: Option<CommitId>,
-    /// Its `ts`: the author's clock, the same on every node.
-    pub ts: Ts,
-    /// The authoring node and the actor it wrote for.
-    pub node: Tid,
+    /// The commit, or the ephemeral batch for a change with no durable half. An ephemeral thing's
+    /// creation names no batch of its own: `id.commit()` is `None`, and it cannot be reverted by id.
+    pub id: ChangeId,
+    /// The actor the author acted for.
     pub actor: Tid,
+    /// The authoring node.
+    pub node: Tid,
+    /// The author's clock, the same on every node.
+    pub ts: Ts,
     /// When this node received it (per node).
     pub received: WallMs,
 }
@@ -48,8 +52,12 @@ impl Stamp {
     }
 }
 
+/// `Stamp::id` of an ephemeral thing's creation. The engine keeps no batch id for it, and 0 is no
+/// batch's number (they start at 1), so no call finds it.
+const UNNAMED_BATCH: ChangeId = ChangeId::Ephemeral(osis_node::EphemeralId { session: [0; osis_crdt::SESSION_NONCE_LEN], n: 0 });
+
 fn stamp(c: osis_node::Creation) -> Stamp {
-    Stamp { commit: c.commit, ts: c.ts, node: c.node, actor: c.actor, received: c.received }
+    Stamp { id: c.commit.map_or(UNNAMED_BATCH, ChangeId::Commit), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
 }
 
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
@@ -68,7 +76,7 @@ pub struct GroupsOf {
 /// The grants on a thing, by holder.
 pub type Grants = BTreeMap<Tid, Grant>;
 
-pub(crate) fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
+pub(crate) fn ak_of<K: ApiKey>(key: &K) -> Result<Ak> {
     Ak::new(key.ak()).map_err(|_| Error::Invalid(format!("bad AK {:?}", key.ak())))
 }
 
@@ -222,7 +230,7 @@ impl Reader<'_> {
 
     /// A typed read (spec/versioning.md §5): `None` when absent, and when the stored value
     /// does not match the key's type (a `Mismatch` diagnostic).
-    pub fn get<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<Option<K::T>> {
+    pub fn get<K: ApiKey>(&mut self, tid: Tid, key: &K) -> Result<Option<K::T>> {
         let ak = ak_of(key)?;
         let (t, Some(raw)) = self.raw(tid, &ak)? else { return Ok(None) };
         let v = match (key.schema(), key.ty()) {
@@ -255,7 +263,7 @@ impl Reader<'_> {
     /// has one); `None` when the path leads nowhere or the value there does not match the
     /// schema (a `Mismatch` diagnostic). A path the schema does not have fails `Type`. Only
     /// that position is materialized.
-    pub fn get_path<K: AspectKey>(&mut self, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
+    pub fn get_path<K: ApiKey>(&mut self, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
         let ak = ak_of(key)?;
         let (tid, Some(raw)) = self.raw(tid, &ak)? else { return Ok(None) };
         let (Some(s), Some(ty)) = (key.schema(), key.ty()) else {
@@ -343,7 +351,7 @@ impl Reader<'_> {
     }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
-    /// snapshot (an ephemeral thing's batch, `commit: None`); `None` while it is unknown or
+    /// snapshot (an ephemeral thing's batch); `None` while it is unknown or
     /// only a snapshot carrying its `created.0` is here.
     pub fn created(&self, tid: Tid) -> Option<Stamp> {
         if self.hidden(tid) {
@@ -372,7 +380,7 @@ impl Osis {
     }
 
     /// An aspect, for reads (`None` when absent or the thing is unknown), paths and callbacks.
-    pub fn at<K: AspectKey>(&self, tid: Tid, key: K) -> AspectRef<'_, K> {
+    pub fn at<K: ApiKey>(&self, tid: Tid, key: K) -> AspectRef<'_, K> {
         AspectRef { db: self, tid, key }
     }
 
@@ -459,7 +467,7 @@ impl Osis {
     }
 
     /// When the thing was created: the oldest valid commit carrying its creation (an ephemeral
-    /// thing's batch, with no commit id); `None` while it is unknown here.
+    /// thing's batch: `Stamp::id` names no commit); `None` while it is unknown here.
     pub fn created(&self, tid: Tid) -> Result<Option<Stamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CREATED, tid);
@@ -477,14 +485,13 @@ impl Osis {
     }
 
     /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
-    /// for app timestamps.
-    pub fn now(&self) -> WallMs {
-        if self.is_attached()
-            && let Ok(Some(n)) = self.rcall(m::NOW, vec![]).map(|v| v.as_uint())
-        {
-            return WallMs(n);
+    /// for app timestamps. On a thin client, its node's: `Network` when it cannot be
+    /// reached.
+    pub fn now(&self) -> Result<WallMs> {
+        if !self.has_store() {
+            return self.rcall(m::NOW, vec![])?.as_uint().map(WallMs).ok_or_else(|| crate::port::codec::bad("time"));
         }
-        self.engine(|e| e.now())
+        Ok(self.engine(|e| e.now()))
     }
 
     /// Reads an aspect and runs `also` under the same engine lock (the dispatcher queues the
@@ -535,9 +542,9 @@ impl Osis {
     /// a detached callback keeps the database open; capture `Osis::downgrade()` instead).
     /// Fails `Network` when `tid` is at a node that cannot be reached now. A live watch hears a
     /// lost connection as an `Err` value, and the aspects again once it is back.
-    pub fn watch_thing(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
+    pub fn on_thing_change(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
-            return self.remote_watch_thing(&r, tid, Box::new(f));
+            return self.remote_on_thing_change(&r, tid, Box::new(f));
         }
         let mut failed = None;
         let sub = self.subscribe(Filter::Thing(tid), true, |r| {
@@ -602,17 +609,17 @@ impl Osis {
         }))
     }
 
-    /// Calls `f` with every diagnostic (structured, deduped and rate-limited by the engine). On a
-    /// handle attached to a node, those of that node: while it cannot be reached none come, and
+    /// Calls `f` with every diagnostic (deduped and rate-limited). On a thin client, those
+    /// of its node: while it cannot be reached none come, and
     /// `status` says so; a session the node has ended fails as its calls do.
-    pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, Diagnostic) + Send + 'static) -> Result<Subscription> {
-        if self.is_attached() {
+    pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, crate::Diagnostic) + Send + 'static) -> Result<Subscription> {
+        if !self.has_store() {
             return self.remote_on_diagnostic(Box::new(f));
         }
         Ok(self.subscribe(Filter::Diagnostics, false, |_| {
             Box::new(move |db, d| {
                 if let Delivery::Diagnostic(x) = d {
-                    f(db, x)
+                    f(db, x.into())
                 }
             })
         }))
@@ -626,7 +633,7 @@ pub struct AspectRef<'d, K> {
     pub(crate) key: K,
 }
 
-impl<'d, K: AspectKey> AspectRef<'d, K> {
+impl<'d, K: ApiKey> AspectRef<'d, K> {
     pub fn get(&self) -> Result<Option<K::T>> {
         if let crate::sources::Source::Remote(r) = self.db.route(self.tid) {
             let ak = ak_of(&self.key)?;
@@ -643,7 +650,7 @@ impl<'d, K: AspectKey> AspectRef<'d, K> {
     }
 }
 
-impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
+impl<K: ApiKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` once with the value at registration (`Source::Initial`, through the
     /// dispatcher like every later call), then on every change; `f` gets the database handle.
     /// Calls coalesce: one call may show several commits' effect and carries the newest one's
@@ -686,7 +693,7 @@ pub struct PathRef<'a, 'd, K> {
     path: Path,
 }
 
-impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
+impl<'d, K: ApiKey> PathRef<'_, 'd, K> {
     pub(crate) fn parts(&self) -> (&'d Osis, Tid, &K, &Path) {
         (self.a.db, self.a.tid, &self.a.key, &self.path)
     }

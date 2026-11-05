@@ -9,7 +9,8 @@ use crate::handle::Osis;
 use crate::read::{PathRef, ak_of};
 use crate::write::PathWrite;
 use osis_base::{Link, Tid, Value};
-use osis_schema::{AspectKey, Path, Type, type_at};
+use osis_schema::ApiKey;
+use osis_schema::{Path, Type, type_at};
 use std::io::{Read, Seek, SeekFrom};
 
 /// The payload of a string or blob position, read lazily.
@@ -28,7 +29,7 @@ enum Src {
     /// `buf[at..]`: the unread rest of the current chunk, `buf` starting at canonical byte
     /// `start`; `head`: bytes of the string head.
     Tree { reader: Box<osis_label::TreeReader>, buf: Vec<u8>, start: u64, at: usize, head: u64 },
-    /// At the attached node: read in `stream_read` pages; `buf` is the page from `start`.
+    /// At the connected node: read in `stream_read` pages; `buf` is the page from `start`.
     Remote { r: std::sync::Arc<crate::port::client::Remote>, ak: osis_base::Ak, path: Path, buf: Vec<u8>, start: u64 },
 }
 
@@ -191,7 +192,7 @@ impl Seek for ValueStream {
 
 impl Osis {
     /// The stored value at `path` of an aspect, links unmaterialized.
-    fn raw_at<K: AspectKey>(&self, tid: Tid, key: &K, path: &Path) -> Result<Option<(Tid, Value)>> {
+    fn raw_at<K: ApiKey>(&self, tid: Tid, key: &K, path: &Path) -> Result<Option<(Tid, Value)>> {
         let ak = ak_of(key)?;
         self.read_local(|r| {
             let (tid, Some(v)) = r.raw(tid, &ak)? else { return Ok(None) };
@@ -200,7 +201,7 @@ impl Osis {
     }
 }
 
-impl<K: AspectKey> PathRef<'_, '_, K> {
+impl<K: ApiKey> PathRef<'_, '_, K> {
     /// The string or blob here as a stream (`Read + Seek`), of any size. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.parts();
@@ -221,7 +222,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     }
 }
 
-impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
+impl<K: ApiKey> PathWrite<'_, '_, '_, K> {
     /// Sets the string or blob here from a reader: a string when the key's schema says
     /// so (UTF-8 checked), else a blob. The value is read whole before the commit for now.
     pub fn set_stream(&mut self, mut r: impl Read) -> Result<()> {
@@ -238,7 +239,7 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
 }
 
 /// The schema type at a path of a key, if typed.
-pub(crate) fn type_of<K: AspectKey>(key: &K, path: &Path) -> Result<Option<Type>> {
+pub(crate) fn type_of<K: ApiKey>(key: &K, path: &Path) -> Result<Option<Type>> {
     let (Some(s), Some(ty)) = (key.schema(), key.ty()) else { return Ok(None) };
     Ok(Some(type_at(s, ty, path)?.0))
 }

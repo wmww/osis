@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 fn item(db: &Osis, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
     let t = w.create_in(db.me(), &[g]).unwrap();
-    w.at(t, ak("t:x.0")).set(&Value::Str(v.into())).unwrap();
+    w.at(t, osis::Key::untyped(ak("t:x.0"))).set(&Value::Str(v.into())).unwrap();
     w.commit().unwrap();
     t
 }
@@ -50,11 +50,11 @@ fn hosting_own_then_open_spec_sync_5() {
     w.run();
     assert_eq!(alice.host_address().unwrap(), None);
     assert_eq!(alice.host_key().unwrap(), None);
-    alice.set_hosting(Some(Hosting { listen: vec!["quic://alice:1".into()], admit: Admit::Own, ..Default::default() })).unwrap();
+    alice.set_hosting(Some(Hosting { listen: vec!["quic://alice:1".parse().unwrap()], admit: Admit::Own, ..Default::default() })).unwrap();
     let key = alice.host_key().unwrap().expect("known before it listens");
     w.run();
     let ha = alice.host_address().unwrap().expect("listening");
-    assert_eq!(HostAddr::new("quic://alice:1", key), ha, "the key it listens with");
+    assert_eq!(HostAddr::new(&"quic://alice:1".parse().unwrap(), key), ha, "the key it listens with");
     assert_eq!(alice.hosting().unwrap().unwrap().admit, Admit::Own);
     let ai = w.index(&alice).unwrap();
     let s = w.host_of(ai).unwrap();
@@ -73,10 +73,10 @@ fn hosting_own_then_open_spec_sync_5() {
     assert!(!hosted(&w, s).contains(&lb), "own: another person's label refused");
     let st = bob.status().unwrap().groups[&bob.me()].clone();
     assert_eq!((st.state, st.not_admitted), (osis::SyncState::Synced, vec![ha.clone()]), "not admitted, not full; synced at base");
-    w.until(bob.wait_synced(osis::SyncScope::Group(bob.me()), std::time::Duration::from_secs(5)), 1000, 10).unwrap();
+    w.until(bob.wait_synced(osis::SyncScope::Thing(bob.me()), std::time::Duration::from_secs(5)), 1000, 10).unwrap();
     let st = carol.status().unwrap().groups[&carol.me()].clone();
     assert_eq!((st.state, st.not_admitted), (osis::SyncState::Refused, vec![ha.clone()]), "at no other host");
-    let r = w.until(carol.wait_synced(osis::SyncScope::Group(carol.me()), std::time::Duration::from_secs(5)), 1000, 10);
+    let r = w.until(carol.wait_synced(osis::SyncScope::Thing(carol.me()), std::time::Duration::from_secs(5)), 1000, 10);
     assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [carol.me()]), "{r:?}");
 
     // open: Bob's label is taken at his next registration
@@ -91,9 +91,9 @@ fn hosting_own_then_open_spec_sync_5() {
     // Bob's new device reaches only Alice's host: his label is served from her store, blind
     let mut cfg = w.cfg(3, &[]);
     cfg.hosts = vec![ha];
-    let restored = w.until(Osis::restore(cfg, &bob_card), 1000, 30).unwrap();
+    let restored = w.until(osis::internals::restore(cfg, &bob_card), 1000, 30).unwrap();
     w.run();
-    assert_eq!(restored.at(tb, ak("t:x.0")).get().unwrap(), Some(Value::Str("bob's".into())));
+    assert_eq!(restored.at(tb, osis::Key::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Str("bob's".into())));
 
     // hygiene: no tid or AK of the label Alice reads or the one she does not
     let mut history = w.hosts[s].backend.history();
@@ -143,13 +143,13 @@ fn own_pair(seed: u64) -> (World, Osis, Osis, usize, HostAddr, Tid, Tid) {
     let (alice, _) = w.person(seed * 2 + 1, &[base]);
     let (bob, _) = w.person(seed * 2 + 2, &[base]);
     w.run();
-    alice.set_hosting(Some(Hosting { listen: vec!["quic://alice:1".into()], admit: Admit::Own, ..Default::default() })).unwrap();
+    alice.set_hosting(Some(Hosting { listen: vec!["quic://alice:1".parse().unwrap()], admit: Admit::Own, ..Default::default() })).unwrap();
     w.run();
     let ha = alice.host_address().unwrap().expect("listening");
     let (ca, cb) = (alice.contact_card().unwrap(), bob.contact_card().unwrap());
     w.run();
-    let a = w.until(bob.import_contact(&ca), 1000, 10).unwrap();
-    let b = w.until(alice.import_contact(&cb), 1000, 10).unwrap();
+    let a = w.until(bob.import_contact(&ca, osis::internals::WAIT), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&cb, osis::internals::WAIT), 1000, 10).unwrap();
     (w, alice, bob, base, ha, a, b)
 }
 
@@ -359,8 +359,8 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     let _ = std::fs::remove_dir_all(&dir);
     let net = osis_transport::Net::new(41);
     let at = |i: u64, run: bool| {
-        let mut c = osis::Config::at(osis::StoreAt::Dir(dir.clone()));
-        c.seed = Some(i);
+        let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
+        c.internals.seed = Some(i);
         c.peers = false;
         if run {
             c.runtime = osis::Runtime::Own;
@@ -369,11 +369,11 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
         c
     };
     let files = || dir.join("host.redb").exists() || dir.join("host.root").exists();
-    let hosting = || Some(Hosting { listen: vec!["mem://e".into()], admit: Admit::Open, ..Default::default() });
+    let hosting = || Some(Hosting { listen: vec!["mem://e".parse().unwrap()], admit: Admit::Open, ..Default::default() });
     let listening = |db: &Osis| wait_for("listening", || db.host_address().unwrap().is_some());
 
     // hosting, with the home label registered there
-    let db = Osis::create(at(1, true)).unwrap().0;
+    let db = osis::internals::create(at(1, true)).unwrap().0;
     db.set_hosting(hosting()).unwrap();
     listening(&db);
     db.add_host(&db.host_address().unwrap().unwrap()).unwrap();
@@ -383,19 +383,19 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     assert_eq!(host_store_labels(&dir), vec![home]);
 
     // stopped and started again with no driver running: the new key's host starts empty
-    let db = Osis::open(at(2, false)).unwrap();
+    let db = osis::internals::open(at(2, false)).unwrap();
     let old = db.host_key().unwrap();
     db.set_hosting(None).unwrap();
     db.set_hosting(hosting()).unwrap();
     assert_ne!(db.host_key().unwrap(), old);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
-    let db = Osis::open(at(3, true)).unwrap();
+    let db = osis::internals::open(at(3, true)).unwrap();
     listening(&db);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert_eq!(host_store_labels(&dir), Vec::new());
 
     // stopped on a running driver: the files go
-    let db = Osis::open(at(4, true)).unwrap();
+    let db = osis::internals::open(at(4, true)).unwrap();
     listening(&db);
     assert!(files());
     db.set_hosting(None).unwrap();
@@ -403,16 +403,16 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
 
     // stopped with no driver running: the next driver start erases
-    let db = Osis::open(at(5, true)).unwrap();
+    let db = osis::internals::open(at(5, true)).unwrap();
     db.set_hosting(hosting()).unwrap();
     listening(&db);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert!(files());
-    let db = Osis::open(at(6, false)).unwrap();
+    let db = osis::internals::open(at(6, false)).unwrap();
     db.set_hosting(None).unwrap();
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert!(files());
-    let db = Osis::open(at(7, true)).unwrap();
+    let db = osis::internals::open(at(7, true)).unwrap();
     wait_for("the host store erased", || !files());
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let _ = std::fs::remove_dir_all(&dir);
@@ -427,8 +427,8 @@ fn own_runtime_close_frees_host_store() {
     let _ = std::fs::remove_dir_all(&dir);
     let net = osis_transport::Net::new(42);
     let at = |i: u64| {
-        let mut c = osis::Config::at(osis::StoreAt::Dir(dir.clone()));
-        c.seed = Some(i);
+        let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
+        c.internals.seed = Some(i);
         c.peers = false;
         c.runtime = osis::Runtime::Own;
         c.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("o{i}"))));
@@ -436,12 +436,12 @@ fn own_runtime_close_frees_host_store() {
     };
     // `host_address` fails once the host could not open its store
     let listening = |db: &Osis| wait_for("listening", || db.host_address().unwrap().is_some());
-    let db = Osis::create(at(0)).unwrap().0;
-    db.set_hosting(Some(Hosting { listen: vec!["mem://o".into()], admit: Admit::Open, ..Default::default() })).unwrap();
+    let db = osis::internals::create(at(0)).unwrap().0;
+    db.set_hosting(Some(Hosting { listen: vec!["mem://o".parse().unwrap()], admit: Admit::Open, ..Default::default() })).unwrap();
     listening(&db);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     for i in 1..6 {
-        let db = Osis::open(at(i)).unwrap();
+        let db = osis::internals::open(at(i)).unwrap();
         listening(&db);
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
     }

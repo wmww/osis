@@ -8,8 +8,17 @@ use osis_node::Engine;
 pub use crate::net::ManualNet;
 pub use osis_node as node;
 
-/// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a handle attached to a
-/// node (`Osis::attach`): its engine is a stand-in, never the node's.
+/// What tests set on `Config` and `ClientConfig`.
+#[derive(Clone, Default)]
+pub struct Knobs {
+    /// Wall clock in place of the system's.
+    pub clock: Option<std::sync::Arc<dyn osis_base::Clock>>,
+    /// Seed for a deterministic rng in place of OS randomness.
+    pub seed: Option<u64>,
+}
+
+/// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a thin client
+/// (`Osis::connect`): its engine is a stand-in, never the node's.
 pub trait Internals {
     /// Runs `f` on the engine under the database lock, then queues its events for the
     /// dispatcher.
@@ -32,14 +41,14 @@ pub trait Internals {
     fn port_panic_next(&self, after_call: bool);
     /// The sync driver task panics at its next control (inside an engine call, under the lock).
     fn panic_driver(&self);
-    /// On an attached handle (the one hook that wants one): its connection thread panics.
+    /// On a thin client (the one hook that wants one): its connection thread panics.
     fn panic_client_thread(&self);
     /// Pads the next pairing reply the port sends by `n` bytes.
     fn port_pad_pair_reply(&self, n: usize);
     /// Runs `f` between each local write's route and its lock.
     fn after_route(&self, f: Box<dyn Fn() + Send>);
     /// Sets a route with nothing else `group_source` does.
-    fn set_route(&self, group: osis_base::Tid, to: Option<String>);
+    fn set_route(&self, group: osis_base::Tid, to: Option<crate::HostAddr>);
 }
 
 impl Internals for Osis {
@@ -89,7 +98,7 @@ impl Internals for Osis {
     fn after_route(&self, f: Box<dyn Fn() + Send>) {
         *crate::watch::lock(&self.inner.port.after_route) = Some(f);
     }
-    fn set_route(&self, group: osis_base::Tid, to: Option<String>) {
+    fn set_route(&self, group: osis_base::Tid, to: Option<crate::HostAddr>) {
         self.inner.routing.store(true, std::sync::atomic::Ordering::Release);
         self.locked(|l| match to {
             Some(a) => l.routes.insert(group, a),
@@ -99,7 +108,85 @@ impl Internals for Osis {
     }
 }
 
-/// Panics on an attached handle (`Internals` reads this process's engine).
+/// Panics on a thin client (`Internals` reads this process's engine).
 fn here(db: &Osis) {
-    assert!(!db.is_attached(), "Internals on a handle attached to a node: Unsupported (its engine is a stand-in)");
+    assert!(db.has_store(), "Internals on a thin client: Unsupported (its engine is a stand-in)");
+}
+
+/// How long test harnesses wait when a test names no time of its own.
+pub const WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// The same, for catching up before a role is lowered.
+pub const PRESYNC: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A store, its hosts and its config in one value, for test harnesses that build all three in one
+/// helper: the fields of `Config` read through it. A client takes its transport, limits and
+/// dispatcher from it, and `wait_timeout` is what its connection and a `restore` wait.
+#[derive(Clone)]
+pub struct Opening {
+    pub store: crate::Store,
+    pub hosts: Vec<crate::HostAddr>,
+    pub wait_timeout: std::time::Duration,
+    pub cfg: crate::Config,
+}
+
+impl std::ops::Deref for Opening {
+    type Target = crate::Config;
+    fn deref(&self) -> &crate::Config {
+        &self.cfg
+    }
+}
+
+impl std::ops::DerefMut for Opening {
+    fn deref_mut(&mut self) -> &mut crate::Config {
+        &mut self.cfg
+    }
+}
+
+impl Opening {
+    pub fn at(store: crate::Store) -> Opening {
+        Opening { store, hosts: Vec::new(), wait_timeout: WAIT, cfg: crate::Config::default() }
+    }
+
+    pub fn memory() -> Opening {
+        Opening::at(crate::Store::Memory(crate::MemStore::new()))
+    }
+
+    pub fn dir(path: impl Into<std::path::PathBuf>) -> Opening {
+        Opening::at(crate::Store::Dir(path.into()))
+    }
+
+    fn client(self) -> crate::ClientConfig {
+        let c = self.cfg;
+        crate::ClientConfig { materialize_limit: c.materialize_limit, transport: c.transport, idle_commit: c.idle_commit, dispatch: c.dispatch, internals: c.internals }
+    }
+}
+
+pub fn create(o: Opening) -> crate::Result<(Osis, Option<crate::RecoveryCard>)> {
+    Osis::create(o.store, &o.hosts, o.cfg)
+}
+
+pub fn open(o: Opening) -> crate::Result<Osis> {
+    Osis::open(o.store, o.cfg)
+}
+
+pub fn pair(o: Opening, offer: &crate::PairOffer) -> crate::Result<crate::Joining> {
+    Osis::pair(o.store, &o.hosts, offer, o.cfg)
+}
+
+pub async fn restore(o: Opening, card: &crate::RecoveryCard) -> crate::Result<Osis> {
+    Osis::restore(o.store, &o.hosts, card, o.wait_timeout, o.cfg).await
+}
+
+pub fn connect_socket(socket: &std::path::Path, o: Opening) -> crate::Result<Osis> {
+    let t = o.wait_timeout;
+    Osis::connect_socket(socket, t, o.client())
+}
+
+pub fn connect(addr: &crate::HostAddr, secret: &crate::ClientSecret, o: Opening) -> crate::Result<Osis> {
+    connect_all(&[crate::NodeLogin { addr: addr.clone(), secret: secret.clone() }], o)
+}
+
+pub fn connect_all(logins: &[crate::NodeLogin], o: Opening) -> crate::Result<Osis> {
+    let t = o.wait_timeout;
+    Osis::connect(logins, t, o.client())
 }

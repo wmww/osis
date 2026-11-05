@@ -17,6 +17,7 @@ use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
+use osis_schema::ApiKey;
 use osis_schema::core_types::{GROUP, is_role_class};
 use osis_schema::{AspectKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use std::collections::{BTreeMap, BTreeSet};
@@ -164,7 +165,7 @@ pub(crate) fn group_op(items: bool, member: Tid, add: bool) -> PathOp {
 
 /// The wall time of `e`; `Invalid` unless it is in the future.
 fn expiry_at(db: &Osis, e: Expiry) -> Result<WallMs> {
-    let now = db.now();
+    let now = db.now()?;
     let at = match e {
         Expiry::At(t) => t,
         Expiry::In(d) => WallMs(now.0.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))),
@@ -208,7 +209,7 @@ impl<'d> Write<'d> {
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
     /// per (AK, schema) of the batch. A schema is told apart by address: keys borrow theirs
     /// from a static or an `Arc` the table shares, so the address is not reused meanwhile.
-    fn intern<K: AspectKey>(&mut self, ak: Ak, key: &K) -> u32 {
+    fn intern<K: ApiKey>(&mut self, ak: Ak, key: &K) -> u32 {
         let at = key.schema().map_or(0, |s: &Schema| std::ptr::from_ref(s).addr());
         let id = (ak, at);
         if let Some(i) = self.key_ix.get(&id) {
@@ -301,7 +302,7 @@ impl<'d> Write<'d> {
     }
 
     /// One aspect of a thing, for whole-value and path ops.
-    pub fn at<K: AspectKey>(&mut self, tid: Tid, key: K) -> AspectWrite<'_, 'd, K> {
+    pub fn at<K: ApiKey>(&mut self, tid: Tid, key: K) -> AspectWrite<'_, 'd, K> {
         let ix = match ak_of(&key) {
             Err(e) => Err(e),
             Ok(ak) => match not_writable(ak.as_str()) {
@@ -715,7 +716,7 @@ pub struct AspectWrite<'w, 'd, K> {
     ix: Result<u32>,
 }
 
-impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
+impl<'w, 'd, K: ApiKey> AspectWrite<'w, 'd, K> {
     fn ok(&self) -> Result<u32> {
         self.ix.clone()
     }
@@ -837,7 +838,7 @@ pub struct PathWrite<'a, 'w, 'd, K> {
     path: Path,
 }
 
-impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
+impl<K: ApiKey> PathWrite<'_, '_, '_, K> {
     fn at(&mut self, extra: Option<PathSeg>, op: Op) -> Result<()> {
         let mut path = segs(&self.path)?;
         path.extend(extra);
@@ -938,6 +939,9 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
 
     /// List or text: moves the range so it starts at index `to` of the sequence without it.
     pub fn move_range(&mut self, r: Range<usize>, to: usize) -> Result<()> {
+        if r.start > r.end {
+            return Err(Error::Invalid(format!("backward range {r:?}")));
+        }
         self.at(None, Op::Move { at: r.start, len: r.len(), to })
     }
 

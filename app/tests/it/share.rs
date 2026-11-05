@@ -2,14 +2,14 @@
 //! nests only: sharing through a tag waits on issues/tag-sharing-op.md), undo across people.
 use osis::internals::Internals as _;
 use osis::core::NAME;
-use osis::{Config, GrantOpts, ManualClock, MemStore, Osis, Role, StoreAt, WallMs};
+use osis::{GrantOpts, ManualClock, MemStore, Osis, Role, Store, WallMs};
 use osis_app::data::{Data, NewKind};
 use std::sync::Arc;
 
-fn cfg(seed: u64, clock: &Arc<ManualClock>) -> Config {
-    let mut c = Config::at(StoreAt::Memory(MemStore::new()));
-    c.seed = Some(seed);
-    c.clock = Some(clock.clone());
+fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
+    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
+    c.internals.seed = Some(seed);
+    c.internals.clock = Some(clock.clone());
     c
 }
 
@@ -32,8 +32,8 @@ fn sync(a: &Data, b: &Data) {
 /// Alice and Bob, two people, each with an app group; each holds the other's commits.
 fn two_people() -> (Data, Data) {
     let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
-    let a = Data::new(Osis::create(cfg(1, &clock)).unwrap().0);
-    let b = Data::new(Osis::create(cfg(2, &clock)).unwrap().0);
+    let a = Data::new(osis::internals::create(cfg(1, &clock)).unwrap().0);
+    let b = Data::new(osis::internals::create(cfg(2, &clock)).unwrap().0);
     a.main_group().unwrap();
     b.main_group().unwrap();
     sync(&a, &b);
@@ -88,7 +88,7 @@ fn reach_through_someone_elses_tag() {
 fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
     let tag = a.create(NewKind::Tag).unwrap();
-    let until = WallMs(a.db.now().0 + 86_400_000);
+    let until = WallMs(a.db.now().unwrap().0 + 86_400_000);
     a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), invite: None }).unwrap();
     assert_eq!(a.reach(tag).unwrap().people.len(), 1);
 }
@@ -139,7 +139,7 @@ fn edited_time() {
     a.add_tag(n, tag).unwrap();
     a.db.grant(n, tag, Role::Read, GrantOpts::default()).unwrap();
     assert_eq!(a.changed(n).unwrap(), Some(made), "a placement or an edge is not an edit");
-    assert!(a.changed(n).unwrap().unwrap() <= a.db.now().0);
+    assert!(a.changed(n).unwrap().unwrap() <= a.db.now().unwrap().0);
 }
 
 /// Tagging a tag nests it (a subgroup, not an item); removing un-nests.

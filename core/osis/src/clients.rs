@@ -1,4 +1,4 @@
-//! Thin clients of this node (notes/client-port.md §3): `clients.0^` on the node thing
+//! Clients of this node by a secret (notes/client-port.md §3): `clients.0^` on the node thing
 //! (spec/data-model.md §9) lists a client actor per client with the hash of its bearer secret
 //! and its end. The node mints the actor (an actor owned by the account, like a link's K) and
 //! acts as it for the client's session (`port::serve`); what the client may read and write is
@@ -14,7 +14,7 @@ use osis_node::flows::{Demotion, PreSync};
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, p};
 
-/// A thin client's bearer secret: shown once by `add_client` and `rotate_client_secret`; osis keeps
+/// A client's bearer secret: shown once by `add_client` and `rotate_client_secret`; osis keeps
 /// only its hash. Whoever holds it is the client. `Debug` is redacted; zeroized on drop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientSecret(pub(crate) Secret32);
@@ -51,18 +51,19 @@ fn secret_of(v: Value) -> Result<ClientSecret> {
 }
 
 impl Osis {
-    /// Registers a thin client: mints its actor, owned by the account,
+    /// Registers a client: mints its actor, owned by the account,
     /// with secrets of its own, placed in the home group so the account's devices can grant to
     /// it, and writes its `clients.0^` entry, all in one transaction. Returns the actor and the
     /// secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
     /// client reaches (it starts with none).
     pub fn add_client(&self, until: Option<WallMs>) -> Result<(Tid, ClientSecret)> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(method::ADD_CLIENT, vec![crate::port::codec::opt(until, |w| Value::uint(w.0))])?;
             let mut a = crate::port::codec::Args::new(v)?;
             return Ok((a.tid()?, secret_of(a.next()?)?));
         }
-        if until.is_some_and(|u| u <= self.now()) {
+        let now = self.now()?;
+        if until.is_some_and(|u| u <= now) {
             return Err(Error::Invalid("a client's until must be in the future".into()));
         }
         let secret = ClientSecret::generate();
@@ -81,9 +82,9 @@ impl Osis {
         Ok((actor, secret))
     }
 
-    /// This node's thin clients (`clients.0^`).
+    /// This node's clients by a secret (`clients.0^`).
     pub fn clients(&self) -> Result<Vec<Client>> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(method::CLIENTS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|c| {
                 let mut a = crate::port::codec::Args::new(c)?;
@@ -95,7 +96,7 @@ impl Osis {
         Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor, until: c.until }).collect())
     }
 
-    /// Removes a thin client: its sessions end at once, its actor loses every role it holds, then
+    /// Removes a client: its sessions end at once, its actor loses every role it holds, then
     /// the entry goes. `false` when there is no entry. The entry stays, ended, until every role is
     /// gone, so a failure or a crash halfway is retried by calling this again.
     ///
@@ -105,7 +106,7 @@ impl Osis {
     /// on a thing this node reads at another node (`Unsupported`, the sessions ended, the entry
     /// staying: move its group home and call this again).
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(method::REMOVE_CLIENT, vec![Value::Tid(actor)])?;
             return crate::port::codec::Args::of(vec![v]).bool();
         }
@@ -132,7 +133,7 @@ impl Osis {
     /// A new bearer secret for a client: the old hash is gone, with its live connections; the
     /// actor and its grants stay. `Invalid` when there is no entry.
     pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
-        if self.is_attached() {
+        if !self.has_store() {
             return secret_of(self.rcall(method::ROTATE_CLIENT_SECRET, vec![Value::Tid(actor)])?);
         }
         let node = self.node();

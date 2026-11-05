@@ -8,11 +8,12 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{AspectRef, Reader, ak_of, lenient};
 use crate::sources::Source;
-use crate::watch::{CommitInfo, Delivery, Filter, Subscription};
+use crate::read::Stamp;
+use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Tid, Value};
 use osis_node::ChangeId;
 use osis_node::engine::history::{HistoryRow, RowBody};
-use osis_schema::AspectKey;
+use osis_schema::ApiKey;
 
 pub use osis_node::engine::history::{HistoryFrom, HistoryPos};
 
@@ -42,7 +43,7 @@ pub enum HistoryBody<T> {
 /// exactly when `valid` (spec/permissions.md §5.2, Acting).
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryEntry<T> {
-    pub commit: CommitInfo,
+    pub commit: Stamp,
     pub kind: CommitKind,
     /// Valid here, now: it may change (the watch says when).
     pub valid: bool,
@@ -98,11 +99,11 @@ fn entry_of(r: &mut Reader<'_>, tid: &Tid, ak: &Ak, row: HistoryRow, limit: usiz
         RowBody::NotFetched => HistoryBody::NotFetched,
     };
     let kind = row.kind.map_or(CommitKind::Ephemeral, crate::commits::kind_of_commit);
-    Ok(HistoryEntry { commit: CommitInfo { id: row.id, actor: row.actor, node: row.node, ts: row.ts, received: row.received }, kind, valid: row.valid, body })
+    Ok(HistoryEntry { commit: Stamp { id: row.id, actor: row.actor, node: row.node, ts: row.ts, received: row.received }, kind, valid: row.valid, body })
 }
 
 /// `e` through the key's type.
-pub(crate) fn typed<K: AspectKey>(db: &Osis, tid: Tid, ak: &Ak, key: &K, e: HistoryEntry<Value>) -> HistoryEntry<K::T> {
+pub(crate) fn typed<K: ApiKey>(db: &Osis, tid: Tid, ak: &Ak, key: &K, e: HistoryEntry<Value>) -> HistoryEntry<K::T> {
     let body = match e.body {
         HistoryBody::Held(v) => HistoryBody::Held(v.and_then(|v| lenient(tid, ak, key.decode(&v), |d| db.engine(|e| e.report(d))))),
         HistoryBody::TooLarge { limit } => HistoryBody::TooLarge { limit },
@@ -161,7 +162,7 @@ impl Osis {
     }
 }
 
-impl<K: AspectKey> AspectRef<'_, K> {
+impl<K: ApiKey> AspectRef<'_, K> {
     /// A page of the aspect's history here: at most `limit` entries (`HISTORY_PAGE` at most) from
     /// `from`, in its direction, fewer past the materialization bound. No walk: a page costs its
     /// entries. An unknown thing, or one the caller may not read, has none.
@@ -176,7 +177,7 @@ impl<K: AspectKey> AspectRef<'_, K> {
     }
 }
 
-impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
+impl<K: ApiKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` for each commit whose entry in the aspect's history reads otherwise, one call per
     /// commit, with the entry as it reads then: no recompute of the aspect, no re-read of a page.
     /// Subscribe first, then read pages: nothing after the subscription is missed, and an event

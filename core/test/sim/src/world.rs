@@ -7,7 +7,7 @@
 
 use osis::internals::node::sync::{Action, ConnId, Event, HostStatus};
 use osis::internals::{Internals, ManualNet};
-use osis::{Config, ManualClock, MemStore, Osis, RecoveryCard, Runtime, HostAddr, StoreAt, WallMs};
+use osis::{ManualClock, MemStore, Osis, RecoveryCard, Runtime, HostAddr, Store, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::{FrameDecoder, Message};
 use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
@@ -141,7 +141,7 @@ impl World {
             Err(e) => panic!("host store: {e:?}"),
         };
         let hub = Hub::new(store, key, Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.hosts.push(Host { hub, addr: HostAddr::new(&format!("quic://host{i}:1"), key), node: None, up: true, backend });
+        self.hosts.push(Host { hub, addr: format!("quic://host{i}:1#{}", osis_schema::osis_base::base64url::encode(&key)).parse().unwrap_or_else(|e| panic!("{e:?}")), node: None, up: true, backend });
         i
     }
 
@@ -186,7 +186,7 @@ impl World {
                 if let Some(h) = self.host_of(d).and_then(|old| self.hosts.get_mut(old)) {
                     h.node = None;
                 }
-                self.hosts.push(Host { hub, addr: HostAddr::new(&url, cfg.key), node: Some(d), up: true, backend });
+                self.hosts.push(Host { hub, addr: format!("{url}#{}", osis_schema::osis_base::base64url::encode(&cfg.key)).parse().unwrap_or_else(|e| panic!("{e:?}")), node: Some(d), up: true, backend });
                 self.hosts.len() - 1
             }
         };
@@ -209,10 +209,10 @@ impl World {
 
     /// A config for a database of this world: manual runtime, the world's clock, `seed`, the
     /// given hosts, a fresh memory store.
-    pub fn cfg(&self, seed: u64, hosts: &[usize]) -> Config {
-        let mut c = Config::at(StoreAt::Memory(MemStore::new()));
-        c.seed = Some(seed);
-        c.clock = Some(self.clock.clone());
+    pub fn cfg(&self, seed: u64, hosts: &[usize]) -> osis::internals::Opening {
+        let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
+        c.internals.seed = Some(seed);
+        c.internals.clock = Some(self.clock.clone());
         c.runtime = Runtime::Manual(self.net.clone());
         c.hosts = hosts.iter().filter_map(|s| self.addr(*s)).collect();
         c
@@ -221,7 +221,7 @@ impl World {
     /// A new person's database syncing with `hosts` (at least one), with its recovery card.
     #[allow(clippy::panic)] // test harness: fail the test loudly
     pub fn person(&mut self, seed: u64, hosts: &[usize]) -> (Osis, RecoveryCard) {
-        match Osis::create(self.cfg(seed, hosts)) {
+        match osis::internals::create(self.cfg(seed, hosts)) {
             Ok((db, Some(card))) => (db, card),
             Ok((_, None)) => panic!("person without hosts has no recovery card"),
             Err(e) => panic!("create: {e:?}"),
@@ -235,7 +235,7 @@ impl World {
                 if let Some(db) = db {
                     let diags = self.diags.clone();
                     // a database of this harness is local: registering cannot fail
-                    if let Ok(sub) = db.on_diagnostic(move |_, d| diags.lock().unwrap_or_else(|e| e.into_inner()).entry(i).or_default().push(format!("{:?}: {}", d.kind, d.detail))) {
+                    if let Ok(sub) = db.on_diagnostic(move |_, d| diags.lock().unwrap_or_else(|e| e.into_inner()).entry(i).or_default().push(d.to_string())) {
                         sub.detach();
                     }
                 }
@@ -420,7 +420,7 @@ impl World {
         for a in acts {
             match a {
                 Action::Dial { conn, address } => {
-                    let want = HostAddr::new(&address.url, address.key).to_string();
+                    let want = format!("{}#{}", address.url, osis_schema::osis_base::base64url::encode(&address.key));
                     let s = self.hosts.iter().position(|x| x.up && x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
                     let Some(s) = s else {
                         self.send_msg(Msg::Down(d, conn));

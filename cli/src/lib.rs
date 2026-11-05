@@ -17,7 +17,8 @@ use anyhow::anyhow;
 use args::{Cli, Global};
 use clap::Parser;
 use json::J;
-use osis::{AspectKey, Config, Error, Key, MemStore, Osis, StoreAt, Tid};
+use osis::{ClientConfig, Config, Error, Key, MemStore, Osis, Store, Tid};
+use osis_schema::AspectKey as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
@@ -156,13 +157,18 @@ fn store_sel(g: &Global, given: Option<StoreSel>) -> anyhow::Result<StoreSel> {
     }
 }
 
-/// The store's config; `net`: sync runs (`Runtime::Own` over QUIC) while the command runs,
-/// else the command stays local (`Runtime::None`).
-fn config(sel: &StoreSel, g: &Global, net: bool) -> Config {
-    let mut c = match sel {
-        StoreSel::Dir(d) => Config::dir(d),
-        StoreSel::Memory(m) => Config::at(StoreAt::Memory(m.clone())),
-    };
+/// The store selected.
+pub(crate) fn store_of(sel: &StoreSel) -> Store {
+    match sel {
+        StoreSel::Dir(d) => Store::Dir(d.clone()),
+        StoreSel::Memory(m) => Store::Memory(m.clone()),
+    }
+}
+
+/// The config of a command holding a store; `net`: sync runs (`Runtime::Own` over QUIC) while the
+/// command runs, else the command stays local (`Runtime::None`).
+fn config(g: &Global, net: bool) -> Config {
+    let mut c = Config::default();
     if let Some(l) = g.limit {
         c.materialize_limit = l;
     }
@@ -173,20 +179,27 @@ fn config(sel: &StoreSel, g: &Global, net: bool) -> Config {
     c
 }
 
-/// `--timeout` also bounds reaching an attached node.
-fn attach_wait(g: &Global, cfg: &mut Config) {
-    if let Some(d) = g.timeout.as_deref().and_then(|t| parse_dur(t).ok()) {
-        cfg.wait_timeout = d;
+/// The config of a command using a node out of process.
+fn client_config(g: &Global) -> ClientConfig {
+    let mut c = ClientConfig::default();
+    if let Some(l) = g.limit {
+        c.materialize_limit = l;
     }
+    c
 }
 
-/// The attachment `--remote ADDR --remote-secret FILE` asks for.
-fn remote_flags(g: &Global) -> anyhow::Result<Vec<osis::RemoteConfig>> {
-    let (Some(addr), Some(file)) = (&g.remote, &g.remote_secret) else { return Ok(Vec::new()) };
-    Ok(vec![osis::RemoteConfig { addr: addr.parse()?, secret: read_secret(file)? }])
+/// How long connecting to a node waits, by `--timeout`.
+fn connect_wait(g: &Global) -> anyhow::Result<Duration> {
+    Ok(timeout_of(g, Some(DEFAULT_WAIT))?.unwrap_or(Duration::MAX))
 }
 
-/// A thin client's secret file: 64 hex digits.
+/// The connection `--remote ADDR --remote-secret FILE` asks for.
+fn remote_flags(g: &Global) -> anyhow::Result<Option<osis::NodeLogin>> {
+    let (Some(addr), Some(file)) = (&g.remote, &g.remote_secret) else { return Ok(None) };
+    Ok(Some(osis::NodeLogin { addr: addr.parse()?, secret: read_secret(file)? }))
+}
+
+/// A client's secret file: 64 hex digits.
 fn read_secret(file: &Path) -> anyhow::Result<osis::ClientSecret> {
     let text = std::fs::read_to_string(file).map_err(|e| exit(8, format!("{}: {e}", file.display())))?;
     let bytes = osis_schema::osis_base::hex::decode(text.trim()).and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or_else(|| usage(format!("{}: not 64 hex digits", file.display())))?;
@@ -208,68 +221,61 @@ fn lock_err(dir: &Path, e: Error) -> anyhow::Error {
 }
 
 /// Opens an existing store (exit 8 when missing or locked). Locked by a daemon (`osis serve`)
-/// whose socket answers, the invocation is that daemon's client instead (`attach`, unless the
+/// whose socket answers, the invocation is that daemon's client instead (`use_daemon`, unless the
 /// command must hold the store itself: `inspect`).
-fn open(sel: &StoreSel, g: &Global, net: bool, attach: bool) -> anyhow::Result<Osis> {
+fn open(sel: &StoreSel, g: &Global, net: bool, use_daemon: bool) -> anyhow::Result<Osis> {
     if g.node.is_some() {
-        return if attach { thin(g) } else { Err(usage("this command holds a store: not with --node")) };
+        return if use_daemon { client_of_node(g) } else { Err(usage("this command holds a store: not with --node")) };
     }
     match sel {
         StoreSel::Dir(d) => {
             if !d.join("db.redb").exists() {
                 return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
             }
-            let mut cfg = config(sel, g, net);
-            cfg.remotes = remote_flags(g)?;
-            if !cfg.remotes.is_empty() {
-                attach_wait(g, &mut cfg);
-            }
-            let db = match Osis::open(cfg) {
+            let login = remote_flags(g)?;
+            let db = match Osis::open(store_of(sel), config(g, net)) {
                 Ok(db) => db,
-                Err(Error::Storage(m)) if attach && m.contains("already open") => match daemon(d, g) {
+                Err(Error::Storage(m)) if use_daemon && m.contains("already open") => match daemon(d, g) {
                     Some(db) => return Ok(db),
                     None => return Err(lock_err(d, Error::Storage(m))),
                 },
                 Err(e) => return Err(lock_err(d, e)),
             };
             let _ = std::fs::write(d.join(PID_FILE), std::process::id().to_string());
-            db.await_remotes();
+            if let Some(l) = login {
+                match db.connect_node(&l, connect_wait(g)?) {
+                    // a node down fails what goes there, as `Network`; the rest of the store works
+                    Err(Error::Network(_)) | Ok(()) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
             Ok(db)
         }
-        StoreSel::Memory(_) => Osis::open(config(sel, g, net)).map_err(|e| match e {
+        StoreSel::Memory(_) => Osis::open(store_of(sel), config(g, net)).map_err(|e| match e {
             Error::Storage(m) if m.contains("not an osis database") => exit(8, "no store (run osis init)"),
             e => e.into(),
         }),
     }
 }
 
-/// The daemon serving the store at `d`: its socket named by `<store>/sock`, attached as Owner
-/// (notes/client-port.md §5). None when there is no live one, or the file names another
+/// The daemon serving the store at `d`: its socket named by `<store>/sock`, as a client acting as
+/// the node's account (notes/client-port.md §5). None when there is no live one, or the file names another
 /// socket than the store's (`socket_path`): another store's daemon is not this one.
 fn daemon(d: &Path, g: &Global) -> Option<Osis> {
     let sock = std::fs::read_to_string(d.join(osis::SOCK_FILE)).ok()?;
     if Path::new(sock.trim_end()) != osis::socket_path(d).ok()? {
         return None;
     }
-    let mut cfg = Config::memory();
-    if let Some(l) = g.limit {
-        cfg.materialize_limit = l;
-    }
-    Osis::attach(Path::new(sock.trim_end()), cfg).ok()
+    Osis::connect_socket(Path::new(sock.trim_end()), connect_wait(g).ok()?, client_config(g)).ok()
 }
 
-/// The node named by `--node`, attached as the thin client `--client-secret` stands for
-/// (notes/client-port.md §3). No store is opened.
-fn thin(g: &Global) -> anyhow::Result<Osis> {
+/// The node named by `--node`, as the client `--client-secret` stands for (notes/client-port.md
+/// §3). No store is opened.
+fn client_of_node(g: &Global) -> anyhow::Result<Osis> {
     let (Some(addr), Some(file)) = (&g.node, &g.client_secret) else { return Err(usage("--node needs --client-secret")) };
     let secret = read_secret(file)?;
-    let addr: osis::HostAddr = addr.parse()?;
-    let mut cfg = Config::memory();
-    if let Some(l) = g.limit {
-        cfg.materialize_limit = l;
-    }
-    attach_wait(g, &mut cfg);
-    Ok(Osis::attach_client(&addr, &secret, cfg)?)
+    let login = osis::NodeLogin { addr: addr.parse()?, secret };
+    Ok(Osis::connect(&[login], connect_wait(g)?, client_config(g))?)
 }
 
 /// Serves the client port while `serve` runs: listens on the store's socket and names it in
@@ -310,9 +316,7 @@ fn create(sel: &StoreSel, g: &Global, hosts: Vec<osis::HostAddr>) -> anyhow::Res
         return Err(exit(8, format!("{} is not empty", d.display())));
     }
     let net = !hosts.is_empty();
-    let mut cfg = config(sel, g, net);
-    cfg.hosts = hosts;
-    let db = Osis::create(cfg).map_err(|e| match sel {
+    let db = Osis::create(store_of(sel), &hosts, config(g, net)).map_err(|e| match sel {
         StoreSel::Dir(d) => lock_err(d, e),
         _ => e.into(),
     })?;
@@ -419,6 +423,11 @@ impl Ctx<'_> {
         }
     }
 
+    /// What a call that waits on other nodes gets: the `--timeout` bound (default 30 s; `0`: none).
+    pub fn wait_for(&self) -> anyhow::Result<Duration> {
+        Ok(self.timeout()?.unwrap_or(Duration::MAX))
+    }
+
     /// The `--timeout` bound (default 30 s; `0`: none).
     pub fn timeout(&self) -> anyhow::Result<Option<Duration>> {
         timeout_of(&self.g, Some(DEFAULT_WAIT))
@@ -444,7 +453,7 @@ impl Ctx<'_> {
     /// The key for an AK: typed by a registered schema unless `--raw`.
     pub fn key(&self, ak: &str) -> anyhow::Result<Key> {
         if self.g.raw {
-            Ok(Key::new(parse_ak(ak, "AK")?, None))
+            Ok(Key::untyped(parse_ak(ak, "AK")?))
         } else {
             self.db.key(ak).map_err(|_| usage(format!("bad AK {ak:?}")))
         }

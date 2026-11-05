@@ -5,7 +5,8 @@ use crate::args::{CreateArgs, MemberCmd, OpArgs, PlaceArgs, RmArgs, ScriptCmd, S
 use crate::text::{self, PStep};
 use crate::{Ctx, key_ty, parse_dur, parse_ts, ty_in, usage};
 use clap::Parser;
-use osis::{AspectKey, AspectWrite, Expiry, Key, Member, Path, Retention, Step, Tid, Value, WallMs};
+use osis_schema::AspectKey as _;
+use osis::{AspectWrite, Expiry, Key, Member, Path, Retention, Step, Tid, Value, WallMs};
 use osis_schema::{Bound, PurgeBy, Type};
 use std::ops::Range;
 
@@ -41,7 +42,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
                     return Err(usage(format!("[{i}] on untyped {} written earlier in this batch: list index or map key is unknown (register a schema, or write in a separate step)", key.ak())));
                 }
                 if cur.is_none() {
-                    let untyped = Key::new(osis::Ak::new(key.ak()).map_err(|_| usage("bad AK"))?, None);
+                    let untyped = Key::untyped(key.name().clone());
                     cur = Some(ctx.db.at(t, untyped).get()?);
                 }
                 let here = cur.as_ref().and_then(|v| v.as_ref()).and_then(|v| osis_schema::value_at(v, &Path(out.clone())));

@@ -5,7 +5,7 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::ak;
 use osis::internals::Internals as _;
-use osis::{SetRoleOpts, SyncFirst, Ak, Change, CommitQuery, Config, MemStore, Osis, Runtime, Scope, Source, StoreAt, Transport, Value};
+use osis::{SetRoleOpts, SyncFirst, Ak, Change, CommitQuery, MemStore, Osis, Runtime, Scope, Source, Store, Transport, Value};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
@@ -33,16 +33,16 @@ impl Drop for Dir {
 
 /// A node over `store` with a runtime, serving the client port at `sock`.
 fn node(store: &MemStore, net: &osis_transport::Net, sock: &std::path::Path, create: bool) -> Osis {
-    let mut c = Config::at(StoreAt::Memory(store.clone()));
+    let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
     c.transport = Some(Transport::InProcess(net.endpoint("n")));
-    let db = if create { Osis::create(c).unwrap().0 } else { Osis::open(c).unwrap() };
+    let db = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
     db.listen_unix(sock).unwrap();
     db
 }
 
 fn attach(sock: &std::path::Path) -> Osis {
-    Osis::attach(sock, Config::memory()).unwrap()
+    osis::internals::connect_socket(sock, osis::internals::Opening::memory()).unwrap()
 }
 
 // spec/wire.md §11.2 (client port), notes/client-port.md §1, §2 (b): an attached handle reads, writes, watches and undoes at the node as its Owner: me/node/home are the node's; every read agrees with the node's own; a node-side write reaches the client's watch, a client write the node's
@@ -53,14 +53,14 @@ fn attached_handle_works_at_the_node() {
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
     let c = attach(&sock);
-    assert!(c.is_attached());
+    assert!(!c.has_store());
     assert_eq!((c.me(), c.node()), (n.me(), n.node()));
     let title = ak("note:title.0");
     // a later batch's first member makes a group, at the node
     let (plain, kept) = c.batch(|w| {
         let (p, k) = (w.create()?, w.create()?);
-        w.at(p, ak("t:x.0")).set(&osis::Value::Int(1))?;
-        w.at(k, ak("t:x.0")).set(&osis::Value::Int(1))?;
+        w.at(p, osis::Key::untyped(ak("t:x.0"))).set(&osis::Value::Int(1))?;
+        w.at(k, osis::Key::untyped(ak("t:x.0"))).set(&osis::Value::Int(1))?;
         Ok((p, k))
     }).unwrap();
     c.batch(|w| w.group(plain).add(osis::Member::Item(kept))).unwrap();
@@ -73,13 +73,13 @@ fn attached_handle_works_at_the_node() {
         .batch(|w| {
             let g = w.create()?;
             let t = w.create()?;
-            w.at(t, title.clone()).set(&Value::Str("a".into()))?;
+            w.at(t, osis::Key::untyped(title.clone())).set(&Value::Str("a".into()))?;
             w.group(g).add(osis::Member::Item(t))?;
             Ok((t, g))
         })
         .unwrap();
-    assert_eq!(n.at(t, title.clone()).get().unwrap(), Some(Value::Str("a".into())));
-    assert_eq!(c.at(t, title.clone()).get().unwrap(), Some(Value::Str("a".into())));
+    assert_eq!(n.at(t, osis::Key::untyped(title.clone())).get().unwrap(), Some(Value::Str("a".into())));
+    assert_eq!(c.at(t, osis::Key::untyped(title.clone())).get().unwrap(), Some(Value::Str("a".into())));
     assert_eq!(c.aspects(t).unwrap(), n.aspects(t).unwrap());
     assert!(c.knows(t).unwrap() && !c.knows(osis::Tid::from_bytes([7; 15])).unwrap());
     assert_eq!(c.groups_of(t).unwrap(), n.groups_of(t).unwrap());
@@ -97,43 +97,43 @@ fn attached_handle_works_at_the_node() {
     assert_eq!(cs, n.status().unwrap());
     // an unknown thing's write fails as locally
     let ghost = osis::Tid::from_bytes([9; 15]);
-    assert!(matches!(c.commit_set(ghost, title.clone(), &Value::Int(1)), Err(osis::Error::UnknownThing { .. })));
+    assert!(matches!(c.commit_set(ghost, osis::Key::untyped(title.clone()), &Value::Int(1)), Err(osis::Error::UnknownThing { .. })));
     // watches: the client sees the node's write; settle inside a callback does not deadlock
     let (tx, rx) = channel();
     let sub = c
-        .at(t, title.clone())
+        .at(t, osis::Key::untyped(title.clone()))
         .on_change(move |db, ch: Change<Value>| {
             db.settle();
             tx.send((ch.value.unwrap(), ch.source)).unwrap();
         })
         .unwrap();
     assert_eq!(rx.recv_timeout(W).unwrap(), (Some(Value::Str("a".into())), Source::Initial));
-    let w = watched(&c, t, title.clone()).unwrap();
+    let w = watched(&c, t, osis::Key::untyped(title.clone())).unwrap();
     assert_eq!(w.current().unwrap(), Some(Value::Str("a".into())));
-    n.commit_set(t, title.clone(), &Value::Str("b".into())).unwrap();
+    n.commit_set(t, osis::Key::untyped(title.clone()), &Value::Str("b".into())).unwrap();
     let (v, src) = rx.recv_timeout(W).unwrap();
     assert_eq!(v, Some(Value::Str("b".into())));
     assert!(matches!(src, Source::Local(_)), "{src:?}");
     c.settle();
     assert_eq!(w.current().unwrap(), Some(Value::Str("b".into())));
     // the node's watch sees the client's write
-    let nw = watched(&n, t, title.clone()).unwrap();
-    c.commit_set(t, title.clone(), &Value::Str("c".into())).unwrap();
+    let nw = watched(&n, t, osis::Key::untyped(title.clone())).unwrap();
+    c.commit_set(t, osis::Key::untyped(title.clone()), &Value::Str("c".into())).unwrap();
     n.settle();
     assert_eq!(nw.current().unwrap(), Some(Value::Str("c".into())));
     // undo, redo and commits at the node, the node's actor's
     assert!(c.undo(&Scope::Thing(t)).unwrap().is_some());
-    assert_eq!(c.at(t, title.clone()).get().unwrap(), Some(Value::Str("b".into())));
+    assert_eq!(c.at(t, osis::Key::untyped(title.clone())).get().unwrap(), Some(Value::Str("b".into())));
     c.redo(&Scope::Thing(t)).unwrap().unwrap();
-    assert_eq!(c.at(t, title.clone()).get().unwrap(), Some(Value::Str("c".into())));
-    let q = CommitQuery::new().scope(Scope::Thing(t));
+    assert_eq!(c.at(t, osis::Key::untyped(title.clone())).get().unwrap(), Some(Value::Str("c".into())));
+    let q = CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
     assert_eq!(c.commits(&q).unwrap(), n.commits(&q).unwrap());
     let last = c.commits(&q).unwrap()[0].commit.id;
     c.revert(last).unwrap();
-    assert_eq!(c.at(t, title.clone()).get().unwrap(), Some(Value::Str("b".into())));
+    assert_eq!(c.at(t, osis::Key::untyped(title.clone())).get().unwrap(), Some(Value::Str("b".into())));
     // a thing watch and a dropped subscription
     let (ttx, trx) = channel();
-    let ts = c.watch_thing(t, move |_, ch| ttx.send(ch.ak).unwrap()).unwrap();
+    let ts = c.on_thing_change(t, move |_, ch| ttx.send(ch.ak).unwrap()).unwrap();
     let mut seen = Vec::new();
     while !seen.contains(&title) {
         seen.push(trx.recv_timeout(W).unwrap());
@@ -143,7 +143,7 @@ fn attached_handle_works_at_the_node() {
     // what needs this process to be the node fails Unsupported, never acts on the stand-in
     assert!(matches!(c.client_listen(&[]), Err(osis::Error::Unsupported(_))));
     assert!(matches!(c.listen_unix(&d.0.join("other.sock")), Err(osis::Error::Unsupported(_))));
-    assert!(matches!(crate::common::block_on(c.group_source(t, osis::GroupSource::Local)), Err(osis::Error::Unsupported(_))));
+    assert!(matches!(crate::common::block_on(c.group_source(t, osis::GroupSource::Local, osis::internals::WAIT)), Err(osis::Error::Unsupported(_))));
     // the stand-in database is never read: Internals fail
     let c2 = c.clone();
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c2.engine(|_| ()))).is_err(), "Internals on an attached handle");
@@ -158,22 +158,22 @@ fn too_large_then_stream_read() {
     let sock = d.0.join("n.sock");
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
-    let mut cfg = Config::memory();
+    let mut cfg = osis::internals::Opening::memory();
     cfg.materialize_limit = 1000;
-    let c = Osis::attach(&sock, cfg).unwrap();
+    let c = osis::internals::connect_socket(&sock, cfg).unwrap();
     let k = ak("f:blob.0");
     let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
     let mut w = n.write();
     let t = w.create().unwrap();
-    w.at(t, k.clone()).set(&Value::Bytes(big.clone())).unwrap();
+    w.at(t, osis::Key::untyped(k.clone())).set(&Value::Bytes(big.clone())).unwrap();
     w.commit().unwrap();
-    assert!(matches!(c.at(t, k.clone()).get(), Err(osis::Error::TooLarge { .. })));
-    let mut s = c.at(t, k.clone()).path(osis::p![]).stream().unwrap().unwrap();
+    assert!(matches!(c.at(t, osis::Key::untyped(k.clone())).get(), Err(osis::Error::TooLarge { .. })));
+    let mut s = c.at(t, osis::Key::untyped(k.clone())).path(osis::p![]).stream().unwrap().unwrap();
     assert_eq!(s.len(), big.len() as u64);
     let mut got = Vec::new();
     std::io::Read::read_to_end(&mut s, &mut got).unwrap();
     assert!(got == big, "stream equals the value");
-    assert_eq!(c.at(t, k).path(osis::p![]).len().unwrap(), Some(big.len() as u64));
+    assert_eq!(c.at(t, osis::Key::untyped(k)).path(osis::p![]).len().unwrap(), Some(big.len() as u64));
     drop(c);
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
@@ -278,14 +278,14 @@ fn write_nonces_per_session() {
     assert!(matches!(r.auth([1; 16]), Ok(Outcome::Ok { .. })));
     let first = r.call(1, WRITE, set_batch(1, n.me(), t, &k, Value::Int(1)));
     assert!(matches!(first, Outcome::Ok { .. }), "{first:?}");
-    let commits = |n: &Osis| n.commits(&CommitQuery::new().scope(Scope::Thing(t))).unwrap().len();
+    let commits = |n: &Osis| n.commits(&CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() }).unwrap().len();
     let before = commits(&n);
     // the reply was lost: the retry under nonce 1 answers the first result, writing nothing
     let again = r.call(2, WRITE, set_batch(1, n.me(), t, &k, Value::Int(2)));
     let (Outcome::Ok { value: a, .. }, Outcome::Ok { value: b, .. }) = (&first, &again) else { panic!() };
     assert_eq!(a, b);
     assert_eq!(commits(&n), before);
-    assert_eq!(n.at(t, k.clone()).get().unwrap(), Some(Value::Int(1)));
+    assert_eq!(n.at(t, osis::Key::untyped(k.clone())).get().unwrap(), Some(Value::Int(1)));
     let r3 = r.call(3, WRITE, set_batch(3, n.me(), t, &k, Value::Int(3)));
     assert!(matches!(r3, Outcome::Ok { .. }));
     // nonce 2 was skipped: below the highest seen and not remembered
@@ -295,7 +295,7 @@ fn write_nonces_per_session() {
     let mut r2 = Raw::unix(&sock);
     r2.auth([2; 16]).unwrap();
     assert!(matches!(r2.call(1, WRITE, set_batch(1, n.me(), t, &k, Value::Int(4))), Outcome::Ok { .. }));
-    assert_eq!(n.at(t, k.clone()).get().unwrap(), Some(Value::Int(4)));
+    assert_eq!(n.at(t, osis::Key::untyped(k.clone())).get().unwrap(), Some(Value::Int(4)));
     // the first session's memory survives its reconnect within the same node process
     drop(r);
     let mut r = Raw::unix(&sock);
@@ -314,7 +314,7 @@ fn write_nonces_per_session() {
         let o = r.call(5 + i as u64, WRITE, set_batch(nonce | resent, n.me(), t, &k, Value::Int(9)));
         assert!(matches!(&o, Outcome::Err { code: 12, .. }), "{o:?}");
     }
-    assert_ne!(n.at(t, k.clone()).get().unwrap(), Some(Value::Int(9)));
+    assert_ne!(n.at(t, osis::Key::untyped(k.clone())).get().unwrap(), Some(Value::Int(9)));
     drop(r);
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }
@@ -356,7 +356,7 @@ fn bench_worst_rows() {
                 (0..100)
                     .map(|i| {
                         let t = w.create()?;
-                        w.at(t, k.clone()).set(&Value::Int(chunk * 100 + i))?;
+                        w.at(t, osis::Key::untyped(k.clone())).set(&Value::Int(chunk * 100 + i))?;
                         Ok(t)
                     })
                     .collect::<osis::Result<Vec<_>>>()
@@ -365,7 +365,7 @@ fn bench_worst_rows() {
         );
     }
     for t in things.iter().take(1000) {
-        n.commit_set(*t, k.clone(), &Value::Int(-1)).unwrap();
+        n.commit_set(*t, osis::Key::untyped(k.clone()), &Value::Int(-1)).unwrap();
     }
     let c = attach(&sock);
     let time = |what: &str, f: &mut dyn FnMut()| {
@@ -375,7 +375,7 @@ fn bench_worst_rows() {
     };
     // the sync engine's own per-event cost at this store (every port request and reply is one)
     time("sync engine: one Tick", &mut || n.feed(osis::internals::node::sync::Event::Tick));
-    time("local get", &mut || drop(n.at(things[0], k.clone()).get().unwrap()));
+    time("local get", &mut || drop(n.at(things[0], osis::Key::untyped(k.clone())).get().unwrap()));
     {
         let d2 = Dir::new();
         let s2 = d2.0.join("s.sock");
@@ -386,22 +386,22 @@ fn bench_worst_rows() {
         w.commit().unwrap();
         time("get, small store, 100 times", &mut || {
             for _ in 0..100 {
-                drop(cs.at(t, k.clone()).get().unwrap());
+                drop(cs.at(t, osis::Key::untyped(k.clone())).get().unwrap());
             }
         });
         drop(cs);
         assert_eq!(small.close().unwrap(), osis::Close::Closed);
     }
-    time("get", &mut || drop(c.at(things[0], k.clone()).get().unwrap()));
+    time("get", &mut || drop(c.at(things[0], osis::Key::untyped(k.clone())).get().unwrap()));
     time("write 1024 sets", &mut || {
         let mut w = c.write();
         for t in things.iter().take(1024) {
-            w.at(*t, k.clone()).set(&Value::Int(-2)).unwrap();
+            w.at(*t, osis::Key::untyped(k.clone())).set(&Value::Int(-2)).unwrap();
         }
         w.commit().unwrap();
     });
-    time("commits, whole store (10^4 things, 1100 commits)", &mut || drop(c.commits(&CommitQuery::new()).unwrap()));
-    time("commits, one thing", &mut || drop(c.commits(&CommitQuery::new().scope(Scope::Thing(things[0]))).unwrap()));
+    time("commits, whole store (10^4 things, 1100 commits)", &mut || drop(c.commits(&CommitQuery::default()).unwrap()));
+    time("commits, one thing", &mut || drop(c.commits(&CommitQuery { scope: Some(Scope::Thing(things[0])), ..Default::default() }).unwrap()));
     time("undo, home group", &mut || drop(c.undo(&Scope::Group(c.me()))));
     time("status", &mut || drop(c.status().unwrap()));
     drop(c);
@@ -434,11 +434,11 @@ fn socket_dir_rules() {
 
 /// A node on `net` at endpoint `ep` with `hosts` and a runtime, serving the client port at `sock`.
 fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::HostAddr>, sock: &std::path::Path) -> Osis {
-    let mut c = Config::at(StoreAt::Memory(MemStore::new()));
+    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.runtime = Runtime::Own;
     c.transport = Some(Transport::InProcess(net.endpoint(ep)));
     c.hosts = hosts;
-    let db = Osis::create(c).unwrap().0;
+    let db = osis::internals::create(c).unwrap().0;
     db.listen_unix(sock).unwrap();
     db
 }
@@ -460,14 +460,14 @@ fn attached_wait_synced_as_at_the_node() {
         .batch(|w| {
             let g = w.create()?;
             let t = w.create_owned_by(g)?;
-            w.at(t, ak("note:title.0")).set(&Value::Str("a".into()))?;
+            w.at(t, osis::Key::untyped(ak("note:title.0"))).set(&Value::Str("a".into()))?;
             w.group(g).add(osis::Member::Item(t))?;
             Ok((g, t))
         })
         .unwrap();
-    let r = block_on(c.wait_synced(SyncScope::Group(t), W));
+    let r = block_on(c.wait_synced(SyncScope::Thing(t), W));
     assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if groups == &vec![t]), "{r:?}");
-    assert_eq!(format!("{r:?}"), format!("{:?}", block_on(n.wait_synced(SyncScope::Group(t), W))));
+    assert_eq!(format!("{r:?}"), format!("{:?}", block_on(n.wait_synced(SyncScope::Thing(t), W))));
     // synced through the port, with a grant and a link delivered: Group and All resolve
     c.sync(g, &[]).unwrap();
     c.grant(g, n.node(), Role::Read, Default::default()).unwrap();
@@ -478,19 +478,19 @@ fn attached_wait_synced_as_at_the_node() {
     c.sync(lone, &[]).unwrap();
     c.grant(lone, n.node(), Role::Read, Default::default()).unwrap();
     assert_eq!(n.status().unwrap().groups[&lone].labels.len(), 1);
-    block_on(c.wait_synced(SyncScope::Group(lone), W)).unwrap();
+    block_on(c.wait_synced(SyncScope::Thing(lone), W)).unwrap();
     // the sharing reads agree with the node's
     assert_eq!(c.links_of(g).unwrap().len(), 1);
     assert_eq!(c.links_of(g).unwrap(), n.links_of(g).unwrap());
     assert!(!c.holders(g).unwrap().is_empty());
     assert_eq!(c.holders(g).unwrap(), n.holders(g).unwrap());
     c.sync_now().unwrap();
-    block_on(c.wait_synced(SyncScope::Group(t), W)).unwrap();
+    block_on(c.wait_synced(SyncScope::Thing(t), W)).unwrap();
     block_on(c.wait_synced(SyncScope::All, W)).unwrap();
     assert_eq!(n.status().unwrap().groups[&g].state, osis::SyncState::Synced);
     // a node whose only host nobody serves: Network after the deadline, as at the node
     let sock2 = d.0.join("m.sock");
-    let m = node_on(&net, "m", vec![osis::HostAddr::new("mem://nobody", [3; 32])], &sock2);
+    let m = node_on(&net, "m", vec![osis::HostAddr::new(&"mem://nobody".parse().unwrap(), [3; 32])], &sock2);
     let cm = attach(&sock2);
     let short = Duration::from_millis(500);
     assert!(matches!(block_on(cm.wait_synced(SyncScope::All, short)), Err(osis::Error::Network(_))));
@@ -522,7 +522,7 @@ fn too_large_sub_is_not_kept() {
     let small = osis_proto::client::SMALL_REPLY;
     let mut w = n.write();
     let t = w.create().unwrap();
-    w.at(t, k.clone()).set(&Value::Bytes(vec![7; small + 1000])).unwrap();
+    w.at(t, osis::Key::untyped(k.clone())).set(&Value::Bytes(vec![7; small + 1000])).unwrap();
     w.commit().unwrap();
     let before = n.watches();
     let mut r = Raw::unix(&sock);
@@ -542,12 +542,12 @@ fn too_large_sub_is_not_kept() {
 
 /// A host on `net` taking any label, with its address.
 fn mem_host(net: &osis_transport::Net) -> (Osis, osis::HostAddr) {
-    let mut hc = Config::at(StoreAt::Memory(MemStore::new()));
+    let mut hc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     hc.runtime = Runtime::Own;
     hc.transport = Some(Transport::InProcess(net.endpoint("s")));
     hc.peers = false;
-    let host = Osis::create(hc).unwrap().0;
-    host.set_hosting(Some(osis::Hosting { listen: vec!["mem://s".into()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let host = osis::internals::create(hc).unwrap().0;
+    host.set_hosting(Some(osis::Hosting { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
     let end = std::time::Instant::now() + W;
     let addr = loop {
         if let Some(a) = host.host_address().unwrap() {
@@ -585,7 +585,7 @@ fn rows_that_wait_through_the_socket() {
             .batch(|w| {
                 let g = w.create()?;
                 let t = w.create_owned_by(g)?;
-                w.at(t, k.clone()).set(&Value::Str(text.into()))?;
+                w.at(t, osis::Key::untyped(k.clone())).set(&Value::Str(text.into()))?;
                 w.group(g).add(osis::Member::Item(t))?;
                 Ok((g, t))
             })
@@ -598,40 +598,40 @@ fn rows_that_wait_through_the_socket() {
     // a joiner by link, through its daemon
     let link = ca.make_link(g, Role::Write, Default::default()).unwrap();
     block_on(ca.wait_synced(SyncScope::All, W)).unwrap();
-    assert_eq!(block_on(cb.redeem(&link)).unwrap(), g);
-    until(|| cb.at(t, k.clone()).get().is_ok_and(|v| v == Some(Value::Str("x".into()))), "the group's content at Bob");
+    assert_eq!(block_on(cb.redeem(&link, osis::internals::WAIT)).unwrap(), g);
+    until(|| cb.at(t, osis::Key::untyped(k.clone())).get().is_ok_and(|v| v == Some(Value::Str("x".into()))), "the group's content at Bob");
     let bob = cb.me();
     until(|| ca.holders(g).unwrap().iter().any(|h| h.actor == bob), "the join reached Alice");
     // its removal, through hers: the link ends with it
     assert_eq!(ca.links_of(g).unwrap().len(), 1);
     // an error of the flow comes back as itself
-    assert!(matches!(block_on(ca.set_role(g, bob, Some(Role::Read), plain)), Err(osis::Error::Invalid(_))));
-    block_on(ca.set_role(g, bob, None, plain)).unwrap();
+    assert!(matches!(block_on(ca.set_role(g, bob, Some(Role::Read), plain, osis::internals::PRESYNC)), Err(osis::Error::Invalid(_))));
+    block_on(ca.set_role(g, bob, None, plain, osis::internals::PRESYNC)).unwrap();
     assert!(!ca.holders(g).unwrap().iter().any(|h| h.actor == bob));
     assert_eq!(ca.links_of(g).unwrap().len(), 0);
     // a direct holder lowered: the role goes over the wire
     let (g2, _) = group("y");
     ca.grant(g2, bob, Role::Write, Default::default()).unwrap();
-    block_on(ca.set_role(g2, bob, Some(Role::Read), SetRoleOpts { sync: SyncFirst::Try(Duration::from_secs(5)), ..plain })).unwrap();
+    block_on(ca.set_role(g2, bob, Some(Role::Read), SetRoleOpts { sync: SyncFirst::Try, ..plain }, Duration::from_secs(5))).unwrap();
     assert_eq!(a.grants(g2).unwrap().get(&bob).map(|e| e.role), Some(Role::Read));
     // ending a link, and a joiner of one
     let (g3, _) = group("z");
     let l3 = ca.make_link(g3, Role::Read, Default::default()).unwrap();
     let id = ca.links_of(g3).unwrap()[0].id.actor();
-    block_on(ca.revoke_link(crate::common::link_id(id), SyncFirst::Required)).unwrap();
+    block_on(ca.revoke_link(crate::common::link_id(id), SyncFirst::Required, osis::internals::PRESYNC)).unwrap();
     assert_eq!(ca.links_of(g3).unwrap().len(), 0);
     assert!(!l3.to_string().is_empty());
     let (g4, _) = group("w");
     let l4 = ca.make_link(g4, Role::Read, Default::default()).unwrap();
     block_on(ca.wait_synced(SyncScope::All, W)).unwrap();
-    assert_eq!(block_on(cb.redeem(&l4)).unwrap(), g4);
+    assert_eq!(block_on(cb.redeem(&l4, osis::internals::WAIT)).unwrap(), g4);
     until(|| ca.holders(g4).unwrap().iter().any(|h| h.actor == bob), "the second join reached Alice");
-    block_on(ca.set_role(g4, bob, None, SetRoleOpts { keep: Some(false), ..plain })).unwrap();
+    block_on(ca.set_role(g4, bob, None, SetRoleOpts { keep: Some(false), ..plain }, osis::internals::PRESYNC)).unwrap();
     assert!(!ca.holders(g4).unwrap().iter().any(|h| h.actor == bob));
     // a contact card made and imported through the sockets
     let card = cb.contact_card().unwrap();
     assert_eq!(card, b.contact_card().unwrap());
-    assert_eq!(block_on(ca.import_contact(&card)).unwrap(), bob);
+    assert_eq!(block_on(ca.import_contact(&card, osis::internals::WAIT)).unwrap(), bob);
     let profile = cb.profile().unwrap();
     assert_eq!(ca.profile_of(bob).unwrap(), Some(profile));
     assert_eq!(ca.profile_of(ca.me()).unwrap(), None);
@@ -650,23 +650,23 @@ fn a_waiting_row_holds_nothing() {
     let net = osis_transport::Net::new(2);
     // a link on a host nobody serves: its redeem waits for good
     let s2 = d.0.join("m.sock");
-    let m = node_on(&net, "m", vec![osis::HostAddr::new("mem://nobody", [3; 32])], &s2);
+    let m = node_on(&net, "m", vec![osis::HostAddr::new(&"mem://nobody".parse().unwrap(), [3; 32])], &s2);
     let mut w = m.write();
     let g = w.create().unwrap();
     w.commit().unwrap();
     let link: ShareLink = m.make_link(g, Role::Read, Default::default()).unwrap();
     let sock = d.0.join("n.sock");
-    let mut cfg = Config::at(StoreAt::Memory(MemStore::new()));
+    let mut cfg = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     cfg.runtime = Runtime::Own;
     cfg.transport = Some(Transport::InProcess(net.endpoint("n")));
     cfg.wait_timeout = Duration::from_secs(3600);
-    let n = Osis::create(cfg).unwrap().0;
+    let n = osis::internals::create(cfg).unwrap().0;
     n.listen_unix(&sock).unwrap();
     let c = attach(&sock);
     let (tx, rx) = channel();
     let (go_tx, go_rx) = channel::<()>();
     let t = std::thread::spawn(move || {
-        let mut r = Box::pin(c.redeem(&link));
+        let mut r = Box::pin(c.redeem(&link, Duration::from_secs(3600)));
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         assert!(r.as_mut().poll(&mut cx).is_pending());
         // the worker answers while it waits
@@ -674,7 +674,7 @@ fn a_waiting_row_holds_nothing() {
         go_rx.recv().unwrap();
         crate::common::block_on(r)
     });
-    rx.recv_timeout(W).expect("the worker answered beside a waiting row");
+    rx.recv_timeout(W).expect("the worker answered beside a waiting row").unwrap();
     let (ctx, crx) = channel();
     std::thread::spawn(move || ctx.send(n.close()).unwrap());
     assert_eq!(crx.recv_timeout(W).expect("close waited for a row that waits").unwrap(), osis::Close::Closed);
@@ -690,7 +690,7 @@ fn no_waiting_row_once_the_handles_went() {
     let d = Dir::new();
     let net = osis_transport::Net::new(2);
     let s2 = d.0.join("m.sock");
-    let m = node_on(&net, "m", vec![osis::HostAddr::new("mem://nobody", [3; 32])], &s2);
+    let m = node_on(&net, "m", vec![osis::HostAddr::new(&"mem://nobody".parse().unwrap(), [3; 32])], &s2);
     let mut w = m.write();
     let g = w.create().unwrap();
     w.commit().unwrap();
@@ -705,18 +705,18 @@ fn no_waiting_row_once_the_handles_went() {
     let (stuck_tx, stuck_rx) = channel::<()>();
     let (in_tx, in_rx) = channel();
     let k = ak("note:title.0");
-    let sub = n.at(t, k.clone()).on_change(move |_, ch: Change<Value>| {
+    let sub = n.at(t, osis::Key::untyped(k.clone())).on_change(move |_, ch: Change<Value>| {
         if matches!(ch.source, Source::Initial) {
             return;
         }
         in_tx.send(()).unwrap();
         let _ = stuck_rx.recv();
     }).unwrap();
-    n.commit_set(t, k.clone(), &Value::Int(1)).unwrap();
+    n.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
     in_rx.recv_timeout(W).unwrap();
     std::mem::forget(sub);
     drop(n);
-    let r = crate::common::block_on(c.redeem(&link));
+    let r = crate::common::block_on(c.redeem(&link, osis::internals::WAIT));
     assert!(matches!(r, Err(osis::Error::Storage(_))), "{r:?}");
     stuck_tx.send(()).unwrap();
     drop(m);
@@ -725,7 +725,7 @@ fn no_waiting_row_once_the_handles_went() {
 // spec: none (API surface); notes/client-port.md §1: every call that is the node's and not this process's is a row: devices, hosts, hosting (it starts at once under the running node), pairing and removing a device, policies, reach, invites, moves and bundles of more than a page, through the socket
 #[test]
 fn process_wide_rows_through_the_socket() {
-    use osis::{GroupPolicy, SyncScope};
+    use osis::{Reach, SyncOptions, SyncScope};
     let d = Dir::new();
     let net = osis_transport::Net::new(2);
     let (host, addr) = mem_host(&net);
@@ -745,7 +745,7 @@ fn process_wide_rows_through_the_socket() {
     // hosting: shown, set, and up without a restart; off
     assert_eq!(c.hosting().unwrap(), None);
     assert_eq!(c.host_key().unwrap(), None);
-    let h = osis::Hosting { listen: vec!["mem://n2".into()], admit: osis::Admit::Own, ..Default::default() };
+    let h = osis::Hosting { listen: vec!["mem://n2".parse().unwrap()], admit: osis::Admit::Own, ..Default::default() };
     c.set_hosting(Some(h.clone())).unwrap();
     assert_eq!(n.hosting().unwrap(), Some(h.clone()));
     assert_eq!(c.hosting().unwrap(), Some(h));
@@ -756,20 +756,20 @@ fn process_wide_rows_through_the_socket() {
     assert_eq!(c.hosting().unwrap(), None);
     until(|| matches!(n.host_address(), Ok(None)), "hosting did not stop");
     // policies, reach
-    let p = GroupPolicy { publish_reach: Some(false), receipts_only: false };
-    assert_eq!(c.group_policy(g).unwrap(), GroupPolicy::default());
-    c.sync_policy(g, p).unwrap();
-    assert_eq!(n.group_policy(g).unwrap(), p);
-    assert_eq!(c.group_policy(g).unwrap(), p);
-    c.sync_policy(g, GroupPolicy::default()).unwrap();
+    let p = SyncOptions { reach: Reach::Never, ..Default::default() };
+    assert_eq!(c.sync_options(g).unwrap(), SyncOptions::default());
+    c.set_sync_options(g, p).unwrap();
+    assert_eq!(n.sync_options(g).unwrap(), p);
+    assert_eq!(c.sync_options(g).unwrap(), p);
+    c.set_sync_options(g, SyncOptions::default()).unwrap();
     c.rotate_reach().unwrap();
     // invites: none
     assert_eq!(c.invite_requests().unwrap(), vec![]);
     // pairing a new device, through the old one's socket
-    let mut pc = Config::at(StoreAt::Memory(MemStore::new()));
+    let mut pc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     pc.runtime = Runtime::Own;
     pc.transport = Some(Transport::InProcess(net.endpoint("p")));
-    let join = Osis::pair(pc, &c.pair_offer().unwrap()).unwrap();
+    let join = osis::internals::pair(pc, &c.pair_offer().unwrap()).unwrap();
     let (node, reply) = c.pair_accept(join.request()).unwrap();
     let p2 = join.finish(&reply).unwrap();
     assert_eq!(p2.node(), node);
@@ -780,7 +780,7 @@ fn process_wide_rows_through_the_socket() {
     let big = "b".repeat(osis::STREAM_CHUNK * 3 / 2);
     let mut w = c.write();
     let t = w.create_owned_by(g).unwrap();
-    w.at(t, ak("note:big.0")).set(&Value::Str(big.clone())).unwrap();
+    w.at(t, osis::Key::untyped(ak("note:big.0"))).set(&Value::Str(big.clone())).unwrap();
     w.group(g).add(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
     crate::common::block_on(c.wait_synced(SyncScope::All, W)).unwrap();
@@ -791,9 +791,9 @@ fn process_wide_rows_through_the_socket() {
     p2.listen_unix(&s3).unwrap();
     let c3 = attach(&s3);
     c3.import_bundle(&out[..]).unwrap();
-    until(|| p2.at(t, ak("note:big.0")).get().is_ok_and(|v| v == Some(Value::Str(big.clone()))), "the bundle's value at the other device");
+    until(|| p2.at(t, osis::Key::untyped(ak("note:big.0"))).get().is_ok_and(|v| v == Some(Value::Str(big.clone()))), "the bundle's value at the other device");
     // the new device removed, through the socket
-    crate::common::block_on(c.remove_device(node, SetRoleOpts { sync: SyncFirst::Skip, keep: None })).unwrap();
+    crate::common::block_on(c.remove_device(node, SetRoleOpts { sync: SyncFirst::Skip, keep: None }, osis::internals::PRESYNC)).unwrap();
     assert_eq!(c.devices().unwrap().len(), 1);
     // pages lost to a reconnect: the import says so and runs nothing
     let mut raw = Raw::unix(&sock);
@@ -839,10 +839,10 @@ fn pair_reply_above_the_small_allowance() {
     let sock = d.0.join("n.sock");
     let n = node_on(&net, "n", vec![addr], &sock);
     let c = attach(&sock);
-    let mut pc = Config::at(StoreAt::Memory(MemStore::new()));
+    let mut pc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     pc.runtime = Runtime::Own;
     pc.transport = Some(Transport::InProcess(net.endpoint("p")));
-    let join = Osis::pair(pc, &c.pair_offer().unwrap()).unwrap();
+    let join = osis::internals::pair(pc, &c.pair_offer().unwrap()).unwrap();
     osis::internals::Internals::port_pad_pair_reply(&n, osis_proto::client::SMALL_REPLY * 2);
     let (node, reply) = c.pair_accept(join.request()).unwrap();
     let p = join.finish(&reply).unwrap();
@@ -867,7 +867,7 @@ fn threads_writing_on_one_handle() {
     let hs: Vec<_> = (0..8)
         .map(|i| {
             let (c, k) = (c.clone(), k.clone());
-            std::thread::spawn(move || (0..50).filter(|j| c.commit_set(t, k.clone(), &Value::Int(i * 1000 + j)).is_err()).count())
+            std::thread::spawn(move || (0..50).filter(|j| c.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(i * 1000 + j)).is_err()).count())
         })
         .collect();
     let failed: usize = hs.into_iter().map(|h| h.join().unwrap()).sum();
@@ -907,7 +907,7 @@ fn client_thread_panic_fails_waits() {
     let net = osis_transport::Net::new(2);
     let sock = d.0.join("m.sock");
     // a host nobody answers at: `wait_synced(All)` waits
-    let m = node_on(&net, "m", vec![osis::HostAddr::new("mem://nobody", [3; 32])], &sock);
+    let m = node_on(&net, "m", vec![osis::HostAddr::new(&"mem://nobody".parse().unwrap(), [3; 32])], &sock);
     let c = attach(&sock);
     let far = Duration::from_secs(600);
     let (tx, rx) = channel();

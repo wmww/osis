@@ -215,10 +215,10 @@ impl Net {
     /// store beside the database). With `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret
     /// (registered at `relays`) and publishes `reach.0`; with feature `lan` and QUIC it also runs
     /// the LAN loop. Without a co-reader transport no co-reader is dialed.
-    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
+    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
-        let shared = OsisShared(db.clone(), cfg.store.clone());
-        let (transport, p2p, relays) = (cfg.transport.clone(), cfg.peers, cfg.relays.clone());
+        let shared = OsisShared(db.clone(), store);
+        let (transport, p2p, relays) = (cfg.transport.clone(), cfg.peers, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         // the client port's unix socket (`Osis::listen_unix`)
         let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
@@ -395,7 +395,7 @@ fn log_line(m: &str) {
 
 /// The driver's view of the handle: the sync engine behind the database lock, and where the
 /// database lives (the host's store goes beside it).
-struct OsisShared(WeakOsis, crate::StoreAt);
+struct OsisShared(WeakOsis, crate::Store);
 
 impl Shared for OsisShared {
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
@@ -406,8 +406,8 @@ impl Shared for OsisShared {
 
     fn host_store(&self) -> std::result::Result<osis_store::Store, String> {
         let (b, r): (Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>) = match &self.1 {
-            crate::StoreAt::Memory(m) => (Box::new(m.host.clone()), Box::new(m.host_root.clone())),
-            crate::StoreAt::Dir(p) => (Box::new(osis_store::RedbBackend::open(&p.join("host.redb")).map_err(|e| e.to_string())?), Box::new(osis_store::FileRoot::new(p.join("host.root")))),
+            crate::Store::Memory(m) => (Box::new(m.host.clone()), Box::new(m.host_root.clone())),
+            crate::Store::Dir(p) => (Box::new(osis_store::RedbBackend::open(&p.join("host.redb")).map_err(|e| e.to_string())?), Box::new(osis_store::FileRoot::new(p.join("host.root")))),
         };
         osis_store::Store::open_or_create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())
     }
@@ -415,11 +415,11 @@ impl Shared for OsisShared {
     fn erase_host_store(&self) -> std::result::Result<(), String> {
         use osis_store::RootStorage as _;
         match &self.1 {
-            crate::StoreAt::Memory(m) => {
+            crate::Store::Memory(m) => {
                 m.host_root.clone().erase().map_err(|e| e.to_string())?;
                 m.host.erase();
             }
-            crate::StoreAt::Dir(p) => {
+            crate::Store::Dir(p) => {
                 osis_store::FileRoot::new(p.join("host.root")).erase().map_err(|e| e.to_string())?;
                 match std::fs::remove_file(p.join("host.redb")) {
                     Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.to_string()),
@@ -516,16 +516,17 @@ impl Waiter {
 
 impl crate::Osis {
     /// A future resolving once `check` answers (or `Network` after `timeout`, unless the check
-    /// answers then). Fails at once
-    /// with `Network` when nothing carries the network (`Runtime::None`).
-    pub(crate) fn wait_until(&self, timeout: Option<Duration>, check: Check) -> Pending<Result<()>> {
+    /// answers then: at 0 after one look, at `Duration::MAX` never). Fails at once with `Network`
+    /// when nothing carries the network (`Runtime::None`).
+    pub(crate) fn wait_until(&self, timeout: Duration, check: Check) -> Pending<Result<()>> {
         let slot = Slot::new();
         if !self.inner.net.online() {
             slot.put(Err(Error::Network("no runtime: sync is off (Config.runtime)".into())));
             return Pending { slot };
         }
         let now = self.inner.clock.now_wall_ms().0;
-        let deadline = timeout.map(|d| now.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX)));
+        // past what a wall clock can name: no deadline, and no timer waiting for it
+        let deadline = u64::try_from(timeout.as_millis()).ok().and_then(|d| now.checked_add(d));
         let mut w = Waiter { check, deadline, slot: slot.clone() };
         let waiting = self.locked(|l| {
             if w.poll(&mut l.sync, &l.status, now) {
@@ -539,61 +540,108 @@ impl crate::Osis {
             l.waiters.push(w);
             true
         });
-        if let (true, Some(d)) = (waiting, timeout) {
-            self.inner.net.timer(d);
+        if waiting && deadline.is_some() {
+            self.inner.net.timer(timeout);
         }
         Pending { slot }
     }
 }
 
-/// A group's sync policy (`Osis::sync_policy`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GroupPolicy {
-    /// Whether this node's `reach.0` (its dialable key) goes under the group's labels, so
-    /// co-readers there can dial it off the LAN (spec/permissions.md §4). `None`: only when
-    /// every reader of the group is this person, a thing it owns or a contact (`import_contact`).
-    pub publish_reach: Option<bool>,
-    /// This device holds none of the group (receipts-only): its labels are not synced, nothing
-    /// of it is downloaded or placed from here; what is already here stays, no longer updated.
-    /// A demotion reads the group's commit headers only, so the holder's edits there are kept
-    /// (spec/permissions.md §5.3).
-    pub receipts_only: bool,
+/// What is left of one call's timeout across its waits. `Duration::MAX` stays that.
+#[derive(Clone, Copy)]
+pub(crate) struct Budget {
+    start: u64,
+    total: Duration,
 }
 
 impl crate::Osis {
-    /// `group`'s sync policy as set (`sync_policy`; the default when never set).
-    pub fn group_policy(&self, group: osis_base::Tid) -> crate::Result<GroupPolicy> {
-        if self.is_attached() {
-            let v = self.rcall(crate::port::method::GROUP_POLICY, vec![Value::Tid(group)])?;
-            let mut a = crate::port::codec::Args::new(v)?;
-            return crate::port::codec::policy(&mut a);
-        }
-        Ok(self.locked(|x| GroupPolicy { publish_reach: x.sync.reach_policy(&group), receipts_only: x.sync.receipts_only().contains(&group) }))
+    pub(crate) fn budget(&self, total: Duration) -> Budget {
+        Budget { start: self.inner.clock.now_wall_ms().0, total }
     }
 
-    /// Sets `group`'s whole sync policy (stored): fields left at their default are reset, so to
-    /// change one, start from `group_policy`. Co-readers of groups without `reach.0` are not
-    /// dialed. When the group's labels already hold this node's `reach.0` and it no longer goes
-    /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
-    pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) -> crate::Result<()> {
-        if self.is_attached() {
-            let mut args = vec![Value::Tid(group)];
-            args.extend(crate::port::codec::policy_v(&policy));
-            return self.rcall(crate::port::method::SYNC_POLICY, args).map(drop);
+    pub(crate) fn left(&self, b: Budget) -> Duration {
+        b.total.saturating_sub(Duration::from_millis(self.inner.clock.now_wall_ms().0.saturating_sub(b.start)))
+    }
+}
+
+/// Whether this node's dialable key goes under a group's labels, so that its co-readers there can
+/// dial it off the LAN (spec/permissions.md §4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Reach {
+    /// Only when every reader of the group is this person, a thing it owns or a contact
+    /// (`import_contact`).
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+/// How much of a group this node holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SyncMode {
+    /// All of it.
+    #[default]
+    Full,
+    /// None of it: its labels are not synced, nothing of it is downloaded or uploaded from here;
+    /// what is already here stays, no longer updated. Lowering a role reads the group's commit
+    /// headers only, so that the holder's edits there are kept (spec/permissions.md §5.3).
+    HeadersOnly,
+}
+
+/// How this node syncs a group (`Osis::sync_options`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SyncOptions {
+    pub reach: Reach,
+    pub mode: SyncMode,
+}
+
+impl crate::Osis {
+    /// How this node syncs `group` (the default when never set).
+    pub fn sync_options(&self, group: osis_base::Tid) -> crate::Result<SyncOptions> {
+        if !self.has_store() {
+            let v = self.rcall(crate::port::method::SYNC_OPTIONS, vec![Value::Tid(group)])?;
+            let mut a = crate::port::codec::Args::new(v)?;
+            return crate::port::codec::sync_options(&mut a);
         }
+        Ok(self.locked(|x| SyncOptions {
+            reach: match x.sync.reach_policy(&group) {
+                None => Reach::Auto,
+                Some(true) => Reach::Always,
+                Some(false) => Reach::Never,
+            },
+            mode: if x.sync.receipts_only().contains(&group) { SyncMode::HeadersOnly } else { SyncMode::Full },
+        }))
+    }
+
+    /// Sets how this node syncs `group` (stored): all of it, so to change one field start from
+    /// `sync_options`. Co-readers of groups without this node's dialable key do not dial it. When
+    /// the group's labels already hold that key and it no longer goes there, the key changes
+    /// (`rotate_reach`), so readers there cannot dial it any more.
+    pub fn set_sync_options(&self, group: osis_base::Tid, o: SyncOptions) -> crate::Result<()> {
+        if !self.has_store() {
+            let mut args = vec![Value::Tid(group)];
+            args.extend(crate::port::codec::sync_options_v(&o));
+            return self.rcall(crate::port::method::SET_SYNC_OPTIONS, args).map(drop);
+        }
+        let reach = match o.reach {
+            Reach::Auto => None,
+            Reach::Always => Some(true),
+            Reach::Never => Some(false),
+        };
+        let headers = o.mode == SyncMode::HeadersOnly;
         self.act(|l| {
-            let mut acts = l.sync.set_reach_policy(group, policy.publish_reach);
-            if l.sync.receipts_only().contains(&group) != policy.receipts_only {
-                acts.extend(l.sync.set_receipts_only(group, policy.receipts_only));
+            let mut acts = l.sync.set_reach_policy(group, reach);
+            if l.sync.receipts_only().contains(&group) != headers {
+                acts.extend(l.sync.set_receipts_only(group, headers));
             }
             acts
         });
         Ok(())
     }
 
-    /// Serves the client port at the unix socket `path`: processes of
-    /// this uid that connect there are Owner clients (`Osis::attach`); others are refused by the
-    /// kernel's word for their uid. A path sockets only; a stale socket file is replaced, one in
+    /// Serves clients at the unix socket `path`: by default, processes of this uid that connect
+    /// there (`Osis::connect_socket`) act as this node's main actor with no authentication (there is
+    /// no security boundary between them); others are refused by the kernel's word for their uid. A path sockets only; a stale socket file is replaced, one in
     /// use is `Network`. Needs a runtime.
     pub fn listen_unix(&self, path: &std::path::Path) -> crate::Result<()> {
         self.local_only("listen_unix")?;
@@ -602,31 +650,32 @@ impl crate::Osis {
         self.inner.net.listen(url)
     }
 
-    /// Serves thin clients at `urls` (`quic://host:port`) with a key of
+    /// Serves clients at `urls` (`quic://host:port`), by default only as actors they authenticate for
+    /// (`add_client`), with a key of
     /// the client listener's own, made on first use and kept in the store: it never rotates with
     /// `rotate_reach` and links to neither the dialable key nor the signing key. Returns each
-    /// `url#key` to hand clients (with its real port). Replaces the listeners of an earlier call
+    /// address to hand clients (with its real port). Replaces the listeners of an earlier call
     /// (their sessions end; clients reconnect by themselves). No URL: stops listening, ends those sessions, shreds the key (a later
     /// call makes a new one, so clients need a new address). All or none: on an error nothing
     /// listens. Needs a runtime. Listening does not last past this process: call it at each start.
-    pub fn client_listen(&self, urls: &[String]) -> crate::Result<Vec<crate::HostAddr>> {
+    pub fn client_listen(&self, urls: &[crate::Url]) -> crate::Result<Vec<crate::HostAddr>> {
         self.local_only("client_listen")?;
-        let a = self.inner.net.client_listen(driver::ClientUrls::Listen(urls.to_vec()))?;
-        Ok(a.into_iter().map(|a| crate::HostAddr::new(&a.url, a.key)).collect())
+        let a = self.inner.net.client_listen(driver::ClientUrls::Listen(urls.iter().map(ToString::to_string).collect()))?;
+        Ok(a.into_iter().map(|a| crate::HostAddr(osis_label::Address { url: a.url, key: a.key })).collect())
     }
 
     /// A new client listener key (by hand only): the old one is shredded,
     /// its listeners and sessions end, and the same addresses listen under the new one, returned
     /// here. A client holding the old address sees `Network` on every call and `connected: false`
-    /// until it attaches to a new address, handed to it out of band. No listener up (a process
+    /// until it connects to a new address, handed to it out of band. No listener up (a process
     /// that has not called `client_listen`): only the key changes. Needs a runtime.
     pub fn rotate_client_key(&self) -> crate::Result<Vec<crate::HostAddr>> {
-        if self.is_attached() {
+        if !self.has_store() {
             let v = self.rcall(crate::port::method::ROTATE_CLIENT_KEY, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
         }
         let a = self.inner.net.client_listen(driver::ClientUrls::Rotate)?;
-        Ok(a.into_iter().map(|a| crate::HostAddr::new(&a.url, a.key)).collect())
+        Ok(a.into_iter().map(|a| crate::HostAddr(osis_label::Address { url: a.url, key: a.key })).collect())
     }
 
     /// Gives this device a new dialable key and LAN secret (spec/sync.md §10): it listens with
@@ -636,7 +685,7 @@ impl crate::Osis {
     /// still open lose first contact (they still work through hosts). Done by itself when a
     /// group holding its `reach.0` stops qualifying and when a direct link ends.
     pub fn rotate_reach(&self) -> crate::Result<()> {
-        if self.is_attached() {
+        if !self.has_store() {
             return self.rcall(crate::port::method::ROTATE_REACH, vec![]).map(drop);
         }
         self.act(|l| l.sync.rotate_reach());

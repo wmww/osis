@@ -6,7 +6,7 @@
 
 use osis::schema::osis_base::cbor;
 use osis::schema::{Bound, core_types as ct};
-use osis::{Ak, ChangeId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, SyncFirst, Tid, Ts, Value};
+use osis::{ChangeId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, SyncFirst, Tid, Ts, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -17,12 +17,12 @@ pub const MSGS: &str = "chat:msgs:";
 /// The chat's settings, admins only.
 pub const SETTINGS: &str = "chat:settings.0^";
 
-fn year_ak(year: u32) -> Result<Ak> {
-    Ak::new(format!("{MSGS}y{year}.0")).map_err(|e| Error::Invalid(e.to_string()))
+fn year_key(db: &Osis, year: u32) -> Result<osis::Key> {
+    db.key(&format!("{MSGS}y{year}.0"))
 }
 
-fn settings_ak() -> Result<Ak> {
-    Ak::new(SETTINGS).map_err(|e| Error::Invalid(e.to_string()))
+fn settings_key(db: &Osis) -> Result<osis::Key> {
+    db.key(SETTINGS)
 }
 
 /// The civil year of a time (Gregorian, UTC).
@@ -105,7 +105,7 @@ pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = db.create_ownerless(db.me())?;
     let mut w = db.write();
     w.at(c, ct::REQUIRED).set(&rules(o.purge, o.disappear, o.keep)?)?;
-    w.at(c, settings_ak()?).set(&settings_value(&o.name, o.edit))?;
+    w.at(c, settings_key(db)?).set(&settings_value(&o.name, o.edit))?;
     w.commit()?;
     db.sync(c, &o.hosts)?;
     Ok(c)
@@ -128,7 +128,7 @@ pub struct Settings {
 /// What this node knows of a chat's settings.
 pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
     let mut s = Settings::default();
-    if let Some(Value::Map(m)) = db.at(c, settings_ak()?).get()? {
+    if let Some(Value::Map(m)) = db.at(c, settings_key(db)?).get()? {
         if let Some(Value::Str(n)) = m.get(&Value::Int(0)) {
             s.name.clone_from(n);
         }
@@ -147,9 +147,9 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
 
 /// The chats this node syncs: its synced groups (`Osis::status`) with chat settings, in tid order;
 /// not one this person is leaving, nor a joined one before its settings arrive. A copy kept after
-/// a kick or leave is not synced: `Osis::kept_copies`. Re-list on `Osis::watch_status`.
+/// a kick or leave is not synced: `Osis::kept_copies`. Re-list on `Osis::on_status_change`.
 pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
-    let ak = settings_ak()?;
+    let ak = settings_key(db)?;
     // a value of another shape is someone's junk: not a chat
     Ok(db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && matches!(db.at(*t, ak.clone()).get(), Ok(Some(_)))).map(|(t, _)| t).collect())
 }
@@ -173,8 +173,8 @@ pub fn add(db: &Osis, c: Tid, person: Tid, role: Role) -> Result<()> {
 
 /// Removes a participant, a read-only copy left to them or not by `keep` (`None`: the chat's
 /// default).
-pub async fn kick(db: &Osis, c: Tid, person: Tid, keep: Option<bool>, sync: SyncFirst) -> Result<()> {
-    db.set_role(c, person, None, SetRoleOpts { sync, keep }).await
+pub async fn kick(db: &Osis, c: Tid, person: Tid, keep: Option<bool>, sync: SyncFirst, timeout: Duration) -> Result<()> {
+    db.set_role(c, person, None, SetRoleOpts { sync, keep }, timeout).await
 }
 
 /// A link anyone holding it can join by, as `role`.
@@ -187,13 +187,13 @@ pub fn link(db: &Osis, c: Tid, role: Role, single_use: bool) -> Result<osis::Sha
 /// may be used up, or its maker or a participant pasted it. So a link never raises a participant's role, and
 /// one whose target names a held chat opens that chat and joins nothing, whatever its key is. One
 /// naming a chat not held joins only if its key is on that chat (`Osis::redeem`).
-pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
+pub async fn join(db: &Osis, l: &osis::ShareLink, timeout: Duration) -> Result<Tid> {
     let c = l.target()?;
     let held = || chats(db).is_ok_and(|x| x.contains(&c));
     if held() {
         return Ok(c);
     }
-    db.redeem(l).await.or_else(|e| if held() { Ok(c) } else { Err(e) })
+    db.redeem(l, timeout).await.or_else(|e| if held() { Ok(c) } else { Err(e) })
 }
 
 /// Removes this person: every grant it holds the chat through (a link joiner's is on the link's
@@ -395,9 +395,9 @@ pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
 }
 
 fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> {
-    let year = year_of(db.now().0);
+    let year = year_of(db.now()?.0);
     let mut w = db.write();
-    w.at(c, year_ak(year)?).overwrite(&body_value(d, r)?)?;
+    w.at(c, year_key(db, year)?).overwrite(&body_value(d, r)?)?;
     let done = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?;
     Ok(Id { year, pos: HistoryPos { ts: done.ts, id: done.id } })
 }
@@ -473,7 +473,7 @@ fn entry_of(year: u32, e: HistoryEntry<Value>) -> Option<Entry> {
 
 /// The years a chat's messages may be under: its creation's to next year's (a clock ahead).
 fn years(db: &Osis, c: Tid) -> Result<Vec<u32>> {
-    let now = year_of(db.now().0);
+    let now = year_of(db.now()?.0);
     let first = db.created(c)?.map_or(now, |s| year_of(s.ts.wall_ms().0));
     Ok((first.min(now)..=now.saturating_add(1)).collect())
 }
@@ -493,7 +493,7 @@ pub fn entries(db: &Osis, c: Tid, from: HistoryFrom, limit: usize) -> Result<Ent
     let limit = limit.min(osis::HISTORY_PAGE);
     let mut out = Entries { entries: Vec::new(), more: false, complete: true };
     for y in years(db, c)? {
-        let page = db.at(c, year_ak(y)?).history(from, limit)?;
+        let page = db.at(c, year_key(db, y)?).history(from, limit)?;
         out.more |= page.more;
         out.complete &= page.complete;
         out.entries.extend(page.entries.into_iter().filter_map(|e| entry_of(y, e)));
@@ -511,7 +511,7 @@ pub fn entries(db: &Osis, c: Tid, from: HistoryFrom, limit: usize) -> Result<Ent
 
 /// The entry at `id`, if it is here.
 pub fn entry_at(db: &Osis, c: Tid, id: &Id) -> Result<Option<Entry>> {
-    let k = year_ak(id.year)?;
+    let k = year_key(db, id.year)?;
     let mut from = HistoryFrom::After(HistoryPos::time(id.pos.ts));
     loop {
         let page = db.at(c, k.clone()).history(from, 16)?;
@@ -772,7 +772,7 @@ fn purge(db: &Osis, c: Tid, ids: &[Id]) -> Result<()> {
     }
     let mut w = db.write();
     for i in ids {
-        w.at(c, year_ak(i.year)?).purge(osis::Purge::Change(i.pos.id))?;
+        w.at(c, year_key(db, i.year)?).purge(osis::Purge::Change(i.pos.id))?;
     }
     w.commit().map(drop)
 }
@@ -807,7 +807,7 @@ pub fn delete(db: &Osis, c: Tid, m: &Message) -> Result<()> {
 pub fn purge_participant(db: &Osis, c: Tid, actor: Tid) -> Result<()> {
     let mut w = db.write();
     for y in years(db, c)? {
-        w.at(c, year_ak(y)?).purge(osis::Purge::Author(actor))?;
+        w.at(c, year_key(db, y)?).purge(osis::Purge::Author(actor))?;
     }
     w.commit().map(drop)
 }
@@ -833,7 +833,7 @@ pub fn watch(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) ->
     let mut subs = Vec::new();
     for y in years(db, c)? {
         let f = f.clone();
-        subs.push(db.at(c, year_ak(y)?).on_history(move |db, ev| {
+        subs.push(db.at(c, year_key(db, y)?).on_history(move |db, ev| {
             let ev = match ev {
                 HistoryEvent::Commit { entry, .. } => match entry.and_then(|e| entry_of(y, e)) {
                     Some(mut e) => {
@@ -854,13 +854,12 @@ pub fn watch(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) ->
 
 /// Tells of this person's own writes on the chat turned invalid: a participant who had not seen a
 /// retention change or its own kick. Its message is the commit named: `resend` it.
-pub fn on_rejected(db: &Osis, c: Tid, mut f: impl FnMut(osis::CommitId) + Send + 'static) -> Result<Subscription> {
+pub fn on_rejected(db: &Osis, c: Tid, mut f: impl FnMut(ChangeId) + Send + 'static) -> Result<Subscription> {
     db.on_diagnostic(move |_, d| {
-        if d.kind == osis::DiagnosticKind::OwnWriteInvalid
-            && d.tids.contains(&c)
-            && let Some(id) = d.commit
+        if let osis::Diagnostic::OwnWriteInvalid { commit, things, .. } = d
+            && things.contains(&c)
         {
-            f(id);
+            f(commit);
         }
     })
 }

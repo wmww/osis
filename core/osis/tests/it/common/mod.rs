@@ -4,7 +4,7 @@
 
 use osis::internals::Internals as _;
 use osis::schema::core_types as ct;
-use osis::{Ak, AspectKey, Config, LinkInfo, ManualClock, MemStore, Osis, Result, StoreAt, Subscription, Tid, WallMs, Write};
+use osis::{Ak, AspectKey, LinkInfo, ManualClock, MemStore, Osis, Result, Store, Subscription, Tid, WallMs, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
@@ -16,16 +16,16 @@ pub fn clock() -> Arc<ManualClock> {
     Arc::new(ManualClock::new(WallMs(T0)))
 }
 
-pub fn cfg(seed: u64, store: MemStore, clock: &Arc<ManualClock>) -> Config {
-    let mut c = Config::at(StoreAt::Memory(store));
-    c.seed = Some(seed);
-    c.clock = Some(clock.clone());
+pub fn cfg(seed: u64, store: MemStore, clock: &Arc<ManualClock>) -> osis::internals::Opening {
+    let mut c = osis::internals::Opening::at(Store::Memory(store));
+    c.internals.seed = Some(seed);
+    c.internals.clock = Some(clock.clone());
     c
 }
 
 /// A fresh database at `T0`.
 pub fn db(seed: u64) -> Osis {
-    Osis::create(cfg(seed, MemStore::new(), &clock())).unwrap().0
+    osis::internals::create(cfg(seed, MemStore::new(), &clock())).unwrap().0
 }
 
 pub fn ak(s: &str) -> Ak {
@@ -161,8 +161,8 @@ pub fn deliver(from: &Osis, to: &Osis) {
 /// Two devices of one person on one clock; commits travel by `deliver`.
 pub fn paired() -> (Osis, Osis, Arc<ManualClock>) {
     let c = clock();
-    let a = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
-    let j = Osis::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
+    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let j = osis::internals::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
     (a, b, c)
@@ -227,7 +227,7 @@ impl CreateIn for osis::Write<'_> {
     }
     fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid> {
         let t = self.create_owned_by(owner)?;
-        self.at(t, ak("t:made.0")).set(&osis::Value::Bool(true))?;
+        self.at(t, osis::Key::untyped(ak("t:made.0"))).set(&osis::Value::Bool(true))?;
         Ok(t)
     }
 }
