@@ -2,10 +2,10 @@
 > Summary: Decided with Tess. The sync protocol runs over any ordered, bidirectional byte stream behind our own transport abstraction; direct host connections (QUIC/TLS/WebSocket) need no iroh; iroh 1.0 is the P2P transport (LAN, hole punching, relays, later BLE), used without n0's infrastructure; we run an official host and relays. Addresses and relays are osis data, host addresses pin the host's key; transport keys are separate from node signing keys. Push wake-ups are a proposal; Tor a future option.
 
 ## What osis needs from the network (spec/requirements.md)
-- Long-lived connections with host push (subscriptions, relay-only signals), several labels per connection, one round trip for the common case.
-- Always-on nodes hosting what they cannot read are the backbone; client-to-host reachability matters most. Direct P2P adds LAN, offline and no-host sync.
-- No required coordinator: any helper is replaceable and self-hostable; osis works without it (LAN, any host, a known address).
-- A blind node must not learn authorship or role grants. It learns client IPs (accepted), not node identities.
+- Long-lived connections with push from the serving side (subscriptions, relay-only signals), several labels per connection, one round trip for the common case.
+- No always-on node or public IP is assumed (spec/requirements.md, Offline and network): nodes that share data sync directly, and any node may also store and serve data it cannot read for others. Today's builds fall short of this: P2P is off (issues/node-host-unify.md).
+- No required coordinator: any helper is replaceable and self-hostable; osis works without it (LAN, any peer, a known address).
+- For data it cannot read a node must not learn authorship or role grants. It learns client IPs (accepted), not node identities.
 - Authorization is application-level (node signatures, label role keys), so the transport only needs confidentiality and a stable peer key to dial.
 
 ## Decisions (Tess)
