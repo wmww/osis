@@ -460,7 +460,9 @@ indexes! {
     /// Commits with a part invalid here, per aspect (`Core::index_validity`), so a join finds the
     /// writes to strip in O(invalid parts), not O(history).
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
-    /// Held deltas per aspect: (`ts`, commit).
+    /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
+    /// and whether its body is held. Invariant: it finds commits, never answers what a thing has
+    /// (any signer can list any aspect); that reads the state (`Tx::has_state`).
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
     /// `retention::any_bounded` without walking the aspect.
@@ -504,7 +506,8 @@ indexes! {
     /// Held commits whose `keys.0` part on a thing wrote a keyset in its body, any validity
     /// (`records::OWN_KEYS`): thing -> commits.
     pub keyset_parts: JSetMap<Tid, CommitId>,
-    /// Things with a `label.0` delta held (`Engine::labeled_groups`).
+    /// Things with a `label.0` state (`Engine::labeled_groups`), kept with the state
+    /// (`Tx::derive`) like `placed`.
     pub labeled: JSet<Tid>,
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
     /// listed until their `keys.0` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
@@ -1082,7 +1085,8 @@ impl Core {
         if k.1.as_str() == "secrets.0" {
             self.secrets_read.remove(&k.0);
         }
-        if matches!(k.1.as_str(), "label.0" | "group.0" | "groups.0") || osis_schema::core_types::is_role_class(k.1.as_str()) {
+        // a holder's `node.0` decides its reader key and route (`flows::is_node`)
+        if matches!(k.1.as_str(), "label.0" | "group.0" | "groups.0" | "node.0") || osis_schema::core_types::is_role_class(k.1.as_str()) {
             self.unrouted = None;
             self.head_keys.clear();
             self.holders_named.clear();
@@ -1653,6 +1657,14 @@ impl Tx<'_> {
         Ok(out)
     }
 
+    /// Whether `(tid, ak)` has a state: a valid write on it applied here. What a thing has is
+    /// read here (or from an index derived from states: `Indexes::labeled`, `placed`, `groups`),
+    /// never from `Indexes::by_aspect`, which any signer's header adds to.
+    pub fn has_state(&mut self, tid: &Tid, ak: &Ak) -> Result<bool> {
+        self.load_lazy(tid, ak)?;
+        Ok(self.cached(tid, ak).is_some())
+    }
+
     /// The whole state of `(tid, ak)`.
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<&Fragment>> {
         self.load(tid, ak)?;
@@ -1682,20 +1694,30 @@ impl Tx<'_> {
         } else {
             self.txn.remove_local(&records::aspect_key(records::ASPECTS, tid, ak), Shred::No)?;
         }
-        self.placed_from(tid, ak, f.as_ref());
+        self.derive(tid, ak, f.as_ref());
         self.core.states.insert((*tid, ak.clone()), f);
         Ok(())
     }
 
-    /// Keeps `Indexes::placed` (the ephemeral placements, read with `group.0`) at the state
-    /// of a group's `placed.0~`, whatever wrote it.
-    fn placed_from(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
-        if ak.as_str() == "placed.0~" {
-            match f.and_then(crate::ephemeral::def_of) {
-                Some(d) => self.core.ix.placed.insert(*tid, d),
-                None => self.core.ix.placed.remove(tid),
-            };
-            self.core.placed_gen += 1;
+    /// Keeps the indexes derived from states at the state `f` of `(tid, ak)`, whatever wrote
+    /// it: `Indexes::placed` (the ephemeral placements, read with `group.0`) and
+    /// `Indexes::labeled`.
+    fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
+        match ak.as_str() {
+            "placed.0~" => {
+                match f.and_then(crate::ephemeral::def_of) {
+                    Some(d) => self.core.ix.placed.insert(*tid, d),
+                    None => self.core.ix.placed.remove(tid),
+                };
+                self.core.placed_gen += 1;
+            }
+            "label.0" => {
+                match f {
+                    Some(_) => self.core.ix.labeled.insert(*tid),
+                    None => self.core.ix.labeled.remove(tid),
+                };
+            }
+            _ => {}
         }
     }
 
@@ -1714,7 +1736,7 @@ impl Tx<'_> {
                 unit.state = s;
                 self.txn.put_aspect(tid, ak, &unit, shred)?;
             }
-            self.placed_from(tid, ak, f.as_ref());
+            self.derive(tid, ak, f.as_ref());
             self.core.states.insert(k, f);
             return Ok(());
         }

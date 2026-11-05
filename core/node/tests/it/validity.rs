@@ -3363,3 +3363,55 @@ fn frontier_lists_commit_with_unheld_part_spec_perm_5_1() {
     let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
     assert!(f.commits.contains(&c), "{f:?}");
 }
+
+/// Peer 1's key signs a content commit writing `node.0` on `k` (a card on a thing it has no
+/// role on), under a session of its own.
+fn forge_card(lp: &mut LocalPeer, k: Tid) -> osis_commit::CommitBlob {
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
+    let b = lp.peers[1].engine.tid();
+    let form = forged_session(b);
+    let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let mut w = Writer::new(ts, form.own_source(b, osis_base::CommitId([0; 32])), 1);
+    let v = osis_schema::AspectKey::encode(&osis_schema::core_types::NODE, &osis_schema::core_types::NodeInfo { software: "forged".into() });
+    let f = create(&mut w, &AnyView, &v).unwrap();
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, 1, 2), None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, form);
+    cb.aspects.push(AspectWrite::new(k, ak("node.0"), 1, 2, bytes));
+    let rec = lp.peers[0].engine.get_typed(&k, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    cb.build(&lp.peers[1].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit
+}
+
+// spec/permissions.md §4 (a node card), §5.2: whether a key
+// actor is a node reads its valid state, never a header's aspect list. A stranger's commit
+// writing `node.0` on a recovery key or a link key, header only (it applies, its part invalid)
+// or whole (its part waits), leaves the key a key actor: its boxes keep the static form, it gets no
+// direct deliveries.
+#[test]
+fn stranger_card_makes_no_node_spec_perm_4() {
+    for header_only in [true, false] {
+        let mut lp = net(2, 951);
+        lp.sync_all().unwrap();
+        let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
+        let (p, _) = lp.peers[0].engine.create_person(&hosts).unwrap();
+        let recovery = lp.peers[0].engine.owner(&p.person).unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, p.person);
+        lp.peers[0].commit(m).unwrap();
+        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts, peers: Vec::new(), single_use: false };
+        let (link, _, _) = lp.peers[0].engine.create_link(&p.person, &spec).unwrap();
+        let l = osis_node::identity::Identity::from_seed(link.seed.clone()).tid();
+        for k in [recovery, l] {
+            assert!(!lp.peers[0].engine.is_node(&k).unwrap(), "a key actor");
+            let mut blob = forge_card(&mut lp, k);
+            if header_only {
+                blob.parts.clear();
+            }
+            let id = blob.id();
+            // whole, its part waits on the author's reach (pending); header only, it applies
+            let got = lp.peers[0].engine.ingest(&blob.encode(), Vec::new()).unwrap();
+            assert!(got == Ingested::Applied(id) || (!header_only && matches!(got, Ingested::Pending(..))), "header only {header_only}: {got:?}");
+            assert!(!lp.peers[0].engine.is_node(&k).unwrap(), "header only {header_only}: a stranger's card makes no node");
+        }
+    }
+}

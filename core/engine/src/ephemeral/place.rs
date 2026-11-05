@@ -239,7 +239,7 @@ impl Engine {
             // a group ephemerally: its (empty) `group.0` persists, its ephemeral items do not;
             // after the conversions, whose expiry it takes: an empty group has no value for
             // expiry to remove (spec/crdt.md §4.7), so it stays a group
-            if self.core.ix.placed.contains_key(t) && !self.core.ix.by_aspect.get(&(*t, gak.clone())).is_some_and(|s| !s.is_empty()) {
+            if self.core.ix.placed.contains_key(t) && !self.run(|tx| tx.has_state(t, &gak))? {
                 let d = out.durable.entry(*t).or_insert_with(|| AspectMut { schema: core_schema(), ..AspectMut::default() });
                 d.ops.insert(0, PathOp { path: Vec::new(), op: Op::Set(GROUP.encode(&Group::default())) });
             }

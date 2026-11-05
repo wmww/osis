@@ -486,13 +486,9 @@ impl Engine {
             core.published = Some((at, map.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
         }
         let out = core.published.as_ref().and_then(|(_, m)| m.get(g).cloned()).unwrap_or_default();
-        // the cache and the `label.0` index against a scan of every held aspect
+        // the cache against a fresh walk
         #[cfg(debug_assertions)]
-        {
-            let scan: std::collections::BTreeSet<Tid> = core.ix.by_aspect.keys().filter(|(_, ak)| ak.as_str() == "label.0").map(|(t, _)| *t).collect();
-            assert!(scan == *core.ix.labeled, "labeled index {:?} vs held {scan:?}", *core.ix.labeled);
-            assert_eq!(published_by_actor(core, &scan).remove(g).unwrap_or_default(), *out, "published_under({g}) cached");
-        }
+        assert_eq!(published_by_actor(core, &core.ix.labeled).remove(g).unwrap_or_default(), *out, "published_under({g}) cached");
         out
     }
 

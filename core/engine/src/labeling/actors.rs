@@ -3,7 +3,7 @@
 
 use crate::engine::{Core, Engine};
 use crate::error::Result;
-use osis_base::{Ak, ChainStep, LabelId, Role, Tid};
+use osis_base::{ChainStep, LabelId, Role, Tid};
 use osis_label::{Address, ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -120,7 +120,7 @@ impl Engine {
         full
     }
 
-    /// Things with a `label.0` held.
+    /// Things with a `label.0` state.
     pub fn labeled_groups(&self) -> Vec<Tid> {
         self.core.ix.labeled.iter().copied().collect()
     }
@@ -229,7 +229,6 @@ impl Engine {
     }
 
     fn find_unrouted(&mut self) -> BTreeMap<Tid, Vec<Tid>> {
-        let node = Ak::new("node.0").ok();
         let things: Vec<Tid> = self.core.timelines.things().copied().collect();
         let mut live: Vec<(Tid, Arc<BTreeSet<Tid>>)> = Vec::new();
         for g in self.labeled_groups() {
@@ -244,9 +243,13 @@ impl Engine {
             }
             let owner = self.core.owner(&t);
             let person = owner.is_some_and(|o| self.core.is_key_actor(&o));
-            let is_node = |m: &Tid| node.as_ref().is_some_and(|n| self.core.ix.by_aspect.contains_key(&(*m, n.clone())));
-            let skip = |m: &Tid| self.core.is_key_actor(m) && (person || !is_node(m));
-            let holders: Vec<Tid> = self.core.current_holders(&t).into_iter().map(|(m, _, _)| m).filter(|m| Some(*m) != owner && !skip(m) && !live.iter().any(|(a, c)| self.carries(a, c, m, &t))).collect();
+            let mut holders = Vec::new();
+            for (m, _, _) in self.core.current_holders(&t) {
+                let skip = self.core.is_key_actor(&m) && (person || !self.is_node(&m).unwrap_or(false));
+                if Some(m) != owner && !skip && !live.iter().any(|(a, c)| self.carries(a, c, &m, &t)) {
+                    holders.push(m);
+                }
+            }
             if !holders.is_empty() && self.role_on(&t).is_some() {
                 out.insert(t, holders);
             }
