@@ -3,7 +3,7 @@
 use crate::common::TestWrites as _;
 use crate::common::ak;
 use osis::internals::Internals as _;
-use osis::{Demotion, HostAddr, Lower, MemStore, Osis, Role, StoreAt, SyncScope, SyncState, Tid, Value, WaitForSync};
+use osis::{SetRole, SyncFirst, Member, HostAddr, MemStore, Osis, Role, StoreAt, SyncScope, SyncState, Tid, Value};
 use osis_sim::world::World;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -53,8 +53,8 @@ fn pair(w: &mut World, hosts: &[usize]) -> (Osis, Osis, Tid) {
     (a, b, bob)
 }
 
-fn skip() -> Demotion {
-    Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None }
+fn skip() -> SetRole {
+    SetRole { sync: SyncFirst::Skip, keep: None }
 }
 
 // spec/sync.md §3 (a recipient looks for what an inbox blob names), §5: the invite to a chat its maker has not registered at the chat's host yet: the invitee is told "not here" and looks again after a back-off, well before the periodic resync, not stranded meanwhile
@@ -273,7 +273,7 @@ fn write_beside_a_removed_thing_reaches_the_peer_spec_commits_4() {
     assert_eq!(says(&b, u), Some(s("live")));
     w.set_online(&b, false);
     write_across(&b, u, m);
-    w.until(a.demote(g, bob, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(a.set_role(g, bob, None, skip()), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -311,7 +311,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     w.run();
     w.set_online(&b, false);
     write_across(&b, u, m);
-    w.until(a.demote(g, bob, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(a.set_role(g, bob, None, skip()), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -362,7 +362,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_8() {
     w.run();
     assert_eq!(a.at(p, name.clone()).get().unwrap(), Some(s("Robert")));
     let link = b.links_of(p).unwrap().remove(0).id;
-    w.until(b.revoke_link(link, skip()), 1000, 10).unwrap();
+    w.until(b.revoke_link(link, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(a.at(p, name.clone()).get().unwrap(), None, "the link ended: what it read goes (spec/permissions.md §3)");
     assert!(w.diagnostics(&a).iter().any(|d| d.starts_with("Removed")));
@@ -396,7 +396,7 @@ fn placing_where_holders_may_not_read_is_reported_spec_sync_3() {
     x.at(t, text()).set(&s("given")).unwrap();
     let shared = t;
     x.commit().unwrap();
-    b.share_into(shared, g, Role::Read, Default::default()).unwrap();
+    b.add_with_grant(Member::Item(shared), g, Role::Read).unwrap();
     w.run();
     b.settle();
     assert_eq!(says(&a, shared), Some(s("given")));

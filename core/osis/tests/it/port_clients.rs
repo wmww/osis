@@ -7,7 +7,7 @@ use crate::common::TestWrites as _;
 use crate::common::{T0, ak, block_on};
 use crate::port::{Raw, set_batch};
 use osis::internals::Internals as _;
-use osis::{ClientSecret, CommitQuery, Config, Demotion, Error, HostAddr, LinkOpts, Lower, ManualClock, MemStore, Osis, Role, Runtime, Scope, StoreAt, Tid, Transport, Value, WaitForSync, WallMs};
+use osis::{SetRole, SyncFirst, ClientSecret, CommitQuery, Config, Error, HostAddr, LinkOpts, ManualClock, MemStore, Osis, Role, Runtime, Scope, StoreAt, Tid, Transport, Value, WallMs};
 use osis_proto::{Command, Outcome};
 use osis_schema::core_types as ct;
 use std::sync::{Arc, Mutex};
@@ -144,7 +144,7 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
         e(c.aspects(t).map(|v| format!("{v:?}"))),
         format!("{:?}", c.knows(t).unwrap()),
         format!("{:?}", c.groups_of(t).unwrap()),
-        format!("{:?}", c.roster(t).unwrap()),
+        format!("{:?}", c.grants(t).unwrap()),
         format!("{:?}", c.role_on(t).unwrap()),
         format!("{:?}", c.owner_of(t).unwrap()),
         format!("{:?}", c.created(t).unwrap()),
@@ -183,7 +183,7 @@ fn reads_are_exactly_the_actors() {
     // what it may not read: the person, its node, a link, another group
     let link_target = x.u;
     let _link = x.n.make_link(link_target, Role::Read, LinkOpts { until: None, single_use: false, direct: true }).unwrap();
-    let k = x.n.links_of(link_target).unwrap()[0].id;
+    let k = x.n.links_of(link_target).unwrap()[0].id.actor();
     let home = x.n.at(x.n.me(), ct::GROUP).get().unwrap().unwrap();
     let seed = home.items.iter().copied().find(|i| x.n.aspects(*i).unwrap().iter().any(|a| a.as_str() == "link:seed.0")).unwrap();
     let ghost = Tid::from_bytes([9; 15]);
@@ -214,7 +214,7 @@ fn writes_are_the_actors() {
     let (a, s, c) = x.client(Role::Read);
     assert!(matches!(c.commit_set(x.t, name.clone(), &Value::Int(1)), Err(Error::Permission { tid, .. }) if tid == x.t));
     assert!(matches!(c.batch(|w| w.create(x.g)), Err(Error::Permission { .. })), "read on the owner is no write");
-    x.n.change_edge(x.g, a, Role::Write, Default::default()).unwrap();
+    x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
     c.commit_set(x.t, name.clone(), &Value::Int(2)).unwrap();
     assert_eq!(x.n.at(x.t, name.clone()).get().unwrap(), Some(Value::Int(2)));
     let last = &x.n.commits(&CommitQuery::new().scope(Scope::Thing(x.t))).unwrap()[0];
@@ -241,7 +241,7 @@ fn writes_are_the_actors() {
     // a purge needs write, whatever the node may do: read was refused above; with write it names
     // what the actor has no right to: its reset stands, the body stays (see the test below)
     c.batch(|w| w.at(x.t, name.clone()).purge()).unwrap();
-    x.n.change_edge(x.g, a, Role::Admin, Default::default()).unwrap();
+    x.n.grant(x.g, a, Role::Admin, Default::default()).unwrap();
     // an aspect of the node needs the actor's rights too
     let node_thing = x.n.node();
     assert!(matches!(c.batch(|w| w.at(node_thing, ct::CLIENTS).remove()), Err(Error::UnknownThing { .. })));
@@ -254,7 +254,7 @@ fn split_write_comes_back_whole_spec_commits_6() {
     let x = node();
     let (name, brief) = (ak("t:name.0"), ak("t:brief.0"));
     let (a, _s, c) = x.client(Role::Read);
-    x.n.change_edge(x.g, a, Role::Write, Default::default()).unwrap();
+    x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
     let mut w = c.write();
     w.at(x.t, name.clone()).set(&Value::Int(1)).unwrap();
     w.at(x.t, brief.clone()).expires_in(Duration::from_secs(3600)).set(&Value::Int(2)).unwrap();
@@ -388,7 +388,7 @@ fn undo_and_revert_are_the_actors() {
     // Read only: a revert it may not write
     x.n.commit_set(x.t, a.clone(), &Value::Int(5)).unwrap();
     let mine = x.n.commits(&q(x.t)).unwrap()[0].commit.id;
-    block_on(x.n.demote(x.g, ca, Lower::To(Role::Read), Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).unwrap();
+    block_on(x.n.set_role(x.g, ca, Some(Role::Read), SetRole { sync: SyncFirst::Skip, keep: None })).unwrap();
     assert!(matches!(c.revert(mine), Err(Error::Permission { .. })));
     assert_eq!(x.n.at(x.t, a).get().unwrap(), Some(Value::Int(5)));
 }
@@ -417,7 +417,7 @@ fn until_ends_the_client() {
     assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
     // the entry stays until removed, its actor with its grants
     assert!(x.n.clients().unwrap().iter().any(|e| e.actor == a));
-    assert!(x.n.roster(x.g).unwrap().contains_key(&a));
+    assert!(x.n.grants(x.g).unwrap().contains_key(&a));
     drop((c, r));
 }
 
@@ -456,7 +456,7 @@ fn remove_client_revokes() {
     assert_eq!(x.served(), 1);
     assert!(x.n.remove_client(a).unwrap());
     x.until(|x| x.served() == 0);
-    assert!(!x.n.roster(x.g).unwrap().contains_key(&a) && !x.n.roster(x.h).unwrap().contains_key(&a));
+    assert!(!x.n.grants(x.g).unwrap().contains_key(&a) && !x.n.grants(x.h).unwrap().contains_key(&a));
     assert_ne!(x.n.engine(|e| e.epochs(&x.g).map(|ep| format!("{:?}", ep.role(Role::Read).newest_held().map(|h| h.0)))), keys_before, "the removal rotated");
     assert!(x.n.clients().unwrap().is_empty());
     assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
@@ -473,18 +473,18 @@ fn remove_client_revokes() {
     assert!(x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a demotion of something else");
-    assert!(x.n.roster(x.n.me()).unwrap().contains_key(&x.n.node()));
+    assert!(x.n.grants(x.n.me()).unwrap().contains_key(&x.n.node()));
     // its until passed already (a removal cut short ends there): the removal still demotes
     let (late, s2) = x.n.add_client(Some(WallMs(T0 + 1))).unwrap();
     x.n.grant(x.g, late, Role::Read, Default::default()).unwrap();
     x.clock.advance(1);
     assert!(matches!(x.attach(&s2), Err(Error::Refused(_))));
     assert!(x.n.remove_client(late).unwrap());
-    assert!(!x.n.roster(x.g).unwrap().contains_key(&late));
+    assert!(!x.n.grants(x.g).unwrap().contains_key(&late));
     // demoted elsewhere: the entry stays, its actor reads nothing
     let (b, _, d) = x.client(Role::Read);
     assert!(d.knows(x.t).unwrap());
-    block_on(x.n.demote(x.g, b, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).unwrap();
+    block_on(x.n.set_role(x.g, b, None, SetRole { sync: SyncFirst::Skip, keep: None })).unwrap();
     assert!(!d.knows(x.t).unwrap());
     assert!(x.n.clients().unwrap().iter().any(|e| e.actor == b));
 }
@@ -520,7 +520,7 @@ fn queued_request_rechecked_at_execution() {
     let (_, _, d) = x.client(Role::Read);
     d.settle();
     assert_eq!(x.n.at(x.t, name).get().unwrap(), Some(Value::Str("x".into())), "the queued write did not run");
-    assert_eq!(x.n.roster(x.g).unwrap().get(&a).map(|e| e.role), Some(Role::Write), "the grant alone would have let it");
+    assert_eq!(x.n.grants(x.g).unwrap().get(&a).map(|e| e.role), Some(Role::Write), "the grant alone would have let it");
 }
 
 // spec/data-model.md §9 (`secret_hash`), notes/client-port.md §3: the secret's hash is what is kept, the secret never is; rotation invalidates the old secret and its live connections, keeps the actor and its grants; an unknown secret is refused
@@ -613,7 +613,7 @@ fn watches_and_rows() {
     assert_eq!(drx.recv_timeout(Duration::from_secs(20)).unwrap(), "shown");
     assert!(drx.try_recv().is_err());
     let subs = x.n.watches();
-    block_on(x.n.demote(x.g, a, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).unwrap();
+    block_on(x.n.set_role(x.g, a, None, SetRole { sync: SyncFirst::Skip, keep: None })).unwrap();
     x.n.commit_set(x.t, name.clone(), &Value::Int(2)).unwrap();
     c.settle();
     assert!(!matches!(w.current(), Ok(Some(Value::Int(2)))), "{:?}", w.current());
@@ -629,11 +629,10 @@ fn watches_and_rows() {
     assert!(matches!(c.rotate_client_secret(a), Err(Error::Unsupported(_))));
     assert!(matches!(c.register_schema("x.osis", "version 1;\naspect x:y.0: int;\n"), Err(Error::Unsupported(_))));
     // the rows of the node's own (the socket's Owner only), those that wait too
-    let plain = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    let plain = SetRole { sync: SyncFirst::Skip, keep: None };
     let link = x.n.make_link(x.g, Role::Read, LinkOpts { direct: true, ..Default::default() }).unwrap();
-    assert!(matches!(block_on(c.demote(x.t, a, Lower::Remove, plain)), Err(Error::Unsupported(_))));
-    assert!(matches!(block_on(c.revoke_link(x.t, plain)), Err(Error::Unsupported(_))));
-    assert!(matches!(block_on(c.revoke_joiner(x.t, a, plain)), Err(Error::Unsupported(_))));
+    assert!(matches!(block_on(c.set_role(x.t, a, None, plain)), Err(Error::Unsupported(_))));
+    assert!(matches!(block_on(c.revoke_link(x.t.to_uri().parse().unwrap(), SyncFirst::Required)), Err(Error::Unsupported(_))));
     // refused here: the link's secret never goes to a node that would only refuse it
     let r = block_on(c.redeem(&link));
     assert!(matches!(&r, Err(Error::Unsupported(m)) if m.starts_with("a thin client")), "{r:?}");
@@ -1196,9 +1195,9 @@ fn half_removed_client_stays_ended() {
     assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
     let s2 = x.n.rotate_client_secret(a).unwrap();
     assert!(matches!(x.attach(&s2), Err(Error::Refused(_))), "a rotation revives nothing");
-    assert!(x.n.roster(x.g).unwrap().contains_key(&a));
+    assert!(x.n.grants(x.g).unwrap().contains_key(&a));
     assert!(x.n.remove_client(a).unwrap());
-    assert!(!x.n.roster(x.g).unwrap().contains_key(&a));
+    assert!(!x.n.grants(x.g).unwrap().contains_key(&a));
     assert!(x.n.clients().unwrap().is_empty());
     assert!(!x.n.remove_client(a).unwrap());
 }
@@ -1266,7 +1265,7 @@ fn walk(seed: u64) {
     w.commit().unwrap();
     let (mut a, mut s) = x.n.add_client(None).unwrap();
     let mut c = x.attach(&s).unwrap();
-    let skip = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
     let mut value = 100i64;
     let mut last: [Value; 4] = std::array::from_fn(|_| Value::Str("x".into()));
     for step in 0..40 {
@@ -1277,7 +1276,7 @@ fn walk(seed: u64) {
                 let r = [Role::Read, Role::Write][rng.next(2) as usize];
                 let target = [g, h][i];
                 match on_group[i] {
-                    Some(old) if r < old => block_on(x.n.demote(target, a, Lower::To(r), skip)).unwrap(),
+                    Some(old) if r < old => block_on(x.n.set_role(target, a, Some(r), skip)).unwrap(),
                     _ => x.n.grant(target, a, r, Default::default()).unwrap(),
                 }
                 on_group[i] = Some(r);
@@ -1285,13 +1284,13 @@ fn walk(seed: u64) {
             2 => {
                 let i = rng.next(2) as usize;
                 if on_group[i].take().is_some() {
-                    block_on(x.n.demote([g, h][i], a, Lower::Remove, skip)).unwrap();
+                    block_on(x.n.set_role([g, h][i], a, None, skip)).unwrap();
                 }
             }
             3 => {
                 let r = [Role::Read, Role::Write][rng.next(2) as usize];
                 match on_thing {
-                    Some(old) if r < old => block_on(x.n.demote(x.out, a, Lower::To(r), skip)).unwrap(),
+                    Some(old) if r < old => block_on(x.n.set_role(x.out, a, Some(r), skip)).unwrap(),
                     _ => x.n.grant(x.out, a, r, Default::default()).unwrap(),
                 }
                 on_thing = Some(r);

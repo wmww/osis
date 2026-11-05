@@ -131,7 +131,7 @@ fn share_notebook_with_a_second_person() {
     w.run();
     assert!(notes(&alice, nb).unwrap().contains(&packing));
 
-    w.until(alice.demote(nb, b, osis::Lower::Remove, Default::default()), 1000, 20).unwrap();
+    w.until(alice.set_role(nb, b, None, Default::default()), 1000, 20).unwrap();
     let secret = new_note(&alice, nb, "Surprise").unwrap();
     w.run();
     assert_eq!(title(&bob, secret).unwrap(), None, "removed: nothing new");

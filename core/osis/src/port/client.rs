@@ -1174,13 +1174,13 @@ impl Osis {
         Ok(self.remote_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
     }
 
-    /// `watch_roster` at the attached node.
-    pub(crate) fn remote_watch_roster(&self, r: &Arc<Remote>, actor: Tid, mut f: CallbackOf<Result<crate::read::Roster>>) -> Result<Subscription> {
+    /// `on_grants_change` at the attached node.
+    pub(crate) fn remote_on_grants_change(&self, r: &Arc<Remote>, thing: Tid, mut f: CallbackOf<Result<crate::read::Grants>>) -> Result<Subscription> {
         let mut last = None;
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
             match ev {
-                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::roster(v) {
+                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::grants(v) {
                     Ok(r) if last.as_ref() == Some(&r) => {}
                     Ok(r) => {
                         last = Some(r.clone());
@@ -1196,7 +1196,7 @@ impl Osis {
                 }
             }
         });
-        Ok(self.remote_sub(r, Some(actor), Value::List(vec![u(super::filter::ROSTER), Value::Tid(actor)]), true, cb)?.0)
+        Ok(self.remote_sub(r, Some(thing), Value::List(vec![u(super::filter::GRANTS), Value::Tid(thing)]), true, cb)?.0)
     }
 
     /// `on_diagnostic` at the attached node (its diagnostics; this process's own go nowhere).

@@ -127,7 +127,7 @@ fn purge_author_through_the_api_spec_perm_7() {
     let mut x = bob.write();
     x.at(g, msgs()).purge_author(alice.me()).unwrap();
     assert!(matches!(x.commit(), Err(Error::Permission { needs: Role::Write, .. })), "a reader");
-    alice.change_edge(g, b, Role::Write, Default::default()).unwrap();
+    alice.grant(g, b, Role::Write, Default::default()).unwrap();
     w.run();
     let flood = say(&bob, g, "junk");
     let own = say(&alice, g, "mine");

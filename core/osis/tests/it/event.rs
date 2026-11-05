@@ -8,7 +8,7 @@ use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
 use osis::core::{BODY, NAME};
-use osis::{EdgeOpts, Error, Osis, Result, Role, Tid};
+use osis::{GrantOpts, Error, Osis, Result, Role, Tid};
 use osis_sim::world::World;
 use crate::schemas::event::*;
 use std::collections::BTreeSet;
@@ -93,7 +93,7 @@ fn calendar_shared_read_only() {
         Some(End::At(Wall { time: local(2027, 5, 2, 9, 10), zone: Some("Europe/London".into()) })),
     )
     .unwrap();
-    alice.grant(work, b, Role::Read, EdgeOpts::default()).unwrap();
+    alice.grant(work, b, Role::Read, GrantOpts::default()).unwrap();
     w.run();
 
     assert_eq!(bob.at(standup, START).get().unwrap(), Some(Start::At(Wall { time: local(2027, 3, 15, 9, 0), zone: berlin() })));

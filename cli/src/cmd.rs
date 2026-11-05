@@ -9,8 +9,8 @@ use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    AspectKey, Change, CommitId, CommitKind, CommitQuery, Demotion, EdgeOpts, Error, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, SyncState, Tid, Ts,
-    Value, WaitForSync,
+    AspectKey, Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, Schema, SetRole, Source, SyncFirst, SyncScope, SyncState, Tid, Ts,
+    Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -28,8 +28,8 @@ pub fn role_text(r: Role) -> &'static str {
     }
 }
 
-fn edge_opts(until: &Option<String>, invite: &Option<String>) -> anyhow::Result<EdgeOpts> {
-    Ok(EdgeOpts { until: opt_ts(until)?, invite: invite.as_deref().map(parse_role).transpose()? })
+fn grant_opts(until: &Option<String>, invite: &Option<String>) -> anyhow::Result<GrantOpts> {
+    Ok(GrantOpts { until: opt_ts(until)?, invite: invite.as_deref().map(parse_role).transpose()? })
 }
 
 pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
@@ -142,18 +142,28 @@ fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
 }
 
 fn links_j(ls: &[osis::LinkInfo]) -> J {
-    J::Arr(ls.iter().map(|l| J::obj([("id", J::tid(l.id)), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
+    J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
 }
 
-fn demotion(d: &DemoteFlags, ctx: &Ctx<'_>) -> anyhow::Result<Demotion> {
-    let sync = match d.sync.as_deref() {
-        None | Some("required") => WaitForSync::Required,
-        Some("try") => WaitForSync::Try(ctx.timeout()?.unwrap_or(crate::DEFAULT_WAIT)),
-        Some("skip") => WaitForSync::Skip,
-        Some(o) => return Err(usage(format!("--sync: required, try or skip (got {o:?})"))),
-    };
-    let backdate = opt_ts(&d.backdate)?;
-    Ok(Demotion { sync, backdate, repudiate: d.repudiate, keep: d.keep })
+fn sync_first(d: &SyncFlags, ctx: &Ctx<'_>) -> anyhow::Result<SyncFirst> {
+    if let Some(t) = opt_ts(&d.backdate)? {
+        return Ok(SyncFirst::Backdate(t));
+    }
+    match d.sync.as_deref() {
+        None | Some("required") => Ok(SyncFirst::Required),
+        Some("try") => Ok(SyncFirst::Try(ctx.timeout()?.unwrap_or(crate::DEFAULT_WAIT))),
+        Some("skip") => Ok(SyncFirst::Skip),
+        Some(o) => Err(usage(format!("--sync: required, try or skip (got {o:?})"))),
+    }
+}
+
+fn set_role_opts(d: &SetRoleFlags, ctx: &Ctx<'_>) -> anyhow::Result<SetRole> {
+    Ok(SetRole { sync: sync_first(&d.sync, ctx)?, keep: d.keep })
+}
+
+/// A role, or `none`.
+fn opt_role(s: &str) -> anyhow::Result<Option<Role>> {
+    if s == "none" { Ok(None) } else { parse_role(s).map(Some) }
 }
 
 fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<osis::Scope> {
@@ -199,7 +209,8 @@ fn needs_net(c: &Cmd) -> bool {
         c,
         Cmd::Pair(_)
             | Cmd::Device(DeviceCmd::Rm { .. })
-            | Cmd::Demote { .. }
+            | Cmd::SetRole { .. }
+            | Cmd::Repudiate { .. }
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
             | Cmd::Card(CardCmd::Import { .. })
             | Cmd::Chat(_)
@@ -210,7 +221,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Group(GroupCmd::Source { .. })
             | Cmd::Clients(ClientsCmd::RotateKey)
             | Cmd::Watch { .. }
-            | Cmd::Roster { watch: true, .. }
+            | Cmd::Grants { watch: true, .. }
             | Cmd::Diag { follow: true }
     ) || delivers(c)
 }
@@ -219,14 +230,15 @@ fn needs_net(c: &Cmd) -> bool {
 /// sent (inbox grants, a new label's first commits):
 /// they run with sync on and wait until it is at the hosts before the process exits.
 fn delivers(c: &Cmd) -> bool {
-    matches!(c, Cmd::Grant { .. } | Cmd::Share { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::ShareInto { .. } | Cmd::RemoveEdgeOf { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
+    // a role that stays may have been granted or raised, which goes to the holder's inbox
+    matches!(c, Cmd::SetRole { role, .. } if role != "none") || matches!(c, Cmd::Grant { .. } | Cmd::Leave { .. } | Cmd::AddWithGrant { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
 }
 
-/// The thing a sharing command shares (a `delivers` command its holders fetch). Not `grant` or
-/// `edge`: they record the role, route or no route (`status` shows it).
+/// The thing a sharing command shares (a `delivers` command its holders fetch). Not `grant`: it
+/// records the role, route or no route (`status` shows it).
 fn shared(c: &Cmd) -> Option<String> {
     match c {
-        Cmd::Share { t, .. } | Cmd::ShareInto { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Some(t.clone()),
+        Cmd::AddWithGrant { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Some(t.clone()),
         _ => None,
     }
 }
@@ -399,20 +411,20 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Device(DeviceCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
-            let d = demotion(&d, ctx)?;
+            let d = set_role_opts(&d, ctx)?;
             let open = wait(ctx, db.remove_device(n, d))?;
             if end_links {
                 // not backdated: joiners since that time stay joiners, as with any link revoked
-                let end = Demotion { sync: if d.backdate.is_some() { WaitForSync::Skip } else { d.sync }, ..Demotion::default() };
+                let end = if matches!(d.sync, SyncFirst::Backdate(_)) { SyncFirst::Skip } else { d.sync };
                 for l in &open {
                     wait(ctx, db.revoke_link(l.id, end))?;
                 }
             }
             let say = |l: &osis::LinkInfo| {
                 if end_links {
-                    format!("ended link {} to {}", l.id.to_uri(), l.target.to_uri())
+                    format!("ended link {} to {}", l.id, l.target.to_uri())
                 } else {
-                    format!("link {} to {} still works for whoever holds that device: osis link revoke {}", l.id.to_uri(), l.target.to_uri(), l.id.to_uri())
+                    format!("link {} to {} still works for whoever holds that device: osis link revoke {}", l.id, l.target.to_uri(), l.id)
                 }
             };
             ctx.emit(&open.iter().map(say).collect::<Vec<_>>(), J::obj([("links", links_j(&open)), ("ended", J::Bool(end_links))]))
@@ -511,17 +523,17 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let arr = |v: &[Tid]| J::Arr(v.iter().map(|t| J::tid(*t)).collect());
             ctx.emit(&lines, J::obj([("items", arr(&items)), ("subgroups", arr(&subs))]))
         }
-        Cmd::Roster { t, watch: false, .. } => roster(ctx, &t),
-        Cmd::Roster { t, watch: true, count } => {
+        Cmd::Grants { t, watch: false, .. } => grants(ctx, &t),
+        Cmd::Grants { t, watch: true, count } => {
             let t = ctx.tid(&t)?;
             let (raw, json_out) = (ctx.g.raw, ctx.g.json);
             let (tx, rx) = mpsc::channel::<(String, bool)>();
-            // the first call is the roster now: printed, not counted
+            // the first call is the grants now: printed, not counted
             let mut initial = true;
-            let _sub = db.watch_roster(t, move |_, r| {
+            let _sub = db.on_grants_change(t, move |_, r| {
                 let l = match (r, json_out) {
-                    (Ok(r), true) => roster_json(&r).text(),
-                    (Ok(r), false) => roster_lines(&r, raw).join(", "),
+                    (Ok(r), true) => grants_json(&r).text(),
+                    (Ok(r), false) => grants_lines(&r, raw).join(", "),
                     (Err(e), true) => J::obj([("error", J::str(e.to_string()))]).text(),
                     (Err(e), false) => format!("(error: {e})"),
                 };
@@ -530,12 +542,15 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let timeout = ctx.timeout_or(None)?;
             stream(ctx, &rx, count, timeout, "change", false, |_, (l, counts)| (l, counts))
         }
-        Cmd::Via { t, holder } => {
-            let p = db.holder_path(ctx.tid(&t)?, ctx.tid(&holder)?)?;
-            if p.is_empty() {
-                return Err(exit(3, "no such holder"));
-            }
-            ctx.emit(&p.iter().map(|(a, b)| format!("{} {}", a.to_uri(), b.to_uri())).collect::<Vec<_>>(), J::Arr(p.iter().map(|(a, b)| J::Arr(vec![J::tid(*a), J::tid(*b)])).collect()))
+        Cmd::Holders { t } => {
+            let hs = db.holders(ctx.tid(&t)?)?;
+            let raw = ctx.g.raw;
+            let lines: Vec<String> = hs.iter().map(|h| {
+                let via = if h.through.is_empty() { String::new() } else { format!(" via {}", h.through.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
+                format!("{} {} {}{via}", h.actor.to_uri(), role_text(h.role), h.until.map_or("-".into(), |u| ts_text(raw, u.0)))
+            }).collect();
+            let j = J::Arr(hs.iter().map(|h| J::obj([("actor", J::tid(h.actor)), ("role", J::str(role_text(h.role))), ("until", J::opt(h.until.map(|u| J::int(u.0)))), ("through", J::Arr(h.through.iter().map(|t| J::tid(*t)).collect()))])).collect());
+            ctx.emit(&lines, j)
         }
         Cmd::Now => {
             let n = db.now().0;
@@ -545,22 +560,26 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let r = db.role_on(ctx.tid(&t)?)?;
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
-        Cmd::Grant { t, holder, role, until, invite } => Ok(db.grant(ctx.tid(&t)?, ctx.tid(&holder)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
-        Cmd::Share { t, holder, role, until, invite } => Ok(db.share(ctx.tid(&t)?, ctx.tid(&holder)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
-        Cmd::Edge { t, holder, role, until, invite } => {
+        Cmd::Grant { t, holder, role, until, invite } => {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
             let role = match role {
                 Some(r) => parse_role(&r)?,
-                None => db.roster(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such edge"))?,
+                None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            Ok(db.change_edge(t, m, role, edge_opts(&until, &invite)?)?)
+            Ok(db.grant(t, m, role, grant_opts(&until, &invite)?)?)
         }
-        Cmd::Demote { t, holder, role, d } => {
-            let to = if role == "remove" { Lower::Remove } else { Lower::To(parse_role(&role)?) };
-            let (t, m, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, demotion(&d, ctx)?);
-            wait(ctx, db.demote(t, m, to, d))
+        Cmd::SetRole { t, holder, role, d } => {
+            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d, ctx)?);
+            wait(ctx, db.set_role(t, m, role, d))
         }
-        Cmd::Leave { t } => Ok(db.leave(ctx.tid(&t)?)?),
+        Cmd::Repudiate { t, holder, role, d } => {
+            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d, ctx)?);
+            wait(ctx, db.repudiate(t, m, role, d))
+        }
+        Cmd::Leave { t, holder } => {
+            let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
+            Ok(db.leave(holder, ctx.tid(&t)?)?)
+        }
         Cmd::Kept { drop: Some(a) } => Ok(db.drop_kept(ctx.tid(&a)?)?),
         Cmd::Kept { drop: None } => {
             for a in db.kept_copies()? {
@@ -568,16 +587,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Cmd::ShareInto { t, g, role, subgroup, place_anyway } => {
-            let s = db.share_into(ctx.tid(&t)?, ctx.tid(&g)?, parse_role(&role)?, osis::ShareOpts { subgroup, place_anyway })?;
-            ctx.emit(&[share_text(s)], J::str(share_text(s)))
-        }
-        Cmd::RemoveEdgeOf { g, t } => Ok(db.remove_edge_of(ctx.tid(&g)?, ctx.tid(&t)?)?),
-        Cmd::Reach { t } => {
-            let r = db.reach(ctx.tid(&t)?)?;
-            let lines: Vec<String> = r.iter().map(|x| format!("{} {} {}", x.group.to_uri(), if x.placed { "placed" } else { "unplaced" }, share_text(x.share))).collect();
-            let j = J::Arr(r.iter().map(|x| J::obj([("group", J::tid(x.group)), ("placed", J::Bool(x.placed)), ("share", J::str(share_text(x.share)))])).collect());
-            ctx.emit(&lines, j)
+        Cmd::AddWithGrant { t, g, role, subgroup } => {
+            let t = ctx.tid(&t)?;
+            let member = if subgroup { Member::Subgroup(t) } else { Member::Item(t) };
+            Ok(db.add_with_grant(member, ctx.tid(&g)?, parse_role(&role)?)?)
         }
         Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
@@ -595,19 +608,13 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 let t = ctx.tid(&t)?;
                 ls.retain(|l| l.target == t);
             }
-            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {}", l.id.to_uri(), role_text(l.role), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
+            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {}", l.id, role_text(l.role), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
             ctx.emit(&lines, links_j(&ls))
         }
-        Cmd::Link(LinkCmd::Revoke { id, joiner, d }) => {
-            let id = ctx.tid(&id)?;
-            let d = demotion(&d, ctx)?;
-            match joiner {
-                Some(j) => {
-                    let j = ctx.tid(&j)?;
-                    wait(ctx, db.revoke_joiner(id, j, d))
-                }
-                None => wait(ctx, db.revoke_link(id, d)),
-            }
+        Cmd::Link(LinkCmd::Revoke { id, d }) => {
+            let id: osis::LinkId = id.parse()?;
+            let sync = sync_first(&d, ctx)?;
+            wait(ctx, db.revoke_link(id, sync))
         }
         Cmd::Card(CardCmd::Show) => {
             let c = db.contact_card()?;
@@ -1082,35 +1089,27 @@ fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
     }
 }
 
-fn share_text(s: osis::Share) -> String {
-    match s {
-        osis::Share::Tied(r) => format!("tied {}", role_text(r)),
-        osis::Share::Untied(r) => format!("untied {}", role_text(r)),
-        osis::Share::Excluded => "excluded".into(),
-    }
-}
-
-fn roster_lines(r: &osis::Roster, raw: bool) -> Vec<String> {
+fn grants_lines(r: &osis::Grants, raw: bool) -> Vec<String> {
     r.iter()
         .map(|(m, e)| {
             let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.invite.map_or("-", role_text), if e.tied { " tied" } else { "" })
+            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.invite.map_or("-", role_text), if e.with_membership { " with-membership" } else { "" })
         })
         .collect()
 }
 
-fn roster_json(r: &osis::Roster) -> J {
+fn grants_json(r: &osis::Grants) -> J {
     J::Arr(
         r.iter()
-            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("invite", J::opt(e.invite.map(|r| J::str(role_text(r))))), ("tied", J::Bool(e.tied))]))
+            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("invite", J::opt(e.invite.map(|r| J::str(role_text(r))))), ("with_membership", J::Bool(e.with_membership))]))
             .collect(),
     )
 }
 
-fn roster(ctx: &mut Ctx<'_>, t: &str) -> anyhow::Result<()> {
-    let r = ctx.db.roster(ctx.tid(t)?)?;
-    let lines = roster_lines(&r, ctx.g.raw);
-    ctx.emit(&lines, roster_json(&r))
+fn grants(ctx: &mut Ctx<'_>, t: &str) -> anyhow::Result<()> {
+    let r = ctx.db.grants(ctx.tid(t)?)?;
+    let lines = grants_lines(&r, ctx.g.raw);
+    ctx.emit(&lines, grants_json(&r))
 }
 
 fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
@@ -1241,7 +1240,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             for g in db.groups_of(t)?.within {
                 lines.push(format!("group {}", g.to_uri()));
             }
-            for (m, e) in db.roster(t)? {
+            for (m, e) in db.grants(t)? {
                 lines.push(format!("holder {} {:?}", m.to_uri(), e));
             }
         }
@@ -1263,7 +1262,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             let a = ctx.tid(&a)?;
             let ep = db.engine(|e| e.epochs(&a));
             lines.push(format!("actor {} epochs {ep:?}", a.to_uri()));
-            for (m, e) in db.roster(a)? {
+            for (m, e) in db.grants(a)? {
                 lines.push(format!("holder {} {:?}", m.to_uri(), e));
             }
         }

@@ -9,7 +9,7 @@
 
 use osis::schema::core_types as ct;
 use osis::schema::{Bound, PurgeBy};
-use osis::{Ak, EdgeOpts, MemStore, Osis, Retention, Role, StoreAt, Tid, Value};
+use osis::{Ak, GrantOpts, MemStore, Osis, Retention, Role, StoreAt, Tid, Value};
 use osis_sim::world::World;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -92,7 +92,7 @@ fn joins(w: &mut World, a: &Osis, c: Tid, host: usize, m: usize, every: usize, s
         if i + 1 == m {
             osis_node::costs::take();
         }
-        a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+        a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
         let local = down.elapsed();
         let t = Instant::now();
         if i + 1 == m {
@@ -252,7 +252,7 @@ fn chat_members() {
     let held = |w: &World| (stores[0].held_bytes(), w.hosts[host].backend.held_bytes());
     let (member0, host0) = held(&w);
     println!("STORE m={m} after the joins: a member {member0} B ({} B per member), host {host0} B", member0 / m.max(1) as u64);
-    assert_eq!(last.roster(c).unwrap().len(), m + 1);
+    assert_eq!(last.grants(c).unwrap().len(), m + 1);
     let (rows, blobs, nblobs) = stores[0].held_split();
     println!("STORE a member, per member: rows {} B, {nblobs} blobs {} B", rows / m.max(1) as u64, blobs / m.max(1) as u64);
     for (what, n, bytes) in osis::internals::Internals::engine(&members[0], |e| e.held_report()).unwrap() {
@@ -269,7 +269,7 @@ fn chat_members() {
     let joiner0 = w.busy(&b);
     let t = Instant::now();
     osis_node::costs::take();
-    a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+    a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
     let joiner = w.index(&b).unwrap();
     w.spans_by_db();
     let newest = format!("message number {:0>180}", n + 39).into_bytes();
@@ -290,7 +290,7 @@ fn chat_members() {
     w.sleep(&b2);
     w.run();
     let before = w.busy_all();
-    a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+    a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
     w.spans_by_db();
     w.run();
     println!("SPANS of an add at a member, its joiner asleep: {}", show_spans(w.take_db_spans(1), 1));
@@ -321,7 +321,7 @@ fn chat_of(m: usize) -> (World, usize, Osis, Vec<Osis>, Tid, Vec<Tid>) {
         let (b, _) = w.person(100 + i as u64, &[host]);
         w.run();
         let p = meet(&mut w, &a, &b);
-        a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+        a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
         w.run();
         members.push(b);
         tids.push(p);
@@ -353,7 +353,7 @@ fn post_reads_nothing_per_member() {
     check(&n, "in a quiet chat");
     // a pass at each node holding the chat, not one per label per node
     assert!(n.get("pass").copied().unwrap_or(0) <= 2 * 2 * (members.len() as u64 + 1), "passes for two posts: {n:?}");
-    w.until(a.demote(c, tids[1], osis::Lower::Remove, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None }), 1000, 100).unwrap();
+    w.until(a.set_role(c, tids[1], None, osis::SetRole { sync: osis::SyncFirst::Skip, keep: None }), 1000, 100).unwrap();
     w.run();
     post(&a, c, 3);
     w.advance(1);
@@ -377,10 +377,10 @@ fn joiner_reads_each_pending_commit_few_times() {
         w.run();
         let p = meet(&mut w, &a, &b);
         let n = counted(&mut w, |w| {
-            a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+            a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
             w.run();
         });
-        assert_eq!(b.roster(c).unwrap().len(), m + 2);
+        assert_eq!(b.grants(c).unwrap().len(), m + 2);
         n.get("reexamine: read pending").copied().unwrap_or(0)
     };
     let m = 9;
@@ -494,7 +494,7 @@ fn many_labels() {
     let unread = |b: &Osis| things.iter().filter(|t| read(b, **t).is_none()).count();
     phase(&mut w, "first sync", n, &[&a, &b], |w| {
         for (i, t) in things.iter().enumerate() {
-            a.share(*t, p, Role::Read, EdgeOpts::default()).unwrap();
+            a.grant(*t, p, Role::Read, GrantOpts::default()).unwrap();
             if (i + 1) % 100 == 0 {
                 w.pump();
             }
@@ -564,7 +564,7 @@ fn share_new(w: &mut World, a: &Osis, p: Tid, i: usize) -> Tid {
     x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
     x.commit().unwrap();
     a.sync(t, &[]).unwrap();
-    a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
+    a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();
     w.run();
     t
 }
@@ -668,7 +668,7 @@ fn an_edge_ending_passes_its_quiet_label() {
     w.advance(310_000);
     w.advance(61_000);
     let until = w.now() + 300_000;
-    a.share(things[0], p, Role::Read, EdgeOpts { until: Some(osis_base::WallMs(until)), ..EdgeOpts::default() }).unwrap();
+    a.grant(things[0], p, Role::Read, GrantOpts { until: Some(osis_base::WallMs(until)), ..GrantOpts::default() }).unwrap();
     w.run();
     w.advance(61_000);
     w.advance(61_000);
@@ -716,7 +716,7 @@ fn a_burst_of_shares_costs_each_about_once() {
             x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {}", from + i).into_bytes())).unwrap();
             x.commit().unwrap();
             a.sync(t, &[]).unwrap();
-            a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
+            a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();
         }
         w.run();
     };
@@ -751,7 +751,7 @@ fn a_burst_past_the_budget_sends_each_body_about_once() {
             x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
             x.commit().unwrap();
             a.sync(t, &[]).unwrap();
-            a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
+            a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();
             t
         })
         .collect();
@@ -785,7 +785,7 @@ fn add_judges_nothing_per_message() {
         let (d, _) = w.person(51, &[host]);
         w.run();
         let p = meet(&mut w, &a, &d);
-        a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+        a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
         w.run();
         // the joiner asleep: it has all to judge (its first pass)
         let (b, _) = w.person(50, &[host]);
@@ -793,10 +793,10 @@ fn add_judges_nothing_per_message() {
         let p = meet(&mut w, &a, &b);
         w.sleep(&b);
         let n = counted(&mut w, |w| {
-            a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+            a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
             w.run();
         });
-        assert_eq!(members[0].roster(c).unwrap().len(), 5);
+        assert_eq!(members[0].grants(c).unwrap().len(), 5);
         let of = |k: &str| n.get(k).copied().unwrap_or(0);
         (of("pass: full"), of("pass: bodies of a commit"), of("rejudge: a commit"), of("secrets: decode"))
     };

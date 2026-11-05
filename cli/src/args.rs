@@ -92,18 +92,22 @@ pub struct PlaceArgs {
     pub in_all: Vec<String>,
 }
 
-/// Demotion flags.
+/// What to do first about work this device has not seen.
 #[derive(Args, Debug, Clone, Default)]
-pub struct DemoteFlags {
-    /// Pre-sync: required (default), try, skip
-    #[arg(long, value_name = "MODE")]
+pub struct SyncFlags {
+    /// Catch up first: required (default), try, skip
+    #[arg(long, value_name = "MODE", conflicts_with = "backdate")]
     pub sync: Option<String>,
-    /// Stamp the demotion at TS
+    /// No catching up: keep what this device had seen by TS
     #[arg(long, value_name = "TS")]
     pub backdate: Option<String>,
-    /// Repudiate the holder's rotations this device cannot open (a writer that locked everyone out)
-    #[arg(long)]
-    pub repudiate: bool,
+}
+
+/// How a role is taken away.
+#[derive(Args, Debug, Clone, Default)]
+pub struct SetRoleFlags {
+    #[command(flatten)]
+    pub sync: SyncFlags,
     /// On a removal: the removed holder's devices keep a read-only copy (true) or erase (false); default: the thing's (`required.0^`, field keep)
     #[arg(long, value_name = "BOOL")]
     pub keep: Option<bool>,
@@ -303,84 +307,73 @@ pub enum Cmd {
     Groups { t: String },
     /// What group G contains: its items and subgroups
     Members { g: String },
-    /// Holders of a thing with their edges (--watch: one line per change)
-    Roster {
+    /// The roles granted on T, by holder (--watch: one line per change)
+    Grants {
         t: String,
         #[arg(long)]
         watch: bool,
-        /// With --watch: stop after N changes (the first line, the roster now, not counted)
+        /// With --watch: stop after N changes (the first line, the grants now, not counted)
         #[arg(long)]
         count: Option<usize>,
     },
     /// This device's role on T
     Role { t: String },
-    /// The edges through which HOLDER is a holder of T (thing holder, one per line)
-    Via { t: String, holder: String },
+    /// Everyone holding a role on T, directly or through another actor: actor, role, when it ends,
+    /// and the actors in between, one line per grant that makes it a holder
+    Holders { t: String },
     /// The database's corrected clock
     Now,
-    /// Grant HOLDER ROLE (read, write, admin) on T, and sync T first when nothing carries it to
-    /// HOLDER (`grant` alone records the role and leaves it with no route)
-    Share {
-        t: String,
-        holder: String,
-        role: String,
-        #[arg(long, value_name = "TS")]
-        until: Option<String>,
-        #[arg(long, value_name = "ROLE")]
-        invite: Option<String>,
-    },
-    /// Grant HOLDER ROLE (read, write, admin) on T: the permission alone (see `share`)
+    /// Grant HOLDER ROLE (read, write, admin) on T, or change the grant's --until and --invite (no
+    /// ROLE: as it is). Never lowers. Records the role only: HOLDER reads T once a synced group it
+    /// reads holds T or T syncs (`group sync`); `status` shows otherwise
     Grant {
         t: String,
         holder: String,
-        role: String,
-        #[arg(long, value_name = "TS")]
-        until: Option<String>,
-        #[arg(long, value_name = "ROLE")]
-        invite: Option<String>,
-    },
-    /// Change an edge's until/invite or raise its role
-    Edge {
-        t: String,
-        holder: String,
-        #[arg(long)]
         role: Option<String>,
         #[arg(long, value_name = "TS")]
         until: Option<String>,
         #[arg(long, value_name = "ROLE")]
         invite: Option<String>,
     },
-    /// Lower HOLDER to ROLE or `remove` (after the pre-sync)
-    Demote {
+    /// Make HOLDER's role on T this one: read, write, admin, or none to remove (lowering and removing
+    /// catch up first)
+    SetRole {
         t: String,
         holder: String,
         role: String,
         #[command(flatten)]
-        d: DemoteFlags,
+        d: SetRoleFlags,
     },
-    /// Remove this person's own edge on T
-    Leave { t: String },
+    /// Lower or remove (ROLE none) HOLDER as `set-role` does, also undoing its key changes this device
+    /// cannot open: for a writer that locked everyone out, and nothing else
+    Repudiate {
+        t: String,
+        holder: String,
+        role: String,
+        #[command(flatten)]
+        d: SetRoleFlags,
+    },
+    /// Remove this person's own grant on T, or with --holder that of an actor this device is an
+    /// admin of (no catching up)
+    Leave {
+        t: String,
+        #[arg(long, value_name = "ACTOR")]
+        holder: Option<String>,
+    },
     /// List this device's kept read-only copies of what it was removed from, or erase ACTOR's
     Kept {
         #[arg(long, value_name = "ACTOR")]
         drop: Option<String>,
     },
-    /// Place T in group G and give G a tied edge on T (it goes when the placement goes)
-    ShareInto {
+    /// Add T to group G and grant G ROLE on it, tied together: the grant goes when T leaves G
+    AddWithGrant {
         t: String,
         g: String,
         role: String,
-        /// Place T as a subgroup of G, not an item
+        /// T joins as a subgroup of G, not an item
         #[arg(long)]
         subgroup: bool,
-        /// Place even when this node may not grant (T is then excluded)
-        #[arg(long)]
-        place_anyway: bool,
     },
-    /// As an admin of group G, remove G's edge on T (a self-removal)
-    RemoveEdgeOf { g: String, t: String },
-    /// Per group listing T (or with a tied edge on it): tied, untied or excluded
-    Reach { t: String },
     /// Share links
     #[command(subcommand)]
     Link(LinkCmd),
@@ -498,7 +491,7 @@ pub enum DeviceCmd {
         #[arg(id = "device", value_name = "NODE")]
         node: String,
         #[command(flatten)]
-        d: DemoteFlags,
+        d: SetRoleFlags,
         /// Also end the person's links: the device keeps their seeds. Without it they are listed
         #[arg(long)]
         end_links: bool,
@@ -517,7 +510,7 @@ pub enum ClientsCmd {
     /// Registers a thin client: prints `ACTOR SECRET`, the secret (64 hex digits) only here. Grant
     /// the actor what it may reach
     Add {
-        /// When it ends (as `share --until`)
+        /// When it ends (as `grant --until`)
         #[arg(long)]
         until: Option<String>,
     },
@@ -597,10 +590,8 @@ pub enum LinkCmd {
     /// End link ID; with --joiner, also remove that joiner in the same commit
     Revoke {
         id: String,
-        #[arg(long, value_name = "ACTOR")]
-        joiner: Option<String>,
         #[command(flatten)]
-        d: DemoteFlags,
+        d: SyncFlags,
     },
 }
 
@@ -702,8 +693,8 @@ pub enum ChatCmd {
     /// Deletes a message for everyone
     Delete { chat: String, id: String },
     Leave { chat: String },
-    /// Who holds what (a link joiner: via its link), the links that work, and the chat's settings
-    Members { chat: String },
+    /// Who takes part in what role (a link joiner: via its link), the links that work, and the chat's settings
+    Participants { chat: String },
     /// The disappearing timer: DUR, or `off`
     Disappear { chat: String, after: String },
 }

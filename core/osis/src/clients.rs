@@ -95,15 +95,15 @@ impl Osis {
         Ok(self.at(self.node(), ct::CLIENTS).get()?.unwrap_or_default().into_iter().map(|(actor, c)| Client { actor, until: c.until }).collect())
     }
 
-    /// Revokes a thin client: its sessions end at once, its actor is demoted from everything it
-    /// holds an edge on (the normal removals with their rotations, spec/permissions.md §3), then
-    /// the entry goes. `false` when there is no entry. The entry stays, ended, until every
-    /// demotion went, so a failure or a crash halfway is retried by calling this again.
+    /// Removes a thin client: its sessions end at once, its actor loses every role it holds, then
+    /// the entry goes. `false` when there is no entry. The entry stays, ended, until every role is
+    /// gone, so a failure or a crash halfway is retried by calling this again.
     ///
-    /// No pre-sync: a client actor's commits are all this node's own (one node serves a client),
-    /// so there is nothing elsewhere to wait for. A demotion this node may not make fails here, as
-    /// does a grant on a thing this node reads at another node (`Unsupported`, the sessions ended,
-    /// the entry staying: move its group home and call this again).
+    /// Unlike `set_role` and `remove_device`, this takes no options and never waits: all a client
+    /// wrote went through this node, so there is nothing elsewhere to catch up on, and a client's
+    /// actor has no device to keep a copy. A role this node may not remove fails here, as does one
+    /// on a thing this node reads at another node (`Unsupported`, the sessions ended, the entry
+    /// staying: move its group home and call this again).
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
         if self.is_attached() {
             let v = self.rcall(method::REMOVE_CLIENT, vec![Value::Tid(actor)])?;

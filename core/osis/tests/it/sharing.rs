@@ -8,7 +8,7 @@ use crate::common;
 use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
-use osis::{Demotion, DiagnosticKind, Error, Lower, Osis, Role, SyncScope, SyncState, Tid, Value, WaitForSync};
+use osis::{SetRole, SyncFirst, DiagnosticKind, Error, Osis, Role, SyncScope, SyncState, Tid, Value};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -63,28 +63,28 @@ fn diags(db: &Osis, kind: DiagnosticKind) -> std::sync::mpsc::Receiver<Vec<Tid>>
     rx
 }
 
-// notes/api.md Sharing (change_edge, leave), spec/permissions.md §2: a raise is a change, a
-// lower role is refused there (`demote`); a holder's self-removal reaches the admin.
+// notes/api.md Sharing (grant, leave), spec/permissions.md §2: a raise is a change, a lower role
+// is refused there (`set_role`); a holder's self-removal reaches the admin.
 #[test]
-fn change_edge_and_leave_spec_permissions_2() {
+fn grant_and_leave_spec_permissions_2() {
     let mut w = World::new();
     let (alice, bob, g) = alice_bob(&mut w, Role::Read);
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
-    alice.change_edge(g, bob.me(), Role::Write, Default::default()).unwrap();
-    assert!(matches!(alice.change_edge(g, bob.me(), Role::Read, Default::default()), Err(Error::Invalid(_))));
+    alice.grant(g, bob.me(), Role::Write, Default::default()).unwrap();
+    assert!(matches!(alice.grant(g, bob.me(), Role::Read, Default::default()), Err(Error::Invalid(_))));
     w.run();
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Write));
     let u = item(&bob, g, g, "as a writer");
     w.run();
     assert_eq!(x(&alice, u), Some(s("as a writer")));
-    bob.leave(g).unwrap();
+    bob.leave(bob.me(), g).unwrap();
     w.run();
-    assert!(!alice.roster(g).unwrap().contains_key(&bob.me()));
+    assert!(!alice.grants(g).unwrap().contains_key(&bob.me()));
     assert_eq!(bob.role_on(g).unwrap(), None);
 }
 
 // notes/api.md Sharing: `grant` never lowers a role: lowering needs a pre-sync and a rotation, which
-// only `demote` runs. A grant at the same role still changes `until` and `invite`, a raise goes
+// only `set_role` runs. A grant at the same role still changes `until` and `invite`, a raise goes
 // through, and the refused grant writes nothing and says what to call.
 // spec: none (API surface, notes/api.md)
 #[test]
@@ -103,18 +103,18 @@ fn grant_refuses_a_lower_role() {
     for (t, to, had) in [(g, Role::Read, Role::Write), (plain, Role::Write, Role::Admin), (plain, Role::Read, Role::Admin)] {
         let before = alice.engine(|e| e.commit_ids().len());
         let r = alice.grant(t, b, to, Default::default());
-        assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("demote")), "{r:?}");
+        assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("set_role")), "{r:?}");
         assert_eq!(alice.engine(|e| e.commit_ids().len()), before, "nothing written");
-        assert_eq!(alice.roster(t).unwrap()[&b].role, had);
+        assert_eq!(alice.grants(t).unwrap()[&b].role, had);
     }
     w.run();
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Write));
     // the same role changes the rest of the grant
     let until = osis::WallMs(alice.now().0 + 1_000_000);
-    alice.grant(g, b, Role::Write, osis::EdgeOpts { until: Some(until), invite: None }).unwrap();
-    assert_eq!(alice.roster(g).unwrap()[&b].until, Some(until));
+    alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(until), invite: None }).unwrap();
+    assert_eq!(alice.grants(g).unwrap()[&b].until, Some(until));
     alice.grant(g, b, Role::Admin, Default::default()).unwrap();
-    assert_eq!(alice.roster(g).unwrap()[&b].role, Role::Admin);
+    assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Admin);
 }
 
 // notes/api.md Sharing (revoke_link), spec/permissions.md §8: revoking a multi-use link removes
@@ -130,7 +130,7 @@ fn revoke_link_spec_permissions_8() {
     assert_eq!(ls.len(), 1);
     assert!(!ls[0].single_use);
     w.run();
-    w.until(alice.revoke_link(ls[0].id, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None }), 1000, 5).unwrap();
+    w.until(alice.revoke_link(ls[0].id, SyncFirst::Skip), 1000, 5).unwrap();
     assert!(alice.links_of(g).unwrap().is_empty());
 }
 
@@ -157,8 +157,8 @@ fn device(w: &mut World, db: &Osis, seed: u64) -> Tid {
     node
 }
 
-fn skip_sync() -> Demotion {
-    Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None }
+fn skip_sync() -> SetRole {
+    SetRole { sync: SyncFirst::Skip, keep: None }
 }
 
 // spec/permissions.md §4 (current `keys.0`), spec/crypto.md §4 (keyset names): a rotation of a group names a holder's keyset; a holder with a late host has an inbox write as its newest `keys.0`; an admin who joins after the rotation still gets the keyset, or holds no established epoch to box a grant with
@@ -183,7 +183,7 @@ fn newcomer_admin_after_a_rotation_naming_a_late_host_holder_spec_crypto_4() {
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
-    w.until(alice.demote(g, ids[1], Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.until(alice.set_role(g, ids[1], None, skip_sync()), 1000, 10).unwrap();
     w.run();
     alice.grant(g, ids[2], Role::Admin, Default::default()).unwrap();
     w.run();
@@ -249,9 +249,9 @@ fn new_device_gets_k_keyset_before_its_box_spec_permissions_4() {
     w.run();
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
-    let k = alice.links_of(g).unwrap()[0].id;
+    let k = alice.links_of(g).unwrap()[0].id.actor();
     // K rotates when the joiner leaves
-    w.until(bob.demote(k, bob.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.until(bob.set_role(k, bob.me(), None, skip_sync()), 1000, 10).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -279,8 +279,8 @@ fn redeem_after_a_joiner_left_spec_permissions_8() {
     w.run();
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
-    let k = alice.links_of(g).unwrap()[0].id;
-    w.until(bob.demote(k, bob.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    w.until(bob.set_role(k, bob.me(), None, skip_sync()), 1000, 10).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -293,7 +293,7 @@ fn redeem_after_a_joiner_left_spec_permissions_8() {
     assert_eq!(x(&alice, u), Some(s("from carol")));
     assert_eq!(alice.links_of(g).unwrap().len(), 1, "the link still works and says so");
     // twice over: the entry box names only the last rotation's wrap
-    w.until(carol.demote(k, carol.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.until(carol.set_role(k, carol.me(), None, skip_sync()), 1000, 10).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -319,7 +319,7 @@ fn ended_link_fails_clearly_spec_permissions_8() {
     let g = group(&alice);
     let revoked = alice.make_link(g, Role::Write, Default::default()).unwrap();
     w.run();
-    w.until(alice.revoke_link(alice.links_of(g).unwrap()[0].id, skip_sync()), 1000, 10).unwrap();
+    w.until(alice.revoke_link(alice.links_of(g).unwrap()[0].id, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(alice.links_of(g).unwrap().is_empty());
     assert!(matches!(w.until(carol.redeem(&revoked), 1000, 30), Err(Error::Invalid(_))));
@@ -328,7 +328,7 @@ fn ended_link_fails_clearly_spec_permissions_8() {
     w.run();
     w.until(bob.redeem(&kicked), 1000, 30).unwrap();
     w.run();
-    w.until(alice.revoke_joiner(alice.links_of(g).unwrap()[0].id, bob.me(), skip_sync()), 1000, 10).unwrap();
+    w.until(alice.set_role(g, bob.me(), None, skip_sync()), 1000, 10).unwrap();
     w.run();
     assert!(alice.links_of(g).unwrap().is_empty());
     assert!(matches!(w.until(carol.redeem(&kicked), 1000, 30), Err(Error::Invalid(_))));
@@ -359,9 +359,9 @@ fn redeem_after_a_read_joiner_left_spec_permissions_8() {
     w.run();
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
-    let k = alice.links_of(g).unwrap()[0].id;
+    let k = alice.links_of(g).unwrap()[0].id.actor();
     let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
-    w.until(bob.demote(k, bob.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.until(bob.set_role(k, bob.me(), None, skip_sync()), 1000, 10).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -443,7 +443,7 @@ fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_8() {
     alice.grant(held, c, Role::Read, Default::default()).unwrap();
     let t = item(&alice, other, other, "in the other group");
     let link = alice.make_link(other, Role::Write, Default::default()).unwrap();
-    let k = alice.links_of(other).unwrap()[0].id;
+    let k = alice.links_of(other).unwrap()[0].id.actor();
     w.run();
     assert_eq!(carol.role_on(held).unwrap(), Some(Role::Read));
     let bad = naming(&link, held);
@@ -454,7 +454,7 @@ fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_8() {
         assert_eq!(x(db, t), None, "{who}: what the key read went with it");
         let groups = db.status().unwrap().groups;
         assert!(!groups.contains_key(&other) && !groups.contains_key(&k), "{who}: no longer synced");
-        assert!(!alice.roster(k).unwrap().contains_key(&db.me()), "{who}");
+        assert!(!alice.grants(k).unwrap().contains_key(&db.me()), "{who}");
     }
     assert_eq!(carol.role_on(held).unwrap(), Some(Role::Read));
     // the key was not spent: the honest link still works
@@ -503,13 +503,13 @@ fn redeem_after_k_left_the_target_spec_permissions_8() {
     let (carol, _) = w.person(3, &[host]);
     let g = group(&alice);
     let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
-    let k = alice.links_of(g).unwrap()[0].id;
+    let k = alice.links_of(g).unwrap()[0].id.actor();
     w.run();
-    w.until(alice.demote(g, k, Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.until(alice.set_role(g, k, None, skip_sync()), 1000, 10).unwrap();
     w.run();
     assert!(matches!(w.until(carol.redeem(&link), 1000, 30), Err(Error::Invalid(_))));
     w.run();
-    assert!(!alice.roster(k).unwrap().contains_key(&carol.me()));
+    assert!(!alice.grants(k).unwrap().contains_key(&carol.me()));
 }
 
 // spec/permissions.md §8 (Bearer use), spec/sync.md §3 (invite requests): a contact card naming a thing its K holds no edge on makes nobody a contact: its owner would count as connected on the word of the card's text
@@ -551,7 +551,7 @@ fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_8() {
     let g = group(&alice);
     let other = group(&alice);
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
-    let k = alice.links_of(g).unwrap()[0].id;
+    let k = alice.links_of(g).unwrap()[0].id.actor();
     let l = alice.engine(|e| e.held_links().unwrap().iter().find(|h| h.k == k).unwrap().l);
     w.run();
     let bad = naming(&link, other);
@@ -560,7 +560,7 @@ fn redeem_cut_off_mid_read_is_no_verdict_spec_permissions_8() {
     assert!(!carol.sync_engine(|e| e.complete_pass(&k)));
     w.set_reachable(&carol, host, false);
     assert!(matches!(w.until(redeem, 1000, 200), Err(Error::Network(_))));
-    assert!(!alice.roster(k).unwrap().contains_key(&carol.me()));
+    assert!(!alice.grants(k).unwrap().contains_key(&carol.me()));
 }
 
 // spec/permissions.md §8 (Redeem), §3: a link read while its maker's upload stalled, K's head there and K's commits not: the failed redemption drops what the head gave, and a retry opens K's label anew and joins (the steps stop the upload at points inside that stretch)
@@ -620,9 +620,9 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     let (carol, _) = w.person(3, &[0]);
     let t = item(&alice, g, g, "x");
     let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
-    let k = alice.links_of(g).unwrap()[0].id;
+    let k = alice.links_of(g).unwrap()[0].id.actor();
     let one = alice.make_link(g, Role::Read, osis::LinkOpts { single_use: true, ..Default::default() }).unwrap();
-    let k1 = alice.links_of(g).unwrap().into_iter().map(|l| l.id).find(|x| *x != k).unwrap();
+    let k1 = alice.links_of(g).unwrap().into_iter().map(|l| l.id.actor()).find(|x| *x != k).unwrap();
     let card = alice.contact_card().unwrap();
     w.run();
     // a sibling's: the used-up link fails on the other device, the role through the person stays
@@ -649,8 +649,8 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     w.run();
     assert_eq!(alice.role_on(mine).unwrap(), Some(Role::Read), "still a contact, its keys here");
     // a kept copy: after a wrong target, then the link's own key revoked; a joiner's role likewise
-    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: Some(true) };
-    w.until(alice.demote(g, bob.me(), Lower::Remove, d), 1000, 10).unwrap();
+    let d = SetRole { sync: SyncFirst::Skip, keep: Some(true) };
+    w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
     w.run();
     assert_eq!(bob.kept_copies().unwrap(), vec![g]);
     assert!(w.until(bob.redeem(&naming(&link, alice.me())), 1000, 200).is_err());
@@ -658,7 +658,7 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     assert_eq!((bob.kept_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a wrong target");
     assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
     w.run();
-    w.until(alice.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+    w.until(alice.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(matches!(w.until(bob.redeem(&link), 1000, 200), Err(Error::Invalid(_))));
     w.run();
@@ -687,8 +687,8 @@ fn one_host_refusing_is_no_end_spec_permissions_8() {
     w.run();
     let policy = osis_host::HostPolicy { cap_bytes: 1, ..osis_host::HostPolicy::default() };
     w.hosts[capped].hub.store_mut().set_policy(policy);
-    let k = alice.links_of(g).unwrap()[0].id;
-    w.until(bob.demote(k, bob.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    w.until(bob.set_role(k, bob.me(), None, skip_sync()), 1000, 10).unwrap();
     w.run();
     w.advance(70_000);
     w.run();
@@ -705,7 +705,7 @@ fn one_host_refusing_is_no_end_spec_permissions_8() {
     w.run();
     assert_eq!(x(&carol, t), Some(s("from alice")));
     // revoked: a redeemer with one host down waits it out, with every host refusing is told at once
-    w.until(alice.revoke_link(alice.links_of(g).unwrap()[0].id, skip_sync()), 1000, 10).unwrap();
+    w.until(alice.revoke_link(alice.links_of(g).unwrap()[0].id, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     w.hosts[capped].hub.store_mut().set_policy(osis_host::HostPolicy::default());
     w.advance(70_000);
@@ -720,7 +720,7 @@ fn one_host_refusing_is_no_end_spec_permissions_8() {
     assert!(matches!(w.until(redeem, 1000, 10), Err(Error::Invalid(_))));
 }
 
-// spec/permissions.md §5.3, notes/api.md Demotion: offline, `Required` fails `Unsynced` after
+// spec/permissions.md §5.3, notes/api.md Demotion and the pre-sync: offline, `Required` fails `Unsynced` after
 // `PRESYNC_WAIT`; `Try` proceeds after its timeout with an `Unsynced` diagnostic.
 #[test]
 fn demotion_presync_policies_spec_permissions_5_3() {
@@ -729,13 +729,13 @@ fn demotion_presync_policies_spec_permissions_5_3() {
     item(&bob, g, g, "bob wrote");
     w.run();
     w.set_online(&alice, false);
-    let r = w.until(alice.demote(g, bob.me(), Lower::Remove, Demotion::default()), 10_000, 10);
+    let r = w.until(alice.set_role(g, bob.me(), None, SetRole::default()), 10_000, 10);
     assert!(matches!(r, Err(Error::Unsynced { ref groups }) if groups.contains(&g)), "{r:?}");
-    assert!(alice.roster(g).unwrap().contains_key(&bob.me()), "nothing stamped");
+    assert!(alice.grants(g).unwrap().contains_key(&bob.me()), "nothing stamped");
     let unsynced = diags(&alice, DiagnosticKind::Unsynced);
-    let t = Demotion { sync: WaitForSync::Try(Duration::from_secs(5)), backdate: None, repudiate: false, keep: None };
-    w.until(alice.demote(g, bob.me(), Lower::To(Role::Read), t), 1000, 10).unwrap();
-    assert_eq!(alice.roster(g).unwrap().get(&bob.me()).map(|e| e.role), Some(Role::Read));
+    let t = SetRole { sync: SyncFirst::Try(Duration::from_secs(5)), keep: None };
+    w.until(alice.set_role(g, bob.me(), Some(Role::Read), t), 1000, 10).unwrap();
+    assert_eq!(alice.grants(g).unwrap().get(&bob.me()).map(|e| e.role), Some(Role::Read));
     assert!(recv(&unsynced).contains(&g));
 }
 
@@ -763,7 +763,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
     w.run();
     let stranded = diags(&db, DiagnosticKind::Stranded);
     w.set_online(&db, false);
-    w.until(da.remove_device(node, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None }), 1000, 5).unwrap();
+    w.until(da.remove_device(node, SetRole { sync: SyncFirst::Skip, keep: None }), 1000, 5).unwrap();
     item(&da, da.me(), home, "after the removal");
     w.run();
     w.set_online(&db, true);
@@ -794,7 +794,7 @@ fn sharers_other_device_deposits_no_foreign_heartbeat_spec_permissions_4() {
     .detach();
     let g = group(&alice);
     alice.make_link(g, Role::Read, Default::default()).unwrap();
-    let k = alice.links_of(g).unwrap()[0].id;
+    let k = alice.links_of(g).unwrap()[0].id.actor();
     w.run();
     w.advance(70_000);
     w.run();
@@ -891,18 +891,18 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     assert_eq!((bob.role_on(g).unwrap(), carol.role_on(g).unwrap()), (Some(Role::Admin), Some(Role::Admin)));
     w.set_online(&carol, false);
     w.advance(60_000);
-    w.until(bob.demote(g, c, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None }), 1000, 10).unwrap();
+    w.until(bob.set_role(g, c, None, SetRole { sync: SyncFirst::Skip, keep: None }), 1000, 10).unwrap();
     w.run();
     let until = osis::WallMs(w.now() + 3_600_000);
-    carol.change_edge(g, b, Role::Admin, osis::EdgeOpts { until: Some(until), invite: None }).unwrap();
-    assert_eq!(carol.roster(g).unwrap().get(&b).and_then(|e| e.until), Some(until), "carol wrote it");
+    carol.grant(g, b, Role::Admin, osis::GrantOpts { until: Some(until), invite: None }).unwrap();
+    assert_eq!(carol.grants(g).unwrap().get(&b).and_then(|e| e.until), Some(until), "carol wrote it");
     // straight to Alice and Bob (G's hosts refuse her stale write key)
     deliver(&carol, &alice);
     deliver(&carol, &bob);
     w.run();
     w.advance(3_700_000);
     for db in [&alice, &bob] {
-        let r = db.roster(g).unwrap();
+        let r = db.grants(g).unwrap();
         assert_eq!(r.get(&b).map(|e| (e.role, e.until)), Some((Role::Admin, None)));
         assert!(!r.contains_key(&c));
     }
@@ -987,16 +987,16 @@ fn removing_a_device_lists_its_links_spec_permissions_8() {
     w.run();
     let made_there = db.make_link(g, Role::Read, Default::default()).unwrap();
     w.run();
-    let there = da.links_of(g).unwrap()[0].id;
+    let there = da.links_of(g).unwrap()[0].id.actor();
     let made_here = da.make_link(g, Role::Read, Default::default()).unwrap();
     w.run();
     let links = da.links_of(g).unwrap();
     assert_eq!(links.len(), 2, "every device lists the person's links");
-    let here = links.iter().map(|l| l.id).find(|k| *k != there).unwrap();
+    let here = links.iter().map(|l| l.id.actor()).find(|k| *k != there).unwrap();
     let stranger = carol.node();
     assert!(w.until(da.remove_device(stranger, skip_sync()), 1000, 10).unwrap().is_empty(), "no device of this person");
     let open = w.until(da.remove_device(db.node(), skip_sync()), 1000, 10).unwrap();
-    let mut ids: Vec<Tid> = open.iter().map(|l| l.id).collect();
+    let mut ids: Vec<Tid> = open.iter().map(|l| l.id.actor()).collect();
     ids.sort();
     let mut want = vec![there, here];
     want.sort();
@@ -1007,11 +1007,11 @@ fn removing_a_device_lists_its_links_spec_permissions_8() {
     // the removal ended neither: the seed still reads
     assert_eq!(w.until(bob.redeem(&made_there), 1000, 30).unwrap(), g);
     w.run();
-    w.until(da.revoke_link(there, skip_sync()), 1000, 10).unwrap();
+    w.until(da.revoke_link(crate::common::link_id(there), SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert!(w.until(carol.redeem(&made_there), 1000, 30).is_err(), "revoked from the device left");
     assert_eq!(w.until(carol.redeem(&made_here), 1000, 30).unwrap(), g, "the other still works");
-    assert_eq!(da.links().unwrap().iter().map(|l| l.id).collect::<Vec<_>>(), vec![here]);
+    assert_eq!(da.links().unwrap().iter().map(|l| l.id.actor()).collect::<Vec<_>>(), vec![here]);
 }
 
 fn pair_device(w: &mut World, da: &Osis, seed: u64) -> Osis {
@@ -1038,7 +1038,7 @@ fn moving_hosts_keeps_a_link_made_on_another_device_spec_permissions_8() {
         let db = pair_device(&mut w, &da, 4);
         let link = da.make_link(g, Role::Read, Default::default()).unwrap();
         w.run();
-        let k = db.links_of(g).unwrap()[0].id;
+        let k = db.links_of(g).unwrap()[0].id.actor();
         let mover = if by_maker { &da } else { &db };
         mover.add_host(&w.addr(h1).unwrap()).unwrap();
         w.run();
@@ -1052,7 +1052,7 @@ fn moving_hosts_keeps_a_link_made_on_another_device_spec_permissions_8() {
             w.run();
         }
         assert_eq!(x(&bob, t), Some(s("shared")), "by maker {by_maker}");
-        assert!(da.roster(k).unwrap().contains_key(&bob.me()), "the redemption reached the sharer");
+        assert!(da.grants(k).unwrap().contains_key(&bob.me()), "the redemption reached the sharer");
     }
 }
 
@@ -1070,10 +1070,10 @@ fn moving_hosts_after_a_revoke_keeps_the_links_label_spec_permissions_8() {
         let db = pair_device(&mut w, &da, 4);
         let link = da.make_link(g, Role::Read, Default::default()).unwrap();
         w.run();
-        let k = db.links_of(g).unwrap()[0].id;
+        let k = db.links_of(g).unwrap()[0].id.actor();
         let mover = if by_maker { &da } else { &db };
         w.set_reachable(mover, h0, false);
-        w.until(mover.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+        w.until(mover.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
         mover.add_host(&w.addr(h1).unwrap()).unwrap();
         mover.remove_host(&w.addr(h0).unwrap()).unwrap();
         w.run();
@@ -1102,15 +1102,15 @@ fn removed_device_revokes_no_link_spec_permissions_8() {
         let db = pair_device(&mut w, &da, 4);
         let link = da.make_link(g, Role::Read, Default::default()).unwrap();
         w.run();
-        let k = db.links_of(g).unwrap()[0].id;
+        let k = db.links_of(g).unwrap()[0].id.actor();
         w.set_online(&db, aware);
         w.until(da.remove_device(db.node(), skip_sync()), 1000, 10).unwrap();
         w.run();
         if aware {
             assert!(db.links().unwrap().is_empty());
-            assert!(matches!(w.until(db.revoke_link(k, skip_sync()), 1000, 10), Err(Error::Invalid(_))));
+            assert!(matches!(w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10), Err(Error::Invalid(_))));
         } else {
-            w.until(db.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+            w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
             w.set_online(&db, true);
         }
         for _ in 0..3 {
@@ -1137,19 +1137,19 @@ fn two_devices_act_on_a_link_spec_permissions_8() {
         let db = pair_device(&mut w, &da, 4);
         let link = da.make_link(g, Role::Read, Default::default()).unwrap();
         w.run();
-        let k = db.links_of(g).unwrap()[0].id;
+        let k = db.links_of(g).unwrap()[0].id.actor();
         match order {
             0 => {
                 w.set_online(&db, false);
                 assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
-                w.until(db.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+                w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
                 w.set_online(&db, true);
             }
             1 => {
                 w.set_online(&db, false);
-                w.until(da.revoke_link(k, skip_sync()), 1000, 10).unwrap();
-                w.until(db.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+                w.until(da.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
+                w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
                 w.set_online(&db, true);
             }
             2 => {
@@ -1157,15 +1157,15 @@ fn two_devices_act_on_a_link_spec_permissions_8() {
                 assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
                 w.set_online(&da, false);
-                w.until(db.demote(g, bob.me(), Lower::Remove, skip_sync()), 1000, 20).unwrap();
+                w.until(db.set_role(g, bob.me(), None, skip_sync()), 1000, 20).unwrap();
                 w.set_online(&da, true);
             }
             _ => {
                 assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
                 w.run();
                 w.set_online(&db, false);
-                w.until(da.demote(g, bob.me(), Lower::Remove, skip_sync()), 1000, 20).unwrap();
-                w.until(db.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+                w.until(da.set_role(g, bob.me(), None, skip_sync()), 1000, 20).unwrap();
+                w.until(db.revoke_link(crate::common::link_id(k), SyncFirst::Skip), 1000, 10).unwrap();
                 w.set_online(&db, true);
             }
         }
@@ -1173,8 +1173,8 @@ fn two_devices_act_on_a_link_spec_permissions_8() {
             w.advance(60_000);
             w.run();
         }
-        let r = da.roster(k).unwrap();
-        assert_eq!(r, db.roster(k).unwrap(), "order {order}");
+        let r = da.grants(k).unwrap();
+        assert_eq!(r, db.grants(k).unwrap(), "order {order}");
         assert!(da.links_of(g).unwrap().is_empty() && db.links_of(g).unwrap().is_empty(), "order {order}");
         assert!(!r.contains_key(&bob.me()), "order {order}");
         if order == 2 {
@@ -1210,8 +1210,128 @@ fn links_listed_on_every_device_and_after_restore_spec_permissions_8() {
     }
     assert_eq!(re.links().unwrap().len(), 3);
     let id = re.links_of(t).unwrap().iter().find(|l| !l.single_use).unwrap().id;
-    w.until(re.revoke_link(id, skip_sync()), 1000, 10).unwrap();
+    w.until(re.revoke_link(id, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(da.links().unwrap().len(), 2);
     assert_eq!(db.links().unwrap().len(), 2);
+}
+
+// notes/api.md Sharing (`set_role`), spec/permissions.md §2: a raise waits for nothing and keeps
+// `until` and `invite`; a lowering caps `invite` and keeps `until`; a role that stays writes nothing;
+// no current role: `Some` grants, `None` writes nothing; `keep` beside a role is `Invalid`, at once.
+#[test]
+fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let b = bob.me();
+    let commits = |db: &Osis| db.engine(|e| e.commit_ids().len());
+    let until = osis::WallMs(alice.now().0 + 1_000_000);
+    alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(until), invite: Some(Role::Write) }).unwrap();
+
+    let before = commits(&alice);
+    w.until(alice.set_role(g, b, Some(Role::Write), Default::default()), 1000, 5).unwrap();
+    assert_eq!(commits(&alice), before, "the same role");
+    let keep = SetRole { keep: Some(true), ..Default::default() };
+    assert!(matches!(w.until(alice.set_role(g, b, Some(Role::Read), keep), 1000, 5), Err(Error::Invalid(_))));
+    assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Write, "nothing written");
+
+    // a raise: no pre-sync, whatever `sync` says, so a cut-off node raises too
+    w.set_online(&alice, false);
+    w.until(alice.set_role(g, b, Some(Role::Admin), Default::default()), 1000, 5).unwrap();
+    let e = alice.grants(g).unwrap()[&b];
+    assert_eq!((e.role, e.until, e.invite), (Role::Admin, Some(until), Some(Role::Write)));
+    w.set_online(&alice, true);
+    w.run();
+
+    w.until(alice.set_role(g, b, Some(Role::Read), skip_sync()), 1000, 5).unwrap();
+    let e = alice.grants(g).unwrap()[&b];
+    assert_eq!((e.role, e.until, e.invite), (Role::Read, Some(until), Some(Role::Read)), "invite capped");
+
+    // removed, then nothing to remove; `Some` grants anew with default options
+    w.until(alice.set_role(g, b, None, skip_sync()), 1000, 5).unwrap();
+    let before = commits(&alice);
+    w.until(alice.set_role(g, b, None, skip_sync()), 1000, 5).unwrap();
+    assert_eq!(commits(&alice), before, "no role, none to remove");
+    w.until(alice.set_role(g, b, Some(Role::Read), Default::default()), 1000, 5).unwrap();
+    let e = alice.grants(g).unwrap()[&b];
+    assert_eq!((e.role, e.until, e.invite), (Role::Read, None, None));
+}
+
+// spec/permissions.md §3, §5.1: a new edge below one past its `until` is a demotion to receivers,
+// with a frontier and a rotation: `grant` refuses it as it does a live one, and `set_role` makes it.
+// At its old role or above, `grant` renews it. Whatever ended, the holder has the role afterwards.
+#[test]
+fn a_role_below_an_ended_grant_takes_set_role() {
+    for role in [Role::Write, Role::Admin] {
+        let mut w = World::new();
+        let (alice, bob, g) = alice_bob(&mut w, role);
+        let b = bob.me();
+        let until = osis::WallMs(alice.now().0 + 1000);
+        alice.grant(g, b, role, osis::GrantOpts { until: Some(until), invite: None }).unwrap();
+        w.run();
+        w.advance(2000);
+        assert!(!alice.grants(g).unwrap().contains_key(&b), "ended");
+        let before = alice.engine(|e| e.commit_ids().len());
+        let r = alice.grant(g, b, Role::Read, Default::default());
+        assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("set_role")), "{r:?}");
+        assert_eq!(alice.engine(|e| e.commit_ids().len()), before, "nothing written");
+        w.until(alice.set_role(g, b, Some(Role::Read), skip_sync()), 1000, 10).unwrap();
+        w.run();
+        assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Read);
+        assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
+        // ended once more: renewed at its role
+        alice.grant(g, b, Role::Read, osis::GrantOpts { until: Some(osis::WallMs(alice.now().0 + 1000)), invite: None }).unwrap();
+        w.run();
+        w.advance(2000);
+        alice.grant(g, b, Role::Read, Default::default()).unwrap();
+        w.run();
+        assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
+    }
+}
+
+// notes/api.md Sharing (`leave`), spec/permissions.md §2: no such grant writes nothing; another
+// actor needs this node its admin (`Permission`), and an admin of the target is sent to `set_role`.
+#[test]
+fn leave_of_no_grant_and_of_others() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Read);
+    let before = bob.engine(|e| e.commit_ids().len());
+    bob.leave(alice.me(), bob.me()).unwrap();
+    assert_eq!(bob.engine(|e| e.commit_ids().len()), before, "no such grant");
+    let host = w.add_host();
+    let (carol, _) = w.person(3, &[host]);
+    w.run();
+    let card = carol.contact_card().unwrap();
+    w.run();
+    let c = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    alice.grant(g, c, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert!(bob.grants(g).unwrap().contains_key(&c));
+    assert!(matches!(bob.leave(c, g), Err(Error::Permission { .. })));
+    assert!(matches!(alice.leave(bob.me(), g), Err(Error::Invalid(_))), "Alice is g's admin: set_role");
+    assert!(alice.grants(g).unwrap().contains_key(&bob.me()));
+}
+
+// notes/api.md Sharing (`holders`), spec/permissions.md §2, §8: one entry per grant that makes an
+// actor a holder: direct and through a link both, the role the least along the way; `holders` of
+// the link's actor answers who holds through it.
+#[test]
+fn holders_lists_every_grant_and_who_holds_through_a_link() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    let hs = alice.holders(g).unwrap();
+    let ways: Vec<&osis::Holder> = hs.iter().filter(|h| h.actor == bob.me()).collect();
+    assert_eq!(ways.iter().map(|h| (h.role, h.through.clone())).collect::<Vec<_>>(), vec![(Role::Write, vec![]), (Role::Read, vec![k])]);
+    assert!(alice.holders(k).unwrap().iter().any(|h| h.actor == bob.me() && h.through.is_empty()));
+    // nearest first
+    let depth: Vec<usize> = hs.iter().map(|h| h.through.len()).collect();
+    assert!(depth.windows(2).all(|d| d[0] <= d[1]), "{depth:?}");
+    // a removal goes down both
+    w.until(alice.set_role(g, bob.me(), None, skip_sync()), 1000, 10).unwrap();
+    assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }

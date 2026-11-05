@@ -5,7 +5,7 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::ak;
 use osis::internals::Internals as _;
-use osis::{Ak, Change, CommitQuery, Config, MemStore, Osis, Runtime, Scope, Source, StoreAt, Transport, Value};
+use osis::{SetRole, SyncFirst, Ak, Change, CommitQuery, Config, MemStore, Osis, Runtime, Scope, Source, StoreAt, Transport, Value};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
@@ -74,7 +74,7 @@ fn attached_handle_works_at_the_node() {
     assert!(c.knows(t).unwrap() && !c.knows(osis::Tid::from_bytes([7; 15])).unwrap());
     assert_eq!(c.groups_of(t).unwrap(), n.groups_of(t).unwrap());
     assert!(c.groups_of(t).unwrap().item_of.contains(&g));
-    assert_eq!(c.roster(t).unwrap(), n.roster(t).unwrap());
+    assert_eq!(c.grants(t).unwrap(), n.grants(t).unwrap());
     assert_eq!(c.role_on(t).unwrap(), n.role_on(t).unwrap());
     assert_eq!(c.owner_of(t).unwrap(), Some(n.me()));
     assert_eq!(c.created(t).unwrap(), n.created(t).unwrap());
@@ -464,17 +464,17 @@ fn attached_wait_synced_as_at_the_node() {
     c.grant(g, n.node(), Role::Read, Default::default()).unwrap();
     let link = c.make_link(g, Role::Read, Default::default()).unwrap();
     assert!(!link.to_string().is_empty());
-    // `share` through the port: the node syncs a thing nothing carries, and it has a label there
+    // through the port: the node syncs a thing nothing carries, and it has a label there
     let lone = c.batch(|w| w.create(c.me())).unwrap();
-    c.share(lone, n.node(), Role::Read, Default::default()).unwrap();
+    c.sync(lone, &[]).unwrap();
+    c.grant(lone, n.node(), Role::Read, Default::default()).unwrap();
     assert_eq!(n.status().unwrap().groups[&lone].labels.len(), 1);
     block_on(c.wait_synced(SyncScope::Group(lone), W)).unwrap();
     // the sharing reads agree with the node's
     assert_eq!(c.links_of(g).unwrap().len(), 1);
     assert_eq!(c.links_of(g).unwrap(), n.links_of(g).unwrap());
-    assert_eq!(c.reach(t).unwrap(), n.reach(t).unwrap());
-    assert!(!c.holder_path(g, n.node()).unwrap().is_empty());
-    assert_eq!(c.holder_path(g, n.node()).unwrap(), n.holder_path(g, n.node()).unwrap());
+    assert!(!c.holders(g).unwrap().is_empty());
+    assert_eq!(c.holders(g).unwrap(), n.holders(g).unwrap());
     c.sync_now().unwrap();
     block_on(c.wait_synced(SyncScope::Group(t), W)).unwrap();
     block_on(c.wait_synced(SyncScope::All, W)).unwrap();
@@ -562,7 +562,7 @@ fn until(mut f: impl FnMut() -> bool, what: &str) {
 #[test]
 fn rows_that_wait_through_the_socket() {
     use crate::common::block_on;
-    use osis::{Demotion, Lower, Role, SyncScope, WaitForSync};
+    use osis::{Role, SyncScope};
     let d = Dir::new();
     let net = osis_transport::Net::new(2);
     let (host, addr) = mem_host(&net);
@@ -586,41 +586,40 @@ fn rows_that_wait_through_the_socket() {
         (g, t)
     };
     let (g, t) = group("x");
-    let plain = Demotion { sync: WaitForSync::Required, backdate: None, repudiate: false, keep: None };
+    let plain = SetRole { sync: SyncFirst::Required, keep: None };
     // a joiner by link, through its daemon
     let link = ca.make_link(g, Role::Write, Default::default()).unwrap();
     block_on(ca.wait_synced(SyncScope::All, W)).unwrap();
     assert_eq!(block_on(cb.redeem(&link)).unwrap(), g);
     until(|| cb.at(t, k.clone()).get().is_ok_and(|v| v == Some(Value::Str("x".into()))), "the group's content at Bob");
     let bob = cb.me();
-    until(|| !ca.holder_path(g, bob).unwrap().is_empty(), "the join reached Alice");
+    until(|| ca.holders(g).unwrap().iter().any(|h| h.actor == bob), "the join reached Alice");
     // its removal, through hers: the link ends with it
     assert_eq!(ca.links_of(g).unwrap().len(), 1);
-    block_on(ca.demote(g, bob, Lower::Remove, plain)).unwrap();
-    assert!(ca.holder_path(g, bob).unwrap().is_empty());
-    assert_eq!(ca.links_of(g).unwrap().len(), 0);
     // an error of the flow comes back as itself
-    assert!(matches!(block_on(ca.demote(g, bob, Lower::To(Role::Read), plain)), Err(osis::Error::Invalid(_))));
+    assert!(matches!(block_on(ca.set_role(g, bob, Some(Role::Read), plain)), Err(osis::Error::Invalid(_))));
+    block_on(ca.set_role(g, bob, None, plain)).unwrap();
+    assert!(!ca.holders(g).unwrap().iter().any(|h| h.actor == bob));
+    assert_eq!(ca.links_of(g).unwrap().len(), 0);
     // a direct holder lowered: the role goes over the wire
     let (g2, _) = group("y");
-    ca.share(g2, bob, Role::Write, Default::default()).unwrap();
-    block_on(ca.demote(g2, bob, Lower::To(Role::Read), Demotion { sync: WaitForSync::Try(Duration::from_secs(5)), ..plain })).unwrap();
-    assert_eq!(a.roster(g2).unwrap().get(&bob).map(|e| e.role), Some(Role::Read));
+    ca.grant(g2, bob, Role::Write, Default::default()).unwrap();
+    block_on(ca.set_role(g2, bob, Some(Role::Read), SetRole { sync: SyncFirst::Try(Duration::from_secs(5)), ..plain })).unwrap();
+    assert_eq!(a.grants(g2).unwrap().get(&bob).map(|e| e.role), Some(Role::Read));
     // ending a link, and a joiner of one
     let (g3, _) = group("z");
     let l3 = ca.make_link(g3, Role::Read, Default::default()).unwrap();
-    let id = ca.links_of(g3).unwrap()[0].id;
-    block_on(ca.revoke_link(id, plain)).unwrap();
+    let id = ca.links_of(g3).unwrap()[0].id.actor();
+    block_on(ca.revoke_link(crate::common::link_id(id), SyncFirst::Required)).unwrap();
     assert_eq!(ca.links_of(g3).unwrap().len(), 0);
     assert!(!l3.to_string().is_empty());
     let (g4, _) = group("w");
     let l4 = ca.make_link(g4, Role::Read, Default::default()).unwrap();
     block_on(ca.wait_synced(SyncScope::All, W)).unwrap();
     assert_eq!(block_on(cb.redeem(&l4)).unwrap(), g4);
-    let id = ca.links_of(g4).unwrap()[0].id;
-    until(|| !ca.holder_path(g4, bob).unwrap().is_empty(), "the second join reached Alice");
-    block_on(ca.revoke_joiner(id, bob, Demotion { keep: Some(false), ..plain })).unwrap();
-    assert!(ca.holder_path(g4, bob).unwrap().is_empty());
+    until(|| ca.holders(g4).unwrap().iter().any(|h| h.actor == bob), "the second join reached Alice");
+    block_on(ca.set_role(g4, bob, None, SetRole { keep: Some(false), ..plain })).unwrap();
+    assert!(!ca.holders(g4).unwrap().iter().any(|h| h.actor == bob));
     // a contact card made and imported through the sockets
     let card = cb.contact_card().unwrap();
     assert_eq!(card, b.contact_card().unwrap());
@@ -788,7 +787,7 @@ fn process_wide_rows_through_the_socket() {
     c3.import_bundle(&out[..]).unwrap();
     until(|| p2.at(t, ak("note:big.0")).get().is_ok_and(|v| v == Some(Value::Str(big.clone()))), "the bundle's value at the other device");
     // the new device removed, through the socket
-    crate::common::block_on(c.remove_device(node, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).unwrap();
+    crate::common::block_on(c.remove_device(node, SetRole { sync: SyncFirst::Skip, keep: None })).unwrap();
     assert_eq!(c.devices().unwrap().len(), 1);
     // pages lost to a reconnect: the import says so and runs nothing
     let mut raw = Raw::unix(&sock);

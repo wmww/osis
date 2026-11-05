@@ -6,7 +6,7 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::{ak, block_on};
 use osis::internals::Internals as _;
-use osis::{ClientSecret, Config, Error, GroupSource, HostAddr, MemStore, Osis, RemoteConfig, Role, Runtime, StoreAt, SyncScope, SyncState, Tid, Transport, Value};
+use osis::{SetRole, SyncFirst, Member, ClientSecret, Config, Error, GroupSource, HostAddr, MemStore, Osis, RemoteConfig, Role, Runtime, StoreAt, SyncScope, SyncState, Tid, Transport, Value};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
@@ -346,16 +346,15 @@ fn disconnected_remote_is_network_never_stale() {
     // every read of a thing there says so, none answers with a default
     assert!(matches!(x.p.knows(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.groups_of(x.t), Err(Error::Network(_))));
-    assert!(matches!(x.p.roster(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.grants(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.role_on(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.owner_of(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.created(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.changed(x.t), Err(Error::Network(_))));
-    assert!(matches!(x.p.reach(x.t), Err(Error::Network(_))));
-    assert!(matches!(x.p.holder_path(x.t, x.p.me()), Err(Error::Network(_))));
+    assert!(matches!(x.p.holders(x.t), Err(Error::Network(_))));
     assert!(x.p.links().unwrap().is_empty(), "the links are this node's: none is at the node gone");
     assert!(matches!(x.p.watch_thing(x.t, |_, _| {}), Err(Error::Network(_))));
-    assert!(matches!(x.p.watch_roster(x.t, |_, _| {}), Err(Error::Network(_))));
+    assert!(matches!(x.p.on_grants_change(x.t, |_, _| {}), Err(Error::Network(_))));
     let before = x.p_local_copy();
     assert!(matches!(x.p.commit_set(x.t, title(), &s("lost?")), Err(Error::Network(_))));
     assert_eq!(x.p_local_copy(), before);
@@ -1063,10 +1062,10 @@ fn a_demotion_of_a_routed_group_is_refused() {
     let (other, _) = x.n.add_client(None).unwrap();
     x.n.grant(x.g, other, Role::Read, Default::default()).unwrap();
     block_on(x.n.wait_synced(SyncScope::Group(x.g), W)).unwrap();
-    let d = osis::Demotion { sync: osis::WaitForSync::Skip, ..Default::default() };
-    let r = block_on(x.p.demote(x.g, x.actor, osis::Lower::Remove, d));
+    let d = SetRole { sync: SyncFirst::Skip, ..Default::default() };
+    let r = block_on(x.p.set_role(x.g, x.actor, None, d));
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
-    assert!(x.n.roster(x.g).unwrap().contains_key(&x.actor));
+    assert!(x.n.grants(x.g).unwrap().contains_key(&x.actor));
     assert!(x.p.engine(|e| e.roster(&x.g).contains_key(&x.actor)), "nothing written to the local copy");
     drop(x.host);
 }
@@ -1268,7 +1267,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
         Ok(t)
     }).unwrap();
     let (both, placed) = (thing(), thing());
-    x.n.share_into(both, h, Role::Write, Default::default()).unwrap();
+    x.n.add_with_grant(Member::Item(both), h, Role::Write).unwrap();
     block_on(x.n.wait_synced(SyncScope::All, W)).unwrap();
     until("P has them", || {
         let _ = x.p.sync_now();
@@ -1449,7 +1448,7 @@ fn a_split_thing_reads_at_the_route_and_refuses_writes() {
     let x = world();
     let w_db = third_node(&x);
     let h = second_group(&x);
-    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    x.p.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
     x.attach_p();
     x.to_remote();
@@ -1496,7 +1495,7 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
     x.to_remote();
     x.p.commit_set(x.t, title(), &s("acked")).unwrap();
     assert!(x.p.status().unwrap().split.is_empty());
-    x.n.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    x.n.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.n.wait_synced(SyncScope::Group(h), W)).unwrap();
     until("P learnt it through H", || {
         let _ = x.p.sync_now();
@@ -1526,7 +1525,7 @@ fn placing_a_routed_thing_in_a_local_group_changes_nothing() {
     x.p.commit_set(x.t, title(), &s("again")).unwrap();
     assert_eq!(x.n.at(x.t, title()).get().unwrap(), Some(s("again")));
     // with a shared edge it would be split: refused, two sources
-    assert!(matches!(x.p.share_into(x.t, h, Role::Read, Default::default()), Err(Error::Invalid(_))));
+    assert!(matches!(x.p.add_with_grant(Member::Item(x.t), h, Role::Read), Err(Error::Invalid(_))));
     drop(x.host);
 }
 
@@ -1535,7 +1534,7 @@ fn placing_a_routed_thing_in_a_local_group_changes_nothing() {
 fn a_client_of_this_node_reads_no_split_thing() {
     let x = world();
     let h = second_group(&x);
-    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    x.p.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     let (a, _) = x.p.add_client(None).unwrap();
     x.p.grant(x.t, a, Role::Read, Default::default()).unwrap();
     assert!(x.p.engine(|e| e.readable_by(&a, &x.t)));
@@ -1634,7 +1633,7 @@ fn status_and_diagnostic_watches_started_while_down_come_up() {
     let x = world();
     let c = x.thin("c1");
     let (tx, rx) = channel();
-    let _r = c.watch_roster(x.g, move |_, r| {
+    let _r = c.on_grants_change(x.g, move |_, r| {
         let _ = tx.send(r);
     }).unwrap();
     assert!(rx.recv_timeout(W).unwrap().unwrap().contains_key(&x.actor));
@@ -1642,7 +1641,7 @@ fn status_and_diagnostic_watches_started_while_down_come_up() {
     x.net.disconnect("c1", "n");
     until("down", || c.at(x.t, title()).get().is_err());
     assert!(matches!(rx.recv_timeout(W).unwrap(), Err(Error::Network(_))), "the lost connection is told");
-    assert!(matches!(c.watch_roster(x.g, |_, _| {}), Err(Error::Network(_))));
+    assert!(matches!(c.on_grants_change(x.g, |_, _| {}), Err(Error::Network(_))));
     let (st, sr) = channel();
     let _st = c.watch_status(move |_, s| {
         let _ = st.send(s.remotes[0].connected);
@@ -1683,7 +1682,7 @@ fn moving_home_after_a_share_into_a_second_group() {
     };
     x.p.sync(h, &[]).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
-    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    x.p.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
     // the blob opened here before the group stops syncing
     until("the share's inbox blob opened at P", || {
@@ -1716,7 +1715,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     let mut w = x.p.write();
     w.at(x.g, title()).set(&s("on g")).unwrap();
     let c = w.commit().unwrap().unwrap();
-    x.n.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    x.n.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.n.wait_synced(SyncScope::Group(h), W)).unwrap();
     until("P learnt it through H", || {
         let _ = x.p.sync_now();
@@ -1737,7 +1736,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
 fn split_shows_through_the_port_and_after_a_restart() {
     let mut x = world();
     let h = second_group(&x);
-    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    x.p.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
     x.attach_p();
     x.to_remote();
@@ -1769,7 +1768,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
 fn a_split_made_after_the_route_refuses_the_write() {
     let x = world();
     let h = second_group(&x);
-    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    x.p.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
     x.attach_p();
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.to_string());

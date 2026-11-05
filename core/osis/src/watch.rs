@@ -67,7 +67,7 @@ pub struct Change<T> {
 pub(crate) enum Filter {
     Aspect(Tid, Ak),
     Thing(Tid),
-    Roster(Tid),
+    Grants(Tid),
     /// Per commit: an aspect's history (`AspectRef::on_history`).
     History(Tid, Ak),
     Diagnostics,
@@ -97,7 +97,7 @@ pub(crate) enum Delivery {
     /// A signal aspect fired (notes/ephemeral.md): once per callback, never coalesced, never in
     /// state.
     Fired { tid: Tid, ak: Ak, source: Source, value: Value },
-    Roster,
+    Grants,
     /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise.
     History { tid: Tid, id: ChangeId },
     Diagnostic(Diagnostic),
@@ -245,7 +245,7 @@ impl Dispatch {
             .subs
             .values()
             .filter_map(|s| match &s.filter {
-                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Roster(t) | Filter::History(t, _) => Some((s.id, false, *t)),
+                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Grants(t) | Filter::History(t, _) => Some((s.id, false, *t)),
                 Filter::Port(token, Some(t)) => Some((*token, true, *t)),
                 _ => None,
             })
@@ -374,7 +374,7 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         return out;
     }
     match m {
-        Msg::Event(Event::Roster { thing }) => to(&|f| *f == Filter::Roster(*thing), Delivery::Roster),
+        Msg::Event(Event::Roster { thing }) => to(&|f| *f == Filter::Grants(*thing), Delivery::Grants),
         Msg::Event(Event::Diagnostic(d)) => to(&|f| *f == Filter::Diagnostics, Delivery::Diagnostic(d.clone())),
         Msg::Status(st) => to(&|f| *f == Filter::Status, Delivery::Status(st.clone())),
         Msg::Port(t, ev) => to(&|f| matches!(f, Filter::Port(x, _) if x == t), Delivery::Port(ev.clone())),

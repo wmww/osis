@@ -8,7 +8,7 @@ use crate::common;
 use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
-use osis::{Demotion, Lower, Osis, Role, SyncScope, SyncState, Tid, Value};
+use osis::{SetRole, SyncFirst, Member, Osis, Role, SyncScope, SyncState, Tid, Value};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -79,7 +79,7 @@ fn pairing_spec_permissions_1() {
     let devs: Vec<Tid> = da.devices().unwrap().into_iter().map(|d| d.node).collect();
     assert!(devs.contains(&da.node()) && devs.contains(&db.node()), "{devs:?}");
     // a lost device, removed without waiting (spec/permissions.md §5.3 `Skip`)
-    let skip = osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
     w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
     assert!(!da.devices().unwrap().iter().any(|d| d.node == db.node()));
     let after = item(&da, da.me(), da.me(), "after the removal");
@@ -177,7 +177,7 @@ fn client_commit_reaches_a_third_device() {
     assert_eq!(x(&bob, t), Some(s("by the client")));
     let last = &bob.commits(&osis::CommitQuery::new().scope(osis::Scope::Thing(t))).unwrap()[0];
     assert_eq!((last.commit.actor, last.commit.node), (actor, alice.node()));
-    assert_eq!(bob.roster(g).unwrap().get(&actor).map(|e| e.role), Some(Role::Write));
+    assert_eq!(bob.grants(g).unwrap().get(&actor).map(|e| e.role), Some(Role::Write));
     // and Bob's writes still reach Alice's client view
     let mut wr = bob.write();
     wr.at(t, ak("t:x.0")).set(&s("by bob")).unwrap();
@@ -333,8 +333,8 @@ fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     w.run();
     assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
-    let k = alice.links_of(g).unwrap()[0].id;
-    let l = alice.roster(k).unwrap().into_keys().find(|m| alice.owner_of(*m).unwrap().is_none()).unwrap();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    let l = alice.grants(k).unwrap().into_keys().find(|m| alice.owner_of(*m).unwrap().is_none()).unwrap();
     (alice, bob, g, k, l)
 }
 
@@ -369,7 +369,7 @@ fn until_link_finalized_by_other_device_spec_permissions_8() {
     w.run();
     assert!(finalized(&alice, k, l), "the other device's removal arrived");
     assert_eq!(removals(&alice), 0, "and wrote no removal of its own");
-    assert!(alice.roster(k).unwrap().contains_key(&bob.me()) && bob.role_on(g).unwrap().is_some(), "the joiner stays");
+    assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && bob.role_on(g).unwrap().is_some(), "the joiner stays");
 }
 
 // spec/permissions.md §8 (link finalized): Alice's only device is offline when the link expires; it removes L
@@ -385,7 +385,7 @@ fn until_link_finalized_when_sharer_returns_spec_permissions_8() {
     w.advance(60_000);
     w.run();
     assert!(finalized(&alice, k, l));
-    assert!(alice.roster(k).unwrap().contains_key(&bob.me()) && bob.role_on(g).unwrap().is_some(), "the joiner stays");
+    assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && bob.role_on(g).unwrap().is_some(), "the joiner stays");
 }
 
 /// Alice's synced group with a multi-use read link redeemed by Bob and Carol: (world, alice,
@@ -402,35 +402,39 @@ fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
         assert_eq!(w.until(o.redeem(&link), 1000, 10).unwrap(), g);
         w.run();
     }
-    let k = alice.links_of(g).unwrap()[0].id;
-    let l = alice.roster(k).unwrap().into_keys().find(|m| alice.owner_of(*m).unwrap().is_none()).unwrap();
+    let k = alice.links_of(g).unwrap()[0].id.actor();
+    let l = alice.grants(k).unwrap().into_keys().find(|m| alice.owner_of(*m).unwrap().is_none()).unwrap();
     (w, alice, bob, carol, g, k, l)
 }
 
 // spec/permissions.md §8 (a joiner is revoked together with the link key), notes/api.md
-// Sharing (`holder_path`, `demote`): a link joiner reaches the target through K; removing it on
+// Sharing (`holders`, `set_role`): a link joiner reaches the target through K; removing it on
 // the target removes it and L from K in one commit, so a failed pre-sync leaves both in place
 // and a retry completes; a second removal writes nothing; a joiner's role cannot be lowered.
 #[test]
 fn demote_link_joiner_spec_permissions_8() {
     let (mut w, alice, bob, carol, g, k, l) = joined_by_link();
-    assert_eq!(alice.holder_path(g, bob.me()).unwrap(), vec![(g, k), (k, bob.me())]);
+    let way = |db: &Osis, t: Tid| db.holders(t).unwrap().into_iter().find(|h| h.actor == bob.me());
+    assert_eq!(way(&alice, g).unwrap().through, vec![k]);
+    // who holds through K: its own holders, and those of the thing going through it
+    assert_eq!(way(&alice, k).unwrap().through, Vec::<Tid>::new());
+    assert!(alice.holders(g).unwrap().iter().any(|h| h.through == vec![k] && h.actor == bob.me()));
     // offline, the required pre-sync fails: nothing changed
     w.set_online(&alice, false);
-    let r = w.until(alice.demote(g, bob.me(), Lower::Remove, Demotion::default()), 1000, 60);
+    let r = w.until(alice.set_role(g, bob.me(), None, SetRole::default()), 1000, 60);
     assert!(matches!(r, Err(osis::Error::Unsynced { .. })), "{r:?}");
-    assert!(alice.roster(k).unwrap().contains_key(&bob.me()) && alice.roster(k).unwrap().contains_key(&l), "no half-removal");
+    assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && alice.grants(k).unwrap().contains_key(&l), "no half-removal");
     w.set_online(&alice, true);
-    let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
-    w.until(alice.demote(g, bob.me(), Lower::Remove, skip), 1000, 10).unwrap();
-    let r = alice.roster(k).unwrap();
+    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
+    w.until(alice.set_role(g, bob.me(), None, skip), 1000, 10).unwrap();
+    let r = alice.grants(k).unwrap();
     assert!(!r.contains_key(&bob.me()) && !r.contains_key(&l) && r.contains_key(&carol.me()));
-    assert!(alice.holder_path(g, bob.me()).unwrap().is_empty());
+    assert!(way(&alice, g).is_none());
     assert!(alice.links_of(g).unwrap().is_empty(), "the link ends with its joiner");
     let commits = alice.engine(|e| e.commit_ids().len());
-    w.until(alice.demote(g, bob.me(), Lower::Remove, skip), 1000, 10).unwrap();
+    w.until(alice.set_role(g, bob.me(), None, skip), 1000, 10).unwrap();
     assert_eq!(alice.engine(|e| e.commit_ids().len()), commits, "nothing left to remove");
-    assert!(matches!(w.until(alice.demote(g, carol.me(), Lower::To(Role::Read), skip), 1000, 10), Err(osis::Error::Invalid(_))));
+    assert!(matches!(w.until(alice.set_role(g, carol.me(), Some(Role::Read), skip), 1000, 10), Err(osis::Error::Invalid(_))));
 }
 
 // spec/permissions.md §8, notes/api.md Sharing (`demote`): after a joiner's removal the other
@@ -445,8 +449,8 @@ fn demote_link_joiner_content_spec_permissions_8() {
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let alice2 = join.finish(&reply).unwrap();
     w.run();
-    let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
-    w.until(alice2.demote(g, bob.me(), Lower::Remove, skip), 1000, 20).unwrap();
+    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
+    w.until(alice2.set_role(g, bob.me(), None, skip), 1000, 20).unwrap();
     let after = item(&alice, g, g, "after bob left");
     w.run();
     assert_eq!(x(&carol, after), Some(s("after bob left")));
@@ -470,8 +474,8 @@ fn removal_rotates_spec_permissions_3() {
     w.run();
     let by_bob = item(bob, g, g, "bob was here");
     w.run();
-    w.until(alice.demote(g, ids[0], osis::Lower::Remove, osis::Demotion::default()), 1000, 10).unwrap();
-    assert!(!alice.roster(g).unwrap().contains_key(&ids[0]));
+    w.until(alice.set_role(g, ids[0], None, SetRole::default()), 1000, 10).unwrap();
+    assert!(!alice.grants(g).unwrap().contains_key(&ids[0]));
     let after = item(&alice, g, g, "after bob left");
     w.run();
     assert_eq!(x(carol, after), Some(s("after bob left")));
@@ -501,7 +505,7 @@ fn dropped_demote_ends_its_receipts_read() {
     alice.sync_policy(h, osis::GroupPolicy { receipts_only: true, ..Default::default() }).unwrap();
     w.run();
     w.set_online(&alice, false);
-    let mut d = Box::pin(alice.demote(g, ids[0], Lower::Remove, Demotion::default()));
+    let mut d = Box::pin(alice.set_role(g, ids[0], None, SetRole::default()));
     assert!(d.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
     assert_eq!(alice.sync_engine(|s| s.receipts_read(&[h])), None, "reading");
     drop(d);
@@ -548,7 +552,7 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
         w.set_online(db, false);
     }
     let before = log(&w);
-    w.until(phone.demote(g, ids[0], Lower::Remove, Demotion::default()), 1000, 30).unwrap();
+    w.until(phone.set_role(g, ids[0], None, SetRole::default()), 1000, 30).unwrap();
     w.run();
     assert_eq!(log(&w), before, "the phone placed nothing under H's label");
     // received by header only (spec/permissions.md §5.1)
@@ -560,7 +564,7 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
     // the dials wait for their retry time
     w.advance(10_000);
     w.run();
-    assert!(!carol.roster(g).unwrap().contains_key(&ids[0]));
+    assert!(!carol.grants(g).unwrap().contains_key(&ids[0]));
     assert_eq!(x(carol, in_g), Some(s("bob in g")));
     assert_eq!(x(carol, in_h), Some(s("bob in h")), "his edit under H stays: the phone's frontier covers it");
 }
@@ -965,7 +969,7 @@ fn add_host_scope_spec_sync_2() {
     w.run();
     assert_eq!(alice.role_on(his).unwrap(), Some(Role::Admin));
     alice.make_link(mine, Role::Read, osis::LinkOpts::default()).unwrap();
-    let k = alice.links_of(mine).unwrap()[0].id;
+    let k = alice.links_of(mine).unwrap()[0].id.actor();
     w.run();
     let hosts = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|l| !l.replaced).unwrap().hosts.len());
     alice.add_host(&w.addr(s1).unwrap()).unwrap();
@@ -1069,7 +1073,7 @@ fn a_grant_then_a_sync_gives_the_route() {
     alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), None);
-    assert_eq!(bob.roster(t).unwrap().get(&ids[0]).map(|e| e.role), Some(Role::Write), "the role is held: the blob carried the granter's chain");
+    assert_eq!(bob.grants(t).unwrap().get(&ids[0]).map(|e| e.role), Some(Role::Write), "the role is held: the blob carried the granter's chain");
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
     assert!(alice.status().unwrap().groups[&t].labels.is_empty(), "no label on a grant");
@@ -1114,17 +1118,18 @@ fn share_syncs_only_when_the_holder_has_no_route() {
     let t = item(&alice, g, g, "in g");
     w.run();
     assert_eq!(x(&others[0], t), Some(s("in g")));
-    alice.share(t, ids[0], Role::Write, Default::default()).unwrap();
+    alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t), "bob reads g, which carries it");
-    alice.share(t, ids[1], Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
     assert!(alice.status().unwrap().groups.contains_key(&t), "carol reads no label of it: synced");
     w.run();
     assert_eq!(x(&others[1], t), Some(s("in g")));
     let u = plain(&alice, "local");
     let (a, _) = alice.add_client(None).unwrap();
-    alice.share(u, a, Role::Read, Default::default()).unwrap();
+    alice.grant(u, a, Role::Read, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&u), "a client reads what this node holds");
-    assert!(matches!(alice.share(u, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
+    assert!(matches!(alice.grant(u, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
     assert!(!alice.status().unwrap().groups.contains_key(&u), "nothing synced for a refused share");
 }
 
@@ -1135,7 +1140,8 @@ fn an_unsync_after_a_share_cuts_the_route() {
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
     let t = plain(&alice, "one");
-    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("one")));
     alice.unsync(t).unwrap();
@@ -1188,9 +1194,9 @@ fn losing_the_group_but_keeping_the_edge_loses_the_route() {
     alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("in g")));
-    w.until(alice.demote(g, ids[0], Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(alice.set_role(g, ids[0], None, skip()), 1000, 10).unwrap();
     w.run();
-    assert!(bob.roster(t).unwrap().contains_key(&ids[0]) && !bob.roster(g).unwrap().contains_key(&ids[0]));
+    assert!(bob.grants(t).unwrap().contains_key(&ids[0]) && !bob.grants(g).unwrap().contains_key(&ids[0]));
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
     alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
@@ -1214,7 +1220,8 @@ fn a_thing_in_a_synced_group_shared_with_an_outsider() {
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
     assert!(!bob.knows(g).unwrap());
-    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("in g")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
@@ -1246,27 +1253,29 @@ fn a_grant_on_someone_elses_item() {
     alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
     let shared = |v: &str| {
         let t = plain(&alice, v);
-        alice.share_into(t, g, Role::Read, Default::default()).unwrap();
+        alice.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
         t
     };
     let t = shared("alice's");
     alice.grant(t, ids[0], Role::Admin, Default::default()).unwrap();
     let u = shared("invite");
-    alice.grant(u, ids[1], Role::Read, osis::EdgeOpts { invite: Some(Role::Read), ..Default::default() }).unwrap();
+    alice.grant(u, ids[1], Role::Read, osis::GrantOpts { invite: Some(Role::Read), ..Default::default() }).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t), "both read g");
     let card = dan.contact_card().unwrap();
     w.run();
     let d = w.until(carol.import_contact(&card), 1000, 10).unwrap();
     w.until(bob.import_contact(&card), 1000, 10).unwrap();
     w.run();
-    let r = carol.share(u, d, Role::Read, Default::default());
+    // an invite does not reach as far as giving the thing a route
+    let r = carol.sync(u, &[]);
     assert!(matches!(r, Err(osis::Error::Permission { tid, .. }) if tid == u), "{r:?}");
-    assert!(!carol.roster(u).unwrap().contains_key(&d), "nothing written");
+    assert!(!carol.grants(u).unwrap().contains_key(&d), "nothing written");
     carol.grant(u, d, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(unrouted(carol, u), vec![d]);
     assert_eq!(x(dan, u), None);
-    bob.share(t, d, Role::Read, Default::default()).unwrap();
+    bob.sync(t, &[]).unwrap();
+    bob.grant(t, d, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dan, t), Some(s("alice's")));
     assert!(unrouted(bob, t).is_empty());
@@ -1285,7 +1294,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     alice.grant(t, h, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), None);
-    assert!(bob.roster(t).unwrap().contains_key(&h), "the group's reader learns the role under its label");
+    assert!(bob.grants(t).unwrap().contains_key(&h), "the group's reader learns the role under its label");
     assert_eq!(unrouted(&alice, t), vec![h]);
     assert_eq!(unrouted(bob, t), vec![h]);
     alice.sync(t, &[]).unwrap();
@@ -1303,7 +1312,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     w.run();
     assert_eq!(x(carol, t), Some(s("later")));
     // and the edge's end reaches them
-    w.until(alice.demote(t, h, Lower::Remove, Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }), 1000, 10).unwrap();
+    w.until(alice.set_role(t, h, None, SetRole { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
     w.run();
     alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
     w.run();
@@ -1415,7 +1424,8 @@ fn an_excluded_thing_is_no_route_through_its_group() {
     assert_eq!(x(bob, t), None);
     assert_eq!(unrouted(&alice, t), vec![ids[0]], "the granter");
     assert_eq!(unrouted(bob, t), vec![ids[0]], "the holder");
-    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("excluded")));
 }
@@ -1441,8 +1451,8 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
     let sub = group("sub");
     let t = plain(&alice, "deep");
-    alice.share_into(sub, g, Role::Read, osis::ShareOpts { subgroup: true, ..Default::default() }).unwrap();
-    alice.share_into(t, sub, Role::Read, Default::default()).unwrap();
+    alice.add_with_grant(Member::Subgroup(sub), g, Role::Read).unwrap();
+    alice.add_with_grant(Member::Item(t), sub, Role::Read).unwrap();
     alice.batch(|w| w.place(sub, g)).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("deep")));
@@ -1461,7 +1471,7 @@ fn no_missing_route_where_nobody_misses_one() {
     assert!(unrouted(&alice, o).is_empty(), "local, as any thing placed nowhere");
     let p = crate::scenario::private_tag(&alice, "private").unwrap();
     let t = plain(&alice, "tagged");
-    alice.share_into(t, p, Role::Read, Default::default()).unwrap();
+    alice.add_with_grant(Member::Item(t), p, Role::Read).unwrap();
     w.run();
     assert!(unrouted(&alice, t).is_empty(), "a private tag in home");
     // a group Bob leaves behind: he read its item; he has no business with its route now
@@ -1474,10 +1484,10 @@ fn no_missing_route_where_nobody_misses_one() {
     alice.sync(g, &[]).unwrap();
     alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
     let item = plain(&alice, "item");
-    alice.share_into(item, g, Role::Read, Default::default()).unwrap();
+    alice.add_with_grant(Member::Item(item), g, Role::Read).unwrap();
     w.run();
     assert_eq!(x(bob, item), Some(s("item")));
-    w.until(alice.demote(g, ids[0], osis::Lower::Remove, osis::Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }), 1000, 20).unwrap();
+    w.until(alice.set_role(g, ids[0], None, SetRole { sync: SyncFirst::Skip, ..Default::default() }), 1000, 20).unwrap();
     w.run();
     w.advance(120_000);
     w.run();
@@ -1531,15 +1541,16 @@ fn a_grant_to_a_bare_node() {
     let bob = &others[0];
     let t = plain(&alice, "t");
     alice.grant(t, bob.node(), Role::Read, Default::default()).unwrap();
-    assert!(alice.roster(t).unwrap().contains_key(&bob.node()));
+    assert!(alice.grants(t).unwrap().contains_key(&bob.node()));
     assert_eq!(unrouted(&alice, t), vec![bob.node()]);
-    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("t")));
     assert!(unrouted(&alice, t).is_empty(), "its person reads it");
     alice.grant(t, bob.node(), Role::Write, Default::default()).unwrap();
     w.run();
-    assert_eq!(bob.roster(t).unwrap().get(&bob.node()).map(|e| e.role), Some(Role::Write));
+    assert_eq!(bob.grants(t).unwrap().get(&bob.node()).map(|e| e.role), Some(Role::Write));
 }
 
 // spec/permissions.md §1, spec/sync.md §2: an ownerless group's inbox is its own label: its readers read the grant from there, and the admin's copy serves later ones
@@ -1553,7 +1564,8 @@ fn a_grant_to_an_ownerless_group() {
     alice.grant(f, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     let t = plain(&alice, "for f");
-    alice.share(t, f, Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, f, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("for f")));
     alice.grant(f, ids[1], Role::Read, Default::default()).unwrap();
@@ -1578,7 +1590,8 @@ fn a_grant_to_a_group_is_copied_only_by_its_admin() {
         let log = |w: &World| osis_proto::store::LabelStore::log_head(w.hosts[0].hub.store(), &label).unwrap().1;
         let before = log(&w);
         let t = plain(&others[0], "for f");
-        others[0].share(t, f, Role::Read, Default::default()).unwrap();
+        others[0].sync(t, &[]).unwrap();
+        others[0].grant(t, f, Role::Read, Default::default()).unwrap();
         w.run();
         for o in &others {
             assert_eq!(x(o, t), Some(s("for f")));
@@ -1596,14 +1609,16 @@ fn grants_to_groups_nest() {
     let bob = &others[0];
     let (p, k) = (group(&alice), group(&alice));
     let t = plain(&alice, "in k");
-    alice.share(t, k, Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, k, Role::Read, Default::default()).unwrap();
     alice.grant(k, p, Role::Read, Default::default()).unwrap();
     w.run();
     alice.grant(p, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("in k")));
     let u = plain(&alice, "later in k");
-    alice.share(u, k, Role::Read, Default::default()).unwrap();
+    alice.sync(u, &[]).unwrap();
+    alice.grant(u, k, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, u), Some(s("later in k")));
 }
@@ -1641,21 +1656,22 @@ fn a_grant_to_a_group_by_an_outsider() {
     let h = group(&alice);
     // dave learns the group's keys and meets alice through a thing the group held, and is gone before bob comes
     let m = plain(&alice, "meeting");
-    alice.share(m, h, Role::Read, Default::default()).unwrap();
-    alice.share(m, ids[1], Role::Read, Default::default()).unwrap();
+    alice.sync(m, &[]).unwrap();
+    alice.grant(m, h, Role::Read, Default::default()).unwrap();
+    alice.grant(m, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dave, m), Some(s("meeting")));
-    w.until(alice.demote(m, h, Lower::Remove, Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }), 1000, 10).unwrap();
+    w.until(alice.set_role(m, h, None, SetRole { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
     w.run();
     let t = plain(dave, "dave's");
     dave.grant(t, h, Role::Read, Default::default()).unwrap();
     w.run();
     assert!(alice.invite_requests().unwrap().is_empty(), "connected");
-    assert!(alice.roster(t).unwrap().contains_key(&h), "applied without a label of the thing");
+    assert!(alice.grants(t).unwrap().contains_key(&h), "applied without a label of the thing");
     assert_eq!(unrouted(&alice, t), vec![h]);
     alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
-    assert!(bob.roster(t).unwrap().contains_key(&h), "copied under the group's label with his chain");
+    assert!(bob.grants(t).unwrap().contains_key(&h), "copied under the group's label with his chain");
     dave.sync(t, &[]).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("dave's")));
@@ -1672,14 +1688,15 @@ fn a_grant_to_a_holder_nothing_reaches() {
     let f = alice.create_ownerless(alice.me()).unwrap();
     alice.sync(f, &[]).unwrap();
     let m = plain(&alice, "meeting");
-    alice.share(m, f, Role::Read, Default::default()).unwrap();
-    alice.share(m, ids[0], Role::Read, Default::default()).unwrap();
+    alice.sync(m, &[]).unwrap();
+    alice.grant(m, f, Role::Read, Default::default()).unwrap();
+    alice.grant(m, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dave, m), Some(s("meeting")));
     let t = plain(dave, "dave's");
     dave.grant(t, f, Role::Read, Default::default()).unwrap();
     w.run();
-    assert!(dave.roster(t).unwrap().contains_key(&f));
+    assert!(dave.grants(t).unwrap().contains_key(&f));
     assert_eq!(unrouted(dave, t), vec![f]);
     assert!(!alice.knows(t).unwrap());
 }
@@ -1708,7 +1725,8 @@ fn a_grant_on_a_group_owned_item_by_an_admin_edge() {
     let u = item(&alice, g, g, "u");
     alice.grant(u, ids[0], Role::Admin, Default::default()).unwrap();
     w.run();
-    bob.share(u, d, Role::Read, Default::default()).unwrap();
+    bob.sync(u, &[]).unwrap();
+    bob.grant(u, d, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dan, u), Some(s("u")));
 }
@@ -1723,7 +1741,7 @@ fn a_grant_to_a_client_or_a_refused_one_makes_no_label() {
     alice.grant(t, a, Role::Read, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t));
     assert!(matches!(alice.grant(t, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
-    let r = alice.grant(t, ids[0], Role::Read, osis::EdgeOpts { invite: Some(Role::Write), ..Default::default() });
+    let r = alice.grant(t, ids[0], Role::Read, osis::GrantOpts { invite: Some(Role::Write), ..Default::default() });
     assert!(matches!(r, Err(osis::Error::Invalid(_))), "{r:?}");
     assert!(!alice.status().unwrap().groups.contains_key(&t));
 }
@@ -1742,11 +1760,11 @@ fn removal_keeps_a_copy_spec_permissions_3() {
         if let Some(k) = keep {
             alice.set_keep_default(g, k).unwrap();
         }
-        alice.grant(g, bob.me(), Role::Read, osis::EdgeOpts::default()).unwrap();
+        alice.grant(g, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        let d = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: say };
-        w.until(alice.demote(g, bob.me(), Lower::Remove, d), 1000, 10).unwrap();
+        let d = SetRole { sync: SyncFirst::Skip, keep: say };
+        w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
         assert_eq!(bob.kept_copies().unwrap().contains(&g), kept);
         assert_eq!(x(bob, t), kept.then(|| s("before")));
@@ -1772,10 +1790,10 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
         if let Some(k) = keep {
             alice.set_keep_default(g, k).unwrap();
         }
-        alice.grant(g, bob.me(), Role::Read, osis::EdgeOpts::default()).unwrap();
+        alice.grant(g, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
         w.run();
-        let d = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
-        w.until(alice.demote(g, bob.me(), Lower::Remove, d), 1000, 10).unwrap();
+        let d = SetRole { sync: SyncFirst::Skip, keep: None };
+        w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), keep.map(|_| s("before")));
         let mut wr = alice.write();
@@ -1809,8 +1827,8 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
         w.until(bob.redeem(&l), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        let d = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: say };
-        w.until(alice.demote(g, bob.me(), Lower::Remove, d), 1000, 10).unwrap();
+        let d = SetRole { sync: SyncFirst::Skip, keep: say };
+        w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), kept.then(|| s("before")), "link {link} say {say:?}");
     }
@@ -1831,15 +1849,15 @@ fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
     assert_eq!(x(&db, t), Some(s("before")));
     da.set_keep_default(da.me(), true).unwrap();
     w.run();
-    let skip = osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
     w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
     w.run();
     assert_eq!(x(&db, t), None, "the device erases");
     assert!(db.kept_copies().unwrap().is_empty());
 }
 
-fn skip() -> Demotion {
-    Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }
+fn skip() -> SetRole {
+    SetRole { sync: SyncFirst::Skip, ..Default::default() }
 }
 
 // spec/permissions.md §2, §3: a reader removed from a group a thing was granted to reads nothing written after; another reader and a later one do
@@ -1853,13 +1871,14 @@ fn kicked_from_a_group_ends_what_it_holds() {
     alice.grant(h, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
     let t = plain(&alice, "one");
-    alice.share(t, h, Role::Write, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, h, Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("one")));
     bob.commit_set(t, ak("t:x.0"), &s("bob's")).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("bob's")));
-    w.until(alice.demote(h, ids[0], Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(alice.set_role(h, ids[0], None, skip()), 1000, 10).unwrap();
     w.run();
     alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
     w.run();
@@ -1871,7 +1890,7 @@ fn kicked_from_a_group_ends_what_it_holds() {
     w.run();
     assert_eq!(x(dan, t), Some(s("after")));
     // the edge's end is under the group's label too: a reader after it reads nothing later
-    w.until(alice.demote(t, h, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(alice.set_role(t, h, None, skip()), 1000, 10).unwrap();
     w.run();
     alice.commit_set(t, ak("t:x.0"), &s("edge gone")).unwrap();
     w.run();
@@ -1892,7 +1911,8 @@ fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
     let (bob, carol, dan) = (&others[0], &others[1], &others[2]);
     let (p, k) = (group(&alice), group(&alice));
     let t = plain(&alice, "one");
-    alice.share(t, k, Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, k, Role::Read, Default::default()).unwrap();
     alice.grant(k, p, Role::Read, Default::default()).unwrap();
     alice.grant(p, ids[0], Role::Read, Default::default()).unwrap();
     alice.grant(p, ids[1], Role::Read, Default::default()).unwrap();
@@ -1903,14 +1923,14 @@ fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
     w.run();
     assert_eq!(x(bob, t), Some(s("one")));
     assert_eq!(x(dan, t), Some(s("one")), "joiner");
-    w.until(alice.demote(p, ids[0], Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(alice.set_role(p, ids[0], None, skip()), 1000, 10).unwrap();
     w.run();
     alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
     w.run();
     assert_ne!(x(bob, t), Some(s("after")));
     assert_eq!(x(carol, t), Some(s("after")));
     assert_eq!(x(dan, t), Some(s("after")));
-    w.until(alice.demote(p, dan.me(), Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(alice.set_role(p, dan.me(), None, skip()), 1000, 10).unwrap();
     w.run();
     alice.commit_set(t, ak("t:x.0"), &s("last")).unwrap();
     w.run();
@@ -1933,7 +1953,8 @@ fn a_grant_to_a_group_with_the_admin_away_and_two_admins() {
     w.set_online(&alice, false);
     w.set_online(eve, false);
     let t = plain(bob, "for f");
-    bob.share(t, f, Role::Read, Default::default()).unwrap();
+    bob.sync(t, &[]).unwrap();
+    bob.grant(t, f, Role::Read, Default::default()).unwrap();
     w.run();
     w.set_online(&alice, true);
     w.set_online(eve, true);
@@ -1957,14 +1978,16 @@ fn a_grant_to_a_group_by_an_outsider_with_two_admins() {
     alice.grant(h, ids[2], Role::Admin, Default::default()).unwrap();
     w.run();
     let m = plain(&alice, "meeting");
-    alice.share(m, h, Role::Read, Default::default()).unwrap();
-    alice.share(m, ids[1], Role::Read, Default::default()).unwrap();
+    alice.sync(m, &[]).unwrap();
+    alice.grant(m, h, Role::Read, Default::default()).unwrap();
+    alice.grant(m, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dave, m), Some(s("meeting")));
-    w.until(alice.demote(m, h, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.until(alice.set_role(m, h, None, skip()), 1000, 10).unwrap();
     w.run();
     let t = plain(dave, "dave's");
-    dave.share(t, h, Role::Read, Default::default()).unwrap();
+    dave.sync(t, &[]).unwrap();
+    dave.grant(t, h, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("dave's")));
     assert_eq!(x(eve, t), Some(s("dave's")));
@@ -2018,7 +2041,8 @@ fn a_wait_right_after_accepting_a_grant() {
     let bob = &others[0];
     w.holds_invites.insert(1);
     let t = plain(&alice, "there");
-    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.until(alice.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)), 1000, 30).unwrap();
     w.run();
     let r = w.until(bob.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)), 1000, 30);
@@ -2039,7 +2063,8 @@ fn a_new_devices_first_wait_on_a_shared_thing() {
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
     let t = plain(&alice, "alice's");
-    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     let mine = plain(bob, "bob's");
     bob.sync(mine, &[]).unwrap();
     w.run();
@@ -2075,7 +2100,8 @@ fn share_of_a_group_carries_its_items() {
     })
     .unwrap();
     let t = item(&alice, g, g, "in g");
-    alice.share(g, ids[0], Role::Read, Default::default()).unwrap();
+    alice.sync(g, &[]).unwrap();
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
     assert!(no_routes(&alice));
     w.until(alice.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)), 1000, 30).unwrap();
     w.run();

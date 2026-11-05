@@ -5,9 +5,8 @@ use crate::Ctx;
 use crate::cmd::{deliver, parse_role, wait};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
-use osis::{Tid, WaitForSync};
+use osis::{SyncFirst, Tid};
 use osis_chat::{Body, Draft, EditMode, Entry, Event, Id, Message, Options, PurgeBy, Timeline};
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, mpsc};
 
 fn id(s: &str) -> anyhow::Result<Id> {
@@ -162,9 +161,9 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             } else {
                 None
             };
-            wait(ctx, osis_chat::kick(&db, t, p, word, if no_sync { WaitForSync::Skip } else { WaitForSync::Required }))?;
+            wait(ctx, osis_chat::kick(&db, t, p, word, if no_sync { SyncFirst::Skip } else { SyncFirst::Required }))?;
             if purge {
-                osis_chat::purge_member(&db, t, p)?;
+                osis_chat::purge_participant(&db, t, p)?;
             }
             send_out(ctx, None)
         }
@@ -275,23 +274,23 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             osis_chat::leave(&db, ctx.tid(&chat)?)?;
             send_out(ctx, None)
         }
-        ChatCmd::Members { chat } => {
+        ChatCmd::Participants { chat } => {
             let t = ctx.tid(&chat)?;
             pull(ctx, t);
-            let m = osis_chat::members(&db, t)?;
-            let links = osis_chat::member_links(&db, t)?;
+            let m = osis_chat::participants(&db, t)?;
+            let links = osis_chat::links(&db, t)?;
             let s = osis_chat::settings(&db, t)?;
-            // through an actor, or none: a joiner's `via` is its link's K
-            let via = m.keys().map(|p| Ok((*p, match db.holder_path(t, *p)?.as_slice() {
-                [(_, k), _] => Some(*k),
+            // through an actor, or none: a joiner's `via` is its link's actor
+            let ways = db.holders(t)?;
+            let via = |p: Tid| ways.iter().find(|h| h.actor == p).and_then(|h| match h.through.as_slice() {
+                [k] => Some(*k),
                 _ => None,
-            }))).collect::<osis::Result<BTreeMap<Tid, Option<Tid>>>>()?;
-            let via = |p: Tid| via.get(&p).copied().flatten();
+            });
             let mut text: Vec<String> = m.iter().map(|(p, r)| format!("{} {r:?}{}", p.to_uri(), via(*p).map_or_else(String::new, |k| format!(" via {}", k.to_uri())))).collect();
             text.extend(links.iter().map(|(k, r)| format!("link {} {r:?}", k.to_uri())));
             let j = J::obj([
                 ("name", J::str(s.name)),
-                ("members", J::Arr(m.iter().map(|(p, r)| J::obj([("person", J::tid(*p)), ("role", J::str(format!("{r:?}"))), ("via", J::opt(via(*p).map(J::tid)))])).collect())),
+                ("participants", J::Arr(m.iter().map(|(p, r)| J::obj([("person", J::tid(*p)), ("role", J::str(format!("{r:?}"))), ("via", J::opt(via(*p).map(J::tid)))])).collect())),
                 ("links", J::Arr(links.iter().map(|(k, r)| J::obj([("link", J::tid(*k)), ("role", J::str(format!("{r:?}")))])).collect())),
             ]);
             ctx.emit(&text, j)

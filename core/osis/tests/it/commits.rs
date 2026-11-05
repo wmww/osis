@@ -252,7 +252,7 @@ fn find_another_actors_revert_api_commits() {
         })
         .unwrap();
     alice.sync(t, &[]).unwrap();
-    alice.grant(t, b, osis::Role::Write, osis::EdgeOpts::default()).unwrap();
+    alice.grant(t, b, osis::Role::Write, osis::GrantOpts::default()).unwrap();
     w.run();
     let c = commit_with(&alice, |wr| wr.at(t, k.clone()).set(&Value::Int(1)));
     w.run();
@@ -572,7 +572,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     let x = ak("t:x.0");
     let g = alice.batch(|wr| { let g = wr.create(alice.me())?; wr.make_group(g)?; Ok(g) }).unwrap();
     alice.sync(g, &[]).unwrap();
-    alice.grant(g, b, osis::Role::Write, osis::EdgeOpts::default()).unwrap();
+    alice.grant(g, b, osis::Role::Write, osis::GrantOpts::default()).unwrap();
     w.run();
     let mk = |owner: osis::Tid| alice.batch(|wr| { let t = wr.create_in(owner, &[g])?; wr.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
     let t = mk(g);

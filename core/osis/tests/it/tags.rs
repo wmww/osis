@@ -7,7 +7,7 @@ use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
 use osis::core::{BODY, GROUP, NAME, TAG, Tag};
-use osis::{Demotion, EdgeOpts, Error, Lower, Osis, Result, Role, Share, ShareOpts, Tid};
+use osis::{SetRole, Member, GrantOpts, Error, Osis, Result, Role, Tid};
 use osis_sim::world::World;
 
 /// A sub-tag of `parent` owned by `owner`, with a tied edge for the parent (unless the parent
@@ -24,7 +24,7 @@ fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Re
         w.add_subgroup(parent, t)?;
         w.commit()?;
     } else {
-        db.share_into(t, parent, role, ShareOpts { subgroup: true, ..ShareOpts::default() })?;
+        db.add_with_grant(Member::Subgroup(t), parent, role)?;
     }
     Ok(t)
 }
@@ -42,7 +42,8 @@ fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
 /// the tag's holders reach it (capped by their role on the tag) and it syncs under the tag's
 /// label (spec/sync.md §3, entitlement). Placing alone shares nothing.
 fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
-    assert_eq!(db.share_into(thing, tag, role, ShareOpts::default())?, Share::Tied(role));
+    db.add_with_grant(Member::Item(thing), tag, role)?;
+    assert_eq!(db.grants(thing)?.get(&tag).map(|e| (e.role, e.with_membership)), Some((role, true)));
     Ok(())
 }
 
@@ -78,7 +79,7 @@ fn list(db: &Osis, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
 }
 
 fn share(db: &Osis, tag: Tid, person: Tid, role: Role, invite: Option<Role>) -> Result<()> {
-    db.grant(tag, person, role, EdgeOpts { until: None, invite })
+    db.grant(tag, person, role, GrantOpts { until: None, invite })
 }
 
 // notes/tags.md (sharing a tag per item through one roster), spec/sync.md §3 (entitlement),
@@ -114,7 +115,7 @@ fn shared_tag_per_item() {
 
     remove(&alice, trip, packing).unwrap();
     w.run();
-    assert!(!alice.roster(packing).unwrap().contains_key(&trip), "the tied edge went after the unplace");
+    assert!(!alice.grants(packing).unwrap().contains_key(&trip), "the tied edge went after the unplace");
     edit(&alice, packing, "socks", "socks, hat").unwrap();
     w.run();
     assert_eq!(text(&bob, packing).unwrap(), None, "removed from the tag: Bob lost it");
@@ -141,11 +142,11 @@ fn sub_tags_chain_rosters_and_only_what_you_may_share() {
     share(&alice, work, b, Role::Write, None).unwrap();
     let memo = new_card(&carol, carol.me(), "carol's memo").unwrap();
     carol.sync(memo, &[]).unwrap();
-    carol.grant(memo, a, Role::Read, EdgeOpts::default()).unwrap();
+    carol.grant(memo, a, Role::Read, GrantOpts::default()).unwrap();
     w.run();
     assert_eq!(text(&alice, memo).unwrap().as_deref(), Some("carol's memo"));
     place(&alice, work, memo).unwrap();
-    assert!(matches!(alice.grant(memo, work, Role::Read, EdgeOpts::default()), Err(Error::Permission { .. })), "no admin on Carol's card");
+    assert!(matches!(alice.grant(memo, work, Role::Read, GrantOpts::default()), Err(Error::Permission { .. })), "no admin on Carol's card");
     w.run();
 
     assert_eq!(list(&bob, work).unwrap().1, vec![ideas], "the sub-tag is a tag");
@@ -187,7 +188,7 @@ fn tag_owned_cards_reader_writer_demotion() {
     assert_eq!(text(&alice, notes).unwrap().as_deref(), Some("from the writer"));
     assert_eq!(text(&reader, spec).unwrap().as_deref(), Some("v2"));
 
-    w.until(alice.demote(team, wr, Lower::To(Role::Read), Demotion::default()), 1000, 20).unwrap();
+    w.until(alice.set_role(team, wr, Some(Role::Read), SetRole::default()), 1000, 20).unwrap();
     w.run();
     assert_eq!(writer.role_on(team).unwrap(), Some(Role::Read));
     assert!(matches!(edit(&writer, spec, "v2", "v3"), Err(Error::Permission { .. })));
@@ -214,5 +215,5 @@ fn invite_holder_shares_on() {
     share(&inviter, team, g, Role::Read, None).unwrap();
     w.run();
     assert_eq!(text(&guest, spec).unwrap().as_deref(), Some("v1"));
-    assert_eq!(alice.roster(team).unwrap().get(&g).map(|e| e.role), Some(Role::Read));
+    assert_eq!(alice.grants(team).unwrap().get(&g).map(|e| e.role), Some(Role::Read));
 }
