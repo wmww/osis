@@ -18,7 +18,7 @@ Terms:
 - Hostile admins are not defended against.
 - Authenticated malicious writers are bounded, not prevented.
 - Malicious readers can only waste storage.
-- Untrusted nodes are trusted for availability only: one can withhold, delay or lose what it holds, and honest nodes still converge through any other route.
+- For data it cannot read a node is trusted for availability only: it can withhold, delay or lose what it holds, and honest nodes still converge through any other route.
 
 ## Decentralization
 - No central or trusted coordinator, consensus or sequencer. Peer-to-peer like git; any node may be offline indefinitely and return.
@@ -35,12 +35,12 @@ Terms:
 
 ## Offline and network
 - Every operation completes with nobody else online. Only propagation waits.
-- No helper is required: relays, discovery and hosts are replaceable and self-hostable. Works over LAN, through any untrusted node, or to a known address.
+- No helper is required: relays, discovery and hosts are replaceable and self-hostable. Works over LAN, through any node whether or not it can read the data, or to a known address.
 - No public-IP server, always-on node or internet connection is assumed. Every feature (creating accounts, sharing, recovery and the rest) works in every configuration, however atypical, including a dynamic mesh with no internet at all.
 - Nodes that share data sync directly by default, between different users too. Privacy of who sees whose address is handled without turning that off.
 - Nothing is special-cased by how much of a store is readable: a normal store holds some data it can read and some it cannot.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
-- To untrusted nodes and relays the network layer reveals no more about a device than the network itself does: addresses, never identities.
+- To relays, and to nodes for data they cannot read, the network layer reveals no more about a device than the network itself does: addresses, never identities.
 - Nothing syncs by being owned: apps place things into synced groups explicitly, and a thing placed nowhere stays local.
 
 ## Cost (goal)
@@ -51,31 +51,31 @@ Terms:
 - Removing a holder costs proportional to the rosters of the actors and things it could read, plus its writes that compaction may not drop yet (on data whose history is kept, every one). Limit: a removal that would list more than about 1.9 million writes fails.
 - Connected nodes see each other's changes promptly, pushed, not polled.
 
-## Untrusted (blind) nodes
-- Untrusted nodes are a first-class feature; one node may be blind to some groups and read others.
-- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap (a change spanning groups links them), counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion classes and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, device identities, or structure beyond that.
+## Data a node cannot read
+- Holding and serving data it cannot read is a first-class feature of every node; one node may read some groups and not others.
+- For such data a node may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap (a change spanning groups links them), counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion classes and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, device identities, or structure beyond that.
 - Nothing stored or relayed links different groups of one owner beyond their overlap and the changes that span them. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
-- One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
-- An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
-- An untrusted node knows no role holders and never waits on their liveness.
-- Read access never allows storing arbitrary content there. An untrusted node stores content only with a writer's signature, beyond a small budget per group open to anyone who must reach the group's readers (grants, readers' own edge writes). Limit: anyone holding an actor's public keys can fill its inbox's budget at a host, up to the host's rates, while none of the inbox's admin devices is online or by flooding without pause; meanwhile grants wait and unanswered invites may be pushed out.
-- Goal: an untrusted node can limit abuse (storage, rate) without learning identities.
+- One protocol for all nodes. Peers differ only in which keys they hold.
+- A node that cannot read data may hold its only copy. Reading never allows deleting data or forcing a re-upload.
+- For data it cannot read, a node knows no role holders and never waits on their liveness.
+- Read access never allows storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small budget per group open to anyone who must reach the group's readers (grants, readers' own edge writes). Limit: anyone holding an actor's public keys can fill its inbox's budget at a host, up to the host's rates, while none of the inbox's admin devices is online or by flooding without pause; meanwhile grants wait and unanswered invites may be pushed out.
+- Goal: a node can limit abuse (storage, rate) of data it cannot read without learning identities.
 
 ## Confidentiality between readers
 - A reader learns only what it may read. Sharing one thing does not reveal values from another, and only metadata if both things are part of the same commit.
 - No identifier on the wire is predictable without a read key. Nothing derives from plaintext that could be guessed.
 - Readers of shared data may learn each other's device identities, the chain that authorizes each author, and the sizes of the rosters in that chain, never the entries of rosters they are not part of.
 - Deleting content leaves the fact, time, author and aspect of the edit visible to readers.
-- No secret ever passes where an untrusted node could read it.
+- No secret ever passes where a node without the keys meant to open it could read it.
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
 
 ## Deletion
 - Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and how long its history is kept (at least: absolute or a while after it is replaced; at most: absolute, or gone once replaced). Defaults per aspect, overridable per change, immutable once written.
-- A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: an untrusted node checks only the role the deleter held when the edit was written and current roles, so a demoted holder can still delete there what its old role allowed, until a reader holding the data next syncs it back.
-- Data may carry an expiry at which every node, untrusted ones included, drops it with nobody online.
+- A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: a node that cannot read the data checks only the role the deleter held when the edit was written and current roles, so a demoted holder can still delete there what its old role allowed, until a reader holding the data next syncs it back.
+- Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online.
 - Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged, once the undoing device has seen the purge; an earlier undo is its own change, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Limit: deletion does not reach offline copies, copies a removed holder kept, dishonest nodes, memory or swap.
-- Untrusted nodes act on their own only for expiry. Every other retention bound takes effect at them when a right holder next syncs.
+- On data it cannot read, a node acts on its own only for expiry. Every other retention bound takes effect there when a right holder next syncs.
 - Keep-at-most bounds storage, not visibility: if the write that replaced a dropped body turns out invalid, its value is live again and returns from any node still holding it. Expired and purged content never returns while the purge counts.
 - Granularity is one edit of one aspect. Part of a value's history can be purged.
 - No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy.
@@ -132,8 +132,8 @@ Binds released formats only; until a stable release formats change in place.
 - A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another holder publishes an explicit demotion, the removed holder's own timestamps decide, within the allowed clock drift.
 - The owner may restart a thing's role history at a roster snapshot; a role change ordered before the snapshot that it did not include is lost.
 - A share link is a bearer secret. One joiner is revoked only together with the link; the remaining joiners get a new one.
-- Removing a holder never re-encrypts existing content. The holder stops reading new content of an actor once a writer or admin of that actor has written after the removal; readers never rotate keys. Limit: what it could read before removal stays readable to it, from a copy it kept or from a dishonest untrusted node.
-- Limit: a holder whose grant raced a key rotation, or that missed more rotations than an untrusted node keeps role history for, cannot read through that node until a holder with rotation rights re-seals to it, which nothing guarantees.
+- Removing a holder never re-encrypts existing content. The holder stops reading new content of an actor once a writer or admin of that actor has written after the removal; readers never rotate keys. Limit: what it could read before removal stays readable to it, from a copy it kept or from a dishonest node.
+- Limit: a holder whose grant raced a key rotation, or that missed more rotations than a node that cannot read the data keeps role history for, cannot read through that node until a holder with rotation rights re-seals to it, which nothing guarantees.
 
 ## API
 - Plain values and listeners. No CRDT concepts, no conflict UI, no correctness that depends on "surfacing it to the user". Diagnostics are informational.

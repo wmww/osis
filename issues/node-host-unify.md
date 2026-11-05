@@ -24,7 +24,7 @@ Requirements: spec/requirements.md, Decentralization. Known departures, in order
 4. **Every feature with no hosts:** audited in issues/no-server-audit.md.
 
 ## Clients
-A **client** is anything using the client protocol; a node may be one too (a phone syncing its private data and using a server's node for bigger, less sensitive data). A **thin client** is a client that is not a node. Neither says what actor it acts as, and the model doesn't couple machine, transport and actor: there are many threat models, and which fits is a node's policy.
+A **client** is anything using the client protocol; a node may be one too (a phone syncing its private data and using another machine's node for bigger, less sensitive data). A **thin client** is a client that is not a node. Neither says what actor it acts as, and the model doesn't couple machine, transport and actor: there are many threat models, and which fits is a node's policy.
 
 Default policy (Tess):
 - **Unix socket**: open without authentication to the current user, as the node's main actor. There is no security boundary there anyway.
