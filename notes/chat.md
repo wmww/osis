@@ -1,5 +1,5 @@
 # Chat
-> Summary: Chat as built on design E (notes/chat-designs/e.md): crate `osis-chat` (core/chat) over the `osis` API, and `osis chat`: one ownerless actor per chat, members hold write, a message is one kept write on `chat:msgs:y<year>.0`, the sender the verified actor. What is built, what the app layer decided, what is left out, costs. Kept from the old pattern: rotation costs and Tess's decision on them.
+> Summary: Chat as built on design E (notes/chat-designs/e.md): crate `osis-chat` (libs/chat) over the `osis` API, and `osis chat`: one ownerless actor per chat, members hold write, a message is one kept write on `chat:msgs:y<year>.0`, the sender the verified actor. What is built, what the app layer decided, what is left out, costs. Kept from the old pattern: rotation costs and Tess's decision on them.
 
 ## As built
 - **Create** (`create`, one flow): `create_ownerless(me)`, `required.0^` (`chat:msgs:` the message rule; the empty prefix the plain default, so `nobody` junk on another aspect is invalid; `keep` true), `chat:settings.0^` (name, edit mode), `make_group`, `sync`. A host must take it by label or `--admit open`: `admit own` does not.

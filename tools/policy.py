@@ -5,7 +5,7 @@ target marked `test = false` / `doctest = false` has unit tests / doctests that 
 and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
 osis-host cannot reach decryption (`host_blind`).
 Usage: python3 tools/policy.py [WORKSPACE]   (from the repo root; WORKSPACE: the directory of a
-workspace's root manifest, `.` (core, default) or `kit` (the GUI workspace, notes/app.md); vendored
+workspace's root manifest, `.` (core, default) or `libs/kit` (the GUI workspace, notes/app.md); vendored
 crates under `patches/` are not ours and are skipped; exit 1 on any violation)"""
 import glob, os, re, sys, tomllib
 
@@ -111,7 +111,7 @@ def env_vars():
     (a set variable it lacks fails the harnesses as a typo)."""
     known = set(open(os.path.join(ROOT, "core/base/testenv-known.txt")).read().split())
     used = set()
-    for top in ("core", "cli", "kit", "app", "tools"):
+    for top in ("core", "cli", "libs", "app", "tools"):
         for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
             dirs[:] = [d for d in dirs if d not in ("target", "patches")]
             for f in files:

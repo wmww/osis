@@ -72,7 +72,7 @@ Starting a session: read notes/handoff.md first when it exists (what the last co
   - The 5-seed sweep took 73-149 s, against 38 s quiet.
   - nice 19 does not shield a laptop: a niced 16-thread run still takes SMT siblings and the shared power and clock budget.
 - Performance: the coordinator owns it (Tess: "a little slower than optimal but much simpler, more correct or more verifiable is a good trade"). Budgets in notes/testing.md (Performance budgets); a new incremental path needs a measured miss of a budget in a realistic scenario, and simple from-scratch code that meets the budget wins.
-- App work (kit/, app/): planned with Tess in a separate UX/planning session (notes/app.md); it runs alongside core work and counts toward the agent limit. When no app session is active (Tess, round 13: "nobody else is working on the app, feel free to fix any problems"), the core coordinator fixes app breakage (failing app tests, API adoption) itself.
+- App work (libs/kit/, app/): planned with Tess in a separate UX/planning session (notes/app.md); it runs alongside core work and counts toward the agent limit. When no app session is active (Tess, round 13: "nobody else is working on the app, feel free to fix any problems"), the core coordinator fixes app breakage (failing app tests, API adoption) itself.
 - Core asks from app work: whatever kit/app needs from core and core lacks becomes an issue tagged `core-ask` (plus the component); app work uses a workaround meanwhile (e.g. durable data until ephemeral data lands), never edits core itself. If the fix is not obvious, also tag `tess-call`: Tess reviews it in a core coordinator session.
 
 ## Periodic checks

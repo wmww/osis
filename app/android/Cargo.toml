@@ -1,7 +1,7 @@
 [package]
 name = "osis-android"
 description = "The osis app packaged for Android (experimental; notes/android.md): android_main and the platform layer"
-workspace = "../../kit"
+workspace = "../../libs/kit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

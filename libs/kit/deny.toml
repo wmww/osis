@@ -1,4 +1,4 @@
-# cargo deny check for the GUI workspace (kit/, app/; tools/gate.sh runs it in kit/). Licences,
+# cargo deny check for the GUI workspace (libs/kit/, app/; tools/gate.sh runs it in libs/kit/). Licences,
 # advisories and sources as strict as core's deny.toml; duplicate versions only warn: the GUI
 # stack (wgpu, winit, windows-*, objc2) carries many we cannot pick.
 

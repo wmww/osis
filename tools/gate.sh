@@ -8,14 +8,14 @@
 # osis-store, osis-crypto: everything the simulated nodes run on)
 # or Cargo.toml/lock since its merge base with main (always on main itself);
 # --sweep-seeds N forces N seeds, 0 skips.
-# Per project (notes/build.md, Merge gate): the GUI workspace (kit/, app/; root manifest kit/Cargo.toml)
-# has its own steps. A diff touching only kit/ or app/ runs only the GUI steps; any other diff runs
+# Per project (notes/build.md, Merge gate): the GUI workspace (libs/kit/, app/; root manifest libs/kit/Cargo.toml)
+# has its own steps. A diff touching only libs/kit/ or app/ runs only the GUI steps; any other diff runs
 # the core steps plus a `cargo check` of the GUI workspace (an osis API change must not silently
 # break the app); both, both. On main itself, or with --all, everything runs. --base REV compares
 # against REV instead of the merge base with main (to time one project's steps). --plan prints the
 # selection (core, gui, seeds) and exits (tested by tools/gate_select_test.sh).
 # A diff whose non-GUI paths are all Markdown under spec/, notes/ and issues/ (core=docs) runs the instant checks and the one
-# test that reads notes/ (osis-cli's command table check; plus the GUI steps if it touched kit/ or app/), not tier 1, lints, deny or the sweep.
+# test that reads notes/ (osis-cli's command table check; plus the GUI steps if it touched libs/kit/ or app/), not tier 1, lints, deny or the sweep.
 set -e
 cd "$(git rev-parse --show-toplevel)"
 # a gate on a half-rebased tree passes on the wrong code (watchdog 13i: eight agents piped a
@@ -42,17 +42,17 @@ core=1
 gui=1
 if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; then
   # changed paths since the merge base, committed or not; a rename counts as delete + add, so a
-  # file moved out of core into kit/ still selects the core steps; a name git quotes (non-ASCII,
+  # file moved out of core into libs/kit/ still selects the core steps; a name git quotes (non-ASCII,
   # control characters) starts with '"'
   changed=$(git diff --no-renames --name-only "$base" --)
   changed="$changed
 $(git ls-files --others --exclude-standard)"
-  printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' -e '^$' || core=
-  printf '%s\n' "$changed" | grep -q -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' || gui=
+  printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' -e '^$' || core=
+  printf '%s\n' "$changed" | grep -q -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' || gui=
   # docs: only Markdown under spec/, notes/, issues/, and no Rust source but the known one
   # (notes/cli.md) names a path there on a line that reads or includes a file; else everything
-  if [ -n "$core" ] && ! printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}\(spec\|notes\|issues\)/.*\.md"\{0,1\}$' -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' -e '^$'; then
-    readers=$(git grep -n -E '(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/' -- '*.rs' | grep -v -e '^kit/' -e '^app/' -e '^cli/tests/it/cli\.rs:[0-9]*: .*"\.\./notes/cli\.md"' || true)
+  if [ -n "$core" ] && ! printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}\(spec\|notes\|issues\)/.*\.md"\{0,1\}$' -e '^"\{0,1\}libs/kit/' -e '^"\{0,1\}app/' -e '^$'; then
+    readers=$(git grep -n -E '(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/' -- '*.rs' | grep -v -e '^libs/kit/' -e '^app/' -e '^cli/tests/it/cli\.rs:[0-9]*: .*"\.\./notes/cli\.md"' || true)
     if [ -z "$readers" ]; then
       core=docs
     else
@@ -89,12 +89,12 @@ tf=$(mktemp)
 trap 'rm -f "$tf"' EXIT
 cpu() { times > "$tf"; cpu=$(awk 'function s(t) { split(t, a, /[ms]/); return a[1] * 60 + a[2] } NR == 2 { printf "%d", s($1) + s($2) }' "$tf"); }
 step() { printf '== %s\n' "$*"; step_s=$(date +%s); cpu; step_c=$cpu; "$@"; cpu; printf '   (%ss, %s CPU-s)\n' $(( $(date +%s) - step_s )) $(( cpu - step_c )); }
-# The GUI workspace: its own target (kit/target), lock and deny config.
+# The GUI workspace: its own target (libs/kit/target), lock and deny config.
 gui_steps() {
-  step python3 tools/policy.py kit
-  ( cd kit && step cargo clippy --workspace --all-targets --locked -- -D warnings )
-  ( cd kit && step cargo test --workspace --locked )
-  ( cd kit && step cargo deny check )
+  step python3 tools/policy.py libs/kit
+  ( cd libs/kit && step cargo clippy --workspace --all-targets --locked -- -D warnings )
+  ( cd libs/kit && step cargo test --workspace --locked )
+  ( cd libs/kit && step cargo deny check )
 }
 if [ -z "$core" ]; then
   echo "== GUI-only change: core steps skipped"
@@ -103,7 +103,7 @@ if [ -z "$core" ]; then
   exit 0
 fi
 # instant checks first, so a missing citation fails before minutes of tests
-# (policy.py and spec_map.py cover the core workspace: core/, cli/; the GUI one is checked above)
+# (policy.py and spec_map.py cover the core workspace: core/, libs/chat/, cli/; the GUI one is checked above)
 step python3 tools/policy.py
 step sh tools/gate_select_test.sh
 step python3 tools/spec_map.py --uncited
@@ -135,6 +135,6 @@ fi
 if [ -n "$gui" ]; then
   gui_steps
 else
-  ( cd kit && step cargo check --workspace --all-targets --locked )
+  ( cd libs/kit && step cargo check --workspace --all-targets --locked )
 fi
 echo "== gate passed ($(( $(date +%s) - t0 ))s)"
