@@ -31,6 +31,21 @@ An ex-holder signs two conflicting writes and controls everything in them (stamp
 
 - **Erase and come back** (Tess, as for purge races): a node removed under its default side erases as today, no holding period; if that turns around it re-syncs. Lost data when no copy is left is accepted. No exception to forward security or remote wipe. A device that wrote its own removal first holds it first, so it stays on its own side and keeps its data. Needs one rule: a removal whose frontier drops another's removal of G is delivered to G's inbox, like a grant (spec/permissions.md §2), because G stopped syncing the label and has no other way to hear. G then claims the label again. Not traced in code.
 
+- **Limit on new nodes**: nodes that saw the removal cannot be taken over; a new or long-offline node gets both writes with no memory of their order, and defaults from host log order or the side where its own grant counts.
+
+### Model results (throwaway prototype on `core/test/roles-model`, not committed)
+About 41M exhaustive and random histories; roles other than admin, `until`, invites, clock skew and following published picks not checked.
+- **Rule that works ("shrink")**: a trusted demotion that turns void loses its seeds and stays out, all void ones at once, D rebuilt from scratch. No loops, at most 4 rounds, order independent, same inputs same result. Fixed seeds can backfire; re-judging "void" each round loops on 1.6% of random histories; removing void ones one at a time depends on order.
+- **Prompts key on (R, X)**: a lone ex-admin signing more writes makes one dispute per pair; after trusting R there are none. k admins all removing each other: at most k(k-1)/2 disputes.
+- **Disputes depend on picks**: a pick can reveal or hide others (0.2-0.8%), so the list is recomputed.
+- **Switching** is a pure function only with D rebuilt. Defaults recorded while on another side change the result (about 3% of adversarial switches): drop or redo them on a switch, untested.
+- **False alarms (histories raising one, dense small random histories, not real-world rates)**: one remover or strict rank 0 of 1.6M; removal rank with free grants 0.02-0.2%; anyone removes anyone 1.6% online, 10.7% heavily offline. After a dispute parties differ over 90%, bystanders 16-25%.
+- **First-received**: late backdating loses at 100% of honest nodes, instant backdating 86-89%; a thief acting first wins (accepted). Feeding W first to chosen nodes fools exactly those.
+- **Kicked admin** (variant A, chosen): a contest that lists its own removal is no dispute; one that omits it raises one, and only the kicked node sides with itself.
+- **Hole, odd rings and accomplices raise no dispute**: Y removes X, listing X's grant of Q; Q, a current admin, removes Y stamped earlier. Y's removal is void, X is back, nobody is warned; earliest stamp decides. Y can answer by a new removal of Q omitting that write, which raises one (traced once). Widening detection costs 10-12% false alarms on removal-rank histories, against 0.07-0.16%. Q is a current admin, so hostile-admin scope; open.
+
+Review findings for the plan: label actor disputes split hosts (largest item: stamps and deposits under a disputed head, per-side labels both sides can find, nothing triggers replacement today); delete and re-upload loop between sides (no deletes at hosts resting on a disputed party's write); cover only under snapshots valid on both sides; a part sealed under a rejected epoch counts as held; leave both parties out of new keys, or accept the wrong-default leak; no synced pick decides a dispute on its own author or person; names need a new reset point once snapshots go; frontier growth needs measuring.
+
 Leaning (before F): base + C, D or E later if wanted. B's rule in the walk is untested: `core/test/roles-model` found loops in similar rules (removal rings), so model-check before building. Also touches spec/requirements.md Permissions (three concepts, fixed owner, owner's snapshot). Would settle "owning vs collecting" in notes/realms.md: made in a realm = the realm is first admin.
 
 ## Optional recovery key (Tess's idea; documented, not built first)
@@ -40,5 +55,5 @@ At most one key actor per thing, named in the creation record, none by default. 
 - **Hand-off**: it names a successor, then burns.
 - **Burn**: a signed list of its writes that count; any other write of it is void. Several burns intersect, so a thief with the key can only cancel recovery, never gain from it.
 - **Threshold**: split the seed outside the protocol, no format change.
-- **Adding later is the weak point**: an ex-admin could claim to have added one, stamped in the past, or void the honest grant by removing its granter earlier. So added-later is only as strong as a normal admin write. Start with record-only.
+- **Must be addable later** (Tess: nothing users may want to change is baked into a thing, so not record-only). An ex-admin could claim to have added one, stamped in the past, or void the honest grant by removing its granter earlier, so an added key is only as strong as a normal admin write. Accepted if built.
 - `Class::Chain` goes in the first build; a later recovery key adds back one small rule. Not modelled.
