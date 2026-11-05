@@ -1,5 +1,5 @@
 # A clock gone back stalls what counts in raw ms
-> Summary: after the wall clock jumps back by D, session pings and stall checks (`next_ping`, `c.timer`), `settle_at`, the peer wait and `Refused` back-offs wait up to D more; in dev builds an edge's `until` coming alive again trips `reseal_quiet`'s debug check.
+> Summary: after the wall clock jumps back by D, session pings and stall checks (`next_ping`, `c.timer`), `settle_at`, the peer wait and `Refused` back-offs wait up to D more; in dev builds a grant's `until` coming alive again trips `reseal_quiet`'s debug check.
 > Tags: node-sync, proto
 
 Found in idle-pass review; older than it. A quiet label's own bound is kept (notes/sync.md Idle labels). A session whose ping waits for the clock also learns no new clock sample and finds no dead connection until then. `reseal_quiet` assumes time only moves on: in release it stays quiet until a role change.

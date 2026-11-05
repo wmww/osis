@@ -280,7 +280,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 2. Hidden by the "ever held write on the chat" check, not stopped; costs storage until an admin removes its M.
 3. Only through a host the kicker has not reached or that refused the step, or a relaying member; honest members then re-upload it (requirements line 124).
 4. `WaitForSync::Required` (default) covers the join add; `Skip` does not.
-5. B: once an admin writes an explicit removal of the absent edge, the leave is audited and the post is unlisted.
+5. B: once an admin writes an explicit removal of the absent grant, the leave is audited and the post is unlisted.
 6. An admin gives member grants an `invite` level; then members may invite.
 7. Only if the sharer's device granted the joiner directly on join (links are admin-only).
 8. Only if M is also added to the member's home group.
@@ -321,14 +321,14 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
 44. Every syncing device places its chain (11.5 KB per account), card (1.5 KB) and four heartbeats a day under each label it reads: about 13 MB once and 2.4 MB a day at 1000; about 1.4 GB and 240 MB a day at 100,000 (e-realms-review.md §3).
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
-46. Messages on a thing owned by the chat with an admin edge for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
+46. Messages on a thing owned by the chat with an admin grant for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.
 48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
-50. The realm's edges are its contents (every member holds them through the realm's inbox copies); names and categories are a chat-app layout aspect on the realm. Channels are not in the realm's group, so nothing of theirs is under its label.
+50. The realm's grants are its contents (every member holds them through the realm's inbox copies); names and categories are a chat-app layout aspect on the realm. Channels are not in the realm's group, so nothing of theirs is under its label.
 51. Grant the private channel only to a role realm. Left: its hosts see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
 52. Entry counts are drowned by heartbeats and certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
-54. A thing owned by the realm or holding an edge for it is in the realm; placed in the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain edges (notes/realms.md open question 1) a writer's unplacing only stops the auto-sync; removing it from the realm is an admin's edge removal.
+54. A thing owned by the realm or holding a grant for it is in the realm; placed in the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain grants (notes/realms.md open question 1) a writer's unplacing only stops the auto-sync; removing it from the realm is an admin's grant removal.
 55. An ownerless actor has no roster snapshots, so its role history is kept forever and readable by its holders.
 56. Rights: demote the top realm on each child, one commit per child; one step only as a client-honored flag.
