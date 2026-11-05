@@ -46,14 +46,31 @@ Durable trust store per node. Default: first received, recorded at detection; a 
 A removal whose frontier drops another's removal of G goes to G's inbox, like a grant. G then opens the label by its claim, or gets boxes by a rotation's inbox copy. A switch to a side that removed you is an ordinary loss; a switch back is this path.
 
 ### 6. Hosts and storage: design this before building
-Goal: the fewest sites. Current thinking, unverified:
+Goal: the fewest sites. Settled by a model (core/test/tla/sides, results table there) unless marked:
 - **Fork of an actor means fork of its labels.** A node refused a step on an actor with its own epochs replaces the label by the existing flow, keys from its side's secrets. No stamping under a captured head.
 - **Label discovery ignores validity**: read every label named by a possible admin's `label.0` that the node's keys open, so common members still reach both.
-- **Old content**: no delete of an old label's content while another side may need it.
-- **Delete and re-upload loop**: a body one side drops and the other holds live can bounce at a host without bound. Candidates: no deletes resting on a disputed party's write, or a holder re-uploads a body once and then keeps it local. Pick the one with fewer sites; prompt purge at hosts is what is at stake.
-- **One-side covers**: a snapshot valid on one side lets that side drop what the other needs. Candidate: accept it (a switch finds what is left) over running two walks.
-- **Stuck parts**: a part sealed under an epoch a node can never open must not block the commit's other parts (spec/commits.md §4). Worth fixing generally; it is not about disputes.
-- **Node cards**: `stale_card` must not delete a card over a one-sided departure (unverified).
+- **Stuck parts**: a part sealed under an epoch a node can never open must not block the commit's other parts (spec/commits.md §4). Worth fixing generally; it is not about disputes. Not modeled.
+
+**Where loops come from.** Each side runs today's rules over its own validity. At every label both sides act at, which is every label where a disputed party or a device it added since writes, not only A's own, a body one side judges must-not-hold and the other must-hold is deleted and uploaded again forever (the shape of items 276 and 282). Worse, when the deleting side gets there before any node of the other side fetched the body, it is gone.
+
+**Candidates, as modeled:**
+- **(a) Gate deletes at hosts: holds, in the right form.** Dd is the set of writes valid on one side only: the closure of both parties' unlisted writes, which the walk can export (step 3). A node never judges a disputed write without both removals (a write is pending until its author's chain arrives, and that chain carries the other party's removal), so it never misses a held one.
+  - Per reason: no delete at a host of a body that is itself in Dd, or for a reason whose write is in Dd. Passes every scenario, same as the two-walk oracle "must-not-hold on both sides". Every must-not-hold and cover reason must name its write: a purge request, the superseder that dated a death or the demotion a fall names, the covering snapshot and the deaths its cover judgment rests on, a placement, the edge end behind `stale_card`. Many sites.
+  - Per aspect: no delete at a host of a body on an aspect holding a Dd write, or named by a Dd purge, placement or edge end. Passes everything but promptness: a purge both sides accept, on an aspect a disputed write touched, never reaches the host (the aspect stays touched while the dispute is held, for good).
+  - Gating the parties' own writes only fails: a device X added after the dispute supersedes a body; that write is no party's but is valid on side X only, so the loop and the loss stay.
+  - Gating by a neutral view (judge again with every disputed write void) fails where must-not-hold rests on a write being invalid: X's post-dispute write under keep at most 0 falls on side Y, the neutral view agrees with Y, and the loop stays; likewise a placement only side Y has.
+- **(b) Re-upload once, then keep it local: fails.** The loop ends, but the body then lives only at the keeping side's existing holders: fresh nodes of that side never get it, and it is lost when those holders go. It also undoes today's healing of a stale or hostile delete (a removed writer deleting twice wins).
+- **(c) Fork: needed for keys, no fix for loops, and it splits reach.** The loser deletes nothing at L (it does not control L's head, as in today's replacement flow). Until the step race ends both sides act at L, and today's rules lose bodies in that window; with (a) they do not. After it, the losing side's new devices read only its replacement label, which holds what the losing side's nodes held at the race. A body left only at L and with the winner's nodes is out of their reach, and a purge both sides accept known only to one side never reaches the other side's label. Members uploading clean bodies (no Dd write on them) to the label they read but do not act at fix the undisputed part; disputed bodies stay out of reach.
+- **(d) One-side covers accepted: fails.** No loop (compaction deletes once per body per node), but loss: side X compacts a body under its own snapshot, the member on X drops it, and side Y never fetched it. Covers go through the gate like any delete; bodies covered only by one side's snapshots stay at hosts.
+- **Unheld writes** (not a candidate): a judgment resting on a write the node does not hold (no placement held, so outside the required set) cannot be gated. It holds only because role commits go up and are fetched first; a host or relay delivering content before the placement reopens the loss.
+
+**Fewest dispute-aware host and sync sites that work:** (1) one gate where node-sync decides deletions at hosts (must-not-hold and compaction), reading Dd, per aspect or per reason; (2) the fork as above: act at a label only under keys from commits valid on the own side (ordinary), replace on a refused step, read every label the node's keys open; (3) optionally, members carrying clean bodies across the fork. Uploads, local drops and fetches stay ordinary.
+
+**Problems for Tess:**
+1. Purges, supersedes and covers that only one side accepts never reach hosts while the dispute is held: the ciphertext stays and hosts grow. The per-aspect gate extends this to purges both sides accept, on aspects a disputed write touched.
+2. Per reason is precise but touches every must-not-hold reason; per aspect is one check plus three cross-aspect reasons. Pick one.
+3. The fork splits reach: the losing side's new devices get what its nodes held at the race, plus what members carry.
+4. Not modeled: several hosts with different race winners (both sides would be refused somewhere and both replace L), several disputes, keep-at-least and `nobody`.
 
 ## Testing
 Oracles are the design's statement of itself; change them once in the harness, not per test.
@@ -67,5 +84,5 @@ Oracles are the design's statement of itself; change them once in the harness, n
 
 ## Open
 - Model check of the no-key-cycles rule, step 0.
-- Step 6 design.
+- Step 6: problems 1-4 above.
 - Silent rejection after a removal has been held a while, warning only the parties: optional later, needs a value that passes notes/arbitrary-values.md.
