@@ -89,9 +89,19 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* "wait") is written alone, its departure uncovered
                       \* (learned under the actor's label); "any": any
                       \* removal may be (a self-removal carries no rotation)
-          MaxRace     \* bound on fork merges made by a node lacking an epoch
+          MaxRace,    \* bound on fork merges made by a node lacking an epoch
                       \* of the actor (two merges racing fork again): the
                       \* concurrency window, as adversary steps
+          Walk        \* Blocked's box clause (issues/blocked-walk-stops-at-
+                      \* readers.md): "rotator" (an epoch boxing an actor at a
+                      \* blocked keyset is blocked only where the node may
+                      \* rotate it), "out" (wherever the node holds it; Seal
+                      \* leaves the actor out), "wait" (as "out", but a node
+                      \* that may not rotate the actor at the blocked keyset
+                      \* makes no rotation leaving it out: it waits), "mark"
+                      \* (as "out", and the rotation records the keyset it left
+                      \* the actor out at; Seal then takes only a keyset listing
+                      \* it, by any node)
 
 Acts == {ActSeq[i] : i \in 1..Len(ActSeq)}
 Holders(a) == {m[2] : m \in {q \in Mem : q[1] = a}}
@@ -204,11 +214,12 @@ StaleAt(x, e) == \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
 Covers(x, e, a) == \A dp \in Known(x) : dp[2] = a => dp \in ep[e].knows
 IsAdm(x, a) == x \in Learners /\ <<a, x>> \in Adm
 \* epochs x may not encrypt under, of those whose secret it holds: missing a
-\* departure it knows; for an admin, stale, keyless or boxing an actor at
-\* one (sealing there was encrypting under it), any depth
+\* departure it knows; for an admin, stale or keyless; boxing an actor at
+\* one (sealing there was encrypting under it), any depth: for an admin
+\* (Walk "rotator") or for any holder of the secret
 Blocked(x) ==
   LET sx == Sec(x)
-  IN Fix(LAMBDA S : S \cup {k \in sx : IsAdm(x, ep[k].act) /\
+  IN Fix(LAMBDA S : S \cup {k \in sx : (Walk # "rotator" \/ IsAdm(x, ep[k].act)) /\
                                      \E b \in BoxesAt(x, k) : b.key.t = "k" /\ b.key.k \in S},
          {k \in sx : \/ ~Covers(x, k, ep[k].act)
                      \/ IsAdm(x, ep[k].act) /\ (StaleAt(x, k) \/ (~Fresh /\ Keyless(x, k)))})
@@ -226,9 +237,13 @@ FreshK(x, a, k, cur, old) ==
 Anchors(x, a, h) ==
   {k \in Named({b \in UNION {BoxesAt(x, e) : e \in Cur(x, a)} : b.h = h}) :
      k \in kn[x] /\ Valid(x, k)}
+\* "mark": the keysets of h a rotation of a left h out at (blocked there),
+\* recorded in it, at a's current epochs
+OutAt(x, a, h) == {q[2] : q \in {p \in UNION {ep[e].out : e \in Cur(x, a)} : p[1] = h}}
 SealSet(x, a, h) ==
   {k \in KOf(x, h) : ~(Taint /\ StaleK(x, k)) /\
-                     \A q \in Anchors(x, a, h) : q = k \/ q \in AncV(x, k)}
+                     (\A q \in Anchors(x, a, h) : q = k \/ q \in AncV(x, k)) /\
+                     \A q \in OutAt(x, a, h) : q \in AncV(x, k)}
 \* no held valid keyset of h, tainted or not, is or descends from every anchor
 Forked(x, a, h) == Anchors(x, a, h) # {} /\ ~\E k \in KOf(x, h) : \A q \in Anchors(x, a, h) : q = k \/ q \in AncV(x, k)
 \* the keyset x seals actor h at for a (0: none, h is left out)
@@ -239,8 +254,11 @@ Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ KeyIn
                  e \in Ids}
 BlindOK(a, hs) == (hs \cap Acts) \ KeyIn(GAll, a) # {} => Cardinality(Blinds) < MaxBlind
 
-\* a rotation of a by x would box an actor whose anchors fork
-Waits(x, a, extra) == \E h \in MemV(x, a, extra) \cap Acts : SealK(x, a, h) = 0 /\ Forked(x, a, h)
+\* a rotation of a by x would box an actor whose anchors fork ("wait": or
+\* leave out one at a blocked keyset that x may not rotate)
+Waits(x, a, extra) == \E h \in MemV(x, a, extra) \cap Acts :
+  \/ SealK(x, a, h) = 0 /\ Forked(x, a, h)
+  \/ Walk = "wait" /\ SealK(x, a, h) \in Blocked(x) /\ ~(IsAdm(x, h) \/ (Through(x, h) /\ ~OffPath(x, x, h)))
 
 Rotate(x, a, extra, race) ==
   LET lo(h) == h \in Acts /\
@@ -258,7 +276,12 @@ Rotate(x, a, extra, race) ==
               hist |-> {e \in Sec(x) : ep[e].act = a},
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
               forged |-> FALSE,
-              race |-> race]
+              race |-> race,
+              \* "mark": each actor left out, at its blocked Seal keyset or
+              \* the marks it was left out at before
+              out |-> IF Walk # "mark" THEN {} ELSE
+                      UNION {{<<h, k>> : k \in ({SealK(x, a, h)} \cap Blocked(x)) \cup OutAt(x, a, h)} :
+                               h \in {g \in MemV(x, a, extra) : lo(g)}}]
   IN /\ ~(LeftOut = "wait" /\ Waits(x, a, extra))
      /\ BlindOK(a, {b.h : b \in new.bx})
      /\ ep' = Append(ep, new)
@@ -269,7 +292,7 @@ Init ==
              [act |-> ActSeq[i], n |-> 0, par |-> {}, by |-> "",
               bx |-> {[h |-> h, key |-> InitKey(h), by |-> "", poss |-> TRUE] :
                         h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
-              hist |-> {}, knows |-> {}, forged |-> FALSE, race |-> FALSE]]
+              hist |-> {}, knows |-> {}, forged |-> FALSE, race |-> FALSE, out |-> {}]]
   /\ rs = {}
   /\ kn = [x \in Learners |-> 1..Len(ActSeq)]
   /\ krs = [x \in Learners |-> {}]
@@ -354,7 +377,7 @@ Forge(d) ==
                                n |-> 1 + ep[Newest(ms)].n,
                                par |-> ms, by |-> d,
                                bx |-> {[h |-> d, key |-> DK(d), by |-> d, poss |-> TRUE]},
-                               hist |-> {}, knows |-> {}, forged |-> TRUE, race |-> FALSE])
+                               hist |-> {}, knows |-> {}, forged |-> TRUE, race |-> FALSE, out |-> {}])
   /\ evd' = evd \cup {<<d, "forge">>}
   /\ UNCHANGED <<kg, rs, kn, krs, wr, done, nw, pl, kpl>>
 
@@ -424,6 +447,9 @@ P2Prem(x, a, dp) ==
 \* device removed from a true holder is the member limit, p2 and p3)
 NotIn(x, a) == {dp \in Known(x) : dp[2] = a \/ dp[2] \notin KClos(a)}
 
+\* the actors on key paths from h up to a, h included
+Chain(a, h) == {c \in KClos(a) : c = h \/ h \in KClos(c)}
+
 \* the stated limit at any depth: x holds, for every holder actor h of a, a
 \* keyset of h the removed device does not open that lists every honest
 \* keyset of h it opens (M's knowing keyset reached x, through h's)
@@ -463,8 +489,9 @@ Write(x, a) ==
                            p7 |-> IF Settled THEN {dp \in done : dp[1] # x /\ dp[2] \in HClos(a)}
                                   ELSE {},
                            p8 |-> IF {r \in rs : r.e = e} \subseteq krs[x]
-                                  THEN {dp \in Known(x) : dp[2] \in KeyAct(a) /\
-                                          {f \in Ids : ep[f].act = dp[2] /\ ~ep[f].forged} \subseteq Sec(x)}
+                                  THEN {dp \in Known(x) : dp[2] \in KClos(a) /\
+                                          \A c \in Chain(a, dp[2]) :
+                                            {f \in Ids : ep[f].act = c /\ ~ep[f].forged} \subseteq Sec(x)}
                                   ELSE {}]}
   /\ nw' = nw + 1
   /\ UNCHANGED <<kg, ep, rs, kn, krs, done, evd, pl, kpl>>
@@ -516,9 +543,10 @@ NoLeakKnownAll == \A c \in wr : \A dp \in c.p5 : c.e \notin ReachD(dp[1])
 NoLeakLimit == \A c \in wr : \A dp \in c.p6 : c.e \notin ReachD(dp[1])
 \* ... or at least once every node has settled (the window ends at all)
 NoLeakSettled == \A c \in wr : \A dp \in c.p7 : c.e \notin ReachD(dp[1])
-\* a device removed from a holder actor h of a reads no content of a written
-\* by a writer that knew the removal and held every epoch of h (and every
-\* re-seal box of its epoch), whether or not h has rotated since (Blocked)
+\* a device removed from an actor h below a (any depth) reads no content of a
+\* written by a writer that knew the removal and held every epoch of h and of
+\* every actor between (and every re-seal box of its epoch), whether or not
+\* they have rotated since (Blocked)
 NoLeakAbove == \A c \in wr : \A dp \in c.p8 : c.e \notin ReachD(dp[1])
 
 \* eventually every writer's next epoch is closed to every removed device

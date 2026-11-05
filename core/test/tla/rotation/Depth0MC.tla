@@ -123,4 +123,29 @@ u1Adm == uAdm \ {<<"A", "a2">>}
 u1Learners == {"a1", "r"}
 u1Eager == {<<"a1", "G">>}
 uG == << <<"G", "A">> >>
+\* ... and g2, a second admin of G not reading A (it re-seals A where a1's
+\* rotation of G left it out)
+u2Mem == uMem \cup {<<"G", "g2">>}
+u2Adm == uAdm \cup {<<"G", "g2">>}
+u2Learners == uLearners \cup {"g2"}
+u2NoSync == {<<"g2", "A">>}
+\* ... with no rotation of A made without knowing the removal (a2 may not
+\* rotate unprompted)
+u2Eager == {<<"a1", "G">>}
+\* readers above (issues/blocked-walk-stops-at-readers.md): M holds A's role,
+\* A holds G's; R, the one admin of G, reads M (so A through M) and may
+\* rotate neither; a1 the admin of A, m1 of M; m1 removes E from M
+vActs == <<"G", "A", "M">>
+vMem == {<<"G", "R">>, <<"G", "A">>, <<"A", "a1">>, <<"A", "M">>,
+         <<"M", "m1">>, <<"M", "R">>, <<"M", "E">>}
+vAdm == {<<"G", "R">>, <<"A", "a1">>, <<"M", "m1">>}
+vLearners == {"R", "a1", "m1"}
+vDeps == {<<"E", "M", "m1">>}
+vG == << <<"G", "A">>, <<"A", "M">> >>
+\* ... and g2, a second admin of G reading neither A nor M (it re-seals A
+\* where R left it out)
+v2Mem == vMem \cup {<<"G", "g2">>}
+v2Adm == vAdm \cup {<<"G", "g2">>}
+v2Learners == vLearners \cup {"g2"}
+v2NoSync == {<<"g2", "A">>, <<"g2", "M">>}
 =============================================================================

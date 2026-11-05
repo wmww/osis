@@ -82,6 +82,12 @@ instances=(
   "rotation Depth0MC D0_fork_rm.cfg all pass"         # a removal goes alone while Seal waits
   "rotation Depth0MC D0_above.cfg all pass"           # ... and things above the actor leave it out (Blocked)
   "rotation Depth0MC D0_above_live.cfg all pass"
+  "rotation Depth0MC D0_readers.cfg small fail"       # blocked walk stops at actors the node may not rotate (issues/blocked-walk-stops-at-readers.md)
+  "rotation Depth0MC D0_readers_out.cfg small pass"   # ... descending through every held epoch
+  "rotation Depth0MC D0_readers_wait.cfg small pass"  # ... waiting instead of leaving out
+  "rotation Depth0MC D0_readers_g2.cfg small fail"    # ... a second admin of G re-seals A where it was left out
+  "rotation Depth0MC D0_readers_g2_mark.cfg all pass" # ... the rotation records the keyset it left A out at
+  "rotation Depth0MC D0_above_g2.cfg small fail"      # alone-above has the same re-seal hole
   "rotation Finalize F_named_seed3.cfg small pass"       # a finalize names the writes it ends (issues/withheld-departures-seeds.md)
   "rotation Finalize F_named_bogus.cfg small pass"
   "rotation Finalize F_named_renew.cfg all pass"
