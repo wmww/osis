@@ -184,7 +184,7 @@ impl Engine {
     }
 
     /// Frees the memory things received from others (never one this session made: the app's
-    /// own) that no held or pending memory commit is on any more, among those of the commits
+    /// own) that no held memory commit validly writes any more, among those of the commits
     /// forgotten since the last sweep: a record is no state of its own (every commit about the
     /// thing carries it again), so dropping it loses nothing and received things do not pile up
     /// (notes/ephemeral.md Records go with their commit's other parts). A durable thing is never
@@ -197,7 +197,10 @@ impl Engine {
                 continue;
             }
             let made_here = self.core.memory.things.get(&t).is_some_and(|m| m.made_here);
-            let used = self.core.on_thing(&t).next().is_some() || self.core.ix.held.owned(&t).next().is_some();
+            // a commit counts through a part valid here (any signer's header lists any thing)
+            let core = &self.core;
+            let on = |c: &CommitId| core.ix.commits.get(c).is_some_and(|m| m.view.memory && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == t && m.valid_at(ai)));
+            let used = core.on_thing(&t).any(|c| on(&c)) || core.ix.held.owned(&t).next().is_some();
             if !made_here && !used {
                 free.insert(t);
             }

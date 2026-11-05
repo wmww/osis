@@ -7,12 +7,15 @@ use crate::model::evaluate;
 use crate::types::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Is `c` in effect: no applied undo commit in effect, valid or not, undoes it.
+/// Does commit `c` count on `(th, a)`: applied, with its part there valid.
+fn counts(applied: &BTreeSet<CommitId>, valid: &BTreeMap<(CommitId, usize), bool>, c: &Commit, th: ThingId, a: Aspect) -> bool {
+    applied.contains(&c.id) && c.parts.iter().enumerate().any(|(i, p)| p.thing == th && p.aspect == a && valid.get(&(c.id, i)) == Some(&true))
+}
+
+/// Is `c` in effect: no undo commit in effect counting on an aspect `c` lists undoes it.
 pub fn in_effect(h: &Held, applied: &BTreeSet<CommitId>, valid: &BTreeMap<(CommitId, usize), bool>, c: CommitId) -> bool {
-    !h.commits.iter().any(|u| {
-        // any applied undo, whatever its validity (in effect is a whole-commit property)
-        u.undoes == Some(c) && applied.contains(&u.id) && in_effect(h, applied, valid, u.id)
-    })
+    let Some(target) = h.commits.iter().find(|x| x.id == c) else { return true };
+    !h.commits.iter().any(|u| u.undoes == Some(c) && target.parts.iter().any(|p| counts(applied, valid, u, p.thing, p.aspect)) && in_effect(h, applied, valid, u.id))
 }
 
 fn before(c: &Commit, t: &Commit) -> bool {
@@ -71,8 +74,8 @@ pub fn undo(h: &Held, target: CommitId, id: CommitId, ts: u64, author: NodeId) -
         let buf = bufs.get(&(th, a)).cloned().unwrap_or_default();
         let cur = crdt::join(o.states.get(&(th, a)).into_iter().flatten());
         let on_aspect = |c: &Commit| c.parts.iter().any(|q| q.thing == th && q.aspect == a);
-        // step-back: every later non-undo commit with writes on the aspect is out of effect
-        let step_back = h.commits.iter().filter(|c| o.applied.contains(&c.id) && on_aspect(c) && before(t, c) && c.undoes.is_none()).all(|c| !effect(c.id));
+        // step-back: every later non-undo commit counting on the aspect is out of effect
+        let step_back = h.commits.iter().filter(|c| counts(&o.applied, &o.valid, c, th, a) && before(t, c) && c.undoes.is_none()).all(|c| !effect(c.id));
         let ours = |c: CommitId| c == t.id || (is_undo(c) && effect(c));
         let mut out: Vec<Write> = Vec::new();
         let read_buf = crdt::read(&buf, a.kind);

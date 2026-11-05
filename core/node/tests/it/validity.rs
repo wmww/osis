@@ -3455,3 +3455,162 @@ fn stranger_label_listing_labels_nothing_spec_sync_2() {
     e.reload().unwrap();
     assert!(!e.labeled_groups().contains(&t));
 }
+
+/// Secrets for hand-built commits on several things: each thing's dedup from its record, a
+/// made-up one for a thing given none (its part sent header only).
+struct Dedups(BTreeMap<Tid, osis_base::CreationRecord>);
+impl osis_commit::Secrets for Dedups {
+    fn dedup(&self, t: &Tid) -> Option<osis_crypto::Secret32> {
+        Some(self.0.get(t).map_or(osis_crypto::Secret32::from_bytes([0; 32]), |r| osis_crypto::dedup_secret(r.nonce())))
+    }
+    fn admin_key(&self, t: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        let _ = t;
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([3; 32])).verifying_key())
+    }
+    fn chain_key(&self) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([1; 32])).verifying_key())
+    }
+    fn write_key(&self, _: &Tid) -> Option<osis_crypto::VerifyingKey> {
+        Some(osis_crypto::DeleteSecret::derive(&osis_crypto::Secret32::from_bytes([2; 32])).verifying_key())
+    }
+}
+
+/// What a forged commit writes on one aspect: the value, or `None` for a part sent header only.
+type ForgedPart<'a> = (Tid, &'a str, Option<Value>);
+
+/// Peer `by`'s key signs a content commit (memory class with `memory`) setting each of
+/// `parts`, with `undoes` and `expires`, no rights checked; parts given no value are sent
+/// header only. Dedups from peer `holder`'s records.
+fn forge_parts(lp: &mut LocalPeer, by: usize, holder: usize, parts: &[ForgedPart<'_>], undoes: Option<osis_base::CommitId>, expires: Option<u64>, memory: bool) -> osis_commit::CommitBlob {
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
+    let b = lp.peers[by].engine.tid();
+    let form = forged_session(b);
+    let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, form);
+    cb.undoes = undoes;
+    cb.expires = expires;
+    if memory {
+        cb.ephemeral = Some(osis_commit::EphClass::Plain);
+    }
+    let mut recs = BTreeMap::new();
+    for (t, a, v) in parts {
+        let mut w = Writer::new(ts, form.own_source(b, osis_base::CommitId([0; 32])), 1);
+        let f = create(&mut w, &AnyView, v.as_ref().unwrap_or(&s("header only"))).unwrap();
+        let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, 1, 2), None).unwrap();
+        let mut w = AspectWrite::new(*t, ak(a), 1, 2, bytes);
+        if memory {
+            w.retention = osis_commit::retention::EPHEMERAL_RETENTION;
+        }
+        cb.aspects.push(w);
+        if let Some(r) = lp.peers[holder].engine.core.created(t) {
+            recs.insert(*t, r.clone());
+        }
+    }
+    let mut blob = cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedups(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
+    let bare: BTreeSet<usize> = parts.iter().enumerate().filter(|(_, p)| p.2.is_none()).map(|(i, _)| i).collect();
+    blob.parts.retain(|p| !bare.contains(&p.ai));
+    blob
+}
+
+// spec/crdt.md §4.6 (in effect, judged per aspect by parts valid here): undo steps back through
+// an undo in effect (z, a, b; b undone to a; undoing a writes z). A stranger's commit naming
+// that undo or listing the aspect later changes nothing: an undo of it sent header only, a
+// later change sent header only, an undo of it validly writing only the stranger's own thing.
+#[test]
+fn stranger_undo_listing_moves_no_step_back_spec_crdt_4_6() {
+    for variant in ["none", "undo header only", "change header only", "undo valid elsewhere"] {
+        let mut lp = net(2, 0x5f21);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, 0);
+        let set = |lp: &mut LocalPeer, v: &str| {
+            lp.advance(1_000);
+            let mut m = Mutation::new();
+            m.set(t, &REG, &s(v)).unwrap();
+            lp.peers[0].commit(m).unwrap().unwrap()
+        };
+        set(&mut lp, "z");
+        let c1 = set(&mut lp, "a");
+        let c2 = set(&mut lp, "b");
+        lp.advance(1_000);
+        let u2 = lp.peers[0].engine.revert(&c2).unwrap().unwrap();
+        assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));
+        lp.advance(1_000);
+        let me = lp.peers[1].engine.tid();
+        let forged = match variant {
+            "undo header only" => Some(forge_parts(&mut lp, 1, 0, &[(t, "t:reg.0", None)], Some(u2), None, false)),
+            "change header only" => Some(forge_parts(&mut lp, 1, 0, &[(t, "t:reg.0", None)], None, None, false)),
+            "undo valid elsewhere" => Some(forge_parts(&mut lp, 1, 0, &[(me, "t:reg.0", Some(s("mine")))], Some(u2), None, false)),
+            _ => None,
+        };
+        if let Some(blob) = forged {
+            let id = blob.id();
+            assert_eq!(lp.peers[0].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id), "{variant}");
+        }
+        lp.advance(1_000);
+        assert!(lp.peers[0].engine.revert(&c1).unwrap().is_some(), "{variant}: the undo writes");
+        assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("z")), "{variant}");
+    }
+}
+
+// spec/sync.md §9 (a received memory thing goes once no commit here needs it): a stranger's
+// commit naming a memory thing, durable or memory class, sent header only (it applies, its part
+// invalid), does not keep the thing once its writer's memory commit expired.
+#[test]
+fn stranger_listing_keeps_no_memory_thing_spec_sync_9() {
+    for durable in [true, false] {
+        let mut lp = net(3, 0x5f23);
+        lp.sync_all().unwrap();
+        let d = new_thing(&mut lp, 0);
+        lp.sync_all().unwrap();
+        let e = &mut lp.peers[0].engine;
+        let mut m = Mutation::new();
+        let w = e.new_thing(&mut m, d);
+        let a = ak("t:tags.0~");
+        m.set(w, &a, &s("x")).unwrap();
+        m.expires(w, &a, WallMs(e.now().0 + 60_000)).unwrap();
+        let id = e.commit_in_memory(m).unwrap().unwrap();
+        let pk = e.package(&id).unwrap().unwrap();
+        assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), Ingested::Applied(_)));
+        assert!(lp.peers[1].engine.core.created(&w).is_some());
+        let blob = forge_parts(&mut lp, 2, 1, &[(w, if durable { "t:reg.0" } else { "t:tags.0~" }, None)], None, None, !durable);
+        let fid = blob.id();
+        let got = if durable { lp.peers[1].engine.ingest(&blob.encode(), Vec::new()) } else { lp.peers[1].engine.ingest_memory(&blob.encode(), u64::MAX) };
+        assert_eq!(got.unwrap(), Ingested::Applied(fid), "durable {durable}");
+        lp.advance(61_000);
+        let e = &mut lp.peers[1].engine;
+        e.tick().unwrap();
+        e.take_memory_drops();
+        assert!(e.core.created(&w).is_none(), "durable {durable}: freed");
+    }
+}
+
+// spec/sync.md §1 (a reused chunk a host deleted is written again with the reusing delta's
+// retention and expiry): an invalid commit linking the value (a reader's, expiring soon) lends
+// the rewrite nothing.
+#[test]
+fn invalid_reuse_lends_relink_no_expiry_spec_sync_1() {
+    let mut lp = net(2, 0x5f25);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let r = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
+    let mut big = vec![0u8; 1 << 20];
+    osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(5), &mut big);
+    let mut m = Mutation::new();
+    m.set(t, &BLOB, &Value::Bytes(big)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let blob_ak = ak("t:blob.0");
+    let link = lp.peers[0].engine.state(&t, &blob_ak).unwrap().unwrap().read().unwrap();
+    assert!(matches!(link, Value::Link(_)));
+    lp.advance(1_000);
+    let soon = lp.peers[1].engine.now().0 + DAY;
+    let blob = forge_parts(&mut lp, 1, 0, &[(t, "t:blob.0", Some(link))], None, Some(soon), false);
+    let id = blob.id();
+    assert_eq!(lp.peers[0].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(id));
+    let e = &mut lp.peers[0].engine;
+    let lost = e.live_trees(&t).unwrap().blobs;
+    let c = e.relink(&lost, &mut |_, _| true).unwrap().expect("a rewrite");
+    assert_eq!(e.header(&c).unwrap().expires, None, "the own commit's expiry, not the reader's");
+}

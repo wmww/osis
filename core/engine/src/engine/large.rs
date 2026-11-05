@@ -601,7 +601,7 @@ impl Engine {
     }
 
     /// `relink` of one field: its ops, with the retention, expiry and schema of the newest held
-    /// commit whose delta links a `held` blob (the value rewritten), if a commit of `me` links one
+    /// commit whose valid delta links a `held` blob (the value rewritten), if a commit of `me` links one
     /// too; `None` when there is nothing to do here.
     fn relink_field(&mut self, tid: &Tid, ak: &Ak, held: &BTreeSet<BlobId>, me: Tid, now: u64) -> Result<Option<super::write::AspectMut>> {
         let commits: Vec<CommitId> = self.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().rev().map(|x| x.1).filter(|c| self.core.ix.commits.get(c).is_some_and(|m| m.header.kind == osis_commit::Kind::Content)).collect()).unwrap_or_default();
@@ -611,7 +611,9 @@ impl Engine {
             let Some(dedup) = tx.core.dedup(&k.0) else { return Ok((None, false)) };
             let mut newest = None;
             for c in commits {
-                let Some((ai, mine)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.header.aspects.iter().position(|a| a.tid == k.0 && a.ak == k.1)?, m.header.author == me))) else { continue };
+                // a commit counts through its part valid here: an invalid one's retention and
+                // expiry are no one's to copy
+                let Some((ai, mine)) = tx.core.ix.commits.get(&c).and_then(|m| Some((m.aspect(&k.0, &k.1).filter(|ai| m.valid_at(*ai))?, m.header.author == me))) else { continue };
                 if newest.is_some() && !mine {
                     continue;
                 }

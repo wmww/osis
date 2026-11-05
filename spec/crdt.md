@@ -292,11 +292,11 @@ Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen pe
   - The write happens if the undone write is still the current winner locally, or if all of the following hold:
     - the current winner was written by an undo commit in effect;
     - it equals the undone write in value (register value, or anchor and sibling key; a value-less write, §4.7, equals nothing);
-    - every commit that is not an undo commit, holds writes of the aspect and is ordered after the undone commit (by `(ts, ID)`) is not in effect.
+    - every commit that is not an undo commit, counts on the aspect and is ordered after the undone commit (by `(ts, ID)`) is not in effect.
   - The first and last of these are the **step-back condition**.
   - Otherwise there is no write.
   - There is no write when the previous value is absent. Only "Absent before" below makes a position absent again; when it does not apply, a register that was absent before keeps its current value.
-  - A commit is **in effect** while no applied undo commit in effect undoes it, whatever that undo commit's validity.
+  - A commit **counts** on an aspect when its part there is valid here, its body held or not. A commit is **in effect** while no undo commit in effect that counts on an aspect the commit lists undoes it.
 - **Flag write, element reset** (text delete, list delete, set remove, key remove): the inverse write (flag `false` for text, or a re-add with a fresh dot) carrying content from the undo buffer, at the undo commit's stamp.
   - A text flag write is inverted only where it changed the flag: `false` only for an element visible in the undo buffer, `true` (undoing an undelete) only for one deleted there.
   - A list element is re-inserted as a fresh element anchored at the deleted one (its stamps after those of the undo's restored position writes, which take theirs in the undone writes' stamp order).
