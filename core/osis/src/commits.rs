@@ -140,7 +140,7 @@ pub enum DropReason {
 }
 
 /// One change: a held commit, attributed by its own signed header only (a change known only
-/// from a snapshot has no entry: notes/api.md Attribution), or an own ephemeral change of this
+/// from a snapshot has no entry), or an own ephemeral change of this
 /// session; with its relations among them. A batch with both halves is its commit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitEntry {

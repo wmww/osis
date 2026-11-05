@@ -124,7 +124,7 @@ pub struct LinkInfo {
 
 /// An invite from a sender with no known connection to this database (spec/sync.md §3, invite
 /// requests): nothing it names is fetched or dialed until `accept_invite`. It says nothing about
-/// sender or thing: both would be the sender's unverified word (notes/api.md Attribution), and a
+/// sender or thing: both would be the sender's unverified word, and a
 /// request never comes from a node known to be connected, so a known name there would be a
 /// spoof or a device not seen yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1202,7 +1202,7 @@ impl Osis {
         Ok(card)
     }
 
-    /// This person's profile thing (notes/std.md): the target of its contact card, made on first
+    /// This person's profile thing: the target of its contact card, made on first
     /// use. The person writes its profile aspects on it (`name.0`, `contact:*`); everyone holding
     /// the card reads them.
     pub fn profile(&self) -> Result<Tid> {
@@ -1550,7 +1550,7 @@ impl Osis {
     /// does not administer `t` and a label of its own has more to bring (a first sync). `All`:
     /// every label with hosts (`status` shows the `NoHosts` ones) and every delivery.
     ///
-    /// On an attached handle the node waits (a subscription, notes/client-port.md §2), with the
+    /// On an attached handle the node waits with the
     /// same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
         let r = match scope {

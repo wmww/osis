@@ -62,7 +62,7 @@ fn next_token() -> u64 {
 /// The name of the file in a store directory naming the socket a daemon listens on.
 pub const SOCK_FILE: &str = "sock";
 
-/// The socket a daemon serving `store` listens on (notes/client-port.md §5): in osis's own
+/// The socket a daemon serving `store` listens on: in osis's own
 /// directory under `$XDG_RUNTIME_DIR` (`osis/`), else `/tmp/osis-<uid>/`, named by the store
 /// path's hash (`sun_path` holds 108 bytes, a store path may not). The directory is created 0700
 /// and checked: owned by this uid, mode 0700, not a symlink.
@@ -786,11 +786,11 @@ pub(crate) fn spawn_client(addr: &crate::HostAddr, secret: &crate::ClientSecret,
 }
 
 impl Osis {
-    /// Attaches to the node serving the unix socket at `socket` (notes/client-port.md §1):
+    /// Attaches to the node serving the unix socket at `socket`:
     /// every call addressed by a tid or group goes there as Owner (the socket's peer has this
     /// process's uid), `me`/`node`/`home` are the node's; `settle` waits for the node's
-    /// deliveries too. What needs this process to be the node (`read(|r| ..)`, `Internals`,
-    /// notes/client-port.md §1) fails `Unsupported`. `cfg` gives the
+    /// deliveries too. What needs this process to be the node (`read(|r| ..)`, `Internals`)
+    /// fails `Unsupported`. `cfg` gives the
     /// clock, dispatcher and materialization bound; its store is not used (a scratch memory
     /// database stands in until the no-store profile, step (f)).
     pub fn attach(socket: &Path, cfg: Config) -> Result<Osis> {
@@ -805,8 +805,8 @@ impl Osis {
     }
 
     /// Attaches to the node at `addr` (`url#key`: a URL it listens on with that transport key,
-    /// which the transport pins) as the thin client `secret` stands for (notes/client-port.md
-    /// §3): the node acts as the client's actor, so `me()` is that actor, what it may not read
+    /// which the transport pins) as the thin client `secret` stands for:
+    /// the node acts as the client's actor, so `me()` is that actor, what it may not read
     /// reads as unknown, process-wide calls fail `Unsupported`. Dials with `cfg.transport` (default
     /// QUIC). A unix address is `Invalid`: the secret goes only over a keyed transport. Fails
     /// `Unsupported` when the node refuses the secret, `Network` past its connection cap or when
@@ -817,7 +817,7 @@ impl Osis {
         Osis::attach_remotes(cfg)
     }
 
-    /// A process with no store (notes/client-port.md §6): every group is at `cfg.remotes`, in that
+    /// A process with no store: every group is at `cfg.remotes`, in that
     /// order for a thing the routes do not place. All must answer as one actor (`Invalid`
     /// otherwise: `me()` is one actor per process); failures as `attach_client`'s. `cfg.store` is
     /// not used.
@@ -858,7 +858,7 @@ impl Osis {
     }
 
     /// Attaches this node's handle to the node at `addr` as the thin client `secret` stands for,
-    /// beside its own store (notes/client-port.md §6): `group_source` can then route groups there,
+    /// beside its own store: `group_source` can then route groups there,
     /// and a thing known nowhere here goes there. Reconnects by itself. Fails as `attach_client`,
     /// not attached then; `Invalid` when already attached to it. `Unsupported` on a handle with no
     /// store of its own.

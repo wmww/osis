@@ -162,6 +162,11 @@ Keep as they are:
 - `on_history` is per aspect, so a per-year chat holds one subscription per year, none for a year beyond next.
 - `HistoryBody::Purged { by }` once needed a commit query with no by-id filter; check it's solved by `actor`.
 
+## H. Docs and crate layout
+- `core/chat` should leave core: plenty of core users don't need chat, and notes/build.md already says further projects are top-level directories depending only on `osis`. Recommend top-level `chat/`, unless more helper libraries appear (then a directory for them). `core/*` in the workspace members and paths in notes, gate and policy tools change with it.
+- Crate docs after the refactor: rewrite `lib.rs` sections to the Public docs rules in notes/api-design.md, since most examples change anyway. "Footguns closed" is the first to go or become plain advice. Module-level jargon in the first lines of each section ("placement is a group op") likewise.
+- Rendered docs still cite `spec/` as plain text (about 90 lines, 38 in `share.rs`). Keep those that help a reader, drop the rest. To make them links, a doc-only module could embed the spec with `#[doc = include_str!(..)]`; not tried. Links between spec files would need rewriting, and `tools/gate.sh` runs its full gate on spec edits once Rust reads `spec/`, unless that file joins its docs step.
+
 ## Related issues, resolve within this work
 - issues/api-knows-empty.md, issues/api-leaving-give-up.md (a give-up call belongs with `leave`), issues/account-rename.md, issues/grant-rename-multi-actor.md (public `act_as(actor) -> Osis` could replace `Write::act_as`).
 - issues/api-deferred.md stays for what isn't built, but its shapes should follow this design. `Unsupported` shouldn't cover unbuilt calls: an unbuilt call isn't in the API.

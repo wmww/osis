@@ -32,7 +32,7 @@ pub enum Cause {
     Fetched,
 }
 
-/// An ephemeral batch of this node (notes/ephemeral.md): its session's nonce (spec/crdt.md §2.1)
+/// An ephemeral batch of this node: its session's nonce (spec/crdt.md §2.1)
 /// and its number there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EphemeralId {
@@ -106,7 +106,7 @@ pub enum DiagnosticKind {
     /// spec/requirements.md Offline and network).
     NotSynced,
     /// A persisted thing's ephemeral placement stayed ephemeral: this node may not write the
-    /// group (notes/ephemeral.md Ephemeral placements; `tids`: item, group).
+    /// group (`tids`: item, group).
     PlacementNotPersisted,
     /// A demotion was stamped without its pre-sync (spec/permissions.md §5.3).
     Unsynced,
@@ -117,7 +117,7 @@ pub enum DiagnosticKind {
     /// they stay in its buffer.
     Uncommitted,
     /// Ephemeral data was not synced or not applied: a host's or this node's ephemeral cap
-    /// was reached, or an ephemeral commit could not be built (notes/ephemeral.md Bounds).
+    /// was reached, or an ephemeral commit could not be built.
     EphemeralRefused,
     /// A typed read found a stored value that does not match the reader's type (another
     /// writer's data, a newer schema version's enum case); it read as absent (the `osis` API,

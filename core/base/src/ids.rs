@@ -151,7 +151,7 @@ impl CreationRecord {
     }
 }
 
-/// Where an aspect's writes live (notes/ephemeral.md Model): durable commits, or in memory.
+/// Where an aspect's writes live: durable commits, or in memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Lifetime {
     #[default]

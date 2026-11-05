@@ -20,7 +20,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Default materialization bound: 64 MiB (notes/api.md Reads).
+/// Default materialization bound: 64 MiB.
 pub const DEFAULT_LIMIT: usize = 64 << 20;
 /// Default wait for another node (`Config::wait_timeout`).
 pub const DEFAULT_WAIT: Duration = Duration::from_secs(60);
@@ -47,7 +47,7 @@ impl MemStore {
     pub fn held_bytes(&self) -> u64 {
         self.backend.held_bytes()
     }
-    /// Rows in the store now (scale checks, notes/growth.md).
+    /// Rows in the store now (scale checks).
     pub fn rows(&self) -> usize {
         self.backend.dump().len()
     }
@@ -98,7 +98,7 @@ pub struct Config {
     /// waits before failing `Network`.
     pub wait_timeout: Duration,
     /// Bytes of this session's ephemeral changes kept for undo (default 16 MiB); older ones are
-    /// `NotUndoable{Compacted}` (notes/ephemeral.md Bounds).
+    /// `NotUndoable{Compacted}`.
     pub ephemeral_history: usize,
     /// Where watch callbacks run (default: a dispatcher thread).
     pub dispatch: Dispatcher,
@@ -385,7 +385,7 @@ pub(crate) fn fresh_engine(cfg: &Config, hosts: &[HostAddr]) -> Result<Fresh> {
 }
 
 impl Osis {
-    /// Creates a database (notes/api.md, spec/permissions.md §1): a new node and a new person
+    /// Creates a database (spec/permissions.md §1): a new node and a new person
     /// actor owned by a fresh recovery key, this node its admin, its home group (the person
     /// itself, spec/sync.md §2) labeled on `Config.hosts`. Returns the recovery card, the only
     /// copy of the recovery key: show or store it, osis keeps none of it. Without hosts there
@@ -662,7 +662,7 @@ impl Osis {
     /// Registers a schema: typed views for its AKs (`key`, this session), undo and large-value
     /// write-back (the engine keeps those in the store). Generated keys carry their schema and
     /// need no registration. This session's newest registration of an AK types its `key`; the
-    /// engine keeps the highest version (notes/data-model.md AKs). An app schema declares no
+    /// engine keeps the highest version. An app schema declares no
     /// core AK.
     pub fn register_schema(&self, s: Schema) -> Result<Arc<Schema>> {
         if s.declares_core() {

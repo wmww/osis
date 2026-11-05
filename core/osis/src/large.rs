@@ -243,8 +243,7 @@ impl<K: AspectKey> AspectWrite<'_, '_, K> {
 
 impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
     /// Sets the string or blob at the path from a reader: a string when the key's schema says
-    /// so (UTF-8 checked), else a blob. The value is read whole before the commit for now
-    /// (issues/api-deferred.md).
+    /// so (UTF-8 checked), else a blob. The value is read whole before the commit for now.
     pub fn set_stream(&mut self, mut r: impl Read) -> Result<()> {
         let mut b = Vec::new();
         r.read_to_end(&mut b).map_err(|e| Error::Invalid(format!("reading the value: {e}")))?;

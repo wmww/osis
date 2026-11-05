@@ -22,8 +22,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Duration;
 
-/// A written batch: its commit, or its ephemeral batch when it had no durable half
-/// (notes/ephemeral.md).
+/// A written batch: its commit, or its ephemeral batch when it had no durable half.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Committed {
     /// The first commit (it carries the records of the things the batch creates).
