@@ -16,6 +16,12 @@ A realm is an actor marked `realm.0` (plus `name.0`), as `tag.0` marks a group; 
 8. Host admission for realms: left to the host admission work (recommended).
 Say "realms as recommended" to build, or change any.
 
+## 11. Limits kept after the requirements pass
+The pass (spec/requirements.md) dropped limits that follow from a stated property and moved mechanism to the subsystem specs. Three real limits stay; say if any should instead become a guarantee:
+1. A write mixing expiries, or mixing data nobody may purge with other data, becomes several changes, so it is not atomic. Keep as a stated limit (recommended: apps rarely mix them), or make one change carry per-part expiries (wire and host work).
+2. Removing a person whose kept writes number more than about 1.9 million fails. Keep (recommended: rare; it only bites on data whose history is kept forever), or require removals of any size.
+3. "Byte-identical everywhere" now reads "equal values compare equal on every node", since a large value's bytes carry random keys. Confirm that is the property you want (recommended).
+
 ## Decided (Tess)
 - Q1: option A (any writer finalizes an ended timed share), built as item 280.
 - Q2: option A, a group never looks inside its member actors, with the two extra rules of notes/keys-requirements-study.md §4. Role cycles (Q8): Tess left it to us: no key cycles (the earlier grant in the agreed order gets keys, the later one none), model-check first, fall back to accepting a leak in cycles until the next knowing re-key if a hidden cycle leaks. Nested shared tags can be one-way. Plan: issues/keys-depth0.md.

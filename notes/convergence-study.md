@@ -40,7 +40,7 @@ Classes: **R×D** retroactive validity × dropped data; **F** forged copies by a
 Of these, only 1-6 are honest-use read divergences; 1 and 2 are the permanent ones, and 1 is Tess's example. 3-6 heal (or are fixed by planned work). 7-11 are hostile-writer outcomes, bounded by "authenticated malicious writers are bounded, not prevented"; their nodes converge whenever both hold the same valid snapshots.
 
 ## 2. Requirement changes examined
-The binding sentence is spec/requirements.md Permissions: "Whether an edit by a revoked holder counts is judged by what the revoker had received, never by the author's own timestamps. Edits the revoker had not received when it revoked are lost until re-grant, except those another writer compacted before it learned of the revocation, which stay."
+The binding sentence is spec/requirements.md Permissions: "Whether an edit by a revoked holder counts is judged by what the revoker had received, never by the author's own timestamps. Limit: edits the revoker had not received when it revoked may be lost until re-grant." Those another writer compacted before it learned of the revocation stay (a valid snapshot vouches for what it carries, spec/permissions.md §5.2).
 
 ### (a) Give up retroactive invalidation
 Meaning "a removal stops only writes arriving after it". Two readings, both fail:
