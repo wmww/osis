@@ -140,8 +140,9 @@ impl HeldBoxes {
 /// Invariant: a key cycle, a stale keyset or a box to a party holding no role, written by a commit
 /// this node judges invalid (its author demoted concurrently, a box removal failing Authority),
 /// is rotated away like one a valid commit wrote: a removed party reads none of the new content
-/// once the writer holds that commit. A writer of `a` writing junk boxes makes `a`'s rotators
-/// rotate once per such commit: no more than it could by rotating `a` itself.
+/// once the writer holds that commit. Junk boxes make `a`'s rotators rotate once per such commit,
+/// whoever wrote them: a reader of `a` too, which could not rotate `a` itself
+/// (issues/held-boxes-reader-rekey.md).
 pub(crate) fn held_boxes(tx: &mut Tx<'_>, a: &Tid) -> Result<HeldBoxes> {
     let state = secrets_in(tx, a)?;
     let ak = crate::flows::ak("secrets.0")?;
