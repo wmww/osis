@@ -5,10 +5,10 @@ use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
 use crate::share::{GrantOpts, GroupSync, Holder, HostAddr, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncFirst, SyncScope, SyncState};
-use crate::watch::{ChangeReason, Source};
-use crate::write::Committed;
-use crate::change::ChangeId;
-use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, Time};
+use crate::watch::{DerivedFrom, Source};
+use crate::write::Commit;
+use crate::commit_id::CommitId;
+use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::{ChangeId as RawChange, Diagnostic, DiagnosticKind, EphemeralId};
 use osis_proto::{ApiCode, Outcome};
@@ -189,59 +189,58 @@ fn wall(v: &Value) -> Result<Time> {
     v.as_uint().map(Time).ok_or_else(|| bad("time"))
 }
 
-pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
-    Args::of(vec![v]).bytes()?.try_into().map(CommitId).map_err(|_| bad("commit id"))
+pub(crate) fn raw_commit_id(v: Value) -> Result<RawCommitId> {
+    Args::of(vec![v]).bytes()?.try_into().map(RawCommitId).map_err(|_| bad("commit id"))
 }
 
-pub(crate) fn change_v(c: &ChangeId) -> Value {
+pub(crate) fn commit_id_v(c: &CommitId) -> Value {
     Value::List(match &c.0 {
         RawChange::Commit(c) => vec![u(0), Value::bytes(&c.0)],
         RawChange::Ephemeral(e) => vec![u(1), Value::bytes(&e.session), u(e.n)],
     })
 }
 
-pub(crate) fn change(v: Value) -> Result<ChangeId> {
+pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
     let mut a = Args::new(v)?;
     let c = match a.uint()? {
-        0 => ChangeId::commit(commit_id(a.next()?)?),
-        1 => ChangeId(RawChange::Ephemeral(EphemeralId { session: a.bytes()?.try_into().map_err(|_| bad("session"))?, n: a.uint()? })),
-        _ => return Err(bad("change")),
+        0 => CommitId::commit(raw_commit_id(a.next()?)?),
+        1 => CommitId(RawChange::Ephemeral(EphemeralId { session: a.bytes()?.try_into().map_err(|_| bad("session"))?, n: a.uint()? })),
+        _ => return Err(bad("commit id")),
     };
     a.end()?;
     Ok(c)
 }
 
-pub(crate) fn committed_v(c: &Committed) -> Value {
-    Value::List(vec![change_v(&c.id), ts_v(c.ts), Value::List(c.also.iter().map(change_v).collect())])
+pub(crate) fn commit_v(c: &Commit) -> Value {
+    Value::List(vec![commit_id_v(&c.id), ts_v(c.ts)])
 }
 
-pub(crate) fn committed(v: Value) -> Result<Committed> {
+pub(crate) fn commit(v: Value) -> Result<Commit> {
     let mut a = Args::new(v)?;
-    let (id, ts) = (change(a.next()?)?, ts(&a.next()?)?);
-    let also = Args::of(vec![a.next()?]).list()?.into_iter().map(change).collect::<Result<_>>()?;
-    let c = Committed { id, written: ts.wall_ms(), ts, also };
+    let (id, ts) = (commit_id(a.next()?)?, ts(&a.next()?)?);
+    let c = Commit { id, written: ts.wall_ms(), ts };
     a.end()?;
     Ok(c)
 }
 
 pub(crate) fn stamp_v(i: &Stamp) -> Value {
-    Value::List(vec![change_v(&i.id), Value::Tid(i.actor), Value::Tid(i.node), ts_v(i.ts), u(i.received.0)])
+    Value::List(vec![commit_id_v(&i.id), Value::Tid(i.actor), Value::Tid(i.node), ts_v(i.ts), u(i.received.0)])
 }
 
 pub(crate) fn stamp(v: Value) -> Result<Stamp> {
     let mut a = Args::new(v)?;
-    let i = Stamp::new(change(a.next()?)?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
+    let i = Stamp::new(commit_id(a.next()?)?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
     a.end()?;
     Ok(i)
 }
 
 pub(crate) fn thing_stamp_v(s: &ThingStamp) -> Value {
-    Value::List(vec![opt(s.id, |c| change_v(&c)), Value::Tid(s.actor), Value::Tid(s.node), ts_v(s.ts), u(s.received.0)])
+    Value::List(vec![opt(s.id, |c| commit_id_v(&c)), Value::Tid(s.actor), Value::Tid(s.node), ts_v(s.ts), u(s.received.0)])
 }
 
 pub(crate) fn thing_stamp(v: Value) -> Result<ThingStamp> {
     let mut a = Args::new(v)?;
-    let (id, actor, node, t, received) = (a.opt()?.map(change).transpose()?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
+    let (id, actor, node, t, received) = (a.opt()?.map(commit_id).transpose()?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
     let s = ThingStamp { id, actor, node, written: t.wall_ms(), ts: t, received };
     a.end()?;
     Ok(s)
@@ -274,13 +273,13 @@ pub(crate) fn grants(v: Value) -> Result<Grants> {
     Ok(out)
 }
 
-const REASONS: [ChangeReason; 5] = [ChangeReason::ValidityChanged, ChangeReason::Expired, ChangeReason::Purged, ChangeReason::Arrived, ChangeReason::LostAccess];
+const REASONS: [DerivedFrom; 5] = [DerivedFrom::ValidityChanged, DerivedFrom::Expired, DerivedFrom::Purged, DerivedFrom::Arrived, DerivedFrom::LostAccess];
 
 /// Fails to compile when a reason is added: list it in `REASONS` too.
 #[allow(dead_code)]
-fn reasons_listed(c: ChangeReason) {
+fn reasons_listed(c: DerivedFrom) {
     match c {
-        ChangeReason::ValidityChanged | ChangeReason::Expired | ChangeReason::Purged | ChangeReason::Arrived | ChangeReason::LostAccess => {}
+        DerivedFrom::ValidityChanged | DerivedFrom::Expired | DerivedFrom::Purged | DerivedFrom::Arrived | DerivedFrom::LostAccess => {}
     }
 }
 
@@ -413,7 +412,7 @@ pub(crate) fn diag(v: Value) -> Result<Diagnostic> {
     let mut a = Args::new(v)?;
     let kind = *usize::try_from(a.uint()?).ok().and_then(|i| KINDS.get(i)).ok_or_else(|| bad("diagnostic kind"))?;
     let tids = tids(a.next()?)?;
-    let commit = a.opt()?.map(commit_id).transpose()?;
+    let commit = a.opt()?.map(raw_commit_id).transpose()?;
     let peer = a.opt()?.map(|p| tid(&p)).transpose()?;
     let detail = a.text()?;
     a.end()?;
@@ -453,7 +452,7 @@ pub(crate) fn scope(v: Value) -> Result<Scope> {
     Ok(s)
 }
 
-const CKINDS: [CommitKind; 5] = [CommitKind::Change, CommitKind::Revert, CommitKind::Role, CommitKind::Summary, CommitKind::Ephemeral];
+const CKINDS: [CommitKind; 5] = [CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Summary, CommitKind::Ephemeral];
 
 fn ckind_v(k: &CommitKind) -> Value {
     u(CKINDS.iter().position(|x| x == k).unwrap_or(0) as u64)
@@ -468,12 +467,12 @@ pub(crate) fn query_v(q: &CommitQuery) -> Value {
         opt(q.scope.as_ref(), scope_v),
         tids_v(&q.actors),
         Value::List(q.kinds.iter().map(ckind_v).collect()),
-        opt(q.reverts.as_ref(), change_v),
-        opt(q.reverted_by.as_ref(), change_v),
+        opt(q.reverts.as_ref(), commit_id_v),
+        opt(q.reverted_by.as_ref(), commit_id_v),
         opt(q.in_effect, Value::Bool),
         opt(q.since, |t| u(t.0)),
         opt(q.until, |t| u(t.0)),
-        opt(q.after.as_ref(), change_v),
+        opt(q.after.as_ref(), commit_id_v),
         opt(q.limit, |n| u(n as u64)),
     ])
 }
@@ -484,12 +483,12 @@ pub(crate) fn query(v: Value) -> Result<CommitQuery> {
         scope: a.opt()?.map(scope).transpose()?,
         actors: tids(a.next()?)?,
         kinds: a.list()?.iter().map(ckind).collect::<Result<_>>()?,
-        reverts: a.opt()?.map(change).transpose()?,
-        reverted_by: a.opt()?.map(change).transpose()?,
+        reverts: a.opt()?.map(commit_id).transpose()?,
+        reverted_by: a.opt()?.map(commit_id).transpose()?,
         in_effect: a.opt()?.map(|b| Args::of(vec![b]).bool()).transpose()?,
         since: a.opt_wall()?,
         until: a.opt_wall()?,
-        after: a.opt()?.map(change).transpose()?,
+        after: a.opt()?.map(commit_id).transpose()?,
         limit: a.opt()?.map(|n| n.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("limit"))).transpose()?,
     };
     a.end()?;
@@ -498,7 +497,7 @@ pub(crate) fn query(v: Value) -> Result<CommitQuery> {
 
 pub(crate) fn from_v(f: &crate::HistoryFrom) -> Value {
     use crate::HistoryFrom as F;
-    let at = |p: &crate::HistoryPos| vec![ts_v(p.0.ts), change_v(&ChangeId(p.0.id))];
+    let at = |p: &crate::HistoryPos| vec![ts_v(p.0.ts), commit_id_v(&CommitId(p.0.id))];
     Value::List(match f {
         F::Newest => vec![u(0)],
         F::Oldest => vec![u(1)],
@@ -514,7 +513,7 @@ pub(crate) fn from(v: Value) -> Result<crate::HistoryFrom> {
         0 => F::Newest,
         1 => F::Oldest,
         k @ (2 | 3) => {
-            let p = HistoryPos::of(ts(&a.next()?)?, change(a.next()?)?);
+            let p = HistoryPos::of(ts(&a.next()?)?, commit_id(a.next()?)?);
             if k == 2 { F::Before(p) } else { F::After(p) }
         }
         _ => return Err(bad("history start")),
@@ -528,7 +527,7 @@ pub(crate) fn hist_entry_v(e: &crate::HistoryEntry<Value>) -> Value {
     let body = match &e.body {
         B::Held(v) => vec![u(0), opt(v.clone(), |x| x)],
         B::TooLarge { limit } => vec![u(1), u(*limit as u64)],
-        B::Purged { by, actor } => vec![u(2), change_v(by), opt(*actor, Value::Tid)],
+        B::Purged { by, actor } => vec![u(2), commit_id_v(by), opt(*actor, Value::Tid)],
         B::Gone => vec![u(3)],
         B::NotFetched => vec![u(4)],
     };
@@ -544,7 +543,7 @@ pub(crate) fn hist_entry(v: Value) -> Result<crate::HistoryEntry<Value>> {
     let body = match b.uint()? {
         0 => B::Held(b.opt()?),
         1 => B::TooLarge { limit: usize::try_from(b.uint()?).unwrap_or(usize::MAX) },
-        2 => B::Purged { by: change(b.next()?)?, actor: b.opt()?.map(|v| Args::of(vec![v]).tid()).transpose()? },
+        2 => B::Purged { by: commit_id(b.next()?)?, actor: b.opt()?.map(|v| Args::of(vec![v]).tid()).transpose()? },
         3 => B::Gone,
         4 => B::NotFetched,
         _ => return Err(bad("history body")),
@@ -569,18 +568,18 @@ pub(crate) fn entry_v(e: &CommitEntry) -> Value {
     Value::List(vec![
         stamp_v(&e.commit),
         ckind_v(&e.kind),
-        opt(e.reverts.as_ref(), change_v),
-        Value::List(e.reverted_by.iter().map(change_v).collect()),
+        opt(e.reverts.as_ref(), commit_id_v),
+        Value::List(e.reverted_by.iter().map(commit_id_v).collect()),
         Value::Bool(e.in_effect),
         aspects_v(&e.aspects),
         Value::Bool(e.content_gone),
-        Value::List(e.purged.iter().map(|(t, k, by)| Value::List(vec![Value::Tid(*t), ak_v(k), change_v(by)])).collect()),
+        Value::List(e.purged.iter().map(|(t, k, by)| Value::List(vec![Value::Tid(*t), ak_v(k), commit_id_v(by)])).collect()),
     ])
 }
 
-fn purged_one(v: Value) -> Result<(Tid, Ak, ChangeId)> {
+fn purged_one(v: Value) -> Result<(Tid, Ak, CommitId)> {
     let mut a = Args::new(v)?;
-    let x = (a.tid()?, a.ak()?, change(a.next()?)?);
+    let x = (a.tid()?, a.ak()?, commit_id(a.next()?)?);
     a.end()?;
     Ok(x)
 }
@@ -590,8 +589,8 @@ pub(crate) fn entry(v: Value) -> Result<CommitEntry> {
     let e = CommitEntry {
         commit: stamp(a.next()?)?,
         kind: ckind(&a.next()?)?,
-        reverts: a.opt()?.map(change).transpose()?,
-        reverted_by: a.list()?.into_iter().map(change).collect::<Result<_>>()?,
+        reverts: a.opt()?.map(commit_id).transpose()?,
+        reverted_by: a.list()?.into_iter().map(commit_id).collect::<Result<_>>()?,
         in_effect: a.bool()?,
         aspects: aspects(a.next()?)?,
         content_gone: a.bool()?,
@@ -854,7 +853,7 @@ pub(crate) fn outcome_err(e: &Error) -> Outcome {
         Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![Value::Tid(*tid), role_v(*needs)]),
         Error::Type { path, reason } => (ApiCode::TYPE, vec![path_v(path), t(reason)]),
         Error::TooLarge { limit } => (ApiCode::TOO_LARGE, vec![u(*limit as u64)]),
-        Error::NotUndoable { commit, reason } => (ApiCode::NOT_UNDOABLE, vec![change_v(commit), u(u64::from(*reason == DropReason::Superseded))]),
+        Error::NotUndoable { commit, reason } => (ApiCode::NOT_UNDOABLE, vec![commit_id_v(commit), u(u64::from(*reason == DropReason::Superseded))]),
         Error::Unsynced { groups } => (ApiCode::UNSYNCED, vec![tids_v(groups)]),
         Error::Invalid(m) => (ApiCode::INVALID, vec![t(m)]),
         Error::Storage(m) => (ApiCode::STORAGE, vec![t(m)]),
@@ -878,7 +877,7 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
             ApiCode::PERMISSION => Error::Permission { tid: a.tid()?, needs: role(&a.next()?)? },
             ApiCode::TYPE => Error::Type { path: path(a.next()?)?, reason: a.text()? },
             ApiCode::TOO_LARGE => Error::TooLarge { limit: usize::try_from(a.uint()?).unwrap_or(usize::MAX) },
-            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: change(a.next()?)?, reason: if a.uint()? == 1 { DropReason::Superseded } else { DropReason::ContentGone } },
+            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: commit_id(a.next()?)?, reason: if a.uint()? == 1 { DropReason::Superseded } else { DropReason::ContentGone } },
             ApiCode::UNSYNCED => Error::Unsynced { groups: tids(a.next()?)? },
             ApiCode::INVALID => Error::Invalid(text(&mut a)),
             ApiCode::STORAGE => Error::Storage(text(&mut a)),

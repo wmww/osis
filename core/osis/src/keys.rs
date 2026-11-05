@@ -31,16 +31,12 @@ impl Key {
         &self.ak
     }
 
-    /// The shape of its values, as its schema declares them (`None`: no schema declares it).
-    pub fn value_type(&self) -> Option<crate::ValueType> {
+    /// The type of its values, as its schema declares it (`None`: no schema declares it): `get()`
+    /// its shape, `name()` its declared name.
+    pub fn value_type(&self) -> Option<crate::NestedType> {
         let s = self.schema.clone()?;
         let ty = s.aspects.get(self.ak.as_str())?.ty.clone();
-        Some(crate::value_type::of_schema(s, ty))
-    }
-
-    /// The name its schema declares its type by, short (`string`, `date`, `option<string>`).
-    pub fn type_name(&self) -> Option<String> {
-        Some(crate::value_type::declared_name(&self.schema.as_ref()?.aspects.get(self.ak.as_str())?.ty))
+        Some(crate::value_type::nested(s, ty))
     }
 
     /// What a write through this key is kept by, unless it says otherwise (`AspectWrite::retention`).

@@ -2,7 +2,7 @@
 //! delta, Local engine Undo; spec/crdt.md §4.6): an in-memory log of this session's own
 //! ephemeral batches, the scope rule, mixed batches as one change, the history cap.
 
-use osis::internals::ChangeRaw as _;
+use osis::internals::CommitRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
@@ -101,33 +101,36 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
     assert_eq!(db.at(d, osis::Key::untyped(cursor)).get().unwrap(), int(2));
 }
 
-// notes/ephemeral.md API delta (Writes, Undo): a batch with a durable and an ephemeral half is
-// one change (its commit); undo reverts both halves in one step, redo restores both.
+// spec/crdt.md §4.6: a commit that keeps a draft placed in a group has a memory commit following it
+// (the placement leaving `placed.0~`): undo takes both in one step, the draft back in the group in
+// memory; redo keeps it again. The commit names the entry.
 #[test]
-fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
+fn keeping_a_draft_undone_in_one_step_spec_crdt_4_6() {
     let db = setup(4);
     let x = ak("t:x.0");
-    let sel = ak("t:sel.0~");
-    let mut w = db.write();
-    let d = w.create_durable(db.me()).unwrap();
-    w.commit().unwrap();
+    let g = db.batch(|w| w.create_durable(db.me())).unwrap();
+    let d = db.batch(|w| {
+        let d = w.create()?;
+        w.group(g).add(osis::Member::Item(d))?;
+        Ok(d)
+    })
+    .unwrap();
     let mut w = db.write();
     w.at(d, osis::Key::untyped(x.clone())).set(&Value::Int(1)).unwrap();
-    w.at(d, osis::Key::untyped(sel.clone())).set(&Value::Int(7)).unwrap();
     let c = w.commit().unwrap().unwrap();
     assert!(c.id.commit().is_some());
-    let scope = Scope::Aspects(vec![(d, x.clone()), (d, ak("t:sel.0~"))]);
-    let found = db.commits(&CommitQuery { scope: Some(scope.clone()), ..Default::default() }).unwrap();
-    assert_eq!(found[0].commit.id, c.id);
-    assert_eq!(found[0].aspects.len(), 2, "both halves in one entry: {:?}", found[0].aspects);
+    let durable = |db: &Osis| db.at(g, osis::internals::core_types::GROUP).get().unwrap().unwrap_or_default().items.contains(&d);
+    let placed = |db: &Osis| db.at(g, osis::internals::core_types::PLACED).get().unwrap().unwrap_or_default().items.contains(&d);
+    assert!(durable(&db) && !placed(&db));
+    let scope = Scope::Thing(d);
+    assert_eq!(db.commits(&CommitQuery { scope: Some(scope.clone()), ..Default::default() }).unwrap()[0].commit.id, c.id);
     let u = db.undo(&scope).unwrap().unwrap();
-    assert!(u.id.commit().is_some(), "the revert has a durable half");
-    assert_eq!((db.at(d, osis::Key::untyped(x.clone())).get().unwrap(), db.at(d, osis::Key::untyped(sel.clone())).get().unwrap()), (None, None));
+    assert!(u.id.commit().is_some(), "the revert has a durable commit");
+    assert_eq!(db.at(d, osis::Key::untyped(x.clone())).get().unwrap(), None);
+    assert!(!durable(&db) && placed(&db), "back in the group in memory");
     db.redo(&scope).unwrap().unwrap();
-    assert_eq!((db.at(d, osis::Key::untyped(x.clone())).get().unwrap(), db.at(d, osis::Key::untyped(sel.clone())).get().unwrap()), (int(1), int(7)));
-    // the Thing scope covers the batch through its durable half: undo reverts it whole
-    db.undo(&Scope::Thing(d)).unwrap().unwrap();
-    assert_eq!((db.at(d, osis::Key::untyped(x)).get().unwrap(), db.at(d, osis::Key::untyped(sel)).get().unwrap()), (None, None));
+    assert_eq!(db.at(d, osis::Key::untyped(x)).get().unwrap(), int(1));
+    assert!(durable(&db) && !placed(&db));
 }
 
 // notes/ephemeral.md API delta (Undo): a folder scope covers its durable item and its
@@ -136,14 +139,19 @@ fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
 fn mixed_scope_undo_order_spec_crdt_4_6() {
     let db = setup(5);
     let (body, draft) = (ak("t:body.0"), ak("t:draft.0~"));
-    let (f, item, e) = db
+    let (f, item) = db
         .batch(|w| {
             let f = w.create_durable(db.me())?;
             let item = w.create_durable(db.me())?;
             w.group(f).add(osis::Member::Item(item))?;
+            Ok((f, item))
+        })
+        .unwrap();
+    let e = db
+        .batch(|w| {
             let e = w.create()?;
             w.group(f).add(osis::Member::Item(e))?;
-            Ok((f, item, e))
+            Ok(e)
         })
         .unwrap();
     db.commit_set(item, osis::Key::untyped(body.clone()), &Value::Int(1)).unwrap();

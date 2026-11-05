@@ -58,9 +58,9 @@ impl Data {
                 }
                 Err(e) => return Err(e),
             };
-            match (key.value_type(), key.type_name()) {
-                (Some(ty), Some(name)) => flatten(&ak, &name, &ty, value.as_ref(), Path::root(), ak.clone(), 0, &mut rows),
-                _ => rows.push(Row { ak: ak.clone(), path: Path::root(), depth: 0, label: ak.clone(), ty: "untyped".into(), value: value.map(|v| show(&v)).unwrap_or_default(), edit: Edit::None, optional: false }),
+            match key.value_type() {
+                Some(ty) => flatten(&ak, &ty.name(), &ty.get(), value.as_ref(), Path::root(), ak.clone(), 0, &mut rows),
+                None => rows.push(Row { ak: ak.clone(), path: Path::root(), depth: 0, label: ak.clone(), ty: "untyped".into(), value: value.map(|v| show(&v)).unwrap_or_default(), edit: Edit::None, optional: false }),
             }
         }
         Ok(rows)
@@ -84,7 +84,7 @@ impl Data {
                     _ => return Err(osis::Error::Invalid(format!("{text:?}: true or false"))),
                 }),
                 Edit::Case => {
-                    let ty = key.value_type().ok_or_else(|| osis::Error::Invalid("untyped".into()))?;
+                    let ty = key.value_type().ok_or_else(|| osis::Error::Invalid("untyped".into()))?.get();
                     let ty = type_at(ty, &row.path, row.optional).ok_or_else(|| osis::Error::Invalid("no type".into()))?;
                     let ValueType::Cases(cases) = ty else { return Ok(()) };
                     let id = cases.iter().find(|c| c.name == text).map(|c| c.id).ok_or_else(|| osis::Error::Invalid(format!("{text:?}: one of {}", cases.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "))))?;

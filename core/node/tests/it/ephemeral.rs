@@ -342,6 +342,8 @@ fn synced_mark_goes_with_the_thing_spec_sync_9() {
     let mut m = Mutation::new();
     let w = e.new_thing(&mut m, g);
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    let mut m = Mutation::new();
     m.set(w, &eph(STATE), &s("v")).unwrap();
     let until = net.now() + 60_000;
     m.expires(w, &eph(STATE), osis_base::WallMs(until)).unwrap();

@@ -60,10 +60,10 @@ pub struct Global {
 /// Write flags of `set`, `overwrite`, `rm`, `op`.
 #[derive(Args, Debug, Clone, Default)]
 pub struct WriteFlags {
-    /// Expire this write after DUR
+    /// The commit expires after DUR
     #[arg(long, value_name = "DUR")]
     pub expires_in: Option<String>,
-    /// Expire this write at TS (RFC 3339 or ms)
+    /// The commit expires at TS (RFC 3339 or ms)
     #[arg(long, value_name = "TS", conflicts_with = "expires_in")]
     pub expires_at: Option<String>,
     /// Retention: by=NAME,at_least=DUR,at_least_abs=TS,at_most=0s,at_most_abs=TS
@@ -263,7 +263,7 @@ pub enum Cmd {
         /// By this actor (repeatable)
         #[arg(long, value_name = "A")]
         actor: Vec<String>,
-        /// change, revert, role, summary or ephemeral (repeatable)
+        /// content, revert, role, summary or ephemeral (repeatable)
         #[arg(long, value_name = "KIND")]
         kind: Vec<String>,
         /// Reverts of commit C
@@ -284,11 +284,11 @@ pub enum Cmd {
         after: Option<String>,
         #[arg(long = "max", value_name = "N")]
         max: Option<usize>,
-        /// Only the change `undo` or `redo` in scope would revert now (needs a scope)
+        /// Only the commit `undo` or `redo` in scope would revert now (needs a scope)
         #[arg(long, value_name = "undo|redo")]
         next: Option<String>,
     },
-    /// Undo this person's newest change in scope
+    /// Undo this person's newest commit in scope
     Undo {
         #[command(flatten)]
         scope: Scope,
@@ -298,7 +298,7 @@ pub enum Cmd {
         #[command(flatten)]
         scope: Scope,
     },
-    /// Revert any change by commit id
+    /// Revert any commit by its id
     Revert { id: String },
     /// Groups listing T as an item or a subgroup, and every group holding T (within)
     Groups { t: String },
@@ -572,10 +572,10 @@ pub enum MemberCmd {
         t: String,
         #[arg(long)]
         subgroup: bool,
-        /// The membership expires after DUR
+        /// The commit, so the membership, expires after DUR
         #[arg(long, value_name = "DUR")]
         expires_in: Option<String>,
-        /// The membership expires at TS (RFC 3339 or ms)
+        /// The commit, so the membership, expires at TS (RFC 3339 or ms)
         #[arg(long, value_name = "TS", conflicts_with = "expires_in")]
         expires_at: Option<String>,
     },

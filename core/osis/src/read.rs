@@ -6,7 +6,7 @@ use crate::handle::Osis;
 use crate::port::method as m;
 use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription};
-use crate::change::{ChangeId, HistoryPos};
+use crate::commit_id::{CommitId, HistoryPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::AspectKey;
@@ -27,11 +27,11 @@ pub struct Grant {
     pub with_membership: bool,
 }
 
-/// A change's author and time, as the change itself signs them (a `CommitKind::Summary` is reported
+/// A commit's author and time, as the commit itself signs them (a `CommitKind::Summary` is reported
 /// as itself, never as the writes it stands in for): why a watch fired, a commit or history entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
-    pub id: ChangeId,
+    pub id: CommitId,
     /// The actor the author acted for.
     pub actor: Tid,
     /// The authoring node.
@@ -40,12 +40,12 @@ pub struct Stamp {
     pub written: Time,
     /// When this node received it (per node).
     pub received: Time,
-    /// `written` with what orders changes of one moment.
+    /// `written` with what orders commits of one moment.
     pub(crate) ts: Ts,
 }
 
 impl Stamp {
-    pub(crate) fn new(id: ChangeId, actor: Tid, node: Tid, ts: Ts, received: Time) -> Stamp {
+    pub(crate) fn new(id: CommitId, actor: Tid, node: Tid, ts: Ts, received: Time) -> Stamp {
         Stamp { id, actor, node, written: ts.wall_ms(), received, ts }
     }
 
@@ -63,8 +63,8 @@ impl Stamp {
 /// When a thing was made or last changed (`Osis::created`, `Osis::changed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThingStamp {
-    /// The change; `None` when it is only the creation of a thing still ephemeral.
-    pub id: Option<ChangeId>,
+    /// The commit; `None` when it is only the creation of a thing still ephemeral.
+    pub id: Option<CommitId>,
     /// The actor the author acted for.
     pub actor: Tid,
     /// The authoring node.
@@ -73,7 +73,7 @@ pub struct ThingStamp {
     pub written: Time,
     /// When this node received it (per node).
     pub received: Time,
-    /// `written` with what orders changes of one moment.
+    /// `written` with what orders commits of one moment.
     pub(crate) ts: Ts,
 }
 
@@ -85,7 +85,7 @@ impl ThingStamp {
 }
 
 fn stamp(c: osis_node::Creation) -> ThingStamp {
-    ThingStamp { id: c.commit.map(ChangeId::commit), written: c.ts.wall_ms(), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
+    ThingStamp { id: c.commit.map(CommitId::commit), written: c.ts.wall_ms(), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
 }
 
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
@@ -378,7 +378,7 @@ impl Reader<'_> {
     }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
-    /// snapshot (an ephemeral thing's batch); `None` while it is unknown or
+    /// snapshot (an ephemeral thing's write); `None` while it is unknown or
     /// only a snapshot carrying its `created.0` is here.
     pub fn created(&self, tid: Tid) -> Option<ThingStamp> {
         if self.hidden(tid) {
@@ -387,9 +387,9 @@ impl Reader<'_> {
         self.e.creation(&tid).map(stamp)
     }
 
-    /// When the thing's content last changed: of the held changes and reverts writing its aspects (not `created.0`, `group.0` or role-class ones: placement and
-    /// sharing are no content change; not ephemeral writes), the one with the latest
-    /// `shown()`, else its creation. A delete is a change. A change known here only from a
+    /// When the thing's content last changed: of the held commits and reverts writing its aspects (not `created.0`, `group.0` or role-class ones: placement and
+    /// sharing are no content write; not ephemeral writes), the one with the latest
+    /// `shown()`, else its creation. A delete is one. A commit known here only from a
     /// snapshot is not seen.
     pub fn changed(&self, tid: Tid) -> Option<ThingStamp> {
         if self.hidden(tid) {
@@ -494,7 +494,7 @@ impl Osis {
     }
 
     /// When the thing was created: the oldest valid commit carrying its creation (an ephemeral
-    /// thing's batch: no commit); `None` while it is unknown here.
+    /// thing's write: no commit); `None` while it is unknown here.
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CREATED, tid);
@@ -502,8 +502,8 @@ impl Osis {
         Ok(self.read_local(|r| r.created(tid)))
     }
 
-    /// When the thing's content last changed (placement and sharing are no content change, a delete
-    /// is); its creation if never since. A change known here only from a `CommitKind::Summary` is
+    /// When the thing's content last changed (placement and sharing are no content write, a delete
+    /// is); its creation if never since. A commit known here only from a `CommitKind::Summary` is
     /// not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {

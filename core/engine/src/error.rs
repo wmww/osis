@@ -24,6 +24,8 @@ pub enum Error {
     BadInput(&'static str),
     /// Caller misuse or an unsupported request. Local.
     Misuse(&'static str),
+    /// A write that cannot be one commit (spec/commits.md §5, §6), saying what clashed. Local.
+    Clash(String),
     /// Stored data this node wrote fails to read back. Local.
     Corrupt(&'static str),
 }
@@ -42,6 +44,7 @@ osis_base::impl_error!(Error {
     UnknownCommit(c) => ("unknown commit {c:?}"),
     BadInput(m) => ("bad input: {m}"),
     Misuse(m) => ("misuse: {m}"),
+    Clash(m) => ("{m}"),
     Corrupt(m) => ("corrupt local record: {m}"),
 });
 
@@ -56,7 +59,7 @@ impl Classified for Error {
             Error::Crypto(e) => e.class(),
             Error::Path(e) => e.class(),
             Error::BadInput(_) => ErrorClass::BadInput,
-            Error::Permission { .. } | Error::UnknownThing(_) | Error::Unsynced { .. } | Error::UnknownCommit(_) | Error::Misuse(_) | Error::Corrupt(_) => ErrorClass::Local,
+            Error::Permission { .. } | Error::UnknownThing(_) | Error::Unsynced { .. } | Error::UnknownCommit(_) | Error::Misuse(_) | Error::Clash(_) | Error::Corrupt(_) => ErrorClass::Local,
         }
     }
 }

@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis};
 use crate::read::Stamp;
 use osis_base::{Ak, Tid, Ts, Value, Time};
-use crate::change::ChangeId;
+use crate::commit_id::CommitId;
 use osis_node::{Cause, Diagnostic, DiagnosticKind, Event, Origin};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,38 +30,38 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub enum Source {
     /// The first call of `on_change`, with the value at registration.
     Initial,
-    /// A change made on this node.
+    /// A commit made on this node.
     Local(Stamp),
-    /// A change received from another node.
+    /// A commit received from another node.
     Remote(Stamp),
-    /// No new change: something else changed what the aspect reads.
-    Derived(ChangeReason),
+    /// No new commit: something else changed what the aspect reads.
+    Derived(DerivedFrom),
 }
 
-/// What changed a read when no new change did (`Source::Derived`).
+/// What changed a read when no new commit did (`Source::Derived`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChangeReason {
+pub enum DerivedFrom {
     /// A write was found valid or invalid after all, as its author's roles became known.
     ValidityChanged,
     /// A write expired.
     Expired,
     /// A write was purged.
     Purged,
-    /// More of an earlier change arrived: another part of it, or a large value a read had missed.
+    /// More of an earlier commit arrived: another part of it, or a large value a read had missed.
     Arrived,
     /// This node lost read access.
     LostAccess,
 }
 
 #[doc(hidden)]
-impl From<Cause> for ChangeReason {
-    fn from(c: Cause) -> ChangeReason {
+impl From<Cause> for DerivedFrom {
+    fn from(c: Cause) -> DerivedFrom {
         match c {
-            Cause::Validity => ChangeReason::ValidityChanged,
-            Cause::Expiry => ChangeReason::Expired,
-            Cause::Purge => ChangeReason::Purged,
-            Cause::LateDelta | Cause::Fetched => ChangeReason::Arrived,
-            Cause::LostAccess => ChangeReason::LostAccess,
+            Cause::Validity => DerivedFrom::ValidityChanged,
+            Cause::Expiry => DerivedFrom::Expired,
+            Cause::Purge => DerivedFrom::Purged,
+            Cause::LateDelta | Cause::Fetched => DerivedFrom::Arrived,
+            Cause::LostAccess => DerivedFrom::LostAccess,
         }
     }
 }
@@ -116,7 +116,7 @@ pub(crate) enum Delivery {
     Fired { tid: Tid, ak: Ak, source: Source, value: Value },
     Grants,
     /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise.
-    History { tid: Tid, id: ChangeId },
+    History { tid: Tid, id: CommitId },
     Diagnostic(Diagnostic),
     Status(Result<crate::share::Status>),
     Port(PortEvent),
@@ -153,7 +153,7 @@ pub(crate) struct Registry {
     subs: BTreeMap<u64, Arc<Sub>>,
 }
 
-/// Where watch callbacks run (`HandleConfig::dispatch`).
+/// Where watch callbacks run (`AppConfig::dispatch`).
 #[derive(Clone, Default)]
 pub enum Dispatcher {
     /// On a dispatcher thread the database starts (the default).
@@ -324,7 +324,7 @@ impl Dispatch {
     }
 }
 
-fn source(id: ChangeId, origin: Origin, node: Tid, actor: Tid, ts: Ts, received: Time) -> Source {
+fn source(id: CommitId, origin: Origin, node: Tid, actor: Tid, ts: Ts, received: Time) -> Source {
     let i = Stamp::new(id, actor, node, ts, received);
     if origin == Origin::Local { Source::Local(i) } else { Source::Remote(i) }
 }
@@ -332,8 +332,8 @@ fn source(id: ChangeId, origin: Origin, node: Tid, actor: Tid, ts: Ts, received:
 /// The aspects an event changed, with its source.
 fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Source)> {
     match m {
-        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => Some((changed, source(ChangeId::commit(*id), *origin, *author, *actor, *ts, *received))),
-        Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, source(ChangeId(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => Some((changed, source(CommitId::commit(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, source(CommitId(*id), *origin, *author, *actor, *ts, *received))),
         Msg::Event(Event::Changed { cause, changed }) => Some((changed, Source::Derived((*cause).into()))),
         _ => None,
     }
@@ -395,7 +395,7 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             let Filter::History(ft, fak) = &s.filter else { continue };
             for (t, ak, id) in changes.iter().filter(|(t, ak, _)| t == ft && ak == fak) {
                 debug_assert_eq!(ak, fak);
-                out.push((s.clone(), Pre::Ready(Delivery::History { tid: *t, id: ChangeId(*id) })));
+                out.push((s.clone(), Pre::Ready(Delivery::History { tid: *t, id: CommitId(*id) })));
             }
         }
         return out;

@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{REQUIRED, Required, RequiredRules};
-use osis::{Bound, ChangeId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, SyncFirst, Tid, Value};
+use osis::{Bound, CommitId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, SyncFirst, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -406,7 +406,7 @@ pub enum Body {
     Text(String),
     /// Deleted for everyone: a tombstone that new devices get too. `who`: verified, as a sender is
     /// (`None`: the request's header is not here).
-    Deleted { by: ChangeId, who: Option<Tid> },
+    Deleted { by: CommitId, who: Option<Tid> },
     /// Expired, or dropped by a keep bound: leaves the timeline.
     Gone,
     /// Its header came, its body not yet.
@@ -436,7 +436,7 @@ pub struct Entry {
 }
 
 fn entry_of(year: u32, e: HistoryEntry<Value>) -> Option<Entry> {
-    if e.kind != CommitKind::Change {
+    if e.kind != CommitKind::Content {
         return None;
     }
     let pos = e.pos();
@@ -757,8 +757,8 @@ fn purge(db: &Osis, c: Tid, ids: &[Id]) -> Result<()> {
     }
     let mut w = db.write();
     for i in ids {
-        let id = i.pos.change().ok_or_else(|| Error::Invalid(format!("{i} names no message")))?;
-        w.at(c, year_key(db, i.year)?).purge(osis::Purge::Change(id))?;
+        let id = i.pos.commit().ok_or_else(|| Error::Invalid(format!("{i} names no message")))?;
+        w.at(c, year_key(db, i.year)?).purge(osis::Purge::Commit(id))?;
     }
     w.commit().map(drop)
 }
@@ -811,7 +811,7 @@ pub enum Event {
     Ended(String),
 }
 
-/// Calls `f` per change, through the years from the chat's creation to the next. Subscribe, then
+/// Calls `f` per commit, through the years from the chat's creation to the next. Subscribe, then
 /// read: nothing after the subscription is missed. A watch living past next year needs renewing.
 pub fn watch(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) -> Result<Vec<Subscription>> {
     let mode = settings(db, c)?.edit;
@@ -840,7 +840,7 @@ pub fn watch(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) ->
 
 /// Tells of this person's own writes on the chat turned invalid: a participant who had not seen a
 /// retention change or its own kick. Its message is the commit named: `resend` it.
-pub fn on_rejected(db: &Osis, c: Tid, mut f: impl FnMut(ChangeId) + Send + 'static) -> Result<Subscription> {
+pub fn on_rejected(db: &Osis, c: Tid, mut f: impl FnMut(CommitId) + Send + 'static) -> Result<Subscription> {
     db.on_diagnostic(move |_, d| {
         if let osis::Diagnostic::OwnWriteInvalid { commit, things, .. } = d
             && things.contains(&c)

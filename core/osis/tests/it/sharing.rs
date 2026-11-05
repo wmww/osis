@@ -869,7 +869,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     // Carol's own clock: kept with the world's, then left behind while she is offline
     let cl = clock();
     let mut c = w.cfg(3, &[host]);
-    c.handle.internals.clock = Some(cl.clone());
+    c.app.internals.clock = Some(cl.clone());
     let carol = osis::internals::create(c).unwrap().0;
     w.run();
     let (bc, cc) = (bob.contact_card().unwrap(), carol.contact_card().unwrap());

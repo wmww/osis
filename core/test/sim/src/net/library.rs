@@ -688,12 +688,17 @@ pub fn disappearing(seed: u64) -> Res<Report> {
         let life = (10 + d.below(20)) * 60_000;
         let at = sim.engine(n)?.now().0 + life;
         let e = sim.engine(n)?;
-        let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, g);
-        m.set(t, &workload::NOTE, &Value::Str(format!("m{k}"))).map_err(|e| sim.fail(e.to_string()))?;
-        m.expires(t, &workload::NOTE, WallMs(at)).map_err(|e| sim.fail(e.to_string()))?;
         // a crash mid-write loses the message, which is fine; the record and the expiring note
         // are two commits (spec/commits.md §6)
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, g);
+        m.persist(t);
+        if sim.write(n, m)?.is_empty() {
+            continue;
+        }
+        let mut m = Mutation::new();
+        m.set(t, &workload::NOTE, &Value::Str(format!("m{k}"))).map_err(|e| sim.fail(e.to_string()))?;
+        m.expires(t, &workload::NOTE, WallMs(at)).map_err(|e| sim.fail(e.to_string()))?;
         if let Some(c) = sim.write(n, m)?.last() {
             notes.push((t, *c));
         }

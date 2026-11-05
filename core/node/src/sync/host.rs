@@ -44,6 +44,19 @@ pub fn host_policy(knobs: &BTreeMap<String, u64>) -> Result<HostPolicy, String> 
     Ok(p)
 }
 
+/// `host_policy` of what can be run by: the limits a stored `host.0^` names that this build cannot
+/// (another node's newer ones) stay out of the policy, and are returned.
+pub fn host_policy_known(knobs: &BTreeMap<String, u64>) -> (HostPolicy, BTreeMap<String, u64>) {
+    let mut p = HostPolicy::default();
+    let mut unknown = BTreeMap::new();
+    for (k, v) in knobs {
+        if p.set(k, *v).is_err() {
+            unknown.insert(k.clone(), *v);
+        }
+    }
+    (p, unknown)
+}
+
 impl SyncEngine {
     /// The secret this node's host listens with, made on first use (only while `host.0^` is
     /// set: `host_step` shreds it otherwise).
@@ -104,10 +117,10 @@ impl SyncEngine {
     pub fn host_config(&mut self) -> Option<HostConfig> {
         let h = self.hosting()?;
         let key = SigningSecret::from_seed(&self.host_secret()).verifying_key().to_bytes();
-        let policy = host_policy(&h.policy).unwrap_or_else(|e| {
-            self.diag(format!("host.0^ policy: {e}; the defaults apply"));
-            HostPolicy::default()
-        });
+        let (policy, unknown) = host_policy_known(&h.policy);
+        if !unknown.is_empty() {
+            self.diag(format!("host.0^ policy: limits not run by: {:?}", unknown.keys().collect::<Vec<_>>()));
+        }
         let admission = match h.admit {
             Admit::Open => Admission::Open,
             Admit::Own => {

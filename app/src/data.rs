@@ -12,7 +12,7 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, NAME, TAG};
-use osis::{ChangeId, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Store, Tid, p};
+use osis::{CommitId, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Store, Tid, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -360,7 +360,7 @@ impl Data {
     /// `min(ts, received)` (a device whose clock runs ahead cannot date a change into the future).
     /// Works around issues/api-change-time.md.
     pub fn changed(&self, t: Tid) -> Result<Option<u64>> {
-        let q = CommitQuery { scope: Some(Scope::Thing(t)), kinds: vec![CommitKind::Change, CommitKind::Revert], limit: Some(1), ..Default::default() };
+        let q = CommitQuery { scope: Some(Scope::Thing(t)), kinds: vec![CommitKind::Content, CommitKind::Revert], limit: Some(1), ..Default::default() };
         let newest = self.db.commits(&q)?.first().map(|e| e.commit.shown());
         let at = match newest {
             Some(x) => Some(x),
@@ -551,10 +551,10 @@ impl Data {
 
     /// The change `Osis::undo` would revert in `scope`: my newest change in effect that is not
     /// itself an undo (an even number of reverts deep).
-    fn next_undo(&self, scope: &Scope) -> Result<Option<ChangeId>> {
+    fn next_undo(&self, scope: &Scope) -> Result<Option<CommitId>> {
         let mine = self.db.commits(&CommitQuery { scope: Some(scope.clone()), actors: vec![self.db.me()], ..Default::default() })?;
-        let reverts: BTreeMap<ChangeId, ChangeId> = mine.iter().filter_map(|e| e.reverts.map(|r| (e.commit.id, r))).collect();
-        let depth = |mut id: ChangeId| {
+        let reverts: BTreeMap<CommitId, CommitId> = mine.iter().filter_map(|e| e.reverts.map(|r| (e.commit.id, r))).collect();
+        let depth = |mut id: CommitId| {
             let mut d = 0usize;
             while let Some(r) = reverts.get(&id) {
                 (d, id) = (d + 1, *r);
@@ -563,7 +563,7 @@ impl Data {
         };
         Ok(mine
             .iter()
-            .filter(|e| matches!(e.kind, CommitKind::Change | CommitKind::Revert | CommitKind::Ephemeral))
+            .filter(|e| matches!(e.kind, CommitKind::Content | CommitKind::Revert | CommitKind::Ephemeral))
             .find(|e| e.in_effect && depth(e.commit.id) % 2 == 0)
             .map(|e| e.commit.id))
     }
@@ -920,6 +920,9 @@ impl Data {
             }
         }
         w.group(g).add(Member::Item(t))?;
+        w.commit()?;
+        // which thing is open is memory, a commit of its own
+        let mut w = db.write();
         w.at(g, OPEN).path(p![node]).set(&t)?;
         w.commit()?;
         Ok(t)

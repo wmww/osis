@@ -199,7 +199,7 @@ impl Net {
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
         let shared = OsisShared(db.clone(), store);
-        let (transport, p2p, relays) = (cfg.handle.internals.transport.clone(), cfg.peers, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
+        let (transport, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.peers, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         // the client port's unix socket (`Osis::listen_socket`)
         let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
@@ -590,7 +590,7 @@ impl crate::Osis {
 
     /// Sets how this node syncs `group` (stored): all of it, so to change one field start from
     /// `sync_options`. Readers of a group not told this node's address do not dial it. When a group
-    /// was told it and no longer qualifies, the address changes (`rotate_address`), so readers there
+    /// was told it and no longer qualifies, the address changes (`rotate_peer_address`), so readers there
     /// cannot dial it any more.
     pub fn set_sync_options(&self, group: osis_base::Tid, o: SyncOptions) -> crate::Result<()> {
         if !self.has_store() {
@@ -635,7 +635,7 @@ impl crate::Osis {
 
     /// Serves clients at `urls` (`quic://host:port`), by default only as actors they authenticate for
     /// (`add_client`), with a key of
-    /// the client listener's own, made on first use and kept in the store: `rotate_address` leaves it
+    /// the client listener's own, made on first use and kept in the store: `rotate_peer_address` leaves it
     /// be, and nothing ties it to this node's other keys. Returns each
     /// address to hand clients (with its real port). Replaces the listeners of an earlier call
     /// (their sessions end; clients reconnect by themselves). No URL: stops listening, ends those sessions, shreds the key (a later
@@ -667,9 +667,9 @@ impl crate::Osis {
     /// Direct links still open no longer reach this node directly (they still work through hosts).
     /// Done by itself when a group told the old address no longer qualifies and when a direct link
     /// ends.
-    pub fn rotate_address(&self) -> crate::Result<()> {
+    pub fn rotate_peer_address(&self) -> crate::Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::ROTATE_ADDRESS, vec![]).map(drop);
+            return self.rcall(crate::port::method::ROTATE_PEER_ADDRESS, vec![]).map(drop);
         }
         self.act(|l| l.sync.rotate_reach());
         Ok(())

@@ -7,7 +7,7 @@ Today `created.0` has fixed `nobody` retention, kept forever, with an exemption 
 ## Proposed
 - Purging a creation permanently ends the thing, for everyone honest. `delete` stays the undoable way.
 - A creation in an expiring commit ends the thing at that time, so a disappearing message is one commit.
-- The exemption goes, along with `Committed`-level consequences of the split (issues/api-refactor.md, One commit).
+- The exemption goes. Today a thing whose only content expires needs a durable stub write first, or a `sync` or grant, which keep it (notes/api.md Writes).
 
 ## Latitude (Tess)
 No sign-off needed. If this fails for dull internal reasons, that's fine. Other outcomes are acceptable: purge and expiry of a creation allowed conceptually but handled specially, keeping the data they need; or what exists today. Any of them beats quietly splitting a write.

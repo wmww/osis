@@ -69,7 +69,7 @@ pub enum Store {
 #[derive(Clone)]
 pub struct Config {
     /// How this handle behaves, as a thin client's does.
-    pub handle: HandleConfig,
+    pub app: AppConfig,
     /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with hosts given).
     pub runtime: Runtime,
     /// Sync directly with other nodes that read the same data (default on): this node listens and
@@ -79,14 +79,14 @@ pub struct Config {
     /// Relays this node tells those nodes it can be reached through (self-hosted `iroh-relay`s;
     /// feature `iroh`, without it `Invalid`).
     pub relays: Vec<Url>,
-    /// Bytes of this session's ephemeral changes kept for undo (default 16 MiB); older ones are
+    /// Bytes of this session's ephemeral commits kept for undo (default 16 MiB); older ones are
     /// `NotUndoable{ContentGone}`.
     pub ephemeral_undo_bytes: usize,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { handle: HandleConfig::default(), runtime: Runtime::None, peers: true, relays: Vec::new(), ephemeral_undo_bytes: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY }
+        Config { app: AppConfig::default(), runtime: Runtime::None, peers: true, relays: Vec::new(), ephemeral_undo_bytes: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY }
     }
 }
 
@@ -97,7 +97,7 @@ impl Config {
         if !hosts.is_empty() && matches!(self.runtime, Runtime::None) {
             return Err(Error::Invalid("hosts with Runtime::None: nothing would sync; set Config.runtime".into()));
         }
-        if !self.relays.is_empty() && self.handle.internals.transport.is_none() && !cfg!(feature = "iroh") {
+        if !self.relays.is_empty() && self.app.internals.transport.is_none() && !cfg!(feature = "iroh") {
             return Err(Error::Invalid("Config.relays needs feature `iroh`".into()));
         }
         Ok(())
@@ -107,7 +107,7 @@ impl Config {
 /// How one `Osis` handle behaves, whether its data is here or at another node: all of a thin
 /// client's config (`Osis::connect`, `connect_socket`), and `Config::handle` of a node.
 #[derive(Clone)]
-pub struct HandleConfig {
+pub struct AppConfig {
     /// Reads of values larger than this many bytes fail `TooLarge` (read those by stream or path).
     pub read_limit: usize,
     /// A text session commits after this much inactivity.
@@ -119,9 +119,9 @@ pub struct HandleConfig {
     pub internals: crate::internals::Knobs,
 }
 
-impl Default for HandleConfig {
-    fn default() -> HandleConfig {
-        HandleConfig { read_limit: DEFAULT_LIMIT, idle_commit: DEFAULT_IDLE_COMMIT, dispatch: Dispatcher::Thread, internals: Default::default() }
+impl Default for AppConfig {
+    fn default() -> AppConfig {
+        AppConfig { read_limit: DEFAULT_LIMIT, idle_commit: DEFAULT_IDLE_COMMIT, dispatch: Dispatcher::Thread, internals: Default::default() }
     }
 }
 
@@ -335,7 +335,7 @@ fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_st
 }
 
 fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
-    match cfg.handle.internals.seed {
+    match cfg.app.internals.seed {
         Some(s) => Box::new(SeededRng::from_u64(s.wrapping_add(salt))),
         None => Box::new(OsRng),
     }
@@ -345,7 +345,7 @@ fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
 /// draw one session nonce and void its earlier commits (spec/crdt.md §2.1). Deterministic per
 /// store, kept beside it. Without a seed the rng is the OS's, so nothing is counted.
 fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
-    if cfg.handle.internals.seed.is_none() {
+    if cfg.app.internals.seed.is_none() {
         return Ok(0);
     }
     let n = match store {
@@ -361,7 +361,7 @@ fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
 }
 
 fn clock(cfg: &Config) -> Arc<dyn Clock> {
-    cfg.handle.internals.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
+    cfg.app.internals.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
 }
 
 fn engine_cfg(cfg: &Config) -> osis_node::Config {
@@ -456,14 +456,14 @@ impl Osis {
         let node = sync.engine().tid();
         sync.set_person(Some(me));
         let events = sync.engine_mut().subscribe();
-        let dispatch = Dispatch::new(&cfg.handle.dispatch);
+        let dispatch = Dispatch::new(&cfg.app.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let routes = crate::sources::load_routes(sync.engine_mut())?;
         sync.engine_mut().core.routed_away = routes.keys().copied().collect();
         let routing = !routes.is_empty();
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), remotes: Vec::new(), routes, status_failed: false };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.handle.read_limit, idle_commit: cfg.handle.idle_commit, transport: cfg.handle.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.peers && (cfg.handle.internals.transport.is_some() || cfg!(feature = "iroh")), connection_wait: cfg.handle.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.peers && (cfg.app.internals.transport.is_some() || cfg!(feature = "iroh")), connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, store, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
@@ -663,7 +663,7 @@ impl Osis {
         self.try_act(|l| Ok(l.sync.carry_out(done)?))
     }
 
-    /// Returns once every callback for changes made so far has run: with
+    /// Returns once every callback for commits made so far has run: with
     /// `Dispatcher::Thread` it waits for the dispatcher thread (tests and scripts wait this
     /// way without sleeping); with `Dispatcher::Pump` it runs them on this thread, which is
     /// how the app pumps (after its wake callback). Returns at once inside a callback.

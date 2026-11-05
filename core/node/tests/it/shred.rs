@@ -1461,10 +1461,10 @@ fn purge_spares_other_values_of_a_carrier_spec_commits_5() {
     }
 }
 
-// spec/requirements.md Deletion, spec/crdt.md §4.7: 0 reacts to an expiring message `e` and posts
-// a lasting message `m2` in one write, then edits `m2`. The write splits: only the reaction takes
-// `e`'s expiry. Past `e`'s T only `e` is gone.
-// Was: the whole write took `e`'s expiry, and the edit into `m2` (a copy of its key) took it too.
+// spec/requirements.md Deletion, spec/crdt.md §4.7, spec/commits.md §6: 0 reacts to an expiring
+// message `e` and posts a lasting message `m2` in one write: refused, as a commit has one expiry.
+// Written apart the reaction takes `e`'s expiry and `m2` none, and 0 edits `m2`. Past `e`'s T only
+// `e` is gone.
 #[test]
 fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -1477,13 +1477,20 @@ fn expiry_spares_other_values_of_a_carrier_spec_crdt_4_7() {
     m.expires(t, &MAP, osis_base::WallMs(t_end)).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(5);
+    let react = || PathOp { path: vec![PathSeg::Key(s("e")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) };
     let mut m = Mutation::new();
-    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("e")), PathSeg::Field(1)], op: Op::Set(Value::Int(2)) }).unwrap();
+    m.op(t, &MAP, react()).unwrap();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
-    let w = lp.peers[0].engine.write(m).unwrap().unwrap();
-    let osis_node::ChangeId::Commit(first) = w.id else { panic!("a durable write") };
-    let expiries: Vec<Option<u64>> = [first].iter().chain(&w.also).map(|c| lp.peers[0].engine.header(c).unwrap().expires).collect();
-    assert_eq!(expiries, [None, Some(t_end)], "the reaction alone takes e's expiry");
+    let r = lp.peers[0].engine.write(m);
+    assert!(matches!(&r, Err(osis_node::Error::Clash(_))), "{r:?}");
+    let mut m = Mutation::new();
+    m.op(t, &MAP, react()).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.header(&c).unwrap().expires, Some(t_end), "the reaction takes e's expiry");
+    let mut m = Mutation::new();
+    m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2"))], op: Op::Set(item("M2-MARK", 7)) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.header(&c).unwrap().expires, None);
     lp.advance(5);
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("m2")), PathSeg::Field(1)], op: Op::Set(Value::Int(9)) }).unwrap();

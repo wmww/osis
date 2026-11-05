@@ -8,7 +8,7 @@ use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
-use osis::{ChangeReason, MemStore, Osis, Source, Value};
+use osis::{DerivedFrom, MemStore, Osis, Source, Value};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -176,8 +176,10 @@ fn derived_change_on_expiry() {
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let k = ak("t:x.0");
     let t = thing(&db);
+    db.commit_set(t, osis::Key::untyped(ak("t:kept.0")), &Value::Int(0)).unwrap();
     let mut w = db.write();
-    w.at(t, osis::Key::untyped(k.clone())).expires(osis::Expiry::In(Duration::from_secs(5))).set(&Value::Int(1)).unwrap();
+    w.expires(osis::Expiry::In(Duration::from_secs(5)));
+    w.at(t, osis::Key::untyped(k.clone())).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let (tx, rx) = channel();
     let _s = db.at(t, osis::Key::untyped(k)).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
@@ -185,7 +187,7 @@ fn derived_change_on_expiry() {
     c.advance(6_000);
     db.engine(|e| e.tick()).unwrap();
     let ch = recv(&rx);
-    assert_eq!((ch.source, ch.value), (Source::Derived(ChangeReason::Expired), Ok(None)));
+    assert_eq!((ch.source, ch.value), (Source::Derived(DerivedFrom::Expired), Ok(None)));
 }
 
 // notes/api.md Diagnostics: bad input from a peer is a diagnostic, never an error the app
@@ -282,7 +284,7 @@ fn coalesced_call_carries_newest_source() {
 fn errors_not_coalesced() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.handle.read_limit = 1000;
+    cf.app.read_limit = 1000;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:big.0");
     let t = thing(&db);
@@ -382,7 +384,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     // the wake runs after the database lock is released: calling the database there is safe
     let weak: Arc<std::sync::OnceLock<osis::WeakOsis>> = Arc::default();
     let weak2 = weak.clone();
-    c.handle.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
+    c.app.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
         w2.fetch_add(1, Ordering::SeqCst);
         if let Some(db) = weak2.get().and_then(|w| w.upgrade()) {
             let _ = db.knows(db.me());

@@ -2827,46 +2827,73 @@ fn second_request_keeps_covered_leftover_spec_crdt_4_7() {
     assert_eq!(lp.peers[0].engine.state_digest(&t, &k).unwrap(), fresh.engine.state_digest(&t, &k).unwrap());
 }
 
-// spec/commits.md §5 (nobody shares a commit only with nobody), §6 (one expiry per commit; the
-// writer splits): a write mixing expiries and `nobody` is one commit per class under one `ts`,
-// the new thing's record in the first; one commit cannot hold it (`Engine::commit` refuses);
-// `required.0^` split from its thing's other writes is refused; an undo copying back writes of
-// different expiries is one undo commit per expiry, each naming the undone commit.
+// spec/commits.md §5 (nobody shares a commit only with nobody), §6 (one expiry per commit): a write
+// mixing expiries or `nobody` with others is refused before anything applies, by `write` as by
+// `commit`; written apart each is one commit; `required.0^` beside an expiring write is refused; an
+// undo copying back writes of different expiries is refused, and changes nothing.
 #[test]
-fn write_splits_by_expiry_and_nobody_spec_commits_6() {
+fn one_write_is_one_commit_or_refused_spec_commits_6() {
     use osis_schema::{PurgeBy, Retention};
     let mut lp = net(1, 57);
     let me = lp.peers[0].engine.tid();
     let nobody = Retention { by: PurgeBy::Nobody, ..Retention::default() };
-    let mixed = |e: &mut osis_node::Engine| {
-        let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, me);
-        m.set(t, &KEPT, &s("k")).unwrap();
-        m.set(t, &BRIEF, &s("b")).unwrap();
-        m.set(t, &REG, &s("n")).unwrap();
-        m.retention(t, &REG, nobody).unwrap();
-        (m, t)
-    };
     let e = &mut lp.peers[0].engine;
-    let (m, _) = mixed(e);
-    assert!(e.commit(m).is_err(), "one commit cannot hold it");
-    let (m, t) = mixed(e);
-    let w = e.write(m).unwrap().unwrap();
-    let ids: Vec<osis_base::CommitId> = w.id.commit().into_iter().chain(w.also.iter().copied()).collect();
-    let hs: Vec<_> = ids.iter().map(|c| e.header(c).unwrap()).collect();
-    let aks = |i: usize| hs[i].aspects.iter().map(|a| a.ak.as_str()).collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(hs.len(), 3);
-    assert!(hs.iter().all(|h| h.ts == hs[0].ts), "one ts");
-    assert_eq!((aks(0), hs[0].expires), (["created.0", "t:kept.0"].into(), None), "the record first");
-    assert_eq!((aks(1), hs[1].expires), (["t:reg.0"].into(), None));
-    assert_eq!((aks(2), hs[2].expires), (["t:brief.0"].into(), Some(hs[0].ts.wall_ms().0 + 3_600_000)));
+    let before = e.commit_ids().len();
+    let clash = |r: Result<Option<osis_base::CommitId>, osis_node::Error>, why: &str| assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains(why)), "{why}: {r:?}");
+    let written = |r: Result<Option<osis_node::Written>, osis_node::Error>| r.map(|w| w.and_then(|w| w.id.commit()));
+    // a record, plain content and a default expiry
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, me);
+    m.set(x, &KEPT, &s("k")).unwrap();
+    m.set(x, &BRIEF, &s("b")).unwrap();
+    clash(e.commit(m), "one expiry");
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, me);
+    m.set(x, &KEPT, &s("k")).unwrap();
+    m.set(x, &BRIEF, &s("b")).unwrap();
+    clash(written(e.write(m)), "one expiry");
+    // nothing but a record and an expiring write: the record does not expire
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, me);
+    m.set(x, &BRIEF, &s("b")).unwrap();
+    clash(written(e.write(m)), "never expires");
+    // `nobody` beside others
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, me);
+    m.set(x, &KEPT, &s("k")).unwrap();
+    m.set(x, &REG, &s("n")).unwrap();
+    m.retention(x, &REG, nobody).unwrap();
+    clash(written(e.write(m)), "nobody");
+    assert_eq!(e.commit_ids().len(), before, "nothing applied");
+    assert_eq!(e.get(&x, &ak("t:kept.0")).unwrap(), None);
+    // apart: one commit each, the record (it goes with `nobody` too) with the first
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, me);
+    m.set(t, &KEPT, &s("k")).unwrap();
+    let first = written(e.write(m)).unwrap().unwrap();
+    let h = e.header(&first).unwrap();
+    assert_eq!(h.expires, None);
+    assert_eq!(h.aspects.iter().map(|a| a.ak.as_str()).collect::<std::collections::BTreeSet<_>>(), ["created.0", "t:kept.0"].into());
+    let mut m = Mutation::new();
+    m.set(t, &BRIEF, &s("b")).unwrap();
+    let brief = written(e.write(m)).unwrap().unwrap();
+    assert_eq!(e.header(&brief).unwrap().expires, Some(e.header(&brief).unwrap().ts.wall_ms().0 + 3_600_000));
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("n")).unwrap();
+    m.retention(t, &REG, nobody).unwrap();
+    written(e.write(m)).unwrap().unwrap();
+    let mut m = Mutation::new();
+    let y = e.new_thing(&mut m, me);
+    m.set(y, &REG, &s("n")).unwrap();
+    m.retention(y, &REG, nobody).unwrap();
+    written(e.write(m)).unwrap().unwrap();
     assert_eq!(e.get(&t, &ak("t:brief.0")).unwrap(), Some(s("b")));
-    // required.0^ goes with its thing's other writes: not beside an expiring one
+    // required.0^ goes with no expiry
     let mut m = Mutation::new();
     m.set(t, &osis_schema::core_types::REQUIRED, &Default::default()).unwrap();
     m.set(t, &BRIEF, &s("c")).unwrap();
-    assert!(e.write(m).is_err());
-    // an undo copying back an expiring write and a plain one: two undo commits
+    clash(written(e.write(m)), "never expires");
+    // an undo copying back an expiring write beside a plain one: refused
     lp.advance(10);
     let at = WallMs(lp.peers[0].engine.now().0 + 60_000);
     let mut m = Mutation::new();
@@ -2880,106 +2907,21 @@ fn write_splits_by_expiry_and_nobody_spec_commits_6() {
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
     let e = &mut lp.peers[0].engine;
-    let osis_node::ephemeral::Reverted::Written(w) = e.revert_change(osis_node::ChangeId::Commit(c), me).unwrap() else { panic!("reverted") };
-    let ids: Vec<osis_base::CommitId> = w.id.commit().into_iter().chain(w.also.iter().copied()).collect();
-    assert_eq!(ids.len(), 2);
-    let hs: Vec<_> = ids.iter().map(|x| e.header(x).unwrap()).collect();
-    assert!(hs.iter().all(|h| h.undoes == Some(c)));
-    assert_eq!(hs.iter().map(|h| h.expires).collect::<Vec<_>>(), vec![None, Some(at.0)]);
-    assert_eq!((e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&t, &ak("t:kept.0")).unwrap()), (Some(s("old")), Some(s("k"))));
-}
-
-// spec/commits.md §6, spec/crdt.md §2.2: the commits of a split write share a `ts` and are on
-// disjoint aspects, so a device given them in any order (the record's commit last included) reads
-// every aspect as the writer does, holds all of them and waits for nothing; the same for the undo
-// commits of a mixed-expiry undo.
-#[test]
-fn split_write_reads_alike_in_every_order_spec_commits_6() {
-    use osis_node::local_peer::Peer;
-    use osis_schema::{PurgeBy, Retention};
-    let orders = |n: usize| -> Vec<Vec<usize>> {
-        let mut out: Vec<Vec<usize>> = vec![Vec::new()];
-        for i in 0..n {
-            out = out.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut o = q.clone(); o.insert(at, i); o })).collect();
-        }
-        out
-    };
-    let mut lp = net(1, 58);
-    let me = lp.peers[0].engine.tid();
-    let nobody = Retention { by: PurgeBy::Nobody, ..Retention::default() };
-    let setup = packages(&mut lp, 0);
-    let e = &mut lp.peers[0].engine;
-    let mut m = Mutation::new();
-    let t = e.new_thing(&mut m, me);
-    m.set(t, &KEPT, &s("k")).unwrap();
-    m.set(t, &BRIEF, &s("b")).unwrap();
-    m.expires(t, &BRIEF, WallMs(e.now().0 + 3_600_000)).unwrap();
-    m.set(t, &REG, &s("n")).unwrap();
-    m.retention(t, &REG, nobody).unwrap();
-    let w = e.write(m).unwrap().unwrap();
-    let ids: Vec<osis_base::CommitId> = w.id.commit().into_iter().chain(w.also.iter().copied()).collect();
-    assert_eq!(ids.len(), 3);
-    let aspects = [ak("t:kept.0"), ak("t:brief.0"), ak("t:reg.0")];
-    let check = |lp: &mut LocalPeer, ids: &[osis_base::CommitId], seed: u64| {
-        let packs: Vec<_> = packages(lp, 0).into_iter().filter(|p| ids.contains(&p.id)).collect();
-        assert_eq!(packs.len(), ids.len());
-        let now = lp.peers[0].engine.now();
-        for order in orders(ids.len()) {
-            let mut p = Peer::new(seed, now).unwrap();
-            for pk in &setup {
-                p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-            }
-            for i in &order {
-                let _ = p.engine.ingest(&packs[*i].bytes, packs[*i].blobs.clone());
-            }
-            p.engine.reexamine().unwrap();
-            assert!(p.engine.pending().is_empty(), "{order:?}: {:?}", p.engine.pending());
-            assert!(ids.iter().all(|c| p.engine.commit_ids().contains(c)), "{order:?}");
-            for a in &aspects {
-                assert_eq!(p.engine.get(&t, a).unwrap(), lp.peers[0].engine.get(&t, a).unwrap(), "{order:?} {a:?}");
-                assert_eq!(p.engine.state_digest(&t, a).unwrap(), lp.peers[0].engine.state_digest(&t, a).unwrap(), "{order:?} {a:?}");
-            }
-        }
-    };
-    check(&mut lp, &ids, 0x5eed);
-    // an undo copying back an expiring write and a plain one: its two commits alike
-    lp.advance(10);
-    let at = WallMs(lp.peers[0].engine.now().0 + 60_000);
-    let mut m = Mutation::new();
-    m.set(t, &KEPT, &s("k1")).unwrap();
-    m.expires(t, &KEPT, at).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
+    let held = e.commit_ids().len();
+    let r = e.revert_change(osis_node::ChangeId::Commit(c), me);
+    assert!(matches!(&r, Err(osis_node::Error::Clash(m)) if m.contains("one expiry")), "{r:?}");
+    assert_eq!(e.commit_ids().len(), held);
+    assert_eq!((e.get(&t, &ak("t:reg.0")).unwrap(), e.get(&t, &ak("t:kept.0")).unwrap()), (Some(s("new")), Some(s("k2"))));
+    // the same undo with one expiry is one undo commit
     lp.advance(10);
     let mut m = Mutation::new();
-    m.set(t, &KEPT, &s("k2")).unwrap();
-    m.set(t, &REG, &s("n2")).unwrap();
+    m.set(t, &REG, &s("newer")).unwrap();
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
-    let osis_node::ephemeral::Reverted::Written(w) = lp.peers[0].engine.revert_change(osis_node::ChangeId::Commit(c), me).unwrap() else { panic!("reverted") };
-    let undo: Vec<osis_base::CommitId> = w.id.commit().into_iter().chain(w.also.iter().copied()).collect();
-    assert_eq!(undo.len(), 2);
-    let setup = packages(&mut lp, 0).into_iter().filter(|p| !undo.contains(&p.id)).collect::<Vec<_>>();
-    let check_undo = |lp: &mut LocalPeer| {
-        let packs: Vec<_> = packages(lp, 0).into_iter().filter(|p| undo.contains(&p.id)).collect();
-        let now = lp.peers[0].engine.now();
-        for order in orders(2) {
-            let mut p = Peer::new(0x5eee, now).unwrap();
-            for pk in &setup {
-                p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-            }
-            for i in &order {
-                p.engine.ingest(&packs[*i].bytes, packs[*i].blobs.clone()).unwrap();
-            }
-            p.engine.reexamine().unwrap();
-            assert!(p.engine.pending().is_empty(), "{order:?}: {:?}", p.engine.pending());
-            for a in &aspects {
-                assert_eq!(p.engine.get(&t, a).unwrap(), lp.peers[0].engine.get(&t, a).unwrap(), "undo {order:?} {a:?}");
-                assert_eq!(p.engine.state_digest(&t, a).unwrap(), lp.peers[0].engine.state_digest(&t, a).unwrap(), "undo {order:?} {a:?}");
-            }
-        }
-    };
-    check_undo(&mut lp);
-    assert_eq!((lp.peers[0].engine.get(&t, &ak("t:kept.0")).unwrap(), lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap()), (Some(s("k1")), Some(s("n"))));
+    let e = &mut lp.peers[0].engine;
+    let osis_node::ephemeral::Reverted::Written(w) = e.revert_change(osis_node::ChangeId::Commit(c), me).unwrap() else { panic!("reverted") };
+    assert_eq!(e.header(&w.id.commit().unwrap()).unwrap().undoes, Some(c));
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
 }
 
 /// Peers 4 and 5 over a register: writer 3 wrote `older` then `c` (expiring at `expires`, when

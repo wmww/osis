@@ -19,8 +19,8 @@ pub fn clock() -> Arc<ManualClock> {
 
 pub fn cfg(seed: u64, store: MemStore, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(store));
-    c.handle.internals.seed = Some(seed);
-    c.handle.internals.clock = Some(clock.clone());
+    c.app.internals.seed = Some(seed);
+    c.app.internals.clock = Some(clock.clone());
     c
 }
 
@@ -202,7 +202,7 @@ pub fn within<F: std::future::Future>(d: Duration, f: F) -> Option<F::Output> {
 }
 
 /// Commits the ops `f` makes in one batch; the commit.
-pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Result<()>) -> osis::Committed {
+pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Result<()>) -> osis::Commit {
     let mut w = db.write();
     f(&mut w).unwrap();
     w.commit().unwrap().unwrap()
@@ -245,18 +245,3 @@ impl CreateIn for osis::Write<'_> {
     }
 }
 
-/// `create` and add to `g` with an expiry in one batch.
-pub trait CreateExpiringIn {
-    fn create_expiring_in(&mut self, owner: osis::Tid, g: osis::Tid, d: Option<std::time::Duration>) -> osis::Result<osis::Tid>;
-}
-
-impl CreateExpiringIn for osis::Write<'_> {
-    fn create_expiring_in(&mut self, owner: osis::Tid, g: osis::Tid, d: Option<std::time::Duration>) -> osis::Result<osis::Tid> {
-        let t = self.create_owned_by(owner)?;
-        match d {
-            Some(d) => self.group(g).expires(osis::Expiry::In(d)).add(osis::Member::Item(t))?,
-            None => self.group(g).add(osis::Member::Item(t))?,
-        }
-        Ok(t)
-    }
-}

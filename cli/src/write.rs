@@ -1,4 +1,4 @@
-//! Write commands (notes/cli.md Command table, Things and aspects): each applies to a `Write` batch, so a
+//! Write commands (notes/cli.md Command table, Things and aspects): each applies to a `Write`, so a
 //! single command and a `write` script line share one implementation.
 
 use crate::args::{CreateArgs, MemberCmd, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
@@ -13,6 +13,8 @@ use std::ops::Range;
 pub struct Did {
     /// Tids bound by `create` (name, tid); the unnamed one of a single command is "".
     pub created: Vec<(String, Tid)>,
+    /// The expiry asked for so far.
+    pub expires: Option<Expiry>,
 }
 
 /// The groups a new thing goes into (none: placed later, or device-local).
@@ -25,11 +27,11 @@ pub fn place(ctx: &Ctx<'_>, p: &PlaceArgs) -> anyhow::Result<Vec<Tid>> {
 
 /// Parses a path. `[n]` on an untyped position: for a read, a list index if the saved value
 /// there is a list, else a map key; for a write (`write: true`), a map key, and an error when
-/// the saved value there is a list (untyped lists take no index writes) or when this batch
+/// the saved value there is a list (untyped lists take no index writes) or when this script
 /// already wrote the aspect (its pending state is invisible, so the saved one cannot decide).
 pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyhow::Result<Path> {
     let al = |w: &str| ctx.alias(w);
-    let ty = key.value_type();
+    let ty = key.value_type().map(|t| t.get());
     let steps = text::parse_path(s, ty.as_ref(), &al).map_err(|e| usage(format!("bad path {s:?}: {e}")))?;
     let mut out = Vec::new();
     let mut cur: Option<Option<Value>> = None;
@@ -38,7 +40,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
             PStep::Step(s) => s,
             PStep::IndexOrKey(i) => {
                 if write && (ctx.pending.contains(&(t, key.name().as_str().to_string())) || ctx.pending.contains(&(t, String::new()))) {
-                    return Err(usage(format!("[{i}] on untyped {} written earlier in this batch: list index or map key is unknown (register a schema, or write in a separate step)", key.name().as_str())));
+                    return Err(usage(format!("[{i}] on untyped {} written earlier in this script: list index or map key is unknown (register a schema, or write in a separate step)", key.name().as_str())));
                 }
                 if cur.is_none() {
                     let untyped = Key::untyped(key.name().clone());
@@ -59,7 +61,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
 
 /// The schema type at a path, for parsing what is written there.
 fn type_at(key: &Key, p: &Path) -> Option<ValueType> {
-    text::type_at_path(key.value_type()?, &p.0)
+    text::type_at_path(key.value_type()?.get(), &p.0)
 }
 
 fn expiry(within: &Option<String>, at: &Option<String>) -> anyhow::Result<Option<Expiry>> {
@@ -70,10 +72,18 @@ fn expiry(within: &Option<String>, at: &Option<String>) -> anyhow::Result<Option
     })
 }
 
-fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key) -> anyhow::Result<AspectWrite<'w, 'd, Key>> {
-    if let Some(e) = expiry(&f.expires_in, &f.expires_at)? {
-        a = a.expires(e);
+/// A line's expiry is its commit's: lines of one script asking for different ones are refused.
+fn commit_expiry(w: &mut osis::Write<'_>, did: &mut Did, e: Option<Expiry>) -> anyhow::Result<()> {
+    let Some(e) = e else { return Ok(()) };
+    if did.expires.is_some_and(|x| x != e) {
+        return Err(usage("a commit has one expiry: this script asks for two, so run them as separate commands"));
     }
+    did.expires = Some(e);
+    w.expires(e);
+    Ok(())
+}
+
+fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key) -> anyhow::Result<AspectWrite<'w, 'd, Key>> {
     if let Some(r) = &f.retention {
         a = a.retention(retention(r, key.default_retention())?);
     }
@@ -130,7 +140,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     }
     for pair in a.pairs.chunks(2) {
         let key = ctx.key(&pair[0])?;
-        let v = ctx.value(&pair[1], key.value_type().as_ref())?;
+        let v = ctx.value(&pair[1], key.value_type().map(|t| t.get()).as_ref())?;
         w.at(t, key).set(&v)?;
     }
     if let Some(n) = &a.as_ {
@@ -232,10 +242,10 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     Ok(())
 }
 
-/// Applies one write command to the batch.
+/// Applies one write command to the `Write`.
 pub fn apply(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
     apply_one(ctx, w, c, did)?;
-    // Record what this batch wrote (path resolution must not trust the saved state there).
+    // Record what this script wrote (path resolution must not trust the saved state there).
     let touched = match c {
         ScriptCmd::Set(SetArgs { t, ak, .. }) | ScriptCmd::Overwrite(SetArgs { t, ak, .. }) | ScriptCmd::Rm(RmArgs { t, ak, .. }) | ScriptCmd::Op(OpArgs { t, ak, .. }) => {
             Some((ctx.tid(t)?, ak.clone()))
@@ -253,6 +263,9 @@ fn member(t: osis::Tid, subgroup: bool) -> Member {
 }
 
 fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mut Did) -> anyhow::Result<()> {
+    if let ScriptCmd::Set(SetArgs { w: f, .. }) | ScriptCmd::Overwrite(SetArgs { w: f, .. }) | ScriptCmd::Op(OpArgs { w: f, .. }) = c {
+        commit_expiry(w, did, expiry(&f.expires_in, &f.expires_at)?)?;
+    }
     match c {
         ScriptCmd::Create(a) => create(ctx, w, a, did),
         ScriptCmd::Set(a) => set(ctx, w, a, false),
@@ -261,11 +274,8 @@ fn apply_one(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, c: &ScriptCmd, did: &mu
         ScriptCmd::Op(a) => op(ctx, w, a),
         ScriptCmd::Group(MemberCmd::Add { g, t, subgroup, expires_in, expires_at }) => {
             let (g, m) = (ctx.tid(g)?, member(ctx.tid(t)?, *subgroup));
-            match expiry(expires_in, expires_at)? {
-                Some(e) => w.group(g).expires(e).add(m)?,
-                None => w.group(g).add(m)?,
-            }
-            Ok(())
+            commit_expiry(w, did, expiry(expires_in, expires_at)?)?;
+            Ok(w.group(g).add(m)?)
         }
         ScriptCmd::Group(MemberCmd::Rm { g, t, subgroup }) => Ok(w.group(ctx.tid(g)?).remove(member(ctx.tid(t)?, *subgroup))?),
         ScriptCmd::Delete { t } => Ok(w.delete(ctx.tid(t)?)?),

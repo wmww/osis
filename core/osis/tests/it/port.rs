@@ -35,7 +35,7 @@ impl Drop for Dir {
 fn node(store: &MemStore, net: &osis_transport::Net, sock: &std::path::Path, create: bool) -> Osis {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.handle.internals.transport = Some(net.endpoint("n"));
+    c.app.internals.transport = Some(net.endpoint("n"));
     let db = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
     db.listen_socket_at(sock).unwrap();
     db
@@ -159,7 +159,7 @@ fn too_large_then_stream_read() {
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
     let mut cfg = osis::internals::Opening::memory();
-    cfg.handle.read_limit = 1000;
+    cfg.app.read_limit = 1000;
     let c = crate::common::block_on(osis::internals::connect_socket(&sock, cfg)).unwrap();
     let k = ak("f:blob.0");
     let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
@@ -257,7 +257,7 @@ impl Raw {
 /// A `write` call's args setting `k` of `t` to `v` (the port's batch form: nonce, actor, keys, ops).
 pub(crate) fn set_batch(nonce: u64, actor: osis::Tid, t: osis::Tid, k: &Ak, v: Value) -> Vec<Value> {
     let op = Value::List(vec![Value::List(vec![]), Value::List(vec![Value::Int(0), v])]);
-    vec![Value::uint(nonce), Value::Tid(actor), Value::List(vec![Value::Str(k.as_str().into())]), Value::List(vec![Value::List(vec![Value::Int(3), Value::Tid(t), Value::Int(0), op])])]
+    vec![Value::uint(nonce), Value::Tid(actor), Value::List(vec![Value::Str(k.as_str().into())]), Value::List(vec![Value::List(vec![Value::Int(3), Value::Tid(t), Value::Int(0), op])]), Value::opt(None)]
 }
 
 const WRITE: u64 = 10;
@@ -451,7 +451,7 @@ fn socket_dir_rules() {
 fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::HostAddr>, sock: &std::path::Path) -> Osis {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.runtime = Runtime::Own;
-    c.handle.internals.transport = Some(net.endpoint(ep));
+    c.app.internals.transport = Some(net.endpoint(ep));
     c.hosts = hosts;
     let db = osis::internals::create(c).unwrap().0;
     db.listen_socket_at(sock).unwrap();
@@ -560,7 +560,7 @@ fn too_large_sub_is_not_kept() {
 fn mem_host(net: &osis_transport::Net) -> (Osis, osis::HostAddr) {
     let mut hc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     hc.runtime = Runtime::Own;
-    hc.handle.internals.transport = Some(net.endpoint("s"));
+    hc.app.internals.transport = Some(net.endpoint("s"));
     hc.peers = false;
     let host = osis::internals::create(hc).unwrap().0;
     host.set_hosting(Some(osis::Hosting { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
@@ -674,8 +674,8 @@ fn a_waiting_row_holds_nothing() {
     let sock = d.0.join("n.sock");
     let mut cfg = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     cfg.runtime = Runtime::Own;
-    cfg.handle.internals.transport = Some(net.endpoint("n"));
-    cfg.handle.internals.connection_wait = Some(Duration::from_secs(3600));
+    cfg.app.internals.transport = Some(net.endpoint("n"));
+    cfg.app.internals.connection_wait = Some(Duration::from_secs(3600));
     let n = osis::internals::create(cfg).unwrap().0;
     n.listen_socket_at(&sock).unwrap();
     let c = attach(&sock);
@@ -778,13 +778,13 @@ fn process_wide_rows_through_the_socket() {
     assert_eq!(n.sync_options(g).unwrap(), p);
     assert_eq!(c.sync_options(g).unwrap(), p);
     c.set_sync_options(g, SyncOptions::default()).unwrap();
-    c.rotate_address().unwrap();
+    c.rotate_peer_address().unwrap();
     // invites: none
     assert_eq!(c.invite_requests().unwrap(), vec![]);
     // pairing a new device, through the old one's socket
     let mut pc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     pc.runtime = Runtime::Own;
-    pc.handle.internals.transport = Some(net.endpoint("p"));
+    pc.app.internals.transport = Some(net.endpoint("p"));
     let join = osis::internals::pair(pc, &c.pair_offer().unwrap()).unwrap();
     let (node, reply) = c.pair_accept(join.request()).unwrap();
     let p2 = join.finish(&reply).unwrap();
@@ -857,7 +857,7 @@ fn pair_reply_above_the_small_allowance() {
     let c = attach(&sock);
     let mut pc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     pc.runtime = Runtime::Own;
-    pc.handle.internals.transport = Some(net.endpoint("p"));
+    pc.app.internals.transport = Some(net.endpoint("p"));
     let join = osis::internals::pair(pc, &c.pair_offer().unwrap()).unwrap();
     osis::internals::Internals::port_pad_pair_reply(&n, osis_proto::client::SMALL_REPLY * 2);
     let (node, reply) = c.pair_accept(join.request()).unwrap();
@@ -952,7 +952,7 @@ fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let net = osis_transport::Net::new(1);
     let _n = node(&MemStore::new(), &net, &sock, true);
     let mut o = osis::internals::Opening::memory();
-    o.handle.dispatch = osis::Dispatcher::Pump(std::sync::Arc::new(|| {}));
+    o.app.dispatch = osis::Dispatcher::Pump(std::sync::Arc::new(|| {}));
     let c = crate::common::block_on(osis::internals::connect_socket(&sock, o)).unwrap();
     crate::common::block_on(c.wait_synced(osis::SyncScope::All)).unwrap();
     let r = crate::common::block_on(osis::internals::connect_socket(&d.0.join("none.sock"), osis::internals::Opening::memory()));
@@ -1005,10 +1005,10 @@ fn listen_socket_names_the_store_notes_client_port() {
     o.runtime = Runtime::Own;
     let n = osis::internals::create(o).unwrap().0;
     n.listen_socket().unwrap();
-    let c = crate::common::block_on(Osis::connect_socket(&store, osis::HandleConfig::default())).unwrap();
+    let c = crate::common::block_on(Osis::connect_socket(&store, osis::AppConfig::default())).unwrap();
     assert_eq!(c.me(), n.me());
     assert!(matches!(c.listen_socket(), Err(osis::Error::Unsupported(_))));
-    assert!(crate::common::block_on(Osis::connect_socket(&d.0.join("no-such-store"), osis::HandleConfig::default())).is_err());
+    assert!(crate::common::block_on(Osis::connect_socket(&d.0.join("no-such-store"), osis::AppConfig::default())).is_err());
     let mut o = osis::internals::Opening::memory();
     o.runtime = Runtime::Own;
     let m = osis::internals::create(o).unwrap().0;

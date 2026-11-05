@@ -36,9 +36,9 @@ fn s(x: &str) -> Value {
 fn on(net: &osis_transport::Net, ep: &str, store: &MemStore, hosts: Vec<HostAddr>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.handle.internals.transport = Some(net.endpoint(ep));
+    c.app.internals.transport = Some(net.endpoint(ep));
     c.hosts = hosts;
-    c.handle.internals.connection_wait = Some(W);
+    c.app.internals.connection_wait = Some(W);
     c.peers = false;
     c
 }
@@ -116,8 +116,8 @@ static NAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::n
 fn attach(net: &osis_transport::Net, nc: &HostAddr, secret: &ClientSecret) -> Osis {
     let mut c = osis::internals::Opening::memory();
     let n = NAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    c.handle.internals.transport = Some(net.endpoint(&format!("c{n}")));
-    c.handle.internals.connection_wait = Some(W);
+    c.app.internals.transport = Some(net.endpoint(&format!("c{n}")));
+    c.app.internals.connection_wait = Some(W);
     crate::common::block_on(osis::internals::connect(nc, secret, c)).unwrap()
 }
 
@@ -235,7 +235,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
             let big_page = app.at(x.m, osis::Key::untyped(file())).history(osis::HistoryFrom::Newest, 5).unwrap();
             assert_eq!(big_page.entries[0].body, osis::HistoryBody::Held(Some(Value::Bytes(big()))));
             let mut w = app.write();
-            w.at(x.m, osis::Key::untyped(text())).purge(osis::Purge::Change(page.entries[0].commit.id)).unwrap();
+            w.at(x.m, osis::Key::untyped(text())).purge(osis::Purge::Commit(page.entries[0].commit.id)).unwrap();
             assert!(w.commit().is_err(), "a copy takes no purge");
             assert!(!app.status().unwrap().groups.contains_key(&x.g), "nothing syncs it");
             assert_eq!(watch.current().unwrap(), Some(s("hello")), "the watch goes on");

@@ -360,11 +360,11 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     let net = osis_transport::Net::new(41);
     let at = |i: u64, run: bool| {
         let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
-        c.handle.internals.seed = Some(i);
+        c.app.internals.seed = Some(i);
         c.peers = false;
         if run {
             c.runtime = osis::Runtime::Own;
-            c.handle.internals.transport = Some(net.endpoint(&format!("e{i}")));
+            c.app.internals.transport = Some(net.endpoint(&format!("e{i}")));
         }
         c
     };
@@ -428,10 +428,10 @@ fn own_runtime_close_frees_host_store() {
     let net = osis_transport::Net::new(42);
     let at = |i: u64| {
         let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
-        c.handle.internals.seed = Some(i);
+        c.app.internals.seed = Some(i);
         c.peers = false;
         c.runtime = osis::Runtime::Own;
-        c.handle.internals.transport = Some(net.endpoint(&format!("o{i}")));
+        c.app.internals.transport = Some(net.endpoint(&format!("o{i}")));
         c
     };
     // `host_address` fails once the host could not open its store
@@ -446,4 +446,25 @@ fn own_runtime_close_frees_host_store() {
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// spec: none (notes/api.md Hosting): a stored limit this build does not know (another node's newer one) hides none
+// of the others from `hosting`, and a read-then-set keeps them all.
+#[test]
+fn an_unknown_stored_limit_loses_nothing() {
+    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &clock())).unwrap().0;
+    db.set_hosting(Some(osis::Hosting { policy: osis::HostPolicy { groups: 7, ..Default::default() }, ..Default::default() })).unwrap();
+    let node = db.node();
+    let mut stored = db.at(node, osis::internals::core_types::HOST).get().unwrap().unwrap();
+    stored.policy.insert("a_later_limit".into(), 9);
+    let mut w = db.write();
+    w.at(node, osis::internals::core_types::HOST).overwrite(&stored).unwrap();
+    w.commit().unwrap();
+    let mut read = db.hosting().unwrap().unwrap();
+    assert_eq!(read.policy.groups, 7, "the limits it knows");
+    read.policy.entries = 11;
+    db.set_hosting(Some(read)).unwrap();
+    let p = db.at(node, osis::internals::core_types::HOST).get().unwrap().unwrap().policy;
+    assert_eq!((p.get("max_labels"), p.get("max_entries"), p.get("a_later_limit")), (Some(&7), Some(&11), Some(&9)));
+    assert_eq!(db.hosting().unwrap().unwrap().policy.groups, 7);
 }

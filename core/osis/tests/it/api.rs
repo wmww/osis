@@ -3,14 +3,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::Exact as _;
-use osis::internals::ChangeRaw as _;
+use osis::internals::CommitRaw as _;
 use osis::internals::schema::RawKey as _;
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
-use crate::common::{CreateIn, CreateExpiringIn};
+use crate::common::CreateIn;
 use osis::internals::schema::core_types::Group;
 use osis::{Error, MemStore, Osis, Role, Value, p};
 use std::collections::{BTreeMap, BTreeSet};
@@ -211,7 +211,7 @@ fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
     let _sub = db.at(n, osis::Key::untyped(k.clone())).on_change(move |_, c| tx.send((c.value, c.source)).unwrap()).unwrap();
     assert_eq!(recv(&changes), (Ok(None), osis::Source::Initial));
     db.engine(|e| e.put_blobs(vec![(l.blob, bytes)])).unwrap();
-    assert_eq!(recv(&changes), (Ok(Some(big.clone())), osis::Source::Derived(osis::ChangeReason::Arrived)));
+    assert_eq!(recv(&changes), (Ok(Some(big.clone())), osis::Source::Derived(osis::DerivedFrom::Arrived)));
     assert_eq!(watch.current(), Ok(Some(big)));
 }
 
@@ -382,7 +382,7 @@ fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
 fn materialization_bound_spec_data_model_6() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.handle.read_limit = 64 * 1024;
+    cf.app.read_limit = 64 * 1024;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:doc.0");
     let big = Value::Bytes(vec![7u8; osis::internals::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
@@ -426,6 +426,8 @@ fn create_place_delete_spec_data_model_8() {
     assert!(db.groups_of(b).unwrap().within.is_empty());
     let mut w = db.write();
     w.group(folder).add(osis::Member::Item(b)).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
     w.group(db.me()).remove(osis::Member::Item(a)).unwrap();
     w.commit().unwrap();
     assert_eq!(db.groups_of(a).unwrap().within, vec![folder]);
@@ -551,9 +553,14 @@ fn expired_unseen_before_tick_spec_crdt_4_7() {
     let (k, e) = (ak("t:msg.0"), ak("t:typing.0~"));
     let mut w = db.write();
     let t = w.create().unwrap();
-    w.at(t, osis::Key::untyped(k.clone())).expires(osis::Expiry::In(std::time::Duration::from_secs(60))).set(&s("hi")).unwrap();
-    w.at(t, osis::Key::untyped(e.clone())).expires(osis::Expiry::In(std::time::Duration::from_secs(60))).set(&s("typing")).unwrap();
+    w.at(t, osis::Key::untyped(ak("t:kept.0"))).set(&s("kept")).unwrap();
     w.commit().unwrap();
+    for (key, v) in [(&k, "hi"), (&e, "typing")] {
+        let mut w = db.write();
+        w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
+        w.at(t, osis::Key::untyped(key.clone())).set(&s(v)).unwrap();
+        w.commit().unwrap();
+    }
     c.advance(59_999);
     assert_eq!((db.at(t, osis::Key::untyped(k.clone())).get().unwrap(), db.at(t, osis::Key::untyped(e.clone())).get().unwrap()), (Some(s("hi")), Some(s("typing"))));
     c.advance(1);
@@ -569,9 +576,12 @@ fn expiry_retention_purge_spec_commits_5_6() {
     let (k, r) = (ak("t:msg.0"), ak("t:keep.0"));
     let mut w = db.write();
     let t = w.create().unwrap();
-    w.at(t, osis::Key::untyped(k.clone())).expires(osis::Expiry::In(std::time::Duration::from_secs(60))).set(&s("hi")).unwrap();
     let ret = osis::Retention { by: osis::internals::schema::PurgeBy::Writer, ..Default::default() };
     w.at(t, osis::Key::untyped(r.clone())).retention(ret).set(&s("kept")).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    w.expires(osis::Expiry::In(std::time::Duration::from_secs(60)));
+    w.at(t, osis::Key::untyped(k.clone())).set(&s("hi")).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::Key::untyped(k.clone())).get().unwrap(), Some(s("hi")));
     c.advance(61_000);
@@ -579,8 +589,9 @@ fn expiry_retention_purge_spec_commits_5_6() {
     assert_eq!(db.at(t, osis::Key::untyped(k.clone())).get().unwrap(), None);
     // expiry in the past is invalid at commit
     let mut w = db.write();
-    assert!(matches!(w.at(t, osis::Key::untyped(k.clone())).expires(osis::Expiry::At(osis::Time(T0))).set(&s("late")), Err(Error::Invalid(_))));
-    drop(w);
+    w.expires(osis::Expiry::At(osis::Time(T0)));
+    w.at(t, osis::Key::untyped(k.clone())).set(&s("late")).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(_))));
     // purge
     let mut w = db.write();
     w.at(t, osis::Key::untyped(r.clone())).purge(osis::Purge::All).unwrap();
@@ -601,7 +612,7 @@ fn act_as_spec_commits_1() {
     w.act_as(db.node());
     w.at(t, osis::Key::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
-    let actor = |c: osis::internals::CommitId| db.engine(|e| e.header(&c).unwrap().actor);
+    let actor = |c: osis::internals::RawCommitId| db.engine(|e| e.header(&c).unwrap().actor);
     assert_eq!((actor(c1.id.commit().unwrap()), actor(c2.id.commit().unwrap())), (db.me(), db.node()));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);
@@ -651,7 +662,7 @@ fn stream_len_set_stream_spec_data_model_6() {
     use std::io::{Read, Seek, SeekFrom};
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.handle.read_limit = 64 * 1024;
+    cf.app.read_limit = 64 * 1024;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:blob.0");
     let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
@@ -957,17 +968,22 @@ fn values_past_limits_huge_spec_data_model() {
 fn expiring_placement_api_writes() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
-    let (x, d) = (ak("t:x.0"), Some(std::time::Duration::from_secs(60)));
+    let x = ak("t:x.0");
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
+    // a thing's record does not expire: the thing first, then what expires
     let mut w = db.write();
-    let t = w.create_expiring_in(db.me(), db.me(), d).unwrap();
-    w.at(t, osis::Key::untyped(x.clone())).expires(minute).set(&s("bye")).unwrap();
-    let gone = t;
+    let gone = w.create().unwrap();
+    w.at(gone, osis::Key::untyped(ak("t:kept.0"))).set(&s("first")).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let t = w.create_expiring_in(db.me(), db.me(), None).unwrap();
-    w.at(t, osis::Key::untyped(x.clone())).set(&s("stays")).unwrap();
-    let kept = t;
+    w.expires(minute);
+    w.group(db.me()).add(osis::Member::Item(gone)).unwrap();
+    w.at(gone, osis::Key::untyped(x.clone())).set(&s("bye")).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    let kept = w.create().unwrap();
+    w.group(db.me()).add(osis::Member::Item(kept)).unwrap();
+    w.at(kept, osis::Key::untyped(x.clone())).set(&s("stays")).unwrap();
     w.commit().unwrap();
     let items = |db: &Osis| db.at(db.me(), osis::internals::core_types::GROUP).get().unwrap().unwrap().items;
     assert!(items(&db).contains(&gone) && items(&db).contains(&kept));
@@ -977,23 +993,19 @@ fn expiring_placement_api_writes() {
     assert!(items(&db).contains(&kept));
     assert_eq!(db.at(gone, osis::Key::untyped(x.clone())).get().unwrap(), None);
     assert_eq!(db.at(kept, osis::Key::untyped(x.clone())).get().unwrap(), Some(s("stays")));
+    // not in the future: refused at commit
+    for e in [osis::Expiry::In(std::time::Duration::ZERO), osis::Expiry::At(db.now().unwrap())] {
+        let mut w = db.write();
+        w.expires(e);
+        w.at(kept, osis::Key::untyped(x.clone())).set(&s("now")).unwrap();
+        assert!(matches!(w.commit(), Err(Error::Invalid(_))));
+    }
+    // the last `expires` is the commit's
     let mut w = db.write();
-    assert!(matches!(w.create_expiring_in(db.me(), db.me(), Some(std::time::Duration::ZERO)), Err(Error::Invalid(_))));
-    assert!(matches!(w.at(kept, osis::Key::untyped(x.clone())).expires(osis::Expiry::In(std::time::Duration::ZERO)).set(&s("now")), Err(Error::Invalid(_))));
-    assert!(matches!(w.at(kept, osis::Key::untyped(x)).expires(osis::Expiry::At(db.now().unwrap())).set(&s("now")), Err(Error::Invalid(_))));
-    // one batch cannot mix expiries on one group's `group.0` (expiry is per aspect write)
-    drop(w);
-    let mut w = db.write();
-    let g = w.create().unwrap();
-    w.group(g).add(osis::Member::Item(db.me())).unwrap();
-    assert!(matches!(w.create_expiring_in(db.me(), g, d), Err(Error::Invalid(_))), "a member that stays beside one that goes");
-    drop(w);
-    let mut w = db.write();
-    w.create_expiring_in(db.me(), db.me(), d).unwrap();
-    w.create_expiring_in(db.me(), db.me(), d).unwrap();
-    assert!(matches!(w.create_expiring_in(db.me(), db.me(), Some(std::time::Duration::from_secs(5))), Err(Error::Invalid(_))));
-    assert!(matches!(w.create_in(db.me(), &[db.me()]), Err(Error::Invalid(_))));
-    drop(w);
+    w.expires(osis::Expiry::In(std::time::Duration::ZERO));
+    w.expires(minute);
+    w.at(kept, osis::Key::untyped(x.clone())).set(&s("again")).unwrap();
+    assert!(w.commit().unwrap().is_some());
     // the `group.0` field constants are the ones `add` writes
     assert_eq!(db.at(db.me(), osis::internals::core_types::GROUP).path(p![osis::internals::GROUP_ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
 }
@@ -1083,7 +1095,7 @@ fn changed_content_only_api_reads() {
 }
 
 /// The newest held commit on `t` here.
-fn newest(db: &Osis, t: osis::Tid) -> osis::internals::CommitId {
+fn newest(db: &Osis, t: osis::Tid) -> osis::internals::RawCommitId {
     db.commits(&osis::CommitQuery { scope: Some(osis::Scope::Thing(t)), limit: Some(1), ..Default::default() }).unwrap()[0].commit.id.commit().unwrap()
 }
 
@@ -1222,7 +1234,7 @@ fn aspects_agrees_with_reads_after_a_purge() {
     w.at(t, osis::Key::untyped(k.clone())).set(&Value::Int(2)).unwrap();
     let last = w.commit().unwrap().unwrap().id;
     let mut w = db.write();
-    w.at(t, osis::Key::untyped(k.clone())).purge(osis::Purge::Change(last)).unwrap();
+    w.at(t, osis::Key::untyped(k.clone())).purge(osis::Purge::Commit(last)).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::Key::untyped(k.clone())).get().unwrap(), None);
     assert!(!db.aspects(t).unwrap().contains(&k));
@@ -1341,7 +1353,9 @@ fn the_empty_path_is_the_whole_value() {
         Ok(t)
     }).unwrap();
     assert_eq!(db.at(t, osis::Key::untyped(k.clone())).get().unwrap(), Some(Value::Int(1)));
-    assert!(commit_with(&db, |w| w.at(t, osis::Key::untyped(k.clone())).path(p![]).overwrite(&Value::Int(1))).also.is_empty(), "an overwrite of an equal value writes");
+    let n = db.engine(|e| e.commit_ids().len());
+    commit_with(&db, |w| w.at(t, osis::Key::untyped(k.clone())).path(p![]).overwrite(&Value::Int(1)));
+    assert_eq!(db.engine(|e| e.commit_ids().len()), n + 1, "an overwrite of an equal value writes");
     let mut w = db.write();
     w.at(t, osis::Key::untyped(k.clone())).path(p![]).set(&Value::Int(1)).unwrap();
     assert_eq!(w.commit().unwrap(), None, "a set of an equal value does not");
@@ -1368,10 +1382,13 @@ fn members_list_a_groups_members() {
     let db = db(1);
     let mut w = db.write();
     let g = w.create().unwrap();
-    let (kept, draft, sub) = (w.create().unwrap(), w.create().unwrap(), w.create().unwrap());
+    let kept = w.create().unwrap();
     w.at(kept, osis::Key::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     w.at(g, osis::Key::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     w.group(g).add(osis::Member::Item(kept)).unwrap();
+    w.commit().unwrap();
+    let mut w = db.write();
+    let (draft, sub) = (w.create().unwrap(), w.create().unwrap());
     w.group(g).add(osis::Member::Item(draft)).unwrap();
     w.group(g).add(osis::Member::Subgroup(sub)).unwrap();
     w.commit().unwrap();
@@ -1519,8 +1536,9 @@ fn a_lasting_member_outlives_an_expiring_first() {
     let (g, x, s, y) = (made(&db), made(&db), made(&db), made(&db));
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     db.batch(|w| {
-        w.group(g).expires(minute).add(osis::Member::Item(x))?;
-        w.group(g).expires(minute).add(osis::Member::Subgroup(s))
+        w.expires(minute);
+        w.group(g).add(osis::Member::Item(x))?;
+        w.group(g).add(osis::Member::Subgroup(s))
     })
     .unwrap();
     db.batch(|w| w.group(g).add(osis::Member::Item(y))).unwrap();
@@ -1551,7 +1569,7 @@ fn a_revert_of_a_first_member_takes_only_it() {
     assert_eq!(a.members(only).unwrap(), vec![osis::Member::Item(y)], "and it can be one again");
 }
 
-// spec/commits.md §6, notes/api.md Writes: a subgroup expires as an item does; a removal in an expiring batch is the disagreement it always was
+// spec/commits.md §6, notes/api.md Writes: a subgroup expires as an item does; a removal in an expiring commit is refused
 #[test]
 fn membership_expires_item_or_subgroup_spec_commits_6() {
     let c = clock();
@@ -1561,11 +1579,20 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
     let (g, t, s, kept) = (w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap());
     w.commit().unwrap();
     let mut w = db.write();
-    w.group(g).expires(minute).add(osis::Member::Item(t)).unwrap();
-    w.group(g).expires(osis::Expiry::In(std::time::Duration::from_secs(60))).add(osis::Member::Subgroup(s)).unwrap();
-    assert!(matches!(w.group(g).add(osis::Member::Item(kept)), Err(Error::Invalid(_))), "the batch's write of the group has one expiry");
-    assert!(matches!(w.group(g).remove(osis::Member::Item(kept)), Err(Error::Invalid(_))), "nor a removal");
-    assert!(matches!(w.group(g).expires(osis::Expiry::In(std::time::Duration::from_secs(5))).add(osis::Member::Item(kept)), Err(Error::Invalid(_))));
+    w.expires(minute);
+    w.group(g).add(osis::Member::Item(t)).unwrap();
+    w.group(g).add(osis::Member::Item(kept)).unwrap();
+    w.group(g).remove(osis::Member::Item(kept)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(_))), "a removal does not expire");
+    let mut w = db.write();
+    w.expires(minute);
+    w.delete(kept).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(_))), "nor a delete");
+    assert_eq!(db.members(g).unwrap(), vec![], "nothing applied");
+    let mut w = db.write();
+    w.expires(minute);
+    w.group(g).add(osis::Member::Item(t)).unwrap();
+    w.group(g).add(osis::Member::Subgroup(s)).unwrap();
     w.commit().unwrap();
     assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(t), osis::Member::Subgroup(s)]);
     c.advance(61_000);
@@ -1703,8 +1730,8 @@ fn waiting_calls_are_send() {
         send(db.remove_device(t, o));
         send(db.connect_node(&login));
         send(db.group_source(t, osis::GroupSource::Local));
-        send(Osis::connect(std::slice::from_ref(&login), osis::HandleConfig::default()));
-        send(Osis::connect_socket(std::path::Path::new("x"), osis::HandleConfig::default()));
+        send(Osis::connect(std::slice::from_ref(&login), osis::AppConfig::default()));
+        send(Osis::connect_socket(std::path::Path::new("x"), osis::AppConfig::default()));
         send(Osis::restore(osis::Store::Memory(MemStore::new()), &[], &recovery, osis::Config::default()));
     }
     let _ = all;
@@ -1726,8 +1753,8 @@ aspect t:rec.0: rec;
     )
     .unwrap();
     let key = db.key("t:rec.0").unwrap();
-    assert_eq!(key.type_name().as_deref(), Some("rec"));
-    let V::Record(f) = key.value_type().unwrap() else { panic!("a record") };
+    assert_eq!(key.value_type().unwrap().name(), "rec");
+    let V::Record(f) = key.value_type().unwrap().get() else { panic!("a record") };
     let by = |n: &str| f.iter().find(|x| x.name == n).unwrap().clone();
     assert!(matches!(by("name").ty.get(), V::String));
     assert!(matches!(by("when").ty.get(), V::Time));
@@ -1752,7 +1779,6 @@ aspect t:rec.0: rec;
     assert!(matches!(kids.get(), V::Record(_)));
     // no schema: nothing to say
     assert_eq!(db.key("t:other.0").unwrap().value_type(), None);
-    assert_eq!(db.key("t:other.0").unwrap().type_name(), None);
     assert_eq!(osis::Key::untyped(ak("t:rec.0")).value_type(), None);
     assert_eq!(key.default_retention(), osis::Retention::default());
 }
@@ -1766,31 +1792,31 @@ fn change_and_place_text_forms_api_design() {
     let t = w.create().unwrap();
     w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
     let done = w.commit().unwrap().unwrap();
-    assert_eq!(done.id.to_string().parse::<osis::ChangeId>().unwrap(), done.id);
+    assert_eq!(done.id.to_string().parse::<osis::CommitId>().unwrap(), done.id);
     let page = db.at(t, k.clone()).history(osis::HistoryFrom::Newest, 1).unwrap();
     let pos = page.entries[0].pos();
     assert_eq!(pos, done.pos());
     assert_eq!(pos.to_string().parse::<osis::HistoryPos>().unwrap(), pos);
-    assert_eq!(pos.change(), Some(done.id));
+    assert_eq!(pos.commit(), Some(done.id));
     assert_eq!(pos.at(), done.written);
     // a time's place comes before what was written then, and names no change
     let at = osis::HistoryPos::time(done.written);
     assert!(at < pos);
-    assert_eq!(at.change(), None);
+    assert_eq!(at.commit(), None);
     assert_eq!(db.at(t, k.clone()).history(osis::HistoryFrom::After(at), 1).unwrap().entries[0].pos(), pos);
     // past the last moment a place can name: still a place, after everything
     assert!(osis::HistoryPos::time(osis::Time(u64::MAX)) > pos);
     let m = w_ephemeral(&db, t);
-    assert_eq!(m.to_string().parse::<osis::ChangeId>().unwrap(), m);
+    assert_eq!(m.to_string().parse::<osis::CommitId>().unwrap(), m);
     for bad in ["", "abc", "ephemeral:", "ephemeral:00:1", "ephemeral:zz:1"] {
-        assert!(matches!(bad.parse::<osis::ChangeId>(), Err(Error::Invalid(_))), "{bad}");
+        assert!(matches!(bad.parse::<osis::CommitId>(), Err(Error::Invalid(_))), "{bad}");
     }
     for bad in ["", "1", "x/y", "1/abc"] {
         assert!(matches!(bad.parse::<osis::HistoryPos>(), Err(Error::Invalid(_))), "{bad}");
     }
 }
 
-fn w_ephemeral(db: &Osis, t: osis::Tid) -> osis::ChangeId {
+fn w_ephemeral(db: &Osis, t: osis::Tid) -> osis::CommitId {
     let mut w = db.write();
     w.at(t, db.key("t:cursor.0~").unwrap()).set(&Value::Int(1)).unwrap();
     w.commit().unwrap().unwrap().id
@@ -1844,9 +1870,9 @@ aspect t:when.0: stamp;
 ",
     )
     .unwrap();
-    assert_eq!(db.key("t:when.0").unwrap().value_type(), Some(V::Time));
-    assert_eq!(db.key("t:when.0").unwrap().type_name().as_deref(), Some("stamp"));
-    let V::Record(f) = db.key("t:rec.0").unwrap().value_type().unwrap() else { panic!("a record") };
+    assert_eq!(db.key("t:when.0").unwrap().value_type().unwrap().get(), V::Time);
+    assert_eq!(db.key("t:when.0").unwrap().value_type().unwrap().name(), "stamp");
+    let V::Record(f) = db.key("t:rec.0").unwrap().value_type().unwrap().get() else { panic!("a record") };
     let by = |n: &str| f.iter().find(|x| x.name == n).unwrap().ty.clone();
     assert_eq!(by("a").get(), V::Time);
     let V::Record(b) = by("b").get() else { panic!("a record") };
@@ -1898,5 +1924,5 @@ fn history_place_of_any_time_api_design() {
     for p in [zero, end, P::time(c.written), c.pos()] {
         assert_eq!(p.to_string().parse::<P>().unwrap(), p);
     }
-    assert_eq!((end.change(), c.pos().change()), (None, Some(c.id)));
+    assert_eq!((end.commit(), c.pos().commit()), (None, Some(c.id)));
 }

@@ -111,7 +111,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
   - Adding a durable item or subgroup is durable and persists the group (§1).
   - Removing a durable item or subgroup also removes it from `placed.0~`.
 - **When a thing persists**:
-  - The persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, with that placement's expiry, and the node removes it from `placed.0~`.
+  - The persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, and the node removes it from `placed.0~`; a writer refuses a persisting write when such a placement expires (spec/commits.md §6).
   - A placement into a group it may not write stays ephemeral.
   - A persisting thing with a `placed.0~` and no `group.0` gets an empty durable `group.0` in that commit.
   - Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral placements durably (a placement made while it persisted elsewhere, or restored by an undo).

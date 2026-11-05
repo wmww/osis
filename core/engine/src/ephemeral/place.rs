@@ -2,8 +2,8 @@
 //! whose item stays ephemeral after the batch is an ephemeral write into the group's `placed.0~`
 //! (the core ephemeral aspect read with `group.0`); one on a durable item is a durable write of
 //! `group.0` and persists the group. When a thing persists, each of its ephemeral placements the node may write becomes a
-//! durable add (with the placement's expiry) in the persisting commit and an ephemeral reset
-//! removes the ephemeral element; a group it may not write keeps it ephemeral
+//! durable add in the persisting commit (one that expires refuses the commit, which has no
+//! expiry) and an ephemeral reset removes the ephemeral element; a group it may not write keeps it ephemeral
 //! (`PlacementNotPersisted`). A persisting thing that is a group ephemerally gets an empty
 //! durable `group.0`.
 
@@ -19,8 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// `group.0` field ids (spec/data-model.md §8).
-/// Per ephemeral placement (group, field, member) the expiry it converts with: `None` when it
-/// does not convert, else its `expires` (`None`: none).
+/// Per ephemeral placement (group, field, member) its expiry: `None` when it does not convert,
+/// else its `expires` (`None`: none).
 type Expiries = BTreeMap<(Tid, u64, Tid), Option<Option<u64>>>;
 
 pub(crate) const ITEMS: u64 = 0;
@@ -105,6 +105,9 @@ pub(super) struct Placed {
     pub durable: BTreeMap<Tid, AspectMut>,
     /// `placed.0~` writes, conversions' resets included.
     pub eph: Vec<EphOp>,
+    /// A `placed.0~` write the batch asked for: a member staying ephemeral, its removal by a
+    /// `delete` aside. The rest of `eph` follows what the durable commit does.
+    pub asked: Option<Tid>,
     /// (item, group): placements of a persisted thing kept ephemeral (no write on the group).
     pub refused: Vec<(Tid, Tid)>,
     /// (item, group): item placements made durable by persisting (`Mutation::require_synced`).
@@ -184,7 +187,7 @@ impl Engine {
         let converting = placed(&persisted, &roots);
         let eph_after = |x: &Tid| records(x).is_some() && !persisted.contains(x);
         let core_schema = || Some(Arc::new(osis_schema::core_schema().clone()));
-        let mut out = Placed { persisted: BTreeSet::new(), saved: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), refused: Vec::new(), converted: Vec::new() };
+        let mut out = Placed { persisted: BTreeSet::new(), saved: BTreeSet::new(), durable: BTreeMap::new(), eph: Vec::new(), asked: None, refused: Vec::new(), converted: Vec::new() };
         for (g, am) in gops {
             let (mut d, mut e) = (Vec::new(), Vec::new());
             for op in &am.ops {
@@ -198,6 +201,9 @@ impl Engine {
                 let listed = || matches!(member_op(op), Some((f, x, false)) if self.core.ix.placed.get(&g).is_some_and(|(i, s)| if f == ITEMS { i.contains(&x) } else { s.contains(&x) }));
                 if !durable || listed() {
                     e.push(op.clone());
+                }
+                if !durable && !member_op(op).is_some_and(|(_, x, add)| !add && m.free.contains(&x)) {
+                    out.asked = Some(g);
                 }
                 if durable {
                     d.push(op.clone());
@@ -224,10 +230,11 @@ impl Engine {
                     out.eph.push(reset);
                     continue;
                 };
-                let d = out.durable.entry(g).or_insert_with(|| AspectMut { schema: core_schema(), expires: exp, ..AspectMut::default() });
-                if d.expires != exp {
-                    return Err(Error::Misuse("placements with different expiries persist into one group in one batch: persist them in separate batches"));
+                // the commit keeping `t` cannot expire, nor this membership stop expiring
+                if let Some(at) = exp {
+                    return Err(Error::Clash(format!("{t} is a member of {g} until {at}: a commit keeping it as a member would have two expiries. Remove it from {g} first, then add it again in an expiring commit")));
                 }
+                let d = out.durable.entry(g).or_insert_with(|| AspectMut { schema: core_schema(), ..AspectMut::default() });
                 d.ops.push(group_op(field, *t, true));
                 if field == ITEMS {
                     out.converted.push((*t, g));
@@ -236,9 +243,7 @@ impl Engine {
             }
         }
         for t in &converting {
-            // a group ephemerally: its (empty) `group.0` persists, its ephemeral items do not;
-            // after the conversions, whose expiry it takes: an empty group has no value for
-            // expiry to remove (spec/crdt.md §4.7), so it stays a group
+            // a group ephemerally: its (empty) `group.0` persists, its ephemeral items do not
             if self.core.ix.placed.contains_key(t) && !self.run(|tx| tx.has_state(t, &gak))? {
                 let d = out.durable.entry(*t).or_insert_with(|| AspectMut { schema: core_schema(), ..AspectMut::default() });
                 d.ops.insert(0, PathOp { path: Vec::new(), op: Op::Set(GROUP.encode(&Group::default())) });

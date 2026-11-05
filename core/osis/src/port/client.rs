@@ -26,7 +26,7 @@
 use super::codec::{self as c, outcome_err, u};
 use super::method;
 use crate::error::{Error, Result};
-use crate::handle::{HandleConfig, Config, Osis, WeakOsis};
+use crate::handle::{AppConfig, Config, Osis, WeakOsis};
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Source, Subscription, lock};
 use osis_base::{Clock, Tid, Value};
 use osis_proto::client::SMALL_REPLY;
@@ -881,11 +881,11 @@ impl Osis {
     /// returns once connected or fails with why the one attempt it makes did not connect (`Network`
     /// for a node not there; call again to try again): nothing stays behind. Connected, it
     /// reconnects by itself.
-    pub async fn connect_socket(store_dir: &Path, cfg: HandleConfig) -> Result<Osis> {
+    pub async fn connect_socket(store_dir: &Path, cfg: AppConfig) -> Result<Osis> {
         Osis::connect_socket_at(&socket_path(store_dir)?, cfg).await
     }
 
-    pub(crate) async fn connect_socket_at(socket: &Path, cfg: HandleConfig) -> Result<Osis> {
+    pub(crate) async fn connect_socket_at(socket: &Path, cfg: AppConfig) -> Result<Osis> {
         let uid = own_uid()?;
         let url = osis_transport::unix::url_of(socket);
         let addr = Address { url: url.clone(), key: osis_transport::unix::uid_key(uid) };
@@ -908,7 +908,7 @@ impl Osis {
     /// Returns once connected to all, as `connect_socket`: `Refused` when a node refuses the secret,
     /// `Invalid` for a unix address (the secret goes only over a keyed transport), `Network` past
     /// its connection cap or when it cannot be reached.
-    pub async fn connect(logins: &[crate::NodeLogin], cfg: HandleConfig) -> Result<Osis> {
+    pub async fn connect(logins: &[crate::NodeLogin], cfg: AppConfig) -> Result<Osis> {
         if logins.is_empty() {
             return Err(Error::Invalid("connect needs a node to log in to".into()));
         }
@@ -920,8 +920,8 @@ impl Osis {
     }
 
     /// The stand-in database of a process without a store.
-    fn scratch(cfg: HandleConfig) -> Result<Osis> {
-        Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], Config { handle: cfg, ..Config::default() })?.0)
+    fn scratch(cfg: AppConfig) -> Result<Osis> {
+        Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], Config { app: cfg, ..Config::default() })?.0)
     }
 
     /// Makes this handle a process with no store of its own over `list`, each up.
@@ -1023,10 +1023,10 @@ impl Osis {
 
     /// A write batch at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
     /// again from the node's memory).
-    pub(crate) fn remote_write(&self, r: &Remote, wire: Vec<Value>) -> Result<Option<crate::write::Committed>> {
+    pub(crate) fn remote_write(&self, r: &Remote, wire: Vec<Value>) -> Result<Option<crate::write::Commit>> {
         let v = r.call_once(method::WRITE, wire)?;
         let o = c::Args::of(vec![v]).opt()?;
-        o.map(c::committed).transpose()
+        o.map(c::commit).transpose()
     }
 
     /// Registers `cb` for a subscription at the connected node: its Reply (`PortEvent::Initial`)
@@ -1130,9 +1130,9 @@ fn delivery(v: Value) -> Result<Delivered> {
 const HISTORY_ENTRY_HEAD: usize = 256;
 
 /// A history subscription's Notify.
-fn history_note(v: Value) -> Result<(crate::ChangeId, Option<crate::HistoryEntry<Value>>)> {
+fn history_note(v: Value) -> Result<(crate::CommitId, Option<crate::HistoryEntry<Value>>)> {
     let mut a = c::Args::new(v)?;
-    let id = c::change(a.next()?)?;
+    let id = c::commit_id(a.next()?)?;
     let entry = a.opt()?.map(c::hist_entry).transpose()?;
     a.end()?;
     Ok((id, entry))

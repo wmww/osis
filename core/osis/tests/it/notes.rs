@@ -148,7 +148,7 @@ fn large_body_streams() {
     let host = w.add_host();
     let laptop = person(&mut w, 1, host);
     let mut cfg = w.cfg(2, &[]);
-    cfg.handle.read_limit = 64 << 10;
+    cfg.app.read_limit = 64 << 10;
     let phone = add_device(&laptop, cfg).unwrap();
     let nb = new_tag(&laptop, "Books").unwrap();
     let note = new_note(&laptop, nb, "Draft").unwrap();

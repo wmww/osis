@@ -212,8 +212,8 @@ impl World {
     /// given hosts, a fresh memory store.
     pub fn cfg(&self, seed: u64, hosts: &[usize]) -> osis::internals::Opening {
         let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-        c.handle.internals.seed = Some(seed);
-        c.handle.internals.clock = Some(self.clock.clone());
+        c.app.internals.seed = Some(seed);
+        c.app.internals.clock = Some(self.clock.clone());
         c.runtime = Runtime::Manual(self.net.clone());
         c.hosts = hosts.iter().filter_map(|s| self.addr(*s)).collect();
         c

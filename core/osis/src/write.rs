@@ -1,10 +1,10 @@
-//! Writes (notes/api.md Writes): a `Write` batch becomes one atomic commit over every touched
-//! thing, of any size, or one per expiry and per `nobody` or other purgeable-by among its writes
-//! (spec/commits.md §5, §6), the creating one first. `set` makes a value equal (structural diff, spec/crdt.md §9), `edit`
+//! Writes (notes/api.md Writes): a `Write` becomes one atomic commit over every touched thing, of
+//! any size, or fails before anything applies, naming what cannot share a commit (spec/commits.md
+//! §5, §6; `Engine::write`). `set` makes a value equal (structural diff, spec/crdt.md §9), `edit`
 //! writes only what changed between what the app showed and what the user produced, `overwrite`
 //! resets then writes, path ops change one position. Rights are checked locally before signing.
 //!
-//! A batch records its API ops in wire-ready form (`WriteOp`, notes/client-port.md §1), checking
+//! A `Write` records its API ops in wire-ready form (`WriteOp`, notes/client-port.md §1), checking
 //! each as it is recorded; `commit` builds the engine `Mutation` from them under the lock.
 
 use crate::error::{Error, Result};
@@ -16,7 +16,7 @@ use crate::read::{Reader, ak_of};
 use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, Time};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
-use crate::change::{ChangeId, HistoryPos};
+use crate::commit_id::{CommitId, HistoryPos};
 use osis_node::Mutation;
 use osis_schema::AspectKey;
 use osis_schema::core_types::{GROUP, is_role_class};
@@ -25,29 +25,24 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
 
-/// A written batch.
+/// A commit just made: an atomic write, whole at every node that applies it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Committed {
-    /// Its first change, which creates the things the batch creates.
-    pub id: ChangeId,
+pub struct Commit {
+    pub id: CommitId,
     /// When it was written.
     pub written: Time,
-    /// Its other changes: writes with different expiries or retention go separately. History
-    /// lists each, and `revert` takes each alone.
-    pub also: Vec<ChangeId>,
-    /// `written` with what orders changes of one moment.
+    /// `written` with what orders commits of one moment.
     pub(crate) ts: Ts,
 }
 
-impl Committed {
-    /// Its first change's place in the history of an aspect it wrote.
+impl Commit {
+    /// Its place in the history of an aspect it wrote.
     pub fn pos(&self) -> HistoryPos {
         HistoryPos::of(self.ts, self.id)
     }
 }
 
-/// When a write stops counting: it goes from every node that holds it, by itself. Without one a
-/// write expires as its key says.
+/// When a commit stops counting: it goes from every node that holds it, by itself (`Write::expires`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expiry {
     /// At this time.
@@ -62,16 +57,16 @@ pub enum Expiry {
 pub enum Purge {
     /// The aspect's whole history, and the aspect itself with it.
     All,
-    /// One change's write. Its entry stays in the history as purged. If it is what the aspect
-    /// reads now the value goes with it: `set` in the same batch to keep one.
-    Change(ChangeId),
+    /// One commit's write. Its entry stays in the history as purged. If it is what the aspect
+    /// reads now the value goes with it: `set` in the same commit to keep one.
+    Commit(CommitId),
     /// Every write by this actor stamped before this commit, those arriving later too. What the
     /// actor writes later stays.
     Author(Tid),
 }
 
-/// One API op of a batch in wire-ready form: tids resolved, aspects by index into the batch's
-/// key table (`Write::keys`), values untyped and validated, expiry as wall time.
+/// One API op of a write in wire-ready form: tids resolved, aspects by index into the write's
+/// key table (`Write::keys`), values untyped and validated.
 #[derive(Clone, Debug)]
 pub(crate) enum WriteOp {
     /// A new thing; its record fixes its tid.
@@ -80,9 +75,7 @@ pub(crate) enum WriteOp {
     Group { g: Tid, member: Tid, items: bool, add: bool },
     /// An op at a path of an aspect (whole-value ops at the root).
     Path { tid: Tid, key: u32, op: PathOp },
-    /// The aspect's delta in this batch expires at `at`.
-    Expires { tid: Tid, key: u32, at: Time },
-    /// The aspect's delta in this batch has retention `r`.
+    /// The aspect's delta in this write has retention `r`.
     Retention { tid: Tid, key: u32, r: Retention },
     /// Purges the aspect's history (after its removal, recorded before).
     Purge { tid: Tid, key: u32 },
@@ -95,18 +88,26 @@ pub(crate) enum WriteOp {
 }
 
 impl WriteOp {
-    /// The thing it names; `None` for a create (it goes where its batch goes).
+    /// The thing it names; `None` for a create (it goes where its write goes).
     fn tid(&self) -> Option<Tid> {
         match self {
             WriteOp::Create(_) => None,
             WriteOp::Delete(t) | WriteOp::Group { g: t, .. } => Some(*t),
-            WriteOp::Path { tid, .. } | WriteOp::Expires { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
+            WriteOp::Path { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
         }
     }
 }
 
-/// A batch of writes: its durable ops become one commit, its ephemeral ops (keys declared
-/// `ephemeral` or `signal`) apply in memory, all or nothing. Reads see written state only.
+/// Writes that become one commit, all or nothing. Reads see written state only. What cannot share
+/// a commit fails `commit` with `Invalid`, naming what clashed; writing it as several commits is up
+/// to the app:
+/// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing's
+///   record never expires, so the commit that first keeps a thing has none: expiring content goes
+///   in a later commit.
+/// - A write under retention `nobody` shares a commit only with others like it.
+/// - A commit is durable or ephemeral (keys marked `~`), and a signal (keys marked `*`) is a commit
+///   of its own. A `delete` is the one exception: it ends all a thing holds, and the part of that
+///   held in memory reaches other nodes on its own.
 #[must_use = "a Write does nothing until commit()"]
 pub struct Write<'d> {
     db: &'d Osis,
@@ -117,10 +118,9 @@ pub struct Write<'d> {
     key_ix: BTreeMap<(Ak, usize), u32>,
     actor: Tid,
     created: Vec<Tid>,
-    /// Per group whose `group.0` this batch writes through the group calls: the expiry those
-    /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
-    group_exp: BTreeMap<Tid, Option<Expiry>>,
-    /// A thing that must still be known (`Osis::knows`) when the batch commits, checked under
+    /// `Write::expires`.
+    expires: Option<Expiry>,
+    /// A thing that must still be known (`Osis::knows`) when the write commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
     /// `Osis::add_with_grant`: a grant follows; no report that holders may not read what this
@@ -128,16 +128,16 @@ pub struct Write<'d> {
     pub(crate) sharing: bool,
 }
 
-impl Committed {
-    pub(crate) fn of(w: osis_node::Written) -> Committed {
-        Committed { id: w.id.into(), written: w.ts.wall_ms(), ts: w.ts, also: w.also.into_iter().map(ChangeId::commit).collect() }
+impl Commit {
+    pub(crate) fn of(w: osis_node::Written) -> Commit {
+        Commit { id: w.id.into(), written: w.ts.wall_ms(), ts: w.ts }
     }
 }
 
 impl Osis {
-    /// A new write batch acting as `me()`.
+    /// A new write acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), alive: None, sharing: false }
+        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), expires: None, alive: None, sharing: false }
     }
 }
 
@@ -186,28 +186,18 @@ fn expiry_at(db: &Osis, e: Expiry) -> Result<Time> {
     Ok(at)
 }
 
-/// `group.0` as a key of the shared core schema.
-fn group_key() -> Key {
-    Key { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) }
-}
-
-/// Records that a batch writes `g`'s `group.0` with expiry `d`; `Invalid` when another write
-/// of it in the batch asked for a different one. `true` when this is its first.
-fn note_expiry(exp: &mut BTreeMap<Tid, Option<Expiry>>, g: Tid, d: Option<Expiry>) -> Result<bool> {
-    match exp.get(&g) {
-        Some(x) if *x == d => Ok(false),
-        Some(_) => Err(Error::Invalid(format!("this batch writes the members of {g} with different expiries: a batch's writes of a group's members are one write, so use one batch each"))),
-        None => {
-            exp.insert(g, d);
-            Ok(true)
-        }
-    }
-}
-
 impl<'d> Write<'d> {
     /// Writes as `actor` instead of `me()`; this node needs that actor's roles.
     pub fn act_as(&mut self, actor: Tid) -> &mut Self {
         self.actor = actor;
+        self
+    }
+
+    /// When this commit expires, in place of what its keys say. A later call replaces it. `commit`
+    /// fails `Invalid` when the time is not in the future, or beside what cannot expire: a removal
+    /// from a group, a `delete`, a purge, or a thing this commit first keeps.
+    pub fn expires(&mut self, e: Expiry) -> &mut Self {
+        self.expires = Some(e);
         self
     }
 
@@ -217,7 +207,7 @@ impl<'d> Write<'d> {
     }
 
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
-    /// per (AK, schema) of the batch. A schema is told apart by address: keys borrow theirs
+    /// per (AK, schema) of the write. A schema is told apart by address: keys borrow theirs
     /// from a static or an `Arc` the table shares, so the address is not reused meanwhile.
     fn intern<K: AspectKey>(&mut self, ak: Ak, key: &K) -> u32 {
         let at = key.schema().map_or(0, |s: &Schema| std::ptr::from_ref(s).addr());
@@ -266,23 +256,8 @@ impl<'d> Write<'d> {
         GroupWrite { w: self, group }
     }
 
-    /// Records that this batch writes `g`'s `group.0` with expiry `e`; `Invalid` when another
-    /// write of it in this batch asked for a different one.
-    fn group_expiry(&mut self, g: Tid, e: Option<Expiry>) -> Result<()> {
-        if !note_expiry(&mut self.group_exp, g, e)? {
-            return Ok(());
-        }
-        if let Some(e) = e {
-            let at = expiry_at(self.db, e)?;
-            let key = self.intern(group_key().ak, &group_key());
-            self.ops.push(WriteOp::Expires { tid: g, key, at });
-        }
-        Ok(())
-    }
-
-    fn member(&mut self, g: Tid, m: Member, add: bool, e: Option<Expiry>) -> Result<()> {
+    fn member(&mut self, g: Tid, m: Member, add: bool) -> Result<()> {
         let g = self.known(g)?;
-        self.group_expiry(g, e)?;
         let (member, subgroup) = m.parts();
         // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
         // placements): `Engine::write` splits the group ops by what persists
@@ -292,7 +267,7 @@ impl<'d> Write<'d> {
 
     /// Removes every aspect the node knows of `tid` and its placements and subgroup memberships in
     /// every group this node may write (one it may not keeps listing it; it reads deleted
-    /// there), as held when the batch commits. Afterwards `knows(tid)` is `false`; the tid stays
+    /// there), as held when the write commits. Afterwards `knows(tid)` is `false`; the tid stays
     /// valid and a later write recreates the thing.
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
@@ -323,7 +298,7 @@ impl<'d> Write<'d> {
         AspectWrite { w: self, tid, key, ix }
     }
 
-    /// The things that decide the batch's source: those it names but does not create; creates
+    /// The things that decide the write's source: those it names but does not create; creates
     /// only: their owners.
     fn deciders(&self) -> Vec<Tid> {
         let named: Vec<Tid> = self.ops.iter().filter_map(WriteOp::tid).filter(|t| !self.created.contains(t)).collect();
@@ -333,11 +308,11 @@ impl<'d> Write<'d> {
         self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { owner, .. }) = o { Some(*owner) } else { None }).filter(|t| !self.created.contains(t)).collect()
     }
 
-    /// Writes every op: the durable ones atomically, as one change per expiry and retention
-    /// (`Committed::also`), the ephemeral ones in memory; `None` when nothing changes. Fails before anything applies with `Permission`,
-    /// `UnknownThing` or `Invalid`; `OutcomeUnknown`, only through another node, may have applied:
-    /// read before repeating it.
-    pub fn commit(self) -> Result<Option<Committed>> {
+    /// Writes every op as one commit; `None` when nothing changes. Fails before anything applies
+    /// with `Permission`, `UnknownThing`, or `Invalid` (also when the ops cannot share a commit:
+    /// `Write`); `OutcomeUnknown`, only through another node, may have applied: read before
+    /// repeating it.
+    pub fn commit(self) -> Result<Option<Commit>> {
         let deciders = self.deciders();
         if let Source::Remote(r) = self.db.route_write_all(&deciders)? {
             let db = self.db;
@@ -349,6 +324,7 @@ impl<'d> Write<'d> {
         let db = self.db;
         db.after_route();
         let limit = db.inner.limit;
+        let expires = self.expires.map(|e| expiry_at(db, e)).transpose()?;
         let (r, unplaced) = db.locked(|l| {
             // the routing invariant's second half: under the lock this commit takes, every thing it
             // writes is still this engine's. A write decided Local before a move fails here, never
@@ -362,7 +338,7 @@ impl<'d> Write<'d> {
             }
             let actor = db.acting;
             let sharing = self.sharing;
-            let Built { mut m, placed, unplaced, cut } = self.build(&mut Reader { e, limit, actor })?;
+            let Built { mut m, placed, unplaced, cut } = self.build(&mut Reader { e, limit, actor }, expires)?;
             let carried = carried_under(e, &cut);
             // whatever actor the batch names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
@@ -374,7 +350,7 @@ impl<'d> Write<'d> {
                         not_synced(e, &placed, sharing);
                         cut_off(e, carried);
                     }
-                    Some(Committed::of(w))
+                    Some(Commit::of(w))
                 }
                 None => None,
             };
@@ -384,11 +360,11 @@ impl<'d> Write<'d> {
         Ok(r)
     }
 
-    /// The batch in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*]]`.
+    /// The write in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*], expires?]`.
     fn wire(&self, there: &crate::port::client::Remote) -> Result<Vec<Value>> {
-        use crate::port::codec::{op_v, retention_v, u};
+        use crate::port::codec::{op_v, opt, retention_v, u};
         if self.ops.len() > crate::port::MAX_BATCH_OPS {
-            return Err(Error::Invalid(format!("a batch to a remote node holds at most {} ops", crate::port::MAX_BATCH_OPS)));
+            return Err(Error::Invalid(format!("a write to another node holds at most {} ops", crate::port::MAX_BATCH_OPS)));
         }
         let t = Value::Tid;
         let ops = self
@@ -399,7 +375,6 @@ impl<'d> Write<'d> {
                     WriteOp::Create(rec) => vec![u(0), rec.to_value()],
                     WriteOp::Group { g, member, items, add } => vec![u(2), t(*g), t(*member), Value::Bool(*items), Value::Bool(*add)],
                     WriteOp::Path { tid, key, op } => vec![u(3), t(*tid), u(u64::from(*key)), op_v(op)?],
-                    WriteOp::Expires { tid, key, at } => vec![u(4), t(*tid), u(u64::from(*key)), u(at.0)],
                     WriteOp::Retention { tid, key, r } => vec![u(5), t(*tid), u(u64::from(*key)), retention_v(r)],
                     WriteOp::Purge { tid, key } => vec![u(6), t(*tid), u(u64::from(*key))],
                     WriteOp::Delete(x) => vec![u(7), t(*x)],
@@ -410,16 +385,17 @@ impl<'d> Write<'d> {
             .collect::<Result<Vec<Value>>>()?;
         // not named by `act_as`: whoever this process is at that node
         let actor = if self.actor == self.db.me() { there.acts_as().unwrap_or(self.actor) } else { self.actor };
-        Ok(vec![t(actor), Value::List(self.keys.iter().map(|k| crate::port::codec::ak_v(&k.ak)).collect()), Value::List(ops)])
+        let expires = self.expires.map(|e| expiry_at(self.db, e)).transpose()?;
+        Ok(vec![t(actor), Value::List(self.keys.iter().map(|k| crate::port::codec::ak_v(&k.ak)).collect()), Value::List(ops), opt(expires, |at| u(at.0))])
     }
 
     /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
-    fn build(self, r: &mut Reader<'_>) -> Result<Built> {
+    fn build(self, r: &mut Reader<'_>, expires: Option<Time>) -> Result<Built> {
         let acting = self.db.acting;
-        let Write { ops, keys, actor, created, mut group_exp, .. } = self;
-        let gk = std::cell::LazyCell::new(group_key);
+        let Write { ops, keys, actor, created, .. } = self;
+        let gk = Key { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
         let mut b = Built { m: Mutation::new(), placed: Vec::new(), unplaced: Vec::new(), cut: Vec::new() };
-        let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its batch".into()));
+        let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         for op in ops {
             match op {
                 WriteOp::Create(rec) => {
@@ -432,12 +408,10 @@ impl<'d> Write<'d> {
                     }
                     b.m.create(rec);
                 }
+                WriteOp::Group { add: false, .. } | WriteOp::Delete(_) if expires.is_some() => return Err(Error::Invalid("a removal from a group or a delete does not expire: this write has an expiry, so write it as a commit of its own".into())),
                 WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
                 WriteOp::Path { tid, key: k, op } => {
                     b.m.op(tid, key(k)?, op)?;
-                }
-                WriteOp::Expires { tid, key: k, at } => {
-                    b.m.expires(tid, key(k)?, at)?;
                 }
                 WriteOp::Retention { tid, key: k, r } => {
                     b.m.retention(tid, key(k)?, r)?;
@@ -467,7 +441,6 @@ impl<'d> Write<'d> {
                         if !created.contains(&g) && !r.holds(g) {
                             return Err(Error::UnknownThing { tid: g });
                         }
-                        note_expiry(&mut group_exp, g, None)?;
                         b.group(&gk, g, t, items, false)?;
                     }
                     b.m.free(t);
@@ -475,14 +448,17 @@ impl<'d> Write<'d> {
             }
         }
         b.m.act_as(actor);
+        if let Some(at) = expires {
+            b.m.expires_all(at);
+        }
         Ok(b)
     }
 }
 
 impl Osis {
-    /// Commits a batch received in wire form (`Write::wire`) as this node's own: tids resolved
+    /// Commits a write received in wire form (`Write::wire`) as this node's own: tids resolved
     /// and checked as the recorder checks them locally, keys typed by this node's schemas.
-    pub(crate) fn replay(&self, args: Vec<Value>) -> Result<Option<Committed>> {
+    pub(crate) fn replay(&self, args: Vec<Value>) -> Result<Option<Commit>> {
         use crate::port::codec::{Args, bad, op, retention};
         let mut a = Args::of(args);
         let actor = a.tid()?;
@@ -490,21 +466,21 @@ impl Osis {
             return Err(Error::Invalid("a client writes only as its own actor".into()));
         }
         let keys: Vec<Key> = a.list()?.iter().map(|v| crate::port::codec::ak(v).and_then(|ak| self.key(ak.as_str()))).collect::<Result<_>>()?;
-        // `group.0` is in the table for a placement's expiry alone (`Write::group_expiry`)
-        if let Some(why) = keys.iter().filter(|k| k.ak.as_str() != GROUP.ak()).find_map(|k| not_writable(k.ak.as_str())) {
+        if let Some(why) = keys.iter().find_map(|k| not_writable(k.ak.as_str())) {
             return Err(Error::Invalid(why));
         }
         let raw = a.list()?;
+        let expires = a.opt()?.map(|v| crate::port::codec::Args::of(vec![v]).uint().map(|t| Expiry::At(Time(t)))).transpose()?;
         a.end()?;
         if raw.len() > crate::port::MAX_BATCH_OPS {
             return Err(bad("batch (too many ops)"));
         }
         let mut w = self.write();
         w.act_as(actor);
+        w.expires = expires;
         w.keys = keys;
         let nkeys = w.keys.len();
         let key = |k: u64| u32::try_from(k).ok().filter(|k| (*k as usize) < nkeys).ok_or_else(|| bad("key index"));
-        let mut expiring = Vec::new();
         for o in raw {
             let mut o = Args::new(o)?;
             let op = match o.uint()? {
@@ -526,35 +502,15 @@ impl Osis {
                     }
                     WriteOp::Path { tid, key: k, op: p }
                 }
-                4 => {
-                    let (tid, k, at) = (o.tid()?, key(o.uint()?)?, Time(o.uint()?));
-                    expiring.push(tid);
-                    WriteOp::Expires { tid, key: k, at }
-                }
                 5 => WriteOp::Retention { tid: o.tid()?, key: key(o.uint()?)?, r: retention(o.next()?)? },
                 6 => WriteOp::Purge { tid: o.tid()?, key: key(o.uint()?)? },
                 7 => WriteOp::Delete(w.known(o.tid()?)?),
-                8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::commit_id(o.next()?)? },
+                8 => WriteOp::PurgeCommit { tid: o.tid()?, key: key(o.uint()?)?, commit: crate::port::codec::raw_commit_id(o.next()?)? },
                 9 => WriteOp::PurgeAuthor { tid: o.tid()?, key: key(o.uint()?)?, actor: o.tid()? },
                 _ => return Err(bad("op kind")),
             };
             o.end()?;
-            if let WriteOp::Path { key: k, .. } | WriteOp::Retention { key: k, .. } | WriteOp::Purge { key: k, .. } | WriteOp::PurgeCommit { key: k, .. } | WriteOp::PurgeAuthor { key: k, .. } = &op
-                && let Some(why) = w.keys.get(*k as usize).and_then(|x| not_writable(x.ak.as_str()))
-            {
-                return Err(Error::Invalid(why));
-            }
-            // a group written with an expiry: a `delete` of the batch removing a placement there
-            // fails as it would locally (`note_expiry`)
-            if let WriteOp::Group { g, .. } = &op {
-                w.group_exp.entry(*g).or_insert(None);
-            }
             w.ops.push(op);
-        }
-        for g in expiring {
-            if let Some(e) = w.group_exp.get_mut(&g) {
-                *e = Some(Expiry::In(Duration::MAX));
-            }
         }
         for t in w.ops.iter().filter_map(WriteOp::tid).collect::<Vec<_>>() {
             w.known(t)?;
@@ -584,7 +540,7 @@ fn op_links(p: &PathOp) -> bool {
         }
 }
 
-/// A batch's engine mutation and the placements its commit acts on.
+/// A write's engine mutation and the placements its commit acts on.
 struct Built {
     m: Mutation,
     /// Things placed into groups and the group (the `NotSynced` check).
@@ -671,17 +627,10 @@ pub struct GroupWrite<'w, 'd> {
 }
 
 impl<'w, 'd> GroupWrite<'w, 'd> {
-    /// Membership that expires: the member leaves by itself at that time (a disappearing message
-    /// leaves its group). A batch's writes of one group's members are one write with one expiry,
-    /// so all of them must ask for the same one, else `Invalid`; a removal, which never expires,
-    /// goes in another batch. Writes expiring otherwise than the batch's others are a change of
-    /// their own (`Committed::also`).
-    pub fn expires(self, e: Expiry) -> ExpiringGroupWrite<'w, 'd> {
-        ExpiringGroupWrite { w: self.w, group: self.group, e }
-    }
-
     /// Adds a member. A thing becomes a group with its first member. A new thing still in memory
     /// joins in memory, and for good when it is kept; else the add is durable, and keeps the group.
+    /// In a commit that expires (`Write::expires`) the member leaves by itself at that time: a
+    /// disappearing message leaves its group.
     ///
     /// A group's items sync only through groups listing it as a subgroup: its members are its
     /// items and its subgroups' members, not its items' items. So when an item stays durable, is
@@ -691,29 +640,16 @@ impl<'w, 'd> GroupWrite<'w, 'd> {
     /// data) is allowed and reported by a `NotSynced` diagnostic, as is one in a synced group
     /// whose holders may not read it: it does not reach them (`Osis::add_with_grant`).
     pub fn add(&mut self, member: Member) -> Result<()> {
-        self.w.member(self.group, member, true, None)
+        self.w.member(self.group, member, true)
     }
 
     /// Removes a member. A grant made with the membership (`Osis::add_with_grant`) goes in a
     /// commit right after when this node may remove it as a self-removal; otherwise a node that
     /// may remove it does so later. What a removed subgroup was the last way into a synced group
-    /// for stops syncing, each reported `NotSynced`.
+    /// for stops syncing, each reported `NotSynced`. A removal does not expire, as it would bring
+    /// the member back with its grant gone: `commit` fails `Invalid` in a commit that expires.
     pub fn remove(&mut self, member: Member) -> Result<()> {
-        self.w.member(self.group, member, false, None)
-    }
-}
-
-/// A group's members, added with an expiry (`GroupWrite::expires`).
-pub struct ExpiringGroupWrite<'w, 'd> {
-    w: &'w mut Write<'d>,
-    group: Tid,
-    e: Expiry,
-}
-
-impl ExpiringGroupWrite<'_, '_> {
-    /// Adds a member, as `GroupWrite::add`, until the expiry.
-    pub fn add(&mut self, member: Member) -> Result<()> {
-        self.w.member(self.group, member, true, Some(self.e))
+        self.w.member(self.group, member, false)
     }
 }
 
@@ -722,7 +658,7 @@ pub struct AspectWrite<'w, 'd, K> {
     w: &'w mut Write<'d>,
     tid: Tid,
     key: K,
-    /// The key's index in the batch's key table, or why no op on it may be recorded.
+    /// The key's index in the write's key table, or why no op on it may be recorded.
     ix: Result<u32>,
 }
 
@@ -794,7 +730,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.op(PathOp { path: Vec::new(), op: Op::RemoveAspect })
     }
 
-    /// Drops writes on the aspect for everyone (`Purge`). A request for one change or one author
+    /// Drops writes on the aspect for everyone (`Purge`). A request for one commit or one author
     /// is itself a write on the thing, so it fails `Permission` without write on the thing.
     pub fn purge(&mut self, what: Purge) -> Result<()> {
         if !self.key.lifetime().is_durable() {
@@ -806,25 +742,11 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
                 self.remove()?;
                 self.push(WriteOp::Purge { tid: self.tid, key });
             }
-            Purge::Change(ChangeId(osis_node::ChangeId::Commit(commit))) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
-            Purge::Change(ChangeId(osis_node::ChangeId::Ephemeral(_))) => return Err(Error::Invalid("an ephemeral batch has no write to purge".into())),
+            Purge::Commit(CommitId(osis_node::ChangeId::Commit(commit))) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
+            Purge::Commit(CommitId(osis_node::ChangeId::Ephemeral(_))) => return Err(Error::Invalid("an ephemeral commit has no write to purge".into())),
             Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
         }
         Ok(())
-    }
-
-    /// When this write expires instead of when the key says. Writes of one batch with different
-    /// expiries go as different changes (`Committed::also`): creating a thing with expiring
-    /// content takes two, its record first. The following op fails `Invalid` when the time is not
-    /// in the future.
-    pub fn expires(mut self, e: Expiry) -> Self {
-        if let Ok(key) = self.ix {
-            match expiry_at(self.w.db, e) {
-                Ok(at) => self.push(WriteOp::Expires { tid: self.tid, key, at }),
-                Err(x) => self.ix = Err(x),
-            }
-        }
-        self
     }
 
     /// How this write is kept, instead of as the key says; checked at commit (`Invalid`).
