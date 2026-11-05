@@ -339,7 +339,7 @@ fn client_purge_is_judged_by_the_actor_spec_perm_7() {
     assert_eq!(c.me(), a);
 }
 
-// notes/api.md Sync status: `connected` counts sync connections: a client's session is none.
+// spec: none (API surface); notes/api.md Sync status: `connected` counts sync connections: a client's session is none.
 #[test]
 fn a_client_session_is_no_sync_connection() {
     let x = node();
