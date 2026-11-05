@@ -106,7 +106,7 @@ fn two_people_three_devices_one_host_localhost() {
     // Alice shares a group by link; Bob redeems it
     let g = osis(&a1, &["create", "--in", "me", "t:made.0", "true"]);
     osis(&a1, &["group", "sync", &g]);
-    let t = osis(&a1, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"hello\""]);
+    let t = osis(&a1, &["create", "--admin", &g, "--in", &g, "t:x.0", "\"hello\""]);
     let link = osis(&a1, &["link", "make", &g, "write"]);
     osis(&a1, &["sync"]);
     // Alice's devices are all closed now: the link works from the host alone
@@ -173,7 +173,7 @@ fn thin_cli_quic_localhost() {
     let n = dir("thin-node");
     osis(&n, &["init"]);
     let g = osis(&n, &["create", "note:title.0", "\"g\""]);
-    let t = osis(&n, &["create", "--owner", &g, "--in", &g, "note:title.0", "\"hello\""]);
+    let t = osis(&n, &["create", "--admin", &g, "--in", &g, "note:title.0", "\"hello\""]);
     let hidden = osis(&n, &["create", "note:title.0", "\"hidden\""]);
     let add = osis(&n, &["clients", "add"]);
     let (actor, secret) = add.split_once(' ').unwrap();
@@ -344,7 +344,7 @@ fn own_host_device_localhost() {
 
     let g = osis(&a, &["create", "--in", "me", "t:made.0", "true"]);
     osis(&a, &["group", "sync", &g]);
-    let t = osis(&a, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"hello\""]);
+    let t = osis(&a, &["create", "--admin", &g, "--in", &g, "t:x.0", "\"hello\""]);
     let link = osis(&a, &["link", "make", &g, "write"]);
     osis(&a, &["sync"]);
     osis(&b, &["init", "--host", &addr]);
@@ -446,7 +446,7 @@ fn daemon_clients_localhost() {
         if xdg {
             let g = osis(&s, &["create", "--in", "me", "t:made.0", "true"]);
             assert_eq!(osis(&s, &["group", "sync", &g]), "");
-            let gt = osis(&s, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"shared\""]);
+            let gt = osis(&s, &["create", "--admin", &g, "--in", &g, "t:x.0", "\"shared\""]);
             assert_eq!(osis(&s, &["grant", &g, &bob, "read"]), "");
             assert_eq!(osis(&s, &["sync"]), "");
             assert_eq!(osis(&s, &["wait", "--group", &gt]), "");
@@ -459,7 +459,7 @@ fn daemon_clients_localhost() {
                 assert!(std::time::Instant::now() < end, "Bob never received the grant");
             }
             let h = osis(&s, &["create", "t:made.0", "true"]);
-            let ht = osis(&s, &["create", "--owner", &h, "--in", &h, "t:x.0", "\"local\""]);
+            let ht = osis(&s, &["create", "--admin", &h, "--in", &h, "t:x.0", "\"local\""]);
             let w = run(&s, &["wait", "--group", &ht]);
             assert_ne!(w.0, 0, "{}", w.2);
             unsynced = Some((ht, w));

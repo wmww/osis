@@ -60,13 +60,13 @@ fn node() -> Node {
     let (g, t, placed, out, h, u) = n
         .batch(|w| {
             let g = w.create()?;
-            let t = w.create_owned_by(g)?;
+            let t = w.create_with_admin(g)?;
             w.group(g).add(osis::Member::Item(t))?;
             let placed = w.create()?;
             w.group(g).add(osis::Member::Item(placed))?;
             let out = w.create()?;
             let h = w.create()?;
-            let u = w.create_owned_by(h)?;
+            let u = w.create_with_admin(h)?;
             Ok((g, t, placed, out, h, u))
         })
         .unwrap();
@@ -149,7 +149,7 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
         format!("{:?}", c.changed(t).unwrap()),
         e(c.commits(&CommitQuery::new().scope(Scope::Thing(t))).map(|v| format!("{v:?}"))),
         e(c.at(t, k.clone()).history(osis::HistoryFrom::Newest, 5).map(|v| format!("{v:?}"))),
-        e(c.at(t, k.clone()).stream().map(|s| format!("{:?}", s.map(|x| x.len())))),
+        e(c.at(t, k.clone()).path(osis::p![]).stream().map(|s| format!("{:?}", s.map(|x| x.len())))),
         e(c.commit_set(t, k.clone(), &Value::Int(1)).map(|_| "written".to_string())),
         e(c.batch(|w| w.delete(t)).map(|_| "written".to_string())),
         e(c.undo(&Scope::Thing(t)).map(|v| format!("{v:?}"))),
@@ -211,7 +211,7 @@ fn writes_are_the_actors() {
     let name = ak("t:name.0");
     let (a, s, c) = x.client(Role::Read);
     assert!(matches!(c.commit_set(x.t, name.clone(), &Value::Int(1)), Err(Error::Permission { tid, .. }) if tid == x.t));
-    assert!(matches!(c.batch(|w| w.create_owned_by(x.g)), Err(Error::Permission { .. })), "read on the owner is no write");
+    assert!(matches!(c.batch(|w| w.create_with_admin(x.g)), Err(Error::Permission { .. })), "read on the first admin is no write");
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
     c.commit_set(x.t, name.clone(), &Value::Int(2)).unwrap();
     assert_eq!(x.n.at(x.t, name.clone()).get().unwrap(), Some(Value::Int(2)));
@@ -219,15 +219,15 @@ fn writes_are_the_actors() {
     assert_eq!((last.commit.actor, last.commit.node), (a, x.n.node()));
     // created things
     let made = c.batch(|w| {
-        let m = w.create_owned_by(x.g)?;
+        let m = w.create_with_admin(x.g)?;
         w.at(m, name.clone()).set(&Value::Int(3))?;
         Ok(m)
     });
     let made = made.unwrap();
     assert_eq!(x.n.owner_of(made).unwrap(), Some(x.g));
     assert_eq!(c.at(made, name.clone()).get().unwrap(), Some(Value::Int(3)));
-    assert!(matches!(c.batch(|w| w.create_owned_by(a)), Err(Error::Invalid(_))), "its own actor as owner");
-    assert!(matches!(c.batch(|w| w.create_owned_by(x.n.me())), Err(Error::Permission { .. })), "the person as owner");
+    assert!(matches!(c.batch(|w| w.create_with_admin(a)), Err(Error::Invalid(_))), "its own actor as first admin");
+    assert!(matches!(c.batch(|w| w.create_with_admin(x.n.me())), Err(Error::Permission { .. })), "the person as first admin");
     assert!(matches!(c.batch(|w| w.create()), Err(Error::Invalid(_))), "the acting actor: its own");
     // a batch naming another actor: a raw session (the API records its own)
     let mut r = x.raw(&s);
@@ -713,7 +713,7 @@ fn group_aspect_ops_place_only_what_it_reads() {
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
     // what it reads, and what the batch creates
     let mut w = c.write();
-    let m = w.create_owned_by(x.g).unwrap();
+    let m = w.create_with_admin(x.g).unwrap();
     w.group(x.g).add(osis::Member::Item(m)).unwrap();
     let g2 = m;
     w.commit().unwrap();
@@ -751,7 +751,7 @@ fn a_batch_by_hand_writes_group_0_by_no_op() {
     assert_eq!(x.n.items(x.g).unwrap().len(), 2);
     // the call an expiry in the table is for
     let mut w = c.write();
-    let m = w.create_owned_by(x.g).unwrap();
+    let m = w.create_with_admin(x.g).unwrap();
     w.at(m, ak("t:name.0")).set(&Value::Int(1)).unwrap();
     w.group(x.g).expires(osis::Expiry::In(Duration::from_secs(60))).add(osis::Member::Item(m)).unwrap();
     w.commit().unwrap();
@@ -814,7 +814,7 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     let (_, _, c) = x.client(Role::Write);
     let made = |x: &Node| {
         let mut w = x.n.write();
-        let m = w.create_owned_by(x.g).unwrap();
+        let m = w.create_with_admin(x.g).unwrap();
         w.at(m, name.clone()).set(&Value::Int(1)).unwrap();
         w.group(x.g).add(osis::Member::Item(m)).unwrap();
         (m, w.commit().unwrap().unwrap().id)
@@ -838,7 +838,7 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     // an ephemeral thing likewise
     let id_eph = {
         let mut w = c.write();
-        let m = w.create_owned_by(x.g).unwrap();
+        let m = w.create_with_admin(x.g).unwrap();
         w.at(m, ak("t:e.0~")).set(&Value::Int(1)).unwrap();
         w.group(x.g).add(osis::Member::Item(m)).unwrap();
         (m, w.commit().unwrap().unwrap().id)
@@ -1064,9 +1064,9 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
         write(&|w| w.group(x.g).remove(osis::Member::Subgroup(t))),
         write(&|w| w.group(t).add(osis::Member::Item(x.t))),
         write(&|w| w.group(t).remove(osis::Member::Item(x.t))),
-        write(&|w| w.create_owned_by(t).map(|_| ())),
+        write(&|w| w.create_with_admin(t).map(|_| ())),
         write(&|w| {
-            let m = w.create_owned_by(x.g)?;
+            let m = w.create_with_admin(x.g)?;
             w.group(t).add(osis::Member::Item(m))
         }),
         write(&|w| w.at(t, ak("t:sig.0*")).set(&Value::Int(1))),
@@ -1130,7 +1130,7 @@ fn revert_lists_nothing_hidden() {
     assert!(!listed(x.placed));
     // what it reads goes back
     let mut w = c.write();
-    let m = w.create_owned_by(x.g).unwrap();
+    let m = w.create_with_admin(x.g).unwrap();
     w.at(m, ak("t:name.0")).set(&Value::Int(1)).unwrap();
     w.group(x.g).add(osis::Member::Item(m)).unwrap();
     let mine = m;
@@ -1167,7 +1167,7 @@ fn revert_lists_nothing_hidden() {
     // a client's draft saved, undone and redone: its own, placed by it
     let name = ak("t:name.0");
     let mut w = c.write();
-    let m = w.create_owned_by(x.g).unwrap();
+    let m = w.create_with_admin(x.g).unwrap();
     w.at(m, ak("t:e.0~")).set(&Value::Int(1)).unwrap();
     w.group(x.g).add(osis::Member::Item(m)).unwrap();
     let d = m;
@@ -1211,7 +1211,7 @@ fn persisting_converts_only_placements_the_actor_may_write() {
     let e = x
         .n
         .batch(|w| {
-            let e = w.create_owned_by(x.g)?;
+            let e = w.create_with_admin(x.g)?;
             w.group(x.h).add(osis::Member::Item(e))?;
             Ok(e)
         })
@@ -1223,7 +1223,7 @@ fn persisting_converts_only_placements_the_actor_may_write() {
     let e2 = x
         .n
         .batch(|w| {
-            let e = w.create_owned_by(x.g)?;
+            let e = w.create_with_admin(x.g)?;
             w.group(x.h).add(osis::Member::Item(e))?;
             Ok(e)
         })

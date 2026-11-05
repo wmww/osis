@@ -717,14 +717,11 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
     let key = ctx.key(ak)?;
     let db = ctx.db.clone();
     if stream || len {
-        let at = db.at(t, key.clone());
-        let s = match path {
-            None | Some("") => at.stream()?,
-            Some(p) => {
-                let p = write::path(ctx, t, &key, p, false)?;
-                at.path(p).stream()?
-            }
+        let p = match path {
+            None | Some("") => osis::Path::root(),
+            Some(p) => write::path(ctx, t, &key, p, false)?,
         };
+        let s = db.at(t, key.clone()).path(p).stream()?;
         let Some(mut s) = s else { return Err(exit(3, "")) };
         if len {
             let n = s.len();

@@ -38,8 +38,8 @@ fn body(db: &Osis, note: Tid) -> Result<String> {
 
 /// Types `text` into the body at char `at` in one editing session: one commit for the pause.
 fn type_text(db: &Osis, note: Tid, at: usize, text: &str) -> Result<()> {
-    let s = db.at(note, BODY).edit_text()?;
-    s.replace(at..at, text)?;
+    let s = db.at(note, BODY).path(osis::p![]).edit_text()?;
+    s.splice(at..at, text)?;
     s.commit()?;
     Ok(())
 }
@@ -154,10 +154,10 @@ fn large_body_streams() {
     let note = new_note(&laptop, nb, "Draft").unwrap();
     // just above `CHUNK_THRESHOLD`: a large value
     let doc: String = (0..13_000).map(|i| format!("line {i}\n")).collect();
-    laptop.batch(|w| w.at(note, BODY).set_stream(doc.as_bytes())).unwrap();
+    laptop.batch(|w| w.at(note, BODY).path(osis::p![]).set_stream(doc.as_bytes())).unwrap();
     w.run();
     assert!(matches!(phone.at(note, BODY).get(), Err(Error::TooLarge { .. })));
-    let mut s = phone.at(note, BODY).stream().unwrap().expect("synced");
+    let mut s = phone.at(note, BODY).path(osis::p![]).stream().unwrap().expect("synced");
     assert_eq!(s.len(), doc.len() as u64);
     let mut got = String::new();
     std::io::Read::read_to_string(&mut s, &mut got).unwrap();

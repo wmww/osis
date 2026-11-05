@@ -6,8 +6,8 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
-use crate::read::{AspectRef, PathRef, ak_of};
-use crate::write::{AspectWrite, PathWrite};
+use crate::read::{PathRef, ak_of};
+use crate::write::PathWrite;
 use osis_base::{Link, Tid, Value};
 use osis_schema::{AspectKey, Path, Type, type_at};
 use std::io::{Read, Seek, SeekFrom};
@@ -200,21 +200,8 @@ impl Osis {
     }
 }
 
-impl<K: AspectKey> AspectRef<'_, K> {
-    /// The aspect's string or blob payload as a stream (`Read + Seek`; above the
-    /// materialization bound too). `None` when absent.
-    pub fn stream(&self) -> Result<Option<ValueStream>> {
-        self.path(Path::root()).stream()
-    }
-
-    /// The payload length in bytes of a string or blob aspect without materializing it.
-    pub fn len(&self) -> Result<Option<u64>> {
-        Ok(self.stream()?.map(|s| s.len()))
-    }
-}
-
 impl<K: AspectKey> PathRef<'_, '_, K> {
-    /// The string or blob at the path as a stream. `None` when absent.
+    /// The string or blob here as a stream (`Read + Seek`), of any size. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.parts();
         if let crate::sources::Source::Remote(r) = db.route(tid) {
@@ -228,21 +215,14 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
         }
     }
 
-    /// The payload length in bytes of the string or blob at the path.
+    /// The length in bytes of the string or blob here, without reading it whole.
     pub fn len(&self) -> Result<Option<u64>> {
         Ok(self.stream()?.map(|s| s.len()))
     }
 }
 
-impl<K: AspectKey> AspectWrite<'_, '_, K> {
-    /// `path(Path::root()).set_stream(r)`: the whole aspect, as `AspectRef::stream` reads it.
-    pub fn set_stream(&mut self, r: impl Read) -> Result<()> {
-        self.path(Path::root()).set_stream(r)
-    }
-}
-
 impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
-    /// Sets the string or blob at the path from a reader: a string when the key's schema says
+    /// Sets the string or blob here from a reader: a string when the key's schema says
     /// so (UTF-8 checked), else a blob. The value is read whole before the commit for now.
     pub fn set_stream(&mut self, mut r: impl Read) -> Result<()> {
         let mut b = Vec::new();

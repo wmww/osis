@@ -673,19 +673,19 @@ fn text_sessions_merge_spec_crdt_5_7() {
     let mut wr = da.write();
     let t = wr.create_in(da.me(), &[da.me()]).unwrap();
     wr.commit().unwrap();
-    let sa = da.at(t, body.clone()).edit_text().unwrap();
-    sa.replace(0..0, "hello").unwrap();
+    let sa = da.at(t, body.clone()).path(osis::p![]).edit_text().unwrap();
+    sa.splice(0..0, "hello").unwrap();
     assert!(sa.commit().unwrap().is_some());
     assert_eq!(sa.commit().unwrap(), None, "nothing new");
     w.run();
-    let sb = db.at(t, db.key("n:body.0").unwrap()).edit_text().unwrap();
+    let sb = db.at(t, db.key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     assert_eq!(sb.text(), "hello");
     let (tx, rx) = std::sync::mpsc::channel();
     sa.on_remote(move |s, _| {
         let _ = tx.send(s.to_string());
     });
-    sb.replace(5..5, " world").unwrap();
-    sa.replace(0..0, ">").unwrap();
+    sb.splice(5..5, " world").unwrap();
+    sa.splice(0..0, ">").unwrap();
     sb.commit().unwrap();
     w.run();
     let merged = recv(&rx);
@@ -710,8 +710,8 @@ fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
         d.register_schema("t.osis", TEXT_SCHEMA).unwrap();
     }
     let t = da.batch(|w| w.create_in(da.me(), &[da.me()])).unwrap();
-    let sa = da.at(t, da.key("n:body.0").unwrap()).edit_text().unwrap();
-    sa.replace(0..0, "hello world").unwrap();
+    let sa = da.at(t, da.key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
+    sa.splice(0..0, "hello world").unwrap();
     sa.commit().unwrap();
     w.run();
     db.settle();
@@ -740,10 +740,10 @@ fn text_session_remote_splices_map_caret() {
     sa.on_remote(move |s, e| {
         let _ = tx.send((s.to_string(), e.to_vec()));
     });
-    let sb = db.at(t, db.key("n:body.0").unwrap()).edit_text().unwrap();
+    let sb = db.at(t, db.key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     assert_eq!(sb.text(), "hello world");
-    sb.replace(0..1, "H").unwrap();
-    sb.replace(6..6, "big ").unwrap();
+    sb.splice(0..1, "H").unwrap();
+    sb.splice(6..6, "big ").unwrap();
     sb.commit().unwrap();
     w.run();
     let (merged, edits) = recv(&rx);
@@ -770,10 +770,10 @@ fn text_session_after_remote_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
     let (_d, rx) = uncommitted(&da);
     db.batch(|w| w.delete(t)).unwrap();
-    sa.replace(11..11, "!").unwrap();
+    sa.splice(11..11, "!").unwrap();
     w.run();
     assert!(!da.knows(t).unwrap(), "deleted here");
-    sa.replace(0..0, "> ").unwrap();
+    sa.splice(0..0, "> ").unwrap();
     drop(sa);
     assert_eq!(recv(&rx), vec![t]);
     w.run();
@@ -789,7 +789,7 @@ fn text_session_after_remote_delete_drops() {
 fn text_session_after_local_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
     let (_d, rx) = uncommitted(&da);
-    sa.replace(11..11, "!").unwrap();
+    sa.splice(11..11, "!").unwrap();
     da.batch(|w| w.delete(t)).unwrap();
     drop(sa);
     assert_eq!(recv(&rx), vec![t]);
@@ -806,7 +806,7 @@ fn text_session_after_local_delete_drops() {
 #[test]
 fn text_session_keeps_edits_across_delete_undo() {
     let (_w, da, _db, t, sa) = text_pair();
-    sa.replace(11..11, "!").unwrap();
+    sa.splice(11..11, "!").unwrap();
     let mut w = da.write();
     w.delete(t).unwrap();
     w.commit().unwrap();

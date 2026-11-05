@@ -533,8 +533,8 @@ fn role_class_refused_spec_permissions_1() {
     assert!(matches!(w.at(t, core::GROUP).set(&Group::default()), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, core::GROUP).path(p![core::group::ITEMS]).add(&t), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, ak("group.0")).remove(), Err(Error::Invalid(_))));
-    assert!(matches!(db.at(t, ak("group.0")).edit_text().and_then(|s| {
-        s.replace(0..0, "x")?;
+    assert!(matches!(db.at(t, ak("group.0")).path(osis::p![]).edit_text().and_then(|s| {
+        s.splice(0..0, "x")?;
         s.commit()
     }), Err(Error::Invalid(_))));
 }
@@ -654,11 +654,11 @@ fn stream_len_set_stream_spec_data_model_6() {
     let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
     let mut w = db.write();
     let t = w.create().unwrap();
-    w.at(t, k.clone()).set_stream(&data[..]).unwrap();
+    w.at(t, k.clone()).path(osis::p![]).set_stream(&data[..]).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, k.clone()).get(), Err(Error::TooLarge { limit: 64 * 1024 }));
-    assert_eq!(db.at(t, k.clone()).len().unwrap(), Some(300_000));
-    let mut st = db.at(t, k.clone()).stream().unwrap().unwrap();
+    assert_eq!(db.at(t, k.clone()).path(osis::p![]).len().unwrap(), Some(300_000));
+    let mut st = db.at(t, k.clone()).path(osis::p![]).stream().unwrap().unwrap();
     let mut all = Vec::new();
     st.read_to_end(&mut all).unwrap();
     assert!(all == data, "whole payload");
@@ -686,10 +686,10 @@ fn stream_len_set_stream_spec_data_model_6() {
     // a small value streams too; absent reads None; a non-string fails
     let small = ak("t:small.0");
     db.commit_set(t, small.clone(), &s("hello")).unwrap();
-    assert_eq!(db.at(t, small.clone()).len().unwrap(), Some(5));
-    assert_eq!(db.at(t, ak("t:none.0")).len().unwrap(), None);
+    assert_eq!(db.at(t, small.clone()).path(osis::p![]).len().unwrap(), Some(5));
+    assert_eq!(db.at(t, ak("t:none.0")).path(osis::p![]).len().unwrap(), None);
     db.commit_set(t, ak("t:n.0"), &Value::Int(1)).unwrap();
-    assert!(matches!(db.at(t, ak("t:n.0")).len(), Err(Error::Invalid(_))));
+    assert!(matches!(db.at(t, ak("t:n.0")).path(osis::p![]).len(), Err(Error::Invalid(_))));
 }
 
 // spec/requirements.md (Offline and network), notes/api.md Diagnostics: a thing placed only in a
@@ -1579,6 +1579,47 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
     assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(kept)], "and it can be one again");
 }
 
+// spec/data-model.md §8: a group and its member, made in memory in one batch, keep as either is written: the member's first durable
+// write keeps both, in one batch with the add or a later one; the group's keeps it alone, the member still in memory there
+#[test]
+fn a_group_and_member_of_one_batch_keep_by_what_is_written() {
+    let db = db(1);
+    let x = ak("t:x.0");
+    let kept = |t: osis::Tid| db.created(t).unwrap().unwrap().commit.is_some();
+    let new = |write_member: bool| {
+        db.batch(|w| {
+            let (g, m) = (w.create()?, w.create()?);
+            w.group(g).add(osis::Member::Item(m))?;
+            if write_member {
+                w.at(m, x.clone()).set(&Value::Int(1))?;
+            }
+            Ok((g, m))
+        })
+        .unwrap()
+    };
+    let check = |g, m, what: &str| {
+        assert!(kept(g) && kept(m), "{what}");
+        assert_eq!(db.at(g, core::GROUP).get().unwrap().unwrap().items, [m].into(), "{what}: durably");
+        assert_eq!(db.groups_of(m).unwrap().item_of, vec![g], "{what}: one membership");
+        db.engine(|e| {
+            assert!(e.closure(&g).contains(&m), "{what}: sync follows");
+        });
+    };
+    let (g, m) = new(true);
+    check(g, m, "the same batch");
+    let (g, m) = new(false);
+    assert!(!kept(g) && !kept(m));
+    db.batch(|w| w.at(m, x.clone()).set(&Value::Int(1))).unwrap();
+    check(g, m, "the member later");
+    let (g, m) = new(false);
+    db.batch(|w| w.at(g, x.clone()).set(&Value::Int(1))).unwrap();
+    assert!(kept(g) && !kept(m), "the group alone");
+    assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(m)]);
+    assert!(db.engine(|e| e.durable_groups_of(&m).is_empty()), "only in memory");
+    db.batch(|w| w.at(m, x.clone()).set(&Value::Int(1))).unwrap();
+    check(g, m, "then the member");
+}
+
 // spec: none (client surface: notes/api.md Writes). One splice for a list and for text: replaces a range, an empty range inserts, no items delete
 #[test]
 fn splice_lists_and_text() {
@@ -1600,6 +1641,7 @@ fn splice_lists_and_text() {
     assert_eq!(w.commit().unwrap(), None, "nothing to do writes nothing");
     let mut w = db.write();
     assert!(matches!(w.at(t, notes::TASKS).path(p![]).splice(1..1, "text"), Err(Error::Invalid(_))), "a list takes items");
+    assert!(matches!(w.at(t, notes::TASKS).path(p![]).splice(1..2, ""), Err(Error::Invalid(_))), "even none, as a string");
     assert!(matches!(w.at(t, notes::TASKS).path(p![]).splice(1..1, &[1_i64]), Err(Error::Type { .. })), "of its type");
     #[allow(clippy::reversed_empty_ranges)]
     let backward = 2..1;
@@ -1620,8 +1662,8 @@ fn edit_text_by_position() {
     w.commit().unwrap();
     let ed = db.at(t, k.clone()).path(p!["a"]).edit_text().unwrap();
     assert_eq!(ed.text(), "one");
-    ed.replace(3..3, "!").unwrap();
+    ed.splice(3..3, "!").unwrap();
     ed.commit().unwrap();
     assert_eq!(db.at(t, k.clone()).path(p!["a"]).get::<String>().unwrap().as_deref(), Some("one!"));
-    assert!(matches!(db.at(t, k).edit_text(), Err(Error::Invalid(_))), "the whole aspect is no string");
+    assert!(matches!(db.at(t, k).path(osis::p![]).edit_text(), Err(Error::Invalid(_))), "the whole aspect is no string");
 }

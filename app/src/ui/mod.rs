@@ -496,9 +496,9 @@ impl Ui {
         let mut fields = Vec::new();
         for key in keys {
             let session = match key {
-                FieldKey::Name => db.at(t, NAME).edit_text()?,
-                FieldKey::Body => db.at(t, BODY).edit_text()?,
-                FieldKey::Location => db.at(t, crate::event::LOCATION).edit_text()?,
+                FieldKey::Name => db.at(t, NAME).path(osis::p![]).edit_text()?,
+                FieldKey::Body => db.at(t, BODY).path(osis::p![]).edit_text()?,
+                FieldKey::Location => db.at(t, crate::event::LOCATION).path(osis::p![]).edit_text()?,
             };
             let mb = self.mb.clone();
             let reported = Arc::new(Mutex::new(Vec::new()));

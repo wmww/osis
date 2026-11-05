@@ -168,8 +168,8 @@ fn remote_delete_of_the_open_thing() {
     let (a, b) = two();
     a.main_group().unwrap();
     let n = a.create_note().unwrap();
-    let s = a.db.at(n, BODY).edit_text().unwrap();
-    s.replace(0..0, "hello").unwrap();
+    let s = a.db.at(n, BODY).path(osis::p![]).edit_text().unwrap();
+    s.splice(0..0, "hello").unwrap();
     s.commit().unwrap();
     sync(&a, &b);
     b.delete(n).unwrap();

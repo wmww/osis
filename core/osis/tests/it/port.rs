@@ -168,12 +168,12 @@ fn too_large_then_stream_read() {
     w.at(t, k.clone()).set(&Value::Bytes(big.clone())).unwrap();
     w.commit().unwrap();
     assert!(matches!(c.at(t, k.clone()).get(), Err(osis::Error::TooLarge { .. })));
-    let mut s = c.at(t, k.clone()).stream().unwrap().unwrap();
+    let mut s = c.at(t, k.clone()).path(osis::p![]).stream().unwrap().unwrap();
     assert_eq!(s.len(), big.len() as u64);
     let mut got = Vec::new();
     std::io::Read::read_to_end(&mut s, &mut got).unwrap();
     assert!(got == big, "stream equals the value");
-    assert_eq!(c.at(t, k).len().unwrap(), Some(big.len() as u64));
+    assert_eq!(c.at(t, k).path(osis::p![]).len().unwrap(), Some(big.len() as u64));
     drop(c);
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
 }

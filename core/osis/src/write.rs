@@ -28,6 +28,7 @@ use std::time::Duration;
 pub struct Committed {
     /// Its first change, which creates the things the batch creates.
     pub id: ChangeId,
+    /// When it was written.
     pub ts: Ts,
     /// Its other changes: writes with different expiries or retention go separately. History
     /// lists each, and `revert` takes each alone.
@@ -193,7 +194,7 @@ fn note_expiry(exp: &mut BTreeMap<Tid, Option<Expiry>>, g: Tid, d: Option<Expiry
 }
 
 impl<'d> Write<'d> {
-    /// Acts for `actor` instead of `me()` (header actor; this node needs its rights).
+    /// Writes as `actor` instead of `me()`; this node needs that actor's roles.
     pub fn act_as(&mut self, actor: Tid) -> &mut Self {
         self.actor = actor;
         self
@@ -221,9 +222,20 @@ impl<'d> Write<'d> {
 
     /// A new thing, the acting actor its first admin. It is held in memory, and gone at restart,
     /// until its first durable write, which keeps it with its tid and its memberships. `Invalid`
-    /// at commit on a thin client's handle: its actor goes with the client.
+    /// at commit on a thin client's handle: its actor goes with the client, so what it makes
+    /// names who stays (`create_with_admin`).
     pub fn create(&mut self) -> Result<Tid> {
         self.create_owned_by(self.actor)
+    }
+
+    /// `create`, with `admin` as the first admin in place of the acting actor: a group or account
+    /// this actor may write (`Permission` at commit otherwise). Beside `create` because a thing's
+    /// first admin is fixed when it is made: a thin client's things need one that outlives the
+    /// client, and a thing made for a group's holders needs no grant to reach them.
+    // Today `admin` is its owner; the owner work makes this the record's first admin
+    // (issues/api-refactor.md Decided).
+    pub fn create_with_admin(&mut self, admin: Tid) -> Result<Tid> {
+        self.create_owned_by(admin)
     }
 
     /// A new thing owned by `owner` (fixed forever; needs write on it).
@@ -310,11 +322,10 @@ impl<'d> Write<'d> {
         self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { owner, .. }) = o { Some(*owner) } else { None }).filter(|t| !self.created.contains(t)).collect()
     }
 
-    /// Writes every op: the durable ones as one atomic commit per expiry and `nobody` class
-    /// (`Committed::also`), the ephemeral ones in memory;
-    /// `None` when nothing changes. Fails before anything applies with `Permission`,
+    /// Writes every op: the durable ones atomically, as one change per expiry and retention
+    /// (`Committed::also`), the ephemeral ones in memory; `None` when nothing changes. Fails before anything applies with `Permission`,
     /// `UnknownThing` or `Invalid`; `OutcomeUnknown`, only through another node, may have applied:
-    /// read before repeating it (crate::port::client).
+    /// read before repeating it.
     pub fn commit(self) -> Result<Option<Committed>> {
         let deciders = self.deciders();
         if let Source::Remote(r) = self.db.route_write_all(&deciders)? {
@@ -406,7 +417,7 @@ impl<'d> Write<'d> {
                     if let (Some(a), CreationRecord::Thing { owner, .. }) = (acting, &rec)
                         && *owner == a
                     {
-                        return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name another owner (create_owned_by)".into()));
+                        return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name a group that stays (create_with_admin)".into()));
                     }
                     b.m.create(rec);
                 }
@@ -766,7 +777,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.whole(v, Op::Replace)
     }
 
-    /// Removes the aspect.
+    /// Removes the aspect, as `path(Path::root()).remove()` does: every position takes `remove`,
+    /// and this is its usual one.
     pub fn remove(&mut self) -> Result<()> {
         self.op(PathOp { path: Vec::new(), op: Op::RemoveAspect })
     }
@@ -804,8 +816,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self
     }
 
-    /// Retention of this write's delta instead of the key's default (spec/commits.md §5);
-    /// checked at commit (`Invalid`).
+    /// How this write is kept, instead of as the key says; checked at commit (`Invalid`).
     pub fn retention(mut self, r: Retention) -> Self {
         if let Ok(key) = self.ix {
             self.push(WriteOp::Retention { tid: self.tid, key, r });
@@ -875,7 +886,7 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
     }
 
     /// Removes the position: the aspect at the empty path, else a map entry, a set element or a
-    /// list element.
+    /// list element. A range of a list or text: `splice`.
     pub fn remove(&mut self) -> Result<()> {
         let mut parent = self.path.clone();
         let last = parent.0.pop();
@@ -890,16 +901,15 @@ impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
     }
 
     /// Replaces the visible range of a list or text with `items`: a slice of items in a list, a
-    /// `&str` in text, `()` for nothing. An empty range inserts.
+    /// `&str` in text, `()` for nothing, which deletes. An empty range inserts.
     pub fn splice(&mut self, r: Range<usize>, items: impl SpliceItems) -> Result<()> {
         if r.start > r.end {
             return Err(Error::Invalid(format!("bad range {r:?}")));
         }
         let items = match items.items() {
-            Items::Text(s) if s.is_empty() => Vec::new(),
             Items::Text(s) => {
                 self.not_a_list()?;
-                vec![Value::Str(s)]
+                if s.is_empty() { Vec::new() } else { vec![Value::Str(s)] }
             }
             Items::List(l) => {
                 for v in &l {

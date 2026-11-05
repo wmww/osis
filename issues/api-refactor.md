@@ -19,7 +19,7 @@ let done = w.commit()?;
 
 let title = db.at(note, notes::TITLE).get()?;
 let sub = db.at(note, notes::TITLE).on_change(|db, c| ..)?;
-let text = db.at(note, notes::BODY).edit_text()?;
+let text = db.at(note, notes::BODY).path(p![]).edit_text()?;
 
 db.sync(note, &[])?;                                       // only if no synced group carries it
 db.grant(note, friend, Role::Write, GrantOpts::default())?;
@@ -36,9 +36,10 @@ Tess answered; the refactor is now in progress (Execution, below).
 
 ### Owner removal is in progress elsewhere
 Design for the world after it:
-- **`create()` takes no owner and `owner_of` goes.** Done but for removing what is doc-hidden and marked (`create_owned_by(owner)`, `create_ownerless(admin)`, `owner_of`, the CLI's `create --owner`, `ownerless`) when owners go. Then these need an answer, none sayable with `create()` alone:
-  - A thin client: `create()` is `Invalid` (its actor goes with it), so it names a group it may write. After owners, its first admin would be an actor that ends with the client: nobody could administer what it made. It needs the account, or the group, as first admin.
-  - Tree-of-things and a group's holders: a thing owned by a group is read by the group's holders with no grant (entitlement, spec/sync.md §3): `create_owned_by(g)` in tests and the CLI's localhost tests. After owners that is `add_with_grant`, with its boxes per thing.
+- **`create()` takes no owner and `owner_of` goes.** Done but for removing what is doc-hidden and marked (`create_owned_by(owner)`, `create_ownerless(admin)`, `owner_of`, the CLI's `ownerless`) when owners go. Then these need an answer:
+  - A thin client: `create()` is `Invalid` (its actor goes with it), so it calls `create_with_admin(g)`: visible, CLI `create --admin G`. Today `g` is its owner. The owner work makes the record name `g` as first admin, and must settle that write on `g` is enough to name it (Tess: see the review of this step).
+  - A group's holders: a thing owned by a group is read by the group's holders with no grant (entitlement, spec/sync.md §3): `create_with_admin(g)` too, which after owners holds through `g`'s role on the thing instead. `add_with_grant` stays for what is already made.
+  - Tree-of-things: `create_owned_by(x)` in tests, on things that are no actor: goes with owners.
   - Chat tells a person from a team and a link key by `owner_of` (`held_through`, `link_key`); the app's `reach` starts from it. Above, Follows from Sharing.
   - Chat's `create_ownerless(me)` becomes plain `create()` plus a durable write: nothing else in it needs an owner.
 - **Leave room for dispute calls** (list, listen, choose). They are per-node trust choices, not data writes: plain calls on `Osis` (`disputes()`, `on_dispute(f)`, `choose_side(..)`), nothing on `Write`. Not built here, but nothing should block them.
@@ -106,7 +107,7 @@ Keep as they are:
 | `Source` (why a watch fired) | `Origin` | Collides with sources per group; notes already say `Origin` |
 | `DropReason` | `NotUndoableReason` | It is why a revert fails |
 | `knows` | `has_content` | What it answers: a thing created and not yet written is known here, and reads `false` |
-| `at.len()`, `path.len()` | `byte_len()` | It is canonical size in bytes, not element count |
+| `path.len()` | `byte_len()` | It is canonical size in bytes, not element count |
 | person, "person actor", `Person`, `PERSON` | account | Decided: issues/account-rename.md |
 | `sync_now` | `nudge_sync`? | It nudges; `wait_synced` is what syncs |
 | `make_link`, `redeem`, `import_contact` | keep | Clear |

@@ -239,21 +239,21 @@
 //! A string or blob above the bound streams; text edited by a user goes through a session that
 //! commits once per pause.
 //! ```
-//! # use osis::{Config, Osis, Ak};
+//! # use osis::{Config, Osis, Ak, p};
 //! # use std::io::Read;
 //! let db = Osis::create(Config::memory())?.0;
 //! let k = Ak::new("app:body.0").unwrap();
 //! let mut w = db.write();
 //! let t = w.create()?;
-//! w.at(t, k.clone()).set_stream(&b"some bytes"[..])?;
+//! w.at(t, k.clone()).path(p![]).set_stream(&b"some bytes"[..])?;
 //! w.commit()?;
 //! let mut s = String::new();
-//! db.at(t, k.clone()).stream()?.unwrap().read_to_string(&mut s).unwrap();
+//! db.at(t, k.clone()).path(p![]).stream()?.unwrap().read_to_string(&mut s).unwrap();
 //! assert_eq!(s, "some bytes");
 //! let title = Ak::new("app:title.0").unwrap();
-//! let ed = db.at(t, title.clone()).edit_text()?;
-//! ed.replace(0..0, "Hello")?;
-//! ed.replace(5..5, " world")?;
+//! let ed = db.at(t, title.clone()).path(p![]).edit_text()?;
+//! ed.splice(0..0, "Hello")?;
+//! ed.splice(5..5, " world")?;
 //! ed.commit()?; // one commit for the whole pause
 //! assert_eq!(db.at(t, title).get()?, Some(osis::Value::Str("Hello world".into())));
 //! # Ok::<(), osis::Error>(())
