@@ -49,7 +49,7 @@ pub fn purge(id: CommitId, author: NodeId, h: u64, item: PurgeItem) -> Commit {
     Commit { purge: vec![item], ..reg(id, author, h, held_model::gen::PURGE, Retention::PLAIN, 0) }
 }
 pub fn held(now_h: u64, commits: Vec<Commit>) -> Held {
-    Held { now: at(now_h), me: OWNER, things: THINGS.to_vec(), commits, own_state: vec![] }
+    Held { now: at(now_h), me: OWNER, things: THINGS.to_vec(), commits, own_state: vec![], dropped_valid: Default::default() }
 }
 pub fn missing(mut c: Commit, i: usize) -> Commit {
     c.parts[i].body = Body::Missing;

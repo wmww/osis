@@ -21,19 +21,23 @@ fn unknown_author_record_pends_spec_commits_4() {
     assert!(!evaluate(&hd).applied.contains(&10));
 }
 
-// spec/commits.md §4 (A thing waits, What a wait holds): an unknown thing's wait holds the commit
+// spec/commits.md §4 (A held part waits, Apply): a part on an unknown thing waits alone
 #[test]
-fn unknown_thing_holds_the_whole_commit_spec_commits_4() {
+fn part_on_unknown_thing_waits_alone_spec_commits_4() {
     let mut c = reg(10, OWNER, 1, REG, Retention::PLAIN, 1);
     c.parts.push(on(UNKNOWN, reg(10, OWNER, 1, REG, Retention::PLAIN, 2)).parts.remove(0));
-    let hd = held(5, vec![c]);
+    let hd = held(5, vec![c.clone()]);
     let o = evaluate(&hd);
-    assert!(!o.applied.contains(&10));
-    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Pending));
-    assert_eq!(read(&hd, REG), Read::Absent);
+    assert!(o.applied.contains(&10));
+    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
+    assert_eq!(o.fates[&(10, 1)], Fate::Keep(KeepWhy::Pending));
+    assert_eq!(read(&hd, REG), Read::Reg(1));
+    // every held part waiting: the commit pends
+    c.parts.remove(0);
+    assert!(!evaluate(&held(5, vec![c])).applied.contains(&10));
 }
 
-// spec/commits.md §4 (A thing waits): nothing leads from the author to the thing until an edge does
+// spec/commits.md §4 (A held part waits): nothing leads from the author to the thing until an edge does
 #[test]
 fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
     let w = reg(10, 2, 1, REG, Retention::PLAIN, 1);
@@ -44,15 +48,17 @@ fn author_with_no_way_to_the_thing_waits_spec_commits_4() {
     assert!(!o.valid[&(10, 0)], "applied, invalid: the grant came after it");
 }
 
-// spec/commits.md §4 (A held part waits), spec/versioning.md §2: a parked part holds its commit
+// spec/commits.md §4 (A held part waits), spec/versioning.md §2: a parked part waits alone
 #[test]
-fn parked_part_holds_its_commit_spec_commits_4() {
+fn parked_part_waits_alone_spec_commits_4() {
     let mut c = reg(10, OWNER, 1, REG, Retention::PLAIN, 1);
     c.parts.push(part(Aspect::reg(5), Retention::PLAIN, vec![]));
     c.parts[1].body = Body::Parked;
-    let o = evaluate(&held(5, vec![c]));
-    assert!(!o.applied.contains(&10));
+    let hd = held(5, vec![c]);
+    let o = evaluate(&hd);
+    assert!(o.applied.contains(&10));
     assert_eq!(o.fates[&(10, 1)], Fate::Keep(KeepWhy::Pending));
+    assert_eq!(read(&hd, REG), Read::Reg(1));
 }
 
 // spec/commits.md §4 (What a wait holds): a role commit's parts wait alone
@@ -106,13 +112,16 @@ fn breaking_required_retention_is_invalid_spec_commits_5() {
     assert!(o.valid[&(13, 0)], "no entry governs another AK");
 }
 
-// spec/commits.md §4 (Breaks a required retention): a missing delta that breaks it counts as held
+// spec/commits.md §4 (Pending), §5 (A waiting part past its expiry): a commit whose only held part
+// waits pends; once the part has gone at its expiry no part is held and it applies as its header
 #[test]
-fn missing_delta_breaking_required_counts_held_spec_commits_4() {
-    let rule = Rule { prefix: None, retention: Retention::WRITER, expiry: None };
-    let mut c = reg(10, OWNER, 2, REG, Retention::WRITER, 1);
-    c.parts.push(part(Aspect::reg(5), Retention::PLAIN, vec![]));
-    c.parts[1].body = Body::Missing;
-    let o = evaluate(&held(3, vec![required(5, 1, vec![rule]), c]));
+fn only_waiting_part_gone_at_expiry_applies_the_header_spec_commits_5() {
+    let mut c = on(UNKNOWN, reg(10, OWNER, 1, REG, Retention::PLAIN, 2));
+    c.expires = Some(at(3));
+    let o = evaluate(&held(2, vec![c.clone()]));
+    assert!(!o.applied.contains(&10));
+    assert!(o.deadlines.contains(&at(3)));
+    let o = evaluate(&held(3, vec![c]));
     assert!(o.applied.contains(&10));
+    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::Gone));
 }

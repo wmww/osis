@@ -93,3 +93,19 @@ fn late_commit_converges_off_bounded_aspects_spec_commits_5() {
     }
 }
 
+
+// spec/commits.md §5, §6, spec/crdt.md §2.2: the clock changes the output only at the deadlines it
+// lists (unparking, expiry, keep bounds), so an adapter checking at each sees every change
+#[test]
+fn output_changes_only_at_its_deadlines_spec_commits_5() {
+    for seed in 0..SEEDS {
+        let h = settle(history(seed, LEN), seed);
+        let mut o = evaluate(&h);
+        let next = o.deadlines.first().copied();
+        let mut later = h.clone();
+        later.now = next.map_or(h.now + 1000 * HOUR, |d| h.now + (d - h.now - 1) / 2);
+        let ol = evaluate(&later);
+        o.deadlines.retain(|&d| d > later.now);
+        assert_eq!(ol, o, "seed {seed}: output changed before its first deadline {next:?}");
+    }
+}

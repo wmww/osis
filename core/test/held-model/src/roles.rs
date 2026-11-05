@@ -638,13 +638,6 @@ fn decide(world: &World, pre: &Edges, ev: &EdgeEv, wall_: u64) -> Option<(Option
     None
 }
 
-/// Possible admins and writers of each thing (spec/commits.md §4), from every edge write and
-/// roster entry of an applied role commit, any validity.
-pub struct Possible {
-    pub admins: BTreeMap<ThingId, BTreeSet<NodeId>>,
-    pub writers: BTreeMap<ThingId, BTreeSet<NodeId>>,
-}
-
 /// A role naming: (thing, signer, holder, role).
 pub type Naming = (ThingId, NodeId, NodeId, Role);
 
@@ -671,87 +664,6 @@ pub fn namings<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Naming>
         }
     }
     out
-}
-
-impl Possible {
-    pub fn new(world: &World, ns: &[Naming]) -> Possible {
-        let things: BTreeSet<ThingId> = world.owners.keys().copied().chain(ns.iter().flat_map(|n| [n.0, n.2])).collect();
-        let pa = |t: ThingId| -> BTreeSet<NodeId> {
-            let mut a: BTreeSet<NodeId> = BTreeSet::from([t]);
-            loop {
-                let n = a.len();
-                for m in a.clone() {
-                    match world.owners.get(&m) {
-                        Some(Owner::Actor(o)) => {
-                            a.insert(*o);
-                        }
-                        Some(Owner::Ownerless { first_admin }) => {
-                            a.insert(*first_admin);
-                        }
-                        _ => {}
-                    }
-                    for &(th, s, h, r) in ns {
-                        if th == m && r == Role::Admin && a.contains(&s) {
-                            a.insert(h);
-                        }
-                    }
-                }
-                if a.len() == n {
-                    return a;
-                }
-            }
-        };
-        let admins: BTreeMap<ThingId, BTreeSet<NodeId>> = things.iter().map(|&t| (t, pa(t))).collect();
-        let mut writers = BTreeMap::new();
-        for &t in &things {
-            let mut w = admins[&t].clone();
-            loop {
-                let n = w.len();
-                for m in w.clone().into_iter().chain([t]) {
-                    let pm = admins.get(&m).cloned().unwrap_or_else(|| pa(m));
-                    w.extend(pm.iter().copied());
-                    for &(th, s, h, r) in ns {
-                        if th == m && r >= Role::Write && pm.contains(&s) {
-                            w.insert(h);
-                        }
-                    }
-                }
-                if w.len() == n {
-                    break;
-                }
-            }
-            writers.insert(t, w);
-        }
-        Possible { admins, writers }
-    }
-    pub fn admin(&self, t: ThingId, x: NodeId) -> bool {
-        self.admins.get(&t).is_some_and(|s| s.contains(&x))
-    }
-    pub fn writer(&self, t: ThingId, x: NodeId) -> bool {
-        self.writers.get(&t).is_some_and(|s| s.contains(&x))
-    }
-    pub fn holder(&self, t: ThingId, x: NodeId, need: Role) -> bool {
-        if need == Role::Admin {
-            self.admin(t, x)
-        } else {
-            self.writer(t, x)
-        }
-    }
-    /// spec/commits.md §4 Purged: could each of the request's author and actor hold the right of
-    /// a delta (header actor `actor`) by any role ever given.
-    pub fn right(&self, q: NodeId, qa: NodeId, by: PurgeBy, actor: NodeId, t: ThingId) -> bool {
-        let one = |x: NodeId| {
-            let auth = (x == actor || self.writer(actor, x)) && self.writer(t, actor);
-            match by {
-                PurgeBy::Nobody => false,
-                PurgeBy::Admin => self.admin(t, x),
-                PurgeBy::Author => auth,
-                PurgeBy::AuthorOrAdmin => self.admin(t, x) || auth,
-                PurgeBy::Writer => self.writer(t, x),
-            }
-        };
-        one(q) && one(qa)
-    }
 }
 
 /// The role a delta on `aspect` needs.

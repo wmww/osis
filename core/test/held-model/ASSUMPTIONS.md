@@ -4,10 +4,11 @@
 **Model shape**
 - One node's view, no network: no sync scope (every thing counts as synced), labels, hosts, must-hold, lasting headers, header-only blobs, delete keys, uploads or carrier writing. A carrier is reported as needed (`DropWhy::AtMost { carrier }`), never written.
 - A body is one part (one delta), not a blob of a commit's deltas per reader section and retention class.
-- `Body::Dropped` does not record why (keep bounds or covered), so a covering snapshot turning invalid does not bring the body back as never received. No suspect flags.
+- `Body::Dropped` does not record why (keep bounds or covered), so a covering snapshot turning invalid does not bring the body back as never received, and a dropped-valid snapshot taking back what it gave counts every dropped delta as dropped otherwise (spec/permissions.md §5.2). No suspect flags.
 - A leftover holding no value of its own is terminal (AMBIGUITIES.md 9): a purge's fall makes its body never received, a lost read access (Keep copies) is not modeled.
 - Role-class bodies are always kept: a roster snapshot replacing them (their keep-at-least `ROLE_KEEP` after it) drops none.
-- Commit IDs are unique in the input; duplicates and copies of a delta (spec/commits.md §4 Copies) are not modeled. Arrival order is not modeled: "a commit such a part applied before T stays applied" and late parts of applied commits do not exist.
+- Commit IDs are unique in the input; duplicates and copies of a delta (spec/commits.md §4 Copies) are not modeled. Arrival order is not modeled beyond `Body::Dropped` (its commit applied) and `Held::dropped_valid`: "a commit such a part applied before T stays applied" holds only through a dropped part, and late parts of applied commits are parts held from the start.
+- A parked part a purge drops (`Gone`) still counts as held for its commit's pending until `act` makes it missing (its judgment needs the applied set). No bad-by-itself deltas, so no bad-input blobs.
 
 **Clock and stamps**
 - Deaths are dated at the earliest held superseder (no arrival order): an engine dating at the first superseder it held may date later, never earlier (AMBIGUITIES.md 5).

@@ -1,4 +1,4 @@
-//! spec/commits.md §4 (atomic apply), §5 (retention, purge), §6 (expiry).
+//! spec/commits.md §4 (apply), §5 (retention, purge), §6 (expiry).
 use crate::util::*;
 use held_model::gen::{MAP, REG};
 use held_model::*;
@@ -11,58 +11,29 @@ fn two_parts(expires: Option<u64>) -> Commit {
     c
 }
 
-// spec/commits.md §4 (Atomic apply)
+// spec/commits.md §4 (Apply): nothing waits for a part; a missing delta is absent
 #[test]
-fn atomic_apply_waits_for_a_missing_part_spec_commits_4() {
+fn missing_part_is_absent_and_the_commit_applies_spec_commits_4() {
     let h = held(2, vec![missing(two_parts(None), 1)]);
-    assert!(!evaluate(&h).applied.contains(&10));
-    assert_eq!(read(&h, REG), Read::Absent);
-    assert_eq!(fate(&h, 10), Fate::Keep(KeepWhy::Pending));
-    let h = held(2, vec![two_parts(None)]);
-    assert_eq!(read(&h, REG), Read::Reg(7));
-}
-
-// spec/commits.md §4 (Dropped or expired)
-#[test]
-fn missing_expired_part_counts_held_spec_commits_4() {
-    let h = held(3, vec![missing(two_parts(Some(at(2))), 1)]);
     let o = evaluate(&h);
     assert!(o.applied.contains(&10));
-    assert_eq!(o.fates[&(10, 0)], Fate::Leftover(LeftoverWhy::Expired));
-}
-
-// spec/commits.md §4 (Under a later snapshot)
-#[test]
-fn missing_part_under_later_snapshot_counts_held_spec_commits_4() {
-    let s = snap(20, OWNER, 2, REG, Retention::WRITER, vec![set(1, 10, 7)]);
-    let h = held(3, vec![missing(reg(10, OWNER, 1, REG, Retention::PLAIN, 7), 0), s]);
-    assert!(evaluate(&h).applied.contains(&10));
+    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
     assert_eq!(read(&h, REG), Read::Reg(7));
+    assert_eq!(read(&h, OTHER), Read::Absent);
 }
 
-// spec/commits.md §4 (Past keep at most)
+// spec/commits.md §4 (Pending): a commit with no part held applies as its header alone
 #[test]
-fn missing_part_past_keep_at_most_counts_held_spec_commits_4() {
-    let zero = Retention { most_zero: true, ..Retention::WRITER };
-    let cs = vec![missing(reg(10, OWNER, 1, REG, zero, 1), 0), reg(11, OWNER, 2, REG, Retention::PLAIN, 2)];
-    assert!(!evaluate(&held(1, cs.clone())).applied.contains(&10));
-    assert!(evaluate(&held(3, cs)).applied.contains(&10));
+fn commit_with_no_part_held_applies_as_its_header_spec_commits_4() {
+    let h = held(2, vec![missing(missing(two_parts(None), 0), 1)]);
+    assert!(evaluate(&h).applied.contains(&10));
+    assert_eq!(read(&h, REG), Read::Absent);
 }
 
-// spec/commits.md §4 (Purged)
+// spec/commits.md §4, spec/permissions.md §5.2: a missing delta of an applied commit is judged all
+// the same (its validity decides its fall and what a late copy gives)
 #[test]
-fn missing_part_purged_counts_held_spec_commits_4() {
-    let cs = vec![
-        edge(5, OWNER, 0, 1, Some(Role::Write), None),
-        missing(reg(10, 1, 1, REG, Retention::PLAIN, 7), 0),
-        purge(20, OWNER, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
-    ];
-    assert!(evaluate(&held(3, cs)).applied.contains(&10));
-}
-
-// spec/commits.md §4 (Author lowered)
-#[test]
-fn missing_part_of_lowered_author_counts_held_spec_commits_4() {
+fn missing_part_of_lowered_author_is_judged_spec_commits_4() {
     let cs = vec![
         edge(5, OWNER, 0, 1, Some(Role::Write), None),
         missing(reg(10, 1, 1, REG, Retention::PLAIN, 7), 0),
@@ -146,6 +117,27 @@ fn keep_at_most_zero_drops_after_first_death_spec_commits_5() {
     assert_eq!(fate(&held(1, cs.clone()), 10), Fate::Keep(KeepWhy::Plain));
     let none = DropWhy::AtMost { carrier: false };
     assert_eq!(fate(&held(2, cs), 10), Fate::MustDrop(none));
+}
+
+// spec/commits.md §5 (Keep at most): the bound is the first death, plus AT_MOST_GRACE while the body
+// has a live write; the node drops it no earlier
+#[test]
+fn keep_at_most_zero_bound_adds_grace_for_a_live_write_spec_commits_5() {
+    let zero = Retention { most_zero: true, ..Retention::WRITER };
+    let e = st(1, 10, 1);
+    let mk = Write { stamp: e, op: Op::Create { key: Some(1) } };
+    let put = |h: u64, c: CommitId, v: Val| Write { stamp: st(h, c, 1), op: Op::SetIn { entry: e.dot, key: Some(1), value: Some(v) } };
+    let a = content(10, OWNER, 1, vec![part(MAP, zero, vec![mk, put(1, 10, 5)])]);
+    let b = content(11, OWNER, 2, vec![part(MAP, Retention::PLAIN, vec![put(2, 11, 6)])]);
+    let o = evaluate(&held(2, vec![a.clone(), b.clone()]));
+    assert_eq!(o.at_most[&(10, 0)], at(2) + AT_MOST_GRACE, "the creation is live");
+    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
+    assert!(o.deadlines.contains(&(at(2) + AT_MOST_GRACE)));
+    let o = evaluate(&held(3, vec![a, b]));
+    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::AtMost { carrier: true }));
+    // a register write superseded has no live write: its bound is the death itself
+    let cs = vec![reg(20, OWNER, 1, REG, zero, 1), reg(21, OWNER, 2, REG, Retention::PLAIN, 2)];
+    assert_eq!(evaluate(&held(1, cs)).at_most[&(20, 0)], at(2));
 }
 
 // spec/commits.md §5 (Keep at most, Carrier): live writes stay in the state
