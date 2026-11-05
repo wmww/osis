@@ -814,7 +814,9 @@ fn open_equals_rebuild_random_histories_unheld_part_dies() {
 // `_large`.
 #[test]
 fn open_equals_rebuild_random_histories_forged() {
-    let seeds: Vec<u64> = (0..4).collect();
+    // 9374128: a part turning missing again left held snapshots' copies of its writes uncarried
+    // (`retention::note_carried_again`)
+    let seeds: Vec<u64> = (0..4).chain([9374128]).collect();
     osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories_forged", &seeds, false, forged_replay, |seed| random_history(seed, true));
 }
 

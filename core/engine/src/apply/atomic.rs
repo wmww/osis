@@ -842,7 +842,7 @@ fn away_of(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Vec<(us
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation
 /// records and edge writes reach perm as on apply (a certificate copy may bring a commit's
 /// `roles.0` delta after its `created.0` one), and held deltas are re-judged.
-pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Parts) -> Result<()> {
+pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, parts: Parts, gave: &BTreeSet<usize>) -> Result<()> {
     tx.core.touch();
     let mut meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let h = meta.header.clone();
@@ -866,6 +866,14 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     crate::retention::forget_joined_leftovers(tx, &h, id, &late)?;
     note_held_rules(tx, &h, id, &parts)?;
     after_store(tx, &h, id, &uncarried, &mut j)?;
+    // a snapshot dropped while valid left what it gave in the state; its copy back and judged
+    // invalid takes that back, as a held snapshot turning invalid does (spec/permissions.md §5.2)
+    let fell: Vec<usize> = gave.iter().copied().filter(|ai| tx.core.ix.commits.get(id).is_some_and(|m| !m.valid_at(*ai))).collect();
+    for ai in fell {
+        let Some(a) = h.aspects.get(ai) else { continue };
+        let gone = copies::given_by(tx, &a.tid, &a.ak, id)?;
+        rebuild_changed(tx, &a.tid, &a.ak, &gone, &mut j)?;
+    }
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
     crate::retention::on_late(tx, id, &late, &mut j.changed)?;

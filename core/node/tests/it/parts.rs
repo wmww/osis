@@ -813,7 +813,10 @@ fn parts_seed(seed: u64) -> PartsSeed {
             let (is, bs): (Vec<usize>, Vec<Vec<u8>>) = toks.into_iter().unzip();
             let (got, got_after) = read(&bs, &is, None);
             for (name, (g, ge), (w, we)) in [("as delivered", (&got.0, &got.2), (&want.0, &want.2)), ("blobs come", (&got_after.0, &got_after.2), (&want_after.0, &want_after.2))] {
-                let stands = |x: &&(String, String)| !ge.contains(&x.0) && !we.contains(&x.0);
+                // a flagged aspect's lines and its bodies' (`body <commit> <tid> <ak>`): the part that
+                // waited past T is never received here, held where it applied first (spec/commits.md §5)
+                let aspect = |k: &str| k.strip_prefix("body ").and_then(|r| r.split_once(' ')).map(|(_, ta)| format!("aspect {ta}"));
+                let stands = |x: &&(String, String)| [ge, we].iter().all(|f| !f.contains(&x.0) && aspect(&x.0).is_none_or(|a| !f.contains(&a)));
                 let (g, w): (Vec<_>, Vec<_>) = (g.iter().filter(stands).collect(), w.iter().filter(stands).collect());
                 if g != w {
                     let first = g.iter().filter(|x| !w.contains(x)).map(|x| format!("got {x:?}")).chain(w.iter().filter(|x| !g.contains(x)).map(|x| format!("want {x:?}"))).collect::<Vec<_>>().join("; ");

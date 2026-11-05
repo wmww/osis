@@ -291,6 +291,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let snapshot = m.header.kind.is_compaction();
     // what a snapshot carried goes with its body: whether it was live is kept (`snapshot_live`)
     let live = snapshot && snapshot_live(tx, &m.header, c, &[ai])?;
+    let gave = snapshot && m.valid_at(ai) && !m.missing.contains(&ai);
     // the held valid snapshots covering it: their copies of its writes stay its writes
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|x| x.1).filter(|s| s != c).collect();
     let mut covered_by = BTreeSet::new();
@@ -317,7 +318,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
     let put: BTreeSet<Tid> = tx.core.timelines.get(&a.tid).and_then(|tl| tl.role_commit(c)).map(|mc| mc.ops.iter().filter(|op| op.target == a.tid && op.edge.is_some()).map(|op| op.holder).collect()).unwrap_or_default();
     let names = crate::apply::keys::names_of(&m.header, ai, &role_bodies, &put);
-    m.dropped.insert(ai, Dropped { covered_by, why, live, stands_in, role, overreach, keysets, names });
+    m.dropped.insert(ai, Dropped { covered_by, why, live, gave, stands_in, role, overreach, keysets, names });
     // a setting not held binds nothing (`validity::never_could_set`)
     if a.ak.as_str() == osis_commit::retention::REQUIRED {
         let mut settings = tx.core.ix.required.get(&a.tid).cloned().unwrap_or_default();
@@ -416,13 +417,11 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     if any && ak.as_str() == "keys.0" {
         crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*tid]))?;
     }
-    if !owned.is_empty() {
-        note_carried_again(tx, tid, ak)?;
-    }
     Ok(owned)
 }
 
-/// Held snapshots' copies of the writes of deltas now never received are carried writes.
+/// Held snapshots' copies of the writes of deltas now never received are carried writes
+/// (`reopen`, `unstrip`: the only ways a held part turns missing).
 fn note_carried_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     for s in snapshots_of(tx.core, tid, ak) {
         let Some(sai) = aspect_index(tx.core, &s, tid, ak) else { continue };
@@ -482,6 +481,11 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
         tx.put_commit(c, &blob, &m, Shred::No, None)?;
     }
     tx.core.put_meta(*c, m.clone());
+    // invariant: `carried` is what held snapshots carry of deltas never received, as an open
+    // derives it; a part turning missing makes their copies of its writes carried again
+    if let Some(a) = m.view.aspects.get(ai) {
+        note_carried_again(tx, &a.tid, &a.ak)?;
+    }
     Ok(Some(m))
 }
 
@@ -791,6 +795,8 @@ fn unstrip(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: bool) -> Result<()> {
     // a snapshot missing indexes nothing, as an open reads it
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.put_meta(*c, m.clone());
+    // as in `reopen`: copies of its writes are carried again
+    note_carried_again(tx, &a.tid, &a.ak)?;
     let owned = writes_of(&m.header, c, ai);
     crate::apply::rebuild(tx, &a.tid, &a.ak, &owned, false)
 }

@@ -33,9 +33,11 @@
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
 //! that they are held); a part an applied commit misses counts as dropped (the model syncs
 //! everything, and spec/commits.md §4 waits only for things synced when the commit came: whether
-//! the node applied too early is not judged here, only too late); a leftover's value-less owners
-//! are taken as stripped by the node, also for a value that arrived value-less; an edge's
-//! `since`, `tied` and `keyset` are dropped (carried, never an authority).
+//! the node applied too early is not judged here, only too late; a part waiting alone, spec/commits.md
+//! §4, is such a part); a leftover's value-less owners are taken as stripped by the node, also for
+//! a value that arrived value-less; an edge's `since`, `tied` and `keyset` are dropped (carried,
+//! never an authority); a keep-at-most-0 snapshot body the node dropped with no live write
+//! (`Dropped::live`) past a death is let go (liveness is judged at the drop, `compare`).
 
 use held_model as hm;
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Value};
@@ -380,8 +382,10 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
     let mut cv = Conv { hist, ids, extra: BTreeMap::new(), vals: BTreeMap::new(), aspects: BTreeMap::new() };
     let applied: Vec<CommitId> = e.commit_ids();
     let mut held: Vec<(CommitId, Arc<Header>, bool)> = applied.iter().filter_map(|id| Some((*id, e.header(id)?, true))).collect();
+    // an applied commit with a part waiting alone (spec/commits.md §4) is listed once, as applied:
+    // the waiting part is missing from its record (fed as dropped, below)
     for (id, _) in e.pending() {
-        if let Some(h) = hist.headers.get(&id) {
+        if let Some(h) = hist.headers.get(&id).filter(|_| !applied.contains(&id)) {
             held.push((id, h.clone(), false));
         }
     }
@@ -799,7 +803,17 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         for (label, i, id, t, a) in &given {
             let f = ob.fates.get(&(*label, *i));
             let lets_go = matches!(f, Some(hm::Fate::MayDrop(_) | hm::Fate::MustDrop(_)));
-            if !lets_go {
+            // liveness is judged when the body drops (spec/commits.md §5: under 0 after replaced a
+            // body with no live write drops at its kill; nodes may hold different bodies): a
+            // snapshot dropped with none (`Dropped::live`) past a death may since carry a write a
+            // body held later brought into the state, whose grace the model adds now (purge seed
+            // 3039). A snapshot has one part per aspect, so `i` is the node's part index too.
+            let c = back.commits.iter().find(|c| c.id == *label).unwrap();
+            let dropped_dead = c.kind == hm::CommitKind::Snapshot
+                && c.parts[*i].retention.most_zero
+                && ob.deaths.get(&(*label, *i)).is_some_and(|d| d.0.is_some())
+                && e.core.ix.commits.get(id).and_then(|m| m.dropped.get(i)).is_some_and(|d| !d.live);
+            if !lets_go && !dropped_dead {
                 return differ(format!("commit {id:?} (#{label}) on {t:?} {}: the node dropped its body, the model's fate for it is {f:?}", a.as_str()), &[input.inside[&(*t, a.clone())].0]);
             }
         }

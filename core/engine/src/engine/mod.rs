@@ -119,6 +119,9 @@ pub struct Dropped {
     /// A compaction snapshot whose body had a write in the state when dropped (what it carried
     /// went with it; `retention::snapshot_live` starts from this).
     pub live: bool,
+    /// A compaction snapshot held and valid when dropped: what it gave stays in the state, until
+    /// a copy arriving again is judged invalid (`atomic::join_late`, spec/permissions.md §5.2).
+    pub gave: bool,
     /// A compaction snapshot's part dropped other than as covered, held then or not: it still
     /// settles suspect flags (`receipt::settled`; indexed by `ix.dropped_snapshots`). One dropped
     /// as covered does not need to: a coverer is valid and stamped no earlier, so it settles all
