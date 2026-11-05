@@ -1443,13 +1443,17 @@ fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob 
         let d = match how {
             Made::Good => encode_delta(&Delta { nonce: [7; 16], fragment: c }, &cx, None).unwrap(),
             Made::Bad => osis_base::encode(&Value::List(vec![Value::Int(1)])),
-            Made::Parked => osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])])),
+            // an encoding this build does not know (99), carrying `PARKED_MARK`
+            Made::Parked => osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99), Value::Bytes(PARKED_MARK.to_vec())])])),
         };
         cb.expires = cb.expires.or(exp.map(|x| now + x));
         cb.aspects.push(AspectWrite::new(*t, ak(k), r.lo, r.hi, d));
     }
     cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit
 }
+
+/// What a parked part of `forge` carries.
+const PARKED_MARK: &[u8] = b"parked-value-c0ffee-parked-value";
 
 /// The parts of `b` on `things`.
 fn cut(b: &CommitBlob, things: &[Tid]) -> Vec<u8> {
@@ -1501,6 +1505,44 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
     p.engine.reexamine().unwrap();
     assert!(!copy_held(&mut p), "no copy past T");
     assert_eq!(p.engine.pending(), vec![]);
+}
+
+// spec/versioning.md §2, spec/commits.md §5: a purge request applies to a part this build cannot read.
+// It cannot be stripped, so it goes, whichever came first: no copy of its bytes is left on the device.
+#[test]
+fn parked_part_goes_at_its_purge_spec_commits_5() {
+    use crate::common::*;
+    for parked_first in [true, false] {
+        let mut f = forge_setup(86);
+        let x = f.x;
+        let b = forge(&mut f, &[(x, "t:future.0", Made::Parked, None)]);
+        f.lp.peers[0].clock.advance(10);
+        let mut m = Mutation::new();
+        let now = f.lp.peers[0].engine.now();
+        m.set(x, &osis_schema::core_types::PURGE, &now).unwrap();
+        m.purge(osis_commit::PurgeItem::Commit { commit: b.id(), tid: x, ak: ak("t:future.0") });
+        let rq = f.lp.peers[0].commit(m).unwrap().unwrap();
+        let rq = f.lp.peers[0].engine.package(&rq).unwrap().unwrap();
+        let mut p = crate::flows::forensic_peer(87, &osis_store::Faults::new());
+        p.clock.set(now);
+        for pk in &f.setup {
+            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        let parked = || b.encode();
+        if parked_first {
+            assert!(matches!(p.engine.ingest(&parked(), Vec::new()).unwrap(), Ingested::Parked(_)));
+            p.engine.ingest(&rq.bytes, rq.blobs.clone()).unwrap();
+        } else {
+            p.engine.ingest(&rq.bytes, rq.blobs.clone()).unwrap();
+            let _ = p.engine.ingest(&parked(), Vec::new()).unwrap();
+        }
+        p.engine.reexamine().unwrap();
+        assert!(p.engine.header(&rq.id).is_some(), "the request applied");
+        assert_eq!(p.engine.pending(), vec![], "parked first: {parked_first}");
+        assert!(p.engine.suspects().unwrap().iter().any(|f| f.0 == x), "flagged");
+        assert_eq!(p.engine.pending_value_past_end(&b.id(), now).unwrap(), None, "parked first: {parked_first}");
+        assert_eq!(found_in(&mut p.engine, &p.backend, PARKED_MARK), vec![], "parked first: {parked_first}");
+    }
 }
 
 // spec/commits.md §4, §5: beside a part past its expiry, a part bad by itself or parked and a true one,

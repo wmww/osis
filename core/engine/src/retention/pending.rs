@@ -58,9 +58,9 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 /// result joined into the part's leftover (`records::LEFTOVER`); its slot in `blob` and the
 /// stored copy holds an empty delta (`emptied`). `examine` joins the leftover in its place, and
 /// `stripped_joined` holds the part as it once joined, as a purge holds an applied part. One with
-/// a page away cannot be stripped: it goes, and
-/// its aspect is flagged, its non-value writes joining only through a copy or a snapshot, as those
-/// of a part missing when purged. One with its thing's record away cannot occur: no right can stand
+/// a page away, or parked (this build cannot read it), cannot be stripped: it goes, and its aspect
+/// is flagged, its non-value writes joining only through a copy or a snapshot, as those of a part
+/// missing when purged. Invariant: no part a held purge request names is held with its values. One with its thing's record away cannot occur: no right can stand
 /// without it (`holds_right`), spec/commits.md §5 states the limit. A bad one is `examine`'s. A snapshot has
 /// no values of its own: kept whole, dropped once applied (`purge_one`).
 fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
@@ -80,7 +80,8 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
         let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
         let mut d = match osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(reader)) {
             Ok(Decoded::Delta(d)) => d,
-            Err(e) if crate::apply::is_missing_page(&e) => {
+            // what cannot be stripped goes (spec/commits.md §5; parked: spec/versioning.md §2)
+            Err(e) if crate::apply::is_missing_page(&e) || osis_base::Classified::class(&e) == osis_base::ErrorClass::Parked => {
                 gone.insert(p.di);
                 continue;
             }
