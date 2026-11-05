@@ -468,3 +468,22 @@ fn an_unknown_stored_limit_loses_nothing() {
     assert_eq!((p.get("max_labels"), p.get("max_entries"), p.get("a_later_limit")), (Some(&7), Some(&11), Some(&9)));
     assert_eq!(db.hosting().unwrap().unwrap().policy.groups, 7);
 }
+
+// spec: none (notes/api.md Hosting): a stored value out of a known limit's range runs as the default, is
+// kept like an unknown name, and gives way when that limit is set: it must not win over it.
+#[test]
+fn a_stored_limit_out_of_range_gives_way() {
+    let db = osis::internals::create(cfg(1, osis::MemStore::new(), &clock())).unwrap().0;
+    db.set_hosting(Some(osis::Hosting::default())).unwrap();
+    let node = db.node();
+    let mut stored = db.at(node, osis::internals::core_types::HOST).get().unwrap().unwrap();
+    stored.policy.insert("max_queued_bytes".into(), 1);
+    let mut w = db.write();
+    w.at(node, osis::internals::core_types::HOST).overwrite(&stored).unwrap();
+    w.commit().unwrap();
+    let mut read = db.hosting().unwrap().unwrap();
+    osis::internals::host_limit(&mut read.policy, "max_queued_bytes", 1 << 30).unwrap();
+    db.set_hosting(Some(read)).unwrap();
+    let p = db.at(node, osis::internals::core_types::HOST).get().unwrap().unwrap().policy;
+    assert_eq!(p.get("max_queued_bytes"), Some(&(1 << 30)), "what was set");
+}

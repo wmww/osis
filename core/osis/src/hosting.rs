@@ -60,7 +60,8 @@ pub struct HostPolicy {
 }
 
 /// `HostPolicy::tuning`: the host's other limits by their names, none of them a field's, and those
-/// stored by another node that this build cannot run by, kept for when a policy read here is set.
+/// stored by another node that this build cannot run by (a name it does not know, or a value out of
+/// a known limit's range), kept for when a policy read here is set unless that sets them.
 #[doc(hidden)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostTuning {
@@ -121,7 +122,9 @@ impl HostPolicy {
         let host = PLAIN.iter().find(|(p, _)| *p == name).map_or(name, |(_, h)| *h);
         let mut k = self.known_limits().map_err(|e| e.to_string())?;
         k.insert(host.to_string(), n);
-        let unknown = std::mem::take(&mut self.tuning.unknown);
+        let mut unknown = std::mem::take(&mut self.tuning.unknown);
+        // a stored value this build could not run by gives way to one it can
+        unknown.remove(host);
         *self = HostPolicy::of(&host_policy(&k)?);
         self.tuning.unknown = unknown;
         Ok(())

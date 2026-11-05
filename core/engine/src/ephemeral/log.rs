@@ -304,7 +304,7 @@ impl Engine {
             };
             // one memory commit, under the session of its expiry (`Engine::write`)
             if inverse.iter().any(|r| r.expires.is_some()) && inverse.iter().any(|r| r.expires.is_none()) {
-                return Err(Error::Clash("undoing this copies back what expires and writes what does not: a commit has one expiry".into()));
+                return Err(Error::Clash("undoing this copies back what expires and writes what does not: an undo is one commit, so this cannot be undone while both stand".into()));
             }
             let mut memory = Vec::new();
             for expiring in [false, true] {
@@ -320,7 +320,7 @@ impl Engine {
                 // meanwhile, `Core::fresh_session`, takes the next batch)
                 let [plain, exp] = &own;
                 let nonce = if expiring { exp } else { plain }.as_session().map(|s| s.nonce).unwrap_or_default();
-                let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: draw_blind(&mut *tx.rng), expires: None };
+                let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: draw_blind(&mut *tx.rng), expires: None, restores: false };
                 memory.push(tx.in_class(true, |tx| crate::engine::write::build_one(tx, plan, deltas))?);
             }
             let logged = super::log_aspects(tx, &memory)?;

@@ -788,6 +788,45 @@ fn text_session_after_remote_delete_drops() {
     }
 }
 
+// notes/api.md Text sessions, spec/commits.md §6: a session whose commit is refused (a draft that keeps
+// expiring in a group cannot be kept yet) says so at `commit`, keeps its edits, commits them once it can;
+// dropped meanwhile it reports them lost.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn text_session_refused_commit_keeps_edits() {
+    let db = db(70);
+    db.register_schema("t.osis", "version 1;\naspect n:t.0: text;").unwrap();
+    let key = db.key("n:t.0").unwrap();
+    let g = db.batch(|w| {
+        let g = w.create()?;
+        w.at(g, osis::Key::untyped(osis::Ak::new("app:s.0").unwrap())).set(&Value::Int(1))?;
+        Ok(g)
+    })
+    .unwrap();
+    let draft = |db: &Osis| {
+        let mut w = db.write();
+        w.expires(osis::Expiry::In(std::time::Duration::from_secs(3600)));
+        let t = w.create().unwrap();
+        w.group(g).add(osis::Member::Item(t)).unwrap();
+        w.commit().unwrap();
+        t
+    };
+    let t = draft(&db);
+    let s = db.at(t, key.clone()).path(osis::p![]).edit_text().unwrap();
+    s.splice(0..0, "kept").unwrap();
+    assert!(matches!(s.commit(), Err(osis::Error::Invalid(m)) if m.contains("member of")));
+    assert_eq!(s.text(), "kept");
+    db.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
+    s.commit().unwrap().unwrap();
+    assert_eq!(db.at(t, key.clone()).get().unwrap(), Some(Value::Str("kept".into())));
+    let (_d, rx) = uncommitted(&db);
+    let t = draft(&db);
+    let s = db.at(t, key).path(osis::p![]).edit_text().unwrap();
+    s.splice(0..0, "lost").unwrap();
+    drop(s);
+    assert_eq!(recv(&rx), vec![t]);
+}
+
 // notes/api.md Text sessions: the same for a delete on the session's own device.
 // spec: none (API surface, notes/api.md)
 #[test]

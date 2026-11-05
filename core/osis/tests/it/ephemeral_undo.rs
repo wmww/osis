@@ -326,3 +326,57 @@ fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
     w.commit().unwrap();
     assert!(db.created(g).unwrap().unwrap().id.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
 }
+
+// spec/crdt.md §4.6 Expiry: a commit's `expires` overrides its keys' defaults, and its undo has no use
+// for them: what the undo writes expires as what it copies back, so a commit that could be made can be
+// undone and redone. Durable and ephemeral alike.
+#[test]
+fn undo_takes_no_key_default_spec_crdt_4_6() {
+    let db = setup(30);
+    db.register_schema("rv.osis", "version 1;\naspect app:d.0: int [expires: 30d];\naspect app:p.0: int;\naspect app:d.0~: int [expires: 30s];\naspect app:p.0~: int;").unwrap();
+    let t = db.batch(|w| w.create_durable(db.me())).unwrap();
+    for (x, y) in [("app:d.0", "app:p.0"), ("app:d.0~", "app:p.0~")] {
+        let (a, b) = (db.key(x).unwrap(), db.key(y).unwrap());
+        let mut w = db.write();
+        w.expires(osis::Expiry::In(std::time::Duration::from_secs(3600)));
+        w.at(t, a.clone()).set(&Value::Int(1)).unwrap();
+        w.at(t, b.clone()).set(&Value::Int(1)).unwrap();
+        w.commit().unwrap();
+        let scope = Scope::Aspects(vec![(t, ak(x)), (t, ak(y))]);
+        db.undo(&scope).unwrap().unwrap();
+        assert_eq!((db.at(t, a.clone()).get().unwrap(), db.at(t, b.clone()).get().unwrap()), (None, None));
+        db.redo(&scope).unwrap().unwrap();
+        assert_eq!((db.at(t, a).get().unwrap(), db.at(t, b).get().unwrap()), (int(1), int(1)));
+    }
+}
+
+// spec/commits.md §6, §7, spec/crdt.md §4.6: an undo is one commit. One that would copy back a value
+// expiring beside one that does not is refused, saying so, with nothing applied and nothing older
+// undone; once the value has expired there is nothing to copy back, and it goes through.
+#[test]
+fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
+    let c = clock();
+    let db = osis::internals::create(cfg(31, MemStore::new(), &c)).unwrap().0;
+    let t = db.batch(|w| w.create_durable(db.me())).unwrap();
+    for (x, y) in [("app:a.0", "app:b.0"), ("app:a.0~", "app:b.0~")] {
+        let (a, b) = (osis::Key::untyped(ak(x)), osis::Key::untyped(ak(y)));
+        db.commit_set(t, b.clone(), &Value::Int(0)).unwrap();
+        let mut w = db.write();
+        w.expires(osis::Expiry::In(std::time::Duration::from_secs(3600)));
+        w.at(t, a.clone()).set(&Value::Int(0)).unwrap();
+        w.commit().unwrap();
+        let mut w = db.write();
+        w.at(t, a.clone()).set(&Value::Int(2)).unwrap();
+        w.at(t, b.clone()).set(&Value::Int(2)).unwrap();
+        w.commit().unwrap();
+        let scope = Scope::Aspects(vec![(t, ak(x)), (t, ak(y))]);
+        let marks = db.engine(|e| e.commit_ids().len());
+        assert!(matches!(db.undo(&scope), Err(Error::Invalid(m)) if m.contains("undo") && !m.contains("separate commits")));
+        assert_eq!(db.engine(|e| e.commit_ids().len()), marks);
+        assert_eq!((db.at(t, a.clone()).get().unwrap(), db.at(t, b.clone()).get().unwrap()), (int(2), int(2)));
+        c.advance(3_700_000);
+        db.engine(|e| e.tick().unwrap());
+        db.undo(&scope).unwrap().unwrap();
+        assert_eq!((db.at(t, a).get().unwrap(), db.at(t, b).get().unwrap()), (None, int(0)));
+    }
+}

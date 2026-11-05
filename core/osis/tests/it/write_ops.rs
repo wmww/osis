@@ -183,17 +183,22 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
     }
 }
 
-/// Which calls may share a commit by their expiry: none, an hour, the key's default.
-fn expiry_class(c: &Call) -> u8 {
+/// Which calls may share a commit: by expiry (none, an hour, the key's default) and by what they
+/// write (`app:e.0~` is ephemeral).
+fn commit_class(c: &Call) -> (u8, bool) {
+    let eph = matches!(c, Call::Set(_, 1, _) | Call::SetExpiring(_, 1, _) | Call::Replace(_, 1, _) | Call::Remove(_, 1));
     match c {
-        Call::SetExpiring(..) | Call::Place(_, 1) => 1,
-        Call::Opened(..) => 2,
-        _ => 0,
+        Call::SetExpiring(..) | Call::Place(_, 1) => (1, eph),
+        Call::Opened(..) => (2, eph),
+        _ => (0, eph),
     }
 }
 
-/// Runs the case batched (a `Write` per run of calls of one expiry; one the node refuses to hold as
-/// one commit, one call per commit) or one call per commit; the things and the last batched
+static REFUSED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static WHOLE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Runs the case batched (a `Write` per run of calls of one class; one the node refuses to hold as
+/// one commit, one call per commit, counted in `REFUSED`) or one call per commit; the things and the last batched
 /// commit's ID.
 fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Option<osis::CommitId>) {
     let wd = world();
@@ -201,7 +206,7 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
     let mut things = wd.things.clone();
     let mut id = None;
     let mut fresh = creates;
-    let runs: Vec<&[Call]> = if batched { calls.chunk_by(|a, b| expiry_class(a) == expiry_class(b)).collect() } else { calls.chunks(1).collect() };
+    let runs: Vec<&[Call]> = if batched { calls.chunk_by(|a, b| commit_class(a) == commit_class(b)).collect() } else { calls.chunks(1).collect() };
     if !batched || calls.is_empty() {
         for _ in 0..std::mem::take(&mut fresh) {
             things.push(db.batch(|w| w.create()).unwrap());
@@ -218,11 +223,15 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
         }
         match w.commit() {
             Ok(c) => {
+                if run.len() > 1 {
+                    WHOLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 things = all;
                 fresh = 0;
                 id = c.map(|c| c.id).or(id);
             }
             Err(osis::Error::Invalid(_)) if batched && run.len() > 1 => {
+                REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 for _ in 0..std::mem::take(&mut fresh) {
                     things.push(db.batch(|w| w.create()).unwrap());
                 }
@@ -277,6 +286,10 @@ fn batch_equals_single_op_batches() {
         // with --nocapture and compare)
         eprintln!("write_ops seed {seed}: {id:?}");
     }
+    // the point is batches: most runs of several calls must commit whole
+    let (whole, refused) = (WHOLE.load(std::sync::atomic::Ordering::Relaxed), REFUSED.load(std::sync::atomic::Ordering::Relaxed));
+    eprintln!("write_ops: {whole} batches whole, {refused} refused");
+    assert!(whole > refused, "{whole} batches whole, {refused} refused");
 }
 
 // spec: none (notes/api.md Keys): an app's generic helper names `osis::AspectKey` alone, with or without a value type, and takes generated keys and `osis::Key`
@@ -311,4 +324,26 @@ fn a_backward_move_range_is_invalid() {
     #[allow(clippy::reversed_empty_ranges)]
     let back = 2..1;
     assert!(matches!(w.at(t, osis::Key::untyped(k)).path(p![]).move_range(back, 0), Err(osis::Error::Invalid(_))));
+}
+
+// spec/commits.md §6, notes/api.md Writes: what clashes is judged on what the ops ask, not on what they
+// turn out to write, so the same calls clash whatever the state: a `set` of the value already there
+// counts, and a key's default names itself in the error.
+#[test]
+fn a_clash_is_judged_on_what_is_asked() {
+    let db = db(2);
+    db.register_schema("rv.osis", "version 1;\naspect app:d.0: int [expires: 30d];\naspect app:p.0: int;").unwrap();
+    let t = db.batch(|w| {
+        let t = w.create()?;
+        w.at(t, osis::Key::untyped(ak("app:a.0"))).set(&Value::Int(0))?;
+        Ok(t)
+    })
+    .unwrap();
+    let (d, plain) = (db.key("app:d.0").unwrap(), db.key("app:p.0").unwrap());
+    db.commit_set(t, d.clone(), &Value::Int(1)).unwrap();
+    let mut w = db.write();
+    w.at(t, d.clone()).set(&Value::Int(1)).unwrap();
+    w.at(t, plain.clone()).set(&Value::Int(1)).unwrap();
+    assert!(matches!(w.commit(), Err(osis::Error::Invalid(m)) if m.contains("app:d.0") && m.contains("app:p.0")));
+    assert_eq!(db.at(t, plain).get().unwrap(), None);
 }

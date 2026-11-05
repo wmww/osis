@@ -314,7 +314,7 @@ Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen pe
   - **Rights.** The undoing node must hold write on the thing, else there is no undo.
   - **Saved draft.** A thing the undoing node's record of its ephemeral writes (spec/commits.md §7) shows as a draft before that commit is not deleted: its writes are undone by the rules above, and the undo of the commit's ephemeral writes restores its ephemeral placements.
   - **Ephemeral creation.** Undoing ephemeral writes that created a draft likewise resets its ephemeral state and its placements in every group the undoing node may write. The thing reads unknown at the undoing node until that undo is undone (an undo finding it already deleted deletes nothing).
-  - **Commits.** These writes and the undo's other writes are one commit per expiry class, so its reset goes wherever its placements' removal goes (spec/sync.md §3). Other nodes read the aspects absent.
+  - **Commits.** These writes and the undo's other writes are one commit, so its reset goes wherever its placements' removal goes (spec/sync.md §3). Other nodes read the aspects absent.
   - **Ephemeral rights.** An ephemeral undo or redo needs the same rights as a write: write on a thing it deletes or brings back and the required role on every aspect it writes, else there is no undo.
 
 Below a map key, the undo buffer's value at a path is that of the join of the key's live entries (what the original op read, §5.6). Originals whose body was dropped are not undoable. Redo = undo of the undo commit. The undo buffer is the undoing node's own view; a receiver judges an undo commit like any content commit (spec/permissions.md §5.2) and never derives its writes again.
@@ -322,7 +322,7 @@ Below a map key, the undo buffer's value at a path is that of the join of the ke
 **Expiry.** An undo never extends a value's lifetime past its original expiry (§4.7).
 - The writes whose content an undo writes back (a re-added element, entry or contribution, a previous register value, a re-inserted fragment, a text undelete's char) are its **copied** writes.
 - The undo's delta of the aspect expires at the earliest T among the deltas owning its copied writes (none if none expires). Its other writes in that aspect share it.
-- An undo whose deltas expire differently is one undo commit per expiry, each naming the undone commit (spec/commits.md §6, §7).
+- An undo whose deltas expire differently is refused at the writer (spec/commits.md §6, §7); its expiry is never a key's default.
 - These copied writes are held value-less in the undo buffer (§4.7), so their content is not written back:
   - a copied write whose T is at or before the undo's `wall_ms(ts)`;
   - one named by a purge request the node holds (spec/commits.md §5);
