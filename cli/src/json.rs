@@ -1,8 +1,8 @@
 //! `--json` output (notes/cli.md, JSON mapping): a small JSON tree and writer, and the value
 //! mapping (named with a schema, else ids).
 
-use crate::text::{Kind, Ty, float_text, kind_of, quote};
-use osis::{Tid, Value};
+use crate::text::{Kind, Ty, case, field as field_of, float_text, kind_of, quote};
+use osis::{NestedType, Tid, Value};
 use osis_schema::osis_base::base64url;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,12 +80,12 @@ fn b64(b: &[u8]) -> J {
 
 /// The JSON form of a value. Timestamps and durations stay ms ints.
 pub fn value(v: &Value, ty: Ty<'_>) -> J {
-    let s = ty.map(|(s, _)| s);
     let kind = kind_of(ty);
     let elem = match &kind {
-        Kind::List(e) | Kind::Set(e) => Some(e),
+        Kind::List(e) | Kind::Set(e) => Some(e.get()),
         _ => None,
     };
+    let elem = elem.as_ref();
     match v {
         Value::Int(i) => J::int(*i),
         Value::Float(f) => {
@@ -97,29 +97,29 @@ pub fn value(v: &Value, ty: Ty<'_>) -> J {
         Value::Bytes(b) => J::obj([("$blob", b64(b))]),
         Value::Tid(t) => J::tid(*t),
         Value::Enum(c, p) => {
-            let case = match &kind {
-                Kind::Enum(e) => e.cases.get(c),
+            let cs = match &kind {
+                Kind::Enum(e) => case(e, *c),
                 _ => None,
             };
-            let mut f = vec![("$case".to_string(), case.map_or_else(|| J::int(*c), |c| J::str(c.name.clone())))];
+            let mut f = vec![("$case".to_string(), cs.map_or_else(|| J::int(*c), |c| J::str(c.name.clone())))];
             if let Some(p) = p {
-                f.push(("$payload".into(), value(p, s.zip(case.and_then(|c| c.payload.as_ref())))));
+                f.push(("$payload".into(), value(p, cs.and_then(|c| c.value.as_ref()).map(NestedType::get).as_ref())));
             }
             J::Obj(f)
         }
-        Value::List(l) => J::Arr(l.iter().map(|x| value(x, s.zip(elem))).collect()),
-        Value::Set(x) => J::obj([("$set", J::Arr(x.iter().map(|x| value(x, s.zip(elem))).collect()))]),
+        Value::List(l) => J::Arr(l.iter().map(|x| value(x, elem)).collect()),
+        Value::Set(x) => J::obj([("$set", J::Arr(x.iter().map(|x| value(x, elem)).collect()))]),
         Value::Map(m) => {
             let (st, kt, vt) = match &kind {
                 Kind::Struct(st) => (Some(st), None, None),
-                Kind::Map(k, v) => (None, Some(k), Some(v)),
+                Kind::Map(k, v) => (None, Some(k.get()), Some(v.get())),
                 _ => (None, None, None),
             };
             let field = |k: &Value| match (st, k) {
-                (Some(st), Value::Int(i)) => u64::try_from(*i).ok().and_then(|id| st.fields.get(&id)),
+                (Some(st), Value::Int(i)) => u64::try_from(*i).ok().and_then(|id| field_of(st, id)),
                 _ => None,
             };
-            let vty = |k: &Value| s.zip(if st.is_some() { field(k).map(|f| &f.ty) } else { vt });
+            let vty = |k: &Value| if st.is_some() { field(k).map(|f| f.ty.get()) } else { vt.clone() };
             // A typed struct is an object by field name; a map is an object only when every key
             // is a string and none is a marker, so an object never reads as a marker form.
             let is_struct = st.is_some() && m.keys().all(|k| matches!(k, Value::Int(i) if *i >= 0));
@@ -133,12 +133,12 @@ pub fn value(v: &Value, ty: Ty<'_>) -> J {
                                 Value::Int(i) if st.is_some() => field(k).map_or_else(|| i.to_string(), |f| f.name.clone()),
                                 k => crate::text::print(k, None),
                             };
-                            (name, value(v, vty(k)))
+                            (name, value(v, vty(k).as_ref()))
                         })
                         .collect(),
                 )
             } else {
-                J::obj([("$map", J::Arr(m.iter().map(|(k, v)| J::Arr(vec![value(k, s.zip(kt)), value(v, vty(k))])).collect()))])
+                J::obj([("$map", J::Arr(m.iter().map(|(k, v)| J::Arr(vec![value(k, kt.as_ref()), value(v, vty(k).as_ref())])).collect()))])
             }
         }
         Value::Link(_) => J::Null,

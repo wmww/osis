@@ -111,7 +111,6 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `RETRY_MIN` 100 ms, `RETRY_MAX` 30 s (osis `port::client`, redial back-off) | M (how late a client notices its node returned; calls fail `Network` meanwhile) | a tight dial loop / never redials, the attachment stays `Network` |
 | `NONCE_RESENT` bit 62 (osis `port::client`, spec/wire.md §11.2) | not a tradeoff (a flag; nonces stay below it: 2^62 writes) | |
 | `CONNECTION_WAIT` 30 s (osis `port::client`: one attempt to reach a node, and a write in flight across a drop before `OutcomeUnknown`) | M (a write's answer is that late; a caller of `connect` races its own timeout) | nothing connects, a write across a drop is unknown / a silent node holds an attempt and a sync write for good |
-| `LINK_VERDICT_WAIT` 60 s (osis `share`: K's label read to its end with no grant on what a link names, before `Invalid`) | M (a bad link says so that late; an honest one this late is told to ask again) | an honest link racing its own upload is `Invalid` / a bad link waits until dropped |
 | `MAX_SUBS` 4096 per connection (osis-proto `api`, spec/wire.md §11.2) | R (code 4; counted apart from open labels) | no remote watching / one connection grows the dirty-flag table and per-change filter walk without bound |
 | `SMALL_REPLY` 16 KiB (holds a Status of 1024 codes, a Path page of 48 steps; the smallest `max_reply`, the allowance of every request whose reply is bounded small) | P (requests per round trip are `WINDOW` over it; a larger reply is `TooLarge` or pages under `REPLY_BUDGET`) | every reply `TooLarge` / two requests per round trip |
 | `FIRST_REPLY` 64 KiB (a first Sync page, a Fetch per ID) | P (Syncs and Fetches per round trip are `WINDOW` over it; a larger reply takes one more round trip) | a role commit asked twice / two per round trip |
@@ -125,6 +124,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
 | `MAX_AUTHOR_ITEMS` 32 (osis-base `format`, by-author items of one commit's purge) | R (bad input; more in further commits) | no purge by author / one commit stalls every node for items x the aspect's length |
 | `HISTORY_PAGE` 256 (osis `history`, entries of a page) | R (a page ends early, `more`) | reads nothing / a whole aspect in one call under `eng` |
+| cli `PAGE` 256 (`history --max`'s default, `chat watch --after`'s fetch) | M (past it the next page) | reads nothing / the cap of the API's own page |
 | `HISTORY_DIRTY_BYTES` 64 (osis `port`, an ID waiting in a history subscription against `SIGNAL_BYTES`) | R (lapse; the client reads again) | nothing counted, unbounded for a slow client / the first ID lapses |
 | `HISTORY_SEND` 64 (osis `port`, entries read per send) | P | nothing sent / every waiting entry read per send, most not fitting |
 | `MAX_BATCH_OPS` 1024 per `write` (osis `port`, the method table) | R (`Invalid`) | no remote write / a batch's cost unbounded per call (one frame bounds it anyway) |

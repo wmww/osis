@@ -2,6 +2,8 @@
 //! Sync configuration and status), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use osis::internals::MemStoreMeasures as _;
+use osis::internals::ChangeRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
@@ -66,7 +68,7 @@ fn pairing_spec_permissions_1() {
     let join = osis::internals::pair(w.cfg(2, &[]), &offer).unwrap();
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();
     let (node, reply) = da.pair_accept(&req).unwrap();
-    assert_eq!(node, join.node());
+    assert_eq!(node, osis::internals::joining_node(&join));
     assert!(reply.to_string().len() < 40_000, "certificates and label.0 only, no content: {}", reply.to_string().len());
     assert!(da.pair_accept(&req).is_err(), "an offer is used once");
     let db = join.finish(&reply).unwrap();
@@ -255,7 +257,7 @@ fn link_redeem_spec_permissions_8() {
     w.run();
     assert_eq!(x(bob, v), Some(s("after the link ended")), "the joiner stays");
     let mut c = w.cfg(9, &[0]);
-    c.client.internals.connection_wait = Some(Duration::from_secs(5));
+    c.handle.internals.connection_wait = Some(Duration::from_secs(5));
     let carol = osis::internals::create(c).unwrap().0;
     w.run();
     assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Invalid(_))), "used once");
@@ -281,7 +283,7 @@ fn used_link_refused_at_once_spec_permissions_8() {
     for (i, wait) in [0, 10_000, 10_000].into_iter().enumerate() {
         w.advance(wait);
         let mut c = w.cfg(20 + i as u64, &[0]);
-        c.client.internals.connection_wait = Some(Duration::from_secs(5));
+        c.handle.internals.connection_wait = Some(Duration::from_secs(5));
         let carol = osis::internals::create(c).unwrap().0;
         w.run();
         assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Invalid(_))), "refused, attempt {i}");
@@ -308,7 +310,7 @@ fn used_link_with_sharer_offline_spec_permissions_8() {
     item(bob, g, g, "from the joiner");
     w.run();
     let mut c = w.cfg(30, &[0]);
-    c.client.internals.connection_wait = Some(Duration::from_secs(5));
+    c.handle.internals.connection_wait = Some(Duration::from_secs(5));
     let carol = osis::internals::create(c).unwrap().0;
     w.run();
     let r = w.try_until(carol.redeem(&link), 1000, 10);
@@ -327,7 +329,7 @@ fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     let [alice, bob] = [1, 2].map(|i| w.person(i, &[host]).0);
     w.run();
     let g = group(&alice);
-    let until = osis::WallMs(w.now() + 3_600_000);
+    let until = osis::Time(w.now() + 3_600_000);
     let link = alice.make_link(g, Role::Read, osis::LinkOpts { until: Some(until), single_use: false, direct: false }).unwrap();
     w.run();
     assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
@@ -503,7 +505,7 @@ fn dropped_demote_ends_its_receipts_read() {
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
     drop(others);
-    alice.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::HeadersOnly, ..Default::default() }).unwrap();
+    alice.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
     w.run();
     w.set_online(&alice, false);
     let mut d = Box::pin(alice.set_role(g, ids[0], None, SetRoleOpts::default()));
@@ -538,7 +540,7 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
     let join = osis::internals::pair(w.cfg(9, &[]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
-    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::HeadersOnly, ..Default::default() }).unwrap();
+    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
     w.run();
     let in_g = item(bob, g, g, "bob in g");
     let in_h = item(bob, h, h, "bob in h");
@@ -587,13 +589,13 @@ fn receipts_only_status_spec_permissions_5_3() {
     let join = osis::internals::pair(w.cfg(9, &[]), &alice.pair_offer().unwrap()).unwrap();
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let phone = join.finish(&reply).unwrap();
-    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::HeadersOnly, ..Default::default() }).unwrap();
+    phone.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
     // one field changed from the policy as set keeps the others
-    phone.set_sync_options(h, osis::SyncOptions { reach: osis::Reach::Never, ..phone.sync_options(h).unwrap() }).unwrap();
-    assert_eq!(phone.sync_options(h).unwrap(), osis::SyncOptions { reach: osis::Reach::Never, mode: osis::SyncMode::HeadersOnly });
+    phone.set_sync_options(h, osis::SyncOptions { share_address: osis::ShareAddress::Never, ..phone.sync_options(h).unwrap() }).unwrap();
+    assert_eq!(phone.sync_options(h).unwrap(), osis::SyncOptions { share_address: osis::ShareAddress::Never, mode: osis::SyncMode::LogOnly });
     w.run();
     let st = phone.status().unwrap();
-    assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::HeadersOnly), "{st:?}");
+    assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::LogOnly), "{st:?}");
     assert_eq!(st.groups.get(&g).map(|s| s.state), Some(SyncState::Synced), "{st:?}");
     // nothing of H goes into a wait for it
     w.until(phone.wait_synced(SyncScope::All), 1000, 10).unwrap();
@@ -832,7 +834,7 @@ fn add_host_moves_labels_spec_sync_2() {
     a.add_host(&w.addr(host).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::Synced);
-    let inbox = a.at(a.me(), osis::core::KEYS).get().unwrap().unwrap().inbox.unwrap();
+    let inbox = a.at(a.me(), osis::internals::core_types::KEYS).get().unwrap().unwrap().inbox.unwrap();
     assert_eq!(inbox.hosts.len(), 1);
     w.until(a.wait_synced(SyncScope::All), 1000, 10).unwrap();
     a.remove_host(&w.addr(host).unwrap()).unwrap();
@@ -904,7 +906,7 @@ fn wait_synced_all_waits_on_hosted_label_of_mixed_group() {
     carol.sync(g, &[w.addr(h).unwrap()]).unwrap();
     w.run();
     let st = carol.status().unwrap().groups[&g].clone();
-    assert_eq!((st.state, st.labels.len()), (SyncState::NoHosts, 2), "a hostless and a hosted label");
+    assert_eq!((st.state, carol.admission_ids(g).unwrap().len()), (SyncState::NoHosts, 2), "a hostless and a hosted label");
     w.until(carol.wait_synced(SyncScope::All), 1000, 10).unwrap();
     // the hostless one is replaced (it takes nothing until it retires): `Group(g)` fails only
     // on her hostless home, which holds `g`
@@ -938,7 +940,7 @@ fn wait_synced_all_waits_for_deliveries_without_hosted_groups() {
     // the groups learned from Bob's card held for receipts only: no label of hers with hosts
     // is synced
     for (h, _) in carol.status().unwrap().groups.into_iter().filter(|(_, s)| s.state != SyncState::NoHosts) {
-        carol.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::HeadersOnly, ..Default::default() }).unwrap();
+        carol.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
     }
     carol.grant(g, b, Role::Read, Default::default()).unwrap();
     assert!(w.try_until(carol.wait_synced(SyncScope::All), 1000, 10).is_none());
@@ -1056,14 +1058,14 @@ fn plain(db: &Osis, v: &str) -> Tid {
     .unwrap()
 }
 
-/// The holders `status` at `db` lists as without a route to `t` (`SyncState::NoRoute`); empty
+/// The holders `status` at `db` lists as without a route to `t` (`SyncState::NotCarried`); empty
 /// when every holder has one.
 fn unrouted(db: &Osis, t: Tid) -> Vec<Tid> {
-    db.status().unwrap().groups.get(&t).filter(|g| g.state == SyncState::NoRoute).map(|g| g.unrouted.clone()).unwrap_or_default()
+    db.status().unwrap().groups.get(&t).filter(|g| g.state == SyncState::NotCarried).map(|g| g.not_carried_to.clone()).unwrap_or_default()
 }
 
 fn no_routes(db: &Osis) -> bool {
-    db.status().unwrap().groups.values().all(|g| g.state != SyncState::NoRoute)
+    db.status().unwrap().groups.values().all(|g| g.state != SyncState::NotCarried)
 }
 
 // spec/sync.md §2 (Route), §3: a grant on a thing placed nowhere records the role and no more: the holder holds it, reads nothing, and both sides show him without a route; `sync` then gives the thing a label, delivered to him, and he reads and writes; a later holder of the labeled thing needs no second label
@@ -1079,7 +1081,7 @@ fn a_grant_then_a_sync_gives_the_route() {
     assert_eq!(bob.grants(t).unwrap().get(&ids[0]).map(|e| e.role), Some(Role::Write), "the role is held: the blob carried the granter's chain");
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    assert!(alice.status().unwrap().groups[&t].labels.is_empty(), "no label on a grant");
+    assert!(alice.admission_ids(t).unwrap().is_empty(), "no label on a grant");
     alice.sync(t, &[]).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("for bob")));
@@ -1088,13 +1090,13 @@ fn a_grant_then_a_sync_gives_the_route() {
     bob.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("from bob")).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("from bob")));
-    let label = alice.status().unwrap().groups[&t].labels.clone();
+    let label = alice.admission_ids(t).unwrap();
     assert_eq!(label.len(), 1);
     alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
     assert!(unrouted(&alice, t).is_empty(), "a labeled thing is a route for every holder");
     w.run();
     assert_eq!(x(carol, t), Some(s("from bob")));
-    assert_eq!(alice.status().unwrap().groups[&t].labels, label);
+    assert_eq!(alice.admission_ids(t).unwrap(), label);
 }
 
 // spec/sync.md §2: synced first, then granted: a route from the start
@@ -1124,9 +1126,9 @@ fn grant_syncs_nothing_and_a_route_may_exist() {
     alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t), "bob reads g, which carries it");
     alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
-    assert_eq!(alice.status().unwrap().groups[&t].state, osis::SyncState::NoRoute, "carol reads no label of it: the grant alone syncs nothing");
+    assert_eq!(alice.status().unwrap().groups[&t].state, osis::SyncState::NotCarried, "carol reads no label of it: the grant alone syncs nothing");
     alice.sync(t, &[]).unwrap();
-    assert_ne!(alice.status().unwrap().groups[&t].state, osis::SyncState::NoRoute);
+    assert_ne!(alice.status().unwrap().groups[&t].state, osis::SyncState::NotCarried);
     w.run();
     assert_eq!(x(&others[1], t), Some(s("in g")));
     let u = plain(&alice, "local");
@@ -1306,7 +1308,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     assert_eq!(x(bob, t), Some(s("for h")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
     assert!(bob.groups_of(t).unwrap().item_of.is_empty() && alice.groups_of(t).unwrap().item_of.is_empty(), "no placement");
-    assert!(bob.status().unwrap().split.is_empty() && alice.status().unwrap().split.is_empty());
+    assert!(bob.status().unwrap().two_sources.is_empty() && alice.status().unwrap().two_sources.is_empty());
     assert!(write_refused(bob, t), "read only");
     alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("later")).unwrap();
     w.run();
@@ -1338,7 +1340,7 @@ fn a_sync_long_after_the_grant_reaches_the_groups_readers() {
     w.run();
     assert_eq!(unrouted(bob, t), vec![h]);
     for _ in 0..4 {
-        w.advance(osis::schema::osis_base::format::INBOX_LIFETIME_MS / 2 + 3_600_000);
+        w.advance(osis::internals::schema::osis_base::format::INBOX_LIFETIME_MS / 2 + 3_600_000);
         w.run();
     }
     assert_eq!(x(bob, t), None);
@@ -1585,7 +1587,7 @@ fn a_grant_to_a_group_is_copied_only_by_its_admin() {
         }
         w.run();
         w.set_online(&alice, false);
-        let label = alice.status().unwrap().groups[&f].labels[0];
+        let label = osis::internals::label_of(&alice.admission_ids(f).unwrap()[0]);
         let log = |w: &World| osis_proto::store::LabelStore::log_head(w.hosts[0].hub.store(), &label).unwrap().1;
         let before = log(&w);
         let t = plain(&others[0], "for f");

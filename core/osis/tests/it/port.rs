@@ -5,7 +5,7 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::ak;
 use osis::internals::Internals as _;
-use osis::{SetRoleOpts, SyncFirst, Ak, Change, CommitQuery, MemStore, Osis, Runtime, Scope, Source, Store, Transport, Value};
+use osis::{SetRoleOpts, SyncFirst, Ak, Change, CommitQuery, MemStore, Osis, Runtime, Scope, Source, Store, Value};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
@@ -35,9 +35,9 @@ impl Drop for Dir {
 fn node(store: &MemStore, net: &osis_transport::Net, sock: &std::path::Path, create: bool) -> Osis {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.client.transport = Some(Transport::InProcess(net.endpoint("n")));
+    c.handle.internals.transport = Some(net.endpoint("n"));
     let db = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
-    db.listen_unix(sock).unwrap();
+    db.listen_socket_at(sock).unwrap();
     db
 }
 
@@ -142,7 +142,7 @@ fn attached_handle_works_at_the_node() {
     drop(ts);
     // what needs this process to be the node fails Unsupported, never acts on the stand-in
     assert!(matches!(c.client_listen(&[]), Err(osis::Error::Unsupported(_))));
-    assert!(matches!(c.listen_unix(&d.0.join("other.sock")), Err(osis::Error::Unsupported(_))));
+    assert!(matches!(c.listen_socket_at(&d.0.join("other.sock")), Err(osis::Error::Unsupported(_))));
     assert!(matches!(crate::common::block_on(c.group_source(t, osis::GroupSource::Local)), Err(osis::Error::Unsupported(_))));
     // the stand-in database is never read: Internals fail
     let c2 = c.clone();
@@ -159,7 +159,7 @@ fn too_large_then_stream_read() {
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
     let mut cfg = osis::internals::Opening::memory();
-    cfg.client.materialize_limit = 1000;
+    cfg.handle.read_limit = 1000;
     let c = crate::common::block_on(osis::internals::connect_socket(&sock, cfg)).unwrap();
     let k = ak("f:blob.0");
     let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
@@ -413,21 +413,21 @@ fn bench_worst_rows() {
 #[test]
 fn socket_dir_rules() {
     use std::os::unix::fs::PermissionsExt;
-    let uid = osis::own_uid().unwrap();
+    let uid = osis::internals::own_uid().unwrap();
     let d = Dir::new();
     let ok = d.0.join("ok");
-    osis::socket_dir(&ok, uid).unwrap();
+    osis::internals::socket_dir(&ok, uid).unwrap();
     assert_eq!(std::fs::metadata(&ok).unwrap().permissions().mode() & 0o777, 0o700);
-    osis::socket_dir(&ok, uid).unwrap();
+    osis::internals::socket_dir(&ok, uid).unwrap();
     let open = d.0.join("open");
     std::fs::create_dir(&open).unwrap();
     std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(osis::socket_dir(&open, uid).is_err(), "group/other access");
+    assert!(osis::internals::socket_dir(&open, uid).is_err(), "group/other access");
     let link = d.0.join("link");
     std::os::unix::fs::symlink(&ok, &link).unwrap();
-    assert!(osis::socket_dir(&link, uid).is_err(), "a symlink");
-    assert!(osis::socket_dir(&ok, uid.wrapping_add(1)).is_err(), "another uid's");
-    let p = osis::socket_path(&d.0.join("store")).unwrap();
+    assert!(osis::internals::socket_dir(&link, uid).is_err(), "a symlink");
+    assert!(osis::internals::socket_dir(&ok, uid.wrapping_add(1)).is_err(), "another uid's");
+    let p = osis::internals::socket_path(&d.0.join("store")).unwrap();
     assert!(p.as_os_str().len() <= osis_transport::unix::MAX_PATH, "{p:?}");
     assert!(p.extension().is_some_and(|e| e == "sock"));
 }
@@ -436,10 +436,10 @@ fn socket_dir_rules() {
 fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::HostAddr>, sock: &std::path::Path) -> Osis {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.runtime = Runtime::Own;
-    c.client.transport = Some(Transport::InProcess(net.endpoint(ep)));
+    c.handle.internals.transport = Some(net.endpoint(ep));
     c.hosts = hosts;
     let db = osis::internals::create(c).unwrap().0;
-    db.listen_unix(sock).unwrap();
+    db.listen_socket_at(sock).unwrap();
     db
 }
 
@@ -477,7 +477,8 @@ fn attached_wait_synced_as_at_the_node() {
     let lone = c.batch(|w| w.create()).unwrap();
     c.sync(lone, &[]).unwrap();
     c.grant(lone, n.node(), Role::Read, Default::default()).unwrap();
-    assert_eq!(n.status().unwrap().groups[&lone].labels.len(), 1);
+    assert_eq!(n.admission_ids(lone).unwrap().len(), 1);
+    assert_eq!(c.admission_ids(lone).unwrap(), n.admission_ids(lone).unwrap(), "through the socket");
     block_on(c.wait_synced(SyncScope::Thing(lone))).unwrap();
     // the sharing reads agree with the node's
     assert_eq!(c.links_of(g).unwrap().len(), 1);
@@ -544,7 +545,7 @@ fn too_large_sub_is_not_kept() {
 fn mem_host(net: &osis_transport::Net) -> (Osis, osis::HostAddr) {
     let mut hc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     hc.runtime = Runtime::Own;
-    hc.client.transport = Some(Transport::InProcess(net.endpoint("s")));
+    hc.handle.internals.transport = Some(net.endpoint("s"));
     hc.peers = false;
     let host = osis::internals::create(hc).unwrap().0;
     host.set_hosting(Some(osis::Hosting { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
@@ -658,10 +659,10 @@ fn a_waiting_row_holds_nothing() {
     let sock = d.0.join("n.sock");
     let mut cfg = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     cfg.runtime = Runtime::Own;
-    cfg.client.transport = Some(Transport::InProcess(net.endpoint("n")));
-    cfg.client.internals.connection_wait = Some(Duration::from_secs(3600));
+    cfg.handle.internals.transport = Some(net.endpoint("n"));
+    cfg.handle.internals.connection_wait = Some(Duration::from_secs(3600));
     let n = osis::internals::create(cfg).unwrap().0;
-    n.listen_unix(&sock).unwrap();
+    n.listen_socket_at(&sock).unwrap();
     let c = attach(&sock);
     let (tx, rx) = channel();
     let (go_tx, go_rx) = channel::<()>();
@@ -725,7 +726,7 @@ fn no_waiting_row_once_the_handles_went() {
 // spec: none (API surface); notes/client-port.md §1: every call that is the node's and not this process's is a row: devices, hosts, hosting (it starts at once under the running node), pairing and removing a device, policies, reach, invites, moves and bundles of more than a page, through the socket
 #[test]
 fn process_wide_rows_through_the_socket() {
-    use osis::{Reach, SyncOptions, SyncScope};
+    use osis::{ShareAddress, SyncOptions, SyncScope};
     let d = Dir::new();
     let net = osis_transport::Net::new(2);
     let (host, addr) = mem_host(&net);
@@ -756,19 +757,19 @@ fn process_wide_rows_through_the_socket() {
     assert_eq!(c.hosting().unwrap(), None);
     until(|| matches!(n.host_address(), Ok(None)), "hosting did not stop");
     // policies, reach
-    let p = SyncOptions { reach: Reach::Never, ..Default::default() };
+    let p = SyncOptions { share_address: ShareAddress::Never, ..Default::default() };
     assert_eq!(c.sync_options(g).unwrap(), SyncOptions::default());
     c.set_sync_options(g, p).unwrap();
     assert_eq!(n.sync_options(g).unwrap(), p);
     assert_eq!(c.sync_options(g).unwrap(), p);
     c.set_sync_options(g, SyncOptions::default()).unwrap();
-    c.rotate_reach().unwrap();
+    c.rotate_address().unwrap();
     // invites: none
     assert_eq!(c.invite_requests().unwrap(), vec![]);
     // pairing a new device, through the old one's socket
     let mut pc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     pc.runtime = Runtime::Own;
-    pc.client.transport = Some(Transport::InProcess(net.endpoint("p")));
+    pc.handle.internals.transport = Some(net.endpoint("p"));
     let join = osis::internals::pair(pc, &c.pair_offer().unwrap()).unwrap();
     let (node, reply) = c.pair_accept(join.request()).unwrap();
     let p2 = join.finish(&reply).unwrap();
@@ -777,7 +778,7 @@ fn process_wide_rows_through_the_socket() {
     assert_eq!(c.devices().unwrap().len(), 2);
     until(|| p2.devices().is_ok_and(|x| x.len() == 2), "the new device reads the person");
     // a bundle of more than a page, out through the socket and in through another's
-    let big = "b".repeat(osis::STREAM_CHUNK * 3 / 2);
+    let big = "b".repeat(osis::internals::STREAM_CHUNK * 3 / 2);
     let mut w = c.write();
     let t = w.create_owned_by(g).unwrap();
     w.at(t, osis::Key::untyped(ak("note:big.0"))).set(&Value::Str(big.clone())).unwrap();
@@ -786,9 +787,9 @@ fn process_wide_rows_through_the_socket() {
     crate::common::block_on(c.wait_synced(SyncScope::All)).unwrap();
     let mut out = Vec::new();
     c.export_bundle(&[g], &mut out).unwrap();
-    assert!(out.len() > osis::STREAM_CHUNK, "{}", out.len());
+    assert!(out.len() > osis::internals::STREAM_CHUNK, "{}", out.len());
     let s3 = d.0.join("p.sock");
-    p2.listen_unix(&s3).unwrap();
+    p2.listen_socket_at(&s3).unwrap();
     let c3 = attach(&s3);
     c3.import_bundle(&out[..]).unwrap();
     until(|| p2.at(t, osis::Key::untyped(ak("note:big.0"))).get().is_ok_and(|v| v == Some(Value::Str(big.clone()))), "the bundle's value at the other device");
@@ -841,7 +842,7 @@ fn pair_reply_above_the_small_allowance() {
     let c = attach(&sock);
     let mut pc = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     pc.runtime = Runtime::Own;
-    pc.client.transport = Some(Transport::InProcess(net.endpoint("p")));
+    pc.handle.internals.transport = Some(net.endpoint("p"));
     let join = osis::internals::pair(pc, &c.pair_offer().unwrap()).unwrap();
     osis::internals::Internals::port_pad_pair_reply(&n, osis_proto::client::SMALL_REPLY * 2);
     let (node, reply) = c.pair_accept(join.request()).unwrap();
@@ -883,7 +884,7 @@ fn schema_bytes_per_node() {
     let sock = d.0.join("n.sock");
     let net = osis_transport::Net::new(1);
     let n = node(&MemStore::new(), &net, &sock, true);
-    let src = |name: &str| format!("version 1;\naspect test:{name}.0: string;\n//{}\n", "x".repeat(osis::MAX_SCHEMA_BYTES * 3 / 5));
+    let src = |name: &str| format!("version 1;\naspect test:{name}.0: string;\n//{}\n", "x".repeat(osis::internals::MAX_SCHEMA_BYTES * 3 / 5));
     let reg = |r: &mut Raw, tok, name: &str| r.call(tok, 16, vec![Value::Str("t.osis".into()), Value::Str(src(name))]);
     let mut a = Raw::unix(&sock);
     a.auth([1; 16]).unwrap();
@@ -936,7 +937,7 @@ fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let net = osis_transport::Net::new(1);
     let _n = node(&MemStore::new(), &net, &sock, true);
     let mut o = osis::internals::Opening::memory();
-    o.client.dispatch = osis::Dispatcher::Pump(std::sync::Arc::new(|| {}));
+    o.handle.dispatch = osis::Dispatcher::Pump(std::sync::Arc::new(|| {}));
     let c = crate::common::block_on(osis::internals::connect_socket(&sock, o)).unwrap();
     crate::common::block_on(c.wait_synced(osis::SyncScope::All)).unwrap();
     let r = crate::common::block_on(osis::internals::connect_socket(&d.0.join("none.sock"), osis::internals::Opening::memory()));
@@ -978,4 +979,23 @@ fn a_dropped_client_wait_leaves_nothing_at_the_node() {
     drop(c);
     assert_eq!(m.close().unwrap(), osis::Close::Closed);
     assert_eq!(a.close().unwrap(), osis::Close::Closed);
+}
+
+// spec: none (API surface); notes/client-port.md §5: a client names a node by its store, as the node's own socket does; a store in memory has none
+#[test]
+fn listen_socket_names_the_store_notes_client_port() {
+    let d = Dir::new();
+    let store = d.0.join("store");
+    let mut o = osis::internals::Opening::dir(&store);
+    o.runtime = Runtime::Own;
+    let n = osis::internals::create(o).unwrap().0;
+    n.listen_socket().unwrap();
+    let c = crate::common::block_on(Osis::connect_socket(&store, osis::HandleConfig::default())).unwrap();
+    assert_eq!(c.me(), n.me());
+    assert!(matches!(c.listen_socket(), Err(osis::Error::Unsupported(_))));
+    assert!(crate::common::block_on(Osis::connect_socket(&d.0.join("no-such-store"), osis::HandleConfig::default())).is_err());
+    let mut o = osis::internals::Opening::memory();
+    o.runtime = Runtime::Own;
+    let m = osis::internals::create(o).unwrap().0;
+    assert!(matches!(m.listen_socket(), Err(osis::Error::Invalid(_))));
 }

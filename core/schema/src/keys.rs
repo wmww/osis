@@ -83,7 +83,7 @@ impl RawKey for Ak {
     }
 }
 
-/// A typed aspect key: AK, schema, Rust type.
+/// A typed aspect key, as generated from a schema: its name and the Rust type its values read as.
 pub struct Aspect<T> {
     ak: &'static str,
     schema: &'static StaticSchema,

@@ -1,5 +1,6 @@
 //! The actions layer over an in-memory database.
-use osis::core::{GROUP, NAME, TAG};
+use osis::core::{NAME, TAG};
+use osis::internals::core_types::{GROUP};
 use osis_app::data::{Data, Kind, snippet};
 use osis_app::schema::View;
 

@@ -6,7 +6,8 @@ use crate::common::TestWrites as _;
 use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
-use osis::core::{BODY, GROUP, NAME, TAG, Tag};
+use osis::core::{BODY, NAME, TAG, Tag};
+use osis::internals::core_types::{GROUP};
 use osis::{SetRoleOpts, Member, GrantOpts, Error, Osis, Result, Role, Tid};
 use osis_sim::world::World;
 

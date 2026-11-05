@@ -6,8 +6,9 @@ use crate::handle::Osis;
 use crate::port::method as m;
 use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription};
-use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
-use osis_node::{ChangeId, Diagnostic, Engine};
+use crate::change::{ChangeId, HistoryPos};
+use osis_base::{Ak, Role, Tid, Ts, Value, Time};
+use osis_node::{Diagnostic, Engine};
 use osis_schema::AspectKey;
 use osis_schema::core_types::{GROUP, PLACED};
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
@@ -18,7 +19,7 @@ use std::collections::BTreeMap;
 pub struct Grant {
     pub role: Role,
     /// The grant ends at this time.
-    pub until: Option<WallMs>,
+    pub until: Option<Time>,
     /// The role this holder may grant others.
     pub invite: Option<Role>,
     /// The holder is a group and this grant goes when the thing stops being its member
@@ -26,54 +27,65 @@ pub struct Grant {
     pub with_membership: bool,
 }
 
-/// A change's author and time, as its signed header says (a snapshot applied is reported as
-/// itself, never as the writes it carries): why a watch fired, a commit or history entry.
+/// A change's author and time, as the change itself signs them (a `CommitKind::Summary` is reported
+/// as itself, never as the writes it stands in for): why a watch fired, a commit or history entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stamp {
-    /// The commit, or the ephemeral batch for a change with no durable half.
     pub id: ChangeId,
     /// The actor the author acted for.
     pub actor: Tid,
     /// The authoring node.
     pub node: Tid,
-    /// The author's clock, the same on every node.
-    pub ts: Ts,
+    /// When it was written, by the author's clock: the same on every node.
+    pub written: Time,
     /// When this node received it (per node).
-    pub received: WallMs,
+    pub received: Time,
+    /// `written` with what orders changes of one moment.
+    pub(crate) ts: Ts,
 }
 
 impl Stamp {
-    /// The time to show and sort by: `min(ts, received)` (an author's clock may run ahead;
-    /// one more than `MAX_DRIFT` ahead is not applied until it is no longer, spec/crdt.md §2.2).
-    pub fn shown(&self) -> WallMs {
-        self.ts.wall_ms().min(self.received)
+    pub(crate) fn new(id: ChangeId, actor: Tid, node: Tid, ts: Ts, received: Time) -> Stamp {
+        Stamp { id, actor, node, written: ts.wall_ms(), received, ts }
+    }
+
+    /// The time to show and sort by: the earlier of `written` and `received`, as an author's clock
+    /// may run ahead.
+    pub fn shown(&self) -> Time {
+        self.written.min(self.received)
+    }
+
+    pub(crate) fn pos(&self) -> HistoryPos {
+        HistoryPos::of(self.ts, self.id)
     }
 }
 
 /// When a thing was made or last changed (`Osis::created`, `Osis::changed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThingStamp {
-    /// The commit; `None` when it is only the creation of a thing still ephemeral.
-    pub commit: Option<CommitId>,
+    /// The change; `None` when it is only the creation of a thing still ephemeral.
+    pub id: Option<ChangeId>,
     /// The actor the author acted for.
     pub actor: Tid,
     /// The authoring node.
     pub node: Tid,
-    /// The author's clock, the same on every node.
-    pub ts: Ts,
+    /// When it was written, by the author's clock: the same on every node.
+    pub written: Time,
     /// When this node received it (per node).
-    pub received: WallMs,
+    pub received: Time,
+    /// `written` with what orders changes of one moment.
+    pub(crate) ts: Ts,
 }
 
 impl ThingStamp {
     /// The time to show and sort by, as `Stamp::shown`.
-    pub fn shown(&self) -> WallMs {
-        self.ts.wall_ms().min(self.received)
+    pub fn shown(&self) -> Time {
+        self.written.min(self.received)
     }
 }
 
 fn stamp(c: osis_node::Creation) -> ThingStamp {
-    ThingStamp { commit: c.commit, ts: c.ts, node: c.node, actor: c.actor, received: c.received }
+    ThingStamp { id: c.commit.map(ChangeId::commit), written: c.ts.wall_ms(), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
 }
 
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
@@ -223,7 +235,7 @@ impl Reader<'_> {
     /// `v` (the body of `id`'s history entry on `tid`'s `ak`) with its links replaced, up to
     /// `limit` bytes; any unreadable link fails it whole. A blob not held is noted: its arrival
     /// re-delivers the entry to history watches (`Engine::missed_blob`).
-    pub(crate) fn materialized(&mut self, tid: &Tid, ak: &Ak, id: ChangeId, v: Value, limit: usize) -> Result<Value> {
+    pub(crate) fn materialized(&mut self, tid: &Tid, ak: &Ak, id: osis_node::ChangeId, v: Value, limit: usize) -> Result<Value> {
         let mut bad = Vec::new();
         let v = materialize(self.e, tid, v, limit, &mut bad)?;
         if bad.contains(&osis_label::Error::Missing) {
@@ -492,7 +504,8 @@ impl Osis {
     }
 
     /// When the thing's content last changed (placement and sharing are no content change, a delete
-    /// is); its creation if never since. A change known here only from a snapshot is not seen.
+    /// is); its creation if never since. A change known here only from a `CommitKind::Summary` is
+    /// not seen.
     pub fn changed(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CHANGED, tid);
@@ -503,9 +516,9 @@ impl Osis {
     /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
     /// for app timestamps. On a thin client, its node's: `Network` when it cannot be
     /// reached.
-    pub fn now(&self) -> Result<WallMs> {
+    pub fn now(&self) -> Result<Time> {
         if !self.has_store() {
-            return self.rcall(m::NOW, vec![])?.as_uint().map(WallMs).ok_or_else(|| crate::port::codec::bad("time"));
+            return self.rcall(m::NOW, vec![])?.as_uint().map(Time).ok_or_else(|| crate::port::codec::bad("time"));
         }
         Ok(self.engine(|e| e.now()))
     }

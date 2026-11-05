@@ -7,7 +7,7 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::port::method;
-use osis_base::{Tid, Value, WallMs};
+use osis_base::{Tid, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_node::flows::{Demotion, PreSync};
@@ -32,18 +32,18 @@ impl ClientSecret {
         self.0.expose()
     }
 
-    fn entry(&self, until: Option<WallMs>) -> ct::Client {
+    fn entry(&self, until: Option<Time>) -> ct::Client {
         ct::Client { secret_hash: osis_base::hash::hash(self.expose()), until }
     }
 }
 
-/// One entry of `clients.0^`.
+/// A client with an actor of its own (`Osis::add_client`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Client {
     /// The actor the node acts as for it: grant it what the client may reach.
     pub actor: Tid,
     /// When its sessions end (none: they do not).
-    pub until: Option<WallMs>,
+    pub until: Option<Time>,
 }
 
 fn secret_of(v: Value) -> Result<ClientSecret> {
@@ -56,7 +56,7 @@ impl Osis {
     /// it, and writes its `clients.0^` entry, all in one transaction. Returns the actor and the
     /// secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
     /// client reaches (it starts with none).
-    pub fn add_client(&self, until: Option<WallMs>) -> Result<(Tid, ClientSecret)> {
+    pub fn add_client(&self, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
         if !self.has_store() {
             let v = self.rcall(method::ADD_CLIENT, vec![crate::port::codec::opt(until, |w| Value::uint(w.0))])?;
             let mut a = crate::port::codec::Args::new(v)?;
@@ -89,7 +89,7 @@ impl Osis {
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|c| {
                 let mut a = crate::port::codec::Args::new(c)?;
                 let actor = a.tid()?;
-                let until = a.opt()?.map(|w| w.as_uint().map(WallMs).ok_or_else(|| crate::port::codec::bad("time"))).transpose()?;
+                let until = a.opt()?.map(|w| w.as_uint().map(Time).ok_or_else(|| crate::port::codec::bad("time"))).transpose()?;
                 Ok(Client { actor, until })
             }).collect();
         }
@@ -113,7 +113,7 @@ impl Osis {
         let node = self.node();
         let Some(e) = self.at(node, ct::CLIENTS).get()?.unwrap_or_default().remove(&actor) else { return Ok(false) };
         // ended under any clock: one moved back revives no half-removed client
-        let ended = Some(WallMs(0));
+        let ended = Some(Time(0));
         if e.until != ended {
             let mut w = self.write();
             w.at(node, ct::CLIENTS).path(p![actor]).set(&ct::Client { until: ended, ..e })?;

@@ -2,13 +2,15 @@
 //! `clients.0^` lists over a keyed listener (here the in-process transport), acting as the client's
 //! actor for every row. The rights of that actor are the whole authorization.
 
+use osis::internals::ChangeRaw as _;
 use crate::common::watched;
 use crate::common::MembersOf as _;
 use crate::common::TestWrites as _;
 use crate::common::{T0, ak, block_on};
 use crate::port::{Raw, set_batch};
 use osis::internals::Internals as _;
-use osis::{SetRoleOpts, SyncFirst, ClientSecret, CommitQuery, Error, HostAddr, LinkOpts, ManualClock, MemStore, Osis, Role, Runtime, Scope, Store, Tid, Transport, Value, WallMs};
+use osis::{SetRoleOpts, SyncFirst, ClientSecret, CommitQuery, Error, HostAddr, LinkOpts, MemStore, Osis, Role, Runtime, Scope, Store, Tid, Value, Time};
+use osis::internals::{ManualClock};
 use osis_proto::{Command, Outcome};
 use osis_schema::core_types as ct;
 use std::sync::{Arc, Mutex};
@@ -41,8 +43,8 @@ struct Node {
 fn open(store: &MemStore, net: &osis_transport::Net, clock: &Arc<ManualClock>, create: bool) -> Osis {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.client.transport = Some(Transport::InProcess(net.endpoint("n")));
-    c.client.internals.clock = Some(clock.clone());
+    c.handle.internals.transport = Some(net.endpoint("n"));
+    c.handle.internals.clock = Some(clock.clone());
     let n = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
     // the keyed listener is up once reach.0 is published
     for _ in 0..2000 {
@@ -55,7 +57,7 @@ fn open(store: &MemStore, net: &osis_transport::Net, clock: &Arc<ManualClock>, c
 }
 
 fn node() -> Node {
-    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(WallMs(T0))), MemStore::new());
+    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
     let (g, t, placed, out, h, u) = n
         .batch(|w| {
@@ -88,7 +90,7 @@ impl Node {
 
     fn attach(&self, secret: &ClientSecret) -> osis::Result<Osis> {
         let mut c = osis::internals::Opening::memory();
-        c.client.transport = Some(Transport::InProcess(self.net.endpoint(&format!("c{}", NAMES.fetch_add(1, Ordering::Relaxed)))));
+        c.handle.internals.transport = Some(self.net.endpoint(&format!("c{}", NAMES.fetch_add(1, Ordering::Relaxed))));
         // a reopened node: its reach is stored, its listener comes up a moment later
         for _ in 0..2000 {
             match crate::common::block_on(osis::internals::connect(&self.addr(), secret, c.clone())) {
@@ -263,7 +265,8 @@ fn split_write_comes_back_whole_spec_commits_6() {
     w.at(x.t, osis::Key::untyped(brief.clone())).expires(osis::Expiry::In(Duration::from_secs(3600))).set(&Value::Int(2)).unwrap();
     let done = w.commit().unwrap().unwrap();
     let first = done.id.commit().expect("a commit");
-    let [osis::ChangeId::Commit(other)] = done.also.as_slice() else { panic!("one more commit: {:?}", done.also) };
+    let [other] = done.also.as_slice() else { panic!("one more commit: {:?}", done.also) };
+    let other = &other.commit().unwrap();
     let h = |id| x.n.engine(|e| e.header(&id)).unwrap();
     assert_eq!(h(first).ts, h(*other).ts, "one ts");
     assert_eq!((h(first).expires, h(*other).expires), (None, Some(h(first).ts.wall_ms().0 + 3_600_000)));
@@ -279,7 +282,7 @@ fn client_purge_is_judged_by_the_actor_spec_perm_7() {
     let x = node();
     let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Admin);
-    let only = osis::Retention { by: osis::schema::PurgeBy::Author, ..Default::default() };
+    let only = osis::Retention { by: osis::internals::schema::PurgeBy::Author, ..Default::default() };
     let held = |k: &osis_base::Ak| x.n.engine(|e| e.commit_ids().into_iter().filter(|i| e.header(i).is_some_and(|h| h.aspects.iter().any(|y| y.tid == x.t && y.ak == *k && y.retention.by == only.by))).collect::<Vec<_>>().into_iter().map(|i| e.body_not_dropped(&i, &x.t, k)).collect::<Vec<_>>());
     let mut w = x.n.write();
     w.at(x.t, osis::Key::untyped(name.clone())).retention(only).set(&Value::Int(1)).unwrap();
@@ -320,7 +323,7 @@ fn client_purge_is_judged_by_the_actor_spec_perm_7() {
 fn tombstone_reads_through_the_client_port_spec_commits_5() {
     let x = node();
     let k = ak("t:msg.0");
-    let forever = osis::Retention { at_least: osis::schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, ..Default::default() };
+    let forever = osis::Retention { at_least: osis::internals::schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, ..Default::default() };
     let (_, _, c) = x.client(Role::Read);
     let q = |t: Tid| CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() };
     for t in [x.t, x.u] {
@@ -335,7 +338,7 @@ fn tombstone_reads_through_the_client_port_spec_commits_5() {
     let e = entries.iter().find(|e| !e.purged.is_empty()).expect("a tombstone");
     let by = entries[0].commit.id;
     assert_eq!(e.purged, vec![(x.t, k.clone(), by)]);
-    assert!(e.dropped);
+    assert!(e.content_gone);
     assert_eq!(e.commit.actor, x.n.me());
     assert_eq!(x.n.at(x.t, osis::Key::untyped(k.clone())).get().unwrap(), None);
     // the same through the port, and only what the client reads
@@ -401,11 +404,11 @@ fn undo_and_revert_are_the_actors() {
 fn until_ends_the_client() {
     let x = node();
     let name = ak("t:name.0");
-    assert!(matches!(x.n.add_client(Some(WallMs(T0))), Err(Error::Invalid(_))));
-    assert!(matches!(x.n.add_client(Some(WallMs(T0 - 1))), Err(Error::Invalid(_))));
-    let (a, s) = x.n.add_client(Some(WallMs(T0 + 60_000))).unwrap();
+    assert!(matches!(x.n.add_client(Some(Time(T0))), Err(Error::Invalid(_))));
+    assert!(matches!(x.n.add_client(Some(Time(T0 - 1))), Err(Error::Invalid(_))));
+    let (a, s) = x.n.add_client(Some(Time(T0 + 60_000))).unwrap();
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
-    assert_eq!(x.n.clients().unwrap(), vec![osis::Client { actor: a, until: Some(WallMs(T0 + 60_000)) }]);
+    assert_eq!(x.n.clients().unwrap(), vec![osis::Client { actor: a, until: Some(Time(T0 + 60_000)) }]);
     let mut r = x.raw(&s);
     assert!(matches!(r.call_at(1, GET, vec![Value::Tid(x.t), Value::Str("t:name.0".into()), Value::List(vec![])]), Outcome::Ok { .. }));
     let c = x.attach(&s).unwrap();
@@ -427,9 +430,9 @@ fn until_ends_the_client() {
 // spec/data-model.md §9, notes/client-port.md §3 (until), restart with a timer pending: sessions do not survive a restart and no timer is stored: a reopened node takes a client's Auth before its until and ends it at its until from the entry alone
 #[test]
 fn restart_with_a_client_until_pending() {
-    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(WallMs(T0))), MemStore::new());
+    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
-    let (a, s) = n.add_client(Some(WallMs(T0 + 60_000))).unwrap();
+    let (a, s) = n.add_client(Some(Time(T0 + 60_000))).unwrap();
     assert_eq!(n.close().unwrap(), osis::Close::Closed);
     let n = open(&store, &net, &clock, false);
     let x = Node { n, net, clock, store, g: a, t: a, placed: a, out: a, h: a, u: a };
@@ -471,14 +474,14 @@ fn remove_client_revokes() {
     let node_thing = x.n.node();
     let last = x.n.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(node_thing, ak("clients.0^"))])), ..Default::default() }).unwrap()[0].commit.id;
     x.n.revert(last).unwrap();
-    assert_eq!(x.n.at(node_thing, ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap().until, Some(WallMs(0)));
+    assert_eq!(x.n.at(node_thing, ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap().until, Some(Time(0)));
     assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
     assert!(x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a demotion of something else");
     assert!(x.n.grants(x.n.me()).unwrap().contains_key(&x.n.node()));
     // its until passed already (a removal cut short ends there): the removal still demotes
-    let (late, s2) = x.n.add_client(Some(WallMs(T0 + 1))).unwrap();
+    let (late, s2) = x.n.add_client(Some(Time(T0 + 1))).unwrap();
     x.n.grant(x.g, late, Role::Read, Default::default()).unwrap();
     x.clock.advance(1);
     assert!(matches!(x.attach(&s2), Err(Error::Refused(_))));
@@ -593,7 +596,7 @@ fn watches_and_rows() {
     let vis = ak("t:sigv.0*");
     let _v = c.at(x.t, osis::Key::untyped(vis.clone())).on_change(move |_, ch: osis::Change<Value>| { let _ = ltx.send(ch.value.is_ok()); }).unwrap();
     lrx.recv_timeout(Duration::from_secs(20)).unwrap();
-    let huge = Value::Str("s".repeat(osis::SIGNAL_BYTES + 1));
+    let huge = Value::Str("s".repeat(osis::internals::SIGNAL_BYTES + 1));
     let live = x.n.watches();
     x.n.commit_set(x.out, osis::Key::untyped(sig.clone()), &huge).unwrap();
     c.settle();
@@ -648,7 +651,7 @@ fn watches_and_rows() {
     assert!(matches!(c.pair_offer(), Err(Error::Unsupported(_))));
     assert!(matches!(c.invite_requests(), Err(Error::Unsupported(_))));
     assert!(matches!(c.sync_options(x.g), Err(Error::Unsupported(_))));
-    assert!(matches!(c.rotate_reach(), Err(Error::Unsupported(_))));
+    assert!(matches!(c.rotate_address(), Err(Error::Unsupported(_))));
     assert!(matches!(c.export_bundle(&[x.g], Vec::new()), Err(Error::Unsupported(_))));
     assert!(matches!(c.import_bundle(&b"x"[..]), Err(Error::Unsupported(_))));
     // never "it does not host" from one who may not read the node's thing
@@ -664,10 +667,10 @@ fn watches_and_rows() {
 fn attachments_past_the_cap() {
     let x = node();
     let (_, s) = x.n.add_client(None).unwrap();
-    let mut all: Vec<Osis> = (0..osis::MAX_CONNS_PER_CLIENT).map(|_| x.attach(&s).unwrap()).collect();
+    let mut all: Vec<Osis> = (0..osis::internals::MAX_CONNS_PER_CLIENT).map(|_| x.attach(&s).unwrap()).collect();
     assert!(matches!(x.attach(&s), Err(Error::Network(_))));
     drop(all.pop());
-    x.until(|x| x.served() < osis::MAX_CONNS_PER_CLIENT + 1);
+    x.until(|x| x.served() < osis::internals::MAX_CONNS_PER_CLIENT + 1);
     for _ in 0..2000 {
         if x.attach(&s).is_ok() {
             return;
@@ -680,14 +683,14 @@ fn attachments_past_the_cap() {
 // spec/sync.md §10 (never on another transport), notes/client-port.md §3 (Owner rows): the registry calls run through a daemon's Owner session; a client secret never goes to a unix socket
 #[test]
 fn registry_through_the_owner_session() {
-    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(WallMs(T0))), MemStore::new());
+    let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
     let dir = std::env::temp_dir().join(format!("osis-port-clients-{}-{}", std::process::id(), NAMES.fetch_add(1, Ordering::Relaxed)));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("n.sock");
-    n.listen_unix(&sock).unwrap();
+    n.listen_socket_at(&sock).unwrap();
     let o = crate::common::block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
-    let (a, s) = o.add_client(Some(WallMs(T0 + 1000))).unwrap();
+    let (a, s) = o.add_client(Some(Time(T0 + 1000))).unwrap();
     assert_eq!(n.clients().unwrap(), o.clients().unwrap());
     assert_eq!(n.at(n.node(), ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap().secret_hash, osis_base::hash::hash(s.expose()));
     let s2 = o.rotate_client_secret(a).unwrap();
@@ -986,7 +989,7 @@ fn revert_tells_no_hidden_body_dropped() {
     let mut w = x.n.write();
     w.at(x.out, osis::Key::untyped(name.clone())).purge(osis::Purge::All).unwrap();
     w.commit().unwrap();
-    assert!(!x.n.engine(|e| e.body_not_dropped(&match id { osis::ChangeId::Commit(c) => c, _ => unreachable!() }, &x.out, &name)), "the body went");
+    assert!(!x.n.engine(|e| e.body_not_dropped(&id.commit().unwrap(), &x.out, &name)), "the body went");
     assert!(matches!(x.n.revert(id), Err(Error::NotUndoable { .. })), "the node sees it");
     let r = c.revert(id);
     assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.t), "{r:?}");
@@ -1119,7 +1122,7 @@ fn revert_lists_nothing_hidden() {
     w.group(x.g).add(osis::Member::Item(e)).unwrap();
     w.commit().unwrap();
     let eid = unplaced(e);
-    assert!(matches!(eid, osis::ChangeId::Ephemeral(_)));
+    assert!(eid.commit().is_none());
     refused(c.revert(eid), x.g);
     assert!(!listed(e));
     // its own unplace of a listed name it may not read: gone stays gone
@@ -1194,7 +1197,7 @@ fn half_removed_client_stays_ended() {
     let node_thing = x.n.node();
     let e = x.n.at(node_thing, ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap();
     let mut w = x.n.write();
-    w.at(node_thing, ct::CLIENTS).path(osis::p![a]).set(&ct::Client { until: Some(WallMs(0)), ..e }).unwrap();
+    w.at(node_thing, ct::CLIENTS).path(osis::p![a]).set(&ct::Client { until: Some(Time(0)), ..e }).unwrap();
     w.commit().unwrap();
     assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
     let s2 = x.n.rotate_client_secret(a).unwrap();
@@ -1319,7 +1322,7 @@ fn walk(seed: u64) {
             }
             6 => {
                 // an until set directly and passed: revoked with the grants still there
-                let at = WallMs(x.n.now().unwrap().0 + 1000);
+                let at = Time(x.n.now().unwrap().0 + 1000);
                 let e = x.n.at(x.n.node(), ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap();
                 let node = x.n.node();
                 let mut w = x.n.write();
@@ -1516,8 +1519,8 @@ fn history_watch_sends_everything_waiting() {
     let (_, _, c) = x.client(Role::Read);
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::Key::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
-    let n = osis::HISTORY_SEND * 3;
-    let changes: Vec<(Tid, osis::Ak, osis::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::ChangeId::Commit(osis::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let n = osis::internals::HISTORY_SEND * 3;
+    let changes: Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1553,8 +1556,8 @@ fn history_watch_past_its_budget_lapses() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::Key::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let n = osis::SIGNAL_BYTES / osis::HISTORY_DIRTY_BYTES + 1;
-    let changes: Vec<(Tid, osis::Ak, osis::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::ChangeId::Commit(osis::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let n = osis::internals::SIGNAL_BYTES / osis::internals::HISTORY_DIRTY_BYTES + 1;
+    let changes: Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1607,8 +1610,8 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::Key::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::ChangeId)> { (0..n as u32).map(|i| (on, k.clone(), osis::ChangeId::Commit(osis::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
-    let flood = osis::SIGNAL_BYTES / osis::HISTORY_DIRTY_BYTES;
+    let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> { (0..n as u32).map(|i| (on, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
+    let flood = osis::internals::SIGNAL_BYTES / osis::internals::HISTORY_DIRTY_BYTES;
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(ids(flood, x.u))));
         e.core.events.queue(osis_node::Event::History(Arc::new(ids(1, x.t))));
@@ -1631,7 +1634,7 @@ fn history_pages_past_large_bodies() {
     let k = ak("t:big.0");
     let (_, _, c) = x.client(Role::Read);
     let half = osis_proto::api::REPLY_BUDGET / 2;
-    let fits = half - osis::HISTORY_PAGE * 256 / 2 - 60;
+    let fits = half - osis::internals::HISTORY_PAGE * 256 / 2 - 60;
     for (b, n) in [(0u8, half - 60), (1, half - 60), (2, fits), (3, fits), (4, fits)] {
         x.n.commit_set(x.t, osis::Key::untyped(k.clone()), &Value::Bytes(vec![b; n])).unwrap();
     }

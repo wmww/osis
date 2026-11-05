@@ -2,11 +2,12 @@
 //! delta, Local engine Undo; spec/crdt.md §4.6): an in-memory log of this session's own
 //! ephemeral batches, the scope rule, mixed batches as one change, the history cap.
 
+use osis::internals::ChangeRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common::*;
 use crate::common::CreateIn;
-use osis::{ChangeId, CommitKind, CommitQuery, DropReason, Error, MemStore, Osis, Scope, Value};
+use osis::{CommitKind, CommitQuery, DropReason, Error, MemStore, Osis, Scope, Value};
 
 fn setup(seed: u64) -> Osis {
     osis::internals::create(cfg(seed, MemStore::new(), &clock())).unwrap().0
@@ -33,9 +34,9 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     let scope = Scope::Thing(t);
     let get = || db.at(t, osis::Key::untyped(k.clone())).get().unwrap();
     let all = db.commits(&CommitQuery { scope: Some(scope.clone()), ..Default::default() }).unwrap();    assert_eq!(all.len(), 3, "the creation and two writes");
-    assert!(all.iter().all(|e| e.kind == CommitKind::Ephemeral && e.in_effect && matches!(e.commit.id, ChangeId::Ephemeral(_))));
+    assert!(all.iter().all(|e| e.kind == CommitKind::Ephemeral && e.in_effect && e.commit.id.commit().is_none()));
     let u = db.undo(&scope).unwrap().unwrap();
-    assert!(matches!(u.id, ChangeId::Ephemeral(_)));
+    assert!(u.id.commit().is_none());
     assert_eq!(get(), int(1));
     let found = db.commits(&CommitQuery { scope: Some(scope.clone()), reverts: Some(all[0].commit.id), ..Default::default() }).unwrap();
     assert_eq!(found.iter().map(|e| (e.commit.id, e.kind)).collect::<Vec<_>>(), vec![(u.id, CommitKind::Ephemeral)]);
@@ -114,13 +115,13 @@ fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
     w.at(d, osis::Key::untyped(x.clone())).set(&Value::Int(1)).unwrap();
     w.at(d, osis::Key::untyped(sel.clone())).set(&Value::Int(7)).unwrap();
     let c = w.commit().unwrap().unwrap();
-    assert!(matches!(c.id, ChangeId::Commit(_)));
+    assert!(c.id.commit().is_some());
     let scope = Scope::Aspects(vec![(d, x.clone()), (d, ak("t:sel.0~"))]);
     let found = db.commits(&CommitQuery { scope: Some(scope.clone()), ..Default::default() }).unwrap();
     assert_eq!(found[0].commit.id, c.id);
     assert_eq!(found[0].aspects.len(), 2, "both halves in one entry: {:?}", found[0].aspects);
     let u = db.undo(&scope).unwrap().unwrap();
-    assert!(matches!(u.id, ChangeId::Commit(_)), "the revert has a durable half");
+    assert!(u.id.commit().is_some(), "the revert has a durable half");
     assert_eq!((db.at(d, osis::Key::untyped(x.clone())).get().unwrap(), db.at(d, osis::Key::untyped(sel.clone())).get().unwrap()), (None, None));
     db.redo(&scope).unwrap().unwrap();
     assert_eq!((db.at(d, osis::Key::untyped(x.clone())).get().unwrap(), db.at(d, osis::Key::untyped(sel.clone())).get().unwrap()), (int(1), int(7)));
@@ -181,7 +182,7 @@ fn mixed_scope_undo_order_spec_crdt_4_6() {
 fn not_undoable_past_history_cap_spec_crdt_4_6() {
     let c = clock();
     let mut x = cfg(6, MemStore::new(), &c);
-    x.ephemeral_history = 8_000;
+    x.ephemeral_undo_bytes = 8_000;
     let db = osis::internals::create(x).unwrap().0;
     let k = ak("app:n.0~");
     let t = db.batch(|w| w.create()).unwrap();
@@ -202,17 +203,17 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
         assert!(undone <= 40);
     };
     assert!(undone > 0);
-    assert!(matches!(err, Error::NotUndoable { commit: ChangeId::Ephemeral(_), reason: DropReason::Compacted }), "{err:?}");
-    assert_eq!(db.revert(ids[0]), Err(Error::NotUndoable { commit: ids[0], reason: DropReason::Compacted }));
+    assert!(matches!(err, Error::NotUndoable { commit, reason: DropReason::ContentGone } if commit.commit().is_none()), "{err:?}");
+    assert_eq!(db.revert(ids[0]), Err(Error::NotUndoable { commit: ids[0], reason: DropReason::ContentGone }));
     // at 0 no ephemeral change is undoable
     let mut x = cfg(7, MemStore::new(), &c);
-    x.ephemeral_history = 0;
+    x.ephemeral_undo_bytes = 0;
     let db = osis::internals::create(x).unwrap().0;
     let mut w = db.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
     db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
-    assert!(matches!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { reason: DropReason::Compacted, .. })));
+    assert!(matches!(db.undo(&Scope::Thing(t)), Err(Error::NotUndoable { reason: DropReason::ContentGone, .. })));
 }
 
 trait Tap: Sized {
@@ -249,7 +250,7 @@ fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     db.undo(&s).unwrap().unwrap();
     assert!(db.groups_of(e).unwrap().item_of == vec![f] && !durable_in_f(&db), "placed ephemerally again");
     assert!(db.at(e, osis::Key::untyped(body.clone())).get().unwrap().is_none() && db.at(e, osis::Key::untyped(draft.clone())).get().unwrap() == int(1) && db.knows(e).unwrap(), "the draft");
-    assert!(db.created(e).unwrap().unwrap().commit.is_some(), "the record stays durable");
+    assert!(db.created(e).unwrap().unwrap().id.is_some(), "the record stays durable");
     db.undo(&s).unwrap().unwrap();
     assert!(!db.knows(e).unwrap() && db.groups_of(e).unwrap().within.is_empty() && db.at(e, osis::Key::untyped(draft.clone())).get().unwrap().is_none(), "the draft's creation undone");
     assert_eq!(db.undo(&s).unwrap(), None);
@@ -311,9 +312,9 @@ fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
     let mut w = db.write();
     let g = w.create().unwrap();
     w.commit().unwrap();
-    assert!(db.created(g).unwrap().unwrap().commit.is_none(), "the group is ephemeral");
+    assert!(db.created(g).unwrap().unwrap().id.is_none(), "the group is ephemeral");
     let mut w = db.write();
     w.group(g).add(osis::Member::Item(n)).unwrap();
     w.commit().unwrap();
-    assert!(db.created(g).unwrap().unwrap().commit.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
+    assert!(db.created(g).unwrap().unwrap().id.is_some() && db.engine(|x| x.durable_groups_of(&n)).contains(&g), "placed durably, the group persisted");
 }

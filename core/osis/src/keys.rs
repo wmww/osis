@@ -1,5 +1,5 @@
 //! `Key`: an aspect key by name, typed by a schema registered at run time (`Osis::key`), and the
-//! core keys. Typed `Aspect<T>` come from codegen (osis-schema).
+//! core keys apps write. Typed `Aspect<T>` come from codegen (osis-schema).
 
 use osis_base::{Ak, Value};
 use osis_schema::{RawKey, Codec, PathError, Schema, typed_read};
@@ -29,6 +29,23 @@ impl Key {
     /// Its name.
     pub fn name(&self) -> &Ak {
         &self.ak
+    }
+
+    /// The shape of its values, as its schema declares them (`None`: no schema declares it).
+    pub fn value_type(&self) -> Option<crate::ValueType> {
+        let s = self.schema.clone()?;
+        let ty = s.aspects.get(self.ak.as_str())?.ty.clone();
+        Some(crate::value_type::of_schema(s, ty))
+    }
+
+    /// The name its schema declares its type by, short (`string`, `date`, `option<string>`).
+    pub fn type_name(&self) -> Option<String> {
+        Some(crate::value_type::declared_name(&self.schema.as_ref()?.aspects.get(self.ak.as_str())?.ty))
+    }
+
+    /// What a write through this key is kept by, unless it says otherwise (`AspectWrite::retention`).
+    pub fn default_retention(&self) -> osis_schema::Retention {
+        self.defaults().retention
     }
 }
 
@@ -61,17 +78,15 @@ impl RawKey for Key {
     }
 }
 
-/// Typed keys of the core aspects (spec/data-model.md §9). Role-class aspects are read here and
-/// written only through the sharing calls, `GROUP` only through the group calls of `Write`.
+/// Aspects every app shares the meaning of, and the rule of what may be written to a thing.
 pub mod core {
-    pub use osis_schema::core_types::{ASPECTS, BODY, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, ROLES, NAME, NODE, PLACED, REACH, REQUIRED, Required, RequiredRules, SECRETS, SEEN, TAG, TENURES, TID, Tag};
-
-    /// Field ids of `group.0` (spec/data-model.md §8), for path reads of it.
-    pub mod group {
-        use osis_schema::FieldId;
-        /// `set<tid>`: the group's items.
-        pub const ITEMS: FieldId = FieldId(0);
-        /// `set<tid>`: its subgroups.
-        pub const SUBGROUPS: FieldId = FieldId(1);
-    }
+    /// What a thing is called.
+    pub use osis_schema::core_types::NAME;
+    /// A thing's main text.
+    pub use osis_schema::core_types::BODY;
+    /// Marks a thing as a tag.
+    pub use osis_schema::core_types::{TAG, Tag};
+    /// What every write to a thing must keep to, by aspect name prefix: how long it is kept, when it
+    /// expires. An admin sets it; a write that breaks it is refused.
+    pub use osis_schema::core_types::{REQUIRED, Required, RequiredRules};
 }

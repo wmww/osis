@@ -4,13 +4,12 @@
 
 #![forbid(unsafe_code)]
 
-use osis::schema::osis_base::cbor;
-use osis::schema::{Bound, core_types as ct};
-use osis::{ChangeId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, SyncFirst, Tid, Ts, Value};
+use osis::core::{REQUIRED, Required, RequiredRules};
+use osis::{Bound, ChangeId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, SyncFirst, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
-pub use osis::schema::PurgeBy;
+pub use osis::PurgeBy;
 
 /// Message aspects, one per year: the name bounds only a re-merge (design E).
 pub const MSGS: &str = "chat:msgs:";
@@ -91,12 +90,12 @@ impl Default for Options {
 
 /// The retention rules of a chat: the message rule, and the plain default for every other aspect, so
 /// junk that nobody could erase is invalid (design E, Hostile participant).
-fn rules(purge: PurgeBy, disappear: Option<Duration>, keep: bool) -> Result<ct::RequiredRules> {
+fn rules(purge: PurgeBy, disappear: Option<Duration>, keep: bool) -> Result<RequiredRules> {
     let ms = disappear.map(|d| u64::try_from(d.as_millis()).map_err(|_| Error::Invalid("too long".into()))).transpose()?;
     let at_least = if ms.is_some() { Bound::default() } else { Bound { abs: Some(osis::FOREVER), rel: None } };
-    let msgs = ct::Required::new(Retention { by: purge, at_least, at_most: Bound::default() }, ms);
-    let rest = ct::Required::new(Retention::default(), None);
-    Ok(ct::RequiredRules { rules: BTreeMap::from([(MSGS.to_string(), msgs), (String::new(), rest)]), keep })
+    let msgs = Required::new(Retention { by: purge, at_least, at_most: Bound::default() }, ms);
+    let rest = Required::new(Retention::default(), None);
+    Ok(RequiredRules { rules: BTreeMap::from([(MSGS.to_string(), msgs), (String::new(), rest)]), keep })
 }
 
 /// A new chat, this person its first admin: required retention set before anyone is granted, so no
@@ -104,7 +103,7 @@ fn rules(purge: PurgeBy, disappear: Option<Duration>, keep: bool) -> Result<ct::
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = db.create_ownerless(db.me())?;
     let mut w = db.write();
-    w.at(c, ct::REQUIRED).set(&rules(o.purge, o.disappear, o.keep)?)?;
+    w.at(c, REQUIRED).set(&rules(o.purge, o.disappear, o.keep)?)?;
     w.at(c, settings_key(db)?).set(&settings_value(&o.name, o.edit))?;
     w.commit()?;
     db.sync(c, &o.hosts)?;
@@ -136,7 +135,7 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
             s.edit = e.parse().unwrap_or_default();
         }
     }
-    let r = db.at(c, ct::REQUIRED).get()?.unwrap_or_default();
+    let r = db.at(c, REQUIRED).get()?.unwrap_or_default();
     s.keep = r.keep;
     if let Some(m) = r.rules.get(MSGS) {
         s.purge = m.by;
@@ -159,7 +158,7 @@ pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
 pub fn set_disappearing(db: &Osis, c: Tid, d: Option<Duration>) -> Result<()> {
     let s = settings(db, c)?;
     let mut w = db.write();
-    w.at(c, ct::REQUIRED).set(&rules(s.purge, d, s.keep)?)?;
+    w.at(c, REQUIRED).set(&rules(s.purge, d, s.keep)?)?;
     w.commit()?;
     Ok(())
 }
@@ -274,38 +273,26 @@ pub struct Id {
 
 impl std::fmt::Display for Id {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}/{}", self.year, self.pos.ts.to_u64(), commit_of(&self.pos.id).map_or_else(String::new, |c| osis::schema::osis_base::hex::encode(&c.0)))
+        write!(f, "{}/{}", self.year, self.pos)
     }
 }
 
 impl std::str::FromStr for Id {
     type Err = Error;
     fn from_str(s: &str) -> Result<Id> {
-        let bad = || Error::Invalid(format!("a message id is YEAR/TS/COMMIT, not {s:?}"));
-        let mut p = s.split('/');
-        let (Some(y), Some(t), Some(c), None) = (p.next(), p.next(), p.next(), p.next()) else { return Err(bad()) };
-        let ts = t.parse().ok().and_then(Ts::from_u64).ok_or_else(bad)?;
-        let c = osis::schema::osis_base::hex::decode(c).and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or_else(bad)?;
-        Ok(Id { year: y.parse().map_err(|_| bad())?, pos: HistoryPos { ts, id: ChangeId::Commit(osis::CommitId(c)) } })
+        let bad = || Error::Invalid(format!("a message id is YEAR/PLACE, not {s:?}"));
+        let (y, pos) = s.split_once('/').ok_or_else(bad)?;
+        Ok(Id { year: y.parse().map_err(|_| bad())?, pos: pos.parse().map_err(|_| bad())? })
     }
 }
 
-fn commit_of(c: &ChangeId) -> Option<osis::CommitId> {
-    match c {
-        ChangeId::Commit(c) => Some(*c),
-        ChangeId::Ephemeral(_) => None,
-    }
-}
-
-fn id_value(i: &Id) -> Option<Value> {
-    Some(Value::List(vec![Value::Int(i64::from(i.year)), Value::Int(i64::try_from(i.pos.ts.to_u64()).ok()?), Value::Bytes(commit_of(&i.pos.id)?.0.to_vec())]))
+fn id_value(i: &Id) -> Value {
+    Value::Str(i.to_string())
 }
 
 fn id_read(v: &Value) -> Option<Id> {
-    let Value::List(l) = v else { return None };
-    let [Value::Int(y), Value::Int(t), Value::Bytes(c)] = l.as_slice() else { return None };
-    let ts = Ts::from_u64(u64::try_from(*t).ok()?)?;
-    Some(Id { year: u32::try_from(*y).ok()?, pos: HistoryPos { ts, id: ChangeId::Commit(osis::CommitId(<[u8; 32]>::try_from(c.as_slice()).ok()?)) } })
+    let Value::Str(s) = v else { return None };
+    s.parse().ok()
 }
 
 /// What one write says it replaces: the original, and every earlier version it knew, whose
@@ -333,27 +320,26 @@ impl Draft {
     }
 }
 
-fn body_value(d: &Draft, r: Option<&Replaces>) -> Result<Value> {
-    let bad = || Error::Invalid("a message id without a commit".into());
+fn body_value(d: &Draft, r: Option<&Replaces>) -> Value {
     let mut m = osis::ValueMap::from([(Value::Int(0), Value::Str(d.text.clone()))]);
     if let Some(n) = &d.name {
         m.insert(Value::Int(3), Value::Str(n.clone()));
     }
     if let Some(t) = &d.reply_to {
-        m.insert(Value::Int(4), id_value(t).ok_or_else(bad)?);
+        m.insert(Value::Int(4), id_value(t));
     }
     if let Some(r) = r {
-        m.insert(Value::Int(1), id_value(&r.original).ok_or_else(bad)?);
-        m.insert(Value::Int(2), Value::List(r.prior.iter().map(|p| id_value(p).ok_or_else(bad)).collect::<Result<_>>()?));
+        m.insert(Value::Int(1), id_value(&r.original));
+        m.insert(Value::Int(2), Value::List(r.prior.iter().map(id_value).collect()));
     }
     // one scalar: an `overwrite` of a map leaves state per entry, and a long aspect's write grows with it
-    Ok(Value::Bytes(cbor::encode(&Value::Map(m))))
+    Value::Bytes(Value::Map(m).to_bytes())
 }
 
 /// Another writer's input: anything not reading as a message reads as `None`.
 fn body_read(v: &Value) -> Option<(Draft, Option<Replaces>)> {
     let Value::Bytes(b) = v else { return None };
-    let Value::Map(m) = cbor::decode(b, &cbor::Limits::default()).ok()? else { return None };
+    let Value::Map(m) = Value::from_bytes(b)? else { return None };
     let Some(Value::Str(text)) = m.get(&Value::Int(0)) else { return None };
     let name = match m.get(&Value::Int(3)) {
         Some(Value::Str(n)) => Some(n.clone()),
@@ -397,9 +383,9 @@ pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
 fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> {
     let year = year_of(db.now()?.0);
     let mut w = db.write();
-    w.at(c, year_key(db, year)?).overwrite(&body_value(d, r)?)?;
+    w.at(c, year_key(db, year)?).overwrite(&body_value(d, r))?;
     let done = w.commit()?.ok_or_else(|| Error::Invalid("nothing written".into()))?;
-    Ok(Id { year, pos: HistoryPos { ts: done.ts, id: done.id } })
+    Ok(Id { year, pos: done.pos() })
 }
 
 /// A write claiming to replace `original`, past `edit`'s checks: what a hostile participant can do. Tests.
@@ -465,16 +451,16 @@ fn entry_of(year: u32, e: HistoryEntry<Value>) -> Option<Entry> {
         },
         HistoryBody::TooLarge { .. } => (Body::Odd, None),
         HistoryBody::Purged { by, actor } => (Body::Deleted { by, who: actor }, None),
-        HistoryBody::Dropped => (Body::Gone, None),
+        HistoryBody::Gone => (Body::Gone, None),
         HistoryBody::NotFetched => (Body::NotFetched, None),
     };
-    Some(Entry { id: Id { year, pos }, sender: e.commit.actor, node: e.commit.node, time: e.commit.ts.wall_ms().0.min(e.commit.received.0), received: e.commit.received.0, valid: e.valid, body, name, reply_to, replaces })
+    Some(Entry { id: Id { year, pos }, sender: e.commit.actor, node: e.commit.node, time: e.commit.shown().0, received: e.commit.received.0, valid: e.valid, body, name, reply_to, replaces })
 }
 
 /// The years a chat's messages may be under: its creation's to next year's (a clock ahead).
 fn years(db: &Osis, c: Tid) -> Result<Vec<u32>> {
     let now = year_of(db.now()?.0);
-    let first = db.created(c)?.map_or(now, |s| year_of(s.ts.wall_ms().0));
+    let first = db.created(c)?.map_or(now, |s| year_of(s.written.0));
     Ok((first.min(now)..=now.saturating_add(1)).collect())
 }
 
@@ -490,7 +476,6 @@ pub struct Entries {
 /// Raw entries across the years, by `(ts, ID)`, in `from`'s direction (`Newest`, `Before`: towards
 /// older). No assumption ties a year's aspect to its stamps: a backdated write sorts by its stamp.
 pub fn entries(db: &Osis, c: Tid, from: HistoryFrom, limit: usize) -> Result<Entries> {
-    let limit = limit.min(osis::HISTORY_PAGE);
     let mut out = Entries { entries: Vec::new(), more: false, complete: true };
     for y in years(db, c)? {
         let page = db.at(c, year_key(db, y)?).history(from, limit)?;
@@ -512,14 +497,14 @@ pub fn entries(db: &Osis, c: Tid, from: HistoryFrom, limit: usize) -> Result<Ent
 /// The entry at `id`, if it is here.
 pub fn entry_at(db: &Osis, c: Tid, id: &Id) -> Result<Option<Entry>> {
     let k = year_key(db, id.year)?;
-    let mut from = HistoryFrom::After(HistoryPos::time(id.pos.ts));
+    let mut from = HistoryFrom::After(HistoryPos::time(id.pos.at()));
     loop {
         let page = db.at(c, k.clone()).history(from, 16)?;
         let Some(last) = page.entries.last().map(|e| e.pos()) else { return Ok(None) };
         if let Some(e) = page.entries.into_iter().find(|e| e.pos() == id.pos) {
             return Ok(entry_of(id.year, e));
         }
-        if !page.more || last.ts > id.pos.ts {
+        if !page.more || last > id.pos {
             return Ok(None);
         }
         from = HistoryFrom::After(last);
@@ -571,7 +556,7 @@ pub struct Page {
     pub complete: bool,
 }
 
-/// Entries a timeline fetches at a time. 1: a read per entry; past `HISTORY_PAGE`: that.
+/// Entries a timeline asks for at a time. 1: a read per entry; more than a page holds: what it holds.
 const FETCH: usize = 64;
 
 /// The timeline, read from the newest back. Reading from the newest, it has seen every edit of an
@@ -681,7 +666,7 @@ fn arrival(e: &Entry) -> (u64, HistoryPos) {
 /// clock jumped back past the cursor, is not returned.
 pub fn since(db: &Osis, c: Tid, after: Option<&Id>, n: usize) -> Result<Since> {
     let from = match after {
-        Some(a) => Some(entry_at(db, c, a)?.map_or((a.pos.ts.wall_ms().0, a.pos), |e| arrival(&e))),
+        Some(a) => Some(entry_at(db, c, a)?.map_or((a.pos.at().0, a.pos), |e| arrival(&e))),
         None => None,
     };
     let mut t = Timeline::new(db, c)?;
@@ -772,7 +757,8 @@ fn purge(db: &Osis, c: Tid, ids: &[Id]) -> Result<()> {
     }
     let mut w = db.write();
     for i in ids {
-        w.at(c, year_key(db, i.year)?).purge(osis::Purge::Change(i.pos.id))?;
+        let id = i.pos.change().ok_or_else(|| Error::Invalid(format!("{i} names no message")))?;
+        w.at(c, year_key(db, i.year)?).purge(osis::Purge::Change(id))?;
     }
     w.commit().map(drop)
 }

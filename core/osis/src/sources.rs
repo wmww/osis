@@ -417,7 +417,7 @@ impl Osis {
         if client {
             local = Status::default();
         }
-        local.split = split;
+        local.two_sources = split;
         for r in remotes {
             local.remotes.push(RemoteStatus { address: r.addr.clone(), connected: r.connected() });
             if !self.may_wait() {
@@ -426,7 +426,7 @@ impl Osis {
             let Ok(v) = r.call(method::STATUS, vec![]) else { continue };
             let Ok(there) = crate::port::codec::status(v) else { continue };
             local.connected = local.connected.saturating_add(there.connected);
-            local.split.extend(there.split);
+            local.two_sources.extend(there.two_sources);
             for (g, s) in there.groups {
                 let mine = routes.get(&g).is_some_and(|a| *a == r.addr);
                 if mine || !local.groups.contains_key(&g) {
@@ -492,9 +492,9 @@ impl Osis {
     /// To `Remote(addr)`: the connection must be up and the node know the group (else `Network` or
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a host
     /// (`wait_synced`'s outcomes; failed or dropped, nothing changed); then this
-    /// node stops syncing it, for itself alone (`SyncMode::HeadersOnly`, not `unsync`, which
+    /// node stops syncing it, for itself alone (`SyncMode::LogOnly`, not `unsync`, which
     /// stops it for every holder), and calls go there. `Invalid`: the person's home group, or a
-    /// group still synced here through a parent (all of it would be split: move the parent). A write made
+    /// group still synced here through a parent (its things would have two sources: move the parent). A write made
     /// during the wait fails the move `Unsynced` rather than strand it: call it again.
     ///
     /// To `Local`: this node must hold the group (a program with no store has no keys: `Unsupported`; a node
@@ -502,13 +502,11 @@ impl Osis {
     /// and this engine caught up (`wait_synced`'s outcomes; failed or dropped, syncing goes on and
     /// calling this again finishes the move), calls keep going to the node, so nothing reads this
     /// engine's old copy. Works with the node gone (what only it held arrives if it returns).
-    /// `Unsynced` here means a label of the group opens under no key at a host (`status`:
-    /// `Stranded`): the route stands, nothing is lost, and calling again helps once the label is
-    /// tried again (new secrets, a new connection, or every `resync_ms`); until a holder re-seals
-    /// this node, stay on the node.
+    /// `Unsynced` here means this node lost the group's keys (`status`: `Stranded`): calls stay at the
+    /// node, nothing is lost, and calling again helps once another holder gives the keys again.
     ///
     /// A thing also in a group that syncs here reads at the node like the rest of this one, and
-    /// refuses writes (`Invalid`, `Status::split`) until this group comes home or the other moves to
+    /// refuses writes (`Invalid`, `Status::two_sources`) until this group comes home or the other moves to
     /// the same node: they would miss the other group's holders (the module's invariant).
     ///
     /// Every watch whose source this changes gets one last `Err(Network)` and ends: watch again.

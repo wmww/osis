@@ -7,7 +7,8 @@ use crate::common::TestWrites as _;
 use crate::scenario::{introduce, new_tag, person};
 use osis::internals::Internals as _;
 use osis::internals::node::sync::EntryKind;
-use osis::core::{BODY, GROUP};
+use osis::core::{BODY};
+use osis::internals::core_types::{GROUP};
 use osis::{SetRoleOpts, SyncFirst, Member, GrantOpts, Error, Osis, Role, Tid};
 use osis_sim::world::World;
 
@@ -247,7 +248,7 @@ fn receipts_only_scope_left_to_holders() {
     bob.add_with_grant(Member::Item(sub), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, sub, g).map(|r| r.share), Some(Share::Tied(Role::Read)));
     w.run();
-    phone.set_sync_options(sub, osis::SyncOptions { mode: osis::SyncMode::HeadersOnly, ..Default::default() }).unwrap();
+    phone.set_sync_options(sub, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
     w.run();
     assert_eq!(phone.grants(sub).unwrap().get(&g).map(|e| e.with_membership), Some(true));
     w.set_online(&alice, false);
@@ -371,7 +372,7 @@ fn placement_pruned_by_a_reset_counts_as_gone() {
     w.set_online(&bob, false);
     carol.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     w.run();
-    let group = osis::core::Group { items: [other].into(), subgroups: Default::default() };
+    let group = osis::internals::core_types::Group { items: [other].into(), subgroups: Default::default() };
     // no API call does this; another implementation's commit may
     carol.engine(|e| {
         let mut m = osis::internals::node::Mutation::new();
@@ -428,7 +429,7 @@ fn group_holders_learn_edge_removal() {
     for db in [&alice, &carol] {
         assert!(db.grants(t).unwrap().contains_key(&g), "granted");
     }
-    let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
+    let seed = |db: &Osis| db.at(t, osis::internals::core_types::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&bob);
     w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
@@ -489,7 +490,7 @@ fn group_admin_learns_removal_elsewhere() {
     bob.grant(t, h, Role::Admin, GrantOpts::default()).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
-    let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
+    let seed = |db: &Osis| db.at(t, osis::internals::core_types::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
     w.until(dave.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
@@ -535,7 +536,7 @@ fn group_admin_copies_removal_without_new_keys() {
     bob.grant(t, h, Role::Admin, GrantOpts::default()).unwrap();
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
-    let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
+    let seed = |db: &Osis| db.at(t, osis::internals::core_types::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
     w.until(dave.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
@@ -552,7 +553,7 @@ fn skip() -> SetRoleOpts {
 }
 
 fn seed_of(db: &Osis, t: Tid) -> Option<[u8; 32]> {
-    db.at(t, osis::core::KEYS).get().ok().flatten().and_then(|k| k.deposit_seed)
+    db.at(t, osis::internals::core_types::KEYS).get().ok().flatten().and_then(|k| k.deposit_seed)
 }
 
 // spec/sync.md §5, §6: Dave reads G and removes G's edge on his card outside G's closure: his deposit under G's label is promoted by its admin, who reads the card no more and holds none of its fresh `keys.0`, its author's chain complete without it; a reader joining later learns the removal and not the fresh deposit seed
@@ -800,12 +801,12 @@ fn a_grant_survives_unsync_and_sync_with_the_holders_away() {
     w.run();
     w.advance(120_000);
     w.run();
-    let first = alice.status().unwrap().groups[&t].labels.clone();
+    let first = alice.admission_ids(t).unwrap();
     alice.unsync(t).unwrap();
     w.run();
     alice.sync(t, &[]).unwrap();
     w.run();
-    assert_ne!(alice.status().unwrap().groups[&t].labels, first, "a new label");
+    assert_ne!(alice.admission_ids(t).unwrap(), first, "a new label");
     edit(&alice, t, "later");
     w.run();
     w.advance(120_000);
@@ -841,12 +842,12 @@ fn a_copy_survives_its_granter_rotating() {
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
     let frank = person(&mut w, 7, 0);
     let f = introduce(&mut w, &dave, &frank);
-    let keys = alice.at(dave.me(), osis::core::KEYS).get().unwrap();
+    let keys = alice.at(dave.me(), osis::internals::core_types::KEYS).get().unwrap();
     dave.grant(dave.me(), f, Role::Read, GrantOpts::default()).unwrap();
     w.run();
     w.until(dave.set_role(dave.me(), f, None, skip()), 1000, 20).unwrap();
     w.run();
-    assert_ne!(alice.at(dave.me(), osis::core::KEYS).get().unwrap(), keys, "alice holds his new keys");
+    assert_ne!(alice.at(dave.me(), osis::internals::core_types::KEYS).get().unwrap(), keys, "alice holds his new keys");
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter's keys moved");
 }
 
@@ -998,5 +999,5 @@ fn a_later_reader_learns_no_keys_of_a_thing_the_group_lost() {
     w.run();
     assert_eq!(text(&bob, t), None);
     assert_eq!(seed_of(&bob, t), None, "no keys of t for a later reader");
-    assert!(dave.at(t, osis::core::KEYS).get().unwrap().is_some());
+    assert!(dave.at(t, osis::internals::core_types::KEYS).get().unwrap().is_some());
 }

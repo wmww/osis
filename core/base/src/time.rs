@@ -2,13 +2,16 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Milliseconds since the Unix epoch, UTC.
+/// A moment: milliseconds since the Unix epoch, UTC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct WallMs(pub u64);
+pub struct Time(pub u64);
 
-impl WallMs {
-    pub fn saturating_add(self, ms: u64) -> WallMs {
-        WallMs(self.0.saturating_add(ms))
+/// `Time` by its older name, which the layers below the API still use.
+pub use self::Time as WallMs;
+
+impl Time {
+    pub fn saturating_add(self, ms: u64) -> Time {
+        Time(self.0.saturating_add(ms))
     }
 }
 

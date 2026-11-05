@@ -3,6 +3,10 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
+/// Entries a command asks for at a time. Minor: the next page follows; 0 reads nothing, past what
+/// the API's page holds it holds that.
+pub const PAGE: usize = 256;
+
 #[derive(Parser, Debug)]
 #[command(name = "osis", version, about = "osis from the command line: read, write, watch, share and sync things", disable_help_subcommand = true)]
 pub struct Cli {
@@ -238,7 +242,7 @@ pub enum Cmd {
         /// Newer than this place, oldest first
         #[arg(long, value_name = "POS")]
         after: Option<String>,
-        #[arg(long = "max", value_name = "N", default_value_t = osis::HISTORY_PAGE)]
+        #[arg(long = "max", value_name = "N", default_value_t = PAGE)]
         max: usize,
     },
     /// Purge an aspect's history, one commit's delta or an author's deltas, each where this actor may
@@ -259,7 +263,7 @@ pub enum Cmd {
         /// By this actor (repeatable)
         #[arg(long, value_name = "A")]
         actor: Vec<String>,
-        /// change, revert, role, snapshot or ephemeral (repeatable)
+        /// change, revert, role, summary or ephemeral (repeatable)
         #[arg(long, value_name = "KIND")]
         kind: Vec<String>,
         /// Reverts of commit C
@@ -514,7 +518,7 @@ pub enum ClientsCmd {
     Rotate { actor: String },
     /// A new client listener key: clients need the new addresses, printed here; through a daemon
     /// its listeners and clients move at once
-    RotateKey,
+    RotateAddress,
 }
 
 #[derive(Subcommand, Debug)]
@@ -523,6 +527,8 @@ pub enum HostingCmd {
     Show,
     /// Start or change hosting: each flag given replaces its field, the rest kept
     Set(HostFlags),
+    /// What names a synced group for a host's `--admitted` and `--cap`, one per line
+    Ids { g: String },
     /// Stop hosting (the host address is dropped; a later start has a new one)
     Off,
 }
@@ -534,28 +540,26 @@ pub struct HostFlags {
     /// Listen for hosted sessions at this transport URL (repeatable)
     #[arg(long, value_name = "URL")]
     pub listen: Vec<String>,
-    /// Which labels this node takes: those of groups its person owns naming its host address,
-    /// or any
+    /// Which groups this node takes: those its account owns naming its host address, or any
     #[arg(long, value_enum)]
     pub admit: Option<AdmitArg>,
-    /// Also admit a group's labels (a group synced here) or a label ID, 32 hex digits
-    /// (repeatable)
+    /// Also admit a group (one synced here) or an admission ID, 32 hex digits (repeatable)
     #[arg(long, value_name = "GROUP|ID")]
-    pub label: Vec<String>,
-    /// Push hosted labels to this peer host, `url#key` (repeatable)
+    pub admitted: Vec<String>,
+    /// Push what it hosts to this peer host, `url#key` (repeatable)
     #[arg(long, value_name = "ADDR")]
     pub replicate: Vec<String>,
-    /// A host policy knob (repeatable)
+    /// A host limit: group_entries, group_bytes, groups, entries, bytes, connections (repeatable)
     #[arg(long, value_name = "NAME=N")]
     pub policy: Vec<String>,
-    /// Caps for a group's labels or a label ID, in place of the policy's (repeatable)
+    /// Caps for a group or an admission ID, in place of the policy's (repeatable)
     #[arg(long, value_name = "GROUP|ID=ENTRIES,BYTES")]
     pub cap: Vec<String>,
 }
 
 impl HostFlags {
     pub fn any(&self) -> bool {
-        !self.listen.is_empty() || self.admit.is_some() || !self.label.is_empty() || !self.replicate.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
+        !self.listen.is_empty() || self.admit.is_some() || !self.admitted.is_empty() || !self.replicate.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
     }
 }
 
@@ -734,7 +738,7 @@ pub enum GroupCmd {
     Policy {
         g: String,
         #[arg(long, value_name = "BOOL")]
-        publish_reach: Option<bool>,
+        share_address: Option<bool>,
         #[arg(long, value_name = "BOOL")]
         heartbeats: Option<bool>,
     },

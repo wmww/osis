@@ -3,8 +3,9 @@
 
 
 use osis::internals::Internals as _;
-use osis::schema::core_types as ct;
-use osis::{Ak, AspectKey, LinkInfo, ManualClock, MemStore, Osis, Result, Store, Subscription, Tid, WallMs, Write};
+use osis::internals::schema::core_types as ct;
+use osis::{Ak, AspectKey, LinkInfo, MemStore, Osis, Result, Store, Subscription, Tid, Time, Write};
+use osis::internals::{ManualClock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
@@ -13,13 +14,13 @@ use std::time::Duration;
 pub const T0: u64 = 1_700_000_000_000;
 
 pub fn clock() -> Arc<ManualClock> {
-    Arc::new(ManualClock::new(WallMs(T0)))
+    Arc::new(ManualClock::new(Time(T0)))
 }
 
 pub fn cfg(seed: u64, store: MemStore, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(store));
-    c.client.internals.seed = Some(seed);
-    c.client.internals.clock = Some(clock.clone());
+    c.handle.internals.seed = Some(seed);
+    c.handle.internals.clock = Some(clock.clone());
     c
 }
 

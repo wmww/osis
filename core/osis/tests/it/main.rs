@@ -30,14 +30,14 @@ mod schemas {
     /// Contacts and profiles (schema/contact.osis).
     #[allow(dead_code, clippy::all)]
     pub mod contact {
-        use osis::schema as osis_schema;
+        use osis::internals::schema as osis_schema;
         include!(concat!(env!("OUT_DIR"), "/contact.rs"));
     }
 
     /// Calendar events (schema/event.osis).
     #[allow(dead_code, clippy::all)]
     pub mod event {
-        use osis::schema as osis_schema;
+        use osis::internals::schema as osis_schema;
         include!(concat!(env!("OUT_DIR"), "/event.rs"));
     }
 }

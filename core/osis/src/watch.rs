@@ -12,8 +12,9 @@
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis};
 use crate::read::Stamp;
-use osis_base::{Ak, Tid, Ts, Value, WallMs};
-use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, Event, Origin};
+use osis_base::{Ak, Tid, Ts, Value, Time};
+use crate::change::ChangeId;
+use osis_node::{Cause, Diagnostic, DiagnosticKind, Event, Origin};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -33,8 +34,36 @@ pub enum Source {
     Local(Stamp),
     /// A change received from another node.
     Remote(Stamp),
-    /// No commit: validity, expiry, purge or a late part of a commit changed the read.
-    Derived(Cause),
+    /// No new change: something else changed what the aspect reads.
+    Derived(ChangeReason),
+}
+
+/// What changed a read when no new change did (`Source::Derived`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChangeReason {
+    /// A write was found valid or invalid after all, as its author's roles became known.
+    ValidityChanged,
+    /// A write expired.
+    Expired,
+    /// A write was purged.
+    Purged,
+    /// More of an earlier change arrived: another part of it, or a large value a read had missed.
+    Arrived,
+    /// This node lost read access.
+    LostAccess,
+}
+
+#[doc(hidden)]
+impl From<Cause> for ChangeReason {
+    fn from(c: Cause) -> ChangeReason {
+        match c {
+            Cause::Validity => ChangeReason::ValidityChanged,
+            Cause::Expiry => ChangeReason::Expired,
+            Cause::Purge => ChangeReason::Purged,
+            Cause::LateDelta | Cause::Fetched => ChangeReason::Arrived,
+            Cause::LostAccess => ChangeReason::LostAccess,
+        }
+    }
 }
 
 /// One change of an aspect.
@@ -295,17 +324,17 @@ impl Dispatch {
     }
 }
 
-fn source(id: ChangeId, origin: Origin, node: Tid, actor: Tid, ts: Ts, received: WallMs) -> Source {
-    let i = Stamp { id, actor, node, ts, received };
+fn source(id: ChangeId, origin: Origin, node: Tid, actor: Tid, ts: Ts, received: Time) -> Source {
+    let i = Stamp::new(id, actor, node, ts, received);
     if origin == Origin::Local { Source::Local(i) } else { Source::Remote(i) }
 }
 
 /// The aspects an event changed, with its source.
 fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Source)> {
     match m {
-        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => Some((changed, source(ChangeId::Commit(*id), *origin, *author, *actor, *ts, *received))),
-        Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, source(*id, *origin, *author, *actor, *ts, *received))),
-        Msg::Event(Event::Changed { cause, changed }) => Some((changed, Source::Derived(*cause))),
+        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => Some((changed, source(ChangeId::commit(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, source(ChangeId(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Changed { cause, changed }) => Some((changed, Source::Derived((*cause).into()))),
         _ => None,
     }
 }
@@ -366,7 +395,7 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
             let Filter::History(ft, fak) = &s.filter else { continue };
             for (t, ak, id) in changes.iter().filter(|(t, ak, _)| t == ft && ak == fak) {
                 debug_assert_eq!(ak, fak);
-                out.push((s.clone(), Pre::Ready(Delivery::History { tid: *t, id: *id })));
+                out.push((s.clone(), Pre::Ready(Delivery::History { tid: *t, id: ChangeId(*id) })));
             }
         }
         return out;

@@ -2,58 +2,52 @@
 //! printed form per value; the parser reads back everything the printer writes, numbered or
 //! named (a schema type guides both).
 
-use osis::{Schema, Step, Tid, Value};
+use osis::{NestedType, RecordField, Step, Tid, TypeCase, Value, ValueType};
 use osis_schema::osis_base::{CanonicalBytes, Unknown, base64url, hex};
-use osis_schema::{EnumType, StructType, Type};
 
-/// A type in a schema, or nothing (numbered forms).
-pub type Ty<'a> = Option<(&'a Schema, &'a Type)>;
+/// A type, or nothing (numbered forms).
+pub type Ty<'a> = Option<&'a ValueType>;
 
 /// What a type means for the text form.
 pub(crate) enum Kind {
     Timestamp,
     Duration,
-    Struct(StructType),
-    Enum(EnumType),
-    List(Type),
-    Set(Type),
-    Map(Type, Type),
+    Struct(Vec<RecordField>),
+    Enum(Vec<TypeCase>),
+    List(NestedType),
+    Set(NestedType),
+    Map(NestedType, NestedType),
     /// Scalars, text, `any`: printed and read as untyped values.
     Plain,
 }
 
-/// Expands named types one step at a time so `timestamp` and `duration` stay visible.
-fn kind(s: &Schema, t: &Type) -> Kind {
-    let mut cur = t.clone();
-    for _ in 0..64 {
-        cur = match cur {
-            Type::Named(n, _) if n == "timestamp" => return Kind::Timestamp,
-            Type::Named(n, _) if n == "duration" => return Kind::Duration,
-            Type::Named(n, args) => match n.as_str() {
-                "option" => Type::option_body(args.first().cloned().unwrap_or(Type::Any)),
-                "markdown" => Type::Text,
-                _ => match s.types.get(&n) {
-                    Some(d) => d.body.subst(&d.params, &args),
-                    None => return Kind::Plain,
-                },
-            },
-            Type::Counter(t) | Type::Max(t) | Type::Min(t) => *t,
-            Type::Struct(st) => return Kind::Struct(st),
-            Type::Enum(e) => return Kind::Enum(e),
-            Type::List(t) => return Kind::List(*t),
-            Type::Set(t) => return Kind::Set(*t),
-            Type::Map(k, v) => return Kind::Map(*k, *v),
-            _ => return Kind::Plain,
-        };
+fn kind(t: &ValueType) -> Kind {
+    match t {
+        ValueType::Time => Kind::Timestamp,
+        ValueType::Duration => Kind::Duration,
+        ValueType::Optional(p) => Kind::Enum(vec![TypeCase { id: 0, name: "none".into(), value: None }, TypeCase { id: 1, name: "some".into(), value: Some(p.clone()) }]),
+        ValueType::Counter(t) | ValueType::Max(t) | ValueType::Min(t) => kind(&t.get()),
+        ValueType::Record(f) => Kind::Struct(f.clone()),
+        ValueType::Cases(c) => Kind::Enum(c.clone()),
+        ValueType::List(t) => Kind::List(t.clone()),
+        ValueType::Set(t) => Kind::Set(t.clone()),
+        ValueType::Map(k, v) => Kind::Map(k.clone(), v.clone()),
+        _ => Kind::Plain,
     }
-    Kind::Plain
 }
 
 pub(crate) fn kind_of(ty: Ty<'_>) -> Kind {
-    match ty {
-        Some((s, t)) => kind(s, t),
-        None => Kind::Plain,
-    }
+    ty.map_or(Kind::Plain, kind)
+}
+
+/// The field of `id`.
+pub(crate) fn field(st: &[RecordField], id: u64) -> Option<&RecordField> {
+    st.iter().find(|f| f.id == id)
+}
+
+/// The case of `id`.
+pub(crate) fn case(e: &[TypeCase], id: u64) -> Option<&TypeCase> {
+    e.iter().find(|c| c.id == id)
 }
 
 // ---- printing
@@ -66,24 +60,23 @@ pub fn print(v: &Value, ty: Ty<'_>) -> String {
 }
 
 fn pv(o: &mut String, v: &Value, ty: Ty<'_>) {
-    let s = ty.map(|(s, _)| s);
-    match (kind_of(ty), v, s) {
-        (Kind::Timestamp, Value::Int(i), _) => match rfc3339(*i) {
+    match (kind_of(ty), v) {
+        (Kind::Timestamp, Value::Int(i)) => match rfc3339(*i) {
             Some(t) => o.push_str(&t),
             None => o.push_str(&i.to_string()),
         },
-        (Kind::Duration, Value::Int(i), _) => o.push_str(&duration_text(*i)),
-        (Kind::Struct(st), Value::Map(m), Some(s)) if m.keys().all(|k| matches!(k, Value::Int(i) if *i >= 0)) => {
+        (Kind::Duration, Value::Int(i)) => o.push_str(&duration_text(*i)),
+        (Kind::Struct(st), Value::Map(m)) if m.keys().all(|k| matches!(k, Value::Int(i) if *i >= 0)) => {
             seq(o, "{", "}", m.iter(), |o, (k, v)| {
                 let f = match k {
-                    Value::Int(i) => u64::try_from(*i).ok().and_then(|id| st.fields.get(&id)),
+                    Value::Int(i) => u64::try_from(*i).ok().and_then(|id| field(&st, id)),
                     _ => None,
                 };
                 match f {
                     Some(f) => {
                         o.push_str(&f.name);
                         o.push_str(": ");
-                        pv(o, v, Some((s, &f.ty)));
+                        pv(o, v, Some(&f.ty.get()));
                     }
                     None => {
                         pv(o, k, None);
@@ -93,23 +86,33 @@ fn pv(o: &mut String, v: &Value, ty: Ty<'_>) {
                 }
             })
         }
-        (Kind::Enum(e), Value::Enum(c, p), Some(s)) if e.cases.contains_key(c) => {
-            let case = e.cases.get(c);
+        (Kind::Enum(e), Value::Enum(c, p)) if case(&e, *c).is_some() => {
+            let cs = case(&e, *c);
             o.push('#');
-            o.push_str(case.map(|c| c.name.as_str()).unwrap_or(""));
+            o.push_str(cs.map(|c| c.name.as_str()).unwrap_or(""));
             if let Some(p) = p {
                 o.push('(');
-                pv(o, p, case.and_then(|c| c.payload.as_ref()).map(|t| (s, t)));
+                let t = cs.and_then(|c| c.value.as_ref()).map(NestedType::get);
+                pv(o, p, t.as_ref());
                 o.push(')');
             }
         }
-        (Kind::List(t), Value::List(l), Some(s)) => seq(o, "[", "]", l.iter(), |o, x| pv(o, x, Some((s, &t)))),
-        (Kind::Set(t), Value::Set(l), Some(s)) => seq(o, "#{", "}", l.iter(), |o, x| pv(o, x, Some((s, &t)))),
-        (Kind::Map(kt, vt), Value::Map(m), Some(s)) => seq(o, "{", "}", m.iter(), |o, (k, v)| {
-            pv(o, k, Some((s, &kt)));
-            o.push_str(": ");
-            pv(o, v, Some((s, &vt)));
-        }),
+        (Kind::List(t), Value::List(l)) => {
+            let t = t.get();
+            seq(o, "[", "]", l.iter(), |o, x| pv(o, x, Some(&t)))
+        }
+        (Kind::Set(t), Value::Set(l)) => {
+            let t = t.get();
+            seq(o, "#{", "}", l.iter(), |o, x| pv(o, x, Some(&t)))
+        }
+        (Kind::Map(kt, vt), Value::Map(m)) => {
+            let (kt, vt) = (kt.get(), vt.get());
+            seq(o, "{", "}", m.iter(), |o, (k, v)| {
+                pv(o, k, Some(&kt));
+                o.push_str(": ");
+                pv(o, v, Some(&vt));
+            })
+        }
         _ => plain(o, v),
     }
 }
@@ -392,16 +395,12 @@ pub enum PStep {
 pub fn parse_path(s: &str, ty: Ty<'_>, aliases: Aliases<'_>) -> Result<Vec<PStep>, String> {
     let mut p = Parser { s, pos: 0, aliases, depth: 0 };
     let mut out = Vec::new();
-    let mut cur: Option<(&Schema, Type)> = ty.map(|(s, t)| (s, t.clone()));
+    let mut cur: Option<ValueType> = ty.cloned();
     loop {
         p.ws();
         let Some(c) = p.peek() else { break };
-        let k = match &cur {
-            Some((s, t)) => kind(s, t),
-            None => Kind::Plain,
-        };
-        let sch = cur.as_ref().map(|(s, _)| *s);
-        let (step, next): (PStep, Option<Type>) = match c {
+        let k = kind_of(cur.as_ref());
+        let (step, next): (PStep, Option<NestedType>) = match c {
             '.' => {
                 p.pos += 1;
                 let w = p.word();
@@ -410,10 +409,10 @@ pub fn parse_path(s: &str, ty: Ty<'_>, aliases: Aliases<'_>) -> Result<Vec<PStep
                     _ => None,
                 };
                 let (id, ft) = match w.parse::<u64>() {
-                    Ok(id) => (id, st.and_then(|st| st.fields.get(&id)).map(|f| f.ty.clone())),
+                    Ok(id) => (id, st.and_then(|st| field(st, id)).map(|f| f.ty.clone())),
                     Err(_) => {
-                        let (id, f) = st.and_then(|st| st.fields.iter().find(|(_, f)| f.name == w)).ok_or_else(|| p.err(&format!("unknown field {w:?}")))?;
-                        (*id, Some(f.ty.clone()))
+                        let f = st.and_then(|st| st.iter().find(|f| f.name == w)).ok_or_else(|| p.err(&format!("unknown field {w:?}")))?;
+                        (f.id, Some(f.ty.clone()))
                     }
                 };
                 (PStep::Step(Step::Field(id)), ft)
@@ -426,10 +425,10 @@ pub fn parse_path(s: &str, ty: Ty<'_>, aliases: Aliases<'_>) -> Result<Vec<PStep
                     _ => None,
                 };
                 let (id, pt) = match w.parse::<u64>() {
-                    Ok(id) => (id, en.and_then(|e| e.cases.get(&id)).and_then(|c| c.payload.clone())),
+                    Ok(id) => (id, en.and_then(|e| case(e, id)).and_then(|c| c.value.clone())),
                     Err(_) => {
-                        let (id, c) = en.and_then(|e| e.cases.iter().find(|(_, c)| c.name == w)).ok_or_else(|| p.err(&format!("unknown case {w:?}")))?;
-                        (*id, c.payload.clone())
+                        let c = en.and_then(|e| e.iter().find(|c| c.name == w)).ok_or_else(|| p.err(&format!("unknown case {w:?}")))?;
+                        (c.id, c.value.clone())
                     }
                 };
                 (PStep::Step(Step::Case(id)), pt)
@@ -446,7 +445,7 @@ pub fn parse_path(s: &str, ty: Ty<'_>, aliases: Aliases<'_>) -> Result<Vec<PStep
                         (PStep::Step(Step::Index(i)), Some(t.clone()))
                     }
                     Kind::Map(kt, vt) => {
-                        let v = p.value(sch.map(|s| (s, kt)))?;
+                        let v = p.value(Some(&kt.get()))?;
                         (PStep::Step(Step::Key(v)), Some(vt.clone()))
                     }
                     _ => match p.value(None)? {
@@ -463,34 +462,28 @@ pub fn parse_path(s: &str, ty: Ty<'_>, aliases: Aliases<'_>) -> Result<Vec<PStep
                     Kind::Set(t) => Some(t.clone()),
                     _ => None,
                 };
-                let v = p.value(match (&et, sch) {
-                    (Some(t), Some(s)) => Some((s, t)),
-                    _ => None,
-                })?;
+                let v = p.value(et.as_ref().map(NestedType::get).as_ref())?;
                 p.expect('}')?;
                 (PStep::Step(Step::Elem(v)), et)
             }
             _ => return Err(p.err("expected a path step (.field, #case, [index or key], {element})")),
         };
         out.push(step);
-        cur = match (sch, next) {
-            (Some(s), Some(t)) => Some((s, t)),
-            _ => None,
-        };
+        cur = next.map(|t| t.get());
     }
     Ok(out)
 }
 
 /// The type at a path (for parsing the value written there), if the schema knows it.
-pub fn type_at_path(s: &Schema, root: &Type, path: &[Step]) -> Option<Type> {
-    let mut cur = root.clone();
+pub fn type_at_path(root: ValueType, path: &[Step]) -> Option<ValueType> {
+    let mut cur = root;
     for st in path {
-        cur = match (kind(s, &cur), st) {
-            (Kind::Struct(t), Step::Field(id)) => t.fields.get(id)?.ty.clone(),
-            (Kind::Enum(e), Step::Case(id)) => e.cases.get(id)?.payload.clone()?,
-            (Kind::List(t), Step::Index(_)) => t,
-            (Kind::Map(_, v), Step::Key(_)) => v,
-            (Kind::Set(t), Step::Elem(_)) => t,
+        cur = match (kind(&cur), st) {
+            (Kind::Struct(t), Step::Field(id)) => field(&t, *id)?.ty.get(),
+            (Kind::Enum(e), Step::Case(id)) => case(&e, *id)?.value.as_ref()?.get(),
+            (Kind::List(t), Step::Index(_)) => t.get(),
+            (Kind::Map(_, v), Step::Key(_)) => v.get(),
+            (Kind::Set(t), Step::Elem(_)) => t.get(),
             _ => return None,
         };
     }
@@ -498,15 +491,11 @@ pub fn type_at_path(s: &Schema, root: &Type, path: &[Step]) -> Option<Type> {
 }
 
 /// The element type of a list or set (for op arguments).
-pub fn element_type(s: &Schema, t: &Type) -> Option<Type> {
-    match kind(s, t) {
-        Kind::List(e) | Kind::Set(e) => Some(e),
+pub fn element_type(t: &ValueType) -> Option<ValueType> {
+    match kind(t) {
+        Kind::List(e) | Kind::Set(e) => Some(e.get()),
         _ => None,
     }
-}
-
-fn typed<'x>(s: Option<&'x Schema>, t: &'x Type) -> Ty<'x> {
-    s.map(|s| (s, t))
 }
 
 struct Parser<'a> {
@@ -576,7 +565,6 @@ impl<'a> Parser<'a> {
     fn value_inner(&mut self, ty: Ty<'_>) -> Result<Value, String> {
         self.ws();
         let k = kind_of(ty);
-        let s = ty.map(|(s, _)| s);
         let r = self.rest();
         let Some(c) = self.peek() else { return Err(self.err("expected a value")) };
         if matches!(k, Kind::Timestamp) && (c.is_ascii_digit() || c == '-') && !r.starts_with("-Infinity") {
@@ -636,10 +624,10 @@ impl<'a> Parser<'a> {
             '[' => {
                 self.pos += 1;
                 let et = match &k {
-                    Kind::List(t) => typed(s, t),
+                    Kind::List(t) => Some(t.get()),
                     _ => None,
                 };
-                let items = self.items(']', |p| p.value(et))?;
+                let items = self.items(']', |p| p.value(et.as_ref()))?;
                 Ok(Value::List(items))
             }
             '{' => {
@@ -650,16 +638,17 @@ impl<'a> Parser<'a> {
                             p.ws();
                             let (id, ft) = p.field_key(st)?;
                             p.expect(':')?;
-                            let v = p.value(ft.as_ref().and_then(|t| typed(s, t)))?;
+                            let v = p.value(ft.as_ref().map(NestedType::get).as_ref())?;
                             Ok((Value::Int(i64::try_from(id).map_err(|_| p.err("field id out of range"))?), v))
                         })?;
                         self.unique(m)
                     }
                     Kind::Map(kt, vt) => {
+                        let (kt, vt) = (kt.get(), vt.get());
                         let m = self.items('}', |p| {
-                            let kk = p.value(typed(s, kt))?;
+                            let kk = p.value(Some(&kt))?;
                             p.expect(':')?;
-                            Ok((kk, p.value(typed(s, vt))?))
+                            Ok((kk, p.value(Some(&vt))?))
                         })?;
                         self.unique(m)
                     }
@@ -678,10 +667,10 @@ impl<'a> Parser<'a> {
                 if self.peek() == Some('{') {
                     self.pos += 1;
                     let et = match &k {
-                        Kind::Set(t) => typed(s, t),
+                        Kind::Set(t) => Some(t.get()),
                         _ => None,
                     };
-                    let items = self.items('}', |p| p.value(et))?;
+                    let items = self.items('}', |p| p.value(et.as_ref()))?;
                     let n = items.len();
                     let set: osis::ValueSet = items.into_iter().collect();
                     if set.len() != n {
@@ -695,15 +684,15 @@ impl<'a> Parser<'a> {
                     _ => None,
                 };
                 let (id, pt) = match w.parse::<u64>() {
-                    Ok(id) => (id, en.and_then(|e| e.cases.get(&id)).and_then(|c| c.payload.clone())),
+                    Ok(id) => (id, en.and_then(|e| case(e, id)).and_then(|c| c.value.clone())),
                     Err(_) => {
-                        let (id, c) = en.and_then(|e| e.cases.iter().find(|(_, c)| c.name == w)).ok_or_else(|| self.err(&format!("unknown case {w:?}")))?;
-                        (*id, c.payload.clone())
+                        let c = en.and_then(|e| e.iter().find(|c| c.name == w)).ok_or_else(|| self.err(&format!("unknown case {w:?}")))?;
+                        (c.id, c.value.clone())
                     }
                 };
                 let payload = if self.peek() == Some('(') {
                     self.pos += 1;
-                    let v = self.value(pt.as_ref().and_then(|t| typed(s, t)))?;
+                    let v = self.value(pt.as_ref().map(NestedType::get).as_ref())?;
                     self.expect(')')?;
                     Some(Box::new(v))
                 } else {
@@ -743,16 +732,16 @@ impl<'a> Parser<'a> {
     }
 
     /// A struct key: field name (bare or quoted) or id.
-    fn field_key(&mut self, st: &StructType) -> Result<(u64, Option<Type>), String> {
+    fn field_key(&mut self, st: &[RecordField]) -> Result<(u64, Option<NestedType>), String> {
         let name = if self.peek() == Some('"') {
             self.string()?
         } else {
             self.word().to_string()
         };
         if let Ok(id) = name.parse::<u64>() {
-            return Ok((id, st.fields.get(&id).map(|f| f.ty.clone())));
+            return Ok((id, field(st, id).map(|f| f.ty.clone())));
         }
-        st.fields.iter().find(|(_, f)| f.name == name).map(|(id, f)| (*id, Some(f.ty.clone()))).ok_or_else(|| self.err(&format!("unknown field {name:?}")))
+        st.iter().find(|f| f.name == name).map(|f| (f.id, Some(f.ty.clone()))).ok_or_else(|| self.err(&format!("unknown field {name:?}")))
     }
 
     /// Comma-separated items up to `close` (trailing comma allowed).

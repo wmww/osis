@@ -35,9 +35,19 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! A key says what its values look like, for code that handles aspects it was not generated for.
+//! ```
+//! # use osis::{Config, MemStore, Osis, Store, ValueType};
+//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
+//! db.register_schema("t.osis", "version 1; aspect t:done.0: bool;")?;
+//! assert_eq!(db.key("t:done.0")?.value_type(), Some(ValueType::Bool));
+//! assert_eq!(db.key("t:other.0")?.value_type(), None);
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
 //! # Paths
 //! `at(tid, key).path(p![..])` reads or writes one position; only that position is
-//! materialized.
+//! loaded.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, p};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
@@ -156,6 +166,8 @@
 //! half done; where a part of it stands, its doc says so. When it is known that it can never finish
 //! it fails (a group with no way to sync: `Unsynced`; sync stopped: `Network`; a closed database:
 //! `Closed`), so a wait that lasts has something that may yet answer it, such as a host out of reach.
+//! A group this node is cut off from (`SyncState::Stranded`) also fails such a wait at once, for now,
+//! though another holder may yet let it back in.
 //! Tokio's timeout, as here, works only inside a tokio runtime with time enabled, and panics elsewhere.
 //! ```no_run
 //! # use osis::{Osis, SyncScope};
@@ -193,11 +205,11 @@
 //! its own: `Osis::connect` and `Osis::connect_socket` make one, and it reads and writes at the
 //! node as if it were local. A node can be a client too (`Osis::connect_node`).
 //! ```no_run
-//! # use osis::{ClientConfig, NodeLogin, Osis};
+//! # use osis::{HandleConfig, NodeLogin, Osis};
 //! # async fn demo(node: &Osis, addr: osis::HostAddr) -> osis::Result<()> {
 //! let (actor, secret) = node.add_client(None)?;
 //! // on the other program, given `addr` and `secret`:
-//! let client = Osis::connect(&[NodeLogin { addr, secret }], ClientConfig::default()).await?;
+//! let client = Osis::connect(&[NodeLogin { addr, secret }], HandleConfig::default()).await?;
 //! assert_eq!(client.me(), actor);
 //! assert!(!client.has_store());
 //! # Ok(()) }
@@ -306,9 +318,9 @@
 //! # Footguns closed
 //! - Read-modify-write clobber: use `edit(base, new)` or path ops for what users edit; `set`
 //!   is for "must be exactly this".
-//! - Out of memory on a huge value: reads fail `TooLarge` past `Config::materialize_limit`;
+//! - Out of memory on a huge value: reads fail `TooLarge` past `HandleConfig::read_limit`;
 //!   read by path instead.
-//! - A thing that never syncs: membership is a group op (`NotSynced` diagnostic).
+//! - A thing that never syncs: membership is said per group (`NotSynced` diagnostic).
 //! - A forgotten unsubscribe: `Subscription` is RAII, and dropping it at once is a lint:
 //! ```compile_fail
 //! #![deny(unused_must_use)]
@@ -323,6 +335,7 @@
 //! ```
 #![forbid(unsafe_code)]
 
+mod change;
 mod clients;
 mod diagnostic;
 mod error;
@@ -341,23 +354,20 @@ mod sources;
 mod text;
 mod commits;
 mod history;
+mod value_type;
 mod watch;
 mod write;
 
 mod port;
-pub use osis_node::sync::MAX_CONNS_PER_CLIENT;
+pub use change::{ChangeId, HistoryFrom, HistoryPos};
 pub use clients::{Client, ClientSecret};
-pub use port::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, socket_path};
-pub use port::client::SOCK_FILE;
-#[doc(hidden)]
-pub use port::client::{own_uid, socket_dir};
 pub use error::{Error, Result};
 pub use diagnostic::Diagnostic;
-pub use hosting::{Admit, HostCaps, HostPolicy, Hosting, LabelId};
-pub use handle::{ClientConfig, Close, Config, DEFAULT_IDLE_COMMIT, DEFAULT_LIMIT, MemStore, Osis, Store, WeakOsis};
-pub use net::{Reach, Runtime, SyncMode, SyncOptions, Transport};
-pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
-pub use keep::{KeepAlive, REFRESH_DIVISOR};
+pub use hosting::{Admit, AdmissionId, HostCaps, HostPolicy, Hosting};
+pub use handle::{Close, Config, HandleConfig, MemStore, Osis, Store, WeakOsis};
+pub use net::{Runtime, ShareAddress, SyncMode, SyncOptions};
+pub use person::{Joining, PairOffer, PairReply, PairRequest};
+pub use keep::KeepAlive;
 pub use keys::{Key, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
@@ -365,16 +375,26 @@ pub use share::{ContactCard, Device, GrantOpts, GroupSync, Holder, HostAddr, Inv
 pub use sources::{GroupSource, NodeLogin, RemoteStatus};
 pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
-pub use history::{HISTORY_PAGE, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPage, HistoryPos};
-pub use watch::{Change, Dispatcher, Source, Subscription};
+pub use history::{HistoryBody, HistoryEntry, HistoryEvent, HistoryPage};
+pub use value_type::{NestedType, RecordField, TypeCase, ValueType};
+pub use watch::{Change, ChangeReason, Dispatcher, Source, Subscription};
 pub use write::{AspectWrite, Committed, ExpiringGroupWrite, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
 
-/// Keep at least this, as an absolute time: for good (`Retention.at_least.abs`).
+/// A retention bound's absolute time for "for good" (`Bound::abs`).
 pub use osis_commit::FOREVER;
-pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, ValueMap, ValueSet, WallMs};
-pub use osis_node::{Cause, ChangeId, EphemeralId};
-pub use osis_schema::AspectKey;
-pub use osis_schema::{Aspect, CaseId, Codec, FieldId, Path, PathError, Lifetime, Retention, Schema, Step, p};
+pub use osis_base::{Ak, Float, Role, Tid, Value, ValueMap, ValueSet};
+/// A moment: milliseconds since the Unix epoch, UTC.
+pub use osis_base::Time;
+pub use osis_schema::{Aspect, AspectKey, Bound, CaseId, Codec, FieldId, Lifetime, Path, PathError, PurgeBy, Retention, Step, p};
 
-/// The schema layer, for generated code (`use osis::schema as osis_schema;`).
-pub use osis_schema as schema;
+/// What code generated from a schema (`osis schema gen`) refers to: `use osis::generated as
+/// osis_schema;` beside the `include!`.
+#[doc(hidden)]
+pub mod generated {
+    pub use osis_schema::{Aspect, CaseId, Codec, FieldId, StaticSchema, codec_enum, codec_struct, ids, named_type};
+
+    /// The value types generated code names.
+    pub mod osis_base {
+        pub use osis_base::{Float, Tid, Value};
+    }
+}

@@ -13,10 +13,11 @@ use crate::share::Member;
 use crate::sources::Source;
 use crate::keys::Key;
 use crate::read::{Reader, ak_of};
-use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, Time};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
-use osis_node::{ChangeId, Mutation};
+use crate::change::{ChangeId, HistoryPos};
+use osis_node::Mutation;
 use osis_schema::AspectKey;
 use osis_schema::core_types::{GROUP, is_role_class};
 use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
@@ -30,10 +31,19 @@ pub struct Committed {
     /// Its first change, which creates the things the batch creates.
     pub id: ChangeId,
     /// When it was written.
-    pub ts: Ts,
+    pub written: Time,
     /// Its other changes: writes with different expiries or retention go separately. History
     /// lists each, and `revert` takes each alone.
     pub also: Vec<ChangeId>,
+    /// `written` with what orders changes of one moment.
+    pub(crate) ts: Ts,
+}
+
+impl Committed {
+    /// Its first change's place in the history of an aspect it wrote.
+    pub fn pos(&self) -> HistoryPos {
+        HistoryPos::of(self.ts, self.id)
+    }
 }
 
 /// When a write stops counting: it goes from every node that holds it, by itself. Without one a
@@ -41,7 +51,7 @@ pub struct Committed {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expiry {
     /// At this time.
-    At(WallMs),
+    At(Time),
     /// This long from now.
     In(Duration),
 }
@@ -71,7 +81,7 @@ pub(crate) enum WriteOp {
     /// An op at a path of an aspect (whole-value ops at the root).
     Path { tid: Tid, key: u32, op: PathOp },
     /// The aspect's delta in this batch expires at `at`.
-    Expires { tid: Tid, key: u32, at: WallMs },
+    Expires { tid: Tid, key: u32, at: Time },
     /// The aspect's delta in this batch has retention `r`.
     Retention { tid: Tid, key: u32, r: Retention },
     /// Purges the aspect's history (after its removal, recorded before).
@@ -120,7 +130,7 @@ pub struct Write<'d> {
 
 impl Committed {
     pub(crate) fn of(w: osis_node::Written) -> Committed {
-        Committed { id: w.id, ts: w.ts, also: w.also.into_iter().map(ChangeId::Commit).collect() }
+        Committed { id: w.id.into(), written: w.ts.wall_ms(), ts: w.ts, also: w.also.into_iter().map(ChangeId::commit).collect() }
     }
 }
 
@@ -159,16 +169,16 @@ pub(crate) fn segs(p: &Path) -> Result<Vec<PathSeg>> {
 
 pub(crate) fn group_op(items: bool, member: Tid, add: bool) -> PathOp {
     let v = Value::Tid(member);
-    let f = if items { crate::core::group::ITEMS } else { crate::core::group::SUBGROUPS };
+    let f = if items { crate::internals::GROUP_ITEMS } else { crate::internals::GROUP_SUBGROUPS };
     PathOp { path: vec![PathSeg::Field(f.0)], op: if add { Op::Add(v) } else { Op::Remove(v) } }
 }
 
 /// The wall time of `e`; `Invalid` unless it is in the future.
-fn expiry_at(db: &Osis, e: Expiry) -> Result<WallMs> {
+fn expiry_at(db: &Osis, e: Expiry) -> Result<Time> {
     let now = db.now()?;
     let at = match e {
         Expiry::At(t) => t,
-        Expiry::In(d) => WallMs(now.0.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))),
+        Expiry::In(d) => Time(now.0.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX))),
     };
     if at <= now {
         return Err(Error::Invalid(format!("expiry {e:?} is not in the future")));
@@ -517,7 +527,7 @@ impl Osis {
                     WriteOp::Path { tid, key: k, op: p }
                 }
                 4 => {
-                    let (tid, k, at) = (o.tid()?, key(o.uint()?)?, WallMs(o.uint()?));
+                    let (tid, k, at) = (o.tid()?, key(o.uint()?)?, Time(o.uint()?));
                     expiring.push(tid);
                     WriteOp::Expires { tid, key: k, at }
                 }
@@ -796,8 +806,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
                 self.remove()?;
                 self.push(WriteOp::Purge { tid: self.tid, key });
             }
-            Purge::Change(ChangeId::Commit(commit)) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
-            Purge::Change(ChangeId::Ephemeral(_)) => return Err(Error::Invalid("an ephemeral batch has no write to purge".into())),
+            Purge::Change(ChangeId(osis_node::ChangeId::Commit(commit))) => self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit }),
+            Purge::Change(ChangeId(osis_node::ChangeId::Ephemeral(_))) => return Err(Error::Invalid("an ephemeral batch has no write to purge".into())),
             Purge::Author(actor) => self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor }),
         }
         Ok(())

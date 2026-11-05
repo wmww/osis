@@ -4,13 +4,13 @@
 
 use crate::common::TestWrites as _;
 use crate::common::*;
-use osis::{Osis, Tid, Value, core, p};
+use osis::{Osis, Tid, Value, p};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 #[allow(clippy::all, dead_code)]
 mod notes {
-    use osis::schema as osis_schema;
+    use osis::internals::schema as osis_schema;
     include!("../../../schema/tests/gen/notes.rs");
 }
 
@@ -210,7 +210,7 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
             }
             vals.push(format!("{a}={:?}", db.at(*t, osis::Key::untyped(a.clone())).get().unwrap()));
         }
-        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t).unwrap(), db.at(*t, core::GROUP).get().unwrap(), db.groups_of(*t).unwrap(), vals.join(" "))));
+        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t).unwrap(), db.at(*t, osis::internals::core_types::GROUP).get().unwrap(), db.groups_of(*t).unwrap(), vals.join(" "))));
     }
     out
 }

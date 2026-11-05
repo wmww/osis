@@ -17,8 +17,7 @@ use anyhow::anyhow;
 use args::{Cli, Global};
 use clap::Parser;
 use json::J;
-use osis::{ClientConfig, Config, Error, Key, MemStore, Osis, Store, Tid};
-use osis_schema::RawKey as _;
+use osis::{HandleConfig, Config, Error, Key, MemStore, Osis, Store, Tid};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
@@ -168,19 +167,18 @@ pub(crate) fn store_of(sel: &StoreSel) -> Store {
 /// The config of a command holding a store; `net`: sync runs (`Runtime::Own` over QUIC) while the
 /// command runs, else the command stays local (`Runtime::None`).
 fn config(g: &Global, net: bool) -> Config {
-    let mut c = Config { client: client_config(g), ..Config::default() };
+    let mut c = Config { handle: handle_config(g), ..Config::default() };
     if net {
         c.runtime = osis::Runtime::Own;
-        c.client.transport = Some(osis::Transport::Quic);
     }
     c
 }
 
 /// The config of a command using a node out of process.
-fn client_config(g: &Global) -> ClientConfig {
-    let mut c = ClientConfig::default();
+fn handle_config(g: &Global) -> HandleConfig {
+    let mut c = HandleConfig::default();
     if let Some(l) = g.limit {
-        c.materialize_limit = l;
+        c.read_limit = l;
     }
     c
 }
@@ -255,15 +253,10 @@ fn open(sel: &StoreSel, g: &Global, net: bool, use_daemon: bool) -> anyhow::Resu
     }
 }
 
-/// The daemon serving the store at `d`: its socket named by `<store>/sock`, as a client acting as
-/// the node's account (notes/client-port.md §5). None when there is no live one, or the file names another
-/// socket than the store's (`socket_path`): another store's daemon is not this one.
+/// The daemon serving the store at `d`, as a client acting as the node's account
+/// (notes/client-port.md §5). None when there is no live one.
 fn daemon(d: &Path, g: &Global) -> Option<Osis> {
-    let sock = std::fs::read_to_string(d.join(osis::SOCK_FILE)).ok()?;
-    if Path::new(sock.trim_end()) != osis::socket_path(d).ok()? {
-        return None;
-    }
-    crate::cmd::within(connect_wait(g).ok()?, Osis::connect_socket(Path::new(sock.trim_end()), client_config(g))).ok()
+    crate::cmd::within(connect_wait(g).ok()?, Osis::connect_socket(d, handle_config(g))).ok()
 }
 
 /// The node named by `--node`, as the client `--client-secret` stands for (notes/client-port.md
@@ -272,36 +265,19 @@ fn client_of_node(g: &Global) -> anyhow::Result<Osis> {
     let (Some(addr), Some(file)) = (&g.node, &g.client_secret) else { return Err(usage("--node needs --client-secret")) };
     let secret = read_secret(file)?;
     let login = osis::NodeLogin { addr: addr.parse()?, secret };
-    Ok(crate::cmd::within(connect_wait(g)?, Osis::connect(&[login], client_config(g)))?)
+    Ok(crate::cmd::within(connect_wait(g)?, Osis::connect(&[login], handle_config(g)))?)
 }
 
-/// Serves the client port while `serve` runs: listens on the store's socket and names it in
-/// `<store>/sock` (removed when the guard drops). A memory store has none.
-pub(crate) fn listen(sel: &StoreSel, db: &Osis) -> anyhow::Result<Option<SockFile>> {
-    let StoreSel::Dir(d) = sel else { return Ok(None) };
-    // a socket directory another user made first (no XDG_RUNTIME_DIR, `/tmp/osis-<uid>`) costs
-    // the clients, never the daemon
-    let sock = match osis::socket_path(d) {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = std::fs::remove_file(d.join(osis::SOCK_FILE));
-            eprintln!("warning: serving without a client socket: {e}");
-            return Ok(None);
-        }
-    };
-    db.listen_unix(&sock)?;
-    let f = d.join(osis::SOCK_FILE);
-    std::fs::write(&f, format!("{}\n", sock.display()))?;
-    Ok(Some(SockFile(f)))
-}
-
-/// Removes `<store>/sock` on drop.
-pub(crate) struct SockFile(PathBuf);
-
-impl Drop for SockFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+/// Serves the client port while `serve` runs, on the store's socket. A memory store has none.
+pub(crate) fn listen(sel: &StoreSel, db: &Osis) -> anyhow::Result<()> {
+    let StoreSel::Dir(_) = sel else { return Ok(()) };
+    match db.listen_socket() {
+        // a socket directory another user made first (no XDG_RUNTIME_DIR, `/tmp/osis-<uid>`) costs
+        // the clients, never the daemon
+        Err(Error::Storage(e)) => eprintln!("warning: serving without a client socket: {e}"),
+        r => r?,
     }
+    Ok(())
 }
 
 /// Creates a store with its home group on `hosts`; refuses a non-empty directory. Returns the
@@ -485,19 +461,9 @@ pub(crate) fn parse_ak(s: &str, what: &str) -> anyhow::Result<osis::Ak> {
     osis::Ak::new(s).map_err(|_| usage(format!("bad {what} {s:?}")))
 }
 
-/// The schema type of a key's aspect (`Ty` for parsing and printing).
-pub(crate) fn key_ty(key: &Key) -> text::Ty<'_> {
-    ty_in(key, key.ty())
-}
-
-/// A type `t` of `key`'s schema.
-pub(crate) fn ty_in<'a>(key: &'a Key, t: Option<&'a osis_schema::Type>) -> text::Ty<'a> {
-    key.schema().zip(t)
-}
-
 /// An optional timestamp flag.
-pub(crate) fn opt_ts(s: &Option<String>) -> anyhow::Result<Option<osis::WallMs>> {
-    Ok(s.as_deref().map(parse_ts).transpose()?.map(osis::WallMs))
+pub(crate) fn opt_ts(s: &Option<String>) -> anyhow::Result<Option<osis::Time>> {
+    Ok(s.as_deref().map(parse_ts).transpose()?.map(osis::Time))
 }
 
 /// A duration flag: `30s`, `5m`, `1h30m`, or `0`.

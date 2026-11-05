@@ -2,7 +2,8 @@
 //! engine's kinds. No correctness depends on one; each says what happened and to what.
 
 use osis_base::Tid;
-use osis_node::{ChangeId, DiagnosticKind as K};
+use crate::change::ChangeId;
+use osis_node::DiagnosticKind as K;
 
 /// Something an app may want to log, or tell its user. All but `Handled` name what an app could do
 /// something about; more kinds may come.
@@ -47,6 +48,7 @@ pub enum Diagnostic {
     Handled { things: Vec<Tid>, commit: Option<ChangeId>, peer: Option<Tid>, detail: String },
 }
 
+#[doc(hidden)]
 impl From<osis_node::Diagnostic> for Diagnostic {
     fn from(d: osis_node::Diagnostic) -> Diagnostic {
         let osis_node::Diagnostic { kind, tids, commit, peer, detail } = d;

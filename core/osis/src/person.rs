@@ -155,14 +155,12 @@ impl Joining {
         &self.request
     }
 
-    /// This new device's node tid.
-    pub fn node(&self) -> Tid {
+    /// This new device's node tid (`internals::joining_node`).
+    pub(crate) fn node(&self) -> Tid {
         self.db.node()
     }
 
-    /// Takes the offering device's reply: applies the grant and what came with it, places the
-    /// grant's certificate copy under the home label (spec/sync.md §3) and returns the
-    /// database, now a device of the person.
+    /// Takes the offering device's reply and returns the database, now a device of the person.
     pub fn finish(self, reply: &PairReply) -> Result<Osis> {
         let items = unpack(&reply.0, REPLY)?;
         let [_, Value::Bytes(grant), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing reply".into())) };
@@ -188,9 +186,8 @@ impl Joining {
 }
 
 impl Osis {
-    /// Restores the person of a recovery card on this fresh device (spec/permissions.md §8):
-    /// claims the home label by the card's key, downloads it, then (signing as the recovery key)
-    /// makes this node an admin of the person. Needs a runtime; the card's hosts are added
+    /// Restores the person of a recovery card on this fresh device: downloads its home group by the
+    /// card's key, then makes this node an admin of the person. Needs a runtime; the card's hosts are added
     /// to `hosts`. `Invalid` when its hosts refuse the card's key; `Unsynced` when the home group stops
     /// opening under this attempt's keys (changed at a host meanwhile: try again); with nobody
     /// answering it waits. On any
@@ -252,7 +249,7 @@ impl Osis {
     }
 
     /// Accepts a new device's request to an offer of this device: makes it an admin of the
-    /// person (or re-seals a device already one) and returns its node tid
+    /// person (or lets back in a device already one) and returns its node tid
     /// with the reply to carry back.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
         if !self.has_store() {

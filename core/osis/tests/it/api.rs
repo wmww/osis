@@ -2,20 +2,22 @@
 //! Writes, Errors, Footguns closed).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis::schema::RawKey as _;
+use osis::internals::Exact as _;
+use osis::internals::ChangeRaw as _;
+use osis::internals::schema::RawKey as _;
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
 use crate::common::{CreateIn, CreateExpiringIn};
-use osis::schema::core_types::Group;
-use osis::{Error, MemStore, Osis, Role, Value, core, p};
+use osis::internals::schema::core_types::Group;
+use osis::{Error, MemStore, Osis, Role, Value, p};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[allow(clippy::all, dead_code)]
 mod notes {
-    use osis::schema as osis_schema;
+    use osis::internals::schema as osis_schema;
     include!("../../../schema/tests/gen/notes.rs");
 }
 use notes::{Task, task};
@@ -25,7 +27,7 @@ fn s(x: &str) -> Value {
 }
 
 fn task(title: &str) -> Task {
-    Task { title: title.into(), done: false, tags: BTreeSet::new(), priority: None, due: None, status: None, weight: osis::schema::osis_base::Float::new(1.0) }
+    Task { title: title.into(), done: false, tags: BTreeSet::new(), priority: None, due: None, status: None, weight: osis::internals::schema::osis_base::Float::new(1.0) }
 }
 
 // notes/api.md Handle and lifecycle: a new database has a node, a person actor and its home
@@ -38,7 +40,7 @@ fn create_and_reopen_spec_api_handle() {
     let (node, me) = {
         let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap().0;
         assert_ne!(db.me(), db.node());
-        assert_eq!(db.at(db.me(), core::GROUP).get().unwrap(), Some(Group::default()));
+        assert_eq!(db.at(db.me(), osis::internals::core_types::GROUP).get().unwrap(), Some(Group::default()));
         assert_eq!(db.role_on(db.me()).unwrap(), Some(Role::Admin));
         (db.node(), db.me())
     };
@@ -87,7 +89,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
     assert_eq!(d, osis::Diagnostic::Mismatch { thing: n, detail: "note:title.0: type error at (root): expected string".into() });
     assert_eq!(db.at(n, osis::Key::untyped(ak("note:title.0"))).get().unwrap(), Some(Value::Int(3)));
     // one element of another shape (as a newer version's enum case would be)
-    let Value::List(mut l) = osis::schema::RawKey::encode(&notes::TASKS, &vec![task("milk"), task("eggs")]) else { panic!() };
+    let Value::List(mut l) = osis::internals::schema::RawKey::encode(&notes::TASKS, &vec![task("milk"), task("eggs")]) else { panic!() };
     let Some(Value::Map(m)) = l.get_mut(1) else { panic!() };
     m.insert(Value::Int(1), Value::Int(7));
     db.commit_set(n, osis::Key::untyped(ak("note:tasks.0")), &Value::List(l)).unwrap();
@@ -120,7 +122,7 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
             tx.send(d).unwrap();
         }
     }).unwrap();
-    let bogus = Value::link(osis::schema::osis_base::Link { hash: [3; 32], blob: osis::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let bogus = Value::link(osis::internals::schema::osis_base::Link { hash: [3; 32], blob: osis::internals::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
     db.commit_set(n, osis::Key::untyped(ak("note:pinned.0")), &Value::Map([(bogus, Value::Int(1))].into_iter().collect())).unwrap();
     assert_eq!(db.at(n, notes::PINNED).get().unwrap(), None, "absent, not an error");
     assert!(matches!(recv(&diags), osis::Diagnostic::Mismatch { thing, .. } if thing == n));
@@ -132,7 +134,7 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
 // set element failed every read of the aspect `blob missing`).
 #[test]
 fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
-    use osis::schema::osis_base::{BlobId, Link};
+    use osis::internals::schema::osis_base::{BlobId, Link};
     let db = db(1);
     let mut w = db.write();
     let n = w.create_in(db.me(), &[db.me()]).unwrap();
@@ -209,7 +211,7 @@ fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
     let _sub = db.at(n, osis::Key::untyped(k.clone())).on_change(move |_, c| tx.send((c.value, c.source)).unwrap()).unwrap();
     assert_eq!(recv(&changes), (Ok(None), osis::Source::Initial));
     db.engine(|e| e.put_blobs(vec![(l.blob, bytes)])).unwrap();
-    assert_eq!(recv(&changes), (Ok(Some(big.clone())), osis::Source::Derived(osis::Cause::Fetched)));
+    assert_eq!(recv(&changes), (Ok(Some(big.clone())), osis::Source::Derived(osis::ChangeReason::Arrived)));
     assert_eq!(watch.current(), Ok(Some(big)));
 }
 
@@ -380,10 +382,10 @@ fn edit_keeps_concurrent_change_set_clobbers_spec_api_footguns() {
 fn materialization_bound_spec_data_model_6() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.client.materialize_limit = 64 * 1024;
+    cf.handle.read_limit = 64 * 1024;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:doc.0");
-    let big = Value::Bytes(vec![7u8; osis::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
+    let big = Value::Bytes(vec![7u8; osis::internals::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
     let mid = Value::Bytes(vec![1u8; 100 * 1024]);
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -400,7 +402,7 @@ fn materialization_bound_spec_data_model_6() {
 fn large_value_round_trip_spec_data_model_6() {
     let db = db(1);
     let k = ak("t:blob.0");
-    let big = Value::Bytes((0..osis::schema::osis_base::format::CHUNK_THRESHOLD * 2).map(|i| (i % 251) as u8).collect());
+    let big = Value::Bytes((0..osis::internals::schema::osis_base::format::CHUNK_THRESHOLD * 2).map(|i| (i % 251) as u8).collect());
     let mut w = db.write();
     let t = w.create().unwrap();
     w.at(t, osis::Key::untyped(k.clone())).set(&big).unwrap();
@@ -531,8 +533,8 @@ fn role_class_refused_spec_permissions_1() {
     assert!(matches!(w.at(t, osis::Key::untyped(ak("roles.0"))).remove(), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::Key::untyped(ak("groups.0"))).remove(), Err(Error::Invalid(_))));
     // group.0 changes by the group calls alone: they check sync and clean up tied edges
-    assert!(matches!(w.at(t, core::GROUP).set(&Group::default()), Err(Error::Invalid(_))));
-    assert!(matches!(w.at(t, core::GROUP).path(p![core::group::ITEMS]).add(&t), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, osis::internals::core_types::GROUP).set(&Group::default()), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, osis::internals::core_types::GROUP).path(p![osis::internals::GROUP_ITEMS]).add(&t), Err(Error::Invalid(_))));
     assert!(matches!(w.at(t, osis::Key::untyped(ak("group.0"))).remove(), Err(Error::Invalid(_))));
     assert!(matches!(db.at(t, osis::Key::untyped(ak("group.0"))).path(osis::p![]).edit_text().and_then(|s| {
         s.splice(0..0, "x")?;
@@ -568,7 +570,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
     let mut w = db.write();
     let t = w.create().unwrap();
     w.at(t, osis::Key::untyped(k.clone())).expires(osis::Expiry::In(std::time::Duration::from_secs(60))).set(&s("hi")).unwrap();
-    let ret = osis::Retention { by: osis::schema::PurgeBy::Writer, ..Default::default() };
+    let ret = osis::Retention { by: osis::internals::schema::PurgeBy::Writer, ..Default::default() };
     w.at(t, osis::Key::untyped(r.clone())).retention(ret).set(&s("kept")).unwrap();
     w.commit().unwrap();
     assert_eq!(db.at(t, osis::Key::untyped(k.clone())).get().unwrap(), Some(s("hi")));
@@ -577,7 +579,7 @@ fn expiry_retention_purge_spec_commits_5_6() {
     assert_eq!(db.at(t, osis::Key::untyped(k.clone())).get().unwrap(), None);
     // expiry in the past is invalid at commit
     let mut w = db.write();
-    assert!(matches!(w.at(t, osis::Key::untyped(k.clone())).expires(osis::Expiry::At(osis::WallMs(T0))).set(&s("late")), Err(Error::Invalid(_))));
+    assert!(matches!(w.at(t, osis::Key::untyped(k.clone())).expires(osis::Expiry::At(osis::Time(T0))).set(&s("late")), Err(Error::Invalid(_))));
     drop(w);
     // purge
     let mut w = db.write();
@@ -599,7 +601,7 @@ fn act_as_spec_commits_1() {
     w.act_as(db.node());
     w.at(t, osis::Key::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     let c2 = w.commit().unwrap().unwrap();
-    let actor = |c: osis::CommitId| db.engine(|e| e.header(&c).unwrap().actor);
+    let actor = |c: osis::internals::CommitId| db.engine(|e| e.header(&c).unwrap().actor);
     assert_eq!((actor(c1.id.commit().unwrap()), actor(c2.id.commit().unwrap())), (db.me(), db.node()));
     // an empty write commits nothing
     assert_eq!(db.write().commit().unwrap(), None);
@@ -649,7 +651,7 @@ fn stream_len_set_stream_spec_data_model_6() {
     use std::io::{Read, Seek, SeekFrom};
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.client.materialize_limit = 64 * 1024;
+    cf.handle.read_limit = 64 * 1024;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:blob.0");
     let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
@@ -746,7 +748,7 @@ fn deleted_reads_unknown_spec_api_reads() {
     let got: Vec<_> = rx.try_iter().collect();
     assert!(got.iter().any(|(ak, v, known)| ak.as_str() == "t:x.0" && *v == Ok(None) && !known), "{got:?}");
     assert!(!db.knows(t).unwrap() && db.created(t).unwrap().is_some());
-    assert!(!db.groups_of(db.me()).unwrap().item_of.contains(&t) && !db.at(db.me(), core::GROUP).get().unwrap().unwrap().items.contains(&t));
+    assert!(!db.groups_of(db.me()).unwrap().item_of.contains(&t) && !db.at(db.me(), osis::internals::core_types::GROUP).get().unwrap().unwrap().items.contains(&t));
     // an unknown tid: not known, no creation
     let other = db_other_thing();
     assert!(!db.knows(other).unwrap() && db.created(other).unwrap().is_none());
@@ -788,7 +790,7 @@ fn groups_of_relations_spec_data_model_8() {
     w.commit().unwrap();
     assert_eq!(db.groups_of(tag).unwrap(), osis::GroupsOf::default());
     for g in [g1, g2] {
-        let d = db.at(g, core::GROUP).get().unwrap().unwrap();
+        let d = db.at(g, osis::internals::core_types::GROUP).get().unwrap().unwrap();
         assert!(!d.items.contains(&tag) && !d.subgroups.contains(&tag), "{g}: {d:?}");
     }
     assert!(!db.knows(tag).unwrap());
@@ -821,7 +823,7 @@ fn placement_reaching_no_synced_group_fails_spec_api_writes() {
     // ... until a durable write persists it with that placement: the same check
     let r = db.commit_set(e, osis::Key::untyped(ak("t:x.0")), &Value::Int(1));
     assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("as a subgroup")), "{r:?}");
-    assert_eq!(db.created(e).unwrap().unwrap().commit, None, "still ephemeral");
+    assert_eq!(db.created(e).unwrap().unwrap().id, None, "still ephemeral");
     // a group with no synced group at all: device-local, allowed (a `NotSynced` diagnostic)
     let mut w = db.write();
     let l = w.create_durable(db.me()).unwrap();
@@ -967,7 +969,7 @@ fn expiring_placement_api_writes() {
     w.at(t, osis::Key::untyped(x.clone())).set(&s("stays")).unwrap();
     let kept = t;
     w.commit().unwrap();
-    let items = |db: &Osis| db.at(db.me(), core::GROUP).get().unwrap().unwrap().items;
+    let items = |db: &Osis| db.at(db.me(), osis::internals::core_types::GROUP).get().unwrap().unwrap().items;
     assert!(items(&db).contains(&gone) && items(&db).contains(&kept));
     c.advance(61_000);
     db.engine(|e| e.tick()).unwrap();
@@ -993,7 +995,7 @@ fn expiring_placement_api_writes() {
     assert!(matches!(w.create_in(db.me(), &[db.me()]), Err(Error::Invalid(_))));
     drop(w);
     // the `group.0` field constants are the ones `add` writes
-    assert_eq!(db.at(db.me(), core::GROUP).path(p![core::group::ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
+    assert_eq!(db.at(db.me(), osis::internals::core_types::GROUP).path(p![osis::internals::GROUP_ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
 }
 
 // spec/commits.md §2 (`created.0`); notes/api.md Reads (`owner_of`, `created`, `now`): the owner fixed at creation, the creating
@@ -1002,16 +1004,16 @@ fn expiring_placement_api_writes() {
 fn owner_created_now_api_reads() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
-    assert_eq!(db.now().unwrap(), osis::WallMs(T0));
+    assert_eq!(db.now().unwrap(), osis::Time(T0));
     c.advance(5);
-    assert_eq!(db.now().unwrap(), osis::WallMs(T0 + 5));
+    assert_eq!(db.now().unwrap(), osis::Time(T0 + 5));
     let mut w = db.write();
     let t = w.create_durable(db.me()).unwrap();
     let done = w.commit().unwrap().unwrap();
     assert_eq!(db.owner_of(t).unwrap(), Some(db.me()));
     let ci = db.created(t).unwrap().unwrap();
-    assert_eq!((ci.commit, ci.ts, ci.node, ci.actor, ci.received), (done.id.commit(), done.ts, db.node(), db.me(), osis::WallMs(T0 + 5)));
-    assert_eq!(ci.shown(), osis::WallMs(T0 + 5));
+    assert_eq!((ci.id, ci.ts(), ci.node, ci.actor, ci.received), (Some(done.id), done.ts(), db.node(), db.me(), osis::Time(T0 + 5)));
+    assert_eq!(ci.shown(), osis::Time(T0 + 5));
     c.advance(5);
     db.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("later")).unwrap();
     assert_eq!(db.created(t).unwrap().unwrap(), ci, "the creation, not the newest commit");
@@ -1041,7 +1043,7 @@ fn changed_content_only_api_reads() {
     ca.advance(10);
     a.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("1")).unwrap();
     let ch = a.changed(t).unwrap().unwrap();
-    assert_eq!((ch.commit, ch.shown()), (Some(newest(&a, t)), osis::WallMs(T0 + 10)));
+    assert_eq!((ch.id, ch.shown()), (Some(newest(&a, t).into()), osis::Time(T0 + 10)));
     assert_ne!(a.created(t).unwrap(), Some(ch));
     // placement: neither the item's nor the group's content
     let home = a.changed(a.me()).unwrap();
@@ -1060,28 +1062,28 @@ fn changed_content_only_api_reads() {
     b.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("2")).unwrap();
     deliver(&b, &a);
     let ch = a.changed(t).unwrap().unwrap();
-    assert_eq!((ch.node, ch.ts.wall_ms(), ch.shown()), (b.node(), osis::WallMs(T0 + 30 * 60_000), osis::WallMs(T0 + 20)));
+    assert_eq!((ch.node, ch.ts().wall_ms(), ch.shown()), (b.node(), osis::Time(T0 + 30 * 60_000), osis::Time(T0 + 20)));
     // a's next change: its ts follows b's (the clock rule), shown latest at its receipt
     ca.advance(10);
     a.commit_set(t, osis::Key::untyped(ak("t:y.0")), &s("3")).unwrap();
     let ch = a.changed(t).unwrap().unwrap();
-    assert_eq!((ch.node, ch.shown()), (a.node(), osis::WallMs(T0 + 30)));
+    assert_eq!((ch.node, ch.shown()), (a.node(), osis::Time(T0 + 30)));
     ca.advance(10);
     let mut w = a.write();
     w.delete(t).unwrap();
     w.commit().unwrap();
     assert!(!a.knows(t).unwrap());
-    assert_eq!(a.changed(t).unwrap().unwrap().shown(), osis::WallMs(T0 + 40), "a delete is a change");
+    assert_eq!(a.changed(t).unwrap().unwrap().shown(), osis::Time(T0 + 40), "a delete is a change");
     let mut w = a.write();
     let e = w.create().unwrap();
     w.at(e, osis::Key::untyped(ak("t:x.0~"))).set(&s("draft")).unwrap();
     w.commit().unwrap();
-    assert!(a.created(e).unwrap().unwrap().commit.is_none());
+    assert!(a.created(e).unwrap().unwrap().id.is_none());
     assert_eq!(a.changed(e).unwrap(), a.created(e).unwrap());
 }
 
 /// The newest held commit on `t` here.
-fn newest(db: &Osis, t: osis::Tid) -> osis::CommitId {
+fn newest(db: &Osis, t: osis::Tid) -> osis::internals::CommitId {
     db.commits(&osis::CommitQuery { scope: Some(osis::Scope::Thing(t)), limit: Some(1), ..Default::default() }).unwrap()[0].commit.id.commit().unwrap()
 }
 
@@ -1129,7 +1131,7 @@ fn created_not_a_snapshot_spec_commits_2() {
     let done = w.commit().unwrap().unwrap();
     c.advance(60_000);
     let snap = a.engine(|e| e.snapshot(&t, &ak("t:x.0"))).unwrap().unwrap();
-    assert_eq!(a.created(t).unwrap().unwrap().commit, Some(done.id.commit().unwrap()));
+    assert_eq!(a.created(t).unwrap().unwrap().id, Some(done.id));
     let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.id.commit().unwrap()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
         b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
@@ -1193,7 +1195,7 @@ fn knows_is_about_content() {
     let t = w.create().unwrap();
     w.commit().unwrap();
     db.sync(t, &[]).unwrap();
-    assert_eq!(db.created(t).unwrap().map(|c| c.commit.is_some()), Some(true), "durable");
+    assert_eq!(db.created(t).unwrap().map(|c| c.id.is_some()), Some(true), "durable");
     assert!(!db.knows(t).unwrap(), "no content yet");
     db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
     assert!(db.knows(t).unwrap());
@@ -1393,7 +1395,7 @@ fn a_first_member_makes_a_group() {
         })
         .unwrap();
     assert_eq!(db.members(plain).unwrap(), vec![]);
-    assert_eq!(db.at(plain, core::GROUP).get().unwrap(), None, "no group yet");
+    assert_eq!(db.at(plain, osis::internals::core_types::GROUP).get().unwrap(), None, "no group yet");
     let mut w = db.write();
     w.group(plain).add(osis::Member::Item(a)).unwrap();
     w.group(plain).add(osis::Member::Item(b)).unwrap();
@@ -1413,7 +1415,7 @@ fn a_first_member_makes_a_group() {
         w.group(other).remove(m).unwrap();
     }
     w.commit().unwrap();
-    assert!(db.members(other).unwrap().is_empty() && db.at(other, core::GROUP).get().unwrap().is_some());
+    assert!(db.members(other).unwrap().is_empty() && db.at(other, osis::internals::core_types::GROUP).get().unwrap().is_some());
     // the acting actor's, whoever the batch acts as
     let mut w = db.write();
     let group_actor = w.create_durable(db.me()).unwrap();
@@ -1585,7 +1587,7 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
 fn a_group_and_member_of_one_batch_keep_by_what_is_written() {
     let db = db(1);
     let x = ak("t:x.0");
-    let kept = |t: osis::Tid| db.created(t).unwrap().unwrap().commit.is_some();
+    let kept = |t: osis::Tid| db.created(t).unwrap().unwrap().id.is_some();
     let new = |write_member: bool| {
         db.batch(|w| {
             let (g, m) = (w.create()?, w.create()?);
@@ -1599,7 +1601,7 @@ fn a_group_and_member_of_one_batch_keep_by_what_is_written() {
     };
     let check = |g, m, what: &str| {
         assert!(kept(g) && kept(m), "{what}");
-        assert_eq!(db.at(g, core::GROUP).get().unwrap().unwrap().items, [m].into(), "{what}: durably");
+        assert_eq!(db.at(g, osis::internals::core_types::GROUP).get().unwrap().unwrap().items, [m].into(), "{what}: durably");
         assert_eq!(db.groups_of(m).unwrap().item_of, vec![g], "{what}: one membership");
         db.engine(|e| {
             assert!(e.closure(&g).contains(&m), "{what}: sync follows");
@@ -1677,13 +1679,13 @@ fn urls_and_host_policy_are_typed() {
     for bad in ["", "no-scheme", "quic://", "://x", "quic://h#key", "quic://a b"] {
         assert!(matches!(bad.parse::<osis::Url>(), Err(Error::Invalid(_))), "{bad}");
     }
-    let long = format!("quic://{}", "h".repeat(osis::schema::osis_base::format::MAX_URL_BYTES));
+    let long = format!("quic://{}", "h".repeat(osis::internals::schema::osis_base::format::MAX_URL_BYTES));
     assert!(matches!(long.parse::<osis::Url>(), Err(Error::Invalid(_))));
     let db = db(1);
-    let policy = osis::HostPolicy { cap_bytes: 77, deletes: 9, ..Default::default() };
+    let policy = osis::HostPolicy { group_bytes: 77, tuning: [("deletes".to_string(), 9)].into(), ..Default::default() };
     db.set_hosting(Some(osis::Hosting { policy: policy.clone(), ..Default::default() })).unwrap();
     assert_eq!(db.hosting().unwrap().unwrap().policy, policy);
-    let bad = osis::HostPolicy { max_queued_bytes: 1, ..Default::default() };
+    let bad = osis::HostPolicy { tuning: [("max_queued_bytes".to_string(), 1)].into(), ..Default::default() };
     assert!(matches!(db.set_hosting(Some(osis::Hosting { policy: bad, ..Default::default() })), Err(Error::Invalid(_))));
 }
 
@@ -1700,9 +1702,120 @@ fn waiting_calls_are_send() {
         send(db.remove_device(t, o));
         send(db.connect_node(&login));
         send(db.group_source(t, osis::GroupSource::Local));
-        send(Osis::connect(std::slice::from_ref(&login), osis::ClientConfig::default()));
-        send(Osis::connect_socket(std::path::Path::new("x"), osis::ClientConfig::default()));
+        send(Osis::connect(std::slice::from_ref(&login), osis::HandleConfig::default()));
+        send(Osis::connect_socket(std::path::Path::new("x"), osis::HandleConfig::default()));
         send(Osis::restore(osis::Store::Memory(MemStore::new()), &[], &recovery, osis::Config::default()));
     }
     let _ = all;
+}
+
+// spec: none (API surface); notes/api.md Reads: a key tells an app the shape of its values, recursive types included, with no schema in sight
+#[test]
+fn value_type_describes_a_key_api_design() {
+    use osis::ValueType as V;
+    let db = db(1);
+    db.register_schema(
+        "t.osis",
+        "version 1;
+type tree = struct { 0 label: string, 1 kids: list<tree> };
+type mood = enum { 0 calm, 1 odd(int) };
+type rec = struct { 0 name: string, 1 when: timestamp, 2 span: duration, 3 nick: option<string>, 4 mood: mood, 5 tags: set<string>, 6 sizes: map<string, int>, 7 n: counter<int>, 8 body: markdown, 9 who: tid, 10 data: blob, 11 ok: bool, 12 x: float, 13 tree: tree };
+aspect t:rec.0: rec;
+",
+    )
+    .unwrap();
+    let key = db.key("t:rec.0").unwrap();
+    assert_eq!(key.type_name().as_deref(), Some("rec"));
+    let V::Record(f) = key.value_type().unwrap() else { panic!("a record") };
+    let by = |n: &str| f.iter().find(|x| x.name == n).unwrap().clone();
+    assert!(matches!(by("name").ty.get(), V::String));
+    assert!(matches!(by("when").ty.get(), V::Time));
+    assert!(matches!(by("span").ty.get(), V::Duration));
+    assert!(matches!(by("body").ty.get(), V::Text));
+    assert!(matches!(by("who").ty.get(), V::Thing));
+    assert!(matches!(by("data").ty.get(), V::Bytes));
+    assert!(matches!(by("ok").ty.get(), V::Bool));
+    assert!(matches!(by("x").ty.get(), V::Float));
+    assert!(matches!(by("n").ty.get(), V::Counter(_)));
+    assert!(matches!(by("tags").ty.get(), V::Set(_)));
+    assert!(matches!(by("sizes").ty.get(), V::Map(_, _)));
+    let nick = by("nick");
+    assert_eq!((nick.ty.name().as_str(), nick.default.clone()), ("option<string>", Some(Value::Enum(0, None))));
+    assert!(matches!(nick.ty.get(), V::Optional(p) if p.get() == V::String));
+    let V::Cases(c) = by("mood").ty.get() else { panic!("cases") };
+    assert_eq!((c[0].id, c[0].name.as_str(), c[0].value.is_none()), (0, "calm", true));
+    assert!(matches!(c[1].value.as_ref().unwrap().get(), V::Int));
+    // a recursive type describes one level per ask
+    let V::Record(t) = by("tree").ty.get() else { panic!("a record") };
+    let V::List(kids) = t[1].ty.get() else { panic!("a list") };
+    assert!(matches!(kids.get(), V::Record(_)));
+    // no schema: nothing to say
+    assert_eq!(db.key("t:other.0").unwrap().value_type(), None);
+    assert_eq!(db.key("t:other.0").unwrap().type_name(), None);
+    assert_eq!(osis::Key::untyped(ak("t:rec.0")).value_type(), None);
+    assert_eq!(key.default_retention(), osis::Retention::default());
+}
+
+// spec: none (API surface); notes/api.md Commits: a change's and a place's text form names what it was made from, an entry's or a batch's, and anything else is `Invalid`
+#[test]
+fn change_and_place_text_forms_api_design() {
+    let db = db(1);
+    let k = db.key("t:x.0").unwrap();
+    let mut w = db.write();
+    let t = w.create().unwrap();
+    w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
+    let done = w.commit().unwrap().unwrap();
+    assert_eq!(done.id.to_string().parse::<osis::ChangeId>().unwrap(), done.id);
+    let page = db.at(t, k.clone()).history(osis::HistoryFrom::Newest, 1).unwrap();
+    let pos = page.entries[0].pos();
+    assert_eq!(pos, done.pos());
+    assert_eq!(pos.to_string().parse::<osis::HistoryPos>().unwrap(), pos);
+    assert_eq!(pos.change(), Some(done.id));
+    assert_eq!(pos.at(), done.written);
+    // a time's place comes before what was written then, and names no change
+    let at = osis::HistoryPos::time(done.written);
+    assert!(at < pos);
+    assert_eq!(at.change(), None);
+    assert_eq!(db.at(t, k.clone()).history(osis::HistoryFrom::After(at), 1).unwrap().entries[0].pos(), pos);
+    // past the last moment a place can name: still a place, after everything
+    assert!(osis::HistoryPos::time(osis::Time(u64::MAX)) > pos);
+    let m = w_ephemeral(&db, t);
+    assert_eq!(m.to_string().parse::<osis::ChangeId>().unwrap(), m);
+    for bad in ["", "abc", "ephemeral:", "ephemeral:00:1", "ephemeral:zz:1"] {
+        assert!(matches!(bad.parse::<osis::ChangeId>(), Err(Error::Invalid(_))), "{bad}");
+    }
+    for bad in ["", "1", "x/y", "1/abc"] {
+        assert!(matches!(bad.parse::<osis::HistoryPos>(), Err(Error::Invalid(_))), "{bad}");
+    }
+}
+
+fn w_ephemeral(db: &Osis, t: osis::Tid) -> osis::ChangeId {
+    let mut w = db.write();
+    w.at(t, db.key("t:cursor.0~").unwrap()).set(&Value::Int(1)).unwrap();
+    w.commit().unwrap().unwrap().id
+}
+
+// spec: none (API surface); notes/api.md Hosting: an admission id is opaque text, asked of a group; a group that does not sync has none; a host policy says what it takes on in plain limits, and the rest stays by name
+#[test]
+fn admission_ids_and_host_policy_api_design() {
+    let db = db(1);
+    let mut w = db.write();
+    let g = w.create().unwrap();
+    w.at(g, osis::core::NAME).set(&"g".to_string()).unwrap();
+    w.commit().unwrap();
+    assert!(db.admission_ids(g).unwrap().is_empty(), "not synced");
+    for bad in ["", "abc", "zz"] {
+        assert!(matches!(bad.parse::<osis::AdmissionId>(), Err(Error::Invalid(_))), "{bad}");
+    }
+    let id: osis::AdmissionId = "00112233445566778899aabbccddeeff".parse().unwrap();
+    assert_eq!(id.to_string(), "00112233445566778899aabbccddeeff");
+    let mut p = osis::HostPolicy { groups: 7, ..Default::default() };
+    p.set("connections", 3).unwrap();
+    p.set("deletes", 9).unwrap();
+    assert!(p.set("no_such_limit", 1).is_err());
+    db.set_hosting(Some(osis::Hosting { admitted: [id].into(), caps: [(id, osis::HostCaps { entries: 1, bytes: 2 })].into(), policy: p.clone(), ..Default::default() })).unwrap();
+    let h = db.hosting().unwrap().unwrap();
+    assert_eq!((h.policy.groups, h.policy.connections, h.policy.tuning.get("deletes").copied()), (7, 3, Some(9)));
+    assert_eq!(h.policy, p);
+    assert!(h.admitted.contains(&id) && h.caps.contains_key(&id));
 }

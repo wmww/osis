@@ -5,13 +5,11 @@ use crate::args::*;
 use crate::json::{self, J};
 use crate::text::{self, Ty};
 use crate::write::{self, Did};
-use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
+use crate::{Ctx, StoreSel, exit, open, opt_ts, parse_ak, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
-use osis_schema::RawKey as _;
 use osis::{
-    Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, Schema, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Ts,
-    Value,
+    Change, ChangeId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -42,34 +40,28 @@ pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
     }
 }
 
-pub fn commit_text(c: &CommitId) -> String {
-    osis_schema::osis_base::hex::encode(&c.0)
+/// A commit id, as `inspect` prints it.
+pub fn commit_text(c: &osis::internals::CommitId) -> String {
+    ChangeId::from(*c).to_string()
 }
 
-/// A change: its commit id, or `ephemeral:<session prefix>:<n>` for an ephemeral batch.
-pub fn change_text(c: &osis::ChangeId) -> String {
-    match c {
-        osis::ChangeId::Commit(c) => commit_text(c),
-        osis::ChangeId::Ephemeral(e) => format!("ephemeral:{}:{}", osis_schema::osis_base::hex::encode(&e.session[..8]), e.n),
-    }
-}
-
-/// Prints a commit id (nothing when nothing changed).
-fn emit_commit(ctx: &mut Ctx<'_>, c: Option<CommitId>) -> anyhow::Result<()> {
-    let c = c.map(|c| commit_text(&c));
+/// Prints a change id (nothing when nothing changed).
+fn emit_commit(ctx: &mut Ctx<'_>, c: Option<ChangeId>) -> anyhow::Result<()> {
+    let c = c.map(|c| c.to_string());
     ctx.emit(&c.iter().cloned().collect::<Vec<_>>(), J::obj([("commit", J::opt(c.map(J::str)))]))
 }
 
-fn parse_commit(s: &str) -> anyhow::Result<CommitId> {
-    osis_schema::osis_base::hex::decode(s).and_then(|b| <[u8; 32]>::try_from(b).ok()).map(CommitId).ok_or_else(|| usage(format!("not a commit id (64 hex digits): {s}")))
+fn parse_change(s: &str) -> anyhow::Result<ChangeId> {
+    s.parse().map_err(|_| usage(format!("not a change id: {s}")))
+}
+
+/// The commit behind a change id, as `inspect` asks.
+fn parse_commit(s: &str) -> anyhow::Result<osis::internals::CommitId> {
+    osis::internals::ChangeRaw::commit(&parse_change(s)?).ok_or_else(|| usage(format!("not a commit id (64 hex digits): {s}")))
 }
 
 fn ts_text(raw: bool, ms: u64) -> String {
     if raw { ms.to_string() } else { i64::try_from(ms).ok().and_then(text::rfc3339).unwrap_or_else(|| ms.to_string()) }
-}
-
-fn ts_of(t: Ts) -> u64 {
-    t.wall_ms().0
 }
 
 // ---- futures without a runtime: the API's futures are runtime-agnostic (notes/api.md).
@@ -119,6 +111,12 @@ pub(crate) fn wait<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -
     Ok(within(ctx.timeout()?, f)?)
 }
 
+/// `wait` of a call judging a link or card: nothing says it never will, so past `--timeout` it says
+/// what is known, and that nothing was left half done.
+pub(crate) fn confirm<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
+    race(ctx.timeout()?, f).unwrap_or_else(|| Err(Error::Network("could not confirm this link yet; trying again is safe".into()))).map_err(Into::into)
+}
+
 /// `wait` of a call catching up as `sync` says: a `SyncFirst::Try` spends `--timeout` on that and
 /// goes ahead, and what follows gets as long again.
 pub(crate) fn wait_after<T>(ctx: &Ctx<'_>, sync: SyncFirst, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
@@ -145,7 +143,7 @@ fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
     let hint: Vec<String> = groups
         .iter()
         .filter_map(|g| st.groups.get(g).filter(|x| x.state == SyncState::Refused).map(|x| (g, x)))
-        .flat_map(|(g, x)| x.not_admitted.iter().map(move |h| format!("host {h} does not admit group {} (yet)", g.to_uri())))
+        .flat_map(|(g, x)| x.refused_by.iter().map(move |h| format!("host {h} does not admit group {} (yet)", g.to_uri())))
         .collect();
     if hint.is_empty() { e.into() } else { anyhow::Error::from(e).context(hint.join("; ")) }
 }
@@ -228,7 +226,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Wait { .. }
             | Cmd::Serve { .. }
             | Cmd::Group(GroupCmd::Source { .. })
-            | Cmd::Clients(ClientsCmd::RotateKey)
+            | Cmd::Clients(ClientsCmd::RotateAddress)
             | Cmd::Watch { .. }
             | Cmd::Grants { watch: true, .. }
             | Cmd::Diag { follow: true }
@@ -365,11 +363,11 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     let mut did = Did::default();
     write::apply(ctx, &mut w, &c, &mut did)?;
     let done = w.commit()?;
-    let commit = done.and_then(|c| c.id.commit());
+    let commit = done.map(|c| c.id);
     let created = did.created.first().map(|(_, t)| *t);
     // a new thing with no durable data lives in this process's memory only
     let unsaved = match created {
-        Some(t) => db.created(t)?.is_some_and(|c| c.commit.is_none()),
+        Some(t) => db.created(t)?.is_some_and(|c| c.id.is_none()),
         None => false,
     };
     if unsaved {
@@ -379,9 +377,9 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     if let Some(t) = created {
         lines.push(t.to_uri());
     } else if let Some(c) = &commit {
-        lines.push(commit_text(c));
+        lines.push(c.to_string());
     }
-    let mut f = vec![("commit".to_string(), J::opt(commit.as_ref().map(|c| J::str(commit_text(c)))))];
+    let mut f = vec![("commit".to_string(), J::opt(commit.as_ref().map(|c| J::str(c.to_string()))))];
     if let Some(t) = created {
         f.push(("tid".into(), J::tid(t)));
     }
@@ -440,6 +438,11 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Hosting(HostingCmd::Show) => hosting_show(ctx),
         Cmd::Hosting(HostingCmd::Set(f)) => set_hosting(ctx, f),
         Cmd::Hosting(HostingCmd::Off) => Ok(db.set_hosting(None)?),
+        Cmd::Hosting(HostingCmd::Ids { g }) => {
+            let ids: Vec<String> = db.admission_ids(ctx.tid(&g)?)?.iter().map(ToString::to_string).collect();
+            let j = J::Arr(ids.iter().map(|x| J::str(x.clone())).collect());
+            ctx.emit(&ids, j)
+        }
         Cmd::Clients(c) => clients(ctx, &c),
         Cmd::Serve { host, client_listen } => serve(ctx, host, &client_listen),
         Cmd::Schema(_) => unreachable!("handled before opening"),
@@ -465,11 +468,11 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
             q.actors = actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?;
             q.kinds = kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?;
-            q.reverts = reverts.as_deref().map(parse_commit).transpose()?.map(osis::ChangeId::Commit);
-            q.reverted_by = reverted_by.as_deref().map(parse_commit).transpose()?.map(osis::ChangeId::Commit);
-            q.after = after.as_deref().map(parse_commit).transpose()?.map(osis::ChangeId::Commit);
-            q.since = opt_ts(&since)?.and_then(|ms| Ts::make(ms, 0));
-            q.until = opt_ts(&until)?.and_then(|ms| Ts::make(ms, 0));
+            q.reverts = reverts.as_deref().map(parse_change).transpose()?;
+            q.reverted_by = reverted_by.as_deref().map(parse_change).transpose()?;
+            q.after = after.as_deref().map(parse_change).transpose()?;
+            q.since = opt_ts(&since)?;
+            q.until = opt_ts(&until)?;
             // the one change undo or redo would revert: a question of its own, about a scope
             if let Some(n) = next {
                 if q != (CommitQuery { scope: q.scope.clone(), ..CommitQuery::default() }) {
@@ -498,23 +501,23 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Purge { t, ak, commit, author } => {
             let tid = ctx.tid(&t)?;
             let key = ctx.key(&ak)?;
-            let commit = commit.as_deref().map(parse_commit).transpose()?;
+            let commit = commit.as_deref().map(parse_change).transpose()?;
             let author = author.as_deref().map(|a| ctx.tid(a)).transpose()?;
             let mut w = db.write();
             let mut at = w.at(tid, key);
             match (commit, author) {
-                (Some(c), _) => at.purge(osis::Purge::Change(osis::ChangeId::Commit(c)))?,
+                (Some(c), _) => at.purge(osis::Purge::Change(c))?,
                 (_, Some(a)) => at.purge(osis::Purge::Author(a))?,
                 _ => at.purge(osis::Purge::All)?,
             }
             let done = w.commit()?;
-            emit_commit(ctx, done.and_then(|d| d.id.commit()))
+            emit_commit(ctx, done.map(|d| d.id))
         }
         Cmd::Undo { scope: s } => undo(ctx, &s, false),
         Cmd::Redo { scope: s } => undo(ctx, &s, true),
         Cmd::Revert { id } => {
-            let c = db.revert(osis::ChangeId::Commit(parse_commit(&id)?))?;
-            emit_commit(ctx, c.id.commit())
+            let c = db.revert(parse_change(&id)?)?;
+            emit_commit(ctx, Some(c.id))
         }
         Cmd::Groups { t } => {
             let gs = db.groups_of(ctx.tid(&t)?)?;
@@ -609,7 +612,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
-            let t = wait(ctx, db.redeem(&l))?;
+            let t = confirm(ctx, db.redeem(&l))?;
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
         Cmd::Link(LinkCmd::Ls { t }) => {
@@ -642,7 +645,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Card(CardCmd::Import { card }) => {
             let c: osis::ContactCard = ctx.arg_text(&card)?.parse()?;
-            let a = wait(ctx, db.import_contact(&c))?;
+            let a = confirm(ctx, db.import_contact(&c))?;
             ctx.emit(&[a.to_uri()], J::obj([("actor", J::tid(a))]))
         }
         Cmd::Ownerless { admin } => {
@@ -660,7 +663,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                         return;
                     }
                 };
-                let l = st.groups.iter().map(|(g, x)| format!("{} {:?}", g.to_uri(), x.state)).chain(st.split.iter().map(|t| format!("{} split", t.to_uri()))).collect::<Vec<_>>().join(", ");
+                let l = st.groups.iter().map(|(g, x)| format!("{} {:?}", g.to_uri(), x.state)).chain(st.two_sources.iter().map(|t| format!("{} two sources", t.to_uri()))).collect::<Vec<_>>().join(", ");
                 let _ = tx.send(format!("connected {} {l}", st.connected));
             })?;
             let timeout = ctx.timeout_or(None)?;
@@ -745,15 +748,15 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
         return Ok(());
     }
     let (v, pty) = match path {
-        None | Some("") => (db.at(t, key.clone()).get()?, key.ty().cloned()),
+        None | Some("") => (db.at(t, key.clone()).get()?, key.value_type()),
         Some(p) => {
             let p = write::path(ctx, t, &key, p, false)?;
-            let pty = key.schema().and_then(|s| text::type_at_path(s, key.ty()?, &p.0));
+            let pty = key.value_type().and_then(|t| text::type_at_path(t, &p.0));
             (db.at(t, key.clone()).path(p).get::<osis::Value>()?, pty)
         }
     };
     let Some(v) = v else { return Err(exit(3, "")) };
-    let (s, j) = show_value(ctx, &v, ty_in(&key, pty.as_ref()));
+    let (s, j) = show_value(ctx, &v, pty.as_ref());
     ctx.emit(&[s], j)
 }
 
@@ -764,7 +767,8 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     let t = ctx.tid(t)?;
     let key = ctx.key(ak)?;
     let db = ctx.db.clone();
-    let ty = key_ty(&key);
+    let ty = key.value_type();
+    let ty = ty.as_ref();
     let (base, new) = match base {
         Some(b) => {
             let base = ctx.value(&b, ty)?;
@@ -785,7 +789,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     let mut w = db.write();
     w.at(t, key.clone()).edit(&base, &new)?;
     let done = w.commit()?;
-    emit_commit(ctx, done.and_then(|c| c.id.commit()))
+    emit_commit(ctx, done.map(|c| c.id))
 }
 
 /// Where `edit`'s temp file goes: the per-user runtime directory (owner-only, usually in
@@ -843,7 +847,7 @@ fn write_script(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         write::apply(ctx, &mut w, c, &mut did).with_context(|| format!("line {n}"))?;
     }
     let done = w.commit()?;
-    let commit = done.map(|c| change_text(&c.id));
+    let commit = done.map(|c| c.id.to_string());
     let mut text = vec![commit.clone().unwrap_or_else(|| "-".into())];
     let mut vars = Vec::new();
     for (name, t) in &did.created {
@@ -869,7 +873,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     for ak in &aks {
         let key = ctx.key(ak.as_str())?;
         let (s, j) = match db.at(t, key.clone()).get() {
-            Ok(Some(v)) => show_value(ctx, &v, key_ty(&key)),
+            Ok(Some(v)) => show_value(ctx, &v, key.value_type().as_ref()),
             // a value its schema does not read (a `Mismatch` diagnostic): shown untyped
             Ok(None) => match db.at(t, Key::untyped(ak.clone())).get() {
                 Ok(Some(v)) => show_value(ctx, &v, None),
@@ -890,7 +894,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     lines.push(format!("owner\t{}", owner.map_or("none".into(), |o| o.to_uri())));
     let changed = db.changed(t)?;
-    let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, ts_of(c.ts)), c.node.to_uri()));
+    let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.node.to_uri()));
     lines.push(format!("created\t{}", stamp(created)));
     lines.push(format!("changed\t{}", stamp(changed)));
     let j = J::obj([
@@ -908,12 +912,13 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
 }
 
 fn stamp_json(c: osis::ThingStamp) -> J {
-    J::obj([("commit", J::opt(c.commit.map(|x| J::str(commit_text(&x))))), ("node", J::tid(c.node)), ("ts", J::int(ts_of(c.ts)))])
+    J::obj([("commit", J::opt(c.id.map(|x| J::str(x.to_string())))), ("node", J::tid(c.node)), ("ts", J::int(c.written.0))])
 }
 
 fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
     let key = ctx.key(c.ak.as_str()).ok();
-    let ty = key.as_ref().and_then(key_ty);
+    let ty = key.as_ref().and_then(Key::value_type);
+    let ty = ty.as_ref();
     let (src, info) = match &c.source {
         Source::Initial => ("initial", None),
         Source::Local(i) => ("local", Some(i)),
@@ -930,10 +935,10 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
             ("tid", J::tid(c.tid)),
             ("ak", J::str(c.ak.as_str())),
             ("source", J::str(src)),
-            ("commit", J::opt(info.map(|i| J::str(change_text(&i.id))))),
+            ("commit", J::opt(info.map(|i| J::str(i.id.to_string())))),
             ("actor", J::opt(info.map(|i| J::tid(i.actor)))),
             ("node", J::opt(info.map(|i| J::tid(i.node)))),
-            ("ts", J::opt(info.map(|i| J::int(ts_of(i.ts))))),
+            ("ts", J::opt(info.map(|i| J::int(i.written.0)))),
             ("value", vj),
         ])
         .text()
@@ -943,7 +948,7 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
             "{src} {} {} {} {} {vt}",
             d(info.map(|i| i.actor.to_uri())),
             d(info.map(|i| i.node.to_uri())),
-            d(info.map(|i| ts_text(ctx.g.raw, ts_of(i.ts)))),
+            d(info.map(|i| ts_text(ctx.g.raw, i.written.0))),
             c.ak.as_str()
         )
     }
@@ -1001,7 +1006,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
 }
 
 const KINDS: [(&str, CommitKind); 5] =
-    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot), ("ephemeral", CommitKind::Ephemeral)];
+    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("summary", CommitKind::Summary), ("ephemeral", CommitKind::Ephemeral)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
     KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, role, snapshot or ephemeral")))
@@ -1011,11 +1016,9 @@ fn kind_text(k: CommitKind) -> &'static str {
     KINDS.iter().find(|x| x.1 == k).map_or("?", |x| x.0)
 }
 
-/// A place printed by `history`: `TS/COMMIT`.
+/// A place printed by `history`.
 fn parse_pos(s: &str) -> anyhow::Result<osis::HistoryPos> {
-    let (ts, c) = s.split_once('/').ok_or_else(|| usage(format!("a place is TS/COMMIT, not {s:?}")))?;
-    let ts = ts.parse().ok().and_then(Ts::from_u64).ok_or_else(|| usage(format!("a place's time: {ts:?}")))?;
-    Ok(osis::HistoryPos { ts, id: osis::ChangeId::Commit(parse_commit(c)?) })
+    s.parse().map_err(|_| usage(format!("not a place printed by history: {s:?}")))
 }
 
 fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: usize) -> anyhow::Result<()> {
@@ -1027,17 +1030,16 @@ fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: u
         osis::HistoryBody::Held(Some(v)) => format!("{v:?}"),
         osis::HistoryBody::Held(None) => "held-empty".to_string(),
         osis::HistoryBody::TooLarge { .. } => "too-large".to_string(),
-        osis::HistoryBody::Purged { by, actor } => format!("purged={} by={}", change_text(by), actor.map_or_else(|| "?".to_string(), |a| a.to_uri())),
-        osis::HistoryBody::Dropped => "dropped".to_string(),
+        osis::HistoryBody::Purged { by, actor } => format!("purged={} by={}", by, actor.map_or_else(|| "?".to_string(), |a| a.to_uri())),
+        osis::HistoryBody::Gone => "gone".to_string(),
         osis::HistoryBody::NotFetched => "not-fetched".to_string(),
     };
-    let pos = |p: osis::HistoryPos| format!("{}/{}", p.ts.to_u64(), change_text(&p.id));
     let lines: Vec<String> = page
         .entries
         .iter()
         .map(|e| {
             let i = &e.commit;
-            format!("{} {} {} {} {} {} {}", pos(e.pos()), ts_text(raw, ts_of(i.ts)), i.actor.to_uri(), i.node.to_uri(), kind_text(e.kind), if e.valid { "valid" } else { "invalid" }, body(&e.body))
+            format!("{} {} {} {} {} {} {}", e.pos(), ts_text(raw, i.written.0), i.actor.to_uri(), i.node.to_uri(), kind_text(e.kind), if e.valid { "valid" } else { "invalid" }, body(&e.body))
         })
         .collect();
     let entries = page
@@ -1045,7 +1047,7 @@ fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: u
         .iter()
         .map(|e| {
             let i = &e.commit;
-            J::obj([("pos", J::str(pos(e.pos()))), ("commit", J::str(change_text(&i.id))), ("ts", J::int(ts_of(i.ts))), ("received", J::int(i.received.0)), ("actor", J::tid(i.actor)), ("node", J::tid(i.node)), ("kind", J::str(kind_text(e.kind))), ("valid", J::Bool(e.valid)), ("body", J::str(body(&e.body)))])
+            J::obj([("pos", J::str(e.pos().to_string())), ("commit", J::str(i.id.to_string())), ("ts", J::int(i.written.0)), ("received", J::int(i.received.0)), ("actor", J::tid(i.actor)), ("node", J::tid(i.node)), ("kind", J::str(kind_text(e.kind))), ("valid", J::Bool(e.valid)), ("body", J::str(body(&e.body)))])
         })
         .collect();
     ctx.emit(&lines, J::obj([("entries", J::Arr(entries)), ("more", J::Bool(page.more)), ("complete", J::Bool(page.complete))]))
@@ -1059,11 +1061,11 @@ fn commit_lines(ctx: &mut Ctx<'_>, cs: &[osis::CommitEntry]) -> anyhow::Result<(
         .map(|c| {
             let aks: Vec<String> = c.aspects.iter().map(|(t, a)| format!("{}{}", t.to_uri(), a.as_str())).collect();
             let i = &c.commit;
-            let mut l = format!("{} {} {} {} {} {}", change_text(&i.id), ts_text(raw, ts_of(i.ts)), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
+            let mut l = format!("{} {} {} {} {} {}", i.id, ts_text(raw, i.written.0), i.actor.to_uri(), i.node.to_uri(), kind_text(c.kind), if c.in_effect { "in-effect" } else { "reverted" });
             if let Some(r) = &c.reverts {
-                l += &format!(" reverts={}", change_text(r));
+                l += &format!(" reverts={}", r);
             }
-            if c.dropped {
+            if c.content_gone {
                 l += " dropped";
             }
             l + " " + &aks.join(",")
@@ -1073,15 +1075,15 @@ fn commit_lines(ctx: &mut Ctx<'_>, cs: &[osis::CommitEntry]) -> anyhow::Result<(
         cs.iter()
             .map(|c| {
                 J::obj([
-                    ("commit", J::str(change_text(&c.commit.id))),
-                    ("ts", J::int(ts_of(c.commit.ts))),
+                    ("commit", J::str(c.commit.id.to_string())),
+                    ("ts", J::int(c.commit.written.0)),
                     ("actor", J::tid(c.commit.actor)),
                     ("node", J::tid(c.commit.node)),
                     ("kind", J::str(kind_text(c.kind))),
                     ("in_effect", J::Bool(c.in_effect)),
-                    ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(change_text(r))))),
-                    ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(change_text(r))).collect())),
-                    ("dropped", J::Bool(c.dropped)),
+                    ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(r.to_string())))),
+                    ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(r.to_string())).collect())),
+                    ("dropped", J::Bool(c.content_gone)),
                     ("aspects", J::Arr(c.aspects.iter().map(|(t, a)| J::Arr(vec![J::tid(*t), J::str(a.as_str())])).collect())),
                 ])
             })
@@ -1094,7 +1096,7 @@ fn undo(ctx: &mut Ctx<'_>, s: &Scope, redo: bool) -> anyhow::Result<()> {
     let sc = scope(ctx, s)?;
     let r = if redo { ctx.db.redo(&sc)? } else { ctx.db.undo(&sc)? };
     match r {
-        Some(c) => emit_commit(ctx, c.id.commit()),
+        Some(c) => emit_commit(ctx, Some(c.id)),
         None => Err(exit(3, if redo { "nothing to redo" } else { "nothing to undo" })),
     }
 }
@@ -1130,17 +1132,16 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 
 fn status_lines(s: &osis::Status, raw: bool) -> Vec<String> {
     let groups = s.groups.iter().map(|(g, x)| {
-        let labels = if x.labels.is_empty() { "-".into() } else { x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",") };
-        let unrouted = if x.unrouted.is_empty() { String::new() } else { format!(" no route for {}", x.unrouted.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
-        format!("{} {:?} {} {}{unrouted}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), labels)
+        let cut_off = if x.not_carried_to.is_empty() { String::new() } else { format!(" not carried to {}", x.not_carried_to.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
+        format!("{} {:?} {}{cut_off}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)))
     });
     // writes on these are refused until a group moves (Osis::group_source)
-    groups.chain(s.split.iter().map(|t| format!("{} split: writes refused", t.to_uri()))).collect()
+    groups.chain(s.two_sources.iter().map(|t| format!("{} two sources: writes refused", t.to_uri()))).collect()
 }
 
 fn status_json(s: &osis::Status) -> J {
-    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("labels", J::Arr(x.labels.iter().map(|l| J::str(osis_schema::osis_base::hex::encode(&l.0))).collect())), ("unrouted", J::Arr(x.unrouted.iter().map(|t| J::tid(*t)).collect()))]));
-    J::obj([("groups", J::Arr(groups.collect())), ("split", J::Arr(s.split.iter().map(|t| J::tid(*t)).collect()))])
+    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("not_carried_to", J::Arr(x.not_carried_to.iter().map(|t| J::tid(*t)).collect()))]));
+    J::obj([("groups", J::Arr(groups.collect())), ("two_sources", J::Arr(s.two_sources.iter().map(|t| J::tid(*t)).collect()))])
 }
 
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
@@ -1168,7 +1169,7 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
         J::obj([
             ("kind", J::str(kind)),
             ("tids", J::Arr(tids.iter().map(|t| J::tid(*t)).collect())),
-            ("commit", J::opt(commit.as_ref().map(|c| J::str(change_text(c))))),
+            ("commit", J::opt(commit.as_ref().map(|c| J::str(c.to_string())))),
             ("peer", J::opt(peer.map(J::tid))),
             ("detail", J::str(detail)),
         ])
@@ -1260,7 +1261,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                 lines.push(format!("aspect {} commits={} stored_size={}", ak.as_str(), changes.len(), size.map_or("-".into(), |s| s.to_string())));
                 for c in changes {
                     let h = &c.header;
-                    lines.push(format!("  commit {} kind={:?} ts={} actor={} node={}{}", commit_text(&c.id), h.kind, ts_of(h.ts), h.actor.to_uri(), h.author.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
+                    lines.push(format!("  commit {} kind={:?} ts={} actor={} node={}{}", commit_text(&c.id), h.kind, h.ts.wall_ms().0, h.actor.to_uri(), h.author.to_uri(), h.undoes.map_or(String::new(), |u| format!(" undoes={}", commit_text(&u)))));
                 }
                 if let Some(f) = frag {
                     lines.push(format!("  state {f}"));
@@ -1321,7 +1322,7 @@ fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow
     let client_listen = client_listen.iter().map(|u| u.parse()).collect::<osis::Result<Vec<osis::Url>>>()?;
     let db = ctx.db.clone();
     // other invocations on this store become its clients (notes/cli.md Design)
-    let _sock = crate::listen(&ctx.sel, &db)?;
+    crate::listen(&ctx.sel, &db)?;
     if host.any() {
         set_hosting(ctx, host)?;
     }
@@ -1372,10 +1373,10 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
             AdmitArg::Open => osis::Admit::Open,
         };
     }
-    if let Some(v) = given(&f.label) {
-        h.labels = BTreeSet::new();
+    if let Some(v) = given(&f.admitted) {
+        h.admitted = BTreeSet::new();
         for l in v {
-            h.labels.extend(labels_of(ctx, &l)?);
+            h.admitted.extend(admission_ids(ctx, &l)?);
         }
     }
     if let Some(v) = given(&f.replicate) {
@@ -1395,7 +1396,7 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
             let (l, n) = c.rsplit_once('=').ok_or_else(bad)?;
             let (e, b) = n.split_once(',').ok_or_else(bad)?;
             let caps = osis::HostCaps { entries: e.parse().map_err(|_| bad())?, bytes: b.parse().map_err(|_| bad())? };
-            for id in labels_of(ctx, l)? {
+            for id in admission_ids(ctx, l)? {
                 h.caps.insert(id, caps);
             }
         }
@@ -1422,8 +1423,8 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
             let a = ctx.tid(actor)?;
             if ctx.db.remove_client(a)? { Ok(()) } else { Err(exit(3, "no such client")) }
         }
-        ClientsCmd::RotateKey => {
-            let a: Vec<String> = ctx.db.rotate_client_key()?.iter().map(ToString::to_string).collect();
+        ClientsCmd::RotateAddress => {
+            let a: Vec<String> = ctx.db.rotate_client_address()?.iter().map(ToString::to_string).collect();
             let j = J::Arr(a.iter().map(|x| J::str(x.clone())).collect());
             ctx.emit(&a, j)
         }
@@ -1435,7 +1436,7 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
     }
 }
 
-/// `host.0^` as lines (`listen URL`, `address URL#KEY` per listen URL but a port 0, `admit own|open`, `label ID`, `replicate ADDR`,
+/// `host.0^` as lines (`listen URL`, `address URL#KEY` per listen URL but a port 0, `admit own|open`, `admitted ID`, `replicate ADDR`,
 /// `policy NAME N`, `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not hosting.
 fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let h = ctx.db.hosting()?.ok_or_else(|| exit(3, "not hosting"))?;
@@ -1443,7 +1444,6 @@ fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         osis::Admit::Own => "own",
         osis::Admit::Open => "open",
     };
-    let hex = |l: &osis::LabelId| osis_schema::osis_base::hex::encode(&l.0);
     // the address each listen URL will have; none for a port 0 (picked only when it listens)
     let addrs: Vec<String> = match ctx.db.host_key()? {
         Some(k) => h.listen.iter().map(|u| osis::HostAddr::new(u, k).to_string()).filter(|a| !a.split('#').next().is_some_and(|u| u.ends_with(":0"))).collect(),
@@ -1452,40 +1452,45 @@ fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let mut lines: Vec<String> = h.listen.iter().map(|u| format!("listen {u}")).collect();
     lines.extend(addrs.iter().map(|a| format!("address {a}")));
     lines.push(format!("admit {admit}"));
-    lines.extend(h.labels.iter().map(|l| format!("label {}", hex(l))));
+    lines.extend(h.admitted.iter().map(|l| format!("admitted {l}")));
     lines.extend(h.replicate.iter().map(|a| format!("replicate {a}")));
-    let knobs = h.policy.knobs();
+    let knobs = policy_lines(&h.policy);
     lines.extend(knobs.iter().map(|(k, n)| format!("policy {k} {n}")));
-    lines.extend(h.caps.iter().map(|(l, c)| format!("cap {} {} {}", hex(l), c.entries, c.bytes)));
+    lines.extend(h.caps.iter().map(|(l, c)| format!("cap {l} {} {}", c.entries, c.bytes)));
     let j = J::obj([
         ("listen", J::Arr(h.listen.iter().map(|u| J::str(u.to_string())).collect())),
         ("addresses", J::Arr(addrs.iter().map(|a| J::str(a.clone())).collect())),
         ("admit", J::str(admit)),
-        ("labels", J::Arr(h.labels.iter().map(|l| J::str(hex(l))).collect())),
+        ("admitted", J::Arr(h.admitted.iter().map(|l| J::str(l.to_string())).collect())),
         ("replicate", J::Arr(h.replicate.iter().map(|a| J::str(a.to_string())).collect())),
         ("policy", J::Obj(knobs.iter().map(|(k, n)| (k.clone(), J::int(*n))).collect())),
-        ("caps", J::Obj(h.caps.iter().map(|(l, c)| (hex(l), J::obj([("entries", J::int(c.entries)), ("bytes", J::int(c.bytes))]))).collect())),
+        ("caps", J::Obj(h.caps.iter().map(|(l, c)| (l.to_string(), J::obj([("entries", J::int(c.entries)), ("bytes", J::int(c.bytes))]))).collect())),
     ]);
     ctx.emit(&lines, j)
 }
 
-/// A label ID (32 hex digits), or a group synced here: its labels (`status` lists them).
-fn labels_of(ctx: &mut Ctx<'_>, s: &str) -> anyhow::Result<Vec<osis::LabelId>> {
-    if let Some(b) = osis_schema::osis_base::hex::decode(s)
-        && let Ok(id) = <[u8; 16]>::try_from(b)
-    {
-        return Ok(vec![osis::LabelId(id)]);
+/// The limits set apart from the defaults, by name.
+fn policy_lines(p: &osis::HostPolicy) -> BTreeMap<String, u64> {
+    let d = osis::HostPolicy::default();
+    let plain = [("group_entries", p.group_entries, d.group_entries), ("group_bytes", p.group_bytes, d.group_bytes), ("groups", p.groups, d.groups), ("entries", p.entries, d.entries), ("bytes", p.bytes, d.bytes), ("connections", p.connections as u64, d.connections as u64)];
+    plain.into_iter().filter(|(_, v, def)| v != def).map(|(k, v, _)| (k.to_string(), v)).chain(p.tuning.clone()).collect()
+}
+
+/// An admission ID, or a group synced here: its IDs.
+fn admission_ids(ctx: &mut Ctx<'_>, s: &str) -> anyhow::Result<Vec<osis::AdmissionId>> {
+    if let Ok(id) = s.parse() {
+        return Ok(vec![id]);
     }
-    let g = ctx.tid(s).map_err(|_| usage(format!("not a group or a label ID (32 hex digits): {s}")))?;
-    let ls = ctx.db.status()?.groups.remove(&g).map(|x| x.labels).unwrap_or_default();
+    let g = ctx.tid(s).map_err(|_| usage(format!("not a group or an admission ID (32 hex digits): {s}")))?;
+    let ls = ctx.db.admission_ids(g)?;
     if ls.is_empty() {
-        return Err(exit(3, format!("{s} is not synced here: give its label ID (`osis status` on a device that reads it)")));
+        return Err(exit(3, format!("{s} is not synced here: give its admission ID (`osis hosting ids` on a device that reads it)")));
     }
     Ok(ls)
 }
 
 /// Reads and parses a schema file (exit 7 when it does not parse); returns its file name too.
-fn read_schema(file: &std::path::Path) -> anyhow::Result<(String, Schema)> {
+fn read_schema(file: &std::path::Path) -> anyhow::Result<(String, osis_schema::Schema)> {
     let src = std::fs::read_to_string(file).map_err(|e| usage(format!("{}: {e}", file.display())))?;
     let name = file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let s = osis_schema::parse(&name, &src).map_err(|e| exit(7, e.to_string()))?;
@@ -1552,12 +1557,12 @@ fn schema_reg(sel: &StoreSel, file: &std::path::Path, add: bool) -> anyhow::Resu
 mod tests {
     // notes/cli.md Command table: `status` shows split things apart from groups, in both forms.
     #[test]
-    fn status_lists_split_things_apart_notes_cli() {
+    fn status_lists_things_with_two_sources_apart_notes_cli() {
         let t = osis::Tid::from_bytes([7; 15]);
         let mut s = osis::Status::default();
-        s.split.insert(t);
-        assert_eq!(super::status_lines(&s, true), vec![format!("{} split: writes refused", t.to_uri())]);
-        assert_eq!(super::status_json(&s).text(), format!("{{\"groups\":[],\"split\":[\"{}\"]}}", t.to_uri()));
+        s.two_sources.insert(t);
+        assert_eq!(super::status_lines(&s, true), vec![format!("{} two sources: writes refused", t.to_uri())]);
+        assert_eq!(super::status_json(&s).text(), format!("{{\"groups\":[],\"two_sources\":[\"{}\"]}}", t.to_uri()));
     }
 
     // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.

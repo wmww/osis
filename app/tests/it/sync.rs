@@ -1,16 +1,18 @@
 //! The actions layer across two devices of one person (commits delivered by hand, the engine-level
 //! path of core's tests) and over malformed synced data.
 use osis::internals::Internals as _;
-use osis::core::{BODY, GROUP};
-use osis::{Ak, ManualClock, MemStore, Osis, Store, Tid, Value, WallMs};
+use osis::core::{BODY};
+use osis::internals::core_types::{GROUP};
+use osis::{Ak, MemStore, Osis, Store, Tid, Value, Time};
+use osis::internals::{ManualClock};
 use osis_app::data::{Data, Kind};
 use osis_app::schema::View;
 use std::sync::Arc;
 
 fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.client.internals.seed = Some(seed);
-    c.client.internals.clock = Some(clock.clone());
+    c.handle.internals.seed = Some(seed);
+    c.handle.internals.clock = Some(clock.clone());
     c
 }
 
@@ -22,7 +24,7 @@ fn two() -> (Data, Data) {
 
 /// `two`, with the clock both read.
 fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
-    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
     let j = osis::internals::pair(cfg(2, &clock), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();

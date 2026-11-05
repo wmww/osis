@@ -4,7 +4,7 @@
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::{ak, block_on};
-use osis::{SetRoleOpts, SyncFirst, ClientSecret, CommitQuery, GrantOpts, Error, HostAddr, MemStore, Osis, Role, Runtime, Scope, Store, SyncScope, Tid, Transport, Value};
+use osis::{SetRoleOpts, SyncFirst, ClientSecret, CommitQuery, GrantOpts, Error, HostAddr, MemStore, Osis, Role, Runtime, Scope, Store, SyncScope, Tid, Value};
 use std::time::{Duration, Instant};
 
 const W: Duration = Duration::from_secs(20);
@@ -36,9 +36,9 @@ fn s(x: &str) -> Value {
 fn on(net: &osis_transport::Net, ep: &str, store: &MemStore, hosts: Vec<HostAddr>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.client.transport = Some(Transport::InProcess(net.endpoint(ep)));
+    c.handle.internals.transport = Some(net.endpoint(ep));
     c.hosts = hosts;
-    c.client.internals.connection_wait = Some(W);
+    c.handle.internals.connection_wait = Some(W);
     c.peers = false;
     c
 }
@@ -116,8 +116,8 @@ static NAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::n
 fn attach(net: &osis_transport::Net, nc: &HostAddr, secret: &ClientSecret) -> Osis {
     let mut c = osis::internals::Opening::memory();
     let n = NAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    c.client.transport = Some(Transport::InProcess(net.endpoint(&format!("c{n}"))));
-    c.client.internals.connection_wait = Some(W);
+    c.handle.internals.transport = Some(net.endpoint(&format!("c{n}")));
+    c.handle.internals.connection_wait = Some(W);
     crate::common::block_on(osis::internals::connect(nc, secret, c)).unwrap()
 }
 
@@ -351,7 +351,7 @@ fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
         a.set_keep_default(g, k).unwrap();
     }
     let (hour, t0) = (3_600_000, w.now());
-    a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::WallMs(t0 + hour)), ..Default::default() }).unwrap();
+    a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::Time(t0 + hour)), ..Default::default() }).unwrap();
     w.run();
     assert_eq!(b.at(m, osis::Key::untyped(text())).get().unwrap(), Some(s("hello")));
     (w, a, b, bob, g, m, t0, hour)
@@ -388,7 +388,7 @@ fn an_until_passing_offline_loses_nothing_spec_permissions_2() {
         let own = n;
         x.commit().unwrap();
         w.advance(1000);
-        a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
+        a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::Time(t0 + 1000 * hour)), ..Default::default() }).unwrap();
         w.run();
         w.advance(2 * hour);
         w.run();
@@ -461,7 +461,7 @@ fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_2() {
     w.run();
     assert_eq!(b.at(m, osis::Key::untyped(text())).get().unwrap(), None, "erased: the default says so, and it heard no more");
     // at its old role: below it `grant` is refused (it would undo what Bob wrote)
-    a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
+    a.grant(g, bob, Role::Write, GrantOpts { until: Some(osis::Time(t0 + 1000 * hour)), ..Default::default() }).unwrap();
     a.commit_set(m, osis::Key::untyped(text()), &s("during")).unwrap();
     w.run();
     let mut hours = 2;
@@ -847,7 +847,7 @@ fn a_thin_client_sees_the_missing_route_and_the_thing_once_synced() {
         })
         .unwrap();
     x.a.grant(t, x.bob, Role::Read, Default::default()).unwrap();
-    let no_route = |db: &Osis| db.status().unwrap().groups.get(&t).is_some_and(|g| g.state == osis::SyncState::NoRoute && g.unrouted == vec![x.bob]);
+    let no_route = |db: &Osis| db.status().unwrap().groups.get(&t).is_some_and(|g| g.state == osis::SyncState::NotCarried && g.not_carried_to == vec![x.bob]);
     assert!(no_route(&x.a), "the granter");
     let nudge = Nudge::default();
     until("Bob's node and his app show the missing route", || {

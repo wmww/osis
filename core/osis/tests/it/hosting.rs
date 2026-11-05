@@ -6,7 +6,8 @@ use crate::common;
 use common::*;
 use crate::common::CreateIn;
 use osis::internals::Internals as _;
-use osis::{Admit, HostAddr, Hosting, LabelId, Osis, Role, Tid, Value};
+use osis::{Admit, HostAddr, Hosting, Osis, Role, Tid, Value};
+use osis::internals::{LabelId};
 use osis_host::Admission;
 use osis_sim::world::World;
 use std::collections::BTreeSet;
@@ -72,10 +73,10 @@ fn hosting_own_then_open_spec_sync_5() {
     assert!(hosted(&w, s).contains(&la), "own: admitted");
     assert!(!hosted(&w, s).contains(&lb), "own: another person's label refused");
     let st = bob.status().unwrap().groups[&bob.me()].clone();
-    assert_eq!((st.state, st.not_admitted), (osis::SyncState::Synced, vec![ha.clone()]), "not admitted, not full; synced at base");
+    assert_eq!((st.state, st.refused_by), (osis::SyncState::Synced, vec![ha.clone()]), "not admitted, not full; synced at base");
     w.until(bob.wait_synced(osis::SyncScope::Thing(bob.me())), 1000, 10).unwrap();
     let st = carol.status().unwrap().groups[&carol.me()].clone();
-    assert_eq!((st.state, st.not_admitted), (osis::SyncState::Refused, vec![ha.clone()]), "at no other host");
+    assert_eq!((st.state, st.refused_by), (osis::SyncState::Refused, vec![ha.clone()]), "at no other host");
     assert!(w.try_until(carol.wait_synced(osis::SyncScope::Thing(carol.me())), 1000, 10).is_none());
 
     // open: Bob's label is taken at his next registration
@@ -342,7 +343,7 @@ fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
     let b = osis_store::RedbBackend::open(&dir.join("host.redb")).unwrap();
     let r = osis_store::FileRoot::new(dir.join("host.root"));
     let s = osis_store::Store::open(Box::new(b), Box::new(r), osis_store::StoreConfig::default()).unwrap();
-    let clock: std::sync::Arc<dyn osis::Clock> = std::sync::Arc::new(osis_base::SystemClock);
+    let clock: std::sync::Arc<dyn osis::internals::Clock> = std::sync::Arc::new(osis_base::SystemClock);
     let h = osis_host::HostStore::open(s, clock, osis_host::HostPolicy::default(), Box::new(osis_crypto::OsRng)).unwrap();
     h.labels_after(None, 1000).unwrap()
 }
@@ -359,11 +360,11 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     let net = osis_transport::Net::new(41);
     let at = |i: u64, run: bool| {
         let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
-        c.client.internals.seed = Some(i);
+        c.handle.internals.seed = Some(i);
         c.peers = false;
         if run {
             c.runtime = osis::Runtime::Own;
-            c.client.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("e{i}"))));
+            c.handle.internals.transport = Some(net.endpoint(&format!("e{i}")));
         }
         c
     };
@@ -427,10 +428,10 @@ fn own_runtime_close_frees_host_store() {
     let net = osis_transport::Net::new(42);
     let at = |i: u64| {
         let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
-        c.client.internals.seed = Some(i);
+        c.handle.internals.seed = Some(i);
         c.peers = false;
         c.runtime = osis::Runtime::Own;
-        c.client.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("o{i}"))));
+        c.handle.internals.transport = Some(net.endpoint(&format!("o{i}")));
         c
     };
     // `host_address` fails once the host could not open its store

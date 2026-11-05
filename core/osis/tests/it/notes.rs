@@ -6,7 +6,8 @@ use crate::common::TestWrites as _;
 use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
-use osis::core::{BODY, GROUP, NAME};
+use osis::core::{BODY, NAME};
+use osis::internals::core_types::{GROUP};
 use osis::{Error, Osis, Result, Role, SyncScope, Tid, Scope};
 use osis_sim::world::World;
 
@@ -147,7 +148,7 @@ fn large_body_streams() {
     let host = w.add_host();
     let laptop = person(&mut w, 1, host);
     let mut cfg = w.cfg(2, &[]);
-    cfg.client.materialize_limit = 64 << 10;
+    cfg.handle.read_limit = 64 << 10;
     let phone = add_device(&laptop, cfg).unwrap();
     let nb = new_tag(&laptop, "Books").unwrap();
     let note = new_note(&laptop, nb, "Draft").unwrap();

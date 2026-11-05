@@ -5,11 +5,12 @@ use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
 use crate::share::{GrantOpts, GroupSync, Holder, HostAddr, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncFirst, SyncScope, SyncState};
-use crate::watch::Source;
+use crate::watch::{ChangeReason, Source};
 use crate::write::Committed;
-use osis_base::{Ak, CommitId, LabelId, Role, Tid, Ts, Value, WallMs};
+use crate::change::ChangeId;
+use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, Time};
 use osis_crdt::{Op, PathOp, PathSeg};
-use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId};
+use osis_node::{ChangeId as RawChange, Diagnostic, DiagnosticKind, EphemeralId};
 use osis_proto::{ApiCode, Outcome};
 use osis_schema::{Bound, Path, PurgeBy, Retention, Step};
 
@@ -83,7 +84,7 @@ impl Args {
         }
     }
     /// An optional wall time.
-    pub fn opt_wall(&mut self) -> Result<Option<WallMs>> {
+    pub fn opt_wall(&mut self) -> Result<Option<Time>> {
         self.opt()?.map(|w| wall(&w)).transpose()
     }
     /// A tid if one is left.
@@ -184,8 +185,8 @@ fn ts(v: &Value) -> Result<Ts> {
     v.as_uint().and_then(Ts::from_u64).ok_or_else(|| bad("ts"))
 }
 
-fn wall(v: &Value) -> Result<WallMs> {
-    v.as_uint().map(WallMs).ok_or_else(|| bad("time"))
+fn wall(v: &Value) -> Result<Time> {
+    v.as_uint().map(Time).ok_or_else(|| bad("time"))
 }
 
 pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
@@ -193,17 +194,17 @@ pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
 }
 
 pub(crate) fn change_v(c: &ChangeId) -> Value {
-    Value::List(match c {
-        ChangeId::Commit(c) => vec![u(0), Value::bytes(&c.0)],
-        ChangeId::Ephemeral(e) => vec![u(1), Value::bytes(&e.session), u(e.n)],
+    Value::List(match &c.0 {
+        RawChange::Commit(c) => vec![u(0), Value::bytes(&c.0)],
+        RawChange::Ephemeral(e) => vec![u(1), Value::bytes(&e.session), u(e.n)],
     })
 }
 
 pub(crate) fn change(v: Value) -> Result<ChangeId> {
     let mut a = Args::new(v)?;
     let c = match a.uint()? {
-        0 => ChangeId::Commit(commit_id(a.next()?)?),
-        1 => ChangeId::Ephemeral(EphemeralId { session: a.bytes()?.try_into().map_err(|_| bad("session"))?, n: a.uint()? }),
+        0 => ChangeId::commit(commit_id(a.next()?)?),
+        1 => ChangeId(RawChange::Ephemeral(EphemeralId { session: a.bytes()?.try_into().map_err(|_| bad("session"))?, n: a.uint()? })),
         _ => return Err(bad("change")),
     };
     a.end()?;
@@ -218,7 +219,7 @@ pub(crate) fn committed(v: Value) -> Result<Committed> {
     let mut a = Args::new(v)?;
     let (id, ts) = (change(a.next()?)?, ts(&a.next()?)?);
     let also = Args::of(vec![a.next()?]).list()?.into_iter().map(change).collect::<Result<_>>()?;
-    let c = Committed { id, ts, also };
+    let c = Committed { id, written: ts.wall_ms(), ts, also };
     a.end()?;
     Ok(c)
 }
@@ -229,18 +230,19 @@ pub(crate) fn stamp_v(i: &Stamp) -> Value {
 
 pub(crate) fn stamp(v: Value) -> Result<Stamp> {
     let mut a = Args::new(v)?;
-    let i = Stamp { id: change(a.next()?)?, actor: a.tid()?, node: a.tid()?, ts: ts(&a.next()?)?, received: wall(&a.next()?)? };
+    let i = Stamp::new(change(a.next()?)?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
     a.end()?;
     Ok(i)
 }
 
 pub(crate) fn thing_stamp_v(s: &ThingStamp) -> Value {
-    Value::List(vec![opt(s.commit, |c| Value::bytes(&c.0)), Value::Tid(s.actor), Value::Tid(s.node), ts_v(s.ts), u(s.received.0)])
+    Value::List(vec![opt(s.id, |c| change_v(&c)), Value::Tid(s.actor), Value::Tid(s.node), ts_v(s.ts), u(s.received.0)])
 }
 
 pub(crate) fn thing_stamp(v: Value) -> Result<ThingStamp> {
     let mut a = Args::new(v)?;
-    let s = ThingStamp { commit: a.opt()?.map(commit_id).transpose()?, actor: a.tid()?, node: a.tid()?, ts: ts(&a.next()?)?, received: wall(&a.next()?)? };
+    let (id, actor, node, t, received) = (a.opt()?.map(change).transpose()?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
+    let s = ThingStamp { id, actor, node, written: t.wall_ms(), ts: t, received };
     a.end()?;
     Ok(s)
 }
@@ -272,13 +274,13 @@ pub(crate) fn grants(v: Value) -> Result<Grants> {
     Ok(out)
 }
 
-const CAUSES: [Cause; 6] = [Cause::Validity, Cause::Expiry, Cause::Purge, Cause::LateDelta, Cause::LostAccess, Cause::Fetched];
+const REASONS: [ChangeReason; 5] = [ChangeReason::ValidityChanged, ChangeReason::Expired, ChangeReason::Purged, ChangeReason::Arrived, ChangeReason::LostAccess];
 
-/// Fails to compile when a cause is added: list it in `CAUSES` too.
+/// Fails to compile when a reason is added: list it in `REASONS` too.
 #[allow(dead_code)]
-fn causes_listed(c: Cause) {
+fn reasons_listed(c: ChangeReason) {
     match c {
-        Cause::Validity | Cause::Expiry | Cause::Purge | Cause::LateDelta | Cause::LostAccess | Cause::Fetched => {}
+        ChangeReason::ValidityChanged | ChangeReason::Expired | ChangeReason::Purged | ChangeReason::Arrived | ChangeReason::LostAccess => {}
     }
 }
 
@@ -287,7 +289,7 @@ pub(crate) fn source_v(s: &Source) -> Value {
         Source::Initial => vec![u(0)],
         Source::Local(i) => vec![u(1), stamp_v(i)],
         Source::Remote(i) => vec![u(2), stamp_v(i)],
-        Source::Derived(c) => vec![u(3), u(CAUSES.iter().position(|x| x == c).unwrap_or(0) as u64)],
+        Source::Derived(c) => vec![u(3), u(REASONS.iter().position(|x| x == c).unwrap_or(0) as u64)],
     })
 }
 
@@ -297,7 +299,7 @@ pub(crate) fn source(v: Value) -> Result<Source> {
         0 => Source::Initial,
         1 => Source::Local(stamp(a.next()?)?),
         2 => Source::Remote(stamp(a.next()?)?),
-        3 => Source::Derived(*usize::try_from(a.uint()?).ok().and_then(|i| CAUSES.get(i)).ok_or_else(|| bad("cause"))?),
+        3 => Source::Derived(*usize::try_from(a.uint()?).ok().and_then(|i| REASONS.get(i)).ok_or_else(|| bad("reason"))?),
         _ => return Err(bad("source")),
     };
     a.end()?;
@@ -328,7 +330,7 @@ pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
     }
 }
 
-const STATES: [SyncState; 8] = [SyncState::Synced, SyncState::Syncing, SyncState::Unreachable, SyncState::NoHosts, SyncState::Refused, SyncState::Stranded, SyncState::HeadersOnly, SyncState::NoRoute];
+const STATES: [SyncState; 8] = [SyncState::Synced, SyncState::Syncing, SyncState::Unreachable, SyncState::NoHosts, SyncState::Refused, SyncState::Stranded, SyncState::LogOnly, SyncState::NotCarried];
 
 pub(crate) fn status_v(s: &Status) -> Value {
     let groups = s
@@ -339,34 +341,32 @@ pub(crate) fn status_v(s: &Status) -> Value {
                 Value::Tid(*g),
                 u(STATES.iter().position(|y| *y == x.state).unwrap_or(0) as u64),
                 opt(x.last_sync, |w| u(w.0)),
-                Value::List(x.labels.iter().map(|l| Value::bytes(&l.0)).collect()),
-                Value::List(x.not_admitted.iter().map(|h| Value::Str(h.to_string())).collect()),
+                Value::List(x.refused_by.iter().map(|h| Value::Str(h.to_string())).collect()),
                 Value::Bool(x.leaving),
-                Value::List(x.unrouted.iter().map(|t| Value::Tid(*t)).collect()),
+                Value::List(x.not_carried_to.iter().map(|t| Value::Tid(*t)).collect()),
             ])
         })
         .collect();
-    Value::List(vec![u(s.connected as u64), Value::List(groups), Value::List(s.split.iter().map(|t| Value::Tid(*t)).collect())])
+    Value::List(vec![u(s.connected as u64), Value::List(groups), Value::List(s.two_sources.iter().map(|t| Value::Tid(*t)).collect())])
 }
 
 pub(crate) fn status(v: Value) -> Result<Status> {
     let mut a = Args::new(v)?;
     let connected = usize::try_from(a.uint()?).map_err(|_| bad("count"))?;
-    let mut st = Status { connected, groups: Default::default(), remotes: Vec::new(), split: Default::default() };
+    let mut st = Status { connected, groups: Default::default(), remotes: Vec::new(), two_sources: Default::default() };
     for g in a.list()? {
         let mut b = Args::new(g)?;
         let t = b.tid()?;
         let state = *usize::try_from(b.uint()?).ok().and_then(|i| STATES.get(i)).ok_or_else(|| bad("state"))?;
         let last_sync = b.opt_wall()?;
-        let labels = b.list()?.into_iter().map(|l| Args::of(vec![l]).bytes().and_then(|x| x.try_into().map(LabelId).map_err(|_| bad("label")))).collect::<Result<_>>()?;
-        let not_admitted = b.list()?.into_iter().map(|h| Args::of(vec![h]).text().and_then(|t| t.parse::<HostAddr>())).collect::<Result<_>>()?;
+        let refused_by = b.list()?.into_iter().map(|h| Args::of(vec![h]).text().and_then(|t| t.parse::<HostAddr>())).collect::<Result<_>>()?;
         let leaving = b.bool()?;
-        let unrouted = b.list()?.into_iter().map(|t| Args::of(vec![t]).tid()).collect::<Result<_>>()?;
+        let not_carried_to = b.list()?.into_iter().map(|t| Args::of(vec![t]).tid()).collect::<Result<_>>()?;
         b.end()?;
-        st.groups.insert(t, GroupSync { state, last_sync, labels, not_admitted, leaving, unrouted });
+        st.groups.insert(t, GroupSync { state, last_sync, refused_by, leaving, not_carried_to });
     }
     for t in a.list()? {
-        st.split.insert(Args::of(vec![t]).tid()?);
+        st.two_sources.insert(Args::of(vec![t]).tid()?);
     }
     a.end()?;
     Ok(st)
@@ -453,7 +453,7 @@ pub(crate) fn scope(v: Value) -> Result<Scope> {
     Ok(s)
 }
 
-const CKINDS: [CommitKind; 5] = [CommitKind::Change, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot, CommitKind::Ephemeral];
+const CKINDS: [CommitKind; 5] = [CommitKind::Change, CommitKind::Revert, CommitKind::Role, CommitKind::Summary, CommitKind::Ephemeral];
 
 fn ckind_v(k: &CommitKind) -> Value {
     u(CKINDS.iter().position(|x| x == k).unwrap_or(0) as u64)
@@ -471,8 +471,8 @@ pub(crate) fn query_v(q: &CommitQuery) -> Value {
         opt(q.reverts.as_ref(), change_v),
         opt(q.reverted_by.as_ref(), change_v),
         opt(q.in_effect, Value::Bool),
-        opt(q.since, ts_v),
-        opt(q.until, ts_v),
+        opt(q.since, |t| u(t.0)),
+        opt(q.until, |t| u(t.0)),
         opt(q.after.as_ref(), change_v),
         opt(q.limit, |n| u(n as u64)),
     ])
@@ -487,8 +487,8 @@ pub(crate) fn query(v: Value) -> Result<CommitQuery> {
         reverts: a.opt()?.map(change).transpose()?,
         reverted_by: a.opt()?.map(change).transpose()?,
         in_effect: a.opt()?.map(|b| Args::of(vec![b]).bool()).transpose()?,
-        since: a.opt()?.map(|t| ts(&t)).transpose()?,
-        until: a.opt()?.map(|t| ts(&t)).transpose()?,
+        since: a.opt_wall()?,
+        until: a.opt_wall()?,
         after: a.opt()?.map(change).transpose()?,
         limit: a.opt()?.map(|n| n.as_uint().and_then(|n| usize::try_from(n).ok()).ok_or_else(|| bad("limit"))).transpose()?,
     };
@@ -498,7 +498,7 @@ pub(crate) fn query(v: Value) -> Result<CommitQuery> {
 
 pub(crate) fn from_v(f: &crate::HistoryFrom) -> Value {
     use crate::HistoryFrom as F;
-    let at = |p: &crate::HistoryPos| vec![ts_v(p.ts), change_v(&p.id)];
+    let at = |p: &crate::HistoryPos| vec![ts_v(p.0.ts), change_v(&ChangeId(p.0.id))];
     Value::List(match f {
         F::Newest => vec![u(0)],
         F::Oldest => vec![u(1)],
@@ -514,7 +514,7 @@ pub(crate) fn from(v: Value) -> Result<crate::HistoryFrom> {
         0 => F::Newest,
         1 => F::Oldest,
         k @ (2 | 3) => {
-            let p = HistoryPos { ts: ts(&a.next()?)?, id: change(a.next()?)? };
+            let p = HistoryPos::of(ts(&a.next()?)?, change(a.next()?)?);
             if k == 2 { F::Before(p) } else { F::After(p) }
         }
         _ => return Err(bad("history start")),
@@ -529,7 +529,7 @@ pub(crate) fn hist_entry_v(e: &crate::HistoryEntry<Value>) -> Value {
         B::Held(v) => vec![u(0), opt(v.clone(), |x| x)],
         B::TooLarge { limit } => vec![u(1), u(*limit as u64)],
         B::Purged { by, actor } => vec![u(2), change_v(by), opt(*actor, Value::Tid)],
-        B::Dropped => vec![u(3)],
+        B::Gone => vec![u(3)],
         B::NotFetched => vec![u(4)],
     };
     Value::List(vec![stamp_v(&e.commit), ckind_v(&e.kind), Value::Bool(e.valid), Value::List(body)])
@@ -545,7 +545,7 @@ pub(crate) fn hist_entry(v: Value) -> Result<crate::HistoryEntry<Value>> {
         0 => B::Held(b.opt()?),
         1 => B::TooLarge { limit: usize::try_from(b.uint()?).unwrap_or(usize::MAX) },
         2 => B::Purged { by: change(b.next()?)?, actor: b.opt()?.map(|v| Args::of(vec![v]).tid()).transpose()? },
-        3 => B::Dropped,
+        3 => B::Gone,
         4 => B::NotFetched,
         _ => return Err(bad("history body")),
     };
@@ -573,7 +573,7 @@ pub(crate) fn entry_v(e: &CommitEntry) -> Value {
         Value::List(e.reverted_by.iter().map(change_v).collect()),
         Value::Bool(e.in_effect),
         aspects_v(&e.aspects),
-        Value::Bool(e.dropped),
+        Value::Bool(e.content_gone),
         Value::List(e.purged.iter().map(|(t, k, by)| Value::List(vec![Value::Tid(*t), ak_v(k), change_v(by)])).collect()),
     ])
 }
@@ -594,7 +594,7 @@ pub(crate) fn entry(v: Value) -> Result<CommitEntry> {
         reverted_by: a.list()?.into_iter().map(change).collect::<Result<_>>()?,
         in_effect: a.bool()?,
         aspects: aspects(a.next()?)?,
-        dropped: a.bool()?,
+        content_gone: a.bool()?,
         purged: a.list()?.into_iter().map(purged_one).collect::<Result<_>>()?,
     };
     a.end()?;
@@ -785,7 +785,7 @@ pub(crate) fn sync_first(v: Value) -> Result<SyncFirst> {
         0 => SyncFirst::Required,
         1 => SyncFirst::Try(std::time::Duration::from_millis(a.uint()?)),
         2 => SyncFirst::Skip,
-        3 => SyncFirst::Backdate(osis_base::WallMs(a.uint()?)),
+        3 => SyncFirst::Backdate(osis_base::Time(a.uint()?)),
         _ => return Err(bad("sync first")),
     };
     a.end()?;
@@ -807,21 +807,21 @@ pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
 
 /// `SyncOptions`' fields.
 pub(crate) fn sync_options_v(o: &crate::SyncOptions) -> Vec<Value> {
-    let reach = match o.reach {
-        crate::Reach::Auto => None,
-        crate::Reach::Always => Some(true),
-        crate::Reach::Never => Some(false),
+    let reach = match o.share_address {
+        crate::ShareAddress::Auto => None,
+        crate::ShareAddress::Always => Some(true),
+        crate::ShareAddress::Never => Some(false),
     };
-    vec![opt(reach, Value::Bool), Value::Bool(o.mode == crate::SyncMode::HeadersOnly)]
+    vec![opt(reach, Value::Bool), Value::Bool(o.mode == crate::SyncMode::LogOnly)]
 }
 
 pub(crate) fn sync_options(a: &mut Args) -> Result<crate::SyncOptions> {
     let reach = match a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()? {
-        None => crate::Reach::Auto,
-        Some(true) => crate::Reach::Always,
-        Some(false) => crate::Reach::Never,
+        None => crate::ShareAddress::Auto,
+        Some(true) => crate::ShareAddress::Always,
+        Some(false) => crate::ShareAddress::Never,
     };
-    Ok(crate::SyncOptions { reach, mode: if a.bool()? { crate::SyncMode::HeadersOnly } else { crate::SyncMode::Full } })
+    Ok(crate::SyncOptions { share_address: reach, mode: if a.bool()? { crate::SyncMode::LogOnly } else { crate::SyncMode::Full } })
 }
 
 /// An outcome carried as a value (a row that waits): the Reply's own forms.
@@ -878,7 +878,7 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
             ApiCode::PERMISSION => Error::Permission { tid: a.tid()?, needs: role(&a.next()?)? },
             ApiCode::TYPE => Error::Type { path: path(a.next()?)?, reason: a.text()? },
             ApiCode::TOO_LARGE => Error::TooLarge { limit: usize::try_from(a.uint()?).unwrap_or(usize::MAX) },
-            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: change(a.next()?)?, reason: if a.uint()? == 1 { DropReason::Superseded } else { DropReason::Compacted } },
+            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: change(a.next()?)?, reason: if a.uint()? == 1 { DropReason::Superseded } else { DropReason::ContentGone } },
             ApiCode::UNSYNCED => Error::Unsynced { groups: tids(a.next()?)? },
             ApiCode::INVALID => Error::Invalid(text(&mut a)),
             ApiCode::STORAGE => Error::Storage(text(&mut a)),

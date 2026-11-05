@@ -81,6 +81,17 @@ impl Unknown {
 }
 
 impl Value {
+    /// This value as one byte string (its canonical encoding), to store several values as one
+    /// scalar, or to keep elsewhere.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        crate::cbor::encode(self)
+    }
+
+    /// What `to_bytes` made; `None` for anything else.
+    pub fn from_bytes(b: &[u8]) -> Option<Value> {
+        crate::cbor::decode(b, &crate::cbor::Limits::default()).ok()
+    }
+
     pub fn link(l: Link) -> Value {
         Value::Link(Box::new(l))
     }

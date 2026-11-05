@@ -207,7 +207,7 @@ fn thin_cli_quic_localhost() {
     assert_ne!(r.0, 0);
     assert!(r.2.contains("refused"), "{}", r.2);
     // a new client listener key: the old address is out, the new one in
-    let new = osis(&n, &["clients", "rotate-key"]);
+    let new = osis(&n, &["clients", "rotate-address"]);
     assert_ne!(new, addr);
     let old = run(&none, &["--timeout", "3s", "--node", &addr, "--client-secret", file, "get", &t, "note:title.0"]);
     assert_ne!(old.0, 0);

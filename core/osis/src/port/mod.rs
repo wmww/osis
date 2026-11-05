@@ -9,7 +9,6 @@ pub(crate) mod client;
 pub(crate) mod codec;
 pub(crate) mod serve;
 
-pub use client::socket_path;
 
 /// The method table (`Call.method`): each row's args and result in `codec` forms. A method number
 /// not listed is answered `Unsupported`; a row is Owner-only unless `for_client` lists it.
@@ -87,7 +86,7 @@ pub(crate) mod method {
     /// `[actor]` -> secret
     pub const ROTATE_CLIENT_SECRET: u64 = 37;
     /// `[]` -> `[node addr text*]`
-    pub const ROTATE_CLIENT_KEY: u64 = 38;
+    pub const ROTATE_CLIENT_ADDRESS: u64 = 38;
     /// `[]` -> `[actor*]`
     pub const KEPT: u64 = 39;
     /// `[actor]` -> `[]`
@@ -121,7 +120,9 @@ pub(crate) mod method {
     /// `[group, Opt(reach), headers_only]` -> `[]`
     pub const SET_SYNC_OPTIONS: u64 = 56;
     /// `[]` -> `[]`
-    pub const ROTATE_REACH: u64 = 57;
+    pub const ROTATE_ADDRESS: u64 = 57;
+    /// `[group]` -> `[text*]`
+    pub const ADMISSION_IDS: u64 = 72;
     /// `[scope]` -> Opt(entry)
     pub const UNDO_TARGET: u64 = 70;
     pub const REDO_TARGET: u64 = 71;

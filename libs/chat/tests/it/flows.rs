@@ -169,7 +169,7 @@ fn delete_for_everyone_spec_commits_5() {
     assert!(matches!(delete(&b, c, &at(&b, &mine)), Err(osis::Error::Permission { .. })));
     // past the library: the request drops nothing
     let mut x = b.write();
-    x.at(c, osis::Key::untyped(osis::Ak::new(format!("{MSGS}y{}.0", mine.year)).unwrap())).purge(osis::Purge::Change(mine.pos.id)).unwrap();
+    x.at(c, osis::Key::untyped(osis::Ak::new(format!("{MSGS}y{}.0", mine.year)).unwrap())).purge(osis::Purge::Change(mine.pos.change().unwrap())).unwrap();
     x.commit().unwrap();
     w.run();
     assert!(matches!(at(&a, &mine).body, Body::Text(_)));
@@ -273,7 +273,7 @@ fn required_and_stale_writer_spec_commits_5() {
     b.settle();
     let told: Vec<_> = rx.try_iter().collect();
     let ids: Vec<ChangeId> = told.clone();
-    assert!(ids.contains(&stale.pos.id) && ids.contains(&stale2.pos.id), "told of both: {told:?}");
+    assert!(ids.contains(&stale.pos.change().unwrap()) && ids.contains(&stale2.pos.change().unwrap()), "told of both: {told:?}");
     assert!(!texts(&a, c).iter().any(|t| t.starts_with("stale")), "others do not show it");
     let mine = find(&b, c, &stale).unwrap().unwrap();
     assert!(!mine.valid, "its sender sees it did not go");
@@ -344,7 +344,7 @@ fn watch_spec_none() {
 }
 
 /// Every link in `v`.
-fn links(v: &Value, out: &mut Vec<osis::schema::osis_base::Link>) {
+fn links(v: &Value, out: &mut Vec<osis::internals::schema::osis_base::Link>) {
     match v {
         Value::Link(l) => out.push(**l),
         Value::Enum(_, Some(p)) => links(p, out),
@@ -369,7 +369,7 @@ fn watch_hears_a_chunk_arrive_spec_dm_6() {
     // Bob loses each body's root blob
     let lost = ids.map(|id| {
         let ak = osis::Ak::new(format!("{MSGS}y{}.0", id.year)).unwrap();
-        let row = b.engine(|e| e.history_entry(&c, &ak, &id.pos.id, usize::MAX)).unwrap().unwrap();
+        let row = b.engine(|e| e.history_entry(&c, &ak, &osis::internals::change_raw(&id.pos.change().unwrap()), usize::MAX)).unwrap().unwrap();
         let osis::internals::node::engine::history::RowBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
         let mut ls = Vec::new();
         links(v, &mut ls);
@@ -455,7 +455,7 @@ fn kicked_while_offline_spec_perm_5() {
     w.run();
     b.settle();
     assert_eq!(texts(&a, c), ["seen"]);
-    assert!(rx.try_iter().any(|x| x == late.pos.id), "told");
+    assert!(rx.try_iter().any(|x| x == late.pos.change().unwrap()), "told");
     assert!(!find(&b, c, &late).unwrap().unwrap().valid);
     assert!(post(&b, c, "more").is_err(), "the kick arrived");
     // a re-grant: the copy ends, it follows again; the late post stays what design E says: revived
@@ -762,7 +762,7 @@ fn expired_link_not_shown_spec_perm_8() {
     let (a, _) = w.person(1, &[host]);
     w.run();
     let c = create(&a, &Options::default()).unwrap();
-    a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::WallMs(a.now().unwrap().0 + 1000)), single_use: false, direct: false }).unwrap();
+    a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::Time(a.now().unwrap().0 + 1000)), single_use: false, direct: false }).unwrap();
     w.run();
     assert_eq!(osis_chat::links(&a, c).unwrap().len(), 1);
     w.advance(2000);
@@ -1085,7 +1085,7 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
     w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
-    assert!(matches!(w.until(join(&b, &crafted), 1000, 200), Err(osis::Error::Invalid(_))), "known, not held: the link's own key does not reach it");
+    assert!(w.try_until(join(&b, &crafted), 1000, 200).is_none(), "known, not held: the link's own key does not reach it, and nothing says it never will");
     w.run();
     assert!(chats(&b).unwrap().is_empty(), "c2 not joined");
     assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c);

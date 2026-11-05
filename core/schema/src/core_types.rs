@@ -217,13 +217,13 @@ codec_struct! {
     pub struct Suspect { 0 thing: Tid, 1 ak: String, 2 digest: [u8; 16] }
 }
 codec_enum! {
-    /// `host.0^` admission: `own` takes the labels of groups this node's person owns that name
-    /// its host address, `open` any label within the caps.
+    /// What a host takes: `Own`, groups this node's account owns that name its host address;
+    /// `Open`, any group within the caps.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub enum Admit { #[default] 0 Own, 1 Open }
 }
 codec_struct! {
-    /// A label's caps in place of the host policy's.
+    /// One group's caps in place of the host policy's.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct HostCaps { 0 entries: u64, 1 bytes: u64 }
 }
@@ -256,8 +256,8 @@ codec_struct! {
     pub struct RequiredBound { 0 abs: Option<u64>, 1 rel: Option<u64> }
 }
 codec_struct! {
-    /// One entry of `required.0^` (spec/commits.md §5): the retention and expiry a delta under
-    /// the entry's AK prefix must carry; `expires` as a duration from the write, none: no expiry.
+    /// The retention and expiry a write under an aspect name prefix must carry; `expires` as a
+    /// duration from the write, none: no expiry.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct Required { 0 by: osis_base::PurgeBy, 1 at_least: RequiredBound, 2 at_most: RequiredBound, 3 expires: Option<u64> }
 }
@@ -270,8 +270,8 @@ impl Required {
         let b = |x: RequiredBound| crate::Bound { abs: x.abs, rel: x.rel };
         crate::Retention { by: self.by, at_least: b(self.at_least), at_most: b(self.at_most) }
     }
-    /// The expiry a delta stamped at `wall` wall ms must carry (`None` when out of range: no
-    /// delta meets it).
+    /// The expiry a write stamped at `wall` ms must carry (`None` when out of range: no write
+    /// meets it).
     pub fn expires_at(&self, wall: u64) -> Option<Option<u64>> {
         match self.expires {
             None => Some(None),
@@ -281,8 +281,8 @@ impl Required {
 }
 
 codec_struct! {
-    /// `required.0^`: the retention required by AK prefix; `keep`: a removal from the thing keeps
-    /// unless its remover says otherwise (spec/permissions.md §3).
+    /// The retention required by aspect name prefix; `keep`: a removal from the thing keeps a
+    /// read-only copy unless its remover says otherwise.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct RequiredRules { 0 rules: BTreeMap<String, Required>, 1 keep: bool }
 }
@@ -340,7 +340,7 @@ impl Codec for Group {
     }
 }
 codec_struct! {
-    /// `tag.0`: marks a group as a user-facing tag (notes/tags.md).
+    /// Marks a group as a tag a user sees.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Tag { 0 color: Option<String> }
 }

@@ -3,11 +3,9 @@
 
 use crate::args::{CreateArgs, MemberCmd, OpArgs, PlaceArgs, RmArgs, ScriptCmd, ScriptLine, SetArgs, WriteFlags};
 use crate::text::{self, PStep};
-use crate::{Ctx, key_ty, parse_dur, parse_ts, ty_in, usage};
+use crate::{Ctx, parse_dur, parse_ts, usage};
 use clap::Parser;
-use osis_schema::RawKey as _;
-use osis::{AspectWrite, Expiry, Key, Member, Path, Retention, Step, Tid, Value, WallMs};
-use osis_schema::{Bound, PurgeBy, Type};
+use osis::{AspectWrite, Bound, Expiry, Key, Member, Path, PurgeBy, Retention, Step, Tid, Time, Value, ValueType};
 use std::ops::Range;
 
 /// What a write command produced.
@@ -31,15 +29,16 @@ pub fn place(ctx: &Ctx<'_>, p: &PlaceArgs) -> anyhow::Result<Vec<Tid>> {
 /// already wrote the aspect (its pending state is invisible, so the saved one cannot decide).
 pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyhow::Result<Path> {
     let al = |w: &str| ctx.alias(w);
-    let steps = text::parse_path(s, key_ty(key), &al).map_err(|e| usage(format!("bad path {s:?}: {e}")))?;
+    let ty = key.value_type();
+    let steps = text::parse_path(s, ty.as_ref(), &al).map_err(|e| usage(format!("bad path {s:?}: {e}")))?;
     let mut out = Vec::new();
     let mut cur: Option<Option<Value>> = None;
     for st in steps {
         let step = match st {
             PStep::Step(s) => s,
             PStep::IndexOrKey(i) => {
-                if write && (ctx.pending.contains(&(t, key.ak().to_string())) || ctx.pending.contains(&(t, String::new()))) {
-                    return Err(usage(format!("[{i}] on untyped {} written earlier in this batch: list index or map key is unknown (register a schema, or write in a separate step)", key.ak())));
+                if write && (ctx.pending.contains(&(t, key.name().as_str().to_string())) || ctx.pending.contains(&(t, String::new()))) {
+                    return Err(usage(format!("[{i}] on untyped {} written earlier in this batch: list index or map key is unknown (register a schema, or write in a separate step)", key.name().as_str())));
                 }
                 if cur.is_none() {
                     let untyped = Key::untyped(key.name().clone());
@@ -47,7 +46,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
                 }
                 let here = cur.as_ref().and_then(|v| v.as_ref()).and_then(|v| osis_schema::value_at(v, &Path(out.clone())));
                 match here {
-                    Some(Value::List(_)) if write => return Err(usage(format!("[{i}]: {} is an untyped list; index writes need a schema (--schema)", key.ak()))),
+                    Some(Value::List(_)) if write => return Err(usage(format!("[{i}]: {} is an untyped list; index writes need a schema (--schema)", key.name().as_str()))),
                     Some(Value::List(_)) => Step::Index(usize::try_from(i).map_err(|_| usage("bad index"))?),
                     _ => Step::Key(Value::Int(i)),
                 }
@@ -59,15 +58,14 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
 }
 
 /// The schema type at a path, for parsing what is written there.
-fn type_at(key: &Key, p: &Path) -> Option<Type> {
-    let s = key.schema()?;
-    text::type_at_path(s, key.ty()?, &p.0)
+fn type_at(key: &Key, p: &Path) -> Option<ValueType> {
+    text::type_at_path(key.value_type()?, &p.0)
 }
 
 fn expiry(within: &Option<String>, at: &Option<String>) -> anyhow::Result<Option<Expiry>> {
     Ok(match (within, at) {
         (Some(d), _) => Some(Expiry::In(parse_dur(d)?)),
-        (_, Some(t)) => Some(Expiry::At(WallMs(parse_ts(t)?))),
+        (_, Some(t)) => Some(Expiry::At(Time(parse_ts(t)?))),
         _ => None,
     })
 }
@@ -77,8 +75,7 @@ fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key
         a = a.expires(e);
     }
     if let Some(r) = &f.retention {
-        let base = key.schema().and_then(|s| s.defaults(key.ak())).map(|d| d.retention).unwrap_or_default();
-        a = a.retention(retention(r, base)?);
+        a = a.retention(retention(r, key.default_retention())?);
     }
     Ok(a)
 }
@@ -133,7 +130,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
     }
     for pair in a.pairs.chunks(2) {
         let key = ctx.key(&pair[0])?;
-        let v = ctx.value(&pair[1], key_ty(&key))?;
+        let v = ctx.value(&pair[1], key.value_type().as_ref())?;
         w.at(t, key).set(&v)?;
     }
     if let Some(n) = &a.as_ {
@@ -161,7 +158,7 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, overwrite: bool)
         _ => return Err(usage("expected [PATH] VALUE")),
     };
     let pt = type_at(&key, &p);
-    let v = ctx.value(val, ty_in(&key, pt.as_ref()))?;
+    let v = ctx.value(val, pt.as_ref())?;
     let mut aw = with_flags(w.at(t, key.clone()), &a.w, &key)?;
     let mut pw = aw.path(p);
     if overwrite { pw.overwrite(&v)? } else { pw.set(&v)? }
@@ -184,12 +181,8 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
     let key = ctx.key(&a.ak)?;
     let p = path(ctx, t, &key, &a.path, true)?;
     let pt = type_at(&key, &p);
-    let sch = key.schema();
-    let et = match (&sch, &pt) {
-        (Some(s), Some(t)) => text::element_type(s, t),
-        _ => None,
-    };
-    let ety = sch.zip(et.as_ref());
+    let et = pt.as_ref().and_then(text::element_type);
+    let ety = et.as_ref();
     let args = &a.args;
     let n = |k: usize| -> anyhow::Result<()> {
         if args.len() == k { Ok(()) } else { Err(usage(format!("{} takes {k} argument(s)", a.op))) }
@@ -208,7 +201,7 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
             let r = range(&args[0])?;
             if args.len() == 1 {
                 pw.splice(r, ())?
-            } else if matches!(pt, Some(Type::Text)) {
+            } else if matches!(pt, Some(ValueType::Text)) {
                 n(2)?;
                 let s = ctx.arg_text(&args[1])?;
                 let s = if s.starts_with('"') {

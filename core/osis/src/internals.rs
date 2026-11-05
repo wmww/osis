@@ -5,10 +5,117 @@ use crate::Osis;
 use osis_node::sync::{Action, Event, SyncEngine};
 use osis_node::Engine;
 
+pub use crate::history::HISTORY_PAGE;
 pub use crate::net::ManualNet;
+pub use crate::person::OFFER_LIFETIME_MS;
+pub use crate::port::client::{own_uid, socket_dir, socket_path};
+pub use crate::port::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES};
+pub use crate::value_type::of_schema;
+pub use osis_base::{Clock, CommitId, CreationRecord, LabelId, ManualClock, Ts};
 pub use osis_node as node;
+pub use osis_node::sync::MAX_CONNS_PER_CLIENT;
+pub use osis_schema as schema;
+pub use osis_schema::core_types;
+pub use osis_transport::InProcess;
 
-/// What tests set on `Config` and `ClientConfig`.
+/// `group.0`'s field of items, for path reads and writes of it (spec/data-model.md §8).
+pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
+/// `group.0`'s field of subgroups.
+pub const GROUP_SUBGROUPS: osis_schema::FieldId = osis_schema::FieldId(1);
+
+/// What a change's id holds.
+pub fn change_raw(c: &crate::ChangeId) -> node::ChangeId {
+    c.0
+}
+
+/// What a change's id holds, as a test asks.
+pub trait ChangeRaw {
+    /// The commit, if it is one and not an ephemeral batch.
+    fn commit(&self) -> Option<CommitId>;
+}
+
+impl ChangeRaw for crate::ChangeId {
+    fn commit(&self) -> Option<CommitId> {
+        match self.0 {
+            node::ChangeId::Commit(c) => Some(c),
+            node::ChangeId::Ephemeral(_) => None,
+        }
+    }
+}
+
+/// The exact order value behind a public time.
+pub trait Exact {
+    fn ts(&self) -> Ts;
+}
+
+impl Exact for crate::Stamp {
+    fn ts(&self) -> Ts {
+        self.ts
+    }
+}
+
+impl Exact for crate::ThingStamp {
+    fn ts(&self) -> Ts {
+        self.ts
+    }
+}
+
+impl Exact for crate::Committed {
+    fn ts(&self) -> Ts {
+        self.ts
+    }
+}
+
+impl Exact for crate::HistoryPos {
+    fn ts(&self) -> Ts {
+        self.0.ts
+    }
+}
+
+/// The label an admission id stands for.
+pub fn label_of(a: &crate::AdmissionId) -> LabelId {
+    a.0
+}
+
+/// Writes a `KeepAlive` has made.
+pub fn kept_writes(k: &crate::KeepAlive) -> u64 {
+    k.writes()
+}
+
+/// A joining device's node tid, before it has finished.
+pub fn joining_node(j: &crate::Joining) -> osis_base::Tid {
+    j.node()
+}
+
+/// What tests measure of a `MemStore`.
+pub trait MemStoreMeasures {
+    /// The bytes the node's store holds.
+    fn held_bytes(&self) -> u64;
+    /// Rows in the store now.
+    fn rows(&self) -> usize;
+    /// The bytes held in rows, and in blobs with their number.
+    fn held_split(&self) -> (u64, u64, u64);
+    /// An independent copy of the store as it is now, as a device backup takes it (the host store
+    /// left out): opening it later is a restore.
+    fn backup(&self) -> crate::MemStore;
+}
+
+impl MemStoreMeasures for crate::MemStore {
+    fn held_bytes(&self) -> u64 {
+        crate::MemStore::held_bytes(self)
+    }
+    fn rows(&self) -> usize {
+        crate::MemStore::rows(self)
+    }
+    fn held_split(&self) -> (u64, u64, u64) {
+        crate::MemStore::held_split(self)
+    }
+    fn backup(&self) -> crate::MemStore {
+        crate::MemStore::backup(self)
+    }
+}
+
+/// What tests set on `HandleConfig`.
 #[derive(Clone, Default)]
 pub struct Knobs {
     /// Wall clock in place of the system's.
@@ -17,6 +124,8 @@ pub struct Knobs {
     pub seed: Option<u64>,
     /// In place of `CONNECTION_WAIT`.
     pub connection_wait: Option<std::time::Duration>,
+    /// In-process endpoints in place of QUIC, for every dial and listener.
+    pub transport: Option<InProcess>,
 }
 
 /// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a thin client
@@ -53,6 +162,8 @@ pub trait Internals {
     fn after_route(&self, f: Box<dyn Fn() + Send>);
     /// Sets a route with nothing else `group_source` does.
     fn set_route(&self, group: osis_base::Tid, to: Option<crate::HostAddr>);
+    /// Serves clients at the unix socket `path` (`Osis::listen_socket` picks the store's).
+    fn listen_socket_at(&self, path: &std::path::Path) -> crate::Result<()>;
 }
 
 impl Internals for Osis {
@@ -102,6 +213,9 @@ impl Internals for Osis {
     fn port_panic_next(&self, after_call: bool) {
         let p = &self.inner.port;
         (if after_call { &p.panic_after_call } else { &p.panic_next }).store(true, std::sync::atomic::Ordering::Release);
+    }
+    fn listen_socket_at(&self, path: &std::path::Path) -> crate::Result<()> {
+        Osis::listen_socket_at(self, path)
     }
     fn after_route(&self, f: Box<dyn Fn() + Send>) {
         *crate::watch::lock(&self.inner.port.after_route) = Some(f);
@@ -175,7 +289,7 @@ pub async fn restore(o: Opening, card: &crate::RecoveryCard) -> crate::Result<Os
 }
 
 pub async fn connect_socket(socket: &std::path::Path, o: Opening) -> crate::Result<Osis> {
-    Osis::connect_socket(socket, o.cfg.client).await
+    Osis::connect_socket_at(socket, o.cfg.handle).await
 }
 
 pub async fn connect(addr: &crate::HostAddr, secret: &crate::ClientSecret, o: Opening) -> crate::Result<Osis> {
@@ -183,5 +297,5 @@ pub async fn connect(addr: &crate::HostAddr, secret: &crate::ClientSecret, o: Op
 }
 
 pub async fn connect_all(logins: &[crate::NodeLogin], o: Opening) -> crate::Result<Osis> {
-    Osis::connect(logins, o.cfg.client).await
+    Osis::connect(logins, o.cfg.handle).await
 }

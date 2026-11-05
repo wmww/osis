@@ -53,25 +53,6 @@ impl ManualNet {
     }
 }
 
-/// How hosts and co-reader nodes are dialed (spec/sync.md §10).
-#[derive(Clone)]
-pub enum Transport {
-    /// Hosts over QUIC; co-readers over iroh (feature `iroh`, through
-    /// `Config.relays`), on the LAN too with feature `lan`. Without `iroh` no co-reader is dialed.
-    Quic,
-    /// In-process endpoints for hosts and co-readers (tests).
-    InProcess(osis_transport::InProcess),
-}
-
-impl std::fmt::Debug for Transport {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Transport::Quic => f.write_str("Quic"),
-            Transport::InProcess(_) => f.write_str("InProcess"),
-        }
-    }
-}
-
 pub(crate) enum Net {
     Off,
     Manual(Mutex<Vec<Action>>),
@@ -211,25 +192,25 @@ impl Net {
         }
     }
 
-    /// Starts the driver task over one transport for hosts and co-readers (`Multi`; its host's
-    /// store beside the database). With `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret
+    /// Starts the driver task over one transport for hosts and other nodes (`Multi`; its host's
+    /// store beside the database). With `p2p` (`Config.peers`) and a peer transport, it listens with the dialable secret
     /// (registered at `relays`) and publishes `reach.0`; with feature `lan` and QUIC it also runs
-    /// the LAN loop. Without a co-reader transport no co-reader is dialed.
+    /// the LAN loop. Without a peer transport no peer is dialed.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
         let shared = OsisShared(db.clone(), store);
-        let (transport, p2p, relays) = (cfg.client.transport.clone(), cfg.peers, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
+        let (transport, p2p, relays) = (cfg.handle.internals.transport.clone(), cfg.peers, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
-        // the client port's unix socket (`Osis::listen_unix`)
+        // the client port's unix socket (`Osis::listen_socket`)
         let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
         // where the dialable-key listener goes, and whether the LAN loop runs
         let (reach, lan): (Option<String>, bool) = match transport {
-            Some(Transport::InProcess(t)) => {
+            Some(t) => {
                 let url = format!("mem://{}-peer", t.name());
                 multi.mem = Some(t);
                 (Some(url), false)
             }
-            Some(Transport::Quic) | None => {
+            None => {
                 multi.quic = Some(osis_transport::Quic::new());
                 #[cfg(feature = "iroh")]
                 {
@@ -559,12 +540,11 @@ impl crate::Osis {
     }
 }
 
-/// Whether this node's dialable key goes under a group's labels, so that its co-readers there can
-/// dial it off the LAN (spec/permissions.md §4).
+/// Whether a group's readers are told how to reach this node directly, so that they can sync with
+/// it off the LAN too.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Reach {
-    /// Only when every reader of the group is this person, a thing it owns or a contact
-    /// (`import_contact`).
+pub enum ShareAddress {
+    /// Only when every reader of the group is this person, a thing it owns or a contact.
     #[default]
     Auto,
     Always,
@@ -577,16 +557,16 @@ pub enum SyncMode {
     /// All of it.
     #[default]
     Full,
-    /// None of it: its labels are not synced, nothing of it is downloaded or uploaded from here;
-    /// what is already here stays, no longer updated. Lowering a role reads the group's commit
-    /// headers only, so that the holder's edits there are kept (spec/permissions.md §5.3).
-    HeadersOnly,
+    /// None of its content: nothing of it is downloaded or uploaded from here, and what is already
+    /// here stays, no longer updated. Lowering a role reads only the log of who changed what, so
+    /// that the holder's edits there are kept.
+    LogOnly,
 }
 
 /// How this node syncs a group (`Osis::sync_options`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SyncOptions {
-    pub reach: Reach,
+    pub share_address: ShareAddress,
     pub mode: SyncMode,
 }
 
@@ -599,31 +579,31 @@ impl crate::Osis {
             return crate::port::codec::sync_options(&mut a);
         }
         Ok(self.locked(|x| SyncOptions {
-            reach: match x.sync.reach_policy(&group) {
-                None => Reach::Auto,
-                Some(true) => Reach::Always,
-                Some(false) => Reach::Never,
+            share_address: match x.sync.reach_policy(&group) {
+                None => ShareAddress::Auto,
+                Some(true) => ShareAddress::Always,
+                Some(false) => ShareAddress::Never,
             },
-            mode: if x.sync.receipts_only().contains(&group) { SyncMode::HeadersOnly } else { SyncMode::Full },
+            mode: if x.sync.receipts_only().contains(&group) { SyncMode::LogOnly } else { SyncMode::Full },
         }))
     }
 
     /// Sets how this node syncs `group` (stored): all of it, so to change one field start from
-    /// `sync_options`. Co-readers of groups without this node's dialable key do not dial it. When
-    /// the group's labels already hold that key and it no longer goes there, the key changes
-    /// (`rotate_reach`), so readers there cannot dial it any more.
+    /// `sync_options`. Readers of a group not told this node's address do not dial it. When a group
+    /// was told it and no longer qualifies, the address changes (`rotate_address`), so readers there
+    /// cannot dial it any more.
     pub fn set_sync_options(&self, group: osis_base::Tid, o: SyncOptions) -> crate::Result<()> {
         if !self.has_store() {
             let mut args = vec![Value::Tid(group)];
             args.extend(crate::port::codec::sync_options_v(&o));
             return self.rcall(crate::port::method::SET_SYNC_OPTIONS, args).map(drop);
         }
-        let reach = match o.reach {
-            Reach::Auto => None,
-            Reach::Always => Some(true),
-            Reach::Never => Some(false),
+        let reach = match o.share_address {
+            ShareAddress::Auto => None,
+            ShareAddress::Always => Some(true),
+            ShareAddress::Never => Some(false),
         };
-        let headers = o.mode == SyncMode::HeadersOnly;
+        let headers = o.mode == SyncMode::LogOnly;
         self.act(|l| {
             let mut acts = l.sync.set_reach_policy(group, reach);
             if l.sync.receipts_only().contains(&group) != headers {
@@ -634,12 +614,20 @@ impl crate::Osis {
         Ok(())
     }
 
-    /// Serves clients at the unix socket `path`: by default, processes of this uid that connect
-    /// there (`Osis::connect_socket`) act as this node's main actor with no authentication (there is
-    /// no security boundary between them); others are refused by the kernel's word for their uid. A path sockets only; a stale socket file is replaced, one in
-    /// use is `Network`. Needs a runtime.
-    pub fn listen_unix(&self, path: &std::path::Path) -> crate::Result<()> {
-        self.local_only("listen_unix")?;
+    /// Serves clients on this store's own unix socket: by default, processes of this uid that
+    /// connect (`Osis::connect_socket` with this store's directory) act as this node's main actor
+    /// with no authentication (there is no security boundary between them); others are refused by
+    /// the kernel's word for their uid. A stale socket is replaced, one in use is `Network`; `Storage`
+    /// when the socket's directory is not safely this user's; `Invalid` for a store in memory, which
+    /// has no directory to name it by. Needs a runtime.
+    pub fn listen_socket(&self) -> crate::Result<()> {
+        self.local_only("listen_socket")?;
+        let Some(dir) = &self.inner.store_dir else { return Err(crate::Error::Invalid("a store in memory has no client socket".into())) };
+        self.listen_socket_at(&crate::port::client::socket_path(dir)?)
+    }
+
+    pub(crate) fn listen_socket_at(&self, path: &std::path::Path) -> crate::Result<()> {
+        self.local_only("listen_socket")?;
         let url = osis_transport::unix::url_of(path);
         osis_transport::unix::url_path(&url).map_err(|e| crate::Error::Invalid(e.to_string()))?;
         self.inner.net.listen(url)
@@ -647,8 +635,8 @@ impl crate::Osis {
 
     /// Serves clients at `urls` (`quic://host:port`), by default only as actors they authenticate for
     /// (`add_client`), with a key of
-    /// the client listener's own, made on first use and kept in the store: it never rotates with
-    /// `rotate_reach` and links to neither the dialable key nor the signing key. Returns each
+    /// the client listener's own, made on first use and kept in the store: `rotate_address` leaves it
+    /// be, and nothing ties it to this node's other keys. Returns each
     /// address to hand clients (with its real port). Replaces the listeners of an earlier call
     /// (their sessions end; clients reconnect by themselves). No URL: stops listening, ends those sessions, shreds the key (a later
     /// call makes a new one, so clients need a new address). All or none: on an error nothing
@@ -659,29 +647,29 @@ impl crate::Osis {
         Ok(a.into_iter().map(|a| crate::HostAddr(osis_label::Address { url: a.url, key: a.key })).collect())
     }
 
-    /// A new client listener key (by hand only): the old one is shredded,
+    /// New client addresses (by hand only): the old key is shredded,
     /// its listeners and sessions end, and the same addresses listen under the new one, returned
     /// here. A client holding the old address sees `Network` on every call and `connected: false`
     /// until it connects to a new address, handed to it out of band. No listener up (a process
     /// that has not called `client_listen`): only the key changes. Needs a runtime.
-    pub fn rotate_client_key(&self) -> crate::Result<Vec<crate::HostAddr>> {
+    pub fn rotate_client_address(&self) -> crate::Result<Vec<crate::HostAddr>> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::ROTATE_CLIENT_KEY, vec![])?;
+            let v = self.rcall(crate::port::method::ROTATE_CLIENT_ADDRESS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
         }
         let a = self.inner.net.client_listen(driver::ClientUrls::Rotate)?;
         Ok(a.into_iter().map(|a| crate::HostAddr(osis_label::Address { url: a.url, key: a.key })).collect())
     }
 
-    /// Gives this device a new dialable key and LAN secret (spec/sync.md §10): it listens with
-    /// the new key at once and publishes it only under groups that get `reach.0`. A co-reader
-    /// removed since can no longer dial it or recognise it on a LAN; a link holder (who got the
-    /// dialable key from a direct link, never the lan secret) can no longer dial it. Direct links
-    /// still open lose first contact (they still work through hosts). Done by itself when a
-    /// group holding its `reach.0` stops qualifying and when a direct link ends.
-    pub fn rotate_reach(&self) -> crate::Result<()> {
+    /// Gives this node a new address other nodes dial it directly at (`Config::peers`): it listens
+    /// there at once and tells only the groups whose `ShareAddress` allows it. A node removed from
+    /// those since can no longer dial it or recognise it on a LAN, nor can a holder of a direct link.
+    /// Direct links still open no longer reach this node directly (they still work through hosts).
+    /// Done by itself when a group told the old address no longer qualifies and when a direct link
+    /// ends.
+    pub fn rotate_address(&self) -> crate::Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::ROTATE_REACH, vec![]).map(drop);
+            return self.rcall(crate::port::method::ROTATE_ADDRESS, vec![]).map(drop);
         }
         self.act(|l| l.sync.rotate_reach());
         Ok(())
