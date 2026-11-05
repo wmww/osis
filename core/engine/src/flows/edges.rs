@@ -144,11 +144,14 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
+    // below the holder's edge for keys (one past its `until` included, still in the state) a
+    // grant would be a demotion with no frontier and no rotation: a demotion lowers it
+    let below = tx.core.timelines.get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(edge.role));
+    if admin && below {
+        return Err(Error::Misuse("a grant below the holder's edge lowers it (use demote)"));
+    }
     if !admin {
         let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i));
-        // below an edge past its `until`, still in the state, a grant would be a removal for keys
-        // with no rotation: receivers refuse it (an admin, or a finalize, takes the edge away first)
-        let below = tx.core.timelines.get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(edge.role));
         if !ok || below {
             return Err(Error::Permission { tid: target });
         }
@@ -240,8 +243,9 @@ fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()
 
 /// A removal or demotion (or a self-removal) of `d.holder` on `target` by `who`: an explicit
 /// demotion carries the frontier and the target's rotation of the roles the holder left in the
-/// same commit (spec/permissions.md §3), after the cascade on the target; a self-removal
-/// carries neither (the next node that may rotate does), and the leaver drops what it lost. An
+/// same commit (spec/permissions.md §3), after the cascade on the target, or no rotation while
+/// Seal waits (its rotation stays due); a self-removal carries no frontier and no rotation (the
+/// next node that may rotate does), and the leaver drops what it lost. An
 /// explicit removal of an absent edge resets its dead entries (spec/permissions.md §2). With
 /// `others`, an explicit removal of those holders' edges too, under the same frontier and one
 /// rotation (spec/commits.md §2). Then the inbox copy to each holder, and placement before any
@@ -351,13 +355,15 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
                 }));
             }
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-            let holders = rotation::recipients(tx, &target, &skip)?.ok_or(rotation::SEAL_WAITS)?;
-            let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
-            if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
-                rotation::fresh_deposit_seed(tx, &mut m, target)?;
+            // while Seal waits the removal goes alone (spec/permissions.md §3)
+            if let Some(holders) = rotation::recipients(tx, &target, &skip)? {
+                let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
+                if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
+                    rotation::fresh_deposit_seed(tx, &mut m, target)?;
+                }
+                unreached = rotation::unreached(tx, &target, &r)?;
+                rot = Some(r);
             }
-            unreached = rotation::unreached(tx, &target, &r)?;
-            rot = Some(r);
         }
     }
     if selfr {
@@ -445,9 +451,10 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 
 /// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
 /// their removal with no frontier, each saying keep or erase as its expiry would, and the
-/// rotation of the roles they held that `who` may rotate, in one role commit. Not written when
-/// `who` holds no current secret of such a role (it waits for a re-seal, spec/crypto.md §4):
-/// false then. The cascade below `target` is the caller's (`rotation::ensure_rotated`).
+/// rotation of the roles they held that `who` may rotate, in one role commit, or alone while Seal
+/// waits (its rotation then stays due). Not written when `who` holds no current secret of such
+/// a role (it waits for a re-seal, spec/crypto.md §4): false then. The cascade below `target`
+/// is the caller's (`rotation::ensure_rotated`).
 pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<bool> {
     let mut m = Mutation::new();
     if who != tx.core.id.tid() {
@@ -472,14 +479,15 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     if !roles.is_empty() && tx.core.has_own_secrets(&target) {
         let Some(held) = tx.core.epochs(&target).filter(|h| roles.iter().all(|r| h.role(*r).newest_held().is_some())) else { return Ok(false) };
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
-        // while Seal waits the finalize stays due, as for a lacking secret
-        let Some(holders) = rotation::recipients(tx, &target, &skip)? else { return Ok(false) };
-        let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
-        if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
-            rotation::fresh_deposit_seed(tx, &mut m, target)?;
+        // while Seal waits the finalize goes alone (spec/permissions.md §3)
+        if let Some(holders) = rotation::recipients(tx, &target, &skip)? {
+            let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
+            if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
+                rotation::fresh_deposit_seed(tx, &mut m, target)?;
+            }
+            unreached = rotation::unreached(tx, &target, &r)?;
+            rot = Some(r);
         }
-        unreached = rotation::unreached(tx, &target, &r)?;
-        rot = Some(r);
     }
     // a writer's write on `roles.0`: judged by the finalize authority, not an admin's
     m.unchecked();
@@ -546,7 +554,8 @@ impl Engine {
     /// Lowers or removes `d.holder`'s edge on `target` (spec/permissions.md §2, §3, §5): an
     /// explicit demotion by an admin (with the frontier of what this node had received of the
     /// demoted nodes, `d.presync` deciding whether to stamp without a pre-sync), or a
-    /// self-removal. The rotation of the roles the holder left goes in the same commit.
+    /// self-removal. The rotation of the roles the holder left goes in the same commit (while Seal
+    /// waits, none: it stays due).
     pub fn demote(&mut self, target: &Tid, d: &Demotion) -> Result<Done> {
         self.demote_signed(None, target, d)
     }

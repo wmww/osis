@@ -58,7 +58,7 @@ pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTree
 /// The roles of `a` that `who` may rotate whose rotation is due
 /// (spec/crypto.md §4, encrypting under): blocked (`blocked_roles_of`), or some current epoch,
 /// not only the newest, does not cover a known departure, or the role forked and `who` is its
-/// merger (merge, rule 3), or some current epoch has a held box to an actor whose grant is
+/// merger (merge, rule 3), or some current epoch has a box to an actor whose grant is
 /// keyless (the knowing re-key, rule 4). Only a role with a held current secret rotates
 /// (spec/crypto.md §4, boxes).
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
@@ -110,7 +110,8 @@ pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: &[(Tid, Option<Role>)])
     Ok(Some(out))
 }
 
-/// The error a rotation, removal or grant gets while Seal waits (`recipients`).
+/// The error a rotation, grant or re-seal gets while Seal waits (`recipients`); a removal goes
+/// without its rotation then (`flows::edges::demote_in`).
 pub(crate) const SEAL_WAITS: Error = Error::Misuse("a holder actor's keysets have forked: this waits until that actor's merger merges them (spec/crypto.md §4, Seal)");
 
 /// A fresh deposit seed for `a` in `m` (spec/crypto.md §3; an admin's write).

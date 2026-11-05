@@ -1390,18 +1390,15 @@ impl Core {
     }
 
     /// Re-indexes which parts of commit `id` are invalid here (call after setting `Meta::valid`).
-    /// A `secrets.0` part turning invalid or valid changes the boxes held (`rotation::members::
-    /// held_boxes`): what is derived from them is dropped (`role_changed`).
     pub fn index_validity(&mut self, id: &CommitId) {
         let Some(m) = self.ix.commits.get(id) else { return };
-        let mut boxes = false;
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
-            let changed = if m.valid_at(ai) { self.ix.invalid.remove(&k, id) } else { self.ix.invalid.insert(k, *id) };
-            boxes |= changed && a.ak.as_str() == "secrets.0";
-        }
-        if boxes {
-            self.role_changed();
+            if m.valid_at(ai) {
+                self.ix.invalid.remove(&k, id);
+            } else {
+                self.ix.invalid.insert(k, *id);
+            }
         }
     }
 

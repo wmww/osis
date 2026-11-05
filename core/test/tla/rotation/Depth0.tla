@@ -8,8 +8,9 @@
 (* an admin rotates while it holds more than one current epoch (merge; Merge *)
 (* "departure": only while one misses a departure it knows, the rule before);*)
 (* a rotation finding no keyset of h descending from every anchor waits      *)
-(* (LeftOut "wait"). Staleness, taint and the knowing re-key judge every box *)
-(* held, valid or not (SeeAll). Role cycles (rule 4, issues/keys-depth0.md): *)
+(* (LeftOut "wait"), and a removal it would carry goes alone (Alone).       *)
+(* Every rule judges the boxes a node holds valid. Role cycles (rule 4,      *)
+(* issues/keys-depth0.md):                                                   *)
 (* no key cycles: actor grants in an agreed order, one closing a cycle over  *)
 (* the earlier ones gives no key access, judged over the grants a node     *)
 (* holds. Fresh: the failed candidate it replaced (leave cycle members out, *)
@@ -76,13 +77,13 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* it holds more than one current epoch and is the
                       \* merger: a maker of a current epoch other than the
                       \* newest, or anyone if none of them may rotate
-          SeeAll,     \* TRUE: staleness, taint and the knowing re-key judge
-                      \* every box the node holds, valid or not (what opens);
-                      \* FALSE: only the boxes it judges valid
           LeftOut,    \* a rotation finding anchors of h but no keyset to seal
                       \* h at: "out" (leaves h out; a later re-seal has no
                       \* anchors), "wait" (while the anchors fork, no keyset
                       \* of h descending from each, makes no rotation)
+          Alone,      \* TRUE: a removal whose rotation waits (LeftOut "wait")
+                      \* is written alone, its departure uncovered (learned
+                      \* under the actor's label); FALSE: the removal waits
           MaxRace     \* bound on fork merges made by a node lacking an epoch
                       \* of the actor (two merges racing fork again): the
                       \* concurrency window, as adversary steps
@@ -180,8 +181,6 @@ RsBox(r) == [h |-> r.h, key |-> r.key, by |-> r.by, poss |-> r.poss]
 BoxOK(x, a, b) == ~(Rule = "box" /\ b.h \in Acts /\ ~b.poss /\ RoleOn(b.by, b.h, a, kg[x]))
 HeldBoxesAt(x, e) == ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}}
 BoxesAt(x, e) == {b \in HeldBoxesAt(x, e) : BoxOK(x, ep[e].act, b)}
-\* the boxes staleness, taint and the knowing re-key judge (SeeAll: what opens)
-RuleBoxesAt(x, e) == IF SeeAll THEN HeldBoxesAt(x, e) ELSE BoxesAt(x, e)
 AllBoxesAt(e) == ep[e].bx \cup {RsBox(r) : r \in {q \in rs : q.e = e}}
 
 \* epochs whose secret device d gets from boxes BX over commits ids
@@ -193,10 +192,10 @@ Sec(x) == SecOf(x, LAMBDA e : BoxesAt(x, e), kn[x])
 ReachD(d) == SecOf(d, AllBoxesAt, Ids)
 
 \* rule 4: an epoch of a boxing an actor with no key access to a (x's view)
-Keyless(x, k) == \E b \in RuleBoxesAt(x, k) : b.h \in Acts /\ b.h \notin KH(x, ep[k].act)
+Keyless(x, k) == \E b \in BoxesAt(x, k) : b.h \in Acts /\ b.h \notin KH(x, ep[k].act)
 StaleK(x, k) == k \in kn[x] /\ (~Valid(x, k) \/ (Taint /\ Keyless(x, k))
                                 \/ \E j \in KOf(x, ep[k].act) : k \in AncV(x, j))
-StaleAt(x, e) == \E b \in RuleBoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
+StaleAt(x, e) == \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
 Covers(x, e, a) == \A dp \in Known(x) : dp[2] = a => dp \in ep[e].knows
 
 \* Fresh (fails with two admins of h, D0_cyc_2adm_fresh): k's boxes to a
@@ -225,6 +224,9 @@ Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ KeyIn
                  e \in Ids}
 BlindOK(a, hs) == (hs \cap Acts) \ KeyIn(GAll, a) # {} => Cardinality(Blinds) < MaxBlind
 
+\* a rotation of a by x would box an actor whose anchors fork
+Waits(x, a, extra) == \E h \in MemV(x, a, extra) \cap Acts : SealK(x, a, h) = 0 /\ Forked(x, a, h)
+
 Rotate(x, a, extra, race) ==
   LET lo(h) == h \in Acts /\
                (SealK(x, a, h) = 0 \/
@@ -242,8 +244,7 @@ Rotate(x, a, extra, race) ==
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
               forged |-> FALSE,
               race |-> race]
-      waits == \E h \in MemV(x, a, extra) \cap Acts : SealK(x, a, h) = 0 /\ Forked(x, a, h)
-  IN /\ ~(LeftOut = "wait" /\ waits)
+  IN /\ ~(LeftOut = "wait" /\ Waits(x, a, extra))
      /\ BlindOK(a, {b.h : b \in new.bx})
      /\ ep' = Append(ep, new)
      /\ kn' = [kn EXCEPT ![x] = @ \cup {Len(ep) + 1}]
@@ -296,17 +297,25 @@ NeedRot(x, a) ==
 Racing(x, a) == \E f \in Ids : ep[f].act = a /\ ~ep[f].forged /\ f \notin kn[x]
 
 Remove(dp) ==
-  /\ dp \notin done /\ Len(ep) < MaxE
+  /\ dp \notin done
   /\ IsAdm(dp[3], dp[2])
-  /\ Rotate(dp[3], dp[2], {dp}, FALSE)
+  /\ \/ /\ Len(ep) < MaxE
+        /\ Rotate(dp[3], dp[2], {dp}, FALSE)
+        \* the remover places it under the labels it syncs the removed party
+        \* read ("remover": every label the actor reaches); placements only
+        \* judge writers through holder actors (none: left out, a smaller
+        \* state space)
+        /\ pl' = IF Via = {} THEN pl
+                ELSE pl \cup {<<dp, l>> : l \in {l2 \in Acts : dp[2] \in HClos(l2) /\
+                                                 (Rule = "remover" \/ Syncs(dp[3], l2))}}
+        /\ UNCHANGED kpl
+     \* Alone: written without its rotation, learned under the actor's label
+     \/ /\ Alone /\ LeftOut = "wait" /\ Waits(dp[3], dp[2], {dp})
+        /\ pl' = pl \cup {<<dp, dp[2]>>}
+        /\ kpl' = [kpl EXCEPT ![dp[3]] = @ \cup {<<dp, dp[2]>>}]
+        /\ UNCHANGED <<ep, kn>>
   /\ done' = done \cup {dp}
-  \* the remover places it under the labels it syncs the removed party read
-  \* ("remover": every label the actor reaches); placements only judge
-  \* writers through holder actors (none: left out, a smaller state space)
-  /\ pl' = IF Via = {} THEN pl
-          ELSE pl \cup {<<dp, l>> : l \in {l2 \in Acts : dp[2] \in HClos(l2) /\
-                                           (Rule = "remover" \/ Syncs(dp[3], l2))}}
-  /\ UNCHANGED <<kg, rs, krs, wr, evd, nw, kpl>>
+  /\ UNCHANGED <<kg, rs, krs, wr, evd, nw>>
 
 EagerRot(p) ==
   /\ p \notin evd /\ Len(ep) < MaxE /\ Writer(p[1], p[2]) /\ Possess(p[1], p[2])
