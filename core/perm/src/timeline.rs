@@ -593,6 +593,12 @@ impl Timeline {
     pub fn lowered_unaudited(&self, holder: &Tid, target: &Tid) -> bool {
         self.walked.prior.contains_key(&(*holder, *target))
     }
+
+    /// The role `lowered_unaudited` took away: the next explicit write on the edge audits against
+    /// it (§5.1 step 4).
+    pub fn role_lowered_unaudited(&self, holder: &Tid, target: &Tid) -> Option<Role> {
+        self.walked.prior.get(&(*holder, *target)).map(|e| e.role)
+    }
     pub fn role_commit(&self, id: &CommitId) -> Option<&Arc<RoleCommit>> {
         self.input.commits.get(id)
     }

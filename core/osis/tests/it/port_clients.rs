@@ -632,6 +632,10 @@ fn watches_and_rows() {
     let plain = SetRole { sync: SyncFirst::Skip, keep: None };
     let link = x.n.make_link(x.g, Role::Read, LinkOpts { direct: true, ..Default::default() }).unwrap();
     assert!(matches!(block_on(c.set_role(x.t, a, None, plain)), Err(Error::Unsupported(_))));
+    assert!(matches!(block_on(c.repudiate(x.t, a, None, plain)), Err(Error::Unsupported(_))));
+    assert!(matches!(c.holders(x.t), Err(Error::Unsupported(_))));
+    assert!(matches!(c.leave(a, x.t), Err(Error::Unsupported(_))));
+    assert!(matches!(c.add_with_grant(osis::Member::Item(x.t), x.g, Role::Read), Err(Error::Unsupported(_))));
     assert!(matches!(block_on(c.revoke_link(x.t.to_uri().parse().unwrap(), SyncFirst::Required)), Err(Error::Unsupported(_))));
     // refused here: the link's secret never goes to a node that would only refuse it
     let r = block_on(c.redeem(&link));

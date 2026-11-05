@@ -146,7 +146,10 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
     if !admin {
         let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i));
-        if !ok {
+        // below an edge past its `until`, still in the state, a grant would be a removal for keys
+        // with no rotation: receivers refuse it (an admin, or a finalize, takes the edge away first)
+        let below = tx.core.timelines.get(&target).is_some_and(|tl| rotation::key_role(tl.edges_at(None).get(&holder, &target)) > Some(edge.role));
+        if !ok || below {
             return Err(Error::Permission { tid: target });
         }
     }
@@ -540,6 +543,14 @@ impl Engine {
     pub fn grant_as(&mut self, signer: &Tid, target: &Tid, holder: &Tid, edge: &Edge) -> Result<Done> {
         let (s, t, m, e) = (*signer, *target, *holder, edge.clone());
         self.run(|tx| grant_in(tx, Some(s), t, m, &e, false))
+    }
+
+    /// The role `holder` lost on `target` with no explicit write on that edge since: an edge past
+    /// its `until` (finalized or not), or one its holder removed. The next explicit write audits
+    /// against it (spec/permissions.md §5.1 step 4), so one below it needs the frontier of a demotion.
+    pub fn lost_role(&self, target: &Tid, holder: &Tid) -> Option<Role> {
+        let tl = self.core.timelines.get(target)?;
+        rotation::key_role(tl.edges_at(None).get(holder, target)).max(tl.role_lowered_unaudited(holder, target))
     }
 
     /// The things whose every label the caller should sync before stamping a demotion of

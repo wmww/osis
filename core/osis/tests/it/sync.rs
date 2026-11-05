@@ -426,9 +426,13 @@ fn demote_link_joiner_spec_permissions_8() {
     assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && alice.grants(k).unwrap().contains_key(&l), "no half-removal");
     w.set_online(&alice, true);
     let skip = SetRole { sync: SyncFirst::Skip, keep: None };
+    let before: std::collections::BTreeSet<_> = alice.engine(|e| e.commit_ids().into_iter().collect());
     w.until(alice.set_role(g, bob.me(), None, skip), 1000, 10).unwrap();
     let r = alice.grants(k).unwrap();
     assert!(!r.contains_key(&bob.me()) && !r.contains_key(&l) && r.contains_key(&carol.me()));
+    // the joiner and the link's key go in one commit: a failure leaves no half-removal
+    let new: Vec<_> = alice.engine(|e| e.commit_ids().into_iter().filter(|c| !before.contains(c)).filter(|c| e.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == k && a.ak.as_str() == "roles.0"))).collect());
+    assert_eq!(new.len(), 1, "one commit on K's grants");
     assert!(way(&alice, g).is_none());
     assert!(alice.links_of(g).unwrap().is_empty(), "the link ends with its joiner");
     let commits = alice.engine(|e| e.commit_ids().len());
@@ -1108,9 +1112,9 @@ fn a_sync_then_a_grant() {
     assert!(unrouted(&others[0], t).is_empty());
 }
 
-// spec/sync.md §2 (Route), notes/api.md Sharing: `share` syncs the thing only when the holder reads no label carrying it; a holder who reads a label that carries it, this node's own client on this person's thing, need none
+// spec/sync.md §2 (Route), notes/api.md Sharing: `grant` syncs nothing; a holder who reads a label that carries it, this node's own client on this person's thing, need none
 #[test]
-fn share_syncs_only_when_the_holder_has_no_route() {
+fn grant_syncs_nothing_and_a_route_may_exist() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 2);
     let g = group(&alice);
@@ -1120,9 +1124,10 @@ fn share_syncs_only_when_the_holder_has_no_route() {
     assert_eq!(x(&others[0], t), Some(s("in g")));
     alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t), "bob reads g, which carries it");
-    alice.sync(t, &[]).unwrap();
     alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
-    assert!(alice.status().unwrap().groups.contains_key(&t), "carol reads no label of it: synced");
+    assert_eq!(alice.status().unwrap().groups[&t].state, osis::SyncState::NoRoute, "carol reads no label of it: the grant alone syncs nothing");
+    alice.sync(t, &[]).unwrap();
+    assert_ne!(alice.status().unwrap().groups[&t].state, osis::SyncState::NoRoute);
     w.run();
     assert_eq!(x(&others[1], t), Some(s("in g")));
     let u = plain(&alice, "local");
@@ -1130,7 +1135,7 @@ fn share_syncs_only_when_the_holder_has_no_route() {
     alice.grant(u, a, Role::Read, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&u), "a client reads what this node holds");
     assert!(matches!(alice.grant(u, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
-    assert!(!alice.status().unwrap().groups.contains_key(&u), "nothing synced for a refused share");
+    assert!(!alice.status().unwrap().groups.contains_key(&u), "nothing synced for a refused grant");
 }
 
 // spec/sync.md §2: `unsync` after a share cuts the route, shown at both sides; synced again, the new label reaches the holder
@@ -1242,7 +1247,7 @@ fn a_link_to_a_plain_item_resolves() {
     assert_eq!(x(&others[0], t), Some(s("linked")));
 }
 
-// spec/sync.md §2: a thing owned by someone else: an admin by an edge shares it (the label on his hosts); an invite edge alone grants the role, cannot sync (`share` says so and writes nothing) and leaves the holder without a route
+// spec/sync.md §2: a thing owned by someone else: an admin by an edge shares it (the label on his hosts); an invite edge alone grants the role, cannot sync (`sync` says so and writes nothing) and leaves the holder without a route
 #[test]
 fn a_grant_on_someone_elses_item() {
     let mut w = World::new();
@@ -1721,7 +1726,7 @@ fn a_grant_on_a_group_owned_item_by_an_admin_edge() {
     w.run();
     assert_eq!(x(dan, t), Some(s("group's")));
     assert_eq!(x(carol, t), Some(s("group's")));
-    // the same with the label made by bob's share
+    // the same with the label made by bob's `sync`
     let u = item(&alice, g, g, "u");
     alice.grant(u, ids[0], Role::Admin, Default::default()).unwrap();
     w.run();
@@ -2087,7 +2092,7 @@ fn a_new_devices_first_wait_on_a_shared_thing() {
     assert!(no_routes(&bob2));
 }
 
-// spec/sync.md §2 (Route): `share` of a whole group: it gets the label, its items go along; the holder has a route to both
+// spec/sync.md §2 (Route): `sync` and `grant` of a whole group: it gets the label, its items go along; the holder has a route to both
 #[test]
 fn share_of_a_group_carries_its_items() {
     let mut w = World::new();

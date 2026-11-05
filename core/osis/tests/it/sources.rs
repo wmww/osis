@@ -1067,6 +1067,9 @@ fn a_demotion_of_a_routed_group_is_refused() {
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
     assert!(x.n.grants(x.g).unwrap().contains_key(&x.actor));
     assert!(x.p.engine(|e| e.roster(&x.g).contains_key(&x.actor)), "nothing written to the local copy");
+    // a raise, and `grant` by its route: a thin attachment carries neither (`method::for_client`)
+    assert!(matches!(block_on(x.p.set_role(x.g, x.actor, Some(Role::Admin), d)), Err(Error::Unsupported(_))));
+    assert!(matches!(x.p.grant(x.g, x.actor, Role::Admin, Default::default()), Err(Error::Unsupported(_))));
     drop(x.host);
 }
 

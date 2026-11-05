@@ -107,7 +107,7 @@ fn read_only(ak: &str) -> bool {
 }
 
 /// Why no op may name `ak`: the engine's, the sharing calls', or a group's members, which change
-/// by the group calls alone (they check sync and clean up tied edges).
+/// by the group calls alone (they check sync and clean up grants made with the membership).
 fn not_writable(ak: &str) -> Option<String> {
     if ak == GROUP.ak() {
         return Some(format!("{ak} is written only by the group calls (place, unplace, add_subgroup, remove_subgroup, make_group)"));
@@ -243,7 +243,7 @@ impl<'d> Write<'d> {
     /// not a subgroup of one), the commit fails `Invalid` before anything applies: add `g` as a
     /// subgroup too. A placement only in groups that do not sync at all (device-local data) is
     /// allowed and reported by a `NotSynced` diagnostic, as is a placement in a synced group
-    /// whose holders may not read `tid` (owned by someone else, with no edge: it does not reach
+    /// whose holders may not read `tid` (owned by someone else, with no grant: it does not reach
     /// them; own it by the group, or `Osis::add_with_grant`).
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
         self.place_expiring(tid, g, None)
@@ -264,13 +264,13 @@ impl<'d> Write<'d> {
     pub fn add_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
         self.group(g, false, sub, true, None)
     }
-    /// Removes `sub` from the subgroups of `g`; its tied edge as `unplace`'s. Items of `sub` this
+    /// Removes `sub` from the subgroups of `g`; a grant made with the membership as `unplace`'s. Items of `sub` this
     /// was the last way into a synced group for stop syncing, each reported `NotSynced`.
     pub fn remove_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
         self.group(g, false, sub, false, None)
     }
 
-    /// Removes every aspect the node knows of `tid` and its placements and subgroup edges in
+    /// Removes every aspect the node knows of `tid` and its placements and subgroup memberships in
     /// every group this node may write (one it may not keeps listing it; it reads deleted
     /// there), as held when the batch commits. Afterwards `knows(tid)` is `false`; the tid stays
     /// valid and a later write recreates the thing.
