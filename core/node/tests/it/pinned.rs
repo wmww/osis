@@ -9,7 +9,7 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::{EntryKind, Event, SyncConfig};
-use osis_schema::{AspectKey, Codec};
+use osis_schema::{RawKey, Codec};
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 

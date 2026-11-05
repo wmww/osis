@@ -8,7 +8,7 @@ use crate::share::Member;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{ChangeId, Diagnostic, Engine};
-use osis_schema::ApiKey;
+use osis_schema::AspectKey;
 use osis_schema::core_types::{GROUP, PLACED};
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
@@ -92,7 +92,7 @@ pub struct GroupsOf {
 /// The grants on a thing, by holder.
 pub type Grants = BTreeMap<Tid, Grant>;
 
-pub(crate) fn ak_of<K: ApiKey>(key: &K) -> Result<Ak> {
+pub(crate) fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
     Ak::new(key.ak()).map_err(|_| Error::Invalid(format!("bad AK {:?}", key.ak())))
 }
 
@@ -246,7 +246,7 @@ impl Reader<'_> {
 
     /// A typed read (spec/versioning.md §5): `None` when absent, and when the stored value
     /// does not match the key's type (a `Mismatch` diagnostic).
-    pub fn get<K: ApiKey>(&mut self, tid: Tid, key: &K) -> Result<Option<K::T>> {
+    pub fn get<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<Option<K::T>> {
         let ak = ak_of(key)?;
         let (t, Some(raw)) = self.raw(tid, &ak)? else { return Ok(None) };
         let v = match (key.schema(), key.ty()) {
@@ -279,7 +279,7 @@ impl Reader<'_> {
     /// has one); `None` when the path leads nowhere or the value there does not match the
     /// schema (a `Mismatch` diagnostic). A path the schema does not have fails `Type`. Only
     /// that position is materialized.
-    pub fn get_path<K: ApiKey>(&mut self, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
+    pub fn get_path<K: AspectKey>(&mut self, tid: Tid, key: &K, path: &Path) -> Result<Option<Value>> {
         let ak = ak_of(key)?;
         let (tid, Some(raw)) = self.raw(tid, &ak)? else { return Ok(None) };
         let (Some(s), Some(ty)) = (key.schema(), key.ty()) else {
@@ -396,7 +396,7 @@ impl Osis {
     }
 
     /// An aspect, for reads (`None` when absent or the thing is unknown), paths and callbacks.
-    pub fn at<K: ApiKey>(&self, tid: Tid, key: K) -> AspectRef<'_, K> {
+    pub fn at<K: AspectKey>(&self, tid: Tid, key: K) -> AspectRef<'_, K> {
         AspectRef { db: self, tid, key }
     }
 
@@ -649,7 +649,7 @@ pub struct AspectRef<'d, K> {
     pub(crate) key: K,
 }
 
-impl<'d, K: ApiKey> AspectRef<'d, K> {
+impl<'d, K: AspectKey> AspectRef<'d, K> {
     pub fn get(&self) -> Result<Option<K::T>> {
         if let crate::sources::Source::Remote(r) = self.db.route(self.tid) {
             let ak = ak_of(&self.key)?;
@@ -666,7 +666,7 @@ impl<'d, K: ApiKey> AspectRef<'d, K> {
     }
 }
 
-impl<K: ApiKey + Clone + Send + 'static> AspectRef<'_, K> {
+impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls `f` once with the value at registration (`Source::Initial`, through the
     /// dispatcher like every later call), then on every change; `f` gets the database handle.
     /// Calls coalesce: one call may show several commits' effect and carries the newest one's
@@ -709,7 +709,7 @@ pub struct PathRef<'a, 'd, K> {
     path: Path,
 }
 
-impl<'d, K: ApiKey> PathRef<'_, 'd, K> {
+impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
     pub(crate) fn parts(&self) -> (&'d Osis, Tid, &K, &Path) {
         (self.a.db, self.a.tid, &self.a.key, &self.path)
     }

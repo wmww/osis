@@ -12,7 +12,7 @@ use crate::error::Result;
 use osis_base::{Role, Tid, Value};
 use osis_crdt::{Held, Session, Source, SourceKind, Stamp};
 use osis_perm::{Tie, TieSource};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 

@@ -18,7 +18,7 @@ use args::{Cli, Global};
 use clap::Parser;
 use json::J;
 use osis::{ClientConfig, Config, Error, Key, MemStore, Osis, Store, Tid};
-use osis_schema::AspectKey as _;
+use osis_schema::RawKey as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
@@ -168,13 +168,10 @@ pub(crate) fn store_of(sel: &StoreSel) -> Store {
 /// The config of a command holding a store; `net`: sync runs (`Runtime::Own` over QUIC) while the
 /// command runs, else the command stays local (`Runtime::None`).
 fn config(g: &Global, net: bool) -> Config {
-    let mut c = Config::default();
-    if let Some(l) = g.limit {
-        c.materialize_limit = l;
-    }
+    let mut c = Config { client: client_config(g), ..Config::default() };
     if net {
         c.runtime = osis::Runtime::Own;
-        c.transport = Some(osis::Transport::Quic);
+        c.client.transport = Some(osis::Transport::Quic);
     }
     c
 }
@@ -189,8 +186,8 @@ fn client_config(g: &Global) -> ClientConfig {
 }
 
 /// How long connecting to a node waits, by `--timeout`.
-fn connect_wait(g: &Global) -> anyhow::Result<Duration> {
-    Ok(timeout_of(g, Some(DEFAULT_WAIT))?.unwrap_or(Duration::MAX))
+fn connect_wait(g: &Global) -> anyhow::Result<Option<Duration>> {
+    timeout_of(g, Some(DEFAULT_WAIT))
 }
 
 /// The connection `--remote ADDR --remote-secret FILE` asks for.
@@ -243,7 +240,7 @@ fn open(sel: &StoreSel, g: &Global, net: bool, use_daemon: bool) -> anyhow::Resu
             };
             let _ = std::fs::write(d.join(PID_FILE), std::process::id().to_string());
             if let Some(l) = login {
-                match db.connect_node(&l, connect_wait(g)?) {
+                match crate::cmd::within(connect_wait(g)?, db.connect_node(&l)) {
                     // a node down fails what goes there, as `Network`; the rest of the store works
                     Err(Error::Network(_)) | Ok(()) => {}
                     Err(e) => return Err(e.into()),
@@ -266,7 +263,7 @@ fn daemon(d: &Path, g: &Global) -> Option<Osis> {
     if Path::new(sock.trim_end()) != osis::socket_path(d).ok()? {
         return None;
     }
-    Osis::connect_socket(Path::new(sock.trim_end()), connect_wait(g).ok()?, client_config(g)).ok()
+    crate::cmd::within(connect_wait(g).ok()?, Osis::connect_socket(Path::new(sock.trim_end()), client_config(g))).ok()
 }
 
 /// The node named by `--node`, as the client `--client-secret` stands for (notes/client-port.md
@@ -275,7 +272,7 @@ fn client_of_node(g: &Global) -> anyhow::Result<Osis> {
     let (Some(addr), Some(file)) = (&g.node, &g.client_secret) else { return Err(usage("--node needs --client-secret")) };
     let secret = read_secret(file)?;
     let login = osis::NodeLogin { addr: addr.parse()?, secret };
-    Ok(Osis::connect(&[login], connect_wait(g)?, client_config(g))?)
+    Ok(crate::cmd::within(connect_wait(g)?, Osis::connect(&[login], client_config(g)))?)
 }
 
 /// Serves the client port while `serve` runs: listens on the store's socket and names it in

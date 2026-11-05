@@ -9,7 +9,7 @@ use osis_crypto::SeededRng;
 use osis_keys::{HolderKeys, Names, Provenance, Recipient, Rotation, rotate};
 use osis_node::Mutation;
 use osis_node::local_peer::LocalPeer;
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;

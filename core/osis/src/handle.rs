@@ -72,12 +72,10 @@ pub enum Store {
 /// How a database with a store of its own runs (`Osis::create`, `open`, `restore`, `pair`).
 #[derive(Clone)]
 pub struct Config {
-    /// Reads of values larger than this many canonical bytes fail `TooLarge`.
-    pub materialize_limit: usize,
+    /// What it shares with a thin client's config.
+    pub client: ClientConfig,
     /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with hosts given).
     pub runtime: Runtime,
-    /// How hosts and co-reader nodes are dialed (default: QUIC).
-    pub transport: Option<Transport>,
     /// Sync with co-reader nodes directly (spec/sync.md §5, §10; default on): listen with the
     /// dialable key, publish `reach.0`, and with feature `lan` announce on the LAN. Over QUIC it
     /// takes feature `iroh`: without it no co-reader is dialed, on or off.
@@ -85,22 +83,14 @@ pub struct Config {
     /// Relay URLs published in `reach.0` (self-hosted `iroh-relay`s; feature `iroh`, without it
     /// `Invalid`).
     pub relays: Vec<Url>,
-    /// A text session commits after this much inactivity.
-    pub idle_commit: Duration,
     /// Bytes of this session's ephemeral changes kept for undo (default 16 MiB); older ones are
     /// `NotUndoable{Compacted}`.
     pub ephemeral_history: usize,
-    /// Where watch callbacks run (default: a dispatcher thread).
-    pub dispatch: Dispatcher,
-    /// Test hooks.
-    #[doc(hidden)]
-    pub internals: crate::internals::Knobs,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        let c = ClientConfig::default();
-        Config { materialize_limit: c.materialize_limit, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), idle_commit: c.idle_commit, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY, dispatch: c.dispatch, internals: c.internals }
+        Config { client: ClientConfig::default(), runtime: Runtime::None, peers: true, relays: Vec::new(), ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY }
     }
 }
 
@@ -111,7 +101,7 @@ impl Config {
         if !hosts.is_empty() && matches!(self.runtime, Runtime::None) {
             return Err(Error::Invalid("hosts with Runtime::None: nothing would sync; set Config.runtime".into()));
         }
-        let quic = matches!(self.transport, None | Some(crate::Transport::Quic));
+        let quic = matches!(self.client.transport, None | Some(crate::Transport::Quic));
         if !self.relays.is_empty() && quic && !cfg!(feature = "iroh") {
             return Err(Error::Invalid("Config.relays needs feature `iroh`".into()));
         }
@@ -119,13 +109,13 @@ impl Config {
     }
 }
 
-/// How a thin client runs (`Osis::connect`, `connect_socket`): what `Config` holds but for what
-/// only a store of its own needs. Sync and undo logs are the node's.
+/// How a process runs whether or not it has a store: all of a thin client's config
+/// (`Osis::connect`, `connect_socket`), and `Config::client` of a node.
 #[derive(Clone)]
 pub struct ClientConfig {
     /// Reads of values larger than this many canonical bytes fail `TooLarge`.
     pub materialize_limit: usize,
-    /// How a node is dialed by its address (default: QUIC).
+    /// How hosts, co-reader nodes and nodes to log in to are dialed (default: QUIC).
     pub transport: Option<Transport>,
     /// A text session commits after this much inactivity.
     pub idle_commit: Duration,
@@ -210,6 +200,8 @@ pub(crate) struct Inner {
     pub idle_commit: Duration,
     /// How this handle dials a node it connects to (`Osis::connect_node`).
     pub transport: Option<Transport>,
+    /// How long a connection's attempt, or a write across a drop, lasts (`CONNECTION_WAIT`).
+    pub connection_wait: Duration,
     pub clock: Arc<dyn Clock>,
     pub schemas: Mutex<Vec<Arc<Schema>>>,
     /// Serializes undo and redo: candidate selection and commit.
@@ -345,7 +337,7 @@ fn parts(store: &Store) -> Result<(Box<dyn osis_store::Backend>, Box<dyn osis_st
 }
 
 fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
-    match cfg.internals.seed {
+    match cfg.client.internals.seed {
         Some(s) => Box::new(SeededRng::from_u64(s.wrapping_add(salt))),
         None => Box::new(OsRng),
     }
@@ -355,7 +347,7 @@ fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
 /// draw one session nonce and void its earlier commits (spec/crdt.md §2.1). Deterministic per
 /// store, kept beside it. Without a seed the rng is the OS's, so nothing is counted.
 fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
-    if cfg.internals.seed.is_none() {
+    if cfg.client.internals.seed.is_none() {
         return Ok(0);
     }
     let n = match store {
@@ -371,7 +363,7 @@ fn open_salt(store: &Store, cfg: &Config) -> Result<u64> {
 }
 
 fn clock(cfg: &Config) -> Arc<dyn Clock> {
-    cfg.internals.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
+    cfg.client.internals.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
 }
 
 fn engine_cfg(cfg: &Config) -> osis_node::Config {
@@ -466,14 +458,14 @@ impl Osis {
         let node = sync.engine().tid();
         sync.set_person(Some(me));
         let events = sync.engine_mut().subscribe();
-        let dispatch = Dispatch::new(&cfg.dispatch);
+        let dispatch = Dispatch::new(&cfg.client.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let routes = crate::sources::load_routes(sync.engine_mut())?;
         sync.engine_mut().core.routed_away = routes.keys().copied().collect();
         let routing = !routes.is_empty();
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), remotes: Vec::new(), routes, status_failed: false };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, transport: cfg.transport.clone(), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.client.materialize_limit, idle_commit: cfg.client.idle_commit, transport: cfg.client.transport.clone(), connection_wait: cfg.client.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, store, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
@@ -615,7 +607,7 @@ impl Osis {
             self.drain(l);
         }
         if !(any || handled) {
-            // nothing changed, but deadlines may have passed
+            // nothing changed, but a waiter's `late` may have passed
             if !l.waiters.is_empty() {
                 let now = self.inner.clock.now_wall_ms().0;
                 let Locked { waiters, sync, status, .. } = l;

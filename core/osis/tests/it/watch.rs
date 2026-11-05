@@ -282,7 +282,7 @@ fn coalesced_call_carries_newest_source() {
 fn errors_not_coalesced() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.materialize_limit = 1000;
+    cf.client.materialize_limit = 1000;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:big.0");
     let t = thing(&db);
@@ -382,7 +382,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     // the wake runs after the database lock is released: calling the database there is safe
     let weak: Arc<std::sync::OnceLock<osis::WeakOsis>> = Arc::default();
     let weak2 = weak.clone();
-    c.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
+    c.client.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
         w2.fetch_add(1, Ordering::SeqCst);
         if let Some(db) = weak2.get().and_then(|w| w.upgrade()) {
             let _ = db.knows(db.me());
@@ -442,4 +442,12 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     });
     let id = other.join().unwrap();
     assert_eq!(calls.lock().unwrap().last(), Some(&(id, Some(Value::Int(4)))));
+}
+
+// spec: none (API surface); notes/api.md Diagnostics, issues/parked-diagnostic.md: a commit from a newer format is told apart from what needs no part from an app
+#[test]
+fn a_parked_commit_has_its_own_diagnostic() {
+    use osis::internals::node::{Diagnostic, DiagnosticKind};
+    let d = Diagnostic { kind: DiagnosticKind::Parked, tids: Vec::new(), commit: None, peer: None, detail: "x".into() };
+    assert!(matches!(osis::Diagnostic::from(d), osis::Diagnostic::Parked { .. }));
 }

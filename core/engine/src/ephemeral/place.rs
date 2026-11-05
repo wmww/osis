@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, ChainStep, CreationRecord, Tid, Ts, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_schema::core_types::{GROUP, Group, PLACED};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

@@ -4,7 +4,7 @@
 use crate::net;
 use net::*;
 use osis_base::{Ak, Role, Value};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_node::sync::Event;
 
 // spec/sync.md §3, §5, §6: two nodes of one group converge through one host: closure

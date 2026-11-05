@@ -304,39 +304,36 @@ fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
     let db = Osis::internal(db.inner.clone());
     let t: Task = match m {
         method::WAIT_SYNCED => {
-            let (scope, t) = (c::sync_scope(a.next()?)?, c::timeout(a.uint()?));
+            let scope = c::sync_scope(a.next()?)?;
             a.end()?;
-            let p = db.wait_synced_pending(scope, t);
+            let p = db.wait_synced_pending(scope);
             Box::pin(async move { p.await.map(|()| nothing()) })
         }
         method::REDEEM => {
             let link: crate::ShareLink = a.text()?.parse()?;
-            let t = c::timeout(a.uint()?);
             a.end()?;
-            Box::pin(async move { Ok(Value::Tid(db.redeem(&link, t).await?)) })
+            Box::pin(async move { Ok(Value::Tid(db.redeem(&link).await?)) })
         }
         method::SET_ROLE | method::REPUDIATE => {
             let (target, holder) = (a.tid()?, a.tid()?);
             let role = a.opt()?.map(|r| c::role(&r)).transpose()?;
             let o = c::set_role(a.next()?)?;
-            let t = c::timeout(a.uint()?);
             a.end()?;
             if m == method::SET_ROLE {
-                Box::pin(async move { db.set_role(target, holder, role, o, t).await.map(|()| nothing()) })
+                Box::pin(async move { db.set_role(target, holder, role, o).await.map(|()| nothing()) })
             } else {
-                Box::pin(async move { db.repudiate(target, holder, role, o, t).await.map(|()| nothing()) })
+                Box::pin(async move { db.repudiate(target, holder, role, o).await.map(|()| nothing()) })
             }
         }
         method::REVOKE_LINK => {
-            let (id, sync, t) = (crate::share::LinkId(a.tid()?), c::sync_first(a.next()?)?, c::timeout(a.uint()?));
+            let (id, sync) = (crate::share::LinkId(a.tid()?), c::sync_first(a.next()?)?);
             a.end()?;
-            Box::pin(async move { db.revoke_link(id, sync, t).await.map(|()| nothing()) })
+            Box::pin(async move { db.revoke_link(id, sync).await.map(|()| nothing()) })
         }
         method::IMPORT_CONTACT => {
             let card: crate::ContactCard = a.text()?.parse()?;
-            let t = c::timeout(a.uint()?);
             a.end()?;
-            Box::pin(async move { Ok(Value::Tid(db.import_contact(&card, t).await?)) })
+            Box::pin(async move { Ok(Value::Tid(db.import_contact(&card).await?)) })
         }
         _ => return Err(unsupported(&format!("method {m} as a row that waits"))),
     };
@@ -769,7 +766,7 @@ impl Worker {
                 if c.subs.values().filter(|s| matches!(s.kind, Kind::Task(Some(_)))).count() >= MAX_WAITS {
                     return Err(Error::Invalid(format!("at most {MAX_WAITS} waits at once per connection")));
                 }
-                // no user handle left: nothing would end it but its own deadline
+                // no user handle left: nothing would tell it (`closing`) and it holds the database open
                 if db.inner.life.0.users_now() == 0 {
                     return Err(Error::Closed);
                 }
@@ -980,9 +977,8 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
         }
         Kind::Grants(t) if g.dirty => out.push((c::grants_v(&db.read_local(|r| r.grants(*t))), None)),
         Kind::Status if g.dirty => {
-            if let Ok(st) = db.status() {
-                out.push((c::status_v(&st), None));
-            }
+            // a store that cannot answer: the client hears something changed and asks for itself
+            out.push((db.status().map_or_else(|_| Value::List(vec![]), |st| c::status_v(&st)), None));
         }
         _ => {}
     }

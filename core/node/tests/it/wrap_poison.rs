@@ -524,7 +524,7 @@ fn useless_mark_outlives_the_tombstone_lifetime_spec_sync_6() {
 // rewrite, keeps it.
 #[test]
 fn useless_superset_does_not_cost_a_rewrite_spec_sync_6() {
-    let gone = osis_base::Ak::new(osis_schema::AspectKey::ak(&GONE)).unwrap();
+    let gone = osis_base::Ak::new(osis_schema::RawKey::ak(&GONE)).unwrap();
     let mut net = Net::new();
     let hosts = vec![net.add_host(), net.add_host()];
     let r = hosts[1];
@@ -602,7 +602,7 @@ fn useless_snapshot_carries_nothing_spec_sync_7() {
     let body = fx.net.host_ids(r, &l);
     fx.net.blocked.insert((a, r));
     fx.net.drop_link(a, r);
-    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&REG)).unwrap();
+    let ak = osis_base::Ak::new(osis_schema::RawKey::ak(&REG)).unwrap();
     let acts = fx.net.sync(a).compact(&t, &ak).unwrap();
     fx.net.actions(a, acts);
     fx.net.run();

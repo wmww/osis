@@ -48,14 +48,15 @@ pub fn name(db: &Osis, c: Tid) -> Result<String> {
 }
 
 /// How long the app waits for a link's host to answer: it runs off the UI thread, and a person is
-/// watching. Minor: at 0 every join fails, at infinity one that nobody answers spins for good.
+/// watching. Minor: at 0 every join fails, at infinity one that nobody answers waits for good.
 const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Joins by an `osis://` link (`osis chat link`): the chat, once here. Blocks until the link's
 /// host answers or `JOIN_WAIT` passes.
 pub fn join(db: &Osis, link: &str) -> Result<Tid> {
     let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a chat link: {e}")))?;
-    block_on(osis_chat::join(db, &l, JOIN_WAIT))
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;
+    rt.block_on(async { tokio::time::timeout(JOIN_WAIT, osis_chat::join(db, &l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("timed out".into())))
 }
 
 /// The profile, made on first use; `None` on a store without hosts.
@@ -135,23 +136,4 @@ pub fn recent(db: &Osis, c: Tid, n: usize) -> Result<Vec<Line>> {
         out.push(Line { id: m.id, who: who(m), time: m.time, text: text_of(&m.body), reply_to, mine: m.sender == me, edited: m.edited.is_some() });
     }
     Ok(out)
-}
-
-/// Polls `f` on this thread until it is ready.
-fn block_on<F: Future>(f: F) -> F::Output {
-    struct Unpark(std::thread::Thread);
-    impl std::task::Wake for Unpark {
-        fn wake(self: std::sync::Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-    let mut f = std::pin::pin!(f);
-    let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
-    let mut cx = std::task::Context::from_waker(&waker);
-    loop {
-        if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
-        }
-        std::thread::park();
-    }
 }

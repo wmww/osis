@@ -360,7 +360,7 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
 // purged large value's chunk blobs leave the host.
 #[test]
 fn purged_chunks_leave_the_host_spec_sync_5() {
-    use osis_schema::AspectKey;
+    use osis_schema::RawKey;
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -391,7 +391,7 @@ fn purged_chunks_leave_the_host_spec_sync_5() {
 // wrote; it fetches the chunks it never read for their salts and deletes them by its delete key.
 #[test]
 fn writer_purge_deletes_chunks_by_delete_key_spec_crypto_7() {
-    use osis_schema::AspectKey;
+    use osis_schema::RawKey;
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -913,7 +913,7 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
 #[test]
 fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     use osis_node::sync::EntryKind;
-    use osis_schema::AspectKey;
+    use osis_schema::RawKey;
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);

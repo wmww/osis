@@ -36,8 +36,8 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 // Untrusted nodes: Alice hosts with `own` admission (its key known before it listens): her home label, once its hosts name her
 // host address, is admitted and served from her host store (her own copy placed there like
 // anyone's); Bob's is refused until she opens admission (his status names her host, his home
-// synced at his other host; Carol's, at her host only, `Refused` and failing `wait_synced` at
-// its deadline), then hosted blind (she holds none of
+// synced at his other host; Carol's, at her host only, `Refused`, and `wait_synced` waits: it may
+// yet be admitted), then hosted blind (she holds none of
 // its keys) and served to Bob's restored device. Her host store holds no tid or AK of either
 // label in any row it ever wrote.
 #[test]
@@ -73,11 +73,10 @@ fn hosting_own_then_open_spec_sync_5() {
     assert!(!hosted(&w, s).contains(&lb), "own: another person's label refused");
     let st = bob.status().unwrap().groups[&bob.me()].clone();
     assert_eq!((st.state, st.not_admitted), (osis::SyncState::Synced, vec![ha.clone()]), "not admitted, not full; synced at base");
-    w.until(bob.wait_synced(osis::SyncScope::Thing(bob.me()), std::time::Duration::from_secs(5)), 1000, 10).unwrap();
+    w.until(bob.wait_synced(osis::SyncScope::Thing(bob.me())), 1000, 10).unwrap();
     let st = carol.status().unwrap().groups[&carol.me()].clone();
     assert_eq!((st.state, st.not_admitted), (osis::SyncState::Refused, vec![ha.clone()]), "at no other host");
-    let r = w.until(carol.wait_synced(osis::SyncScope::Thing(carol.me()), std::time::Duration::from_secs(5)), 1000, 10);
-    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [carol.me()]), "{r:?}");
+    assert!(w.try_until(carol.wait_synced(osis::SyncScope::Thing(carol.me())), 1000, 10).is_none());
 
     // open: Bob's label is taken at his next registration
     alice.set_hosting(Some(Hosting { admit: Admit::Open, ..alice.hosting().unwrap().unwrap() })).unwrap();
@@ -148,8 +147,8 @@ fn own_pair(seed: u64) -> (World, Osis, Osis, usize, HostAddr, Tid, Tid) {
     let ha = alice.host_address().unwrap().expect("listening");
     let (ca, cb) = (alice.contact_card().unwrap(), bob.contact_card().unwrap());
     w.run();
-    let a = w.until(bob.import_contact(&ca, osis::internals::WAIT), 1000, 10).unwrap();
-    let b = w.until(alice.import_contact(&cb, osis::internals::WAIT), 1000, 10).unwrap();
+    let a = w.until(bob.import_contact(&ca), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&cb), 1000, 10).unwrap();
     (w, alice, bob, base, ha, a, b)
 }
 
@@ -360,11 +359,11 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     let net = osis_transport::Net::new(41);
     let at = |i: u64, run: bool| {
         let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
-        c.internals.seed = Some(i);
+        c.client.internals.seed = Some(i);
         c.peers = false;
         if run {
             c.runtime = osis::Runtime::Own;
-            c.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("e{i}"))));
+            c.client.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("e{i}"))));
         }
         c
     };
@@ -377,7 +376,7 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     db.set_hosting(hosting()).unwrap();
     listening(&db);
     db.add_host(&db.host_address().unwrap().unwrap()).unwrap();
-    common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(30))).unwrap();
+    common::block_on(db.wait_synced(osis::SyncScope::All)).unwrap();
     let home = home_label(&db);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert_eq!(host_store_labels(&dir), vec![home]);
@@ -428,10 +427,10 @@ fn own_runtime_close_frees_host_store() {
     let net = osis_transport::Net::new(42);
     let at = |i: u64| {
         let mut c = osis::internals::Opening::at(osis::Store::Dir(dir.clone()));
-        c.internals.seed = Some(i);
+        c.client.internals.seed = Some(i);
         c.peers = false;
         c.runtime = osis::Runtime::Own;
-        c.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("o{i}"))));
+        c.client.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("o{i}"))));
         c
     };
     // `host_address` fails once the host could not open its store

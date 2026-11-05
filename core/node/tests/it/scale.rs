@@ -7,7 +7,7 @@ use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KeyActorKeys, Secret32, SeededRng};
 use osis_keys::{HolderKeys, Recipient, rotate};
 use osis_node::{Config, Engine, Mutation};
-use osis_schema::{Aspect, AspectKey, Codec, StaticSchema};
+use osis_schema::{Aspect, RawKey, Codec, StaticSchema};
 use osis_schema::core_types as ct;
 use osis_store::{Backend, BackendError, KeyValue, MemoryBackend, MemoryRoot, WriteBatch};
 use std::collections::{BTreeMap, BTreeSet};

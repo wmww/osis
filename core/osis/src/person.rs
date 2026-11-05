@@ -191,10 +191,11 @@ impl Osis {
     /// Restores the person of a recovery card on this fresh device (spec/permissions.md §8):
     /// claims the home label by the card's key, downloads it, then (signing as the recovery key)
     /// makes this node an admin of the person. Needs a runtime; the card's hosts are added
-    /// to `hosts`. Fails `Network` after `timeout`; on any failure (or a dropped future) the
-    /// recovery key is forgotten and the store gets no person record (it does not open as a
-    /// database; use a fresh store for the next attempt).
-    pub async fn restore(store: Store, hosts: &[HostAddr], card: &RecoveryCard, timeout: std::time::Duration, cfg: Config) -> Result<Osis> {
+    /// to `hosts`. `Invalid` when a host refuses the card's key, `Unsynced` when the home group
+    /// opens under no key at a host (`SyncState::Stranded`); with nobody answering it waits. On any
+    /// failure (or a dropped future) the recovery key is forgotten and the store gets no person
+    /// record (it does not open as a database; use a fresh store for the next attempt).
+    pub async fn restore(store: Store, hosts: &[HostAddr], card: &RecoveryCard, cfg: Config) -> Result<Osis> {
         cfg.check(hosts)?;
         let c = card.parse()?;
         let hosts = with_hosts(hosts, c.hosts.iter().cloned().map(HostAddr).collect());
@@ -205,8 +206,18 @@ impl Osis {
         let db = Osis::start(sync, clock, store, &cfg, c.person)?;
         let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
         db.act(|x| x.sync.follow(r, c.person, c.home_label, c.hosts.clone()));
-        let p = c.person;
-        db.wait_until(timeout, Box::new(move |s, st, _| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
+        let (p, home) = (c.person, c.home_label);
+        db.wait_until(None, Box::new(move |s, st, _| {
+            if s.static_entry_refused(&home) {
+                return Some(Err(Error::Invalid("this recovery card no longer works".into())));
+            }
+            match st.groups.get(&p).map(|g| g.state) {
+                Some(SyncState::Stranded) => Some(Err(Error::Unsynced { groups: vec![p] })),
+                Some(SyncState::Synced) if s.engine().knows(&p) => Some(Ok(())),
+                _ => None,
+            }
+        }))
+        .await?;
         let done = db.engine(|e| e.recover(&c, &[], PreSync::Synced))?;
         drop(key);
         db.carry(done)?;

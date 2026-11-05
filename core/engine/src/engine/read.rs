@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_crdt::Fragment;
 use osis_perm::{At, Edge};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_schema::Codec;
 use osis_schema::core_types as ct;
 use std::collections::BTreeMap;
@@ -131,7 +131,7 @@ impl Engine {
     }
 
     /// A typed read (reader defaults, spec/versioning.md §5).
-    pub fn get_typed<K: AspectKey>(&mut self, tid: &Tid, key: &K) -> Result<Option<K::T>> {
+    pub fn get_typed<K: RawKey>(&mut self, tid: &Tid, key: &K) -> Result<Option<K::T>> {
         let ak = Ak::new(key.ak()).map_err(|_| Error::Misuse("invalid AK"))?;
         match self.get(tid, &ak)? {
             Some(v) => Ok(Some(key.decode(&v)?)),

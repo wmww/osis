@@ -36,7 +36,7 @@ use osis_keys::{KeysWrite, HolderKeys, Recipient, SecretsWrite};
 use osis_label::Address;
 use osis_perm::At;
 use osis_schema::core_types::{self as ct, Inbox, Keys, Secrets};
-use osis_schema::{AspectKey, Codec};
+use osis_schema::{RawKey, Codec};
 use osis_store::Shred;
 use std::collections::BTreeSet;
 use std::sync::Arc;

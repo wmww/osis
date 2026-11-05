@@ -41,8 +41,8 @@ struct Node {
 fn open(store: &MemStore, net: &osis_transport::Net, clock: &Arc<ManualClock>, create: bool) -> Osis {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.transport = Some(Transport::InProcess(net.endpoint("n")));
-    c.internals.clock = Some(clock.clone());
+    c.client.transport = Some(Transport::InProcess(net.endpoint("n")));
+    c.client.internals.clock = Some(clock.clone());
     let n = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
     // the keyed listener is up once reach.0 is published
     for _ in 0..2000 {
@@ -88,10 +88,10 @@ impl Node {
 
     fn attach(&self, secret: &ClientSecret) -> osis::Result<Osis> {
         let mut c = osis::internals::Opening::memory();
-        c.transport = Some(Transport::InProcess(self.net.endpoint(&format!("c{}", NAMES.fetch_add(1, Ordering::Relaxed)))));
+        c.client.transport = Some(Transport::InProcess(self.net.endpoint(&format!("c{}", NAMES.fetch_add(1, Ordering::Relaxed)))));
         // a reopened node: its reach is stored, its listener comes up a moment later
         for _ in 0..2000 {
-            match osis::internals::connect(&self.addr(), secret, c.clone()) {
+            match crate::common::block_on(osis::internals::connect(&self.addr(), secret, c.clone())) {
                 Err(Error::Network(m)) if m.contains("unreachable") => std::thread::sleep(Duration::from_millis(10)),
                 r => return r,
             }
@@ -391,7 +391,7 @@ fn undo_and_revert_are_the_actors() {
     // Read only: a revert it may not write
     x.n.commit_set(x.t, osis::Key::untyped(a.clone()), &Value::Int(5)).unwrap();
     let mine = x.n.commits(&q(x.t)).unwrap()[0].commit.id;
-    block_on(x.n.set_role(x.g, ca, Some(Role::Read), SetRoleOpts { sync: SyncFirst::Skip, keep: None }, osis::internals::PRESYNC)).unwrap();
+    block_on(x.n.set_role(x.g, ca, Some(Role::Read), SetRoleOpts { sync: SyncFirst::Skip, keep: None })).unwrap();
     assert!(matches!(c.revert(mine), Err(Error::Permission { .. })));
     assert_eq!(x.n.at(x.t, osis::Key::untyped(a)).get().unwrap(), Some(Value::Int(5)));
 }
@@ -487,7 +487,7 @@ fn remove_client_revokes() {
     // demoted elsewhere: the entry stays, its actor reads nothing
     let (b, _, d) = x.client(Role::Read);
     assert!(d.knows(x.t).unwrap());
-    block_on(x.n.set_role(x.g, b, None, SetRoleOpts { sync: SyncFirst::Skip, keep: None }, osis::internals::PRESYNC)).unwrap();
+    block_on(x.n.set_role(x.g, b, None, SetRoleOpts { sync: SyncFirst::Skip, keep: None })).unwrap();
     assert!(!d.knows(x.t).unwrap());
     assert!(x.n.clients().unwrap().iter().any(|e| e.actor == b));
 }
@@ -616,7 +616,7 @@ fn watches_and_rows() {
     assert_eq!(drx.recv_timeout(Duration::from_secs(20)).unwrap(), "shown");
     assert!(drx.try_recv().is_err());
     let subs = x.n.watches();
-    block_on(x.n.set_role(x.g, a, None, SetRoleOpts { sync: SyncFirst::Skip, keep: None }, osis::internals::PRESYNC)).unwrap();
+    block_on(x.n.set_role(x.g, a, None, SetRoleOpts { sync: SyncFirst::Skip, keep: None })).unwrap();
     x.n.commit_set(x.t, osis::Key::untyped(name.clone()), &Value::Int(2)).unwrap();
     c.settle();
     assert!(!matches!(w.current(), Ok(Some(Value::Int(2)))), "{:?}", w.current());
@@ -634,13 +634,13 @@ fn watches_and_rows() {
     // the rows of the node's own (the socket's Owner only), those that wait too
     let plain = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     let link = x.n.make_link(x.g, Role::Read, LinkOpts { direct: true, ..Default::default() }).unwrap();
-    assert!(matches!(block_on(c.set_role(x.t, a, None, plain, osis::internals::PRESYNC)), Err(Error::Unsupported(_))));
-    assert!(matches!(block_on(c.repudiate(x.t, a, None, plain, osis::internals::PRESYNC)), Err(Error::Unsupported(_))));
+    assert!(matches!(block_on(c.set_role(x.t, a, None, plain)), Err(Error::Unsupported(_))));
+    assert!(matches!(block_on(c.repudiate(x.t, a, None, plain)), Err(Error::Unsupported(_))));
     assert!(matches!(c.leave(x.n.me(), x.t), Err(Error::Permission { .. })), "only its own actor's role");
     assert!(matches!(c.add_with_grant(osis::Member::Item(x.t), x.g, Role::Read), Err(Error::Unsupported(_))));
-    assert!(matches!(block_on(c.revoke_link(x.t.to_uri().parse().unwrap(), SyncFirst::Required, osis::internals::PRESYNC)), Err(Error::Unsupported(_))));
+    assert!(matches!(block_on(c.revoke_link(x.t.to_uri().parse().unwrap(), SyncFirst::Required)), Err(Error::Unsupported(_))));
     // refused here: the link's secret never goes to a node that would only refuse it
-    let r = block_on(c.redeem(&link, osis::internals::WAIT));
+    let r = block_on(c.redeem(&link));
     assert!(matches!(&r, Err(Error::Unsupported(m)) if m.starts_with("a client with")), "{r:?}");
     assert!(matches!(c.devices(), Err(Error::Unsupported(_))));
     assert!(matches!(c.add_host(&osis::HostAddr::new(&"quic://x:1".parse().unwrap(), [1; 32])), Err(Error::Unsupported(_))));
@@ -686,7 +686,7 @@ fn registry_through_the_owner_session() {
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("n.sock");
     n.listen_unix(&sock).unwrap();
-    let o = osis::internals::connect_socket(&sock, osis::internals::Opening::memory()).unwrap();
+    let o = crate::common::block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
     let (a, s) = o.add_client(Some(WallMs(T0 + 1000))).unwrap();
     assert_eq!(n.clients().unwrap(), o.clients().unwrap());
     assert_eq!(n.at(n.node(), ct::CLIENTS).get().unwrap().unwrap().remove(&a).unwrap().secret_hash, osis_base::hash::hash(s.expose()));
@@ -695,7 +695,7 @@ fn registry_through_the_owner_session() {
     assert!(o.remove_client(a).unwrap());
     assert!(!o.remove_client(a).unwrap());
     let unix = HostAddr::new(&format!("unix://{}", sock.display()).parse().unwrap(), [0; 32]);
-    assert!(matches!(osis::internals::connect(&unix, &s2, osis::internals::Opening::memory()), Err(Error::Invalid(_))));
+    assert!(matches!(crate::common::block_on(osis::internals::connect(&unix, &s2, osis::internals::Opening::memory())), Err(Error::Invalid(_))));
     drop((o, n));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1280,7 +1280,7 @@ fn walk(seed: u64) {
                 let r = [Role::Read, Role::Write][rng.next(2) as usize];
                 let target = [g, h][i];
                 match on_group[i] {
-                    Some(old) if r < old => block_on(x.n.set_role(target, a, Some(r), skip, osis::internals::PRESYNC)).unwrap(),
+                    Some(old) if r < old => block_on(x.n.set_role(target, a, Some(r), skip)).unwrap(),
                     _ => x.n.grant(target, a, r, Default::default()).unwrap(),
                 }
                 on_group[i] = Some(r);
@@ -1288,13 +1288,13 @@ fn walk(seed: u64) {
             2 => {
                 let i = rng.next(2) as usize;
                 if on_group[i].take().is_some() {
-                    block_on(x.n.set_role([g, h][i], a, None, skip, osis::internals::PRESYNC)).unwrap();
+                    block_on(x.n.set_role([g, h][i], a, None, skip)).unwrap();
                 }
             }
             3 => {
                 let r = [Role::Read, Role::Write][rng.next(2) as usize];
                 match on_thing {
-                    Some(old) if r < old => block_on(x.n.set_role(x.out, a, Some(r), skip, osis::internals::PRESYNC)).unwrap(),
+                    Some(old) if r < old => block_on(x.n.set_role(x.out, a, Some(r), skip)).unwrap(),
                     _ => x.n.grant(x.out, a, r, Default::default()).unwrap(),
                 }
                 on_thing = Some(r);

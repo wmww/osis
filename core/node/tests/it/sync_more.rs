@@ -7,7 +7,7 @@ use net::*;
 use osis_base::{Ak, Role, Value};
 use osis_node::Mutation;
 use osis_node::sync::{EntryKind, SyncConfig};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_schema::core_types as ct;
 use osis_host::HostPolicy;
 use osis_proto::LabelStore;

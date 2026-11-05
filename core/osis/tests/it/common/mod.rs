@@ -18,8 +18,8 @@ pub fn clock() -> Arc<ManualClock> {
 
 pub fn cfg(seed: u64, store: MemStore, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(store));
-    c.internals.seed = Some(seed);
-    c.internals.clock = Some(clock.clone());
+    c.client.internals.seed = Some(seed);
+    c.client.internals.clock = Some(clock.clone());
     c
 }
 
@@ -168,9 +168,17 @@ pub fn paired() -> (Osis, Osis, Arc<ManualClock>) {
     (a, b, c)
 }
 
+/// How long `block_on` waits before it calls a wait hung: a test never hangs.
+const HUNG: Duration = Duration::from_secs(120);
+
 /// Runs a future to completion on this thread (no runtime: the API's futures are resolved by
-/// the database, notes/api.md Design rules).
+/// the database, notes/api.md Design rules). Panics if it hangs.
 pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    within(HUNG, f).expect("a wait hung")
+}
+
+/// `block_on`, what a caller's timeout does: `None`, and `f` dropped, past `d`.
+pub fn within<F: std::future::Future>(d: Duration, f: F) -> Option<F::Output> {
     struct Unpark(std::thread::Thread);
     impl std::task::Wake for Unpark {
         fn wake(self: Arc<Self>) {
@@ -180,9 +188,13 @@ pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
     let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = std::task::Context::from_waker(&waker);
     let mut f = std::pin::pin!(f);
+    let end = std::time::Instant::now() + d;
     loop {
         if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
+            return Some(v);
+        }
+        if std::time::Instant::now() >= end {
+            return None;
         }
         std::thread::park_timeout(Duration::from_millis(50));
     }

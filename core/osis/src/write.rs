@@ -17,9 +17,9 @@ use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_commit::PurgeItem;
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
-use osis_schema::ApiKey;
+use osis_schema::AspectKey;
 use osis_schema::core_types::{GROUP, is_role_class};
-use osis_schema::{AspectKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
+use osis_schema::{RawKey, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
@@ -209,7 +209,7 @@ impl<'d> Write<'d> {
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
     /// per (AK, schema) of the batch. A schema is told apart by address: keys borrow theirs
     /// from a static or an `Arc` the table shares, so the address is not reused meanwhile.
-    fn intern<K: ApiKey>(&mut self, ak: Ak, key: &K) -> u32 {
+    fn intern<K: AspectKey>(&mut self, ak: Ak, key: &K) -> u32 {
         let at = key.schema().map_or(0, |s: &Schema| std::ptr::from_ref(s).addr());
         let id = (ak, at);
         if let Some(i) = self.key_ix.get(&id) {
@@ -302,7 +302,7 @@ impl<'d> Write<'d> {
     }
 
     /// One aspect of a thing, for whole-value and path ops.
-    pub fn at<K: ApiKey>(&mut self, tid: Tid, key: K) -> AspectWrite<'_, 'd, K> {
+    pub fn at<K: AspectKey>(&mut self, tid: Tid, key: K) -> AspectWrite<'_, 'd, K> {
         let ix = match ak_of(&key) {
             Err(e) => Err(e),
             Ok(ak) => match not_writable(ak.as_str()) {
@@ -716,7 +716,7 @@ pub struct AspectWrite<'w, 'd, K> {
     ix: Result<u32>,
 }
 
-impl<'w, 'd, K: ApiKey> AspectWrite<'w, 'd, K> {
+impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     fn ok(&self) -> Result<u32> {
         self.ix.clone()
     }
@@ -838,7 +838,7 @@ pub struct PathWrite<'a, 'w, 'd, K> {
     path: Path,
 }
 
-impl<K: ApiKey> PathWrite<'_, '_, '_, K> {
+impl<K: AspectKey> PathWrite<'_, '_, '_, K> {
     fn at(&mut self, extra: Option<PathSeg>, op: Op) -> Result<()> {
         let mut path = segs(&self.path)?;
         path.extend(extra);

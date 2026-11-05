@@ -114,7 +114,7 @@ fn add_with_grant_unplace_and_stale_placement() {
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Tied(Role::Read)));
     w.run();
-    w.until(bob.set_role(t, g, None, SetRoleOpts::default(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -402,7 +402,7 @@ fn invalidated_placement_removes_the_tied_edge() {
     w.set_online(&bob, false);
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Tied(Role::Read)));
-    w.until(alice.set_role(g, bob.me(), Some(Role::Read), SetRoleOpts::default(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(alice.set_role(g, bob.me(), Some(Role::Read), SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     w.set_online(&bob, true);
     for _ in 0..4 {
@@ -430,7 +430,7 @@ fn group_holders_learn_edge_removal() {
     }
     let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&bob);
-    w.until(bob.set_role(t, g, None, SetRoleOpts::default(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     for db in [&alice, &bob, &carol] {
         assert!(!db.grants(t).unwrap().contains_key(&g), "the removal reached {}", db.me());
@@ -456,7 +456,7 @@ fn inherited_inbox_opens() {
         assert!(db.grants(t).unwrap().contains_key(&g), "the grant reached {}", db.me());
         assert_eq!(db.at(t, osis::core::NAME).get().unwrap(), Some("Bob's".to_string()));
     }
-    w.until(bob.set_role(t, g, None, SetRoleOpts::default(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     for db in [&alice, &carol] {
         assert!(!db.grants(t).unwrap().contains_key(&g), "and its removal {}", db.me());
@@ -491,7 +491,7 @@ fn group_admin_learns_removal_elsewhere() {
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
     let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
-    w.until(dave.set_role(t, g, None, SetRoleOpts::default(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -537,7 +537,7 @@ fn group_admin_copies_removal_without_new_keys() {
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
     let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
-    w.until(dave.set_role(t, g, None, SetRoleOpts::default(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -570,7 +570,7 @@ fn group_removal_deposit_promoted_without_new_keys() {
     dave.grant(t, g, Role::Read, GrantOpts::default()).unwrap();
     w.run();
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
-    w.until(dave.set_role(t, g, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(t, g, None, skip()), 1000, 20).unwrap();
     w.run();
     w.advance(120_000);
     w.run();
@@ -617,7 +617,7 @@ fn owner_home_copy_of_removal_without_new_keys() {
     w.advance(60_000);
     w.run();
     assert_eq!(text(&alice, t).as_deref(), Some("plan"));
-    w.until(dave.set_role(t, m, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(t, m, None, skip()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -646,7 +646,7 @@ fn outsider() -> (World, Osis, Osis, Osis, Osis, Osis, Tid, Tid, Tid) {
     alice.grant(m, h, Role::Read, GrantOpts::default()).unwrap();
     alice.grant(m, d, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    w.until(alice.set_role(m, h, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(alice.set_role(m, h, None, skip()), 1000, 20).unwrap();
     w.run();
     let t = card(&dave, "dave's");
     w.run();
@@ -662,7 +662,7 @@ fn grant_to_group_of_a_thing_rotated_before() {
     dave.sync(t, &[]).unwrap();
     dave.grant(t, f, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    w.until(dave.set_role(t, f, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(t, f, None, skip()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -683,7 +683,7 @@ fn grant_lost_and_regained_with_the_admin_away() {
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
     w.set_online(&alice, false);
-    w.until(dave.set_role(t, h, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(t, h, None, skip()), 1000, 20).unwrap();
     w.run();
     w.advance(30_000);
     w.run();
@@ -730,7 +730,7 @@ fn grant_and_removal_orders_large() {
             }
             w.run();
             if granted {
-                w.until(dave.set_role(t, h, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+                w.until(dave.set_role(t, h, None, skip()), 1000, 20).unwrap();
             } else {
                 dave.sync(t, &[]).unwrap();
                 dave.grant(t, h, Role::Read, GrantOpts::default()).unwrap();
@@ -844,7 +844,7 @@ fn a_copy_survives_its_granter_rotating() {
     let keys = alice.at(dave.me(), osis::core::KEYS).get().unwrap();
     dave.grant(dave.me(), f, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    w.until(dave.set_role(dave.me(), f, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(dave.me(), f, None, skip()), 1000, 20).unwrap();
     w.run();
     assert_ne!(alice.at(dave.me(), osis::core::KEYS).get().unwrap(), keys, "alice holds his new keys");
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter's keys moved");
@@ -872,7 +872,7 @@ fn a_copy_survives_its_granters_edge_changing() {
     let (frank, t, fd) = franks_thing(&mut w, &dave, h);
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
     w.set_online(&alice, false);
-    w.until(frank.set_role(t, fd, Some(Role::Write), skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(frank.set_role(t, fd, Some(Role::Write), skip()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -888,7 +888,7 @@ fn a_copy_survives_its_granters_edge_changing() {
 fn a_copy_survives_its_granter_leaving() {
     let (mut w, alice, _e, dave, _c, bob, h, b, _t) = outsider();
     let (frank, t, fd) = franks_thing(&mut w, &dave, h);
-    w.until(frank.set_role(t, fd, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(frank.set_role(t, fd, None, skip()), 1000, 20).unwrap();
     w.run();
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter removed");
 }
@@ -938,7 +938,7 @@ fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"), "carol");
     // p rotates: dave leaves p
-    w.until(frank.set_role(p, fd, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(frank.set_role(p, fd, None, skip()), 1000, 20).unwrap();
     w.run();
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "owned by a group");
 }
@@ -981,14 +981,14 @@ fn a_later_reader_learns_no_keys_of_a_thing_the_group_lost() {
     w.run();
     w.advance(60_000);
     w.run();
-    w.until(dave.set_role(t, h, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(t, h, None, skip()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
     // t rotates on: its label moves while h is out
     dave.grant(t, f, Role::Read, GrantOpts::default()).unwrap();
     w.run();
-    w.until(dave.set_role(t, f, None, skip(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(dave.set_role(t, f, None, skip()), 1000, 20).unwrap();
     w.run();
     w.advance(120_000);
     w.run();

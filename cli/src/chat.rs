@@ -144,7 +144,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         }
         ChatCmd::Join { link } => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
-            let t = wait(osis_chat::join(&db, &l, ctx.wait_for()?))?;
+            let t = wait(ctx, osis_chat::join(&db, &l))?;
             send_out(ctx, None)?;
             // a `read` through the daemon does not pull: the first messages are here when this ends
             if !db.has_store() {
@@ -161,7 +161,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             } else {
                 None
             };
-            wait(osis_chat::kick(&db, t, p, word, if no_sync { SyncFirst::Skip } else { SyncFirst::Required }, ctx.wait_for()?))?;
+            wait(ctx, osis_chat::kick(&db, t, p, word, if no_sync { SyncFirst::Skip } else { SyncFirst::Required }))?;
             if purge {
                 osis_chat::purge_participant(&db, t, p)?;
             }
@@ -316,7 +316,7 @@ fn catch_up(ctx: &mut Ctx<'_>, t: Tid) {
     let db = ctx.db.clone();
     if db.hosts().is_ok_and(|h| !h.is_empty()) {
         let _ = db.sync_now();
-        let _ = wait(db.wait_synced(osis::SyncScope::Thing(t), crate::DEFAULT_WAIT.min(std::time::Duration::from_secs(10))));
+        let _ = crate::cmd::within(Some(crate::DEFAULT_WAIT.min(std::time::Duration::from_secs(10))), db.wait_synced(osis::SyncScope::Thing(t)));
     }
 }
 

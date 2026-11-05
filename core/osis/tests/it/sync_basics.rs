@@ -6,7 +6,6 @@ use osis::internals::Internals as _;
 use osis::{SetRoleOpts, SyncFirst, Member, HostAddr, MemStore, Osis, Role, Store, SyncScope, SyncState, Tid, Value};
 use osis_sim::world::World;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 fn s(x: &str) -> Value {
     Value::Str(x.into())
@@ -48,7 +47,7 @@ fn pair(w: &mut World, hosts: &[usize]) -> (Osis, Osis, Tid) {
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
-    let bob = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     (a, b, bob)
 }
 
@@ -111,7 +110,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
-    let carol = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let carol = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let (g1, g2) = (chat(&a, &[]), chat(&a, &[]));
     a.grant(g1, bob, Role::Write, Default::default()).unwrap();
     a.grant(g2, carol, Role::Write, Default::default()).unwrap();
@@ -211,7 +210,7 @@ fn polling_sync_now_costs_nothing_and_holds_nothing_back() {
     b.sync_now().unwrap();
     w.run();
     assert_eq!(says(&a, t), Some(s("written while polled")));
-    w.until(b.wait_synced(SyncScope::All, Duration::from_secs(5)), 100, 5).unwrap();
+    w.until(b.wait_synced(SyncScope::All), 100, 5).unwrap();
 }
 
 /// Time to `db` hearing Bob's write on `t` once Bob is back: the redial's pause (`retry_ms`, 5 s) and
@@ -270,7 +269,7 @@ fn write_beside_a_removed_thing_reaches_the_peer_spec_commits_4() {
     assert_eq!(says(&b, u), Some(s("live")));
     w.set_online(&b, false);
     write_across(&b, u, m);
-    w.until(a.set_role(g, bob, None, skip(), osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(a.set_role(g, bob, None, skip()), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -291,7 +290,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
-    let carol = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let carol = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = chat(&a, &[w.addr(h1).unwrap()]);
     let m = message(&a, g, "hello");
     let live = chat(&a, &[w.addr(h0).unwrap()]);
@@ -308,7 +307,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     w.run();
     w.set_online(&b, false);
     write_across(&b, u, m);
-    w.until(a.set_role(g, bob, None, skip(), osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(a.set_role(g, bob, None, skip()), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -342,7 +341,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_8() {
     let name = ak("name.0");
     b.commit_set(p, osis::Key::untyped(name.clone()), &s("Bob")).unwrap();
     w.run();
-    let bob = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     w.run();
     assert_eq!(a.at(p, osis::Key::untyped(name.clone())).get().unwrap(), Some(s("Bob")));
     assert_eq!(a.engine(|e| e.core.ix.bearers.len()), 1);
@@ -359,7 +358,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_8() {
     w.run();
     assert_eq!(a.at(p, osis::Key::untyped(name.clone())).get().unwrap(), Some(s("Robert")));
     let link = b.links_of(p).unwrap().remove(0).id;
-    w.until(b.revoke_link(link, SyncFirst::Skip, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(b.revoke_link(link, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     assert_eq!(a.at(p, osis::Key::untyped(name.clone())).get().unwrap(), None, "the link ended: what it read goes (spec/permissions.md §3)");
     assert!(w.diagnostics(&a).iter().any(|d| d.starts_with("lost access")));

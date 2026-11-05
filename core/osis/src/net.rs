@@ -218,7 +218,7 @@ impl Net {
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
         let shared = OsisShared(db.clone(), store);
-        let (transport, p2p, relays) = (cfg.transport.clone(), cfg.peers, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
+        let (transport, p2p, relays) = (cfg.client.transport.clone(), cfg.peers, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         // the client port's unix socket (`Osis::listen_unix`)
         let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
@@ -315,7 +315,7 @@ impl Net {
         true
     }
 
-    /// Wakes the driver after `d` so waiters with a deadline are looked at.
+    /// Wakes the driver after `d` so waiters with a `late` time are looked at.
     pub fn timer(&self, d: Duration) {
         if let Net::Driver { ctl, handle, .. } = self {
             // a weak sender: a pending timer does not keep the driver alive
@@ -433,19 +433,28 @@ impl Shared for OsisShared {
 
 /// Where a waiting call's result lands.
 pub(crate) struct Slot<T> {
-    m: Mutex<(Option<T>, Option<Waker>)>,
+    /// The result until taken, who waits for it, whether one came.
+    m: Mutex<(Option<T>, Option<Waker>, bool)>,
 }
 
 impl<T> Slot<T> {
     pub fn new() -> Arc<Slot<T>> {
-        Arc::new(Slot { m: Mutex::new((None, None)) })
+        Arc::new(Slot { m: Mutex::new((None, None, false)) })
     }
 
     pub fn put(&self, v: T) {
         let mut g = lock(&self.m);
         g.0 = Some(v);
+        g.2 = true;
         if let Some(w) = g.1.take() {
             w.wake();
+        }
+    }
+
+    /// `put`, unless a result came first.
+    fn put_unless_answered(&self, v: T) {
+        if !lock(&self.m).2 {
+            self.put(v);
         }
     }
 }
@@ -484,55 +493,58 @@ impl<T> Future for Pending<T> {
     }
 }
 
-/// The check gets whether the deadline passed (its last look: an answer then replaces `Network`).
+/// The check gets whether its `late` time passed (`Osis::wait_until`).
 pub(crate) type Check = Box<dyn FnMut(&mut SyncEngine, &Status, bool) -> Option<Result<()>> + Send>;
 
 /// A condition on the sync state, looked at after every change.
 pub(crate) struct Waiter {
     check: Check,
-    deadline: Option<u64>,
+    late: Option<u64>,
     slot: Arc<Slot<Result<()>>>,
 }
 
 impl Waiter {
-    /// Resolves the slot when the check answers or the deadline passed; `true` when done.
+    /// Resolves the slot when the check answers; `true` when done.
     pub fn poll(&mut self, sync: &mut SyncEngine, status: &Status, now: u64) -> bool {
         // the future was dropped: nobody waits any more
         if Arc::strong_count(&self.slot) == 1 {
             return true;
         }
-        let late = self.deadline.is_some_and(|d| now >= d);
+        let late = self.late.is_some_and(|d| now >= d);
         if let Some(r) = (self.check)(sync, status, late) {
             self.slot.put(r);
-            return true;
-        }
-        if late {
-            self.slot.put(Err(Error::Network("timed out".into())));
             return true;
         }
         false
     }
 }
 
+/// A database going away answers whoever still waits on it: a future holding no handle
+/// (`Osis::wait_synced_pending`) would hear nothing else.
+impl Drop for Waiter {
+    fn drop(&mut self) {
+        self.slot.put_unless_answered(Err(Error::Closed));
+    }
+}
+
 impl crate::Osis {
-    /// A future resolving once `check` answers (or `Network` after `timeout`, unless the check
-    /// answers then: at 0 after one look, at `Duration::MAX` never). Fails at once with `Network`
-    /// when nothing carries the network (`Runtime::None`).
-    pub(crate) fn wait_until(&self, timeout: Duration, check: Check) -> Pending<Result<()>> {
+    /// A future resolving once `check` answers. `late`: from this long on the check is told so
+    /// (first at once for 0; past what a clock can name, never): it may then answer what it would
+    /// not before. Fails at once with `Network` when nothing carries the network (`Runtime::None`).
+    pub(crate) fn wait_until(&self, late: Option<Duration>, check: Check) -> Pending<Result<()>> {
         let slot = Slot::new();
         if !self.inner.net.online() {
             slot.put(Err(Error::Network("no runtime: sync is off (Config.runtime)".into())));
             return Pending { slot };
         }
         let now = self.inner.clock.now_wall_ms().0;
-        // past what a wall clock can name: no deadline, and no timer waiting for it
-        let deadline = u64::try_from(timeout.as_millis()).ok().and_then(|d| now.checked_add(d));
-        let mut w = Waiter { check, deadline, slot: slot.clone() };
+        let at = late.and_then(|d| u64::try_from(d.as_millis()).ok()).and_then(|d| now.checked_add(d));
+        let mut w = Waiter { check, late: at, slot: slot.clone() };
         let waiting = self.locked(|l| {
             if w.poll(&mut l.sync, &l.status, now) {
                 return false;
             }
-            // the driver died: nothing would answer or time this out
+            // the driver died: nothing would answer
             if let Some(e) = self.inner.net.died() {
                 w.slot.put(Err(e));
                 return false;
@@ -540,27 +552,10 @@ impl crate::Osis {
             l.waiters.push(w);
             true
         });
-        if waiting && deadline.is_some() {
-            self.inner.net.timer(timeout);
+        if let (true, Some(_), Some(d)) = (waiting, at, late) {
+            self.inner.net.timer(d);
         }
         Pending { slot }
-    }
-}
-
-/// What is left of one call's timeout across its waits. `Duration::MAX` stays that.
-#[derive(Clone, Copy)]
-pub(crate) struct Budget {
-    start: u64,
-    total: Duration,
-}
-
-impl crate::Osis {
-    pub(crate) fn budget(&self, total: Duration) -> Budget {
-        Budget { start: self.inner.clock.now_wall_ms().0, total }
-    }
-
-    pub(crate) fn left(&self, b: Budget) -> Duration {
-        b.total.saturating_sub(Duration::from_millis(self.inner.clock.now_wall_ms().0.saturating_sub(b.start)))
     }
 }
 

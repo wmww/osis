@@ -28,7 +28,7 @@ use crate::events::{ChangeId, Diagnostic, DiagnosticKind, EphemeralId, Event, Or
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Fragment, Source};
 use osis_schema::core_types::{CREATED, GROUP, PLACED};
-use osis_schema::{AspectKey, Lifetime};
+use osis_schema::{RawKey, Lifetime};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// An ephemeral thing as this node holds it: its memory-class record and creation

@@ -19,7 +19,7 @@ pub fn person(w: &mut World, seed: u64, host: usize) -> Osis {
 pub fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
     let card = other.contact_card().unwrap();
     w.run();
-    w.until(db.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap()
+    w.until(db.import_contact(&card), 1000, 10).unwrap()
 }
 
 /// A tag owned by the person, synced under its own label (a shareable root, not placed in home).

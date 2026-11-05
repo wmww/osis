@@ -13,7 +13,7 @@
 //! - a read in flight when it drops: `Network`;
 //! - a write in flight when it drops: blocks until reconnected, then its one result;
 //!   `OutcomeUnknown` if the node restarted, forgot the nonce, refused the session or
-//!   the connection's timeout passed with no connection;
+//!   `CONNECTION_WAIT` passed with no connection;
 //! - a watch: `Err(Network)` while down, then the value again as a new `Source::Initial`;
 //! - a watch started while down: `Err(Network)` from the call, except what does not need the node
 //!   to answer: `on_status_change`, which reports it down, and `on_diagnostic`, quiet until it is up
@@ -36,7 +36,7 @@ use osis_transport::{Address, Unix};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -49,6 +49,11 @@ const MAX_QUEUED: usize = 64 * 1024 * 1024;
 /// connection stays `Network`; `RETRY_MAX` is how late a client notices its node came back.
 const RETRY_MIN: Duration = Duration::from_millis(100);
 const RETRY_MAX: Duration = Duration::from_secs(30);
+/// How long one attempt to reach a node lasts, and how long a write in flight waits across a dropped
+/// connection before it is `OutcomeUnknown`: a sync call has no future to drop. Minor: at 0 nothing
+/// connects and every write across a drop is unknown; at infinity a node that takes the connection
+/// and never answers holds its attempt, and the write, for good.
+pub(crate) const CONNECTION_WAIT: Duration = Duration::from_secs(30);
 /// The tokens of a connection's own Auth and `whoami`; every other comes from `TOKENS`.
 const AUTH_TOKEN: u64 = 0;
 const WHO_TOKEN: u64 = 1;
@@ -137,12 +142,21 @@ struct LinkInner {
     /// Never up again: the node refused this session, or there is no connection.
     ended: Option<Error>,
     who: Option<Who>,
+    /// Waiting for the first attempt's end (`Remote::first`).
+    wakers: Vec<std::task::Waker>,
+}
+
+impl LinkInner {
+    fn wake(&mut self) {
+        for w in self.wakers.drain(..) {
+            w.wake();
+        }
+    }
 }
 
 #[derive(Default)]
 struct LinkState {
     m: Mutex<LinkInner>,
-    cv: Condvar,
 }
 
 impl LinkState {
@@ -150,7 +164,7 @@ impl LinkState {
         let mut g = lock(&self.m);
         g.up = r.is_ok();
         g.tried = Some(r);
-        self.cv.notify_all();
+        g.wake();
     }
 
     fn end(&self, e: Error) {
@@ -158,7 +172,33 @@ impl LinkState {
         g.up = false;
         g.tried = Some(Err(e.clone()));
         g.ended = Some(e);
-        self.cv.notify_all();
+        g.wake();
+    }
+}
+
+/// `Remote::first`.
+struct FirstAttempt(Arc<LinkState>);
+
+impl std::future::Future for FirstAttempt {
+    type Output = Result<()>;
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<()>> {
+        let mut g = lock(&self.0.m);
+        if let Some(r) = &g.tried {
+            return std::task::Poll::Ready(r.clone());
+        }
+        if !g.wakers.iter().any(|w| w.will_wake(cx.waker())) {
+            g.wakers.push(cx.waker().clone());
+        }
+        std::task::Poll::Pending
+    }
+}
+
+/// A subscription at a node that a future holds: ended when the future goes.
+struct Unsub(Arc<Remote>, u64);
+
+impl Drop for Unsub {
+    fn drop(&mut self) {
+        self.0.unsub(self.1);
     }
 }
 
@@ -217,12 +257,10 @@ impl Remote {
         Some(g.ended.clone().unwrap_or_else(|| net(format!("node {} not connected", self.addr))))
     }
 
-    /// Waits for the first connection attempt's outcome (each is bounded by the connection's
-    /// timeout).
-    pub fn first(&self) -> Result<()> {
-        let g = lock(&self.link.m);
-        let g = crate::net::blocking(|| self.link.cv.wait_while(g, |x| x.tried.is_none()).unwrap_or_else(|e| e.into_inner()));
-        g.tried.clone().unwrap_or(Ok(()))
+    /// The latest connection attempt's outcome, once there is one (each is bounded by
+    /// `CONNECTION_WAIT`).
+    pub fn first(&self) -> impl std::future::Future<Output = Result<()>> + Send + use<> {
+        FirstAttempt(self.link.clone())
     }
 
     fn who(&self) -> Option<Who> {
@@ -682,6 +720,13 @@ impl Io {
 /// drop during unwinding aborts the process.
 impl Drop for Io {
     fn drop(&mut self) {
+        {
+            let mut g = lock(&self.link.m);
+            if g.tried.is_none() {
+                g.tried = Some(Err(net("connection to the node closed")));
+                g.wake();
+            }
+        }
         self.calls.clear();
         self.writes.clear();
         for (_, mut s) in std::mem::take(&mut self.subs) {
@@ -764,13 +809,8 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
     }
 }
 
-/// A timer's stand-in for "no limit" (`Duration::MAX` from the caller: instants cannot hold it).
-/// Longer than anyone waits, so its size does not matter.
-const NEVER: Duration = Duration::from_secs(100 * 365 * 86_400);
-
 /// Starts a connection's thread; the connection comes up behind it.
 fn spawn_remote(via: Via, addr: Address, shown: crate::HostAddr, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
-    let wait = wait.min(NEVER);
     let (tx, rx) = mpsc::unbounded_channel();
     let session = random();
     let link = Arc::new(LinkState::default());
@@ -787,7 +827,7 @@ fn spawn_remote(via: Via, addr: Address, shown: crate::HostAddr, secret: Option<
 }
 
 /// A connection to the node at `login`'s address as the client its secret stands for.
-pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<crate::Transport>, limit: usize, timeout: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<crate::Transport>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
     let addr = &login.addr;
     // the secret goes only over a transport pinned to the node's key
     if addr.0.url.starts_with("unix://") {
@@ -798,7 +838,7 @@ pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<crate::T
         _ => Via::Net,
     };
     let a = Address { url: addr.0.url.clone(), key: addr.0.key };
-    spawn_remote(via, a, addr.clone(), Some(login.secret.0.clone()), limit, timeout, clock)
+    spawn_remote(via, a, addr.clone(), Some(login.secret.0.clone()), limit, wait, clock)
 }
 
 impl Osis {
@@ -808,19 +848,19 @@ impl Osis {
     /// waits for the node's deliveries too. What needs this process to be the node fails
     /// `Unsupported`.
     ///
-    /// `timeout` bounds each attempt to reach the node, and how long a write in flight waits for a
-    /// dropped connection to come back before it is `OutcomeUnknown`: at 0 nothing connects
-    /// (`Network`), at `Duration::MAX` a node that takes the connection and never answers blocks
-    /// the caller for good.
-    pub fn connect_socket(socket: &Path, timeout: Duration, cfg: ClientConfig) -> Result<Osis> {
+    /// A thin client can do nothing without its node, and `me()` must be its node's answer, so this
+    /// returns once connected or fails with why the one attempt it makes did not connect (`Network`
+    /// for a node not there; call again to try again): nothing stays behind. Connected, it
+    /// reconnects by itself.
+    pub async fn connect_socket(socket: &Path, cfg: ClientConfig) -> Result<Osis> {
         let uid = own_uid()?;
         let url = osis_transport::unix::url_of(socket);
         let addr = Address { url: url.clone(), key: osis_transport::unix::uid_key(uid) };
         let shown = crate::HostAddr(osis_label::Address { url, key: addr.key });
         let limit = cfg.materialize_limit;
         let db = Osis::scratch(cfg)?;
-        let r = spawn_remote(Via::Unix, addr, shown, None, limit, timeout, db.inner.clock.clone())?;
-        db.client_over(vec![r])?;
+        let r = spawn_remote(Via::Unix, addr, shown, None, limit, db.inner.connection_wait, db.inner.clock.clone())?;
+        db.client_over(vec![r]).await?;
         Ok(db)
     }
 
@@ -831,33 +871,32 @@ impl Osis {
     /// node says which actor a login makes this program, `me()` (one made for its secret by
     /// `add_client`). What that actor may not read reads as unknown, and calls only the node's main
     /// actor may make fail `Unsupported`. All must answer as one actor (`Invalid`; no login is
-    /// `Invalid` too). Reconnects by itself afterwards.
+    /// `Invalid` too).
     ///
-    /// Fails `Refused` when a node refuses the secret, `Invalid` for a unix address (the secret
-    /// goes only over a keyed transport), `Network` past its connection cap or when it cannot be
-    /// reached. `timeout` as for `connect_socket`.
-    pub fn connect(logins: &[crate::NodeLogin], timeout: Duration, cfg: ClientConfig) -> Result<Osis> {
+    /// Returns once connected to all, as `connect_socket`: `Refused` when a node refuses the secret,
+    /// `Invalid` for a unix address (the secret goes only over a keyed transport), `Network` past
+    /// its connection cap or when it cannot be reached.
+    pub async fn connect(logins: &[crate::NodeLogin], cfg: ClientConfig) -> Result<Osis> {
         if logins.is_empty() {
             return Err(Error::Invalid("connect needs a node to log in to".into()));
         }
         let (transport, limit) = (cfg.transport.clone(), cfg.materialize_limit);
         let db = Osis::scratch(cfg)?;
-        let list = logins.iter().map(|x| spawn_client(x, &transport, limit, timeout, db.inner.clock.clone())).collect::<Result<Vec<_>>>()?;
-        db.client_over(list)?;
+        let list = logins.iter().map(|x| spawn_client(x, &transport, limit, db.inner.connection_wait, db.inner.clock.clone())).collect::<Result<Vec<_>>>()?;
+        db.client_over(list).await?;
         Ok(db)
     }
 
     /// The stand-in database of a process without a store.
     fn scratch(cfg: ClientConfig) -> Result<Osis> {
-        let scratch = Config { materialize_limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, dispatch: cfg.dispatch, internals: cfg.internals, ..Config::default() };
-        Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], scratch)?.0)
+        Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], Config { client: cfg, ..Config::default() })?.0)
     }
 
     /// Makes this handle a process with no store of its own over `list`, each up.
-    fn client_over(&self, list: Vec<Arc<Remote>>) -> Result<()> {
+    async fn client_over(&self, list: Vec<Arc<Remote>>) -> Result<()> {
         let mut who = None;
         for r in &list {
-            r.first()?;
+            r.first().await?;
             let w = r.who().ok_or_else(|| net("no connection"))?;
             if who.is_some_and(|x| x != w) {
                 return Err(Error::Invalid("connected nodes answer as different actors: one acting actor per process".into()));
@@ -875,13 +914,13 @@ impl Osis {
     /// `group_source` can then route groups there, and a thing known nowhere here goes there.
     /// Stays connected, reconnecting by itself, until `disconnect_node`.
     ///
-    /// `Network`: the node could not be reached within `timeout`; this keeps trying (`status` shows
-    /// when it is up, calling this again says). `timeout` also bounds each later attempt and a
-    /// write in flight across a drop, as for `connect_socket`. `Refused`: it refuses the secret, and
-    /// nothing stays. `Invalid` for a unix address, and for a login at an address connected now by another secret
-    /// (`disconnect_node` first); `Unsupported` on a thin client. Connected already by this one:
-    /// returns as that connection stands.
-    pub fn connect_node(&self, login: &crate::NodeLogin, timeout: Duration) -> Result<()> {
+    /// `Ok` once the first attempt to reach it ended and left the connection in place, up or not:
+    /// `status` shows which, and this keeps trying while it is down. `Refused`: it refuses the
+    /// secret, and nothing stays. `Invalid` for a unix address, and for a login at an address connected
+    /// now by another secret (`disconnect_node` first); `Unsupported` on a thin client. Connected
+    /// already by this one: `Ok`. Dropped during that first attempt, the connection is in place
+    /// as if this had returned: `disconnect_node` ends it.
+    pub async fn connect_node(&self, login: &crate::NodeLogin) -> Result<()> {
         self.local_only("connect_node")?;
         // one that is down by an old secret (rotated, say) may never come up: the new login replaces it
         let same = |r: &Remote| r.secret.as_ref() == Some(&login.secret.0);
@@ -893,18 +932,20 @@ impl Osis {
             Some(r) if !same(&r) => return Err(Error::Invalid(format!("connected to {} by another secret: `disconnect_node` first", login.addr))),
             Some(r) => r,
             None => {
-                let r = spawn_client(login, &self.inner.transport, self.inner.limit, timeout, self.inner.clock.clone())?;
+                let r = spawn_client(login, &self.inner.transport, self.inner.limit, self.inner.connection_wait, self.inner.clock.clone())?;
                 self.locked(|l| l.remotes.push(r.clone()));
                 self.inner.routing.store(true, Ordering::Release);
                 r
             }
         };
-        match r.first().and_then(|()| r.down().map_or(Ok(()), Err)) {
-            Err(e @ Error::Refused(_)) => {
-                self.locked(|l| l.remotes.retain(|x| x.addr != login.addr));
+        let first = r.first().await;
+        // known to be no use: it goes; else it stays and keeps trying
+        match r.ended().or_else(|| first.err().filter(|e| matches!(e, Error::Refused(_) | Error::Invalid(_)))) {
+            Some(e) => {
+                self.locked(|l| l.remotes.retain(|x| !Arc::ptr_eq(x, &r)));
                 Err(e)
             }
-            x => x,
+            None => Ok(()),
         }
     }
 
@@ -968,11 +1009,7 @@ impl Osis {
         let sink = self.port_sink(token, Some(itx));
         r.tx.send(Cmd::Sub { token, filter, again, sink }).map_err(|_| net("connection to the node closed"))?;
         let v = crate::net::blocking(|| irx.recv()).map_err(|_| net("connection to the node closed"))?;
-        // a Sub answered by an error: `[1, code, detail*]`
-        if let Value::List(l) = &v
-            && l.first().and_then(Value::as_uint) == Some(1)
-            && let Ok(Err(e)) = c::read(v.clone())
-        {
+        if let Some(e) = sub_error(&v) {
             return Err(e);
         }
         Ok((sub, v))
@@ -1032,6 +1069,17 @@ impl Osis {
             let _ = r.call(method::SETTLE, vec![]);
         }
     }
+}
+
+/// The error a Sub was answered by: `[1, code, detail*]`.
+fn sub_error(v: &Value) -> Option<Error> {
+    if let Value::List(l) = v
+        && l.first().and_then(Value::as_uint) == Some(1)
+        && let Ok(Err(e)) = c::read(v.clone())
+    {
+        return Some(e);
+    }
+    None
 }
 
 /// What an aspect delivery holds: thing, aspect, read result, source, fired.
@@ -1252,35 +1300,84 @@ impl Osis {
     }
 
     /// A row that waits, at `r` (`filter::TASK`): a subscription the node answers once with the
-    /// outcome of its own async call (its rule, its clock and deadlines); no Call waits and nothing
-    /// holds the node's worker. Dropping this future ends it there, as a local one's drop. The
-    /// connection ending is `Network`, and what it had done stays done (a redeem may have joined).
+    /// outcome of its own async call (its rule, its clock); no Call waits and nothing holds the
+    /// node's worker. The answer goes straight to this future, not by the dispatcher: nothing but
+    /// the connection has to run for it. Dropping this future ends it there, as a local one's drop.
+    /// The connection ending is `Network`, and what it had done stays done (a redeem may have joined).
     pub(crate) async fn remote_task(&self, r: &Arc<Remote>, m: u64, args: Vec<Value>) -> Result<Value> {
+        if let Some(e) = r.down() {
+            return Err(e);
+        }
         let (pending, slot) = crate::net::Pending::new();
         // the first outcome stands (a later end of the connection does not replace it)
-        let first = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let put = move |r: Result<Value>| {
-            if !first.swap(true, Ordering::AcqRel) {
-                slot.put(r);
+        let mut slot = Some(slot);
+        let mut put = move |r: Result<Value>| {
+            if let Some(s) = slot.take() {
+                s.put(r);
             }
         };
-        let p2 = put.clone();
-        let cb: Callback = Box::new(move |_, d| match d {
-            Delivery::Port(PortEvent::Notify(Payload::Delivery { value })) => {
-                if let Ok(Some(v)) = c::Args::of(vec![value]).opt() {
-                    p2(c::outcome_of(v).unwrap_or_else(Err));
+        let sink: Sink = Box::new(move |ev| match ev {
+            PortEvent::Initial(v) => {
+                if let Some(e) = sub_error(&v) {
+                    return put(Err(e));
+                }
+                match c::Args::of(vec![v]).opt() {
+                    Ok(Some(o)) => put(c::outcome_of(o).unwrap_or_else(Err)),
+                    Ok(None) => {}
+                    Err(e) => put(Err(e)),
                 }
             }
-            Delivery::Port(PortEvent::Notify(Payload::Lapsed | Payload::TooLarge { .. }) | PortEvent::Closed) => p2(Err(net(LOST))),
-            _ => {}
+            PortEvent::Notify(Payload::Delivery { value }) => {
+                if let Ok(Some(o)) = c::Args::of(vec![value]).opt() {
+                    put(c::outcome_of(o).unwrap_or_else(Err));
+                }
+            }
+            PortEvent::Notify(Payload::Lapsed | Payload::TooLarge { .. }) | PortEvent::Closed => put(Err(net(LOST))),
         });
-        let (sub, initial) = self.remote_sub(r, None, Value::List(vec![u(super::filter::TASK), u(m), Value::List(args)]), false, cb)?;
-        if let Some(v) = c::Args::of(vec![initial]).opt()? {
-            put(c::outcome_of(v)?);
+        let token = next_token();
+        let _end = Unsub(r.clone(), token);
+        r.tx.send(Cmd::Sub { token, filter: Value::List(vec![u(super::filter::TASK), u(m), Value::List(args)]), again: false, sink }).map_err(|_| net("connection to the node closed"))?;
+        pending.await
+    }
+
+    /// Waits until `r` reports `g` synced: nothing written there waits. Done at once when it is
+    /// down, or goes down, or does not report the group (a client's actor no longer reads it):
+    /// nothing more can be learned from it. `Unsynced` when it never can be (stranded or hostless
+    /// there). A status subscription, not a `wait_synced`: a client by a secret has no rows that wait.
+    pub(crate) async fn node_uploaded(&self, r: &Arc<Remote>, g: Tid) -> Result<()> {
+        if r.down().is_some() {
+            return Ok(());
         }
-        let out = pending.await;
-        drop(sub);
-        out
+        let (pending, slot) = crate::net::Pending::new();
+        let mut slot = Some(slot);
+        let mut put = move |r: Result<()>| {
+            if let Some(s) = slot.take() {
+                s.put(r);
+            }
+        };
+        let judge = move |v: Value| -> Option<Result<()>> {
+            use crate::share::SyncState as S;
+            // a Notify naming no status: the node's store could not say
+            match c::status(v).ok()?.groups.get(&g).map(|s| s.state) {
+                None | Some(S::Synced) => Some(Ok(())),
+                Some(S::Stranded | S::NoHosts) => Some(Err(Error::Unsynced { groups: vec![g] })),
+                Some(_) => None,
+            }
+        };
+        let sink: Sink = Box::new(move |ev| match ev {
+            PortEvent::Initial(v) if sub_error(&v).is_some() => put(sub_error(&v).map_or(Ok(()), Err)),
+            PortEvent::Initial(value) | PortEvent::Notify(Payload::Delivery { value }) => {
+                if let Some(x) = judge(value) {
+                    put(x);
+                }
+            }
+            PortEvent::Notify(Payload::Lapsed | Payload::TooLarge { .. }) => put(Err(net("the node's status subscription ended: call again"))),
+            PortEvent::Closed => put(Ok(())),
+        });
+        let token = next_token();
+        let _end = Unsub(r.clone(), token);
+        r.tx.send(Cmd::Sub { token, filter: Value::List(vec![u(super::filter::STATUS)]), again: false, sink }).map_err(|_| net("connection to the node closed"))?;
+        pending.await
     }
 
     /// `remote_task` at the node of a handle with no store. A client by a secret has no such

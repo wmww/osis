@@ -6,7 +6,7 @@
 
 use crate::data::Data;
 use osis::schema::{Schema, Step, Type};
-use osis::schema::AspectKey as _;
+use osis::schema::RawKey as _;
 use osis::{Path, Result, Tid, Value};
 
 /// How a row's text is turned back into a value.

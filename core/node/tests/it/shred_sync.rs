@@ -9,7 +9,7 @@ use net::*;
 use osis_base::{Ak, Role};
 use osis_commit::PurgeItem;
 use osis_node::Mutation;
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use osis_node::sync::Event;
 use osis_store::{Fault, Faults, Source};
 

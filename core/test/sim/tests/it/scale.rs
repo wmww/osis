@@ -41,7 +41,7 @@ fn post(a: &Osis, c: Tid, i: usize) {
 fn meet(w: &mut World, a: &Osis, b: &Osis) -> Tid {
     let card = b.contact_card().unwrap();
     w.run();
-    w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap()
+    w.until(a.import_contact(&card), 1000, 10).unwrap()
 }
 
 fn median(mut v: Vec<Duration>) -> Duration {
@@ -352,7 +352,7 @@ fn post_reads_nothing_per_member() {
     check(&n, "in a quiet chat");
     // a pass at each node holding the chat, not one per label per node
     assert!(n.get("pass").copied().unwrap_or(0) <= 2 * 2 * (members.len() as u64 + 1), "passes for two posts: {n:?}");
-    w.until(a.set_role(c, tids[1], None, osis::SetRoleOpts { sync: osis::SyncFirst::Skip, keep: None }, osis::internals::PRESYNC), 1000, 100).unwrap();
+    w.until(a.set_role(c, tids[1], None, osis::SetRoleOpts { sync: osis::SyncFirst::Skip, keep: None }), 1000, 100).unwrap();
     w.run();
     post(&a, c, 3);
     w.advance(1);
@@ -465,12 +465,12 @@ fn many_labels() {
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
-    let p = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let p = w.until(a.import_contact(&card), 1000, 10).unwrap();
     w.run();
     // each knows the other: a stranger's invites wait for the user, at most `INBOX_WAITING` of them
     let card = a.contact_card().unwrap();
     w.run();
-    w.until(b.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    w.until(b.import_contact(&card), 1000, 10).unwrap();
     w.run();
     let empty = (a_store.rows(), b_store.rows(), w.hosts[host].backend.dump().len());
 
@@ -547,7 +547,7 @@ fn labels_world(n: usize) -> (World, Osis, Osis, Tid, Vec<Tid>) {
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
-    let p = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let p = w.until(a.import_contact(&card), 1000, 10).unwrap();
     w.run();
     let things = (0..n).map(|i| share_new(&mut w, &a, p, i)).collect();
     w.advance(61_000);
@@ -736,7 +736,7 @@ fn a_burst_past_the_budget_sends_each_body_about_once() {
     // each knows the other: a stranger's shares are requests, at most `INBOX_WAITING` of them
     let card = a.contact_card().unwrap();
     w.run();
-    w.until(b.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    w.until(b.import_contact(&card), 1000, 10).unwrap();
     w.run();
     w.start_tally();
     let things: Vec<Tid> = (0..BURST)

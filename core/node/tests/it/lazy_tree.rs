@@ -6,7 +6,7 @@ use net::*;
 use osis_base::{Ak, Role, Value};
 use osis_node::Mutation;
 use osis_node::sync::SyncConfig;
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 
 // spec/sync.md §6 (chunk and tree-node blobs of large atomic values may be fetched lazily): a
 // lazy reader fetches the tree of the value it reads, node by node, and nothing of another

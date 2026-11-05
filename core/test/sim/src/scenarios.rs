@@ -10,7 +10,7 @@ use crate::workload;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Role, Value};
 use osis_node::{Ingested, Mutation, Reason};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 pub type Scenario = fn(u64) -> Res<Report>;

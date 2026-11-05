@@ -36,9 +36,9 @@ fn s(x: &str) -> Value {
 fn on(net: &osis_transport::Net, ep: &str, store: &MemStore, hosts: Vec<HostAddr>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.transport = Some(Transport::InProcess(net.endpoint(ep)));
+    c.client.transport = Some(Transport::InProcess(net.endpoint(ep)));
     c.hosts = hosts;
-    c.wait_timeout = W;
+    c.client.internals.connection_wait = Some(W);
     c.peers = false;
     c
 }
@@ -68,15 +68,15 @@ fn chat(edge: GrantOpts, role: Role) -> Chat {
     let b_store = MemStore::new();
     let b = osis::internals::create(on(&net, "b", &b_store, vec![addr.clone()])).unwrap().0;
     let card = b.contact_card().unwrap();
-    block_on(b.wait_synced(SyncScope::All, W)).unwrap();
-    let bob = block_on(a.import_contact(&card, osis::internals::WAIT)).unwrap();
+    block_on(b.wait_synced(SyncScope::All)).unwrap();
+    let bob = block_on(a.import_contact(&card)).unwrap();
     let mut w = a.write();
     let g = w.create().unwrap();
     w.group(a.me()).add(osis::Member::Item(g)).unwrap();
     w.commit().unwrap();
     a.sync(g, &[]).unwrap();
-    block_on(a.wait_synced(SyncScope::All, W)).unwrap();
-    block_on(b.wait_synced(SyncScope::All, W)).unwrap();
+    block_on(a.wait_synced(SyncScope::All)).unwrap();
+    block_on(b.wait_synced(SyncScope::All)).unwrap();
     let mut w = a.write();
     let m = w.create_with_admin(g).unwrap();
     w.group(g).add(osis::Member::Item(m)).unwrap();
@@ -116,9 +116,9 @@ static NAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::n
 fn attach(net: &osis_transport::Net, nc: &HostAddr, secret: &ClientSecret) -> Osis {
     let mut c = osis::internals::Opening::memory();
     let n = NAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    c.transport = Some(Transport::InProcess(net.endpoint(&format!("c{n}"))));
-    c.wait_timeout = W;
-    osis::internals::connect(nc, secret, c).unwrap()
+    c.client.transport = Some(Transport::InProcess(net.endpoint(&format!("c{n}"))));
+    c.client.internals.connection_wait = Some(W);
+    crate::common::block_on(osis::internals::connect(nc, secret, c)).unwrap()
 }
 
 impl Chat {
@@ -144,7 +144,7 @@ impl Chat {
     /// Alice kicks `who`, the removal saying `keep` if it says, and Bob's node hears.
     fn kick(&self, who: Tid, keep: Option<bool>) {
         let d = SetRoleOpts { sync: SyncFirst::Skip, keep };
-        block_on(self.a.set_role(self.g, who, None, d, osis::internals::PRESYNC)).unwrap();
+        block_on(self.a.set_role(self.g, who, None, d)).unwrap();
         let nudge = Nudge::default();
         until("Bob's node hears", || {
             nudge.at(&self.b);
@@ -164,7 +164,7 @@ impl Chat {
                 Ok(n)
             })
             .unwrap();
-        block_on(self.a.wait_synced(SyncScope::Thing(self.g), W)).unwrap();
+        block_on(self.a.wait_synced(SyncScope::Thing(self.g))).unwrap();
         n
     }
 }
@@ -210,7 +210,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
         let watch = watched(&app, x.m, osis::Key::untyped(text())).unwrap();
         assert_eq!(watch.current().unwrap(), Some(s("hello")));
         assert!(hidden(&other, x.m) && hidden(&other, x.g));
-        block_on(x.b.wait_synced(SyncScope::Thing(x.g), W)).unwrap();
+        block_on(x.b.wait_synced(SyncScope::Thing(x.g))).unwrap();
 
         x.kick(x.bob, Some(keep));
         let new = x.write_on();
@@ -299,7 +299,7 @@ fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
-    let bob = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = sim_group(&a);
     let mut x = a.write();
     let m = x.create_with_admin(g).unwrap();
@@ -326,7 +326,7 @@ fn sim_group(a: &Osis) -> Tid {
 
 fn sim_kick(w: &mut World, a: &Osis, g: Tid, who: Tid, keep: Option<bool>) {
     let d = SetRoleOpts { sync: SyncFirst::Skip, keep };
-    w.until(a.set_role(g, who, None, d, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(a.set_role(g, who, None, d), 1000, 10).unwrap();
     w.run();
 }
 
@@ -340,7 +340,7 @@ fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
-    let bob = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = sim_group(&a);
     let mut x = a.write();
     let m = x.create_with_admin(g).unwrap();
@@ -499,7 +499,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     for c in [reader, leaves_after, left_before] {
         assert_eq!(b.acting_as(c).at(m, osis::Key::untyped(text())).get().unwrap(), Some(s("hello")));
     }
-    w.until(b.set_role(bob, left_before, None, skip(), osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(b.set_role(bob, left_before, None, skip()), 1000, 10).unwrap();
     w.run();
     sim_kick(&mut w, &a, g, bob, None);
     assert_eq!(b.kept_copies().unwrap(), vec![g]);
@@ -513,7 +513,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     assert_eq!(b.acting_as(reader).kept_copies().unwrap(), vec![g]);
     // a reader of the holder writes nothing, whatever its role on the holder
     assert!(refused(&b.acting_as(leaves_after), m));
-    w.until(b.set_role(bob, leaves_after, None, skip(), osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(b.set_role(bob, leaves_after, None, skip()), 1000, 10).unwrap();
     w.run();
     assert!(!reads(leaves_after));
     let new = mk(Some(Role::Read));
@@ -589,7 +589,7 @@ fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
     x.kick(x.bob, None);
     assert_eq!(watch.current().unwrap(), Some(s("hello")));
     let d = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
-    block_on(x.b.set_role(x.bob, actor, None, d, osis::internals::PRESYNC)).unwrap();
+    block_on(x.b.set_role(x.bob, actor, None, d)).unwrap();
     until("hidden", || hidden(&app, x.m));
     assert!(app.kept_copies().unwrap().is_empty());
     assert_eq!(watch.current().unwrap(), Some(s("hello")), "what it had read: nothing more comes");
@@ -634,7 +634,7 @@ fn an_ownerless_chat_keeps_spec_permissions_3() {
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
-    let bob = w.until(a.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = a.create_ownerless(a.me()).unwrap();
     let mut x = a.write();
     x.group(a.me()).add(osis::Member::Item(g)).unwrap();
@@ -700,7 +700,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
-    let carol = w.until(b.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let carol = w.until(b.import_contact(&card), 1000, 10).unwrap();
     let own = sim_group(&b);
     b.grant(own, carol, Role::Read, Default::default()).unwrap();
     let live = sim_group(&a);
@@ -718,7 +718,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     x.at(m, osis::Key::untyped(text())).set(&s("by bob, unsent")).unwrap();
     x.commit().unwrap();
     let d = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
-    w.until(a.set_role(g, bob, None, d, osis::internals::PRESYNC), 1000, 10).unwrap();
+    w.until(a.set_role(g, bob, None, d), 1000, 10).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -809,7 +809,7 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     let nudge = Nudge::default();
     until("Bob has t", || { nudge.at(b); b.at(t, osis::Key::untyped(text())).get().ok().flatten() == Some(s("before")) });
     let d = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
-    block_on(a.set_role(xg, h, None, d, osis::internals::PRESYNC)).unwrap();
+    block_on(a.set_role(xg, h, None, d)).unwrap();
     let nudge = Nudge::default();
     until("kept", || { nudge.at(b); b.kept_copies().unwrap().contains(&xg) });
     assert!(b.role_on(h).unwrap().is_some() && b.role_on(xg).unwrap().is_none());
@@ -822,11 +822,11 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     let nudge = Nudge::default();
     until("live", || { nudge.at(b); b.at(u, osis::Key::untyped(text())).get().ok().flatten() == Some(s("live")) });
     assert_eq!(b.at(t, osis::Key::untyped(text())).get().unwrap(), Some(s("before")));
-    block_on(b.wait_synced(SyncScope::Thing(h), W)).unwrap();
+    block_on(b.wait_synced(SyncScope::Thing(h))).unwrap();
     let Chat { b, b_store, net, addr, .. } = x0;
     assert_eq!(b.close().unwrap(), osis::Close::Closed);
     let b2 = osis::internals::open(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
-    block_on(b2.wait_synced(SyncScope::Thing(h), W)).unwrap();
+    block_on(b2.wait_synced(SyncScope::Thing(h))).unwrap();
     assert_eq!(b2.at(t, osis::Key::untyped(text())).get().unwrap(), Some(s("before")));
     assert_eq!(b2.at(u, osis::Key::untyped(text())).get().unwrap(), Some(s("live")));
     assert!(b2.kept_copies().unwrap().contains(&xg));

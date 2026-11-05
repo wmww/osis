@@ -150,17 +150,32 @@
 //! given; it returns the recovery card, the only copy of that key. Sync runs on a runtime
 //! (`Runtime::Own`, or the app's tokio handle); without one everything works locally, and hosts are
 //! refused. Status, waiting until synced and restoring from the card are the network-facing calls.
-//! A call that waits for another node takes how long it may wait, last.
+//!
+//! A call that waits for another node is `async`, works on any runtime or none, and lasts until it
+//! is done or dropped: to give up, wrap it in your runtime's timeout. Dropping one leaves nothing
+//! half done; where a part of it stands, its doc says so. When it is known that it can never finish
+//! it fails (a group with no way to sync: `Unsynced`; sync stopped: `Network`; a closed database:
+//! `Closed`), so a wait that lasts has something that may yet answer it, such as a host out of reach.
+//! ```no_run
+//! # use osis::{Osis, SyncScope};
+//! # use std::time::Duration;
+//! # async fn demo(db: Osis) {
+//! match tokio::time::timeout(Duration::from_secs(10), db.wait_synced(SyncScope::All)).await {
+//!     Ok(Ok(())) => println!("at a host"),
+//!     Ok(Err(e)) => println!("cannot sync: {e}"),
+//!     Err(_) => println!("not yet: see db.status()"),
+//! }
+//! # }
+//! ```
 //! ```no_run
 //! # use osis::{Config, MemStore, Osis, Runtime, Store, SyncScope};
-//! # use std::time::Duration;
 //! # async fn demo() -> osis::Result<()> {
 //! let cfg = Config { runtime: Runtime::Own, ..Default::default() };
 //! let hosts = ["quic://example.org:4433#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse()?];
 //! let (db, card) = Osis::create(Store::Memory(MemStore::new()), &hosts, cfg.clone())?;
-//! db.wait_synced(SyncScope::All, Duration::from_secs(10)).await?;
+//! db.wait_synced(SyncScope::All).await?;
 //! // on a fresh device: the same person from the card
-//! let again = Osis::restore(Store::Memory(MemStore::new()), &[], &card.unwrap(), Duration::from_secs(60), cfg).await?;
+//! let again = Osis::restore(Store::Memory(MemStore::new()), &[], &card.unwrap(), cfg).await?;
 //! assert_eq!(again.me(), db.me());
 //! # Ok(()) }
 //! ```
@@ -178,11 +193,10 @@
 //! node as if it were local. A node can be a client too (`Osis::connect_node`).
 //! ```no_run
 //! # use osis::{ClientConfig, NodeLogin, Osis};
-//! # use std::time::Duration;
-//! # fn demo(node: &Osis, addr: osis::HostAddr) -> osis::Result<()> {
+//! # async fn demo(node: &Osis, addr: osis::HostAddr) -> osis::Result<()> {
 //! let (actor, secret) = node.add_client(None)?;
 //! // on the other program, given `addr` and `secret`:
-//! let client = Osis::connect(&[NodeLogin { addr, secret }], Duration::from_secs(10), ClientConfig::default())?;
+//! let client = Osis::connect(&[NodeLogin { addr, secret }], ClientConfig::default()).await?;
 //! assert_eq!(client.me(), actor);
 //! assert!(!client.has_store());
 //! # Ok(()) }
@@ -225,7 +239,7 @@
 //! assert_eq!(links.iter().filter(|l| l.target == g).count(), 1);
 //! // who holds `g`, and who holds it through what
 //! assert!(db.holders(g)?.iter().any(|h| h.actor == links[0].id.actor() && h.through.is_empty()));
-//! // grant, and later change or remove: `db.set_role(g, holder, Some(Role::Read), SetRoleOpts::default(), timeout).await`
+//! // grant, and later change or remove: `db.set_role(g, holder, Some(Role::Read), SetRoleOpts::default()).await`
 //! db.grant(g, db.node(), Role::Read, GrantOpts::default())?;
 //! assert_eq!(db.grants(g)?[&db.node()].role, Role::Read);
 //! # Ok::<(), osis::Error>(())
@@ -358,7 +372,7 @@ pub use write::{AspectWrite, Committed, ExpiringGroupWrite, Expiry, GroupWrite, 
 pub use osis_commit::FOREVER;
 pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, ValueMap, ValueSet, WallMs};
 pub use osis_node::{Cause, ChangeId, EphemeralId};
-pub use osis_schema::ApiKey as AspectKey;
+pub use osis_schema::AspectKey;
 pub use osis_schema::{Aspect, CaseId, Codec, FieldId, Path, PathError, Lifetime, Retention, Schema, Step, p};
 
 /// The schema layer, for generated code (`use osis::schema as osis_schema;`).

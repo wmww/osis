@@ -111,7 +111,7 @@ fn purge_author_through_the_api_spec_perm_7() {
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
-    let b = w.until(alice.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut x = alice.write();
     let g = x.create().unwrap();
     x.group(alice.me()).add(osis::Member::Item(g)).unwrap();
@@ -158,7 +158,7 @@ fn page_says_when_it_may_miss_entries() {
     let t = t.unwrap();
     say(&db, t, "x");
     assert!(!db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 1).unwrap().complete, "still syncing");
-    w.until(db.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
+    w.until(db.wait_synced(SyncScope::All), 1000, 10).unwrap();
     w.run();
     assert!(db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 1).unwrap().complete);
     // a thing in no label: nothing to wait for
@@ -222,7 +222,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
-    let b = w.until(alice.import_contact(&card, osis::internals::WAIT), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     let mut x = alice.write();
     let g = x.create().unwrap();
     x.group(alice.me()).add(osis::Member::Item(g)).unwrap();
@@ -261,7 +261,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
 #[test]
 fn page_bound_counts_large_values() {
     let mut c = osis::internals::Opening::memory();
-    c.materialize_limit = 3 << 20;
+    c.client.materialize_limit = 3 << 20;
     let db = osis::internals::create(c).unwrap().0;
     let t = thing(&db);
     let k = ak("t:big.0");

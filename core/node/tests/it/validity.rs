@@ -612,7 +612,7 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
 // same write by its author once an admin applies).
 #[test]
 fn forged_role_class_unmerged_spec_perm_1() {
-    use osis_schema::{AspectKey, core_types as ct};
+    use osis_schema::{RawKey, core_types as ct};
     let (mut lp, d, _, _) = setup(49);
     let label = ct::Label { index: 0, steps: BTreeMap::new(), hosts: Vec::new(), replaced: false };
     let labels: ct::Labels = BTreeMap::from([(osis_base::LabelId([5; 16]), label)]);
@@ -3381,7 +3381,7 @@ fn forge_on(lp: &mut LocalPeer, k: Tid, a: &str) -> osis_commit::CommitBlob {
     let form = if kind == Kind::Role { osis_commit::Form::Commit } else { forged_session(b) };
     let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let mut w = Writer::new(ts, form.own_source(b, osis_base::CommitId([0; 32])), 1);
-    let v = osis_schema::AspectKey::encode(&osis_schema::core_types::NODE, &osis_schema::core_types::NodeInfo { software: "forged".into() });
+    let v = osis_schema::RawKey::encode(&osis_schema::core_types::NODE, &osis_schema::core_types::NodeInfo { software: "forged".into() });
     let f = create(&mut w, &AnyView, &v).unwrap();
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, kind, ts, b, 1, 2), None).unwrap();
     let mut cb = CommitBuilder::new(kind, ts, b, b, form);

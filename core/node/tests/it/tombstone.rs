@@ -10,7 +10,7 @@ use osis_base::{Ak, CommitId, LabelId, Role, Tid};
 use osis_commit::{FOREVER, PurgeItem};
 use osis_node::Mutation;
 use osis_node::sync::EntryKind;
-use osis_schema::{AspectKey, Bound, PurgeBy, Retention};
+use osis_schema::{RawKey, Bound, PurgeBy, Retention};
 
 fn permanent() -> Retention {
     Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(FOREVER), rel: None }, at_most: Bound::default() }

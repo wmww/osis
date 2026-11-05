@@ -12,7 +12,7 @@ use osis_base::{BlobId, CommitId, LabelId, Role, Value};
 use osis_crypto::SeededRng;
 use osis_node::Mutation;
 use osis_proto::{Command, Entry, LabelStore};
-use osis_schema::{Aspect, AspectKey, StaticSchema};
+use osis_schema::{Aspect, RawKey, StaticSchema};
 
 /// Version 1 of the skew schema (the old build's).
 pub static SKEW1: StaticSchema = StaticSchema::new(

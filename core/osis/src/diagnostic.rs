@@ -40,6 +40,8 @@ pub enum Diagnostic {
     /// Background sync died: nothing syncs until the database is opened again, and waits fail
     /// `Network`.
     SyncStopped { detail: String },
+    /// A commit from a newer format than this build reads: it waits here, and an update may read it.
+    Parked { things: Vec<Tid>, commit: Option<ChangeId>, peer: Option<Tid>, detail: String },
     /// Data from another node was refused, is waiting for what it depends on or was repaired, all
     /// without any part for an app: for a log.
     Handled { things: Vec<Tid>, commit: Option<ChangeId>, peer: Option<Tid>, detail: String },
@@ -63,6 +65,7 @@ impl From<osis_node::Diagnostic> for Diagnostic {
             (K::Storage, ..) => Diagnostic::Storage { detail },
             (K::Callback, ..) => Diagnostic::Callback { detail },
             (K::SyncStopped, ..) => Diagnostic::SyncStopped { detail },
+            (K::Parked, ..) => Diagnostic::Parked { things: tids, commit: commit.map(Into::into), peer, detail },
             _ => Diagnostic::Handled { things: tids, commit: commit.map(Into::into), peer, detail: format!("{kind:?}: {detail}") },
         }
     }
@@ -84,6 +87,7 @@ impl std::fmt::Display for Diagnostic {
             Diagnostic::Storage { detail } => ("storage", detail),
             Diagnostic::Callback { detail } => ("callback", detail),
             Diagnostic::SyncStopped { detail } => ("sync stopped", detail),
+            Diagnostic::Parked { detail, .. } => ("from a newer format", detail),
             Diagnostic::Handled { detail, .. } => ("handled", detail),
         };
         write!(f, "{what}: {detail}")

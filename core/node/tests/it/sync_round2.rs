@@ -10,7 +10,7 @@ use osis_crypto::SeededRng;
 use osis_node::Mutation;
 use osis_node::sync::{Action, EntryKind, Event};
 use osis_proto::{Entry, LabelStore, Put};
-use osis_schema::AspectKey;
+use osis_schema::RawKey;
 
 /// Blob IDs node `n` knows under `l` holding commit `c`.
 fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::CommitId) -> Vec<osis_base::BlobId> {

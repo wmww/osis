@@ -211,8 +211,8 @@ impl World {
     /// given hosts, a fresh memory store.
     pub fn cfg(&self, seed: u64, hosts: &[usize]) -> osis::internals::Opening {
         let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-        c.internals.seed = Some(seed);
-        c.internals.clock = Some(self.clock.clone());
+        c.client.internals.seed = Some(seed);
+        c.client.internals.clock = Some(self.clock.clone());
         c.runtime = Runtime::Manual(self.net.clone());
         c.hosts = hosts.iter().filter_map(|s| self.addr(*s)).collect();
         c
@@ -646,20 +646,30 @@ impl World {
     /// `steps` times. Panics if it did not resolve, after printing every database's diagnostics.
     #[allow(clippy::panic)] // test harness: fail the test loudly
     pub fn until<F: Future>(&mut self, f: F, step_ms: u64, steps: usize) -> F::Output {
+        match self.try_until(f, step_ms, steps) {
+            Some(v) => v,
+            None => {
+                self.trace();
+                panic!("future did not resolve in {steps} steps of {step_ms} ms");
+            }
+        }
+    }
+
+    /// `until`, what a caller's timeout does: `None`, and `f` dropped, if it did not resolve.
+    pub fn try_until<F: Future>(&mut self, f: F, step_ms: u64, steps: usize) -> Option<F::Output> {
         let mut f = std::pin::pin!(f);
         let mut cx = Context::from_waker(Waker::noop());
         for _ in 0..steps {
             if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-                return v;
+                return Some(v);
             }
             self.run();
             if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-                return v;
+                return Some(v);
             }
             self.advance(step_ms);
         }
-        self.trace();
-        panic!("future did not resolve in {steps} steps of {step_ms} ms");
+        None
     }
 }
 

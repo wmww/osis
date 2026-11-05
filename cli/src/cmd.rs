@@ -8,7 +8,7 @@ use crate::write::{self, Did};
 use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
-use osis_schema::AspectKey as _;
+use osis_schema::RawKey as _;
 use osis::{
     Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, Schema, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Ts,
     Value,
@@ -86,28 +86,57 @@ fn deadline(d: Option<Duration>) -> Option<Instant> {
     d.and_then(|d| Instant::now().checked_add(d))
 }
 
-/// Polls `f` on this thread until it is ready: the call's own timeout ends it.
-fn block_on<F: Future>(f: F) -> F::Output {
+/// Polls `f` on this thread until it is ready, or past `limit` drops it: `None`.
+fn race<F: Future>(limit: Option<Duration>, f: F) -> Option<F::Output> {
+    let end = deadline(limit);
     let mut f = std::pin::pin!(f);
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
     loop {
         if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return v;
+            return Some(v);
         }
-        std::thread::park();
+        match end {
+            None => std::thread::park(),
+            Some(e) => {
+                let left = e.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return None;
+                }
+                std::thread::park_timeout(left);
+            }
+        }
     }
 }
 
-pub(crate) fn wait<T>(f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
-    Ok(block_on(f)?)
+/// A call that waits, within `limit` (`None`: for as long as it takes): past it `Network`, exit 6.
+pub(crate) fn within<T>(limit: Option<Duration>, f: impl Future<Output = osis::Result<T>>) -> osis::Result<T> {
+    race(limit, f).unwrap_or_else(|| Err(Error::Network("timed out".into())))
 }
 
-/// `wait_synced` on its own deadline `t` (a label a host does not admit fails it `Unsynced`
-/// then, saying which host).
-fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, t: Duration) -> anyhow::Result<()> {
+/// A call that waits, within `--timeout`.
+pub(crate) fn wait<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
+    Ok(within(ctx.timeout()?, f)?)
+}
+
+/// `wait` of a call catching up as `sync` says: a `SyncFirst::Try` spends `--timeout` on that and
+/// goes ahead, and what follows gets as long again.
+pub(crate) fn wait_after<T>(ctx: &Ctx<'_>, sync: SyncFirst, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
+    let t = ctx.timeout()?;
+    Ok(within(if matches!(sync, SyncFirst::Try(_)) { t.map(|t| t.saturating_mul(2)) } else { t }, f)?)
+}
+
+/// `wait_synced` within `limit`; past it `Network`, or the hosts that do not admit a group (state
+/// `Refused`) when there are any.
+fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
-    block_on(db.wait_synced(s, t)).map_err(|e| not_admitted(&db, e))
+    match race(limit, db.wait_synced(s)) {
+        Some(r) => r.map_err(|e| not_admitted(&db, e)),
+        None => {
+            let refused = db.status().map(|st| st.groups.iter().filter(|(_, x)| x.state == SyncState::Refused).map(|(g, _)| *g).collect::<Vec<_>>()).unwrap_or_default();
+            Err(if refused.is_empty() { Error::Network("timed out".into()).into() } else { not_admitted(&db, Error::Unsynced { groups: refused }) })
+        }
+    }
 }
 
 /// `e` with the hosts that do not admit the groups it names (state `Refused`), if any.
@@ -125,20 +154,20 @@ fn links_j(ls: &[osis::LinkInfo]) -> J {
     J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
 }
 
-fn sync_first(d: &SyncFlags) -> anyhow::Result<SyncFirst> {
+fn sync_first(ctx: &Ctx<'_>, d: &SyncFlags) -> anyhow::Result<SyncFirst> {
     if let Some(t) = opt_ts(&d.backdate)? {
         return Ok(SyncFirst::Backdate(t));
     }
     match d.sync.as_deref() {
         None | Some("required") => Ok(SyncFirst::Required),
-        Some("try") => Ok(SyncFirst::Try),
+        Some("try") => Ok(SyncFirst::Try(ctx.wait_for()?)),
         Some("skip") => Ok(SyncFirst::Skip),
         Some(o) => Err(usage(format!("--sync: required, try or skip (got {o:?})"))),
     }
 }
 
-fn set_role_opts(d: &SetRoleFlags) -> anyhow::Result<SetRoleOpts> {
-    Ok(SetRoleOpts { sync: sync_first(&d.sync)?, keep: d.keep })
+fn set_role_opts(ctx: &Ctx<'_>, d: &SetRoleFlags) -> anyhow::Result<SetRoleOpts> {
+    Ok(SetRoleOpts { sync: sync_first(ctx, &d.sync)?, keep: d.keep })
 }
 
 /// A role, or `none`.
@@ -242,7 +271,7 @@ pub(crate) fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Resu
         scopes.insert(0, SyncScope::Thing(ctx.tid(&x)?));
     }
     for s in scopes {
-        let left = end.map_or(Duration::MAX, |e| e.saturating_duration_since(Instant::now()));
+        let left = end.map(|e| e.saturating_duration_since(Instant::now()));
         wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at the hosts: {e:#}")))?;
     }
     Ok(())
@@ -278,8 +307,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         Cmd::Restore { card, host } => {
             let cfg = crate::config(&g, true);
             let card: osis::RecoveryCard = crate::arg_text(&mut *stdin, card)?.parse()?;
-            let t = crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?.unwrap_or(Duration::MAX);
-            block_on(Osis::restore(crate::store_of(&sel), &seed(host)?, &card, t, cfg))?
+            within(crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?, Osis::restore(crate::store_of(&sel), &seed(host)?, &card, cfg))?
         }
         Cmd::Pair(PairCmd::Join { offer, host }) => {
             // the app carries two messages: print the request, read the reply
@@ -385,14 +413,13 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Device(DeviceCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
-            let d = set_role_opts(&d)?;
-            let t = ctx.wait_for()?;
-            let open = wait(db.remove_device(n, d, t))?;
+            let d = set_role_opts(ctx, &d)?;
+            let open = wait_after(ctx, d.sync, db.remove_device(n, d))?;
             if end_links {
                 // not backdated: joiners since that time stay joiners, as with any link revoked
                 let end = if matches!(d.sync, SyncFirst::Backdate(_)) { SyncFirst::Skip } else { d.sync };
                 for l in &open {
-                    wait(db.revoke_link(l.id, end, t))?;
+                    wait_after(ctx, end, db.revoke_link(l.id, end))?;
                 }
             }
             let say = |l: &osis::LinkInfo| {
@@ -552,14 +579,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(db.grant(t, m, role, grant_opts(&until, &invite)?)?)
         }
         Cmd::SetRole { t, holder, role, d } => {
-            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d)?);
-            let w = ctx.wait_for()?;
-            wait(db.set_role(t, m, role, d, w))
+            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(ctx, &d)?);
+            wait_after(ctx, d.sync, db.set_role(t, m, role, d))
         }
         Cmd::Repudiate { t, holder, role, d } => {
-            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d)?);
-            let w = ctx.wait_for()?;
-            wait(db.repudiate(t, m, role, d, w))
+            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(ctx, &d)?);
+            wait_after(ctx, d.sync, db.repudiate(t, m, role, d))
         }
         Cmd::Leave { t, holder } => {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
@@ -584,7 +609,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
-            let t = wait(db.redeem(&l, ctx.wait_for()?))?;
+            let t = wait(ctx, db.redeem(&l))?;
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
         Cmd::Link(LinkCmd::Ls { t }) => {
@@ -598,8 +623,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Link(LinkCmd::Revoke { id, d }) => {
             let id: osis::LinkId = id.parse()?;
-            let sync = sync_first(&d)?;
-            wait(db.revoke_link(id, sync, ctx.wait_for()?))
+            let sync = sync_first(ctx, &d)?;
+            wait_after(ctx, sync, db.revoke_link(id, sync))
         }
         Cmd::Card(CardCmd::Show) => {
             let c = db.contact_card()?;
@@ -617,7 +642,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Card(CardCmd::Import { card }) => {
             let c: osis::ContactCard = ctx.arg_text(&card)?.parse()?;
-            let a = wait(db.import_contact(&c, ctx.wait_for()?))?;
+            let a = wait(ctx, db.import_contact(&c))?;
             ctx.emit(&[a.to_uri()], J::obj([("actor", J::tid(a))]))
         }
         Cmd::Ownerless { admin } => {
@@ -647,7 +672,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 Some(g) => SyncScope::Thing(ctx.tid(&g)?),
                 None => SyncScope::All,
             };
-            let t = ctx.wait_for()?;
+            let t = ctx.timeout()?;
             wait_sync(ctx, s, t)
         }
         Cmd::Group(GroupCmd::Sync { g, host }) => {
@@ -663,7 +688,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             }
             let g = ctx.tid(&g)?;
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Remote(to.parse()?) };
-            Ok(block_on(db.group_source(g, to, ctx.wait_for()?))?)
+            wait(ctx, db.group_source(g, to))
         }
         Cmd::Group(GroupCmd::Policy { .. }) => Err(not_built("set_sync_options (issues/api-deferred.md)")),
         Cmd::Bundle(BundleCmd::Export { groups }) => {
@@ -1135,6 +1160,7 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
         D::Storage { detail } => ("Storage", vec![], None, None, detail),
         D::Callback { detail } => ("Callback", vec![], None, None, detail),
         D::SyncStopped { detail } => ("SyncStopped", vec![], None, None, detail),
+        D::Parked { things, commit, peer, detail } => ("Parked", things.clone(), *commit, *peer, detail),
         D::Handled { things, commit, peer, detail } => ("Handled", things.clone(), *commit, *peer, detail),
         other => ("Other", vec![], None, None, Box::leak(other.to_string().into_boxed_str())),
     };

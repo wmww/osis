@@ -9,7 +9,6 @@ use crate::common::CreateIn;
 use osis::core::{BODY, GROUP, NAME};
 use osis::{Error, Osis, Result, Role, SyncScope, Tid, Scope};
 use osis_sim::world::World;
-use std::time::Duration;
 
 /// A new note in `notebook`, owned by it (so the notebook's holders read and write it).
 fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
@@ -82,7 +81,7 @@ fn two_devices_offline_edits_and_undo() {
     w.run();
     assert_eq!(body(&laptop, note).unwrap(), "- milk", "the phone's edit waits for the network");
     w.set_online(&phone, true);
-    w.until(phone.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
+    w.until(phone.wait_synced(SyncScope::All), 1000, 10).unwrap();
     w.run();
     assert_eq!(body(&laptop, note).unwrap(), "- milk, eggs");
     assert_eq!(body(&phone, note).unwrap(), "- milk, eggs");
@@ -131,7 +130,7 @@ fn share_notebook_with_a_second_person() {
     w.run();
     assert!(notes(&alice, nb).unwrap().contains(&packing));
 
-    w.until(alice.set_role(nb, b, None, Default::default(), osis::internals::PRESYNC), 1000, 20).unwrap();
+    w.until(alice.set_role(nb, b, None, Default::default()), 1000, 20).unwrap();
     let secret = new_note(&alice, nb, "Surprise").unwrap();
     w.run();
     assert_eq!(title(&bob, secret).unwrap(), None, "removed: nothing new");
@@ -148,7 +147,7 @@ fn large_body_streams() {
     let host = w.add_host();
     let laptop = person(&mut w, 1, host);
     let mut cfg = w.cfg(2, &[]);
-    cfg.materialize_limit = 64 << 10;
+    cfg.client.materialize_limit = 64 << 10;
     let phone = add_device(&laptop, cfg).unwrap();
     let nb = new_tag(&laptop, "Books").unwrap();
     let note = new_note(&laptop, nb, "Draft").unwrap();
