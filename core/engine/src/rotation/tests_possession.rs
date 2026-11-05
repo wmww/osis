@@ -1,7 +1,8 @@
 //! Possession (spec/crypto.md §4, Holder actors; issues/keys-depth0-removed-member-rotates.md,
-//! model `D0_rm_possess*`): a writer whose role on G comes through holder actor X1 boxes X1 only
-//! at a keyset whose secret it holds, shown by a signature; its rotation counts its role through
-//! X1 only so. Shape: G <- X1 <- X2 <- W, X2 removing W where G's admin never learns of it.
+//! model `D0_rm_possess*`): a rotation of G, or a removal of its box to X1, counts its writer's
+//! role through holder actor X1 only where it boxes X1 showing it holds the secret of the keyset
+//! it boxes it at (a signature). Shape: G <- X1 <- X2 <- W, X2 removing W where G's admin never
+//! learns of it.
 
 #![allow(clippy::unwrap_used)]
 use super::tests::{blocked_at, commit_ids, edge, group, held_by, newest_read, openable, send_skipping};
@@ -152,8 +153,9 @@ fn removed_member_waits_spec_crypto_4() {
 }
 
 // A removed W that keeps its secrets forges a rotation of G sealing X1 at X1's new keyset, which
-// it cannot open: no possession signature. Refused at A (which never learns W left) and at B;
-// A rotates on its stale box and W opens nothing A uses (Box).
+// it cannot open: no possession signature, so W's role on G (only through X1) does not count
+// for it (Authority). Refused at A (which never learns W left) and at B; A rotates on its stale
+// box and W opens nothing A uses.
 #[test]
 fn removed_member_forged_rotation_refused_spec_crypto_4() {
     let mut s = shape(7_002);
@@ -210,10 +212,11 @@ fn removed_member_box_removal_refused_spec_crypto_4() {
     a_writes_unread(&mut s, start);
 }
 
-// W re-seals X1 at G's current epochs (which it holds) at X1's new keyset, which it cannot open:
-// no rotation, no removal, only a box without a possession signature (Box). Were it valid, A
-// would find G's epochs boxed at X1's knowing keyset, fresh, and write under one W holds.
-// Refused; A rotates on its stale box and W opens nothing A uses.
+// W re-seals X1 at G's current epochs (which it holds) at X1's new keyset, which it cannot open,
+// over the stale boxes: a removal of each and a put without a possession signature. Were it
+// valid, A would find G's epochs boxed at X1's knowing keyset, fresh, and write under one W
+// holds. A removal counts W's role only with possession (Authority): refused; A rotates on its
+// stale box and W opens nothing A uses.
 #[test]
 fn removed_member_reseal_refused_spec_crypto_4() {
     let mut s = shape(7_007);
@@ -244,21 +247,6 @@ fn removed_member_reseal_refused_spec_crypto_4() {
     refused_at(&mut s, A, c, None);
     refused_at(&mut s, B, c, None);
     a_writes_unread(&mut s, start);
-}
-
-// Writers: W, a writer of X1 through X2 lacking X1's new keyset's secret, would box X1 nothing
-// (left out) in a grant or re-seal of G, rather than a box without a signature.
-#[test]
-fn removed_member_boxes_holder_nothing_spec_crypto_4() {
-    let mut s = shape(7_005);
-    removed(&mut s);
-    let (g, x1) = (s.g, s.x1);
-    let me = s.lp.peers[W].engine.tid();
-    let r = s.lp.peers[W].engine.run(|tx| super::members::sealed(tx, &me, &g, &x1, Role::Write)).unwrap();
-    assert!(r.is_none(), "X1 boxed by W: {r:?}");
-    let a = s.lp.peers[A].engine.tid();
-    let r = s.lp.peers[A].engine.run(|tx| super::members::sealed(tx, &a, &g, &x1, Role::Write)).unwrap();
-    assert!(r.is_some(), "A, no member of X1, seals it");
 }
 
 // Judged again when the keyset arrives (arrival-order independence): A holds W's forged

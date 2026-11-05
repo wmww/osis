@@ -60,7 +60,13 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* the removal), "remover" (the remover places under
                       \* every label the actor reaches), "possess" (a writer
                       \* through holder actors rotates only sealing a keyset
-                      \* whose secret it holds)
+                      \* whose secret it holds), "box" (the dropped Box rule:
+                      \* a box to holder actor h by a sealer holding a role on
+                      \* h, not through the boxed actor, at a keyset whose
+                      \* secret it lacked is invalid where a node judges so,
+                      \* and hidden from that node's rules, yet still opens
+                      \* for whoever holds the keyset; a sealer holding such
+                      \* a role leaves h out instead)
 
 Acts == {ActSeq[i] : i \in 1..Len(ActSeq)}
 Holders(a) == {m[2] : m \in {q \in Mem : q[1] = a}}
@@ -97,13 +103,20 @@ KeyIn(G, a) == KeyMap[G][a]
 KeyAct(a) == KeyIn(GAll, a) \cap Acts
 KClos(h) == Fix(LAMBDA S : S \cup UNION {KeyAct(b) : b \in S}, KeyAct(h))
 
+\* "box": the actors on whose roles device y holds a role on h, over the actor
+\* edges in G and none through a (roles, not key access)
+RoleClos(h, a, G) == Fix(LAMBDA S : S \cup {b \in Acts \ {a} : \E c \in S : <<c, b>> \in Mem /\ <<c, b>> \in G}, {h})
+RoleOn(y, h, a, G) == \E c \in RoleClos(h, a, G) : <<c, y>> \in Mem
+
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
 KK(k) == [t |-> "k", d |-> "", k |-> k]
 Idx(a) == CHOOSE i \in 1..Len(ActSeq) : ActSeq[i] = a
 InitKey(h) == IF h \in Acts THEN KK(Idx(h)) ELSE DK(h)
 
-VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged]
-          rs,     \* re-seal boxes: [e, h, key]
+VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged];
+                  \* a box: [h, key, by (its sealer), poss (whether the
+                  \* sealer held the keyset's secret)]
+          rs,     \* re-seal boxes: [e, h, key, by, poss]
           kn,     \* kn[x]: epoch commits x holds
           krs,    \* krs[x]: re-seal commits x holds
           wr,     \* content: [a, e, w, p1..p5] (p: premises held)
@@ -143,8 +156,11 @@ NewestV(x, a) == Newest(Cur(x, a))
 KH(x, a) == KeyIn(kg[x], a)
 MemV(x, a, extra) == KH(x, a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
 
-BoxesAt(x, e) == ep[e].bx \cup {[h |-> r.h, key |-> r.key] : r \in {q \in krs[x] : q.e = e}}
-AllBoxesAt(e) == ep[e].bx \cup {[h |-> r.h, key |-> r.key] : r \in {q \in rs : q.e = e}}
+RsBox(r) == [h |-> r.h, key |-> r.key, by |-> r.by, poss |-> r.poss]
+\* "box": a box x judges invalid (and so does not see)
+BoxOK(x, a, b) == ~(Rule = "box" /\ b.h \in Acts /\ ~b.poss /\ RoleOn(b.by, b.h, a, kg[x]))
+BoxesAt(x, e) == {b \in ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}} : BoxOK(x, ep[e].act, b)}
+AllBoxesAt(e) == ep[e].bx \cup {RsBox(r) : r \in {q \in rs : q.e = e}}
 
 \* epochs whose secret device d gets from boxes BX over commits ids
 SecOf(d, BX(_), ids) ==
@@ -188,13 +204,16 @@ BlindOK(a, hs) == (hs \cap Acts) \ KeyIn(GAll, a) # {} => Cardinality(Blinds) < 
 Rotate(x, a, extra) ==
   LET lo(h) == h \in Acts /\
                (SealK(x, a, h) = 0 \/
-                (InCycle(a, h) /\ ~FreshK(x, a, SealK(x, a, h), {}, KOf(x, a))))
+                (InCycle(a, h) /\ ~FreshK(x, a, SealK(x, a, h), {}, KOf(x, a))) \/
+                (Rule = "box" /\ RoleOn(x, h, a, kg[x]) /\ SealK(x, a, h) \notin Sec(x)))
       seal(h) == IF h \in Acts THEN KK(SealK(x, a, h)) ELSE DK(h)
       new == [act |-> a,
               n |-> 1 + ep[NewestV(x, a)].n,
               par |-> KOf(x, a),
               by |-> x,
-              bx |-> {[h |-> h, key |-> seal(h)] : h \in {g \in MemV(x, a, extra) : ~lo(g)}},
+              bx |-> {[h |-> h, key |-> seal(h), by |-> x,
+                       poss |-> (h \notin Acts \/ SealK(x, a, h) \in Sec(x))] :
+                        h \in {g \in MemV(x, a, extra) : ~lo(g)}},
               hist |-> {e \in Sec(x) : ep[e].act = a},
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
               forged |-> FALSE]
@@ -205,7 +224,7 @@ Rotate(x, a, extra) ==
 Init ==
   /\ ep = [i \in 1..Len(ActSeq) |->
              [act |-> ActSeq[i], n |-> 0, par |-> {}, by |-> "",
-              bx |-> {[h |-> h, key |-> InitKey(h)] :
+              bx |-> {[h |-> h, key |-> InitKey(h), by |-> "", poss |-> TRUE] :
                         h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
               hist |-> {}, knows |-> {}, forged |-> FALSE]]
   /\ rs = {}
@@ -265,7 +284,7 @@ Forge(d) ==
           IN ep' = Append(ep, [act |-> dp[2],
                                n |-> 1 + ep[Newest(ms)].n,
                                par |-> ms, by |-> d,
-                               bx |-> {[h |-> d, key |-> DK(d)]},
+                               bx |-> {[h |-> d, key |-> DK(d), by |-> d, poss |-> TRUE]},
                                hist |-> {}, knows |-> {}, forged |-> TRUE])
   /\ evd' = evd \cup {<<d, "forge">>}
   /\ UNCHANGED <<kg, rs, kn, krs, wr, done, nw, pl, kpl>>
@@ -314,10 +333,10 @@ Reseal(x, a, h) ==
        /\ Covers(x, e, a)
        /\ ~\E b \in BoxesAt(x, e) : b.h = h
        /\ LET k == SealK(x, a, h)
-              r == [e |-> e, h |-> h, key |-> KK(k)]
+              r == [e |-> e, h |-> h, key |-> KK(k), by |-> x, poss |-> k \in Sec(x)]
           IN /\ k # 0
-             \* "possess": a writer through holder actors re-seals one only at a keyset it opens
-             /\ (Rule = "possess" /\ Through(x, a) /\ ~IsAdm(x, a)) => k \in Sec(x)
+             \* "box": a sealer holding a role on h re-seals it only at a keyset it opens
+             /\ (Rule = "box" /\ RoleOn(x, h, a, kg[x])) => k \in Sec(x)
              /\ InCycle(a, h) => FreshK(x, a, k, Cur(x, a), KOf(x, a) \ Cur(x, a))
              /\ BlindOK(a, {h})
              /\ rs' = rs \cup {r}

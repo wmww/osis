@@ -36,8 +36,7 @@ fn rotate_skipping(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>, s
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let who = tx.core.id.tid();
-            let holders = super::recipients(tx, &who, &g, &skip)?;
+            let holders = super::recipients(tx, &g, &skip)?;
             let mut m = Mutation::new();
             let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, &[])?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -792,10 +791,16 @@ fn removal_lacking_rotated_secret_refused_spec_permissions_3() {
 // knowing keyset), and after each admin acting alone until nothing changes, D's old secrets open
 // no newest epoch a writer encrypts under beyond what D's remaining boxes give it; then nothing
 // is blocked and every holder with key access is boxed. (A writer that has not yet received a
-// holder actor's knowing rotation is within the stated limit and not checked.)
+// holder actor's knowing rotation is within the stated limit and not checked.) Also seeds that
+// failed at full size under the dropped Box rule (model `D0_box_rule`): 1032 (the admin of two
+// actors of a 3-cycle seals one to the third before it holds the grant giving it a role on the
+// third; its box, invalid but opening all the same, was hidden from the knowing re-key and
+// taint), 1055 (a sealer whose role on the holder runs only through keyless grants, never able
+// to sign, left it out for good); and 9540070 (a rotation of read alone needs write: the
+// writer's possession check judged it by read, and its own commit was refused).
 #[test]
 fn cycle_removals_leak_nothing_random() {
-    cycle_stats(osis_base::testenv::run_seeds("rotation::tests_members::cycle_removals_leak_nothing_random", &[0, 1, 2, 3, 4, 5], false, cycle_replay, cycle_removals));
+    cycle_stats(osis_base::testenv::run_seeds("rotation::tests_members::cycle_removals_leak_nothing_random", &[0, 1, 2, 3, 4, 5, 1032, 1055, 9_540_070], false, cycle_replay, cycle_removals));
 }
 
 /// Seeds: OSIS_CYCLE_START, OSIS_CYCLE_SEEDS (default 1000..1200).

@@ -80,8 +80,10 @@ Properties: `NoLeakDirect`, `NoLeakMember`, `NoLeakMemberAll` (invariants), `NoL
 | `D0_rm_spec` | as D0_rm_spec0 plus reader R in X2 syncing G | **fails** `NoLeakLimit`; without it pass | 865; 20,455 | 11 s; 94 s |
 | `D0_rm_ahead`, `D0_rm_ahead0` | `ahead`, with and without R | as `spec`: **fail** `NoLeakLimit`; without it R: pass, no R: **fails** `NoLeakSettled` | 42,823 (R, settled) | 154 s |
 | `D0_rm_remover0` | `remover`, no R | **fails** `NoLeakLimit`; without it pass | 491; 2,823 | 11 s; 22 s |
-| `D0_rm_possess0` | `possess`, no R, W may rotate G once unprompted; W also re-seals X1 only at a keyset it opens | pass (probe: W's rotations seal X1 only at its old keyset; a1 writes under one) | 2,876 | 15 s |
+| `D0_rm_possess0` | `possess`, no R, W may rotate G once unprompted | pass (also before the Box clause was dropped, when W re-sealed X1 only at a keyset it opens) (probe: W's rotations seal X1 only at its old keyset; a1 writes under one) | 2,876 | 15 s |
 | `D0_rm_possess` | as D0_rm_possess0 plus R; safety only | pass | 154,785 | 52 s |
+| `D0_box_rule` | 3-cycle A {p, D, B}, B {p, C}, C {q, A}: B in A, A in C, C in B (keyless); p lacks A in C at first and re-seals B to C before it holds C's secret; p removes D from A; Taint; `box` (the dropped Box rule: such a box is invalid where p's role on C through A is known, and hidden there) | **fails** `NoLeakKnownAll` (expected: the hidden box closes the cycle, so neither taint nor the knowing re-key fires; p writes A sealed to B's keyset D reaches; cycle harness seed 1032) | 150 | 2 s |
+| `D0_box_ok` | as D0_box_rule without the Box rule, `MaxE = 8` (the cascade removal, C, B's re-key, A, C again needs 8; at 6 and 7 liveness fails at the bound) | pass | 36,566 | 11 min (8 workers) |
 
 Without `MaxBlind` (any number of blind seals) `D0_nc_hide_taint_lean` fails liveness at the epoch bound: concurrent re-seals by x1 and the still-ignorant y1 re-form the cycle between fresh keysets, x1 rotates off it, and again, until `MaxE`. The other failed candidates (the study's rules: unanchored sealing without merge, leaving cycle members out on direct departures with one box check; reachability; Fresh on the other shapes; a commit rule with rejoin rotations) and their traces are in git history and study §4.
 

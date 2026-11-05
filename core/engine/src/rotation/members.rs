@@ -1,7 +1,7 @@
 //! Holder actors as this node judges them (spec/crypto.md §4, Holder actors): key access over the
 //! actor grants it holds (cached), a holder actor's held keysets, the recipient a box seals it
-//! to, stale and keyless boxes of an actor, and the writer's side of possession (a holder actor
-//! this node is in is boxed only signed; a rotation only with the authority that shows). The rules
+//! to, stale and keyless boxes of an actor, and the writer's side of possession (a rotation only
+//! with the authority its signed boxes show). The rules
 //! are osis-keys' (`osis_keys::members`, `osis_keys::possession`); this gathers their inputs.
 //! Nothing here reads a departure from a holder actor.
 
@@ -165,14 +165,12 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
         .collect())
 }
 
-/// Holder `m` of `a`, holding `role`, as a rotation, grant or re-seal of `a` by `who` (this
-/// node, or a key actor it signs as) boxes it (spec/crypto.md §4): a key actor whole; a holder
-/// actor without key access not at all; one with it, per role up to `role`, at the keyset Seal
-/// gives (`osis_keys::seal_keyset`), symmetric where this node holds that established epoch's
-/// secret, cut at the first role with none (left out of it and the roles above), or, where `who`
-/// holds that role on `m`, at the first without that secret (Possession: such a box must carry
-/// its signature). `None`: boxed nothing.
-pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Option<Recipient>> {
+/// Holder `m` of `a`, holding `role`, as a rotation, grant or re-seal of `a` boxes it
+/// (spec/crypto.md §4): a key actor whole; a holder actor without key access not at all; one with
+/// it, per role up to `role`, at the keyset Seal gives (`osis_keys::seal_keyset`), symmetric
+/// (signed: it shows possession) where this node holds that established epoch's secret, cut at
+/// the first role with none (left out of it and the roles above). `None`: boxed nothing.
+pub(crate) fn sealed(tx: &mut Tx<'_>, a: &Tid, m: &Tid, role: Role) -> Result<Option<Recipient>> {
     if tx.core.is_key_actor(m) {
         return Ok(recipient(tx, *m, role).ok());
     }
@@ -185,9 +183,6 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
         let held = keysets_of(tx, m, r, None)?;
         let Some(k) = osis_keys::seal_keyset(&held, &anchors(tx, a, m, r)?, &tainted(tx, m, r)?) else { break };
         let secret = own.as_ref().filter(|e| e.role(r).is_established(&k)).and_then(|e| e.role(r).secret(&k)).cloned();
-        if secret.is_none() && role_avoiding(tx.core, who, m, a) >= Some(r) {
-            break;
-        }
         let written = tx.core.ix.keysets.get(&(*m, r, k)).and_then(|x| x.kem.clone());
         let kem = match (written, &secret) {
             (Some(b), _) => osis_crypto::KemPublicKey::from_slice(&b).ok(),
@@ -209,11 +204,6 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -
 fn roles_avoiding(core: &Core, who: &Tid, a: &Tid, avoid: &BTreeSet<Tid>) -> BTreeMap<Tid, Role> {
     let Some(tl) = core.timelines.get(a) else { return BTreeMap::new() };
     tl.roles_avoiding(who, osis_perm::At::now(crate::flows::now_ts(core)), avoid)
-}
-
-/// `who`'s role on holder actor `m` of `a`, on paths not through `a`.
-fn role_avoiding(core: &Core, who: &Tid, m: &Tid, a: &Tid) -> Option<Role> {
-    roles_avoiding(core, who, a, &BTreeSet::from([*a])).get(m).copied()
 }
 
 /// Whether `who` may make a rotation of `a` needing `needed`, boxing `holders` (`sealed`)
