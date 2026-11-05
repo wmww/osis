@@ -1314,6 +1314,7 @@ fn leave_of_no_grant_and_of_others() {
 
 // notes/api.md Sharing (`leave`): one holding only through a link's actor is told so, for nothing
 // would change: never a quiet success with the role still there. Leaving that actor ends it.
+// spec: none (API surface, notes/api.md)
 #[test]
 fn leave_tells_of_another_way_in() {
     let mut w = World::new();
