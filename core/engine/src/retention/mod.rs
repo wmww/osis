@@ -233,8 +233,11 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     if by_timer && hb.is_some_and(|b| b <= tx.now().0) {
         return drop_body(tx);
     }
-    // deaths awaiting a recompute may be early: the recompute judges the body (`settle_due`)
-    if a.retention.at_most.rel.is_some() && holders.iter().filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
+    // deaths awaiting a recompute may be early: the recompute judges the body. Invariant: it
+    // waits only on aspects where the body holds a part, the ones whose recompute judges it again
+    // (`settle_due` visits held parts); a timer that fired here is gone, so waiting on any other
+    // would leave the body past its bound
+    if a.retention.at_most.rel.is_some() && holders.iter().filter(|x| m.holds(**x)).filter_map(|x| m.header.aspects.get(*x)).any(|x| tx.core.ix.deaths_due.contains(&(x.tid, x.ak.clone()))) {
         return Ok(());
     }
     let d = class_deaths(tx, &m.header, &body, &holders)?;

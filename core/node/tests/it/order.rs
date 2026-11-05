@@ -1238,10 +1238,11 @@ fn live_writes(e: &mut osis_node::Engine) -> BTreeMap<(Tid, Ak), BTreeSet<osis_c
 
 /// Check (a), at the clock the node was delivered at: no dead body under keep at most 0 is held
 /// (it drops in the killing transaction) and no body under it is gone before the earliest
-/// superseder any held body gives. A commit carrying a purge request
-/// keeps its blobs to `ROLE_KEEP` (spec/commits.md §5, Purge request); a drop before a flip or an
-/// aspect flagged for a part gone at its expiry has no bound to judge against.
-fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played) -> Option<String> {
+/// superseder any held body gives, or a fall it was dropped at on the way (`fell`). A commit
+/// carrying a purge request keeps its blobs to `ROLE_KEEP` (spec/commits.md §5, Purge request); a
+/// drop before a flip or an aspect flagged for a part gone at its expiry has no bound to judge
+/// against.
+fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played, fell: &Fell) -> Option<String> {
     let now = played.now;
     let (mine, _) = facts_of(&facts_text(&mut p.engine));
     let (theirs, inv) = facts_of(&o.facts);
@@ -1269,7 +1270,7 @@ fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played) -> Option<String> {
             } else {
                 let first = o.deaths.get(&(id, a.tid, a.ak.clone())).copied().flatten();
                 let k = (format!("{id:?}"), key.0, key.1);
-                if h.kind.has_own_writes() && a.retention.at_most.abs.is_none_or(|t| t > now.0) && theirs.get(&k).is_some_and(|f| f.held) && !first.is_some_and(|y| y.0.wall_ms().0 <= now.0) {
+                if h.kind.has_own_writes() && a.retention.at_most.abs.is_none_or(|t| t > now.0) && theirs.get(&k).is_some_and(|f| f.held) && !first.is_some_and(|y| y.0.wall_ms().0 <= now.0) && !fell(&id, &a.tid, &a.ak) {
                     return Some(format!("body dropped before its keep-at-most bound: {what}, earliest superseder {first:?}"));
                 }
             }
@@ -1415,8 +1416,8 @@ fn live_write_lost(p: &mut Peer, o: &Oracle, played: &Played, flips: &dyn Fn(&st
 }
 
 /// `judged` with the per-node checks around it, for a node `o` is the keep-everything node of.
-fn judged_checked(p: &mut Peer, played: &Played, o: &Oracle, flips: &dyn Fn(&str, &str) -> bool) -> Result<Judged, String> {
-    bound_kept_now(p, o, played).or_else(|| value_past_end(p, played, played.now)).or_else(|| model_differs(p, played, o)).map_or(Ok(()), Err)?;
+fn judged_checked(p: &mut Peer, played: &Played, o: &Oracle, flips: &dyn Fn(&str, &str) -> bool, fell: &Fell) -> Result<Judged, String> {
+    bound_kept_now(p, o, played, fell).or_else(|| value_past_end(p, played, played.now)).or_else(|| model_differs(p, played, o)).map_or(Ok(()), Err)?;
     let j = judged(p, played);
     later_checks(p, played, o, flips).map_or(Ok(j), Err)
 }
@@ -2151,6 +2152,30 @@ fn flipped(played: &Played, order: &[usize], way: Way, tid: &str, ak: &str) -> b
     seen.values().any(|v| v.len() > 1)
 }
 
+/// Whether body `(c, tid, ak)` was dropped at a fall on a way (`fell_at_drop`).
+type Fell<'a> = dyn Fn(&CommitId, &Tid, &Ak) -> bool + 'a;
+
+/// Whether delivering `order` (as `deliver_with` with `way`) last dropped body `(c, tid, ak)` at a
+/// fall: the step that dropped it left none of its writes live, with an invalid write on its
+/// aspect. Under keep at most 0 after replaced, a valid write an un-merge took counts dead from its
+/// fall (spec/commits.md §5 Bodies and deaths), a date the node loses when a snapshot or a flip
+/// merges the write again, so a node keeping every body gives it no superseder. A delivery with
+/// facts at every step: asked only about a drop found.
+fn fell_at_drop(played: &Played, order: &[usize], way: Way, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+    let (mut rng, clock) = way.parts();
+    let (mut was, mut fell) = (false, false);
+    deliver_with(played, order, rng.as_mut(), clock, &mut |p| {
+        let e = &mut p.engine;
+        let ai = e.core.ix.commits.get(c).and_then(|m| m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).filter(|i| !m.missing.contains(i)));
+        let dropped = ai.is_some() && !e.body_not_dropped(c, tid, ak);
+        if dropped && !was {
+            fell = !e.body_live(c, tid, ak).unwrap() && !e.invalid_writes(tid, ak).is_empty();
+        }
+        was = dropped;
+    });
+    fell
+}
+
 /// The first difference between one node's two judgements, facts included.
 fn first_diff(a: &Judged, b: &Judged) -> Option<String> {
     first_diff_parts(&a.parts, &b.parts).or_else(|| first_diff_parts(&[("facts", a.facts.clone())], &[("facts", b.facts.clone())]))
@@ -2424,7 +2449,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         // the reference, as made: the per-node checks hold, a reopen from the persisted index and a
         // rebuild judge alike and give one index (an open re-examines what pends)
         let mut p = deliver(played, &orders[0]);
-        if let Some(d) = bound_kept_now(&mut p, &o, played).or_else(|| value_past_end(&mut p, played, played.now)).or_else(|| model_differs(&mut p, played, &o)) {
+        if let Some(d) = bound_kept_now(&mut p, &o, played, &|c, t, a| fell_at_drop(played, &orders[0], Way::Plain, c, t, a)).or_else(|| value_past_end(&mut p, played, played.now)).or_else(|| model_differs(&mut p, played, &o)) {
             return Err(format!("{of}, as made: {d}"));
         }
         let now = judged_now(&mut p, &played.things);
@@ -2489,14 +2514,15 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 let copy = rng.clone();
                 let mut p = deliver_split(played, order, rng);
                 let flips = |t: &str, a: &str| flipped(played, &orders[0], Way::Plain, t, a) || flipped(played, order, Way::Split(copy.clone()), t, a);
-                let d = judged_checked(&mut p, played, &o, &flips).map(|got| alike_exchanged(played, &want, &orders[0], &got, order, Way::Split(copy.clone()), &flips));
+                let fell = |c: &CommitId, t: &Tid, a: &Ak| fell_at_drop(played, order, Way::Split(copy.clone()), c, t, a);
+                let d = judged_checked(&mut p, played, &o, &flips, &fell).map(|got| alike_exchanged(played, &want, &orders[0], &got, order, Way::Split(copy.clone()), &flips));
                 return match d {
                     Err(d) | Ok(Some(d)) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
                     Ok(None) => Ok(()),
                 };
             }
             let mut p = deliver(played, order);
-            if let Some(d) = bound_kept_now(&mut p, &o, played).or_else(|| value_past_end(&mut p, played, played.now)).or_else(|| model_differs(&mut p, played, &o)) {
+            if let Some(d) = bound_kept_now(&mut p, &o, played, &|c, t, a| fell_at_drop(played, order, Way::Plain, c, t, a)).or_else(|| value_past_end(&mut p, played, played.now)).or_else(|| model_differs(&mut p, played, &o)) {
                 return Err(format!("{of}, order #{k} {order:?}: {d}"));
             }
             let mut got = judged_now(&mut p, &played.things);
@@ -2541,7 +2567,8 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 return Err(format!("{of}: order #{k} at an earlier clock {c:?} {order:?}, {d}"));
             }
             let flips = |t: &str, a: &str| flipped(played, &orders[0], Way::Plain, t, a) || flipped(played, order, Way::Clocked(c), t, a);
-            let d = judged_checked(&mut p, played, &o, &flips).map(|got| alike_exchanged(played, &want, &orders[0], &Judged { early: true, ..got }, order, Way::Clocked(c), &flips));
+            let fell = |x: &CommitId, t: &Tid, a: &Ak| fell_at_drop(played, order, Way::Clocked(c), x, t, a);
+            let d = judged_checked(&mut p, played, &o, &flips, &fell).map(|got| alike_exchanged(played, &want, &orders[0], &Judged { early: true, ..got }, order, Way::Clocked(c), &flips));
             match d {
                 Err(d) | Ok(Some(d)) => Err(format!("{of}: order #0 (as made, want) {held:?} vs order #{k} at an earlier clock {c:?} (got) {order:?}: {d}")),
                 Ok(None) => Ok(()),
@@ -3147,6 +3174,41 @@ fn arrival_order_purge_rows_large_spec_perm_7() {
     run("arrival_order_purge_rows_large_spec_perm_7", osis_base::testenv::large(7000..7060), 40, LARGE, purge_rows_history);
 }
 
+// spec/commits.md §5 Bodies and deaths: a writer's map write under `required.0^` (keep at most 0
+// after replaced) arrives un-merged (an invalid write holds what it writes in), so it counts dead
+// from its fall and goes; a valid snapshot coming next merges it again. A node keeping every body
+// gives it no superseder: the drop is at the fall (`fell_at_drop`), not before its bound. Seed
+// 9300016 unshrunk, as made.
+#[test]
+fn body_dropped_at_its_fall_seed_9300016_spec_commits_5() {
+    let cfg = Cfg { sync: true, ..LARGE };
+    let played = with_syncs(play(9300016, &history(9300016, 60, cfg)), 9300016, false);
+    let all: Vec<usize> = (0..played.packs.len()).collect();
+    let o = oracle(&played, &all);
+    let mut p = deliver(&played, &all);
+    assert!(bound_kept_now(&mut p, &o, &played, &|_, _, _| false).is_some(), "a body dropped with no superseder");
+    assert_eq!(bound_kept_now(&mut p, &o, &played, &|c, t, a| fell_at_drop(&played, &all, Way::Plain, c, t, a)), None);
+}
+
+// spec/commits.md §5 Keep bounds: a body on two aspects under keep at most 0 after replaced, its
+// part on one missing, dies with a live write; its timer fires while the other aspect's deaths
+// wait for a recompute. It goes by its bound all the same (was: the judgment waited on the
+// missing part's aspect, whose recompute visits held parts only, and the timer was spent). Seed
+// 9300016, shrunk.
+#[test]
+fn body_with_a_missing_part_goes_at_its_bound_seed_9300016_spec_commits_5() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![a(Leave { by: 1, t: 2 }), a(Roster { by: 0, t: 2 }), Forged { by: 0, a: 3, b: 0, how: 4, op: 25, k: 2, v: 1 }, a(NestedItem { by: 2, other: 0, t: 2, k: 0, compact: true, also: false }), Forged { by: 2, a: 1, b: 4, how: 1, op: 11, k: 0, v: 4 }, a(Write { by: 2, t: 0, op: 27, k: 2, v: 0 }), a(Roster { by: 0, t: 5 }), a(Require { by: 2, t: 0, op: 31, rule: 3 }), a(Breaking { by: 0, t: 1, op: 8, v: 9, fits: false }), a(New { by: 0, parent: 4, write: true }), a(Require { by: 0, t: 2, op: 15, rule: 3 }), a(NestedItem { by: 1, other: 0, t: 4, k: 2, compact: true, also: true }), a(Require { by: 2, t: 2, op: 19, rule: 3 })];
+    let played = with_syncs(play(9300016, &h), 9300016, false);
+    let held = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25];
+    let o = oracle(&played, &held);
+    let mut p = deliver(&played, &held);
+    p.clock.set(later_than(&played));
+    p.engine.tick().unwrap();
+    assert_eq!(body_past_bound(&mut p, &played, &o), None);
+}
+
 // spec/commits.md §5 (a snapshot carrying a purged value is held as its leftover), spec/crdt.md
 // §4.7: an open rebuilding the index lists the stripped snapshot as the incremental path does
 // (was: its slot gone from the blob, the rebuild left it out of the snapshots index).
@@ -3695,8 +3757,9 @@ fn copy_kills_write_sharing_a_dead_stamp_spec_crdt_4_8() {
     let o = oracle(&played, &(0..played.packs.len()).collect::<Vec<_>>());
     assert!(o.deaths.values().any(|d| d.is_some_and(|d| d.0 < d.1)), "{:?}", o.deaths);
     for rel in [[0, 1, 2, 3, 4], [0, 1, 4, 2, 3]] {
-        let mut p = deliver(&played, &(0..b).chain(rel.iter().map(|i| b + i)).collect::<Vec<_>>());
-        assert_eq!(bound_kept_now(&mut p, &o, &played), None, "order {rel:?}");
+        let order: Vec<usize> = (0..b).chain(rel.iter().map(|i| b + i)).collect();
+        let mut p = deliver(&played, &order);
+        assert_eq!(bound_kept_now(&mut p, &o, &played, &|c, t, a| fell_at_drop(&played, &order, Way::Plain, c, t, a)), None, "order {rel:?}");
     }
 }
 
@@ -4808,8 +4871,8 @@ fn nested_write_dies_under_unmerged_record_seed_52040_spec_crdt_4_8() {
     let rev: Vec<usize> = held.iter().rev().copied().collect();
     let o = oracle(&played, &held);
     let (mut w, mut g) = (deliver(&played, &held), deliver(&played, &rev));
-    assert_eq!(bound_kept_now(&mut w, &o, &played), None);
-    assert_eq!(bound_kept_now(&mut g, &o, &played), None);
+    assert_eq!(bound_kept_now(&mut w, &o, &played, &|c, t, a| fell_at_drop(&played, &held, Way::Plain, c, t, a)), None);
+    assert_eq!(bound_kept_now(&mut g, &o, &played, &|c, t, a| fell_at_drop(&played, &rev, Way::Plain, c, t, a)), None);
     assert!(!w.engine.body_not_dropped(&played.packs[46].id, &tid_of(&played, "t:gonemap.0"), &ak("t:gonemap.0")), "the dead body under keep at most 0 is dropped as made");
     assert!(!g.engine.body_not_dropped(&played.packs[46].id, &tid_of(&played, "t:gonemap.0"), &ak("t:gonemap.0")), "and reversed");
     let (want, got) = (judged(&mut w, &played), judged(&mut g, &played));
