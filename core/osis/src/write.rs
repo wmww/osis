@@ -654,8 +654,8 @@ impl<'w, 'd> GroupWrite<'w, 'd> {
     /// Removes a member. A grant made with the membership (`Osis::add_with_grant`) goes in a
     /// commit right after when this node may remove it as a self-removal; otherwise a node that
     /// may remove it does so later. What a removed subgroup was the last way into a synced group
-    /// for stops syncing, each reported `NotSynced`. A removal does not expire, as it would bring
-    /// the member back with its grant gone: `commit` fails `Invalid` in a commit that expires.
+    /// for stops syncing, each reported `NotSynced`. `commit` fails `Invalid` in a commit that
+    /// expires.
     pub fn remove(&mut self, member: Member) -> Result<()> {
         self.w.member(self.group, member, false)
     }
