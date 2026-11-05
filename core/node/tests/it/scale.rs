@@ -716,6 +716,7 @@ fn demotion_heavy_open() {
 }
 
 mod long_aspect;
+mod role_history;
 
 use crate::net;
 

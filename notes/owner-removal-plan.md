@@ -27,6 +27,28 @@ It deletes names below an actor, keyset names and the departure walk, which remo
 ### 1. Delete roster snapshots
 Delete §6, `tenures.0`, epoch starts and their rounds, `kind` 4, snapshot certificate projection, `MAX_LINKED_FRONTIERS`. Independent of owners and a pure removal. Then measure: frontier size at 10^3 and 10^4 role writes, joiner bytes, evaluation time. Frontiers that hurt can extend an earlier frontier by link. Scale requirement gets an exception for role history.
 
+#### Step 1 measurements
+`scale::role_history::cost` (osis-node, release, by hand; shapes and how to run in its header). One node writes N raw edge writes on one thing (no boxes or rotations); a joiner gets every role commit ("off", today's default: nothing writes roster snapshots on its own) or one roster snapshot written at the end ("on"). Box at load 8-35: CPU-s are up to 2x high at 10^3. Shapes: chat (1000 writers joining and leaving, 250 at 10^3), readers (same at read), devices (3 persons, about 5 admin devices each, each removal listing 10 commits; per person), invites (link edges and joiner grants; the realm grows to N/2), kicks (chat whose leaves are kicks listing 1..10^3 commits, log-uniform).
+
+| shape, N | history off | snapshot on | frontiers total, largest | joiner ingest CPU-s off / on | evaluate anew (open) off / on | joiner peak off |
+|---|---|---|---|---|---|---|
+| chat 10^3 | 366 KB | 160 KB | | 11 / 4.2 | 0.09 / 0.06 s | +14 MiB |
+| readers 10^3 | 366 KB | 47 KB | | 11 / 2.0 | 0.09 / 0.02 s | +13 MiB |
+| devices 10^3 | 176 KB | 98 KB | 161 KB, 346 B | 1.0 / 0.4 | 0.03 / 0.02 s | +1 MiB |
+| invites 10^3 | 371 KB | 183 KB | | 8.9 / 9.6 | 0.08 / 0.05 s | +16 MiB |
+| kicks 10^3 | 2.1 MB | 1.9 MB | 1.7 MB, 34 KB | 10.5 / 10.7 | 0.16 / 0.13 s | +27 MiB |
+| chat 10^4 | 3.6 MB | 1.4 MB (writing it 294 CPU-s) | | 109 / 194 | 1.5 / 1.0 s | +228 MiB |
+| readers 10^4 | 3.6 MB | 176 KB (43 CPU-s) | | 112 / 30 | 2.4 / 0.03 s | +245 MiB |
+| devices 10^4 | 1.8 MB | 1.0 MB (53 CPU-s) | 1.7 MB, 346 B | 16 / 19 | 0.32 / 0.16 s | +35 MiB |
+| invites 10^4 | 3.7 MB | writing it (about 5000 holders) not done after 13 min; stopped | | 159 / - | 2.1 s | +435 MiB |
+| kicks 10^4 | 25.8 MB | cannot be written: "the commit does not fit a blob" | 22.2 MB, 34 KB | 132 / - | 1.8 s | +383 MiB |
+
+- Bytes: 364-371 B per role write, plus 34 B per commit a frontier lists. Snapshots shrink only read rosters much (20x for readers); a writer's every ended tenure and every frontier stay in the ledger forever, so with writers they save 1.1-2.6x, and a kick-heavy group at 10^4 already cannot write one.
+- Time: the joiner's cost is CPU, not bytes, and it is superlinear: 10^4 role commits ingested one by one take 110-160 CPU-s (10^3: 1-11), with snapshots no better (a snapshot's per-edge deltas each join at O(roster): writing one at 10^4 took 294 CPU-s). Evaluating the timeline anew is 1.5-2.4 s at 10^4. The ingest is per-arrival timeline work (85 of 112 s for readers) and `apply: join` per `roles.0` delta: implementation, issues/role-history-join-cost.md. The owner's own edge write averaged 15-23 ms at 10^4 history (4.6 ms at 10^3), under the 50 ms budget but growing.
+- 10^5 not run: the owner's writes alone would take hours here.
+- Against the budgets (notes/testing.md): "node open under 1 s" and "a single local write, read or received commit under 50 ms" hold per commit; there is no join budget, but a 2-3 minute join at 10^4 role writes is past "Rare events ... under a few seconds". spec/requirements.md Scale: "No operation is O(total data) or O(history)." A join is O(role history) with or without snapshots (the ledger is), so the exception is needed either way; "State grows with the number of edits and removals ever made, a few bytes each" holds for frontiers (34 B per listed commit) but a role write is about 370 B.
+- **Recommendation: the stated exception is enough; linked frontiers are not needed now.** Deleting snapshots costs at most 2.6x joiner bytes for writer groups (20x for big read rosters: 3.6 MB at 10^4 writes) and nothing in frontiers, which the ledger keeps anyway. Extending an earlier frontier by link saves only where successive frontiers overlap; in these shapes each kick lists the kicked member's own commits, disjoint, so it saves nothing. The size that hurts is about 10^4 role writes per thing (a 1000-member chat after a few thousand joins and leaves), and what hurts there is the joiner's CPU, fixed by batching the ingest, not by the spec. The one frontier that does grow without bound is a single kick of a heavy writer (notes/testing.md long aspect: `TooLarge` at 3*10^5 commits), unchanged by this step.
+
 ### 2. Owner becomes first admin
 - Record: `{ first_admin, nonce }` or `{ key, nonce }`. Ownerless stops being a case: every non-key thing is one.
 - Implicit edge: stands until removed, stored nowhere, so plain things stay free. For the no-key-cycles rule it is a grant ordered at the thing's creation, so it always wins; its removal may give a later keyless grant key access. Needs a removal form naming a holder with no entry (today a creation commit writes one for ownerless things).
