@@ -92,12 +92,11 @@ Keep as they are:
 | person, "person actor", `Person`, `PERSON` | account | Decided: issues/account-rename.md |
 | `sync_now` | `nudge_sync`? | It nudges; `wait_synced` is what syncs |
 | `make_link`, `redeem`, `import_contact` | keep | Clear |
-| `hosts()`, `hosting()`, `host_address()` | `hosts()` and `own_host_*` | The hosts this account uses vs the host this node runs |
 | `placed.0~`, `PlacementNotPersisted`, `place_plan`, "placed" in prose | membership words | Decided 3 |
 
 ### Vocabulary
 - **Nodes** (Tess; spec/requirements.md Terms, issues/node-host-unify.md): `node` in the API, never `device`: `devices()` and `remove_device` become `nodes()` and `remove_node`; apps may say device to their users. Host is a role. "Blind node" goes. "Owner" goes. A **client** is anything using the client protocol, a node included; a **thin client** is one that is not a node. Neither says what actor it acts as. `is_attached` and `attach*` follow (D2).
-- **Host, not relay**: unless Tess decides otherwise. Relay already means forwarding without storing (iroh relays, relay-only commits).
+- **`host` retires (Tess)**, as a concept, not only a word. A group syncs with peers; a peer need not say whether it holds the group's keys. Vocabulary: `node`, `peer`, `Address` (how to reach a node: URL and key), `serving` (a node's willingness to store and serve data for others, with admission rules and limits). `sync(group, &peers)`, `peers(group)` (saved on the group, or published by the peer itself), `add_peer`, `remove_peer`, `SyncState::NoPeers`, `set_serving(Option<Serving>)`. `Config.peers` is renamed or goes, since direct sync is the default. `relay` keeps its meaning. `HostAddr` becomes `Address`. Spec rules and `osis-host` wait for owner removal and issues/node-host-unify.md, but nothing public says host. Watch for sentences that swap the word and keep the old picture; see notes/api-design.md.
 - **Account**, not person or user: an account may be a team, a bot or a shared identity. `me()` keeps its name.
 - **Roles**: one sentence for all of it: an actor is *granted a role* on a thing, and is then a *holder* of that role. A role can be set, or removed. Clean out older words wherever API, CLI, spec and notes use them:
   - *edge* for a grant (comments in `core/osis/src`, 131 lines in `spec/`), including "tied edge" and `EdgeKey`. The API and CLI say grant.

@@ -14,6 +14,7 @@ Applies to any change to what the `osis` crate exports, and to whatever else app
 - **Step back.** Before adding to the API, look at the whole area and how it should feel to use. The easy move, adding a function or a knob to what exists, is how every problem below arrived.
 - **No leaks.** Things inside the core stay inside, however easy they are to expose. A word from the implementation (a label, an epoch, a frontier, a rotation, a compaction snapshot) needs a reason an app must know it. Sizes, caps and tuning constants of the implementation are not API.
 - **Name what a thing is, not its common use.** A host is a host, even when it is a sometimes-on laptop with no public IP; never a "server". An address that can name a node is not a `HostAddr`. Spell words out over abbreviations.
+- **A rename replaces a concept, not a word.** Before renaming, ask what the thing really is. If a sentence reworded around the new term still leans on the old idea, the idea is the problem: rewrite what it says, or change the design. "Host" goes because the concept was wrong, not the word: "a node that serves a label" that still assumes one always-on machine without keys is the same mistake. When a rename isn't working, stop and say so.
 - **Churn is good.** Until Tess opens the stability discussion, renames and reshaping are cheap and welcome. Call counts in tests are never a reason to keep a shape.
 
 ## Public docs
