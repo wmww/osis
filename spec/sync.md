@@ -295,7 +295,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Header-only blob**: in the required set only as the lasting header of a commit lasting on a thing of the closure whose actor the label's reads (spec/commits.md §5), with no other body of the commit wanted there, and then is must-hold, whatever snapshot covers it. One of a commit with a permanent delta or a purge request that is not lasting here is may-hold: another node may judge it lasting.
   - **must-not-hold**, any of:
     - purged;
-    - expired;
+    - expired (its blob's prefix expiry, §3, whatever of it the label's actor reads);
     - past keep-at-most;
     - dropped without a right (spec/permissions.md §7);
     - outside the required set;
@@ -310,6 +310,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Neither** uploads nor relays a body a delete removed from the label (an entry of it that is not a certificate copy, within `TOMBSTONE_LIFETIME`) while both of these hold:
     - each of its deltas only a blob carries (as for a strict subset above) is held there by another blob of the commit that is not must-not-hold;
     - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §7).
+    - So once a delete or a bad Replace took a delta covered by a snapshot under the label, no one places it again, even a node that dates its deaths later (spec/commits.md §5) and still keeps it: the host keeps the snapshot's live state, not that delta's history before its keep-at-least bound. Once no valid snapshot under the label covers it, its holders place it again.
   - **Delete-key holders** delete must-not-hold bodies.
   - **Dropped bodies**: a node that dropped a body keeps knowing its entries (not its key or wrap). When the body counts as never received again (spec/permissions.md §5.2) it fetches them again where present, and otherwise takes the body from a holder's upload (it is must-hold there: no valid snapshot covers it).
   - **May-hold bodies**: nobody acts on them except a compactor dropping them once per body (commit and delta set, §7).
