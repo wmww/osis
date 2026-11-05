@@ -235,7 +235,7 @@ fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Op
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&a).unwrap();
-            let holders = super::recipients(tx, &a, &[(me, keep)])?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &tx.core.id.tid(), &a, &[(me, keep)])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let rot = super::rotation_into(tx, &mut m, a, &roles, &held, &holders, &[])?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -281,7 +281,7 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &g, &[(b, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[(b, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, &[])?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -325,7 +325,7 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
             .engine
             .run(|tx| {
                 let held = tx.core.epochs(&g).unwrap();
-                let holders = super::recipients(tx, &g, &[(other, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
+                let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[(other, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
                 let mut m = Mutation::new();
                 let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, &[])?;
                 crate::engine::Engine::commit_tx(tx, m)?;
@@ -423,7 +423,7 @@ fn forked_reseals(seed: u64) -> (bool, usize) {
             // refused (a rotated role's secret not held) changes nothing
             let _ = lp.peers[i].engine.run(|tx| {
                 let held = tx.core.epochs(&g).unwrap();
-                let holders = super::recipients(tx, &g, &skip)?.ok_or(super::SEAL_WAITS)?;
+                let holders = super::recipients(tx, &tx.core.id.tid(), &g, &skip)?.ok_or(super::SEAL_WAITS)?;
                 let mut m = Mutation::new();
                 let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, &[])?;
                 crate::engine::Engine::commit_tx(tx, m)?;
@@ -737,7 +737,7 @@ fn writer_rotation_skips(list_s: bool) {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &g, &[])?.ok_or(super::SEAL_WAITS)?;
+            let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let secrets = crate::flows::secrets_in(tx, &g)?;
             let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
@@ -907,7 +907,7 @@ pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTr
     let skip: Vec<(Tid, Option<Role>)> = skip.iter().map(|j| (lp.peers[*j].engine.tid(), None)).collect();
     let _ = lp.peers[i].engine.run(|tx| {
         let held = tx.core.epochs(&g).unwrap();
-        let holders = super::recipients(tx, &g, &skip)?.ok_or(super::SEAL_WAITS)?;
+        let holders = super::recipients(tx, &tx.core.id.tid(), &g, &skip)?.ok_or(super::SEAL_WAITS)?;
         let mut m = Mutation::new();
         let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, &[])?;
         crate::engine::Engine::commit_tx(tx, m)?;

@@ -80,6 +80,8 @@ instances=(
   "rotation Depth0MC D0_fork_live.cfg all pass"       # the fork's merger merges; Seal waits while anchors fork
   "rotation Depth0MC D0_fork_wait.cfg all pass"
   "rotation Depth0MC D0_fork_rm.cfg all pass"         # a removal goes alone while Seal waits
+  "rotation Depth0MC D0_above.cfg all pass"           # ... and things above the actor leave it out (Blocked)
+  "rotation Depth0MC D0_above_live.cfg all pass"
   "rotation Finalize F_named_seed3.cfg small pass"       # a finalize names the writes it ends (issues/withheld-departures-seeds.md)
   "rotation Finalize F_named_bogus.cfg small pass"
   "rotation Finalize F_named_renew.cfg all pass"
