@@ -1213,6 +1213,11 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
         let (got, want) = (plain(got), plain(want));
         let same = got.as_ref().map(encode).transpose()? == want.as_ref().map(encode).transpose()?;
         debug_assert!(same, "state of {tid:?} {ak:?} differs from a rebuild from held bodies:\n{}", text_diff(&format!("{got:#?}"), &format!("{want:#?}")));
+        // and the group index, derived from it
+        if ak.as_str() == "group.0" {
+            let def = group_def(got.as_ref().and_then(Fragment::read));
+            debug_assert_eq!(tx.core.ix.groups.defs.get(&tid), def.as_ref(), "the group index of {tid:?} differs from its state");
+        }
     }
     Ok(())
 }
@@ -1276,6 +1281,10 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], clear
         tx.core.events.diagnostic(d, now);
     }
     tx.set_state(tid, ak, st, Shred::Yes, clear_undo)?;
+    // members gone by expiry, purge, a keep bound or validity leave the group index with them
+    if ak.as_str() == "group.0" {
+        observe_state(tx, tid, ak)?;
+    }
     crate::retention::mark_if_bounded(tx, tid, ak)?;
     tx.core.mark_aspect_changed(tid, ak);
     Ok(())

@@ -1569,7 +1569,10 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
     c.advance(61_000);
     db.engine(|e| e.tick()).unwrap();
     assert_eq!(db.members(g).unwrap(), vec![], "both left by themselves");
-    // `groups_of` still lists it here: issues/expired-membership-index.md
+    let was = db.groups_of(t).unwrap();
+    assert!(was.item_of.is_empty() && was.within.is_empty(), "the index with them: {was:?}");
+    assert!(db.groups_of(s).unwrap().subgroup_of.is_empty());
+    assert!(!db.engine(|e| e.closure(&g).contains(&t)), "and sync, which follows it");
     let mut w = db.write();
     w.group(g).add(osis::Member::Item(kept)).unwrap();
     w.commit().unwrap();
