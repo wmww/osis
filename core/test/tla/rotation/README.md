@@ -133,3 +133,13 @@ Content records now carry the rule-4 premises, so the earlier rows' state counts
 
 Without `MaxBlind` (any number of blind seals) `D0_nc_hide_taint_lean` fails liveness at the epoch bound: concurrent re-seals by x1 and the still-ignorant y1 re-form the cycle between fresh keysets, x1 rotates off it, and again, until `MaxE`.
 
+
+## Lockout recovery (`Lockout.tla`)
+notes/lockout-recovery.md. One actor, one key role; admin a, honest writer h, writer w that rotates boxing `WBox` only, j granted by a's removal of w. a removes w once with a full frontier (every rotation of w it received) and the rotation that removal requires; commits arrive in any order; w's rotations count at a node unless it holds the removal and its frontier misses them. Invariants: `NoLeak` (w never holds a secret honest content went under once its writer knew of the removal), `Unlocked` (settled: a and h hold every current secret; one j lacks is held by an honest node, so re-sealable), `Alike`, `Repairable` (content j cannot read is held by an honest node that may rotate), `RemoveOK` (the removal can always be made). `ProbeRecovered` (expected to fail) confirms a recovery superseding an epoch a never held is reached. TLC 2.19, 4 workers.
+
+| cfg | instance | result | states | time |
+|---|---|---|---|---|
+| `L_list` | `Mode = "list"`: the required rotation lists every current epoch, held or not; w rotates up to twice boxing itself, h once; 2 writes | pass | 3,850,276 | 31 s |
+| `L_list_honest` | as L_list, w boxes h too (an honest rotation that missed a) | pass | 7,792,820 | 67 s |
+| `L_fork` | `Mode = "fork"`: a forks from the epochs it holds (negative control) | **fails** `Unlocked` (w's epoch stays current beside a's, a lacks it) | 110,848 | 1 s |
+| `L_none` | `Mode = "none"`: a locked a refuses (today without repudiation; negative control) | **fails** `RemoveOK` | 60 | 1 s |
