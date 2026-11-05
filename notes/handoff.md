@@ -14,7 +14,7 @@ Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md, notes/questi
 | branch | state | next |
 |---|---|---|
 | `keys-tidy` | WIP, not fully tested. Done: grant to a blocked holder goes through as Out; fix in `NamesHeld::departed` (a removal's own epoch counted before its edge write; on main too). Blocked: bounding rotation names: the issue's proposal leaks (TLA `F_naive_chain`); a sound base-chain rule breaks when a base rotation turns invalid; three options for Tess in issues/rotation-names-grow.md (state at top). Prototype on local `keys-tidy-names-proto`. | run tier 1/clippy/harnesses, review, merge the done parts; put the names options to Tess; then lockout recovery |
-| `readers-leak` | TLA model of issues/blocked-walk-stops-at-readers.md (older leak via actors the writer can't rotate). | read results in the issue; build the chosen rule or state the limit |
+| `readers-leak` | Model done (6a939473e, unmerged: TLA + issue only). Leak confirmed; rule (a) fails with a second G admin who doesn't read A, and so does main's merged alone-above fix (`D0_above_g2`). Candidate "mark" (a rotation records the A key it left A out at; re-add only at a newer A key) passes but needs a wire field; or accept as a stated limit. | merge the model branch (notes/TLA only); put mark-vs-limit to Tess as part of Q12; it bears on the merged item 297 too |
 | `firstadmin-model` | TLA model of first-admin edge removal and derived secrets (risk before step 2 stage B). | read results in issues/owner-to-first-admin.md Risks |
 Check `git branch` and `wt list`; any worktree still claimed with no running agent: commit WIP and release.
 
