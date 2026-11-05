@@ -5,7 +5,10 @@
 (* encrypt under is stale when the keyset it names is invalid or listed as    *)
 (* superseded by a held valid keyset, and then it rotates first. Role cycles: *)
 (* a rotation leaves out holder actors whose holder closure contains a, and   *)
-(* re-seals them once a check on their keyset passes (CycleCheck, variants). *)
+(* re-seals them once a check on their keyset passes (CycleCheck, variants), *)
+(* or (CycleCheck "nocycle", rule 4) no key cycles: actor grants in an       *)
+(* agreed order, one closing a cycle over the earlier ones gives no key      *)
+(* access, judged over the grants a node holds.                              *)
 (* Several actors, read role only; an actor's keyset is its read epoch (boxes *)
 (* to h at keyset k open with epoch k's secret). Crypto is access: a node's   *)
 (* secrets are the closure, from its device key, over the boxes and history   *)
@@ -35,11 +38,21 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* rotation; "noback" iff h's keyset holds a box to a;
                       \* "fresh" unless Fresh with nothing current; "commit"
                       \* unless RotOK
-          CycleCheck, \* when a re-seal may seal cycle member h at keyset k:
+          CycleCheck, \* "nocycle": rule 4, no key cycles (below); else
+                      \* when a re-seal may seal cycle member h at keyset k:
                       \* "box" k has a box to a naming a current keyset of a
                       \* (the study's one box check); "reach" k is not
                       \* reachable from a's superseded keysets over the boxes
                       \* the node holds; "fresh" Fresh; "commit" ResealOK
+          Grants,     \* "nocycle": the actor edges of Mem in the agreed order
+          Hidden,     \* "nocycle": {<<node, edge>>}: grants a node does not
+                      \* hold at first (it learns them later)
+          MaxBlind,   \* "nocycle": bound on blind boxes (to a holder with no
+                      \* key access, sealed by a node missing a grant): the
+                      \* ignorance window, as one-shot adversary steps
+          Taint,      \* "nocycle": a keyset boxing a holder without key
+                      \* access in the node's view is stale; no stale keyset
+                      \* is sealed to
           Stale,      \* a box to h at keyset k is stale where k is invalid or
                       \* "listed": a held valid keyset of h lists k (the
                       \* study's rule); "newer": one is newer than k by (n, id)
@@ -66,7 +79,30 @@ Fix(F(_), S) == LET T == F(S) IN IF T = S THEN S ELSE Fix(F, T)
 
 \* actors holding h, transitively (h itself only on a cycle)
 HClos(h) == Fix(LAMBDA S : S \cup UNION {ActHolders(b) : b \in S}, ActHolders(h))
-InCycle(a, h) == a \in HClos(h)
+Rule4 == CycleCheck = "nocycle"
+InCycle(a, h) == ~Rule4 /\ a \in HClos(h)
+
+\* rule 4: over edge set E (<<a, h>>: h holds a role on a), the actors whose
+\* secrets h's key yields; greedy in the agreed order over the grants G held:
+\* a grant whose holder's key a's key already yields gives no key access
+GAll == {Grants[i] : i \in 1..Len(Grants)}
+\* grants some node lacks at first are made later: initial epochs do not box
+\* them, a hidden grant's box is a knowing admin's re-seal
+GLate == {q[2] : q \in Hidden}
+Yields(E, h) == Fix(LAMBDA S : S \cup {q[1] : q \in {r \in E : r[2] \in S}}, {h})
+RECURSIVE KeyedTo(_, _)
+KeyedTo(G, i) == IF i = 0 THEN {} ELSE
+  LET E == KeyedTo(G, i - 1)
+      g == Grants[i]
+  IN IF g \in G /\ g[2] \notin Yields(E, g[1]) THEN E \cup {g} ELSE E
+\* (a constant table: TLC evaluates it once)
+KeyMap == [G \in SUBSET GAll |-> LET E == KeyedTo(G, Len(Grants)) IN
+             [a \in Acts |-> IF ~Rule4 THEN Holders(a)
+                             ELSE {h \in Holders(a) : h \notin Acts \/ <<a, h>> \in E}]]
+KeyIn(G, a) == KeyMap[G][a]
+\* the true key holders (every grant held), for the properties
+KeyAct(a) == KeyIn(GAll, a) \cap Acts
+KClos(h) == Fix(LAMBDA S : S \cup UNION {KeyAct(b) : b \in S}, KeyAct(h))
 
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
 KK(k) == [t |-> "k", d |-> "", k |-> k]
@@ -77,11 +113,12 @@ VARIABLES ep,     \* epochs: [act, n, par, by, bx, hist, knows, forged]
           rs,     \* re-seal boxes: [e, h, key]
           kn,     \* kn[x]: epoch commits x holds
           krs,    \* krs[x]: re-seal commits x holds
-          wr,     \* content: [a, e, w, p1, p2, p3] (p: premises held)
+          wr,     \* content: [a, e, w, p1..p5] (p: premises held)
+          kg,     \* kg[x]: grants x holds (rule 4)
           done,   \* removals made
           evd,    \* Eager pairs and Forgers used
           nw
-vars == <<ep, rs, kn, krs, wr, done, evd, nw>>
+vars == <<ep, rs, kn, krs, wr, kg, done, evd, nw>>
 
 Ids == DOMAIN ep
 \* what e lists, transitively, through honest keysets (ground truth, for
@@ -101,7 +138,8 @@ Cur(x, a) == {e \in KOf(x, a) : ~\E f \in KOf(x, a) : e \in AncV(x, f)}
 Newer(e, f) == ep[e].n > ep[f].n \/ (ep[e].n = ep[f].n /\ e > f)
 Newest(S) == CHOOSE e \in S : \A f \in S \ {e} : Newer(e, f)
 NewestV(x, a) == Newest(Cur(x, a))
-MemV(x, a, extra) == Holders(a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
+KH(x, a) == KeyIn(kg[x], a)
+MemV(x, a, extra) == KH(x, a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2] = a}}
 
 BoxesAt(x, e) == ep[e].bx \cup {[h |-> r.h, key |-> r.key] : r \in {q \in krs[x] : q.e = e}}
 AllBoxesAt(e) == ep[e].bx \cup {[h |-> r.h, key |-> r.key] : r \in {q \in rs : q.e = e}}
@@ -114,7 +152,9 @@ SecOf(d, BX(_), ids) ==
 Sec(x) == SecOf(x, LAMBDA e : BoxesAt(x, e), kn[x])
 ReachD(d) == SecOf(d, AllBoxesAt, Ids)
 
-StaleK(x, k) == k \in kn[x] /\ (~Valid(x, k) \/ \E j \in KOf(x, ep[k].act) :
+\* rule 4: an epoch of a boxing an actor with no key access to a (x's view)
+Keyless(x, k) == \E b \in BoxesAt(x, k) : b.h \in Acts /\ b.h \notin KH(x, ep[k].act)
+StaleK(x, k) == k \in kn[x] /\ (~Valid(x, k) \/ (Taint /\ Keyless(x, k)) \/ \E j \in KOf(x, ep[k].act) :
                     IF Stale = "listed" THEN k \in AncV(x, j) ELSE Newer(j, k))
 StaleAt(x, e) == \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
 Covers(x, e, a) == \A dp \in Known(x) : dp[2] = a => dp \in ep[e].knows
@@ -159,9 +199,15 @@ Anchors(x, a, h) ==
   {k \in Named({b \in UNION {BoxesAt(x, e) : e \in Cur(x, a)} : b.h = h}) :
      k \in kn[x] /\ Valid(x, k)}
 SealSet(x, a, h) ==
-  {k \in KOf(x, h) : Anchor => \A q \in Anchors(x, a, h) : q = k \/ q \in AncV(x, k)}
+  {k \in KOf(x, h) : ~(Taint /\ StaleK(x, k)) /\
+                     (Anchor => \A q \in Anchors(x, a, h) : q = k \/ q \in AncV(x, k))}
 \* the keyset x seals actor h at for a (0: none, h is left out)
 SealK(x, a, h) == IF SealSet(x, a, h) = {} THEN 0 ELSE Newest(SealSet(x, a, h))
+
+\* boxes of a to holders hs add blind ones only within MaxBlind
+Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ KeyIn(GAll, ep[e].act)}} :
+                 e \in Ids}
+BlindOK(a, hs) == (hs \cap Acts) \ KeyIn(GAll, a) # {} => Cardinality(Blinds) < MaxBlind
 
 Rotate(x, a, extra, dir) ==
   LET lo(h) == h \in Acts /\
@@ -181,18 +227,21 @@ Rotate(x, a, extra, dir) ==
               hist |-> {e \in Sec(x) : ep[e].act = a},
               knows |-> Known(x) \cup extra,
               forged |-> FALSE]
-  IN /\ ep' = Append(ep, new)
+  IN /\ BlindOK(a, {b.h : b \in new.bx})
+     /\ ep' = Append(ep, new)
      /\ kn' = [kn EXCEPT ![x] = @ \cup {Len(ep) + 1}]
 
 Init ==
   /\ ep = [i \in 1..Len(ActSeq) |->
              [act |-> ActSeq[i], n |-> 0, par |-> {}, by |-> "",
-              bx |-> {[h |-> h, key |-> InitKey(h)] : h \in Holders(ActSeq[i])},
+              bx |-> {[h |-> h, key |-> InitKey(h)] :
+                        h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
               hist |-> {}, knows |-> {}, forged |-> FALSE]]
   /\ rs = {}
   /\ kn = [x \in Learners |-> 1..Len(ActSeq)]
   /\ krs = [x \in Learners |-> {}]
   /\ wr = {}
+  /\ kg = [x \in Learners |-> {g \in GAll : <<x, g>> \notin Hidden}]
   /\ done = {}
   /\ evd = {}
   /\ nw = 0
@@ -205,6 +254,7 @@ NeedRot(x, a) ==
      IN /\ e \in Sec(x)
         /\ \/ ~Covers(x, e, a) \/ StaleAt(x, e)
            \/ Merge /\ \E f \in Cur(x, a) : ~Covers(x, f, a)
+           \/ Rule4 /\ \E f \in Cur(x, a) : Keyless(x, f)
            \/ Rejoin /\ \E h \in MemV(x, a, {}) \cap Acts :
                  /\ InCycle(a, h) /\ ~\E b \in BoxesAt(x, e) : b.h = h
                  /\ SealK(x, a, h) # 0
@@ -216,18 +266,18 @@ Remove(dp) ==
   /\ IsAdm(dp[3], dp[2])
   /\ Rotate(dp[3], dp[2], {dp}, TRUE)
   /\ done' = done \cup {dp}
-  /\ UNCHANGED <<rs, krs, wr, evd, nw>>
+  /\ UNCHANGED <<kg, rs, krs, wr, evd, nw>>
 
 EagerRot(p) ==
   /\ p \notin evd /\ Len(ep) < MaxE /\ IsAdm(p[1], p[2])
   /\ Rotate(p[1], p[2], {}, FALSE)
   /\ evd' = evd \cup {p}
-  /\ UNCHANGED <<rs, krs, wr, done, nw>>
+  /\ UNCHANGED <<kg, rs, krs, wr, done, nw>>
 
 ForcedRot(x, a) ==
   /\ Len(ep) < MaxE /\ NeedRot(x, a)
   /\ Rotate(x, a, {}, ~Covers(x, NewestV(x, a), a))
-  /\ UNCHANGED <<rs, krs, wr, done, evd, nw>>
+  /\ UNCHANGED <<kg, rs, krs, wr, done, evd, nw>>
 
 Forge(d) ==
   /\ d \in Forgers /\ <<d, "forge">> \notin evd /\ Len(ep) < MaxE
@@ -240,18 +290,23 @@ Forge(d) ==
                                bx |-> {[h |-> d, key |-> DK(d)]},
                                hist |-> {}, knows |-> {}, forged |-> TRUE])
   /\ evd' = evd \cup {<<d, "forge">>}
-  /\ UNCHANGED <<rs, kn, krs, wr, done, nw>>
+  /\ UNCHANGED <<kg, rs, kn, krs, wr, done, nw>>
 
 Learn(x, e) ==
   /\ e \in Ids /\ e \notin kn[x]
   /\ kn' = [kn EXCEPT ![x] = @ \cup {e} \cup (IF Carry THEN Named(ep[e].bx) ELSE {})]
-  /\ UNCHANGED <<ep, rs, krs, wr, done, evd, nw>>
+  /\ UNCHANGED <<kg, ep, rs, krs, wr, done, evd, nw>>
 
 LearnRs(x, r) ==
   /\ r \in rs /\ r \notin krs[x]
   /\ krs' = [krs EXCEPT ![x] = @ \cup {r}]
   /\ kn' = [kn EXCEPT ![x] = @ \cup (IF Carry THEN Named({r}) ELSE {})]
-  /\ UNCHANGED <<ep, rs, wr, done, evd, nw>>
+  /\ UNCHANGED <<kg, ep, rs, wr, done, evd, nw>>
+
+LearnG(x, g) ==
+  /\ g \in GAll \ kg[x]
+  /\ kg' = [kg EXCEPT ![x] = @ \cup {g}]
+  /\ UNCHANGED <<ep, rs, kn, krs, wr, done, evd, nw>>
 
 Reseal(x, a, h) ==
   /\ IsAdm(x, a) /\ h \in MemV(x, a, {}) \cap Acts
@@ -262,31 +317,42 @@ Reseal(x, a, h) ==
               r == [e |-> e, h |-> h, key |-> KK(k)]
           IN /\ k # 0
              /\ InCycle(a, h) => CC(x, a, k, Cur(x, a), KOf(x, a) \ Cur(x, a))
+             /\ BlindOK(a, {h})
              /\ rs' = rs \cup {r}
              /\ krs' = [krs EXCEPT ![x] = @ \cup {r}]
-  /\ UNCHANGED <<ep, kn, wr, done, evd, nw>>
+  /\ UNCHANGED <<kg, ep, kn, wr, done, evd, nw>>
 
 \* the inside-member premise: x knows d left M (a holder of a) and holds a
 \* keyset of M made knowing it that lists every honest keyset of M made
 \* without knowing it
 P2Prem(x, a, dp) ==
-  /\ dp[2] \in ActHolders(a) /\ dp \in Known(x)
+  /\ dp[2] \in KeyAct(a) /\ dp \in Known(x)
   /\ \A k \in Ids : (ep[k].act = dp[2] /\ ~ep[k].forged /\ dp \notin ep[k].knows) =>
         \E j \in kn[x] : ep[j].act = dp[2] /\ ~ep[j].forged /\ dp \in ep[j].knows /\ k \in AncH(j)
+
+\* removals x knows from a itself or from an actor with no key path to a (a
+\* device removed from a true holder is the member limit, p2 and p3)
+NotIn(x, a) == {dp \in Known(x) : dp[2] = a \/ dp[2] \notin KClos(a)}
 
 Write(x, a) ==
   /\ a \in WriteTo /\ IsAdm(x, a) /\ nw < Writes
   /\ LET e == NewestV(x, a)
      IN /\ e \in Sec(x) /\ Covers(x, e, a) /\ ~StaleAt(x, e)
+        /\ ~(Rule4 /\ Keyless(x, e))
         /\ wr' = wr \cup {[a |-> a, e |-> e, w |-> x,
                            p1 |-> {dp \in Known(x) : dp[2] = a},
                            p2 |-> {dp \in Deps : P2Prem(x, a, dp)},
                            p3 |-> IF {r \in rs : r.e = e} \subseteq krs[x]
                                   THEN {dp \in Deps : \A y \in Learners :
                                           IsAdm(y, a) => P2Prem(y, a, dp)}
-                                  ELSE {}]}
+                                  ELSE {},
+                           p4 |-> IF \A y \in Learners : kg[y] = GAll
+                                  THEN NotIn(x, a) ELSE {},
+                           p5 |-> IF /\ \A y \in Learners : kg[y] = GAll
+                                     /\ Ids \subseteq kn[x] /\ rs \subseteq krs[x]
+                                  THEN NotIn(x, a) ELSE {}]}
   /\ nw' = nw + 1
-  /\ UNCHANGED <<ep, rs, kn, krs, done, evd>>
+  /\ UNCHANGED <<kg, ep, rs, kn, krs, done, evd>>
 
 Next ==
   \/ \E dp \in Deps : Remove(dp)
@@ -295,9 +361,11 @@ Next ==
   \/ \E x \in Learners, a \in Acts : ForcedRot(x, a) \/ Write(x, a)
   \/ \E x \in Learners, a \in Acts, h \in Acts : Reseal(x, a, h)
   \/ \E x \in Learners : (\E e \in Ids : Learn(x, e)) \/ (\E r \in rs : LearnRs(x, r))
+                          \/ (\E g \in GAll : LearnG(x, g))
 
 Fairness ==
-  /\ \A x \in Learners : WF_vars((\E e \in Ids : Learn(x, e)) \/ (\E r \in rs : LearnRs(x, r)))
+  /\ \A x \in Learners : WF_vars((\E e \in Ids : Learn(x, e)) \/ (\E r \in rs : LearnRs(x, r))
+                                  \/ (\E g \in GAll : LearnG(x, g)))
   /\ \A x \in Learners, a \in Acts : WF_vars(ForcedRot(x, a))
   /\ \A x \in Learners, a \in Acts : WF_vars(\E h \in Acts : Reseal(x, a, h))
 
@@ -305,7 +373,8 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 
 \* ---- properties
 CurMem(a) == Holders(a) \ {dp[1] : dp \in {q \in done : q[2] = a}}
-CurDevs(a) == UNION {CurMem(b) \ Acts : b \in {a} \cup HClos(a)}
+\* (through key access only: under rule 4 a keyless grant reads nothing)
+CurDevs(a) == UNION {CurMem(b) \ Acts : b \in {a} \cup KClos(a)}
 GCur(a) == {e \in Ids : ep[e].act = a /\ ~ep[e].forged /\
                         ~\E f \in Ids : ~ep[f].forged /\ e \in AncH(f)}
 
@@ -318,6 +387,12 @@ NoLeakMember == \A c \in wr : \A dp \in c.p2 : c.e \notin ReachD(dp[1])
 \* and the writer held every re-seal box of the epoch (an ignorant boxer's
 \* box it has not seen is the residual of notes/crypto.md, as today)
 NoLeakMemberAll == \A c \in wr : \A dp \in c.p3 : c.e \notin ReachD(dp[1])
+\* rule 4 with a hidden grant, the stated limit: a device removed from a or
+\* from an actor with no key path to a reads no content written knowing the
+\* removal once every node holds
+\* every grant (p4), and the writer also holds every keyset and re-seal (p5)
+NoLeakKnown == \A c \in wr : \A dp \in c.p4 : c.e \notin ReachD(dp[1])
+NoLeakKnownAll == \A c \in wr : \A dp \in c.p5 : c.e \notin ReachD(dp[1])
 
 \* eventually every writer's next epoch is closed to every removed device
 \* that no longer reaches the actor (any depth, cycles included)

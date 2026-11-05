@@ -29,7 +29,7 @@ Delete §6, `tenures.0`, epoch starts and their rounds, `kind` 4, snapshot certi
 
 ### 2. Owner becomes first admin
 - Record: `{ first_admin, nonce }` or `{ key, nonce }`. Ownerless stops being a case: every non-key thing is one.
-- Implicit edge: stands until removed, stored nowhere, so plain things stay free. Needs a removal form naming a holder with no entry (today a creation commit writes one for ownerless things).
+- Implicit edge: stands until removed, stored nowhere, so plain things stay free. For the no-key-cycles rule it is a grant ordered at the thing's creation, so it always wins; its removal may give a later keyless grant key access. Needs a removal form naming a holder with no entry (today a creation commit writes one for ownerless things).
 - One authority class: delete `Class::Chain` and the rule that an edge cannot name the owner. Effective role is the path rule only.
 - Secrets: derive while the first admin's edge stands and nothing else holds a role; rotation to own secrets exists. Refuse a first admin removing itself from a plain thing with no other admin.
 - Rename the chain as a derivation chain where only keys use it (`[owner*]`, delete base). Rewrite `admit own`, inbox fallback, ephemeral rules, links, API `owner_of`.
@@ -83,6 +83,6 @@ Oracles are the design's statement of itself; change them once in the harness, n
 - Model: roles-model search with trust sets; `core/test/tla/roles` for shrink, plus a TLA spec for step 5 if it grows.
 
 ## Open
-- Model check of the no-key-cycles rule, step 0.
-- Step 6: problems 1-4 above.
+- Rule 4b (taint) for hidden grants: taken (Wren: an endless leak under a withholding host is worse than re-keying while it withholds; issues/keys-depth0.md). The implicit first-admin edge counts as a grant made at creation and never loses (notes/keys-requirements-study.md §4): step 2 orders implicit edges first.
+- Step 6: problems 1-4 above (question 9).
 - Silent rejection after a removal has been held a while, warning only the parties: optional later, needs a value that passes notes/arbitrary-values.md.

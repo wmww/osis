@@ -50,4 +50,20 @@ wAdm == {<<"W", "w1">>, <<"X", "x1">>, <<"Y", "y1">>}
 wLearners == {"w1", "x1", "y1"}
 wDeps == {<<"D", "W", "w1">>}
 wEager == {<<"y1", "Y">>}
+
+\* rule 4 (CycleCheck "nocycle"): grants in the agreed order
+noGrants == << >>
+\* X holds Y first, so Y holding X gives no key access; and the reverse
+gYX == << <<"Y", "X">>, <<"X", "Y">> >>
+gXY == << <<"X", "Y">>, <<"Y", "X">> >>
+\* under gXY, y1 (y2) does not hold the earlier grant at first: it seals Y to X
+hideY1 == {<<"y1", <<"X", "Y">> >>}
+hideY2 == {<<"y2", <<"X", "Y">> >>}
+\* 3-cycle: X holds Y, Y holds Z first; Z holding X gives no key access;
+\* x1 lacks the grant of X holding Y at first: it seals X to Z
+tG == << <<"Y", "X">>, <<"Z", "Y">>, <<"X", "Z">> >>
+tHide == {<<"x1", <<"Y", "X">> >>}
+tEager == {<<"y1", "Y">>, <<"z1", "Z">>}
+\* below: W holds X, X holds Y first; Y holding X gives no key access
+wG == << <<"X", "W">>, <<"Y", "X">>, <<"X", "Y">> >>
 =============================================================================
