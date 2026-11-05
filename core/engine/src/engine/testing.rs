@@ -96,8 +96,7 @@ impl Engine {
             let mut rots = Vec::new();
             for a in actors {
                 let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-                let me = tx.core.id.tid();
-                let mut holders = crate::rotation::recipients(tx, &me, a, &[])?;
+                let mut holders = crate::rotation::recipients(tx, a, &[])?;
                 holders.retain(|r| boxed.contains(&r.holder));
                 rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, &[])?));
             }

@@ -182,7 +182,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let boxes = if rotation::grant_keyless(tx.core, &target, &holder) {
         None
     } else {
-        let rcpt = rotation::sealed(tx, &who, &target, &holder, edge.role)?.ok_or(Error::Misuse("the holder has no keyset this node may seal it to"))?;
+        let rcpt = rotation::sealed(tx, &target, &holder, edge.role)?.ok_or(Error::Misuse("the holder has no keyset this node may seal it to"))?;
         Some(box_holder(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
     };
     // an edge past its `until` is out of the roster but still in the state: a set over it would
@@ -347,7 +347,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
                 }));
             }
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-            let holders = rotation::recipients(tx, &who, &target, &skip)?;
+            let holders = rotation::recipients(tx, &target, &skip)?;
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
             if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
                 rotation::fresh_deposit_seed(tx, &mut m, target)?;
@@ -468,7 +468,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     if !roles.is_empty() && tx.core.has_own_secrets(&target) {
         let Some(held) = tx.core.epochs(&target).filter(|h| roles.iter().all(|r| h.role(*r).newest_held().is_some())) else { return Ok(false) };
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
-        let holders = rotation::recipients(tx, &who, &target, &skip)?;
+        let holders = rotation::recipients(tx, &target, &skip)?;
         let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
         if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
             rotation::fresh_deposit_seed(tx, &mut m, target)?;

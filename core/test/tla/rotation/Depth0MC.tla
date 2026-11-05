@@ -77,4 +77,17 @@ r0Mem == rMem \ {<<"X2", "R">>}
 r0Learners == rLearners \ {"R"}
 \* ... W may rotate G once unprompted (sealing X1 at a keyset it opens)
 rEagerW == {<<"W", "G">>}
+\* the dropped Box rule (D0_box_rule, D0_box_ok): 3-cycle,
+\* B in A, C in B, A in C; p the admin of A and B (so p holds a role on C
+\* through A), q of C; p removes D from A. In order B in A, A in C, then C in
+\* B closes the cycle: no key access. p lacks A in C at first, so it seals B to
+\* C (a blind box) at C's keyset before it holds C's secret
+bActs == <<"A", "B", "C">>
+bMem == {<<"A", "p">>, <<"A", "D">>, <<"A", "B">>, <<"B", "p">>, <<"B", "C">>,
+         <<"C", "q">>, <<"C", "A">>}
+bAdm == {<<"A", "p">>, <<"B", "p">>, <<"C", "q">>}
+bLearners == {"p", "q"}
+bDeps == {<<"D", "A", "p">>}
+bG == << <<"A", "B">>, <<"C", "A">>, <<"B", "C">> >>
+bHide == {<<"p", <<"C", "A">> >>}
 =============================================================================

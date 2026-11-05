@@ -72,6 +72,8 @@ instances=(
   "rotation Depth0MC D0_rm_spec0_live.cfg small fail" # ... and stays open to it
   "rotation Depth0MC D0_rm_possess0.cfg small pass"   # the possession rule
   "rotation Depth0MC D0_rm_possess.cfg all pass"
+  "rotation Depth0MC D0_box_rule.cfg small fail"      # the dropped Box rule hides a key cycle's box (cycle harness seed 1032)
+  "rotation Depth0MC D0_box_ok.cfg all pass"          # ... no Box rule
   "rotation Finalize F_named_seed3.cfg small pass"       # a finalize names the writes it ends (issues/withheld-departures-seeds.md)
   "rotation Finalize F_named_bogus.cfg small pass"
   "rotation Finalize F_named_renew.cfg all pass"

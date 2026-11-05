@@ -1061,8 +1061,9 @@ impl osis_keys::possession::View for Possession<'_> {
 }
 
 /// Whether `secrets.0` part `ai` (on `a`) of role commit `id` passes possession
-/// (spec/crypto.md §4, Holder actors), from what its body showed (`Indexes::shown`; none held:
-/// nothing to judge). It rotates when its commit writes a keyset of `a`.
+/// (spec/crypto.md §4, Holder actors, Authority), from what its body showed (`Indexes::shown`;
+/// none held: nothing to judge). It rotates when its commit writes a keyset of `a`; a part that
+/// neither rotates nor removes a box is not judged (a box alone never is).
 ///
 /// Invariant (arrival-order independence): a function of `a`'s timeline (`stale_things` when it
 /// changes) and of the held valid keysets of the holders it boxes and of `a`'s holders
@@ -1070,7 +1071,7 @@ impl osis_keys::possession::View for Possession<'_> {
 fn possessed(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
     let Some(x) = core.ix.shown.get(&(*id, ai)) else { return true };
     let rotates = x.rotates;
-    if x.shown.is_empty() && x.removed.is_empty() && !rotates {
+    if x.removed.is_empty() && !rotates {
         return true;
     }
     let at = At::before(Point { ts: h.ts, node: h.author, commit: *id });

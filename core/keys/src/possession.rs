@@ -1,10 +1,13 @@
-//! Possession (spec/crypto.md §4, Holder actors): a box to a holder actor M written by an author
-//! holding a role on M shows that the author holds the secret of the keyset of M it boxes at, by
-//! a signature with that keyset's possession key; a rotation or removal counts its author's role
-//! on the actor through a holder actor only where it shows that. Without it a party removed from
-//! M, where its removal is unknown, could box M at M's new keyset (which it cannot open) and so
-//! make an epoch it holds look fresh (issues/keys-depth0-removed-member-rotates.md). Pure: the
-//! engine gathers the roles and keysets.
+//! Possession (spec/crypto.md §4, Holder actors): a symmetric box to a holder actor M shows that
+//! its author holds the secret of the keyset of M it boxes at, by a signature with that keyset's
+//! possession key; a rotation, or a removal of a box to M, counts its author's role on the actor
+//! through M only where it shows that (Authority). Without it a party removed from M, where its
+//! removal is unknown, could rotate the actor sealing M at M's new keyset (which it cannot open),
+//! or replace a stale box with one so sealed, and so make an epoch it holds look fresh
+//! (issues/keys-depth0-removed-member-rotates.md). A box alone is never judged: it opens for
+//! whoever holds the keyset it names whatever its validity, so judging it would only hide what it
+//! discloses from the rules that judge boxes (stale, keyless; model `D0_box_rule`).
+//! Pure: the engine gathers the roles and keysets.
 
 use crate::aspects::from_schema;
 use crate::Error;
@@ -84,20 +87,16 @@ pub trait View {
 }
 
 /// Whether a `secrets.0` delta showing `shown` and removing boxes of `removed` (holder, role)
-/// passes possession (spec/crypto.md §4): each box of role r to a holder actor the author holds r
-/// or above on carries a signature valid under the keyset it names (Box); and, when it `rotates`
-/// or removes such a box without putting it again, the author does not hold `needed` on the
-/// actor only through holder actors it does not box with a valid signature (Authority).
+/// passes possession (spec/crypto.md §4, Authority): when it `rotates` or removes a box of role r
+/// to a holder actor the author holds r or above on without putting it again with a valid
+/// signature, the author does not hold `needed` on the actor only through holder actors it does
+/// not box with a valid signature.
 pub fn holds(shown: &[Shown], removed: &[(Tid, Role)], rotates: bool, needed: Role, v: &dyn View) -> bool {
     // a keyset the node holds no valid body of is not judged by (a box naming it is not stale
     // either: within the stated limit until the body arrives, and judged again then)
     let valid = |s: &Shown| v.keys(&s.holder, s.role, &s.keyset).is_none_or(|pks| pks.iter().any(|pk| s.verifies(pk)));
     let actors = || shown.iter().filter(|s| !v.key_actor(&s.holder));
-    // Box: the author would read through the holder, so it must show it holds what it boxes at
-    if actors().any(|s| v.author_on(&s.holder) >= Some(s.role) && !valid(s)) {
-        return false;
-    }
-    // Authority: a rotation through a holder actor counts only where the author shows it is in
+    // a rotation through a holder actor counts only where the author shows it is in
     // that actor now (a removed party, its removal unknown here, holds no new keyset's secret);
     // so does a removal of a box to a holder actor the author holds that role on, unless it puts
     // that box again signed (else it could take a stale box away, to have it re-sealed fresh)
@@ -176,27 +175,28 @@ mod tests {
     }
 
     #[test]
-    fn signed_box_passes_box_and_authority() {
+    fn signed_box_gives_authority() {
         let (s, k, v) = setup();
         let b = boxed(&s, k, Role::Write, Some(&s));
         assert!(holds(&shown(&b), &[], true, Role::Write, &v));
     }
 
     #[test]
-    fn unsigned_box_by_a_member_fails() {
+    fn unsigned_box_shows_nothing() {
         let (s, k, v) = setup();
         let b = boxed(&s, k, Role::Write, None);
-        assert!(!holds(&shown(&b), &[], false, Role::Write, &v), "Box");
-        // a non-member boxes M without showing anything
+        assert!(!holds(&shown(&b), &[], true, Role::Write, &v), "a rotation only through M");
+        // a box alone is never judged, by a member or not
+        assert!(holds(&shown(&b), &[], false, Role::Write, &v), "a member's grant or re-seal");
         let v = V { author_on_m: None, direct: Some(Role::Admin), ..v };
-        assert!(holds(&shown(&b), &[], true, Role::Write, &v));
+        assert!(holds(&shown(&b), &[], true, Role::Write, &v), "a direct admin's rotation");
     }
 
     #[test]
     fn signature_by_another_secret_fails() {
         let (s, k, v) = setup();
         let b = boxed(&s, k, Role::Write, Some(&Secret32::from_bytes([6; 32])));
-        assert!(!holds(&shown(&b), &[], false, Role::Write, &v));
+        assert!(!holds(&shown(&b), &[], true, Role::Write, &v));
     }
 
     #[test]
@@ -213,9 +213,9 @@ mod tests {
         let (key, b) = boxed(&s, k, Role::Write, Some(&s));
         let SecretBox::Symmetric(mut x) = b else { unreachable!() };
         x.wrap[0] ^= 1;
-        assert!(!holds(&[Shown::of(&tid(A), &key, &SecretBox::Symmetric(x)).unwrap()], &[], false, Role::Write, &v), "another wrap");
+        assert!(!holds(&[Shown::of(&tid(A), &key, &SecretBox::Symmetric(x)).unwrap()], &[], true, Role::Write, &v), "another wrap");
         let moved = BoxKey { holder: tid(M), role: Role::Write, epoch: to_schema(&Epoch::derive(&tid(A), Role::Write, 2, &Secret32::from_bytes([8; 32])).unwrap()) };
-        assert!(!holds(&[Shown::of(&tid(A), &moved, &boxed(&s, k, Role::Write, Some(&s)).1).unwrap()], &[], false, Role::Write, &v), "another epoch of A");
+        assert!(!holds(&[Shown::of(&tid(A), &moved, &boxed(&s, k, Role::Write, Some(&s)).1).unwrap()], &[], true, Role::Write, &v), "another epoch of A");
     }
 
     #[test]
