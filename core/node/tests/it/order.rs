@@ -3157,6 +3157,17 @@ fn stripped_snapshot_indexed_on_rebuild_seed_9210005() {
     check(9210005, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
+// spec/permissions.md §7, §5.2: a re-grant gives back the right of a purge request its author made
+// while demoted, as it does the request's writes, so the deltas it names stay purged in any arrival
+// order (was: the right also asked the role held at the request's time, so the request held none,
+// a node as made lost the named body anyway and one given the history reversed kept its value).
+#[test]
+fn regrant_gives_purge_right_back_seed_3001() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Nested { by: 1, other: 0, t: 5, k: 1, text: true, compact: false, also: false })), Aim(Box::new(Nested { by: 2, other: 0, t: 0, k: 2, text: true, compact: false, also: false })), Forged { by: 0, a: 4, b: 3, how: 3, op: 29, k: 1, v: 8 }, Aim(Box::new(Nested { by: 1, other: 2, t: 5, k: 0, text: false, compact: true, also: true })), Aim(Box::new(Message { by: 0, t: 2, v: 1 })), Advance { who: Some(1), ms: 671 }, Aim(Box::new(New { by: 0, parent: 3, write: true })), Aim(Box::new(Purge { by: 1, t: 1, of: 1, back: 3, v: 3 })), Aim(Box::new(Demote { by: 0, t: 0, holder: 1, at: 2, to_read: true })), Forged { by: 1, a: 5, b: 1, how: 1, op: 7, k: 1, v: 8 }, Forged { by: 2, a: 5, b: 4, how: 4, op: 19, k: 2, v: 4 }, Aim(Box::new(Nested { by: 0, other: 1, t: 4, k: 0, text: true, compact: false, also: true })), Aim(Box::new(NestedItem { by: 0, other: 2, t: 1, k: 2, compact: false, also: true })), Aim(Box::new(NestedItem { by: 1, other: 0, t: 7, k: 2, compact: true, also: true })), Forged { by: 1, a: 7, b: 0, how: 1, op: 0, k: 1, v: 1 }, Aim(Box::new(Message { by: 2, t: 1, v: 3 })), Aim(Box::new(Nested { by: 2, other: 1, t: 7, k: 0, text: true, compact: true, also: true })), Forged { by: 0, a: 4, b: 3, how: 2, op: 30, k: 1, v: 2 }];
+    check(3001, &h, Cfg { random: 0, subsets: 0, clock: 0, split: 0, sync: true, model: true, ..LARGE }).unwrap();
+}
+
 // spec/permissions.md §7, spec/wire.md §4: arrival order decides nothing with purges by author,
 // whichever deltas and demotions come after them.
 #[test]
