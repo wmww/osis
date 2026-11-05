@@ -1510,8 +1510,8 @@ fn snapshot_survives_rebuild_spec_crdt_4_6() {
     assert_eq!(at_a, map(&[("a", "1"), ("b", "1"), ("c", "1")]), "a's covered write stays, c's compacted one too; c's later one goes");
 }
 
-// spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries, "except those
-// another writer compacted before it learned of the revocation, which stay"): a holder's write
+// spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries, so a removed
+// holder's writes another writer compacted before it learned of the removal stay): a holder's write
 // compacted by others before its removal stays at every holder and at a node arriving later
 // Shape: c's automatic compaction is stamped last, so its snapshot covers every snapshot and
 // body at d and at the host (writers deleted them there); c's removal invalidates it, and d

@@ -37,7 +37,7 @@ The residual: a demoted X writes c2 under counters its demotion D covers in sess
 - Colluding remaining writer: it can write the content itself (out of scope, as today).
 - Snapshots by X before D: X's snapshots are listed by ID as today. A valid one vouches for what it carries, which X could write anyway while it held write.
 - Forks and clones: every copy draws its own nonce, so no two copies share counters.
-- A node that has not yet received D counts c2 as a valid writer's write until D arrives, like any write by a removed writer. An honest compactor that snapshots c2 before it learns of D keeps it for good (spec/requirements.md: "except those another writer compacted before it learned of the revocation, which stay").
+- A node that has not yet received D counts c2 as a valid writer's write until D arrives, like any write by a removed writer. An honest compactor that snapshots c2 before it learns of D keeps it for good (a valid snapshot vouches for what it carries, spec/permissions.md §5.2).
 - New devices: they hold D (role commits) and judge c2 invalid.
 - Arrival order: rule 7 is a function of the held set, so a node getting D after c2 and one getting it before end up alike.
 - Compaction pruning and header forgetting no longer matter here: no demotion reads snapshot frontiers or counters.

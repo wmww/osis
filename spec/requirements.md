@@ -28,9 +28,8 @@ Terms:
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
 - Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order. Nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives. Limits:
   - A holder may look removed on a node that joined late, until the rest of a roster snapshot arrives. Only a hiding host or lost author makes this last.
-  - On an aspect with a keep-at-most bound or expiry, if a validity flip or purge lands after a body was dropped, nodes may read it differently until a writer holding it next compacts, or the next write of that data.
-  - A part that expires before a node applies it counts as never received there: that node may read what came before it until a writer next compacts. The expired value itself never shows.
-- A change may touch any number of things, of any owners and reader sets. Only its header's lists bound its size: about 140 GB of chunks in one change; past that the writer gets a plain refusal. A node applies all the parts it may read and syncs at once, or none of them.
+  - On data with a keep-at-most bound or expiry, a body a node dropped before something that changes its effect arrived (a late write, a validity flip, a purge) can leave nodes reading differently until a writer next compacts or writes that data.
+- A change may touch any number of things, of any owners and reader sets, up to a fixed maximum size (about 140 GB). A node applies all the parts of a change it may read on things it holds at once, or none; a part on a thing it starts holding later joins then.
 - Each part of a change is authorized on its own thing. Revoking the author on one thing removes only that part.
 - A wrong local clock harms only that node's own writes.
 
@@ -49,19 +48,17 @@ Terms:
 - Round trips: a small constant in the common incremental case, logarithmic at worst; a holder that missed k key rotations may need k.
 - Nothing a node already holds is sent again. A thing in many groups is stored and transferred once per node.
 - Compaction and deletion cost proportional to what changed, not to group size or history.
-- Removing a holder costs proportional to the rosters of the actors and things it could read, plus its writes that compaction may not drop yet. Limit: on data whose history is kept, that is every kept write of the removed device (about 32 B each); a removal listing more than one header list holds (about 1.9 million writes) fails.
+- Removing a holder costs proportional to the rosters of the actors and things it could read, plus its writes that compaction may not drop yet (on data whose history is kept, every one). Limit: a removal that would list more than about 1.9 million writes fails.
 - Connected nodes see each other's changes promptly, pushed, not polled.
 
 ## Untrusted (blind) nodes
 - Untrusted nodes are a first-class feature; one node may be blind to some groups and read others.
-- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap (one change's blob may sit under labels that share no thing), counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion classes and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, device identities, or structure beyond that.
+- They may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap (a change spanning groups links them), counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion classes and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, device identities, or structure beyond that.
 - Nothing stored or relayed links different groups of one owner beyond their overlap and the changes that span them. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
 - An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
 - An untrusted node knows no role holders and never waits on their liveness.
-- Read access never allows storing arbitrary content there. An untrusted node stores content only with a writer's signature, beyond a small flagged budget per group open to anyone who must reach the group's readers. While the budget is full, what goes through it (grants, readers' own edge writes) waits. Limits:
-  - Anyone holding an actor's public keys can fill the budget of its inbox, per host, only while none of the inbox group's admins' devices is online, or by flooding without pause, up to the host's rates. That can push out invites its user has not answered. It empties when the flood stops.
-  - A sender whose changes the actor's devices take unasked (one holding a role on a group the actor syncs) is limited by the host's rates and storage caps, not the budget, until the actor removes it. Its entries stay up to 90 days, a copy of each grant longer.
+- Read access never allows storing arbitrary content there. An untrusted node stores content only with a writer's signature, beyond a small budget per group open to anyone who must reach the group's readers (grants, readers' own edge writes). Limit: anyone holding an actor's public keys can fill its inbox's budget at a host, up to the host's rates, while none of the inbox's admin devices is online or by flooding without pause; meanwhile grants wait and unanswered invites may be pushed out.
 - Goal: an untrusted node can limit abuse (storage, rate) without learning identities.
 
 ## Confidentiality between readers
@@ -74,14 +71,14 @@ Terms:
 
 ## Deletion
 - Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and how long its history is kept (at least: absolute or a while after it is replaced; at most: absolute, or gone once replaced). Defaults per aspect, overridable per change, immutable once written.
-- A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: an untrusted node can only check the role the deleter held when the edit was written plus current roles, so a demoted holder can still delete there what its old role allowed, until a co-reader's next sync restores the data.
-- Data may carry an expiry at which every node, untrusted ones included, drops it with nobody online. A change has one expiry, and data nobody may purge shares a change only with such data; a write mixing either is several changes.
+- A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: an untrusted node checks only the role the deleter held when the edit was written and current roles, so a demoted holder can still delete there what its old role allowed, until a reader holding the data next syncs it back.
+- Data may carry an expiry at which every node, untrusted ones included, drops it with nobody online.
 - Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged, once the undoing device has seen the purge; an earlier undo is its own change, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
-- Limit: deletion does not reach offline copies, dishonest nodes, memory or swap. A purge made after a removal may stay undone in a copy the removal let the holder keep.
+- Limit: deletion does not reach offline copies, copies a removed holder kept, dishonest nodes, memory or swap.
 - Untrusted nodes act on their own only for expiry. Every other retention bound takes effect at them when a right holder next syncs.
-- A body dropped at its keep-at-most bound stays dropped only at nodes that cannot get it back: if the write that replaced it turns out invalid, the value is live and returns from any node that still holds it. Expired and purged content never returns while the purge counts.
-- Granularity is one edit of one aspect. Part of a value's history can be purged. An author's purge of a large value removes at untrusted nodes only the chunks that author wrote; an admin's removes all of them.
-- No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy. Deduplication is therefore only against content the writer already holds.
+- Keep-at-most bounds storage, not visibility: if the write that replaced a dropped body turns out invalid, its value is live again and returns from any node still holding it. Expired and purged content never returns while the purge counts.
+- Granularity is one edit of one aspect. Part of a value's history can be purged.
+- No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy.
 - Forward secure where the platform offers erasable key storage (a hardware keystore, a TPM): a node that deleted honestly and is compromised later yields nothing. Elsewhere, browsers included, deleted data is unrecoverable through the platform's own storage only. A node that lost access to data yields nothing it can no longer read, unless its removal said to keep a read-only copy; the default is to erase.
 - Nothing depends on retaining full history.
 
@@ -117,7 +114,7 @@ Binds released formats only; until a stable release formats change in place.
 - Cryptographic primitives can be replaced without re-encrypting or re-signing old data.
 
 ## Data model
-- One canonical serialization, byte-identical everywhere. One hash function. The one exception is the random keys inside a large value: two writes of equal content differ in bytes, so large values compare by content hash.
+- One canonical serialization and one hash function: equal values compare equal on every node.
 - Every datum is an aspect of a thing. Values are typed by the writer's schema. References may dangle.
 - Per-aspect merge with one conflict rule everywhere: at a position the later write wins, and a removal is final.
   - At a position (a register, a struct's field, an aspect) a write newer than a concurrent reset shows.
@@ -131,15 +128,15 @@ Binds released formats only; until a stable release formats change in place.
 - Readers only read: posting into a shared space needs write on its actor.
 - Every write is attributable to a signing key actor (normally a device) and verifiable. Hiding authorship is a deliberate choice, never the default.
 - Rights held by different parties never combine into a right neither has alone.
-- Whether an edit by a revoked holder counts is judged by what the revoker had received, never by the author's own timestamps. Edits the revoker had not received when it revoked are lost until re-grant, except those another writer compacted before it learned of the revocation, which stay.
-- A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another holder publishes an explicit demotion, the removed holder's own timestamps decide, within the allowed clock drift. A timed grant's end is finalized by the next writer about to write after it (an admin for an admin grant), whose removal rotates.
+- Whether an edit by a revoked holder counts is judged by what the revoker had received, never by the author's own timestamps. Limit: edits the revoker had not received when it revoked may be lost until re-grant.
+- A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another holder publishes an explicit demotion, the removed holder's own timestamps decide, within the allowed clock drift.
 - The owner may restart a thing's role history at a roster snapshot; a role change ordered before the snapshot that it did not include is lost.
 - A share link is a bearer secret. One joiner is revoked only together with the link; the remaining joiners get a new one.
 - Removing a holder never re-encrypts existing content. The holder stops reading new content of an actor once a writer or admin of that actor has written after the removal; readers never rotate keys. Limit: what it could read before removal stays readable to it, from a copy it kept or from a dishonest untrusted node.
-- Limit: a holder an untrusted node does not list yet (its grant raced a key rotation), or that missed more rotations than the kept role history, reads from that node again only after a holder with rotation rights re-seals. Re-sealing is triggered, never guaranteed.
+- Limit: a holder whose grant raced a key rotation, or that missed more rotations than an untrusted node keeps role history for, cannot read through that node until a holder with rotation rights re-seals to it, which nothing guarantees.
 
 ## API
 - Plain values and listeners. No CRDT concepts, no conflict UI, no correctness that depends on "surfacing it to the user". Diagnostics are informational.
-- Atomic, not isolated: concurrent changes merge, so app invariants must hold under merge. A change is one unit: every label of every thing it touches carries all of it, each part readable by its thing's readers. A node applies all the parts it may read on things it holds at once; a part on a thing it holds later joins then.
+- Atomic (Decentralization), not isolated: concurrent changes merge, so app invariants must hold under merge. Limit: a write mixing expiries, or mixing data nobody may purge with other data, is several changes.
 - Untyped access always works on any stored data.
 - Large values are usable both materialized and streamed.

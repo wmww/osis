@@ -3053,7 +3053,7 @@ fn arrival_order_alike_large_spec_permissions_5_2() {
 /// seeds replay as they were). A purge whose right falls after it applied counts as never received
 /// (spec/permissions.md §7): `alike_exchanged` gives both nodes its bodies again.
 /// `h`, then every peer holds what the others do and each compacts every aspect of every thing it
-/// may write: spec/requirements.md Deterministic's expiry exception lasts "until a writer next
+/// may write: spec/requirements.md Deterministic's keep-at-most and expiry limit lasts "until a writer next
 /// compacts", so all orders read alike with no body given again and no flag excused.
 fn settled(mut h: Vec<Step>) -> Vec<Step> {
     use Step::*;
