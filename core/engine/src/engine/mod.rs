@@ -82,9 +82,10 @@ pub struct Meta {
     /// `retention::make_leftover`, `retention::strip_carried`): read from `records::LEFTOVER` as
     /// the body. Held for the engine, no body for node-sync (`body_gone`).
     pub stripped: BTreeSet<usize>,
-    /// Those of `stripped` still holding values of their own writes: a delta stripped only of the
-    /// copies it carries. Such a leftover is a body like a whole one for keep bounds and deaths
-    /// (`bare`).
+    /// Those of `stripped` held as their leftover only for the copies they carry, none of their own
+    /// writes value-less (a snapshot, which has none, always). Such a leftover is a body like a
+    /// whole one for keep bounds, deaths, covering and a purge naming it (`bare`;
+    /// spec/commits.md §5 Dropping a body).
     pub valued: BTreeSet<usize>,
     /// Aspects none of whose deltas is held here (neither held nor dropped): a part that may
     /// still arrive late, or never, or one dropped under a cover since turned invalid
@@ -174,8 +175,8 @@ impl Meta {
     pub(crate) fn holds(&self, ai: usize) -> bool {
         !self.dropped.contains_key(&ai) && !self.missing.contains(&ai)
     }
-    /// Whether part `ai` is held as a leftover with no value of its own writes: no values to keep,
-    /// so no keep bounds and no deaths.
+    /// Whether part `ai` is held as a leftover for its own writes gone value-less (expired,
+    /// purged): no values to keep, so no keep bounds and no deaths.
     pub(crate) fn bare(&self, ai: usize) -> bool {
         self.stripped.contains(&ai) && !self.valued.contains(&ai)
     }

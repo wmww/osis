@@ -1207,11 +1207,14 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     for t in played.sync.things() {
         p.engine.set_syncing(*t, true).unwrap();
     }
-    // twice: a body a purge dropped before it fell here comes back
+    // twice: a body a purge dropped before it fell here comes back; a forged package may be
+    // refused, never fail the node
     for _ in 0..2 {
         for &i in held {
             let pk = &played.packs[i];
-            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+            if let Err(e) = p.engine.ingest(&pk.bytes, pk.blobs.clone()) {
+                assert_ne!(osis_base::Classified::class(&e), osis_base::ErrorClass::Local, "the keep-everything node: {e}");
+            }
         }
     }
     let mut aspects = BTreeSet::new();
@@ -4946,4 +4949,14 @@ fn held_model_agrees_on_purge_rights_spec_commits_5() {
     ];
     let seen = check(9360000, &h, Cfg { model: true, ..SMALL }).unwrap();
     assert!(seen.model.compared > 0 && seen.model.reached.get("purged").is_some_and(|n| *n > 0), "{:?}", seen.model);
+}
+
+// spec/commits.md §5 Purge, Dropping a body: a request naming a snapshot drops it though the same
+// request stripped it first of a purged write's copy (was: a stripped snapshot, having no own
+// writes, read as a bare leftover, which nothing drops, so the node as made kept its body).
+#[test]
+fn stripped_snapshot_named_by_purge_drops_seed_9500003() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Leave { by: 1, t: 3 })), Aim(Box::new(Compact { by: 1, t: 3, op: 0 })), Advance { who: Some(0), ms: 1571 }, Aim(Box::new(Purge { by: 0, t: 4, of: 1, back: 1, v: 0 }))];
+    check(9500003, &h, Cfg { sync: true, model: true, ..LARGE }).unwrap();
 }

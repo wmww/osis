@@ -287,10 +287,9 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
         return Ok(());
     }
     let k = (a.tid, a.ak.clone());
-    if m.stripped.remove(&ai) {
-        m.valued.remove(&ai);
-        leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
-    }
+    // a stripped part's body is its leftover: read below as the held body, forgotten after
+    let stripped = m.stripped.remove(&ai);
+    m.valued.remove(&ai);
     let snapshot = m.header.kind.is_compaction();
     // what a snapshot carried goes with its body: whether it was live is kept (`snapshot_live`)
     let live = snapshot && snapshot_live(tx, &m.header, c, &[ai])?;
@@ -321,6 +320,9 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
     let put: BTreeSet<Tid> = tx.core.timelines.get(&a.tid).and_then(|tl| tl.role_commit(c)).map(|mc| mc.ops.iter().filter(|op| op.target == a.tid && op.edge.is_some()).map(|op| op.holder).collect()).unwrap_or_default();
     let names = crate::apply::keys::names_of(&m.header, ai, &role_bodies, &put);
+    if stripped {
+        leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
+    }
     m.dropped.insert(ai, Dropped { covered_by, why, live, gave, stands_in, role, overreach, keysets, names });
     // a setting not held binds nothing (`validity::never_could_set`)
     if a.ak.as_str() == osis_commit::retention::REQUIRED {
@@ -734,13 +736,14 @@ fn strip_leftover(core: &Core, h: &Header, c: &CommitId, ai: usize, body: &mut F
 
 /// Stores `body` as the leftover of part `ai` of `c` (meta `m`): a part held whole loses its body
 /// (the blob without the slot, shredded); one dropped as covered is held again, as its leftover.
-/// It holds values while its own writes are off the value-less list (`Meta::valued`): a body for
-/// keep bounds and deaths; bare, its death records go.
+/// It holds values while its own writes are off the value-less list (`Meta::valued`; a snapshot
+/// always, so a request naming one still drops it once stripped): a body for keep bounds and
+/// deaths; bare, its death records go.
 fn put_leftover(tx: &mut Tx<'_>, c: &CommitId, ai: usize, mut m: crate::engine::Meta, body: Fragment, gives: Option<crate::engine::Gives>) -> Result<()> {
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
     let k = (a.tid, a.ak.clone());
     leftover::put(tx, &a.tid, &a.ak, c, ai, &leftover::Leftover { fragment: body, gives })?;
-    let valued = !writes_of(&m.header, c, ai).is_empty() && gone_of(tx.core, &m.header, c, ai).is_empty();
+    let valued = gone_of(tx.core, &m.header, c, ai).is_empty();
     if m.stripped.contains(&ai) && m.valued.contains(&ai) == valued {
         return Ok(());
     }
@@ -824,7 +827,9 @@ fn hold_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, change
     }
     let own = writes_of(&m.header, c, ai);
     // a snapshot a request names has no values of its own: it is dropped (the values it carries
-    // of the named deltas go with theirs, `strip_carried`) and comes back with a fall
+    // of the named deltas go with theirs, `strip_carried`) and comes back with a fall. Invariant:
+    // a snapshot is never a bare leftover (`put_leftover`), so one this or an earlier request
+    // stripped of a copy drops too, in any order of the deltas a request walks
     if purged && own.is_empty() && m.header.kind.is_compaction() {
         if let Some(a) = m.header.aspects.get(ai) {
             changed.insert((a.tid, a.ak.clone()));
