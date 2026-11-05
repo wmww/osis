@@ -24,7 +24,7 @@ Themes (notes/theming.md): one main colour from the content drives accents, sele
 ## State in osis
 - All app state lives in osis; widgets hold only what is too hot to be data (drag positions, caret blink, animation).
 - Durable view state (open things, lens, filters, layout, window management if it grows) as things in a person-private group: a view can be moved between devices, and between apps or toolkits, and saved and restored. Not specified or built on the first pass, but the architecture assumes it.
-- Ephemeral view state (selection, expanded panels, scroll anchor) as ephemeral things and aspects (notes/ephemeral.md): in memory, local unless placed in a synced group; hot live state across devices is synced ephemeral data, not commits.
+- Ephemeral view state (selection, expanded panels, scroll anchor) as drafts and ephemeral aspects (notes/ephemeral.md): in memory, local unless placed in a synced group; hot live state across devices is synced ephemeral data, not commits.
 - Needed from the API (asks for the library side): in-memory things must support watches, queries and backlinks exactly like stored things; the mode where the app pumps the watch dispatcher on its own (UI) thread exists (`Dispatcher::Pump`).
 
 ## Layers

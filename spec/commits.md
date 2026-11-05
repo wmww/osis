@@ -64,7 +64,7 @@ Encoding: spec/wire.md §4. Fields:
   - an AK without `*` in a relay-only commit;
   - an AK with `~` or `*` in a durable commit.
 
-  For such a part: a writer MUST NOT write one (a durable write on an ephemeral thing is a durable commit persisting it, spec/data-model.md §1), and a receiver drops it alone, as a part not matching its header entry (§4).
+  For such a part: a writer MUST NOT write one (a durable write on a draft is a durable commit persisting it, spec/data-model.md §1), and a receiver drops it alone, as a part not matching its header entry (§4).
 - A commit spanning several kinds is invalid.
 
 ## 3. Dot forms
