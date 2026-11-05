@@ -16,11 +16,6 @@ A realm is an actor marked `realm.0` (plus `name.0`), as `tag.0` marks a group; 
 8. Host admission for realms: left to the host admission work (recommended).
 Say "realms as recommended" to build, or change any.
 
-## 6. Re-granting someone brings back writes a removal left out on purpose
-Today when a removed person gets their role back, every write they made since they first had the role becomes valid again, including writes the removing admin left out on purpose (spec/permissions.md §5.2; notes/permissions.md "Re-grant validates the gap"). Leaving writes out on purpose is how an admin undoes a writer's lockout (bad key rotations) or takes back their purges. So re-adding that writer later quietly undoes the recovery.
-- A: keep it (simple, one rule; the app warns an admin re-adding someone whose removal left writes out on purpose). Recommended.
-- B: a re-grant only restores writes from the start of the current grant plus the gap, never ones a removal left out on purpose (needs the timeline to remember deliberate omissions).
-
 ## 7. A removal can make writes valid that were never allowed
 A removal's frontier lists the removed person's writes it had seen, and each listed write is valid, whether or not the person had the role when writing (spec/permissions.md §5.2). Writes made after an `until` expiry rely on this, as intended. Side effect: a write made before the person was ever granted (an outsider's write the admin happened to receive) becomes valid when that person is later granted and removed. Rare, needs a hostile writer.
 - A: keep it, and have clients leave out of a frontier the writes made before the person first held the role. Recommended (receivers unchanged).
@@ -46,3 +41,4 @@ A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) settled most o
 - Q2: option A, a group never looks inside its member actors, with the two extra rules of notes/keys-requirements-study.md §4. Role cycles (Q8): Tess left it to us: no key cycles (the earlier grant in the agreed order gets keys, the later one none), model-check first, fall back to accepting a leak in cycles until the next knowing re-key if a hidden cycle leaks. Nested shared tags can be one-way. Plan: issues/keys-depth0.md.
 - Q3: Tess's wording in spec/requirements.md (no values of another thing; only metadata, and only when one commit touches both); the exact metadata (thing ID, `ai` list, owner chain, size) is stated in spec/wire.md §4 and changes there deliberately, without her sign-off. Built as is (whole-2b).
 - Q4: option A, written into spec/requirements.md Deletion (an undo made before the device saw the purge is its own change). Nothing to build.
+- Q6: A (Tess): a re-grant revives all the person's writes; no special case. Her point: leaving writes out of a removal on purpose as a recovery tool is depending on a side effect; an admin who wants something gone should revert it explicitly, not as a side effect of a kick. Don't extend that side effect to new uses (bears on Q7, Q10 and on notes that describe deliberate omission as lockout or purge recovery).
