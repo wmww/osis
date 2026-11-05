@@ -37,6 +37,9 @@ Terms:
 ## Offline and network
 - Every operation completes with nobody else online. Only propagation waits.
 - No helper is required: relays, discovery and hosts are replaceable and self-hostable. Works over LAN, through any untrusted node, or to a known address.
+- No public-IP server, always-on node or internet connection is assumed. Every feature (creating accounts, sharing, recovery and the rest) works in every configuration, however atypical, including a dynamic mesh with no internet at all.
+- Nodes that share data sync directly by default, between different users too. Privacy of who sees whose address is handled without turning that off.
+- Nothing is special-cased by how much of a store is readable: a normal store holds some data it can read and some it cannot.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
 - To untrusted nodes and relays the network layer reveals no more about a device than the network itself does: addresses, never identities.
 - Nothing syncs by being owned: apps place things into synced groups explicitly, and a thing placed nowhere stays local.
