@@ -21,7 +21,7 @@ Everything else reads validity as it does now. Enforced: the dispute types are p
 ## Order
 Each step passes the gate alone and is useful alone. Spec changes go with each step; spec/requirements.md Permissions, Deterministic, API and Scale change in the steps that break them.
 
-### 0. Keys at depth 0 (issues/keys-depth0.md), needs Tess's question 8
+### 0. Keys at depth 0 (issues/keys-depth0.md)
 It deletes names below an actor, keyset names and the departure walk, which removes two review findings: names growing forever without snapshots, and a grant on one side leaving a holder out for good. Without it, step 1 needs a new reset point for names. Build first.
 
 ### 1. Delete roster snapshots
@@ -66,6 +66,6 @@ Oracles are the design's statement of itself; change them once in the harness, n
 - Model: roles-model search with trust sets; `core/test/tla/roles` for shrink, plus a TLA spec for step 5 if it grows.
 
 ## Open
-- Question 8 (notes/questions-for-tess.md), step 0.
+- Model check of the no-key-cycles rule, step 0.
 - Step 6 design.
 - Silent rejection after a removal has been held a while, warning only the parties: optional later, needs a value that passes notes/arbitrary-values.md.
