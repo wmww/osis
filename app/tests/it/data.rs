@@ -128,7 +128,7 @@ fn kinds_tags_reach_undo() {
     d.db.write_with(|w| w.at(n, NAME).set(&"changed".to_string())).unwrap();
     assert!(d.undo(n).unwrap());
     assert_eq!(d.name(n).unwrap(), "");
-    assert!(d.edited(n).starts_with("Edited "));
+    assert!(d.edited(n).unwrap().starts_with("Edited "));
 }
 
 /// A cycle of tags beside an ordinary top tag still shows in the tree (nothing in it is top).

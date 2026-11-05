@@ -50,7 +50,7 @@ pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
 /// The names of the tags a thing is in, as this node knows them.
 pub fn tag_names(db: &Osis, thing: Tid) -> Result<Vec<String>> {
     let mut out = Vec::new();
-    for g in db.groups_of(thing).within {
+    for g in db.groups_of(thing).unwrap().within {
         if db.get(g, TAG)?.is_some() {
             out.push(db.get(g, NAME)?.unwrap_or_default());
         }

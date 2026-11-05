@@ -264,7 +264,8 @@ impl<'d> Write<'d> {
     pub fn add_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
         self.group(g, false, sub, true, None)
     }
-    /// Removes `sub` from the subgroups of `g`; its tied edge as `unplace`'s.
+    /// Removes `sub` from the subgroups of `g`; its tied edge as `unplace`'s. Items of `sub` this
+    /// was the last way into a synced group for stop syncing, each reported `NotSynced`.
     pub fn remove_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
         self.group(g, false, sub, false, None)
     }
@@ -331,13 +332,13 @@ impl<'d> Write<'d> {
             db.guard_local(l, &deciders)?;
             let e = l.engine();
             if let Some(t) = self.alive
-                && !crate::read::knows_in(e, t)
+                && !crate::read::knows_in(e, t)?
             {
                 return Err(Error::UnknownThing { tid: t });
             }
             let actor = db.acting;
             let sharing = self.sharing;
-            let Built { mut m, placed, unplaced } = self.build(&mut Reader { e, limit, actor })?;
+            let Built { mut m, placed, unplaced, cut } = self.build(&mut Reader { e, limit, actor })?;
             // whatever actor the batch names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
@@ -346,6 +347,7 @@ impl<'d> Write<'d> {
                 Some(w) => {
                     if w.id.commit().is_some() {
                         not_synced(e, &placed, sharing);
+                        cut_off(e, &cut);
                     }
                     Some(Committed { id: w.id, ts: w.ts, also: w.also })
                 }
@@ -392,7 +394,7 @@ impl<'d> Write<'d> {
         let acting = self.db.acting;
         let Write { ops, keys, actor, created, mut group_exp, .. } = self;
         let gk = std::cell::LazyCell::new(group_key);
-        let mut b = Built { m: Mutation::new(), placed: Vec::new(), unplaced: Vec::new() };
+        let mut b = Built { m: Mutation::new(), placed: Vec::new(), unplaced: Vec::new(), cut: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its batch".into()));
         for op in ops {
             match op {
@@ -571,6 +573,8 @@ struct Built {
     /// (thing, group) placements and subgroup edges removed: their tied edges go after the
     /// commit where that is a self-removal (`Osis::untie_now`).
     unplaced: Vec<(Tid, Tid)>,
+    /// (parent, subgroup) edges removed (the `NotSynced` check).
+    cut: Vec<(Tid, Tid)>,
 }
 
 impl Built {
@@ -582,8 +586,31 @@ impl Built {
         }
         if !add {
             self.unplaced.push((member, g));
+            if !items {
+                self.cut.push((g, member));
+            }
         }
         Ok(())
+    }
+}
+
+/// Reports the items of each cut subgroup that its removal took out of every synced group: they
+/// stay on this device from now on.
+fn cut_off(e: &mut osis_node::Engine, cut: &[(Tid, Tid)]) {
+    if cut.is_empty() {
+        return;
+    }
+    let labeled = e.labeled_groups();
+    let carried = |e: &osis_node::Engine, t: &Tid| labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g));
+    for (parent, sub) in cut {
+        if !carried(e, parent) || carried(e, sub) {
+            continue;
+        }
+        for t in e.closure_placed(sub) {
+            if e.ephemeral_thing(&t).is_none() && !carried(e, &t) {
+                e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail: "a subgroup left the synced group that held it: this stays on this device".into() });
+            }
+        }
     }
 }
 

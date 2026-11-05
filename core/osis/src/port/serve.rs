@@ -558,13 +558,14 @@ impl Worker {
                 c::read_v(&r)
             }
             method::ASPECTS => Value::List(db.aspects(a.tid()?)?.iter().map(c::ak_v).collect()),
-            method::KNOWS => b(db.knows(a.tid()?)),
-            method::GROUPS_OF => c::groups_v(&db.groups_of(a.tid()?)),
-            method::ROSTER => c::roster_v(&db.roster(a.tid()?)),
-            method::ROLE_ON => c::opt(db.role_on(a.tid()?), c::role_v),
-            method::OWNER_OF => c::opt(db.owner_of(a.tid()?), Value::Tid),
-            method::CREATED => c::opt(db.created(a.tid()?), |s| c::stamp_v(&s)),
-            method::CHANGED => c::opt(db.changed(a.tid()?), |s| c::stamp_v(&s)),
+            method::KNOWS => b(db.knows(a.tid()?)?),
+            method::HOLDS => b(db.holds(a.tid()?)),
+            method::GROUPS_OF => c::groups_v(&db.groups_of(a.tid()?)?),
+            method::ROSTER => c::roster_v(&db.roster(a.tid()?)?),
+            method::ROLE_ON => c::opt(db.role_on(a.tid()?)?, c::role_v),
+            method::OWNER_OF => c::opt(db.owner_of(a.tid()?)?, Value::Tid),
+            method::CREATED => c::opt(db.created(a.tid()?)?, |s| c::stamp_v(&s)),
+            method::CHANGED => c::opt(db.changed(a.tid()?)?, |s| c::stamp_v(&s)),
             method::WRITE => {
                 let nonce = a.uint()?;
                 let rest = a.rest();
@@ -635,7 +636,7 @@ impl Worker {
                 db.drop_kept(a.tid()?)?;
                 Value::List(vec![])
             }
-            method::HOSTS => Value::List(db.hosts().iter().map(|h| Value::Str(h.to_string())).collect()),
+            method::HOSTS => Value::List(db.hosts()?.iter().map(|h| Value::Str(h.to_string())).collect()),
             method::SYNC_NOW => {
                 db.sync_now()?;
                 Value::List(vec![])
@@ -675,7 +676,7 @@ impl Worker {
                 if m == method::ADD_HOST { db.add_host(&h)? } else { db.remove_host(&h)? }
                 nothing()
             }
-            method::HOST_KEY => c::opt(db.host_key(), |k| Value::bytes(&k)),
+            method::HOST_KEY => c::opt(db.host_key()?, |k| Value::bytes(&k)),
             method::PAIR_OFFER => Value::Str(db.pair_offer()?.to_string()),
             method::PAIR_ACCEPT => {
                 let (node, reply) = db.pair_accept(&a.text()?.parse()?)?;
@@ -738,10 +739,10 @@ impl Worker {
                 db.leave(a.tid()?)?;
                 Value::List(vec![])
             }
-            method::REACH => c::reach_v(&db.reach(a.tid()?)),
-            method::HOLDER_PATH => c::pairs_v(&db.holder_path(a.tid()?, a.tid()?)),
-            method::LINKS => c::links_v(&db.links(a.tid()?)),
-            method::ALL_LINKS => c::links_v(&db.all_links()),
+            method::REACH => c::reach_v(&db.reach(a.tid()?)?),
+            method::HOLDER_PATH => c::pairs_v(&db.holder_path(a.tid()?, a.tid()?)?),
+            method::LINKS => c::links_v(&db.links(a.tid()?)?),
+            method::ALL_LINKS => c::links_v(&db.all_links()?),
             method::MAKE_LINK => {
                 let (t, r) = (a.tid()?, c::role(&a.next()?)?);
                 let until = a.opt_wall()?;
@@ -839,16 +840,17 @@ impl Worker {
             }
             let _ = tx.send(Job::Dirty(conn));
         });
-        let mut initial = Value::List(vec![]);
+        let mut initial = Ok(Value::List(vec![]));
         let sub = db.subscribe(filter, false, |r| {
             match &kind {
-                Kind::Aspect(t, ak) => initial = c::read_v(&r.value(*t, ak)),
-                Kind::Thing(t) => initial = Value::List(r.aspects(*t).unwrap_or_default().iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect()),
-                Kind::Roster(t) => initial = c::roster_v(&r.roster(*t)),
+                Kind::Aspect(t, ak) => initial = Ok(c::read_v(&r.value(*t, ak))),
+                Kind::Thing(t) => initial = r.aspects(*t).map(|aks| Value::List(aks.iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect())),
+                Kind::Roster(t) => initial = Ok(c::roster_v(&r.roster(*t))),
                 _ => {}
             }
             cb
         });
+        let mut initial = initial?;
         if let Kind::Status = kind {
             initial = c::status_v(&db.status()?);
         }
@@ -984,7 +986,7 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
                 out.push((Value::List(vec![c::change_v(id), c::opt(e.as_ref(), c::hist_entry_v)]), None));
             }
         }
-        Kind::Roster(t) if g.dirty => out.push((c::roster_v(&db.roster(*t)), None)),
+        Kind::Roster(t) if g.dirty => out.push((c::roster_v(&db.read_local(|r| r.roster(*t))), None)),
         Kind::Status if g.dirty => {
             if let Ok(st) = db.status() {
                 out.push((c::status_v(&st), None));

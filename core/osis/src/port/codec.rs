@@ -865,8 +865,8 @@ pub(crate) fn outcome_err(e: &Error) -> Outcome {
         Error::Network(m) => (ApiCode::NETWORK, vec![t(m)]),
         Error::OutcomeUnknown => (ApiCode::OUTCOME_UNKNOWN, vec![]),
         Error::Unsupported(m) => (ApiCode::UNSUPPORTED, vec![t(m)]),
+        Error::Refused(m) => (ApiCode::REFUSED, vec![t(m)]),
         Error::Closed => (ApiCode::STORAGE, vec![t("the node's database closed")]),
-        Error::StillOpen { .. } => (ApiCode::INVALID, vec![t(&e.to_string())]),
     };
     Outcome::Err { code, detail }
 }
@@ -888,6 +888,7 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
             ApiCode::STORAGE => Error::Storage(text(&mut a)),
             ApiCode::NETWORK => Error::Network(text(&mut a)),
             ApiCode::UNSUPPORTED => Error::Unsupported(text(&mut a)),
+            ApiCode::REFUSED => Error::Refused(text(&mut a)),
             ApiCode::OUTCOME_UNKNOWN => Error::OutcomeUnknown,
             _ => Error::Invalid(format!("port: error code {code}")),
         })

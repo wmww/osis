@@ -457,7 +457,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     let mk = |db: &Osis| db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.write_with(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
-    let created = db.created(t).unwrap().commit.map(ChangeId::Commit).unwrap();
+    let created = db.created(t).unwrap().unwrap().commit.map(ChangeId::Commit).unwrap();
     db.write_with(|w| { w.place(t, f2)?; w.add_subgroup(f3, t) }).unwrap();
     let edit = commit_with(&db, |w| w.at(t, y.clone()).set(&Value::Int(2))).id;
     let s = Scope::Thing(t);
@@ -467,12 +467,12 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     assert_eq!(db.get(t, y.clone()).unwrap(), None);
     assert_eq!(next(&db, &s, Next::Undo), Some(created));
     step(&db, &s, Next::Undo).unwrap();
-    let gs = db.groups_of(t);
-    assert!(!db.knows(t) && gs.item_of.is_empty() && gs.subgroup_of.is_empty() && db.get(t, x.clone()).unwrap().is_none(), "deleted: {gs:?}");
+    let gs = db.groups_of(t).unwrap();
+    assert!(!db.knows(t).unwrap() && gs.item_of.is_empty() && gs.subgroup_of.is_empty() && db.get(t, x.clone()).unwrap().is_none(), "deleted: {gs:?}");
     assert_eq!(next(&db, &s, Next::Undo), None);
     step(&db, &s, Next::Redo).unwrap();
-    let gs = db.groups_of(t);
-    assert!(db.knows(t) && db.get(t, x.clone()).unwrap() == Some(Value::Int(1)));
+    let gs = db.groups_of(t).unwrap();
+    assert!(db.knows(t).unwrap() && db.get(t, x.clone()).unwrap() == Some(Value::Int(1)));
     let mut items = gs.item_of;
     items.sort();
     let mut want = vec![f, f2];
@@ -484,9 +484,9 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     // reverting the creation directly, with a later change in effect, deletes too (the later
     // content goes with it), and reverting that revert restores everything
     let r = db.revert(created).unwrap();
-    assert!(!db.knows(t) && db.get(t, y.clone()).unwrap().is_none() && db.groups_of(t).within.is_empty());
+    assert!(!db.knows(t).unwrap() && db.get(t, y.clone()).unwrap().is_none() && db.groups_of(t).unwrap().within.is_empty());
     db.revert(r.id).unwrap();
-    assert!(db.get(t, x).unwrap() == Some(Value::Int(1)) && db.get(t, y).unwrap() == Some(Value::Int(2)) && db.groups_of(t).within.len() == 2);
+    assert!(db.get(t, x).unwrap() == Some(Value::Int(1)) && db.get(t, y).unwrap() == Some(Value::Int(2)) && db.groups_of(t).unwrap().within.len() == 2);
 }
 
 // notes/ephemeral.md API delta (Undo), spec/crdt.md §4.6: undoing the batch that created an
@@ -504,19 +504,19 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
         v.sort();
         v
     };
-    assert_eq!(sorted(db.groups_of(e).item_of), sorted(vec![f, f2]));
+    assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
     let s = Scope::Thing(e);
     // the placement in f2 is a write of f2: outside the thing's scope, so undo picks the creation
     let picked = next(&db, &s, Next::Undo).unwrap();
     assert!(matches!(picked, ChangeId::Ephemeral(_)));
     step(&db, &s, Next::Undo).unwrap();
-    assert!(!db.knows(e) && db.groups_of(e).item_of.is_empty() && db.get(e, k.clone()).unwrap().is_none());
+    assert!(!db.knows(e).unwrap() && db.groups_of(e).unwrap().item_of.is_empty() && db.get(e, k.clone()).unwrap().is_none());
     assert_eq!(step(&db, &s, Next::Undo), None);
     step(&db, &s, Next::Redo).unwrap();
-    assert!(db.knows(e) && db.get(e, k).unwrap() == Some(Value::Int(1)));
-    assert_eq!(sorted(db.groups_of(e).item_of), sorted(vec![f, f2]));
+    assert!(db.knows(e).unwrap() && db.get(e, k).unwrap() == Some(Value::Int(1)));
+    assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
     // still an ephemeral thing: nothing reached the store for it
-    assert_eq!(db.created(e).unwrap().commit, None);
+    assert_eq!(db.created(e).unwrap().unwrap().commit, None);
 }
 
 // notes/api.md Commits: `next` reports what undo and redo would revert, in a thing and in a
@@ -573,21 +573,21 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     let s = Scope::Thing(t);
     alice.undo(&s).unwrap().unwrap();
     w.run();
-    assert!(!bob.knows(t) && bob.groups_of(t).within.is_empty());
+    assert!(!bob.knows(t).unwrap() && bob.groups_of(t).unwrap().within.is_empty());
     alice.redo(&s).unwrap().unwrap();
     w.run();
-    assert!(bob.knows(t) && bob.get(t, x.clone()).unwrap() == Some(Value::Int(1)) && bob.groups_of(t).item_of == vec![g]);
-    let c = ChangeId::Commit(alice.created(t).unwrap().commit.unwrap());
+    assert!(bob.knows(t).unwrap() && bob.get(t, x.clone()).unwrap() == Some(Value::Int(1)) && bob.groups_of(t).unwrap().item_of == vec![g]);
+    let c = ChangeId::Commit(alice.created(t).unwrap().unwrap().commit.unwrap());
     bob.revert(c).unwrap();
     w.run();
-    assert!(!alice.knows(t) && alice.groups_of(t).within.is_empty());
+    assert!(!alice.knows(t).unwrap() && alice.groups_of(t).unwrap().within.is_empty());
     let t3 = mk(alice.me());
     w.run();
-    assert_eq!(bob.role_on(t3), None);
-    let c3 = ChangeId::Commit(alice.created(t3).unwrap().commit.unwrap());
+    assert_eq!(bob.role_on(t3).unwrap(), None);
+    let c3 = ChangeId::Commit(alice.created(t3).unwrap().unwrap().commit.unwrap());
     assert!(matches!(bob.revert(c3), Err(Error::Permission { .. })));
     w.run();
-    assert!(alice.knows(t3) && alice.groups_of(t3).item_of == vec![g]);
+    assert!(alice.knows(t3).unwrap() && alice.groups_of(t3).unwrap().item_of == vec![g]);
 }
 
 // notes/api.md Commits: a revert of a creation is related to it in a scope naming only
@@ -597,14 +597,14 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
 fn creation_revert_found_by_created_scope_api_commits() {
     let (da, db) = two_devices();
     let t = da.write_with(|w| w.create_durable(da.me())).unwrap();
-    let c = da.created(t).unwrap().commit.map(ChangeId::Commit).unwrap();
+    let c = da.created(t).unwrap().unwrap().commit.map(ChangeId::Commit).unwrap();
     commit_with(&da, |w| {
         w.at(t, ak("t:made.0")).remove()?;
         w.at(t, ak("t:y.0")).set(&Value::Int(1))
     });
     let r = da.revert(c).unwrap();
     sync2(&da, &db);
-    assert!(!db.knows(t));
+    assert!(!db.knows(t).unwrap());
     let e = db.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, ak("created.0"))]))).unwrap();
     assert_eq!(e.iter().map(|e| (e.commit.id, e.in_effect, e.reverted_by.clone())).collect::<Vec<_>>(), vec![(c, false, vec![r.id])]);
 }

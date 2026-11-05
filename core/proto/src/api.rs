@@ -121,4 +121,5 @@ impl ApiCode {
     pub const UNSUPPORTED: u64 = 11;
     /// No detail: the write may or may not have applied.
     pub const OUTCOME_UNKNOWN: u64 = 12;
+    pub const REFUSED: u64 = 13;
 }

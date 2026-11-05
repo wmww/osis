@@ -115,7 +115,7 @@ impl Ui {
     #[cfg(target_os = "android")]
     fn android_join(&mut self, col: Flex) -> Flex {
         let look = self.look.clone();
-        let col = match self.data.db.hosts().first() {
+        let col = match self.data.db.hosts().unwrap_or_default().first() {
             Some(h) => col.with_child(style::label(&look, &format!("Host: {h}"), Text::Small)),
             None => col.with_child(style::label(&look, "No host yet: copy its quic:// address first", Text::Small)).with_child(self.paste_chip("Paste host address", PasteTo::Host)),
         };

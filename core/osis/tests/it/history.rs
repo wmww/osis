@@ -321,10 +321,10 @@ fn required_is_no_content_spec_commits_5() {
     say(&db, t, "x");
     db.write_with(|w| w.at(t, ct::REQUIRED).set(&rules)).unwrap();
     db.write_with(|w| w.delete(t)).unwrap();
-    assert!(!db.knows(t), "deleted");
+    assert!(!db.knows(t).unwrap(), "deleted");
     assert_eq!(db.get(t, ct::REQUIRED).unwrap(), Some(rules.clone()), "still in force");
     let u = db.write_with(|w| { let u = w.create(db.me())?; w.at(u, msgs()).set(&s("x"))?; w.at(u, ct::REQUIRED).set(&rules)?; Ok(u) }).unwrap();
     db.undo(&osis::Scope::Thing(u)).unwrap();
-    assert!(!db.knows(u), "undone");
+    assert!(!db.knows(u).unwrap(), "undone");
     assert_eq!(db.get(u, ct::REQUIRED).unwrap(), Some(rules));
 }

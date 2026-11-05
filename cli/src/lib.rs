@@ -48,6 +48,7 @@ pub fn category(e: &Error) -> (i32, &'static str) {
         Error::UnknownThing { .. } => (3, "UnknownThing"),
         Error::UnknownActor { .. } => (3, "UnknownActor"),
         Error::Permission { .. } => (4, "Permission"),
+        Error::Refused(_) => (4, "Refused"),
         Error::TooLarge { .. } => (5, "TooLarge"),
         Error::Type { .. } => (5, "Type"),
         Error::Network(_) => (6, "Network"),
@@ -58,7 +59,6 @@ pub fn category(e: &Error) -> (i32, &'static str) {
         Error::Storage(_) => (1, "Storage"),
         Error::Unsupported(_) => (1, "Unsupported"),
         Error::Closed => (1, "Closed"),
-        Error::StillOpen { .. } => (1, "StillOpen"),
     }
 }
 

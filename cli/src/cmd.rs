@@ -187,8 +187,9 @@ fn truncate(s: String, width: usize) -> String {
     if width == 0 || s.chars().count() <= width { s } else { s.chars().take(width.saturating_sub(1)).collect::<String>() + "…" }
 }
 
-fn not_supported(what: &'static str) -> anyhow::Error {
-    Error::Unsupported(what.into()).into()
+/// A command over an API piece that does not exist yet.
+pub(crate) fn not_built(what: &'static str) -> anyhow::Error {
+    exit(1, format!("not built yet: {what}"))
 }
 
 /// Commands that wait for or talk to other nodes: the store opens with sync running. Others stay
@@ -305,7 +306,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
     // -v on a command that syncs: diagnostics to stderr while it runs, best effort (not for
     // those that already print them on stdout)
     let streams = matches!(cli.cmd, Cmd::Serve { .. } | Cmd::Diag { follow: true });
-    let verbose = (g.verbose > 0 && needs_net(&cli.cmd) && !streams).then(|| Verbose::start(&db, g.json));
+    let verbose = (g.verbose > 0 && needs_net(&cli.cmd) && !streams).then(|| Verbose::start(&db, g.json)).transpose()?;
     std::thread::scope(|s| {
         let verbose = verbose.map(|(v, rx)| {
             s.spawn(move || {
@@ -318,15 +319,22 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
         let (flush, shared) = (delivers(&cli.cmd), shared(&cli.cmd));
         let mut r = run(&mut ctx, cli.cmd);
-        if r.is_ok() && flush && !ctx.db.hosts().is_empty() {
-            r = deliver(&mut ctx, shared);
+        if r.is_ok() && flush {
+            r = match ctx.db.hosts() {
+                Ok(h) if h.is_empty() => Ok(()),
+                Ok(_) => deliver(&mut ctx, shared),
+                // a thin client: its node delivers
+                Err(Error::Unsupported(_)) => Ok(()),
+                Err(e) => Err(e.into()),
+            };
         }
         ctx.db.settle();
         drop(verbose);
         let db = ctx.db.clone();
         drop(ctx);
+        // other handles left open change nothing: every commit is durable and this process ends
         let closed = db.close();
-        r.and(closed.map_err(Into::into))
+        r.and(closed.map(drop).map_err(Into::into))
     })
 }
 
@@ -340,7 +348,11 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
     let commit = done.and_then(|c| c.id.commit());
     let created = did.created.first().map(|(_, t)| *t);
     // a new thing with no durable data lives in this process's memory only
-    if created.is_some_and(|t| db.created(t).is_some_and(|c| c.commit.is_none())) {
+    let unsaved = match created {
+        Some(t) => db.created(t)?.is_some_and(|c| c.commit.is_none()),
+        None => false,
+    };
+    if unsaved {
         return Err(usage("a new thing with no durable data is gone when this command exits: give AK V (or use `write`)"));
     }
     let mut lines = Vec::new();
@@ -400,7 +412,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&open.iter().map(say).collect::<Vec<_>>(), J::obj([("links", links_j(&open)), ("ended", J::Bool(end_links))]))
         }
         Cmd::Hosts(HostsCmd::Ls) => {
-            let s = db.hosts();
+            let s = db.hosts()?;
             ctx.emit(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>(), J::Arr(s.iter().map(|s| J::str(s.to_string())).collect()))
         }
         Cmd::Hosts(HostsCmd::Add { addr }) => Ok(db.add_host(&ctx.arg_text(&addr)?.parse()?)?),
@@ -428,8 +440,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let a = db.aspects(ctx.tid(&t)?)?;
             ctx.emit(&a.iter().map(|a| a.as_str().to_string()).collect::<Vec<_>>(), J::Arr(a.iter().map(|a| J::str(a.as_str())).collect()))
         }
-        Cmd::Ls { .. } => Err(not_supported("query (issues/api-deferred.md)")),
-        Cmd::Backlinks { .. } => Err(not_supported("backlinks (issues/api-deferred.md)")),
+        Cmd::Ls { .. } => Err(not_built("query (issues/api-deferred.md)")),
+        Cmd::Backlinks { .. } => Err(not_built("backlinks (issues/api-deferred.md)")),
         Cmd::Watch { t, ak, count } => watch(ctx, &t, ak.as_deref(), count),
         Cmd::Commits { scope: s, actor, kind, reverts, reverted_by, in_effect, since, until, after, max, next } => {
             let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
@@ -479,7 +491,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             emit_commit(ctx, c.id.commit())
         }
         Cmd::Groups { t } => {
-            let gs = db.groups_of(ctx.tid(&t)?);
+            let gs = db.groups_of(ctx.tid(&t)?)?;
             let rel = [("item", &gs.item_of), ("subgroup", &gs.subgroup_of), ("within", &gs.within)];
             let lines = rel.iter().flat_map(|(n, v)| v.iter().map(move |g| format!("{n}\t{}", g.to_uri()))).collect::<Vec<_>>();
             let arr = |v: &[Tid]| J::Arr(v.iter().map(|g| J::tid(*g)).collect());
@@ -493,18 +505,19 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             // the first call is the roster now: printed, not counted
             let mut initial = true;
             let _sub = db.watch_roster(t, move |_, r| {
-                let l = if json_out {
-                    roster_json(&r).text()
-                } else {
-                    roster_lines(&r, raw).join(", ")
+                let l = match (r, json_out) {
+                    (Ok(r), true) => roster_json(&r).text(),
+                    (Ok(r), false) => roster_lines(&r, raw).join(", "),
+                    (Err(e), true) => J::obj([("error", J::str(e.to_string()))]).text(),
+                    (Err(e), false) => format!("(error: {e})"),
                 };
                 let _ = tx.send((l, !std::mem::take(&mut initial)));
-            });
+            })?;
             let timeout = ctx.timeout_or(None)?;
             stream(ctx, &rx, count, timeout, "change", false, |_, (l, counts)| (l, counts))
         }
         Cmd::Via { t, holder } => {
-            let p = db.holder_path(ctx.tid(&t)?, ctx.tid(&holder)?);
+            let p = db.holder_path(ctx.tid(&t)?, ctx.tid(&holder)?)?;
             if p.is_empty() {
                 return Err(exit(3, "no such holder"));
             }
@@ -515,7 +528,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&[ts_text(ctx.g.raw, n)], J::obj([("now", J::int(n))]))
         }
         Cmd::Role { t } => {
-            let r = db.role_on(ctx.tid(&t)?);
+            let r = db.role_on(ctx.tid(&t)?)?;
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
         Cmd::Grant { t, holder, role, until, invite } => Ok(db.grant(ctx.tid(&t)?, ctx.tid(&holder)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
@@ -524,7 +537,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
             let role = match role {
                 Some(r) => parse_role(&r)?,
-                None => db.roster(t).get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such edge"))?,
+                None => db.roster(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such edge"))?,
             };
             Ok(db.change_edge(t, m, role, edge_opts(&until, &invite)?)?)
         }
@@ -548,7 +561,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::RemoveEdgeOf { g, t } => Ok(db.remove_edge_of(ctx.tid(&g)?, ctx.tid(&t)?)?),
         Cmd::Reach { t } => {
-            let r = db.reach(ctx.tid(&t)?);
+            let r = db.reach(ctx.tid(&t)?)?;
             let lines: Vec<String> = r.iter().map(|x| format!("{} {} {}", x.group.to_uri(), if x.placed { "placed" } else { "unplaced" }, share_text(x.share))).collect();
             let j = J::Arr(r.iter().map(|x| J::obj([("group", J::tid(x.group)), ("placed", J::Bool(x.placed)), ("share", J::str(share_text(x.share)))])).collect());
             ctx.emit(&lines, j)
@@ -565,8 +578,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Link(LinkCmd::Ls { t }) => {
             let ls = match t {
-                Some(t) => db.links(ctx.tid(&t)?),
-                None => db.all_links(),
+                Some(t) => db.links(ctx.tid(&t)?)?,
+                None => db.all_links()?,
             };
             let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {}", l.id.to_uri(), role_text(l.role), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
             ctx.emit(&lines, links_j(&ls))
@@ -611,7 +624,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let _sub = db.watch_status(move |_, st| {
                 let l = st.groups.iter().map(|(g, x)| format!("{} {:?}", g.to_uri(), x.state)).chain(st.split.iter().map(|t| format!("{} split", t.to_uri()))).collect::<Vec<_>>().join(", ");
                 let _ = tx.send(format!("connected {} {l}", st.connected));
-            });
+            })?;
             let timeout = ctx.timeout_or(None)?;
             stream_lines(ctx, &rx, None, timeout)
         }
@@ -626,7 +639,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Group(GroupCmd::Sync { g, host }) => {
             let g = ctx.tid(&g)?;
-            let s = if host.is_empty() { db.hosts() } else { hosts(ctx, &host)? };
+            let s = if host.is_empty() { db.hosts()? } else { hosts(ctx, &host)? };
             Ok(db.sync(g, &s)?)
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
@@ -642,7 +655,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => Err(exit(6, "timed out: where it was, unless the move finished")),
             }
         }
-        Cmd::Group(GroupCmd::Policy { .. }) => Err(not_supported("sync_policy (issues/api-deferred.md)")),
+        Cmd::Group(GroupCmd::Policy { .. }) => Err(not_built("sync_policy (issues/api-deferred.md)")),
         Cmd::Bundle(BundleCmd::Export { groups }) => {
             let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;
             db.export_bundle(&gs, &mut *ctx.out)?;
@@ -662,7 +675,11 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         StoreSel::Dir(d) => d.display().to_string(),
         StoreSel::Memory(_) => "(memory)".into(),
     };
-    let hosts = db.hosts();
+    // a thin client has none of its own to show
+    let hosts = match db.hosts() {
+        Err(Error::Unsupported(_)) => Vec::new(),
+        h => h?,
+    };
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
     let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri()), format!("home\t{}", db.home().to_uri())];
     lines.extend(hosts.iter().map(|s| format!("host\t{s}")));
@@ -815,8 +832,8 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let t = ctx.tid(t)?;
     let aks = db.aspects(t)?;
-    let known = db.knows(t);
-    let created = db.created(t);
+    let known = db.knows(t)?;
+    let created = db.created(t)?;
     if aks.is_empty() && !known && created.is_none() {
         return Err(Error::UnknownThing { tid: t }.into());
     }
@@ -836,23 +853,23 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         lines.push(format!("{}\t{}", ak.as_str(), truncate(s, width)));
         fields.push((ak.as_str().to_string(), j));
     }
-    let groups = db.groups_of(t);
-    let role = db.role_on(t);
-    let owner = db.owner_of(t);
+    let groups = db.groups_of(t)?;
+    let role = db.role_on(t)?;
+    let owner = db.owner_of(t)?;
     let uris = |v: &[Tid]| v.iter().map(Tid::to_uri).collect::<Vec<_>>().join(" ");
-    lines.push(format!("state\t{}", if known { "present" } else { "deleted" }));
+    lines.push(format!("state\t{}", if known { "present" } else { "empty" }));
     lines.push(format!("groups\t{}", uris(&groups.within)));
     lines.push(format!("subgroup_of\t{}", uris(&groups.subgroup_of)));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
     lines.push(format!("owner\t{}", owner.map_or("none".into(), |o| o.to_uri())));
-    let changed = db.changed(t);
+    let changed = db.changed(t)?;
     let stamp = |c: Option<osis::Stamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, ts_of(c.ts)), c.node.to_uri()));
     lines.push(format!("created\t{}", stamp(created)));
     lines.push(format!("changed\t{}", stamp(changed)));
     let j = J::obj([
         ("tid", J::tid(t)),
         ("aspects", J::Obj(fields)),
-        ("deleted", J::Bool(!known)),
+        ("empty", J::Bool(!known)),
         ("groups", J::Arr(groups.within.iter().map(|g| J::tid(*g)).collect())),
         ("subgroup_of", J::Arr(groups.subgroup_of.iter().map(|g| J::tid(*g)).collect())),
         ("role", J::opt(role.map(|r| J::str(role_text(r))))),
@@ -950,7 +967,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
         }
         None => db.watch_thing(t, move |_, c| {
             let _ = tx.send(c);
-        }),
+        })?,
     };
     let timeout = ctx.timeout_or(None)?;
     stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c), !matches!(c.source, Source::Initial)))
@@ -1082,7 +1099,7 @@ fn roster_json(r: &osis::Roster) -> J {
 }
 
 fn roster(ctx: &mut Ctx<'_>, t: &str) -> anyhow::Result<()> {
-    let r = ctx.db.roster(ctx.tid(t)?);
+    let r = ctx.db.roster(ctx.tid(t)?)?;
     let lines = roster_lines(&r, ctx.g.raw);
     ctx.emit(&lines, roster_json(&r))
 }
@@ -1143,7 +1160,7 @@ fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>, best_effort: bool) -> anyh
             st.store(true, std::sync::atomic::Ordering::Release);
             tx = None;
         }
-    });
+    })?;
     db.settle();
     if timeout == Some(Duration::ZERO) {
         while let Ok(l) = rx.try_recv() {
@@ -1166,7 +1183,7 @@ struct Verbose {
 
 impl Verbose {
     /// Subscribes; the lines go to the receiver, drained by the caller's thread.
-    fn start(db: &Osis, json: bool) -> (Verbose, mpsc::Receiver<String>) {
+    fn start(db: &Osis, json: bool) -> anyhow::Result<(Verbose, mpsc::Receiver<String>)> {
         let (tx, rx) = mpsc::channel();
         let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
         let t = tx.clone();
@@ -1174,8 +1191,8 @@ impl Verbose {
             if let Some(tx) = t.lock().ok().as_ref().and_then(|g| g.as_ref()) {
                 let _ = tx.send(diag_line(&d, json));
             }
-        });
-        (Verbose { tx, _sub: sub }, rx)
+        })?;
+        Ok((Verbose { tx, _sub: sub }, rx))
     }
 }
 
@@ -1194,7 +1211,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     match i {
         InspectCmd::Thing { t } => {
             let t = ctx.tid(&t)?;
-            lines.push(format!("tid {} known={} role={}", t.to_uri(), db.knows(t), db.role_on(t).map_or("none", role_text)));
+            lines.push(format!("tid {} known={} role={}", t.to_uri(), db.knows(t)?, db.role_on(t)?.map_or("none", role_text)));
             let aks = db.aspects(t)?;
             for ak in aks {
                 let (changes, size, frag) = db.engine(|e| {
@@ -1212,10 +1229,10 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                     lines.push(format!("  state {f}"));
                 }
             }
-            for g in db.groups_of(t).within {
+            for g in db.groups_of(t)?.within {
                 lines.push(format!("group {}", g.to_uri()));
             }
-            for (m, e) in db.roster(t) {
+            for (m, e) in db.roster(t)? {
                 lines.push(format!("holder {} {:?}", m.to_uri(), e));
             }
         }
@@ -1225,7 +1242,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             let mut things: Vec<Tid> = all.into_iter().map(|(t, _)| t).collect();
             things.dedup();
             for t in things {
-                if db.groups_of(t).within.contains(&g) {
+                if db.groups_of(t)?.within.contains(&g) {
                     lines.push(format!("item {}", t.to_uri()));
                 }
             }
@@ -1237,7 +1254,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             let a = ctx.tid(&a)?;
             let ep = db.engine(|e| e.epochs(&a));
             lines.push(format!("actor {} epochs {ep:?}", a.to_uri()));
-            for (m, e) in db.roster(a) {
+            for (m, e) in db.roster(a)? {
                 lines.push(format!("holder {} {:?}", m.to_uri(), e));
             }
         }
@@ -1270,7 +1287,7 @@ fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow
     if host.any() {
         set_hosting(ctx, host)?;
     }
-    if let Some(mut h) = db.hosting() {
+    if let Some(mut h) = db.hosting()? {
         if h.listen.is_empty() {
             h.listen = vec![DEFAULT_LISTEN.into()];
             db.set_hosting(Some(h))?;
@@ -1305,7 +1322,7 @@ fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow
 /// starts hosting (`own`, no listener) when it was off.
 fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
     let db = ctx.db.clone();
-    let mut h = db.hosting().unwrap_or_default();
+    let mut h = db.hosting()?.unwrap_or_default();
     // a flag given once as '' clears its field; otherwise its values replace it
     let given = |v: &[String]| (!v.is_empty()).then(|| v.iter().filter(|x| !(v.len() == 1 && x.is_empty())).cloned().collect::<Vec<_>>());
     if let Some(v) = given(&f.listen) {
@@ -1383,14 +1400,14 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
 /// `host.0^` as lines (`listen URL`, `address URL#KEY` per listen URL but a port 0, `admit own|open`, `label ID`, `replicate ADDR`,
 /// `policy NAME N`, `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not hosting.
 fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
-    let h = ctx.db.hosting().ok_or_else(|| exit(3, "not hosting"))?;
+    let h = ctx.db.hosting()?.ok_or_else(|| exit(3, "not hosting"))?;
     let admit = match h.admit {
         osis::Admit::Own => "own",
         osis::Admit::Open => "open",
     };
     let hex = |l: &osis::LabelId| osis_schema::osis_base::hex::encode(&l.0);
     // the address each listen URL will have; none for a port 0 (picked only when it listens)
-    let addrs: Vec<String> = match ctx.db.host_key() {
+    let addrs: Vec<String> = match ctx.db.host_key()? {
         Some(k) => h.listen.iter().map(|u| osis::HostAddr::new(u, k).to_string()).filter(|a| !a.split('#').next().is_some_and(|u| u.ends_with(":0"))).collect(),
         None => vec![],
     };

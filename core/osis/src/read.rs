@@ -154,7 +154,7 @@ pub struct Reader<'a> {
 }
 
 /// `Reader::knows` on an engine already locked (a check inside a commit).
-pub(crate) fn knows_in(e: &mut Engine, tid: Tid) -> bool {
+pub(crate) fn knows_in(e: &mut Engine, tid: Tid) -> Result<bool> {
     Reader { e, limit: 0, actor: None }.knows(tid)
 }
 
@@ -317,16 +317,19 @@ impl Reader<'_> {
         }
     }
 
-    /// Whether the thing is here: its creation is held and it has content, some aspect a
-    /// `Write` sets, or it is ephemeral or a draft again (its save undone) here (content or
-    /// not, unless an undo of its creation deleted it). `false` for an unknown thing and for a deleted one, which `created` still
-    /// reports; an actor carrying only role data (a link key, a contact before any
-    /// data) reads `false` too.
-    pub fn knows(&mut self, tid: Tid) -> bool {
+    /// Whether the thing is here with content: its creation is held and some aspect a `Write`
+    /// sets is present, or it is ephemeral or a draft again (its save undone) here (content or
+    /// not, unless an undo of its creation deleted it). `false` for an unknown thing and for one
+    /// with no content: deleted, and equally never written (a thing just created and placed, an
+    /// actor carrying only role data).
+    pub fn knows(&mut self, tid: Tid) -> Result<bool> {
         if self.hidden(tid) {
-            return false;
+            return Ok(false);
         }
-        self.e.ephemeral_thing(&tid).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&tid) || (self.e.knows(&tid) && self.e.has_content(&tid).unwrap_or(true))
+        if self.e.ephemeral_thing(&tid).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&tid) {
+            return Ok(true);
+        }
+        Ok(self.e.knows(&tid) && self.e.has_content(&tid)?)
     }
 
     /// Whether the thing's creation is held or it is ephemeral here, deleted or not: what a
@@ -399,6 +402,8 @@ impl Osis {
         AspectRef { db: self, tid, key }
     }
 
+    /// The aspects that read as present on the thing, core ones included (`created.0`). A register
+    /// whose live write was purged reads absent, and is not listed.
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             let v = r.call(m::ASPECTS, vec![Value::Tid(tid)])?;
@@ -407,43 +412,41 @@ impl Osis {
         self.read_local(|r| r.aspects(tid))
     }
 
-    /// `Reader::groups_of`. Attached to a node that cannot be reached: empty (a diagnostic).
-    pub fn groups_of(&self, tid: Tid) -> GroupsOf {
+    /// The groups the thing is in: those listing it as an item or as a subgroup, and every group
+    /// holding it transitively.
+    pub fn groups_of(&self, tid: Tid) -> Result<GroupsOf> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
-            return self.infallible(r.call(m::GROUPS_OF, vec![Value::Tid(tid)]).and_then(crate::port::codec::groups));
+            return crate::port::codec::groups(r.call(m::GROUPS_OF, vec![Value::Tid(tid)])?);
         }
-        self.read_local(|r| r.groups_of(tid))
+        Ok(self.read_local(|r| r.groups_of(tid)))
     }
 
-    pub fn roster(&self, thing: Tid) -> Roster {
+    /// Who holds a role on `thing`.
+    pub fn roster(&self, thing: Tid) -> Result<Roster> {
         if let crate::sources::Source::Remote(r) = self.route(thing) {
-            return self.infallible(r.call(m::ROSTER, vec![Value::Tid(thing)]).and_then(crate::port::codec::roster));
+            return crate::port::codec::roster(r.call(m::ROSTER, vec![Value::Tid(thing)])?);
         }
-        self.read_local(|r| r.roster(thing))
+        Ok(self.read_local(|r| r.roster(thing)))
     }
 
-    pub fn role_on(&self, tid: Tid) -> Option<Role> {
+    /// This node's effective role on `tid` now (`None`: no access).
+    pub fn role_on(&self, tid: Tid) -> Result<Option<Role>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
-            return self.infallible(r.call(m::ROLE_ON, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).opt()?.map(|r| crate::port::codec::role(&r)).transpose()));
+            let v = r.call(m::ROLE_ON, vec![Value::Tid(tid)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(|r| crate::port::codec::role(&r)).transpose();
         }
-        self.read_local(|r| r.role_on(tid))
+        Ok(self.read_local(|r| r.role_on(tid)))
     }
 
-    /// `Reader::knows`: the thing is here, not unknown or deleted.
-    pub fn knows(&self, tid: Tid) -> bool {
+    /// Whether the thing is here with content. `false` for an unknown thing and for one with no
+    /// content, which is a deleted one and equally one never written: a thing just created, or
+    /// only placed or granted. Its creation being here needs no content, and is all a write needs.
+    pub fn knows(&self, tid: Tid) -> Result<bool> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
-            return self.infallible(r.call(m::KNOWS, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).bool()));
+            let v = r.call(m::KNOWS, vec![Value::Tid(tid)])?;
+            return crate::port::codec::Args::of(vec![v]).bool();
         }
         self.read_local(|r| r.knows(tid))
-    }
-
-    /// A remote result of a call whose signature cannot fail: the default when the node could
-    /// not answer, reported as a diagnostic.
-    pub(crate) fn infallible<T: Default>(&self, r: Result<T>) -> T {
-        r.unwrap_or_else(|e| {
-            self.engine(|x| x.report(Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("attached node: {e}") }));
-            T::default()
-        })
     }
 
     pub(crate) fn holds(&self, tid: Tid) -> bool {
@@ -451,31 +454,33 @@ impl Osis {
     }
 
     /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).
-    pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
+    pub fn owner_of(&self, tid: Tid) -> Result<Option<Tid>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
-            return self.infallible(r.call(m::OWNER_OF, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::tid(&t)).transpose()));
+            let v = r.call(m::OWNER_OF, vec![Value::Tid(tid)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::tid(&t)).transpose();
         }
-        self.read_local(|r| r.owner_of(tid))
+        Ok(self.read_local(|r| r.owner_of(tid)))
     }
 
-    fn remote_stamp(&self, r: &crate::port::client::Remote, m: u64, tid: Tid) -> Option<Stamp> {
-        self.infallible(r.call(m, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::stamp).transpose()))
+    fn remote_stamp(&self, r: &crate::port::client::Remote, m: u64, tid: Tid) -> Result<Option<Stamp>> {
+        let v = r.call(m, vec![Value::Tid(tid)])?;
+        crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::stamp).transpose()
     }
 
     /// When the thing was created (`Reader::created`).
-    pub fn created(&self, tid: Tid) -> Option<Stamp> {
+    pub fn created(&self, tid: Tid) -> Result<Option<Stamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CREATED, tid);
         }
-        self.read_local(|r| r.created(tid))
+        Ok(self.read_local(|r| r.created(tid)))
     }
 
     /// When the thing's content last changed (`Reader::changed`).
-    pub fn changed(&self, tid: Tid) -> Option<Stamp> {
+    pub fn changed(&self, tid: Tid) -> Result<Option<Stamp>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CHANGED, tid);
         }
-        self.read_local(|r| r.changed(tid))
+        Ok(self.read_local(|r| r.changed(tid)))
     }
 
     /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
@@ -535,15 +540,23 @@ impl Osis {
     /// once per present aspect (`Source::Initial`, through the dispatcher). Like every
     /// callback, `f` gets the database handle, so it need not capture one (a captured clone in
     /// a detached callback keeps the database open; capture `Osis::downgrade()` instead).
-    pub fn watch_thing(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Subscription {
+    /// Fails `Network` when `tid` is at a node that cannot be reached now. A live watch hears a
+    /// lost connection as an `Err` value, and the aspects again once it is back.
+    pub fn watch_thing(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Result<Subscription> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
             return self.remote_watch_thing(&r, tid, Box::new(f));
         }
-        self.subscribe(Filter::Thing(tid), true, move |r| {
+        let mut failed = None;
+        let sub = self.subscribe(Filter::Thing(tid), true, |r| {
             let mut last: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
-            for ak in r.aspects(tid).unwrap_or_default() {
-                let v = r.value(tid, &ak);
-                last.insert(ak, v);
+            match r.aspects(tid) {
+                Ok(aks) => {
+                    for ak in aks {
+                        let v = r.value(tid, &ak);
+                        last.insert(ak, v);
+                    }
+                }
+                Err(e) => failed = Some(e),
             }
             let mut first = Some(last.clone());
             Box::new(move |db, d| match d {
@@ -564,42 +577,52 @@ impl Osis {
                 }
                 _ => {}
             })
-        })
+        });
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(sub),
+        }
     }
 
-    /// Calls `f` with the roster of `actor` now (through the dispatcher) and on every change.
-    pub fn watch_roster(&self, actor: Tid, mut f: impl FnMut(&Osis, Roster) + Send + 'static) -> Subscription {
+    /// Calls `f` with the roster of `actor` now (through the dispatcher) and on every change. Fails
+    /// `Network` when `actor` is at a node that cannot be reached now; a live watch hears a lost
+    /// connection as an `Err`, and the roster again once it is back.
+    pub fn watch_roster(&self, actor: Tid, mut f: impl FnMut(&Osis, Result<Roster>) + Send + 'static) -> Result<Subscription> {
         if let crate::sources::Source::Remote(r) = self.route(actor) {
             return self.remote_watch_roster(&r, actor, Box::new(f));
         }
-        self.subscribe(Filter::Roster(actor), true, move |r| {
+        Ok(self.subscribe(Filter::Roster(actor), true, move |r| {
             let mut last = r.roster(actor);
             Box::new(move |db, d| match d {
-                Delivery::Initial => f(db, last.clone()),
-                Delivery::Roster => {
-                    let r = db.roster(actor);
-                    if r != last {
+                Delivery::Initial => f(db, Ok(last.clone())),
+                Delivery::Roster => match db.roster(actor) {
+                    Ok(r) if r == last => {}
+                    Ok(r) => {
                         last = r.clone();
-                        f(db, r);
+                        f(db, Ok(r));
                     }
-                }
+                    Err(e) => f(db, Err(e)),
+                },
+                Delivery::Moved => f(db, Err(crate::sources::moved())),
                 _ => {}
             })
-        })
+        }))
     }
 
-    /// Calls `f` with every diagnostic (structured, deduped and rate-limited by the engine).
-    pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, Diagnostic) + Send + 'static) -> Subscription {
+    /// Calls `f` with every diagnostic (structured, deduped and rate-limited by the engine). On a
+    /// handle attached to a node, those of that node: while it cannot be reached none come, and
+    /// `status` says so.
+    pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, Diagnostic) + Send + 'static) -> Result<Subscription> {
         if self.is_attached() {
             return self.remote_on_diagnostic(Box::new(f));
         }
-        self.subscribe(Filter::Diagnostics, false, |_| {
+        Ok(self.subscribe(Filter::Diagnostics, false, |_| {
             Box::new(move |db, d| {
                 if let Delivery::Diagnostic(x) = d {
                     f(db, x)
                 }
             })
-        })
+        }))
     }
 }
 

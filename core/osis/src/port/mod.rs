@@ -22,6 +22,8 @@ pub(crate) mod method {
     pub const ASPECTS: u64 = 2;
     /// `[tid]` -> bool
     pub const KNOWS: u64 = 3;
+    /// `[tid]` -> bool: its creation is here, content or not (what routing asks of a node)
+    pub const HOLDS: u64 = 69;
     /// `[tid]` -> groups
     pub const GROUPS_OF: u64 = 4;
     /// `[tid]` -> roster
@@ -160,7 +162,7 @@ pub(crate) mod method {
     /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this
     /// node's authority and take no actor (they would be a confused deputy).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
+        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | HOLDS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
     }
 }
 

@@ -1,8 +1,8 @@
 # CLI
-> Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes (or, while `osis serve` holds it, runs as that daemon's client over its unix socket); the command table over the `osis` API (which commands work, which report Unsupported for API pieces not built); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from the original plan.
+> Summary: `osis-cli` (binary `osis`): one invocation opens the store, acts, closes (or, while `osis serve` holds it, runs as that daemon's client over its unix socket); the command table over the `osis` API (which commands work, which say "not built yet" for API pieces missing); the value syntax grammar (read back what it prints, numbered or named); the JSON mapping; exit codes; design decisions and deviations from the original plan.
 
 ## Design
-- **Thin**: a command is one API call plus parsing and printing (`cli/src/cmd.rs`, `write.rs`). Missing API pieces surface as the API's `Unsupported` (exit 1, kind `Unsupported`), never as CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `group policy`, `op undelete`; issues/api-deferred.md) report Unsupported from the CLI with the method's name.
+- **Thin**: a command is one API call plus parsing and printing (`cli/src/cmd.rs`, `write.rs`). Missing API pieces say "not built yet" (exit 1, kind `Cli`), never CLI workarounds. Commands whose API method does not exist yet (`ls`, `backlinks`, `group policy`, `op undelete`; issues/api-deferred.md) report Unsupported from the CLI with the method's name.
 - **Store**: `-s DIR` / `OSIS_STORE` / `$XDG_DATA_HOME/osis/default`. Missing (`db.redb` absent): exit 8. Locked: if `<store>/sock` names a socket a daemon (`osis serve`) answers on, the invocation attaches to it (`Osis::attach`, Owner tier, notes/client-port.md) and runs the whole command there, same output and exit codes; else exit 8. `inspect` (needs the engine) and `serve` never attach (exit 8 while locked). Every other command runs through it, also those that wait on other nodes (`link redeem/revoke`, `demote`, `device rm`, `card import`, `chat join/kick`, `wait`: they wait at the node, notes/client-port.md §2; the node's own `wait_timeout` bounds each of its waits, `--timeout` only drops the call sooner), except `group source` (exit 1 saying so: its attachment and secret live in the process holding the store) and any call on a group the node routes elsewhere (exit 1 `Unsupported`, notes/client-port.md §8). One process per store holds only while no daemon runs. The lock is redb's file lock; the CLI writes its pid to `<store>/pid` after opening so a second opener says `store in use by pid N`. `init` refuses a non-empty directory (exit 8). `<store>/cli.toml` holds registered schema paths (`schemas = [ "…", ]`, one quoted path per line; absolute). No other state.
 - **Entry points**: `osis_cli::main_with(args, stdin, stdout, stderr) -> i32`; `osis_cli::run(args, Option<StoreSel>, Io)` also takes a memory store (tests) and the terminal flag (`edit` opens `$EDITOR` only on a terminal).
 - **Futures** (`restore`, `demote`, `redeem`, `import_contact`, `remove_device`, `revoke_link`, `revoke_joiner`, `wait_synced`): polled on the calling thread by a park/unpark waker with the `--timeout` deadline (exit 6; `wait_synced` on its own deadline, `wait_sync`: an `Unsynced` naming a `Refused` group says "host ADDR does not admit group URI (yet)" (`sync`, `wait`, delivering commands); `init --host` does not wait, so a refused home shows only in `status`); sync runs on the API's own runtime. Each invocation ends with `Osis::close`, which waits until the store is free.
@@ -28,7 +28,7 @@
 - `roster T --watch` added for `watch_roster`.
 
 ## Command table
-Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = works; 2nd = Unsupported (API piece not built).
+Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = works; 2nd = "not built yet" (API piece not built).
 
 | command | API | state |
 |---|---|---|
@@ -52,7 +52,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | (none: interactive editors only) | `edit_text` (text sessions) | |
 | (none: a CLI process is not there to keep a value alive) | `keep_alive` | |
 | `write` (stdin) | one `write` batch | now |
-| `show T` | `aspects`, `get`, `knows` (`state present/deleted`), `groups_of`, `role_on`, `owner_of`, `created`, `changed` | now |
+| `show T` | `aspects`, `get`, `knows` (`state present/empty`: empty is deleted or never written, JSON `empty`), `groups_of`, `role_on`, `owner_of`, `created`, `changed` | now |
 | `aspects T` / `delete T` | `aspects` / `Write::delete` | now |
 | `ls G` / `backlinks T` | query / backlinks | 2nd (no API yet) |
 | `watch T [AK]` | `at().on_change` / `watch_thing` | now |
@@ -108,17 +108,17 @@ One JSON document per command; streaming commands print JSON lines. int → numb
 | code | meaning |
 |---|---|
 | 0 | ok |
-| 1 | other: `Storage`, `Closed`, `NotUndoable`, `Unsupported`, I/O |
+| 1 | other: `Storage`, `Closed`, `NotUndoable`, `Unsupported`, a command not built yet (kind `Cli`), I/O |
 | 2 | usage, unparsable argument or value |
 | 3 | `UnknownThing`, `UnknownActor`, absent on `get`, nothing to undo/redo |
-| 4 | `Permission` |
+| 4 | `Permission`, `Refused` |
 | 5 | `TooLarge`, `Type` |
 | 6 | `Network`, `Unsynced`, timeout |
 | 7 | `Invalid` (also a schema that does not parse or check) |
 | 8 | store missing, locked, or (on `init`) not empty |
 
 ## Tests
-tests/it/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/it/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, streams, the local sharing commands, Unsupported commands, the command-table coverage check). Tier 2: tests/it/localhost.rs runs the binary against a real `osis serve` with three store directories (notes/testing.md).
+tests/it/syntax.rs (round trips as properties, printed forms, JSON mapping); tests/it/cli.rs (in-process runs on memory and temp-dir stores: commands, exit codes, lock, `write` atomicity, undo, schema forms, streams, the local sharing commands, commands not built yet, the command-table coverage check). Tier 2: tests/it/localhost.rs runs the binary against a real `osis serve` with three store directories (notes/testing.md).
 
 ## Not built
 Proxying through an app that holds the store (only `serve` listens); `edit_text` sessions (keystroke editing is a UI concern; `edit` covers scripts); shell completion, REPL, colour, paging; aliases beyond `me`/`node`/`home`; bearer read (`open_link`).

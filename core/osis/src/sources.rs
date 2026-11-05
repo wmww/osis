@@ -10,7 +10,7 @@
 //! 1. a process with no store: its attachments;
 //! 2. a routed group in S: the node of the route, attached or not, whatever else holds `t`;
 //! 3. `t` known here: this engine;
-//! 4. else the attachments, in order: the first that knows `t`, the first unreachable one stopping
+//! 4. else the attachments, in order: the first that holds `t`, the first unreachable one stopping
 //!    the search (a later one must not answer for it); none: this engine, which says unknown.
 //!
 //! A local write is decided twice for one reason: a route decided Local before a move may run
@@ -172,7 +172,7 @@ fn split_things(l: &mut Locked) -> BTreeSet<Tid> {
 /// The attachment that answers for a thing known here to none (rule 4).
 fn ask(first: &Arc<Remote>, rs: &[Arc<Remote>], tid: Tid) -> Arc<Remote> {
     for r in rs {
-        match r.call(method::KNOWS, vec![Value::Tid(tid)]) {
+        match r.call(method::HOLDS, vec![Value::Tid(tid)]) {
             Ok(Value::Bool(false)) => {}
             // it knows, or cannot say: this call goes there, and fails `Network` if down
             _ => return r.clone(),
@@ -532,8 +532,8 @@ impl Osis {
         }
         let Some(r) = self.locked(|l| l.remotes.iter().find(|r| r.addr == text).cloned()) else { return Err(Error::Invalid(format!("not attached to {text}"))) };
         crate::net::blocking(|| r.first())?;
-        // Value::Bool(false): the node does not know it, or the client's actor may not read it
-        if r.call(method::KNOWS, vec![Value::Tid(group)])? != Value::Bool(true) {
+        // Value::Bool(false): the node does not hold it, or the client's actor may not read it
+        if r.call(method::HOLDS, vec![Value::Tid(group)])? != Value::Bool(true) {
             return Err(Error::UnknownThing { tid: group });
         }
         let (held, live) = self.locked(|l| {
@@ -637,7 +637,8 @@ impl Osis {
         }
     }
 
-    /// The groups this node reads and writes at another node, with its address.
+    /// The groups this node reads and writes at another node, with its address: this process's own
+    /// table, so it cannot fail, and a handle with no store has none.
     pub fn routes(&self) -> BTreeMap<Tid, String> {
         self.locked(|l| l.routes.clone())
     }

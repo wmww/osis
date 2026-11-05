@@ -7,6 +7,7 @@ use crate::json::J;
 use crate::{exit, parse_dur, usage};
 use osis::{Tid, WaitForSync};
 use osis_chat::{Body, Draft, EditMode, Entry, Event, Id, Message, Options, PurgeBy, Timeline};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, mpsc};
 
 fn id(s: &str) -> anyhow::Result<Id> {
@@ -277,14 +278,15 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         ChatCmd::Members { chat } => {
             let t = ctx.tid(&chat)?;
             pull(ctx, t);
-            let m = osis_chat::members(&db, t);
-            let links = osis_chat::member_links(&db, t);
+            let m = osis_chat::members(&db, t)?;
+            let links = osis_chat::member_links(&db, t)?;
             let s = osis_chat::settings(&db, t)?;
             // through an actor, or none: a joiner's `via` is its link's K
-            let via = |p: Tid| match db.holder_path(t, p).as_slice() {
+            let via = m.keys().map(|p| Ok((*p, match db.holder_path(t, *p)?.as_slice() {
                 [(_, k), _] => Some(*k),
                 _ => None,
-            };
+            }))).collect::<osis::Result<BTreeMap<Tid, Option<Tid>>>>()?;
+            let via = |p: Tid| via.get(&p).copied().flatten();
             let mut text: Vec<String> = m.iter().map(|(p, r)| format!("{} {r:?}{}", p.to_uri(), via(*p).map_or_else(String::new, |k| format!(" via {}", k.to_uri())))).collect();
             text.extend(links.iter().map(|(k, r)| format!("link {} {r:?}", k.to_uri())));
             let j = J::obj([
@@ -313,7 +315,7 @@ fn pull(ctx: &mut Ctx<'_>, t: Tid) {
 /// Waits a moment for what the hosts have of `t` (best effort).
 fn catch_up(ctx: &mut Ctx<'_>, t: Tid) {
     let db = ctx.db.clone();
-    if !db.hosts().is_empty() {
+    if db.hosts().is_ok_and(|h| !h.is_empty()) {
         let _ = db.sync_now();
         let _ = wait(ctx, db.wait_synced(osis::SyncScope::Group(t), crate::DEFAULT_WAIT.min(std::time::Duration::from_secs(10))));
     }
@@ -321,7 +323,7 @@ fn catch_up(ctx: &mut Ctx<'_>, t: Tid) {
 
 /// What this command wrote reaches the hosts before the process exits; a daemon sees to it itself.
 fn send_out(ctx: &mut Ctx<'_>, shared: Option<Tid>) -> anyhow::Result<()> {
-    if ctx.db.is_attached() || ctx.db.hosts().is_empty() {
+    if ctx.db.is_attached() || ctx.db.hosts()?.is_empty() {
         return Ok(());
     }
     deliver(ctx, shared.map(|t| t.to_uri()))

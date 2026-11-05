@@ -14,9 +14,9 @@
 //! - a write in flight when it drops: blocks until reconnected, then its one result;
 //!   `OutcomeUnknown` if the node restarted, forgot the nonce, refused the session or
 //!   `Config::wait_timeout` passed with no connection;
-//! - a watch: `Err(Network)` while down, then the value again as a new `Source::Initial`; a
-//!   `watch_thing` or `watch_status` started while down too. `watch_roster` and `on_diagnostic`
-//!   have no way to say it is down: quiet until it is up, then as a live one.
+//! - a watch: `Err(Network)` while down, then the value again as a new `Source::Initial`;
+//! - a watch started while down: `Err(Network)` from the call, except what does not need the node
+//!   to answer: `watch_status`, which reports it down, and `on_diagnostic`, quiet until it is up.
 //!
 //! `OutcomeUnknown` means the write may or may not have applied. Repeating it is a new write (a
 //! new nonce), so a blind repeat can apply it twice: read what it wrote first, and repeat only if
@@ -268,8 +268,8 @@ impl Remote {
         match crate::net::blocking(|| rx.recv()) {
             Ok(Ok(Outcome::Ok { value })) => Ok(value),
             Ok(Ok(Outcome::Err { code, detail })) => Err(c::error_of(code, detail)),
-            Ok(Err(Code::REFUSED)) => Err(Error::Unsupported("refused by the node (no session, or revoked)".into())),
-            Ok(Err(Code::UNSUPPORTED)) => Err(Error::Unsupported("node too old".into())),
+            Ok(Err(Code::REFUSED)) => Err(Error::Refused("no session, or revoked".into())),
+            Ok(Err(Code::UNSUPPORTED)) => Err(Error::Refused(NO_PORT.into())),
             Ok(Err(code)) => Err(net(format!("node answered error {}", code.0))),
             // a write whose reply was lost may or may not have applied
             Err(_) if once => Err(Error::OutcomeUnknown),
@@ -303,6 +303,9 @@ struct SubEntry {
     again: bool,
     sink: Sink,
 }
+
+/// A protocol Error 11 to a request: what answered is no node serving the client port (a host).
+const NO_PORT: &str = "this address serves no client port";
 
 /// How a connection's start ended.
 enum Started {
@@ -351,10 +354,10 @@ fn new_session(peer_static_key: [u8; 32]) -> ClientSession {
 /// How a session ends when its Auth is not answered by a Reply. `keyed`: it sent a secret.
 fn not_authed(r: std::result::Result<Outcome, Code>, keyed: bool) -> Started {
     match r {
-        Err(Code::REFUSED) if keyed => Started::Refused(Error::Unsupported("the node refused this client secret".into())),
+        Err(Code::REFUSED) if keyed => Started::Refused(Error::Refused("this client secret".into())),
         Err(Code::RATE_LIMITED) => Started::Failed(net("the node holds as many connections of this client as it takes")),
-        Err(Code::REFUSED) => Started::Refused(Error::Unsupported("the node refused this session (not its uid)".into())),
-        Err(Code::UNSUPPORTED) => Started::Refused(Error::Unsupported("node too old".into())),
+        Err(Code::REFUSED) => Started::Refused(Error::Refused("this session (not its uid)".into())),
+        Err(Code::UNSUPPORTED) => Started::Refused(Error::Refused(NO_PORT.into())),
         _ => Started::Failed(net("no answer to Auth")),
     }
 }
@@ -809,7 +812,7 @@ impl Osis {
     /// the node acts as the client's actor, so `me()` is that actor, what it may not read
     /// reads as unknown, process-wide calls fail `Unsupported`. Dials with `cfg.transport` (default
     /// QUIC). A unix address is `Invalid`: the secret goes only over a keyed transport. Fails
-    /// `Unsupported` when the node refuses the secret, `Network` past its connection cap or when
+    /// `Refused` when the node refuses the secret, `Network` past its connection cap or when
     /// it cannot be reached (within `cfg.wait_timeout`). Reconnects by itself afterwards (module
     /// comment).
     pub fn attach_client(addr: &crate::HostAddr, secret: &crate::ClientSecret, mut cfg: Config) -> Result<Osis> {
@@ -972,11 +975,11 @@ impl Osis {
         })
     }
 
-    /// `remote_sub` for a call that cannot return an error: with the node down the callback hears
-    /// `Closed` now and the first value when it is up (a live one's reconnect).
-    fn remote_sub_kept(&self, r: &Arc<Remote>, on: Option<Tid>, filter: Value, cb: Callback) -> Subscription {
+    /// `remote_sub` for a watch that needs no answer to start: with the node down the callback
+    /// hears `Closed` now and the first value when it is up (a live one's reconnect).
+    fn remote_sub_kept(&self, r: &Arc<Remote>, on: Option<Tid>, filter: Value, cb: Callback) -> Result<Subscription> {
         if r.down().is_none() {
-            return self.remote_sub(r, on, filter, true, cb).map(|x| x.0).unwrap_or_else(|e| self.dead_sub(e));
+            return Ok(self.remote_sub(r, on, filter, true, cb)?.0);
         }
         let token = next_token();
         let sub = self.port_register(r, token, on, cb);
@@ -984,7 +987,7 @@ impl Osis {
         if r.tx.send(Cmd::Sub { token, filter, again: true, sink: self.port_sink(token, None) }).is_err() {
             self.port_sink(token, None)(PortEvent::Closed);
         }
-        sub
+        Ok(sub)
     }
 
     /// Waits for the attached node's deliveries for changes made so far to reach the
@@ -1146,7 +1149,7 @@ impl Osis {
     }
 
     /// `watch_thing` at the attached node.
-    pub(crate) fn remote_watch_thing(&self, r: &Arc<Remote>, tid: Tid, mut f: ChangeFn) -> Subscription {
+    pub(crate) fn remote_watch_thing(&self, r: &Arc<Remote>, tid: Tid, mut f: ChangeFn) -> Result<Subscription> {
         let mut last: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
@@ -1185,26 +1188,36 @@ impl Osis {
                 }
             }
         });
-        self.remote_sub_kept(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), cb)
+        Ok(self.remote_sub(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), true, cb)?.0)
     }
 
     /// `watch_roster` at the attached node.
-    pub(crate) fn remote_watch_roster(&self, r: &Arc<Remote>, actor: Tid, mut f: CallbackOf<crate::read::Roster>) -> Subscription {
+    pub(crate) fn remote_watch_roster(&self, r: &Arc<Remote>, actor: Tid, mut f: CallbackOf<Result<crate::read::Roster>>) -> Result<Subscription> {
         let mut last = None;
         let cb: Callback = Box::new(move |db, d| {
-            let Delivery::Port(PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v })) = d else { return };
-            if let Ok(r) = c::roster(v)
-                && last.as_ref() != Some(&r)
-            {
-                last = Some(r.clone());
-                f(db, r);
+            let Delivery::Port(ev) = d else { return };
+            match ev {
+                PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v }) => match c::roster(v) {
+                    Ok(r) if last.as_ref() == Some(&r) => {}
+                    Ok(r) => {
+                        last = Some(r.clone());
+                        f(db, Ok(r));
+                    }
+                    Err(e) => f(db, Err(e)),
+                },
+                PortEvent::Notify(Payload::TooLarge { .. }) => f(db, Err(Error::TooLarge { limit: REPLY_BUDGET })),
+                // what comes back after it is told again, even if equal
+                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
+                    last = None;
+                    f(db, Err(sub_ended()));
+                }
             }
         });
-        self.remote_sub_kept(r, Some(actor), Value::List(vec![u(super::filter::ROSTER), Value::Tid(actor)]), cb)
+        Ok(self.remote_sub(r, Some(actor), Value::List(vec![u(super::filter::ROSTER), Value::Tid(actor)]), true, cb)?.0)
     }
 
     /// `on_diagnostic` at the attached node (its diagnostics; this process's own go nowhere).
-    pub(crate) fn remote_on_diagnostic(&self, mut f: CallbackOf<osis_node::Diagnostic>) -> Subscription {
+    pub(crate) fn remote_on_diagnostic(&self, mut f: CallbackOf<osis_node::Diagnostic>) -> Result<Subscription> {
         let cb: Callback = Box::new(move |db, d| {
             if let Delivery::Port(PortEvent::Notify(Payload::Delivery { value })) = d
                 && let Ok(x) = c::diag(value)
@@ -1216,7 +1229,7 @@ impl Osis {
     }
 
     /// `watch_status` at the attached node.
-    pub(crate) fn remote_watch_status(&self, mut f: CallbackOf<crate::share::Status>) -> Subscription {
+    pub(crate) fn remote_watch_status(&self, mut f: CallbackOf<crate::share::Status>) -> Result<Subscription> {
         // every change, and the attachment going down or up, shows as the merged status now
         let cb: Callback = Box::new(move |db, d| {
             if matches!(d, Delivery::Port(_))
@@ -1268,13 +1281,6 @@ impl Osis {
             return Err(Error::Unsupported("a thin client: only its node's owner runs this".into()));
         }
         self.remote_task(self.primary(), m, args).await
-    }
-
-    /// A subscription that never fires (a remote watch whose Sub failed on a call that cannot
-    /// return an error).
-    fn dead_sub(&self, e: Error) -> Subscription {
-        self.infallible::<()>(Err(e));
-        self.inner.dispatch.register(u64::MAX, Filter::Port(u64::MAX, None), Box::new(|_, _| {}))
     }
 }
 

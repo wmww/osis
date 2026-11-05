@@ -113,7 +113,7 @@ fn share_notebook_with_a_second_person() {
     alice.grant(nb, b, Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(title(&bob, plan).unwrap().as_deref(), Some("Plan"));
-    assert_eq!(bob.role_on(plan), Some(Role::Write));
+    assert_eq!(bob.role_on(plan).unwrap(), Some(Role::Write));
 
     rename(&bob, plan, "Plan", "Plan: Lisbon").unwrap();
     let travel = private_tag(&alice, "travel").unwrap();

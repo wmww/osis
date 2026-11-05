@@ -342,6 +342,19 @@ fn disconnected_remote_is_network_never_stale() {
     assert!(matches!(x.p.at(x.t, title()).get_value(), Err(Error::Network(_))));
     assert!(matches!(x.p.aspects(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.at(x.t, title()).watch(), Err(Error::Network(_))));
+    // every read of a thing there says so, none answers with a default
+    assert!(matches!(x.p.knows(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.groups_of(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.roster(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.role_on(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.owner_of(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.created(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.changed(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.reach(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.holder_path(x.t, x.p.me()), Err(Error::Network(_))));
+    assert!(matches!(x.p.links(x.t), Err(Error::Network(_))));
+    assert!(matches!(x.p.watch_thing(x.t, |_, _| {}), Err(Error::Network(_))));
+    assert!(matches!(x.p.watch_roster(x.t, |_, _| {}), Err(Error::Network(_))));
     let before = x.p_local_copy();
     assert!(matches!(x.p.write_with(|w| w.at(x.t, title()).set(&s("lost?"))), Err(Error::Network(_))));
     assert_eq!(x.p_local_copy(), before);
@@ -396,7 +409,7 @@ fn a_nodes_client_does_not_read_what_it_moved_away() {
     x.to_remote();
     x.set_n("newer");
     assert_eq!(client.get(x.t, title()).unwrap(), None);
-    assert!(!client.knows(x.t));
+    assert!(!client.knows(x.t).unwrap());
     until("its subscription lapsed", || w.current().is_err());
     drop(x.host);
 }
@@ -491,7 +504,7 @@ fn restart_keeps_the_attachment_working() {
     assert!(matches!(c2.write_with(|w| w.at(t, title()).set(&s("not sent"))), Err(Error::Network(_))));
     // the node restarts on its store and listens again
     let (net, store, addr, urls) = (x.net.clone(), x.n_store.clone(), x.addr.clone(), x.urls.clone());
-    std::mem::replace(&mut x.n, Osis::create(Config::memory()).unwrap().0).close().unwrap();
+    assert_eq!(std::mem::replace(&mut x.n, Osis::create(Config::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
     let n2 = Osis::open(cfg_on(&net, "n", &store, vec![addr])).unwrap();
     assert_eq!(n2.client_listen(&urls).unwrap().remove(0), x.nc, "the client listener's key survives a restart");
     net.heal("c1", "n");
@@ -526,7 +539,7 @@ fn write_in_flight_across_a_restart_is_unknown() {
     x.net.partition("c1", "n");
     x.net.disconnect("c1", "n");
     let (net, store, addr, urls) = (x.net.clone(), x.n_store.clone(), x.addr.clone(), x.urls.clone());
-    std::mem::replace(&mut x.n, Osis::create(Config::memory()).unwrap().0).close().unwrap();
+    assert_eq!(std::mem::replace(&mut x.n, Osis::create(Config::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
     let n2 = Osis::open(cfg_on(&net, "n", &store, vec![addr])).unwrap();
     n2.client_listen(&urls).unwrap();
     net.heal("c1", "n");
@@ -589,7 +602,7 @@ fn owner_reconnect_registers_schemas_again() {
         Ok(t)
     }).unwrap();
     let watch = c.at(t, title()).watch().unwrap();
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
     until("down", || !c.status().unwrap().remotes[0].connected);
     let n = open(false);
     until("reconnected", || c.status().unwrap().remotes[0].connected);
@@ -636,7 +649,7 @@ fn client_listener_key_is_its_own() {
     assert_ne!(key, own(dialable.expose()));
     let lan = x.n.sync_engine(|s| s.lan_secret());
     assert_ne!(key, own(lan.expose()));
-    assert_ne!(Some(key), x.n.host_key());
+    assert_ne!(Some(key), x.n.host_key().unwrap());
     assert_eq!(x.n.sync_engine(|s| s.client_listen_key()), Some(key));
     // rotate_reach: nothing changes for clients
     x.n.rotate_reach().unwrap();
@@ -738,7 +751,7 @@ fn config_remotes_and_the_persisted_route() {
     x.set_n("n1");
     assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("n1")));
     let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
-    std::mem::replace(&mut x.p, Osis::create(Config::memory()).unwrap().0).close().unwrap();
+    assert_eq!(std::mem::replace(&mut x.p, Osis::create(Config::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
     // reopened without its attachment: Network, never the copy here
     let p2 = Osis::open(cfg_on(&net, "p", &pstore, vec![addr.clone()])).unwrap();
     assert_eq!(p2.routes().get(&x.g), Some(&x.nc.to_string()));
@@ -746,13 +759,13 @@ fn config_remotes_and_the_persisted_route() {
     assert!(matches!(p2.write_with(|w| w.at(x.t, title()).set(&s("z"))), Err(Error::Network(_))));
     let st = p2.status().unwrap();
     assert_eq!(st.remotes, vec![osis::RemoteStatus { address: x.nc.to_string(), connected: false }]);
-    p2.close().unwrap();
+    assert_eq!(p2.close().unwrap(), osis::Close::Closed);
     // reopened with it: the route works, nothing to redo
     let mut c = cfg_on(&net, "p", &pstore, vec![addr.clone()]);
     c.remotes = vec![RemoteConfig { addr: x.nc.clone(), secret: x.secret.clone() }];
     let p3 = Osis::open(c).unwrap();
     until("the attachment came up", || p3.get(x.t, title()).ok().flatten() == Some(s("n1")));
-    p3.close().unwrap();
+    assert_eq!(p3.close().unwrap(), osis::Close::Closed);
     // a route naming a node gone for good: home works with no attachment at all
     let p4 = Osis::open(cfg_on(&net, "p", &pstore, vec![addr])).unwrap();
     block_on(p4.group_source(x.g, GroupSource::Local)).unwrap();
@@ -818,9 +831,9 @@ fn thin_client_over_quic() {
     let mut short = cfg.clone();
     short.wait_timeout = Duration::from_secs(3);
     assert!(matches!(Osis::attach_client(&HostAddr::new(addr.url(), [8; 32]), &secret, short.clone()), Err(Error::Network(_))));
-    assert!(matches!(Osis::attach_client(&addr, &ClientSecret::from_bytes([1; 32]), short.clone()), Err(Error::Unsupported(_))));
+    assert!(matches!(Osis::attach_client(&addr, &ClientSecret::from_bytes([1; 32]), short.clone()), Err(Error::Refused(_))));
     // restart on the same store and port: the same address, the session comes back
-    n.close().unwrap();
+    assert_eq!(n.close().unwrap(), osis::Close::Closed);
     until("down", || !c.status().unwrap().remotes[0].connected);
     assert!(matches!(c.get(t, title()), Err(Error::Network(_))));
     assert!(matches!(watch.current(), Err(Error::Network(_))));
@@ -1050,7 +1063,7 @@ fn a_demotion_of_a_routed_group_is_refused() {
     let d = osis::Demotion { sync: osis::WaitForSync::Skip, ..Default::default() };
     let r = block_on(x.p.demote(x.g, x.actor, osis::Lower::Remove, d));
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
-    assert!(x.n.roster(x.g).contains_key(&x.actor));
+    assert!(x.n.roster(x.g).unwrap().contains_key(&x.actor));
     assert!(x.p.engine(|e| e.roster(&x.g).contains_key(&x.actor)), "nothing written to the local copy");
     drop(x.host);
 }
@@ -1147,21 +1160,22 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1 Reconnect: a watch started while the node is down, on a call that returns no error, tells so and comes up with the connection: no silent dead subscription
+// spec/sync.md §10, notes/client-port.md §1 Reconnect: a watch of a thing started while the node is down fails `Network`, and works once it is up.
 #[test]
-fn a_watch_started_while_down_comes_up() {
+fn a_watch_started_while_down_fails_and_works_once_up() {
     let x = world();
     x.attach_p();
     x.to_remote();
     x.net.partition("p", "n");
     x.net.disconnect("p", "n");
     until("down", || !x.p.status().unwrap().remotes[0].connected);
+    assert!(matches!(x.p.watch_thing(x.t, |_, _| {}), Err(Error::Network(_))));
+    x.net.heal("p", "n");
+    until("up", || x.p.status().unwrap().remotes[0].connected);
     let (tx, rx) = channel();
     let _sub = x.p.watch_thing(x.t, move |_, ch| {
         let _ = tx.send(ch.value.clone());
-    });
-    assert!(matches!(rx.recv_timeout(W).unwrap(), Err(Error::Network(_))));
-    x.net.heal("p", "n");
+    }).unwrap();
     loop {
         if rx.recv_timeout(W).unwrap() == Ok(Some(s("first"))) {
             break;
@@ -1472,7 +1486,7 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
     let h = second_group(&x);
     until("N has H", || {
         let _ = x.n.sync_now();
-        x.n.knows(h) && x.n.status().unwrap().groups.contains_key(&h)
+        x.n.knows(h).unwrap() && x.n.status().unwrap().groups.contains_key(&h)
     });
     x.attach_p();
     x.to_remote();
@@ -1525,6 +1539,21 @@ fn a_client_of_this_node_reads_no_split_thing() {
     drop(x.host);
 }
 
+// spec/sync.md §10, notes/client-port.md §6 Moving: a group with no content yet is held at the node all the same: it can be moved there, though `knows` reads `false`.
+#[test]
+fn an_empty_group_at_the_node_can_be_routed_to() {
+    let x = world();
+    x.attach_p();
+    let e = x.n.write_with(|w| w.create(x.n.me())).unwrap();
+    x.n.sync(e, &[]).unwrap();
+    x.n.grant(e, x.actor, Role::Read, Default::default()).unwrap();
+    let c = x.thin("c9");
+    assert!(!c.knows(e).unwrap(), "no content: the premise");
+    block_on(x.p.group_source(e, GroupSource::Remote(x.nc.clone()))).unwrap();
+    assert_eq!(x.p.routes().get(&e), Some(&x.nc.to_string()));
+    drop(x.host);
+}
+
 // spec/sync.md §10, notes/client-port.md §6 Moving: a group held here without a live label comes home: this engine's role decides (the route would ask the node, where the client's actor reads nothing of it), and its first label is written while the route still stands
 #[test]
 fn a_group_without_a_label_here_comes_home() {
@@ -1562,26 +1591,35 @@ fn removing_a_client_of_a_routed_group_waits_for_it_to_come_home() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1 Reconnect: `watch_roster` and `on_diagnostic` started while the node is down say nothing (no way to) and come up with the connection, each its value once
+// spec/sync.md §10, notes/client-port.md §1 Reconnect: `watch_status` and `on_diagnostic` need no answer to start: started while the node is down, the first tells so, the second is quiet, and both come up with the connection. A roster watch losing its connection says so, and shows the roster again.
 #[test]
-fn roster_and_diagnostic_watches_started_while_down_come_up() {
+fn status_and_diagnostic_watches_started_while_down_come_up() {
     let x = world();
     let c = x.thin("c1");
-    x.net.partition("c1", "n");
-    x.net.disconnect("c1", "n");
-    until("down", || c.get(x.t, title()).is_err());
     let (tx, rx) = channel();
     let _r = c.watch_roster(x.g, move |_, r| {
         let _ = tx.send(r);
-    });
+    }).unwrap();
+    assert!(rx.recv_timeout(W).unwrap().unwrap().contains_key(&x.actor));
+    x.net.partition("c1", "n");
+    x.net.disconnect("c1", "n");
+    until("down", || c.get(x.t, title()).is_err());
+    assert!(matches!(rx.recv_timeout(W).unwrap(), Err(Error::Network(_))), "the lost connection is told");
+    assert!(matches!(c.watch_roster(x.g, |_, _| {}), Err(Error::Network(_))));
+    let (st, sr) = channel();
+    let _st = c.watch_status(move |_, s| {
+        let _ = st.send(s.remotes[0].connected);
+    }).unwrap();
+    assert!(!sr.recv_timeout(W).unwrap(), "down, and says so");
     let (dt, dr) = channel();
     let _d = c.on_diagnostic(move |_, d| {
         let _ = dt.send(d.detail.clone());
-    });
-    assert!(rx.recv_timeout(SHORT).is_err(), "quiet while down");
+    }).unwrap();
+    assert!(dr.recv_timeout(SHORT).is_err(), "quiet while down");
     x.net.heal("c1", "n");
-    let first = rx.recv_timeout(W).unwrap();
+    let first = rx.recv_timeout(W).unwrap().unwrap();
     assert!(first.contains_key(&x.actor));
+    while !sr.recv_timeout(W).unwrap() {}
     until("the diagnostics subscription is live", || c.get(x.t, title()).is_ok());
     c.settle();
     let t = x.t;
@@ -1633,7 +1671,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     let h = second_group(&x);
     until("N has H", || {
         let _ = x.n.sync_now();
-        x.n.knows(h) && x.n.status().unwrap().groups.contains_key(&h)
+        x.n.knows(h).unwrap() && x.n.status().unwrap().groups.contains_key(&h)
     });
     x.attach_p();
     x.to_remote();
@@ -1677,7 +1715,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     drop(o);
     let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
-    std::mem::replace(&mut x.p, Osis::create(Config::memory()).unwrap().0).close().unwrap();
+    assert_eq!(std::mem::replace(&mut x.p, Osis::create(Config::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
     let mut c = cfg_on(&net, "p", &pstore, vec![addr]);
     c.remotes = vec![RemoteConfig { addr: x.nc.clone(), secret: x.secret.clone() }];
     let p = Osis::open(c).unwrap();
@@ -1685,7 +1723,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
     let r = p.write_with(|w| w.at(x.t, title()).set(&s("reopened")));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     until("the attachment came up", || p.get(x.t, title()).ok().flatten() == Some(s("first")));
-    p.close().unwrap();
+    assert_eq!(p.close().unwrap(), osis::Close::Closed);
     let _ = std::fs::remove_dir_all(&d);
     drop(x.host);
 }

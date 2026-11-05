@@ -153,7 +153,7 @@ impl Chat {
         let nudge = Nudge::default();
         until("Bob's node hears", || {
             nudge.at(&self.b);
-            self.b.role_on(self.g).is_none() && self.b.engine_settled(self.g)
+            self.b.role_on(self.g).unwrap().is_none() && self.b.engine_settled(self.g)
         });
     }
 
@@ -194,7 +194,7 @@ fn read_big(c: &Osis, t: Tid) -> bool {
 }
 
 fn hidden(c: &Osis, t: Tid) -> bool {
-    !c.knows(t) && matches!(c.get(t, text()), Err(Error::UnknownThing { .. }) | Ok(None))
+    !c.knows(t).unwrap() && matches!(c.get(t, text()), Err(Error::UnknownThing { .. }) | Ok(None))
 }
 
 fn refused(c: &Osis, t: Tid) -> bool {
@@ -227,7 +227,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
         if keep {
             assert_eq!(app.get(x.m, text()).unwrap(), Some(s("hello")), "frozen");
             assert_eq!(app.get(x.m, ak("msg:seen.0")).unwrap(), Some(s("by the app")));
-            assert!(app.groups_of(x.m).item_of.contains(&x.g));
+            assert!(app.groups_of(x.m).unwrap().item_of.contains(&x.g));
             assert!(read_big(&app, x.m), "a large value, by pages");
             assert!(!app.commits(&CommitQuery::new().scope(Scope::Thing(x.m))).unwrap().is_empty());
             // notes/api.md History: its history reads as well, read-only
@@ -245,7 +245,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
             assert!(!app.status().unwrap().groups.contains_key(&x.g), "nothing syncs it");
             assert_eq!(watch.current().unwrap(), Some(s("hello")), "the watch goes on");
             assert_eq!(app.kept_copies().unwrap(), vec![x.g]);
-            assert_eq!(app.role_on(x.m), None, "no role: this is how an app tells");
+            assert_eq!(app.role_on(x.m).unwrap(), None, "no role: this is how an app tells");
             assert!(refused(&app, x.m), "read-only");
             assert!(app.write_with(|w| { let n = w.create(x.g)?; w.place(n, x.g) }).is_err(), "no new message");
             assert!(matches!(app.undo(&Scope::Thing(x.m)), Err(Error::Permission { .. })), "undo writes nothing");
@@ -266,7 +266,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
         }
         assert!(other.kept_copies().unwrap().is_empty());
         let Chat { b, b_store, net, addr, urls, m, g, nc, .. } = x;
-        b.close().unwrap();
+        assert_eq!(b.close().unwrap(), osis::Close::Closed);
         until("down", || !app.status().unwrap().remotes[0].connected);
         let b2 = Osis::open(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
         assert_eq!(b2.client_listen(&urls).unwrap().remove(0), nc);
@@ -287,7 +287,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
         } else {
             assert!(hidden(&app, m));
         }
-        b2.close().unwrap();
+        assert_eq!(b2.close().unwrap(), osis::Close::Closed);
     }
 }
 
@@ -355,7 +355,7 @@ fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
 fn assert_ended(b: &Osis, g: Tid, m: Tid, keep: Option<bool>) {
     assert_eq!(b.kept_copies().unwrap().contains(&g), keep == Some(true), "{keep:?}");
     assert_eq!(b.get(m, text()).unwrap().is_some(), keep == Some(true), "{keep:?}");
-    assert!(b.role_on(g).is_none());
+    assert!(b.role_on(g).unwrap().is_none());
 }
 
 // spec/permissions.md §2 (an `until` passing), §3 Keep: a holder online past its `until`, nobody writing a role commit: its labels are heard out at once, and it drops by itself, erasing or keeping as the default says
@@ -387,7 +387,7 @@ fn an_until_passing_offline_loses_nothing_spec_permissions_2() {
         w.set_online(&b, true);
         w.advance(60_000);
         w.run();
-        assert_eq!(b.role_on(g), Some(Role::Write), "{keep:?}");
+        assert_eq!(b.role_on(g).unwrap(), Some(Role::Write), "{keep:?}");
         assert_eq!(a.get(own, text()).unwrap(), Some(s("unsent")), "{keep:?}");
         b.write_with(|x| x.at(m, text()).set(&s("after"))).unwrap();
         w.run();
@@ -486,7 +486,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     assert!(reads(reader) && reads(leaves_after));
     assert!(!reads(left_before) && !reads(none) && !reads(elsewhere));
     for c in [left_before, none, elsewhere] {
-        assert!(!b.acting_as(c).knows(m) && !b.acting_as(c).knows(g), "exactly as an unknown thing");
+        assert!(!b.acting_as(c).knows(m).unwrap() && !b.acting_as(c).knows(g).unwrap(), "exactly as an unknown thing");
         assert!(b.acting_as(c).kept_copies().unwrap().is_empty());
     }
     assert_eq!(b.acting_as(reader).kept_copies().unwrap(), vec![g]);
@@ -512,12 +512,12 @@ fn a_client_with_its_own_edge_spec_permissions_3() {
         b.grant(g, c, Role::Read, EdgeOpts::default()).unwrap();
         w.run();
         assert_eq!(b.acting_as(c).get(m, text()).unwrap(), Some(s("hello")));
-        assert!(!b.acting_as(other).knows(m));
+        assert!(!b.acting_as(other).knows(m).unwrap());
         sim_kick(&mut w, &a, g, c, own);
         sim_kick(&mut w, &a, g, bob, person);
         assert_eq!(b.acting_as(c).get(m, text()).ok().flatten() == Some(s("hello")), reads, "own {own:?} person {person:?}");
         assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "the node keeps by either");
-        assert!(!b.acting_as(other).knows(m));
+        assert!(!b.acting_as(other).knows(m).unwrap());
         assert!(refused(&b.acting_as(c), m));
     }
 }
@@ -539,7 +539,7 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     assert_eq!(b.acting_as(before).get(m, text()).unwrap(), Some(s("in the chat")), "live, through the realm");
     sim_kick(&mut w, &a, chat, f, None);
     assert_eq!(b.kept_copies().unwrap(), vec![chat]);
-    assert!(b.role_on(f).is_some());
+    assert!(b.role_on(f).unwrap().is_some());
     let (after, _) = b.add_client(None).unwrap();
     b.grant(f, after, Role::Read, Default::default()).unwrap();
     w.run();
@@ -548,7 +548,7 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     for c in [before, after] {
         let c = b.acting_as(c);
         assert_eq!(c.get(in_f, text()).unwrap(), Some(s("hello")), "the realm itself");
-        assert!(!c.knows(m) && !c.knows(chat));
+        assert!(!c.knows(m).unwrap() && !c.knows(chat).unwrap());
         assert!(c.kept_copies().unwrap().is_empty());
     }
 }
@@ -590,9 +590,9 @@ fn a_client_reads_through_a_kept_holder_spec_permissions_3() {
     let kept = b.kept_copies().unwrap();
     assert!(kept.contains(&f) && kept.contains(&chat), "{kept:?}");
     assert_eq!(b.acting_as(app).get(m, text()).unwrap(), Some(s("in the chat")));
-    assert!(!b.acting_as(other).knows(m) && !b.acting_as(other).knows(f));
+    assert!(!b.acting_as(other).knows(m).unwrap() && !b.acting_as(other).knows(f).unwrap());
     b.drop_kept(f).unwrap();
-    assert!(!b.acting_as(app).knows(m), "what hung on it goes");
+    assert!(!b.acting_as(app).knows(m).unwrap(), "what hung on it goes");
 }
 
 // spec/permissions.md §1 (ownerless things), §3 (Keep): a chat with no owner keeps alike: Bob kicked, the copy stands, his app reads it, another client does not
@@ -622,7 +622,7 @@ fn an_ownerless_chat_keeps_spec_permissions_3() {
     assert_eq!(b.kept_copies().unwrap(), vec![g]);
     assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")));
     assert_eq!(b.acting_as(app).get(m, text()).unwrap(), Some(s("hello")));
-    assert!(!b.acting_as(other).knows(m) && !b.acting_as(other).knows(g));
+    assert!(!b.acting_as(other).knows(m).unwrap() && !b.acting_as(other).knows(g).unwrap());
     assert!(refused(&b, m));
 }
 
@@ -723,7 +723,7 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
     let c = b.acting_as(app);
     assert_eq!(b.get(m, e.clone()).unwrap(), Some(s("before")));
     assert_eq!(b.get(thing, e.clone()).unwrap(), Some(s("before")));
-    assert!(!c.knows(thing));
+    assert!(!c.knows(thing).unwrap());
     for db in [&b, &c] {
         assert!(matches!(db.write_with(|x| x.at(m, e.clone()).set(&s("no"))), Err(Error::Permission { .. })));
         assert!(db.write_with(|x| x.at(thing, e.clone()).set(&s("no"))).is_err());
@@ -749,7 +749,7 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     block_on(a.demote(xg, h, Lower::Remove, d)).unwrap();
     let nudge = Nudge::default();
     until("kept", || { nudge.at(b); b.kept_copies().unwrap().contains(&xg) });
-    assert!(b.role_on(h).is_some() && b.role_on(xg).is_none());
+    assert!(b.role_on(h).unwrap().is_some() && b.role_on(xg).unwrap().is_none());
     a.write_with(|w| w.at(t, text()).set(&s("after"))).unwrap();
     let u = a.write_with(|w| { let u = w.create(h)?; w.place(u, h)?; w.at(u, text()).set(&s("live"))?; Ok(u) }).unwrap();
     let nudge = Nudge::default();
@@ -757,13 +757,13 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     assert_eq!(b.get(t, text()).unwrap(), Some(s("before")));
     block_on(b.wait_synced(SyncScope::Group(h), W)).unwrap();
     let Chat { b, b_store, net, addr, .. } = x0;
-    b.close().unwrap();
+    assert_eq!(b.close().unwrap(), osis::Close::Closed);
     let b2 = Osis::open(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
     block_on(b2.wait_synced(SyncScope::Group(h), W)).unwrap();
     assert_eq!(b2.get(t, text()).unwrap(), Some(s("before")));
     assert_eq!(b2.get(u, text()).unwrap(), Some(s("live")));
     assert!(b2.kept_copies().unwrap().contains(&xg));
-    b2.close().unwrap();
+    assert_eq!(b2.close().unwrap(), osis::Close::Closed);
 }
 
 // spec/sync.md §2 (Route), notes/client-port.md Routes for client actors: a thing granted to Bob that nothing carries shows without a route at Bob's node and to Bob's app (a thin client acting as his actor), and the app reads it once the granter syncs it

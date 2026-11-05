@@ -58,7 +58,7 @@ fn tagging_shares_nothing() {
     assert_eq!(a.tags_of(n).unwrap(), vec![shared]);
     assert_eq!(a.reach(n).unwrap().who(), "Only you");
     sync(&a, &b);
-    assert_eq!(b.db.role_on(n), None);
+    assert_eq!(b.db.role_on(n).unwrap(), None);
     a.remove_tag(n, shared).unwrap();
     assert!(a.tags_of(n).unwrap().is_empty());
 }
@@ -128,12 +128,12 @@ fn undo_is_mine_and_keeps_the_thing() {
 fn edited_time() {
     let (a, b) = two_people();
     let n = a.create(NewKind::Note).unwrap();
-    let made = a.changed(n).unwrap();
+    let made = a.changed(n).unwrap().unwrap();
     let tag = shared_tag(&a, &b, Role::Read);
     a.add_tag(n, tag).unwrap();
     a.db.grant(n, tag, Role::Read, EdgeOpts::default()).unwrap();
-    assert_eq!(a.changed(n), Some(made), "a placement or an edge is not an edit");
-    assert!(a.changed(n).unwrap() <= a.db.now().0);
+    assert_eq!(a.changed(n).unwrap(), Some(made), "a placement or an edge is not an edit");
+    assert!(a.changed(n).unwrap().unwrap() <= a.db.now().0);
 }
 
 /// Tagging a tag nests it (a subgroup, not an item); removing un-nests.

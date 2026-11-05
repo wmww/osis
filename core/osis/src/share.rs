@@ -512,7 +512,8 @@ impl Osis {
     /// it (spec/sync.md §2); with none it holds the role and no route, which `status` shows
     /// (`SyncState::NoRoute`, `GroupSync::unrouted`) until `sync` gives the target a label
     /// (`share` does both). Grants one by one each cost about 2.6 KB of boxes: share sets through
-    /// a group.
+    /// a group. Adds, raises, or changes `until` and `invite`. A role below the holder's present
+    /// one is `Invalid`: lowering takes `demote`, which syncs and rotates keys first.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
@@ -528,6 +529,9 @@ impl Osis {
             known_actor(e, holder)?;
             // an edge change keeps its tie; a new hand grant is untied
             let cur = e.roster(&target).get(&holder).copied();
+            if cur.is_some_and(|x| role < x.role) {
+                return Err(Error::Invalid("a lower role needs demote".into()));
+            }
             let tied = cur.and_then(|x| x.tied).map(flows::tied::tie_ct);
             e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)
         })?;
@@ -573,7 +577,7 @@ impl Osis {
                 return Err(Error::UnknownThing { tid: x });
             }
         }
-        let existing = self.roster(tid).get(&group).copied();
+        let existing = self.roster(tid)?.get(&group).copied();
         // a tied edge whose placement is gone here is tied again to the new one
         let retie = existing.is_some_and(|x| x.tied) && self.engine(|e| e.tie_dead(&tid, &group))?;
         let role = existing.filter(|_| retie).map_or(role, |x| x.role.max(role));
@@ -640,7 +644,7 @@ impl Osis {
         if let crate::sources::Source::Remote(r) = self.route_write_all(&[group, target])? {
             return r.call(crate::port::method::REMOVE_EDGE_OF, vec![Value::Tid(group), Value::Tid(target)]).map(drop);
         }
-        if !self.roster(target).contains_key(&group) {
+        if !self.roster(target)?.contains_key(&group) {
             return Ok(());
         }
         let done = self.guarded(&[group, target], |e| match e.may_remove(&target, &group) {
@@ -654,26 +658,21 @@ impl Osis {
     /// Per group, how its holders reach `tid` through it (spec/permissions.md §2): every group
     /// listing it as an item or subgroup (`Tied`, `Untied` or `Excluded`), and every group with
     /// a tied edge on it that no longer lists it (`placed: false`, until that edge goes).
-    pub fn reach(&self, tid: Tid) -> Vec<GroupReach> {
+    pub fn reach(&self, tid: Tid) -> Result<Vec<GroupReach>> {
         if let crate::sources::Source::Remote(r) = self.route(tid) {
-            return self.infallible(r.call(crate::port::method::REACH, vec![Value::Tid(tid)]).and_then(crate::port::codec::reach));
+            return crate::port::codec::reach(r.call(crate::port::method::REACH, vec![Value::Tid(tid)])?);
         }
         let (gs, roster) = self.read_local(|r| (r.groups_of(tid), r.roster(tid)));
         let placed: BTreeSet<Tid> = gs.item_of.into_iter().chain(gs.subgroup_of).collect();
         let mut out: Vec<GroupReach> = placed.iter().map(|g| GroupReach { group: *g, placed: true, share: roster.get(g).copied().map_or(Share::Excluded, share_of) }).collect();
         out.extend(roster.iter().filter(|(g, e)| e.tied && !placed.contains(g)).map(|(g, e)| GroupReach { group: *g, placed: false, share: Share::Tied(e.role) }));
-        out
+        Ok(out)
     }
 
     /// Changes `until`/`invite` of an edge or raises its role (a lower role: `demote`).
     pub fn change_edge(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             return r.call(crate::port::method::CHANGE_EDGE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
-        }
-        if let Some(e) = self.roster(target).get(&holder)
-            && role < e.role
-        {
-            return Err(Error::Invalid("a lower role is a demotion: use demote".into()));
         }
         self.grant(target, holder, role, opts)
     }
@@ -730,11 +729,11 @@ impl Osis {
     /// The edges through which `actor` is a holder of `target` (spec/permissions.md §2): the
     /// (thing, holder) pairs from `target` down to `actor` of a shortest chain, e.g. `[(target,
     /// K), (K, actor)]` for a link joiner; empty when it is none.
-    pub fn holder_path(&self, target: Tid, actor: Tid) -> Vec<(Tid, Tid)> {
+    pub fn holder_path(&self, target: Tid, actor: Tid) -> Result<Vec<(Tid, Tid)>> {
         if let crate::sources::Source::Remote(r) = self.route(target) {
-            return self.infallible(r.call(crate::port::method::HOLDER_PATH, vec![Value::Tid(target), Value::Tid(actor)]).and_then(crate::port::codec::pairs));
+            return crate::port::codec::pairs(r.call(crate::port::method::HOLDER_PATH, vec![Value::Tid(target), Value::Tid(actor)])?);
         }
-        self.read_local(|r| {
+        Ok(self.read_local(|r| {
             let mut via: BTreeMap<Tid, Tid> = BTreeMap::from([(target, target)]);
             let mut queue = std::collections::VecDeque::from([target]);
             while let Some(x) = queue.pop_front() {
@@ -758,7 +757,7 @@ impl Osis {
                 }
             }
             Vec::new()
-        })
+        }))
     }
 
     /// Lowers or removes `holder`'s edge on `target` (spec/permissions.md §2, §3, §5): first the
@@ -784,7 +783,7 @@ impl Osis {
         self.not_routed("demote", target)?;
         // each round removes one way in; the bound only guards against a roster that never settles
         for _ in 0..16 {
-            let path = self.holder_path(target, holder);
+            let path = self.holder_path(target, holder)?;
             let via = match (path.as_slice(), to) {
                 ([], Lower::Remove) => return Ok(()),
                 ([], Lower::To(_)) => return Err(Error::Invalid(format!("{holder} is no holder of {target}"))),
@@ -795,7 +794,7 @@ impl Osis {
             match via {
                 None => self.demote_edge(target, holder, to, d).await?,
                 Some(k) => {
-                    if !self.held_links().iter().any(|h| h.k == k && h.target == target) {
+                    if !self.held_links()?.iter().any(|h| h.k == k && h.target == target) {
                         return Err(Error::Invalid(format!("{holder} reaches {target} through {k}, a group actor: demote it there")));
                     }
                     if to != Lower::Remove {
@@ -814,7 +813,7 @@ impl Osis {
     async fn demote_edge(&self, t: Tid, m: Tid, to: Lower, d: Demotion) -> Result<()> {
         let new = match to {
             Lower::To(role) => {
-                let cur = self.roster(t).get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
+                let cur = self.roster(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
                 Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None })
             }
             Lower::Remove => None,
@@ -1024,41 +1023,42 @@ impl Osis {
 
     /// The person's links to `target` that still work, whichever device made them (each holds
     /// the seed thing; one whose seed has not arrived is not listed).
-    pub fn links(&self, target: Tid) -> Vec<LinkInfo> {
+    pub fn links(&self, target: Tid) -> Result<Vec<LinkInfo>> {
         if let crate::sources::Source::Remote(r) = self.route(target) {
-            return self.infallible(r.call(crate::port::method::LINKS, vec![Value::Tid(target)]).and_then(crate::port::codec::links));
+            return crate::port::codec::links(r.call(crate::port::method::LINKS, vec![Value::Tid(target)])?);
         }
-        self.live_links().into_iter().filter(|i| i.target == target).collect()
+        Ok(self.live_links()?.into_iter().filter(|i| i.target == target).collect())
     }
 
-    /// All the person's links that still work (`links`).
-    pub fn all_links(&self) -> Vec<LinkInfo> {
+    /// All the person's links that still work (`links`). `Unsupported` on a thin client.
+    pub fn all_links(&self) -> Result<Vec<LinkInfo>> {
         if self.is_attached() {
-            return self.infallible(self.rcall(crate::port::method::ALL_LINKS, vec![]).and_then(crate::port::codec::links));
+            return crate::port::codec::links(self.rcall(crate::port::method::ALL_LINKS, vec![])?);
         }
         self.live_links()
     }
 
-    fn live_links(&self) -> Vec<LinkInfo> {
-        self.held_links()
+    fn live_links(&self) -> Result<Vec<LinkInfo>> {
+        Ok(self
+            .held_links()?
             .into_iter()
             .filter_map(|h| {
                 let e = self.engine(|e| e.roster(&h.k).get(&h.l).copied())?;
                 Some(LinkInfo { id: h.k, target: h.target, role: e.role, until: e.until, single_use: h.single_use })
             })
-            .collect()
+            .collect())
     }
 
     /// The links whose seed thing is the person's and whose K it owns (a co-reader can place a
     /// seed thing in a shared group: it names no link of ours).
-    fn held_links(&self) -> Vec<flows::HeldLink> {
+    fn held_links(&self) -> Result<Vec<flows::HeldLink>> {
         let me = self.me();
         self.engine(|e| person_links(e, me))
     }
 
     /// Link `id`'s key L (`held_links`).
     fn link_key(&self, id: Tid) -> Result<Tid> {
-        self.held_links().iter().find(|h| h.k == id).map(|h| h.l).ok_or(Error::Invalid(format!("no link {id} of this person")))
+        self.held_links()?.iter().find(|h| h.k == id).map(|h| h.l).ok_or(Error::Invalid(format!("no link {id} of this person")))
     }
 
     /// Ends a link (spec/permissions.md §8): removes its key from K (joiners stay holders of K;
@@ -1332,18 +1332,19 @@ impl Osis {
     /// caller's choice. None when `node` was no device.
     pub async fn remove_device(&self, node: Tid, d: Demotion) -> Result<Vec<LinkInfo>> {
         let me = self.me();
-        let was = self.roster(me).contains_key(&node);
+        let was = self.roster(me)?.contains_key(&node);
         self.demote(me, node, Lower::Remove, d).await?;
-        Ok(if was { self.all_links() } else { Vec::new() })
+        if was { self.all_links() } else { Ok(Vec::new()) }
     }
 
-    /// The hosts new labels go to (and kept connected).
-    pub fn hosts(&self) -> Vec<HostAddr> {
+    /// The hosts new labels go to (and kept connected). `Unsupported` on a thin client: they are
+    /// its node's.
+    pub fn hosts(&self) -> Result<Vec<HostAddr>> {
         if self.is_attached() {
-            let v = self.rcall(crate::port::method::HOSTS, vec![]).and_then(|v| crate::port::codec::Args::of(vec![v]).list());
-            return v.unwrap_or_default().into_iter().filter_map(|h| crate::port::codec::Args::of(vec![h]).text().ok()?.parse().ok()).collect();
+            let v = self.rcall(crate::port::method::HOSTS, vec![])?;
+            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
         }
-        self.host_addrs().into_iter().map(HostAddr).collect()
+        Ok(self.host_addrs().into_iter().map(HostAddr).collect())
     }
 
     fn host_addrs(&self) -> Vec<osis_label::Address> {
@@ -1360,7 +1361,7 @@ impl Osis {
         if self.is_attached() {
             return self.rcall(crate::port::method::ADD_HOST, vec![Value::Str(s.to_string())]).map(drop);
         }
-        let mut v = self.hosts();
+        let mut v = self.hosts()?;
         if !v.contains(s) {
             v.push(s.clone());
         }
@@ -1373,7 +1374,7 @@ impl Osis {
         if self.is_attached() {
             return self.rcall(crate::port::method::REMOVE_HOST, vec![Value::Str(s.to_string())]).map(drop);
         }
-        let mut v = self.hosts();
+        let mut v = self.hosts()?;
         v.retain(|x| x != s);
         self.set_hosts(v)
     }
@@ -1386,7 +1387,7 @@ impl Osis {
             // links, whichever device made them, and the contact card name their label's hosts in
             // their text: they stay; a routed group too: nothing written here leaves, and a stale
             // list would move it on the way home
-            let links = person_links(x.engine(), me);
+            let links = person_links(x.engine(), me)?;
             let mut fixed: BTreeSet<Tid> = links.iter().map(|h| h.k).chain(x.routes.keys().copied()).collect();
             if let Some(card) = x.engine().app_record(CONTACT)?
                 && let Ok(l) = ContactCard(String::from_utf8_lossy(&card).into_owned()).parse()
@@ -1403,7 +1404,8 @@ impl Osis {
     }
 
     /// Makes `group` synced through `hosts` (default: this database's): its own label
-    /// (spec/sync.md §2); needs admin on the group. A no-op when it has one.
+    /// (spec/sync.md §2); needs admin on the group. A no-op when it has one, unless `hosts` names
+    /// others: `Invalid`, for a group's label keeps its hosts.
     pub fn sync(&self, group: Tid, hosts: &[HostAddr]) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(group)? {
             return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(hosts.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
@@ -1450,6 +1452,7 @@ impl Osis {
         } else {
             self.persist(&[group])?;
         }
+        let named: BTreeSet<osis_label::Address> = hosts.iter().map(|s| s.0.clone()).collect();
         let hosts = if hosts.is_empty() { self.host_addrs() } else { hosts.iter().map(|s| s.0.clone()).collect() };
         if !home {
             self.after_route();
@@ -1457,6 +1460,9 @@ impl Osis {
         self.locked(|x| -> Result<()> {
             if !home {
                 self.guard_local(x, &[group])?;
+            }
+            if !named.is_empty() && x.engine().group_labels(&group)?.iter().any(|l| !l.replaced && !same_set(&l.hosts, &named)) {
+                return Err(Error::Invalid(format!("{group} already syncs through other hosts")));
             }
             self.make_label(x, group, hosts)
         })
@@ -1516,15 +1522,16 @@ impl Osis {
         self.merged_status(local)
     }
 
-    /// Calls `f` with the status now (through the dispatcher) and on every change.
-    pub fn watch_status(&self, mut f: impl FnMut(&Osis, Status) + Send + 'static) -> Subscription {
+    /// Calls `f` with the status now (through the dispatcher) and on every change, a node that
+    /// cannot be reached shown as such (`Status::remotes`) rather than failing the watch.
+    pub fn watch_status(&self, mut f: impl FnMut(&Osis, Status) + Send + 'static) -> Result<Subscription> {
         if self.is_attached() {
             return self.remote_watch_status(Box::new(f));
         }
         // a node with attachments shows them too: not a watch of them, a status at each change here
         let me = self.inner.me;
         let first = self.status().unwrap_or_else(|_| self.locked(|x| status_of(&mut x.sync, me)));
-        self.subscribe(Filter::Status, true, move |_| {
+        Ok(self.subscribe(Filter::Status, true, move |_| {
             let mut first = Some(first);
             Box::new(move |db, d| match d {
                 Delivery::Initial => {
@@ -1535,7 +1542,7 @@ impl Osis {
                 Delivery::Status(s) => f(db, db.merged_status(s.clone()).unwrap_or(s)),
                 _ => {}
             })
-        })
+        }))
     }
 
     /// Resolves once every label in scope finished a pass with nothing outstanding after the
@@ -1664,9 +1671,9 @@ fn persist_in(e: &mut osis_node::Engine, me: Tid, tids: &[Tid]) -> Result<()> {
 }
 
 /// `Osis::held_links`, on this engine.
-fn person_links(e: &mut osis_node::Engine, me: Tid) -> Vec<flows::HeldLink> {
-    let held = e.held_links().map(|h| h.to_vec()).unwrap_or_default();
-    held.into_iter().filter(|h| h.owner == me && e.owner(&h.k) == Some(me)).collect()
+fn person_links(e: &mut osis_node::Engine, me: Tid) -> Result<Vec<flows::HeldLink>> {
+    let held = e.held_links()?.to_vec();
+    Ok(held.into_iter().filter(|h| h.owner == me && e.owner(&h.k) == Some(me)).collect())
 }
 
 fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> bool {

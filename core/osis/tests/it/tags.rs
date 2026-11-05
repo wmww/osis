@@ -99,7 +99,7 @@ fn shared_tag_per_item() {
     share(&alice, trip, b, Role::Read, None).unwrap();
     w.run();
     assert_eq!(text(&bob, plan).unwrap().as_deref(), Some("flights"));
-    assert_eq!(bob.role_on(plan), Some(Role::Read), "capped by the role on the tag");
+    assert_eq!(bob.role_on(plan).unwrap(), Some(Role::Read), "capped by the role on the tag");
     assert!(matches!(edit(&bob, plan, "flights", "x"), Err(Error::Permission { .. })));
     assert_eq!(text(&bob, diary).unwrap(), None, "placed without an edge: not shared");
     assert_eq!(list(&bob, trip).unwrap().0.len(), 2, "the placement itself is visible");
@@ -112,7 +112,7 @@ fn shared_tag_per_item() {
 
     remove(&alice, trip, packing).unwrap();
     w.run();
-    assert!(!alice.roster(packing).contains_key(&trip), "the tied edge went after the unplace");
+    assert!(!alice.roster(packing).unwrap().contains_key(&trip), "the tied edge went after the unplace");
     edit(&alice, packing, "socks", "socks, hat").unwrap();
     w.run();
     assert_eq!(text(&bob, packing).unwrap(), None, "removed from the tag: Bob lost it");
@@ -148,7 +148,7 @@ fn sub_tags_chain_rosters_and_only_what_you_may_share() {
 
     assert_eq!(list(&bob, work).unwrap().1, vec![ideas], "the sub-tag is a tag");
     assert_eq!(text(&bob, pitch).unwrap().as_deref(), Some("pitch"), "reached through the sub-tag");
-    assert_eq!(bob.role_on(pitch), Some(Role::Read), "min(write on Work, read edge on Ideas, write edge on pitch)");
+    assert_eq!(bob.role_on(pitch).unwrap(), Some(Role::Read), "min(write on Work, read edge on Ideas, write edge on pitch)");
     assert!(matches!(edit(&bob, pitch, "pitch", "x"), Err(Error::Permission { .. })));
     assert_eq!(text(&bob, memo).unwrap(), None, "Carol's card is not shared on");
 }
@@ -187,7 +187,7 @@ fn tag_owned_cards_reader_writer_demotion() {
 
     w.until(alice.demote(team, wr, Lower::To(Role::Read), Demotion::default()), 1000, 20).unwrap();
     w.run();
-    assert_eq!(writer.role_on(team), Some(Role::Read));
+    assert_eq!(writer.role_on(team).unwrap(), Some(Role::Read));
     assert!(matches!(edit(&writer, spec, "v2", "v3"), Err(Error::Permission { .. })));
     assert_eq!(text(&reader, notes).unwrap().as_deref(), Some("from the writer"), "earlier writes stay");
 }
@@ -212,5 +212,5 @@ fn invite_holder_shares_on() {
     share(&inviter, team, g, Role::Read, None).unwrap();
     w.run();
     assert_eq!(text(&guest, spec).unwrap().as_deref(), Some("v1"));
-    assert_eq!(alice.roster(team).get(&g).map(|e| e.role), Some(Role::Read));
+    assert_eq!(alice.roster(team).unwrap().get(&g).map(|e| e.role), Some(Role::Read));
 }

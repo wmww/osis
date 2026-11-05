@@ -79,4 +79,15 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     assert_eq!(m.sender, actor, "a client is its own sender");
     edit(&app, c, &find(&app, c, &mine).unwrap().unwrap(), "fixed").unwrap();
     assert_eq!(newest_text(&n, c), Some(Body::Text("fixed".into())));
+    // the node gone: a member list says so, and `leave` acts on no empty answer
+    net.partition("app", "n");
+    net.disconnect("app", "n");
+    let end = Instant::now() + W;
+    while app.knows(c).is_ok() {
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(matches!(members(&app, c), Err(osis::Error::Network(_))));
+    assert!(matches!(leave(&app, c), Err(osis::Error::Network(_))));
+    assert!(n.roster(c).unwrap().contains_key(&actor));
 }

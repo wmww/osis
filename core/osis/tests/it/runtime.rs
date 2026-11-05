@@ -79,7 +79,7 @@ async fn round_trip(host_ep: Transport, url: &str, a: Transport, b: Transport, p
     }
     // close() returns once the database is closed (the driver held only a weak reference)
     let weak = da.downgrade();
-    da.close().unwrap();
+    assert_eq!(da.close().unwrap(), osis::Close::Closed);
     assert!(weak.upgrade().is_none());
     drop(db);
     drop(host_db);
@@ -286,7 +286,7 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     let bob_key = bob.sync_engine(|s| s.own_reach()).unwrap().dialable;
     assert!(!alice.sync_engine(|s| s.served_co_readers()).contains(&bob_key));
     // the link ends (revoked): the key it carried rotates
-    let k = alice.links(g)[0].id;
+    let k = alice.links(g).unwrap()[0].id;
     tokio::time::timeout(GUARD, alice.revoke_link(k, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).await.unwrap().unwrap();
     tokio::time::timeout(GUARD, async {
         while alice.sync_engine(|s| s.own_reach()).unwrap().dialable == now.dialable {
@@ -302,7 +302,7 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     net.partition("c", "s");
     assert!(matches!(carol.redeem(&link).await, Err(osis::Error::Network(_))));
     assert!(carol.sync_engine(|s| s.link_peer_keys()).is_empty());
-    assert_eq!(carol.role_on(g), None);
+    assert_eq!(carol.role_on(g).unwrap(), None);
     // even at the sharer's current key, K refuses the revoked link's key: the open fails there.
     // Erin is told at once; the new key is listened on first (a dial before that pauses the peer)
     let nk = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
@@ -323,7 +323,7 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     let erin = Osis::create(e).unwrap().0;
     assert!(matches!(tokio::time::timeout(GUARD, erin.redeem(&patched)).await.unwrap(), Err(osis::Error::Invalid(_))), "K's open was refused at the sharer");
     assert!(erin.sync_engine(|s| s.link_peer_keys()).is_empty());
-    assert_eq!(erin.role_on(g), None);
+    assert_eq!(erin.role_on(g).unwrap(), None);
     // a redemption dropped while it waits forgets its follow too (the key guard)
     net.partition("d", "s");
     let dave = Osis::create(cfg(4, vec![], Transport::InProcess(net.endpoint("d")))).unwrap().0;
@@ -375,7 +375,7 @@ async fn redeem_direct_no_host_in_process_spec_permissions_8() {
     .await
     .unwrap();
     // Bob leaves, K rotates: the link goes on for a next redeemer at her device (spec/sync.md §2)
-    let k = alice.links(g)[0].id;
+    let k = alice.links(g).unwrap()[0].id;
     let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
     tokio::time::timeout(GUARD, bob.demote(k, bob.me(), osis::Lower::Remove, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).await.unwrap().unwrap();
     tokio::time::timeout(GUARD, async {
@@ -423,7 +423,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_8() {
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
     tokio::time::timeout(GUARD, async {
-        while !alice.links(g).is_empty() {
+        while !alice.links(g).unwrap().is_empty() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -492,7 +492,7 @@ fn close_while_driver_runs_no_timer_panic() {
                     c.transport = Some(Transport::InProcess(net.endpoint(&format!("c{t}-{i}"))));
                     let (db, _) = Osis::create(c).unwrap();
                     let _ = common::block_on(db.wait_synced(osis::SyncScope::All, Duration::from_secs(1)));
-                    db.close().unwrap();
+                    assert_eq!(db.close().unwrap(), osis::Close::Closed);
                 }
             });
         }
@@ -540,12 +540,12 @@ fn own_runtime_reopen_right_after_close() {
     };
     let (db, _) = Osis::create(at(0)).unwrap();
     let t = db.write_with(|w| w.create_durable(db.me())).unwrap();
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
     for i in 1..12u64 {
         let db = Osis::open(at(i)).unwrap();
         assert_eq!(db.get(t, ak("n:v.0")).unwrap(), (i > 1).then(|| Value::Int(i as i64 - 1)));
         db.write_with(|w| w.at(t, ak("n:v.0")).set(&Value::Int(i as i64))).unwrap();
-        db.close().unwrap();
+        assert_eq!(db.close().unwrap(), osis::Close::Closed);
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -576,7 +576,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
                     c.transport = Some(Transport::InProcess(net.endpoint(&format!("k{t}-{i}"))));
                     let (db, _) = Osis::create(c).unwrap();
                     let _ = common::block_on(db.wait_synced(osis::SyncScope::All, Duration::from_secs(1)));
-                    db.close().unwrap();
+                    assert_eq!(db.close().unwrap(), osis::Close::Closed);
                     drop(rt);
                 }
             });
@@ -642,7 +642,7 @@ fn driver_panic_fails_waiters() {
     let (dtx, drx) = std::sync::mpsc::channel();
     let _sub = db.on_diagnostic(move |_, d| {
         let _ = dtx.send(d);
-    });
+    }).unwrap();
     let far = Duration::from_secs(600);
     let (tx, rx) = std::sync::mpsc::channel();
     let d2 = db.clone();
@@ -672,5 +672,5 @@ fn driver_panic_fails_waiters() {
         }
     };
     assert!(d.detail.contains("test: the sync driver panics"), "{}", d.detail);
-    db.close().unwrap();
+    assert_eq!(db.close().unwrap(), osis::Close::Closed);
 }

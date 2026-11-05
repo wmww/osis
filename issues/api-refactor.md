@@ -70,7 +70,7 @@ Design for the world after it:
 
 ## B. Sharing: one verb per intent
 All of this speaks of granting a role (F, Vocabulary). Today: `grant`, `share`, `share_into`, `change_edge`, `demote(Lower)`, `leave`, `remove_edge_of`, `remove_device`, `remove_client`, `revoke_link`, `revoke_joiner`.
-1. **`grant(target, holder, role, GrantOpts)`** is the one call that adds, raises or changes `until` and `invite`, and nothing else (Decided 1). Removes `share` and `change_edge`. `grant` refuses lowering: from reading `Osis::grant` and `grant_in`, neither checks today, so a `grant` at a lower role looks like it lowers with no pre-sync and no rotation. Not run: write a failing test first.
+1. **`grant(target, holder, role, GrantOpts)`** is the one call that adds, raises or changes `until` and `invite`, and nothing else (Decided 1). Removes `share` and `change_edge`. `grant` refuses lowering (done).
 2. **Demote and remove become separate functions.** `demote(.., Lower::{To, Remove}, Demotion)` is centered wrongly: the two cases differ in what is allowed (a joiner can only be removed) and what applies (`keep` only on removal).
    - `set_role(target, holder, role, SetRole { sync: SyncFirst, until, invite })`, async: makes the holder's role this one, raising or lowering. The usual call (Tess). Replaces lowering by `demote`; a link joiner's role still can't be lowered (`Invalid`).
    - `grant` stays beside it, the one justified overlap: it never waits and never takes anything away, for sync code and for callers that mean only that. Say so at its definition.
@@ -82,18 +82,6 @@ All of this speaks of granting a role (F, Vocabulary). Today: `grant`, `share`, 
 5. **`remove_device` and `remove_client`**: both a removal of a holder of the account plus cleanup. Keep them, but give each the same `Revocation` shape where it applies; `remove_client` is sync and takes none, and that difference should be justified or removed.
 6. **`Share::{Tied, Untied, Excluded}`, `Edge.tied`, `GroupReach`, `reach`, `holder_path`**: tie and path are internals. Keep a way to answer "who can get at this, through what, and will it go when the membership goes", in plain words: `via_group` on a grant, say. `holder_path` is used by chat, and the old api-review notes the missing reverse ("who holds through this"), so design one `holders(target)` answering both.
 7. **Links**: `LinkInfo.id` is documented as "the link's actor K"; make an opaque `LinkId`. `revoke_joiner` is named for link internals; `joiner` is fine, but see B2.
-
-## C. Reads that hide failure (robustness)
-Verified: `groups_of`, `knows`, `role_on`, `roster`, `owner_of`, `created`, `changed`, `reach`, `holder_path`, `links`, `hosts`, `hosting`, `host_key`, `routes`, `watch_thing`, `watch_roster`, `watch_status` cannot return an error, so on an attached handle a lost connection gives an empty default plus a diagnostic (notes/client-port.md §1 states this as the rule). So `knows` says a thing is gone and `roster` says nobody holds it when in fact the node is unreachable, against "a disconnected source is `Network`". `demote` itself walks `holder_path` and `roster`. All become `Result`.
-
-Also:
-- `knows` conflates "no content yet" and "deleted" (issues/api-knows-empty.md). Fix it here.
-- `Osis::close` reports a normal outcome as `Err(StillOpen)` after closing the handle.
-- `sync(group, hosts)` is verified a silent no-op when a label exists, even with different hosts. Make it refuse, or change them.
-- Default `Runtime::None` with `Config.hosts` set means nothing syncs and nothing says so. Refuse that, or default to `Own`.
-- Without feature `iroh`, `Config.peers` and `relays` silently do little.
-- `Unsupported` means both "not built yet" and, from `attach_client`, "the node refused your secret". Give the refusal its own variant; `Unsupported` means only "this kind of handle doesn't carry this call".
-- `aspects(t)` may omit a register whose last write was purged (old api-review). Decide and document.
 
 ## D. Shape, re-decided
 Each is a fresh verdict by the tests in notes/api-design.md, including those that stay.
@@ -118,6 +106,7 @@ Change:
 17. **Callback naming**: `watch_*` take a callback here but `watch()` returns a handle there. All callbacks are `on_*`: `on_thing_change`, `on_roster_change`, `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
 18. **`AspectKey`**: three implementations (`Aspect<T>`, `Ak`, `Key`) plus `db.key`. `Key` with no schema is `Ak`. One dynamic key: `db.key(name)` typed when a schema is registered, else untyped. `Ak` becomes a name only, if the examples stay readable. The trait's methods exist for generated code and the crate: seal it or hide them.
 19. **`LinkOpts`, `GrantOpts` and `Revocation`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
+20. **`now()`** on an attached handle that cannot reach its node falls back to this process's clock, unsaid. A time is no decision-maker's default, but it should say so or return `Result`.
 
 Keep as they are:
 - `undo` and `redo` as two functions: different results, no shared target to enum over.
@@ -153,6 +142,7 @@ Keep as they are:
 | `Device.node`, `node()`, `devices()`, `remove_device(node)` | pick `device` for the API | Same thing, two words |
 | `Source` (why a watch fired) | `Origin` | Collides with sources per group; notes already say `Origin` |
 | `DropReason` | `NotUndoableReason` | It is why a revert fails |
+| `knows` | `has_content` | What it answers: a thing created and not yet written is known here, and reads `false` |
 | `at.len()`, `path.len()` | `byte_len()` | It is canonical size in bytes, not element count |
 | `Lower` | gone (B2) | |
 | `Edge`, `EdgeOpts`, `change_edge` | `Grant`, `GrantOpts` | issues/grant-rename-multi-actor.md |
@@ -186,12 +176,11 @@ Keep as they are:
 - Rendered docs still cite `spec/` as plain text (about 90 lines, 38 in `share.rs`). Keep those that help a reader, drop the rest. To make them links, a doc-only module could embed the spec with `#[doc = include_str!(..)]`; not tried. Links between spec files would need rewriting, and `tools/gate.sh` runs its full gate on spec edits once Rust reads `spec/`, unless that file joins its docs step.
 
 ## Related issues, resolve within this work
-- issues/api-knows-empty.md, issues/api-leaving-give-up.md (a give-up call belongs with `leave`), issues/account-rename.md, issues/grant-rename-multi-actor.md (public `act_as(actor) -> Osis` could replace `Write::act_as`).
-- issues/api-deferred.md stays for what isn't built, but its shapes should follow this design. `Unsupported` shouldn't cover unbuilt calls: an unbuilt call isn't in the API.
+- issues/api-leaving-give-up.md (a give-up call belongs with `leave`), issues/account-rename.md, issues/grant-rename-multi-actor.md (public `act_as(actor) -> Osis` could replace `Write::act_as`).
+- issues/api-deferred.md stays for what isn't built, but its shapes should follow this design.
 
 ## Execution
 One branch per step, in order; each merges before the next starts.
-- **1. Robustness**: C and the `grant` lowering bug.
 - **2. Removals**: A.
 - **3. Sharing**: B.
 - **4. Shapes**: D.

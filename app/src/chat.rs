@@ -56,7 +56,7 @@ pub fn join(db: &Osis, link: &str) -> Result<Tid> {
 
 /// The profile, made on first use; `None` on a store without hosts.
 fn profile(db: &Osis) -> Result<Option<Tid>> {
-    if db.hosts().is_empty() { Ok(None) } else { db.profile().map(Some) }
+    if db.hosts()?.is_empty() { Ok(None) } else { db.profile().map(Some) }
 }
 
 /// The name messages go out under: the profile's `name.0`, else `OSIS_CHAT_NAME`.
