@@ -133,6 +133,8 @@ Binds released formats only; until a stable release formats change in place.
 - The owner may restart a thing's role history at a roster snapshot; a role change ordered before the snapshot that it did not include is lost.
 - A share link is a bearer secret. One joiner is revoked only together with the link; the remaining joiners get a new one.
 - Removing a holder never re-encrypts existing content. The holder stops reading new content of an actor once a writer or admin of that actor has written after the removal; readers never rotate keys. Limit: what it could read before removal stays readable to it, from a copy it kept or from a dishonest node.
+- A role an actor M holds on A reaches the parties holding roles on M; A never depends on who they are. A party removed from M stops reading A's new content once M's keys were changed knowing the removal and a writer or admin of A has written since. Limit: until then it may read A's content written since the removal, not only new content.
+- Actors may hold roles on each other in a cycle; the grant that would close a cycle of read access gives its holder no read access through it (the earlier grant wins). Limit: a party removed from an actor on such a cycle may read the other actors' new content until a writer that has seen every grant of the cycle has written.
 - Limit: a holder whose grant raced a key rotation, or that missed more rotations than a node that cannot read the data keeps role history for, cannot read through that node until a holder with rotation rights re-seals to it, which nothing guarantees.
 
 ## API

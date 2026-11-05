@@ -2065,7 +2065,7 @@ fn saved_walk_keeps_keep_spec_permissions_3() {
     let n = w.nodes(2);
     let g = w.thing(n[0]);
     w.set(n[0], g, n[1], edge(osis_base::Role::Read), 1, &[]);
-    w.set(n[0], g, n[1], Some(osis_perm::Edge::kept_end(None)), 2, &[]);
+    w.set(n[0], g, n[1], Some(osis_perm::Edge::kept_end()), 2, &[]);
     let held = w.held();
     let mut inc = Timelines::new();
     let all: BTreeSet<Tid> = held.things().into_iter().collect();

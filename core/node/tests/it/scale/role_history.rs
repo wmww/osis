@@ -64,7 +64,7 @@ fn frontier(k: usize, rng: &mut Rng) -> (Value, usize) {
 }
 
 fn edge(role: Role, invite: Option<Role>) -> ct::Edge {
-    ct::Edge { role, until: None, invite, since: None, tied: None, keyset: None }
+    ct::Edge { role, until: None, invite, since: None, tied: None }
 }
 
 /// Joiner `j` gets `base`, then `pks`: CPU s, wall s, peak resident growth (KiB).

@@ -2,20 +2,15 @@
 (* Instance constants for Depth0.tla (a .cfg cannot write tuples).           *)
 EXTENDS Depth0
 
-\* holder actor M of A; m1 removes device D (an admin of M) from M
+\* holder actor M of A; m1 removes device D (an admin of M) from M; m2 may
+\* fork M and a1 (the one admin of A) may rotate A once unprompted
 mActs == <<"A", "M">>
-mMem == {<<"A", "a1">>, <<"A", "a2">>, <<"A", "M">>,
-         <<"M", "m1">>, <<"M", "m2">>, <<"M", "D">>}
-mAdm == {<<"A", "a1">>, <<"A", "a2">>, <<"M", "m1">>, <<"M", "m2">>, <<"M", "D">>}
-mLearners == {"a1", "a2", "m1", "m2"}
+mMem == {<<"A", "a1">>, <<"A", "M">>, <<"M", "m1">>, <<"M", "m2">>, <<"M", "D">>}
+mAdm == {<<"A", "a1">>, <<"M", "m1">>, <<"M", "m2">>, <<"M", "D">>}
+mLearners == {"a1", "m1", "m2"}
 mDeps == {<<"D", "M", "m1">>}
-mFork == {<<"m2", "M">>}
-
-\* the same with one admin of A, a1, that may also rotate A once unprompted
-m1Mem == mMem \ {<<"A", "a2">>}
-m1Adm == mAdm \ {<<"A", "a2">>}
-m1Learners == {"a1", "m1", "m2"}
-m1Eager == mFork \cup {<<"a1", "A">>}
+mEager == {<<"m2", "M">>, <<"a1", "A">>}
+mG == << <<"A", "M">> >>
 
 \* 2-cycle X <-> Y (each a holder of the other); x1 removes D from X
 cActs == <<"X", "Y">>
@@ -51,7 +46,7 @@ wLearners == {"w1", "x1", "y1"}
 wDeps == {<<"D", "W", "w1">>}
 wEager == {<<"y1", "Y">>}
 
-\* rule 4 (CycleCheck "nocycle"): grants in the agreed order
+\* rule 4: grants in the agreed order (none: Fresh)
 noGrants == << >>
 \* X holds Y first, so Y holding X gives no key access; and the reverse
 gYX == << <<"Y", "X">>, <<"X", "Y">> >>
@@ -63,7 +58,23 @@ hideY2 == {<<"y2", <<"X", "Y">> >>}
 \* x1 lacks the grant of X holding Y at first: it seals X to Z
 tG == << <<"Y", "X">>, <<"Z", "Y">>, <<"X", "Z">> >>
 tHide == {<<"x1", <<"Y", "X">> >>}
-tEager == {<<"y1", "Y">>, <<"z1", "Z">>}
 \* below: W holds X, X holds Y first; Y holding X gives no key access
 wG == << <<"X", "W">>, <<"Y", "X">>, <<"X", "Y">> >>
+\* removed-member writer: G <- X1 <- X2 <- {W, R}; b, the one admin of X1 and
+\* X2, does not sync G; W writes G through X1 and X2; b removes W from X2;
+\* a1 (G's admin) syncs only G (it sees X1's keys.0, never X2's commits)
+rActs == <<"G", "X1", "X2">>
+rMem == {<<"G", "a1">>, <<"G", "X1">>, <<"X1", "b">>, <<"X1", "X2">>,
+         <<"X2", "b">>, <<"X2", "W">>, <<"X2", "R">>}
+rAdm == {<<"G", "a1">>, <<"X1", "b">>, <<"X2", "b">>}
+rLearners == {"a1", "b", "W", "R"}
+rDeps == {<<"W", "X2", "b">>}
+rVia == {<<"W", "G">>}
+rNoSync == {<<"a1", "X1">>, <<"a1", "X2">>, <<"b", "G">>}
+rG == << <<"G", "X1">>, <<"X1", "X2">> >>
+\* ... with no other member of X2 syncing G (R absent)
+r0Mem == rMem \ {<<"X2", "R">>}
+r0Learners == rLearners \ {"R"}
+\* ... W may rotate G once unprompted (sealing X1 at a keyset it opens)
+rEagerW == {<<"W", "G">>}
 =============================================================================

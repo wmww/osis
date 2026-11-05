@@ -708,8 +708,9 @@ impl SyncEngine {
         self.placing(&a)
     }
 
-    /// The roles of `a` uncovered by a known departure, a departure by this node's own
-    /// self-removal not counted until that commit is placed (spec/crypto.md §4).
+    /// The roles of `a` this node may not encrypt under (`rotation::blocked_roles_of`), a
+    /// departure by this node's own self-removal not counted until that commit is placed
+    /// (spec/crypto.md §4).
     fn placing(&mut self, a: &Tid) -> Result<BTreeSet<osis_base::Role>> {
         let mut deps = Vec::new();
         for (d, own) in self.engine.run(|tx| crate::rotation::departures_placing(tx, a))? {
@@ -720,7 +721,8 @@ impl SyncEngine {
             }
             deps.push(d);
         }
-        self.engine.run(|tx| crate::rotation::uncovered_roles_of(tx, a, deps))
+        let me = self.engine.tid();
+        self.engine.run(|tx| crate::rotation::blocked_roles_of(tx, &me, a, &deps))
     }
 }
 

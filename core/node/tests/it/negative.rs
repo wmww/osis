@@ -386,7 +386,7 @@ fn covered_drop_coverer_falls_reuploaded_spec_sync_6() {
     assert!(net.engine(b).body_not_dropped(&x, &t, &ak), "B still holds X, kept");
     assert!(net.host_ids(host, &l).iter().all(|id| !first.contains(id)), "X stays out while covered");
     let dt = net.tid(d);
-    let new = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let new = osis_schema::core_types::Edge { role: osis_base::Role::Read, until: None, invite: None, since: None, tied: None };
     let done = net.engine(a).demote(&g, &Demotion { holder: dt, new: Some(new), presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

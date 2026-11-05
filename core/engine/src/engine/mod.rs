@@ -132,15 +132,25 @@ pub struct Dropped {
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
     pub overreach: bool,
-    /// The keysets a `keys.0` body wrote (`apply::keys::keysets_of`): each role's epoch and the
-    /// epochs it lists as superseded. A role commit's are `epoch_intro` candidates (which commit
-    /// introduced an epoch is a judgment the box judgement of a holder actor's keyset needs); every valid one's count in
-    /// `keyset_epochs` (keyset names, spec/crypto.md §4).
+    /// The keysets a `keys.0` body wrote (`apply::keys::keysets_of`): a role commit's are
+    /// `epoch_intro` candidates; every valid one's are held keysets (`keysets`, spec/crypto.md
+    /// §4), and an invalid one's held invalid.
     pub keysets: Vec<KeysetRec>,
-    /// The sealed names of the boxes a role commit's `secrets.0` body wrote that carry them (a
-    /// grant's, spec/crypto.md §4): what the part was judged to carry stays (spec/commits.md
-    /// §5), so a boxer of their holder still holds them (`rotation::departures::grant_names`).
-    pub names: Vec<NamesRec>,
+    /// What a role commit's `secrets.0` body showed for possession (`Indexes::shown`).
+    pub shown: Option<Arc<Showing>>,
+}
+
+/// What a role commit's `secrets.0` part shows for possession (spec/crypto.md §4, Holder
+/// actors), read from its bodies (`validity::note_required`): whether it rotates (its commit
+/// writes a keyset of the actor, or it writes more than entries), the boxes it removes, and what
+/// each box to a holder names and signs. A judgment of the body
+/// alone; the keysets that verify it and the roles it is judged by are read when judging.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Showing {
+    pub rotates: bool,
+    /// (holder, role) of each box it removes.
+    pub removed: Vec<(Tid, osis_base::Role)>,
+    pub shown: Vec<osis_keys::possession::Shown>,
 }
 
 impl Dropped {
@@ -149,11 +159,28 @@ impl Dropped {
     }
 }
 
-/// A box's sealed names a `secrets.0` body wrote, by the box's key: holder, role, epoch.
-pub(crate) type NamesRec = (Tid, osis_base::Role, osis_crypto::Epoch, Vec<u8>);
+/// A keyset a `keys.0` body wrote: its role, epoch, the epochs its supersedes list names, its
+/// KEM public key (`None`: another suite, or malformed: never sealed to) and its possession key
+/// (`None`: malformed: verifies nothing).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeysetRec {
+    pub role: osis_base::Role,
+    pub epoch: osis_crypto::Epoch,
+    pub lists: Vec<osis_crypto::Epoch>,
+    pub kem: Option<Vec<u8>>,
+    pub possession: Option<[u8; 32]>,
+}
 
-/// A keyset a `keys.0` body wrote: its role, epoch and the epochs it lists as superseded.
-pub(crate) type KeysetRec = (osis_base::Role, osis_crypto::Epoch, Vec<osis_crypto::Epoch>);
+/// A held valid keyset (`Indexes::keysets`): the epochs the supersedes lists of the bodies
+/// writing it name, joined, its KEM key (the first such body's of suite 1 noted), and the
+/// possession keys those bodies publish, joined (any of them verifies a possession signature,
+/// spec/crypto.md §4: a body other than the keyset's rotation is a forgery, within its limit).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeldKeyset {
+    pub lists: BTreeSet<osis_crypto::Epoch>,
+    pub kem: Option<Vec<u8>>,
+    pub possession: BTreeSet<[u8; 32]>,
+}
 
 /// A snapshot part's frontiers and `Absorbed` (commit, author).
 pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
@@ -533,16 +560,19 @@ indexes! {
     /// `secrets.0` parts of role commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,
+    /// What held (or dropped, `Dropped::shown`) `secrets.0` parts of role commits show for
+    /// possession, by commit and aspect index (`Showing`).
+    pub shown: JMap<(CommitId, usize), Arc<Showing>>,
     /// Keyed boxes per holder: holder -> (actor, box key), from `secrets.0` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
     /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
-    /// (actor, role, epoch) -> (`ts`, commit). Absent: unknown. The box judgement of a holder
-    /// actor's keyset reads which commit set it (`rotation::held_actors`).
+    /// (actor, role, epoch) -> (`ts`, commit). Absent: unknown. What a box naming the keyset
+    /// carries (spec/crypto.md §4, Carried) and a certificate of the actor's current keys.
     pub epoch_intro: EpochIntro,
-    /// The keyset epochs held per actor (spec/crypto.md §4, keyset names): each epoch a held
-    /// valid `keys.0` body (a role commit's delta or a compaction snapshot; kept once dropped,
-    /// `Dropped::keysets`) writes as a role's keyset or lists as superseded by one.
-    pub keyset_epochs: JSetMap<Tid, (osis_base::Role, osis_crypto::Epoch)>,
+    /// The held valid keysets (spec/crypto.md §4, held keyset): (actor, role, epoch) for each
+    /// keyset a held valid `keys.0` body (a role commit's delta or a compaction snapshot; kept
+    /// once dropped, `Dropped::keysets`) writes. `Core::keysets_of` reads one actor's.
+    pub keysets: JMap<(Tid, osis_base::Role, osis_crypto::Epoch), HeldKeyset>,
     /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`): tid -> when due
     /// (engine ms; 0: now).
     pub lost_due: JMap<Tid, u64>,
@@ -678,6 +708,9 @@ pub struct Core {
     /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster);
     /// cleared with it.
     pub reseal_quiet: BTreeSet<Tid>,
+    /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`):
+    /// O(edges) to build. Cleared by `role_changed` and a rollback (the timelines move back).
+    pub key_access: Option<Arc<BTreeSet<(Tid, Tid)>>>,
     /// `Engine::inbox_label`'s answers by actor, and the things on their owner chains above them:
     /// a write there can move many answers (`inbox_moved`).
     pub inbox_labels: BTreeMap<Tid, Option<LabelId>>,
@@ -989,11 +1022,17 @@ impl Core {
 
     /// Drops what is derived from rosters, `secrets.0` and held epochs (the departures cache):
     /// called wherever those change.
+    /// The held valid keysets of actor `m`: (role, epoch, what is held of it).
+    pub(crate) fn keysets_of(&self, m: &Tid) -> impl Iterator<Item = (osis_base::Role, osis_crypto::Epoch, &HeldKeyset)> {
+        self.ix.keysets.range((*m, osis_base::Role::Read, osis_crypto::Epoch::ZERO)..).take_while(move |(k, _)| k.0 == *m).map(|(k, v)| (k.1, k.2, v))
+    }
+
     pub fn role_changed(&mut self) {
         self.inbox_actors = None;
         self.head_keys.clear();
         self.holders_named.clear();
         self.reseal_quiet.clear();
+        self.key_access = None;
         if !self.ix.departures.is_empty() {
             self.ix.departures.retain(|_, _| false);
         }
@@ -1150,6 +1189,7 @@ impl Core {
         self.inbox_labels.clear();
         self.inbox_uppers.clear();
         self.inbox_actors = None;
+        self.key_access = None;
         self.ix.rollback();
         self.memory.rollback();
         // the timelines follow the restored held set; validity flags are restored with `commits`
@@ -1203,6 +1243,7 @@ impl Core {
             head_keys: HashMap::new(),
             holders_named: HashMap::new(),
             reseal_quiet: BTreeSet::new(),
+            key_access: None,
             inbox_labels: BTreeMap::new(),
             inbox_uppers: BTreeSet::new(),
             acting_memo: None,
@@ -2238,7 +2279,7 @@ mod tests {
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
         let (path, op) = match role {
-            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }.to_value())),
+            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None }.to_value())),
             None => (Vec::new(), Op::Remove(Value::Tid(m))),
         };
         let mut mu = Mutation::new();

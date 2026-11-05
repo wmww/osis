@@ -18,10 +18,12 @@ pub enum Domain {
     LanAnnounce,
     /// A co-reader node's open at a co-reader peer, by its dialable key (spec/sync.md §5).
     CoReaderOpen,
+    /// A box's possession signature, by a keyset's possession key (spec/crypto.md §4).
+    Possession,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 8] = [
+    pub const ALL: [Domain; 9] = [
         Domain::Commit,
         Domain::LabelRegister,
         Domain::LabelOpen,
@@ -30,6 +32,7 @@ impl Domain {
         Domain::Delete,
         Domain::LanAnnounce,
         Domain::CoReaderOpen,
+        Domain::Possession,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -41,6 +44,7 @@ impl Domain {
             Domain::Delete => "osis v1 delete",
             Domain::LanAnnounce => "osis v1 lan announce",
             Domain::CoReaderOpen => "osis v1 co-reader open",
+            Domain::Possession => "osis v1 possession",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {

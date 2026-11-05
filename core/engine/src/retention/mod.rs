@@ -314,16 +314,13 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::copies::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
-    // and the names its boxes to the holders its edge writes put carry (`keys::names_of`: a
-    // grant's or raise's, which a later boxer of the holder must hold)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragments(tx, c, ai)? } else { Vec::new() };
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
-    let put: BTreeSet<Tid> = tx.core.timelines.get(&a.tid).and_then(|tl| tl.role_commit(c)).map(|mc| mc.ops.iter().filter(|op| op.target == a.tid && op.edge.is_some()).map(|op| op.holder).collect()).unwrap_or_default();
-    let names = crate::apply::keys::names_of(&m.header, ai, &role_bodies, &put);
+    let shown = tx.core.ix.shown.get(&(*c, ai)).cloned();
     if stripped {
         leftover::remove(tx, &a.tid, &a.ak, c, ai)?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, why, live, gave, stands_in, role, overreach, keysets, names });
+    m.dropped.insert(ai, Dropped { covered_by, why, live, gave, stands_in, role, overreach, keysets, shown });
     // a setting not held binds nothing (`validity::never_could_set`)
     if a.ak.as_str() == osis_commit::retention::REQUIRED {
         let mut settings = tx.core.ix.required.get(&a.tid).cloned().unwrap_or_default();
@@ -476,6 +473,7 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
     }
     m.missing.insert(ai);
     tx.core.ix.rotation_role.remove(&(*c, ai));
+    tx.core.ix.shown.remove(&(*c, ai));
     let several = m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0" && a.hashes.len() != 1);
     if !several {
         tx.core.ix.grant_overreach.remove(&(*c, ai));
@@ -1170,7 +1168,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();
@@ -1241,7 +1239,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         let first = lp.peers[0].commit(m).unwrap().unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();

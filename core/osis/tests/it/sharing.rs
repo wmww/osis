@@ -133,7 +133,7 @@ fn revoke_link_spec_permissions_8() {
     assert!(alice.links_of(g).unwrap().is_empty());
 }
 
-// spec/permissions.md §4 (owners' keysets), spec/crypto.md §4 (keyset names): an account who got its peer after creation has an inbox write as its newest `keys.0`; a link's actor names the account's keyset, so that keyset must come along or a redeemer holds no established epoch to box
+// spec/permissions.md §4 (owners' keysets), spec/crypto.md §4 (held keyset): an account who got its peer after creation has an inbox write as its newest `keys.0`; a link's actor boxes the account at its keyset, so that keyset must come along or a redeemer holds no established epoch to box
 #[test]
 fn redeem_link_of_an_account_with_a_late_peer_spec_permissions_4() {
     let mut w = World::new();
@@ -160,7 +160,7 @@ fn skip_sync() -> SetRoleOpts {
     SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None }
 }
 
-// spec/permissions.md §4 (current `keys.0`), spec/crypto.md §4 (keyset names): a rotation of a group names a holder's keyset; a holder with a late peer has an inbox write as its newest `keys.0`; an admin who joins after the rotation still gets the keyset, or holds no established epoch to box a grant with
+// spec/permissions.md §4 (current `keys.0`), spec/crypto.md §4 (held keyset): a rotation of a group boxes a holder at its keyset; a holder with a late peer has an inbox write as its newest `keys.0`; an admin who joins after the rotation still gets the keyset, or holds no established epoch to box a grant with
 #[test]
 fn newcomer_admin_after_a_rotation_naming_a_late_peer_holder_spec_crypto_4() {
     let mut w = World::new();
@@ -373,7 +373,7 @@ fn redeem_after_a_read_joiner_left_spec_permissions_8() {
     assert_eq!((x(&carol, t), x(&carol, v)), (Some(s("from alice")), Some(s("after the leave"))));
 }
 
-// spec/permissions.md §8, §3: a node removal rotates K (a departure inside its owner): a link no one used yet still works, a read link as well
+// spec/permissions.md §8, §3: a node removal rotates the account, then K (its box to the account stale): a link no one used yet still works, a read link as well
 #[test]
 fn redeem_after_a_device_removal_spec_permissions_8() {
     let mut w = World::new();

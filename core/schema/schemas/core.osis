@@ -2,6 +2,7 @@
 version 1;
 
 type signing_key = enum { 1 ed25519(blob) };          // 32 bytes
+type signature = enum { 1 ed25519(blob) };            // 64 bytes
 type kem_key = enum { 1 x25519_mlkem768(blob) };      // pk_x || pk_m, 1216 bytes
 type sealed = enum { 1 x25519_mlkem768(blob) };       // ct_x || ct_m || AEAD
 /// Exactly one of fields 0, 1 and 3 (spec/wire.md §3); typed through `CreationRecord`.
@@ -15,13 +16,13 @@ type source = enum { 0 commit(blob), 1 session(blob) };   // a dot's source (spe
 /// An aspect a heartbeat reports suspect, with its keyed state digest (16 bytes, spec/permissions.md §4).
 type suspect = struct { 0 thing: tid, 1 ak: string, 2 digest: blob };
 type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };   // creation stamp of a group.0 element and its set
-type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie>, 5 keyset: option<edge_key> };
-type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch> };   // suite ID of the epoch; delete key: spec/crypto.md §7; supersedes: spec/crypto.md §4
+type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie> };
+type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch>, 5 possession_key: signing_key };   // suite ID of the epoch; delete key: spec/crypto.md §7; supersedes, possession key: spec/crypto.md §4
 type inbox = struct { 0 label: blob, 1 hosts: list<address> };  // label ID: 16 bytes
 type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };
 type box = enum {
-    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed, 3 names: option<blob> }),
-    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 names: option<blob> }),     // epoch of s; wrap, names: spec/wire.md §7
+    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed }),
+    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 possession: option<signature> }),     // epoch of s; wrap, possession: spec/wire.md §7
 };
 type history_key = struct { 0 role: role, 1 epoch: epoch };
 type frontier = struct { 0 commits: set<blob> };   // 32-byte commit IDs of what the demoter received (spec/permissions.md §5.1)

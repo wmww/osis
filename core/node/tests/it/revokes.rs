@@ -8,11 +8,12 @@ use osis_base::Role;
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::sync::EntryKind;
 use osis_schema::core_types as ct;
+use std::collections::BTreeSet;
 
-// spec/permissions.md §4 (any holder that syncs a label and holds a revoke about an author seen
-// under it places it there): W writes in G through team X; X's admin B, who does not sync G,
-// removes W from X; R, a holder of X that syncs G through it, places that revoke under G's
-// label.
+// spec/permissions.md §4 (chain certificates: current `keys.0` of the actors on a path): W writes
+// in G through team X; X's admin B, who does not sync G, removes W from X (the commit writes X's
+// new keyset); R, a holder of X that syncs G through it, places it under G's label as X's current
+// keys, and G's admin, finding its box to X stale, rotates: W reads nothing new.
 #[test]
 fn revoke_about_author_placed_spec_permissions_4() {
     let mut net = Net::new();
@@ -24,7 +25,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
     let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     net.pair(b, a);
     let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
     let done = net.engine(a).grant(&g, &x, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -61,14 +62,15 @@ fn revoke_about_author_placed_spec_permissions_4() {
     assert_eq!(net.read(w, u), None);
 }
 
-// spec/permissions.md §4 (exception to spec/crypto.md §4: a holder that may not rotate the
-// label's actor places the revoke of a departure inside a holder, the write on the last actor of
-// its chain, and each chain actor's newest `keys.0`): G <- X1 <- X2 <- {W, R}; X2's admin B, who
-// does not sync G, removes W from X2 and rotates X2 and X1 (apart); R reads G through two levels,
-// may not rotate it, and places W's removal from X2 and X1's new keys under G's label; G's admin
-// rotates, sealing to X1's new keyset, and W reads nothing new.
+// spec/permissions.md §4 (chain certificates: current `keys.0` of the actors on a path),
+// spec/crypto.md §4 (holder actors: stale): G <- X1 <- X2 <- {W, R}; X2's admin B, who does not
+// sync G, removes W from X2 (rotating X2), then rotates X1 (its box to X2 stale); R reads G
+// through two levels, may not rotate it, and is not held back by the stale box: it places X1's new
+// keys under G's label. W, still a writer of G through X1 in its own view and in that of G's admin
+// (who never learns W left X2), finds G's box to X1 stale too but holds no secret of X1's new
+// keyset, so it may not rotate G (spec/crypto.md §4, Possession): it waits, and G's admin rotates.
 #[test]
-fn nested_departure_revoke_placed_spec_permissions_4() {
+fn nested_departure_removed_writer_waits_spec_crypto_4() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -77,7 +79,7 @@ fn nested_departure_revoke_placed_spec_permissions_4() {
     let r = net.node(4, &[host]);
     let x2 = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     let x1 = net.group_seeded(b, &[], vec![net.address(host)], 2);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
     let done = net.engine(b).grant(&x1, &x2, &edge).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -111,14 +113,15 @@ fn nested_departure_revoke_placed_spec_permissions_4() {
         net.advance(31_000);
     }
     assert!(net.engine(r).header(&removal).is_some(), "R holds the revoke");
+    // X1's new keys (B rotated X1: its box to X2 stale) reach G's label as R's chain certificate
     let ids = net.host_ids(host, &lg);
-    let placed = net.sync(r).entries(&lg).into_iter().any(|(id, k)| ids.contains(&id) && matches!(k, EntryKind::Commit { commit, .. } if commit == removal));
-    assert!(placed, "the revoke of W on X2 is under G's label");
+    let placed: BTreeSet<_> = net.sync(r).entries(&lg).into_iter().filter(|(id, _)| ids.contains(id)).filter_map(|(_, k)| if let EntryKind::Commit { commit, .. } = k { Some(commit) } else { None }).collect();
+    let x1k = net.engine(r).current_keys(&x1);
+    assert!(x1k.iter().any(|c| placed.contains(c)), "X1's current keys.0 under G's label");
     let u = net.item(a, g, g, "after w left");
     for _ in 0..4 {
         net.advance(31_000);
     }
-    assert!(net.engine(a).header(&removal).is_some(), "the admin holds the revoke");
     assert_eq!(net.read(r, u), Some(s("after w left")));
     assert_eq!(net.read(w, u), None, "W reads nothing written after it left");
 }
@@ -136,7 +139,7 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     let m = net.group_seeded(b, &[(w, Role::Read), (r, Role::Read)], vec![net.address(host)], 3);
     net.pair(b, a);
     let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
     let done = net.engine(a).grant(&g, &x, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

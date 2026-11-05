@@ -36,7 +36,7 @@ pub(super) const METAS: &[u8] = b"node/metas";
 // records table is not deepened by them).
 const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
-const KEYSET_EPOCHS: &[u8] = b"node/keyset epochs";
+const KEYSETS: &[u8] = b"node/keysets";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const REQUIRED: &[u8] = b"node/required";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
@@ -107,6 +107,33 @@ impl Rec for Role {
     }
     fn from(v: &Value) -> Option<Self> {
         Role::from_value(v).ok()
+    }
+}
+impl Rec for super::HeldKeyset {
+    fn to(&self) -> Value {
+        let kem = Value::List(self.kem.iter().map(|b| Value::bytes(b)).collect());
+        let lists: Vec<osis_crypto::Epoch> = self.lists.iter().copied().collect();
+        let possession = Value::List(self.possession.iter().map(|b| Value::bytes(b)).collect());
+        Value::List(vec![lists.to(), kem, possession])
+    }
+    fn from(v: &Value) -> Option<Self> {
+        let Value::List(f) = v else { return None };
+        let [lists, kem, possession] = f.as_slice() else { return None };
+        let Value::List(possession) = possession else { return None };
+        let possession = possession.iter().map(|p| match p {
+            Value::Bytes(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+            _ => None,
+        }).collect::<Option<BTreeSet<[u8; 32]>>>()?;
+        let kem = match kem {
+            Value::List(x) => match x.as_slice() {
+                [] => None,
+                [Value::Bytes(b)] => Some(b.clone()),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let lists: Vec<osis_crypto::Epoch> = Rec::from(lists)?;
+        Some(super::HeldKeyset { lists: lists.into_iter().collect(), kem, possession })
     }
 }
 impl Rec for BoxKey {
@@ -278,17 +305,17 @@ impl<T: Rec> Rec for Option<T> {
 }
 impl Rec for osis_perm::Edge {
     fn to(&self) -> Value {
-        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.since.to(), self.tied.map(crate::flows::tied::tie_ct).as_ref().map(Codec::to_value).to(), self.keyset.to()])
+        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.since.to(), self.tied.map(crate::flows::tied::tie_ct).as_ref().map(Codec::to_value).to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [role, until, invite, since, tied, keyset] = x.as_slice() else { return None };
+        let [role, until, invite, since, tied] = x.as_slice() else { return None };
         let until = <Option<u64> as Rec>::from(until)?.map(WallMs);
         let tied = match <Option<Value> as Rec>::from(tied)? {
             None => None,
             Some(t) => Some(crate::flows::tied::tie_perm(osis_schema::core_types::Tie::from_value(&t).ok()?)),
         };
-        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, since: Rec::from(since)?, tied, keyset: Rec::from(keyset)? })
+        Some(osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, since: Rec::from(since)?, tied })
     }
 }
 impl Rec for u64 {
@@ -485,17 +512,39 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             w = w.raw(&s.0);
         }
         w = w.u32(d.keysets.len() as u32);
-        for (r, e, listed) in &d.keysets {
-            w = w.u8(*r as u8).u64(e.n()).raw(e.nonce()).u32(listed.len() as u32);
-            for x in listed {
+        for k in &d.keysets {
+            w = w.u8(k.role as u8).u64(k.epoch.n()).raw(k.epoch.nonce()).u32(k.lists.len() as u32);
+            for x in &k.lists {
                 w = w.u64(x.n()).raw(x.nonce());
             }
-        }
-        w = w.u32(d.names.len() as u32);
-        for (k, role, e, sealed) in &d.names {
-            w = w.raw(k.as_bytes()).u8(*role as u8).u64(e.n()).raw(e.nonce()).bytes(sealed);
+            w = match &k.kem {
+                Some(b) => w.u8(1).bytes(b),
+                None => w.u8(0),
+            };
+            w = match &k.possession {
+                Some(b) => w.u8(1).raw(b),
+                None => w.u8(0),
+            };
         }
         w = w.u8(u8::from(d.stands_in));
+        w = match &d.shown {
+            None => w.u8(0),
+            Some(x) => {
+                let mut w = w.u8(1).u8(u8::from(x.rotates)).u32(x.removed.len() as u32);
+                for (m, r) in &x.removed {
+                    w = w.raw(m.as_bytes()).u8(*r as u8);
+                }
+                w = w.u32(x.shown.len() as u32);
+                for b in &x.shown {
+                    w = w.raw(b.holder.as_bytes()).u8(b.role as u8).u64(b.keyset.n()).raw(b.keyset.nonce());
+                    w = match &b.signed {
+                        Some((d, sig)) => w.u8(1).raw(d).raw(sig),
+                        None => w.u8(0),
+                    };
+                }
+                w
+            }
+        };
     }
     w = w.u32(m.stripped.len() as u32);
     for a in &m.stripped {
@@ -615,22 +664,36 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         for _ in 0..r.u32()? {
             let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped keyset role"))?;
             let e = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?;
-            let mut listed = Vec::new();
+            let mut lists = Vec::new();
             for _ in 0..r.u32()? {
-                listed.push(osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?);
+                lists.push(osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?);
             }
-            keysets.push((role, e, listed));
-        }
-        let mut names = Vec::new();
-        for _ in 0..r.u32()? {
-            let holder = r.tid()?;
-            let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped names role"))?;
-            let e = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped names epoch"))?;
-            names.push((holder, role, e, r.bytes()?.to_vec()));
+            let kem = if r.u8()? != 0 { Some(r.bytes()?.to_vec()) } else { None };
+            let possession = if r.u8()? != 0 { Some(r.arr()?) } else { None };
+            keysets.push(super::KeysetRec { role, epoch: e, lists, kem, possession });
         }
         let stands_in = r.u8()? != 0;
+        let shown = if r.u8()? != 0 {
+            let rotates = r.u8()? != 0;
+            let mut removed = Vec::new();
+            for _ in 0..r.u32()? {
+                let m = Tid::from_bytes(r.arr()?);
+                removed.push((m, [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped shown role"))?));
+            }
+            let mut shown = Vec::new();
+            for _ in 0..r.u32()? {
+                let holder = Tid::from_bytes(r.arr()?);
+                let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped shown role"))?;
+                let keyset = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped shown epoch"))?;
+                let signed = if r.u8()? != 0 { Some((r.arr()?, r.arr()?)) } else { None };
+                shown.push(osis_keys::possession::Shown { holder, role, keyset, signed });
+            }
+            Some(std::sync::Arc::new(super::Showing { rotates, removed, shown }))
+        } else {
+            None
+        };
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, live: flags & 2 != 0, gave: flags & 64 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, names });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, live: flags & 2 != 0, gave: flags & 64 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, shown });
     }
     let (mut stripped, mut valued) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {
@@ -675,7 +738,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     }
     put_setmap(txn, BOXES_TO, &c.ix.boxes_to, all)?;
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
-    put_setmap(txn, KEYSET_EPOCHS, &c.ix.keyset_epochs, all)?;
+    put_map(txn, KEYSETS, &c.ix.keysets, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_map(txn, REQUIRED, &c.ix.required, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
@@ -844,8 +907,8 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, EPOCH_INTRO)? {
         tx.core.ix.epoch_intro.insert(k, dec(&v)?);
     }
-    for ((t, x), _) in scan::<(Tid, (Role, osis_crypto::Epoch))>(tx, KEYSET_EPOCHS)? {
-        tx.core.ix.keyset_epochs.insert(t, x);
+    for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, KEYSETS)? {
+        tx.core.ix.keysets.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
         tx.core.ix.delete_hints.insert(k, dec(&v)?);

@@ -108,6 +108,16 @@ fn compaction_seed_3914() {
     ok("compaction", 3914);
 }
 
+// spec/sync.md §5 (reading without the head's read epoch): sweep seed 9 (and 9390 on main), an
+// admin whose epochs forked from the head's never fetched the head's rotation, listed before it
+// held the epoch its wrap opens under, so its commits never left it. Pinned by osis-node
+// `sync_review::rotation_wrapped_under_epoch_learned_later_is_read_spec_sync_5`.
+#[test]
+#[ignore = "tier 2"]
+fn member_churn_seed_9() {
+    ok("member_churn", 9);
+}
+
 // spec/permissions.md §8: disk loss and recovery from the card.
 #[test]
 #[ignore = "tier 2"]

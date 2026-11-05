@@ -70,6 +70,10 @@ agility!(
     SigningKey, Ed25519, Some(32)
 );
 agility!(
+    /// `signature = enum { 1 ed25519(blob) }`, 64 bytes.
+    Signature, Ed25519, Some(64)
+);
+agility!(
     /// `kem_key = enum { 1 x25519_mlkem768(blob) }`, `pk_x || pk_m`, 1216 bytes.
     KemKey, X25519MlKem768, Some(1216)
 );
@@ -125,17 +129,15 @@ codec_struct! {
 }
 codec_struct! {
     /// A role edge; `since` only in roster snapshots (spec/permissions.md §6); `tied`: the
-    /// placement of the target in its holder, a group, the edge goes with (spec/permissions.md §2);
-    /// `keyset`: on a grant or raise of a holder actor, the key of its `keys.0` commit whose
-    /// keyset the granter sealed to (spec/crypto.md §4).
+    /// placement of the target in its holder, a group, the edge goes with (spec/permissions.md §2).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie>, 5 keyset: Option<EdgeKey> }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie> }
 }
 codec_struct! {
-    /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, and the epochs its rotation
-    /// supersedes (spec/crypto.md §3, §4, §7, §8).
+    /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, the epochs its rotation
+    /// supersedes, and possession key (spec/crypto.md §3, §4, §7, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch> }
+    pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeSet<Epoch>, 5 possession_key: SigningKey }
 }
 codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -146,14 +148,14 @@ codec_struct! {
     pub struct BoxKey { 0 holder: Tid, 1 role: Role, 2 epoch: Epoch }
 }
 codec_struct! {
-    /// `names`: a grant's names for its holder actor (spec/crypto.md §4, spec/wire.md §7).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SealedBox { 0 keyset: Option<Epoch>, 1 suite: u64, 2 sealed: Sealed, 3 names: Option<Vec<u8>> }
+    pub struct SealedBox { 0 keyset: Option<Epoch>, 1 suite: u64, 2 sealed: Sealed }
 }
 codec_struct! {
-    /// `epoch` of s; `wrap`: spec/wire.md §7; `names` as `SealedBox`'s.
+    /// `epoch` of s; `wrap`; `possession`: the possession signature, iff the holder is not a
+    /// key actor (spec/wire.md §7, spec/crypto.md §4).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SymmetricBox { 0 epoch: Epoch, 1 wrap: Vec<u8>, 2 names: Option<Vec<u8>> }
+    pub struct SymmetricBox { 0 epoch: Epoch, 1 wrap: Vec<u8>, 2 possession: Option<Signature> }
 }
 
 codec_enum! {

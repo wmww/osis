@@ -136,12 +136,10 @@ pub fn boxes() -> VecFile {
     let e3 = named(&actor, Role::Read, 3, &s32(0x09));
     let mut earlier = vec![(named(&actor, Role::Read, 1, &s32(0x21)), s32(0x21)), (named(&actor, Role::Read, 2, &s32(0x22)), s32(0x22))];
     earlier.sort_by_key(|(e, _)| *e);
-    // names (spec/wire.md §7): one name [thing, ts, node, commit], one keyset name [thing, role, n,
-    // nonce], the departs mark [ts, node]
+    // names (spec/wire.md §7): one name [thing, ts, node, commit], the departs mark [ts, node]
     let name = Value::List(vec![Value::Bytes(actor.as_bytes().to_vec()), Value::Int(1_700_000_000_000 << 16), Value::Bytes(vec![0x31; 15]), Value::Bytes(vec![0x32; 32])]);
-    let ks_name = Value::List(vec![Value::Bytes(vec![0x02; 15]), Value::Int(0), Value::Int(5), Value::Bytes(vec![0x05; 32])]);
     let departs = Value::List(vec![Value::Int(1_700_000_000_001 << 16), Value::Bytes(vec![0x31; 15])]);
-    let names = Value::List(vec![Value::List(vec![name.clone()]), Value::List(vec![ks_name.clone()]), Value::List(vec![departs])]);
+    let names = Value::List(vec![Value::List(vec![name.clone()]), Value::List(vec![departs])]);
     let h = seal_history(&s32(0x09), &actor, Role::Read, &e3, &earlier, &names).unwrap();
     assert_eq!(open_history(&s32(0x09), &actor, Role::Read, &e3, &h).unwrap(), (earlier.clone(), names.clone()));
     let pairs = Value::List(earlier.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n() as i64), Value::Bytes(s.expose().to_vec())])).collect());
@@ -160,23 +158,6 @@ pub fn boxes() -> VecFile {
     );
     assert_eq!(open_history(&s32(0x09), &actor, Role::Write, &e3, &h), Err(Error::Decrypt));
     cases.push(case("history box wrong role", "spec/wire.md §7").with("secret", hex(s32(0x09).expose())).with("actor", hex(actor.as_bytes())).with("role", "1").with("n", "3").with("nonce", hex(e3.nonce())).with("box", hex(&h)).with("reject", "decrypt"));
-
-    // A grant's box names: random nonce || AEAD under the history key, AD [actor, holder, role, n,
-    // nonce], the names with no departs mark.
-    let holder = Tid::from_bytes([0x02; 15]);
-    let bn = Value::List(vec![Value::List(vec![name]), Value::List(vec![ks_name]), Value::List(vec![])]);
-    let nn = [0x0e; 24];
-    let sealed = seal_box_names(&s32(0x09), &actor, &holder, Role::Read, &e3, &bn, &mut FixedRng::new(&[&nn])).unwrap();
-    assert_eq!(sealed.get(..24), Some(&nn[..]));
-    assert_eq!(open_box_names(&s32(0x09), &actor, &holder, Role::Read, &e3, &sealed).unwrap(), bn);
-    let ad = encode(&Value::List(vec![Value::Bytes(actor.as_bytes().to_vec()), Value::Bytes(holder.as_bytes().to_vec()), Value::Int(0), Value::Int(3), Value::Bytes(e3.nonce().to_vec())]));
-    let r = case("box names", "spec/wire.md §7").with("secret", hex(s32(0x09).expose())).with("actor", hex(actor.as_bytes())).with("holder", hex(holder.as_bytes()));
-    let r = r.with("role", "0").with("n", "3").with("nonce", hex(e3.nonce()));
-    cases.push(r.with("ad", hex(&ad)).with("names-nonce", hex(&nn)).with("plaintext", hex(&encode(&bn))).with("names", hex(&sealed)));
-    let other = Tid::from_bytes([0x04; 15]);
-    assert_eq!(open_box_names(&s32(0x09), &actor, &other, Role::Read, &e3, &sealed), Err(Error::Decrypt));
-    let r = case("box names wrong holder", "spec/wire.md §7").with("secret", hex(s32(0x09).expose())).with("actor", hex(actor.as_bytes())).with("holder", hex(other.as_bytes()));
-    cases.push(r.with("role", "0").with("n", "3").with("nonce", hex(e3.nonce())).with("names", hex(&sealed)).with("reject", "decrypt"));
 
     // Inbox sealed box over an opaque prefix (the prefix layout is osis-label's, inbox/).
     let prefix = super::PREFIX;

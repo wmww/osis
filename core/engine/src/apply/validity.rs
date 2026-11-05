@@ -28,7 +28,7 @@ pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
     if e.invite.is_some_and(|i| i > e.role) {
         return None;
     }
-    Some(Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of), tied: e.tied.map(crate::flows::tied::tie_perm), keyset: e.keyset.map(point_of) })
+    Some(Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of), tied: e.tied.map(crate::flows::tied::tie_perm) })
 }
 
 fn point_of(k: ct::EdgeKey) -> Point {
@@ -154,31 +154,38 @@ fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -
 /// The edge writes of one `roles.0` delta of a role commit, per holder: an entry the
 /// delta creates sets the edge it reads; an entry reset removes the edge its entry's creation
 /// keyed, when the reset carries that key or none (a record acts only on the entry of its key,
-/// spec/crdt.md §5.6; an edge change is remove + put, spec/permissions.md §2). With whether
-/// every reset's entry is known here: a reset of an entry whose creation is not held names no
-/// holder yet.
+/// spec/crdt.md §5.6; an edge change is remove + put, spec/permissions.md §2). With whether the
+/// delta is resolved here: a removal (no edge left for keys: none, or `until` 0) names the writes
+/// it ends by the entries it resets, so each such reset's creation must be held; if not, the
+/// commit applies nothing yet (`add_role_commit_in`). A reset beside a put of a live edge for its
+/// key decides nothing: the put sets the edge whatever it replaces.
 fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Vec<EdgeOp>, bool) {
-    let mut known = true;
     let mut per: BTreeMap<Tid, Option<Edge>> = BTreeMap::new();
-    let mut set: BTreeSet<Tid> = BTreeSet::new();
     for (d, k, v) in es {
-        let created = own.is_some_and(|o| o.owns(d.owner()));
-        match (k, v) {
-            (Some(m), Some(e)) if created => {
-                per.insert(*m, Some(*e));
-                set.insert(*m);
-            }
-            // a nested write into another's entry is no edge write (bad input on receipt)
-            (_, Some(_)) => {}
-            (_, None) => match core.ix.holder_keys.get(&(*target, d.clone())) {
-                Some(m) if k.is_some_and(|k| k != *m) => {}
-                Some(m) if !set.contains(m) => {
-                    per.insert(*m, None);
-                }
-                Some(_) => {}
-                None => known = false,
-            },
+        if let (Some(m), Some(e)) = (k, v)
+            && own.is_some_and(|o| o.owns(d.owner()))
+        {
+            per.insert(*m, Some(*e));
         }
+    }
+    let live_put = |m: &Tid| per.get(m).is_some_and(|e| e.is_some_and(|e| !e.says_keep()));
+    let mut known = true;
+    let mut removed: BTreeSet<Tid> = BTreeSet::new();
+    for (d, k, v) in es {
+        // a nested write into another's entry is no edge write (bad input on receipt)
+        if v.is_some() {
+            continue;
+        }
+        match core.ix.holder_keys.get(&(*target, d.clone())) {
+            Some(m) if k.is_some_and(|k| k != *m) => {}
+            Some(m) => {
+                removed.insert(*m);
+            }
+            None => known &= k.as_ref().is_some_and(live_put),
+        }
+    }
+    for m in removed {
+        per.entry(m).or_insert(None);
     }
     (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder, edge }).collect(), known)
 }
@@ -460,8 +467,12 @@ fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgePart
     }
     match h.kind {
         Kind::Role => {
-            // the writes whose holder is known go to perm now; a commit resetting an entry of
-            // unknown key stays in `unresolved` and is derived again when keys arrive
+            // a commit's edge writes apply together or not at all (spec/permissions.md §2): one
+            // whose removal resets an entry of unknown creation names a write this node lacks, so
+            // it applies none of them and stays in `unresolved` until keys arrive. Invariant: an applied
+            // commit is the whole departure its author applied, which a name of it stands for
+            // (spec/crypto.md §4 Met): a finalize held without the write it ends removes nobody
+            // here, and one partly applied would let its name cover a holder it left in place.
             let mut ops = Vec::new();
             let mut known = true;
             for (ai, es) in parts.holders() {
@@ -479,6 +490,7 @@ fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgePart
                 core.ix.unresolved.remove(id);
             } else {
                 core.ix.unresolved.insert(*id);
+                ops.clear();
             }
             match core.ix.held.edge_commit(id) {
                 Some(c) if c.ops == ops => return,
@@ -586,11 +598,9 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
 /// from the delta alone. A key-erased record, a key that is no box or history key, or a write
 /// or reset of the whole value or of a field: admin.
 pub(super) fn secrets_role(f: &Fragment) -> Role {
-    let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct).filter(|_| f.is_plain_struct()) else { return Role::Admin };
+    let Some(maps) = entry_maps(f) else { return Role::Admin };
     let mut top = Role::Write;
-    for id in [0, 1] {
-        let Some(field) = st.field(id) else { continue };
-        let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map).filter(|_| !field.has_reset()) else { return Role::Admin };
+    for (id, m) in maps {
         for (_, _, k, _) in m.entries() {
             let role = k.and_then(|k| match id {
                 0 => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()).map(|k| k.role),
@@ -600,6 +610,35 @@ pub(super) fn secrets_role(f: &Fragment) -> Role {
         }
     }
     top
+}
+
+/// The box and history maps of a `secrets.0` delta (field 0, 1) that writes entries only: a
+/// plain struct, no reset of the value or of a field. `None` otherwise.
+fn entry_maps(f: &Fragment) -> Option<Vec<(u64, &osis_crdt::Map)>> {
+    let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct).filter(|_| f.is_plain_struct()) else { return None };
+    let mut out = Vec::new();
+    for id in [0, 1] {
+        let Some(field) = st.field(id) else { continue };
+        let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map).filter(|_| !field.has_reset()) else { return None };
+        out.push((id, m));
+    }
+    Some(out)
+}
+
+/// What a role commit's `secrets.0` delta on `actor` shows for possession (spec/crypto.md §4):
+/// whether it writes more than entries (`rotates`, as a keyset written beside it does:
+/// `note_required`), the boxes it removes, and each box's keyset and signature.
+fn showing_of(actor: &Tid, f: &Fragment) -> crate::engine::Showing {
+    let w = super::keys::secrets_write(f);
+    let rotates = entry_maps(f).is_none();
+    let removed = w.removed.iter().map(|k| (k.holder, k.role)).collect();
+    let shown = w.boxes.iter().filter_map(|(k, b)| osis_keys::possession::Shown::of(actor, k, b)).collect();
+    crate::engine::Showing { rotates, removed, shown }
+}
+
+/// Notes what part `ai` of `id` shows for possession (`Indexes::shown`).
+pub(crate) fn note_shown(core: &mut Core, id: &CommitId, ai: usize, x: Arc<crate::engine::Showing>) {
+    core.ix.shown.insert((*id, ai), x);
 }
 
 /// Records the roles `secrets.0` and `keys.0` deltas of a commit need, and the `secrets.0` parts
@@ -616,6 +655,40 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
     if h.kind != Kind::Role {
         return;
+    }
+    // a part's deltas (pages of one rotation) show together; it rotates when the commit's
+    // `keys.0` part on its actor writes a keyset (held now or when noted before)
+    let mut showing: BTreeMap<usize, crate::engine::Showing> = BTreeMap::new();
+    for (ai, _, d) in parts {
+        if let (Some(a), Decoded::Delta(d)) = (h.aspects.get(*ai), d)
+            && a.ak.as_str() == "secrets.0"
+        {
+            let x = showing_of(&a.tid, &d.fragment);
+            let e = showing.entry(*ai).or_insert_with(|| core.ix.shown.get(&(*id, *ai)).map(|x| (**x).clone()).unwrap_or_default());
+            e.rotates |= x.rotates;
+            e.removed.extend(x.removed);
+            e.shown.extend(x.shown);
+        }
+    }
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == "keys.0") else { continue };
+        if super::keys::keys_write(d.fragment()).keysets.is_empty() {
+            continue;
+        }
+        // only a `secrets.0` body held (now or before) shows anything
+        let Some(si) = h.aspects.iter().position(|b| b.tid == a.tid && b.ak.as_str() == "secrets.0") else { continue };
+        if let Some(x) = showing.get_mut(&si) {
+            x.rotates = true;
+        } else if let Some(x) = core.ix.shown.get(&(*id, si)) {
+            showing.insert(si, crate::engine::Showing { rotates: true, ..(**x).clone() });
+        }
+    }
+    for (ai, mut x) in showing {
+        x.shown.sort();
+        x.shown.dedup();
+        x.removed.sort();
+        x.removed.dedup();
+        note_shown(core, id, ai, Arc::new(x));
     }
     // the edges this commit puts, per target: what an invite grant may box
     let mut granted: BTreeMap<(Tid, Tid), Role> = BTreeMap::new();
@@ -955,10 +1028,67 @@ pub(crate) fn fell_at(core: &Core, h: &Header, id: &CommitId, ai: usize) -> osis
     h.ts.max(by(&a.tid, role)).max(acting)
 }
 
+/// What possession is judged by (`osis_keys::possession::View`): the roles just before a role
+/// commit's key on the actor's timeline, and the held valid keysets.
+struct Possession<'a> {
+    core: &'a Core,
+    tl: &'a osis_perm::Timeline,
+    at: At,
+    actor: Tid,
+    author: Tid,
+    /// The author's roles on paths not through the actor.
+    roles: BTreeMap<Tid, Role>,
+}
+
+impl osis_keys::possession::View for Possession<'_> {
+    fn key_actor(&self, t: &Tid) -> bool {
+        self.core.is_key_actor(t)
+    }
+    fn author_on(&self, t: &Tid) -> Option<Role> {
+        self.roles.get(t).copied()
+    }
+    fn holder_actors(&self) -> BTreeSet<Tid> {
+        let owner = self.core.owner(&self.actor);
+        self.tl.roster(&self.actor, self.at).into_keys().chain(owner).filter(|m| !self.core.is_key_actor(m) && self.core.keysets_of(m).next().is_some()).collect()
+    }
+    fn role_on_actor(&self, avoid: &BTreeSet<Tid>) -> Option<Role> {
+        self.tl.roles_avoiding(&self.author, self.at, avoid).get(&self.actor).copied()
+    }
+    fn keys(&self, m: &Tid, r: Role, k: &osis_crypto::Epoch) -> Option<Vec<osis_crypto::VerifyingKey>> {
+        let x = self.core.ix.keysets.get(&(*m, r, *k))?;
+        Some(x.possession.iter().filter_map(|p| osis_crypto::VerifyingKey::from_bytes(p).ok()).collect())
+    }
+}
+
+/// Whether `secrets.0` part `ai` (on `a`) of role commit `id` passes possession
+/// (spec/crypto.md §4, Holder actors), from what its body showed (`Indexes::shown`; none held:
+/// nothing to judge). It rotates when its commit writes a keyset of `a`.
+///
+/// Invariant (arrival-order independence): a function of `a`'s timeline (`stale_things` when it
+/// changes) and of the held valid keysets of the holders it boxes and of `a`'s holders
+/// (`stale_things` when they change, `apply::keys::keyset_changed`).
+fn possessed(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
+    let Some(x) = core.ix.shown.get(&(*id, ai)) else { return true };
+    let rotates = x.rotates;
+    if x.shown.is_empty() && x.removed.is_empty() && !rotates {
+        return true;
+    }
+    let at = At::before(Point { ts: h.ts, node: h.author, commit: *id });
+    // the author's roles on holder actors not through `a` (a role on M through `a` is a cycle,
+    // read through a keyless grant: no secret of M to show)
+    let roles = tl.roles_avoiding(&h.author, at, &BTreeSet::from([a.tid]));
+    let v = Possession { core, tl, at, actor: a.tid, author: h.author, roles };
+    let needed = core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or(Role::Write);
+    osis_keys::possession::holds(&x.shown, &x.removed, rotates, needed, &v)
+}
+
 /// `part_valid` of a content part on its thing's timeline `tl`.
 fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
     let ak = a.ak.as_str();
     let point = Point { ts: h.ts, node: h.author, commit: *id };
+    if ak == "secrets.0" && h.kind == Kind::Role && !possessed(core, tl, h, id, ai, a) {
+        return false;
+    }
     // an applied invite grant carries the grantee's boxes (spec/permissions.md §1, §2): every
     // put on the thing applied as an invite grant (`grant_overreach` checked the boxes against
     // all of them), so a self-removal beside a failing put exempts nothing

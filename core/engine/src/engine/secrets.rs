@@ -370,31 +370,39 @@ impl Core {
 }
 
 /// The names a node holds (spec/crypto.md §4) for epochs of `actor`: applied commits (a departing
-/// rotation commit by its `ts` and author among the held `roles.0` deltas of `actor`), epoch
-/// starts, and held keyset epochs (`keyset_epochs`).
+/// rotation commit by its `ts` and author among the held `roles.0` deltas of `actor`) and epoch
+/// starts.
 pub(crate) struct NamesHeld<'c> {
     core: &'c Core,
     actor: Tid,
 }
 
+impl NamesHeld<'_> {
+    /// Commit `c` is applied here with what its edge writes end: no reset of it names an entry
+    /// whose creation is not held (spec/permissions.md §2; such a commit applies none of its edge
+    /// writes, `apply::validity`). Invariant: a met name is a departure this node holds whole,
+    /// so it never boxes a holder an epoch's rotator saw depart into that epoch: a finalize held
+    /// without the write it ends removes nobody here, yet its rotation would count.
+    fn resolved(&self, c: &CommitId) -> bool {
+        !self.core.ix.unresolved.contains(c)
+    }
+}
+
 impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the name's thing, or, having none
     /// there, its `keys.0` part (a copy of some of it, a certificate copy or another label's parts,
-    /// may lack the departure).
+    /// may lack the departure), and `resolved`.
     fn met(&self, n: &Name) -> bool {
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {
             let part = |ak: &str| m.header.aspects.iter().position(|a| a.tid == n.thing && a.ak.as_str() == ak);
             part("roles.0").or_else(|| part("keys.0")).is_none_or(|ai| !m.missing.contains(&ai))
         });
-        applied || self.core.start_key(&n.thing).is_some_and(|s| n.key < s)
-    }
-    fn keyset(&self, k: &osis_keys::KeysetName) -> bool {
-        self.core.ix.keyset_epochs.get(&k.thing).is_some_and(|s| s.contains(&(k.role, k.epoch)))
+        applied && self.resolved(&n.key.commit) || self.core.start_key(&n.thing).is_some_and(|s| n.key < s)
     }
     fn departed(&self, own: &Own) -> bool {
         let applied = osis_base::Ak::new("roles.0").ok().and_then(|ak| self.core.ix.by_aspect.get(&(self.actor, ak))).is_some_and(|set| {
             let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
-            set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node))
+            set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node) && self.resolved(c))
         });
         applied || self.core.start_key(&self.actor).is_some_and(|s| (own.ts, own.node) < (s.ts, s.node))
     }
@@ -780,7 +788,7 @@ mod tests {
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
         let k = |n: u8| Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2);
-        a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), keysets: [osis_keys::KeysetName { thing: Tid::from_bytes([6; 15]), role: Role::Write, epoch: e1 }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
+        a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
         a.write.set_established(e1, Provenance::Derived);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);

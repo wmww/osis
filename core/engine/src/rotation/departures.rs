@@ -1,12 +1,10 @@
-//! Departures (spec/permissions.md §3, spec/crypto.md §4): the ones this node knows of, read
-//! from the role timeline (applied edge writes that lowered an edge, edge writes a demotion's
-//! audit dropped, whose holder holds less now) and from state (box
-//! holders at a current epoch that hold less than that role now), recursively through holder
-//! and owner actors (departures inside a holder), each attributed to the name a rotation
-//! knowing it writes (`events`); the names rotations and grants write (`names`); the covers
-//! rule over them (by names: an epoch covers what its rotator named); the box judgement of a
-//! holder actor's keyset over the held actors (`held_actors`). Departures are recomputed on
-//! demand (O(edge history)) and cached per actor (`departures`), never stored. Keys read no
+//! Departures from an actor (spec/permissions.md §3, spec/crypto.md §4): the ones this node
+//! knows of, read from the role timeline (applied edge writes that lowered an edge, edge writes a
+//! demotion's audit dropped, whose holder holds less now) and from state (box holders at a
+//! current epoch that hold less than that role now), each attributed to the name a rotation
+//! knowing it writes (`events`); the names rotations write (`names`). A departure from a holder
+//! actor of `a` is none of `a`'s (spec/crypto.md §4, Holder actors). Departures are recomputed
+//! on demand (O(edge history)) and cached per actor (`departures`), never stored. Keys read no
 //! clock: an edge counts by its role with its `until` disregarded (`key_role`), so an edge past
 //! its `until` departs only by its removal (a finalize, spec/permissions.md §2).
 
@@ -14,10 +12,8 @@ use crate::engine::{Core, Tx};
 use crate::error::Result;
 use crate::flows::{now_ts, secrets_in};
 use osis_base::{Role, Tid};
-use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, Name, ROLES, uncovered};
+use osis_keys::{Departure, Name};
 use osis_perm::{At, EdgeOp, RoleCommit, Timeline, WriteId};
-use std::sync::Arc;
-use osis_schema::core_types::{self as ct, BoxKey};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The departure of a holder now holding `cur` from a role above it: from the role just above.
@@ -53,41 +49,13 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
     osis_keys::Key { ts: p.ts.to_u64(), node: p.node, commit: p.commit }
 }
 
-/// The names a rotation of `a` writes (spec/crypto.md §4), from this node's own timelines: those
-/// of `a` and of every thing below it (`admin_paths_into`: its current holders, transitively,
-/// owners included; `thing_names`); a grant boxing holder actor `a` writes them too (with the
-/// keyset it boxes, `keyset_names`). They are what an epoch covers (`osis_keys::covers`): every
-/// departure this node knows from those things is named (`events`), so its own epochs cover
-/// what it knows. A holder actor's are named because its admins write its keyset: a node
-/// lacking an admin's departure from it holds that admin's later keysets valid and would box the
-/// actor there. Invariant (with `keyset_names`): where these names are met, every `keys.0` body
-/// of a boxed holder actor valid there is by an author the rotator did not see depart (every
-/// admin path into the actor runs through things below `a`). `departs`: the rotation commit
-/// itself, when it makes a departure from `a` (it cannot name its own ID).
+/// The names a rotation of `a` writes (spec/crypto.md §4), from this node's own timeline of `a`
+/// (`thing_names`). They are what an epoch covers (`osis_keys::covers`): every departure from
+/// `a` this node knows is named (`events`), so its own epochs cover what it knows. `departs`:
+/// the rotation commit itself, when it makes a departure from `a` (it cannot name its own ID).
 pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
     let mut out = osis_keys::Names { departs, ..osis_keys::Names::default() };
-    for v in admin_paths_into(core, a) {
-        thing_names(core, &v, &mut out.list);
-    }
-    out
-}
-
-/// `a` and every thing on a path of current holders into it (owners included), transitively,
-/// whether or not it has secrets of its own: an owner chain passing a plain thing (derived
-/// secrets) still gives its admins admin below it, so `below_of` (holders with secrets of their
-/// own) would miss their departures.
-fn admin_paths_into(core: &Core, a: &Tid) -> Vec<Tid> {
-    let mut out = vec![*a];
-    let mut seen = BTreeSet::from([*a]);
-    let mut i = 0;
-    while let Some(v) = out.get(i).copied() {
-        i += 1;
-        for (x, _) in core.key_holders(&v) {
-            if seen.insert(x) {
-                out.push(x);
-            }
-        }
-    }
+    thing_names(core, a, &mut out.list);
     out
 }
 
@@ -158,169 +126,13 @@ fn thing_names(core: &Core, a: &Tid, out: &mut BTreeSet<Name>) {
     out.extend(events(core, tl, a).into_iter().map(|x| x.3));
 }
 
-/// What this node holds of what the earlier sealers of holder actor `m` on `a` knew of `m`
-/// (spec/crypto.md §4, boxing a holder actor).
-pub(crate) enum Sealers {
-    /// This node holds a box to `m` carrying its sealer's names (at a current epoch of `a`, or in
-    /// a held or dropped commit putting `m`'s edge on `a`), and every such box's names are met
-    /// here: the box judgement here keeps out what they knew. Also a grant of `m` while it holds
-    /// nothing on `a` and no commit putting `m`'s edge whose boxes it lacks (no earlier sealer).
-    Free,
-    /// Some held names are not met here (or do not open), or no such box is held and `m`'s roster
-    /// entry (or, `m` holding no edge, the newest put of it held) names no keyset: `m` is left out.
-    Unmet,
-    /// No such box is held (the grant's boxes deposited and never received, or every box held
-    /// was sealed bound): `m` is sealed only to the keyset of the `keys.0` commit its roster
-    /// entry on `a` names, this key (an entry naming none: left out).
-    Bound(ct::EdgeKey),
-}
-
-/// The names-carrying boxes to holder actor `m` of `roles` (those this node seals) that it
-/// holds on `a`, and what they say (`Sealers`); a box of another role is its own sealer's
-/// business (its names are under that role's secret, which a lower role never holds). Invariant (by induction on the sealers of `m` on `a`): a departure inside `m`
-/// that a sealer knew, and so kept from its box to `m` by `keys.0` validity or the box
-/// judgement, is held here before this node boxes `m` free (its box carries names; a bound
-/// seal's carries none, so it frees nobody), or this node seals only to the keyset the roster
-/// entry names, the one the last grant or raise of `m` sealed to (a bound sealer: the one it was
-/// bound to), so a box this node writes opens to no party that sealer kept out by what it knew.
-/// Names it cannot open (it lacks the boxed epochs' secrets, or they are malformed) count as
-/// unmet. Only valid `secrets.0` parts of applied puts count (a reader's grant-shaped commit
-/// with a box carrying empty names frees nobody); a put whose `secrets.0` part is missing is a
-/// sealer this node lacks, so `m`'s removal and re-grant does not free it (the hole would be C3
-/// again: the re-grant at this node's own keyset choice). Not covered: a sealer whose box never
-/// reaches this node while another sealer's, made without it, does (notes/crypto.md, Frozen
-/// coverage).
-pub(crate) fn sealers(tx: &mut Tx<'_>, a: &Tid, m: &Tid, roles: &BTreeSet<Role>) -> Result<Sealers> {
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(Sealers::Free) };
-    // a box's key and its sealed names; each group needs one whose names open and are met: a
-    // box at a current epoch alone, a commit's boxes together (they carry the same names, one per
-    // boxed epoch)
-    type Sealed = (Role, osis_crypto::Epoch, Vec<u8>);
-    let to_m = |w: osis_keys::SecretsWrite| -> Vec<Sealed> {
-        w.boxes.into_iter().filter(|(k, _)| k.holder == *m && roles.contains(&k.role)).filter_map(|(k, b)| Some((k.role, osis_keys::aspects::from_schema(&k.epoch).ok()?, osis_keys::names_of(&b)?.clone()))).collect()
-    };
-    let mut groups: Vec<Vec<Sealed>> = secrets_in(tx, a)?
-        .boxes
-        .iter()
-        .filter(|(k, _)| k.holder == *m && roles.contains(&k.role))
-        .filter_map(|(k, b)| Some((k.role, osis_keys::aspects::from_schema(&k.epoch).ok()?, osis_keys::names_of(b)?.clone())))
-        .filter(|(r, e, _)| epochs.role(*r).is_current(e))
-        .map(|x| vec![x])
-        .collect();
-    let secrets_ak = crate::flows::ak("secrets.0")?;
-    // the puts whose boxes this node lacks (the part missing), newest first: earlier sealers
-    let mut lacking: Vec<(osis_perm::Point, Option<osis_perm::Point>)> = Vec::new();
-    for (c, point, keyset) in edge_puts(tx.core, a, m)? {
-        let Some((ai, dropped)) = tx.core.ix.commits.get(&c).and_then(|meta| {
-            let ai = meta.aspect(a, &secrets_ak)?;
-            if meta.missing.contains(&ai) {
-                lacking.push((point, keyset));
-                return None;
-            }
-            if !meta.valid_at(ai) {
-                return None;
-            }
-            Some((ai, meta.dropped.get(&ai).map(|d| d.names.iter().filter(|x| x.0 == *m && roles.contains(&x.1)).map(|x| (x.1, x.2, x.3.clone())).collect::<Vec<Sealed>>())))
-        }) else {
-            continue;
-        };
-        if let Some(g) = dropped {
-            groups.push(g);
-            continue;
-        }
-        for d in crate::apply::held_parts(tx, &c, ai)? {
-            if let osis_commit::Decoded::Delta(d) = d {
-                groups.push(to_m(crate::apply::keys::secrets_write(&d.fragment)));
-            }
-        }
-    }
-    groups.retain(|g| !g.is_empty());
-    let held = tx.core.names_held(a);
-    let met = |(r, e, sealed): &Sealed| {
-        let k = BoxKey { holder: *m, role: *r, epoch: osis_keys::aspects::to_schema(e) };
-        epochs.role(*r).reading_secret(e).and_then(|s| osis_keys::open_names(a, &k, sealed, s)).is_some_and(|n| n.met(&held))
-    };
-    if !groups.iter().all(|g| g.iter().any(met)) {
-        return Ok(Sealers::Unmet);
-    }
-    if !groups.is_empty() {
-        return Ok(Sealers::Free);
-    }
-    let keyset = match tx.core.timelines.get(a).and_then(|tl| tl.edges_at(None).get(m, a).copied()).filter(|e| key_role(Some(e)).is_some()) {
-        Some(entry) => entry.keyset,
-        // no edge: the newest put this node lacks the boxes of, if any, binds it
-        None => match lacking.iter().max_by_key(|x| x.0) {
-            Some(x) => x.1,
-            None => return Ok(Sealers::Free),
-        },
-    };
-    Ok(match keyset {
-        Some(k) => Sealers::Bound(ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit }),
-        None => Sealers::Unmet,
-    })
-}
-
-/// The held commits putting `m`'s edge on `a` (a grant or raise: their boxes to `m` carry the
-/// sealer's names), the put applied or the commit ordered before `a`'s epoch start
-/// (spec/permissions.md §6; the commit is held either way): each with its point and the
-/// `keyset` its edge write names.
-fn edge_puts(core: &Core, a: &Tid, m: &Tid) -> Result<Vec<(osis_base::CommitId, osis_perm::Point, Option<osis_perm::Point>)>> {
-    let Some(tl) = core.timelines.get(a) else { return Ok(Vec::new()) };
-    let roles_ak = crate::flows::ak("roles.0")?;
-    let start = tl.epoch_start(a).and_then(|id| core.ix.commits.get(&id).map(|c| osis_perm::Point { ts: c.view.ts, node: c.view.author, commit: id }));
-    Ok(core
-        .ix
-        .by_aspect
-        .get(&(*a, roles_ak))
-        .into_iter()
-        .flatten()
-        .map(|x| x.1)
-        .filter_map(|c| {
-            let mc = tl.role_commit(&c)?;
-            let (i, op) = mc.ops.iter().enumerate().find(|(_, op)| op.target == *a && op.holder == *m && op.edge.is_some())?;
-            let counts = tl.is_applied(&WriteId::Op(c, i as u32)) || start.is_some_and(|s| mc.point() < s);
-            counts.then(|| (c, mc.point(), op.edge.and_then(|e| e.keyset)))
-        })
-        .collect())
-}
-
-/// The names a grant boxing holder actor `m` carries in its boxes (spec/crypto.md §4): those of
-/// `m` and the things below it (`names`), and the keyset epochs its boxes name.
-pub(crate) fn grant_names(core: &Core, boxed: &osis_keys::Recipient, roles: &BTreeSet<Role>) -> osis_keys::Names {
-    let mut n = names(core, &boxed.holder, None);
-    n.keysets = keyset_names(std::slice::from_ref(boxed), roles);
-    n
-}
-
-/// The keyset names of a rotation (spec/crypto.md §4): per boxed holder actor and rotated role it
-/// holds, the epoch of the actor its box names. A departure inside a holder actor rides in the
-/// actor's rotation that made that epoch: a node not holding it would box the actor at an older
-/// keyset a departed holder of it opens, and the new epoch's history box would carry this one.
-pub(crate) fn keyset_names(boxed: &[osis_keys::Recipient], roles: &BTreeSet<Role>) -> BTreeSet<osis_keys::KeysetName> {
-    let mut out = BTreeSet::new();
-    for rc in boxed {
-        let osis_keys::HolderKeys::Actor { keysets, own } = &rc.keys else { continue };
-        for r in roles.iter().filter(|r| **r <= rc.role) {
-            let ks = keysets.get(r).map(|x| x.0);
-            let named = match own.get(r) {
-                Some((es, _)) if osis_keys::symmetric_box(es, ks.as_ref()) => Some(*es),
-                _ => ks,
-            };
-            if let Some(e) = named {
-                out.insert(osis_keys::KeysetName { thing: rc.holder, role: *r, epoch: e });
-            }
-        }
-    }
-    out
-}
-
 /// Departures from `a` itself: holders that hold less now (`Core::key_holders`) than a departure event
 /// of theirs (`events`) or a box at a current epoch had them hold (spec/crypto.md §4), each
 /// concerning the roles above its current one up to the highest it left, and named by its newest
 /// event (a box holder with none: by `a`'s epoch start, which its snapshot dropped it at; with no
 /// start either, by nothing, so no epoch covers it until a rotation supersedes the box). The
 /// owner never departs.
-pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
+fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
     let owner = tx.core.owner(a);
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
     // per holder: the roles it left that it holds less than now, and its newest event
@@ -360,270 +172,22 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Dep
     Ok(left.into_iter().map(|(m, (from, upto, at))| Departure::holder(m, from).upto(upto).at(at.or(start))).collect())
 }
 
-/// Every departure `a`'s epochs must cover: its own, and inside each holder or owner actor
-/// with secrets of its own, recursively (spec/crypto.md §4), along every chain that never
-/// passes the departed holder; a chain may pass an actor more than once, `a` included (a
-/// role cycle). Chains that the covers rule cannot tell apart (same first and second
-/// actor, same actor left, holder and role, and the same verdict of the first actor's newest
-/// epoch of each role) are one departure, carrying one of them: work is polynomial in the actor
-/// graph below `a`, whatever its depth, and finite with cycles. Cached per actor
-/// (`Core::departures`) until a roster, `secrets.0`, `keys.0` or held epochs change.
+/// Every departure `a`'s epochs must cover: its own (`direct_departures`). Cached per actor
+/// (`Core::departures`) until a roster, `secrets.0` or held epochs change.
 pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
     if let Some(d) = tx.core.ix.departures.get(a) {
         return Ok(d.clone());
     }
-    let _s = crate::costs::span("departures: collect");
-    let out: Vec<Departure> = collect(tx, a, &[])?.into_iter().collect();
+    let _s = crate::costs::span("departures");
+    let out: Vec<Departure> = direct_departures(tx, a)?.into_iter().collect();
     tx.core.ix.departures.insert(*a, out.clone());
     Ok(out)
-}
-
-/// A class of departures seen from actor V: the actor after V on the chain, the actor left,
-/// the holder, the roles, and whether V's newest epoch of each role keeps it out.
-type Class = (Option<Tid>, Tid, Tid, Role, Role, [bool; 3]);
-
-/// Whether `v`'s newest epoch of each role keeps `d` out by its boxes (seen from `v`,
-/// `osis_keys::keeps_out`); unheld counts as not. The box judgement of a holder actor's keyset
-/// reaches below `v` only through these verdicts.
-pub(super) fn verdicts(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure) -> [bool; 3] {
-    let (Some(s), Some(e)) = (osis_keys::HeldActors::secrets(held, v), osis_keys::HeldActors::epochs(held, v)) else { return [false; 3] };
-    ROLES.map(|r| e.role(r).newest().is_some_and(|k| osis_keys::keeps_out(s, r, &k, d, held)))
-}
-
-pub(super) fn class_of(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure) -> Class {
-    (d.via.first().copied(), d.via.last().copied().unwrap_or(*v), d.holder, d.from, d.upto, verdicts(held, v, d))
-}
-
-/// The departures of `departures`: the walk below `a` (`a` too when it is on a cycle), then
-/// `a`'s own departures (`pending` added: ones a commit being made makes) and those inside its
-/// holders.
-pub(super) fn collect(tx: &mut Tx<'_>, a: &Tid, pending: &[Departure]) -> Result<BTreeSet<Departure>> {
-    let (below, parents) = below_of(tx.core, a);
-    let mut direct = Vec::with_capacity(below.len() + 1);
-    let mut mine = direct_departures(tx, a)?;
-    mine.extend(pending.iter().cloned());
-    direct.push((*a, mine.clone()));
-    for v in below {
-        let d = direct_departures(tx, &v)?;
-        direct.push((v, d));
-    }
-    // no departure anywhere: `class_of` is never asked
-    let held = if direct.iter().any(|(_, d)| !d.is_empty()) { held_actors(tx)? } else { MemoryHeldActors::default() };
-    let found = walk(&parents, direct, |v, d| class_of(&held, v, d));
-    let mut out = mine;
-    for (m, ps) in &parents {
-        let Some((_, role)) = ps.iter().find(|(p, _)| p == a) else { continue };
-        for d in found.get(m).into_iter().flat_map(|f| f.values()) {
-            if d.holder != *a {
-                out.extend(Departure::through(*m, *role, d));
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Per actor, the actors it is a holder of, with its role there.
-pub(super) type Parents = BTreeMap<Tid, Vec<(Tid, Role)>>;
-
-/// The actors below `a` with secrets of its own (holders, transitively; `a` left out), and who
-/// each of them and `a` is a holder of among `a` and them, with its role there.
-pub(super) fn below_of(core: &Core, a: &Tid) -> (Vec<Tid>, Parents) {
-    let mut parents = Parents::new();
-    let mut below: Vec<Tid> = Vec::new();
-    let mut queue = std::collections::VecDeque::from([*a]);
-    let mut seen = BTreeSet::from([*a]);
-    while let Some(v) = queue.pop_front() {
-        let ms: BTreeMap<Tid, Role> = core.key_holders(&v).into_iter().filter(|x| x.0 != v && core.has_own_secrets(&x.0)).map(|x| (x.0, x.1)).collect();
-        for (x, role) in ms {
-            parents.entry(x).or_default().push((v, role));
-            if seen.insert(x) {
-                below.push(x);
-                queue.push_back(x);
-            }
-        }
-    }
-    (below, parents)
-}
-
-/// The fixpoint over the holder graph: each actor keeps one departure per class, starting from
-/// the actors' own (`direct`, in walk order); a chain is extended by every actor it is a holder
-/// of except the departed holder itself, concerning at most its role there (`Departure::through`). Classes are finite, so this ends on cycles too, and
-/// the merge is exact: the class of a chain's extension depends only on the chain's class.
-/// Chains share their tails (`osis_keys::Via`), so each kept departure costs one hop.
-pub(super) fn walk(parents: &Parents, direct: Vec<(Tid, BTreeSet<Departure>)>, class_of: impl Fn(&Tid, &Departure) -> Class) -> BTreeMap<Tid, BTreeMap<Class, Departure>> {
-    let mut found: BTreeMap<Tid, BTreeMap<Class, Departure>> = BTreeMap::new();
-    let mut work = std::collections::VecDeque::new();
-    let keep = |found: &mut BTreeMap<Tid, BTreeMap<Class, Departure>>, work: &mut std::collections::VecDeque<(Tid, Departure)>, v: Tid, d: Departure| {
-        if let std::collections::btree_map::Entry::Vacant(e) = found.entry(v).or_default().entry(class_of(&v, &d)) {
-            e.insert(d.clone());
-            work.push_back((v, d));
-        }
-    };
-    for (v, ds) in direct {
-        for d in ds {
-            keep(&mut found, &mut work, v, d);
-        }
-    }
-    while let Some((w, d)) = work.pop_front() {
-        for (u, role) in parents.get(&w).into_iter().flatten() {
-            if d.holder != *u
-                && let Some(x) = Departure::through(w, *role, &d)
-            {
-                keep(&mut found, &mut work, *u, x);
-            }
-        }
-    }
-    found
-}
-
-/// What the box judgement of a holder actor's keyset (`osis_keys::keeps_out`) needs of every
-/// actor this node holds secrets of; an actor with secrets of its own whose secrets it does not
-/// hold is judged by its newest `keys.0` keysets (spec/permissions.md §3, Left out): those
-/// epochs, established in this view only, with the `secrets.0` boxes held of it, and a holder
-/// that left it presumed boxed there unless the keyset's commit shows otherwise
-/// (`presumed_boxes`). Epochs observed without any secret (boxes or keysets seen) are not
-/// holding: such an actor is judged by its `keys.0` too, or a newer keyset arriving alone never
-/// counted.
-///
-/// O(actors known): only a departure inside a holder actor asks it (`held_for`).
-pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
-    let _s = crate::costs::span("held actors");
-    let mut h = MemoryHeldActors::default();
-    let actors: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
-    for a in actors {
-        // a plain thing's leftover epochs (an invalid rotation's) are no secrets of its own
-        let Some(e) = tx.core.own_epochs(&a) else { continue };
-        let held = ROLES.iter().any(|r| e.role(*r).newest_held().is_some());
-        if !held && tx.core.ix.own_keys.contains(&a) {
-            continue;
-        }
-        let s = secrets_in(tx, &a)?;
-        h.map.insert(a, (s, e));
-    }
-    let unheld: Vec<Tid> = tx.core.ix.own_keys.iter().filter(|a| !h.map.contains_key(a)).copied().collect();
-    for a in unheld {
-        let Some(keys) = Core::keys_in(tx, &a)? else { continue };
-        let mut e = ActorEpochs::default();
-        for (r, ks) in [(Role::Read, &keys.read), (Role::Write, &keys.write), (Role::Admin, &keys.admin)] {
-            if let Some(ep) = ks.as_ref().and_then(|k| osis_keys::aspects::from_schema(&k.epoch).ok()) {
-                e.role_mut(r).set_established(ep, osis_keys::Provenance::Fixed);
-            }
-        }
-        let mut s = secrets_in(tx, &a)?;
-        presumed_boxes(tx, &a, &e, Arc::make_mut(&mut s))?;
-        h.map.insert(a, (s, e));
-    }
-    Ok(h)
-}
-
-/// `held_actors` for judging holder actors against `deps`: only a departure inside a holder
-/// reads it (`role_keeps_out`), so with none an empty view gives the same answers.
-pub(crate) fn held_for(tx: &mut Tx<'_>, deps: &[Departure]) -> Result<MemoryHeldActors> {
-    if deps.iter().any(|d| !d.via.is_empty()) { held_actors(tx) } else { Ok(MemoryHeldActors::default()) }
-}
-
-/// Boxes presumed in actor `a`'s keyset epochs, on top of the `secrets.0` boxes held of it
-/// (spec/crypto.md §4): a holder that left a role of `a` (an applied lowering write) and holds
-/// less now counts as boxed at `a`'s keyset epoch of each role it
-/// left, unless that keyset was set by the commit that made the departure (a removal carrying
-/// its rotation), or this node holds the `secrets.0` delta of the commit that set it and that
-/// delta boxes no such holder (a rotation boxes every holder current to its author). Times are
-/// the authors' word, so they decide nothing: a self-removal backdated before a rotation that
-/// still boxed the leaver, or a rotation made unaware of a departure, presumes the leaver
-/// boxed. A self-removal thus keeps `a`'s epoch from covering until `a` rotates
-/// (spec/permissions.md §3).
-fn presumed_boxes(tx: &mut Tx<'_>, a: &Tid, e: &ActorEpochs, s: &mut osis_schema::core_types::Secrets) -> Result<()> {
-    let Some(tl) = tx.core.timelines.get(a) else { return Ok(()) };
-    let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
-    // (holder, the roles it left, the commit that made the departure)
-    let mut left: Vec<(Tid, Role, Role, osis_base::CommitId)> = Vec::new();
-    for (mc, op) in edge_writes(tl, a) {
-        if let Some(d) = departure_of(tl, a, mc, op) {
-            left.push((op.holder, d.from, d.upto, mc.id));
-        }
-    }
-    let owner = tx.core.owner(a);
-    for (m, from, upto, by) in left {
-        if current.get(&m).copied() >= Some(from) || owner == Some(m) {
-            continue;
-        }
-        for r in ROLES.into_iter().filter(|r| (from..=upto).contains(r)) {
-            let Some(ep) = e.role(r).newest() else { continue };
-            let k = BoxKey { holder: m, role: r, epoch: osis_keys::aspects::to_schema(&ep) };
-            let intro = tx.core.ix.epoch_intro.get(&(*a, r, ep)).map(|x| x.1);
-            let boxed = match intro {
-                Some(c) if c == by => false,
-                Some(c) => rotation_boxes(tx, a, &c)?.is_none_or(|b| b.contains(&k)),
-                None => true,
-            };
-            if boxed {
-                let placeholder = osis_schema::core_types::SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: k.epoch.clone(), wrap: Vec::new(), names: None });
-                s.boxes.entry(k).or_insert(placeholder);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The box keys commit `c`'s `secrets.0` delta on `a` writes, when this node holds that delta.
-fn rotation_boxes(tx: &mut Tx<'_>, a: &Tid, c: &osis_base::CommitId) -> Result<Option<BTreeSet<BoxKey>>> {
-    let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "secrets.0")) else { return Ok(None) };
-    let parts = crate::apply::held_parts(tx, c, ai)?;
-    if parts.is_empty() {
-        return Ok(None);
-    }
-    let mut out = BTreeSet::new();
-    for d in parts {
-        if let osis_commit::Decoded::Delta(d) = d {
-            out.extend(crate::apply::keys::secrets_write(&d.fragment).boxes.into_keys());
-        }
-    }
-    Ok(Some(out))
 }
 
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may rotate now: write
 /// and above rotates its role and below.
 pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
     core.timelines.get(a).map(|tl| tl.may_rotate(who, a, At::now(now_ts(core))).into_iter().collect()).unwrap_or_default()
-}
-
-/// The known departures `a`'s newest held epochs (any role) do not cover now.
-pub(crate) fn uncovered_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
-    let deps = departures(tx, a)?;
-    let mut out: Vec<Departure> = Vec::new();
-    for (_, ds) in uncovered_by_role(tx, a, &deps)?.unwrap_or_default() {
-        for d in ds {
-            if !out.contains(&d) {
-                out.push(d);
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// The roles of `a` whose newest current epoch does not cover a known departure.
-pub(crate) fn uncovered_roles(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>> {
-    let deps = departures(tx, a)?;
-    uncovered_roles_of(tx, a, deps)
-}
-
-pub fn uncovered_roles_of(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Result<BTreeSet<Role>> {
-    Ok(uncovered_by_role(tx, a, &deps)?.unwrap_or_default().into_iter().filter(|(_, ds)| !ds.is_empty()).map(|(r, _)| r).collect())
-}
-
-pub(super) type ByRole = Vec<(Role, Vec<Departure>)>;
-
-/// For each role of `a` with a held epoch, the departures of `deps` its newest held epoch does
-/// not cover (by names, `osis_keys::covers`); `None` when `deps` is empty or no epochs of `a`
-/// are held.
-pub(super) fn uncovered_by_role(tx: &mut Tx<'_>, a: &Tid, deps: &[Departure]) -> Result<Option<ByRole>> {
-    if deps.is_empty() {
-        return Ok(None);
-    }
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(None) };
-    let held = tx.core.names_held(a);
-    let by_role = ROLES.into_iter().filter_map(|r| Some((r, uncovered(a, &epochs, r, &epochs.role(r).newest_held()?.0, deps, &held).into_iter().cloned().collect()))).collect();
-    Ok(Some(by_role))
 }
 
 /// The known departures of `a`, each with the commit that made it when that is this node's
@@ -633,14 +197,12 @@ pub fn departures_placing(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Departure, Op
     Ok(departures(tx, a)?.into_iter().map(|d| { let c = own_leaving(tx.core, a, &d); (d, c) }).collect())
 }
 
-/// The commit of departure `d` (from `a`, or from the innermost actor on its way) when it is
-/// this node's own self-removal (spec/permissions.md §2): the newest applied write on the
+/// The commit of departure `d` from `a` when it is this node's own self-removal (spec/permissions.md §2): the newest applied write on the
 /// holder's edge there lowers it and is a commit made here (signed by this node or a key actor
 /// it holds). From stored commits only, so a restart keeps it.
 fn own_leaving(core: &Core, a: &Tid, d: &Departure) -> Option<osis_base::CommitId> {
-    let t = d.via.last().unwrap_or(a);
-    let tl = core.timelines.get(t)?;
-    let (mc, op) = edge_writes(tl, t).filter(|(_, op)| op.holder == d.holder).max_by_key(|(mc, _)| mc.point())?;
+    let tl = core.timelines.get(a)?;
+    let (mc, op) = edge_writes(tl, a).filter(|(_, op)| op.holder == d.holder).max_by_key(|(mc, _)| mc.point())?;
     let own = mc.author == core.id.tid() || core.ix.commits.get(&mc.id).is_some_and(|m| m.origin == crate::events::Origin::Local);
-    (own && departure_of(tl, t, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, t, &op.holder, mc.ts)).then_some(mc.id)
+    (own && departure_of(tl, a, mc, op).is_some() && crate::apply::validity::self_removal(core, &mc.author, a, &op.holder, mc.ts)).then_some(mc.id)
 }

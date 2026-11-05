@@ -96,7 +96,8 @@ impl Engine {
             let mut rots = Vec::new();
             for a in actors {
                 let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-                let mut holders = crate::rotation::recipients(tx, a, &[])?;
+                let me = tx.core.id.tid();
+                let mut holders = crate::rotation::recipients(tx, &me, a, &[])?;
                 holders.retain(|r| boxed.contains(&r.holder));
                 rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, &[])?));
             }
@@ -502,7 +503,7 @@ impl Engine {
             ("required", format!("{:?}", *ix.required)),
             ("boxes_to", format!("{:?}", *ix.boxes_to)),
             ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
-            ("keyset_epochs", format!("{:?}", *ix.keyset_epochs)),
+            ("keysets", format!("{:?}", *ix.keysets)),
             ("own_keys", format!("{:?}", *ix.own_keys)),
             ("keyset_parts", format!("{:?}", *ix.keyset_parts)),
             ("holder_keys", format!("{:?}", *ix.holder_keys)),

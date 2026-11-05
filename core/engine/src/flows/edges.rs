@@ -3,7 +3,7 @@
 //! the pre-sync choice and the receipt-record frontier, inbox delivery and acceptance
 //! (spec/sync.md §3, spec/crypto.md §5).
 
-use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets, recipient, remove_edge, secrets_in};
+use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets, remove_edge, secrets_in};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::rotation;
@@ -50,11 +50,11 @@ fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: 
         };
     }
     let keep = old.is_some() && d.keep.unwrap_or_else(|| crate::apply::validity::keep_now(core, target));
-    Ok(keep.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, since: None, tied: None, keyset: None }))
+    Ok(keep.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, since: None, tied: None }))
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm), keyset: None }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm) }
 }
 
 /// Which parts of a commit an inbox blob carries.
@@ -165,8 +165,8 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         }
         rotation::own_secrets(tx, target, &mut done)?;
     }
-    // boxing is encrypting under: rotate first where a known departure is uncovered (a holder
-    // actor's own epochs too, by this node where it may)
+    // boxing is encrypting under: rotate first where due (a holder actor's own epochs too, by
+    // this node where it may)
     if !tx.core.is_key_actor(&holder) {
         let me = tx.core.id.tid();
         rotation::ensure_rotated(tx, me, holder, &mut done)?;
@@ -176,37 +176,15 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     rotation::require_covered_but(tx, who, target, &[holder], &roles, &mut done)?;
     let epochs = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
     let secrets = secrets_in(tx, &target)?;
-    // a holder actor whose newest epoch still does not cover its departures (this node may not
-    // rotate it) is left out of the roles above them (re-sealed once it rotates,
-    // spec/permissions.md §3); its boxes carry what this node knows of it (spec/crypto.md §4),
-    // so a grant leaving it out of every role, which would carry nothing, is refused
-    let rcpt = recipient(tx, holder, edge.role)?;
-    let mut names = None;
-    let mut edge = Edge { keyset: None, ..edge.clone() };
-    let boxes = match rotation::grantee_left_out(tx, &target, &rcpt)? {
-        Some(b) => {
-            let mut w = box_holder(&target, &epochs, &secrets, &b.rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?;
-            // the edge names the `keys.0` commit whose keyset the read box seals to: a boxer
-            // holding no box to the holder seals it there only (spec/crypto.md §4)
-            if matches!(b.rcpt.keys, osis_keys::HolderKeys::Actor { .. }) {
-                edge.keyset = match &b.bound {
-                    Some(k) => Some(k.clone()),
-                    // holding no such commit (the keyset from a compaction snapshot): the
-                    // standing edge's, an earlier sealer's choice
-                    None => osis_keys::box_epoch(&w, &holder, Role::Read).and_then(|e| keyset_commit(tx.core, &holder, Role::Read, &e)).or_else(|| {
-                        tx.core.timelines.get(&target).and_then(|tl| tl.edges_at(None).get(&holder, &target).and_then(|o| o.keyset)).map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit })
-                    }),
-                };
-            }
-            if let Some(n) = b.names(tx.core, &roles) {
-                osis_keys::with_names(&target, &holder, &mut w, &n, &epochs, &mut *tx.rng)?;
-                names = Some(n);
-            }
-            w
-        }
-        None => return Err(Error::Misuse("the holder actor's epoch does not cover a departure inside it (it must rotate first)")),
+    // a holder actor is boxed at the keyset Seal gives, per role (spec/crypto.md §4); one whose
+    // grant would close a key cycle is keyless and boxed nothing; one this node can seal to no
+    // keyset is not granted (its boxes would say nothing)
+    let boxes = if rotation::grant_keyless(tx.core, &target, &holder) {
+        None
+    } else {
+        let rcpt = rotation::sealed(tx, &who, &target, &holder, edge.role)?.ok_or(Error::Misuse("the holder has no keyset this node may seal it to"))?;
+        Some(box_holder(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?)
     };
-    let edge = &edge;
     // an edge past its `until` is out of the roster but still in the state: a set over it would
     // keep its fields the new edge leaves out (the `until` among them)
     let held = old.is_some() || tx.core.timelines.get(&target).is_some_and(|tl| tl.edges_at(None).get(&holder, &target).is_some());
@@ -218,7 +196,9 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     if leave {
         remove_edge(&mut m, target, who)?;
     }
-    put_secrets(&mut m, target, &boxes, !admin)?;
+    if let Some(w) = &boxes {
+        put_secrets(&mut m, target, w, !admin)?;
+    }
     if let Some(s) = signer {
         m.sign_as(s);
     }
@@ -232,20 +212,11 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         if deposit {
             done.deliveries.push(super::owe(tx, Delivery::Deposit { commit: c, under: target })?);
         }
-        // the commits its names name go with it, so its target's rotators can meet them
-        if names.as_ref().is_some_and(|n| !n.list.is_empty()) {
-            done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, names.as_ref()), under: vec![target] })?);
+        if let Some(w) = &boxes {
+            rotation::carry(tx, target, w, &mut done)?;
         }
     }
     Ok(done)
-}
-
-/// The key of the rotation commit that introduced epoch `e` of role `r` of `m` (its valid
-/// `keys.0` part held: `Core::epoch_intro`).
-fn keyset_commit(core: &crate::engine::Core, m: &Tid, r: Role, e: &osis_crypto::Epoch) -> Option<ct::EdgeKey> {
-    let c = core.ix.epoch_intro.get(&(*m, r, *e))?.1;
-    let v = &core.ix.commits.get(&c)?.view;
-    Some(ct::EdgeKey { ts: v.ts, node: v.author, commit: c })
 }
 
 /// The dots of `holder`'s `roles.0` entries on `target` this node has seen, live or dead.
@@ -281,9 +252,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let ts = now_ts(tx.core);
     let tl = tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?;
     let old = tl.edges_at(None).get(&holder, &target).copied();
-    // the lowered edge keeps the standing edge's `keyset` (spec/crypto.md §4), as written below
     let new = written(tx.core, &target, old.as_ref(), d)?;
-    let new_p = new.as_ref().map(|n| PermEdge { keyset: old.and_then(|o| o.keyset), ..perm_edge(n) });
+    let new_p = new.as_ref().map(perm_edge);
     if old.is_some() && !osis_perm::types::lowers(new_p.as_ref(), old.as_ref()) {
         return Err(Error::Misuse("not a lowering write (use grant)"));
     }
@@ -334,11 +304,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             m.dead_resets.insert((target, super::ak("roles.0")?), dots);
         }
     }
-    // a lowering seals nothing to the holder: the edge keeps the keyset the standing one names
-    // (spec/crypto.md §4)
     if let Some(n) = &new {
-        let keyset = old.and_then(|o| o.keyset).map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit });
-        put_edge(&mut m, target, holder, &Edge { keyset, ..n.clone() })?;
+        put_edge(&mut m, target, holder, n)?;
     }
     for (o, _) in &gone {
         removal(tx, &mut m, target, *o)?;
@@ -371,7 +338,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
             // rotating a role without its current secret would drop that secret from the
-            // history boxes (it reaches the target through a holder actor left out)
+            // history boxes (it reaches the target through a holder actor a rotation left out)
             if roles.iter().any(|r| held.role(*r).newest_held().is_none()) {
                 return Err(Error::Misuse(if repudiate.is_none() {
                     "this node lacks a current secret of the target its rotation needs: it waits for a re-seal, or, if the demoted holder rotated the target to itself, removes it repudiating that rotation"
@@ -380,7 +347,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
                 }));
             }
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
-            let holders = rotation::recipients(tx, &target, &skip)?;
+            let holders = rotation::recipients(tx, &who, &target, &skip)?;
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
             if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
                 rotation::fresh_deposit_seed(tx, &mut m, target)?;
@@ -429,7 +396,7 @@ fn lowered_deliveries(tx: &mut Tx<'_>, who: Tid, target: Tid, c: CommitId, rot: 
         done.deliveries.extend(deliver_parts(tx, *x, c, &[target], Parts::Edge, Vec::new())?);
     }
     done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), unreached)?);
-    let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts), own_secrets: &|t: &Tid| tx.core.has_own_secrets(t) };
+    let graph = osis_keys::PermGraph { timeline: tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?, at: At::now(ts) };
     let mut under: Vec<Tid> = lowered.first().map(|h| osis_keys::reached(&graph, target, *h).into_iter().collect()).unwrap_or_default();
     if let Err(i) = under.binary_search(&target) {
         under.insert(i, target);
@@ -475,9 +442,9 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 /// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
 /// their removal with no frontier, each saying keep or erase as its expiry would, and the
 /// rotation of the roles they held that `who` may rotate, in one role commit. Not written when
-/// `who` holds no current secret of such a role (it waits for a re-seal, spec/crypto.md §4).
-/// The cascade below `target` is the caller's (`rotation::ensure_rotated`).
-pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<()> {
+/// `who` holds no current secret of such a role (it waits for a re-seal, spec/crypto.md §4):
+/// false then. The cascade below `target` is the caller's (`rotation::ensure_rotated`).
+pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid, PermEdge, bool)], done: &mut Done) -> Result<bool> {
     let mut m = Mutation::new();
     if who != tx.core.id.tid() {
         m.sign_as(who);
@@ -487,8 +454,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     for (x, e, keep) in ended {
         removal(tx, &mut m, target, *x)?;
         if *keep {
-            let keyset = e.keyset.map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit });
-            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, since: None, tied: None, keyset })?;
+            put_edge(&mut m, target, *x, &Edge { role: Role::Read, until: Some(WallMs(0)), invite: None, since: None, tied: None })?;
         }
         if let Some(dep) = Departure::of_change(*x, Some(e.role), None) {
             left.extend(ROLES.into_iter().filter(|r| *r <= e.role));
@@ -500,9 +466,9 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     let may = rotation::may_rotate(tx.core, &who, &target);
     let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
     if !roles.is_empty() && tx.core.has_own_secrets(&target) {
-        let Some(held) = tx.core.epochs(&target).filter(|h| roles.iter().all(|r| h.role(*r).newest_held().is_some())) else { return Ok(()) };
+        let Some(held) = tx.core.epochs(&target).filter(|h| roles.iter().all(|r| h.role(*r).newest_held().is_some())) else { return Ok(false) };
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
-        let holders = rotation::recipients(tx, &target, &skip)?;
+        let holders = rotation::recipients(tx, &who, &target, &skip)?;
         let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
         if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
             rotation::fresh_deposit_seed(tx, &mut m, target)?;
@@ -521,7 +487,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
         let removed: Vec<Tid> = ended.iter().map(|x| x.0).collect();
         lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removed, &removed, done)?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// The parts of held commit `c` on `actor`'s `secrets.0`.

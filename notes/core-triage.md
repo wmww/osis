@@ -19,8 +19,7 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | 4 | purge-no-reset-older-value | A?/C | S to diagnose | A purge without a reset reads `None` at the admin and an older value at a new device. Check whether content the user believes gone shows, or whether it is the accepted 2B limit. |
 | 5 | pending-unbounded | A | M | A reader or inbox sender grows what a node keeps pending, for good. Needs Tess's bound. **WC**: step 3 shrinks pending to parts on unheld things; re-check then. |
 | 6 | purged-values-in-waiting-copies | A | M | Purged values sit in waiting copies (part and request both waiting for the record; a blob kept for a junk-held slot; an unnamed waiting snapshot). **WC**, with #5. |
-| 7 | keyset-names-placement-rosters | A | L | Readers of A receive members' device rosters (Confidentiality breach). **Q2**: option A makes it moot; else build roster option 2 (decided). |
-| 9 | epoch-establishment-redesign | A | M | Frozen coverage built; its review and three open cases remain. **Q2**: mostly moot under A. |
+| 9 | epoch-establishment-redesign | A | M | Frozen coverage built; the review of the direct-holder model (C2) remains (holder actors at depth 0, issues/keys-depth0.md). |
 | 10 | hidden-writes-not-swept | A | M | Two honest flows (edit after a parent reset, payload edit of a non-current enum case) keep hidden bytes; needs a concurrent edit; reads never show them. |
 | 11 | fork-held-by-non-rotators | B | M | A current epoch only a demoted writer holds stays unreadable to everyone else. Rare honest shape; stays under Q2 either way. |
 | 12 | covered-body-new-label | B | L | A covered body is may-hold, so hosts can end with no copy of a body retention keeps. Two fixes tried and rejected. |
@@ -40,7 +39,6 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | 26 | undo-valueless-blocks-absent-before, crdt-model-root-register-undo, undo-partial-buffer | C | S each | Engine and model disagree on undo corners; two need Tess's rule. |
 | 27 | node-sync-gaps, clock-back-raw-timers | C | low | Transient: crossed deletes re-place within a resync; a clock jump back stalls timers by its size. |
 | 28 | suspect-repair-per-launch | C | S | One extra snapshot per launch for an unsettleable report; check against the growth rule. |
-| 29 | write-only-reseal-bound | C | design | A write-only re-seal stays bound when it could seal free (liveness, conservative). **Q2**: moot under A. |
 | 30 | session-sources (left: 3, 6) | C/E | M each | Step 3 (demoter compacts first) is now drop-rejoin item 7; step 6 durable header forgetting. Steps 1, 2, 4, 5 built. |
 
 ### D: hostile-only, stated-limit candidates
@@ -53,14 +51,13 @@ Priority (Tess): shapes only a malicious writer can craft inside data it may wri
 | hint-wrap-flip | a hostile host delays a label's real entries before `label.0` is held (traced, not run) | availability only; S fix (never replace a wrap that opens under any held group) |
 | header-list-decode-memory, large-value-read-memory, invalid-arrival-replays-aspect, eph-node-cost-bounds | memory or CPU a signed hostile writer or forger can cost a reader | caps as stated |
 | deposit-seed-reaches-departed, fresh-deposit-seed-readable-by-departed | a departed holder keeps depositing junk | accepted residual |
-| keyset-name-later-admin-path | the lost-device window, an ignorant boxer | accepted residual; **Q2**: moot under A |
 | epoch-derived-same-secret | insider disruption above 2^62 | low |
 | host-hub-stall, sync-log-scan, inbox-full-walk-scale | bounded DoS cost at a host or node | rates and caps as stated |
 | cli-proxy follow-ups (rule 4 answer, no call deadline, Auth guesses) | a hostile attached node or client | listed as limits in the issue |
 | store-unit-length-leak | plaintext row names link a slot's versions for a forensic reader | state, or hash row names |
 
 ### E: perf and cost (wait)
-big-map-rewrite-cost, chat-add-cost, covered-cost-whole-snapshot, crdt-seq-linearization-cost, durable-decode-bound (left: the writer's whole-state snapshot), frontier-certificate-cost (re-measure since ID-only frontiers; close if the split is not worth it), idle-pass-per-label, long-aspect-cost, node-core-gaps, node-sequences-not-paged, perm-eval-cost, rotation-chain-cost (**Q2**: mostly moot under A), sync-step-cost, text-redelete-recompute-cost, net-cleanup (listener backlog).
+big-map-rewrite-cost, chat-add-cost, covered-cost-whole-snapshot, crdt-seq-linearization-cost, durable-decode-bound (left: the writer's whole-state snapshot), frontier-certificate-cost (re-measure since ID-only frontiers; close if the split is not worth it), idle-pass-per-label, long-aspect-cost, node-core-gaps, node-sequences-not-paged, perm-eval-cost, sync-step-cost, text-redelete-recompute-cost, net-cleanup (listener backlog).
 
 ### F: optional features, API, tooling, cleanup (wait or do when touched)
 account-rename, api-deferred, api-knows-empty, api-after-owners, api-leaving-give-up, app-attach-daemon, app-chat-multiline, app-group-helper, grant-rename-multi-actor, history-less-grant, partial-history-fetch, schema-discovery, cli-own-admission (label-ID admission), cli-proxy (e, f, g), magic-number-review, root-key-erasure-tier, pending-grant-unreachable (deletable machinery), eph-unify (left: D undo over held bodies, E durable auto-compaction), eph-unpaged-cover (memory pages), crdt-leftovers-branch (decide, then delete `origin/crdt-leftovers`; its list-expiry oracle is worth keeping), host-timed-delete-unused (after **WC** 2b), engine-cleanup, mid-cleanup, spec-audit-engine-rest, spec-audit-protocol, spec-audit-sync, tests-unbuilt, validity-conformance-vectors, seed-pinned-bugs-without-test, paged-apply-test-slow, build-baked-absolute-paths.
@@ -82,7 +79,7 @@ About 17 items. **Decided (Tess)**: commit IDs only; kept-history cost a stated 
 10 items. Honest path closed except waiting copies (purged-values-in-waiting-copies, waits on WC) and two undiagnosed reads (purge-no-reset-older-value, order-purge-seed-9160006). Hostile residue: forged-key-erased-reset, misstated half of vouched-key-erased (D).
 
 ### 2.5 Keys
-About 29 items, three security reviews, one redesign; where the cost went: notes/keys-requirements-study.md (about 290 commits). Two questions wait on Tess (notes/questions-for-tess.md): Q1 timed shares and self-removals as non-departures (small deletion, removes the clock from keys); Q2 a group never looks inside its member actors (deletes about 2k lines; closes keyset-names-placement-rosters, keyset-name-later-admin-path, write-only-reseal-bound and most of epoch-establishment-redesign and rotation-chain-cost). If Q2 is declined: the redesign's review and roster option 2.
+About 29 items, three security reviews, one redesign; where the cost went: notes/keys-requirements-study.md (about 290 commits). Q1 (timed ends finalized) and Q2 (a group never looks inside its member actors, issues/keys-depth0.md: closed keyset-names-placement-rosters, keyset-name-later-admin-path, write-only-reseal-bound, rotation-chain-cost and most of epoch-establishment-redesign) are built.
 
 ### 2.6 Inbox budget
 6 items; converged. unmet-sender-burst is a stated limit (option 3); inbox-hint-names-others-label fixed.
@@ -94,6 +91,6 @@ About 29 items, three security reviews, one redesign; where the cost went: notes
 Rounds: d70 delete-sticks, d75 delete-holes, the parked crdt-leftovers branch. Done: bare anchors keep no key (removed-keys: a dot's bare structure lives in its key-erased record, spec/crdt.md §5.6 Bare anchors). Open: hidden-writes-not-swept, list-mark-lost-on-fall, list-element-snapshot-before-expiry. Both list issues point to one rule (value-less as its own state bit, the map's rule). The requirement looks fine; the CRDT's anchor and mark records are where it leaks.
 
 ### 2.9 Overall
-- Atomic apply and kick cost are decided and (for atomic) being built; keys waits on Tess's Q1/Q2.
+- Atomic apply and kick cost are decided and (for atomic) being built; keys Q1 and Q2 are built.
 - Arrival order is now one direction (drop-rejoin-robust) plus a backlog of seeds to replay after it.
 - The new top of the A list is the CRDT removal tail (2.8) and two undiagnosed "value past expiry" seeds; pending storage still needs Tess's bound once whole commits shrink it.

@@ -19,8 +19,7 @@ Written on ostrich with main at the commit that adds this note. Nothing is runni
 - Dropped bodies coming back after a revocation: keep the rule, build it simple and robust; download and CPU are cheap in this corner (issues/drop-rejoin-robust.md, seven items, start with the debug rebuild check).
 - Keep at most: drop "D after replaced" for D > 0; keep "0 after replaced" and absolute T (built: branch keep-at-most).
 - Moving a thing to another owner: removed (branch remove-moves); notes/moves.md says what could be built later.
-- Roster privacy: notes/roster-names.md option 2 (issues/keyset-names-placement-rosters.md).
-- Key rotation: the requirements study is done (notes/keys-requirements-study.md); two questions wait in notes/questions-for-tess.md (unstamped removals as key departures; depth-0 nesting for keys). Option 2 of roster-names is moot if the second is accepted.
+- Key rotation: depth 0 is built (issues/keys-depth0.md, notes/crypto.md Holder actors at depth 0): no names below an actor, no key cycles (rule 4, with taint). Roster privacy of members follows from it.
 - Tests: per-branch oracle sizes are a tenth of full by default, `OSIS_FULL=1` in periodic runs only; no rerun of run ranges; one all-core run per box; a study, not a third patch, after a second seed-found fix in one area (notes/coordination.md, notes/test-value-study.md).
 
 ## Suggested order

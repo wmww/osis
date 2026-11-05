@@ -333,9 +333,22 @@ fn judge(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<(Vec<Tid>, BTreeMap<Tid, u6
     Ok((lost, kept.iter().filter_map(|a| Some((*a, ages(a)?))).collect()))
 }
 
-/// This node's own self-removals (`departures_placing`) behind a departure from `a`.
+/// This node's own self-removals (`departures_placing`) from `a` or from an actor holding a role
+/// on it, transitively: what made it lose `a` (a node that left a holder actor loses what that
+/// actor reads).
 fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>> {
-    Ok(super::departures_placing(tx, a)?.into_iter().filter_map(|(_, c)| c).collect())
+    let mut out = BTreeSet::new();
+    let mut seen = BTreeSet::from([*a]);
+    let mut work = vec![*a];
+    while let Some(t) = work.pop() {
+        out.extend(super::departures_placing(tx, &t)?.into_iter().filter_map(|(_, c)| c));
+        for (m, _) in tx.core.key_holders(&t) {
+            if !tx.core.is_key_actor(&m) && seen.insert(m) {
+                work.push(m);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Whether `k` is a thing where a held single-use redemption granting one of ours stands void

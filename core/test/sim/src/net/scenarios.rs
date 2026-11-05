@@ -715,7 +715,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     sim.quiet(40)?;
     // a guest: its edge ends by the clock
     let at = sim.engine(a)?.now().0 + 600_000;
-    let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(WallMs(at)), invite: None, since: None, tied: None, keyset: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(WallMs(at)), invite: None, since: None, tied: None };
     let r = sim.engine(a)?.grant(&g, &pf, &edge);
     let done = r.map_err(|e| sim.fail(format!("guest: {e}")))?;
     sim.carry(a, done)?;
@@ -730,7 +730,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     sim.pair(c, extra, pc)?;
     sim.quiet(40)?;
     write(&mut sim, &mut d, extra, 40)?;
-    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None }), presync: PreSync::Synced, keep: None };
+    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None }), presync: PreSync::Synced, keep: None };
     let r = sim.engine(a)?.demote(&g, &lower);
     let done = r.map_err(|e| sim.fail(format!("lower: {e}")))?;
     sim.carry(a, done)?;

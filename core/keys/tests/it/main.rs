@@ -3,7 +3,6 @@
 
 mod common;
 mod boxes;
-mod chain;
 mod covers;
 mod epochs;
 mod established;
