@@ -67,19 +67,30 @@ fn next_token() -> u64 {
 
 /// The socket a node on `store` listens on: in osis's own
 /// directory under `$XDG_RUNTIME_DIR` (`osis/`), else `/tmp/osis-<uid>/`, named by the store
-/// path's hash (`sun_path` holds 108 bytes, a store path may not). The directory is created 0700
-/// and checked: owned by this uid, mode 0700, not a symlink.
+/// path's hash (`sun_path` holds 108 bytes, a store path may not). However the path is spelled, one
+/// store has one socket: symlinks are followed, and a store not there yet is named as it stands. The
+/// directory is created 0700 and checked: owned by this uid, mode 0700, not a symlink. `Storage` when
+/// it is not, or the path would not fit a socket.
 pub fn socket_path(store: &Path) -> Result<PathBuf> {
+    socket_path_under(std::env::var_os("XDG_RUNTIME_DIR").as_deref().map(Path::new), store)
+}
+
+/// `socket_path` with `runtime_dir` as `$XDG_RUNTIME_DIR`.
+pub fn socket_path_under(runtime_dir: Option<&Path>, store: &Path) -> Result<PathBuf> {
     let uid = own_uid()?;
-    let dir = match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
-        Some(d) => PathBuf::from(d).join("osis"),
+    let dir = match runtime_dir.filter(|d| !d.as_os_str().is_empty()) {
+        Some(d) => d.join("osis"),
         None => PathBuf::from(format!("/tmp/osis-{uid}")),
     };
     socket_dir(&dir, uid)?;
-    let abs = std::path::absolute(store).map_err(|e| Error::Storage(e.to_string()))?;
+    let abs = std::fs::canonicalize(store).or_else(|_| std::path::absolute(store)).map_err(|e| Error::Storage(e.to_string()))?;
     let h = osis_base::hash::hash(abs.as_os_str().as_encoded_bytes());
     let name: String = h.iter().take(8).map(|b| format!("{b:02x}")).collect();
-    Ok(dir.join(format!("{name}.sock")))
+    let sock = dir.join(format!("{name}.sock"));
+    if sock.as_os_str().len() > osis_transport::unix::MAX_PATH {
+        return Err(Error::Storage(format!("{}: too long a path for a socket", sock.display())));
+    }
+    Ok(sock)
 }
 
 /// Creates `dir` 0700 if missing, then checks it is a directory of `uid`'s, mode 0700, not a

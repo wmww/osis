@@ -153,7 +153,7 @@ pub(crate) struct Registry {
     subs: BTreeMap<u64, Arc<Sub>>,
 }
 
-/// Where watch callbacks run (`Config::dispatch`).
+/// Where watch callbacks run (`HandleConfig::dispatch`).
 #[derive(Clone, Default)]
 pub enum Dispatcher {
     /// On a dispatcher thread the database starts (the default).
@@ -494,8 +494,9 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
 
 /// A registration; dropping it unsubscribes. Off the
 /// dispatcher thread, drop waits for a call in flight, so no call starts or runs after it
-/// returns; except when the dropping thread holds the engine lock (inside
-/// `Internals::engine`), where it cannot wait: a call may still be running then.
+/// returns.
+// The exception: a thread holding the engine lock (inside `Internals::engine`) cannot wait, so a
+// call may still be running then.
 #[must_use = "dropping a Subscription unsubscribes at once; use detach() to keep it"]
 pub struct Subscription {
     shared: Weak<Shared>,

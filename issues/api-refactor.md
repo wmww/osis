@@ -68,7 +68,7 @@ Keep as they are:
 - Port every caller: chat's disappearing messages, the CLI, undo's and `revert`'s handling of `also`, and spec/commits.md's "a writer splits".
 
 ## E. Leaks
-Done (step 5), notes/api.md has the shapes. Left: `Admit`, `HostCaps`, `HostPolicy`, `Hosting`, `Device`, `host_*` go with step 6 (`Serving`, `Address`). `Value` still shows `Link` and `Unknown` variants: a value an app reads holds neither unless written by an odd peer, and the enum is the data model's.
+Done (step 5), notes/api.md has the shapes. Left: `Admit`, `HostCaps`, `HostPolicy`, `Hosting`, `Device`, `host_*` go with step 6 (`Serving`, `Address`). `Value::Unknown` stays: a newer writer's value reaches apps as it is. `Value::Link` is hidden: reads replace it and writes refuse it. `Time` is `WallMs` by a second name below the API until the last sweep (Decided).
 
 ## F. Names
 | Now | Proposed | Why |

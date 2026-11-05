@@ -8,7 +8,7 @@ use osis_node::Engine;
 pub use crate::history::HISTORY_PAGE;
 pub use crate::net::ManualNet;
 pub use crate::person::OFFER_LIFETIME_MS;
-pub use crate::port::client::{own_uid, socket_dir, socket_path};
+pub use crate::port::client::{own_uid, socket_dir, socket_path, socket_path_under};
 pub use crate::port::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES};
 pub use crate::value_type::of_schema;
 pub use osis_base::{Clock, CommitId, CreationRecord, LabelId, ManualClock, Ts};
@@ -75,6 +75,17 @@ impl Exact for crate::HistoryPos {
 /// The label an admission id stands for.
 pub fn label_of(a: &crate::AdmissionId) -> LabelId {
     a.0
+}
+
+/// Sets a host limit by name, `HostPolicy`'s or one it does not show (`--policy`, tests). `Err` on a
+/// name or value the host cannot run by.
+pub fn host_limit(p: &mut crate::HostPolicy, name: &str, n: u64) -> Result<(), String> {
+    p.set(name, n)
+}
+
+/// The host limits set that `HostPolicy` does not show, by name.
+pub fn host_limits_unshown(p: &crate::HostPolicy) -> std::collections::BTreeMap<String, u64> {
+    p.tuning.0.clone()
 }
 
 /// Writes a `KeepAlive` has made.

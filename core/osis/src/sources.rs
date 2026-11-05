@@ -65,7 +65,7 @@ pub struct RemoteStatus {
 /// Where a group's calls go (`Osis::group_source`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GroupSource {
-    /// This node's engine: it syncs the group.
+    /// This node: it syncs the group.
     Local,
     /// The node at this address, which must be connected (`Osis::connect_node`).
     Remote(HostAddr),
@@ -486,8 +486,8 @@ impl Osis {
         Ok(r)
     }
 
-    /// Moves `group` between this node's engine and a node it is connected to
-    /// one group at a time, never losing a write.
+    /// Moves where `group` is read and written, between this node and a node it is connected to,
+    /// never losing a write.
     ///
     /// To `Remote(addr)`: the connection must be up and the node know the group (else `Network` or
     /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a host
@@ -499,15 +499,15 @@ impl Osis {
     ///
     /// To `Local`: this node must hold the group (a program with no store has no keys: `Unsupported`; a node
     /// without it: `Invalid`). It syncs the group again and, until the node's writes are at a host
-    /// and this engine caught up (`wait_synced`'s outcomes; failed or dropped, syncing goes on and
+    /// and this node caught up (`wait_synced`'s outcomes; failed or dropped, syncing goes on and
     /// calling this again finishes the move), calls keep going to the node, so nothing reads this
-    /// engine's old copy. Works with the node gone (what only it held arrives if it returns).
+    /// node's old copy. Works with the node gone (what only it held arrives if it returns).
     /// `Unsynced` here means this node lost the group's keys (`status`: `Stranded`): calls stay at the
     /// node, nothing is lost, and calling again helps once another holder gives the keys again.
     ///
     /// A thing also in a group that syncs here reads at the node like the rest of this one, and
     /// refuses writes (`Invalid`, `Status::two_sources`) until this group comes home or the other moves to
-    /// the same node: they would miss the other group's holders (the module's invariant).
+    /// the same node: they would miss the other group's holders.
     ///
     /// Every watch whose source this changes gets one last `Err(Network)` and ends: watch again.
     /// The route survives a restart (the `sources` record); a store-less process has none.

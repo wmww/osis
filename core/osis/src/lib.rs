@@ -383,9 +383,8 @@ pub use write::{AspectWrite, Committed, ExpiringGroupWrite, Expiry, GroupWrite, 
 /// A retention bound's absolute time for "for good" (`Bound::abs`).
 pub use osis_commit::FOREVER;
 pub use osis_base::{Ak, Float, Role, Tid, Value, ValueMap, ValueSet};
-/// A moment: milliseconds since the Unix epoch, UTC.
-pub use osis_base::Time;
-pub use osis_schema::{Aspect, AspectKey, Bound, CaseId, Codec, FieldId, Lifetime, Path, PathError, PurgeBy, Retention, Step, p};
+pub use osis_base::{AkError, Time, TidParseError};
+pub use osis_schema::{Aspect, AspectKey, Bound, CaseId, Codec, FieldId, Lifetime, Path, PathError, PathErrorKind, PurgeBy, Retention, Step, p};
 
 /// What code generated from a schema (`osis schema gen`) refers to: `use osis::generated as
 /// osis_schema;` beside the `include!`.

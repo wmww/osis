@@ -41,6 +41,7 @@ macro_rules! agility {
         pub enum $name {
             $variant(Vec<u8>),
         }
+        #[doc(hidden)]
         impl Codec for $name {
             fn to_value(&self) -> Value {
                 match self {
@@ -78,6 +79,7 @@ agility!(
 );
 
 /// `created.0`: the creation record (spec/wire.md §3).
+#[doc(hidden)]
 impl Codec for CreationRecord {
     const CHECKS_ITSELF: bool = true;
     fn to_value(&self) -> Value {
@@ -240,6 +242,7 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Client { 0 secret_hash: [u8; 32], 1 until: Option<WallMs> }
 }
+#[doc(hidden)]
 impl Codec for osis_base::PurgeBy {
     fn to_value(&self) -> Value {
         rt::enum_value(*self as u64, None)
@@ -252,6 +255,7 @@ impl Codec for osis_base::PurgeBy {
     }
 }
 codec_struct! {
+    /// A retention bound of `Required`, as `Bound` is of `Retention`.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub struct RequiredBound { 0 abs: Option<u64>, 1 rel: Option<u64> }
 }
@@ -329,6 +333,7 @@ pub struct Group {
     pub subgroups: BTreeSet<Tid>,
 }
 
+#[doc(hidden)]
 impl Codec for Group {
     fn to_value(&self) -> Value {
         rt::struct_value(vec![(0, self.items.to_value()), (1, self.subgroups.to_value())])
@@ -340,7 +345,7 @@ impl Codec for Group {
     }
 }
 codec_struct! {
-    /// Marks a group as a tag a user sees.
+    /// A tag's own settings.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Tag { 0 color: Option<String> }
 }
@@ -349,6 +354,7 @@ codec_struct! {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Tenures(pub Vec<Tenure>);
 
+#[doc(hidden)]
 impl Codec for Tenures {
     fn to_value(&self) -> Value {
         Value::Set(self.0.iter().map(Codec::to_value).collect())
@@ -378,7 +384,6 @@ pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);
 pub const HOST: Aspect<Host> = Aspect::new("host.0^", &CORE);
 /// `clients.0^`: by client actor.
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients.0^", &CORE);
-/// `required.0^`: whole-value writes; fixed retention (spec/commits.md §5).
 pub const REQUIRED: Aspect<RequiredRules> = Aspect::new("required.0^", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);

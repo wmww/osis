@@ -19,7 +19,7 @@ use osis_node::undo::HeldCommit;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Which aspects a query, undo or redo ranges over; resolved when used. `Thing` and `Group`
-/// cover durable aspects and ephemeral things (and `placed.0~`); an
+/// cover durable aspects and ephemeral things and memberships; an
 /// ephemeral aspect of a durable thing (a cursor, a selection) is in scope only when named by
 /// `Aspects`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,7 +62,7 @@ pub struct CommitQuery {
     /// The change this one reverts.
     pub reverted_by: Option<ChangeId>,
     pub in_effect: Option<bool>,
-    /// Written at this time or later.
+    /// Written at this time or later. Several changes can share a moment: to page, use `after`.
     pub since: Option<Time>,
     /// Written before this time.
     pub until: Option<Time>,
@@ -309,7 +309,7 @@ impl Osis {
         Ok((found, aks))
     }
 
-    /// Changes matching `q`, newest first (by `ts`, then ID).
+    /// Changes matching `q`, newest first.
     pub fn commits(&self, q: &CommitQuery) -> Result<Vec<CommitEntry>> {
         if let crate::sources::Source::Remote(r) = self.route_scope(q.scope.as_ref())? {
             let v = r.call(crate::port::method::COMMITS, vec![crate::port::codec::query_v(q)])?;

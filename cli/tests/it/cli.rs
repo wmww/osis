@@ -658,31 +658,38 @@ fn verbose_prints_diagnostics_plan_cli_4() {
     assert!(o.err.contains("\"kind\":\"NotSynced\""), "{}", o.err);
 }
 
-// notes/cli.md Design (daemon), notes/client-port.md §5: a locked store's `<store>/sock` naming another socket than the store's own (`socket_path`) is not followed: another store's daemon never answers for this one
+// notes/cli.md Design (daemon), notes/client-port.md §5: a locked store with no live daemon on its socket is exit 8 at once, whether no socket is there or a dead daemon's is left: and another node's socket never answers for this store
 #[test]
-fn sock_pointer_must_be_the_stores() {
-    let d = tmp("sockptr");
+fn locked_store_with_no_live_daemon() {
+    let d = tmp("nodaemon");
     let ds = d.to_str().unwrap();
     let call = |args: &[&str]| {
         let (mut o, mut e) = (Vec::new(), Vec::new());
-        let code = osis_cli::main_with(["osis", "-s", ds].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
+        let code = osis_cli::main_with(["osis", "-s", ds, "--timeout", "0"].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
         (code, String::from_utf8(e).unwrap())
     };
     assert_eq!(call(&["init"]).0, 0);
     let held = osis::internals::open(osis::internals::Opening::dir(&d)).unwrap();
-    // another node of this uid serving a socket of its own
-    // (a short path: `sun_path`)
-    let other = std::env::temp_dir().join(format!("osis-cli-sockptr-{}", std::process::id()));
+    let in_use = |what: &str| {
+        let (code, err) = call(&["whoami"]);
+        assert_eq!(code, 8, "{what}: {err}");
+        assert!(err.contains("store in use"), "{what}: {err}");
+    };
+    in_use("no socket");
+    // a dead daemon's socket: bound, then nobody there
+    let sock = osis::internals::socket_path(&d).unwrap();
+    drop(std::os::unix::net::UnixListener::bind(&sock).unwrap());
+    assert!(sock.exists());
+    in_use("a stale socket");
+    let _ = std::fs::remove_file(&sock);
+    // another node of this uid serving a socket of its own (a short path: `sun_path`)
+    let other = std::env::temp_dir().join(format!("osis-cli-nodaemon-{}", std::process::id()));
     std::fs::create_dir_all(&other).unwrap();
     let mut c = osis::internals::Opening::memory();
     c.runtime = osis::Runtime::Own;
     let (n, _) = osis::internals::create(c).unwrap();
-    let sock = other.join("n.sock");
-    n.listen_socket_at(&sock).unwrap();
-    std::fs::write(d.join("sock"), format!("{}\n", sock.display())).unwrap();
-    let (code, err) = call(&["whoami"]);
-    assert_eq!(code, 8, "{err}");
-    assert!(err.contains("store in use"), "{err}");
+    n.listen_socket_at(&other.join("n.sock")).unwrap();
+    in_use("another node's socket");
     drop((held, n));
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&other);

@@ -617,3 +617,42 @@ fn creation_revert_found_by_created_scope_api_commits() {
     let e = db.commits(&CommitQuery { scope: Some(Scope::Aspects(vec![(t, ak("created.0"))])), ..Default::default() }).unwrap();
     assert_eq!(e.iter().map(|e| (e.commit.id, e.in_effect, e.reverted_by.clone())).collect::<Vec<_>>(), vec![(c, false, vec![r.id])]);
 }
+
+// spec/crdt.md §2.2 (commits order by hybrid time, then ID); notes/api.md Commits, History: changes of one millisecond keep their order: a moment's filter takes them all, and paging by `after` or by an entry's place loses none
+#[test]
+fn one_moment_many_changes_lose_none_api_commits() {
+    let c = clock();
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let k = osis::Key::untyped(ak("t:x.0"));
+    let t = db.batch(|w| w.create()).unwrap();
+    let made: Vec<_> = (0..5).map(|i| commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(i)))).collect();
+    let at = made[0].written;
+    assert!(made.iter().all(|m| m.written == at), "the clock did not move");
+    assert_eq!(made.windows(2).filter(|w| w[0].pos() < w[1].pos()).count(), 4, "in the order written");
+    let newest_first: Vec<_> = made.iter().rev().map(|m| m.id).collect();
+    let base = || CommitQuery { scope: Some(Scope::Aspects(vec![(t, ak("t:x.0"))])), ..Default::default() };
+    let ids = |q: CommitQuery| db.commits(&q).unwrap().into_iter().map(|e| e.commit.id).collect::<Vec<_>>();
+    assert_eq!(ids(base()), newest_first);
+    assert_eq!(ids(CommitQuery { since: Some(at), until: Some(osis::Time(at.0 + 1)), ..base() }), newest_first, "the moment holds them all");
+    assert_eq!(ids(CommitQuery { until: Some(at), ..base() }), vec![], "all before none of them");
+    // one by one, by `after`
+    let (mut seen, mut after) = (Vec::new(), None);
+    while let Some(e) = ids(CommitQuery { after, limit: Some(1), ..base() }).pop() {
+        seen.push(e);
+        after = Some(e);
+    }
+    assert_eq!(seen, newest_first);
+    // and by a history page's places, both ways
+    let (mut seen, mut from) = (Vec::new(), osis::HistoryFrom::Newest);
+    while let Some(e) = db.at(t, k.clone()).history(from, 1).unwrap().entries.pop() {
+        seen.push(e.commit.id);
+        from = osis::HistoryFrom::Before(e.pos());
+    }
+    assert_eq!(seen, newest_first);
+    let (mut seen, mut from) = (Vec::new(), osis::HistoryFrom::After(osis::HistoryPos::time(at)));
+    while let Some(e) = db.at(t, k.clone()).history(from, 1).unwrap().entries.pop() {
+        seen.push(e.commit.id);
+        from = osis::HistoryFrom::After(e.pos());
+    }
+    assert_eq!(seen, made.iter().map(|m| m.id).collect::<Vec<_>>());
+}

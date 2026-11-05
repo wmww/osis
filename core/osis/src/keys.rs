@@ -85,8 +85,10 @@ pub mod core {
     /// A thing's main text.
     pub use osis_schema::core_types::BODY;
     /// Marks a thing as a tag.
-    pub use osis_schema::core_types::{TAG, Tag};
+    pub use osis_schema::core_types::TAG;
+    pub use osis_schema::core_types::Tag;
     /// What every write to a thing must keep to, by aspect name prefix: how long it is kept, when it
     /// expires. An admin sets it; a write that breaks it is refused.
-    pub use osis_schema::core_types::{REQUIRED, Required, RequiredRules};
+    pub use osis_schema::core_types::REQUIRED;
+    pub use osis_schema::core_types::{Required, RequiredBound, RequiredRules};
 }

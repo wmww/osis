@@ -89,6 +89,7 @@ pub struct SetRoleOpts {
     pub keep: Option<bool>,
 }
 
+/// How a link made by `Osis::make_link` ends and is reached.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
     /// The link expires. It closes when one of your devices next syncs after `until`: until then
@@ -297,11 +298,16 @@ pub struct Device {
     pub role: Role,
 }
 
+/// How a group's sync stands here (`GroupSync::state`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SyncState {
+    /// Nothing left to send or fetch.
     Synced,
+    /// Sending or fetching.
     Syncing,
+    /// No host of it answers now. It keeps trying.
     Unreachable,
+    /// It has no host to sync with.
     NoHosts,
     /// A host does not take it (yet; `GroupSync::refused_by` names them) and no other host has it
     /// open. It keeps asking.
@@ -346,6 +352,7 @@ pub struct Status {
     pub two_sources: BTreeSet<Tid>,
 }
 
+/// What `Osis::wait_synced` waits for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncScope {
     /// Every synced group with hosts (one with none has nothing to wait for) and every pending

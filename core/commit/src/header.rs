@@ -12,7 +12,7 @@ use osis_schema::{Bound, PurgeBy, Retention};
 
 /// Decoder limits of commit structures (spec/wire.md §13).
 pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
-/// `abs` bound meaning forever (spec/wire.md §4).
+// `abs` bound meaning forever (spec/wire.md §4).
 pub const FOREVER: u64 = i64::MAX as u64;
 
 /// Header `kind` (spec/wire.md §4, spec/commits.md §2).

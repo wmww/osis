@@ -53,10 +53,16 @@ pub struct HostPolicy {
     pub bytes: u64,
     /// Connections served at once.
     pub connections: usize,
-    /// The rest of the host's limits, by their names (tests, `osis host set --policy`).
+    /// The rest of the host's limits (`internals::host_limit`). `pub`, so that `..Default::default()`
+    /// fills it in, and of a type with nothing to touch.
     #[doc(hidden)]
-    pub tuning: BTreeMap<String, u64>,
+    pub tuning: HostTuning,
 }
+
+/// `HostPolicy::tuning`: the host's other limits by their names, none of them a field's.
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HostTuning(pub(crate) BTreeMap<String, u64>);
 
 /// The names of `HostPolicy`'s fields among the host's own.
 const PLAIN: [(&str, &str); 6] = [("group_entries", "cap_entries"), ("group_bytes", "cap_bytes"), ("groups", "max_labels"), ("entries", "max_entries"), ("bytes", "max_bytes"), ("connections", "max_connections")];
@@ -70,12 +76,12 @@ impl Default for HostPolicy {
 impl HostPolicy {
     fn of(p: &HostLimits) -> HostPolicy {
         let tuning = p.knobs().into_iter().filter(|(k, _)| !PLAIN.iter().any(|(_, h)| h == k)).collect();
-        HostPolicy { group_entries: p.cap_entries, group_bytes: p.cap_bytes, groups: p.max_labels, entries: p.max_entries, bytes: p.max_bytes, connections: p.max_connections, tuning }
+        HostPolicy { group_entries: p.cap_entries, group_bytes: p.cap_bytes, groups: p.max_labels, entries: p.max_entries, bytes: p.max_bytes, connections: p.max_connections, tuning: HostTuning(tuning) }
     }
 
     /// The host's own limits, `Invalid` when it cannot run by them.
     fn limits(&self) -> Result<BTreeMap<String, u64>> {
-        let mut k = self.tuning.clone();
+        let mut k = self.tuning.0.clone();
         let d = HostLimits::default();
         let mut put = |name: &str, v: u64, def: u64| {
             if v != def {
@@ -92,9 +98,8 @@ impl HostPolicy {
         Ok(k)
     }
 
-    /// Sets a limit by name: a field's, or one of `tuning`.
-    #[doc(hidden)]
-    pub fn set(&mut self, name: &str, n: u64) -> std::result::Result<(), String> {
+    /// Sets a limit by name: a field's, or one of the host's own.
+    pub(crate) fn set(&mut self, name: &str, n: u64) -> std::result::Result<(), String> {
         let host = PLAIN.iter().find(|(p, _)| *p == name).map_or(name, |(_, h)| *h);
         let mut k = self.limits().map_err(|e| e.to_string())?;
         k.insert(host.to_string(), n);
@@ -103,7 +108,7 @@ impl HostPolicy {
     }
 }
 
-/// What this node hosts (`host.0^`).
+/// What this node hosts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hosting {
     /// URLs to listen on (`quic://0.0.0.0:4040`); the node's own sessions to its host
@@ -142,7 +147,7 @@ impl Osis {
         }))
     }
 
-    /// Starts, changes or (none) stops hosting: writes this node's `host.0^`. Stopping
+    /// Starts, changes or (none) stops hosting. Stopping
     /// erases what the host stored, its address with it; a later start has a new host address
     /// and an empty store. Fails `Invalid` on a policy the host cannot run by.
     pub fn set_hosting(&self, h: Option<Hosting>) -> Result<()> {
@@ -168,11 +173,15 @@ impl Osis {
 
     /// What names `group` for hosts' admission rules (several while it moves from one to another,
     /// none when it does not sync). Pass it to whoever runs a host, for `Hosting::admitted` or
-    /// `caps`.
+    /// `caps`. `Unsupported` on a client with its own actor.
     pub fn admission_ids(&self, group: Tid) -> Result<Vec<AdmissionId>> {
+        let remote = |v: osis_base::Value| crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).text()?.parse()).collect();
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::ADMISSION_IDS, vec![osis_base::Value::Tid(group)])?;
-            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).text()?.parse()).collect();
+            return remote(self.rcall(crate::port::method::ADMISSION_IDS, vec![osis_base::Value::Tid(group)])?);
+        }
+        // a group this node reads at another: there it syncs, not here
+        if let crate::sources::Source::Remote(r) = self.route(group) {
+            return remote(r.call(crate::port::method::ADMISSION_IDS, vec![osis_base::Value::Tid(group)])?);
         }
         Ok(self.locked(|l| l.sync.label_status().iter().filter(|s| s.group == group).map(|s| AdmissionId(s.label)).collect()))
     }

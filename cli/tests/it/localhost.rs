@@ -12,8 +12,8 @@ use std::process::{Child, Command, Stdio};
 const OSIS: &str = env!("CARGO_BIN_EXE_osis");
 
 thread_local! {
-    /// This test's `osis` runs have no `XDG_RUNTIME_DIR` (a client follows `<store>/sock` only to
-    /// the socket its own environment names, so client and daemon must agree).
+    /// This test's `osis` runs have no `XDG_RUNTIME_DIR` (client and daemon find the store's socket
+    /// by their environment, so they must agree).
     static NO_XDG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -232,15 +232,24 @@ fn thin_cli_quic_localhost() {
     assert_ne!(r.0, 0, "without the attachment too: {}", r.1);
 }
 
-/// `osis serve` on `store` as a plain daemon, up once its socket is named.
+/// The socket `osis serve` on `store` listens on in this test's environment.
+fn socket_of(store: &Path) -> PathBuf {
+    let xdg = if NO_XDG.get() { None } else { std::env::var_os("XDG_RUNTIME_DIR") };
+    osis::internals::socket_path_under(xdg.as_deref().map(Path::new), store).unwrap()
+}
+
+/// `osis serve` on `store` as a plain daemon, up once its socket answers (a killed daemon's may be
+/// left there, answering nothing).
 fn daemon(store: &Path) -> Host {
+    let sock = socket_of(store);
     let c = cmd().arg("-s").arg(store).arg("serve").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let host = Host(c);
     let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while !store.join("sock").exists() {
+    while std::os::unix::net::UnixStream::connect(&sock).is_err() {
         assert!(std::time::Instant::now() < end, "no daemon");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    Host(c)
+    host
 }
 
 // spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a host taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined through the daemon on the other (again by either: the chat), `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick through the daemon
@@ -400,20 +409,10 @@ fn daemon_clients_localhost() {
     let lbad = run_in(&local, &["write"], BAD_SCRIPT);
     assert_eq!(lbad.0, 3, "{}", lbad.2);
     for xdg in [true, false] {
-        // a killed daemon's pointer stays (stale): wait for the new one
-        let _ = std::fs::remove_file(s.join("sock"));
         NO_XDG.set(!xdg);
-        let child = cmd().arg("-s").arg(&s).arg("serve").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
-        let host = Host(child);
-        // `serve` names its socket in the store once it listens
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !s.join("sock").exists() {
-            assert!(std::time::Instant::now() < end, "serve did not listen");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let sock = std::fs::read_to_string(s.join("sock")).unwrap();
+        let host = daemon(&s);
         if !xdg {
-            assert!(sock.starts_with("/tmp/osis-"), "{sock}");
+            assert!(socket_of(&s).to_string_lossy().starts_with("/tmp/osis-"));
         }
         let t = osis(&s, &["create", "note:title.0", "\"x\""]);
         assert!(t.starts_with("osis://"), "{t}");

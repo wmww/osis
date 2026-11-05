@@ -666,9 +666,8 @@ impl Osis {
     /// Returns once every callback for changes made so far has run: with
     /// `Dispatcher::Thread` it waits for the dispatcher thread (tests and scripts wait this
     /// way without sleeping); with `Dispatcher::Pump` it runs them on this thread, which is
-    /// how the app pumps (after its wake callback). Returns at once inside a callback. Never
-    /// call it inside an `Internals::engine` closure: a callback may need the lock
-    /// that closure holds (deadlock).
+    /// how the app pumps (after its wake callback). Returns at once inside a callback.
+    // Never inside an `Internals::engine` closure: a callback may need the lock it holds (deadlock).
     pub fn settle(&self) {
         // connected nodes' deliveries so far reach the queue first (not from a callback: the reply
         // would wait for this very dispatcher)

@@ -193,7 +193,7 @@ fn scalar(t: &ValueType) -> Option<Edit> {
         // a text (a body) is edited in its own session, which merges per character; a
         // one-line row would also flatten its lines
         ValueType::Text => Edit::None,
-        ValueType::Int | ValueType::Time | ValueType::Duration => Edit::Int,
+        ValueType::Int | ValueType::Time | ValueType::Duration | ValueType::Date | ValueType::LocalTime => Edit::Int,
         ValueType::Float => Edit::Float,
         ValueType::Bool => Edit::Bool,
         ValueType::Cases(c) if c.iter().all(|c| c.value.is_none()) => Edit::Case,

@@ -1009,7 +1009,7 @@ const KINDS: [(&str, CommitKind); 5] =
     [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("summary", CommitKind::Summary), ("ephemeral", CommitKind::Ephemeral)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
-    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, role, snapshot or ephemeral")))
+    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, role, summary or ephemeral")))
 }
 
 fn kind_text(k: CommitKind) -> &'static str {
@@ -1066,7 +1066,7 @@ fn commit_lines(ctx: &mut Ctx<'_>, cs: &[osis::CommitEntry]) -> anyhow::Result<(
                 l += &format!(" reverts={}", r);
             }
             if c.content_gone {
-                l += " dropped";
+                l += " content-gone";
             }
             l + " " + &aks.join(",")
         })
@@ -1083,7 +1083,7 @@ fn commit_lines(ctx: &mut Ctx<'_>, cs: &[osis::CommitEntry]) -> anyhow::Result<(
                     ("in_effect", J::Bool(c.in_effect)),
                     ("reverts", J::opt(c.reverts.as_ref().map(|r| J::str(r.to_string())))),
                     ("reverted_by", J::Arr(c.reverted_by.iter().map(|r| J::str(r.to_string())).collect())),
-                    ("dropped", J::Bool(c.content_gone)),
+                    ("content_gone", J::Bool(c.content_gone)),
                     ("aspects", J::Arr(c.aspects.iter().map(|(t, a)| J::Arr(vec![J::tid(*t), J::str(a.as_str())])).collect())),
                 ])
             })
@@ -1386,7 +1386,7 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
         h.policy = osis::HostPolicy::default();
         for p in v {
             let (k, n) = p.split_once('=').ok_or_else(|| usage(format!("not NAME=N: {p}")))?;
-            h.policy.set(k, n.parse().map_err(|_| usage(format!("not NAME=N: {p}")))?).map_err(Error::Invalid)?;
+            osis::internals::host_limit(&mut h.policy, k, n.parse().map_err(|_| usage(format!("not NAME=N: {p}")))?).map_err(Error::Invalid)?;
         }
     }
     if let Some(v) = given(&f.cap) {
@@ -1473,7 +1473,7 @@ fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 fn policy_lines(p: &osis::HostPolicy) -> BTreeMap<String, u64> {
     let d = osis::HostPolicy::default();
     let plain = [("group_entries", p.group_entries, d.group_entries), ("group_bytes", p.group_bytes, d.group_bytes), ("groups", p.groups, d.groups), ("entries", p.entries, d.entries), ("bytes", p.bytes, d.bytes), ("connections", p.connections as u64, d.connections as u64)];
-    plain.into_iter().filter(|(_, v, def)| v != def).map(|(k, v, _)| (k.to_string(), v)).chain(p.tuning.clone()).collect()
+    plain.into_iter().filter(|(_, v, def)| v != def).map(|(k, v, _)| (k.to_string(), v)).chain(osis::internals::host_limits_unshown(p)).collect()
 }
 
 /// An admission ID, or a group synced here: its IDs.
