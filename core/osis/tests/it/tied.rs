@@ -8,7 +8,7 @@ use crate::scenario::{introduce, new_tag, person};
 use osis::internals::Internals as _;
 use osis::internals::node::sync::EntryKind;
 use osis::core::{BODY, GROUP};
-use osis::{SetRole, SyncFirst, Member, GrantOpts, Error, Osis, Role, Tid};
+use osis::{SetRoleOpts, SyncFirst, Member, GrantOpts, Error, Osis, Role, Tid};
 use osis_sim::world::World;
 
 fn card(db: &Osis, text: &str) -> Tid {
@@ -114,7 +114,7 @@ fn add_with_grant_unplace_and_stale_placement() {
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Tied(Role::Read)));
     w.run();
-    w.until(bob.set_role(t, g, None, SetRole::default()), 1000, 20).unwrap();
+    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -404,7 +404,7 @@ fn invalidated_placement_removes_the_tied_edge() {
     w.set_online(&bob, false);
     bob.add_with_grant(Member::Item(t), g, Role::Read).unwrap();
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Tied(Role::Read)));
-    w.until(alice.set_role(g, bob.me(), Some(Role::Read), SetRole::default()), 1000, 20).unwrap();
+    w.until(alice.set_role(g, bob.me(), Some(Role::Read), SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     w.set_online(&bob, true);
     for _ in 0..4 {
@@ -432,7 +432,7 @@ fn group_holders_learn_edge_removal() {
     }
     let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&bob);
-    w.until(bob.set_role(t, g, None, SetRole::default()), 1000, 20).unwrap();
+    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     for db in [&alice, &bob, &carol] {
         assert!(!db.grants(t).unwrap().contains_key(&g), "the removal reached {}", db.me());
@@ -458,7 +458,7 @@ fn inherited_inbox_opens() {
         assert!(db.grants(t).unwrap().contains_key(&g), "the grant reached {}", db.me());
         assert_eq!(db.at(t, osis::core::NAME).get().unwrap(), Some("Bob's".to_string()));
     }
-    w.until(bob.set_role(t, g, None, SetRole::default()), 1000, 20).unwrap();
+    w.until(bob.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     for db in [&alice, &carol] {
         assert!(!db.grants(t).unwrap().contains_key(&g), "and its removal {}", db.me());
@@ -493,7 +493,7 @@ fn group_admin_learns_removal_elsewhere() {
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
     let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
-    w.until(dave.set_role(t, g, None, SetRole::default()), 1000, 20).unwrap();
+    w.until(dave.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -539,7 +539,7 @@ fn group_admin_copies_removal_without_new_keys() {
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
     let seed = |db: &Osis| db.at(t, osis::core::KEYS).get().unwrap().and_then(|k| k.deposit_seed);
     let old = seed(&carol);
-    w.until(dave.set_role(t, g, None, SetRole::default()), 1000, 20).unwrap();
+    w.until(dave.set_role(t, g, None, SetRoleOpts::default()), 1000, 20).unwrap();
     w.run();
     w.advance(60_000);
     w.run();
@@ -549,8 +549,8 @@ fn group_admin_copies_removal_without_new_keys() {
 }
 
 /// A removal that does not wait for sync.
-fn skip() -> SetRole {
-    SetRole { sync: SyncFirst::Skip, ..Default::default() }
+fn skip() -> SetRoleOpts {
+    SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }
 }
 
 fn seed_of(db: &Osis, t: Tid) -> Option<[u8; 32]> {

@@ -3,7 +3,7 @@
 use crate::common::TestWrites as _;
 use crate::common::ak;
 use osis::internals::Internals as _;
-use osis::{SetRole, SyncFirst, Member, HostAddr, MemStore, Osis, Role, StoreAt, SyncScope, SyncState, Tid, Value};
+use osis::{SetRoleOpts, SyncFirst, Member, HostAddr, MemStore, Osis, Role, StoreAt, SyncScope, SyncState, Tid, Value};
 use osis_sim::world::World;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -53,8 +53,8 @@ fn pair(w: &mut World, hosts: &[usize]) -> (Osis, Osis, Tid) {
     (a, b, bob)
 }
 
-fn skip() -> SetRole {
-    SetRole { sync: SyncFirst::Skip, keep: None }
+fn skip() -> SetRoleOpts {
+    SetRoleOpts { sync: SyncFirst::Skip, keep: None }
 }
 
 // spec/sync.md §3 (a recipient looks for what an inbox blob names), §5: the invite to a chat its maker has not registered at the chat's host yet: the invitee is told "not here" and looks again after a back-off, well before the periodic resync, not stranded meanwhile

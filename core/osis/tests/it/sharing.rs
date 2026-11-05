@@ -8,7 +8,7 @@ use crate::common;
 use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
-use osis::{SetRole, SyncFirst, DiagnosticKind, Error, Osis, Role, SyncScope, SyncState, Tid, Value};
+use osis::{SetRoleOpts, SyncFirst, DiagnosticKind, Error, Osis, Role, SyncScope, SyncState, Tid, Value};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -157,8 +157,8 @@ fn device(w: &mut World, db: &Osis, seed: u64) -> Tid {
     node
 }
 
-fn skip_sync() -> SetRole {
-    SetRole { sync: SyncFirst::Skip, keep: None }
+fn skip_sync() -> SetRoleOpts {
+    SetRoleOpts { sync: SyncFirst::Skip, keep: None }
 }
 
 // spec/permissions.md §4 (current `keys.0`), spec/crypto.md §4 (keyset names): a rotation of a group names a holder's keyset; a holder with a late host has an inbox write as its newest `keys.0`; an admin who joins after the rotation still gets the keyset, or holds no established epoch to box a grant with
@@ -649,7 +649,7 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     w.run();
     assert_eq!(alice.role_on(mine).unwrap(), Some(Role::Read), "still a contact, its keys here");
     // a kept copy: after a wrong target, then the link's own key revoked; a joiner's role likewise
-    let d = SetRole { sync: SyncFirst::Skip, keep: Some(true) };
+    let d = SetRoleOpts { sync: SyncFirst::Skip, keep: Some(true) };
     w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
     w.run();
     assert_eq!(bob.kept_copies().unwrap(), vec![g]);
@@ -729,11 +729,11 @@ fn demotion_presync_policies_spec_permissions_5_3() {
     item(&bob, g, g, "bob wrote");
     w.run();
     w.set_online(&alice, false);
-    let r = w.until(alice.set_role(g, bob.me(), None, SetRole::default()), 10_000, 10);
+    let r = w.until(alice.set_role(g, bob.me(), None, SetRoleOpts::default()), 10_000, 10);
     assert!(matches!(r, Err(Error::Unsynced { ref groups }) if groups.contains(&g)), "{r:?}");
     assert!(alice.grants(g).unwrap().contains_key(&bob.me()), "nothing stamped");
     let unsynced = diags(&alice, DiagnosticKind::Unsynced);
-    let t = SetRole { sync: SyncFirst::Try(Duration::from_secs(5)), keep: None };
+    let t = SetRoleOpts { sync: SyncFirst::Try(Duration::from_secs(5)), keep: None };
     w.until(alice.set_role(g, bob.me(), Some(Role::Read), t), 1000, 10).unwrap();
     assert_eq!(alice.grants(g).unwrap().get(&bob.me()).map(|e| e.role), Some(Role::Read));
     assert!(recv(&unsynced).contains(&g));
@@ -763,7 +763,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
     w.run();
     let stranded = diags(&db, DiagnosticKind::Stranded);
     w.set_online(&db, false);
-    w.until(da.remove_device(node, SetRole { sync: SyncFirst::Skip, keep: None }), 1000, 5).unwrap();
+    w.until(da.remove_device(node, SetRoleOpts { sync: SyncFirst::Skip, keep: None }), 1000, 5).unwrap();
     item(&da, da.me(), home, "after the removal");
     w.run();
     w.set_online(&db, true);
@@ -891,7 +891,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     assert_eq!((bob.role_on(g).unwrap(), carol.role_on(g).unwrap()), (Some(Role::Admin), Some(Role::Admin)));
     w.set_online(&carol, false);
     w.advance(60_000);
-    w.until(bob.set_role(g, c, None, SetRole { sync: SyncFirst::Skip, keep: None }), 1000, 10).unwrap();
+    w.until(bob.set_role(g, c, None, SetRoleOpts { sync: SyncFirst::Skip, keep: None }), 1000, 10).unwrap();
     w.run();
     let until = osis::WallMs(w.now() + 3_600_000);
     carol.grant(g, b, Role::Admin, osis::GrantOpts { until: Some(until), invite: None }).unwrap();
@@ -1231,7 +1231,7 @@ fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
     let before = commits(&alice);
     w.until(alice.set_role(g, b, Some(Role::Write), Default::default()), 1000, 5).unwrap();
     assert_eq!(commits(&alice), before, "the same role");
-    let keep = SetRole { keep: Some(true), ..Default::default() };
+    let keep = SetRoleOpts { keep: Some(true), ..Default::default() };
     assert!(matches!(w.until(alice.set_role(g, b, Some(Role::Read), keep), 1000, 5), Err(Error::Invalid(_))));
     assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Write, "nothing written");
 

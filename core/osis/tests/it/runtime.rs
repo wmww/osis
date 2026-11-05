@@ -9,7 +9,7 @@ use osis::internals::Internals as _;
 use crate::common;
 use common::ak;
 use crate::common::CreateIn;
-use osis::{SetRole, SyncFirst, Config, MemStore, Osis, Runtime, HostAddr, StoreAt, SyncScope, Transport, Value};
+use osis::{SetRoleOpts, SyncFirst, Config, MemStore, Osis, Runtime, HostAddr, StoreAt, SyncScope, Transport, Value};
 use osis_transport::Transport as _;
 use std::time::Duration;
 
@@ -385,7 +385,7 @@ async fn redeem_direct_no_host_in_process_spec_permissions_8() {
     // Bob leaves, K rotates: the link goes on for a next redeemer at her device (spec/sync.md §2)
     let k = alice.links_of(g).unwrap()[0].id.actor();
     let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
-    tokio::time::timeout(GUARD, bob.set_role(k, bob.me(), None, SetRole { sync: SyncFirst::Skip, keep: None })).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, bob.set_role(k, bob.me(), None, SetRoleOpts { sync: SyncFirst::Skip, keep: None })).await.unwrap().unwrap();
     tokio::time::timeout(GUARD, async {
         while alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap()) == before {
             tokio::time::sleep(Duration::from_millis(20)).await;

@@ -7,7 +7,7 @@ use crate::common::TestWrites as _;
 use crate::common::{T0, ak, block_on};
 use crate::port::{Raw, set_batch};
 use osis::internals::Internals as _;
-use osis::{SetRole, SyncFirst, ClientSecret, CommitQuery, Config, Error, HostAddr, LinkOpts, ManualClock, MemStore, Osis, Role, Runtime, Scope, StoreAt, Tid, Transport, Value, WallMs};
+use osis::{SetRoleOpts, SyncFirst, ClientSecret, CommitQuery, Config, Error, HostAddr, LinkOpts, ManualClock, MemStore, Osis, Role, Runtime, Scope, StoreAt, Tid, Transport, Value, WallMs};
 use osis_proto::{Command, Outcome};
 use osis_schema::core_types as ct;
 use std::sync::{Arc, Mutex};
@@ -388,7 +388,7 @@ fn undo_and_revert_are_the_actors() {
     // Read only: a revert it may not write
     x.n.commit_set(x.t, a.clone(), &Value::Int(5)).unwrap();
     let mine = x.n.commits(&q(x.t)).unwrap()[0].commit.id;
-    block_on(x.n.set_role(x.g, ca, Some(Role::Read), SetRole { sync: SyncFirst::Skip, keep: None })).unwrap();
+    block_on(x.n.set_role(x.g, ca, Some(Role::Read), SetRoleOpts { sync: SyncFirst::Skip, keep: None })).unwrap();
     assert!(matches!(c.revert(mine), Err(Error::Permission { .. })));
     assert_eq!(x.n.at(x.t, a).get().unwrap(), Some(Value::Int(5)));
 }
@@ -484,7 +484,7 @@ fn remove_client_revokes() {
     // demoted elsewhere: the entry stays, its actor reads nothing
     let (b, _, d) = x.client(Role::Read);
     assert!(d.knows(x.t).unwrap());
-    block_on(x.n.set_role(x.g, b, None, SetRole { sync: SyncFirst::Skip, keep: None })).unwrap();
+    block_on(x.n.set_role(x.g, b, None, SetRoleOpts { sync: SyncFirst::Skip, keep: None })).unwrap();
     assert!(!d.knows(x.t).unwrap());
     assert!(x.n.clients().unwrap().iter().any(|e| e.actor == b));
 }
@@ -613,7 +613,7 @@ fn watches_and_rows() {
     assert_eq!(drx.recv_timeout(Duration::from_secs(20)).unwrap(), "shown");
     assert!(drx.try_recv().is_err());
     let subs = x.n.watches();
-    block_on(x.n.set_role(x.g, a, None, SetRole { sync: SyncFirst::Skip, keep: None })).unwrap();
+    block_on(x.n.set_role(x.g, a, None, SetRoleOpts { sync: SyncFirst::Skip, keep: None })).unwrap();
     x.n.commit_set(x.t, name.clone(), &Value::Int(2)).unwrap();
     c.settle();
     assert!(!matches!(w.current(), Ok(Some(Value::Int(2)))), "{:?}", w.current());
@@ -629,7 +629,7 @@ fn watches_and_rows() {
     assert!(matches!(c.rotate_client_secret(a), Err(Error::Unsupported(_))));
     assert!(matches!(c.register_schema("x.osis", "version 1;\naspect x:y.0: int;\n"), Err(Error::Unsupported(_))));
     // the rows of the node's own (the socket's Owner only), those that wait too
-    let plain = SetRole { sync: SyncFirst::Skip, keep: None };
+    let plain = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     let link = x.n.make_link(x.g, Role::Read, LinkOpts { direct: true, ..Default::default() }).unwrap();
     assert!(matches!(block_on(c.set_role(x.t, a, None, plain)), Err(Error::Unsupported(_))));
     assert!(matches!(block_on(c.repudiate(x.t, a, None, plain)), Err(Error::Unsupported(_))));
@@ -1269,7 +1269,7 @@ fn walk(seed: u64) {
     w.commit().unwrap();
     let (mut a, mut s) = x.n.add_client(None).unwrap();
     let mut c = x.attach(&s).unwrap();
-    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     let mut value = 100i64;
     let mut last: [Value; 4] = std::array::from_fn(|_| Value::Str("x".into()));
     for step in 0..40 {

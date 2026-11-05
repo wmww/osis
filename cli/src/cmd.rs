@@ -9,7 +9,7 @@ use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    AspectKey, Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, Schema, SetRole, Source, SyncFirst, SyncScope, SyncState, Tid, Ts,
+    AspectKey, Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, Schema, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Ts,
     Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -157,8 +157,8 @@ fn sync_first(d: &SyncFlags, ctx: &Ctx<'_>) -> anyhow::Result<SyncFirst> {
     }
 }
 
-fn set_role_opts(d: &SetRoleFlags, ctx: &Ctx<'_>) -> anyhow::Result<SetRole> {
-    Ok(SetRole { sync: sync_first(&d.sync, ctx)?, keep: d.keep })
+fn set_role_opts(d: &SetRoleFlags, ctx: &Ctx<'_>) -> anyhow::Result<SetRoleOpts> {
+    Ok(SetRoleOpts { sync: sync_first(&d.sync, ctx)?, keep: d.keep })
 }
 
 /// A role, or `none`.

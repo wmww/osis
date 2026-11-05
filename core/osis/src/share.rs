@@ -77,7 +77,7 @@ pub enum SyncFirst {
 
 /// How `Osis::set_role` takes a role away.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SetRole {
+pub struct SetRoleOpts {
     pub sync: SyncFirst,
     /// On removal: whether the holder's devices keep a read-only copy (`true`) or erase it
     /// (`false`). `None`: the thing's default (`core::RequiredRules::keep`), and erase for a device
@@ -745,10 +745,10 @@ impl Osis {
     /// written. `until` and `invite` stay as they are (`invite` capped at the new role): `grant` sets
     /// those.
     ///
-    /// A raise waits for nothing. Lowering or removing first does as `SetRole::sync` says, so that
+    /// A raise waits for nothing. Lowering or removing first does as `SetRoleOpts::sync` says, so that
     /// what the holder did while it could is kept; so does a role below one the holder lost when its
     /// grant ended or it left, which ends the old grant in a commit of its own (a failure between
-    /// the two leaves the holder with no role, as it had: call again). `SetRole::keep` with a role
+    /// the two leaves the holder with no role, as it had: call again). `SetRoleOpts::keep` with a role
     /// is `Invalid`.
     ///
     /// A removal follows every way the holder has in (`holders`) until none is left. A holder who
@@ -761,7 +761,7 @@ impl Osis {
     ///
     /// `Unsupported` on a thin client, and on a thing this node reads at another node: move its group
     /// home first. A removal written to the copy here would never leave it.
-    pub async fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRole) -> Result<()> {
+    pub async fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         keep_only_on_removal(role, o)?;
         if self.is_attached() {
             return self.rtask(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
@@ -810,7 +810,7 @@ impl Osis {
     /// discards an honest change. `holder` must hold a grant on `target` itself (else `Invalid`), and
     /// only that grant is touched; `role` can lower or remove, not raise. Nothing to undo: that grant
     /// changes as `set_role` would change it. `Unsupported` as for `set_role`.
-    pub async fn repudiate(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRole) -> Result<()> {
+    pub async fn repudiate(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
         keep_only_on_removal(role, o)?;
         if self.is_attached() {
             return self.rtask(crate::port::method::REPUDIATE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
@@ -829,7 +829,7 @@ impl Osis {
     /// Lowers or removes the grant of `m` on `t`: the pre-sync of every label the lost authority
     /// wrote under, then the demotion with this node's frontier and the target's rotation, in one
     /// commit (spec/permissions.md §2, §3, §5).
-    async fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRole, repudiate: bool) -> Result<()> {
+    async fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts, repudiate: bool) -> Result<()> {
         let new = match role {
             Some(role) => {
                 let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
@@ -1098,13 +1098,13 @@ impl Osis {
         }
         self.not_routed("revoke_link", id.0)?;
         let l = self.link_key(id.0)?;
-        self.lower(id.0, l, None, SetRole { sync, keep: None }, false).await
+        self.lower(id.0, l, None, SetRoleOpts { sync, keep: None }, false).await
     }
 
     /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
     /// (spec/permissions.md §8: a joiner may keep the seed); the other joiners stay holders of K and
     /// need a new link to invite anyone. After the pre-sync.
-    async fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRole) -> Result<()> {
+    async fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
         self.not_routed("set_role", k)?;
         let l = self.link_key(k)?;
         let things = self.engine(|e| {
@@ -1351,7 +1351,7 @@ impl Osis {
     /// returns, which is easy to forget: this account's links still working. The device keeps their
     /// keys, so whoever holds it can read and join through each until `revoke_link`, and ending
     /// them is the caller's choice. None when `node` was no device. `Unsupported` on a thin client.
-    pub async fn remove_device(&self, node: Tid, o: SetRole) -> Result<Vec<LinkInfo>> {
+    pub async fn remove_device(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
         let me = self.me();
         let was = self.grants(me)?.contains_key(&node);
         self.set_role(me, node, None, o).await?;
@@ -1684,8 +1684,8 @@ impl Osis {
     }
 }
 
-/// `SetRole::keep` is a removal's word.
-fn keep_only_on_removal(role: Option<Role>, o: SetRole) -> Result<()> {
+/// `SetRoleOpts::keep` is a removal's word.
+fn keep_only_on_removal(role: Option<Role>, o: SetRoleOpts) -> Result<()> {
     if role.is_some() && o.keep.is_some() {
         return Err(Error::Invalid("keep is for removing a role: there is no copy to keep while a role remains".into()));
     }

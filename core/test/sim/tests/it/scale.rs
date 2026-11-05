@@ -353,7 +353,7 @@ fn post_reads_nothing_per_member() {
     check(&n, "in a quiet chat");
     // a pass at each node holding the chat, not one per label per node
     assert!(n.get("pass").copied().unwrap_or(0) <= 2 * 2 * (members.len() as u64 + 1), "passes for two posts: {n:?}");
-    w.until(a.set_role(c, tids[1], None, osis::SetRole { sync: osis::SyncFirst::Skip, keep: None }), 1000, 100).unwrap();
+    w.until(a.set_role(c, tids[1], None, osis::SetRoleOpts { sync: osis::SyncFirst::Skip, keep: None }), 1000, 100).unwrap();
     w.run();
     post(&a, c, 3);
     w.advance(1);

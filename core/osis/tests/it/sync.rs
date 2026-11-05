@@ -8,7 +8,7 @@ use crate::common;
 use osis_sim::world::World;
 use common::*;
 use crate::common::CreateIn;
-use osis::{SetRole, SyncFirst, Member, Osis, Role, SyncScope, SyncState, Tid, Value};
+use osis::{SetRoleOpts, SyncFirst, Member, Osis, Role, SyncScope, SyncState, Tid, Value};
 use std::time::Duration;
 
 fn s(x: &str) -> Value {
@@ -79,7 +79,7 @@ fn pairing_spec_permissions_1() {
     let devs: Vec<Tid> = da.devices().unwrap().into_iter().map(|d| d.node).collect();
     assert!(devs.contains(&da.node()) && devs.contains(&db.node()), "{devs:?}");
     // a lost device, removed without waiting (spec/permissions.md §5.3 `Skip`)
-    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
     assert!(!da.devices().unwrap().iter().any(|d| d.node == db.node()));
     let after = item(&da, da.me(), da.me(), "after the removal");
@@ -421,11 +421,11 @@ fn demote_link_joiner_spec_permissions_8() {
     assert!(alice.holders(g).unwrap().iter().any(|h| h.through == vec![k] && h.actor == bob.me()));
     // offline, the required pre-sync fails: nothing changed
     w.set_online(&alice, false);
-    let r = w.until(alice.set_role(g, bob.me(), None, SetRole::default()), 1000, 60);
+    let r = w.until(alice.set_role(g, bob.me(), None, SetRoleOpts::default()), 1000, 60);
     assert!(matches!(r, Err(osis::Error::Unsynced { .. })), "{r:?}");
     assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && alice.grants(k).unwrap().contains_key(&l), "no half-removal");
     w.set_online(&alice, true);
-    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     let before: std::collections::BTreeSet<_> = alice.engine(|e| e.commit_ids().into_iter().collect());
     w.until(alice.set_role(g, bob.me(), None, skip), 1000, 10).unwrap();
     let r = alice.grants(k).unwrap();
@@ -453,7 +453,7 @@ fn demote_link_joiner_content_spec_permissions_8() {
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let alice2 = join.finish(&reply).unwrap();
     w.run();
-    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     w.until(alice2.set_role(g, bob.me(), None, skip), 1000, 20).unwrap();
     let after = item(&alice, g, g, "after bob left");
     w.run();
@@ -478,7 +478,7 @@ fn removal_rotates_spec_permissions_3() {
     w.run();
     let by_bob = item(bob, g, g, "bob was here");
     w.run();
-    w.until(alice.set_role(g, ids[0], None, SetRole::default()), 1000, 10).unwrap();
+    w.until(alice.set_role(g, ids[0], None, SetRoleOpts::default()), 1000, 10).unwrap();
     assert!(!alice.grants(g).unwrap().contains_key(&ids[0]));
     let after = item(&alice, g, g, "after bob left");
     w.run();
@@ -509,7 +509,7 @@ fn dropped_demote_ends_its_receipts_read() {
     alice.sync_policy(h, osis::GroupPolicy { receipts_only: true, ..Default::default() }).unwrap();
     w.run();
     w.set_online(&alice, false);
-    let mut d = Box::pin(alice.set_role(g, ids[0], None, SetRole::default()));
+    let mut d = Box::pin(alice.set_role(g, ids[0], None, SetRoleOpts::default()));
     assert!(d.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
     assert_eq!(alice.sync_engine(|s| s.receipts_read(&[h])), None, "reading");
     drop(d);
@@ -556,7 +556,7 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
         w.set_online(db, false);
     }
     let before = log(&w);
-    w.until(phone.set_role(g, ids[0], None, SetRole::default()), 1000, 30).unwrap();
+    w.until(phone.set_role(g, ids[0], None, SetRoleOpts::default()), 1000, 30).unwrap();
     w.run();
     assert_eq!(log(&w), before, "the phone placed nothing under H's label");
     // received by header only (spec/permissions.md §5.1)
@@ -1317,7 +1317,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     w.run();
     assert_eq!(x(carol, t), Some(s("later")));
     // and the edge's end reaches them
-    w.until(alice.set_role(t, h, None, SetRole { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
+    w.until(alice.set_role(t, h, None, SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
     w.run();
     alice.commit_set(t, ak("t:x.0"), &s("after")).unwrap();
     w.run();
@@ -1492,7 +1492,7 @@ fn no_missing_route_where_nobody_misses_one() {
     alice.add_with_grant(Member::Item(item), g, Role::Read).unwrap();
     w.run();
     assert_eq!(x(bob, item), Some(s("item")));
-    w.until(alice.set_role(g, ids[0], None, SetRole { sync: SyncFirst::Skip, ..Default::default() }), 1000, 20).unwrap();
+    w.until(alice.set_role(g, ids[0], None, SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }), 1000, 20).unwrap();
     w.run();
     w.advance(120_000);
     w.run();
@@ -1666,7 +1666,7 @@ fn a_grant_to_a_group_by_an_outsider() {
     alice.grant(m, ids[1], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dave, m), Some(s("meeting")));
-    w.until(alice.set_role(m, h, None, SetRole { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
+    w.until(alice.set_role(m, h, None, SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
     w.run();
     let t = plain(dave, "dave's");
     dave.grant(t, h, Role::Read, Default::default()).unwrap();
@@ -1768,7 +1768,7 @@ fn removal_keeps_a_copy_spec_permissions_3() {
         alice.grant(g, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        let d = SetRole { sync: SyncFirst::Skip, keep: say };
+        let d = SetRoleOpts { sync: SyncFirst::Skip, keep: say };
         w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
         assert_eq!(bob.kept_copies().unwrap().contains(&g), kept);
@@ -1797,7 +1797,7 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
         }
         alice.grant(g, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
         w.run();
-        let d = SetRole { sync: SyncFirst::Skip, keep: None };
+        let d = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
         w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), keep.map(|_| s("before")));
@@ -1832,7 +1832,7 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
         w.until(bob.redeem(&l), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        let d = SetRole { sync: SyncFirst::Skip, keep: say };
+        let d = SetRoleOpts { sync: SyncFirst::Skip, keep: say };
         w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), kept.then(|| s("before")), "link {link} say {say:?}");
@@ -1854,15 +1854,15 @@ fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
     assert_eq!(x(&db, t), Some(s("before")));
     da.set_keep_default(da.me(), true).unwrap();
     w.run();
-    let skip = SetRole { sync: SyncFirst::Skip, keep: None };
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
     w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
     w.run();
     assert_eq!(x(&db, t), None, "the device erases");
     assert!(db.kept_copies().unwrap().is_empty());
 }
 
-fn skip() -> SetRole {
-    SetRole { sync: SyncFirst::Skip, ..Default::default() }
+fn skip() -> SetRoleOpts {
+    SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }
 }
 
 // spec/permissions.md §2, §3: a reader removed from a group a thing was granted to reads nothing written after; another reader and a later one do
