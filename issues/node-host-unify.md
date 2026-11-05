@@ -41,10 +41,30 @@ Rule text still says "host" here, waiting on this issue and owner removal. Swapp
 - spec/data-model.md §9 (`host.0^`, `own`): admission by owner, also waiting on owner removal.
 - spec/requirements.md: "a hiding host", "Nothing trusts a host's word", an inbox's budget "at a host": each is about a node serving data it cannot read.
 
+## Two kinds of peer
+The API says peer (issues/api-refactor.md's rename), and two things answer to it. A rename could not hide it: `add_peer` is a label's host under a new word. Honest for now (lib.rs says so): `saved_peers`, `SyncScope::AllWithSavedPeers`, `SyncState::{NoPeers, Connected}`.
+
+| | Saved peer | Direct peer |
+|---|---|---|
+| Named by | fixed address in `label.0`, link and card text | `reach.0` (key, relays), LAN, a link's sharer |
+| Who can be one | a node serving (`set_serving`, `Admit`), reader or not; a plain node has no such address | a node that reads the group |
+| What it holds | blobs, in `host.redb` | plaintext state |
+| Key | serving key | dialable key |
+| Confirms | a pass: `Synced`, `wait_synced`, the pre-sync, `restore`, `complete` | nothing: `Connected` |
+
+One kind of peer needs, in order of what it unblocks:
+1. **One idea of a group's sources** (issues/no-server-audit.md Fixes 4): states, waits, the pre-sync and `complete` judged over saved and direct alike. Open for Tess: what `Required` promises when no single place holds all writes. No wire change. Most of the API's honesty comes from this.
+2. **An address that names a node**: `peer://` in `label.0`, link and card hosts, dialed by key (spec/sync.md §10, spec/wire.md §10, rows 26, 27); one key to name a node by, or a reason for each (item 3 above).
+3. **One serving path**: a reader serving a label and the hub, differing in what proof opens it (item 2; spec/sync.md §4-§6), and one store (item 1).
+4. **Consent**: what `Admit` means once anyone may name any node as a peer (row 29, after owners).
+5. **Finding carriers**: how holders learn of a non-reading carrier on a dynamic mesh (row 28, Fixes 7).
+
+Then, in the API: `add_peer` takes any node, `peers(g)` is one list and `sync(g, peers)` adds to it, `set_serving` is only limits, `AllWithSavedPeers` becomes all, and `Connected` goes.
+
 ## Names left
 The public API, CLI, app and notes say node, peer, `Address`, serving, `SyncId`, account (`osis`'s notes/api.md). What still says otherwise waits for owner removal, as the owner work is in there:
 - **Engine, perm, proto, `osis-host` names**: `label` and `LabelId`, `HostPolicy`, `host.0^`, `host.redb`, `Tier::Owner`, `Person`/`create_person`, `ChangeId`, `Written`, `Mutation::expires` per aspect, `Edge`, `Hub`, `osis_label::ShareLink.hosts`, `CommitKind` beneath the API's, `Time` as `WallMs` by another name. The harness too (`World::add_host`, `Opening.hosts`, `hosts` in test helpers).
-- **Spec rule text**: "host" and "label" throughout; "edge", "rights", "demotion" and "revocation" where a role is meant, and one word of "part" and "delta". The concept changes are the list above.
+- **Spec rule text**: "host" and "label" throughout; "edge", "rights", "demotion" and "revocation" where a role is meant, one word of "part" and "delta", and "placed" (membership words; a commit held at a host: "uploaded"). The concept changes are the list above.
 - `required.0^`'s schema field `keep` (core.osis, spec/data-model.md §9, `osis get`): the API's `RequiredRules::retain_copies` wraps it; rename with the spec's "saying keep" in spec/permissions.md §2, §3.
 - **"Sync ID" over "label"**: engine and spec take the word then too. Today the `SyncId` type is an opaque label ID.
 - `sync(thing, &peers)`: a sync ID of its own is mostly a detail of how a thing travels; Tess is unsure how much to encourage single-thing ones. The doc steers sets through a group, and only `make_link` makes one quietly. Reconsider with the peers work.

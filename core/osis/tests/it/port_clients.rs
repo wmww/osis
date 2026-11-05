@@ -688,7 +688,7 @@ fn watches_and_rows() {
     assert!(matches!(c.rotate_peer_address(), Err(Error::Unsupported(_))));
     assert!(matches!(c.export_bundle(&[x.g], Vec::new()), Err(Error::Unsupported(_))));
     assert!(matches!(c.import_bundle(&b"x"[..]), Err(Error::Unsupported(_))));
-    // never "it does not peer" from one who may not read the node's thing
+    // never "it does not serve" from one who may not read the node's thing
     assert!(matches!(c.serving(), Err(Error::Unsupported(_))));
     assert!(matches!(c.serving_key(), Err(Error::Unsupported(_))), "the node's own: not for a client");
     assert!(matches!(c.saved_peers(), Err(Error::Unsupported(_))));

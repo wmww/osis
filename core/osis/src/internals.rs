@@ -93,7 +93,7 @@ pub fn kept_writes(k: &crate::KeepAlive) -> u64 {
     k.writes()
 }
 
-/// A joining device's node tid, before it has finished.
+/// A joining node's node tid, before it has finished.
 pub fn joining_node(j: &crate::Joining) -> osis_base::Tid {
     j.node()
 }
@@ -106,7 +106,7 @@ pub trait MemStoreMeasures {
     fn rows(&self) -> usize;
     /// The bytes held in rows, and in blobs with their number.
     fn held_split(&self) -> (u64, u64, u64);
-    /// An independent copy of the store as it is now, as a device backup takes it (the host store
+    /// An independent copy of the store as it is now, as a node backup takes it (the host store
     /// left out): opening it later is a restore.
     fn backup(&self) -> crate::MemStore;
 }

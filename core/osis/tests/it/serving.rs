@@ -1,4 +1,4 @@
-//! A node that peers (notes/api.md Serving, notes/sync.md Serving), in process: its `host.0^`
+//! A node that serves (notes/api.md Serving, notes/sync.md Serving), in process: its `host.0^`
 //! runs a hub the world steps; the node's own dials of its peer address reach it like anyone's.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -34,12 +34,12 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 // spec/wire.md §11.2 (an unadmitted genesis step gets code 14), notes/sync.md Serving, spec/requirements.md
-// Data a node cannot read: Alice peers with `own` admission (its key known before it listens): her home label, once its peers name her
-// peer address, is admitted and served from her peer store (her own copy placed there like
+// Data a node cannot read: Alice serves with `own` admission (its key known before it listens): her home label, once its peers name her
+// peer address, is admitted and served from her serving store (her own copy placed there like
 // anyone's); Bob's is refused until she opens admission (his status names her peer, his home
 // synced at his other peer; Carol's, at her peer only, `Refused`, and `wait_synced` waits: it may
 // yet be admitted), then served blind (she holds none of
-// its keys) and served to Bob's restored node. Her peer store holds no tid or AK of either
+// its keys) and served to Bob's restored node. Her serving store holds no tid or AK of either
 // label in any row it ever wrote.
 #[test]
 fn serving_own_then_open_spec_sync_5() {
@@ -107,7 +107,7 @@ fn serving_own_then_open_spec_sync_5() {
         }
     }
 
-    // stopping shreds the peer secret: the next start has a new key
+    // stopping shreds the serving secret: the next start has a new key
     alice.set_serving(None).unwrap();
     w.run();
     assert_eq!(alice.serving_address().unwrap(), None);
@@ -338,7 +338,7 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
     }
 }
 
-/// The labels in the peer store at `dir` (the node closed).
+/// The labels in the serving store at `dir` (the node closed).
 fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
     let b = osis_store::RedbBackend::open(&dir.join("host.redb")).unwrap();
     let r = osis_store::FileRoot::new(dir.join("host.root"));
@@ -348,8 +348,8 @@ fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
     h.labels_after(None, 1000).unwrap()
 }
 
-// spec/data-model.md §9 (`host.0^` absent: it does not peer; stopping erases the peer store),
-// spec/requirements.md Deletion: stopping serving erases the peer store (`host.redb`,
+// spec/data-model.md §9 (`host.0^` absent: it does not serve; stopping erases the serving store),
+// spec/requirements.md Deletion: stopping serving erases the serving store (`host.redb`,
 // `host.root`) once the peer closes it, on a running driver or at the next driver start when
 // it stopped while none ran; a start under a new peer key after a stop no driver carried out
 // serves nothing of the old store.
@@ -377,7 +377,7 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
     db.set_serving(hosting()).unwrap();
     listening(&db);
     db.add_peer(&db.serving_address().unwrap().unwrap()).unwrap();
-    common::block_on(db.wait_synced(osis::SyncScope::AllWithPeers)).unwrap();
+    common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers)).unwrap();
     let home = home_label(&db);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     assert_eq!(host_store_labels(&dir), vec![home]);
@@ -419,7 +419,7 @@ fn stop_serving_erases_its_store_spec_data_model_9() {
 }
 
 // notes/api.md Handle and sync: `close` with `Runtime::Own` returns once the driver, and with it
-// the peer, is gone, so the peer store is free: reopening at once peers again (not "Database
+// the peer, is gone, so the serving store is free: reopening at once serves again (not "Database
 // already open"). spec: none (an API property)
 #[test]
 fn own_runtime_close_frees_serving_store() {
@@ -434,7 +434,7 @@ fn own_runtime_close_frees_serving_store() {
         c.app.internals.transport = Some(net.endpoint(&format!("o{i}")));
         c
     };
-    // `host_address` fails once the peer could not open its store
+    // `serving_address` fails once the peer could not open its store
     let listening = |db: &Osis| wait_for("listening", || db.serving_address().unwrap().is_some());
     let db = osis::internals::create(at(0)).unwrap().0;
     db.set_serving(Some(Serving { listen: vec!["mem://o".parse().unwrap()], admit: Admit::Open, ..Default::default() })).unwrap();

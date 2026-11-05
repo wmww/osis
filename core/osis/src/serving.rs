@@ -132,8 +132,9 @@ impl ServingPolicy {
     }
 }
 
-/// This node's terms for storing and serving data for others, readable by it or not. Serving is
-/// optional, and nothing assumes such a node stays on or has a fixed address.
+/// This node's terms for storing and serving data for others, readable by it or not. It may come and
+/// go, but others save it as a peer by a fixed address (`Osis::serving_address`, `Osis::add_peer`):
+/// a node with no stable address cannot be reached this way yet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Serving {
     /// URLs to listen on (`quic://0.0.0.0:4040`).
@@ -173,10 +174,10 @@ impl Osis {
     /// Starts, changes or (none) stops serving. Stopping erases what it stored for others, and its
     /// address: a later start has a new address and starts empty. Fails `Invalid` on a policy it
     /// cannot run by.
-    pub fn set_serving(&self, h: Option<Serving>) -> Result<()> {
+    pub fn set_serving(&self, serving: Option<Serving>) -> Result<()> {
         let node = self.node();
         let mut w = self.write();
-        match h {
+        match serving {
             Some(h) => {
                 let v = ct::Host {
                     listen: h.listen.iter().map(ToString::to_string).collect(),
@@ -211,6 +212,7 @@ impl Osis {
 
     /// The address others reach this node's serving at (the first listener's), once it listens; `None`
     /// while it does not serve or has not started. Fails `Network` when it could not listen.
+    /// `Unsupported` on a thin client.
     pub fn serving_address(&self) -> Result<Option<Address>> {
         self.local_only("serving_address")?;
         let st = self.locked(|l| l.sync.host_status().clone());

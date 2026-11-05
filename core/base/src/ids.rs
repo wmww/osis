@@ -6,12 +6,13 @@ use crate::value::Value;
 use crate::{ErrorClass, hash};
 use std::fmt;
 
-/// 120-bit thing id: first 15 bytes of BLAKE3 over the canonical creation record.
+/// A thing's identity: 120 bits, minted offline when it is created. `Display` and `parse` give its
+/// text form.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Tid([u8; TID_LEN]);
 
 impl Tid {
-    /// Wraps 15 bytes received on the wire. Any bytes are a valid (possibly dangling) reference.
+    /// From its 15 bytes. Any bytes are a valid reference, perhaps to nothing.
     pub const fn from_bytes(b: [u8; TID_LEN]) -> Tid {
         Tid(b)
     }
@@ -275,6 +276,7 @@ impl Ak {
             None => Err(AkError),
         }
     }
+    #[doc(hidden)]
     /// `s` if it is a valid AK, else a panic: at build time in a `const` (key constants).
     pub const fn check(s: &'static str) -> &'static str {
         assert!(parse(s.as_bytes()).is_some(), "invalid aspect key");
@@ -311,6 +313,7 @@ impl Ak {
     pub fn lifetime(&self) -> Lifetime {
         self.parsed().lifetime
     }
+    #[doc(hidden)]
     /// The markers of a valid AK's text, read from its tail (`^`, `~` and `*` occur nowhere else
     /// in one): admin-only, lifetime. For keys held as text (`RawKey::ak`).
     pub fn markers_of(s: &str) -> (bool, Lifetime) {
@@ -322,7 +325,7 @@ impl Ak {
         (matches!(rest, [.., b'^']), lifetime)
     }
     /// Whether this key is a later version of `other`: the same tid and name segments, a higher
-    /// version, any markers (spec/data-model.md §2).
+    /// version, any markers.
     pub fn successor_of(&self, other: &Ak) -> bool {
         let (p, q) = (self.parsed(), other.parsed());
         self.0.get(..p.dot) == other.0.get(..q.dot) && p.version > q.version
@@ -407,6 +410,7 @@ pub enum PurgeBy {
 }
 
 impl PurgeBy {
+    #[doc(hidden)]
     pub const ALL: [PurgeBy; 5] = [PurgeBy::Nobody, PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer, PurgeBy::Author];
     pub fn name(self) -> &'static str {
         match self {
@@ -417,6 +421,7 @@ impl PurgeBy {
             PurgeBy::Author => "author",
         }
     }
+    #[doc(hidden)]
     pub fn from_id(id: u64) -> Option<PurgeBy> {
         PurgeBy::ALL.into_iter().find(|p| *p as u64 == id)
     }

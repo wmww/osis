@@ -1,4 +1,4 @@
-//! Sharing, links, cards, nodes, hosts and sync (notes/api.md Sharing and roles, Sync
+//! Sharing, links, cards, nodes, peers and sync (notes/api.md Sharing and roles, Sync
 //! configuration and status) over role flows and the sync engine: each sharing call is
 //! one role commit made locally (spec/permissions.md §2), whose deliveries the sync engine
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
@@ -199,7 +199,8 @@ macro_rules! text_type {
 }
 
 text_type!(
-    /// A share link (`osis://link/...`): holds the link key's seed.
+    /// A share link (`osis://link/...`): whoever holds this text can redeem it, so hand it over as a
+    /// secret.
     ShareLink, osis_label::ShareLink, osis_label::ShareLink::from_text, "link"
 );
 impl ShareLink {
@@ -213,7 +214,7 @@ text_type!(
     ContactCard, osis_label::ShareLink, osis_label::ShareLink::from_text, "contact card"
 );
 text_type!(
-    /// A recovery card (`osis://card/...`): holds the recovery seed; show or store it, osis
+    /// A recovery card (`osis://card/...`): whoever holds it can act as the account; show or store it, osis
     /// keeps none of it.
     RecoveryCard, osis_label::RecoveryCard, osis_label::RecoveryCard::from_text, "recovery card"
 );
@@ -296,28 +297,29 @@ impl Address {
     }
 }
 
-/// A node of this account (`Osis::nodes`).
+/// A node of this account and its role on the account (`Osis::nodes`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(missing_docs)]
 pub struct AccountNode {
-    /// The node.
     pub node: Tid,
-    /// Its role on the account.
     pub role: Role,
 }
 
-/// How a group's sync stands here (`GroupSync::state`).
+/// How a group's sync stands here (`GroupSync::state`), best first. A group syncing several ways at
+/// once, as when moving from one to another, shows the worst of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SyncState {
     /// Nothing left to send or fetch.
     Synced,
     /// Sending or fetching.
     Syncing,
-    /// No saved peer, but other readers are connected: changes go to them as they happen, and nothing
-    /// says either side holds all the other does.
+    /// No saved peer, but other readers have it open with this node: changes go to them as they
+    /// happen, and nothing says either side holds all the other does.
     Connected,
-    /// No saved peer of it answers now. It keeps trying.
+    /// No saved peer of it answers now (a node that does not serve never does). It keeps trying.
     Unreachable,
-    /// No saved peer, and no other node connected on it now: what is written here stays here for now.
+    /// No saved peer, and no other node has it open with this node now: what is written here stays
+    /// here for now.
     NoPeers,
     /// A saved peer does not take it (yet; `GroupSync::refused_by` names them) and no other has it open.
     /// It keeps asking.
@@ -335,7 +337,7 @@ pub enum SyncState {
 /// How one group syncs here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupSync {
-    /// How it stands.
+    /// Where its sync has got to.
     pub state: SyncState,
     /// When it was last caught up.
     pub last_sync: Option<Time>,
@@ -360,7 +362,7 @@ pub struct Status {
     /// How each group stands.
     pub groups: BTreeMap<Tid, GroupSync>,
     /// The nodes this process is a client of, and those a group's source names.
-    pub client_connections: Vec<crate::sources::ClientConnection>,
+    pub node_connections: Vec<crate::sources::NodeConnection>,
     /// Things read at a connected node and also in a group that carries them to another source:
     /// writes on them are refused until one of the groups moves (`Osis::group_source`).
     pub two_sources: BTreeSet<Tid>,
@@ -371,8 +373,8 @@ pub struct Status {
 pub enum SyncScope {
     /// Every synced group with a saved peer, and every pending delivery. A group with none is left
     /// out, so `Ok` says nothing of it: what was written there may have reached nobody (`status` shows
-    /// such a group as `NoPeers` or `Connected`).
-    AllWithPeers,
+    /// such a group as `NoPeers` or `Connected`). There is no scope that waits on other readers.
+    AllWithSavedPeers,
     /// The sync of this thing (its own, or of groups containing it; one with no saved peer fails
     /// `Unsynced`) and the deliveries about it, what it holds or those groups.
     Thing(Tid),
@@ -441,7 +443,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
             groups.insert(t, GroupSync { state: SyncState::NotCarried, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to });
         }
     }
-    Ok(Status { connected: sync.connected(), groups, client_connections: Vec::new(), two_sources: BTreeSet::new() })
+    Ok(Status { connected: sync.connected(), groups, node_connections: Vec::new(), two_sources: BTreeSet::new() })
 }
 
 fn edge(role: Role, o: GrantOpts) -> ct::Edge {
@@ -502,7 +504,7 @@ fn route_arriving(sync: &mut SyncEngine, t: &Tid) -> bool {
     sync.label_status().iter().any(|s| !skip.contains(&s.group) && matches!(label_state(s), SyncState::Syncing | SyncState::Unreachable))
 }
 
-/// The labels' check of `wait_synced(Group(t))`, over the groups holding `t` now and the
+/// The labels' check of `wait_synced(Thing(t))`, over the groups holding `t` now and the
 /// deliveries about `t`, what it holds or those groups; `Unsynced` when none holds it and none
 /// will (`route_arriving`).
 fn group_synced(sync: &mut SyncEngine, me: Tid, t: Tid) -> Option<Result<()>> {
@@ -528,7 +530,7 @@ fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveri
     let skip = sync.receipts_only().clone();
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect();
     // a replaced label with no peer beside another of its group takes nothing (it retires after
-    // ROLE_KEEP): left out, else `Group(t)` failed until then
+    // ROLE_KEEP): left out, else `Thing(t)` failed until then
     let gone = |s: &osis_node::sync::LabelStatus| s.hosts == 0 && s.replaced;
     let labels: Vec<(Tid, SyncState)> = all
         .iter()
@@ -1120,8 +1122,8 @@ impl Osis {
         Ok(KeyGuard { db: self.downgrade(), l, link: Some(link.k) })
     }
 
-    /// The account's links that still work, whichever node made them (each holds the seed thing;
-    /// one whose seed has not arrived is not listed); filter by `LinkInfo::target`. `Unsupported` on
+    /// The account's links that still work, whichever node made them (one that has not yet synced here
+    /// from the node that made it is not listed); filter by `LinkInfo::target`. `Unsupported` on
     /// a client with its own actor, which is also why a node connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
         if !self.has_store() {
@@ -1236,6 +1238,7 @@ impl Osis {
 
     /// This account's contact card: a read link to its profile, a thing that also carries what others
     /// need to grant this account a role. Made once; later calls return the same card. `Invalid` on a node with no saved peers.
+    /// `Unsupported` on a client with its own actor.
     pub fn contact_card(&self) -> Result<ContactCard> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::CONTACT_CARD, vec![])?;
@@ -1288,18 +1291,20 @@ impl Osis {
     /// This account's profile thing: the target of its contact card, made on first
     /// use. The account writes its profile aspects on it (`name.0`, `contact:*`); everyone holding
     /// the card reads them.
+    /// `Unsupported` on a client with its own actor.
     pub fn profile(&self) -> Result<Tid> {
         let card = self.contact_card()?;
         Ok(card.parse()?.target)
     }
 
     /// The profile thing of an account whose card this node imported, if any.
-    pub fn profile_of(&self, person: Tid) -> Result<Option<Tid>> {
+    /// `Unsupported` on a client with its own actor.
+    pub fn profile_of(&self, account: Tid) -> Result<Option<Tid>> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(person)])?;
+            let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(account)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::Args::of(vec![t]).tid()).transpose();
         }
-        let Some(b) = self.engine(|e| e.app_record(&format!("{PROFILE_OF}{person}")))? else { return Ok(None) };
+        let Some(b) = self.engine(|e| e.app_record(&format!("{PROFILE_OF}{account}")))? else { return Ok(None) };
         let t = String::from_utf8(b).map_err(|_| Error::Storage("profile record".into()))?;
         t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
     }
@@ -1356,6 +1361,7 @@ impl Osis {
     }
 
     /// The invite requests waiting for the user (`InviteId`).
+    /// `Unsupported` on a client with its own actor.
     pub fn invite_requests(&self) -> Result<Vec<InviteId>> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::INVITE_REQUESTS, vec![])?;
@@ -1367,6 +1373,7 @@ impl Osis {
     /// Accepts an invite request: its grant applies and its thing's peers are dialed (then joined as
     /// for any invite). `Invalid` when no such request waits (accepted, declined or
     /// expired).
+    /// `Unsupported` on a client with its own actor.
     pub fn accept_invite(&self, id: InviteId) -> Result<()> {
         if !self.has_store() {
             return self.rcall(crate::port::method::ACCEPT_INVITE, vec![Value::Bytes(id.bytes().to_vec())]).map(drop);
@@ -1382,6 +1389,7 @@ impl Osis {
 
     /// Declines an invite request: it is forgotten and never shown again (re-sends included).
     /// `Invalid` when no such request waits.
+    /// `Unsupported` on a client with its own actor.
     pub fn decline_invite(&self, id: InviteId) -> Result<()> {
         if !self.has_store() {
             return self.rcall(crate::port::method::DECLINE_INVITE, vec![Value::Bytes(id.bytes().to_vec())]).map(drop);
@@ -1393,6 +1401,7 @@ impl Osis {
     }
 
     /// This account's nodes: those holding a role on it.
+    /// `Unsupported` on a client with its own actor.
     pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::NODES, vec![])?;
@@ -1456,31 +1465,34 @@ impl Osis {
         self.locked(|x| x.sync.config().hosts.clone())
     }
 
-    /// Saves a peer: this node stays connected to it, and what syncs from now on syncs with it (links,
-    /// `sync`). What already syncs with all the saved peers moves to the new list: the home group and
+    /// Saves a peer: a node serving at this address (`set_serving`, its `serving_address`), whether or
+    /// not it can read what it gets. This node stays connected to it, and what syncs from now on syncs
+    /// with it (links, `sync`). What already syncs with all the saved peers moves to the new list: the home group and
     /// groups this account owns that this node administers; not links or the contact card (their text
     /// names their peers), not others' groups. With `Runtime::None` the list is only stored, for the
     /// next open with a runtime: until then `status` shows nothing connected and `wait_synced` fails
     /// `Network`.
-    pub fn add_peer(&self, s: &Address) -> Result<()> {
+    /// `Unsupported` on a client with its own actor.
+    pub fn add_peer(&self, peer: &Address) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::ADD_PEER, vec![Value::Str(s.to_string())]).map(drop);
+            return self.rcall(crate::port::method::ADD_PEER, vec![Value::Str(peer.to_string())]).map(drop);
         }
         let mut v = self.saved_peers()?;
-        if !v.contains(s) {
-            v.push(s.clone());
+        if !v.contains(peer) {
+            v.push(peer.clone());
         }
         self.set_hosts(v)
     }
 
     /// Removes a saved peer, from the list and the groups that follow it (`add_peer`); a group with
     /// holders besides this account's nodes keeps its last one.
-    pub fn remove_peer(&self, s: &Address) -> Result<()> {
+    /// `Unsupported` on a client with its own actor.
+    pub fn remove_peer(&self, peer: &Address) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::REMOVE_PEER, vec![Value::Str(s.to_string())]).map(drop);
+            return self.rcall(crate::port::method::REMOVE_PEER, vec![Value::Str(peer.to_string())]).map(drop);
         }
         let mut v = self.saved_peers()?;
-        v.retain(|x| x != s);
+        v.retain(|x| x != peer);
         self.set_hosts(v)
     }
 
@@ -1513,6 +1525,7 @@ impl Osis {
     /// prefer sets: share many things through one group, as each thing synced alone costs its own keys
     /// and its own sync. A no-op when it syncs already, unless `peers` names others: `Invalid`, for a
     /// group keeps its peers.
+    /// `Unsupported` on a client with its own actor.
     pub fn sync(&self, group: Tid, peers: &[Address]) -> Result<()> {
         if let crate::sources::Route::Remote(r) = self.route_write(group)? {
             return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(peers.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
@@ -1593,6 +1606,7 @@ impl Osis {
     }
 
     /// Stops syncing `group` for all its holders (it stays in other synced groups it is a member of).
+    /// `Unsupported` on a client with its own actor.
     pub fn unsync(&self, group: Tid) -> Result<()> {
         if let crate::sources::Route::Remote(r) = self.route_write(group)? {
             return r.call(crate::port::method::UNSYNC, vec![Value::Tid(group)]).map(drop);
@@ -1631,7 +1645,7 @@ impl Osis {
     }
 
     /// Calls `f` with the status now (through the dispatcher) and on every change, a node that
-    /// cannot be reached shown as such (`Status::client_connections`). `Err`: the store could not say; the
+    /// cannot be reached shown as such (`Status::node_connections`). `Err`: the store could not say; the
     /// next status that can be read follows.
     pub fn on_status_change(&self, mut f: impl FnMut(&Osis, Result<Status>) + Send + 'static) -> Result<Subscription> {
         if !self.has_store() {
@@ -1661,14 +1675,14 @@ impl Osis {
     /// holding `t` and the deliveries about `t`, a thing it holds or one of those groups. With no group
     /// holding `t` it fails `Unsynced` at once, unless one may still arrive: a grant named it, or this
     /// node does not administer `t` and something it syncs has more to bring (a first sync).
-    /// `AllWithPeers`: every group with a saved peer and every delivery. Groups with none are left out,
+    /// `AllWithSavedPeers`: every group with a saved peer and every delivery. Groups with none are left out,
     /// and `Ok` says nothing of them: look at `status`.
     ///
     /// On a thin client the node waits with the same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
         let r = match scope {
             SyncScope::Thing(t) => self.route(t),
-            SyncScope::AllWithPeers => self.route_scope(None)?,
+            SyncScope::AllWithSavedPeers => self.route_scope(None)?,
         };
         if let crate::sources::Route::Remote(r) = r {
             return self.remote_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::sync_scope_v(scope)]).await.map(drop);
@@ -1681,7 +1695,7 @@ impl Osis {
         let me = self.inner.me;
         use crate::net::Pending;
         match scope {
-            SyncScope::AllWithPeers => {
+            SyncScope::AllWithSavedPeers => {
                 // nothing to wait for: done, also without a runtime
                 let idle = self.locked(|x| {
                     let skip = x.sync.receipts_only().clone();
@@ -1722,6 +1736,7 @@ impl Osis {
 
     /// Writes `groups` as a bundle to `out`, for another node's `import_bundle`: sync by hand, carried
     /// any way you like.
+    /// `Unsupported` on a client with its own actor.
     pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
         if !self.has_store() {
             use crate::port::{STREAM_CHUNK, codec::{Args, tids_v}, method};
@@ -1750,6 +1765,7 @@ impl Osis {
     }
 
     /// Reads a bundle: what this node can open applies like synced content.
+    /// `Unsupported` on a client with its own actor.
     pub fn import_bundle(&self, mut input: impl std::io::Read) -> Result<()> {
         let mut b = Vec::new();
         input.read_to_end(&mut b).map_err(|e| Error::Storage(e.to_string()))?;

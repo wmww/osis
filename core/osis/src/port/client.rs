@@ -116,7 +116,7 @@ pub fn own_uid() -> Result<u32> {
     osis_transport::unix::own_uid().map_err(|e| Error::Storage(e.to_string()))
 }
 
-/// The node's person and node actors (`Osis::me`, `node` of a thin client).
+/// The node's account and node actors (`Osis::me`, `node` of a thin client).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Who {
     pub me: Tid,

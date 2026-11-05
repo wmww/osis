@@ -65,7 +65,7 @@ impl Stamp {
 /// When a thing was made or last changed (`Osis::created`, `Osis::changed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThingStamp {
-    /// The commit; `None` when it is only the creation of a thing still ephemeral.
+    /// The commit; `None` when it is only the creation of a draft.
     pub id: Option<CommitId>,
     /// The actor the author acted for.
     pub actor: Tid,
@@ -495,8 +495,8 @@ impl Osis {
         crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::thing_stamp).transpose()
     }
 
-    /// When the thing was created: the oldest valid commit carrying its creation (an ephemeral
-    /// thing's write: no commit); `None` while it is unknown here.
+    /// When the thing was created: the oldest valid commit carrying its creation (a draft's: no
+    /// commit); `None` while it is unknown here.
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Route::Remote(r) = self.route(tid) {
             return self.remote_stamp(&r, m::CREATED, tid);

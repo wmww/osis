@@ -11,7 +11,7 @@
 //!
 //! # A first write
 //! You are the first admin of a thing you create. `me()` is your account, and also a group synced to
-//! all your nodes. A new thing lives in memory until its first durable write.
+//! all your nodes. A new thing is a **draft**, in memory, until its first durable write.
 //! ```
 //! use osis::{Config, Member, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
@@ -186,18 +186,24 @@
 //! ```
 //!
 //! # Sync and peers
-//! Nodes that share a group sync directly with each other. You can also name **peers** by address,
-//! nodes a group syncs with whether or not they can read it: another of your machines, a friend's, or
-//! a rented box that serves data for others (`set_serving`). What a peer cannot read reaches it
-//! encrypted. Everything works with nobody online; sync catches up whenever two nodes meet.
+//! Everything works with nobody online; sync catches up whenever two nodes meet. Two kinds of node
+//! carry a group, for now:
+//! - Other nodes that read it find each other and sync directly (`Config::direct_sync`,
+//!   `ShareAddress`), with feature `iroh`, and on a LAN with feature `lan`. Neither is on by default.
+//! - **Saved peers**, named by address: nodes that serve data for others at a fixed address
+//!   (`set_serving`, `serving_address`), whether or not they can read it: another of your machines,
+//!   a friend's, a rented box. What a peer cannot read reaches it encrypted.
+//!
+//! Only a saved peer can confirm anything: `wait_synced`, catching up before lowering a role, and
+//! recovery count on one, and `status` shows a group with none as `NoPeers` or `Connected`.
 //!
 //! Sync runs on a runtime (`Runtime::Own`, or your tokio handle); without one everything local still
-//! works, and peers are refused. `Osis::create` given peers also returns a recovery card, the only copy
-//! of the key that restores the account on a new node. `status` says how each group stands.
+//! works, and a call that waits for another node fails `Network`. `Osis::create` given peers also
+//! returns a recovery card, the only copy of the key that restores the account on a new node.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, SyncState};
 //! let (db, card) = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! assert!(card.is_none(), "no peers: nothing to restore from");
+//! assert!(card.is_none(), "no saved peers: no card");
 //! assert_eq!(db.status()?.groups[&db.me()].state, SyncState::NoPeers);
 //! # Ok::<(), osis::Error>(())
 //! ```
@@ -207,7 +213,7 @@
 //! let cfg = Config { runtime: Runtime::Own, ..Default::default() };
 //! let peers = ["quic://example.org:4433#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse()?];
 //! let (db, card) = Osis::create(Store::Memory(MemStore::new()), &peers, cfg.clone())?;
-//! db.wait_synced(SyncScope::AllWithPeers).await?;
+//! db.wait_synced(SyncScope::AllWithSavedPeers).await?;
 //! // on a fresh node: the same account from the card
 //! let again = Osis::restore(Store::Memory(MemStore::new()), &[], &card.unwrap(), cfg).await?;
 //! assert_eq!(again.me(), db.me());
@@ -221,8 +227,8 @@
 //! # use osis::{Osis, SyncScope};
 //! # use std::time::Duration;
 //! # async fn demo(db: Osis) {
-//! match tokio::time::timeout(Duration::from_secs(10), db.wait_synced(SyncScope::AllWithPeers)).await {
-//!     Ok(Ok(())) => println!("reached its peers"),
+//! match tokio::time::timeout(Duration::from_secs(10), db.wait_synced(SyncScope::AllWithSavedPeers)).await {
+//!     Ok(Ok(())) => println!("reached the saved peers"),
 //!     Ok(Err(e)) => println!("cannot sync: {e}"),
 //!     Err(_) => println!("not yet: see db.status()"),
 //! }
@@ -387,7 +393,7 @@ pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
 pub use retention::{Bound, Retention};
 pub use share::{AccountNode, Address, ContactCard, GrantOpts, GroupSync, Holder, InviteId, LinkId, LinkInfo, LinkOpts, Member, RecoveryCard, SetRoleOpts, ShareLink, Status, SyncFirst, SyncScope, SyncState, Url};
-pub use sources::{GroupSource, NodeLogin, ClientConnection};
+pub use sources::{GroupSource, NodeLogin, NodeConnection};
 pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, NotUndoableReason, Scope};
 pub use history::{HistoryBody, HistoryEntry, HistoryEvent, HistoryPage};

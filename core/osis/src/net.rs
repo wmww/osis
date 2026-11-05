@@ -577,6 +577,7 @@ pub struct SyncOptions {
 
 impl crate::Osis {
     /// How this node syncs `group` (the default when never set).
+    /// `Unsupported` on a client with its own actor.
     pub fn sync_options(&self, group: osis_base::Tid) -> crate::Result<SyncOptions> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::SYNC_OPTIONS, vec![Value::Tid(group)])?;
@@ -597,6 +598,7 @@ impl crate::Osis {
     /// `sync_options`. Readers of a group not told this node's address do not dial it. When a group
     /// was told it and no longer qualifies, the address changes (`rotate_peer_address`), so readers there
     /// cannot dial it any more.
+    /// `Unsupported` on a client with its own actor.
     pub fn set_sync_options(&self, group: osis_base::Tid, o: SyncOptions) -> crate::Result<()> {
         if !self.has_store() {
             let mut args = vec![Value::Tid(group)];
@@ -625,6 +627,7 @@ impl crate::Osis {
     /// the kernel's word for their uid. A stale socket is replaced, one in use is `Network`; `Storage`
     /// when the socket's directory is not safely this user's or too long a path; `Invalid` for a store in memory, which
     /// has no directory to name it by. Needs a runtime.
+    /// `Unsupported` on a thin client.
     pub fn listen_socket(&self) -> crate::Result<()> {
         self.local_only("listen_socket")?;
         let Some(dir) = &self.inner.store_dir else { return Err(crate::Error::Invalid("a store in memory has no client socket".into())) };
@@ -646,6 +649,7 @@ impl crate::Osis {
     /// (their sessions end; clients reconnect by themselves). No URL: stops listening, ends those sessions, shreds the key (a later
     /// call makes a new one, so clients need a new address). All or none: on an error nothing
     /// listens. Needs a runtime. Listening does not last past this process: call it at each start.
+    /// `Unsupported` on a thin client.
     pub fn client_listen(&self, urls: &[crate::Url]) -> crate::Result<Vec<crate::Address>> {
         self.local_only("client_listen")?;
         let a = self.inner.net.client_listen(driver::ClientUrls::Listen(urls.iter().map(ToString::to_string).collect()))?;
@@ -657,6 +661,7 @@ impl crate::Osis {
     /// here. A client holding the old address sees `Network` on every call and `connected: false`
     /// until it connects to a new address, handed to it out of band. No listener up (a process
     /// that has not called `client_listen`): only the key changes. Needs a runtime.
+    /// `Unsupported` on a client with its own actor.
     pub fn rotate_client_address(&self) -> crate::Result<Vec<crate::Address>> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::ROTATE_CLIENT_ADDRESS, vec![])?;
@@ -672,6 +677,7 @@ impl crate::Osis {
     /// Direct links still open no longer reach this node directly (they still work through saved peers).
     /// Done by itself when a group told the old address no longer qualifies and when a direct link
     /// ends.
+    /// `Unsupported` on a client with its own actor.
     pub fn rotate_peer_address(&self) -> crate::Result<()> {
         if !self.has_store() {
             return self.rcall(crate::port::method::ROTATE_PEER_ADDRESS, vec![]).map(drop);

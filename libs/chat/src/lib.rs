@@ -90,10 +90,10 @@ impl Default for Options {
 
 /// The retention rules of a chat: the message rule, and the plain default for every other aspect, so
 /// junk that nobody could erase is invalid .
-fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> Result<RequiredRules> {
+fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> RequiredRules {
     let at_least = if disappear.is_some() { Bound::default() } else { Bound::FOREVER };
     let msgs = Required { retention: Retention { by: purge, at_least, at_most: Bound::default() }, expires: disappear };
-    Ok(RequiredRules { rules: BTreeMap::from([(MSGS.to_string(), msgs), (String::new(), Required::default())]), retain_copies })
+    RequiredRules { rules: BTreeMap::from([(MSGS.to_string(), msgs), (String::new(), Required::default())]), retain_copies }
 }
 
 /// A new chat, this account its first admin: required retention set before anyone is granted, so no
@@ -101,7 +101,7 @@ fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> Re
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = db.create_ownerless(db.me())?;
     let mut w = db.write();
-    w.at(c, REQUIRED).set(&rules(o.purge, o.disappear, o.retain_copies)?)?;
+    w.at(c, REQUIRED).set(&rules(o.purge, o.disappear, o.retain_copies))?;
     w.at(c, settings_key(db)?).set(&settings_value(&o.name, o.edit))?;
     w.commit()?;
     db.sync(c, &o.peers)?;
@@ -156,7 +156,7 @@ pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
 pub fn set_disappearing(db: &Osis, c: Tid, d: Option<Duration>) -> Result<()> {
     let s = settings(db, c)?;
     let mut w = db.write();
-    w.at(c, REQUIRED).set(&rules(s.purge, d, s.retain_copies)?)?;
+    w.at(c, REQUIRED).set(&rules(s.purge, d, s.retain_copies))?;
     w.commit()?;
     Ok(())
 }

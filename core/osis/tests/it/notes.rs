@@ -82,7 +82,7 @@ fn two_devices_offline_edits_and_undo() {
     w.run();
     assert_eq!(body(&laptop, note).unwrap(), "- milk", "the phone's edit waits for the network");
     w.set_online(&phone, true);
-    w.until(phone.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
+    w.until(phone.wait_synced(SyncScope::AllWithSavedPeers), 1000, 10).unwrap();
     w.run();
     assert_eq!(body(&laptop, note).unwrap(), "- milk, eggs");
     assert_eq!(body(&phone, note).unwrap(), "- milk, eggs");

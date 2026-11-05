@@ -20,7 +20,7 @@ pub struct Bound {
 }
 
 impl Bound {
-    /// For good, as a keep-at-least: the write's body and its proof of authorship stay until a purge.
+    /// For good, as `Retention::at_least`: the write's body and its proof of authorship stay until a purge.
     pub const FOREVER: Bound = Bound { until: Some(Time(osis_commit::FOREVER)), after_replaced: None };
 }
 
@@ -44,7 +44,8 @@ pub struct Retention {
     /// Held at least this long, leaving earlier only by a purge. Who wrote a change, and when, is
     /// reported only while the change itself is held: `Bound::FOREVER` keeps that provable.
     pub at_least: Bound,
-    /// Held at most this long.
+    /// Held at most this long. Of `Bound::after_replaced` only zero is allowed here, and only with
+    /// `by: PurgeBy::Writer` (`Invalid` otherwise, at commit).
     pub at_most: Bound,
 }
 

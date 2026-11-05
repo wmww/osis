@@ -1,6 +1,6 @@
 //! The background runtime (notes/api.md Design rules: async only where another node is waited
 //! on; sync runs on the handle's tokio runtime): two nodes on `Runtime::Tokio` reach a
-//! third that peers (one on the app's runtime, one on `Runtime::Own`) over in-process sessions
+//! third that serves (one on the app's runtime, one on `Runtime::Own`) over in-process sessions
 //! (tier 1, a guard timeout against a hang) and over localhost QUIC (tier 2, ignored).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -24,7 +24,7 @@ fn cfg(seed: u64, hosts: Vec<Address>, t: Option<osis::internals::InProcess>) ->
     c
 }
 
-/// A node serving any label (`set_hosting`, open admission) on `t` at `url`, and its peer
+/// A node serving any label (`set_serving`, open admission) on `t` at `url`, and its peer
 /// address once it listens.
 async fn host_node(t: Option<osis::internals::InProcess>, url: &str) -> (Option<Osis>, Address) {
     let mut c = cfg(90, vec![], t);
@@ -55,7 +55,7 @@ async fn round_trip(host_ep: Option<osis::internals::InProcess>, url: &str, a: O
     let t = w.create_in(da.me(), &[da.me()]).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str("over the wire".into())).unwrap();
     w.commit().unwrap();
-    tokio::time::timeout(GUARD, da.wait_synced(SyncScope::AllWithPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, da.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
 
     // the fresh node syncs on a runtime of osis's own (`Runtime::Own`)
     let mut own = cfg(2, vec![], b);
@@ -93,7 +93,7 @@ async fn runtime_in_process_spec_sync_10() {
     round_trip(Some(net.endpoint("s")), "mem://s", Some(net.endpoint("a")), Some(net.endpoint("b")), false).await;
 }
 
-// spec/sync.md §5 (co-reader peer), §10, notes/api.md (Config.peers): two nodes under the
+// spec/sync.md §5 (co-reader peer), §10, notes/api.md (Config::direct_sync): two nodes under the
 // handle's driver keep syncing peer to peer once their peer is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_peers_in_process_spec_sync_5() {
@@ -119,7 +119,7 @@ async fn redeem_over(host_ep: Option<osis::internals::InProcess>, url: &str, a: 
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(Duration::from_secs(90), bob.redeem(&link)).await.unwrap().unwrap(), g);
     // spec/permissions.md §4, notes/sync.md: `reach.0` under the home group, not under a group
     // shared with a non-contact, until the policy says so
@@ -255,7 +255,7 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     w.commit().unwrap();
     // `reach.0` went under g (only Alice reads it); the link's K joining g makes g stop
     // qualifying, so the key rotates, and the link carries the new one, listened on
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
     let now = alice.sync_engine(|s| s.own_reach()).unwrap();
     assert_ne!(now.dialable, me.reach.dialable, "rotated: g no longer qualifies");
@@ -269,7 +269,7 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     })
     .await
     .unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
     let want = Some(Value::Str("first contact".into()));
     tokio::time::timeout(GUARD, async {
@@ -474,7 +474,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_8() {
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, single_use: true, ..Default::default() }).unwrap();
     let key = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
     assert_eq!(osis_label::ShareLink::from_text(&link.to_string()).unwrap().peers[0].dialable, key);
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
     tokio::time::timeout(GUARD, async {
         while !alice.links_of(g).unwrap().is_empty() {
@@ -545,7 +545,7 @@ fn close_while_driver_runs_no_timer_panic() {
                     c.runtime = Runtime::Own;
                     c.app.internals.transport = Some(net.endpoint(&format!("c{t}-{i}")));
                     let (db, _) = osis::internals::create(c).unwrap();
-                    let _ = common::block_on(db.wait_synced(osis::SyncScope::AllWithPeers));
+                    let _ = common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers));
                     assert_eq!(db.close().unwrap(), osis::Close::Closed);
                 }
             });
@@ -631,7 +631,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
                     c.runtime = Runtime::Tokio(rt.handle().clone());
                     c.app.internals.transport = Some(net.endpoint(&format!("k{t}-{i}")));
                     let (db, _) = osis::internals::create(c).unwrap();
-                    let _ = common::block_on(db.wait_synced(osis::SyncScope::AllWithPeers));
+                    let _ = common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers));
                     assert_eq!(db.close().unwrap(), osis::Close::Closed);
                     drop(rt);
                 }
@@ -643,7 +643,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
 }
 
 // spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Serving (a dedicated peer node): a
-// node paired to Alice's account peers under `own` on the handle's driver (the account set
+// node paired to Alice's account serves under `own` on the handle's driver (the account set
 // before the driver starts), the only peer either node knows: her home, a group she makes
 // afterwards and a link to it all reach it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -669,15 +669,15 @@ async fn own_serving_node_in_process_spec_data_model_9() {
     .unwrap();
     dev.add_peer(&ha).unwrap();
     alice.add_peer(&ha).unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
 
     let mut w = alice.write();
     let g = w.create_in(alice.me(), &[alice.me()]).unwrap();
     w.commit().unwrap();
     alice.sync(g, &[]).unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
-    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithPeers)).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
 }
 
 // notes/api.md Handle and sync: a sync driver that panics (inside an engine call, under the lock)
@@ -691,7 +691,7 @@ fn driver_panic_fails_waiters() {
     c.app.internals.seed = Some(3);
     c.runtime = Runtime::Own;
     c.app.internals.transport = Some(net.endpoint("dp"));
-    // a peer nobody answers at: `wait_synced(All)` waits
+    // a peer nobody answers at: `wait_synced(AllWithSavedPeers)` waits
     c.hosts = vec![Address::new(&"mem://nobody".parse().unwrap(), [7; 32])];
     let (db, _) = osis::internals::create(c).unwrap();
     let (dtx, drx) = std::sync::mpsc::channel();
@@ -701,7 +701,7 @@ fn driver_panic_fails_waiters() {
     let (tx, rx) = std::sync::mpsc::channel();
     let d2 = db.clone();
     let waiter = std::thread::spawn(move || {
-        let _ = tx.send(common::block_on(d2.wait_synced(SyncScope::AllWithPeers)));
+        let _ = tx.send(common::block_on(d2.wait_synced(SyncScope::AllWithSavedPeers)));
     });
     let t0 = std::time::Instant::now();
     while db.waiting() == 0 {
@@ -718,7 +718,7 @@ fn driver_panic_fails_waiters() {
     };
     died(r);
     // a later wait fails at once too
-    died(common::block_on(db.wait_synced(SyncScope::AllWithPeers)));
+    died(common::block_on(db.wait_synced(SyncScope::AllWithSavedPeers)));
     let d = loop {
         let d = drx.recv_timeout(GUARD).expect("no SyncStopped diagnostic");
         if let osis::Diagnostic::SyncStopped { detail } = d {
@@ -750,10 +750,10 @@ async fn direct_link_with_peers_off_fails_at_once() {
 #[tokio::test]
 async fn database_going_answers_a_wait_with_no_handle() {
     let net = osis_transport::Net::new(2);
-    // a peer nobody answers at: `wait_synced(All)` waits
+    // a peer nobody answers at: `wait_synced(AllWithSavedPeers)` waits
     let nobody = Address::new(&"mem://nobody".parse().unwrap(), [7; 32]);
     let db = osis::internals::create(cfg(1, vec![nobody], Some(net.endpoint("a")))).unwrap().0;
-    let f = db.wait_synced_no_handle(SyncScope::AllWithPeers);
+    let f = db.wait_synced_no_handle(SyncScope::AllWithSavedPeers);
     assert_eq!(db.waiting(), 1);
     drop(db);
     let r = tokio::time::timeout(GUARD, f).await.expect("nothing answers it");

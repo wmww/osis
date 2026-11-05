@@ -15,8 +15,7 @@ pub enum Diagnostic {
     /// `thing` reaches no other node: no synced group holds it, or `group`, which was to, has holders
     /// who may not read it. Add it to a synced group, `sync` it, or grant the group a role on it.
     NotSynced { thing: Tid, group: Option<Tid>, detail: String },
-    /// An ephemeral `item` saved durably stays in `group` only ephemerally: this node may not write
-    /// the group.
+    /// A draft kept for good stays in `group` only in memory: this node may not write the group.
     MembershipNotSaved { item: Tid, group: Tid, detail: String },
     /// A background write could not commit (a text session, a kept-alive value), and is still waiting.
     Uncommitted { thing: Tid, detail: String },

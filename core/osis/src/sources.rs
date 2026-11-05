@@ -27,7 +27,7 @@
 //! holders would miss them with no sign. Reads stay on the route: this engine's copy, fed by the
 //! other group alone, never answers. A split cannot always be refused where it starts (a holder of
 //! the other group may place the thing there at any time), so it is a state with one rule, not a
-//! refused step: the next write says so, `Status::split` lists it, and moving either group ends it.
+//! refused step: the next write says so, `Status::two_sources` lists it, and moving either group ends it.
 //!
 //! The port worker (`port::serve`) serves every client of its node one call at a time, so it never
 //! waits on another node: a socket client's call that routes there fails `Unsupported`.
@@ -57,12 +57,12 @@ pub struct NodeLogin {
     pub secret: crate::ClientSecret,
 }
 
-/// A node this process is a client of, or that a group's source names (`Status::client_connections`).
+/// A node this process is a client of, or that a group's source names, and whether the connection
+/// is up now (`Status::node_connections`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClientConnection {
-    /// The node.
+#[allow(missing_docs)]
+pub struct NodeConnection {
     pub address: Address,
-    /// Whether the connection is up now.
     pub connected: bool,
 }
 
@@ -423,7 +423,7 @@ impl Osis {
         }
         local.two_sources = split;
         for r in remotes {
-            local.client_connections.push(ClientConnection { address: r.addr.clone(), connected: r.connected() });
+            local.node_connections.push(NodeConnection { address: r.addr.clone(), connected: r.connected() });
             if !self.may_wait() {
                 continue;
             }

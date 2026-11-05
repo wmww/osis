@@ -21,7 +21,7 @@ pub enum Value {
     Str(String),
     Bytes(Vec<u8>),
     Tid(Tid),
-    /// Case ID (a CBOR uint, so up to u64; schema case IDs are small) and optional payload.
+    /// Case ID and optional payload.
     Enum(u64, Option<Box<Value>>),
     /// Also the struct representation (int keys).
     Map(ValueMap),
@@ -40,11 +40,13 @@ pub enum Value {
 pub struct Float(u64);
 
 impl Float {
+    #[doc(hidden)]
     pub const CANONICAL_NAN: u64 = 0x7ff8_0000_0000_0000;
-    /// Normalizes NaN (spec/data-model.md §5).
+    /// Normalizes NaN.
     pub fn new(f: f64) -> Float {
         if f.is_nan() { Float(Self::CANONICAL_NAN) } else { Float(f.to_bits()) }
     }
+    #[doc(hidden)]
     /// From received bits: `None` for a non-canonical NaN.
     pub fn from_bits(bits: u64) -> Option<Float> {
         if f64::from_bits(bits).is_nan() && bits != Self::CANONICAL_NAN { None } else { Some(Float(bits)) }
@@ -105,6 +107,7 @@ impl Value {
         Value::Unknown(Box::new(u))
     }
 
+    #[doc(hidden)]
     /// Whether the canonical encoding exceeds `CHUNK_THRESHOLD` (spec/data-model.md §6).
     pub fn above_chunk_threshold(&self) -> bool {
         use crate::format::CHUNK_THRESHOLD;
@@ -126,6 +129,7 @@ impl Value {
     pub fn uint(n: u64) -> Value {
         Value::Int(i64::try_from(n).unwrap_or(i64::MAX))
     }
+    #[doc(hidden)]
     /// A uint; `None` above `i64::MAX`.
     pub fn try_uint(n: u64) -> Option<Value> {
         i64::try_from(n).ok().map(Value::Int)
@@ -133,6 +137,7 @@ impl Value {
     pub fn bytes(b: &[u8]) -> Value {
         Value::Bytes(b.to_vec())
     }
+    #[doc(hidden)]
     /// `Opt(X) := [] | [X]`.
     pub fn opt(v: Option<Value>) -> Value {
         Value::List(v.into_iter().collect())
@@ -159,6 +164,7 @@ impl Value {
     pub fn as_array<const N: usize>(&self) -> Option<[u8; N]> {
         self.as_bytes()?.try_into().ok()
     }
+    #[doc(hidden)]
     /// `Opt(X)`: a list of zero or one item.
     pub fn as_opt(&self) -> Option<Option<&Value>> {
         match self.as_list()? {
@@ -167,6 +173,7 @@ impl Value {
             _ => None,
         }
     }
+    #[doc(hidden)]
     /// Nesting depth as the decoder counts it: arrays, maps and tags on the deepest path.
     pub fn depth(&self) -> usize {
         fn max(it: impl Iterator<Item = usize>) -> usize {
@@ -184,6 +191,7 @@ impl Value {
         }
     }
 
+    #[doc(hidden)]
     /// `self.depth() > max`, recursing at most `max` levels (safe on untrusted nesting).
     pub fn deeper_than(&self, max: usize) -> bool {
         let below = |v: &Value, by: usize| max.checked_sub(by).is_none_or(|m| v.deeper_than(m));

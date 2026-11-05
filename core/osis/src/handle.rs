@@ -30,7 +30,7 @@ const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 pub struct MemStore {
     backend: MemoryBackend,
     root: MemoryRoot,
-    /// The store of the node's host, its own key root beside it, while it hosts (`set_hosting`).
+    /// The store of the node's host, its own key root beside it, while it serves (`set_serving`).
     pub(crate) host: MemoryBackend,
     /// Opens under a test seed, this store's and its backups' (`open_salt`).
     opens: Arc<std::sync::atomic::AtomicU64>,
@@ -197,7 +197,7 @@ pub(crate) struct Inner {
     pub transport: Option<osis_transport::InProcess>,
     /// The store's directory: what names its client socket (`Osis::listen_socket`).
     pub store_dir: Option<std::path::PathBuf>,
-    /// Whether this node can dial another by its key alone (`Config.peers`, over a transport that
+    /// Whether this node can dial another by its key alone (`Config::direct_sync`, over a transport that
     /// can: QUIC takes feature `iroh`).
     pub dials_peers: bool,
     /// How long a connection's attempt, or a write across a drop, lasts (`CONNECTION_WAIT`).
@@ -414,8 +414,9 @@ pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[Address]) -> Re
 impl Osis {
     /// Creates a node and a new account with this node its admin. The account is also its home group,
     /// synced with `peers`. Returns the recovery card, the only copy of the key that restores the
-    /// account on a new node: show or store it, osis keeps none of it. With no peers there is nothing
-    /// to restore from: no card (the key is discarded). Peers need `Config::runtime` (`Invalid`).
+    /// account on a new node: show or store it, osis keeps none of it. A restore finds the account
+    /// through saved peers alone, so with none there is no card (the key is discarded). Peers need
+    /// `Config::runtime` (`Invalid`).
     pub fn create(store: Store, peers: &[Address], cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
         cfg.check(peers)?;
         let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, peers)?;
@@ -540,7 +541,7 @@ impl Osis {
         Ok(Close::Closed)
     }
 
-    /// This node's node tid (a thin client: its node's).
+    /// This node's own identity, an actor apart from its account (a thin client: its node's).
     pub fn node(&self) -> Tid {
         self.inner.client.get().map_or(self.inner.node, |t| t.who.node)
     }

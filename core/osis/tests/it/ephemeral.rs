@@ -1011,7 +1011,7 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
     let (db, _c) = setup(1);
     let state = db.aspect_key("win:state.0~").unwrap();
     let before = db.engine(|e| e.core.acting());
-    assert!(!before.contains(&db.me()), "nothing acted for the person yet: {before:?}");
+    assert!(!before.contains(&db.me()), "nothing acted for the account yet: {before:?}");
     let mut w = db.write();
     let win = w.create().unwrap();
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![]))].into())).unwrap();

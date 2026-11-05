@@ -15,24 +15,26 @@ pub enum Error {
     UnknownThing { tid: Tid },
     /// An actor whose keys are not known here (grants need them: a contact card, a shared group).
     UnknownActor { tid: Tid },
-    /// The acting node lacks `needs` on `tid` (checked locally before signing).
+    /// The acting actor lacks `needs` on `tid` (checked locally before signing).
     Permission { tid: Tid, needs: Role },
     /// A typed write's value failed validation at `path` (unknown case, mismatch, missing
     /// field), or a typed path read named a path the key's schema does not have. Stored data
-    /// never fails a read on typed grounds: it reads as absent (`DiagnosticKind::Mismatch`).
+    /// never fails a read on typed grounds: it reads as absent (`Diagnostic::Mismatch`).
     Type { path: Path, reason: String },
     /// The value is above `AppConfig::read_limit`; read it by path or stream.
     TooLarge { limit: usize },
     /// The newest commit in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
     NotUndoable { commit: CommitId, reason: NotUndoableReason },
-    /// Catching up before lowering a role (`SyncFirst`) could not reach these groups.
+    /// These groups cannot catch up, and waiting would not help: stranded, or with no saved peer to
+    /// confirm anything (`wait_synced`, `SyncFirst::Required`, `restore`, `group_source`).
     Unsynced { groups: Vec<Tid> },
-    /// A malformed argument: value, link, card, path, op, retention.
+    /// What was asked cannot be done as asked: a malformed argument (value, link, card, path, op,
+    /// retention), or writes that cannot share a commit. The text says which.
     Invalid(String),
     /// Local storage failed (or a local record is corrupt).
     Storage(String),
-    /// Another node could not be reached in time.
+    /// Another node could not be reached, or this one has no network (`Runtime::None`).
     Network(String),
     /// A write through another node may or may not have applied (its reply was lost and the node
     /// cannot tell). Repeating it is a new write: read first, repeat only if it is not there.

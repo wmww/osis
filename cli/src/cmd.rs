@@ -137,7 +137,7 @@ fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Re
     }
 }
 
-/// Names the groups `wait_synced(AllWithPeers)` left out: what was written there reached nobody.
+/// Names the groups `wait_synced(AllWithSavedPeers)` left out: what was written there reached nobody.
 fn say_no_peers(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     if ctx.g.quiet {
         return Ok(());
@@ -277,7 +277,7 @@ pub(crate) fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Resu
     let db = ctx.db.clone();
     db.nudge_sync()?;
     let end = deadline(ctx.timeout()?);
-    let mut scopes = vec![SyncScope::AllWithPeers];
+    let mut scopes = vec![SyncScope::AllWithSavedPeers];
     if let Some(x) = shared {
         scopes.insert(0, SyncScope::Thing(ctx.tid(&x)?));
     }
@@ -477,8 +477,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let a = db.aspects(ctx.tid(&t)?)?;
             ctx.emit(&a.iter().map(|a| a.as_str().to_string()).collect::<Vec<_>>(), J::Arr(a.iter().map(|a| J::str(a.as_str())).collect()))
         }
-        Cmd::Ls { .. } => Err(not_built("query (issues/api-deferred.md)")),
-        Cmd::Backlinks { .. } => Err(not_built("backlinks (issues/api-deferred.md)")),
+        Cmd::Ls { .. } => Err(not_built("query")),
+        Cmd::Backlinks { .. } => Err(not_built("backlinks")),
         Cmd::Watch { t, ak, count } => watch(ctx, &t, ak.as_deref(), count),
         Cmd::Commits { scope: s, actor, kind, reverts, reverted_by, in_effect, since, until, after, max, next } => {
             let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
@@ -689,11 +689,11 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Sync { group } | Cmd::Wait { group } => {
             let s = match group {
                 Some(g) => SyncScope::Thing(ctx.tid(&g)?),
-                None => SyncScope::AllWithPeers,
+                None => SyncScope::AllWithSavedPeers,
             };
             let t = ctx.timeout()?;
             wait_sync(ctx, s, t)?;
-            if matches!(s, SyncScope::AllWithPeers) {
+            if matches!(s, SyncScope::AllWithSavedPeers) {
                 say_no_peers(ctx)?;
             }
             Ok(())
@@ -713,7 +713,31 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };
             wait(ctx, db.group_source(g, to))
         }
-        Cmd::Group(GroupCmd::Policy { .. }) => Err(not_built("set_sync_options (issues/api-deferred.md)")),
+        Cmd::Group(GroupCmd::Policy { g, share_address, mode }) => {
+            let g = ctx.tid(&g)?;
+            let mut o = db.sync_options(g)?;
+            let change = share_address.is_some() || mode.is_some();
+            if let Some(s) = share_address {
+                o.share_address = match s.as_str() {
+                    "auto" => osis::ShareAddress::Auto,
+                    "always" => osis::ShareAddress::Always,
+                    "never" => osis::ShareAddress::Never,
+                    _ => return Err(usage(format!("bad --share-address {s:?}: auto, always or never"))),
+                };
+            }
+            if let Some(m) = mode {
+                o.mode = match m.as_str() {
+                    "full" => osis::SyncMode::Full,
+                    "log-only" => osis::SyncMode::LogOnly,
+                    _ => return Err(usage(format!("bad --mode {m:?}: full or log-only"))),
+                };
+            }
+            if change {
+                db.set_sync_options(g, o)?;
+            }
+            let (s, m) = (format!("{:?}", o.share_address).to_lowercase(), if o.mode == osis::SyncMode::Full { "full" } else { "log-only" });
+            ctx.emit(&[format!("share_address {s}"), format!("mode {m}")], J::obj([("share_address", J::str(s.clone())), ("mode", J::str(m.to_string()))]))
+        }
         Cmd::Bundle(BundleCmd::Export { groups }) => {
             let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;
             db.export_bundle(&gs, &mut *ctx.out)?;
@@ -1156,12 +1180,12 @@ fn status_lines(s: &osis::Status, raw: bool) -> Vec<String> {
         format!("{} {:?} {}{cut_off}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)))
     });
     // writes on these are refused until a group moves (Osis::group_source)
-    groups.chain(s.two_sources.iter().map(|t| format!("{} two sources: writes refused", t.to_uri()))).collect()
+    std::iter::once(format!("connected {}", s.connected)).chain(groups).chain(s.two_sources.iter().map(|t| format!("{} two sources: writes refused", t.to_uri()))).collect()
 }
 
 fn status_json(s: &osis::Status) -> J {
     let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("not_carried_to", J::Arr(x.not_carried_to.iter().map(|t| J::tid(*t)).collect()))]));
-    J::obj([("groups", J::Arr(groups.collect())), ("two_sources", J::Arr(s.two_sources.iter().map(|t| J::tid(*t)).collect()))])
+    J::obj([("groups", J::Arr(groups.collect())), ("connected", J::int(s.connected as u64)), ("two_sources", J::Arr(s.two_sources.iter().map(|t| J::tid(*t)).collect()))])
 }
 
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
