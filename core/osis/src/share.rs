@@ -805,13 +805,19 @@ impl Osis {
             return self.rtask(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
         }
         self.not_routed("set_role", target)?;
+        // `Try` gives the call this long, however many ways in it takes
+        let start = self.inner.clock.now_wall_ms().0;
+        let left = |o: SetRoleOpts| match o.sync {
+            SyncFirst::Try(d) => SetRoleOpts { sync: SyncFirst::Try(d.saturating_sub(Duration::from_millis(self.inner.clock.now_wall_ms().0.saturating_sub(start)))), ..o },
+            _ => o,
+        };
         // each round removes one way in; the bound only guards against grants that never settle
         for _ in 0..16 {
             let Some(way) = self.holders(target)?.into_iter().find(|h| h.actor == holder) else {
                 let Some(r) = role else { return Ok(()) };
                 // a role lost above `r`: its end made explicit first, with what that takes
                 if self.engine(|e| below_lost(e, &target, &holder, r)) {
-                    self.lower(target, holder, None, o, false).await?;
+                    self.lower(target, holder, None, left(o), false).await?;
                 }
                 return self.grant(target, holder, r, GrantOpts::default());
             };
@@ -821,14 +827,14 @@ impl Osis {
                     match role {
                         Some(r) if r == cur.role => return Ok(()),
                         Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, invite: cur.invite }),
-                        _ => self.lower(target, holder, role, o, false).await?,
+                        _ => self.lower(target, holder, role, left(o), false).await?,
                     }
                 }
                 [k] if self.held_links()?.iter().any(|h| h.k == *k && h.target == target) => {
                     if role.is_some() {
                         return Err(Error::Invalid(format!("{holder} joined {target} by a link: it can only be removed")));
                     }
-                    self.remove_joiner(*k, holder, o).await?;
+                    self.remove_joiner(*k, holder, left(o)).await?;
                 }
                 [k, ..] => return Err(Error::Invalid(format!("{holder} reaches {target} through {k}: set its role there"))),
             }
@@ -1086,6 +1092,9 @@ impl Osis {
     /// key and relays like a co-reader, for K and the target only, `follow_link_peer`); the key
     /// goes with the guard, and with it the follow unless the redemption went through.
     fn follow_link(&self, link: &osis_label::ShareLink) -> Result<KeyGuard> {
+        if link.hosts.is_empty() && !self.inner.dials_peers {
+            return Err(Error::Network("this link names no host and this node does not dial others directly".into()));
+        }
         let l = self.locked(|x| -> Result<Tid> {
             let l = x.engine().hold_key_actor(link.seed.clone())?;
             let peers = link.peers.iter().map(|p| osis_label::Address { url: osis_transport::peer_url(&p.relays), key: p.dialable }).collect();

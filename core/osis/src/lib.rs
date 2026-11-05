@@ -156,6 +156,7 @@
 //! half done; where a part of it stands, its doc says so. When it is known that it can never finish
 //! it fails (a group with no way to sync: `Unsynced`; sync stopped: `Network`; a closed database:
 //! `Closed`), so a wait that lasts has something that may yet answer it, such as a host out of reach.
+//! Tokio's timeout, as here, works only inside a tokio runtime with time enabled, and panics elsewhere.
 //! ```no_run
 //! # use osis::{Osis, SyncScope};
 //! # use std::time::Duration;

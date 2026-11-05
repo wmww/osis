@@ -206,7 +206,8 @@ impl Drop for Unsub {
 pub(crate) struct Remote {
     /// What routes name.
     pub addr: crate::HostAddr,
-    tx: mpsc::UnboundedSender<Cmd>,
+    /// Its command channel; none once `end` closed it, which ends the connection's thread.
+    tx: Mutex<Option<mpsc::UnboundedSender<Cmd>>>,
     link: Arc<LinkState>,
     /// The materialization bound of reads.
     limit: usize,
@@ -235,7 +236,18 @@ impl Remote {
         let (tx, _) = mpsc::unbounded_channel();
         let link = Arc::new(LinkState::default());
         lock(&link.m).ended = Some(e);
-        Arc::new(Remote { addr: addr.clone(), tx, link, limit: 0, keyed: false, secret: None })
+        Arc::new(Remote { addr: addr.clone(), tx: Mutex::new(Some(tx)), link, limit: 0, keyed: false, secret: None })
+    }
+
+    /// Hands the connection's thread a command; fails once it ended.
+    fn send(&self, c: Cmd) -> Result<()> {
+        lock(&self.tx).as_ref().ok_or(()).and_then(|t| t.send(c).map_err(|_| ())).map_err(|()| net("connection to the node closed"))
+    }
+
+    /// Ends the connection now, whoever still holds this: what waits on it hears so.
+    pub fn end(&self) {
+        self.link.end(net(format!("disconnected from node {}", self.addr)));
+        lock(&self.tx).take();
     }
 
     /// Whether the connection is up now.
@@ -278,6 +290,15 @@ impl Remote {
         self.call_n(m, args, None)
     }
 
+    /// `call` as a future, on a thread of its own: its caller may give up while the node says
+    /// nothing. A dropped future leaves the thread to end with the call.
+    pub fn call_pending(self: &Arc<Self>, m: u64, args: Vec<Value>) -> crate::net::Pending<Result<Value>> {
+        let (pending, slot) = crate::net::Pending::new();
+        let r = self.clone();
+        std::thread::spawn(move || slot.put(r.call(m, args)));
+        pending
+    }
+
     /// `call` of a write under a fresh nonce (the next of this session, taken when sent); a
     /// `TooLarge` retry goes under the same nonce.
     pub fn call_once(&self, m: u64, args: Vec<Value>) -> Result<Value> {
@@ -309,7 +330,7 @@ impl Remote {
         }
         let once = nonce.is_some();
         let (tx, rx) = std::sync::mpsc::channel();
-        self.tx.send(Cmd::Call { token: next_token(), max_reply, method: m, args, nonce, reply: tx }).map_err(|_| net("connection to the node closed"))?;
+        self.send(Cmd::Call { token: next_token(), max_reply, method: m, args, nonce, reply: tx })?;
         match crate::net::blocking(|| rx.recv()) {
             Ok(Ok(Outcome::Ok { value })) => Ok(value),
             Ok(Ok(Outcome::Err { code, detail })) => Err(c::error_of(code, detail)),
@@ -323,12 +344,12 @@ impl Remote {
     }
 
     pub fn unsub(&self, token: u64) {
-        let _ = self.tx.send(Cmd::Unsub { token });
+        let _ = self.send(Cmd::Unsub { token });
     }
 
     /// Whether a schema's source is registered on each reconnect from now on.
     pub fn remember_schema(&self, file: &str, src: &str) {
-        let _ = self.tx.send(Cmd::Schema { file: file.into(), src: src.into() });
+        let _ = self.send(Cmd::Schema { file: file.into(), src: src.into() });
     }
 }
 
@@ -823,7 +844,7 @@ fn spawn_remote(via: Via, addr: Address, shown: crate::HostAddr, secret: Option<
             rt.block_on(run(via, addr, io, rx));
         })
         .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(Arc::new(Remote { addr: shown, tx, link, limit, keyed, secret: kept }))
+    Ok(Arc::new(Remote { addr: shown, tx: Mutex::new(Some(tx)), link, limit, keyed, secret: kept }))
 }
 
 /// A connection to the node at `login`'s address as the client its secret stands for.
@@ -919,7 +940,8 @@ impl Osis {
     /// secret, and nothing stays. `Invalid` for a unix address, and for a login at an address connected
     /// now by another secret (`disconnect_node` first); `Unsupported` on a thin client. Connected
     /// already by this one: `Ok`. Dropped during that first attempt, the connection is in place
-    /// as if this had returned: `disconnect_node` ends it.
+    /// as if this had returned: `disconnect_node` ends it. A refusal after that attempt, as one
+    /// after a later reconnect, shows in what goes there (`Refused`), and it stops trying.
     pub async fn connect_node(&self, login: &crate::NodeLogin) -> Result<()> {
         self.local_only("connect_node")?;
         // one that is down by an old secret (rotated, say) may never come up: the new login replaces it
@@ -961,7 +983,7 @@ impl Osis {
     #[allow(clippy::panic)]
     pub(crate) fn panic_client_thread(&self) {
         let sink: Sink = Box::new(|_| panic!("test: the client port's connection thread panics"));
-        let _ = self.primary().tx.send(Cmd::Sub { token: next_token(), filter: Value::List(Vec::new()), again: false, sink });
+        let _ = self.primary().send(Cmd::Sub { token: next_token(), filter: Value::List(Vec::new()), again: false, sink });
     }
 
     /// Whether this handle is a client by a secret: no store, an actor of its own at the node.
@@ -1007,7 +1029,7 @@ impl Osis {
         let sub = self.port_register(r, token, on, cb);
         let (itx, irx) = std::sync::mpsc::channel::<Value>();
         let sink = self.port_sink(token, Some(itx));
-        r.tx.send(Cmd::Sub { token, filter, again, sink }).map_err(|_| net("connection to the node closed"))?;
+        r.send(Cmd::Sub { token, filter, again, sink })?;
         let v = crate::net::blocking(|| irx.recv()).map_err(|_| net("connection to the node closed"))?;
         if let Some(e) = sub_error(&v) {
             return Err(e);
@@ -1056,7 +1078,7 @@ impl Osis {
         let token = next_token();
         let sub = self.port_register(r, token, on, cb);
         // the handle of a stand-in has no connection to tell it
-        if r.tx.send(Cmd::Sub { token, filter, again: true, sink: self.port_sink(token, None) }).is_err() {
+        if r.send(Cmd::Sub { token, filter, again: true, sink: self.port_sink(token, None) }).is_err() {
             self.port_sink(token, None)(PortEvent::Closed);
         }
         Ok(sub)
@@ -1336,7 +1358,7 @@ impl Osis {
         });
         let token = next_token();
         let _end = Unsub(r.clone(), token);
-        r.tx.send(Cmd::Sub { token, filter: Value::List(vec![u(super::filter::TASK), u(m), Value::List(args)]), again: false, sink }).map_err(|_| net("connection to the node closed"))?;
+        r.send(Cmd::Sub { token, filter: Value::List(vec![u(super::filter::TASK), u(m), Value::List(args)]), again: false, sink })?;
         pending.await
     }
 
@@ -1376,7 +1398,7 @@ impl Osis {
         });
         let token = next_token();
         let _end = Unsub(r.clone(), token);
-        r.tx.send(Cmd::Sub { token, filter: Value::List(vec![u(super::filter::STATUS)]), again: false, sink }).map_err(|_| net("connection to the node closed"))?;
+        r.send(Cmd::Sub { token, filter: Value::List(vec![u(super::filter::STATUS)]), again: false, sink })?;
         pending.await
     }
 

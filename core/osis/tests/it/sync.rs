@@ -2160,3 +2160,41 @@ fn text_on_remote_is_a_subscription() {
     assert!(rx.try_recv().is_err(), "no call after the drop");
     assert!(sa.text().starts_with(">>"), "the session still merges");
 }
+
+// notes/api.md Handle (restore), issues/restore-head-moved.md: a head that moves in the moments a fresh device reads the home group leaves it no key to reopen with, for good: `Unsynced` at once, not a wait nothing answers, and a fresh attempt restores. Each round moves the head at another point.
+#[test]
+fn restore_fails_when_the_head_moves_under_it_and_a_fresh_attempt_works() {
+    use std::future::Future as _;
+    let mut failed = 0;
+    for steps in 18..27 {
+        let mut w = World::new();
+        let host = w.add_host();
+        let (da, card) = w.person(1, &[host]);
+        for i in 0..5 {
+            item(&da, da.me(), da.me(), &format!("{i}"));
+        }
+        let join = osis::internals::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
+        let (node, reply) = da.pair_accept(join.request()).unwrap();
+        let _other = join.finish(&reply).unwrap();
+        w.run();
+        let mut restore = std::pin::pin!(osis::internals::restore(w.cfg(4, &[]), &card));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(restore.as_mut().poll(&mut cx).is_pending());
+        for _ in 0..steps {
+            w.step(None);
+            assert!(restore.as_mut().poll(&mut cx).is_pending(), "done before the head moved: start the rounds earlier");
+        }
+        w.until(da.remove_device(node, SetRoleOpts { sync: SyncFirst::Skip, keep: None }), 1000, 1).unwrap();
+        item(&da, da.me(), da.me(), "after the removal");
+        match w.until(restore, 1000, 200) {
+            Ok(dc) => assert_eq!(dc.me(), da.me()),
+            Err(osis::Error::Unsynced { .. }) => {
+                failed += 1;
+                let dc = w.until(osis::internals::restore(w.cfg(5, &[]), &card), 1000, 30).unwrap();
+                assert_eq!(dc.me(), da.me());
+            }
+            Err(e) => panic!("after {steps} steps: {e:?}"),
+        }
+    }
+    assert!(failed > 0, "no round hit the window: widen the rounds");
+}

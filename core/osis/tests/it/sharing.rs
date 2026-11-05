@@ -719,8 +719,8 @@ fn one_host_refusing_is_no_end_spec_permissions_8() {
     assert!(matches!(w.until(redeem, 1000, 10), Err(Error::Invalid(_))));
 }
 
-// spec/permissions.md §5.3, notes/api.md Demotion and the pre-sync: offline, `Required` fails `Unsynced` after
-// `PRESYNC_WAIT`; `Try` proceeds after its timeout with an `Unsynced` diagnostic.
+// spec/permissions.md §5.3, notes/api.md Demotion and the pre-sync: offline, `Required` waits with nothing
+// stamped; `Try` proceeds after its time with an `Unsynced` diagnostic.
 #[test]
 fn demotion_presync_policies_spec_permissions_5_3() {
     let mut w = World::new();
@@ -1495,4 +1495,19 @@ fn waits_have_no_deadline_and_try_goes_ahead() {
     w.until(alice.set_role(g, bob.me(), Some(Role::Read), t), 10, 2).unwrap();
     assert_eq!(alice.grants(g).unwrap()[&bob.me()].role, Role::Read);
 
+}
+
+// notes/api.md set_role: `SyncFirst::Try` gives the whole call its time: a holder with two ways in, offline, does not cost it twice
+#[test]
+fn try_is_for_the_call_not_each_way_in() {
+    let mut w = World::new();
+    let (alice, bob, g) = alice_bob(&mut w, Role::Write);
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.until(bob.redeem(&link), 1000, 30).unwrap();
+    w.run();
+    w.set_online(&alice, false);
+    let t = SetRoleOpts { sync: SyncFirst::Try(Duration::from_secs(5)), keep: None };
+    w.until(alice.set_role(g, bob.me(), None, t), 1000, 8).unwrap();
+    assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }
