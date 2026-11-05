@@ -1511,3 +1511,56 @@ fn try_is_for_the_call_not_each_way_in() {
     w.until(alice.set_role(g, bob.me(), None, t), 1000, 8).unwrap();
     assert!(!alice.holders(g).unwrap().iter().any(|h| h.actor == bob.me()));
 }
+
+// spec/permissions.md §3 (a self-removal carries no rotation), spec/crypto.md §4 (Seal: a holder
+// actor at a blocked keyset is left out): Alice's team K reads her doc G; Dave reads K and writes
+// G. With Alice offline, Bob leaves K and Dave writes to G, leaving K out (K's epochs miss Bob's
+// departure and Dave may not rotate K): Carol, of K, does not read it. Alice comes back and
+// writes nothing, yet her node rotates K in its next pass (every pass rotates what is due first)
+// and re-seals K to G: Carol reads Dave's write; Bob never does.
+#[test]
+fn team_reads_again_after_a_member_left_spec_permissions_3() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let (dave, _) = w.person(4, &[host]);
+    w.run();
+    let mut ids = Vec::new();
+    for p in [&bob, &carol, &dave] {
+        let card = p.contact_card().unwrap();
+        w.run();
+        ids.push(w.until(alice.import_contact(&card), 1000, 10).unwrap());
+    }
+    let k = group(&alice);
+    let g = group(&alice);
+    for id in &ids {
+        alice.grant(k, *id, Role::Read, Default::default()).unwrap();
+    }
+    alice.grant(g, ids[2], Role::Write, Default::default()).unwrap();
+    alice.grant(g, k, Role::Read, Default::default()).unwrap();
+    w.run();
+    let before = item(&alice, g, g, "before");
+    w.run();
+    assert_eq!(x(&carol, before), Some(s("before")));
+    let k_was = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
+    let g_was = dave.engine(|e| e.epochs(&g).unwrap().read.newest().unwrap());
+    w.set_online(&alice, false);
+    bob.leave(bob.me(), k).unwrap();
+    w.run();
+    let v = item(&dave, g, g, "after bob left");
+    w.advance(70_000);
+    w.run();
+    assert_ne!(dave.engine(|e| e.epochs(&g).unwrap().read.newest().unwrap()), g_was, "Dave rotated G");
+    assert_eq!(x(&carol, v), None, "K left out of G meanwhile");
+    assert_eq!(x(&bob, v), None);
+    w.set_online(&alice, true);
+    for _ in 0..3 {
+        w.advance(70_000);
+        w.run();
+    }
+    assert_ne!(alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap()), k_was, "K rotated with nothing written under it");
+    assert_eq!(x(&carol, v), Some(s("after bob left")), "Carol reads G again through K");
+    assert_eq!(x(&bob, v), None, "Bob does not");
+}
