@@ -296,13 +296,16 @@ impl Engine {
                     m.ts = Some(ts);
                     crate::engine::write::commit_in(tx, m)?
                 }
-                ChangeId::Ephemeral(_) => Vec::new(),
+                ChangeId::Ephemeral(_) => None,
             };
-            let ts = match commit.first() {
-                Some(c) => tx.core.ix.commits.get(c).map(|m| m.view.ts).unwrap_or(ts),
+            let ts = match commit {
+                Some(c) => tx.core.ix.commits.get(&c).map(|m| m.view.ts).unwrap_or(ts),
                 None => ts,
             };
-            // memory commits by session, then by expiry (`Engine::write`)
+            // one memory commit, under the session of its expiry (`Engine::write`)
+            if inverse.iter().any(|r| r.expires.is_some()) && inverse.iter().any(|r| r.expires.is_none()) {
+                return Err(Error::Clash("undoing this copies back what expires and writes what does not: a commit has one expiry".into()));
+            }
             let mut memory = Vec::new();
             for expiring in [false, true] {
                 let deltas: Vec<Delta> = inverse.iter().filter(|r| r.expires.is_some() == expiring).map(|r| {
@@ -318,14 +321,14 @@ impl Engine {
                 let [plain, exp] = &own;
                 let nonce = if expiring { exp } else { plain }.as_session().map(|s| s.nonce).unwrap_or_default();
                 let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, signer: node, blind: draw_blind(&mut *tx.rng), expires: None };
-                memory.extend(tx.in_class(true, |tx| crate::engine::write::build_split(tx, plan, deltas))?);
+                memory.push(tx.in_class(true, |tx| crate::engine::write::build_one(tx, plan, deltas))?);
             }
             let logged = super::log_aspects(tx, &memory)?;
             Ok((commit, memory, logged, ts))
         });
         self.eph.log = log;
         let (commit, memory, logged, ts) = batch?;
-        if commit.is_empty() && memory.is_empty() && making.is_empty() {
+        if commit.is_none() && memory.is_empty() && making.is_empty() {
             return Ok(Reverted::Superseded);
         }
         let w = self.finish_batch((commit, memory, logged), Vec::new(), making, &BTreeSet::new(), Vec::new(), ts, actor, Some(id));

@@ -162,7 +162,7 @@ struct Pending {
     /// Fired signals and diagnostics, never coalesced, each with its bytes.
     queue: VecDeque<(Value, usize)>,
     /// History subscription: the commits whose entries changed (`HISTORY_DIRTY_BYTES` each).
-    history: BTreeSet<crate::ChangeId>,
+    history: BTreeSet<crate::CommitId>,
     /// A delivery did not fit `SIGNAL_BYTES`: the subscription ends.
     lapsed: bool,
 }
@@ -170,7 +170,7 @@ struct Pending {
 impl Pending {
     /// Commit `id`'s entry changed. Past the connection's budget the subscription lapses: the client
     /// reads its pages again.
-    fn note_history(&mut self, id: crate::ChangeId, held: &AtomicUsize) {
+    fn note_history(&mut self, id: crate::CommitId, held: &AtomicUsize) {
         if self.history.contains(&id) {
             return;
         }
@@ -568,7 +568,7 @@ impl Worker {
             method::WRITE => {
                 let nonce = a.uint()?;
                 let rest = a.rest();
-                return self.once(db, conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::committed_v(&x))));
+                return self.once(db, conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::commit_v(&x))));
             }
             method::COMMITS => Value::List(db.commits(&c::query(a.next()?)?)?.iter().map(c::entry_v).collect()),
             method::UNDO_TARGET => c::opt(db.undo_target(&c::scope(a.next()?)?)?.as_ref(), c::entry_v),
@@ -576,12 +576,12 @@ impl Worker {
             method::UNDO | method::REDO => {
                 let nonce = a.uint()?;
                 let scope = c::scope(a.next()?)?;
-                return self.once(db, conn, nonce, || Ok(c::opt(if m == method::UNDO { db.undo(&scope)? } else { db.redo(&scope)? }, |x| c::committed_v(&x))));
+                return self.once(db, conn, nonce, || Ok(c::opt(if m == method::UNDO { db.undo(&scope)? } else { db.redo(&scope)? }, |x| c::commit_v(&x))));
             }
             method::REVERT => {
                 let nonce = a.uint()?;
-                let ch = c::change(a.next()?)?;
-                return self.once(db, conn, nonce, || Ok(c::committed_v(&db.revert(ch)?)));
+                let ch = c::commit_id(a.next()?)?;
+                return self.once(db, conn, nonce, || Ok(c::commit_v(&db.revert(ch)?)));
             }
             method::HISTORY => {
                 let (tid, ak, from) = (a.tid()?, a.ak()?, c::from(a.next()?)?);
@@ -692,8 +692,8 @@ impl Worker {
                 db.set_sync_options(g, c::sync_options(&mut a)?)?;
                 nothing()
             }
-            method::ROTATE_ADDRESS => {
-                db.rotate_address()?;
+            method::ROTATE_PEER_ADDRESS => {
+                db.rotate_peer_address()?;
                 nothing()
             }
             method::EXPORT_BUNDLE => {
@@ -973,7 +973,7 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
         Kind::History(t, ak) => {
             for id in g.history.iter().take(HISTORY_SEND) {
                 let Ok(e) = db.history_entry_here(*t, ak, id) else { continue };
-                out.push((Value::List(vec![c::change_v(id), c::opt(e.as_ref(), c::hist_entry_v)]), None));
+                out.push((Value::List(vec![c::commit_id_v(id), c::opt(e.as_ref(), c::hist_entry_v)]), None));
             }
         }
         Kind::Grants(t) if g.dirty => out.push((c::grants_v(&db.read_local(|r| r.grants(*t))), None)),

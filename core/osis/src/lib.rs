@@ -40,7 +40,7 @@
 //! # use osis::{Config, MemStore, Osis, Store, ValueType};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
 //! db.register_schema("t.osis", "version 1; aspect t:done.0: bool;")?;
-//! assert_eq!(db.key("t:done.0")?.value_type(), Some(ValueType::Bool));
+//! assert_eq!(db.key("t:done.0")?.value_type().map(|t| t.get()), Some(ValueType::Bool));
 //! assert_eq!(db.key("t:other.0")?.value_type(), None);
 //! # Ok::<(), osis::Error>(())
 //! ```
@@ -83,6 +83,31 @@
 //! w.at(t, form.clone()).edit(&shown, &edited)?;
 //! w.commit()?;
 //! assert_eq!(db.at(t, form).get()?, Some(edited));
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # One write, one commit
+//! A `Write` is one commit, whole at every node, or it fails `Invalid` before anything applies,
+//! saying what cannot share a commit. Writing several commits is up to you.
+//! ```
+//! # use osis::{Config, Error, Expiry, MemStore, Osis, Store, Value};
+//! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
+//! let (title, typing) = (db.key("app:title.0")?, db.key("app:typing.0~")?);
+//! let mut w = db.write();
+//! let t = w.create()?;
+//! w.at(t, title.clone()).set(&Value::Str("note".into()))?;
+//! w.commit()?;
+//! // memory and disk are two commits: a peer could see one without the other
+//! let mut w = db.write();
+//! w.at(t, title.clone()).set(&Value::Str("draft".into()))?;
+//! w.at(t, typing.clone()).set(&Value::Bool(true))?;
+//! assert!(matches!(w.commit(), Err(Error::Invalid(_))));
+//! // a commit has one expiry
+//! let mut w = db.write();
+//! w.expires(Expiry::In(std::time::Duration::from_secs(5)));
+//! w.at(t, typing).set(&Value::Bool(true))?;
+//! let done = w.commit()?.unwrap();
+//! db.revert(done.id)?;
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
@@ -134,7 +159,7 @@
 //!
 //! # Commits, undo, redo, revert
 //! `commits` queries the held commits (anyone's); undo and redo revert this actor's own
-//! newest change or undo in a scope; `revert` reverts any commit.
+//! newest commit or undo in a scope; `revert` reverts any commit.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, Scope, CommitQuery, CommitKind};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
@@ -205,11 +230,11 @@
 //! its own: `Osis::connect` and `Osis::connect_socket` make one, and it reads and writes at the
 //! node as if it were local. A node can be a client too (`Osis::connect_node`).
 //! ```no_run
-//! # use osis::{HandleConfig, NodeLogin, Osis};
+//! # use osis::{AppConfig, NodeLogin, Osis};
 //! # async fn demo(node: &Osis, addr: osis::HostAddr) -> osis::Result<()> {
 //! let (actor, secret) = node.add_client(None)?;
 //! // on the other program, given `addr` and `secret`:
-//! let client = Osis::connect(&[NodeLogin { addr, secret }], HandleConfig::default()).await?;
+//! let client = Osis::connect(&[NodeLogin { addr, secret }], AppConfig::default()).await?;
 //! assert_eq!(client.me(), actor);
 //! assert!(!client.has_store());
 //! # Ok(()) }
@@ -318,7 +343,7 @@
 //! # Footguns closed
 //! - Read-modify-write clobber: use `edit(base, new)` or path ops for what users edit; `set`
 //!   is for "must be exactly this".
-//! - Out of memory on a huge value: reads fail `TooLarge` past `HandleConfig::read_limit`;
+//! - Out of memory on a huge value: reads fail `TooLarge` past `AppConfig::read_limit`;
 //!   read by path instead.
 //! - A thing that never syncs: membership is said per group (`NotSynced` diagnostic).
 //! - A forgotten unsubscribe: `Subscription` is RAII, and dropping it at once is a lint:
@@ -335,7 +360,7 @@
 //! ```
 #![forbid(unsafe_code)]
 
-mod change;
+mod commit_id;
 mod clients;
 mod diagnostic;
 mod error;
@@ -359,12 +384,12 @@ mod watch;
 mod write;
 
 mod port;
-pub use change::{ChangeId, HistoryFrom, HistoryPos};
+pub use commit_id::{CommitId, HistoryFrom, HistoryPos};
 pub use clients::{Client, ClientSecret};
 pub use error::{Error, Result};
 pub use diagnostic::Diagnostic;
 pub use hosting::{Admit, AdmissionId, HostCaps, HostPolicy, Hosting};
-pub use handle::{Close, Config, HandleConfig, MemStore, Osis, Store, WeakOsis};
+pub use handle::{Close, Config, AppConfig, MemStore, Osis, Store, WeakOsis};
 pub use net::{Runtime, ShareAddress, SyncMode, SyncOptions};
 pub use person::{Joining, PairOffer, PairReply, PairRequest};
 pub use keep::KeepAlive;
@@ -377,8 +402,8 @@ pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
 pub use history::{HistoryBody, HistoryEntry, HistoryEvent, HistoryPage};
 pub use value_type::{NestedType, RecordField, TypeCase, ValueType};
-pub use watch::{Change, ChangeReason, Dispatcher, Source, Subscription};
-pub use write::{AspectWrite, Committed, ExpiringGroupWrite, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
+pub use watch::{Change, DerivedFrom, Dispatcher, Source, Subscription};
+pub use write::{AspectWrite, Commit, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
 
 /// A retention bound's absolute time for "for good" (`Bound::abs`).
 pub use osis_commit::FOREVER;

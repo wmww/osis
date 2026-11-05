@@ -17,9 +17,9 @@ const GUARD: Duration = Duration::from_secs(30);
 
 fn cfg(seed: u64, hosts: Vec<HostAddr>, t: Option<osis::internals::InProcess>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.handle.internals.seed = Some(seed);
+    c.app.internals.seed = Some(seed);
     c.runtime = Runtime::Tokio(tokio::runtime::Handle::current());
-    c.handle.internals.transport = t;
+    c.app.internals.transport = t;
     c.hosts = hosts;
     c
 }
@@ -154,7 +154,7 @@ async fn redeem_quic_localhost_spec_permissions_8() {
 async fn text_idle_commit_api_text_sessions() {
     let net = osis_transport::Net::new(4);
     let mut c = cfg(1, vec![], Some(net.endpoint("a")));
-    c.handle.idle_commit = Duration::from_millis(20);
+    c.app.idle_commit = Duration::from_millis(20);
     let db = osis::internals::create(c).unwrap().0;
     let k = ak("t:body.0");
     let mut w = db.write();
@@ -242,7 +242,7 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     net.partition("b", "s");
     let alice = osis::internals::create(cfg(1, vec![host], Some(net.endpoint("a")))).unwrap().0;
     let mut c = cfg(2, vec![], Some(net.endpoint("b")));
-    c.handle.internals.connection_wait = Some(GUARD);
+    c.app.internals.connection_wait = Some(GUARD);
     let bob = osis::internals::create(c).unwrap().0;
     let me = reach_of(&alice).await;
     let mut w = alice.write();
@@ -307,7 +307,7 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     .unwrap();
     // a later holder of the link reaches nothing, and its follow is forgotten
     let mut c = cfg(3, vec![], Some(net.endpoint("c")));
-    c.handle.internals.connection_wait = Some(Duration::from_secs(2));
+    c.app.internals.connection_wait = Some(Duration::from_secs(2));
     let carol = osis::internals::create(c).unwrap().0;
     net.partition("c", "s");
     assert!(tokio::time::timeout(Duration::from_secs(2), carol.redeem(&link)).await.is_err());
@@ -329,7 +329,7 @@ async fn redeem_direct_in_process_spec_permissions_8() {
     patched.hosts = vec![];
     let patched: osis::ShareLink = patched.to_text().unwrap().parse().unwrap();
     let mut e = cfg(5, vec![], Some(net.endpoint("e")));
-    e.handle.internals.connection_wait = Some(GUARD);
+    e.app.internals.connection_wait = Some(GUARD);
     let erin = osis::internals::create(e).unwrap().0;
     assert!(matches!(tokio::time::timeout(GUARD, erin.redeem(&patched)).await.unwrap(), Err(osis::Error::Invalid(_))), "K's open was refused at the sharer");
     assert!(erin.sync_engine(|s| s.link_peer_keys()).is_empty());
@@ -351,7 +351,7 @@ async fn redeem_direct_no_host_in_process_spec_permissions_8() {
     let net = osis_transport::Net::new(9);
     let alice = osis::internals::create(cfg(1, vec![], Some(net.endpoint("a")))).unwrap().0;
     let mut c = cfg(2, vec![], Some(net.endpoint("b")));
-    c.handle.internals.connection_wait = Some(GUARD);
+    c.app.internals.connection_wait = Some(GUARD);
     let bob = osis::internals::create(c).unwrap().0;
     reach_of(&alice).await;
     let mut w = alice.write();
@@ -395,7 +395,7 @@ async fn redeem_direct_no_host_in_process_spec_permissions_8() {
     .await
     .unwrap();
     let mut c = cfg(3, vec![], Some(net.endpoint("c")));
-    c.handle.internals.connection_wait = Some(GUARD);
+    c.app.internals.connection_wait = Some(GUARD);
     let carol = osis::internals::create(c).unwrap().0;
     assert_eq!(tokio::time::timeout(GUARD, carol.redeem(&link)).await.unwrap().unwrap(), g);
     tokio::time::timeout(GUARD, async {
@@ -418,7 +418,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_8() {
     net.partition("b", "s");
     let alice = osis::internals::create(cfg(1, vec![host.clone()], Some(net.endpoint("a")))).unwrap().0;
     let mut c = cfg(2, vec![], Some(net.endpoint("b")));
-    c.handle.internals.connection_wait = Some(GUARD);
+    c.app.internals.connection_wait = Some(GUARD);
     let bob = osis::internals::create(c).unwrap().0;
     reach_of(&alice).await;
     let mut w = alice.write();
@@ -469,7 +469,7 @@ async fn rotate_reach_relistens_in_process_spec_sync_10() {
         async move { osis_transport::Transport::dial(&probe, &osis_transport::Address { url: osis_transport::peer_url(&[]), key }).await.is_ok() }
     };
     assert!(dial(old.dialable).await);
-    db.rotate_address().unwrap();
+    db.rotate_peer_address().unwrap();
     let new = db.sync_engine(|s| s.own_reach()).unwrap();
     assert_ne!(new.dialable, old.dialable);
     assert_ne!(new.lan_secret, old.lan_secret);
@@ -495,9 +495,9 @@ fn close_while_driver_runs_no_timer_panic() {
             sc.spawn(move || {
                 for i in 0..40 {
                     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-                    c.handle.internals.seed = Some(t * 1000 + i);
+                    c.app.internals.seed = Some(t * 1000 + i);
                     c.runtime = Runtime::Own;
-                    c.handle.internals.transport = Some(net.endpoint(&format!("c{t}-{i}")));
+                    c.app.internals.transport = Some(net.endpoint(&format!("c{t}-{i}")));
                     let (db, _) = osis::internals::create(c).unwrap();
                     let _ = common::block_on(db.wait_synced(osis::SyncScope::All));
                     assert_eq!(db.close().unwrap(), osis::Close::Closed);
@@ -541,9 +541,9 @@ fn own_runtime_reopen_right_after_close() {
     let net = osis_transport::Net::new(10);
     let at = |i: u64| {
         let mut c = osis::internals::Opening::at(Store::Dir(dir.clone()));
-        c.handle.internals.seed = Some(i);
+        c.app.internals.seed = Some(i);
         c.runtime = Runtime::Own;
-        c.handle.internals.transport = Some(net.endpoint(&format!("r{i}")));
+        c.app.internals.transport = Some(net.endpoint(&format!("r{i}")));
         c
     };
     let (db, _) = osis::internals::create(at(0)).unwrap();
@@ -581,9 +581,9 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
                 for i in 0..40 {
                     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("tk-close").enable_all().build().unwrap();
                     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-                    c.handle.internals.seed = Some(t * 1000 + i);
+                    c.app.internals.seed = Some(t * 1000 + i);
                     c.runtime = Runtime::Tokio(rt.handle().clone());
-                    c.handle.internals.transport = Some(net.endpoint(&format!("k{t}-{i}")));
+                    c.app.internals.transport = Some(net.endpoint(&format!("k{t}-{i}")));
                     let (db, _) = osis::internals::create(c).unwrap();
                     let _ = common::block_on(db.wait_synced(osis::SyncScope::All));
                     assert_eq!(db.close().unwrap(), osis::Close::Closed);
@@ -642,9 +642,9 @@ async fn own_host_device_in_process_spec_data_model_9() {
 fn driver_panic_fails_waiters() {
     let net = osis_transport::Net::new(12);
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.handle.internals.seed = Some(3);
+    c.app.internals.seed = Some(3);
     c.runtime = Runtime::Own;
-    c.handle.internals.transport = Some(net.endpoint("dp"));
+    c.app.internals.transport = Some(net.endpoint("dp"));
     // a host nobody answers at: `wait_synced(All)` waits
     c.hosts = vec![HostAddr::new(&"mem://nobody".parse().unwrap(), [7; 32])];
     let (db, _) = osis::internals::create(c).unwrap();

@@ -11,7 +11,7 @@ pub use crate::person::OFFER_LIFETIME_MS;
 pub use crate::port::client::{own_uid, socket_dir, socket_path, socket_path_under};
 pub use crate::port::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES};
 pub use crate::value_type::of_schema;
-pub use osis_base::{Clock, CommitId, CreationRecord, LabelId, ManualClock, Ts};
+pub use osis_base::{Clock, CommitId as RawCommitId, CreationRecord, LabelId, ManualClock, Ts};
 pub use osis_node as node;
 pub use osis_node::sync::MAX_CONNS_PER_CLIENT;
 pub use osis_schema as schema;
@@ -23,19 +23,19 @@ pub const GROUP_ITEMS: osis_schema::FieldId = osis_schema::FieldId(0);
 /// `group.0`'s field of subgroups.
 pub const GROUP_SUBGROUPS: osis_schema::FieldId = osis_schema::FieldId(1);
 
-/// What a change's id holds.
-pub fn change_raw(c: &crate::ChangeId) -> node::ChangeId {
+/// What a commit's id holds.
+pub fn change_raw(c: &crate::CommitId) -> node::ChangeId {
     c.0
 }
 
-/// What a change's id holds, as a test asks.
-pub trait ChangeRaw {
-    /// The commit, if it is one and not an ephemeral batch.
-    fn commit(&self) -> Option<CommitId>;
+/// What a commit's id holds, as a test asks.
+pub trait CommitRaw {
+    /// The durable or received commit it names, not an own ephemeral one.
+    fn commit(&self) -> Option<RawCommitId>;
 }
 
-impl ChangeRaw for crate::ChangeId {
-    fn commit(&self) -> Option<CommitId> {
+impl CommitRaw for crate::CommitId {
+    fn commit(&self) -> Option<RawCommitId> {
         match self.0 {
             node::ChangeId::Commit(c) => Some(c),
             node::ChangeId::Ephemeral(_) => None,
@@ -60,7 +60,7 @@ impl Exact for crate::ThingStamp {
     }
 }
 
-impl Exact for crate::Committed {
+impl Exact for crate::Commit {
     fn ts(&self) -> Ts {
         self.ts
     }
@@ -85,7 +85,7 @@ pub fn host_limit(p: &mut crate::HostPolicy, name: &str, n: u64) -> Result<(), S
 
 /// The host limits set that `HostPolicy` does not show, by name.
 pub fn host_limits_unshown(p: &crate::HostPolicy) -> std::collections::BTreeMap<String, u64> {
-    p.tuning.0.clone()
+    p.tuning.known.clone()
 }
 
 /// Writes a `KeepAlive` has made.
@@ -126,7 +126,7 @@ impl MemStoreMeasures for crate::MemStore {
     }
 }
 
-/// What tests set on `HandleConfig`.
+/// What tests set on `AppConfig`.
 #[derive(Clone, Default)]
 pub struct Knobs {
     /// Wall clock in place of the system's.
@@ -300,7 +300,7 @@ pub async fn restore(o: Opening, card: &crate::RecoveryCard) -> crate::Result<Os
 }
 
 pub async fn connect_socket(socket: &std::path::Path, o: Opening) -> crate::Result<Osis> {
-    Osis::connect_socket_at(socket, o.cfg.handle).await
+    Osis::connect_socket_at(socket, o.cfg.app).await
 }
 
 pub async fn connect(addr: &crate::HostAddr, secret: &crate::ClientSecret, o: Opening) -> crate::Result<Osis> {
@@ -308,5 +308,5 @@ pub async fn connect(addr: &crate::HostAddr, secret: &crate::ClientSecret, o: Op
 }
 
 pub async fn connect_all(logins: &[crate::NodeLogin], o: Opening) -> crate::Result<Osis> {
-    Osis::connect(logins, o.cfg.handle).await
+    Osis::connect(logins, o.cfg.app).await
 }

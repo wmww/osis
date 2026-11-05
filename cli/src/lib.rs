@@ -17,7 +17,7 @@ use anyhow::anyhow;
 use args::{Cli, Global};
 use clap::Parser;
 use json::J;
-use osis::{HandleConfig, Config, Error, Key, MemStore, Osis, Store, Tid};
+use osis::{AppConfig, Config, Error, Key, MemStore, Osis, Store, Tid};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
@@ -167,7 +167,7 @@ pub(crate) fn store_of(sel: &StoreSel) -> Store {
 /// The config of a command holding a store; `net`: sync runs (`Runtime::Own` over QUIC) while the
 /// command runs, else the command stays local (`Runtime::None`).
 fn config(g: &Global, net: bool) -> Config {
-    let mut c = Config { handle: handle_config(g), ..Config::default() };
+    let mut c = Config { app: app_config(g), ..Config::default() };
     if net {
         c.runtime = osis::Runtime::Own;
     }
@@ -175,8 +175,8 @@ fn config(g: &Global, net: bool) -> Config {
 }
 
 /// The config of a command using a node out of process.
-fn handle_config(g: &Global) -> HandleConfig {
-    let mut c = HandleConfig::default();
+fn app_config(g: &Global) -> AppConfig {
+    let mut c = AppConfig::default();
     if let Some(l) = g.limit {
         c.read_limit = l;
     }
@@ -256,7 +256,7 @@ fn open(sel: &StoreSel, g: &Global, net: bool, use_daemon: bool) -> anyhow::Resu
 /// The daemon serving the store at `d`, as a client acting as the node's account
 /// (notes/client-port.md §5). None when there is no live one.
 fn daemon(d: &Path, g: &Global) -> Option<Osis> {
-    crate::cmd::within(connect_wait(g).ok()?, Osis::connect_socket(d, handle_config(g))).ok()
+    crate::cmd::within(connect_wait(g).ok()?, Osis::connect_socket(d, app_config(g))).ok()
 }
 
 /// The node named by `--node`, as the client `--client-secret` stands for (notes/client-port.md
@@ -265,7 +265,7 @@ fn client_of_node(g: &Global) -> anyhow::Result<Osis> {
     let (Some(addr), Some(file)) = (&g.node, &g.client_secret) else { return Err(usage("--node needs --client-secret")) };
     let secret = read_secret(file)?;
     let login = osis::NodeLogin { addr: addr.parse()?, secret };
-    Ok(crate::cmd::within(connect_wait(g)?, Osis::connect(&[login], handle_config(g)))?)
+    Ok(crate::cmd::within(connect_wait(g)?, Osis::connect(&[login], app_config(g)))?)
 }
 
 /// Serves the client port while `serve` runs, on the store's socket. A memory store has none.
@@ -353,7 +353,7 @@ pub(crate) struct Ctx<'a> {
     pub tty: bool,
     pub sel: StoreSel,
     pub vars: BTreeMap<String, Tid>,
-    /// (tid, AK) this batch wrote; AK "" for the whole thing (created or deleted).
+    /// (tid, AK) this script wrote; AK "" for the whole thing (created or deleted).
     pub pending: std::collections::BTreeSet<(Tid, String)>,
 }
 

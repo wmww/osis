@@ -102,7 +102,7 @@ fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
     !l.sync.receipts_only().contains(g) && labeled(l, g)
 }
 
-/// The things change `id` touched, when this engine holds it.
+/// The things commit `id` touched, when this engine holds it.
 fn touched_by(e: &Engine, id: ChangeId) -> Option<Vec<Tid>> {
     match id {
         ChangeId::Commit(c) => e.header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()),
@@ -263,10 +263,10 @@ impl Osis {
         Ok(s)
     }
 
-    /// `route_change` for a call that writes. A change not held here says nothing of what it touched
+    /// `route_commit` for a call that writes. A commit not held here says nothing of what it touched
     /// (a write through a route never comes here): `Invalid` while anything is split.
-    pub(crate) fn route_write_change(&self, id: ChangeId) -> Result<Source> {
-        let s = self.route_change(id)?;
+    pub(crate) fn route_write_commit(&self, id: ChangeId) -> Result<Source> {
+        let s = self.route_commit(id)?;
         self.after_route();
         if self.routed() && self.has_store() {
             match self.locked(|l| touched_by(l.engine(), id)) {
@@ -323,7 +323,7 @@ impl Osis {
         }
     }
 
-    /// The source of calls over `scope` (`None`: every held change; for a process with a store,
+    /// The source of calls over `scope` (`None`: every held commit; for a process with a store,
     /// its own).
     pub(crate) fn route_scope(&self, scope: Option<&crate::commits::Scope>) -> Result<Source> {
         Ok(match scope {
@@ -336,9 +336,9 @@ impl Osis {
         })
     }
 
-    /// The source holding change `id`: of what it touched when this engine holds it; else an
-    /// only connection. `Invalid` among several: a change id does not say whose it is.
-    pub(crate) fn route_change(&self, id: ChangeId) -> Result<Source> {
+    /// The source holding commit `id`: of what it touched when this engine holds it; else an
+    /// only connection. `Invalid` among several: a commit id does not say whose it is.
+    pub(crate) fn route_commit(&self, id: ChangeId) -> Result<Source> {
         if !self.routed() {
             return Ok(Source::Local);
         }
@@ -387,8 +387,8 @@ impl Osis {
         }
     }
 
-    /// `guard_local` for a revert: what the change touched.
-    pub(crate) fn guard_change(&self, l: &mut Locked, id: ChangeId) -> Result<()> {
+    /// `guard_local` for a revert: what the commit touched.
+    pub(crate) fn guard_commit(&self, l: &mut Locked, id: ChangeId) -> Result<()> {
         if !self.routing() {
             return Ok(());
         }

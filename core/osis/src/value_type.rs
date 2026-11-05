@@ -6,7 +6,7 @@ use osis_base::Value;
 use osis_schema::{Schema, Type};
 use std::sync::Arc;
 
-/// The shape of a value (`Key::value_type`).
+/// The shape of a value (`NestedType::get`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValueType {
     /// A string, replaced whole (`Value::Str`).
@@ -73,7 +73,7 @@ pub struct RecordField {
     pub default: Option<Value>,
 }
 
-/// A type inside another.
+/// A type as a schema declares it: of a key's values (`Key::value_type`), or inside another.
 #[derive(Clone)]
 pub struct NestedType {
     schema: Arc<Schema>,
@@ -111,9 +111,9 @@ pub fn of_schema(schema: Arc<Schema>, ty: Type) -> ValueType {
     describe(&schema, &ty)
 }
 
-/// A type's declared name.
-pub(crate) fn declared_name(ty: &Type) -> String {
-    type_name(ty)
+/// `ty` of `schema`.
+pub(crate) fn nested(schema: Arc<Schema>, ty: Type) -> NestedType {
+    NestedType { schema, ty }
 }
 
 fn type_name(t: &Type) -> String {

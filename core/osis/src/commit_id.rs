@@ -1,38 +1,38 @@
-//! `ChangeId` and `HistoryPos`: opaque names an app keeps, compares and passes back. What they hold
-//! (a commit or an ephemeral batch, a hybrid clock value) stays inside.
+//! `CommitId` and `HistoryPos`: opaque names an app keeps, compares and passes back. What they hold
+//! (an engine commit or ephemeral write ID, a hybrid clock value) stays inside.
 
 use crate::error::{Error, Result};
 use osis_base::hex;
-use osis_base::{CommitId, Ts, Time};
+use osis_base::{CommitId as RawCommitId, Ts, Time};
 use osis_node::EphemeralId;
 use osis_node::engine::history as engine;
 
-/// One change: what `Write::commit` returns, a history entry or watch names, and `revert` or
-/// `Purge::Change` takes. Its text form (`Display`, `FromStr`) keeps it anywhere.
+/// Names one commit: what `Write::commit` returns, a history entry or watch names, and `revert` or
+/// `Purge::Commit` takes. Its text form (`Display`, `FromStr`) keeps it anywhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ChangeId(pub(crate) osis_node::ChangeId);
+pub struct CommitId(pub(crate) osis_node::ChangeId);
 
-impl ChangeId {
-    pub(crate) fn commit(c: CommitId) -> ChangeId {
-        ChangeId(osis_node::ChangeId::Commit(c))
+impl CommitId {
+    pub(crate) fn commit(c: RawCommitId) -> CommitId {
+        CommitId(osis_node::ChangeId::Commit(c))
     }
 }
 
 #[doc(hidden)]
-impl From<osis_node::ChangeId> for ChangeId {
-    fn from(c: osis_node::ChangeId) -> ChangeId {
-        ChangeId(c)
+impl From<osis_node::ChangeId> for CommitId {
+    fn from(c: osis_node::ChangeId) -> CommitId {
+        CommitId(c)
     }
 }
 
 #[doc(hidden)]
-impl From<CommitId> for ChangeId {
-    fn from(c: CommitId) -> ChangeId {
-        ChangeId::commit(c)
+impl From<RawCommitId> for CommitId {
+    fn from(c: RawCommitId) -> CommitId {
+        CommitId::commit(c)
     }
 }
 
-impl std::fmt::Display for ChangeId {
+impl std::fmt::Display for CommitId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
             osis_node::ChangeId::Commit(c) => f.write_str(&hex::encode(&c.0)),
@@ -41,22 +41,22 @@ impl std::fmt::Display for ChangeId {
     }
 }
 
-impl std::str::FromStr for ChangeId {
+impl std::str::FromStr for CommitId {
     type Err = Error;
-    fn from_str(s: &str) -> Result<ChangeId> {
-        let bad = || Error::Invalid(format!("not a change id: {s:?}"));
+    fn from_str(s: &str) -> Result<CommitId> {
+        let bad = || Error::Invalid(format!("not a commit id: {s:?}"));
         if let Some(rest) = s.strip_prefix("ephemeral:") {
             let (session, n) = rest.split_once(':').ok_or_else(bad)?;
             let session = hex::decode(session).and_then(|b| b.try_into().ok()).ok_or_else(bad)?;
-            return Ok(ChangeId(osis_node::ChangeId::Ephemeral(EphemeralId { session, n: n.parse().map_err(|_| bad())? })));
+            return Ok(CommitId(osis_node::ChangeId::Ephemeral(EphemeralId { session, n: n.parse().map_err(|_| bad())? })));
         }
         let c = hex::decode(s).and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or_else(bad)?;
-        Ok(ChangeId::commit(CommitId(c)))
+        Ok(CommitId::commit(RawCommitId(c)))
     }
 }
 
-/// A place in an aspect's history, for `HistoryFrom::Before` and `After`: an entry's or a batch's
-/// (`HistoryEntry::pos`, `Committed::pos`), or a time's. Places order as the history does, and the
+/// A place in an aspect's history, for `HistoryFrom::Before` and `After`: an entry's or a commit's
+/// (`HistoryEntry::pos`, `Commit::pos`), or a time's. Places order as the history does, and the
 /// text form (`Display`, `FromStr`) keeps one anywhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HistoryPos(pub(crate) engine::HistoryPos);
@@ -72,12 +72,12 @@ impl HistoryPos {
         self.0.ts.wall_ms()
     }
 
-    /// The change at this place (none at a time's).
-    pub fn change(&self) -> Option<ChangeId> {
-        (self.0 != engine::HistoryPos::time(self.0.ts)).then_some(ChangeId(self.0.id))
+    /// The commit at this place (none at a time's).
+    pub fn commit(&self) -> Option<CommitId> {
+        (self.0 != engine::HistoryPos::time(self.0.ts)).then_some(CommitId(self.0.id))
     }
 
-    pub(crate) fn of(ts: Ts, id: ChangeId) -> HistoryPos {
+    pub(crate) fn of(ts: Ts, id: CommitId) -> HistoryPos {
         HistoryPos(engine::HistoryPos { ts, id: id.0 })
     }
 }
@@ -89,7 +89,7 @@ fn ts_at(t: Time) -> Ts {
 
 impl std::fmt::Display for HistoryPos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.0.ts.to_u64(), ChangeId(self.0.id))
+        write!(f, "{}/{}", self.0.ts.to_u64(), CommitId(self.0.id))
     }
 }
 

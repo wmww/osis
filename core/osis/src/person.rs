@@ -9,7 +9,7 @@ use crate::handle::{Fresh, Osis, PERSON, fresh_engine, save_hosts};
 use crate::share::{RecoveryCard, HostAddr, SyncState};
 use crate::{Config, Store};
 use osis_base::cbor::{Limits, decode, encode};
-use osis_base::{BlobId, CommitId, Tid, Value, base64url};
+use osis_base::{BlobId, CommitId as RawCommitId, Tid, Value, base64url};
 use osis_node::flows::PreSync;
 use osis_node::local_peer::Package;
 
@@ -167,7 +167,7 @@ impl Joining {
         if !tag_ok(&self.secret, "osis pair reply", &items) {
             return Err(Error::Invalid("pairing reply does not match the offer".into()));
         }
-        let grant = CommitId(grant.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing reply".into()))?);
+        let grant = RawCommitId(grant.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing reply".into()))?);
         let pks = packages_of(pks)?;
         let person = self.person;
         let done = self.db.engine(|e| -> Result<_> {
@@ -271,7 +271,7 @@ impl Osis {
         let node = *node;
         let pks = packages_of(pks)?;
         let me = self.me();
-        let (grant, mine) = self.locked(|x| -> Result<(CommitId, Vec<Package>)> {
+        let (grant, mine) = self.locked(|x| -> Result<(RawCommitId, Vec<Package>)> {
             for (bytes, blobs) in pks {
                 x.engine().ingest(&bytes, blobs)?;
             }

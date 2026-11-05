@@ -120,7 +120,7 @@ pub(crate) mod method {
     /// `[group, Opt(reach), headers_only]` -> `[]`
     pub const SET_SYNC_OPTIONS: u64 = 56;
     /// `[]` -> `[]`
-    pub const ROTATE_ADDRESS: u64 = 57;
+    pub const ROTATE_PEER_ADDRESS: u64 = 57;
     /// `[group]` -> `[text*]`
     pub const ADMISSION_IDS: u64 = 72;
     /// `[scope]` -> Opt(entry)

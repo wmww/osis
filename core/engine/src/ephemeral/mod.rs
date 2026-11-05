@@ -2,10 +2,10 @@
 //! memory class and aspects whose key is `ephemeral` or `signal`. Their commits, bodies and every
 //! row derived from them live in Core's memory class (the store's overlay), forgotten at restart;
 //! everything else is as for durable data (issues/eph-unify.md). `Engine::write` splits a
-//! `Mutation` into its durable half (one commit, carrying the creation records of the ephemeral
-//! things it persists) and its ephemeral half: one memory commit per expiry class (plain writes
-//! under this open's session, expiring ones under its second session, spec/crdt.md §2.1), all in
-//! one transaction, so a batch applies whole or not at all. Signal writes go as relay-only
+//! `Mutation` by key: a commit, durable or memory (plain writes under this open's session, expiring
+//! ones under its second session, spec/crdt.md §2.1), or `Clash` when it asks for both. What only
+//! follows a durable commit (a kept thing's memberships leaving `placed.0~`, a deleted thing's
+//! memory side) goes in a memory commit beside it, in one transaction. Signal writes go as relay-only
 //! commits (`signal`). Reads come from Core as for any aspect. This module keeps only what
 //! belongs to the local write path: the undo log of own batches (`log`), drafts again, things
 //! deleted by undoing their creation, unsent signals and delivered relay-only commits.
@@ -71,13 +71,9 @@ pub struct Eph {
 /// A batch written by `Engine::write`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Written {
-    /// Its first commit (the one carrying the records of the things it creates), else its
-    /// ephemeral batch.
+    /// Its commit, else its ephemeral batch.
     pub id: ChangeId,
     pub ts: Ts,
-    /// Its other commits, when its durable writes need several: one per expiry and `nobody`
-    /// class (spec/commits.md §5, §6). Each is a change of its own to history and revert.
-    pub also: Vec<CommitId>,
 }
 
 /// One ephemeral aspect write of a batch, before resolution.
@@ -176,10 +172,11 @@ impl Engine {
         keys.iter().filter_map(|k| crate::engine::Core::delete_secret(k.level, &k.key, &thing, &author).map(|d| (k.level, d))).collect()
     }
 
-    /// Writes `m`: its durable half as one commit (with the creation records of the ephemeral
-    /// things it persists and their placements made durable, spec/data-model.md §1, §8) and its
-    /// ephemeral half as memory commits, one per expiry class, in one transaction. Validated as
-    /// a whole: when the commit or any op fails, nothing applies. `None` when nothing changes.
+    /// Writes `m` as one commit: durable (with the creation records of the ephemeral things it
+    /// persists and their placements made durable, spec/data-model.md §1, §8) or memory.
+    /// `Clash` when it cannot be one: durable and ephemeral writes, or signals beside either; a
+    /// memory commit then carries only what follows the durable one (`Placed::asked`, `delete`).
+    /// When the commit or any op fails, nothing applies. `None` when nothing changes.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.tid();
         let actor = m.actor.unwrap_or(node);
@@ -212,8 +209,14 @@ impl Engine {
         for (g, am) in plan.durable {
             m.aspects.insert((g, gak.clone()), am);
         }
+        // one commit: a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
+        let asked = eph_ops.iter().find(|o| !m.free.contains(&o.tid)).map(|o| format!("{} {}", o.tid, o.ak)).or(plan.asked.map(|g| format!("the members of {g}")));
+        if let (Some(a), Some(((t, k), _))) = (&asked, m.aspects.iter().find(|((t, _), _)| !m.free.contains(t))) {
+            return Err(Error::Clash(format!("a commit is durable or ephemeral, and this write is both: {a} is ephemeral, {t} {k} is not. Write them as separate commits")));
+        }
         eph_ops.extend(plan.eph);
-        let refused = plan.refused;        m.synced.extend(plan.converted);
+        let refused = plan.refused;
+        m.synced.extend(plan.converted);
         let persisted = plan.persisted;
         // the drafts this batch saves: ephemeral things made before it that it persists, and
         // drafts again it writes durably
@@ -240,10 +243,9 @@ impl Engine {
         let durable = !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.dead_resets.is_empty() && m.undoes.is_none());
         if eph_ops.is_empty() && fresh.is_empty() && m.free.is_empty() && refused.is_empty() && saved.is_empty() {
             // the common durable write: no ephemeral half
-            let ids = self.run(|tx| commit_in(tx, m))?;
-            let Some((id, also)) = ids.split_first() else { return Ok(None) };
-            let ts = self.core.ix.commits.get(id).map(|c| c.view.ts).unwrap_or_default();
-            return Ok(Some(Written { id: ChangeId::Commit(*id), ts, also: also.to_vec() }));
+            let Some(id) = self.run(|tx| commit_in(tx, m))? else { return Ok(None) };
+            let ts = self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default();
+            return Ok(Some(Written { id: ChangeId::Commit(id), ts }));
         }
         let ts = self.core.hlc.next();
         let now = self.now();
@@ -285,11 +287,15 @@ impl Engine {
         let unplaced: BTreeSet<(Tid, Tid)> = eph_ops.iter().filter(|op| op.ak.as_str() == PLACED.ak()).flat_map(|op| op.am.ops.iter().filter_map(|o| place::member_removal(o).map(|x| (op.tid, x)))).chain(m.aspects.iter().filter(|((_, ak), _)| ak.as_str() == GROUP.ak()).flat_map(|((g, _), am)| am.ops.iter().filter_map(|o| place::member_removal(o).map(|x| (*g, x))))).collect();
         let free = std::mem::take(&mut m.free);
         let gone = self.freeable(&free, &unplaced);
-        // one memory commit per expiry class, as a durable batch is one commit (spec/sync.md §9;
-        // spec/crdt.md §2.1: plain writes under this open's session, expiring ones under its
-        // second session, so an expired commit leaves no gap in the plain writes' counters), so
-        // a deletion's resets ride with the unplacing that takes the thing out of the closure;
-        // writes on things freed go with them (`apply::free` drops a freed thing's parts)
+        // a signal is a relay-only commit of its own (spec/sync.md §9)
+        if let Some(op) = (!signals.is_empty()).then(|| eph_ops.iter().find(|o| o.ak.lifetime() != Lifetime::Signal && !m.free.contains(&o.tid))).flatten() {
+            return Err(Error::Clash(format!("a signal is a commit of its own, and this write also writes {} {}. Write them as separate commits", op.tid, op.ak)));
+        }
+        // one memory commit (spec/sync.md §9; spec/crdt.md §2.1: plain writes under this open's
+        // session, expiring ones under its second session, so an expired commit leaves no gap in
+        // the plain writes' counters), so a deletion's resets ride with the unplacing that takes
+        // the thing out of the closure; writes on things freed go with them (`apply::free` drops a
+        // freed thing's parts)
         let mut batches: BTreeMap<bool, Mutation> = BTreeMap::new();
         fn batch(batches: &mut BTreeMap<bool, Mutation>, expiring: bool, actor: Tid, ts: Ts) -> &mut Mutation {
             batches.entry(expiring).or_insert_with(|| {
@@ -324,8 +330,11 @@ impl Engine {
             let e = batch(&mut batches, false, actor, ts).aspects.entry((g, place::placed_ak()?)).or_insert_with(|| AspectMut { schema: Some(std::sync::Arc::new(osis_schema::core_schema().clone())), ..AspectMut::default() });
             e.ops.extend(ops);
         }
-        // a new thing's record goes in the plain commit (first), with its first write when that
-        // is plain, else alone (known all the same)
+        if let (Some(p), Some(x)) = (batches.get(&false).and_then(|x| x.aspects.keys().next()), batches.get(&true).and_then(|x| x.aspects.keys().next())) {
+            return Err(Error::Clash(format!("a commit has one expiry, and this write has two: {} {} does not expire, {} {} does. Write them as separate commits", p.0, p.1, x.0, x.1)));
+        }
+        // a new thing's record is held at once, whatever its first write's expiry: a memory commit
+        // carries it beside its delta
         for (t, r) in fresh.iter().filter(|(t, _)| !gone.contains(t)) {
             batch(&mut batches, false, actor, ts).creates.insert(*t, r.clone());
         }
@@ -342,10 +351,10 @@ impl Engine {
                 m.ts = Some(ts);
                 commit_in(tx, m)?
             } else {
-                Vec::new()
+                None
             };
             let mut memory = Vec::new();
-            // the plain commit (with the records) first, then the expiring one
+            // at most one with writes, the plain one only with records otherwise
             for x in batches.into_values() {
                 // a delta past what one unpaged delta may hold is refused (spec/commits.md §2)
                 let c = tx.in_class(true, |tx| commit_in(tx, x)).map_err(|e| match e {
@@ -368,7 +377,7 @@ impl Engine {
             self.eph.drafts.remove(t);
         }
         for (item, group) in refused {
-            self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit: batch.0.first().copied(), peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
+            self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit: batch.0, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
         }
         Ok(self.finish_batch(batch, signals, making, &gone, gone_aspects, ts, actor, None))
     }
@@ -377,7 +386,7 @@ impl Engine {
     /// marks, the undo log, the history and change events. Its id: the commit when it had a
     /// durable half, else a fresh `EphemeralId`; `None` when nothing changed.
     #[allow(clippy::too_many_arguments)]
-    fn finish_batch(&mut self, (commit, memory, mut logged): (Vec<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, gone_aspects: Vec<(Tid, Ak)>, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
+    fn finish_batch(&mut self, (commit, memory, mut logged): (Option<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, gone_aspects: Vec<(Tid, Ak)>, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
         let node = self.tid();
         let now = self.now();
         let mut changed: Vec<(Tid, Ak)> = logged.iter().map(|a| (a.tid, a.ak.clone())).collect();
@@ -421,11 +430,7 @@ impl Engine {
         making.unmade.retain(|t| !gone.contains(t));
         changed.sort();
         changed.dedup();
-        let (first, also) = match commit.split_first() {
-            Some((c, rest)) => (Some(*c), rest.to_vec()),
-            None => (None, Vec::new()),
-        };
-        let id = match first {
+        let id = match commit {
             Some(c) => ChangeId::Commit(c),
             None if memory.is_empty() && signals.is_empty() && making.is_empty() && gone.is_empty() => return None,
             None => {
@@ -441,7 +446,7 @@ impl Engine {
             self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed, signals });
             self.core.events.flush();
         }
-        Some(Written { id, ts, also })
+        Some(Written { id, ts })
     }
 
     /// Of `free`, the ephemeral things this node may free at once: held as memory class, never
@@ -501,7 +506,7 @@ impl Engine {
         let actor = m.actor.unwrap_or(self.tid());
         let id = self.run(|tx| {
             tx.set_memory();
-            crate::engine::write::one(commit_in(tx, m)?)
+            commit_in(tx, m)
         })?;
         if let Some(c) = id
             && let Some(h) = self.header(&c)

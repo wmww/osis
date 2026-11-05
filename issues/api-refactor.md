@@ -14,8 +14,12 @@ let note = w.create()?;                                    // first admin: the a
 w.group(folder).add(Member::Item(note))?;
 w.at(note, notes::TITLE).set(&title)?;
 w.at(note, notes::TAGS).path(p![&tag]).set(&true)?;
-w.at(msg, chat::BODY).expires(Expiry::In(DAY)).set(&text)?;
-let done = w.commit()?;
+let done = w.commit()?;                                    // one commit, or Invalid naming what clashed
+
+let mut w = db.write();
+w.expires(Expiry::In(DAY));
+w.at(msg, chat::BODY).set(&text)?;
+w.commit()?;
 
 let title = db.at(note, notes::TITLE).get()?;
 let sub = db.at(note, notes::TITLE).on_change(|db, c| ..)?;
@@ -49,7 +53,7 @@ Design for the world after it:
 Done.
 
 ## D. Shape, re-decided
-Done (step 4), notes/api.md has the shapes. Where they left the proposal: async calls and connecting take no timeout (a caller's runtime races them; `SyncFirst::Try(Duration)` alone holds one), `Config` nests `ClientConfig`, a thin client takes `ClientConfig`, not `Config`; `db.connect_node` and `disconnect_node` in place of `attach_node` and `detach_node`; `created` and `changed` return a `ThingStamp` with `id: Option<ChangeId>` (an ephemeral thing's creation names no batch, and no id stands in for one); `Ak` stays a key to the engine, `AspectKey` is what the API takes (`RawKey` beneath it, hidden).
+Done (step 4), notes/api.md has the shapes. Where they left the proposal: async calls and connecting take no timeout (a caller's runtime races them; `SyncFirst::Try(Duration)` alone holds one), `Config` nests `ClientConfig`, a thin client takes `ClientConfig`, not `Config`; `db.connect_node` and `disconnect_node` in place of `attach_node` and `detach_node`; `created` and `changed` return a `ThingStamp` with `id: Option<CommitId>` (an ephemeral thing's creation names no batch, and no id stands in for one); `Ak` stays a key to the engine, `AspectKey` is what the API takes (`RawKey` beneath it, hidden).
 
 Keep as they are:
 - `undo` and `redo` as two functions: different results, no shared target to enum over.
@@ -58,14 +62,6 @@ Keep as they are:
 - One `Osis` type with `Unsupported` on calls a kind of handle doesn't carry (Tess's decision against a second client type). Each such call's doc must say so.
 - A flat method list on `Osis` rather than namespaces (`db.sharing()`, ...): that would add concepts.
 - `settle` for both pump and test wait: same operation, though `run_callbacks` may read better.
-
-## One commit (step 5b)
-`Write::commit` still splits a write into several commits, one per expiry and per `nobody` class (`Committed::also`, spec/commits.md §5 and §6). An atomic write that silently isn't atomic is what Tess wants gone.
-- `commit` makes exactly one commit, or fails `Invalid` before anything applies, naming what clashed. `Committed::also` goes; `commit` returns one id. The app splits, visibly, if it means to.
-- A commit has one expiry, so expiry belongs on the write, not per aspect: `w.expires(e)`, and `AspectWrite::expires` and `ExpiringGroupWrite` go. A key's default expiry applies unless the write sets one; keys whose defaults differ in one write are a clash.
-- A thing's record can't expire, so creating a thing with expiring content takes two commits today, and an app sees that (Tess: fine, explicit beats a quiet split). If creations often need their own commit, consider a helper, say `db.create_thing()`, which commits a creation alone and returns the tid, callable in the middle of building another write: judge it from chat and the app. Check whether the record could go in an expiring commit (exempt, as `created.0` already is from the `nobody` rule); that's an engine and spec change for after owner removal, so write it up rather than build it.
-- A mixed durable and ephemeral write: is it one commit? Decide by the same rule.
-- Port every caller: chat's disappearing messages, the CLI, undo's and `revert`'s handling of `also`, and spec/commits.md's "a writer splits".
 
 ## E. Leaks
 Done (step 5), notes/api.md has the shapes. Left: `Admit`, `HostCaps`, `HostPolicy`, `Hosting`, `Device`, `host_*` go with step 6 (`Serving`, `Address`). `Value::Unknown` stays: a newer writer's value reaches apps as it is. `Value::Link` is hidden: reads replace it and writes refuse it. `Time` is `WallMs` by a second name below the API until the last sweep (Decided).
@@ -88,9 +84,9 @@ Done (step 5), notes/api.md has the shapes. Left: `Admit`, `HostCaps`, `HostPoli
 ### Vocabulary
 Decided with Tess (concepts, not only words; notes/api-design.md):
 - **"Database" retires.** A **store** is what's on disk, a **node** is what runs, and `Osis` is a handle to one. Docs and errors follow.
-- **Draft and ephemeral.** A new thing not yet durably written is a **draft**: local and unsaved. **Ephemeral** stays for `~` aspects: shared with others, never stored.
+- **Draft and ephemeral.** A new thing not yet durably written is a **draft**, shared or not. **Ephemeral** stays for `~` aspects: shared with others, never stored.
 - **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. "Key actor" stays internal, and the spec's definition stops being "has role secrets".
-- **A commit is an atomic write, called a commit, never implicitly split (Tess, strongly).** See "One commit" below. "Change" as a public word goes, with `ChangeId`: one opaque `CommitId`, ephemeral commits included. "Batch" goes where it means a commit. In the spec, one word of "part" and "delta".
+- **A commit is an atomic write, called a commit, never implicitly split (Tess, strongly).** Done in the API (step 5b, notes/api.md Writes). "Change" stays only for a value changing (`on_change`, `Change<T>`). In the spec, one word of "part" and "delta".
 - **Sync ID replaces label**, internally and externally, in code and spec. API: an opaque `SyncId`, only where serving's admission needs one. Code and spec prose wait for owner removal.
 - **Aspect key** is the whole string (`note:title.0~`), as the spec's AK. Consistently: `db.aspect_key(ak)`, not `db.key`; `Ak` stays its type. Domain plus generic word is fine, as with crypto keys: Tess isn't concerned by collisions that clearly refer to different things, only by one concept under several terms or one term used suboptimally.
 - **Keep** splits: a removed holder's copy (`retain_copy`-style), `keep_alive`, and retention's keep-at-most. **Invite** on a grant becomes `may_grant`; "invite" stays for an incoming request from a stranger. Route, link and card: agent's discretion.
@@ -127,6 +123,7 @@ Decided with Tess (concepts, not only words; notes/api-design.md):
 One branch per step, in order; each merges before the next starts.
 - **4. Shapes**: D. Done.
 - **5. Leaks**: E. Done.
+- **5b. One commit**: Done (notes/api.md Writes). Engine names (`ChangeId`, `Written`, `Mutation::expires` per aspect) stay until the last sweep.
 - **6. Names and docs**: F, the Vocabulary, and H's doc rewrite.
 
 Rules for each step's worker:

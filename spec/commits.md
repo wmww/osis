@@ -123,7 +123,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 
 ### Who and how long
 - **Purgeable by**: a set, not a scale: `nobody` (none), `admin` (the thing's admins), `author` (the delta's author), `author_or_admin` (both), `writer` (every writer, so both too).
-  - A `nobody` delta shares a commit only with `nobody` deltas, `created.0` and `required.0^` aside, which go with any; a writer splits a write mixing them into commits (§6).
+  - A `nobody` delta shares a commit only with `nobody` deltas, `created.0` and `required.0^` aside, which go with any (§6).
   - No exception widens it: a body whose set has no holder stays until a keep-at-most bound or expiry, if any.
   - A member of the set may drop the delta's body: by purge request (spec/permissions.md §7), by compaction, and by deleting its blobs at hosts (spec/sync.md §5). Delete keys follow it (spec/crypto.md §7).
   - A **right holder** is a node that holds the right now.
@@ -234,7 +234,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - A writer whose `ts` has reached the T it was given (its HLC ahead of its clock) writes `wall_ms(ts) + 1`.
 - The schema may give a default per AK as a duration from the write.
 - The blob prefix carries the commit's T (spec/sync.md §1, §3).
-- A writer splits a write whose deltas want different expiries, or that mixes `nobody` deltas with others (§5), into commits, one per expiry and class, under one `ts` (spec/crdt.md §2.2), the one carrying the things' records first. `required.0^` goes in the commit holding its thing's other deltas of the write.
+- A write is one commit. A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect or a purge request; and one mixing durable, ephemeral and relay-only writes (§2, spec/sync.md §9).
 - At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less, the body and every held body carrying a copy of their values as its leftover, whatever the delta's keep-at-least bound.
 - A delta never received stays never received: a copy arriving after T joins value-less (held as its leftover from then on), and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
 - Hosts delete the blob at T unattended (spec/sync.md §5).

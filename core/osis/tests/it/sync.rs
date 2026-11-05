@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::MemStoreMeasures as _;
-use osis::internals::ChangeRaw as _;
+use osis::internals::CommitRaw as _;
 use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
@@ -257,7 +257,7 @@ fn link_redeem_spec_permissions_8() {
     w.run();
     assert_eq!(x(bob, v), Some(s("after the link ended")), "the joiner stays");
     let mut c = w.cfg(9, &[0]);
-    c.handle.internals.connection_wait = Some(Duration::from_secs(5));
+    c.app.internals.connection_wait = Some(Duration::from_secs(5));
     let carol = osis::internals::create(c).unwrap().0;
     w.run();
     assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Invalid(_))), "used once");
@@ -283,7 +283,7 @@ fn used_link_refused_at_once_spec_permissions_8() {
     for (i, wait) in [0, 10_000, 10_000].into_iter().enumerate() {
         w.advance(wait);
         let mut c = w.cfg(20 + i as u64, &[0]);
-        c.handle.internals.connection_wait = Some(Duration::from_secs(5));
+        c.app.internals.connection_wait = Some(Duration::from_secs(5));
         let carol = osis::internals::create(c).unwrap().0;
         w.run();
         assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Invalid(_))), "refused, attempt {i}");
@@ -310,7 +310,7 @@ fn used_link_with_sharer_offline_spec_permissions_8() {
     item(bob, g, g, "from the joiner");
     w.run();
     let mut c = w.cfg(30, &[0]);
-    c.handle.internals.connection_wait = Some(Duration::from_secs(5));
+    c.app.internals.connection_wait = Some(Duration::from_secs(5));
     let carol = osis::internals::create(c).unwrap().0;
     w.run();
     let r = w.try_until(carol.redeem(&link), 1000, 10);
@@ -643,7 +643,11 @@ fn disappearing_message_spec_commits_6() {
     w.run();
     let mut wr = alice.write();
     let m = wr.create_in(g, &[g]).unwrap();
-    wr.at(m, osis::Key::untyped(ak("t:x.0"))).expires(osis::Expiry::In(Duration::from_secs(10))).set(&s("gone soon")).unwrap();
+    wr.at(m, osis::Key::untyped(ak("t:kept.0"))).set(&s("kept")).unwrap();
+    wr.commit().unwrap();
+    let mut wr = alice.write();
+    wr.expires(osis::Expiry::In(Duration::from_secs(10)));
+    wr.at(m, osis::Key::untyped(ak("t:x.0"))).set(&s("gone soon")).unwrap();
     wr.commit().unwrap();
     w.run();
     assert_eq!(x(bob, m), Some(s("gone soon")));

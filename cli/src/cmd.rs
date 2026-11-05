@@ -9,7 +9,7 @@ use crate::{Ctx, StoreSel, exit, open, opt_ts, parse_ak, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    Change, ChangeId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Value,
+    Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -41,23 +41,23 @@ pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
 }
 
 /// A commit id, as `inspect` prints it.
-pub fn commit_text(c: &osis::internals::CommitId) -> String {
-    ChangeId::from(*c).to_string()
+pub fn commit_text(c: &osis::internals::RawCommitId) -> String {
+    CommitId::from(*c).to_string()
 }
 
-/// Prints a change id (nothing when nothing changed).
-fn emit_commit(ctx: &mut Ctx<'_>, c: Option<ChangeId>) -> anyhow::Result<()> {
+/// Prints a commit id (nothing when nothing changed).
+fn emit_commit(ctx: &mut Ctx<'_>, c: Option<CommitId>) -> anyhow::Result<()> {
     let c = c.map(|c| c.to_string());
     ctx.emit(&c.iter().cloned().collect::<Vec<_>>(), J::obj([("commit", J::opt(c.map(J::str)))]))
 }
 
-fn parse_change(s: &str) -> anyhow::Result<ChangeId> {
-    s.parse().map_err(|_| usage(format!("not a change id: {s}")))
+fn parse_id(s: &str) -> anyhow::Result<CommitId> {
+    s.parse().map_err(|_| usage(format!("not a commit id: {s}")))
 }
 
-/// The commit behind a change id, as `inspect` asks.
-fn parse_commit(s: &str) -> anyhow::Result<osis::internals::CommitId> {
-    osis::internals::ChangeRaw::commit(&parse_change(s)?).ok_or_else(|| usage(format!("not a commit id (64 hex digits): {s}")))
+/// The durable commit behind a commit id, as `inspect` asks.
+fn parse_commit(s: &str) -> anyhow::Result<osis::internals::RawCommitId> {
+    osis::internals::CommitRaw::commit(&parse_id(s)?).ok_or_else(|| usage(format!("not a commit id (64 hex digits): {s}")))
 }
 
 fn ts_text(raw: bool, ms: u64) -> String {
@@ -468,12 +468,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let mut q = CommitQuery { scope: opt_scope(ctx, &s)?, in_effect, limit: max, ..CommitQuery::default() };
             q.actors = actor.iter().map(|a| ctx.tid(a)).collect::<anyhow::Result<_>>()?;
             q.kinds = kind.iter().map(|k| kind_of(k)).collect::<anyhow::Result<_>>()?;
-            q.reverts = reverts.as_deref().map(parse_change).transpose()?;
-            q.reverted_by = reverted_by.as_deref().map(parse_change).transpose()?;
-            q.after = after.as_deref().map(parse_change).transpose()?;
+            q.reverts = reverts.as_deref().map(parse_id).transpose()?;
+            q.reverted_by = reverted_by.as_deref().map(parse_id).transpose()?;
+            q.after = after.as_deref().map(parse_id).transpose()?;
             q.since = opt_ts(&since)?;
             q.until = opt_ts(&until)?;
-            // the one change undo or redo would revert: a question of its own, about a scope
+            // the one commit undo or redo would revert: a question of its own, about a scope
             if let Some(n) = next {
                 if q != (CommitQuery { scope: q.scope.clone(), ..CommitQuery::default() }) {
                     return Err(usage("--next takes only a scope"));
@@ -501,12 +501,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Purge { t, ak, commit, author } => {
             let tid = ctx.tid(&t)?;
             let key = ctx.key(&ak)?;
-            let commit = commit.as_deref().map(parse_change).transpose()?;
+            let commit = commit.as_deref().map(parse_id).transpose()?;
             let author = author.as_deref().map(|a| ctx.tid(a)).transpose()?;
             let mut w = db.write();
             let mut at = w.at(tid, key);
             match (commit, author) {
-                (Some(c), _) => at.purge(osis::Purge::Change(c))?,
+                (Some(c), _) => at.purge(osis::Purge::Commit(c))?,
                 (_, Some(a)) => at.purge(osis::Purge::Author(a))?,
                 _ => at.purge(osis::Purge::All)?,
             }
@@ -516,7 +516,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Undo { scope: s } => undo(ctx, &s, false),
         Cmd::Redo { scope: s } => undo(ctx, &s, true),
         Cmd::Revert { id } => {
-            let c = db.revert(parse_change(&id)?)?;
+            let c = db.revert(parse_id(&id)?)?;
             emit_commit(ctx, Some(c.id))
         }
         Cmd::Groups { t } => {
@@ -748,10 +748,10 @@ fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, l
         return Ok(());
     }
     let (v, pty) = match path {
-        None | Some("") => (db.at(t, key.clone()).get()?, key.value_type()),
+        None | Some("") => (db.at(t, key.clone()).get()?, key.value_type().map(|t| t.get())),
         Some(p) => {
             let p = write::path(ctx, t, &key, p, false)?;
-            let pty = key.value_type().and_then(|t| text::type_at_path(t, &p.0));
+            let pty = key.value_type().map(|t| t.get()).and_then(|t| text::type_at_path(t, &p.0));
             (db.at(t, key.clone()).path(p).get::<osis::Value>()?, pty)
         }
     };
@@ -767,7 +767,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
     let t = ctx.tid(t)?;
     let key = ctx.key(ak)?;
     let db = ctx.db.clone();
-    let ty = key.value_type();
+    let ty = key.value_type().map(|t| t.get());
     let ty = ty.as_ref();
     let (base, new) = match base {
         Some(b) => {
@@ -873,7 +873,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     for ak in &aks {
         let key = ctx.key(ak.as_str())?;
         let (s, j) = match db.at(t, key.clone()).get() {
-            Ok(Some(v)) => show_value(ctx, &v, key.value_type().as_ref()),
+            Ok(Some(v)) => show_value(ctx, &v, key.value_type().map(|t| t.get()).as_ref()),
             // a value its schema does not read (a `Mismatch` diagnostic): shown untyped
             Ok(None) => match db.at(t, Key::untyped(ak.clone())).get() {
                 Ok(Some(v)) => show_value(ctx, &v, None),
@@ -917,7 +917,7 @@ fn stamp_json(c: osis::ThingStamp) -> J {
 
 fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
     let key = ctx.key(c.ak.as_str()).ok();
-    let ty = key.as_ref().and_then(Key::value_type);
+    let ty = key.as_ref().and_then(Key::value_type).map(|t| t.get());
     let ty = ty.as_ref();
     let (src, info) = match &c.source {
         Source::Initial => ("initial", None),
@@ -1006,10 +1006,10 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
 }
 
 const KINDS: [(&str, CommitKind); 5] =
-    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("summary", CommitKind::Summary), ("ephemeral", CommitKind::Ephemeral)];
+    [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("summary", CommitKind::Summary), ("ephemeral", CommitKind::Ephemeral)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
-    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, role, summary or ephemeral")))
+    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: content, revert, role, summary or ephemeral")))
 }
 
 fn kind_text(k: CommitKind) -> &'static str {
@@ -1147,7 +1147,7 @@ fn status_json(s: &osis::Status) -> J {
 /// One diagnostic as `diag` prints it (text or a JSON line): its kind, what it names, its detail.
 fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
     use osis::Diagnostic as D;
-    let (kind, tids, commit, peer, detail): (&str, Vec<Tid>, Option<osis::ChangeId>, Option<Tid>, &str) = match d {
+    let (kind, tids, commit, peer, detail): (&str, Vec<Tid>, Option<osis::CommitId>, Option<Tid>, &str) = match d {
         D::NotSynced { thing, group, detail } => ("NotSynced", std::iter::once(*thing).chain(*group).collect(), None, None, detail),
         D::MembershipNotSaved { item, group, detail } => ("MembershipNotSaved", vec![*item, *group], None, None, detail),
         D::Uncommitted { thing, detail } => ("Uncommitted", vec![*thing], None, None, detail),

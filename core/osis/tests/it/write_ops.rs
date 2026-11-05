@@ -77,8 +77,8 @@ const SETUP: usize = 4;
 
 /// A case: how many things it creates (first in the batch: they draw the same tids either
 /// way), then its calls. Lists that would read differently batched and unbatched are
-/// normalized away (a batch's `delete` removes what is held when the batch commits, not what
-/// the batch wrote before it): a thing has no call before its delete, and a created thing is
+/// normalized away (a commit's `delete` removes what is held when it commits, not what
+/// was written before it in it): a thing has no call before its delete, and a created thing is
 /// not deleted.
 fn case(seed: u64) -> (usize, Vec<Call>) {
     let mut r = Rng(seed);
@@ -115,7 +115,18 @@ fn case(seed: u64) -> (usize, Vec<Call>) {
             c => !c.things().iter().any(|t| first_delete(*t).is_some_and(|d| i < d)),
         })
         .collect();
-    let calls = calls.into_iter().zip(keep).filter_map(|(c, k)| k.then_some(c)).collect();
+    // a thing's first durable write does not expire: what expires goes on the things already kept
+    let calls = calls
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(c, k)| k.then_some(c))
+        .map(|c| match c {
+            Call::SetExpiring(t, k, v) if t >= SETUP => Call::Set(t, k, v),
+            Call::Opened(t, _) if t >= SETUP => Call::Views(t, 1),
+            Call::Place(t, 1) if t >= SETUP => Call::Place(t, 0),
+            c => c,
+        })
+        .collect();
     (creates, calls)
 }
 
@@ -148,7 +159,10 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
     let [g0, g1] = wd.groups;
     match c {
         Call::Set(t, k, v) => w.at(things[*t], osis::Key::untyped(key(*k))).set(&Value::Int(*v)),
-        Call::SetExpiring(t, k, v) => w.at(things[*t], osis::Key::untyped(key(*k))).expires(osis::Expiry::In(HOUR)).set(&Value::Int(*v)),
+        Call::SetExpiring(t, k, v) => {
+            w.expires(osis::Expiry::In(HOUR));
+            w.at(things[*t], osis::Key::untyped(key(*k))).set(&Value::Int(*v))
+        }
         Call::Replace(t, k, v) => w.at(things[*t], osis::Key::untyped(key(*k))).overwrite(&Value::Int(*v)),
         Call::Remove(t, k) => w.at(things[*t], osis::Key::untyped(key(*k))).remove(),
         Call::Put(t, k, v) => w.at(things[*t], osis::Key::untyped(key(2))).path(p!(Value::Int(*k))).set(&Value::Int(*v)),
@@ -158,7 +172,10 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
         Call::Views(t, n) => w.at(things[*t], notes::VIEWS).path(osis::Path::root()).contribute(n),
         Call::Opened(t, v) => w.at(things[*t], notes::LAST_OPENED).set(v),
         Call::Place(t, 0) => w.group(g0).add(osis::Member::Item(things[*t])),
-        Call::Place(t, _) => w.group(g1).expires(osis::Expiry::In(HOUR)).add(osis::Member::Item(things[*t])),
+        Call::Place(t, _) => {
+            w.expires(osis::Expiry::In(HOUR));
+            w.group(g1).add(osis::Member::Item(things[*t]))
+        }
         Call::Unplace(t) => w.group(g0).remove(osis::Member::Item(things[*t])),
         Call::AddSubgroup(t) => w.group(g0).add(osis::Member::Subgroup(things[*t])),
         Call::RemoveSubgroup(t) => w.group(g0).remove(osis::Member::Subgroup(things[*t])),
@@ -166,28 +183,54 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
     }
 }
 
-/// Runs the case batched (one `Write`) or one call per batch; the things and the batched
+/// Which calls may share a commit by their expiry: none, an hour, the key's default.
+fn expiry_class(c: &Call) -> u8 {
+    match c {
+        Call::SetExpiring(..) | Call::Place(_, 1) => 1,
+        Call::Opened(..) => 2,
+        _ => 0,
+    }
+}
+
+/// Runs the case batched (a `Write` per run of calls of one expiry; one the node refuses to hold as
+/// one commit, one call per commit) or one call per commit; the things and the last batched
 /// commit's ID.
-fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Option<osis::ChangeId>) {
+fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Option<osis::CommitId>) {
     let wd = world();
     let db = wd.db.clone();
     let mut things = wd.things.clone();
     let mut id = None;
-    if batched {
-        let mut w = db.write();
-        for _ in 0..creates {
-            things.push(w.create().unwrap());
-        }
-        for c in calls {
-            apply(&mut w, &wd, &things, c).unwrap_or_else(|e| panic!("{c:?}: {e}"));
-        }
-        id = w.commit().unwrap().map(|c| c.id);
-    } else {
-        for _ in 0..creates {
+    let mut fresh = creates;
+    let runs: Vec<&[Call]> = if batched { calls.chunk_by(|a, b| expiry_class(a) == expiry_class(b)).collect() } else { calls.chunks(1).collect() };
+    if !batched || calls.is_empty() {
+        for _ in 0..std::mem::take(&mut fresh) {
             things.push(db.batch(|w| w.create()).unwrap());
         }
-        for c in calls {
-            db.batch(|w| apply(w, &wd, &things, c)).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+    }
+    for run in runs {
+        let mut w = db.write();
+        let mut all = things.clone();
+        for _ in 0..fresh {
+            all.push(w.create().unwrap());
+        }
+        for c in run {
+            apply(&mut w, &wd, &all, c).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+        }
+        match w.commit() {
+            Ok(c) => {
+                things = all;
+                fresh = 0;
+                id = c.map(|c| c.id).or(id);
+            }
+            Err(osis::Error::Invalid(_)) if batched && run.len() > 1 => {
+                for _ in 0..std::mem::take(&mut fresh) {
+                    things.push(db.batch(|w| w.create()).unwrap());
+                }
+                for c in run {
+                    db.batch(|w| apply(w, &wd, &things, c)).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+                }
+            }
+            Err(e) => panic!("{run:?}: {e}"),
         }
     }
     (wd, things, id)

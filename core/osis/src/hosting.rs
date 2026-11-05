@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::share::{HostAddr, Url};
 use crate::Osis;
 use osis_base::{LabelId, Tid, hex};
-use osis_node::sync::{HostPolicy as HostLimits, HostStatus, host_policy};
+use osis_node::sync::{HostPolicy as HostLimits, HostStatus, host_policy, host_policy_known};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -59,10 +59,14 @@ pub struct HostPolicy {
     pub tuning: HostTuning,
 }
 
-/// `HostPolicy::tuning`: the host's other limits by their names, none of them a field's.
+/// `HostPolicy::tuning`: the host's other limits by their names, none of them a field's, and those
+/// stored by another node that this build cannot run by, kept for when a policy read here is set.
 #[doc(hidden)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HostTuning(pub(crate) BTreeMap<String, u64>);
+pub struct HostTuning {
+    pub(crate) known: BTreeMap<String, u64>,
+    pub(crate) unknown: BTreeMap<String, u64>,
+}
 
 /// The names of `HostPolicy`'s fields among the host's own.
 const PLAIN: [(&str, &str); 6] = [("group_entries", "cap_entries"), ("group_bytes", "cap_bytes"), ("groups", "max_labels"), ("entries", "max_entries"), ("bytes", "max_bytes"), ("connections", "max_connections")];
@@ -76,12 +80,26 @@ impl Default for HostPolicy {
 impl HostPolicy {
     fn of(p: &HostLimits) -> HostPolicy {
         let tuning = p.knobs().into_iter().filter(|(k, _)| !PLAIN.iter().any(|(_, h)| h == k)).collect();
-        HostPolicy { group_entries: p.cap_entries, group_bytes: p.cap_bytes, groups: p.max_labels, entries: p.max_entries, bytes: p.max_bytes, connections: p.max_connections, tuning: HostTuning(tuning) }
+        HostPolicy { group_entries: p.cap_entries, group_bytes: p.cap_bytes, groups: p.max_labels, entries: p.max_entries, bytes: p.max_bytes, connections: p.max_connections, tuning: HostTuning { known: tuning, unknown: BTreeMap::new() } }
     }
 
-    /// The host's own limits, `Invalid` when it cannot run by them.
+    /// The stored limits `stored`, as far as this build can run by them, the rest kept.
+    fn stored(stored: &BTreeMap<String, u64>) -> HostPolicy {
+        let (p, unknown) = host_policy_known(stored);
+        let mut out = HostPolicy::of(&p);
+        out.tuning.unknown = unknown;
+        out
+    }
+
+    /// The host's own limits, `Invalid` when it cannot run by them; those it could not read stay.
     fn limits(&self) -> Result<BTreeMap<String, u64>> {
-        let mut k = self.tuning.0.clone();
+        let mut k = self.known_limits()?;
+        k.extend(self.tuning.unknown.iter().map(|(n, v)| (n.clone(), *v)));
+        Ok(k)
+    }
+
+    fn known_limits(&self) -> Result<BTreeMap<String, u64>> {
+        let mut k = self.tuning.known.clone();
         let d = HostLimits::default();
         let mut put = |name: &str, v: u64, def: u64| {
             if v != def {
@@ -101,9 +119,11 @@ impl HostPolicy {
     /// Sets a limit by name: a field's, or one of the host's own.
     pub(crate) fn set(&mut self, name: &str, n: u64) -> std::result::Result<(), String> {
         let host = PLAIN.iter().find(|(p, _)| *p == name).map_or(name, |(_, h)| *h);
-        let mut k = self.limits().map_err(|e| e.to_string())?;
+        let mut k = self.known_limits().map_err(|e| e.to_string())?;
         k.insert(host.to_string(), n);
+        let unknown = std::mem::take(&mut self.tuning.unknown);
         *self = HostPolicy::of(&host_policy(&k)?);
+        self.tuning.unknown = unknown;
         Ok(())
     }
 }
@@ -141,8 +161,8 @@ impl Osis {
             admit: h.admit,
             admitted: h.labels.into_iter().map(AdmissionId).collect(),
             replicate: h.replicate.into_iter().map(|a| HostAddr(osis_label::Address { url: a.url, key: a.key })).collect(),
-            // what the host runs by, the defaults for knobs it does not know
-            policy: HostPolicy::of(&host_policy(&h.policy).unwrap_or_default()),
+            // what the host runs by; a limit it cannot, another node's, stays for a later set
+            policy: HostPolicy::stored(&h.policy),
             caps: h.caps.into_iter().map(|(l, c)| (AdmissionId(l), c)).collect(),
         }))
     }

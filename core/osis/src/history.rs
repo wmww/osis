@@ -10,7 +10,7 @@ use crate::read::{AspectRef, Reader, ak_of, lenient};
 use crate::sources::Source;
 use crate::read::Stamp;
 use crate::watch::{Delivery, Filter, Subscription};
-use crate::change::{ChangeId, HistoryFrom, HistoryPos};
+use crate::commit_id::{CommitId, HistoryFrom, HistoryPos};
 use osis_base::{Ak, Tid, Value};
 use osis_node::engine::history::{HistoryRow, RowBody};
 use osis_schema::AspectKey;
@@ -27,18 +27,18 @@ pub enum HistoryBody<T> {
     /// Its value (`None`: the write holds no whole value of the key's type, a removal or a path
     /// write, or it does not read as that type: a `Mismatch` diagnostic).
     Held(Option<T>),
-    /// Held, and above `HandleConfig::read_limit`.
+    /// Held, and above `AppConfig::read_limit`.
     TooLarge { limit: usize },
     /// Purged, on every honest node: the entry stays to say so. `by` the purge, `actor` who made it
     /// (`None`: not known here).
-    Purged { by: ChangeId, actor: Option<Tid> },
+    Purged { by: CommitId, actor: Option<Tid> },
     /// Gone for another reason: it expired, passed a keep bound or was tidied up.
     Gone,
     /// Not on this node yet: known of, and still to arrive. Not an absence.
     NotFetched,
 }
 
-/// One change's write on an aspect: `commit.actor` is verified exactly when `valid`.
+/// One commit's write on an aspect: `commit.actor` is verified exactly when `valid`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryEntry<T> {
     pub commit: Stamp,
@@ -72,7 +72,7 @@ pub struct HistoryPage<T> {
 pub enum HistoryEvent<T> {
     /// This commit's entry reads otherwise now: new (late ones too), turned valid or invalid, body
     /// arrived, purged, dropped. `None`: it has no entry any more (a memory commit gone).
-    Commit { id: ChangeId, entry: Option<HistoryEntry<T>> },
+    Commit { id: CommitId, entry: Option<HistoryEntry<T>> },
     /// Events may have been missed: a connection to the node dropped or came back, or an entry
     /// did not fit. Read the pages shown again; the subscription goes on.
     Reread,
@@ -92,7 +92,7 @@ fn entry_of(r: &mut Reader<'_>, tid: &Tid, ak: &Ak, row: HistoryRow, limit: usiz
             Err(_) => HistoryBody::NotFetched,
         },
         RowBody::TooLarge => HistoryBody::TooLarge { limit },
-        RowBody::Purged(by) => HistoryBody::Purged { by: ChangeId::commit(by), actor: r.e.header(&by).map(|h| h.actor) },
+        RowBody::Purged(by) => HistoryBody::Purged { by: CommitId::commit(by), actor: r.e.header(&by).map(|h| h.actor) },
         RowBody::Dropped => HistoryBody::Gone,
         RowBody::NotFetched => HistoryBody::NotFetched,
     };
@@ -147,7 +147,7 @@ impl Osis {
     }
 
     /// The entry of `id` at this engine; what a callback or a Notify reads.
-    pub(crate) fn history_entry_here(&self, tid: Tid, ak: &Ak, id: &ChangeId) -> Result<Option<HistoryEntry<Value>>> {
+    pub(crate) fn history_entry_here(&self, tid: Tid, ak: &Ak, id: &CommitId) -> Result<Option<HistoryEntry<Value>>> {
         let (mat, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
             let mut r = Reader { e: l.engine(), limit: mat, actor };

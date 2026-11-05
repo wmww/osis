@@ -2,7 +2,7 @@
 //! engine's kinds. No correctness depends on one; each says what happened and to what.
 
 use osis_base::Tid;
-use crate::change::ChangeId;
+use crate::commit_id::CommitId;
 use osis_node::DiagnosticKind as K;
 
 /// Something an app may want to log, or tell its user. All but `Handled` name what an app could do
@@ -20,7 +20,7 @@ pub enum Diagnostic {
     Uncommitted { thing: Tid, detail: String },
     /// A write of this node turned invalid after it was written: it no longer reads, and nothing
     /// sends it again. Write it again if it still matters.
-    OwnWriteInvalid { commit: ChangeId, things: Vec<Tid>, detail: String },
+    OwnWriteInvalid { commit: CommitId, things: Vec<Tid>, detail: String },
     /// A stored value did not match the reader's type, and read as absent.
     Mismatch { thing: Tid, detail: String },
     /// A large value could not be read (not fetched yet, or failing verification), and read as absent.
@@ -42,10 +42,10 @@ pub enum Diagnostic {
     /// `Network`.
     SyncStopped { detail: String },
     /// A commit from a newer format than this build reads: it waits here, and an update may read it.
-    Parked { things: Vec<Tid>, commit: Option<ChangeId>, peer: Option<Tid>, detail: String },
+    Parked { things: Vec<Tid>, commit: Option<CommitId>, peer: Option<Tid>, detail: String },
     /// Data from another node was refused, is waiting for what it depends on or was repaired, all
     /// without any part for an app: for a log.
-    Handled { things: Vec<Tid>, commit: Option<ChangeId>, peer: Option<Tid>, detail: String },
+    Handled { things: Vec<Tid>, commit: Option<CommitId>, peer: Option<Tid>, detail: String },
 }
 
 #[doc(hidden)]

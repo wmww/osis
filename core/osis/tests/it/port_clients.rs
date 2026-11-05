@@ -2,7 +2,7 @@
 //! `clients.0^` lists over a keyed listener (here the in-process transport), acting as the client's
 //! actor for every row. The rights of that actor are the whole authorization.
 
-use osis::internals::ChangeRaw as _;
+use osis::internals::CommitRaw as _;
 use crate::common::watched;
 use crate::common::MembersOf as _;
 use crate::common::TestWrites as _;
@@ -43,8 +43,8 @@ struct Node {
 fn open(store: &MemStore, net: &osis_transport::Net, clock: &Arc<ManualClock>, create: bool) -> Osis {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.handle.internals.transport = Some(net.endpoint("n"));
-    c.handle.internals.clock = Some(clock.clone());
+    c.app.internals.transport = Some(net.endpoint("n"));
+    c.app.internals.clock = Some(clock.clone());
     let n = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
     // the keyed listener is up once reach.0 is published
     for _ in 0..2000 {
@@ -90,7 +90,7 @@ impl Node {
 
     fn attach(&self, secret: &ClientSecret) -> osis::Result<Osis> {
         let mut c = osis::internals::Opening::memory();
-        c.handle.internals.transport = Some(self.net.endpoint(&format!("c{}", NAMES.fetch_add(1, Ordering::Relaxed))));
+        c.app.internals.transport = Some(self.net.endpoint(&format!("c{}", NAMES.fetch_add(1, Ordering::Relaxed))));
         // a reopened node: its reach is stored, its listener comes up a moment later
         for _ in 0..2000 {
             match crate::common::block_on(osis::internals::connect(&self.addr(), secret, c.clone())) {
@@ -252,25 +252,48 @@ fn writes_are_the_actors() {
     assert!(matches!(c.batch(|w| w.at(node_thing, ct::CLIENTS).remove()), Err(Error::UnknownThing { .. })));
 }
 
-// spec/commits.md §6, notes/client-port.md: a client's write that splits by expiry comes back
-// with its other commits (`Committed::also` crosses the port), the plain one first.
+// spec/commits.md §5, §6, notes/client-port.md §2: a client's write that cannot be one commit is
+// refused at the node before anything applies, the node's message naming what clashed, by the API
+// and by a raw batch alike; its expiry is the commit's; written apart each comes back with its id.
 #[test]
-fn split_write_comes_back_whole_spec_commits_6() {
+fn a_clashing_write_is_refused_through_the_port_spec_commits_6() {
     let x = node();
-    let (name, brief) = (ak("t:name.0"), ak("t:brief.0"));
+    let (name, brief, hot) = (ak("t:name.0"), ak("t:brief.0"), ak("t:hot.0~"));
     let (a, _s, c) = x.client(Role::Read);
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
+    let n = x.n.engine(|e| e.commit_ids().len());
+    let hour = osis::Expiry::In(Duration::from_secs(3600));
+    // a key's default beside a plain write
+    x.n.register_schema("t.osis", "version 1;\naspect t:soon.0: int [expires: 1h];").unwrap();
+    let mut w = c.write();
+    w.at(x.t, osis::Key::untyped(ak("t:soon.0"))).set(&Value::Int(2)).unwrap();
+    w.at(x.t, osis::Key::untyped(name.clone())).set(&Value::Int(1)).unwrap();
+    let r = w.commit();
+    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("t:soon.0") && m.contains("t:name.0")), "{r:?}");
+    // durable and ephemeral
     let mut w = c.write();
     w.at(x.t, osis::Key::untyped(name.clone())).set(&Value::Int(1)).unwrap();
-    w.at(x.t, osis::Key::untyped(brief.clone())).expires(osis::Expiry::In(Duration::from_secs(3600))).set(&Value::Int(2)).unwrap();
-    let done = w.commit().unwrap().unwrap();
-    let first = done.id.commit().expect("a commit");
-    let [other] = done.also.as_slice() else { panic!("one more commit: {:?}", done.also) };
-    let other = &other.commit().unwrap();
+    w.at(x.t, osis::Key::untyped(hot.clone())).set(&Value::Int(1)).unwrap();
+    let r = w.commit();
+    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("t:hot.0~") && m.contains("t:name.0")), "{r:?}");
+    assert_eq!(x.n.engine(|e| e.commit_ids().len()), n, "nothing applied");
+    // a removal in a commit that expires
+    let mut w = c.write();
+    w.expires(hour);
+    w.group(x.g).remove(osis::Member::Item(x.t)).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Invalid(_))));
+    // apart: one commit each, the expiry the commit's
+    let mut w = c.write();
+    w.at(x.t, osis::Key::untyped(name.clone())).set(&Value::Int(1)).unwrap();
+    let first = w.commit().unwrap().unwrap().id.commit().expect("a commit");
+    let mut w = c.write();
+    w.expires(hour);
+    w.at(x.t, osis::Key::untyped(brief.clone())).set(&Value::Int(2)).unwrap();
+    let other = w.commit().unwrap().unwrap().id.commit().expect("a commit");
     let h = |id| x.n.engine(|e| e.header(&id)).unwrap();
-    assert_eq!(h(first).ts, h(*other).ts, "one ts");
-    assert_eq!((h(first).expires, h(*other).expires), (None, Some(h(first).ts.wall_ms().0 + 3_600_000)));
-    assert_eq!(h(*other).aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), vec!["t:brief.0"]);
+    assert_eq!(h(first).expires, None);
+    assert_eq!(h(other).expires, Some(h(other).ts.wall_ms().0 + 3_600_000));
+    assert_eq!(h(other).aspects.iter().map(|a| a.ak.as_str().to_string()).collect::<Vec<_>>(), vec!["t:brief.0"]);
     assert_eq!((c.at(x.t, osis::Key::untyped(name)).get().unwrap(), c.at(x.t, osis::Key::untyped(brief)).get().unwrap()), (Some(Value::Int(1)), Some(Value::Int(2))));
 }
 
@@ -651,7 +674,7 @@ fn watches_and_rows() {
     assert!(matches!(c.pair_offer(), Err(Error::Unsupported(_))));
     assert!(matches!(c.invite_requests(), Err(Error::Unsupported(_))));
     assert!(matches!(c.sync_options(x.g), Err(Error::Unsupported(_))));
-    assert!(matches!(c.rotate_address(), Err(Error::Unsupported(_))));
+    assert!(matches!(c.rotate_peer_address(), Err(Error::Unsupported(_))));
     assert!(matches!(c.export_bundle(&[x.g], Vec::new()), Err(Error::Unsupported(_))));
     assert!(matches!(c.import_bundle(&b"x"[..]), Err(Error::Unsupported(_))));
     // never "it does not host" from one who may not read the node's thing
@@ -734,7 +757,7 @@ fn group_aspect_ops_place_only_what_it_reads() {
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
 }
 
-// spec/wire.md §11.2, notes/api.md Writes, notes/client-port.md §3: a batch sent by hand names `group.0` for nothing but a placement's expiry, even with only what the actor reads in it; a placement that expires still goes
+// spec/wire.md §11.2, notes/api.md Writes, notes/client-port.md §3: a batch sent by hand names `group.0` for nothing, even with only what the actor reads in it; a placement that expires still goes
 #[test]
 fn a_batch_by_hand_writes_group_0_by_no_op() {
     let x = node();
@@ -743,7 +766,7 @@ fn a_batch_by_hand_writes_group_0_by_no_op() {
     let invalid = |o: Outcome, what: &str| assert!(matches!(&o, Outcome::Err { detail, .. } if format!("{detail:?}").contains("Write::group")), "{what}: {o:?}");
     let readable = ct::Group { items: [x.t].into_iter().collect(), subgroups: Default::default() };
     invalid(raw.call_at(1, WRITE, set_batch(1, a, x.g, &ak("group.0"), osis::Codec::to_value(&readable))), "set");
-    let batch = |nonce: u64, op: Vec<Value>| vec![Value::uint(nonce), Value::Tid(a), Value::List(vec![Value::Str("group.0".into())]), Value::List(vec![Value::List(op)])];
+    let batch = |nonce: u64, op: Vec<Value>| vec![Value::uint(nonce), Value::Tid(a), Value::List(vec![Value::Str("group.0".into())]), Value::List(vec![Value::List(op)]), Value::opt(None)];
     let (key, g) = (Value::Int(0), Value::Tid(x.g));
     invalid(raw.call_at(2, WRITE, batch(2, vec![Value::Int(6), g.clone(), key.clone()])), "purge");
     invalid(raw.call_at(3, WRITE, batch(3, vec![Value::Int(9), g.clone(), key.clone(), Value::Tid(a)])), "purge an author");
@@ -751,15 +774,14 @@ fn a_batch_by_hand_writes_group_0_by_no_op() {
     let none = Value::List(vec![Value::opt(None), Value::opt(None)]);
     invalid(raw.call_at(5, WRITE, batch(5, vec![Value::Int(5), g, key, Value::List(vec![Value::Int(0), none.clone(), none])])), "retention");
     assert_eq!(x.n.items(x.g).unwrap().len(), 2, "nothing written");
-    // an expiry on `group.0` alone writes nothing
-    let at = Value::uint(T0 + 60_000);
-    assert!(matches!(raw.call_at(6, WRITE, batch(6, vec![Value::Int(4), Value::Tid(x.g), Value::Int(0), at])), Outcome::Ok { .. }));
-    assert_eq!(x.n.items(x.g).unwrap().len(), 2);
-    // the call an expiry in the table is for
+    // an expiry names no key: the commit's, a member's leaving with it
     let mut w = c.write();
     let m = w.create_with_admin(x.g).unwrap();
     w.at(m, osis::Key::untyped(ak("t:name.0"))).set(&Value::Int(1)).unwrap();
-    w.group(x.g).expires(osis::Expiry::In(Duration::from_secs(60))).add(osis::Member::Item(m)).unwrap();
+    w.commit().unwrap();
+    let mut w = c.write();
+    w.expires(osis::Expiry::In(Duration::from_secs(60)));
+    w.group(x.g).add(osis::Member::Item(m)).unwrap();
     w.commit().unwrap();
     assert!(x.n.items(x.g).unwrap().contains(&m));
 }
@@ -1091,7 +1113,7 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
 fn revert_lists_nothing_hidden() {
     let x = node();
     let (_, _, c) = x.client(Role::Write);
-    let refused = |r: osis::Result<osis::Committed>, g: Tid| assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == g), "{r:?}");
+    let refused = |r: osis::Result<osis::Commit>, g: Tid| assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == g), "{r:?}");
     let unplaced = |m: Tid| {
         let mut w = x.n.write();
         w.group(x.g).remove(osis::Member::Item(m)).unwrap();
@@ -1144,21 +1166,20 @@ fn revert_lists_nothing_hidden() {
     let id = unplaced(mine);
     c.revert(id).unwrap();
     assert!(listed(mine));
-    // both halves of one change: the durable half refused after the ephemeral one was built: nothing of either, nothing logged, no commit
-    let mut w = x.n.write();
-    w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
-    w.commit().unwrap();
+    // a commit keeping a draft in a group, with the memory commit that follows it: the durable one refused after the other was built: nothing of either, nothing logged, no commit
     let eph = ak("t:e.0~");
-    let both = {
-        let mut w = x.n.write();
-        w.group(x.g).remove(osis::Member::Item(x.out)).unwrap();
-        w.at(x.t, osis::Key::untyped(eph.clone())).set(&Value::Int(5)).unwrap();
-        w.commit().unwrap().unwrap().id
-    };
+    x.n.commit_set(x.t, osis::Key::untyped(eph.clone()), &Value::Int(5)).unwrap();
+    let draft = x.n.batch(|w| {
+        let d = w.create()?;
+        w.group(x.g).add(osis::Member::Item(d))?;
+        Ok(d)
+    })
+    .unwrap();
+    let both = crate::common::commit_with(&x.n, |w| w.at(draft, osis::Key::untyped(ak("t:name.0"))).set(&Value::Int(1))).id;
     let (held, logged) = (x.n.commits(&CommitQuery::default()).unwrap().len(), x.n.engine(|e| e.ephemeral_log().len()));
     let r = c.revert(both);
-    assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.g || tid == x.t), "{r:?}");
-    assert!(!listed(x.out));
+    assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.g || tid == draft), "{r:?}");
+    assert!(x.n.items(x.g).unwrap().contains(&draft));
     assert_eq!(x.n.at(x.t, osis::Key::untyped(eph.clone())).get().unwrap(), Some(Value::Int(5)));
     assert_eq!((x.n.commits(&CommitQuery::default()).unwrap().len(), x.n.engine(|e| e.ephemeral_log().len())), (held, logged));
     c.commit_set(x.t, osis::Key::untyped(eph.clone()), &Value::Int(6)).unwrap();
@@ -1449,7 +1470,7 @@ fn history_rows_as_the_actor() {
     assert_eq!(e.commit.actor, a);
     let id = e.commit.id;
     let mut w = c.write();
-    w.at(x.t, osis::Key::untyped(k.clone())).purge(osis::Purge::Change(id)).unwrap();
+    w.at(x.t, osis::Key::untyped(k.clone())).purge(osis::Purge::Commit(id)).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
     let e = &x.n.at(x.t, osis::Key::untyped(k.clone())).history(HistoryFrom::Newest, 2).unwrap().entries;
     assert!(e.iter().any(|e| e.commit.id == id && e.body == HistoryBody::Purged { by: rq, actor: Some(a) }), "{e:?}");
@@ -1460,7 +1481,7 @@ fn history_rows_as_the_actor() {
     assert!(w.commit().is_err());
     let (_, _, ro) = x.client(Role::Read);
     let mut w = ro.write();
-    w.at(x.t, osis::Key::untyped(k.clone())).purge(osis::Purge::Change(one)).unwrap();
+    w.at(x.t, osis::Key::untyped(k.clone())).purge(osis::Purge::Commit(one)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a reader's request");
     // the second layer: a handle acting for it reads nothing either, if a delivery ever reached one
     let acting = x.n.acting_as(a);
@@ -1520,7 +1541,7 @@ fn history_watch_sends_everything_waiting() {
     let (tx, rx) = channel();
     let _s = c.at(x.t, osis::Key::untyped(k.clone())).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
     let n = osis::internals::HISTORY_SEND * 3;
-    let changes: Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let changes: Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1557,7 +1578,7 @@ fn history_watch_past_its_budget_lapses() {
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::Key::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
     let n = osis::internals::SIGNAL_BYTES / osis::internals::HISTORY_DIRTY_BYTES + 1;
-    let changes: Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    let changes: Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
         e.core.events.flush();
@@ -1610,7 +1631,7 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
     let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.commit_set(t, osis::Key::untyped(k2), &Value::Int(7)).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
-    let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> { (0..n as u32).map(|i| (on, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
+    let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::internals::node::ChangeId)> { (0..n as u32).map(|i| (on, k.clone(), osis::internals::node::ChangeId::Commit(osis::internals::RawCommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
     let flood = osis::internals::SIGNAL_BYTES / osis::internals::HISTORY_DIRTY_BYTES;
     x.n.engine(|e| {
         e.core.events.queue(osis_node::Event::History(Arc::new(ids(flood, x.u))));

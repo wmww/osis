@@ -3,7 +3,7 @@
 
 use crate::common::TestWrites as _;
 use crate::common::*;
-use osis::{ChangeId, CommitKind, Error, HistoryBody, HistoryEvent, HistoryFrom, Osis, Role, SyncScope, Tid, Value};
+use osis::{CommitId, CommitKind, Error, HistoryBody, HistoryEvent, HistoryFrom, Osis, Role, SyncScope, Tid, Value};
 use osis_sim::world::World;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
@@ -24,7 +24,7 @@ fn thing(db: &Osis) -> Tid {
     db.batch(|w| w.create()).unwrap()
 }
 
-fn say(db: &Osis, t: Tid, x: &str) -> ChangeId {
+fn say(db: &Osis, t: Tid, x: &str) -> CommitId {
     let mut w = db.write();
     w.at(t, osis::Key::untyped(msgs())).set(&s(x)).unwrap();
     w.commit().unwrap().unwrap().id
@@ -53,7 +53,7 @@ fn page_and_watch() {
     let got = heard(&db, &rx);
     let [HistoryEvent::Commit { id, entry: Some(e) }] = got.as_slice() else { panic!("{got:?}") };
     assert_eq!(*id, a);
-    assert_eq!((e.body.clone(), e.valid, e.commit.actor, e.kind), (HistoryBody::Held(Some(s("one"))), true, db.me(), CommitKind::Change));
+    assert_eq!((e.body.clone(), e.valid, e.commit.actor, e.kind), (HistoryBody::Held(Some(s("one"))), true, db.me(), CommitKind::Content));
     say(&db, t, "two");
     let page = db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, 10).unwrap();
     assert_eq!(page.entries.iter().map(|e| e.body.clone()).collect::<Vec<_>>(), vec![HistoryBody::Held(Some(s("two"))), HistoryBody::Held(Some(s("one")))]);
@@ -84,7 +84,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     let b = say(&db, t, "next");
     let (_sub, rx) = watch(&db, t, msgs());
     let mut w = db.write();
-    w.at(t, osis::Key::untyped(msgs())).purge(osis::Purge::Change(a)).unwrap();
+    w.at(t, osis::Key::untyped(msgs())).purge(osis::Purge::Commit(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
     let page = db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Oldest, 10).unwrap();
     assert_eq!(page.entries.len(), 2, "no entry for the request");
@@ -137,7 +137,7 @@ fn purge_author_through_the_api_spec_perm_7() {
     w.run();
     for db in [&alice, &bob] {
         let page = db.at(g, osis::Key::untyped(msgs())).history(HistoryFrom::Oldest, 10).unwrap();
-        let of = |c: ChangeId| page.entries.iter().find(|e| e.commit.id == c).unwrap().body.clone();
+        let of = |c: CommitId| page.entries.iter().find(|e| e.commit.id == c).unwrap().body.clone();
         assert_eq!(of(flood), HistoryBody::Purged { by: rq, actor: Some(alice.me()) });
         assert_eq!(of(own), HistoryBody::Held(Some(s("mine"))));
     }
@@ -233,7 +233,8 @@ fn memory_commits_read_and_tell_spec_sync_9() {
     let typing = ak("t:typing.0~");
     let (_sub, rx) = watch(&bob, g, typing.clone());
     let mut x = alice.write();
-    x.at(g, osis::Key::untyped(typing.clone())).expires(osis::Expiry::In(Duration::from_secs(5))).set(&s("alice types")).unwrap();
+    x.expires(osis::Expiry::In(Duration::from_secs(5)));
+    x.at(g, osis::Key::untyped(typing.clone())).set(&s("alice types")).unwrap();
     x.commit().unwrap();
     // at once for its writer
     let own = alice.at(g, osis::Key::untyped(typing.clone())).history(HistoryFrom::Newest, 5).unwrap();
@@ -261,7 +262,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
 #[test]
 fn page_bound_counts_large_values() {
     let mut c = osis::internals::Opening::memory();
-    c.handle.read_limit = 3 << 20;
+    c.app.read_limit = 3 << 20;
     let db = osis::internals::create(c).unwrap().0;
     let t = thing(&db);
     let k = ak("t:big.0");
@@ -296,7 +297,7 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     let rules: ct::RequiredRules = [(String::new(), ct::Required::new(osis::Retention::default(), Some(60_000)))].into_iter().collect();
     db.commit_set(t, ct::REQUIRED, &rules).unwrap();
     let mut w = db.write();
-    w.at(t, osis::Key::untyped(msgs())).purge(osis::Purge::Change(a)).unwrap();
+    w.at(t, osis::Key::untyped(msgs())).purge(osis::Purge::Commit(a)).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
     assert_eq!(db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
 }

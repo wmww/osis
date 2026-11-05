@@ -224,7 +224,7 @@ fn untyped_index_paths_notes_cli() {
     let before = s.ok(&["commits", "--group", "me"]).out;
     let o = s.call(&["write"], &format!("set {t} x:m.0 {{1: \"c\"}}\nset {t} x:m.0 [1] \"d\"\n"));
     assert_eq!(o.code, 2, "{}", o.err);
-    assert!(o.err.contains("line 2") && o.err.contains("earlier in this batch"), "{}", o.err);
+    assert!(o.err.contains("line 2") && o.err.contains("earlier in this script"), "{}", o.err);
     let o = s.call(&["write"], "create --in me --as a x:l.0 [1, 2]\nset $a x:l.0 [0] 5\n");
     assert_eq!(o.code, 2, "{}", o.err);
     assert_eq!(s.ok(&["commits", "--group", "me"]).out, before);
@@ -251,7 +251,7 @@ fn commits_undo_redo_plan_cli_4() {
     s.ok(&["set", &t, "a:x.0", "2"]);
     let h = s.ok(&["commits", "--thing", &t]).out;
     assert_eq!(h.lines().count(), 3, "{h}");
-    assert!(h.lines().all(|l| l.contains(" change in-effect ")), "{h}");
+    assert!(h.lines().all(|l| l.contains(" content in-effect ")), "{h}");
     assert_eq!(s.ok(&["commits", "--thing", &t, "--next", "redo"]).out, "");
     let next = s.ok(&["commits", "--thing", &t, "--next", "undo"]).out;
     assert_eq!(next.lines().count(), 1, "{next}");
@@ -769,6 +769,10 @@ fn group_and_splice_commands() {
     s.ok(&["group", "add", &g, &t, "--expires-in", "1h"]);
     assert!(s.ok(&["members", &g]).out.contains(&t));
     assert_eq!(s.code(&["group", "add", &g, &t, "--expires-in", "1h", "--expires-at", "2030-01-01T00:00:00Z"]), 2, "one expiry");
+    let two = s.call(&["write"], &format!("set --expires-in 1h {t} a:x.0 1\nset --expires-in 2h {t} a:y.0 1\n"));
+    assert!(two.code == 2 && two.err.contains("one expiry"), "{}", two.err);
+    assert_eq!(s.call(&["write"], &format!("set --expires-in 1h {t} a:x.0 1\nset {t} a:y.0 1\n")).code, 0, "the flag is the commit's, whichever line gives it");
+    assert_eq!(s.call(&["write"], &format!("set {t} a:x.0 1\nset {t} a:cursor.0~ 1\n")).code, 7, "durable beside ephemeral");
     let owned = s.ok(&["create", "--admin", &g, "t:x.0", "1"]).line().to_string();
     assert!(s.ok(&["show", &owned]).out.contains(&format!("owner\t{g}")), "{}", s.ok(&["show", &owned]).out);
     let schema = s.ok(&["create", "t:made.0", "true"]).line().to_string();

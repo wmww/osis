@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{PathRef, ak_of};
 use crate::watch::{Delivery, Filter, Source, Subscription, lock};
-use crate::write::Committed;
+use crate::write::Commit;
 use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
 use osis_schema::AspectKey;
@@ -23,7 +23,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
-/// One edit of a session's text by a remote change, in chars: `del` chars at `at` replaced by
+/// One edit of a session's text by a remote commit, in chars: `del` chars at `at` replaced by
 /// `text`, at the text as it was before this edit (a list applies in order).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Splice {
@@ -129,7 +129,7 @@ fn char_range(s: &str, r: &Range<usize>) -> Result<Range<usize>> {
 }
 
 /// Commits `base -> buf` of a session; `None` when nothing changed.
-fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Committed>> {
+fn flush(db: &Osis, b: &Bind, st: &mut State) -> Result<Option<Commit>> {
     if st.buf == st.base {
         return Ok(None);
     }
@@ -199,7 +199,7 @@ impl TextSession {
         lock(&self.st).buf.clone()
     }
 
-    /// Calls `f` with the merged text and the edits from the buffer before, after a remote change.
+    /// Calls `f` with the merged text and the edits from the buffer before, after a remote commit.
     pub fn on_remote(&self, mut f: impl FnMut(&Osis, &str, &[Splice]) + Send + 'static) -> Result<Subscription> {
         let cb: crate::watch::Callback = Box::new(move |db, d| {
             if let Delivery::Text { text, edits } = d {
@@ -236,7 +236,7 @@ impl TextSession {
 
     /// Commits what changed since the last commit as one commit; `UnknownThing` (the edits
     /// kept) when the thing was deleted since it was known here.
-    pub fn commit(&self) -> Result<Option<Committed>> {
+    pub fn commit(&self) -> Result<Option<Commit>> {
         let mut s = lock(&self.st);
         let c = flush(&self.db, &self.b, &mut s)?;
         s.last_edit = None;

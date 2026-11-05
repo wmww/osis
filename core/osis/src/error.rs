@@ -3,7 +3,7 @@
 
 use crate::commits::DropReason;
 use osis_base::{Role, Tid};
-use crate::change::ChangeId;
+use crate::commit_id::CommitId;
 use osis_schema::{Path, PathError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,11 +18,11 @@ pub enum Error {
     /// field), or a typed path read named a path the key's schema does not have. Stored data
     /// never fails a read on typed grounds: it reads as absent (`DiagnosticKind::Mismatch`).
     Type { path: Path, reason: String },
-    /// The value is above `HandleConfig::read_limit`; read it by path or stream.
+    /// The value is above `AppConfig::read_limit`; read it by path or stream.
     TooLarge { limit: usize },
-    /// The newest change in an undo or redo scope cannot be undone (its body was dropped, or a
+    /// The newest commit in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
-    NotUndoable { commit: ChangeId, reason: DropReason },
+    NotUndoable { commit: CommitId, reason: DropReason },
     /// Catching up before lowering a role (`SyncFirst`) could not reach these groups.
     Unsynced { groups: Vec<Tid> },
     /// A malformed argument: value, link, card, path, op, retention.
@@ -81,6 +81,7 @@ impl From<osis_node::Error> for Error {
             N::Store(e) => Error::Storage(e.to_string()),
             N::Corrupt(m) => Error::Storage(m.into()),
             N::Misuse(m) => Error::Invalid(m.into()),
+            N::Clash(m) => Error::Invalid(m),
             N::Unsynced { tid, group } => Error::Invalid(format!("{tid} is in {group}, whose own aspects sync but whose items reach no synced group: add {group} as a subgroup of a synced group (same batch or before), or add {tid} elsewhere")),
             e => Error::Invalid(e.to_string()),
         }

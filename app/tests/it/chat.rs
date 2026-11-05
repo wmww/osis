@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.handle.internals.seed = Some(seed);
-    c.handle.internals.clock = Some(clock.clone());
+    c.app.internals.seed = Some(seed);
+    c.app.internals.clock = Some(clock.clone());
     // a host that never runs: a profile (where the sender's name lives) needs one named
     c.hosts = vec![osis::HostAddr::new(&"quic://127.0.0.1:9".parse().unwrap(), [7; 32])];
     c.runtime = osis::Runtime::Manual(osis::internals::ManualNet::new());
