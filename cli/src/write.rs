@@ -42,7 +42,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
                 }
                 if cur.is_none() {
                     let untyped = Key::new(osis::Ak::new(key.ak()).map_err(|_| usage("bad AK"))?, None);
-                    cur = Some(ctx.db.get(t, untyped).ok().flatten());
+                    cur = Some(ctx.db.get(t, untyped)?);
                 }
                 let here = cur.as_ref().and_then(|v| v.as_ref()).and_then(|v| osis_schema::value_at(v, &Path(out.clone())));
                 match here {

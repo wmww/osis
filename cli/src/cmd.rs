@@ -231,6 +231,14 @@ fn shared(c: &Cmd) -> Option<String> {
     }
 }
 
+/// The hosts this process delivers to: a thin client has none, its node delivers.
+fn own_hosts(db: &Osis) -> osis::Result<Vec<osis::HostAddr>> {
+    match db.hosts() {
+        Err(Error::Unsupported(_)) => Ok(Vec::new()),
+        h => h,
+    }
+}
+
 /// Sends what a `delivers` command queued (within `--timeout`): `wait_synced` on the shared
 /// thing's groups (a hostless one fails: its holders can never fetch it), then on `All`.
 pub(crate) fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
@@ -320,11 +328,9 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         let (flush, shared) = (delivers(&cli.cmd), shared(&cli.cmd));
         let mut r = run(&mut ctx, cli.cmd);
         if r.is_ok() && flush {
-            r = match ctx.db.hosts() {
+            r = match own_hosts(&ctx.db) {
                 Ok(h) if h.is_empty() => Ok(()),
                 Ok(_) => deliver(&mut ctx, shared),
-                // a thin client: its node delivers
-                Err(Error::Unsupported(_)) => Ok(()),
                 Err(e) => Err(e.into()),
             };
         }
@@ -639,7 +645,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Group(GroupCmd::Sync { g, host }) => {
             let g = ctx.tid(&g)?;
-            let s = if host.is_empty() { db.hosts()? } else { hosts(ctx, &host)? };
+            let s = hosts(ctx, &host)?;
             Ok(db.sync(g, &s)?)
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
@@ -675,11 +681,7 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         StoreSel::Dir(d) => d.display().to_string(),
         StoreSel::Memory(_) => "(memory)".into(),
     };
-    // a thin client has none of its own to show
-    let hosts = match db.hosts() {
-        Err(Error::Unsupported(_)) => Vec::new(),
-        h => h?,
-    };
+    let hosts = own_hosts(&db)?;
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
     let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri()), format!("home\t{}", db.home().to_uri())];
     lines.extend(hosts.iter().map(|s| format!("host\t{s}")));

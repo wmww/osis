@@ -115,9 +115,10 @@ impl Ui {
     #[cfg(target_os = "android")]
     fn android_join(&mut self, col: Flex) -> Flex {
         let look = self.look.clone();
-        let col = match self.data.db.hosts().unwrap_or_default().first() {
-            Some(h) => col.with_child(style::label(&look, &format!("Host: {h}"), Text::Small)),
-            None => col.with_child(style::label(&look, "No host yet: copy its quic:// address first", Text::Small)).with_child(self.paste_chip("Paste host address", PasteTo::Host)),
+        let col = match self.data.db.hosts().map(|h| h.first().cloned()) {
+            Ok(Some(h)) => col.with_child(style::label(&look, &format!("Host: {h}"), Text::Small)),
+            Ok(None) => col.with_child(style::label(&look, "No host yet: copy its quic:// address first", Text::Small)).with_child(self.paste_chip("Paste host address", PasteTo::Host)),
+            Err(e) => col.with_child(style::label(&look, &format!("Hosts unknown: {e}"), Text::Small)),
         };
         let row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_child(self.paste_chip("Paste link and join", PasteTo::Join)).with_child(self.paste_chip("Paste name", PasteTo::Name));
         col.with_child(NewWidget::new(row))

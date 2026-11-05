@@ -1539,6 +1539,36 @@ fn a_client_of_this_node_reads_no_split_thing() {
     drop(x.host);
 }
 
+// notes/client-port.md §3: what routing asks answers for a thing the client's actor may not read exactly as for a tid nobody knows: no existence oracle.
+#[test]
+fn routing_to_what_the_actor_may_not_read_is_as_to_nothing() {
+    let x = world();
+    x.attach_p();
+    let hidden = x.n.write_with(|w| {
+        let t = w.create(x.n.me())?;
+        w.at(t, title()).set(&s("not for the client"))?;
+        Ok(t)
+    }).unwrap();
+    x.n.sync(hidden, &[]).unwrap();
+    let ghost = osis::Tid::from_bytes([9; 15]);
+    assert_eq!(block_on(x.p.group_source(hidden, GroupSource::Remote(x.nc.clone()))), Err(Error::UnknownThing { tid: hidden }));
+    assert_eq!(block_on(x.p.group_source(ghost, GroupSource::Remote(x.nc.clone()))), Err(Error::UnknownThing { tid: ghost }));
+    assert!(x.p.routes().is_empty());
+    drop(x.host);
+}
+
+// notes/client-port.md §2: a host's sessions answer the client port's kinds with protocol Error 11: `Refused`, and the attachment does not retry.
+#[test]
+fn a_host_address_refuses_a_client() {
+    let x = world();
+    let mut c = Config::memory();
+    c.transport = Some(Transport::InProcess(x.net.endpoint("at-host")));
+    c.wait_timeout = W;
+    let r = Osis::attach_client(&x.addr, &x.secret, c);
+    assert!(matches!(&r, Err(Error::Refused(m)) if m.contains("client port")), "{:?}", r.map(|_| ()));
+    drop(x.host);
+}
+
 // spec/sync.md §10, notes/client-port.md §6 Moving: a group with no content yet is held at the node all the same: it can be moved there, though `knows` reads `false`.
 #[test]
 fn an_empty_group_at_the_node_can_be_routed_to() {

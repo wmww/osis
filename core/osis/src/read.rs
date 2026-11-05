@@ -611,7 +611,7 @@ impl Osis {
 
     /// Calls `f` with every diagnostic (structured, deduped and rate-limited by the engine). On a
     /// handle attached to a node, those of that node: while it cannot be reached none come, and
-    /// `status` says so.
+    /// `status` says so; a session the node has ended fails as its calls do.
     pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, Diagnostic) + Send + 'static) -> Result<Subscription> {
         if self.is_attached() {
             return self.remote_on_diagnostic(Box::new(f));
