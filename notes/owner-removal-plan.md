@@ -14,7 +14,7 @@ A side is an ordinary view: a node runs the ordinary rules over held data plus i
 Dispute-aware code, all of it:
 1. **Walk** (osis-perm): trust set input and dispute detection.
 2. **Trust store and API**: durable local defaults and choices, a dispute listener, choose. Synced choices are suggestions read outside the walk.
-3. **Hosts**: at most the rules of step 6.
+3. **Hosts and sync**: the delete check, branches and members carrying clean bodies (step 6).
 
 Everything else reads validity as it does now. Enforced: the dispute types are private to osis-perm and the API layer, plus named exceptions; review anything else as a design failure. If step 6 needs more than a few sites, stop and redesign.
 
@@ -73,32 +73,37 @@ Durable trust store per node. Default: first received, recorded at detection; a 
 ### 5. Coming back after erasing
 A removal whose frontier drops another's removal of G goes to G's inbox, like a grant. G then opens the label by its claim, or gets boxes by a rotation's inbox copy. A switch to a side that removed you is an ordinary loss; a switch back is this path.
 
-### 6. Hosts and storage: design this before building
-Goal: the fewest sites. Settled by a model (core/test/tla/sides, results table there) unless marked:
-- **Fork of an actor means fork of its labels.** A node refused a step on an actor with its own epochs replaces the label by the existing flow, keys from its side's secrets. No stamping under a captured head.
-- **Label discovery ignores validity**: read every label named by a possible admin's `label.0` that the node's keys open, so common members still reach both.
-- **Stuck parts**: a part sealed under an epoch a node can never open must not block the commit's other parts (spec/commits.md §4). Worth fixing generally; it is not about disputes. Not modeled.
+### 6. Hosts and storage under a fork: design this before building
+A dispute is a fork of an actor, and forks are permanent: two sides may live side by side for good, with devices switching sides at any time. A concession (one party's write listing the other's removal) is one more way a fork can disappear; nothing waits for one. Model: core/test/tla/sides (results table there).
 
-**Where loops come from.** Each side runs today's rules over its own validity. At every label both sides act at, which is every label where a disputed party or a device it added since writes, not only A's own, a body one side judges must-not-hold and the other must-hold is deleted and uploaded again forever (the shape of items 276 and 282). Worse, when the deleting side gets there before any node of the other side fetched the body, it is gone.
+**Which labels a fork reaches.** Two kinds, nothing else:
+- **The forked actor's own labels** (keys from its secrets): each side rotates and registers its own step after the same point of the label's step chain.
+- **Labels where someone's right flows through the forked actor**: an actor A holding a role on D whose admins fork; a person actor whose devices fork; devices added on one side after the fork. The walk judging D walks A's history and recognizes the same fork (keyed (R, X)), so every node knows which writes are fork-dependent (valid on one side only). No separate detection.
 
-**Candidates, as modeled:**
-- **(a) Gate deletes at hosts: holds, in the right form.** Dd is the set of writes valid on one side only: the closure of both parties' unlisted writes, which the walk can export (step 3). A node never judges a disputed write without both removals (a write is pending until its author's chain arrives, and that chain carries the other party's removal), so it never misses a held one.
-  - Per reason: no delete at a host of a body that is itself in Dd, or for a reason whose write is in Dd. Passes every scenario, same as the two-walk oracle "must-not-hold on both sides". Every must-not-hold and cover reason must name its write: a purge request, the superseder that dated a death or the demotion a fall names, the covering snapshot and the deaths its cover judgment rests on, a placement, the edge end behind `stale_card`. Many sites.
-  - Per aspect: no delete at a host of a body on an aspect holding a Dd write, or named by a Dd purge, placement or edge end. Passes everything but promptness: a purge both sides accept, on an aspect a disputed write touched, never reaches the host (the aspect stays touched while the dispute is held, for good).
-  - Gating the parties' own writes only fails: a device X added after the dispute supersedes a body; that write is no party's but is valid on side X only, so the loop and the loss stay.
-  - Gating by a neutral view (judge again with every disputed write void) fails where must-not-hold rests on a write being invalid: X's post-dispute write under keep at most 0 falls on side Y, the neutral view agrees with Y, and the loop stays; likewise a placement only side Y has.
-- **(b) Re-upload once, then keep it local: fails.** The loop ends, but the body then lives only at the keeping side's existing holders: fresh nodes of that side never get it, and it is lost when those holders go. It also undoes today's healing of a stale or hostile delete (a removed writer deleting twice wins).
-- **(c) Fork: needed for keys, no fix for loops, and it splits reach.** The loser deletes nothing at L (it does not control L's head, as in today's replacement flow). Until the step race ends both sides act at L, and today's rules lose bodies in that window; with (a) they do not. After it, the losing side's new devices read only its replacement label, which holds what the losing side's nodes held at the race. A body left only at L and with the winner's nodes is out of their reach, and a purge both sides accept known only to one side never reaches the other side's label. Members uploading clean bodies (no Dd write on them) to the label they read but do not act at fix the undisputed part; disputed bodies stay out of reach.
-- **(d) One-side covers accepted: fails.** No loop (compaction deletes once per body per node), but loss: side X compacts a body under its own snapshot, the member on X drops it, and side Y never fetched it. Covers go through the gate like any delete; bodies covered only by one side's snapshots stay at hosts.
-- **Unheld writes** (not a candidate): a judgment resting on a write the node does not hold (no placement held, so outside the required set) cannot be gated. It holds only because role commits go up and are fetched first; a host or relay delivering content before the placement reopens the loss.
+**At labels both sides use: deletes only when no side needs the body.** Without a rule, the two sides delete and re-upload forever, or one deletes a body before the other side fetched it (the shape of items 276 and 282). The rule, permanent: a node deletes a body at a host (must-not-hold or compaction) only when a reason holds on its own side and, on every other side, the body is invalid or a reason holds there too. In walk terms: no delete on the strength of a fork-dependent write unless that write is valid wherever the body is; a fork-dependent body itself goes only for such a reason. Every must-not-hold and cover reason must name its write: a purge request, the superseder that dated a death or the demotion a fall names, the covering snapshot and the deaths its cover rests on, a placement, the edge end behind `stale_card`. Uploads, local drops and fetches stay ordinary.
+- **The plain rule** "never delete on the strength of a fork-dependent write, nor a fork-dependent write itself" passes every loss and loop check but keeps, forever, every version one side writes after the fork and later replaces (scenario S: side X may not delete its own superseded write, though side Y never needed it). Under a permanent fork that is all of one side's churn at those labels. The rule above fixes it with the same results elsewhere (`need` against `touch`).
+- **Per field** (no deletes on a field a fork-dependent write touched): a purge both sides accept, on such a field, never reaches hosts. Under a permanent fork that is never; rejected.
+- **Neutral view, the parties' own writes only, re-upload once, one-side covers ungated**: fail (loops or loss), as before.
+- **Cost, permanent**: a delete only one side accepts (a purge, an old version replaced, compaction) never reaches hosts at these labels while the fork lasts.
+- **Several forks**: k forks make 2^k sides. The rule stays a subset check if each fork-dependent write carries the set of fork picks its validity rests on (valid wherever the body is: the reason write's picks are a subset of the body's). Not modelled.
+- **Unheld writes**: a judgment resting on a write the node does not hold (no placement held, so outside the required set) cannot be checked. It holds only because role commits go up and are fetched first; a host or relay delivering content first reopens the loss (Q0).
 
-**Fewest dispute-aware host and sync sites that work:** (1) one gate where node-sync decides deletions at hosts (must-not-hold and compaction), reading Dd, per aspect or per reason; (2) the fork as above: act at a label only under keys from commits valid on the own side (ordinary), replace on a refused step, read every label the node's keys open; (3) optionally, members carrying clean bodies across the fork. Uploads, local drops and fetches stay ordinary.
+**The forked actor's own labels: one host branch per side.** Today a host keeps one step chain: the second side's step is refused, it replaces the label, and its new devices get only what its nodes held then (modelled: loss of reach). Instead:
+- **Register gains a branch form**: a step whose parent is a step on the host's path other than the head. A registrar sends it only when its view rejects the head's step; an honest race (head valid on its view) re-registers on the head as today, so honest races never branch.
+- **The host keeps every branch**, each with its own head, entries, caps and opens. A new branch starts with the entries stamped while its parent was the head: only what that step's holders could read already, no later upload. A superseded step's sync key is answered with all its children; a node follows the branch its view accepts. Label discovery ignores validity: a node reads every branch its keys open (common members, boxed by both sides, read both).
+- **No thing tid changes**: labels are only sync channels.
+- **Results**: pre-fork bodies at the host stay in reach of both sides for good; the step race and its loser are gone; several hosts no longer pick different winners (each gets both branches once both sides register there; not modelled).
+- **The delete rule** is needed only while both sides act under the shared step: before the first one-sided step, and on the first branch until the second exists. On each branch afterwards it can be off: one side acts there (same results either way).
+- **Members carry clean bodies across.** A body first uploaded after the split (a pre-fork body only a common member held, or a purge both sides accept) otherwise reaches only the uploader's branch. Common members, holding both sides' keys, also upload and delete at the branch they read but do not follow the bodies no fork-dependent write touches: the same predicate as the delete rule. With it every scenario passes except Q0.
+- **Holes, stated:**
+  1. Anyone who ever held a delete key of the label (an admin removed with no fork at all) can open a branch at any time; the host cannot tell. Other nodes ignore branches their view rejects. Costs: host storage within per-branch caps (as making a new label costs), and the removed admin can download again the ciphertext of entries stamped up to the step it branches from, and see which were deleted since. Nothing it could not read before (the requirements' removal limit), but a new way to get it back from an honest host. Caps per label across branches would instead let it eat the honest side's room.
+  2. A host that refuses to branch: the refused side replaces the label there, as today, with the reach loss at that host; the first branch keeps the delete rule on there.
+  3. After a concession nobody follows the conceded side's branch; it keeps what it held (a purge never reaches it) until deleted. Treat it as replaced: the conceding side's admins delete its content entries, as replacement does today.
+- **Stuck parts**: a part sealed under an epoch a node can never open must not block the commit's other parts (spec/commits.md §4). Worth fixing generally; not about forks. Not modelled.
 
-**Problems for Tess:**
-1. Purges, supersedes and covers that only one side accepts never reach hosts while the dispute is held: the ciphertext stays and hosts grow. The per-aspect gate extends this to purges both sides accept, on aspects a disputed write touched.
-2. Per reason is precise but touches every must-not-hold reason; per aspect is one check plus three cross-aspect reasons. Pick one.
-3. The fork splits reach: the losing side's new devices get what its nodes held at the race, plus what members carry.
-4. Not modeled: several hosts with different race winners (both sides would be refused somewhere and both replace L), several disputes, keep-at-least and `nobody`.
+**Sites:** (1) one delete check where node-sync decides deletions at hosts, reading the walk's fork-dependent writes and their sides; (2) branches: send the branch form when the head's step is invalid on the own view, follow the branch the own view accepts, read every branch the keys open; (3) common members acting on clean bodies at the other branch. Hosts: the branch form of Register and the branch's starting entries.
+
+**Problems for Tess** (question 9): the permanent host cost of one-side deletes; the rule's form (no side needs it, against the plain rule's permanent garbage); a removed admin opening a branch; the abandoned branch after a concession. Not modelled: several hosts, several forks, honest races under branching.
 
 ## Testing
 Oracles are the design's statement of itself; change them once in the harness, not per test.
@@ -112,5 +117,5 @@ Oracles are the design's statement of itself; change them once in the harness, n
 
 ## Open
 - Rule 4b (taint) for hidden grants: taken (Wren: an endless leak under a withholding host is worse than re-keying while it withholds; issues/keys-depth0.md). The implicit first-admin edge counts as a grant made at creation and never loses (notes/keys-requirements-study.md §4): step 2 orders implicit edges first.
-- Step 6: problems 1-4 above (question 9).
+- Step 6: the problems above (question 9).
 - Silent rejection after a removal has been held a while, warning only the parties: optional later, needs a value that passes notes/arbitrary-values.md.
