@@ -1,40 +1,42 @@
 # Handoff to the next coordinator
-> Summary: State of the project for a coordinator working autonomously while Tess is away: branches to review or delete, decisions made in the last session and where they live, the queued work in a suggested order, the new test rules, and how to proceed without Tess. Delete or rewrite this note once its items are taken.
+> Summary: State left by coordinator Wren (ostrich, Nov 4-5): the owner-removal plan is mid-flight (steps 0-1 built), three branches in progress, open questions for Tess, what to do next and in what order. Delete or rewrite once taken.
 
-Written on ostrich with main at the commit that adds this note. Nothing is running: no agents, all five worktrees clean and detached. Read CLAUDE.md, notes/coordination.md and notes/core-triage.md first.
+Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md, notes/questions-for-tess.md first. Session log: notes/mvp-progress.md "Wren session" (items 269-298).
 
-## Working without Tess
-- Tess will not answer for a while. A question that needs her goes into notes/questions-for-tess.md (plain words, options, a recommendation), and you move on to other work; do not stop. Where the work cannot wait and the choice is cheap to reverse, take the recommended option and say so in the question.
-- devbox is spun down (Tess): ostrich is the only box working, so this coordinator owns every issue area, devbox's included (cli, api, schema, tests and the rest of its list in notes/coordination.md), and runs every periodic check. No claims or channel posts are needed. The osis chat channel is stopped (notes/dogfood.md); Tess will set up a new one on a newer osis.
-- Standing priorities (Tess): security, data loss and the core first; simple and verifiable beats fast; refactors complete; rare hostile shapes inside data the writer may write are very low priority (notes/core-triage.md §1 D).
+## Tess's standing guidance from this session (also in memory)
+- Rethink and rewrite, don't tack on; a precisely stated design problem beats a hollow finished build; coordinators may change the design within the requirements' words or spirit.
+- Requirements state properties we care about, not shrink-wrapped behaviour; no features on protocol side effects (e.g. deliberate frontier omission as a recovery tool).
+- Admin disputes are forks tolerated indefinitely; no rule may wait for a dispute to be "settled".
+- Greenfield is cheap: build reference models and TLA checks freely. Every major design change this session was model-checked first, and the models found real holes each time.
+- Ask Tess questions one at a time, explaining the trade-off and why users care.
 
-## Branches
-| branch | state | do |
+## Branches in flight (local; agents told to commit WIP and release)
+| branch | state | next |
 |---|---|---|
-| `origin/eph-lane` | eph-unify step C, +1851/-2304, partly reviewed, no verdict; whole-commits 2b waits on it | issues/eph-lane-review.md: fresh reviewer of the last reviewer's fixes, trace churn seed 9130190 (a possible upload/delete storm) first, then merge or discard; delete the branch on origin |
-| `origin/crdt-leftovers` | two attempts at crdt issues, a review said neither is ready | issues/crdt-leftovers-branch.md: probably restart from the issues; keep its list-expiry oracle; delete the branch on origin |
+| `keys-tidy` | rotation names bounded by supersession (issues/rotation-names-grow.md) + grant to a blocked holder goes through as Out (spec §4 Seal). Status section at the top of the issue. | finish, review, merge; then lockout recovery (issues/lockout-recovery-without-omission.md) on the same area |
+| `readers-leak` | TLA model of issues/blocked-walk-stops-at-readers.md (older leak via actors the writer can't rotate). | read results in the issue; build the chosen rule or state the limit |
+| `firstadmin-model` | TLA model of first-admin edge removal and derived secrets (risk before step 2 stage B). | read results in issues/owner-to-first-admin.md Risks |
+Check `git branch` and `wt list`; any worktree still claimed with no running agent: commit WIP and release.
 
-## Decided last session (all recorded; build from these)
-- Kick frontiers: commit IDs only, one system; kept-history removal cost is a stated limit (spec/requirements.md Cost). The hash DAG, per-session heads and F4 links are dropped. ID batches are the fallback if costs ever hurt (notes/frontier-study.md §11).
-- Dropped bodies coming back after a revocation: keep the rule, build it simple and robust; download and CPU are cheap in this corner (issues/drop-rejoin-robust.md, seven items, start with the debug rebuild check).
-- Keep at most: drop "D after replaced" for D > 0; keep "0 after replaced" and absolute T (built: branch keep-at-most).
-- Moving a thing to another owner: removed (branch remove-moves); notes/moves.md says what could be built later.
-- Key rotation: depth 0 is built (issues/keys-depth0.md, notes/crypto.md Holder actors at depth 0): no names below an actor, no key cycles (rule 4, with taint). Roster privacy of members follows from it.
-- Tests: per-branch oracle sizes are a tenth of full by default, `OSIS_FULL=1` in periodic runs only; no rerun of run ranges; one all-core run per box; a study, not a third patch, after a second seed-found fix in one area (notes/coordination.md, notes/test-value-study.md).
+## Owner-removal plan (notes/owner-removal-plan.md)
+- Step 0 keys at depth 0: built (items 295-297). Step 1 roster snapshots deleted: built (298).
+- Step 2 owners → first admins: staged build plan in issues/owner-to-first-admin.md (A derive from first admin, B one record/one authority class, C renames, D API/CLI). Start A after keys-tidy merges (both touch key derivation). Build step 3 right after B (security gap between them). Stage D conflicts with Tess's other session's API work (issues/api-after-owners.md): coordinate.
+- Step 3 disputes: de-risked (core/test/roles-model trust.rs; three rule problems in plan step 3). Step 6 hosts: de-risked and Q9 closed (core/test/tla/sides; host branching + "no side needs it").
 
-## Suggested order
-1. eph-lane: merged (item 269).
-2. Whole commits: 2b merged (item 276); next steps 3, 4 (issues/whole-commits.md, notes/whole-commits.md): deletes the cross-thing waits and two requirement exceptions.
-3. issues/drop-rejoin-robust.md item 5 (rebuild check after every transaction in debug builds): cheap, and it will find what the rest of that issue fixes. Then its items 2, 1, 3, 4, 7, with the reference model (6) alongside.
-4. The simplifications keep-at-most-relative and roster option 2 (remove-moves is done). Each deletes code and spec; spec/ describes only what is built, so each lands its own spec edit.
-5. notes/core-triage.md §1, by rank (refreshed after item 272).
-6. crdt-leftovers decision; the rest of core-triage by rank.
-Periodic checks and simplification passes per notes/coordination.md, with `OSIS_FULL=1`. After whole commits and the simplifications land, a spec pass: spec/commits.md §4-5 should shrink a lot (it grew from 388 to about 6900 words in three weeks of seed fixes).
+## Open questions for Tess (notes/questions-for-tess.md)
+- Q12: depth 0 bends slightly (a device holding a member group's keys won't hand out its stale key). Recommended: accept. Already built (297).
+- Q13: anyone with write on G may create a thing whose first admin is G. Recommended: yes. Needed before step 2 stage B.
+- Q11: three small limits from the requirements pass. Q5 realms: on hold until owners settle.
 
-## Tools and costs
-- `tools/agent-times.py` (default: the session that last ran agents) shows per agent the minutes per kind of work; the watchdog reads it with `--since` and `--long 3`.
-- Quiet-box costs (notes/build.md): gate about 4 min, tier 1 about 2.5 min / 1900 CPU-s, the whole per-branch oracle set about 2.5 min / 950 CPU-s.
-- Worktree targets are 15-29 GB against 11-12 expected: `wt` cannot prune under noatime (notes/complaints/session-wrapup.md); disk is fine (about 490 GB free); delete and rebuild one that grows past about 30 GB.
+## Other open work, in rough priority
+- issues/gone-body-drop-seeds.md, issues/settled-seed-7032.md (pre-existing keep-at-most drops; the order shrink needs a time budget).
+- issues/role-history-join-cost.md (a join of 10^4 role writes takes 2-3 CPU-min; from-scratch eval is ~2 s).
+- issues/eph-churn-delete-upload-loop.md: snapshot storm; branch `snapshot-storm` parked (fix too costly); re-study now that items 274/283 changed held bodies.
+- Periodic checks: last run 15 (after item 276). Many merges since: run them when the box is quiet (notes/coordination.md; the tier-2 command now skips release-only benches).
+- Model (core/test/held-model) covers retention/validity/apply; extend with trust sets for step 3.
 
-## Owner removal (Tess approved incorporating notes/owner-removal-plan.md, Wren session)
-Order: finish whole commits step 3 (in flight) first; plan step 0 (keys depth 0) starts with the no-key-cycles TLA check (running); step 6 (hosts under disputes) de-risked by a TLA model with two trust sets before design (running); step 1 (delete roster snapshots) measured (notes/owner-removal-plan.md, Step 1 measurements) and built on branch no-roster. The reference model (core/test/held-model) gets a trust-set input for steps 2-3 instead of more owner-chain coverage. Tess's implementation guidance: rethink and rewrite rather than tack on; a precisely stated design problem beats a hollow finished build; coordinators may change the design within the requirements' words or spirit.
+## Process notes
+- Fable usage ran out mid-session; opus took over cut-off work from WIP commits. If a model limit hits, commit the agent's worktree as WIP and relaunch on another model in the same worktree.
+- A branch's own new randomized harness must run once at OSIS_FULL=1 before merge (plain sizes hid a 4.6% failure rate).
+- On a branch with earlier unmerged commits, squash only to the tip you started from, never the merge base.
+- Main moves under long branches (Tess's other session refactors the API and sweeps wording): rebase rewrites prose into main's terms, not mechanical conflict resolution.
