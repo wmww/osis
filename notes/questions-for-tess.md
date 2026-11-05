@@ -16,13 +16,6 @@ A realm is an actor marked `realm.0` (plus `name.0`), as `tag.0` marks a group; 
 8. Host admission for realms: left to the host admission work (recommended).
 Say "realms as recommended" to build, or change any.
 
-## 10. Deleting while removed, then re-granted (linked to 6 and 7)
-The requirement says the right to delete is judged at the time of the request. Now a delete request someone made while removed counts once they get the role back, like their edits from that gap do (spec/permissions.md §7; needed so a re-grant cannot bring back an edit's value its own request deleted, order seed 3001). They could delete the same things right after the re-grant anyway, so this gives no new power, but the requirement's wording no longer says what happens.
-- Proposed sentence for spec/requirements.md Deletion: "A re-grant counts for deletes as for edits: a request made while removed takes effect once the role is back."
-Side effect, from 7: a delete request made before the person ever held the role (a reader's, the admin happened to receive it) takes effect when that person is later granted and then removed, because the removal lists it. The removal itself then deletes data. Mostly no new power (while granted they could have asked again), but in a rare case (acting for another person's device) it may delete what they never could. Choices:
-- A: answer 7 with A and extend it: clients also leave out of a removal the delete requests made before the person first held the role (receivers unchanged). Recommended.
-- B: receivers also require that the person had held the role at some point at or before the request (one condition in the purge right).
-
 ## 9. Owner removal step 6: what hosts do during a dispute
 A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) settled most of step 6. Hosts need one gate: while two admins are in a dispute, nobody deletes data at a host when the reason rests on a write only one side accepts. Without it the two sides delete and re-upload forever, or a body is lost before the other side ever fetched it. The plan's other candidates failed. What the gate costs, and a choice:
 - **Cost, either way:** while a dispute lasts, deletes only one side agrees with (a purge, an old version being replaced, compaction) don't reach hosts: the encrypted data stays and hosts grow until the dispute is settled.
@@ -38,3 +31,4 @@ A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) settled most o
 - Q4: option A, written into spec/requirements.md Deletion (an undo made before the device saw the purge is its own change). Nothing to build.
 - Q6: A (Tess): a re-grant revives all the person's writes; no special case. Her point: leaving writes out of a removal on purpose as a recovery tool is depending on a side effect; an admin who wants something gone should revert it explicitly, not as a side effect of a kick. Don't extend that side effect to new uses (bears on Q7, Q10 and on notes that describe deliberate omission as lockout or purge recovery).
 - Q7: simplest (Tess: "this would be a strange thing for an admin to do"): no change; a removal's listed writes are valid as today; stated limit only. Lockout recovery by deliberate omission (`--repudiate`) to be re-studied as a key fork from the last epoch held (Q6 principle).
+- Q10: a gap delete counts after re-grant, like gap edits. Requirements kept to the property (Tess: "define the properties we care about, not shrink-wrap the behavior"): Deletion now says a purge counts only if its author had the right, judged as an edit's validity; the demotion-omission exception sentence is gone (it follows). Side effect (grant-then-remove of a stranger) is a stated limit, as Q7.
