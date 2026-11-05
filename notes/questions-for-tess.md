@@ -16,22 +16,6 @@ A realm is an actor marked `realm.0` (plus `name.0`), as `tag.0` marks a group; 
 8. Host admission for realms: left to the host admission work (recommended).
 Say "realms as recommended" to build, or change any.
 
-## 9. Owner removal step 6: hosts when an actor forks
-A fork can last forever, so everything below is a permanent rule, not a waiting period. A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) checked it with devices switching sides; no loops and no data lost.
-- **The forked actor's own data: each side gets its own branch at the host.** Today the second side is refused and moves to a new label, and its new devices then get only what its own devices still hold. With branching, both sides keep everything that was at the host before the fork, for good. Shared members also copy across data no fork-dependent write touches, so late uploads reach both sides.
-- **Other data, where someone's access runs through the forked actor** (an actor holding a role whose admins fork, a person whose devices fork): a host deletes a body only when no side needs it.
-- **What users notice:** nothing, except that hosts keep more. Deletes only one side accepts (a purge, an old version being replaced, compaction) never reach hosts on that shared data while the fork lasts.
-- **Choice: the rule's form.**
-  - **A (recommended): "no side needs it".** One side's own old versions still get cleaned up, since the other side never needed them.
-  - **B: plain "never delete because of a fork-dependent write, nor such a write itself".** Simpler to state, but every edit one side makes after the fork leaves its old version at hosts forever.
-  - (Per field was rejected: a purge both sides accept would never reach hosts.)
-- **Stated limits, for your OK:**
-  1. A removed admin (no fork needed) can open a branch of its old label at a host. Other devices ignore it; it costs host storage, and it can download again the encrypted copies it could already read before its removal.
-  2. A host that won't branch falls back to today's new label, with today's reach loss at that host.
-  3. After one side concedes, its branch is abandoned; its admins should delete it, like a replaced label.
-  4. As before, one shape is safe only because role changes reach devices before content does.
-- Not yet modelled: several hosts, several forks at once, two honest admins rotating at the same moment.
-
 ## Decided (Tess)
 - Q1: option A (any writer finalizes an ended timed share), built as item 280.
 - Q2: option A, a group never looks inside its member actors, with the two extra rules of notes/keys-requirements-study.md §4. Role cycles (Q8): Tess left it to us: no key cycles (the earlier grant in the agreed order gets keys, the later one none), model-check first, fall back to accepting a leak in cycles until the next knowing re-key if a hidden cycle leaks. Nested shared tags can be one-way. Plan: issues/keys-depth0.md.
@@ -40,3 +24,4 @@ A fork can last forever, so everything below is a permanent rule, not a waiting 
 - Q6: A (Tess): a re-grant revives all the person's writes; no special case. Her point: leaving writes out of a removal on purpose as a recovery tool is depending on a side effect; an admin who wants something gone should revert it explicitly, not as a side effect of a kick. Don't extend that side effect to new uses (bears on Q7, Q10 and on notes that describe deliberate omission as lockout or purge recovery).
 - Q7: simplest (Tess: "this would be a strange thing for an admin to do"): no change; a removal's listed writes are valid as today; stated limit only. Lockout recovery by deliberate omission (`--repudiate`) to be re-studied as a key fork from the last epoch held (Q6 principle).
 - Q10: a gap delete counts after re-grant, like gap edits. Requirements kept to the property (Tess: "define the properties we care about, not shrink-wrap the behavior"): Deletion now says a purge counts only if its author had the right, judged as an edit's validity; the demotion-omission exception sentence is gone (it follows). Side effect (grant-then-remove of a stranger) is a stated limit, as Q7.
+- Q9: closed by model (Tess: "if that actually works great"). Forks are permanent. The forked actor's own label: hosts branch on a step a registrar's view rejects; each side keeps its branch; members holding both sides' keys carry bodies no fork-dependent write touches. Other labels where a right flows through the forked actor: a body is deleted at a host only when on every side it is invalid or a delete reason holds ("no side needs it"). Permanent cost: deletes only one side accepts never reach hosts on shared data. Limits: a once-removed admin may open a branch from an old step (host storage; it re-reads what it could read); a host that won't branch falls back to label replacement; a conceded branch is deleted like a replaced label; one shape relies on role commits arriving before content. Not modelled: several hosts, several forks at once (each fork-dependent write tagged with the picks it rests on). core/test/tla/sides, notes/owner-removal-plan.md step 6.
