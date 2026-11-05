@@ -32,5 +32,14 @@ Default policy (Tess):
 
 To build: a credential names the actor it acts as, the main one included if the node's owner chooses. Today the transport decides (socket: main actor; secret: an actor minted for it), and notes/client-port.md Rejected ("Thin devices") argues from a threat model it shouldn't impose: reword it as a default. Today's credential is a bearer secret inside TLS; decide whether "cryptographically authenticated" needs a signature by the actor's key instead. Also: acting as several actors in process, issues/grant-rename-multi-actor.md (public `act_as`).
 
-## Words to sweep
-"Blind node", "untrusted node" as a kind, "Owner" session, "device" as a term of the model. notes/networking.md "Blind always-on nodes are the backbone", notes/client-port.md §0 "Two kinds of process", notes/sync.md, notes/convergence-study.md, notes/overview.md. API part: issues/api-refactor.md, Names.
+## Spec needing a concept change, not a word change
+Rule text still says "host" here, waiting on this issue and owner removal. Swapping the word would keep the picture:
+- spec/overview.md Conventions: a label's hosts are "the addresses in its `label.0` record": a fixed list admins write, so a node is reachable as one only at a stable address.
+- spec/sync.md §2, §10, spec/wire.md §10 (`Link`, `Card`): `label.0`, link and card host lists hold fixed addresses; `peer://` is never one (issues/no-server-audit.md rows 26, 27).
+- spec/sync.md §4, §5, §6: two serving paths with different rules: host state and operations against a co-reader peer "serving it as its own host", with proof 3 refused at hosts. Item 2 above.
+- spec/permissions.md §3 (complete pass waits on hosts, and on peers only for a bounded time) and §8 (recovery card and links name hosts): issues/no-server-audit.md rows 13-19.
+- spec/data-model.md §9 (`host.0^`, `own`): admission by owner, also waiting on owner removal.
+- spec/requirements.md: "a hiding host", "Nothing trusts a host's word", an inbox's budget "at a host": each is about a node serving data it cannot read.
+
+## Words left
+"Owner" session and "device" as a term of the model. notes/client-port.md §0 "Two kinds of process" (held for the API steps). API part: issues/api-refactor.md, Names.

@@ -47,10 +47,10 @@ Known open (issues/): cost residues (perm-eval-cost, node-core-gaps, node-sequen
 - notes/permissions.md: permission rules' reasons, roles model findings, revocation reasoning, sharing patterns.
 - notes/sync.md: sync and host reasons, limits, what a node learns about data it cannot read, policy defaults.
 - notes/crypto.md: suite choices, costs, crates.
-- notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, placements, undo, ephemeral commits held in memory at nodes and hosts, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.
+- notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, placements, undo, ephemeral commits held in memory at every node holding them, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: chat as built on design E (examples/chat), with costs.
 - notes/tags.md: the standard core aspects (`name.0`, `body.0`, `tag.0`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
-- notes/networking.md: transports (iroh, direct hosts), official infrastructure, push wake-up proposal, risks.
+- notes/networking.md: transports (iroh, known addresses), official infrastructure, push wake-up proposal, risks.
 - notes/local-store.md: encrypted local store and key-erasure deletion.
 - notes/node.md: osis-engine and osis-node module layout, engine surface, store records, node-core readings.
 - notes/cli.md: the `osis` command-line tool (command table, value syntax, JSON, exit codes).
