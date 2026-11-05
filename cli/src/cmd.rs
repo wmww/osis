@@ -1605,8 +1605,8 @@ mod tests {
         let t = osis::Tid::from_bytes([7; 15]);
         let mut s = osis::Status::default();
         s.two_sources.insert(t);
-        assert_eq!(super::status_lines(&s, true), vec![format!("{} two sources: writes refused", t.to_uri())]);
-        assert_eq!(super::status_json(&s).text(), format!("{{\"groups\":[],\"two_sources\":[\"{}\"]}}", t.to_uri()));
+        assert_eq!(super::status_lines(&s, true), vec!["connected 0".to_string(), format!("{} two sources: writes refused", t.to_uri())]);
+        assert_eq!(super::status_json(&s).text(), format!("{{\"groups\":[],\"connected\":0,\"two_sources\":[\"{}\"]}}", t.to_uri()));
     }
 
     // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.
