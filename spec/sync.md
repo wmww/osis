@@ -92,15 +92,15 @@
 - **Certificate blobs**: chain certificates, node cards, heartbeats, revokes and roster snapshots (spec/permissions.md §4): copies of the parts of a role commit about one actor.
   - They go under a label as a fresh encryption per label, never as a blob shared with another label.
   - The chunk and tree-node blobs of a linked frontier or header list go under it too, as the same blobs (a link names them) with a filler wrap.
-  - A roster snapshot copied as a certificate carries the edge and ledger deltas the chain needs.
+  - A roster snapshot copied as a certificate carries the grant and ledger deltas the chain needs.
   - A writer promoting a deposited commit completes its author's chain under the label from what it holds (§5).
 - **Inbox blob** (spec/crypto.md §5; layout and payload spec/wire.md §9): the parts about actor G of a role commit, boxed to G, with the label IDs and host addresses of those things it names that have labels of their own.
   - **What it carries about G**, any of:
     - a grant with G's boxes;
-    - a change or removal of G's edge;
+    - a change or removal of G's grant;
     - a re-seal of G;
     - a rotation boxing G where G held no box at the read epoch before it;
-    - the `label.0` write giving a thing G holds an edge on its first live label: sent by its writer to every actor on the thing's roster that is not a key actor and whose read keyset and inbox it knows.
+    - the `label.0` write giving a thing G holds a grant on its first live label: sent by its writer to every actor on the thing's roster that is not a key actor and whose read keyset and inbox it knows.
   - **Placement**: under G's inbox (§2) by deposit, or by upload when the sender holds the inbox label's write key. The inbox group's admins may delete it earlier than its expiry.
   - **Re-send**: its prefix expiry is `INBOX_LIFETIME`, after which the sender re-sends unless the recipient has since acted on it: a commit by it or a device of it writing a thing the blob names or a thing such a thing owns. Acting elsewhere does not count. A sender MAY bound the number of re-sends.
   - **Stamping in place**: a writer of the inbox's group stamps a deposited inbox blob in place (§5).
@@ -130,7 +130,7 @@
   - Declining one leaves its commit unapplied, at that node and for good, from every inbox blob carrying it. The same commit arriving in a blob under a label the node syncs (a sibling device that accepted it placed its copy under home) is applied as any commit: the acceptance wins.
 - **Grant copy**: a grantee device that accepts a grant for an actor (from the inbox, from K's label, or by pairing) places a certificate copy of the grant, with the `label.0` commits of the labels it reached, under that actor's home label; not when an entry there already holds the grant's parts, counted as for chain certificates (spec/permissions.md §4).
   - From an inbox blob only a node with admin on the actor copies, and only, of a valid applied role commit:
-    - the carried parts on the things where a `roles.0` delta writes the edge of the actor or an actor it owns or a `secrets.0` delta boxes one, or, of a `label.0` write, on the named things where the actor or an actor it owns holds an edge;
+    - the carried parts on the things where a `roles.0` delta writes the grant of the actor or an actor it owns or a `secrets.0` delta boxes one, or, of a `label.0` write, on the named things where the actor or an actor it owns holds a grant;
     - with the `created.0` commit and every `label.0` commit of those things that the payload names (no `label.0` commit of a thing the actor reads no more);
     - and the author's chain of each (spec/permissions.md §4), that chain without any `keys.0` but its author's own;
     - and nothing from a blob whose expiry is less than `INBOX_LIFETIME` / 2 away.
@@ -301,7 +301,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - outside the required set;
     - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: kept or holding a live write, and covered by no snapshot under the label;
     - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
-    - another node's node-card commit, for `node.0` and `reach.0`, once that node reads the label's actor no more after an applied edge write on its way to the actor ended an edge (removed it, or its `until` passed).
+    - another node's node-card commit, for `node.0` and `reach.0`, once that node reads the label's actor no more after an applied edge write on its way to the actor ended a grant (removed it, or its `until` passed).
   - **may-hold**: the rest: covered, between bounds, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
 
   After syncing:

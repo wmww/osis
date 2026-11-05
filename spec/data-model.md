@@ -124,7 +124,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `tid.0` | the thing's tid |
 | `aspects.0` | AKs present on the thing |
 | `created.0` | the creation record (spec/commits.md §2, §5) |
-| `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `since`: only in roster snapshots (spec/permissions.md §6). `tied`: the placement the edge goes with (spec/permissions.md §2). `until` 0: a removal saying keep (spec/permissions.md §2). `keyset`: a holder actor's edge: the key of its `keys.0` commit the last grant or raise sealed to, kept by every later write of the edge and by roster snapshots (spec/crypto.md §4) |
+| `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `since`: only in roster snapshots (spec/permissions.md §6). `tied`: the placement the grant goes with (spec/permissions.md §2). `until` 0: a removal saying keep (spec/permissions.md §2). `keyset`: a holder actor's grant: the key of its `keys.0` commit the last grant or raise sealed to, kept by every later write of the grant and by roster snapshots (spec/crypto.md §4) |
 | `keys.0` | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
 | `secrets.0` | an actor's boxes and history boxes (spec/crypto.md §4) |
 | `tenures.0` | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
