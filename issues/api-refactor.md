@@ -63,6 +63,14 @@ Keep as they are:
 - A flat method list on `Osis` rather than namespaces (`db.sharing()`, ...): that would add concepts.
 - `settle` for both pump and test wait: same operation, though `run_callbacks` may read better.
 
+## One commit (step 5b)
+`Write::commit` still splits a write into several commits, one per expiry and per `nobody` class (`Committed::also`, spec/commits.md §5 and §6). An atomic write that silently isn't atomic is what Tess wants gone.
+- `commit` makes exactly one commit, or fails `Invalid` before anything applies, naming what clashed. `Committed::also` goes; `commit` returns one id. The app splits, visibly, if it means to.
+- A commit has one expiry, so expiry belongs on the write, not per aspect: `w.expires(e)`, and `AspectWrite::expires` and `ExpiringGroupWrite` go. A key's default expiry applies unless the write sets one; keys whose defaults differ in one write are a clash.
+- A thing's record can't expire, so creating a thing with expiring content takes two commits today, and an app sees that. Check whether the record could go in an expiring commit (exempt, as `created.0` already is from the `nobody` rule); that's an engine and spec change for after owner removal, so write it up rather than build it.
+- A mixed durable and ephemeral write: is it one commit? Decide by the same rule.
+- Port every caller: chat's disappearing messages, the CLI, undo's and `revert`'s handling of `also`, and spec/commits.md's "a writer splits".
+
 ## E. Leaks
 - **Exported implementation numbers**: `MAX_CONNS_PER_CLIENT`, `HISTORY_DIRTY_BYTES`, `HISTORY_SEND`, `MAX_SCHEMA_BYTES`, `SIGNAL_BYTES`, `STREAM_CHUNK`, `WRITE_NONCES`, `REFRESH_DIVISOR`, `OFFER_LIFETIME_MS`, `DEFAULT_*`. Make them private or move them to `internals` for tests. `HISTORY_PAGE` stays only if a page limit is the caller's business.
 - **Socket helpers**: `socket_path`, `SOCK_FILE`, `own_uid`, `socket_dir`: the CLI's needs, not an app's. `connect_socket(store_dir)` can resolve the path itself.
@@ -95,6 +103,16 @@ Keep as they are:
 | `placed.0~`, `PlacementNotPersisted`, `place_plan`, "placed" in prose | membership words | Decided 3 |
 
 ### Vocabulary
+Decided with Tess (concepts, not only words; notes/api-design.md):
+- **"Database" retires.** A **store** is what's on disk, a **node** is what runs, and `Osis` is a handle to one. Docs and errors follow.
+- **Draft and ephemeral.** A new thing not yet durably written is a **draft**: local and unsaved. **Ephemeral** stays for `~` aspects: shared with others, never stored.
+- **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. "Key actor" stays internal, and the spec's definition stops being "has role secrets".
+- **A commit is an atomic write, called a commit, never implicitly split (Tess, strongly).** See "One commit" below. "Change" as a public word goes, with `ChangeId`: one opaque `CommitId`, ephemeral commits included. "Batch" goes where it means a commit. In the spec, one word of "part" and "delta".
+- **Sync ID replaces label**, internally and externally, in code and spec. API: an opaque `SyncId`, only where serving's admission needs one. Code and spec prose wait for owner removal.
+- **Aspect key** is the whole string (`note:title.0~`), as the spec's AK. Consistently: `db.aspect_key(ak)`, not `db.key`; `Ak` stays its type. Domain plus generic word is fine, as with crypto keys: Tess isn't concerned by collisions that clearly refer to different things, only by one concept under several terms or one term used suboptimally.
+- **Keep** splits: a removed holder's copy (`retain_copy`-style), `keep_alive`, and retention's keep-at-most. **Invite** on a grant becomes `may_grant`; "invite" stays for an incoming request from a stranger. Route, link and card: agent's discretion.
+- **`sync(thing, &peers)`**: a sync ID of its own is mostly a detail of how a thing travels. Tess is unsure how much to encourage single-thing ones (perhaps right when a user shares one specific thing). Keep the call, make its doc steer sets through a group, and don't let other calls create one quietly, `make_link` aside. Reconsider with the peers work.
+
 - **Nodes** (Tess; spec/requirements.md Terms, issues/node-host-unify.md): `node` in the API, never `device`: `devices()` and `remove_device` become `nodes()` and `remove_node`; apps may say device to their users. Host is a role. "Blind node" goes. "Owner" goes. A **client** is anything using the client protocol, a node included; a **thin client** is one that is not a node. Neither says what actor it acts as. `is_attached` and `attach*` follow (D2).
 - **`host` retires (Tess)**, as a concept, not only a word. A group syncs with peers; a peer need not say whether it holds the group's keys. Vocabulary: `node`, `peer`, `Address` (how to reach a node: URL and key), `serving` (a node's willingness to store and serve data for others, with admission rules and limits). `sync(group, &peers)`, `peers(group)` (saved on the group, or published by the peer itself), `add_peer`, `remove_peer`, `SyncState::NoPeers`, `set_serving(Option<Serving>)`. `Config.peers` is renamed or goes, since direct sync is the default. `relay` keeps its meaning. `HostAddr` becomes `Address`. Spec rules and `osis-host` wait for owner removal and issues/node-host-unify.md, but nothing public says host. Watch for sentences that swap the word and keep the old picture; see notes/api-design.md.
 - **Account**, not person or user: an account may be a team, a bot or a shared identity. `me()` keeps its name.
