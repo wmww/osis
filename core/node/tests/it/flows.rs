@@ -1344,12 +1344,6 @@ fn until_link_backdated_grant_void_spec_perm_8() {
 // inbox; the removed holder is not re-sealed.
 #[test]
 fn reseal_raced_grant_spec_perm_3() {
-    struct Pass;
-    impl osis_node::flows::SyncState for Pass {
-        fn complete_pass(&self, _: &Tid) -> bool {
-            true
-        }
-    }
     let (mut lp, ps) = people(4, 512);
     let (pa, pb, pc, pd) = (ps[0], ps[1], ps[2], ps[3]);
     let t = thing_of(&mut lp, 0, pa);
@@ -1390,12 +1384,6 @@ fn reseal_raced_grant_spec_perm_3() {
 // and nothing is re-sealed.
 #[test]
 fn key_actor_holders_not_resealed_spec_perm_3() {
-    struct Pass;
-    impl osis_node::flows::SyncState for Pass {
-        fn complete_pass(&self, _: &Tid) -> bool {
-            true
-        }
-    }
     let mut lp = net(3, 533);
     let (p, _) = lp.peers[0].engine.create_person(&hosts()).unwrap();
     let p = p.person;
@@ -1539,6 +1527,14 @@ fn reseal_over_unheld_box_spec_perm_3() {
     assert!(lp.peers[2].engine.epochs(&t).unwrap().read.secret(&e2).is_some(), "carol reads e2");
 }
 
+/// A complete pass of every actor's labels (re-seal decisions).
+struct Pass;
+impl osis_node::flows::SyncState for Pass {
+    fn complete_pass(&self, _: &Tid) -> bool {
+        true
+    }
+}
+
 /// Alice (0) owns C, K1 and K2; K1 and K2 are writers of C; o0 (1) writes K1; late (2)
 /// writes K2 (and reads K1 when `late_reads_k1`). Unless late reads K1 it never gets K1's
 /// `secrets.0` parts (they travel under K1's label only), as with `spread_hiding`. Returns
@@ -1602,28 +1598,32 @@ fn unheld_holder_judged_by_keyset_spec_crypto_4() {
     assert!(rot.commits.is_empty() && still.is_empty(), "late rotates nothing: {still:?}");
 }
 
-// spec/permissions.md §3 (holder actors), spec/requirements.md (Permissions, the inside-member
-// limit): o0 leaves K1 by self-removal (no rotation); late, a reader of K1, may not rotate K1, and
-// nothing departed from C: it rotates nothing and may write under C (o0 reads C's new content
-// until K1's knowing keyset reaches C's writers). Alice rotates K1; at late, C's box to K1 is then
-// stale, and late rotates C once, to an epoch o0 does not hold.
+// spec/permissions.md §3 (holder actors, a self-removal carries no rotation), spec/crypto.md §4
+// (Encrypting under: an epoch boxing a holder actor at a blocked keyset; Seal): o0 leaves K1 by
+// self-removal (no rotation). late, a reader of K1 and a writer of C through K2, may not rotate
+// K1 and nothing departed from C, but C's read epoch boxes K1 at a keyset missing o0's departure:
+// late rotates C once, leaving K1 out, to an epoch o0 does not hold. Alice rotates K1, and
+// re-seals K1 to C.
 #[test]
-fn inside_member_departure_waits_for_its_rotation_spec_perm_3() {
+fn inside_member_departure_leaves_holder_out_spec_perm_3() {
     let (mut lp, c, k1, po) = two_links(518, true);
     lp.peers[1].engine.demote(&k1, &Demotion { holder: po, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     spread(&mut lp);
-    for _ in 0..2 {
-        let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
-        assert!(rot.commits.is_empty() && still.is_empty(), "late: nothing to rotate, not blocked: {still:?}");
-    }
-    let (rot, _) = lp.peers[0].engine.ensure_rotated(&k1).unwrap();
-    assert_eq!(rot.commits.len(), 1, "alice rotates K1");
-    spread(&mut lp);
+    assert!(lp.peers[2].engine.departures(&c).unwrap().is_empty(), "nothing departed from C");
     let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
     assert!(still.is_empty() && rot.commits.len() == 1, "late rotates C once: {still:?}");
+    assert!(lp.peers[2].engine.ensure_rotated(&c).unwrap().0.commits.is_empty(), "and no more");
     let top = newest_read(&lp, 2, c).unwrap();
     spread(&mut lp);
     assert!(lp.peers[1].engine.epochs(&c).is_none_or(|e| e.read.secret(&top).is_none()), "o0 does not hold C's new epoch");
+    let (rot, _) = lp.peers[0].engine.ensure_rotated(&k1).unwrap();
+    assert_eq!(rot.commits.len(), 1, "alice rotates K1");
+    spread(&mut lp);
+    assert!(!lp.peers[0].engine.reseal_due(&c, &Pass).unwrap().commits.is_empty(), "alice re-seals K1 to C");
+    spread(&mut lp);
+    let top = newest_read(&lp, 0, c).unwrap();
+    assert!(lp.peers[2].engine.epochs(&c).is_some_and(|e| e.read.secret(&top).is_some()), "late reads C again");
+    assert!(lp.peers[1].engine.epochs(&c).is_none_or(|e| e.read.secret(&top).is_none()), "o0 does not");
 }
 
 // spec/crypto.md §3, §4: a doc without secrets of its own in a team without any either: its

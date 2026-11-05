@@ -106,4 +106,21 @@ fG == << <<"A", "M">> >>
 \* fork the removal goes without A's rotation)
 eMem == fMem \cup {<<"A", "E">>}
 eDeps == {<<"E", "A", "m1">>}
+\* above A: A holds G's role; a1 (admin of A and G) removes device E from A,
+\* the removal alone (Alone "any"); a2 (A's other admin) may fork A once
+\* unprompted, a1 may rotate G once unprompted
+uActs == <<"G", "A">>
+uMem == {<<"G", "a1">>, <<"G", "A">>, <<"A", "a1">>, <<"A", "a2">>, <<"A", "E">>}
+uAdm == {<<"G", "a1">>, <<"A", "a1">>, <<"A", "a2">>}
+uLearners == {"a1", "a2"}
+uDeps == {<<"E", "A", "a1">>}
+uEager == {<<"a2", "A">>, <<"a1", "G">>}
+\* ... with a1 the one admin of A (two admins both rotating A for the removal
+\* fork it, and the merge and G's moves after it outrun MaxE 7) and r, a
+\* device reading G only through A
+u1Mem == (uMem \ {<<"A", "a2">>}) \cup {<<"A", "r">>}
+u1Adm == uAdm \ {<<"A", "a2">>}
+u1Learners == {"a1", "r"}
+u1Eager == {<<"a1", "G">>}
+uG == << <<"G", "A">> >>
 =============================================================================

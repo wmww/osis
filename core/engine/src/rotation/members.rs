@@ -3,7 +3,8 @@
 //! to, stale and keyless boxes of an actor, and the writer's side of possession (a rotation only
 //! with the authority its signed boxes show). The rules
 //! are osis-keys' (`osis_keys::members`, `osis_keys::possession`); this gathers their inputs.
-//! Nothing here reads a departure from a holder actor.
+//! A departure from a holder actor counts only as what this node may encrypt under
+//! (`super::blocked_epoch`): sealing at a keyset is encrypting under it.
 
 use crate::engine::{Core, Tx};
 use crate::error::Result;
@@ -169,20 +170,23 @@ fn anchors(tx: &mut Tx<'_>, a: &Tid, m: &Tid, r: Role) -> Result<BTreeSet<Epoch>
 pub(crate) enum Sealed {
     /// These boxes.
     Boxed(Recipient),
-    /// Nothing: left out until re-sealed (no key access, keys or keyset to seal to).
+    /// Nothing: left out until re-sealed (no key access, keys or keyset to seal to, or one the
+    /// sealer may not encrypt under).
     Out,
     /// No such commit is made yet: Seal waits for a keyset of a holder actor that descends from
     /// its anchors (`osis_keys::Seal::Wait`).
     Wait,
 }
 
-/// Holder `m` of `a`, holding `role`, as a rotation, grant or re-seal of `a` boxes it
-/// (spec/crypto.md §4): a key actor whole; a holder actor without key access not at all; one with
-/// it, per role up to `role`, at the keyset Seal gives (`osis_keys::seal_keyset`), symmetric
-/// (signed: it shows possession) where this node holds that established epoch's secret, cut at
-/// the first role with none (left out of it and the roles above); `Wait` if Seal waits at any
-/// role up to `role`.
-pub(crate) fn sealed(tx: &mut Tx<'_>, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
+/// Holder `m` of `a`, holding `role`, as a rotation, grant or re-seal of `a` by `who` (this node,
+/// or a key actor it signs as) boxes it (spec/crypto.md §4): a key actor whole; a holder actor
+/// without key access not at all; one with it, per role up to `role`, at the keyset Seal gives
+/// (`osis_keys::seal_keyset`), symmetric (signed: it shows possession) where this node holds that
+/// established epoch's secret, cut at the first role with none or whose keyset `who` may not
+/// encrypt under (`super::blocked_epoch`: a departure from `m` it knows that keyset does not
+/// cover, say), left out of it and the roles above; `Wait` if Seal waits at any role up to
+/// `role`.
+pub(crate) fn sealed(tx: &mut Tx<'_>, who: &Tid, a: &Tid, m: &Tid, role: Role) -> Result<Sealed> {
     if tx.core.is_key_actor(m) {
         return Ok(recipient(tx, *m, role).ok().map_or(Sealed::Out, Sealed::Boxed));
     }
@@ -190,6 +194,7 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, a: &Tid, m: &Tid, role: Role) -> Result<Se
         return Ok(Sealed::Out);
     }
     let own = tx.core.own_epochs(m);
+    let deps = super::departures(tx, m)?;
     let (mut keysets, mut secrets, mut top) = (BTreeMap::new(), BTreeMap::new(), None);
     for r in ROLES.into_iter().filter(|r| *r <= role) {
         let held = keysets_of(tx, m, r, None)?;
@@ -198,6 +203,9 @@ pub(crate) fn sealed(tx: &mut Tx<'_>, a: &Tid, m: &Tid, role: Role) -> Result<Se
             Seal::Out => break,
             Seal::Wait => return Ok(Sealed::Wait),
         };
+        if super::blocked_epoch(tx, who, m, r, &k, &deps)? {
+            break;
+        }
         let secret = own.as_ref().filter(|e| e.role(r).is_established(&k)).and_then(|e| e.role(r).secret(&k)).cloned();
         let written = tx.core.ix.keysets.get(&(*m, r, k)).and_then(|x| x.kem.clone());
         let kem = match (written, &secret) {
@@ -233,19 +241,23 @@ pub(crate) fn authority(core: &Core, who: &Tid, a: &Tid, needed: Role, holders: 
     avoid.is_empty() || on_a(&avoid) >= Some(needed) || on_a(&BTreeSet::new()) < Some(needed)
 }
 
-/// Whether `a`'s epoch `e` of role `r` has a stale box (spec/crypto.md §4, rule 2): a box of its
-/// `secrets.0` state to a holder actor naming a keyset held invalid, tainted, or listed by a held
-/// valid keyset of it.
-pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
+/// The holder actors `a`'s epoch `e` of role `r` boxes, each with the keyset its box names, by
+/// the boxes of `a`'s `secrets.0` state.
+pub(crate) fn boxed_keysets(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<Vec<(Tid, Epoch)>> {
     let s = secrets_in(tx, a)?;
-    let named: Vec<(Tid, Epoch)> = s
-        .boxes
+    Ok(s.boxes
         .iter()
         .filter(|(k, _)| k.role == r && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|x| x == *e))
         .filter(|(k, _)| !tx.core.is_key_actor(&k.holder))
         .filter_map(|(k, b)| Some((k.holder, osis_keys::box_epoch(b)?)))
-        .collect();
-    for (m, k) in named {
+        .collect())
+}
+
+/// Whether `a`'s epoch `e` of role `r` has a stale box (spec/crypto.md §4, rule 2): a box of its
+/// `secrets.0` state to a holder actor naming a keyset held invalid, tainted, or listed by a held
+/// valid keyset of it.
+pub(crate) fn stale_at(tx: &mut Tx<'_>, a: &Tid, r: Role, e: &Epoch) -> Result<bool> {
+    for (m, k) in boxed_keysets(tx, a, r, e)? {
         let held = keysets_of(tx, &m, r, Some(&k))?;
         if osis_keys::stale(&k, &held, &tainted(tx, &m, r)?) {
             return Ok(true);
