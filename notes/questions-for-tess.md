@@ -16,13 +16,21 @@ A realm is an actor marked `realm.0` (plus `name.0`), as `tag.0` marks a group; 
 8. Host admission for realms: left to the host admission work (recommended).
 Say "realms as recommended" to build, or change any.
 
-## 9. Owner removal step 6: what hosts do during a dispute
-A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) settled most of step 6. Hosts need one gate: while two admins are in a dispute, nobody deletes data at a host when the reason rests on a write only one side accepts. Without it the two sides delete and re-upload forever, or a body is lost before the other side ever fetched it. The plan's other candidates failed. What the gate costs, and a choice:
-- **Cost, either way:** while a dispute lasts, deletes only one side agrees with (a purge, an old version being replaced, compaction) don't reach hosts: the encrypted data stays and hosts grow until the dispute is settled.
-- **Choice: how precise the gate is.**
-  - **A (recommended): per field.** No deletes at hosts on any field a disputed write touched. One check, plus three small cases. Extra cost: a purge *both* sides agree with, on such a field, also waits until the dispute ends. Fits "a fight may do wide damage, its handling must not spread through the code".
-  - **B: per reason.** Every delete reason names the write it rests on; only those resting on disputed writes wait. Precise, but touches every place that decides a delete (about seven kinds).
-- **Stated limits, for your OK:** after the fork, the losing side's new devices get only what its own devices held when the race was lost, plus what shared members carry across. And one shape is safe only because role changes reach devices before content does; a host delivering content first could lose a body (the model shows it). Not yet modelled: several hosts picking different winners, several disputes at once.
+## 9. Owner removal step 6: hosts when an actor forks
+A fork can last forever, so everything below is a permanent rule, not a waiting period. A model (core/test/tla/sides; notes/owner-removal-plan.md step 6) checked it with devices switching sides; no loops and no data lost.
+- **The forked actor's own data: each side gets its own branch at the host.** Today the second side is refused and moves to a new label, and its new devices then get only what its own devices still hold. With branching, both sides keep everything that was at the host before the fork, for good. Shared members also copy across data no fork-dependent write touches, so late uploads reach both sides.
+- **Other data, where someone's access runs through the forked actor** (an actor holding a role whose admins fork, a person whose devices fork): a host deletes a body only when no side needs it.
+- **What users notice:** nothing, except that hosts keep more. Deletes only one side accepts (a purge, an old version being replaced, compaction) never reach hosts on that shared data while the fork lasts.
+- **Choice: the rule's form.**
+  - **A (recommended): "no side needs it".** One side's own old versions still get cleaned up, since the other side never needed them.
+  - **B: plain "never delete because of a fork-dependent write, nor such a write itself".** Simpler to state, but every edit one side makes after the fork leaves its old version at hosts forever.
+  - (Per field was rejected: a purge both sides accept would never reach hosts.)
+- **Stated limits, for your OK:**
+  1. A removed admin (no fork needed) can open a branch of its old label at a host. Other devices ignore it; it costs host storage, and it can download again the encrypted copies it could already read before its removal.
+  2. A host that won't branch falls back to today's new label, with today's reach loss at that host.
+  3. After one side concedes, its branch is abandoned; its admins should delete it, like a replaced label.
+  4. As before, one shape is safe only because role changes reach devices before content does.
+- Not yet modelled: several hosts, several forks at once, two honest admins rotating at the same moment.
 
 ## Decided (Tess)
 - Q1: option A (any writer finalizes an ended timed share), built as item 280.

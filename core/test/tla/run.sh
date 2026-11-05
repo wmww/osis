@@ -73,6 +73,12 @@ instances=(
   "sides MC reup_once.cfg small fail"         # candidate (b)
   "sides MC fork_split.cfg small fail"        # fork: the race loser's reach
   "sides MC place_order.cfg small fail"       # placement fetched after what it places
+  "sides MC branch_kill.cfg small pass"       # host branching, rule lifted per branch
+  "sides MC branch_late.cfg small fail"       # branching: a late upload reaches one branch
+  "sides MC branch_bridge.cfg small pass"     # ... members carry clean bodies across
+  "sides MC concede.cfg small pass"           # a concession ends the fork: no loss, no loop
+  "sides MC tidy_touch.cfg small fail"        # per-reason rule: one-side superseded writes stay
+  "sides MC tidy_need.cfg small pass"         # need rule: they go
   "rotation Depth0MC D0_nc.cfg small pass"            # rule 4, no key cycles (issues/keys-depth0.md)
   "rotation Depth0MC D0_nc_rev.cfg small pass"
   "rotation Depth0MC D0_nc2.cfg all pass"
