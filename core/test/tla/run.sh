@@ -62,6 +62,17 @@ instances=(
   "rotation Rotation MC_desc_c1.cfg all pass"
   "rotation Rotation MC_desc_c1f.cfg all pass"
   "rotation Rotation MC_desc_c3.cfg all pass"
+  "sides MC kill_touch.cfg small pass"        # notes/owner-removal-plan.md step 6
+  "sides MC purge_touch.cfg small pass"
+  "sides MC place_touch.cfg small pass"
+  "sides MC kill_none.cfg small fail"         # no gate: loss and loop
+  "sides MC grantee_direct.cfg small fail"    # gate on the parties' own writes only
+  "sides MC fall_neutral.cfg small fail"      # gate by a neutral view
+  "sides MC purge_aspect.cfg small fail"      # per-aspect gate: accepted purge stuck
+  "sides MC cover_own.cfg small fail"         # one-side covers ungated
+  "sides MC reup_once.cfg small fail"         # candidate (b)
+  "sides MC fork_split.cfg small fail"        # fork: the race loser's reach
+  "sides MC place_order.cfg small fail"       # placement fetched after what it places
   "roles Roles MC_core.cfg small pass"
   "roles Roles MC_multi.cfg small pass"
   "roles Roles MC_group.cfg all pass"
