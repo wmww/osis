@@ -5,12 +5,16 @@
 (* keyset the boxes to h at a's current epochs name (anchors); a box of the   *)
 (* epoch it would encrypt under is stale when the keyset it names is invalid *)
 (* or listed as superseded by a held valid keyset, and then it rotates first; *)
-(* an admin rotates while any current epoch misses a departure it knows      *)
-(* (merge). Role cycles (rule 4, issues/keys-depth0.md): no key cycles:      *)
-(* actor grants in an agreed order, one closing a cycle over the earlier     *)
-(* ones gives no key access, judged over the grants a node holds. Fresh: the *)
-(* failed candidate it replaced (leave cycle members out, re-seal by a check *)
-(* on their keyset), kept as the record of its counterexample.               *)
+(* an admin rotates while it holds more than one current epoch (merge; Merge *)
+(* "departure": only while one misses a departure it knows, the rule before);*)
+(* a rotation finding no keyset of h descending from every anchor waits      *)
+(* (LeftOut "wait"). Staleness, taint and the knowing re-key judge every box *)
+(* held, valid or not (SeeAll). Role cycles (rule 4, issues/keys-depth0.md): *)
+(* no key cycles: actor grants in an agreed order, one closing a cycle over  *)
+(* the earlier ones gives no key access, judged over the grants a node     *)
+(* holds. Fresh: the failed candidate it replaced (leave cycle members out, *)
+(* re-seal by a check on their keyset), kept as the record of its           *)
+(* counterexample.                                                           *)
 (* Several actors, read role only; an actor's keyset is its read epoch (boxes *)
 (* to h at keyset k open with epoch k's secret). Crypto is access: a node's   *)
 (* secrets are the closure, from its device key, over the boxes and history   *)
@@ -54,7 +58,7 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
           Split,      \* TRUE: a holder's keys.0 under a target's label
                       \* arrives without the keysets it names (they are
                       \* carried under the holder's own label only)
-          Rule        \* removed-member writer (issues/keys-depth0-removed-
+          Rule,       \* removed-member writer (issues/keys-depth0-removed-
                       \* member-rotates.md): "spec" (a reader places a revoke
                       \* about an entry's author), "ahead" (... once it knows
                       \* the removal), "remover" (the remover places under
@@ -67,6 +71,21 @@ CONSTANTS ActSeq,     \* actor names; initial epoch i is ActSeq[i]'s
                       \* and hidden from that node's rules, yet still opens
                       \* for whoever holds the keyset; a sealer holding such
                       \* a role leaves h out instead)
+          Merge,      \* rule 3: an admin rotates while a current epoch misses
+                      \* a departure it knows ("departure"), and ("fork") while
+                      \* it holds more than one current epoch and is the
+                      \* merger: a maker of a current epoch other than the
+                      \* newest, or anyone if none of them may rotate
+          SeeAll,     \* TRUE: staleness, taint and the knowing re-key judge
+                      \* every box the node holds, valid or not (what opens);
+                      \* FALSE: only the boxes it judges valid
+          LeftOut,    \* a rotation finding anchors of h but no keyset to seal
+                      \* h at: "out" (leaves h out; a later re-seal has no
+                      \* anchors), "wait" (while the anchors fork, no keyset
+                      \* of h descending from each, makes no rotation)
+          MaxRace     \* bound on fork merges made by a node lacking an epoch
+                      \* of the actor (two merges racing fork again): the
+                      \* concurrency window, as adversary steps
 
 Acts == {ActSeq[i] : i \in 1..Len(ActSeq)}
 Holders(a) == {m[2] : m \in {q \in Mem : q[1] = a}}
@@ -159,7 +178,10 @@ MemV(x, a, extra) == KH(x, a) \ {dp[1] : dp \in {q \in Known(x) \cup extra : q[2
 RsBox(r) == [h |-> r.h, key |-> r.key, by |-> r.by, poss |-> r.poss]
 \* "box": a box x judges invalid (and so does not see)
 BoxOK(x, a, b) == ~(Rule = "box" /\ b.h \in Acts /\ ~b.poss /\ RoleOn(b.by, b.h, a, kg[x]))
-BoxesAt(x, e) == {b \in ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}} : BoxOK(x, ep[e].act, b)}
+HeldBoxesAt(x, e) == ep[e].bx \cup {RsBox(r) : r \in {q \in krs[x] : q.e = e}}
+BoxesAt(x, e) == {b \in HeldBoxesAt(x, e) : BoxOK(x, ep[e].act, b)}
+\* the boxes staleness, taint and the knowing re-key judge (SeeAll: what opens)
+RuleBoxesAt(x, e) == IF SeeAll THEN HeldBoxesAt(x, e) ELSE BoxesAt(x, e)
 AllBoxesAt(e) == ep[e].bx \cup {RsBox(r) : r \in {q \in rs : q.e = e}}
 
 \* epochs whose secret device d gets from boxes BX over commits ids
@@ -171,10 +193,10 @@ Sec(x) == SecOf(x, LAMBDA e : BoxesAt(x, e), kn[x])
 ReachD(d) == SecOf(d, AllBoxesAt, Ids)
 
 \* rule 4: an epoch of a boxing an actor with no key access to a (x's view)
-Keyless(x, k) == \E b \in BoxesAt(x, k) : b.h \in Acts /\ b.h \notin KH(x, ep[k].act)
+Keyless(x, k) == \E b \in RuleBoxesAt(x, k) : b.h \in Acts /\ b.h \notin KH(x, ep[k].act)
 StaleK(x, k) == k \in kn[x] /\ (~Valid(x, k) \/ (Taint /\ Keyless(x, k))
                                 \/ \E j \in KOf(x, ep[k].act) : k \in AncV(x, j))
-StaleAt(x, e) == \E b \in BoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
+StaleAt(x, e) == \E b \in RuleBoxesAt(x, e) : b.key.t = "k" /\ StaleK(x, b.key.k)
 Covers(x, e, a) == \A dp \in Known(x) : dp[2] = a => dp \in ep[e].knows
 
 \* Fresh (fails with two admins of h, D0_cyc_2adm_fresh): k's boxes to a
@@ -193,6 +215,8 @@ Anchors(x, a, h) ==
 SealSet(x, a, h) ==
   {k \in KOf(x, h) : ~(Taint /\ StaleK(x, k)) /\
                      \A q \in Anchors(x, a, h) : q = k \/ q \in AncV(x, k)}
+\* no held valid keyset of h, tainted or not, is or descends from every anchor
+Forked(x, a, h) == Anchors(x, a, h) # {} /\ ~\E k \in KOf(x, h) : \A q \in Anchors(x, a, h) : q = k \/ q \in AncV(x, k)
 \* the keyset x seals actor h at for a (0: none, h is left out)
 SealK(x, a, h) == IF SealSet(x, a, h) = {} THEN 0 ELSE Newest(SealSet(x, a, h))
 
@@ -201,7 +225,7 @@ Blinds == UNION {{<<e, b.h>> : b \in {c \in AllBoxesAt(e) : c.h \in Acts \ KeyIn
                  e \in Ids}
 BlindOK(a, hs) == (hs \cap Acts) \ KeyIn(GAll, a) # {} => Cardinality(Blinds) < MaxBlind
 
-Rotate(x, a, extra) ==
+Rotate(x, a, extra, race) ==
   LET lo(h) == h \in Acts /\
                (SealK(x, a, h) = 0 \/
                 (InCycle(a, h) /\ ~FreshK(x, a, SealK(x, a, h), {}, KOf(x, a))) \/
@@ -216,8 +240,11 @@ Rotate(x, a, extra) ==
                         h \in {g \in MemV(x, a, extra) : ~lo(g)}},
               hist |-> {e \in Sec(x) : ep[e].act = a},
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
-              forged |-> FALSE]
-  IN /\ BlindOK(a, {b.h : b \in new.bx})
+              forged |-> FALSE,
+              race |-> race]
+      waits == \E h \in MemV(x, a, extra) \cap Acts : SealK(x, a, h) = 0 /\ Forked(x, a, h)
+  IN /\ ~(LeftOut = "wait" /\ waits)
+     /\ BlindOK(a, {b.h : b \in new.bx})
      /\ ep' = Append(ep, new)
      /\ kn' = [kn EXCEPT ![x] = @ \cup {Len(ep) + 1}]
 
@@ -226,7 +253,7 @@ Init ==
              [act |-> ActSeq[i], n |-> 0, par |-> {}, by |-> "",
               bx |-> {[h |-> h, key |-> InitKey(h), by |-> "", poss |-> TRUE] :
                         h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
-              hist |-> {}, knows |-> {}, forged |-> FALSE]]
+              hist |-> {}, knows |-> {}, forged |-> FALSE, race |-> FALSE]]
   /\ rs = {}
   /\ kn = [x \in Learners |-> 1..Len(ActSeq)]
   /\ krs = [x \in Learners |-> {}]
@@ -244,18 +271,34 @@ Writer(x, a) == IsAdm(x, a) \/ (x \in Learners /\ Through(x, a) /\ ~OffPath(x, x
 Possess(x, a) == Rule # "possess" \/ IsAdm(x, a) \/
                  \E h \in ActHolders(a) : SealK(x, a, h) \in Sec(x)
 
+\* y may rotate a, as x sees it
+MayRot(x, y, a) == IsAdm(y, a) \/ (y \in Learners /\ Through(y, a) /\ ~OffPath(x, y, a))
+\* x merges a fork of a: it made a current epoch other than the newest, or no
+\* maker of one may rotate a ("fork": two makers merging alike fork again)
+Merger(x, a) ==
+  LET others == Cur(x, a) \ {NewestV(x, a)}
+  IN (\E f \in others : ep[f].by = x) \/ ~\E f \in others : MayRot(x, ep[f].by, a)
+\* rule 3, merge: a current epoch misses a known departure, or ("fork") there
+\* is more than one and x is the merger
+MergeDue(x, a) == \/ \E f \in Cur(x, a) : ~Covers(x, f, a)
+                  \/ Merge = "fork" /\ Cardinality(Cur(x, a)) > 1 /\ Merger(x, a)
+\* a rotation due for any reason but a fork of knowing epochs
+OtherDue(x, a) ==
+  LET e == NewestV(x, a)
+  IN \/ ~Covers(x, e, a) \/ StaleAt(x, e)
+     \/ \E f \in Cur(x, a) : ~Covers(x, f, a)
+     \/ ~Fresh /\ \E f \in Cur(x, a) : Keyless(x, f)
 NeedRot(x, a) ==
   /\ Writer(x, a) /\ Possess(x, a)
-  /\ LET e == NewestV(x, a)
-     IN /\ e \in Sec(x)
-        /\ \/ ~Covers(x, e, a) \/ StaleAt(x, e)
-           \/ \E f \in Cur(x, a) : ~Covers(x, f, a)
-           \/ ~Fresh /\ \E f \in Cur(x, a) : Keyless(x, f)
+  /\ NewestV(x, a) \in Sec(x)
+  /\ OtherDue(x, a) \/ MergeDue(x, a)
+\* x lacks an epoch of a some node made: a rotation now may fork
+Racing(x, a) == \E f \in Ids : ep[f].act = a /\ ~ep[f].forged /\ f \notin kn[x]
 
 Remove(dp) ==
   /\ dp \notin done /\ Len(ep) < MaxE
   /\ IsAdm(dp[3], dp[2])
-  /\ Rotate(dp[3], dp[2], {dp})
+  /\ Rotate(dp[3], dp[2], {dp}, FALSE)
   /\ done' = done \cup {dp}
   \* the remover places it under the labels it syncs the removed party read
   \* ("remover": every label the actor reaches); placements only judge
@@ -267,13 +310,16 @@ Remove(dp) ==
 
 EagerRot(p) ==
   /\ p \notin evd /\ Len(ep) < MaxE /\ Writer(p[1], p[2]) /\ Possess(p[1], p[2])
-  /\ Rotate(p[1], p[2], {})
+  /\ Rotate(p[1], p[2], {}, FALSE)
   /\ evd' = evd \cup {p}
   /\ UNCHANGED <<kg, rs, krs, wr, done, nw, pl, kpl>>
 
+\* a merge of knowing forks alone, racing, only within MaxRace
 ForcedRot(x, a) ==
   /\ Len(ep) < MaxE /\ NeedRot(x, a)
-  /\ Rotate(x, a, {})
+  /\ LET race == ~OtherDue(x, a) /\ Racing(x, a)
+     IN /\ race => Cardinality({e \in Ids : ep[e].race}) < MaxRace
+        /\ Rotate(x, a, {}, race)
   /\ UNCHANGED <<kg, rs, krs, wr, done, evd, nw, pl, kpl>>
 
 Forge(d) ==
@@ -285,7 +331,7 @@ Forge(d) ==
                                n |-> 1 + ep[Newest(ms)].n,
                                par |-> ms, by |-> d,
                                bx |-> {[h |-> d, key |-> DK(d), by |-> d, poss |-> TRUE]},
-                               hist |-> {}, knows |-> {}, forged |-> TRUE])
+                               hist |-> {}, knows |-> {}, forged |-> TRUE, race |-> FALSE])
   /\ evd' = evd \cup {<<d, "forge">>}
   /\ UNCHANGED <<kg, rs, kn, krs, wr, done, nw, pl, kpl>>
 
@@ -453,6 +499,11 @@ Excludes == <>[](\A dp \in done : \A a \in Acts : \A x \in Learners :
 CurrentOpens == <>[](\A a \in Acts : \A v \in CurDevs(a) \cap Learners :
                        Syncs(v, a) => GCur(a) \subseteq Sec(v))
 ReadsAll == <>[](\A c \in wr : \A v \in CurDevs(c.a) \cap Learners : Syncs(v, c.a) => c.e \in Sec(v))
+\* no lockout of a holder actor: every admin of a eventually has a keyset to
+\* seal each holder actor with key access at (a rotation of another role
+\* would leave it out otherwise: cycle harness seed 1838)
+SealsAll == <>[](\A a \in Acts : \A h \in KeyAct(a) : \A x \in Learners :
+                   IsAdm(x, a) => SealK(x, a, h) # 0)
 \* rotations stop within MaxE (no ping-pong)
 Settles == <>[](\A x \in Learners, a \in Acts : ~NeedRot(x, a))
 =============================================================================

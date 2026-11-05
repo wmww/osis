@@ -235,7 +235,7 @@ fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Op
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&a).unwrap();
-            let holders = super::recipients(tx, &a, &[(me, keep)])?;
+            let holders = super::recipients(tx, &a, &[(me, keep)])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let rot = super::rotation_into(tx, &mut m, a, &roles, &held, &holders, &[])?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -261,11 +261,12 @@ fn regrant_after_tag_removal_spec_crypto_4() {
     assert!(lp.peers[0].engine.ensure_rotated(&n).unwrap().1.is_empty(), "covered");
 }
 
-// spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks) (churn seeds 140170
-// and 140188 shrunk: a node re-sealed itself on every pass): A and D rotate G's write
+// spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks, merge) (churn seeds
+// 140170 and 140188 shrunk: a node re-sealed itself on every pass): A and D rotate G's write
 // concurrently, D's rotation leaving writer B out, so B lacks a box and the secret at D's fork.
 // B, holding only A's fork, writes no re-seal of itself (before: one boxing A's fork alone on
-// every pass); A, holding both, re-seals B once, a box at each fork.
+// every pass); A, holding both, re-seals B once, a box at each fork, or, as the fork's merger
+// (rule 3: re-sealing encrypts under G), merges it, boxing B.
 #[test]
 fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     let mut lp = LocalPeer::new(3, 1141, WallMs(1_700_000_000_000)).unwrap();
@@ -280,7 +281,7 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &g, &[(b, Some(Role::Read))])?;
+            let holders = super::recipients(tx, &g, &[(b, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, &[])?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -299,10 +300,10 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     lp.sync_all().unwrap();
     for p in 0..3 {
         assert!(lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "peer {p}: fixpoint");
-        assert!(all_boxed(&mut lp, p, &[g]), "peer {p}: every holder boxed at both forks");
+        assert!(all_boxed(&mut lp, p, &[g]), "peer {p}: every holder boxed");
     }
     let e = lp.peers[1].engine.epochs(&g).unwrap();
-    assert!(e.write.current().iter().all(|x| e.write.secret(x).is_some()), "B holds both forks' secrets");
+    assert!(e.write.current().iter().all(|x| e.write.secret(x).is_some()), "B holds every current secret");
 }
 
 // spec/permissions.md §3 (re-seal: a node holding one fork re-seals at it): B and D, writers of
@@ -324,7 +325,7 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
             .engine
             .run(|tx| {
                 let held = tx.core.epochs(&g).unwrap();
-                let holders = super::recipients(tx, &g, &[(other, Some(Role::Read))])?;
+                let holders = super::recipients(tx, &g, &[(other, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
                 let mut m = Mutation::new();
                 let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, &[])?;
                 crate::engine::Engine::commit_tx(tx, m)?;
@@ -422,7 +423,7 @@ fn forked_reseals(seed: u64) -> (bool, usize) {
             // refused (a rotated role's secret not held) changes nothing
             let _ = lp.peers[i].engine.run(|tx| {
                 let held = tx.core.epochs(&g).unwrap();
-                let holders = super::recipients(tx, &g, &skip)?;
+                let holders = super::recipients(tx, &g, &skip)?.ok_or(super::SEAL_WAITS)?;
                 let mut m = Mutation::new();
                 let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, &[])?;
                 crate::engine::Engine::commit_tx(tx, m)?;
@@ -524,10 +525,11 @@ fn rotation_after_invalid_one_336_spec_crypto_4() {
 // each other (re-writing every box G made at s), then 2 removes reader 3: its rotation C removes
 // the boxes at s and at 4's fork. C must be established wherever it is held, else 4's fork stays
 // current with its boxes gone, covering 3 by the box rule, and is encrypted under while 3 holds
-// it.
+// it. (Seed 3918: at 3917 4's fork lost the order, so 4, the fork's merger, merged it in its
+// grant and the shape was gone.)
 #[test]
 fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
-    let mut lp = LocalPeer::new(5, 3_917, WallMs(1_700_000_000_000)).unwrap();
+    let mut lp = LocalPeer::new(5, 3_918, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
     let g = group(&mut lp, 0);
@@ -735,7 +737,7 @@ fn writer_rotation_skips(list_s: bool) {
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let holders = super::recipients(tx, &g, &[])?;
+            let holders = super::recipients(tx, &g, &[])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
             let secrets = crate::flows::secrets_in(tx, &g)?;
             let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
@@ -905,7 +907,7 @@ pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTr
     let skip: Vec<(Tid, Option<Role>)> = skip.iter().map(|j| (lp.peers[*j].engine.tid(), None)).collect();
     let _ = lp.peers[i].engine.run(|tx| {
         let held = tx.core.epochs(&g).unwrap();
-        let holders = super::recipients(tx, &g, &skip)?;
+        let holders = super::recipients(tx, &g, &skip)?.ok_or(super::SEAL_WAITS)?;
         let mut m = Mutation::new();
         let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, &[])?;
         crate::engine::Engine::commit_tx(tx, m)?;

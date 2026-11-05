@@ -7,8 +7,8 @@ use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Name, Names, Opener, Recipient, box_holder, ingest, may_encrypt_under, merge_due, reseal_needed, roles_up_to,
-    rotate,
+    ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Maker, Name, Names, Opener, Recipient, box_holder, fork_merger, ingest, may_encrypt_under, merge_due, reseal_needed,
+    roles_up_to, rotate,
 };
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
@@ -113,6 +113,30 @@ fn rotation_held_before_the_removal() {
     let kdep = [Departure::holder(k, Role::Read).at(Some(name(a, 10)))];
     assert!(!may_encrypt_under(&a, &v, Role::Read, &e3, &kdep, &AllHeld));
     assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write }]).is_empty());
+}
+
+// spec/crypto.md §4 (merge, merger): two rotations of read from one epoch fork it. Its merger is
+// the maker of the epoch other than the newest; the newest's maker merges only when that maker
+// may not rotate (or is unknown); a third node likewise. One epoch: no merge.
+#[test]
+fn fork_merger_is_one_maker() {
+    let (a, p) = (tid(1), tid(2));
+    let pe = person(0x20);
+    let (view, base) = switched(a, p, &pe, &[]);
+    assert!(!fork_merger(&view, Role::Read, |_| None), "one current epoch");
+    let holders = [owner_rcpt(p, &pe)];
+    let (r1, r2) = (rotate(&a, &read(), &view, &base, &holders, &Names::default(), &mut rng(6)).unwrap(), rotate(&a, &read(), &view, &base, &holders, &Names::default(), &mut rng(7)).unwrap());
+    let mut v = r1.preview(&view).unwrap();
+    v = r2.preview(&v).unwrap();
+    assert_eq!(v.read.current().len(), 2);
+    let newest = v.read.newest().unwrap();
+    let other = *v.read.current().iter().find(|e| **e != newest).unwrap();
+    let by = |mine: osis_crypto::Epoch, other_may: bool| move |e: &osis_crypto::Epoch| Some(Maker { me: *e == mine, may_rotate: *e == mine || other_may });
+    assert!(fork_merger(&v, Role::Read, by(other, true)), "the maker of the epoch other than the newest");
+    assert!(!fork_merger(&v, Role::Read, by(newest, true)), "the newest's maker abstains");
+    assert!(fork_merger(&v, Role::Read, by(newest, false)), "... unless the other maker may not rotate");
+    assert!(!fork_merger(&v, Role::Read, |_| Some(Maker { me: false, may_rotate: true })), "a third node abstains");
+    assert!(fork_merger(&v, Role::Read, |_| None), "makers unknown: anyone");
 }
 
 // spec/crypto.md §4 (boxes decide nothing; study C2): an epoch whose rotation left M unboxed

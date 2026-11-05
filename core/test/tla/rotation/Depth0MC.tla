@@ -90,4 +90,16 @@ bLearners == {"p", "q"}
 bDeps == {<<"D", "A", "p">>}
 bG == << <<"A", "B">>, <<"C", "A">>, <<"B", "C">> >>
 bHide == {<<"p", <<"C", "A">> >>}
+\* forked holder anchors (cycle harness seed
+\* 1838): m1 and m2 admin both A and M; m1 removes D from M; each may rotate M
+\* once more unprompted, so two keysets of M knowing the removal can stand
+\* side by side; each then rotates A (its box to M's first keyset is stale)
+\* sealing M at the keyset it holds, so A's two current epochs anchor M at both
+fActs == <<"A", "M">>
+fMem == {<<"A", "m1">>, <<"A", "m2">>, <<"A", "M">>, <<"M", "m1">>, <<"M", "m2">>, <<"M", "D">>}
+fAdm == {<<"A", "m1">>, <<"A", "m2">>, <<"M", "m1">>, <<"M", "m2">>}
+fLearners == {"m1", "m2"}
+fDeps == {<<"D", "M", "m1">>}
+fEager == {<<"m1", "M">>, <<"m2", "M">>}
+fG == << <<"A", "M">> >>
 =============================================================================
