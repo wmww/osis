@@ -735,8 +735,15 @@ fn parts_seed(seed: u64) -> PartsSeed {
     let (mut bad_parts, mut linked) = (0, 0);
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let steps = diff_steps(&mut rng);
-    // a scripted step may be refused after a demotion
-    let Ok(played) = std::panic::catch_unwind(|| play(seed, &steps)) else { return PartsSeed::default() };
+    // a scripted step may be refused after a demotion: named, the history left out
+    let played = match std::panic::catch_unwind(|| play(seed, &steps)) {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = e.downcast_ref::<String>().cloned().or_else(|| e.downcast_ref::<&str>().map(|x| x.to_string())).unwrap_or_default();
+            eprintln!("seed {seed} not played: {msg}");
+            return PartsSeed::default();
+        }
+    };
     for pk in &played.packs {
         let b = CommitBlob::decode(&pk.bytes).unwrap();
         linked += usize::from(b.header.kind == osis_commit::Kind::RosterSnapshot && !b.header.chunks.is_empty());
@@ -856,9 +863,24 @@ fn parts_differential_large_spec_commits_4() {
     let (bad_parts, linked): (usize, usize) = (all.iter().map(|s| s.bad_parts).sum(), all.iter().map(|s| s.linked).sum());
     let bad: Vec<&String> = all.iter().flat_map(|s| &s.bad).collect();
     eprintln!("{played_n} of {n} histories played, {bad_parts} commits with a bad part, {linked} snapshots linking a frontier");
+    for b in &bad {
+        eprintln!("failure: {b}");
+    }
     assert!(played_n > n / 2);
     assert!(n < 10 || (bad_parts > 0 && linked > 0), "the histories hold the hostile cases");
     assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).map(|x| x.as_str()).collect::<Vec<_>>().join("\n"));
+}
+
+// spec/commits.md §4: the differential's histories play through a write that changes nothing (no
+// commit) and a sync carrying a hostile roster snapshot the receiver refuses (a frontier linked
+// outside its chunk list), so no seed is left out for either (seeds 9350000+: 16 and 1 were).
+#[test]
+fn history_plays_past_a_no_op_write_and_a_refused_commit_spec_commits_4() {
+    use Step::*;
+    let steps = [NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, Three { by: 0, a: 0, b: 1, c: 2, v: 1 }, BadPart { by: 0, a: 0, b: 0, how: 3 }, Sync { from: 0, to: 1 }];
+    let played = play(SEED, &steps);
+    let b = CommitBlob::decode(&played.packs.last().unwrap().bytes).unwrap();
+    assert_eq!(b.header.kind, osis_commit::Kind::RosterSnapshot, "the hostile snapshot made");
 }
 
 // spec/commits.md §4: a relay's junk part on a thing whose record is away cannot be hash-checked; it

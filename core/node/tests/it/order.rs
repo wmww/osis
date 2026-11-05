@@ -807,7 +807,16 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Sync { from, to } => {
-                lp.sync(from, to).unwrap();
+                // a hostile commit `to` refuses (`BadPart` linking a frontier outside its chunk
+                // list) stops `sync`: then each package is given alone, the refused ones dropped
+                if let Err(e) = lp.sync(from, to) {
+                    assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput, "{e}");
+                    for pk in lp.packages(from).unwrap() {
+                        if let Err(e) = lp.deliver(to, &pk) {
+                            assert_eq!(osis_base::Classified::class(&e), osis_base::ErrorClass::BadInput, "{e}");
+                        }
+                    }
+                }
                 None
             }
             Step::Send { from, to, back } => {
@@ -1045,14 +1054,14 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
             Step::HostileWrite { by, t, v } => {
                 let mut m = Mutation::new();
                 m.set(th(t), &REG, &s(&format!("v{v}"))).unwrap();
-                lp.peers[by].engine.commit_hostile(m).unwrap().expect("a write");
+                lp.peers[by].engine.commit_hostile(m).unwrap();
                 Some(by)
             }
             Step::Two { by, a, b, v } => {
                 let mut m = Mutation::new();
                 m.set(th(a), &REG, &s(&format!("v{v}"))).unwrap();
                 m.set(th(b), &REG, &s(&format!("v{v}"))).unwrap();
-                lp.peers[by].engine.commit_hostile(m).unwrap().expect("two writes");
+                lp.peers[by].engine.commit_hostile(m).unwrap();
                 Some(by)
             }
             Step::Three { by, a, b, c, v } => {
@@ -1060,7 +1069,8 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 for x in [th(a), th(b), th(c)] {
                     m.set(x, &REG, &s(&format!("v{v}"))).unwrap();
                 }
-                lp.peers[by].engine.commit_hostile(m).unwrap().expect("three writes");
+                // `None` (as for `Two`, `HostileWrite`): the values were there already, no commit
+                lp.peers[by].engine.commit_hostile(m).unwrap();
                 Some(by)
             }
             Step::TwoEdges { by, a, b, holder, role } => {
