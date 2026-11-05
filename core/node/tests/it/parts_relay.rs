@@ -407,10 +407,10 @@ fn redelivery_leaves_a_part_past_its_expiry_spec_commits_5() {
     assert_eq!(x.net.engine(b).suspects().unwrap().len(), 1, "still counts as never received");
 }
 
-// spec/commits.md §5: a part of a pending commit named by a held purge request is held value-less: its
-// values go from the pending copy and the blob holding it goes. The commit waits for its other delta.
+// spec/commits.md §4, §5: a commit given one part applies it; a purge request naming that part drops
+// it and the blob holding it goes. Its other delta joins when it comes.
 #[test]
-fn purged_pending_part_leaves_its_blob_spec_commits_5() {
+fn purged_part_leaves_its_blob_spec_commits_5() {
     let mut x = case();
     let (a, b, g, h) = (x.a, x.b, x.g, x.h);
     x.give_record(90);
@@ -431,13 +431,12 @@ fn purged_pending_part_leaves_its_blob_spec_commits_5() {
     let p = x.net.engine(a).commit(m).unwrap().unwrap();
     let (host, l) = (x.host, x.l);
     push(&mut x.net, b, host, l, e, 100);
-    assert!(x.net.engine(b).pending().iter().any(|q| q.0 == c), "it waits for its other delta");
+    assert!(x.holds(c), "it waits for nothing");
+    assert_eq!(x.read(), Some(Value::Str("purged".into())));
     assert!(x.net.sync(b).holds_blob(&id));
     let pp = plain(&mut x.net, a, &p);
     x.give(pp, p, 110);
     assert!(x.holds(p));
-    assert!(x.net.engine(b).pending().iter().any(|q| q.0 == c), "it still waits");
-    assert!(x.net.engine(b).suspects().unwrap().is_empty(), "held value-less, not dropped");
     assert!(!x.net.sync(b).holds_blob(&id), "the purged part's blob and key go");
     every_body(&mut x.net, a, a, g, b, host, l, &c, 120);
     assert!(x.holds(c), "{:?}", x.net.engine(b).pending());
@@ -459,11 +458,11 @@ fn redelivery_leaves_a_dropped_body_spec_commits_5() {
     assert_eq!(x.net.engine(b).settled_slots(&c).unwrap(), slots);
 }
 
-// spec/commits.md §4 (copies, a thing's content): a commit on one thing in two bodies, junk first in a
-// slot and its true copy second, the thing's record last. The redelivery takes the true copy, which then
-// waits for the other body like any part: nothing shows until it comes, and no name is left.
+// spec/commits.md §4 (copies): a commit on one thing in two bodies, junk first in a slot and its true
+// copy second, the thing's record last. The redelivery takes the true copy, which applies alone; the
+// other body joins when it comes, and no name is left.
 #[test]
-fn junk_first_on_a_unit_keeps_out_no_entry_spec_commits_4() {
+fn junk_first_in_one_body_keeps_out_no_entry_spec_commits_4() {
     for other_first in [true, false] {
         let mut x = case();
         let (a, b, h) = (x.a, x.b, x.h);
@@ -495,11 +494,8 @@ fn junk_first_on_a_unit_keeps_out_no_entry_spec_commits_4() {
         let reg_slots: Vec<(usize, usize)> = x.net.engine(a).body(&c).unwrap().unwrap().parts.into_iter().filter(|p| p.0 == reg_ai).collect();
         assert!(reg_slots.iter().all(|p| x.net.engine(b).settled_slots(&c).unwrap().contains(p)), "other first {other_first}: the true copy came");
         assert!(x.net.engine(b).take_redeliver().is_empty());
-        if other_first {
-            assert!(x.holds(c), "other first {other_first}");
-        } else {
-            assert_eq!(x.read(), Some(Value::Str("first".into())), "its other body is away");
-            assert_eq!(x.net.engine(b).pending(), vec![(c, osis_node::Reason::WaitDeltas)]);
+        assert!(x.holds(c), "other first {other_first}");
+        if !other_first {
             give(&mut x, other, 400);
         }
         assert_eq!(x.read(), Some(Value::Str("third".into())), "other first {other_first}");

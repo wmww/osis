@@ -703,8 +703,6 @@ pub(crate) fn note_required_rules(core: &mut Core, h: &Header, id: &CommitId, pa
         if core.ix.commits.get(id).is_none_or(|m| m.valid_at(*ai)) {
             core.stale_things.insert(a.tid);
         }
-        // a pending commit's missing delta may count as held now (`breaks_a_held_setting`)
-        core.waits.wake_thing(&a.tid);
     }
 }
 

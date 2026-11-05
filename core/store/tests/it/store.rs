@@ -172,7 +172,7 @@ fn cursors_logs_local() {
     assert!(t.remove_local(b"zzz", Shred::No).unwrap());
 }
 
-// spec/commits.md §4: one storage transaction per atomic apply; notes/local-store.md, Units: blob ciphertexts sit beside the units, inside transactions.
+// spec/commits.md §4: one storage transaction per commit applied; notes/local-store.md, Units: blob ciphertexts sit beside the units, inside transactions.
 #[test]
 fn blobs() {
     for dev in devices("blobs") {

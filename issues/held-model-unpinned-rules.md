@@ -8,6 +8,6 @@ Each was found by reading code only. Add a node test per line (core/node/tests/i
 2. **A remover's reset is a live write of its own body** (spec/commits.md §5): a `remove_aspect` body under 0 after replaced stays live (carrier, grace) until a later reset prunes its reset.
 3. **A bare leftover never drops at keep at most** (spec/commits.md §5 Dropping a body): an expired body under an absolute keep at most stays as its leftover past T and past the bound (`judge_at_most` returns on `Meta::bare`); a copy-stripped (valued) leftover drops at its bound.
 4. **Covered against a value-less copy** (spec/commits.md §5 Covered): a valued body whose write a valid snapshot carries value-less is not covered (`covered` join test, snapshot.rs).
-5. **Possible admins exclude pending role commits** (spec/commits.md §4): a drift-parked grant does not make its holder's missing delta count as held through Author lowered or Purged.
+5. **Possible admins exclude pending role commits** (spec/commits.md §4): a drift-parked grant gives its holder no purge right by any role ever held (`counts_as_purged`, `Held::ever_holders`). (Its atomic-apply uses went with whole-commits step 3.)
 6. **Covered drop needs the node's own right** (spec/commits.md §5 Between the bounds): a node demoted below the right keeps a body a rightful snapshot covers (`drop_from` None).
 7. **An aspect-wide purge names compaction snapshots** (spec/commits.md §5 Purge): `PurgeItem::Aspect` drops a snapshot of the aspect it may purge.

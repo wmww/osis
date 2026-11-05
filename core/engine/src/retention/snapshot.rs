@@ -186,8 +186,9 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || carrier_at(tx.core, s, sai) {
         return Ok(Some(false));
     }
-    // a snapshot stamped later stands in for more commits than this one (atomic apply, §4), and
-    // dropped as covered it would stop: never covered by one stamped earlier
+    // a snapshot stamped later settles the suspect flags of more commits than this one
+    // (`receipt::settled`), and dropped as covered it would stop: never covered by one stamped
+    // earlier
     if stamped_later(tx.core, c, s) {
         return Ok(Some(false));
     }

@@ -119,14 +119,14 @@ fn request_ids(b: &[u8]) -> Result<Vec<CommitId>> {
 }
 
 /// Adds request `pc` to the list at `key`.
-fn note_request(tx: &mut Tx<'_>, key: &[u8], pc: &CommitId) -> Result<bool> {
+fn note_request(tx: &mut Tx<'_>, key: &[u8], pc: &CommitId) -> Result<()> {
     let mut b = tx.txn.get_local(key)?.unwrap_or_default();
     if b.chunks(32).any(|x| x == pc.0) {
-        return Ok(false);
+        return Ok(());
     }
     b.extend_from_slice(&pc.0);
     tx.txn.put_local(key, &b, Shred::No)?;
-    Ok(true)
+    Ok(())
 }
 
 /// The held requests that may name delta `a` of commit `c`: those naming it and those with an item
@@ -203,17 +203,16 @@ pub(crate) fn requests_resting_on(core: &Core, node: &Tid, things: &BTreeSet<Tid
     out
 }
 
-/// Is aspect `ai` of commit `c` (not applied yet) already purged by a held request? Such a
-/// missing delta counts as held (spec/commits.md §4).
+/// Is aspect `ai` of commit `c` (not applied yet) already purged by a held request?
 pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = ch.aspects.get(ai) else { return Ok(false) };
     let requests = requests_on(tx, a, c)?;
     Ok(requests.iter().any(|(pc, p)| stands(tx.core, p, pc, a, ch, c)))
 }
 
-/// Whether missing delta `ai` of `c` counts as held for a held purge request naming it, signed by
-/// one that could ever hold the right (spec/commits.md §4; `apply::gates`). Unlike `known_purged`
-/// it reads no validity, so a demotion arriving later changes nothing here.
+/// Whether a held purge request names delta `ai` of `c`, signed by one that could ever hold the
+/// right (`Held::ever_holders`). Unlike `known_purged` it reads no validity, so a demotion
+/// arriving later changes nothing here.
 pub(crate) fn counts_as_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(a) = ch.aspects.get(ai) else { return Ok(false) };
     Ok(requests_on(tx, a, c)?.iter().any(|(_, p)| could_stand(tx.core, p, a, ch, c)))
@@ -471,9 +470,7 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
             PurgeItem::Commit { commit, tid, ak } => records::purges_named_key(tid, ak, commit),
             _ => records::aspect_key(records::PURGES, item.tid(), item.ak()),
         };
-        if note_request(tx, &key, id)? {
-            tx.core.waits.wake(item.tid(), item.ak());
-        }
+        note_request(tx, &key, id)?;
     }
     Ok(())
 }

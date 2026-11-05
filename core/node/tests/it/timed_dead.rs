@@ -135,7 +135,7 @@ pub(crate) fn most(abs: Option<u64>, rel: Option<u64>) -> Option<osis_schema::Re
     Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs, rel } })
 }
 
-// spec/commits.md §4 (a delta past its keep-at-most bound counts as held), §5 (a body with no live
+// spec/commits.md §4 (a node never waits for a part), §5 (a body with no live
 // write needs no carrier), driving the real deletion: at most 0, deleted with the kill's sync.
 #[test]
 fn reader_after_delete_at_most_zero_spec_commits_4() {
@@ -143,11 +143,10 @@ fn reader_after_delete_at_most_zero_spec_commits_4() {
     reader_applies_after_carrierless_delete(0x7d10, r, r, 0);
 }
 
-// spec/commits.md §4 (atomic apply: a delta that left with no carrier and nothing on its aspect as
-// late waits), §5 (a header-only blob goes under a label only as a lasting header): a snapshot
-// taken without an earlier-stamped removal is dead on arrival under at most 0. Nothing of it stays
-// at the host, so a node coming later never hears of it and has nothing pending. Handed the bare
-// header anyway, it waits, reads the same, and the aspect's next write releases it.
+// spec/commits.md §4 (a node never waits for a part), §5 (a header-only blob goes under a label only
+// as a lasting header): a snapshot taken without an earlier-stamped removal is dead on arrival under
+// at most 0. Nothing of it stays at the host, so a node coming later never hears of it and has
+// nothing pending. Handed the bare header anyway, it applies it alone and reads the same.
 #[test]
 fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {
     use osis_base::Role;
@@ -196,59 +195,9 @@ fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {
     assert_eq!(net.engine(late).get(&t, &gone).unwrap(), want);
     let pk = net.engine(a).package(&snap).unwrap().unwrap();
     assert!(net.engine(a).body(&snap).unwrap().is_none());
-    net.engine(late).ingest(&pk.bytes, pk.blobs).unwrap();
-    assert_eq!(net.engine(late).pending(), vec![(snap, osis_node::Reason::WaitDeltas)]);
-    assert_eq!(net.engine(late).get(&t, &gone).unwrap(), want);
-    net.advance(1_000);
-    let mut m = Mutation::new();
-    m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("j"))], op: Op::Set(s("w")) }).unwrap();
-    net.engine(a).commit(m).unwrap();
-    net.run();
-    net.advance(resync);
-    net.run();
+    assert_eq!(net.engine(late).ingest(&pk.bytes, pk.blobs).unwrap(), osis_node::Ingested::Applied(snap));
     assert_eq!(net.engine(late).pending(), Vec::new());
-}
-
-// spec/commits.md §4: a pending commit whose missing part's absolute bound comes (a later commit
-// on its aspect held) wakes its node at the bound, nothing else happening (no resync, no timer
-// of its own).
-#[test]
-fn wait_wakes_node_at_bound_spec_commits_4() {
-    use osis_base::Role;
-    const D: u64 = 5_000;
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(0x7d40, &[host]);
-    let b = net.node(0x7d41, &[host]);
-    let g = net.group(a, &[(b, Role::Read)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
-    assert!(net.sync(b).config().resync_ms > D);
-    net.set_online(a, false);
-    let r = most(Some(net.now() + D), None).unwrap();
-    let mut m = Mutation::new();
-    m.retention(t, &GONE, r).unwrap();
-    m.set(t, &GONE, &s("v1")).unwrap();
-    m.set(t, &REG, &s("k")).unwrap();
-    let c1 = net.engine(a).commit(m).unwrap().unwrap();
-    net.advance(1);
-    let mut m = Mutation::new();
-    m.retention(t, &GONE, r).unwrap();
-    m.set(t, &GONE, &s("v2")).unwrap();
-    let c2 = net.engine(a).commit(m).unwrap().unwrap();
-    let pk = net.engine(a).package(&c1).unwrap().unwrap();
-    let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-    let h = blob.header.clone();
-    blob.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "t:reg.0");
-    net.engine(b).ingest(&blob.encode(), pk.blobs).unwrap();
-    let pk = net.engine(a).package(&c2).unwrap().unwrap();
-    net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
-    assert_eq!(net.engine(b).pending().len(), 1);
-    let bound = net.now() + D;
-    net.feed(b, osis_node::sync::Event::Tick);
-    assert!(net.nodes[b].wake.is_some_and(|at| at <= bound), "{:?} vs {bound}", net.nodes[b].wake);
-    net.advance(D);
-    assert!(net.engine(b).pending().is_empty(), "{:?}", net.engine(b).pending());
+    assert_eq!(net.engine(late).get(&t, &gone).unwrap(), want);
 }
 
 /// A new item a writer and a reader both sync: (net, writer, reader, item).
@@ -462,8 +411,8 @@ fn pending_commit_holds_back_no_own_upload_spec_sync_6() {
     assert!(!at_host(&mut net, b, host, &l, &c2).is_empty(), "b's own body held back behind a pending commit");
 }
 
-// spec/commits.md §4: a reader's first sync of a label, a commit across two of its things, a host hiding
-// the body on one: the group is asked for before the label's entries come, so the commit waits whole.
+// spec/commits.md §4, spec/sync.md §3: a reader's first sync of a label, a commit across two of its
+// things, a host hiding its one blob: nothing of the commit is received.
 #[test]
 fn first_sync_waits_across_things_spec_commits_4() {
     use osis_base::Role;

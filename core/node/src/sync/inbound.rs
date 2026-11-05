@@ -730,8 +730,8 @@ impl SyncEngine {
         let Some(g) = self.group_of(&l, conn) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
         if let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &e.wrap) {
-            // atomic apply waits for this group's closure (spec/commits.md §4) from the first entry it
-            // opens: a label named by another's word, with no entry readable, asks for nothing
+            // this group's closure is synced (spec/commits.md §4) from the first entry it opens: a
+            // label named by another's word, with no entry readable, asks for nothing
             if !self.engine.core.ix.syncing.contains(&g) {
                 self.engine.set_syncing(g, true)?;
             }

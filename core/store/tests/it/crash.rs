@@ -2,7 +2,7 @@
 //! Crash safety: a crash at any durable write of a transaction (or of the recovery after it)
 //! leaves the store as before or as after, never between; a shredding transaction counts as
 //! committed exactly when its new root record is durable (spec/commits.md §4: one storage
-//! transaction per atomic apply; notes/local-store.md, Key tree: crash safety).
+//! transaction per commit applied; notes/local-store.md, Key tree: crash safety).
 
 use crate::common;
 

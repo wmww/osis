@@ -301,8 +301,8 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     }
     // as covered only with a coverer: the others come back on arrival alone
     let why = if why == DropFor::Cover && covered_by.is_empty() { DropFor::Other } else { why };
-    // a snapshot dropped other than as covered still stands in for what it was stamped after
-    // (spec/commits.md §4, §5), held when it dropped or not (a part missing, as after a purge
+    // a snapshot dropped other than as covered still settles suspect flags of what it was stamped
+    // after (`receipt::settled`), held when it dropped or not (a part missing, as after a purge
     // fell, needs no body for that: its header says it all); a coverer, stamped no earlier,
     // does for a covered one
     let stands_in = snapshot && why != DropFor::Cover;
@@ -1084,12 +1084,6 @@ impl Engine {
             let first = tx.txn.scan_local(records::TIMER, &[], 1)?;
             Ok(first.first().and_then(|(k, _)| k.get(records::TIMER.len()..)).and_then(|k| records::parse_timer(k).ok()).map(|(t, _, _)| t))
         })
-    }
-
-    /// When the next pending commit's missing delta counts as held by the clock (corrected wall
-    /// ms): a tick then applies it.
-    pub fn next_wait_due(&self) -> Option<u64> {
-        self.core.waits.next_due()
     }
 
     /// Drops a body (compaction between the bounds, executed by node-sync): aspect `ak` of

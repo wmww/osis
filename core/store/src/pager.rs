@@ -969,7 +969,7 @@ mod tests {
         assert_eq!(rows(&b, b'u'), 0);
     }
 
-    // spec/commits.md §4: one storage transaction per atomic apply; spilled rows are invisible until commit, readable inside
+    // spec/commits.md §4: one storage transaction per commit applied; spilled rows are invisible until commit, readable inside
     // the transaction, and gone after abort and reopen.
     #[test]
     fn spill() {

@@ -1,4 +1,4 @@
-//! Atomic apply (spec/commits.md §4): one store transaction joins every valid delta of a commit
+//! Applying a commit (spec/commits.md §4): one store transaction joins every valid delta of a commit
 //! after its role records reach perm, records deaths, expiry and purges, and
 //! re-judges held deltas when the held set changed; events go out after it is durable.
 
@@ -61,22 +61,10 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
     }
 }
 
-/// A compaction snapshot's held parts may count a waiting commit's missing delta of their
-/// aspects as dropped (`receipt::listed`): those waits are judged again.
-fn wake_listed(core: &mut Core, h: &Header, held: &BTreeSet<usize>) {
-    if h.kind.is_compaction() {
-        for a in held.iter().filter_map(|ai| h.aspects.get(*ai)) {
-            core.waits.wake(&a.tid, &a.ak);
-        }
-    }
-}
-
 /// Adds a commit to the per-aspect and session range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
-        // a delta wait on the aspect reads it (`at_most_bound`), its part here or not
-        core.waits.wake(&a.tid, &a.ak);
         if a.ak.as_str() == "label.0" {
             core.ix.labeled.insert(a.tid);
         }
@@ -669,7 +657,6 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
 
-    wake_listed(tx.core, &h, &parts.ais());
 
     if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
         let order = in_order(&parts);
@@ -864,7 +851,6 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     tx.core.put_meta(*id, meta.clone());
     let uncarried = copies::uncarry(tx.core, id, &h, &|ai| parts.has(ai));
     let late = parts.ais();
-    wake_listed(tx.core, &h, &late);
     let mut held_changed = note_created(tx, &h, merged, &parts.whole)?;
     let away = away_of(tx, &h, id, &parts);
     let edges = h.kind.is_role() && (!away.is_empty() || late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str()))));
@@ -1133,15 +1119,7 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             }
         }
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
-        // (what a thing's groups are decides what the node syncs: its waits are examined again)
-        "group.0" => {
-            let def = group_def(v);
-            // any change, not only what moved: a subgroup edge moves no durable closure when the
-            // subgroup holds only ephemeral placements, yet brings those in (`groups_of`)
-            for t in tx.core.ix.groups.set(*tid, def) {
-                tx.core.waits.wake_thing(&t);
-            }
-        }
+        "group.0" => tx.core.ix.groups.set(*tid, group_def(v)),
         _ => {}
     }
     Ok(())

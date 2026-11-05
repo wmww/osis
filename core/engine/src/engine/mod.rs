@@ -76,7 +76,7 @@ pub struct Meta {
     /// Validity per aspect (spec/permissions.md §5.2).
     pub valid: Vec<bool>,
     /// Aspects whose deltas were all dropped (keep at most, compaction, while invalid), with
-    /// what each keeps: they count as held.
+    /// what each keeps.
     pub dropped: BTreeMap<usize, Dropped>,
     /// Aspects held as their leftover (expired, purged, a body carrying a copy of such a value:
     /// `retention::make_leftover`, `retention::strip_carried`): read from `records::LEFTOVER` as
@@ -120,9 +120,9 @@ pub struct Dropped {
     /// went with it; `retention::snapshot_live` starts from this).
     pub live: bool,
     /// A compaction snapshot's part dropped other than as covered, held then or not: it still
-    /// counts as held for atomic apply and suspect flags (`receipt::listed`, `settled`; indexed
-    /// by `ix.dropped_snapshots`). One dropped as covered does not need to: a coverer is valid and
-    /// stamped no earlier, so it counts for all it did.
+    /// settles suspect flags (`receipt::settled`; indexed by `ix.dropped_snapshots`). One dropped
+    /// as covered does not need to: a coverer is valid and stamped no earlier, so it settles all
+    /// it did.
     pub stands_in: bool,
     /// Its `rotation_role` and `grant_overreach` notes when it dropped: judgments the body made,
     /// kept so re-judging the part (and a rebuild) needs no body.
@@ -463,8 +463,8 @@ indexes! {
     /// `retention::any_bounded` without walking the aspect.
     pub bounded_held: JMap<(Tid, Ak), u64>,
     /// Compaction snapshots held per aspect, with their frontiers and `Absorbed`: the bodies
-    /// carrying a write besides its own (deaths, spec/commits.md §5); what stands in for missing
-    /// deltas in atomic apply (`receipt::listed`).
+    /// carrying a write besides its own (deaths, spec/commits.md §5); what settles suspect flags
+    /// (`receipt::settled`).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
     /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
     /// open, not persisted).

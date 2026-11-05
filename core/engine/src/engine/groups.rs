@@ -99,16 +99,15 @@ impl Groups {
     }
 
     /// Sets (or with `None` removes) the definition of group `g` and updates what derives from it.
-    /// The things that entered or left a closure.
-    pub fn set(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) -> BTreeSet<Tid> {
+    pub fn set(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) {
         if self.defs.get(&g) == def.as_ref() {
-            return BTreeSet::new();
+            return;
         }
         self.log.push((g, self.defs.get(&g).cloned()));
         self.apply(g, def)
     }
 
-    fn apply(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) -> BTreeSet<Tid> {
+    fn apply(&mut self, g: Tid, def: Option<(BTreeSet<Tid>, BTreeSet<Tid>)>) {
         let above = self.above(&g);
         let mut old = BTreeMap::new();
         for a in &above {
@@ -132,19 +131,10 @@ impl Groups {
             }
             self.defs.insert(g, d);
         }
-        let mut moved = BTreeSet::new();
         for a in &above {
             let before = old.remove(a);
-            self.list(a, before.clone());
-            let after = self.closures.get(a);
-            match (&before, after) {
-                (Some(b), Some(c)) if Arc::ptr_eq(b, c) => {}
-                (Some(b), Some(c)) => moved.extend(b.symmetric_difference(c).copied()),
-                (Some(x), None) | (None, Some(x)) => moved.extend(x.iter().copied()),
-                (None, None) => {}
-            }
+            self.list(a, before);
         }
-        moved
     }
 
     /// Sets a definition without deriving (`rebuild` follows): loading every group at open.

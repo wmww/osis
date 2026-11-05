@@ -178,12 +178,12 @@ fn snapshot_covers_one_reaching_further_spec_commits_5() {
     assert_eq!(e.get(&t, &tags).unwrap(), Some(Value::Set([s("a"), s("b")].into())));
 }
 
-// spec/commits.md §4 (atomic apply: a missing delta counts as held when a later snapshot of its
-// aspect holds nothing of its session): A's commit c writes the register and a tag; B, syncing
-// the thing, gets c without its tags part and W's snapshot of the tags, written without c: c
-// applies at B (the register shows), and its tags part joins when it comes.
+// spec/commits.md §4 (a node never waits for a part), spec/crdt.md §8: A's commit c writes the
+// register and a tag; B, syncing the thing, gets c without its tags part and W's snapshot of the
+// tags, written without c: c applies at B (the register shows), and its tags part joins when it
+// comes, the snapshot holding nothing of its session.
 #[test]
-fn untraced_session_part_counts_held_spec_commits_4() {
+fn untraced_session_part_joins_late_spec_commits_4() {
     let mut lp = net(3, 0x5e70);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -208,53 +208,11 @@ fn untraced_session_part_counts_held_spec_commits_4() {
     lp.peers[1].engine.ingest(&only(&pk.bytes, &h, "t:reg.0"), Vec::new()).unwrap();
     lp.peers[1].engine.reexamine().unwrap();
     let e = &mut lp.peers[1].engine;
-    assert!(e.pending().is_empty(), "the snapshot counts the missing part as held: {:?}", e.pending());
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
     assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));
     assert_eq!(e.get(&t, &ak("t:tags.0")).unwrap(), Some(Value::Set([s("w")].into())));
     lp.deliver(1, &pk).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), Some(Value::Set([s("a"), s("w")].into())), "the part joined late");
-}
-
-// spec/commits.md §4 (atomic apply: the later snapshot that counts a missing delta as held is
-// signed by a possible writer): a reader's forged snapshot stamped after c does not let a host
-// show c without its hidden part; c waits until a writer's compaction, which must count (its body
-// may be all that is left).
-#[test]
-fn only_a_possible_writers_snapshot_counts_a_part_held_spec_commits_4() {
-    let mut lp = net(4, 0x5e74);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (w, r) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    set_edge(&mut lp.peers[0].engine, t, r, Some(edge(Role::Read)), None);
-    lp.sync_all().unwrap();
-    lp.peers[1].engine.set_syncing(t, true).unwrap();
-    lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("a")).unwrap();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
-    let h = lp.peers[0].engine.header(&c).unwrap();
-    lp.advance(1_000);
-    let now = osis_base::Ts::make(lp.peers[3].engine.now(), 0).unwrap();
-    let forged = forge_snapshot(&mut lp, 3, t, &ak("t:tags.0"), now, osis_crdt::Fragment::default());
-    let e = &mut lp.peers[1].engine;
-    e.ingest(&forged, Vec::new()).unwrap();
-    e.ingest(&only(&pk.bytes, &h, "t:reg.0"), Vec::new()).unwrap();
-    e.reexamine().unwrap();
-    assert!(e.pending().iter().any(|x| x.0 == c), "a reader's snapshot counts nothing as held");
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "c does not show part by part");
-    let mut m = Mutation::new();
-    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
-    lp.peers[2].commit(m).unwrap().unwrap();
-    lp.advance(1_000);
-    lp.peers[2].engine.snapshot(&t, &ak("t:tags.0")).unwrap().unwrap();
-    sync(&mut lp, 2, 1);
-    lp.peers[1].engine.reexamine().unwrap();
-    let e = &mut lp.peers[1].engine;
-    assert!(e.pending().is_empty(), "a writer's snapshot does: {:?}", e.pending());
-    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));
 }
 
 /// The store's bytes at peer `i`.
@@ -584,7 +542,7 @@ fn gap_cover_check(seed: u64) -> Result<(), String> {
     if reads(&mut lp, 4) != want {
         return Err(format!("the fresh node differs: {want:?} vs {:?}", reads(&mut lp, 4)));
     }
-    // bare headers change no read; one may wait for a later commit on its aspect (§4, last sentence of Atomic apply)
+    // bare headers change no read (spec/commits.md §4: a commit with no part held applies as its header)
     for pk in &headers {
         let _ = lp.deliver(4, pk);
     }
