@@ -66,7 +66,7 @@ fn demotion_takes_the_purge_right_spec_permissions_7() {
         vec![
             edge(5, OWNER, 0, 1, Some(Role::Write), None),
             reg(10, 1, 1, REG, Retention::PLAIN, 7),
-            purge(15, 1, 2, PurgeItem::Commit(10)),
+            purge(15, 1, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
             edge(20, OWNER, 3, 1, None, Some(f)),
         ]
     };

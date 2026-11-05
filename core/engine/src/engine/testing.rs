@@ -360,6 +360,18 @@ impl Engine {
         Ok(None)
     }
 
+    /// The aspect indexes of the parts waiting commit `c`'s stored copy holds, value-less ones
+    /// included (`None`: not waiting). Tests: the held-model adapter (`tests/it/held.rs`).
+    #[doc(hidden)]
+    pub fn pending_parts(&mut self, c: &CommitId) -> Result<Option<std::collections::BTreeSet<usize>>> {
+        let c = *c;
+        self.run(|tx| {
+            let Some((_, bytes)) = tx.txn.get_pending(&c)? else { return Ok(None) };
+            let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(None) };
+            Ok(Some(blob.parts.iter().map(|p| p.ai).collect()))
+        })
+    }
+
     /// A part of waiting commit `c` whose stored copy still holds a value past its expiry at `now`,
     /// or that a held purge request drops, its thing's record held so it could be stripped (tests:
     /// `order::value_past_end`; spec/commits.md §5).

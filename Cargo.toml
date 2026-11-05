@@ -29,6 +29,7 @@ osis = { path = "core/osis" }
 osis-chat = { path = "core/chat" }
 osis-sim = { path = "core/test/sim" }
 crdt-model = { path = "core/test/crdt-model" }
+held-model = { path = "core/test/held-model" }
 osis-vectors = { path = "core/test/vectors" }
 roles-model = { path = "core/test/roles-model" }
 blake3 = { version = "1.8", default-features = false, features = ["std", "zeroize"] }

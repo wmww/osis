@@ -43,3 +43,5 @@ relay = ["iroh", "osis-transport/relay"]
 [dev-dependencies]
 # Judgment vectors (tests/it/judgment.rs): the `.vec` format and the vectors directory.
 osis-vectors.workspace = true
+# The held-model adapter (tests/it/held.rs): an independent reading of the spec to compare with.
+held-model.workspace = true

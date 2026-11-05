@@ -513,6 +513,8 @@ pub(crate) struct Played {
     moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// The history ends with every writer compacting what it holds (`settled`): no exception left.
     settled: bool,
+    /// `Cfg::model`: the history for the held-model adapter, and what it compared.
+    model: Option<std::sync::Arc<(crate::held::History, std::sync::Mutex<crate::held::Coverage>)>>,
 }
 
 /// Per step kind: how many ran and how many made a commit, and why the others made none.
@@ -1151,7 +1153,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), settled: false }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), judged: Default::default(), moved: Default::default(), settled: false, model: None }
 }
 
 /// Per body (commit, thing, aspect): its first and last death (spec/crdt.md §4.8).
@@ -1183,6 +1185,9 @@ struct Oracle {
     /// What each aspect reads after `later_than`.
     reads_later: BTreeMap<(Tid, Ak), String>,
     expired_pending: BTreeSet<(String, String)>,
+    /// `Cfg::model`: every body it holds at `played.now`, for the model's judgment of the bodies
+    /// a node dropped (`held::compare`).
+    bodies: crate::held::Bodies,
 }
 
 fn oracle(played: &Played, held: &[usize]) -> Oracle {
@@ -1207,12 +1212,13 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
         p.engine.replay_deaths(t, a).unwrap();
     }
     let (deaths, facts) = (deaths_of(&mut p.engine), facts_text(&mut p.engine));
+    let bodies = if played.model.is_some() { crate::held::bodies(&mut p.engine) } else { Default::default() };
     p.clock.set(later_than(played));
     p.engine.tick().unwrap();
     let live_later = live_writes(&mut p.engine);
     let reads_later = live_later.keys().map(|(t, a)| ((*t, a.clone()), format!("{:?}", p.engine.get(t, a).unwrap()))).collect();
     let expired_pending = expired_pending(&mut p.engine);
-    Oracle { held: held.to_vec(), deaths, facts, carried, live_later, reads_later, expired_pending }
+    Oracle { held: held.to_vec(), deaths, facts, carried, live_later, reads_later, expired_pending, bodies }
 }
 
 /// Past every keep bound, grace and expiry the ops draw (30 min, plus 1 h with a live write), from
@@ -1410,14 +1416,23 @@ fn live_write_lost(p: &mut Peer, o: &Oracle, played: &Played, flips: &dyn Fn(&st
 
 /// `judged` with the per-node checks around it, for a node `o` is the keep-everything node of.
 fn judged_checked(p: &mut Peer, played: &Played, o: &Oracle, flips: &dyn Fn(&str, &str) -> bool) -> Result<Judged, String> {
-    bound_kept_now(p, o, played).or_else(|| value_past_end(p, played, played.now)).map_or(Ok(()), Err)?;
+    bound_kept_now(p, o, played).or_else(|| value_past_end(p, played, played.now)).or_else(|| model_differs(p, played, o)).map_or(Ok(()), Err)?;
     let j = judged(p, played);
     later_checks(p, played, o, flips).map_or(Ok(j), Err)
 }
 
 /// The per-node checks later (the node ticked by `later`); leaves it holding `o`'s bodies.
 fn later_checks(p: &mut Peer, played: &Played, o: &Oracle, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
-    body_past_bound(p, played, o).or_else(|| value_past_end(p, played, later_than(played))).or_else(|| live_write_lost(p, o, played, flips))
+    model_differs(p, played, o).or_else(|| body_past_bound(p, played, o)).or_else(|| value_past_end(p, played, later_than(played))).or_else(|| live_write_lost(p, o, played, flips))
+}
+
+/// `Cfg::model`: where the node and held-model judge what it holds differently (`held::compare`).
+fn model_differs(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> {
+    let m = played.model.as_ref()?;
+    let mut cov = crate::held::Coverage::default();
+    let d = crate::held::compare(&mut p.engine, &m.0, &o.bodies, &mut cov);
+    m.1.lock().unwrap().add(&cov);
+    d
 }
 
 /// The facts of each body the harness uses to tell which bodies to give again after a flip and
@@ -2195,14 +2210,16 @@ struct Cfg {
     sync: bool,
     /// `settled` histories: the whole held set only, and `alike` with no exception.
     settled: bool,
+    /// Every node judged is also compared with held-model (`held::compare`).
+    model: bool,
 }
 
-const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false };
-const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false };
+const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false };
+const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false, settled: false, model: false };
 /// Every order of the whole set and 2 partial sets (`OSIS_ORDER_ALL_HELD`: of every held set),
 /// every order with late parts too (6 commits: up to 720 orders), 24 of them at an earlier clock
 /// (every order clocked cost +50%; `OSIS_ORDER_CLOCK=720` gives that back).
-const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false, settled: false };
+const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false, settled: false, model: false };
 /// The same up to 5 commits (120 orders), for tier 1.
 const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
 
@@ -2303,6 +2320,8 @@ struct Seen {
     /// Deliveries at an earlier clock (`Clock`), and those whose move changed a state or a body.
     clocked: u64,
     moved: u64,
+    /// What the held-model comparison covered (`Cfg::model`).
+    model: crate::held::Coverage,
 }
 
 impl Seen {
@@ -2321,6 +2340,7 @@ impl Seen {
         }
         self.clocked += o.clocked;
         self.moved += o.moved;
+        self.model.add(&o.model);
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
         }
@@ -2401,6 +2421,8 @@ fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
 fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let played = play(seed, steps);
     let played = if cfg.sync { with_syncs(played, seed, cfg.settled) } else { played };
+    let model = cfg.model.then(|| std::sync::Arc::new((crate::held::History::new(&played.packs), Default::default())));
+    let played = Played { model, ..played };
     let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
     let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
     let mut full: Option<Judged> = None;
@@ -2433,7 +2455,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         // the reference, as made: the per-node checks hold, a reopen from the persisted index and a
         // rebuild judge alike and give one index (an open re-examines what pends)
         let mut p = deliver(played, &orders[0]);
-        if let Some(d) = bound_kept_now(&mut p, &o, played).or_else(|| value_past_end(&mut p, played, played.now)) {
+        if let Some(d) = bound_kept_now(&mut p, &o, played).or_else(|| value_past_end(&mut p, played, played.now)).or_else(|| model_differs(&mut p, played, &o)) {
             return Err(format!("{of}, as made: {d}"));
         }
         let now = judged_now(&mut p, &played.things);
@@ -2507,7 +2529,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 };
             }
             let mut p = deliver(played, order);
-            if let Some(d) = bound_kept_now(&mut p, &o, played).or_else(|| value_past_end(&mut p, played, played.now)) {
+            if let Some(d) = bound_kept_now(&mut p, &o, played).or_else(|| value_past_end(&mut p, played, played.now)).or_else(|| model_differs(&mut p, played, &o)) {
                 return Err(format!("{of}, order #{k} {order:?}: {d}"));
             }
             let mut got = judged_now(&mut p, &played.things);
@@ -2577,6 +2599,9 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 clocked(k)?;
             }
         }
+    }
+    if let Some(m) = &synced.model {
+        seen.model = m.1.lock().unwrap().clone();
     }
     seen.restored = synced.restored.load(std::sync::atomic::Ordering::Relaxed);
     seen.moved = synced.moved.load(std::sync::atomic::Ordering::Relaxed);
@@ -2788,6 +2813,9 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
     let summary = format!("order::{name}: {} seeds from {}, {len} steps, {tried} orders in the passing ones, {} failing, {:.1} s (settings: {settings:?})", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len(), t0.elapsed().as_secs_f64());
     // always shown: the order counts are what a passing run is read for
     osis_base::testenv::visible(true, &summary);
+    if cfg.model {
+        osis_base::testenv::visible(true, &format!("order::{name}: held-model compared {} aspects over {} nodes, reaching {:?}; skipped {:?}", seen.model.compared, seen.model.nodes, seen.model.reached, seen.model.skipped));
+    }
     if std::env::var("OSIS_ORDER_STATS").is_ok() {
         eprintln!("{}\npending {:?}, invalid {}, aspects {:?}, per-node checks judged {:?}, {} of {} early clocks changed a state or a body at the move", seen.tally.show(), seen.pending, seen.invalid, seen.aspects, seen.judged, seen.moved, seen.clocked);
     }
@@ -3166,7 +3194,7 @@ fn arrival_order_purge_author_large_spec_perm_7() {
 // with purges in the history either.
 #[test]
 fn arrival_order_purge_small_spec_commits_5() {
-    run("arrival_order_purge_small_spec_commits_5", 0..4, 8, SMALL, purge_history);
+    run("arrival_order_purge_small_spec_commits_5", 0..4, 8, Cfg { model: true, ..SMALL }, purge_history);
 }
 
 // spec/permissions.md §7: a waiting commit's part stripped for a purge that falls before it applies
@@ -3196,7 +3224,7 @@ fn partial_roster_snapshot_removes_nobody_seed_3050_large() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_large_spec_commits_5() {
-    run("arrival_order_purge_large_spec_commits_5", osis_base::testenv::large(3000..3060), 60, LARGE, purge_history);
+    run("arrival_order_purge_large_spec_commits_5", osis_base::testenv::large(3000..3060), 60, Cfg { model: true, ..LARGE }, purge_history);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded
@@ -3238,7 +3266,7 @@ fn settled_flagged_aspect_alike_after_repair_spec_sync_7() {
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_exhaustive_large_spec_crdt_4_8() {
-    run("arrival_order_exhaustive_large_spec_crdt_4_8", osis_base::testenv::large(2023..2063), 30, EXHAUST, focused_history);
+    run("arrival_order_exhaustive_large_spec_crdt_4_8", osis_base::testenv::large(2023..2063), 30, Cfg { model: true, ..EXHAUST }, focused_history);
 }
 
 /// A history of writes under keep at most, some with a part under default retention, on G.
@@ -4815,4 +4843,22 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
         assert_eq!(map(&a, i), map(&b, i), "{}", a.parts[i].0);
     }
     assert!(map(&a, 1).contains("value: Some(Int(5))"), "1's write is kept");
+}
+
+// spec/commits.md §5 (Purge), spec/permissions.md §7: held-model (`held.rs`) judges what each node
+// holds alike: a writer's purge of an admin's delta, without the right, drops nothing; an
+// admin's purge of a writer's delta drops it. Also a tier-1 run of the adapter.
+#[test]
+fn held_model_agrees_on_purge_rights_spec_commits_5() {
+    use Step::*;
+    let h = vec![
+        Write { by: 2, t: 0, op: 0, k: 0, v: 1 },
+        Write { by: 1, t: 0, op: 0, k: 0, v: 2 },
+        Sync { from: 2, to: 1 },
+        Sync { from: 1, to: 2 },
+        Purge { by: 1, t: 0, of: 2, back: 0, v: 3 },
+        Purge { by: 2, t: 0, of: 1, back: 1, v: 4 },
+    ];
+    let seen = check(9360000, &h, Cfg { model: true, ..SMALL }).unwrap();
+    assert!(seen.model.compared > 0 && seen.model.reached.get("purged").is_some_and(|n| *n > 0), "{:?}", seen.model);
 }

@@ -1,5 +1,5 @@
 # held-model: spec ambiguities
-> Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (all 23 resolved). Most important first.
+> Summary: Every place the spec left a choice, contradicted itself or said too little while building held-model, the model's choice, and how each was resolved against the engine (all 24 resolved). Most important first.
 
 Each entry: the spec text, the problem, the model's choice (and where in the code), then **Resolved**: (a) spec fixed to the intended rule (the engine's), model matched; (b) engine wrong, issue filed; (c) a question for Tess (notes/questions-for-tess.md), model's choice kept. Engine tests the code reading found no test for: issues/held-model-unpinned-rules.md.
 
@@ -75,3 +75,6 @@ Each entry: the spec text, the problem, the model's choice (and where in the cod
 
 23. **An invalid snapshot's copies' deaths.** spec/commits.md §5: "A write of a delta invalid here does not die". For an invalid snapshot carrying copies of valid writes that do die, the model treats its writes as not dying (fall under 0 after replaced).
    **Resolved** (a) The engine dates an invalid snapshot only by its fall (`deaths::carriers`, `date_falls`; retention.rs `invalid_snapshot_recomputes_no_deaths_spec_commits_5`). spec/commits.md §5 says its carried writes do not die.
+
+24. **A purged or expired delta's own body.** spec/commits.md §5 Purge said a node "drops ... the named deltas" and "holds every body carrying their values as its leftover", leaving open whether the named delta's own body is dropped or held as its leftover. Choice: `Fate::Leftover(Purged | Expired)`.
+   **Resolved** (a) spec/crdt.md §4.7 (the body goes, "the node holds the body's leftover instead") and commits §6 already said leftover for expiry; commits §5 Purge now names the delta's own body too. The engine holds it as its leftover (`Meta::stripped`); the adapter (osis-node `tests/it/held.rs`) had read every leftover as dropped (`body_not_dropped`) and accepted either.

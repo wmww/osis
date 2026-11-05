@@ -55,7 +55,7 @@ fn missing_part_purged_counts_held_spec_commits_4() {
     let cs = vec![
         edge(5, OWNER, 0, 1, Some(Role::Write), None),
         missing(reg(10, 1, 1, REG, Retention::PLAIN, 7), 0),
-        purge(20, OWNER, 2, PurgeItem::Commit(10)),
+        purge(20, OWNER, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
     ];
     assert!(evaluate(&held(3, cs)).applied.contains(&10));
 }
@@ -79,7 +79,7 @@ fn author_purge_leaves_a_leftover_and_no_value_spec_commits_5() {
     let cs = vec![
         edge(5, OWNER, 0, 1, Some(Role::Write), None),
         reg(10, 1, 1, REG, Retention::PLAIN, 7),
-        purge(20, 1, 2, PurgeItem::Commit(10)),
+        purge(20, 1, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
     ];
     let h = held(3, cs);
     let o = evaluate(&h);
@@ -91,13 +91,22 @@ fn author_purge_leaves_a_leftover_and_no_value_spec_commits_5() {
     assert_eq!(read(&h2, REG), Read::Absent);
 }
 
+// spec/commits.md §5 (Purge), spec/wire.md §4: a request by commit names that commit's delta on
+// one aspect, not its other deltas
+#[test]
+fn purge_by_commit_names_one_aspect_spec_commits_5() {
+    let h = held(3, vec![two_parts(None), purge(20, OWNER, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG })]);
+    assert_eq!(read(&h, REG), Read::Absent);
+    assert_eq!(read(&h, OTHER), Read::Reg(8));
+}
+
 // spec/commits.md §5 (Purge), spec/permissions.md §7: an author may not purge an `admin` delta
 #[test]
 fn purge_without_the_right_drops_nothing_spec_commits_5() {
     let cs = vec![
         edge(5, OWNER, 0, 1, Some(Role::Write), None),
         reg(10, 1, 1, REG, Retention::PLAIN.with_by(PurgeBy::Admin), 7),
-        purge(20, 1, 2, PurgeItem::Commit(10)),
+        purge(20, 1, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
     ];
     let h = held(3, cs);
     assert_eq!(read(&h, REG), Read::Reg(7));
@@ -119,7 +128,7 @@ fn snapshot_copy_of_a_purged_value_is_a_leftover_spec_commits_5() {
     let cs = vec![
         reg(10, OWNER, 1, REG, Retention::PLAIN, 7),
         snap(15, OWNER, 2, REG, Retention::WRITER, vec![set(1, 10, 7)]),
-        purge(20, OWNER, 3, PurgeItem::Commit(10)),
+        purge(20, OWNER, 3, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
     ];
     let h = held(4, cs);
     let o = evaluate(&h);
@@ -276,7 +285,7 @@ fn copy_leftover_drops_at_its_bound_spec_commits_5() {
     let cs = vec![
         reg(10, OWNER, 1, REG, Retention::PLAIN, 7),
         snap(15, OWNER, 2, REG, r, vec![set(1, 10, 7)]),
-        purge(20, OWNER, 2, PurgeItem::Commit(10)),
+        purge(20, OWNER, 2, PurgeItem::Commit { commit: 10, thing: T, aspect: REG }),
     ];
     assert_eq!(fate(&held(2, cs.clone()), 15), Fate::Leftover(LeftoverWhy::Copy));
     assert!(matches!(fate(&held(3, cs), 15), Fate::MustDrop(DropWhy::AtMost { .. })));

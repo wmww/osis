@@ -274,7 +274,8 @@ pub enum CommitKind {
 /// spec/commits.md §5 Purge: what a request names (deltas of commits with a smaller `ts`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PurgeItem {
-    Commit(CommitId),
+    /// That commit's delta on that aspect (spec/wire.md §4 `[commit_id, tid, ak]`).
+    Commit { commit: CommitId, thing: ThingId, aspect: Aspect },
     Aspect { thing: ThingId, aspect: Aspect },
     Author { thing: ThingId, aspect: Aspect, author: NodeId },
 }
