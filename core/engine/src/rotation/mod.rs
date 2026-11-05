@@ -1,9 +1,10 @@
 //! Rotations (spec/permissions.md §3, spec/crypto.md §4): when one is due (`rotation_due`:
-//! departures from the actor not covered, by any current epoch; stale boxes to holder actors;
-//! holders boxed through a keyless grant), the cascade (`ensure_rotated`: the holder actors this node
-//! may rotate first, then the actor), giving a thing secrets of its own, re-seals. Departures
-//! from an actor: `departures`; holder actors (key access, keysets, sealing, staleness):
-//! `members`; dropping what this node lost read access to: `lost`.
+//! departures from the actor not covered, by any current epoch; forks, by their merger; stale
+//! boxes to holder actors; holders boxed through a keyless grant), the cascade
+//! (`ensure_rotated`: the holder actors this node may rotate first, then the actor), giving a
+//! thing secrets of its own, re-seals. Departures from an actor: `departures`; holder actors
+//! (key access, keysets, sealing, staleness): `members`; dropping what this node lost read
+//! access to: `lost`.
 
 mod departures;
 mod lost;
@@ -21,7 +22,7 @@ pub use departures::{departures_placing, may_rotate};
 pub use lost::{Dropped, Leaving, LostScope, LOST_HEARD_WAIT_MS, PENDING_GRANT_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
 pub(crate) use departures::{departures, key_role};
-pub(crate) use members::{grant_keyless, sealed};
+pub(crate) use members::{Sealed, grant_keyless, sealed};
 pub(crate) use lost::{arm_untils, boxes_kept, load_lost_due, mark_lost_due};
 #[cfg(test)]
 pub(crate) use lost::authentic;
@@ -56,9 +57,10 @@ pub(crate) fn blocked_roles(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTree
 
 /// The roles of `a` that `who` may rotate whose rotation is due
 /// (spec/crypto.md §4, encrypting under): blocked (`blocked_roles_of`), or some current epoch,
-/// not only the newest, does not cover a known departure (merge, rule 3) or boxes an actor
-/// whose grant is keyless (the knowing re-key, rule 4). Only a role with a held current secret
-/// rotates (spec/crypto.md §4, boxes).
+/// not only the newest, does not cover a known departure, or the role forked and `who` is its
+/// merger (merge, rule 3), or some current epoch has a held box to an actor whose grant is
+/// keyless (the knowing re-key, rule 4). Only a role with a held current secret rotates
+/// (spec/crypto.md §4, boxes).
 fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let may = may_rotate(tx.core, who, a);
     let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
@@ -67,7 +69,7 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     let mut out = BTreeSet::new();
     for r in ROLES.into_iter().filter(|r| may.contains(r) && epochs.role(*r).newest_held().is_some()) {
         let held = tx.core.names_held(a);
-        let mut due = blocked.contains(&r) || osis_keys::merge_due(a, &epochs, r, &deps, &held);
+        let mut due = blocked.contains(&r) || osis_keys::merge_due(a, &epochs, r, &deps, &held) || osis_keys::fork_merger(&epochs, r, |e| maker(tx.core, who, a, r, e));
         for e in epochs.role(r).current() {
             due = due || members::keyless_at(tx, a, r, &e)?;
         }
@@ -78,11 +80,20 @@ fn rotation_due(tx: &mut Tx<'_>, who: &Tid, a: &Tid) -> Result<BTreeSet<Role>> {
     Ok(out)
 }
 
+/// The maker of epoch `e` of role `r` of `a` as `who` sees it (`osis_keys::fork_merger`): the
+/// author of its rotation commit (`epoch_intro`); unknown without one (a snapshot's epoch).
+fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Option<osis_keys::Maker> {
+    let (_, c) = core.ix.epoch_intro.get(&(*a, r, *e))?;
+    let author = core.ix.commits.get(c)?.view.author;
+    Some(osis_keys::Maker { me: author == *who, may_rotate: may_rotate(core, &author, a).contains(&r) })
+}
+
 /// Current holders of `a` for keys (`Core::key_holders`) as a rotation boxes them
 /// (`members::sealed`); each of `skip` gets its new role or is left out (departing holders).
 /// Holders boxed nothing (keys unknown, no keyset to seal to, no key access) are left out:
-/// re-sealed later where the re-seal trigger finds them.
-pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: &[(Tid, Option<Role>)]) -> Result<Vec<Recipient>> {
+/// re-sealed later where the re-seal trigger finds them. `None`: the rotation waits (Seal waits
+/// for a holder actor's keyset).
+pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: &[(Tid, Option<Role>)]) -> Result<Option<Vec<Recipient>>> {
     let mut out = Vec::new();
     for (m, role) in tx.core.key_holders(a) {
         let role = match skip.iter().find(|(s, _)| *s == m) {
@@ -90,10 +101,17 @@ pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: &[(Tid, Option<Role>)])
             Some((_, None)) => continue,
             None => role,
         };
-        out.extend(members::sealed(tx, a, &m, role)?);
+        match members::sealed(tx, a, &m, role)? {
+            Sealed::Boxed(r) => out.push(r),
+            Sealed::Out => {}
+            Sealed::Wait => return Ok(None),
+        }
     }
-    Ok(out)
+    Ok(Some(out))
 }
+
+/// The error a rotation, removal or grant gets while Seal waits (`recipients`).
+pub(crate) const SEAL_WAITS: Error = Error::Misuse("a holder actor's keysets have forked: this waits until that actor's merger merges them (spec/crypto.md §4, Seal)");
 
 /// A fresh deposit seed for `a` in `m` (spec/crypto.md §3; an admin's write).
 pub(crate) fn fresh_deposit_seed(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid) -> Result<()> {
@@ -179,13 +197,18 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
 /// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no edge), signed
 /// by `who`.
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
+    let holders = recipients(tx, &a, &[])?.ok_or(SEAL_WAITS)?;
+    rotate_boxing(tx, who, a, roles, &holders)
+}
+
+/// `rotate_now` boxing `holders` (`recipients`).
+fn rotate_boxing(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, holders: &[Recipient]) -> Result<Done> {
     let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-    let holders = recipients(tx, &a, &[])?;
     let mut m = Mutation::new();
     if who != tx.core.id.tid() {
         m.sign_as(who);
     }
-    let rot = rotation_into(tx, &mut m, a, roles, &held, &holders, &[])?;
+    let rot = rotation_into(tx, &mut m, a, roles, &held, holders, &[])?;
     if refreshes_deposit(tx.core, &who, &a, roles) {
         fresh_deposit_seed(tx, &mut m, a)?;
     }
@@ -300,13 +323,15 @@ pub(crate) fn ensure_rotated_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: &
             continue;
         }
         let mine = rotation_due(tx, &who, &x)?;
-        // a rotation due that `who` may not make for want of possession waits (its roles stay
-        // blocked): every node would judge it invalid
-        if !mine.is_empty() && {
-            let holders = recipients(tx, &x, &[])?;
-            possessed(tx.core, &who, &x, &mine, &holders)
-        } {
-            done.extend(rotate_now(tx, who, x, &mine)?);
+        if mine.is_empty() {
+            continue;
+        }
+        // a rotation due waits (its roles stay blocked) while Seal waits for a holder actor's
+        // keyset, or for want of possession: every node would judge it invalid
+        if let Some(holders) = recipients(tx, &x, &[])?
+            && possessed(tx.core, &who, &x, &mine, &holders)
+        {
+            done.extend(rotate_boxing(tx, who, x, &mine, &holders)?);
         }
     }
     blocked_roles(tx, &who, &a)
@@ -362,7 +387,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
     let who = tx.core.id.tid();
     require_covered(tx, who, t, &ROLES.into_iter().collect(), done)?;
     let held = tx.core.epochs(&t).ok_or(Error::Misuse("the owner's secrets are not held"))?;
-    let holders = recipients(tx, &t, &[])?;
+    let holders = recipients(tx, &t, &[])?.ok_or(SEAL_WAITS)?;
     let mut m = Mutation::new();
     let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, &[])?;
     fresh_deposit_seed(tx, &mut m, t)?;
@@ -454,7 +479,7 @@ fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
             continue;
         }
         // as `reseal_one` boxes it: a holder actor left out of a role is left out of the roles above
-        let Some(rc) = members::sealed(tx, a, &m, role)? else { continue };
+        let Sealed::Boxed(rc) = members::sealed(tx, a, &m, role)? else { continue };
         keep.retain(|r| *r <= rc.role);
         if !keep.is_empty() {
             out.push((m, keep));
@@ -475,8 +500,17 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let secrets = secrets_in(tx, &a)?;
     let role = tx.core.key_holders(&a).into_iter().find(|(m, _)| *m == holder).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
-    let rcpt = members::sealed(tx, &a, &holder, role)?.ok_or(Error::Misuse("the holder has no key access or no keyset this node may seal it to"))?;
-    let roles: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= rcpt.role).collect();
+    let rcpt = match members::sealed(tx, &a, &holder, role)? {
+        Sealed::Boxed(r) => r,
+        Sealed::Out => return Err(Error::Misuse("the holder has no key access or no keyset this node may seal it to")),
+        Sealed::Wait => return Err(SEAL_WAITS),
+    };
+    // a rotation just made (a merge) boxed the holder at the new epoch already
+    let rotated = !done.commits.is_empty();
+    let roles: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= rcpt.role && !(rotated && osis_keys::reseal_missing(&secrets, &epochs, &holder, *r).is_empty())).collect();
+    if roles.is_empty() {
+        return Ok(done);
+    }
     let Some(w) = osis_keys::box_holder(&a, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)? else {
         return Err(Error::Misuse("the holder's keyset is unknown"));
     };

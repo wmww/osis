@@ -1,5 +1,5 @@
-//! Departures from an actor and the covers rule (spec/crypto.md §4), merge (a current epoch other
-//! than the newest that does not cover), re-seal triggers (spec/permissions.md §3). A departure is
+//! Departures from an actor and the covers rule (spec/crypto.md §4), merge (a current epoch that
+//! does not cover; a fork, by its merger), re-seal triggers (spec/permissions.md §3). A departure is
 //! from the actor itself: what departs inside a holder actor reaches the actor only as that
 //! holder's new keyset (`members`).
 
@@ -86,8 +86,8 @@ pub fn may_encrypt_under(actor: &Tid, epochs: &ActorEpochs, r: Role, e: &Epoch, 
     epochs.role(r).is_current(e) && uncovered(actor, epochs, r, e, departures, held).is_empty()
 }
 
-/// Merge (spec/crypto.md §4, encrypting under): whether some current epoch of `r`, not only the
-/// newest, does not cover a known departure. A node that may rotate `r` rotates while it does.
+/// Merge (spec/crypto.md §4, encrypting under), for any node that may rotate `r`: whether some
+/// current epoch of `r`, not only the newest, does not cover a known departure.
 ///
 /// Invariant: a fork made by a rotator that did not know a departure stays current beside the
 /// knowing epoch, and may win the (n, nonce) order; a holder actor anchored on it (`members::
@@ -97,6 +97,36 @@ pub fn may_encrypt_under(actor: &Tid, epochs: &ActorEpochs, r: Role, e: &Epoch, 
 /// rotation supersedes it too.
 pub fn merge_due(actor: &Tid, epochs: &ActorEpochs, r: Role, departures: &[Departure], held: &dyn Held) -> bool {
     epochs.role(r).current().iter().any(|e| !uncovered(actor, epochs, r, e, departures, held).is_empty())
+}
+
+/// The maker of an epoch as a node sees it (`fork_merger`): whether it is this node, and
+/// whether it may rotate the role now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Maker {
+    pub me: bool,
+    pub may_rotate: bool,
+}
+
+/// Merge of a fork (spec/crypto.md §4, encrypting under): whether `r` has more than one current
+/// epoch and this node is its merger: it made (`maker`; `None`: unknown) a current epoch other
+/// than the newest, or no maker of one may rotate `r`. The merger rotates, listing every
+/// current epoch.
+///
+/// Invariant: a holder actor's boxes at A's current epochs anchor it (`members::seal_keyset`);
+/// A forked across two keysets of M, neither listing the other, anchors M at both, and only a
+/// keyset of M listing both (M's merge) can seal M again. Nodes holding the same fork agree on
+/// its newest epoch, so its maker never merges beside another maker: two nodes merging alike
+/// would fork again on every round of a sync that delivers both merges together. The merges of
+/// nodes holding different forks fork again at most once per epoch made concurrently.
+pub fn fork_merger(epochs: &ActorEpochs, r: Role, maker: impl Fn(&Epoch) -> Option<Maker>) -> bool {
+    let rs = epochs.role(r);
+    let cur = rs.current();
+    let Some(newest) = rs.newest() else { return false };
+    if cur.len() < 2 {
+        return false;
+    }
+    let others: Vec<Option<Maker>> = cur.iter().filter(|e| **e != newest).map(&maker).collect();
+    others.iter().flatten().any(|m| m.me) || !others.iter().flatten().any(|m| m.may_rotate)
 }
 
 /// A current holder as a re-sealer sees it: its role on the actor (an owner: admin).

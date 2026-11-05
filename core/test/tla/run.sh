@@ -74,6 +74,12 @@ instances=(
   "rotation Depth0MC D0_rm_possess.cfg all pass"
   "rotation Depth0MC D0_box_rule.cfg small fail"      # the dropped Box rule hides a key cycle's box (cycle harness seed 1032)
   "rotation Depth0MC D0_box_ok.cfg all pass"          # ... no Box rule
+  "rotation Depth0MC D0_box_see.cfg small pass"       # ... rules judging every box held, valid or not
+  "rotation Depth0MC D0_fork_old.cfg small fail"      # two knowing forks of a holder never merged (cycle harness seed 1838)
+  "rotation Depth0MC D0_fork_old_safety.cfg all fail" # ... and a rotation over forked anchors drops them (leak)
+  "rotation Depth0MC D0_fork_out.cfg small fail"      # merging forks, leaving the holder out: the same leak
+  "rotation Depth0MC D0_fork_live.cfg small pass"     # the fork's merger merges; Seal waits while anchors fork
+  "rotation Depth0MC D0_fork_wait.cfg all pass"
   "rotation Finalize F_named_seed3.cfg small pass"       # a finalize names the writes it ends (issues/withheld-departures-seeds.md)
   "rotation Finalize F_named_bogus.cfg small pass"
   "rotation Finalize F_named_renew.cfg all pass"

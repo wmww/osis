@@ -21,3 +21,7 @@
 - cycle-leaks: libtest swallows `eprintln!` of passing tests; a probe printing from a passing test shows nothing without `-- --nocapture` (cost a wrong "never reached" conclusion once).
 - cycle-leaks: `OSIS_*` debug env vars panic as unknown (testenv-known.txt); name throwaway probe vars without the prefix.
 - cycle-leaks: eight single-worker TLC JVMs beside tier 1 at load 28 ran at ~200 states/min and took 22 GB RAM; run TLC instances one at a time with workers instead.
+- merge/held boxes: a Depth0 instance with two learners, two unprompted rotations and one removal ran 47 min (4.5 M states, 8 workers) for invariants alone at MaxE 9; at MaxE 10 it was still growing at 1 M. Liveness needs a stripped copy (no removal, no write).
+- merge/held boxes: a probe disabling "merge any fork" with `&& false` made seed 1838 pass (the wait then hid the lockout as "nothing due"); the honest probe restores the old rule, not no rule.
+- merge/held boxes: a `pkill -f <test binary>` in front of a cargo command matched its own shell and killed the run (the footer says never `pkill -f`; use TaskStop).
+- merge/held boxes: plain "merge any fork" passed every engine harness yet hung an osis World-sim test (two devices merging alike each round); run the osis tests before trusting a liveness rule the engine harnesses pass.
