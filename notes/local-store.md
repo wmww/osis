@@ -2,7 +2,7 @@
 > Summary: A node keeps plaintext, wraps and indexes only inside an encrypted local store whose unit keys hang off a key tree rooted in platform erasable storage; deleting a unit erases its key, so freed pages never matter and no storage engine has to erase anything. Chunk keys are random and stored in links, so crypto-shredding covers large values too. Design decided; part of the MVP. Dedup only against content the writer holds keeps the no-fingerprint rule.
 
 ## Requirement
-spec/requirements.md, Deletion: a node that deleted honestly and is compromised later yields nothing, not even confirmation of a guess. Compromise means the attacker holds the device unlocked, so disk encryption does not help, and freed database pages, journals, undo buffers and indexes all count.
+spec/requirements.md, Deletion: a node that deleted honestly and is compromised later yields nothing, not even confirmation of a guess. Compromise means the attacker holds the device unlocked, so disk encryption does not help, and freed store pages, journals, undo buffers and indexes all count.
 
 ## Principle
 No storage engine erases reliably (SSD wear levelling, copy-on-write filesystems, write-ahead logs), so never rely on erasing data. Erase keys instead. Every piece of local plaintext or key material lives in a unit encrypted under its own unit key; unit keys live in a key tree whose root sits in the one place the platform can erase; deleting a unit means dropping its key and rotating the path to a fresh root. (Reardon, Basin, Capkun, "SoK: Secure Data Deletion", 2013; DNEFS.) The storage engine, whether SQLite, redb or plain files, only ever holds ciphertext, so the backend choice is free and freed pages are harmless.
