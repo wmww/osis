@@ -40,7 +40,7 @@ impl SyncEngine {
                     _ => {}
                 }
             }
-            st.peers_connected = self.conns.values().filter(|c| c.peer && c.up && c.labels.contains_key(&l.id)).count() + self.served.values().filter(|s| s.opens(&l.id)).count();
+            st.peers_connected = self.conns.values().filter(|c| c.peer && c.up && c.labels.get(&l.id).is_some_and(|x| matches!(x.phase, Phase::Open))).count() + self.served.values().filter(|s| s.opens(&l.id)).count();
             out.push(st);
         }
         out
@@ -68,13 +68,15 @@ impl SyncEngine {
     }
 
     /// The addresses `g` syncs with as this node knows them: its live labels' hosts, then the
-    /// co-readers it dials for them (`reach.0`, a link's sharer).
+    /// co-readers it dials for them (`reach.0`, a link's sharer), each by its lasting `peer://`
+    /// address: a read leaves the LAN routes (`peer_addresses` expires them) alone.
     pub fn group_peers(&mut self, g: &Tid) -> Vec<Address> {
         let ids: BTreeSet<LabelId> = self.labels().iter().filter(|(x, l)| x == g && !l.replaced).map(|(_, l)| l.id).collect();
         let mut out: Vec<Address> = self.labels().iter().filter(|(x, l)| x == g && !l.replaced).flat_map(|(_, l)| l.hosts.clone()).collect();
         if self.cfg.peers {
-            let direct = self.peer_addresses().into_values().chain(self.link_routes().into_values());
-            out.extend(direct.filter(|(_, ls)| !ls.is_disjoint(&ids)).map(|(a, _)| a).collect::<Vec<_>>());
+            let co_readers: Vec<Address> = self.peers().iter().filter(|(_, p)| !p.labels.is_disjoint(&ids)).map(|(k, p)| Address { url: osis_transport::peer_url(&p.reach.relays), key: *k }).collect();
+            out.extend(co_readers);
+            out.extend(self.link_routes().into_values().filter(|(_, ls)| !ls.is_disjoint(&ids)).map(|(a, _)| a));
         }
         let mut seen = BTreeSet::new();
         out.retain(|a| seen.insert(a.key));

@@ -115,6 +115,52 @@ fn dials(acts: &[Action]) -> Vec<Address> {
     acts.iter().filter_map(|x| if let Action::Dial { address, .. } = x { Some(address.clone()) } else { None }).collect()
 }
 
+// notes/api.md Sync configuration: `peers` is a read: it names a co-reader by its lasting address,
+// not by the LAN route of the moment, whose key is another and which only dialing expires.
+#[test]
+fn group_peers_names_a_co_reader_not_its_lan_route() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach_ed(&mut net, a);
+    let kb = reach_ed(&mut net, b);
+    net.blocked_peers.insert((a, b));
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    net.run();
+    let lasting = vec![Address { url: osis_transport::peer_url(&[]), key: kb }];
+    assert_eq!(net.sync(a).group_peers(&g), lasting);
+    let own = net.sync(b).lan_announcement([0x77; 32], 4433).unwrap();
+    let (hit, _) = net.sync(a).lan_seen(&own, "192.168.1.5:47380".parse().unwrap());
+    assert_eq!(hit, Some(kb));
+    assert_eq!(net.sync(a).group_peers(&g), lasting, "a LAN route known");
+}
+
+// notes/api.md Sync configuration: `peers_connected` (`SyncState::Connected`) says a co-reader has
+// the label open, not that one is connected on the way to asking.
+#[test]
+fn peers_connected_only_once_the_label_is_open() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach(&mut net, a, 0xa7);
+    reach(&mut net, b, 0xb7);
+    let g = net.group_at(a, &[(b, Role::Write)], vec![]);
+    let mut told = false;
+    net.feed(a, osis_node::sync::Event::Local);
+    net.feed(b, osis_node::sync::Event::Local);
+    for _ in 0..50 {
+        net.round();
+        let st = net.sync(a).label_status();
+        let Some(s) = st.iter().find(|s| s.group == g) else { continue };
+        if s.peers_connected > 0 {
+            let opened = |net: &mut Net, x: usize| net.sync(x).served_opened().values().any(|o| o.contains(&s.label));
+            assert!(opened(&mut net, a) || opened(&mut net, b), "connected before anyone opened it");
+            told = true;
+        }
+    }
+    assert!(told, "never connected");
+}
+
 // spec/sync.md §10: a co-reader's signed announcement matches for the current and adjacent
 // windows, and the node then dials the announced transport key at the source address and port
 // (not the dialable key), even inside its retry pause (once per pause length); a stranger's tag,
