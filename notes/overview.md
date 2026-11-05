@@ -39,6 +39,7 @@ Known open (issues/): cost residues (perm-eval-cost, node-core-gaps, node-sequen
 ## Notes
 - notes/architecture.md: crate map and DAG, fixed abstractions, error classes, build and test rules, dependency allowlist, osis-base and osis-schema surfaces, where each crate's notes live.
 - notes/mvp-progress.md: the MVP final report and how to resume.
+- notes/api-design.md: Tess's API philosophy and the checklist for any API change.
 - notes/api.md: the designed API shape (sync data API, typed keys, watches, `Write` with `set`/`edit`, sharing and sync surface), fixed directions, footguns closed, rejected shapes.
 - notes/data-model.md: tids, CBOR, large values, AK grammar, schema DSL sketch.
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.

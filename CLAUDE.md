@@ -17,6 +17,7 @@ Below the title each note, issue and specs should contain a one-line `> Summary:
 - Coordinators spawn worker and reviewer agents as `model: "opus"` for most work; `model: "fable"` at the coordinator's discretion for particularly gnarly areas or problems agents have already attempted and failed at.
 - Code should be built in simple, safe Rust wherever that's the right tool for the job.
 - No backward compatibility with earlier builds until Tess opens the stability discussion: no legacy readers, migrations, old-format fallbacks, version shims or "accepted, pre-release" carry-overs in code, protocol, schemas, stores or spec. Change formats in place; data from an older commit may fail to load. spec/requirements.md Versioning (old data readable forever, the wire only grows, no reused identifiers) constrains nothing until stability: it is the design target for released nodes, not a limit on changing today's formats.
+- Any change to the public `osis` API must pass notes/api-design.md.
 - Any picked number (threshold, cap, timeout, grace period) must pass notes/arbitrary-values.md (what happens at 0 and at infinity?).
 - Refactor freely as needed. don't trust that existing code/comments/notes are necessarily correct, or existing design decisions are optimal.
 - Unless otherwise asked, commit, pull --rebase and push when you've completed your task. Only main is pushed: task branches stay local (every worktree shares the repo's branches), so never push a worktree branch.
