@@ -18,7 +18,7 @@ use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
 use osis_schema::core_types::{GROUP, PLACED, is_role_class};
 use osis_schema::{AspectKey, CaseId, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
 
@@ -339,6 +339,7 @@ impl<'d> Write<'d> {
             let actor = db.acting;
             let sharing = self.sharing;
             let Built { mut m, placed, unplaced, cut } = self.build(&mut Reader { e, limit, actor })?;
+            let carried = carried_under(e, &cut);
             // whatever actor the batch names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
@@ -347,7 +348,7 @@ impl<'d> Write<'d> {
                 Some(w) => {
                     if w.id.commit().is_some() {
                         not_synced(e, &placed, sharing);
-                        cut_off(e, &cut);
+                        cut_off(e, carried);
                     }
                     Some(Committed { id: w.id, ts: w.ts, also: w.also })
                 }
@@ -573,8 +574,8 @@ struct Built {
     /// (thing, group) placements and subgroup edges removed: their tied edges go after the
     /// commit where that is a self-removal (`Osis::untie_now`).
     unplaced: Vec<(Tid, Tid)>,
-    /// (parent, subgroup) edges removed (the `NotSynced` check).
-    cut: Vec<(Tid, Tid)>,
+    /// Subgroups cut from a parent (the `NotSynced` check).
+    cut: Vec<Tid>,
 }
 
 impl Built {
@@ -587,29 +588,37 @@ impl Built {
         if !add {
             self.unplaced.push((member, g));
             if !items {
-                self.cut.push((g, member));
+                self.cut.push(member);
             }
         }
         Ok(())
     }
 }
 
-/// Reports the items of each cut subgroup that its removal took out of every synced group: they
-/// stay on this device from now on.
-fn cut_off(e: &mut osis_node::Engine, cut: &[(Tid, Tid)]) {
+/// Whether a label carries `t` (a subgroup's own aspects go by its own placements, not its parents).
+fn carried(e: &osis_node::Engine, labeled: &BTreeSet<Tid>, t: &Tid) -> bool {
+    labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g))
+}
+
+/// What the cut subgroups hold that a label carries, before the commit cuts them.
+fn carried_under(e: &osis_node::Engine, cut: &[Tid]) -> BTreeSet<Tid> {
     if cut.is_empty() {
+        return BTreeSet::new();
+    }
+    let labeled: BTreeSet<Tid> = e.labeled_groups().into_iter().collect();
+    cut.iter().flat_map(|sub| e.closure(sub).iter().filter(|t| *t != sub && carried(e, &labeled, t)).copied().collect::<Vec<_>>()).collect()
+}
+
+/// Reports what the commit took out of every synced group, of `was` (`carried_under`): it stays on
+/// this device from now on.
+fn cut_off(e: &mut osis_node::Engine, was: BTreeSet<Tid>) {
+    if was.is_empty() {
         return;
     }
-    let labeled = e.labeled_groups();
-    let carried = |e: &osis_node::Engine, t: &Tid| labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g));
-    for (parent, sub) in cut {
-        if !carried(e, parent) || carried(e, sub) {
-            continue;
-        }
-        for t in e.closure_placed(sub) {
-            if e.ephemeral_thing(&t).is_none() && !carried(e, &t) {
-                e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail: "a subgroup left the synced group that held it: this stays on this device".into() });
-            }
+    let labeled: BTreeSet<Tid> = e.labeled_groups().into_iter().collect();
+    for t in was {
+        if !carried(e, &labeled, &t) {
+            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail: "a subgroup left the synced group that held it: this stays on this device".into() });
         }
     }
 }

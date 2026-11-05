@@ -1197,6 +1197,63 @@ fn aspects_agrees_with_reads_after_a_purge() {
     assert!(!db.aspects(t).unwrap().contains(&k));
 }
 
+// notes/api.md Group ops: the check is of what the cut took away. A cut below a subgroup of the synced
+// group strands the same; a cut under a group that never synced strands nothing; deleting a tag tells
+// of its items that went with it, never of the deleted tag.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn a_cut_tells_exactly_what_it_took_out_of_sync() {
+    let db = db(1);
+    let k = ak("t:x.0");
+    let (tx, rx) = std::sync::mpsc::channel();
+    db.on_diagnostic(move |_, d| {
+        if d.kind == osis::DiagnosticKind::NotSynced {
+            let _ = tx.send(d.tids.clone());
+        }
+    }).unwrap().detach();
+    let group = |w: &mut osis::Write<'_>| {
+        let g = w.create(db.me()).unwrap();
+        w.make_group(g).unwrap();
+        g
+    };
+    let synced = db.write_with(|w| Ok(group(w))).unwrap();
+    db.sync(synced, &[osis::HostAddr::new("mem://a", [1; 32])]).unwrap();
+    let mut w = db.write();
+    let (mid, low, plain, tag, far, dual) = (group(&mut w), group(&mut w), group(&mut w), group(&mut w), group(&mut w), group(&mut w));
+    w.add_subgroup(synced, mid).unwrap();
+    w.add_subgroup(mid, low).unwrap();
+    w.add_subgroup(plain, far).unwrap();
+    w.add_subgroup(synced, tag).unwrap();
+    // `dual` is an item too: its own aspects keep syncing, its items do not
+    w.add_subgroup(synced, dual).unwrap();
+    w.place(dual, synced).unwrap();
+    let (below, never, in_tag, also_synced, in_dual) = (w.create(db.me()).unwrap(), w.create(db.me()).unwrap(), w.create(db.me()).unwrap(), w.create(synced).unwrap(), w.create(db.me()).unwrap());
+    for t in [below, never, in_tag, also_synced, in_dual] {
+        w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
+    }
+    w.place(below, low).unwrap();
+    w.place(never, far).unwrap();
+    w.place(in_tag, tag).unwrap();
+    w.place(also_synced, tag).unwrap();
+    w.place(also_synced, synced).unwrap();
+    w.place(in_dual, dual).unwrap();
+    w.commit().unwrap();
+    db.settle();
+    let _ = rx.try_iter().count();
+    let told = |rx: &std::sync::mpsc::Receiver<Vec<osis::Tid>>| {
+        db.settle();
+        rx.try_iter().flatten().collect::<BTreeSet<osis::Tid>>()
+    };
+    db.write_with(|w| w.remove_subgroup(mid, low)).unwrap();
+    assert_eq!(told(&rx), BTreeSet::from([below]), "a level down");
+    db.write_with(|w| w.remove_subgroup(plain, far)).unwrap();
+    assert_eq!(told(&rx), BTreeSet::new(), "it never synced");
+    db.write_with(|w| w.delete(tag)).unwrap();
+    assert_eq!(told(&rx), BTreeSet::from([in_tag]), "its items, not the tag");
+    db.write_with(|w| w.remove_subgroup(synced, dual)).unwrap();
+    assert_eq!(told(&rx), BTreeSet::from([in_dual]), "its items, not itself");
+}
+
 // notes/api.md Group ops: cutting a subgroup out of the synced group that was its only way there
 // tells of the items it strands; an item still carried otherwise is not told of.
 // spec: none (API surface, notes/api.md)
@@ -1232,5 +1289,5 @@ fn cutting_a_subgroup_reports_what_it_strands() {
     db.write_with(|w| w.remove_subgroup(synced, sub)).unwrap();
     db.settle();
     let told: BTreeSet<osis::Tid> = rx.try_iter().flatten().collect();
-    assert_eq!(told, BTreeSet::from([sub, stranded]), "the subgroup's own aspects stay here too");
+    assert_eq!(told, BTreeSet::from([stranded]), "a subgroup is no member: its own aspects never went through this group");
 }

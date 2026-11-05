@@ -236,7 +236,7 @@
 //! ```compile_fail
 //! #![deny(unused_must_use)]
 //! let db = osis::Osis::create(osis::Config::memory()).unwrap().0;
-//! db.on_diagnostic(|_, _| {})?;
+//! db.on_diagnostic(|_, _| {}).unwrap();
 //! ```
 //! - A forgotten commit: `Write` is `#[must_use]`:
 //! ```compile_fail

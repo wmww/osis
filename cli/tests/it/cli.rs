@@ -315,6 +315,30 @@ fn stream_and_len_plan_cli_4() {
     assert_eq!(s.code(&["get", &t, "a:none.0", "--len"]), 3);
 }
 
+// notes/cli.md: `group sync G` names no hosts: on a group already synced elsewhere it does nothing, as
+// the API's empty list; naming others is `Invalid`.
+#[test]
+fn group_sync_without_hosts_keeps_the_label() {
+    let s = S::mem();
+    let (a, b) = (osis::HostAddr::new("mem://a", [1; 32]).to_string(), osis::HostAddr::new("mem://b", [2; 32]).to_string());
+    s.ok(&["hosts", "add", &a]);
+    let g = s.ok(&["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]).line().to_string();
+    // 6: done, and no host to deliver to in this test
+    assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g, "--host", &b]), 6);
+    assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g]), 6);
+    assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g, "--host", &a]), 7);
+}
+
+// notes/api.md Materialization bound: `[0]` on an untyped aspect needs its value to tell list from map:
+// a value past the limit fails `TooLarge`, and never reads as absent.
+#[test]
+fn an_untyped_index_past_the_limit_says_so() {
+    let s = S::mem();
+    let t = s.ok(&["create", "--owner", "me", "--in", "home", "t:l.0", "[\"a long enough string\"]"]).line().to_string();
+    assert_eq!(s.ok(&["get", &t, "t:l.0", "[0]"]).line(), "\"a long enough string\"");
+    assert_eq!(s.code(&["--limit", "4", "get", &t, "t:l.0", "[0]"]), 5);
+}
+
 // notes/cli.md Command table Sharing and roles, Sync, Identity and devices: the local half of the
 // sharing commands on one store (no hosts): links, cards, devices, grants by error category,
 // status (bundles are binary: the localhost e2e).

@@ -1356,7 +1356,8 @@ impl Osis {
     /// the new list: the home label and groups the person owns (directly or through its
     /// actors) that this node administers; not links or the contact card (their text names
     /// their hosts), not groups owned by others. A database created without hosts becomes
-    /// reachable once one is added.
+    /// reachable once one is added. With `Runtime::None` the list is only stored, for the next open
+    /// with a runtime: until then `status` shows nothing connected and `wait_synced` fails `Network`.
     pub fn add_host(&self, s: &HostAddr) -> Result<()> {
         if self.is_attached() {
             return self.rcall(crate::port::method::ADD_HOST, vec![Value::Str(s.to_string())]).map(drop);

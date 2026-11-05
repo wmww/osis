@@ -443,6 +443,9 @@ fn remove_client_revokes() {
     assert!(x.n.clients().unwrap().is_empty());
     assert!(matches!(x.attach(&s), Err(Error::Refused(_))));
     assert!(c.get(x.t, ak("t:name.0")).is_err());
+    // the session is over for good, and a listener on it would never hear anything: it says so
+    x.until(|_| matches!(c.get(x.t, ak("t:name.0")), Err(Error::Refused(_))));
+    assert!(matches!(c.on_diagnostic(|_, _| {}), Err(Error::Refused(_))));
     // the entry on its way out read ended under any clock (undoing its removal shows that write): a half removal revives under no clock (half_removed_client_stays_ended)
     let node_thing = x.n.node();
     let last = x.n.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(node_thing, ak("clients.0^"))]))).unwrap()[0].commit.id;

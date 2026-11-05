@@ -16,7 +16,8 @@
 //!   `Config::wait_timeout` passed with no connection;
 //! - a watch: `Err(Network)` while down, then the value again as a new `Source::Initial`;
 //! - a watch started while down: `Err(Network)` from the call, except what does not need the node
-//!   to answer: `watch_status`, which reports it down, and `on_diagnostic`, quiet until it is up.
+//!   to answer: `watch_status`, which reports it down, and `on_diagnostic`, quiet until it is up
+//!   (`Refused` once the node has ended the session: it will never be up).
 //!
 //! `OutcomeUnknown` means the write may or may not have applied. Repeating it is a new write (a
 //! new nonce), so a blind repeat can apply it twice: read what it wrote first, and repeat only if
@@ -199,6 +200,11 @@ impl Remote {
     /// Whether the connection is up now.
     pub fn connected(&self) -> bool {
         lock(&self.link.m).up
+    }
+
+    /// Why this attachment will never come up again, if so.
+    fn ended(&self) -> Option<Error> {
+        lock(&self.link.m).ended.clone()
     }
 
     /// Why a call fails now, if it does: the connection is down.
@@ -1218,6 +1224,9 @@ impl Osis {
 
     /// `on_diagnostic` at the attached node (its diagnostics; this process's own go nowhere).
     pub(crate) fn remote_on_diagnostic(&self, mut f: CallbackOf<osis_node::Diagnostic>) -> Result<Subscription> {
+        if let Some(e) = self.primary().ended() {
+            return Err(e);
+        }
         let cb: Callback = Box::new(move |db, d| {
             if let Delivery::Port(PortEvent::Notify(Payload::Delivery { value })) = d
                 && let Ok(x) = c::diag(value)
