@@ -12,7 +12,7 @@ Written from `spec/` alone, depending on no osis crate, so it is an independent 
   - `stripped`: owners whose values `act` stripped from the body (it holds its leftover).
   - Content and snapshot parts carry `Delta::Writes(Vec<Write>)`; a `Write` is a `Stamp { ts, dot: Dot { commit, ctr } }` and an `Op`: `Set`, `Reset`, `Create`, `SetIn`, `Remove`, `Insert`, `Delete`, `Anchor`. Value fields are `Option`: `None` is held value-less.
   - `Aspect { name, kind, admin_only }`: `kind` is Register, Map or Text; `admin_only` is the `^` marker.
-  - `Retention { by, least_abs, least_rel, most_abs, most_zero }`; `purge: Vec<PurgeItem>` (by commit, aspect, or author on an aspect); `frontier` on demotions.
+  - `Retention { by, least_abs, least_rel, most_abs, most_zero }`; `purge: Vec<PurgeItem>` (a commit's delta on an aspect, a whole aspect, or an author on an aspect); `frontier` on demotions.
 - `own_state`: writes the state holds that no held body does (live writes of bodies dropped at keep at most).
 
 ## Output (`src/model.rs`, `evaluate(&Held) -> Outcome`)
@@ -29,4 +29,4 @@ Written from `spec/` alone, depending on no osis crate, so it is an independent 
 - A commit arriving after the node acted on the rest reads as if held from the start, except on aspects with a keep-at-most bound or expiry (spec/requirements.md, Deterministic limits); about 1 seed in 1000 differs there.
 
 ## Adapter use
-Feed the engine and the model the same history (`gen::history` or the engine's own), map the engine's held commits into `Held`, and compare reads, validity and fates; check `forbidden` against the engine's stored bytes. Run with more seeds by raising `SEEDS` locally (3000 pass).
+osis-node `tests/it/held.rs` maps what a node holds into `Held` and compares applied commits, validity, reads, fates and `forbidden` (scope and normalizations in its module doc); the order harness runs it on every node it judges under `Cfg::model` (`order::arrival_order_purge_*`, `held_model_agrees_*`, `arrival_order_exhaustive_large_*`). Run this crate's properties with more seeds by raising `SEEDS` locally (3000 pass).

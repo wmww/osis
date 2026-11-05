@@ -122,7 +122,7 @@ pub fn history(seed: u64, n: usize) -> Held {
             let target = commits[r.below(commits.len() as u64) as usize].clone();
             let tp = target.parts[0].clone();
             let item = match r.below(3) {
-                0 => PurgeItem::Commit(target.id),
+                0 => PurgeItem::Commit { commit: target.id, thing: tp.thing, aspect: tp.aspect },
                 1 => PurgeItem::Aspect { thing: tp.thing, aspect: tp.aspect },
                 _ => PurgeItem::Author { thing: tp.thing, aspect: tp.aspect, author: target.author },
             };

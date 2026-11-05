@@ -98,7 +98,7 @@ fn names(q: &Commit, c: &Commit, p: &Part) -> bool {
     c.ts < q.ts
         && c.kind != CommitKind::Role
         && q.purge.iter().any(|it| match *it {
-            PurgeItem::Commit(id) => id == c.id,
+            PurgeItem::Commit { commit, thing, aspect } => commit == c.id && p.thing == thing && p.aspect == aspect,
             PurgeItem::Aspect { thing, aspect } => p.thing == thing && p.aspect == aspect,
             PurgeItem::Author { thing, aspect, author } => p.thing == thing && p.aspect == aspect && c.author == author,
         })
