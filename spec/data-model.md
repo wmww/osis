@@ -8,10 +8,10 @@
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
 - A thing never changes owner.
-- An **ephemeral thing** is one whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner, and travels beside the deltas of ephemeral commits (spec/commits.md §2).
+- A **draft** (**ephemeral thing**) is a thing whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and owner, and travels beside the deltas of ephemeral commits (spec/commits.md §2).
   - The durable set is closed under owner: the first commit with a durable delta on an ephemeral thing (or a durable placement into it, §8) carries `created.0` of it and of every ephemeral thing on its owner chain (spec/commits.md §2), keeping the tids, and makes its ephemeral placements durable (§8).
-  - A durable thing never becomes ephemeral.
-  - An ephemeral thing never given durable data is gone when no node holds it.
+  - A durable thing never becomes a draft.
+  - A draft never given durable data is gone when no node holds it.
 
 ## 2. Aspects
 - An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) "." version ["^"] ["~" / "*"]`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo.1^~`. Anything else, or longer than the AK limit (spec/wire.md §4), is not an AK.
@@ -107,7 +107,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - `placed.0~`, of `group.0`'s type, is the one ephemeral core aspect: the ephemeral placements into the group, written by group operations only.
 - **Group writes**:
   - Adding or removing an item or subgroup that is ephemeral after the write is a write of the group's `placed.0~`, needing write on the group.
-  - Any other write of an ephemeral group's `group.0` is ephemeral too and goes to `placed.0~`.
+  - Any other write of an draft group's `group.0` is ephemeral too and goes to `placed.0~`.
   - Adding a durable item or subgroup is durable and persists the group (§1).
   - Removing a durable item or subgroup also removes it from `placed.0~`.
 - **When a thing persists**:

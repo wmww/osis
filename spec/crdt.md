@@ -314,8 +314,8 @@ Undo is a new commit with `undoes` set; its deltas are ordinary writes chosen pe
   - a reset of each aspect of it the node holds (`remove_aspect`, not `created.0` or role-class aspects);
   - removal of the thing from the items and subgroups of every held `group.0` listing it that the undoing node may write (resolved after the undo's own writes there).
   - **Rights.** The undoing node must hold write on the thing, else there is no undo.
-  - **Saved draft.** A thing the undoing node's record of its ephemeral writes (spec/commits.md §7) shows as an ephemeral thing before that commit is not deleted: its writes are undone by the rules above, and the undo of the commit's ephemeral writes restores its ephemeral placements.
-  - **Ephemeral creation.** Undoing ephemeral writes that created an ephemeral thing likewise resets its ephemeral state and its placements in every group the undoing node may write. The thing reads unknown at the undoing node until that undo is undone (an undo finding it already deleted deletes nothing).
+  - **Saved draft.** A thing the undoing node's record of its ephemeral writes (spec/commits.md §7) shows as a draft before that commit is not deleted: its writes are undone by the rules above, and the undo of the commit's ephemeral writes restores its ephemeral placements.
+  - **Ephemeral creation.** Undoing ephemeral writes that created a draft likewise resets its ephemeral state and its placements in every group the undoing node may write. The thing reads unknown at the undoing node until that undo is undone (an undo finding it already deleted deletes nothing).
   - **Commits.** These writes and the undo's other writes are one commit per expiry class, so its reset goes wherever its placements' removal goes (spec/sync.md §3). Other nodes read the aspects absent.
   - **Ephemeral rights.** An ephemeral undo or redo needs the same rights as a write: write on a thing it deletes or brings back and the required role on every aspect it writes, else there is no undo.
 
