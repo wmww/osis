@@ -9,9 +9,9 @@ cd "$dir"
 git init -q -b main r
 cd r
 git config user.email t@t; git config user.name t; git config commit.gpgsign false
-mkdir -p tools core/engine core/osis kit/src app notes spec issues
+mkdir -p tools core/engine core/osis libs/kit/src libs/chat app notes spec issues
 cp "$gate" tools/gate.sh
-for f in Cargo.toml core/engine/a.rs core/osis/a.rs kit/src/a.rs app/a.rs notes/n.md spec/s.md issues/i.md; do
+for f in Cargo.toml core/engine/a.rs core/osis/a.rs libs/kit/src/a.rs libs/chat/a.rs app/a.rs notes/n.md spec/s.md issues/i.md; do
   seq 1 40 > "$f"
 done
 git add -A; git commit -qm init
@@ -29,10 +29,11 @@ case_() {
   check "$1" "$2"
 }
 check "on main" "core=1 gui=1 seeds=5"
-case_ "kit only" "core=0 gui=1 seeds=0" "echo x >> kit/src/a.rs"
+case_ "kit only" "core=0 gui=1 seeds=0" "echo x >> libs/kit/src/a.rs"
+case_ "libs/chat is core" "core=1 gui=0 seeds=0" "echo x >> libs/chat/a.rs"
 case_ "app only" "core=0 gui=1 seeds=0" "echo x >> app/a.rs"
-case_ "new kit file with space" "core=0 gui=1 seeds=0" "echo x > 'kit/src/b c.rs'"
-case_ "new kit file, non-ASCII name" "core=0 gui=1 seeds=0" "echo x > \"kit/src/\$(printf '\\303\\251').rs\""
+case_ "new kit file with space" "core=0 gui=1 seeds=0" "echo x > 'libs/kit/src/b c.rs'"
+case_ "new kit file, non-ASCII name" "core=0 gui=1 seeds=0" "echo x > \"libs/kit/src/\$(printf '\\303\\251').rs\""
 case_ "new app file, tab in name" "core=0 gui=1 seeds=0" "echo x > \"app/a\$(printf '\\t')b.rs\""
 case_ "core, no sweep crate" "core=1 gui=0 seeds=0" "echo x >> core/osis/a.rs"
 case_ "sweep crate" "core=1 gui=0 seeds=5" "echo x >> core/engine/a.rs"
@@ -40,26 +41,26 @@ case_ "root manifest" "core=1 gui=0 seeds=5" "echo x >> Cargo.toml"
 case_ "notes only" "core=docs gui=0 seeds=0" "echo x >> notes/n.md"
 case_ "spec, notes, issues" "core=docs gui=0 seeds=0" "echo x >> spec/s.md; echo x >> notes/n.md; git rm -q issues/i.md"
 case_ "notes and core" "core=1 gui=0 seeds=0" "echo x >> notes/n.md; echo x >> core/osis/a.rs"
-case_ "notes and kit" "core=docs gui=1 seeds=0" "echo x >> notes/n.md; echo x >> kit/src/a.rs"
+case_ "notes and kit" "core=docs gui=1 seeds=0" "echo x >> notes/n.md; echo x >> libs/kit/src/a.rs"
 case_ "notes file moved to the root" "core=1 gui=0 seeds=0" "git mv notes/n.md n.md"
 case_ "non-Markdown file under notes" "core=1 gui=0 seeds=0" "echo x > notes/v.txt"
 case_ "non-ASCII Markdown name under spec" "core=docs gui=0 seeds=0" "echo x > \"spec/\$(printf '\\303\\251').md\""
 case_ "gate itself" "core=1 gui=0 seeds=0" "echo '#' >> tools/gate.sh"
-case_ "kit and core" "core=1 gui=1 seeds=0" "echo x >> kit/src/a.rs; echo x >> core/osis/a.rs"
+case_ "kit and core" "core=1 gui=1 seeds=0" "echo x >> libs/kit/src/a.rs; echo x >> core/osis/a.rs"
 case_ "core deleted" "core=1 gui=0 seeds=0" "git rm -q core/osis/a.rs"
-case_ "core moved into kit" "core=1 gui=1 seeds=0" "git mv core/osis/a.rs kit/src/moved.rs"
+case_ "core moved into kit" "core=1 gui=1 seeds=0" "git mv core/osis/a.rs libs/kit/src/moved.rs"
 case_ "sweep crate moved into app" "core=1 gui=1 seeds=5" "git mv core/engine/a.rs app/moved.rs"
 check "--all" "core=1 gui=1 seeds=5" --all
 check "--base HEAD" "core=1 gui=1 seeds=5" --base HEAD
 check "--base bad" "exit 2: fatal: Needed a single revision" --base nonexistent
-case_ "kit commit" "core=0 gui=1 seeds=0" "echo x >> kit/src/a.rs"
-cd kit/src  # not a subshell: check's counters must survive
+case_ "kit commit" "core=0 gui=1 seeds=0" "echo x >> libs/kit/src/a.rs"
+cd libs/kit/src  # not a subshell: check's counters must survive
 check "from a subdirectory" "core=0 gui=1 seeds=0"
-cd ../..
+cd ../../..
 echo x > core/osis/new.rs
-cd kit/src
+cd libs/kit/src
 check "untracked core file, from a subdirectory" "core=1 gui=1 seeds=0"
-cd ../..
+cd ../../..
 rm core/osis/new.rs
 echo x >> core/osis/a.rs
 check "uncommitted core edit" "core=1 gui=1 seeds=0"
@@ -78,9 +79,9 @@ git checkout -q main; echo 'let _ = std::fs::read_to_string("../notes/n.md");' >
 case_ "notes only, a source reads notes" "gate: docs-only diff, but these read spec/, notes/ or issues/ (add them to the docs step): full gate
 core/osis/r.rs:1:let _ = std::fs::read_to_string(\"../notes/n.md\");
 core=1 gui=0 seeds=0" "echo x >> notes/n.md"
-git checkout -q main; git checkout -qb fresh; echo x >> kit/src/a.rs
+git checkout -q main; git checkout -qb fresh; echo x >> libs/kit/src/a.rs
 check "uncommitted kit edit, no commits (base = HEAD)" "core=1 gui=1 seeds=5"
-git checkout -q kit/src/a.rs
+git checkout -q libs/kit/src/a.rs
 git checkout -q --orphan orph; git commit -qm orphan
 check "no merge base" "core=1 gui=1 seeds=5"
 git checkout -q t; git branch -qm main old

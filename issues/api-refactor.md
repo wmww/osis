@@ -180,8 +180,7 @@ Keep as they are:
 - `on_history` is per aspect, so a per-year chat holds one subscription per year, none for a year beyond next.
 - `HistoryBody::Purged { by }` once needed a commit query with no by-id filter; check it's solved by `actor`.
 
-## H. Docs and crate layout
-- `core/chat` moves to `libs/chat`, `kit` to `libs/kit` (Decided 7). Workspace members, the GUI workspace's paths, `tools/gate.sh`, its selection test, `scripts/wt-mark`, the Android build and notes change with it.
+## H. Docs
 - Crate docs after the refactor: rewrite `lib.rs` sections to the Public docs rules in notes/api-design.md, since most examples change anyway. "Footguns closed" is the first to go or become plain advice. Module-level jargon in the first lines of each section ("placement is a group op") likewise.
 - Rendered docs still cite `spec/` as plain text (about 90 lines, 38 in `share.rs`). Keep those that help a reader, drop the rest. To make them links, a doc-only module could embed the spec with `#[doc = include_str!(..)]`; not tried. Links between spec files would need rewriting, and `tools/gate.sh` runs its full gate on spec edits once Rust reads `spec/`, unless that file joins its docs step.
 
@@ -190,8 +189,7 @@ Keep as they are:
 - issues/api-deferred.md stays for what isn't built, but its shapes should follow this design. `Unsupported` shouldn't cover unbuilt calls: an unbuilt call isn't in the API.
 
 ## Execution
-One branch per step, in order; each merges before the next starts. `libs` can run beside step 1.
-- **libs**: H's layout move.
+One branch per step, in order; each merges before the next starts.
 - **1. Robustness**: C and the `grant` lowering bug.
 - **2. Removals**: A.
 - **3. Sharing**: B.
@@ -201,7 +199,7 @@ One branch per step, in order; each merges before the next starts. `libs` can ru
 
 Rules for each step's worker:
 - Read notes/api-design.md and this issue. The issue is a strong proposal, not a contract: when a change turns out wrong in use, do what the philosophy says and say so in your report. Update this issue: delete what is done.
-- **Every consumer moves in the same branch**: `cli/`, chat, `app/` and `kit/` (their own workspace, `kit/Cargo.toml`; see `tools/gate.sh` for its build and test steps), `core/test/sim`, `core/bench`, tests, `lib.rs` doc examples. Port rows and codec change in place: no compatibility. Update notes/api.md, notes/cli.md and notes/client-port.md where they state what changed.
+- **Every consumer moves in the same branch**: `cli/`, chat, `app/` and `libs/kit/` (their own workspace, `libs/kit/Cargo.toml`; see `tools/gate.sh` for its build and test steps), `core/test/sim`, `core/bench`, tests, `lib.rs` doc examples. Port rows and codec change in place: no compatibility. Update notes/api.md, notes/cli.md and notes/client-port.md where they state what changed.
 - The CLI mirrors the API: it follows these changes in commands and output too.
 - **Using the API from the app and CLI is the test of it.** If a new shape makes them clumsy, fix the shape and report it.
 - **Do not loosen an existing test's meaning**: port it. Report any that can't be ported.

@@ -1,7 +1,7 @@
 # Arbitrary values: audit table
 > Summary: Every picked number in core/, cli/ and spec/ with its class (notes/arbitrary-values.md), what 0 and infinity do, and why this value. The project's durable record of magic numbers: every change that adds, changes or removes a picked number updates its row in the same commit. Tess's review of the tradeoff values: issues/magic-number-review.md.
 
-Classes: **P** performance switch between correct strategies (or a cache/batch size: only speed changes); **R** resource bound with a defined safe outcome past it; **M** minor consequence; **O** Tess-agreed tradeoff (protocol constant, spec); **X** not acceptable (only makes a bug unlikely), with the issue or fix. Left out: structural constants (CBOR tags, enum discriminants, byte lengths fixed by an algorithm, versions, table ids, values derived from listed ones), unit-test fixtures, kit/ and app/.
+Classes: **P** performance switch between correct strategies (or a cache/batch size: only speed changes); **R** resource bound with a defined safe outcome past it; **M** minor consequence; **O** Tess-agreed tradeoff (protocol constant, spec); **X** not acceptable (only makes a bug unlikely), with the issue or fix. Left out: structural constants (CBOR tags, enum discriminants, byte lengths fixed by an algorithm, versions, table ids, values derived from listed ones), unit-test fixtures, libs/kit/ and app/.
 
 ## Not acceptable
 | value | where | problem | status |

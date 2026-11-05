@@ -10,7 +10,7 @@ case $abi in
     *) echo "usage: $0 [arm64|x86_64]" >&2; exit 2 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
-kit=$here/../../kit
+kit=$here/../../libs/kit
 : "${ANDROID_HOME:?set ANDROID_HOME}" "${ANDROID_NDK_ROOT:?set ANDROID_NDK_ROOT}"
 bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
 jar=$ANDROID_HOME/platforms/android-36/android.jar

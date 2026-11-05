@@ -1,4 +1,4 @@
-# Run by `wt release` in each workspace (repo root, kit/) before it prunes that target: every
+# Run by `wt release` in each workspace (repo root, libs/kit/) before it prunes that target: every
 # standard command (notes/build.md), so units a task skipped stay. Each is a no-op on a gated tree.
 set -e
 if [ "$(basename "$PWD")" = kit ]; then

@@ -1,7 +1,7 @@
 [package]
 name = "osis-app"
 description = "The first-party osis app (prototype: a notes app)"
-workspace = "../kit"
+workspace = "../libs/kit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

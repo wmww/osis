@@ -1,12 +1,12 @@
-# The GUI workspace (notes/app.md, kit and app): osis-kit and osis-app, apart from the core
+# The GUI workspace (notes/app.md, libs/kit and app): osis-kit and osis-app, apart from the core
 # workspace at the repo root so the GUI stack stays out of core's builds, gate and feature
-# unification. This manifest is its root (Cargo.lock and target/ live in kit/); `[patch]` entries
+# unification. This manifest is its root (Cargo.lock and target/ live here); `[patch]` entries
 # for forked low-level crates go here. Core crates come in by path: only osis, osis-schema and osis-chat.
 [workspace]
 resolver = "2"
-members = [".", "../app", "../app/android"]
-# a bare `cargo build` in kit/ builds the app too
-default-members = [".", "../app", "../app/android"]
+members = [".", "../../app", "../../app/android"]
+# a bare `cargo build` here builds the app too
+default-members = [".", "../../app", "../../app/android"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,11 +16,11 @@ license = "MIT"
 
 # Every external dependency needs its line in notes/architecture.md (Dependency policy).
 [workspace.dependencies]
-osis = { path = "../core/osis" }
-osis-schema = { path = "../core/schema" }
-osis-chat = { path = "../core/chat" }
+osis = { path = "../../core/osis" }
+osis-schema = { path = "../../core/schema" }
+osis-chat = { path = "../chat" }
 osis-kit = { path = "." }
-osis-app = { path = "../app" }
+osis-app = { path = "../../app" }
 # One pinned Masonry (notes/app.md Toolkit); re-exported as osis_kit::masonry.
 masonry = "=0.4.0"
 masonry_winit = "=0.4.0"
