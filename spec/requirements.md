@@ -6,7 +6,7 @@ Items are hard unless their section says goal. **Limit** marks something the des
 Terms:
 - **Thing**: anything with an identity. **Aspect**: one typed datum of a thing. **Group**: a thing that lists things; the unit of sync.
 - **Change**: one signed, atomic edit (a commit). **Part**: what a change writes on one aspect. **Body**: the stored bytes of a part.
-- **Actor**: a thing that can hold rights (a device, person, team, shared space). **Holder**: an actor with a role (read, write, admin) on something.
+- **Actor**: a thing that can hold roles and act (a node, an account, a team, a shared space). Thing, group and actor are overlapping capabilities of one object, not kinds. **Holder**: an actor with a role (read, write, admin) on something.
 - **Node**: a running osis instance with its own identity and store. It reads what it holds keys for and keeps the rest encrypted, in any mix; nothing else separates nodes. **Host**: a role, not a kind of node: a node hosts a group by storing it and serving it to others, whether or not it can read it. A node is **untrusted** for data it cannot read.
 - **Peer**: another node a node syncs with directly. **Relay**: forwards a connection's encrypted bytes and stores nothing; not a node. **Client**: anything using the osis client protocol to reach a node out of process, on the same machine or another; a node may be one too, for data it doesn't sync itself. **Thin client**: a client that is not a node. Machine, transport and acting actor are independent: which actors a client may act as is a node's policy, not a property of where the client runs.
 

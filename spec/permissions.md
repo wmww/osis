@@ -9,10 +9,10 @@
   - A **co-reader open** (proof 3, spec/sync.md §5) is a label open by a node that reads the label.
   - **Member**, **membership** and **member of a group** mean only placement in a group (`group.0`, spec/data-model.md §8), which grants no rights.
   - A value in a CRDT set is an **element**.
-- **Actor**: a thing with role secrets (spec/crypto.md §3).
+- **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
   - A **key actor** (node, recovery key, link key) also has a signing key committed by its tid and owns itself.
   - A **node** is a key actor whose seed never leaves its device.
-  - A **person actor** represents a user; its nodes hold roles on it (by app convention its owner is a recovery key and its nodes are its admins).
+  - An **account** is the actor apps treat as a user, team, bot or shared identity; its nodes hold roles on it (by app convention its owner is a recovery key and its nodes are its admins).
 - **Ownership**: every thing but an ownerless one has exactly one owner actor, fixed by its creation record. An actor is a thing, so it has an owner too.
   - Owner chains end at a key actor or an ownerless thing (the chain's **top**), within `MAX_OWNER_DEPTH` owner links.
   - A delta written on a thing further below its top (judged from the creation records alone) is invalid, its `created.0` excepted; the rest of its commit is judged as usual.
