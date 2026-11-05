@@ -942,3 +942,40 @@ fn a_wait_needs_no_pump_and_connecting_to_nothing_fails() {
     let r = crate::common::block_on(osis::internals::connect_socket(&d.0.join("none.sock"), osis::internals::Opening::memory()));
     assert!(matches!(r, Err(osis::Error::Network(_))), "{:?}", r.map(|_| ()));
 }
+
+// notes/client-port.md §2 (rows that wait): a client's wait dropped is the node's dropped: no waiter and no link key stay there
+#[test]
+fn a_dropped_client_wait_leaves_nothing_at_the_node() {
+    use osis::internals::Internals as _;
+    use std::future::Future as _;
+    let d = Dir::new();
+    let net = osis_transport::Net::new(2);
+    // hosts nobody answers at: both waits last
+    let nobody = osis::HostAddr::new(&"mem://nobody".parse().unwrap(), [3; 32]);
+    let a = node_on(&net, "a", vec![nobody.clone()], &d.0.join("a.sock"));
+    let g = a.batch(|w| w.create()).unwrap();
+    a.sync(g, &[]).unwrap();
+    let link = a.make_link(g, osis::Role::Read, Default::default()).unwrap();
+    let sock = d.0.join("m.sock");
+    let m = node_on(&net, "m", vec![nobody], &sock);
+    let c = attach(&sock);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let settled = |want: usize, keys: usize| {
+        let t0 = std::time::Instant::now();
+        while m.waiting() != want || m.engine(|e| e.held_key_actors()) != keys {
+            assert!(t0.elapsed() < W, "waiters {} keys {}", m.waiting(), m.engine(|e| e.held_key_actors()));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    {
+        let mut synced = Box::pin(c.wait_synced(osis::SyncScope::All));
+        let mut redeem = Box::pin(c.redeem(&link));
+        assert!(synced.as_mut().poll(&mut cx).is_pending());
+        assert!(redeem.as_mut().poll(&mut cx).is_pending());
+        settled(2, 1);
+    }
+    settled(0, 0);
+    drop(c);
+    assert_eq!(m.close().unwrap(), osis::Close::Closed);
+    assert_eq!(a.close().unwrap(), osis::Close::Closed);
+}
