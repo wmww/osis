@@ -63,7 +63,7 @@ B never needs to know which case it is in. Per construct:
 ## Readers and replacements
 | Reader | Today | Without the entry or header | Replacement |
 |---|---|---|---|
-| Atomic apply `listed` (receipt.rs:208, apply/mod.rs:164) | Frontier reaches part | Waits forever for a deleted part | Rule 5. Pre-existing gap without any snapshot: issues/atomic-wait-no-later-commit.md |
+| Atomic apply `listed` (receipt.rs:208, apply/mod.rs:164) | Frontier reaches part | Waits forever for a deleted part | Gone with whole-commits step 3 (no commit waits for a part) |
 | Compaction `covered` (retention/mod.rs:1087, :1097) | Frontier and frontier ⊇ check, Node only | Never covers once S is pruned | Rule 4. Session check is missing today (Node only) |
 | Receipts and demotion frontier (`received` :147, `Engine::frontier` :290; perm `Frontier::covers`) | Node ranges plus commit IDs | n/a | Rules 6 and 7: IDs only; `Receipt.sources`, `received`'s snapshot claims, perm `Frontier.writes` go |
 | Receipts-only reads (permissions.md §5.3, receipt.rs:252) | By commit ID | Unchanged | None needed |
@@ -107,7 +107,6 @@ Tess accepted both the Atomic exception and the suspect-flag hole below ("fine i
 
 ## Open points, resolved
 - **Equivocation by a valid writer** (overlapping counters in one session): nodes holding the first commit void both. Nodes that forgot it, and new devices today, count the second. Where the first's writes are live, a held valid snapshot carries them and the misstatement rule (permissions.md §5.2) voids the second's writes under those dots. So only a still-valid writer whose first commit's writes are all dead can split nodes. It could write the second commit with fresh counters anyway. Not hardened: the hardening rule only narrows this (it stops once S is pruned), and rule 7 already removes the demoted-writer case. Accepted under "authenticated malicious writers are bounded". The overlap void stays: one dot names one write.
-- **Atomic apply with no snapshot at all:** yes, a commit can wait forever today. A body with no live write under keep at most is deleted at hosts with no carrier (commits.md §5), so a node that later gets its commit's other body never gets this one, and no snapshot lists it (`waits_for_deltas`). Filed as issues/atomic-wait-carrierless-drop.md with a repro sketch. Pre-existing, independent of this design.
 - **Other per-node state a cloned store shares**, checked:
   - HLC record: both copies continue from one last `ts`. Equal `ts` across copies is harmless, because stamps break ties by dot and the nonces differ.
   - Label steps and rotations: two copies act like two admin devices. A host takes one child of its head; concurrent rotations fork as spec'd.

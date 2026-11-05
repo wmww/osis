@@ -77,7 +77,6 @@ Encoding: spec/wire.md §4. Fields:
 ## 4. Verification and application
 - A commit's signature MUST verify; receivers dedup by commit ID.
 - Each **delta** is judged on its own, by its author's authority on that delta's thing (spec/permissions.md §5); an invalid delta is un-merged alone (spec/crdt.md §4.6), the commit's other deltas stand.
-- A node **syncs** what it was asked to and what the `group.0` values it holds put in those groups' closures (spec/sync.md §3), judged as of each examination.
 - A commit is **pending**, not applied and counted as not received, while any of these holds:
   - it is parked (spec/versioning.md §2);
   - the author's `created.0` record is unknown;
@@ -97,6 +96,7 @@ Encoding: spec/wire.md §4. Fields:
 - **Order independence**: which parts apply is a function of the parts and other data held, never of arrival order or of which parts came together.
 - A thing's **possible admins**, by the role commits the node has applied (a pending one, parked included, gives nothing), of any validity and whatever followed: the least set holding the thing and, with each member, its owner or first admin and any holder named with admin on that member by an edge write, roster or ledger entry a member signed.
 - A thing's **possible writers**, by the same data: the least set holding the possible admins of the thing and of each member, and any holder named with write or above on the thing or on a member by one of that thing's or that member's possible admins.
+- A request's signers **could hold the right** of a delta's purgeable-by when its author and its actor each could, by any role any held write ever gave, whatever that role's validity: for `admin`, a possible admin of the thing; for `writer`, a possible writer of it; for `author`, the delta's actor or a possible writer of that actor, the actor being a possible writer of the thing; for `author_or_admin`, either of the `admin` and `author` cases.
 - A delta of an already applied commit that arrives later (a blob of the commit holding more parts than the node applied: the node began syncing its label after applying, or its body counts as never received, §5) is joined on arrival, a live one past its keep at most included; a blob holding fewer changes nothing.
 - Role commits are applied before content.
 - Two commits of one session whose counter ranges on one aspect overlap are both invalid.

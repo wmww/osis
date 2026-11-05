@@ -246,7 +246,7 @@ impl SyncEngine {
     /// synced and the engine's changes spread first; what touches the set during the pass
     /// collects in its place and joins it after; a failed pass judges everything next time.
     fn with_work(&mut self, g: &Tid, conn: Option<ConnId>, l: LabelId, f: impl FnOnce(&mut Self, &BodyCtx, &mut Work) -> Result<()>) -> Result<()> {
-        // this group's closure is synced (spec/commits.md §4)
+        // this group's closure is synced (spec/sync.md §3)
         if !self.engine.core.ix.syncing.contains(g) {
             self.engine.set_syncing(*g, true)?;
         }
