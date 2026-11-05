@@ -658,6 +658,22 @@ impl Timeline {
         f(&view, &view.roles_from(node))
     }
 
+    /// Each holder of `thing` whose current edge does not say keep (spec/permissions.md §2), with
+    /// the point of the change since which it has held such an edge without a break (`None`:
+    /// since before every change: the epoch start's roster or a first admin). O(the walk's
+    /// history of `thing`).
+    pub fn standing_since(&self, thing: &Tid) -> BTreeMap<Tid, Option<Point>> {
+        let mut out: BTreeMap<Tid, Option<Point>> = EdgesAt::new(&self.walked.initial).holders(thing).filter(|(_, e)| !e.says_keep()).map(|(m, _)| (*m, None)).collect();
+        for c in self.walked.history.iter().filter(|c| c.target == *thing) {
+            if c.edge.is_some_and(|e| !e.says_keep()) {
+                out.entry(c.holder).or_insert(Some(c.point));
+            } else {
+                out.remove(&c.holder);
+            }
+        }
+        out
+    }
+
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: how each one's
     /// edge ended and the point of its last write (`None`: unchanged since an epoch start).
     /// O(the walk's history): only a node that lost access asks (spec/permissions.md §3, Keep).
@@ -745,5 +761,12 @@ impl Timeline {
     pub fn roles_of(&self, node: &Tid, at: At) -> BTreeMap<Tid, Role> {
         let edges = self.edges_at(at.point);
         View::at(&self.input.owners, &edges, at.ts).roles_from(node)
+    }
+
+    /// `roles_of` over paths that never pass through a thing of `avoid` (`node`'s role on it
+    /// aside).
+    pub fn roles_avoiding(&self, node: &Tid, at: At, avoid: &BTreeSet<Tid>) -> BTreeMap<Tid, Role> {
+        let edges = self.edges_at(at.point);
+        View::at(&self.input.owners, &edges, at.ts).roles_from_avoiding(node, avoid)
     }
 }

@@ -111,13 +111,25 @@ impl BoxSlot {
 
     /// AD `[actor, holder, role, n, nonce, form]` or `[label_id, step_key, form]`.
     pub fn ad(&self, form: BoxForm) -> Result<Vec<u8>, Error> {
+        Ok(encode(&Value::List(self.ad_items(form)?)))
+    }
+
+    fn ad_items(&self, form: BoxForm) -> Result<Vec<Value>, Error> {
         let form = form.to_wire()?;
-        Ok(encode(&Value::List(match self {
+        Ok(match self {
             BoxSlot::Secrets { actor, holder, role, epoch } => {
                 vec![tid(actor), tid(holder), role_value(*role), Value::Int(epoch.n), Value::Bytes(epoch.nonce.to_vec()), form]
             }
             BoxSlot::Entry { label, step_key, .. } => vec![Value::Bytes(label.0.to_vec()), Value::Bytes(step_key.to_vec()), form],
-        })))
+        })
+    }
+
+    /// The digest a symmetric box's possession signature signs (spec/wire.md §7): BLAKE3 of
+    /// the canonical `[actor, holder, role, n, nonce, form, wrap]`.
+    pub fn possession_digest(&self, epoch_s: Epoch, wrap: &[u8]) -> Result<[u8; 32], Error> {
+        let mut items = self.ad_items(BoxForm::Symmetric { epoch_s })?;
+        items.push(Value::Bytes(wrap.to_vec()));
+        Ok(*blake3::hash(&encode(&Value::List(items))).as_bytes())
     }
 }
 
@@ -180,7 +192,7 @@ pub fn open_entry(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8])
         return Err(Error::Malformed("not an entry box slot"));
     }
     match form {
-        BoxForm::Sealed { suite, .. } if suite != u64::from(SUITE_1) => return Err(Error::UnknownSuite(suite)),
+        BoxForm::Sealed { keyset: None, suite, .. } if suite != u64::from(SUITE_1) => return Err(Error::UnknownSuite(suite)),
         BoxForm::Symmetric { .. } => return Err(Error::Malformed("symmetric form is not sealed")),
         BoxForm::Sealed { .. } => {}
     }
@@ -219,7 +231,7 @@ pub fn open_box(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8]) -
         return Err(Error::Malformed("an entry box is opened by open_entry"));
     }
     match form {
-        BoxForm::Sealed { suite, .. } if suite != u64::from(SUITE_1) => return Err(Error::UnknownSuite(suite)),
+        BoxForm::Sealed { keyset: None, suite, .. } if suite != u64::from(SUITE_1) => return Err(Error::UnknownSuite(suite)),
         BoxForm::Symmetric { .. } => return Err(Error::Malformed("symmetric form is not sealed")),
         BoxForm::Sealed { .. } => {}
     }
@@ -309,30 +321,6 @@ pub fn open_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, c
     let out = parse_history(&pairs, actor, role, epoch);
     wipe_value(pairs);
     Ok((out?, names))
-}
-
-/// The names a grant's box to a holder actor carries (spec/crypto.md §4, spec/wire.md §7): a
-/// random 24-byte nonce, then AEAD under `kdf("history", secret)` (the boxed epoch's) with that
-/// nonce, AD `[actor, holder, role, n, nonce]`, plaintext the names value as written (osis-keys
-/// encodes it). The nonce is random: one key seals every box's names at an epoch and its history
-/// box (zero nonce), so a fixed nonce would reuse the keystream.
-pub fn seal_box_names(secret: &Secret32, actor: &Tid, holder: &Tid, role: Role, epoch: &Epoch, names: &Value, rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
-    let mut nonce = [0u8; aead::NONCE_LEN];
-    rng.fill_bytes(&mut nonce);
-    let mut out = nonce.to_vec();
-    out.extend(aead::seal(kdf(kdf::HISTORY, secret.expose(), b"").expose(), &nonce, &box_names_ad(actor, holder, role, epoch), &encode(names))?);
-    Ok(out)
-}
-
-/// Opens a box's names (`seal_box_names`): the names value as written.
-pub fn open_box_names(secret: &Secret32, actor: &Tid, holder: &Tid, role: Role, epoch: &Epoch, ct: &[u8]) -> Result<Value, Error> {
-    let (nonce, ct) = ct.split_first_chunk::<{ aead::NONCE_LEN }>().ok_or(Error::Malformed("box names"))?;
-    let pt = aead::open(kdf(kdf::HISTORY, secret.expose(), b"").expose(), nonce, &box_names_ad(actor, holder, role, epoch), ct)?;
-    decode(&pt, &Limits::DEFAULT).map_err(|_| Error::Malformed("box names"))
-}
-
-fn box_names_ad(actor: &Tid, holder: &Tid, role: Role, epoch: &Epoch) -> Vec<u8> {
-    encode(&Value::List(vec![tid(actor), tid(holder), role_value(role), Value::Int(epoch.n), Value::Bytes(epoch.nonce.to_vec())]))
 }
 
 fn parse_history(v: &Value, actor: &Tid, role: Role, epoch: &Epoch) -> Result<Vec<(Epoch, Secret32)>, Error> {
@@ -608,22 +596,6 @@ mod tests {
         let pt = encode(&Value::List(vec![item(1, 3)]));
         let ct = aead::seal(key.expose(), &ZERO_NONCE, &history_ad(&a, Role::Read, &e3), &pt).unwrap();
         assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct), Err(Error::Malformed("history")));
-    }
-
-    // spec/wire.md §7: a box's names travel under the history key with a random nonce, so two
-    // boxes' names (and the zero-nonce history box) never share a keystream; bound to their box.
-    #[test]
-    fn box_names_nonce() {
-        let (s, a, h) = (sec(1), actor(1), actor(2));
-        let e = ep(Role::Read, 3, 1);
-        let mut rng = SeededRng::from_u64(9);
-        let x = seal_box_names(&s, &a, &h, Role::Read, &e, &names(), &mut rng).unwrap();
-        let y = seal_box_names(&s, &a, &h, Role::Read, &e, &names(), &mut rng).unwrap();
-        assert_ne!(x.get(..24), y.get(..24));
-        assert_ne!(x.get(..24), Some(&ZERO_NONCE[..]));
-        assert_eq!(open_box_names(&s, &a, &h, Role::Read, &e, &x).unwrap(), names());
-        assert!(open_box_names(&s, &a, &actor(3), Role::Read, &e, &x).is_err());
-        assert!(open_box_names(&s, &a, &h, Role::Read, &e, &x[..20]).is_err());
     }
 
     // spec/wire.md §1: epochs are `[n, nonce]` with n in the int range and a 32-byte nonce.

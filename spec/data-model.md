@@ -117,14 +117,14 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
   - Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral placements durably (a placement made while it persisted elsewhere, or restored by an undo).
 
 ## 9. Core schema
-The core aspects form the core schema, evolving under spec/versioning.md. The block below (DSL of notes/data-model.md) gives their exact types and flags; `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
+The core aspects form the core schema, evolving under spec/versioning.md. The block below (DSL of notes/data-model.md) gives their exact types and flags; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3.
 
 | AK | what it is for |
 |---|---|
 | `tid.0` | the thing's tid |
 | `aspects.0` | AKs present on the thing |
 | `created.0` | the creation record (spec/commits.md §2, §5) |
-| `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `since`: only in roster snapshots (spec/permissions.md §6). `tied`: the placement the grant goes with (spec/permissions.md §2). `until` 0: a removal saying keep (spec/permissions.md §2). `keyset`: a holder actor's grant: the key of its `keys.0` commit the last grant or raise sealed to, kept by every later write of the grant and by roster snapshots (spec/crypto.md §4) |
+| `roles.0` | role grants; read as the role timeline's roster (spec/permissions.md §5). `since`: only in roster snapshots (spec/permissions.md §6). `tied`: the placement the grant goes with (spec/permissions.md §2). `until` 0: a removal saying keep (spec/permissions.md §2) |
 | `keys.0` | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
 | `secrets.0` | an actor's boxes and history boxes (spec/crypto.md §4) |
 | `tenures.0` | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
@@ -161,13 +161,13 @@ type edge_key = struct { 0 ts: int, 1 node: tid, 2 commit: blob };   // (ts, aut
 type source = enum { 0 commit(blob), 1 session(blob) };   // a dot's source (spec/crdt.md §2.1); commit: 32-byte commit ID; session: 31 bytes, the node's tid then its nonce (spec/crdt.md §3.2)
 type suspect = struct { 0 thing: tid, 1 ak: string, 2 digest: blob };   // digest: 16 bytes (spec/permissions.md §4)
 type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };   // creation stamp of a group.0 element and its set
-type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie>, 5 keyset: option<edge_key> };
-type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch> };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7; supersedes: superseded epochs (spec/crypto.md §4)
+type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie> };
+type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch>, 5 possession_key: signing_key };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7; supersedes: superseded epochs, possession key: spec/crypto.md §4
 type inbox = struct { 0 label: blob, 1 hosts: list<address> };  // label ID: 16 bytes
 type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };
 type box = enum {
-    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed, 3 names: option<blob> }),
-    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 names: option<blob> }),     // epoch of s; wrap, names: spec/wire.md §7
+    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed }),
+    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 possession: option<signature> }),     // epoch of s; wrap, possession: spec/wire.md §7
 };
 type history_key = struct { 0 role: role, 1 epoch: epoch };
 type frontier = struct { 0 commits: set<blob> };   // 32-byte commit IDs the demoter lists (spec/permissions.md §5.1)

@@ -217,8 +217,12 @@ impl SyncEngine {
         if read_ok {
             self.place_deferred(&g)?;
         }
-        // a complete pass and still no secret of the head's read epoch: stranded
+        // no secret of the head's read epoch: read first (spec/sync.md §5, Re-registration),
+        // stranded only once nothing more here opens
         if keys.epochs[0].is_none() {
+            if self.read_first(conn, host, &g, l, out)? {
+                return Ok(());
+            }
             return self.stranded(conn, g, l, out);
         }
         if self.reregister(conn, l, out)? {
@@ -301,18 +305,11 @@ impl SyncEngine {
                 sends.push(Out { prio: 3, id, fresh: false, of: None });
             }
         }
-        if !replaced && (keys.is_writer() || keys.deposit.is_some()) {
-            if read_ok {
-                let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
-                self.certificates(&g, l, false, &authors)?;
-                let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
-                self.heartbeat(&g, l, keys, tight, &ctx.closure)?;
-            } else if !self.may_rotate_read(&g) {
-                // the revokes of departures inside holders and their chains' keysets only: they
-                // tell the label's rotators what keeps its epoch uncovered and what to seal to
-                // (spec/permissions.md §4 exception)
-                self.certificates(&g, l, true, &BTreeSet::new())?;
-            }
+        if !replaced && (keys.is_writer() || keys.deposit.is_some()) && read_ok {
+            let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
+            self.certificates(&g, l, &authors)?;
+            let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
+            self.heartbeat(&g, l, keys, tight, &ctx.closure)?;
         }
         if keys.write.is_some() && read_ok {
             self.complete_chains(conn, host, &g, l)?;
@@ -618,7 +615,7 @@ impl SyncEngine {
         let sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left)?;
         let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
         let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
-        self.certificates(&g, l, false, &authors)?;
+        self.certificates(&g, l, &authors)?;
         self.heartbeat(&g, l, keys, false, &ctx.closure)?;
         if let Some(wk) = &keys.write {
             self.local_promote(&g, l, wk, &scope, &ours, &mut left)?;
@@ -777,14 +774,39 @@ impl SyncEngine {
         if self.lc(conn, &l).is_some_and(|x| x.fill.is_some()) {
             return Ok(());
         }
+        let ids: Vec<BlobId> = w.unopened.iter().copied().collect();
+        self.open_or_fetch(conn, host, l, ids, out).map(|_| ())
+    }
+
+    /// `refetch` of every entry of `l` for a node holding no secret of the head's read epoch
+    /// (its pass stops there, so the work set's `unopened` is not kept). Invariant: such a node
+    /// is stranded only when no entry present at `host` unwraps under a read secret it holds
+    /// and is unopened. An entry listed before the secret its wrap opens under arrived was not
+    /// fetched then: the head's rotation commit is one when it is wrapped under an epoch this
+    /// node learned later, another rotation's or a fork's (spec/crypto.md §5; member_churn
+    /// seeds 9, 9390: an admin that never read it never registered or uploaded again). True
+    /// while something is fetched or opened.
+    fn read_first(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
+        let secrets = self.read_secrets(g);
+        let ids: Vec<BlobId> = self.state.entries.range((l, BlobId([0; 32]))..).take_while(|((x, _), _)| *x == l).filter(|((_, b), e)| e.kind == Kind::Unknown && (e.shredded() || osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).map(|((_, b), _)| *b).collect();
+        let busy = ids.iter().any(|b| self.fetching(b));
+        Ok(self.open_or_fetch(conn, host, l, ids, out)? || busy)
+    }
+
+    /// Of unopened entries `ids` of `l`: those whose bytes are here are opened under the
+    /// secrets held now, the rest present at `host` fetched (a fetch lost to a cut or crash,
+    /// secrets that arrived later). Whether any was fetched or opened.
+    fn open_or_fetch(&mut self, conn: ConnId, host: HostKey, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<bool> {
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.req.missing.contains(b));
-        let ids: Vec<BlobId> = w.unopened.iter().filter(|b| !self.fetching(b) && !missing(self, b) && self.state.is_present(&host, &l, b) && !self.memory_skips(&l, b)).copied().collect();
+        let ids: Vec<BlobId> = ids.into_iter().filter(|b| !self.fetching(b) && !missing(self, b) && self.state.is_present(&host, &l, b) && !self.memory_skips(&l, b)).collect();
         let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
-        // bytes here but never opened under the secrets held now
         if !held.is_empty() {
             self.open_entries(Some(conn), l, &held)?;
         }
-        self.fetch_on(conn, l, want, out)
+        let opened = held.iter().any(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind != Kind::Unknown));
+        let fetched = !want.is_empty();
+        self.fetch_on(conn, l, want, out)?;
+        Ok(opened || fetched)
     }
 
     /// Aspects this node cannot judge deletions on yet: those of pending commits; every aspect

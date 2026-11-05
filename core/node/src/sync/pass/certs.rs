@@ -33,42 +33,33 @@ impl SyncEngine {
     /// label's older content, except a rotation commit of the label's actor, which is wrapped
     /// under the epoch it supersedes (spec/crypto.md §5): such an entry counts only when it
     /// opens under the newest read secret.
-    pub(super) fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool, authors: &BTreeSet<Tid>) -> Result<()> {
+    pub(super) fn certificates(&mut self, g: &Tid, l: LabelId, authors: &BTreeSet<Tid>) -> Result<()> {
         let _s = crate::costs::span("pass: certificates");
         let closure = self.engine.closure(g);
-        let mut own_removals = BTreeSet::new();
-        let wanted = if revokes_only {
-            // under an epoch a departure inside a holder leaves uncovered: those revokes and keysets only
-            let actor = self.engine.group_actor(g);
-            self.engine.inside_holder_revokes(&actor, &closure)
-        } else {
-            let mut wanted = self.card_certificates(g);
-            for (c, p) in self.inbox_certificates(g, l)? {
-                wanted.entry(c).or_default().extend(p);
-            }
-            // revokes and roster snapshots about authors seen under the label (spec/permissions.md
-            // §4), so its verifiers judge their writes as this node does: authors of an entry
-            // judged invalid here or not judged yet (`Engine::judged_valid`); a revoke changes no
-            // verdict on the writes its frontier covers (a joiner's home label holds the copy of its grant by
-            // link actor L, made before L's removal)
-            // (`authors`: `Work::unjudged`)
-            let me = self.engine.tid();
-            let mut authors = authors.clone();
-            authors.remove(&me);
-            let actor = self.engine.group_actor(g);
-            for (c, p) in self.engine.revoke_certificates(&authors, &closure, &actor) {
-                wanted.entry(c).or_default().extend(p);
-            }
-            // removals of the label's actor's edges on things in its closure, whoever made them
-            // (spec/permissions.md §2): its holders still holding such an edge would re-upload
-            // the thing's bodies that others delete, on every pass
-            let (removals, own) = self.engine.removal_certificates(&actor, &closure);
-            for (c, p) in removals {
-                wanted.entry(c).or_default().extend(p);
-            }
-            own_removals = own;
-            wanted
-        };
+        let mut wanted = self.card_certificates(g);
+        for (c, p) in self.inbox_certificates(g, l)? {
+            wanted.entry(c).or_default().extend(p);
+        }
+        // revokes and roster snapshots about authors seen under the label (spec/permissions.md
+        // §4), so its verifiers judge their writes as this node does: authors of an entry
+        // judged invalid here or not judged yet (`Engine::judged_valid`); a revoke changes no
+        // verdict on the writes its frontier covers (a joiner's home label holds the copy of its grant by
+        // link actor L, made before L's removal)
+        // (`authors`: `Work::unjudged`)
+        let me = self.engine.tid();
+        let mut authors = authors.clone();
+        authors.remove(&me);
+        let actor = self.engine.group_actor(g);
+        for (c, p) in self.engine.revoke_certificates(&authors, &closure, &actor) {
+            wanted.entry(c).or_default().extend(p);
+        }
+        // removals of the label's actor's edges on things in its closure, whoever made them
+        // (spec/permissions.md §2): its holders still holding such an edge would re-upload
+        // the thing's bodies that others delete, on every pass
+        let (removals, own_removals) = self.engine.removal_certificates(&actor, &closure);
+        for (c, p) in removals {
+            wanted.entry(c).or_default().extend(p);
+        }
         for (c, want) in wanted {
             let (mine, have) = self.held_parts(g, l, &c)?;
             // what the label's closure bodies carry is never copied (a copy duplicating closure

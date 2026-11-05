@@ -598,7 +598,7 @@ fn ownerless_has_no_owner_chain() {
 }
 
 fn says_keep() -> Option<Edge> {
-    Some(Edge::kept_end(None))
+    Some(Edge::kept_end())
 }
 
 fn end_of(tl: &osis_perm::Timeline, g: &Tid, m: &Tid) -> EdgeEnd {

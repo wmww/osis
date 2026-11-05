@@ -186,7 +186,8 @@ impl Engine {
     /// carrying no keyset, and a rotation of what `t` holds names `t`'s keyset (spec/crypto.md §4).
     pub fn current_keys(&self, t: &Tid) -> BTreeSet<CommitId> {
         let mut newest: BTreeMap<osis_base::Role, (u64, BTreeSet<CommitId>)> = BTreeMap::new();
-        for (r, e) in self.core.ix.keyset_epochs.get(t).into_iter().flatten() {
+        for (r, e, _) in self.core.keysets_of(t) {
+            let (r, e) = (&r, &e);
             let Some((_, c)) = self.core.ix.epoch_intro.get(&(*t, *r, *e)) else { continue };
             let n = newest.entry(*r).or_default();
             if e.n() > n.0 {
@@ -272,82 +273,6 @@ impl Engine {
                 add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
             }
         }
-    }
-
-    /// Revokes of the departures inside holders of `actor` that leave its epochs uncovered now
-    /// (`rotation::uncovered_departures`: a departure from M, the last actor on its chain, with
-    /// secrets of its own and outside `closure`; the newest applied write lowering the departed
-    /// holder's edge on M), each the whole write on M with what judges it, and the current `keys.0`
-    /// commits of each actor on the chain, projected to that `keys.0`, with its author's chain: the only
-    /// certificates a node that may not rotate places under such an epoch (spec/permissions.md
-    /// §4).
-    pub fn inside_holder_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
-        let a = *actor;
-        let deps = self.run(|tx| crate::rotation::uncovered_departures(tx, &a)).unwrap_or_default();
-        let mut found: Vec<osis_perm::Certificates> = Vec::new();
-        let mut whole: Vec<(CommitId, Tid)> = Vec::new();
-        let mut keyed: BTreeSet<Tid> = BTreeSet::new();
-        for d in deps {
-            // the actor left: the last on the chain (A's holder via[0] is the first)
-            let Some(m) = d.via.last().copied() else { continue };
-            let leaver = d.holder;
-            if closure.contains(&m) || !self.core.has_own_secrets(&m) {
-                continue;
-            }
-            // each actor on the chain's newest keyset: a rotator holding none of its secrets seals
-            // to it, and one rotated apart from the departure write is known only from its `keys.0`
-            keyed.extend(d.via.iter().filter(|t| !closure.contains(t)).copied());
-            let Some(tl) = self.core.timelines.get(&m) else { continue };
-            let mut newest: Option<(osis_base::Ts, osis_perm::WriteId, CommitId)> = None;
-            for wid in tl.applied().keys() {
-                let osis_perm::WriteId::Op(c, i) = wid else { continue };
-                let Some(mc) = tl.role_commit(c) else { continue };
-                let Some(op) = mc.ops.get(*i as usize) else { continue };
-                if op.target != m || op.holder != leaver {
-                    continue;
-                }
-                // lowering for keys, as the departure (`rotation::key_role`)
-                let old = crate::rotation::key_role(tl.edges_at(Some(mc.point())).get(&op.holder, &op.target));
-                let new = crate::rotation::key_role(op.edge.as_ref());
-                if new < old && newest.as_ref().is_none_or(|(t, _, _)| mc.ts > *t) {
-                    newest = Some((mc.ts, *wid, *c));
-                }
-            }
-            if let Some((_, wid, c)) = newest
-                && let Some(cs) = tl.write_certificates(&wid)
-                && !whole.contains(&(c, m))
-            {
-                found.push(cs);
-                whole.push((c, m));
-            }
-        }
-        let mut out = BTreeMap::new();
-        for cs in &found {
-            self.cert_parts(cs, &mut out);
-        }
-        for t in keyed {
-            for c in self.current_keys(&t) {
-                if whole.contains(&(c, t)) {
-                    continue;
-                }
-                // its `keys.0` delta, like a chain certificate's (not its boxes: a covered removal
-                // that rotated it stays unplaced as a whole write)
-                let p = self.parts_of(&c, &BTreeSet::from([t]), &["keys.0"]);
-                for (x, q) in self.author_chain(&c, &p).unwrap_or_default() {
-                    out.entry(x).or_default().extend(q);
-                }
-                out.entry(c).or_default().extend(p);
-            }
-        }
-        // the whole write on M (its rotation's `keys.0` and `secrets.0` too: boxes sealed to M's
-        // holders): a reader that syncs M waits for every delta of it (spec/commits.md §4)
-        for (c, m) in whole {
-            let p = self.parts_of(&c, &BTreeSet::from([m]), &["roles.0", "tenures.0", "keys.0", "secrets.0"]);
-            if !p.is_empty() {
-                out.entry(c).or_default().extend(p);
-            }
-        }
-        out
     }
 
     /// Whether this node judges the parts `parts` of commit `c` valid (spec/permissions.md
@@ -543,7 +468,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let good = lp.peers[0].commit(m).unwrap().unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync_all().unwrap();
         lp.advance(60_000);

@@ -183,7 +183,7 @@ pub(crate) fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
 }
 
 pub(crate) fn edge_of(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }
+    ct::Edge { role, until: None, invite: None, since: None, tied: None }
 }
 
 pub(crate) fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -657,7 +657,7 @@ fn invite_power_spec_perm_2() {
     let (mut lp, ps) = people(3, 504);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&d, &pb, &ct::Edge { role: Role::Write, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[0].engine.grant(&d, &pb, &ct::Edge { role: Role::Write, until: None, invite: Some(Role::Read), since: None, tied: None }).unwrap();
     spread(&mut lp);
     // bob invites carol with read, not with write
     assert!(lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Write)).is_err());
@@ -806,7 +806,7 @@ fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
     assert!(g.iter().all(|c| frontier_ids(&mut lp, 1, &r).contains(c)), "Bob lists the grant he holds");
     let until = osis_base::WallMs(lp.peers[0].clock.as_ref().now_wall_ms().0 + 3_600_000);
     let before = ids(&lp, 2);
-    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None, tied: None }).unwrap();
     let forged = new_ids(&lp, 2, &before);
     assert!(lp.peers[2].engine.header(&forged[0]).unwrap().ts < lp.peers[1].engine.header(&r).unwrap().ts, "backdated");
     spread(&mut lp);
@@ -837,7 +837,7 @@ fn future_stamped_setter_spec_perm_5_1() {
     // a rewrite of Bob's edge stamped half an hour ahead
     lp.peers[2].clock.advance(1_800_000);
     let before = ids(&lp, 2);
-    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: None, invite: Some(Role::Read), since: None, tied: None }).unwrap();
     let f = new_ids(&lp, 2, &before);
     send(&mut lp, 2, 1, &f);
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -963,9 +963,10 @@ fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCar
     (lp, p.person, pa, p.card)
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (covers by names, the recursive box judgement; the TLC two-hop scenario):
-// device d1 removed from person P, P a writer of team T, T a writer of doc U. Before P's other
-// device encrypts under U it rotates T, then U, top-down; d1 holds neither new secret.
+// spec/permissions.md §3, spec/crypto.md §4 (holder actors: stale; the cascade): device d1
+// removed from person P, P a writer of team T, T a writer of doc U. No departure is U's; before
+// P's other device encrypts under U it rotates T (its box to P stale), then U (its box to T
+// stale); d1 holds neither new secret.
 #[test]
 fn cascade_two_hops_spec_perm_3() {
     let (mut lp, p, pa, _) = devices_and_alice(507);
@@ -979,8 +980,7 @@ fn cascade_two_hops_spec_perm_3() {
     assert_eq!(newest_read(&lp, 0, u), Some(u0), "d1 reads U through P and T");
     // d2 removes d1 from P: P's rotation rides in the removal
     lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, presync: PreSync::Synced, keep: None }).unwrap();
-    let deps = lp.peers[1].engine.departures(&u).unwrap();
-    assert!(deps.iter().any(|d| d.holder == d1 && d.via == vec![t, p]), "{deps:?}");
+    assert!(lp.peers[1].engine.departures(&u).unwrap().is_empty(), "nothing departed from U");
     // nothing below rotated yet (lazy); before encrypting under U: T, then U
     assert_eq!(newest_read(&lp, 1, t), Some(t0));
     let (done, still) = lp.peers[1].engine.ensure_rotated(&u).unwrap();
@@ -990,7 +990,7 @@ fn cascade_two_hops_spec_perm_3() {
     assert!(ht.aspects.iter().all(|a| a.tid == t));
     let (t1, u1) = (newest_read(&lp, 1, t).unwrap(), newest_read(&lp, 1, u).unwrap());
     assert!(t1 != t0 && u1 != u0);
-    assert!(lp.peers[1].engine.departures(&u).unwrap().is_empty() || lp.peers[1].engine.ensure_rotated(&u).unwrap().0.commits.is_empty());
+    assert!(lp.peers[1].engine.ensure_rotated(&u).unwrap().0.commits.is_empty());
     spread(&mut lp);
     assert_eq!(newest_read(&lp, 2, u), Some(u1), "alice is boxed");
     assert!(lp.peers[0].engine.epochs(&u).unwrap().read.secret(&u1).is_none(), "d1 is not");
@@ -1429,7 +1429,7 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
     let (pa, pb) = (ps[0], ps[1]);
     let t = thing_of(&mut lp, 0, pa);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 5_000);
-    lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None }).unwrap();
     let e0 = newest_read(&lp, 0, t);
     lp.advance(10_000);
     assert!(lp.peers[0].engine.departures(&t).unwrap().is_empty(), "the clock alone departs nobody");
@@ -1586,36 +1586,44 @@ fn spread_hiding(lp: &mut LocalPeer, to: usize, hidden: Tid) {
     }
 }
 
-// spec/crypto.md §4 (the box judgement; a node holding no secret of M judges by M's newest
-// `keys.0` keyset), spec/permissions.md §3: after alice removes o0 from K1 and rotates K1 and C, a
-// writer of C that never read K1 sees C covered and rotates nothing.
+// spec/crypto.md §4 (holder actors: a box is stale only by M's keysets), spec/permissions.md §3:
+// after alice removes o0 from K1 and rotates K1 and C, a writer of C that never read K1 knows no
+// departure from C and finds C's box to K1 at K1's newest keyset: it rotates nothing.
 #[test]
 fn unheld_holder_judged_by_keyset_spec_crypto_4() {
     let (mut lp, c, k1, po) = two_links(517, false);
     lp.peers[0].engine.demote(&k1, &Demotion { holder: po, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let (rot, still) = lp.peers[0].engine.ensure_rotated(&c).unwrap();
-    assert!(still.is_empty() && !rot.commits.is_empty(), "alice rotates C");
+    assert!(still.is_empty() && rot.commits.len() == 1, "alice rotates C (K1 rotated with the removal)");
     spread_hiding(&mut lp, 2, k1);
     assert!(lp.peers[2].engine.epochs(&k1).is_none_or(|e| e.read.held().next().is_none()), "late holds no K1 secret");
-    assert!(!lp.peers[2].engine.departures(&c).unwrap().is_empty(), "late knows the departure inside K1");
+    assert!(lp.peers[2].engine.departures(&c).unwrap().is_empty(), "nothing departed from C");
     let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
     assert!(rot.commits.is_empty() && still.is_empty(), "late rotates nothing: {still:?}");
 }
 
-// spec/permissions.md §3: o0 leaves K1 by self-removal (no rotation); late, a reader of K1, may
-// not rotate K1, and a rotation of C would still box K1 at the uncovered epoch: it does not
-// rotate C (stranded on C until K1 rotates), however often it is asked.
-// spec/permissions.md §3 (required rotation)
+// spec/permissions.md §3 (holder actors), spec/requirements.md (Permissions, the inside-member
+// limit): o0 leaves K1 by self-removal (no rotation); late, a reader of K1, may not rotate K1, and
+// nothing departed from C: it rotates nothing and may write under C (o0 reads C's new content
+// until K1's knowing keyset reaches C's writers). Alice rotates K1; at late, C's box to K1 is then
+// stale, and late rotates C once, to an epoch o0 does not hold.
 #[test]
-fn no_rotation_that_cannot_cover_spec_perm_3() {
+fn inside_member_departure_waits_for_its_rotation_spec_perm_3() {
     let (mut lp, c, k1, po) = two_links(518, true);
     lp.peers[1].engine.demote(&k1, &Demotion { holder: po, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     spread(&mut lp);
-    for _ in 0..3 {
+    for _ in 0..2 {
         let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
-        assert!(rot.commits.is_empty(), "no useless rotation of C");
-        assert!(!still.is_empty(), "C stays uncovered for late");
+        assert!(rot.commits.is_empty() && still.is_empty(), "late: nothing to rotate, not blocked: {still:?}");
     }
+    let (rot, _) = lp.peers[0].engine.ensure_rotated(&k1).unwrap();
+    assert_eq!(rot.commits.len(), 1, "alice rotates K1");
+    spread(&mut lp);
+    let (rot, still) = lp.peers[2].engine.ensure_rotated(&c).unwrap();
+    assert!(still.is_empty() && rot.commits.len() == 1, "late rotates C once: {still:?}");
+    let top = newest_read(&lp, 2, c).unwrap();
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.epochs(&c).is_none_or(|e| e.read.secret(&top).is_none()), "o0 does not hold C's new epoch");
 }
 
 // spec/crypto.md §3, §4: a doc without secrets of its own in a team without any either: its
@@ -2098,7 +2106,7 @@ fn raced_grant_read_box_after_until_spec_crypto_4() {
     spread(&mut lp);
     lp.advance(1000);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
-    lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, since: None, tied: None }).unwrap();
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced, keep: None }).unwrap();
     spread(&mut lp);
     let r0 = newest_read(&lp, 1, t).unwrap();
@@ -2314,7 +2322,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     let w = osis_keys::box_holder(&d, &v, &ct::Secrets::default(), &rc, &BTreeSet::from([Role::Read]), &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();
     let mut s = ct::Secrets::default();
     w.apply(&mut s);
-    let junk = ct::SecretBox::Symmetric(ct::SymmetricBox { epoch: osis_keys::aspects::to_schema(&top), wrap: vec![0; 49], names: None });
+    let junk = ct::SecretBox::Symmetric(ct::SymmetricBox { epoch: osis_keys::aspects::to_schema(&top), wrap: vec![0; 49], possession: None });
     for i in 0..100u64 {
         let e = osis_crypto::Epoch::new(i64::MAX as u64 - 1 - i, [2; 32]).unwrap();
         s.boxes.insert(osis_keys::aspects::box_key(pb, Role::Read, &e), junk.clone());

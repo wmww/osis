@@ -32,36 +32,9 @@ instances=(
   "rotation Rotation MC_fork_reorder.cfg all pass"
   "rotation Rotation MC_withhold.cfg all pass"
   "rotation Rotation MC_names_own.cfg small fail"       # negative control: own removals only
-  "rotation Rotation MC_keyset.cfg small pass"
-  "rotation Rotation MC_keyset_nonames.cfg small fail"  # negative control: no keyset names
-  "rotation Rotation MC_keyset_forge.cfg small pass"
-  "rotation Rotation MC_keyset_forge_rot.cfg all pass"
-  "rotation Rotation MC_keyset_forge_nogroup.cfg small fail"  # negative control: no group names
-  "rotation Rotation MC_keyset_forge_commit.cfg small fail"   # negative control: commit-named keysets
-  "rotation Rotation MC_keyset_forge_write.cfg all pass"      # R18, closed by frozen coverage
   "rotation Rotation MC_c2_box.cfg small fail"         # study C2 under the box-inspection rule
   "rotation Rotation MC_c2.cfg all pass"               # C2 under frozen coverage
   "rotation Rotation MC_c2_boxcovers.cfg small fail"   # negative control: no box counts as covering
-  "rotation Rotation MC_c1_box.cfg all fail"           # study C1 under the box rule
-  "rotation Rotation MC_c1.cfg all pass"
-  "rotation Rotation MC_c1f_box.cfg small fail"        # study C1' under the box rule
-  "rotation Rotation MC_c1f.cfg all pass"
-  "rotation Rotation MC_c3_box.cfg small fail"         # study C3 under the box rule
-  "rotation Rotation MC_c3_current.cfg small fail"     # the study's box-names rule: a grant leaving g out
-  "rotation Rotation MC_c3_boxed.cfg small fail"       # ... a grant at an epoch no longer current
-  "rotation Rotation MC_c3.cfg all pass"               # names tied to the grant
-  "rotation Rotation MC_c3_proj.cfg small pass"        # a grant held as its edge alone: sealed at the named keyset
-  "rotation Rotation MC_c3_proj_free.cfg small fail"   # negative control: the boxer's own keyset choice
-  "rotation Rotation MC_c3_proj_bad.cfg small pass"    # a second edge naming a keyset nobody holds: bound until a free box arrives
-  "rotation Rotation MC_c3_lean.cfg all pass"          # MC_c3 without the fork of g
-  "rotation Rotation MC_c3_nonames.cfg small fail"     # negative control: grants carry no names
-  "rotation Rotation MC_desc_keyset.cfg small pass"    # keyset descent (notes/roster-names.md), no names below A
-  "rotation Rotation MC_desc_forge.cfg small pass"     # ... the forgery cannot sign under keyset 1
-  "rotation Rotation MC_desc_forge_nosig.cfg small fail"  # negative control: descent without signatures
-  "rotation Rotation MC_desc_forge_rot.cfg all pass"
-  "rotation Rotation MC_desc_c1.cfg all pass"
-  "rotation Rotation MC_desc_c1f.cfg all pass"
-  "rotation Rotation MC_desc_c3.cfg all pass"
   "sides MC kill_touch.cfg small pass"        # notes/owner-removal-plan.md step 6
   "sides MC purge_touch.cfg small pass"
   "sides MC place_touch.cfg small pass"
@@ -93,6 +66,21 @@ instances=(
   "rotation Depth0MC D0_nc_hide_lim.cfg small fail"   # ... past a knowing writer without taint
   "rotation Depth0MC D0_nc_hide_live.cfg all pass"
   "rotation Depth0MC D0_nc_hide_taint_lean.cfg all pass"
+  "rotation Depth0MC D0_rm_spec0.cfg small fail"      # removed-member writer rotates (issues/keys-depth0-removed-member-rotates.md)
+  "rotation Depth0MC D0_rm_spec.cfg small fail"
+  "rotation Depth0MC D0_rm_remover0.cfg small fail"
+  "rotation Depth0MC D0_rm_spec0_live.cfg small fail" # ... and stays open to it
+  "rotation Depth0MC D0_rm_possess0.cfg small pass"   # the possession rule
+  "rotation Depth0MC D0_rm_possess.cfg all pass"
+  "rotation Finalize F_named_seed3.cfg small pass"       # a finalize names the writes it ends (issues/withheld-departures-seeds.md)
+  "rotation Finalize F_named_bogus.cfg small pass"
+  "rotation Finalize F_named_renew.cfg all pass"
+  "rotation Finalize F_old_seed3.cfg small fail"         # name met by the commit alone: seed 3 leaks
+  "rotation Finalize F_branch_seed3_erase.cfg small fail" # lowering writes applied: erase finalize leaks
+  "rotation Finalize F_branch_renew.cfg all fail"         # ... and a renewal locks out
+  "rotation Finalize F_issue_seed3.cfg small fail"        # rotate instead of re-seal: history leaks
+  "rotation Finalize F_partial_all.cfg all fail"          # known writes apply alone: name covers too much
+  "rotation Finalize F_partial_bogus.cfg small fail"      # ... and an unheld reset locks out
   "roles Roles MC_core.cfg small pass"
   "roles Roles MC_multi.cfg small pass"
   "roles Roles MC_group.cfg all pass"

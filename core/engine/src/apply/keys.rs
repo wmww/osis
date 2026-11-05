@@ -4,7 +4,7 @@
 //! invalid no longer counts, valid again is recorded again. `Core::own_epochs` establishes from
 //! these and the held commits and epoch starts (the names).
 
-use crate::engine::{Core, KeysetRec, NamesRec, Tx};
+use crate::engine::{Core, KeysetRec, Tx};
 use crate::error::Result;
 use osis_commit::{Decoded, Header, Kind};
 use osis_base::{CommitId, Role, Tid, Value};
@@ -53,32 +53,20 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
     out.into_iter().collect()
 }
 
-/// The sealed names part `ai` of role commit `h` writes in `bodies` (its `secrets.0` deltas)
-/// in its boxes to `holders`: what a grant's boxes carry (spec/crypto.md §4), kept in its record
-/// when it drops (`Dropped::names`).
-pub(crate) fn names_of(h: &Header, ai: usize, bodies: &[Fragment], holders: &std::collections::BTreeSet<Tid>) -> Vec<NamesRec> {
-    if !h.kind.is_role() || !h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0") {
-        return Vec::new();
-    }
-    let mut out = std::collections::BTreeSet::new();
-    for b in bodies {
-        for (k, x) in secrets_write(b).boxes.into_iter().filter(|(k, _)| holders.contains(&k.holder)) {
-            if let (Some(sealed), Ok(e)) = (osis_keys::names_of(&x), osis_keys::aspects::from_schema(&k.epoch)) {
-                out.insert((k.holder, k.role, e, sealed.clone()));
-            }
-        }
-    }
-    out.into_iter().collect()
-}
-
-/// Each keyset a `keys.0` body writes: its role, epoch and listed epochs.
+/// Each keyset a `keys.0` body writes: its role, epoch, listed epochs, KEM key (suite 1) and
+/// possession key.
 fn keyset_recs(body: &Fragment) -> Vec<KeysetRec> {
     keys_write(body)
         .keysets
         .into_iter()
-        .filter_map(|(r, ks)| {
-            let e = osis_keys::aspects::from_schema(&ks.epoch).ok()?;
-            Some((r, e, ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect()))
+        .filter_map(|(role, ks)| {
+            let epoch = osis_keys::aspects::from_schema(&ks.epoch).ok()?;
+            let lists = ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect();
+            let ct::KemKey::X25519MlKem768(b) = ks.kem_key;
+            let kem = (ks.suite == osis_keys::SUITE && osis_crypto::KemPublicKey::from_slice(&b).is_ok()).then_some(b);
+            let ct::SigningKey::Ed25519(p) = ks.possession_key;
+            let possession = <[u8; 32]>::try_from(p.as_slice()).ok().filter(|p| osis_crypto::VerifyingKey::from_bytes(p).is_ok());
+            Some(KeysetRec { role, epoch, lists, kem, possession })
         })
         .collect()
 }
@@ -125,25 +113,49 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
 }
 
 /// Notes the keysets a valid `keys.0` body of `actor` writes (`keyset_recs`, or a dropped part's
-/// record): each epoch and the epochs it lists are held keyset epochs (`keyset_epochs`); a role
+/// record): each is a held valid keyset (`keysets`); a role
 /// commit's also record the commit as the epoch's introduction if earliest: a rotation writes
 /// the rotated roles' keysets, nothing else does, so the epoch's introducer
 /// (`Core::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is not held
 /// (synced after a compaction, or missing again after `retention::uncover`).
 pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[KeysetRec]) {
-    for (r, e, listed) in keysets {
+    for k in keysets {
         if h.kind == Kind::Role {
-            note_intro(core, h, actor, *r, *e);
+            note_intro(core, h, actor, k.role, k.epoch);
         }
-        for x in std::iter::once(e).chain(listed) {
-            if core.ix.keyset_epochs.insert(*actor, (*r, *x)) {
-                core.touch();
-            }
+        let key = (*actor, k.role, k.epoch);
+        let mut held = core.ix.keysets.get(&key).cloned().unwrap_or_default();
+        let before = held.clone();
+        held.lists.extend(k.lists.iter().copied());
+        if held.kem.is_none() {
+            held.kem = k.kem.clone();
+        }
+        held.possession.extend(k.possession);
+        if held != before || !core.ix.keysets.contains_key(&key) {
+            core.ix.keysets.insert(key, held);
+            core.touch();
+            keyset_changed(core, actor);
         }
     }
 }
 
-/// Re-derives `epoch_intro` and `keyset_epochs` of `actors` from their valid `keys.0` parts
+/// A held valid keyset of `actor` changed: possession (`validity::possessed`) is judged again for
+/// the `secrets.0` parts of what boxes it (`boxes_to`) and of what it holds a role on or owns
+/// (their commits only: a thing's other deltas do not depend on it).
+fn keyset_changed(core: &mut Core, actor: &Tid) {
+    let mut things: std::collections::BTreeSet<Tid> = core.ix.boxes_to.get(actor).into_iter().flatten().map(|x| x.0).collect();
+    things.extend(core.ix.held.owned(actor).copied());
+    if let Some(tl) = core.timelines.get(actor) {
+        things.extend(tl.edges_at(None).targets(actor).copied());
+    }
+    let Ok(ak) = osis_base::Ak::new("secrets.0") else { return };
+    for t in things {
+        let ids: Vec<CommitId> = core.ix.by_aspect.get(&(t, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+        core.stale_commits.extend(ids);
+    }
+}
+
+/// Re-derives `epoch_intro` and `keysets` of `actors` from their valid `keys.0` parts
 /// (after validity flips, drops, and at load once validity is judged): an invalid write (a
 /// removed admin's backdated rotation) never introduces an epoch nor makes one held.
 pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet<Tid>) -> Result<()> {
@@ -153,9 +165,10 @@ pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeS
     tx.core.touch();
     tx.core.ix.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
     for a in actors {
-        let held: Vec<(Role, osis_crypto::Epoch)> = tx.core.ix.keyset_epochs.get(a).into_iter().flatten().copied().collect();
-        for x in held {
-            tx.core.ix.keyset_epochs.remove(a, &x);
+        keyset_changed(tx.core, a);
+        let held: Vec<(Role, osis_crypto::Epoch)> = tx.core.keysets_of(a).map(|x| (x.0, x.1)).collect();
+        for (r, e) in held {
+            tx.core.ix.keysets.remove(&(*a, r, e));
         }
     }
     let ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
@@ -692,7 +705,7 @@ mod tests {
     #[test]
     fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
         let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
         for seed in 0..4u64 {
             let mut lp = LocalPeer::new(4, 530 + seed, WallMs(1_700_000_000_000)).unwrap();
             let ps: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.create_person(&hosts).unwrap().0.person).collect();
@@ -758,7 +771,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         let g2 = *lp.peers[0].engine.grant(&t, &c, &edge).unwrap().commits.last().unwrap();
         let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
@@ -791,7 +804,7 @@ mod tests {
             (t, c)
         };
         let ((t1, c1), (t2, _)) = (thing(&mut lp), thing(&mut lp));
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         let g1 = *lp.peers[0].engine.grant(&t1, &b, &edge).unwrap().commits.last().unwrap();
         let g2 = *lp.peers[0].engine.grant(&t2, &b, &edge).unwrap().commits.last().unwrap();
         let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
@@ -920,7 +933,7 @@ mod tests {
     fn removed_reader(seed: u64) -> (LocalPeer, Tid) {
         let (mut lp, t) = grantee_world(seed, 3);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
         assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), Some(Value::Int(1)));
@@ -936,7 +949,7 @@ mod tests {
         let (mut lp, t) = removed_reader(931);
         let c = lp.peers[2].engine.tid();
         lp.sync(2, 0).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         lp.peers[0].engine.grant(&t, &c, &edge).unwrap();
         let before = lp.peers[0].engine.epochs(&t).unwrap().read.newest().unwrap();
         lp.peers[0].engine.demote(&t, &Demotion { holder: c, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -974,7 +987,7 @@ mod tests {
             let t = lp.peers[0].engine.new_thing(&mut mu, me);
             mu.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
             lp.peers[0].commit(mu).unwrap();
-            let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+            let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
             lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
             lp.peers[0].engine.grant(&t, &m, &edge(Role::Read)).unwrap();
             lp.peers[0].engine.demote(&t, &Demotion { holder: m, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -1109,7 +1122,7 @@ mod tests {
     fn late_regrant_keeps_its_boxes_spec_perm_3() {
         let (mut lp, t) = grantee_world(914, 2);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
         let removal = lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, presync: PreSync::Synced, keep: None }).unwrap();
@@ -1183,7 +1196,7 @@ mod tests {
     fn genuine_grant_applies_after_flood_spec_crypto_4() {
         let (mut lp, t) = grantee_world(910, 4);
         let b = lp.peers[1].engine.tid();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         let g = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
         flood(&mut lp, t, 40);
         let before = candidates(&lp, &t);
@@ -1221,7 +1234,7 @@ mod tests {
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, a, x) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2));
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
         let y = tid(&mut lp, 3);
@@ -1285,7 +1298,7 @@ mod tests {
         lp.sync_all().unwrap();
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (me, a, x, b, z) = (tid(&mut lp, 0), tid(&mut lp, 1), tid(&mut lp, 2), tid(&mut lp, 3), tid(&mut lp, 4));
-        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &a, &edge(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&g, &b, &edge(Role::Admin)).unwrap();
@@ -1391,7 +1404,7 @@ mod tests {
         let mut lp = LocalPeer::new(2, 943, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (me, y) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let edge = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None };
         let g = thing_of(&mut lp, 0, me);
         lp.peers[0].engine.grant(&g, &y, &edge).unwrap();
         let t = thing_of(&mut lp, 0, g);

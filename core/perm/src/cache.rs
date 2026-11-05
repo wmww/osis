@@ -117,7 +117,6 @@ impl W {
         self.opt(e.invite, W::role);
         self.opt(e.since.as_ref(), W::point);
         self.opt(e.tied.as_ref(), W::tie);
-        self.opt(e.keyset.as_ref(), W::point);
     }
     fn tie(&mut self, t: &Tie) {
         self.ts(t.ts);
@@ -589,8 +588,7 @@ impl<'a> R<'a> {
         let invite = self.opt(R::role)?;
         let since = self.opt(R::point)?;
         let tied = self.opt(R::tie)?;
-        let keyset = self.opt(R::point)?;
-        Some(Edge { role, until, invite, since, tied, keyset })
+        Some(Edge { role, until, invite, since, tied })
     }
     fn tie(&mut self) -> Option<Tie> {
         let ts = self.ts()?;

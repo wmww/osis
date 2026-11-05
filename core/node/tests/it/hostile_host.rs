@@ -319,7 +319,7 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let item = osis_crypto::EntryItem { epoch: Epoch::derive(&ka, Role::Read, 1, &other).unwrap(), secret: other, earlier: None };
     let sealed = osis_crypto::seal_entry(keys.kem.public(), &slot, &item, &mut SeededRng::from_u64(11)).unwrap();
     use osis_schema::core_types as ct;
-    let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed), names: None });
+    let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed) });
     let target = head.label;
     let addr = net.address(host);
     let mut se: SyncEngine = net.take(a);

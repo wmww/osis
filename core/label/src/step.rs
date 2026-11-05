@@ -297,7 +297,7 @@ fn parse_box(v: &Value) -> Result<SecretBox, Error> {
         osis_schema::PathErrorKind::UnknownCase(c) => Error::Crypto(osis_crypto::Error::UnknownCase(c)),
         _ => Error::Malformed("entry box"),
     })?;
-    if b.to_value() != *v || !matches!(&b, SecretBox::Sealed(x) if x.names.is_none()) {
+    if b.to_value() != *v || !matches!(&b, SecretBox::Sealed(_)) {
         return Err(Error::Malformed("entry box"));
     }
     Ok(b)
@@ -396,7 +396,7 @@ fn shuffle<T>(v: &mut [T], rng: &mut dyn CryptoRngCore) {
 
 fn seal_entry_box(slot: &BoxSlot, kem: &KemPublicKey, item: &EntryItem, rng: &mut dyn CryptoRngCore) -> Result<SecretBox, Error> {
     let sealed = seal_entry(kem, slot, item, rng)?;
-    Ok(SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed), names: None }))
+    Ok(SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed) }))
 }
 
 /// Opens an entry box of `step` of `group`'s label with the key actor's KEM key: the read
@@ -566,11 +566,11 @@ pub(crate) mod tests {
         for n in [0, 3, 5] {
             assert!(ClaimSet::from_value(&set(c(n), vec![])).is_err(), "{n}");
         }
-        let sealed = SecretBox::Sealed(SealedBox { keyset: None, suite: 1, sealed: Sealed::X25519MlKem768(vec![0; 1200]), names: None }).to_value();
+        let sealed = SecretBox::Sealed(SealedBox { keyset: None, suite: 1, sealed: Sealed::X25519MlKem768(vec![0; 1200]) }).to_value();
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sealed.clone())])).is_ok());
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[9; 32]), sealed)])).is_err());
         // an entry box is sealed (spec/wire.md §7)
-        let sym = SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [0; 32] }, wrap: vec![0; 49], names: None }).to_value();
+        let sym = SecretBox::Symmetric(osis_schema::core_types::SymmetricBox { epoch: osis_schema::core_types::Epoch { n: 1, nonce: [0; 32] }, wrap: vec![0; 49], possession: None }).to_value();
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), sym)])).is_err());
         assert!(ClaimSet::from_value(&set(c(2), vec![(Value::bytes(&[1; 32]), Value::Int(0))])).is_err());
         assert!(ClaimSet::from_value(&set(Value::List(vec![Value::bytes(&[0; 31])]), vec![])).is_err());
@@ -582,7 +582,7 @@ pub(crate) mod tests {
     // read and when registering.
     #[test]
     fn claim_set_size_cap() {
-        let big = SecretBox::Sealed(SealedBox { keyset: None, suite: 1, sealed: Sealed::X25519MlKem768(vec![0; MAX_CLAIM_SET]), names: None });
+        let big = SecretBox::Sealed(SealedBox { keyset: None, suite: 1, sealed: Sealed::X25519MlKem768(vec![0; MAX_CLAIM_SET]) });
         let set = ClaimSet { claims: vec![[1; 32]], entries: [([1; 32], big)].into_iter().collect() };
         let b = set.to_bytes();
         assert!(b.len() > MAX_CLAIM_SET && b.len() < MAX_MESSAGE);

@@ -251,6 +251,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     3. it uploads anything else (a remover does so in the removal's sync, spec/permissions.md §3), and records the steps in `label.0`.
   - While that host refuses the step for now (Register), the admin's uploads and deletions there go on under the host's head (wrapped under the newest read epoch as always, spec/crypto.md §5).
   - An admin that does not hold the head's epochs walks and reads first (§2) and registers nothing.
+- **Reading without the head's read epoch**: a node holding no secret of the read epoch a host's head registers fetches and opens every entry present there whose wrap opens under a read secret it holds, again whenever it gains one (an entry listed before was not fetched then). Only after that does its pass there count as complete (spec/permissions.md §4, stranded).
 - **Deletion by delete key**: a node holding a delete key for a body the label must not hold (§6) deletes it under every label it syncs as soon as it sees the condition. Whichever delete-key holder sees a valid purge executes it.
 
 ## 6. Protocol

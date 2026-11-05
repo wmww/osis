@@ -8,10 +8,9 @@ use crate::names::Names;
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
-    BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, key_actor_role_secret, open_box_names, seal_box, seal_box_names, seal_history,
-    wrap_symmetric_box,
+    BoxItem, BoxSlot, CryptoRngCore, Epoch, KemPublicKey, Secret32, key_actor_role_secret, seal_box, seal_history, wrap_symmetric_box,
 };
-use osis_schema::core_types::{BoxKey, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, SymmetricBox};
+use osis_schema::core_types::{BoxKey, KemKey, Keys, Sealed, SealedBox, SecretBox, Secrets, Signature, SymmetricBox};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What the writer knows of a holder's keys.
@@ -79,11 +78,11 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
         let slot = BoxSlot::Secrets { actor: *actor, holder, role: i.role, epoch: i.epoch };
         let b = match &rcpt.keys {
             HolderKeys::KeyActor { kem, seed: None } => sealed(kem, &slot, None, i, rng)?,
-            HolderKeys::KeyActor { seed: Some(seed), .. } => symmetric(&slot, i, &key_actor_role_secret(seed, i.role), Epoch::ZERO)?,
+            HolderKeys::KeyActor { seed: Some(seed), .. } => symmetric(&slot, i, &key_actor_role_secret(seed, i.role), Epoch::ZERO, false)?,
             HolderKeys::Actor { keysets, own } => {
                 let ks = keysets.get(&i.role);
                 match own.get(&i.role) {
-                    Some((es, s)) if symmetric_box(es, ks.map(|(ek, _)| ek)) => symmetric(&slot, i, s, *es)?,
+                    Some((es, s)) if symmetric_box(es, ks.map(|(ek, _)| ek)) => symmetric(&slot, i, s, *es, true)?,
                     _ => {
                         let Some((ek, pk)) = ks else { return Ok(None) };
                         sealed(pk, &slot, Some(*ek), i, rng)?
@@ -106,12 +105,15 @@ pub fn symmetric_box(own: &Epoch, keyset: Option<&Epoch>) -> bool {
 fn sealed(pk: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>, i: &Item, rng: &mut dyn CryptoRngCore) -> Result<SecretBox, Error> {
     let item = BoxItem { role: i.role, epoch: i.epoch, secret: i.secret.clone() };
     let sealed = seal_box(pk, slot, keyset, &item, rng)?;
-    Ok(SecretBox::Sealed(SealedBox { keyset: keyset.as_ref().map(to_schema), suite: SUITE, sealed: Sealed::X25519MlKem768(sealed), names: None }))
+    Ok(SecretBox::Sealed(SealedBox { keyset: keyset.as_ref().map(to_schema), suite: SUITE, sealed: Sealed::X25519MlKem768(sealed) }))
 }
 
-fn symmetric(slot: &BoxSlot, i: &Item, s: &Secret32, epoch_s: Epoch) -> Result<SecretBox, Error> {
+/// A symmetric box under the holder's secret `s` of `epoch_s`; to a holder actor (`signed`) with
+/// its possession signature (spec/crypto.md §4, spec/wire.md §7).
+fn symmetric(slot: &BoxSlot, i: &Item, s: &Secret32, epoch_s: Epoch, signed: bool) -> Result<SecretBox, Error> {
     let wrap = wrap_symmetric_box(s, slot, epoch_s, i.secret)?;
-    Ok(SecretBox::Symmetric(SymmetricBox { epoch: to_schema(&epoch_s), wrap: wrap.to_vec(), names: None }))
+    let possession = if signed { Some(Signature::Ed25519(crate::possession::sign(s, slot, epoch_s, &wrap)?.0.to_vec())) } else { None };
+    Ok(SecretBox::Symmetric(SymmetricBox { epoch: to_schema(&epoch_s), wrap: wrap.to_vec(), possession }))
 }
 
 /// A role's new epoch made by a rotation.
@@ -273,70 +275,13 @@ pub fn box_holder(
     Ok(Some(out))
 }
 
-/// Puts `names` into each box `w` writes to holder actor `holder` (spec/crypto.md §4: the
-/// sealer's names for the actor it boxes), sealed under the boxed epoch's secret (`held`, the
-/// actor's).
-pub fn with_names(actor: &Tid, holder: &Tid, w: &mut SecretsWrite, names: &Names, held: &ActorEpochs, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
-    names_into(actor, holder, w, names, &|r, e| held.role(r).secret(e), rng)
-}
-
-fn names_into<'s>(actor: &Tid, holder: &Tid, w: &mut SecretsWrite, names: &Names, secret_of: &dyn Fn(Role, &Epoch) -> Option<&'s Secret32>, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
-    let v = names.to_value();
-    for (k, b) in w.boxes.iter_mut().filter(|(k, _)| k.holder == *holder) {
-        let e = from_schema(&k.epoch)?;
-        let s = secret_of(k.role, &e).ok_or(Error::NoSecret(k.role))?;
-        let sealed = Some(seal_box_names(s, actor, holder, k.role, &e, &v, rng)?);
-        match b {
-            SecretBox::Sealed(x) => x.names = sealed,
-            SecretBox::Symmetric(x) => x.names = sealed,
-        }
-    }
-    Ok(())
-}
-
-impl Rotation {
-    /// `with_names` for the boxes this rotation writes to holder actor `holder`, sealed under
-    /// the epochs it makes.
-    pub fn with_names(&mut self, actor: &Tid, holder: &Tid, names: &Names, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
-        let Rotation { rotated, secrets, .. } = self;
-        names_into(actor, holder, secrets, names, &|r, e| rotated.iter().find(|x| x.role == r && x.epoch == *e).map(|x| &x.secret), rng)
-    }
-}
-
-/// The epoch of `holder` the box of role `r` in `w` names (a sealed box's recipient keyset
-/// epoch, a symmetric one's epoch of s), if `w` boxes it.
-pub fn box_epoch(w: &SecretsWrite, holder: &Tid, r: Role) -> Option<Epoch> {
-    w.boxes.iter().filter(|(k, _)| k.holder == *holder && k.role == r).find_map(|(_, b)| match b {
+/// The epoch of its holder box `b` names (a sealed box's recipient keyset epoch, a symmetric
+/// one's epoch of s): none for a key actor's sealed box.
+pub fn box_epoch(b: &SecretBox) -> Option<Epoch> {
+    match b {
         SecretBox::Sealed(x) => x.keyset.as_ref().and_then(|e| from_schema(e).ok()),
         SecretBox::Symmetric(x) => from_schema(&x.epoch).ok(),
-    })
-}
-
-/// The sealed names box `b` carries, if any (`open_names` opens them).
-pub fn names_of(b: &SecretBox) -> Option<&Vec<u8>> {
-    match b {
-        SecretBox::Sealed(x) => x.names.as_ref(),
-        SecretBox::Symmetric(x) => x.names.as_ref(),
     }
-}
-
-/// Whether box `b` carries names (a grant's, `with_names`).
-pub fn carries_names(b: &SecretBox) -> bool {
-    names_of(b).is_some()
-}
-
-/// The names box `b` at key `k` of `actor` carries, opened under `secret` (its epoch's): `None`
-/// when it carries none or they do not open to well-formed names.
-pub fn box_names(actor: &Tid, k: &BoxKey, b: &SecretBox, secret: &Secret32) -> Option<Names> {
-    open_names(actor, k, names_of(b)?, secret)
-}
-
-/// Sealed names `sealed` of the box at key `k` of `actor`, opened under `secret` (its epoch's):
-/// `None` when they do not open to well-formed names.
-pub fn open_names(actor: &Tid, k: &BoxKey, sealed: &[u8], secret: &Secret32) -> Option<Names> {
-    let e = from_schema(&k.epoch).ok()?;
-    let v = open_box_names(secret, actor, &k.holder, k.role, &e, sealed).ok()?;
-    Names::from_value(&v)
 }
 
 /// The roles a grant of `role` boxes: every role at or below it.

@@ -447,7 +447,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
 }
 
 fn edge(role: Role, o: GrantOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.may_grant, since: None, tied: None, keyset: None }
+    ct::Edge { role, until: o.until, invite: o.may_grant, since: None, tied: None }
 }
 
 /// Whether a grant of `role` to `h`, with no grant on `t` now, would be written by an admin below
@@ -685,7 +685,7 @@ impl Osis {
                 true => Some(e.placement(&tid, &group, subgroup)?.ok_or_else(|| Error::Invalid(format!("{tid} is not in {group} here")))?),
                 false => None,
             };
-            let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct), keyset: None };
+            let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct) };
             e.grant(&tid, &group, &edge).map_err(needs_admin)
         })?;
         self.carry(done)
@@ -899,7 +899,7 @@ impl Osis {
         let new = match role {
             Some(role) => {
                 let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
-                Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None })
+                Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct) })
             }
             None => None,
         };

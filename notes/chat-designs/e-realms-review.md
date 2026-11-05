@@ -31,7 +31,7 @@ The real costs are authority and reach:
 - `step_due` needs admin on that label, and receipts-only reads refuse to register (§5.3, `register_path` fails). So a mod must fully sync every channel, or be a bot that does.
 - Steps never leave the host path, and a member offline through n steps walks n round trips per channel (sync §5). At 100,000 members, with about 100 departures a day, that is about 700 round trips per channel after a week away.
 
-**Channel rotation "about 7 KB": undercount.** Measured figures give 2.7 KB per holder plus 2.6 KB `keys.0`, about 11 KB at 3 holders. Worse, it holds only if issues/keyset-names-placement-rosters.md is fixed, and that issue has no chosen fix. Today a rotation names every departure below C, and ownerless EV has no epoch start, so every EV removal ever plus every member's device removals appear, and each named commit is placed under C. At 75 B per name x 2 roles: about 0.3 MB per rotation at 1000 members, about 30 MB at 100,000.
+**Channel rotation "about 7 KB": undercount.** Measured figures give 2.7 KB per holder plus 2.6 KB `keys.0`, about 11 KB at 3 holders. Worse, it holds only if issues/keyset-names-placement-rosters.md (closed by keys depth 0: no names below an actor) is fixed, and that issue has no chosen fix. Today a rotation names every departure below C, and ownerless EV has no epoch start, so every EV removal ever plus every member's device removals appear, and each named commit is placed under C. At 75 B per name x 2 roles: about 0.3 MB per rotation at 1000 members, about 30 MB at 100,000.
 
 ## 2. Frontier scope
 

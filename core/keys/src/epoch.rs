@@ -130,11 +130,8 @@ impl EpochInfo {
     /// Invariant (R9): an epoch whose secret is held is used (encrypted under, boxed, put in a
     /// history box) only once some history entry of it has every name met: every departure from
     /// the actor its rotator held is applied here, or lies before this node's epoch start, so this
-    /// node's roster has those holders departed and its holder computation boxes none of them;
-    /// and every holder actor's keyset epoch its boxes named is held here from a valid `keys.0`
-    /// body (its own or one superseding it), so this node boxes that actor at that keyset or one
-    /// whose rotator had it (and its departures) in hand, never an older one a holder departed
-    /// from the actor still opens. The rotator names from its own
+    /// node's roster has those holders departed and its holder computation boxes none of them.
+    /// The rotator names from its own
     /// timeline, so the epochs its history box carries had their names met there, and those names
     /// are among its own: no chain of other rotators' word is followed. An entry is written under
     /// the epoch's secret, so only its holders write one (they could leak it anyway). A secret not
@@ -662,9 +659,6 @@ mod tests {
         fn met(&self, n: &crate::Name) -> bool {
             self.have.contains(&n.key.commit.0[0])
         }
-        fn keyset(&self, k: &crate::KeysetName) -> bool {
-            self.have.contains(&(k.epoch.nonce()[0]))
-        }
         fn departed(&self, _: &crate::Own) -> bool {
             self.departed
         }
@@ -673,7 +667,7 @@ mod tests {
     fn names(cs: &[u8], departs: bool) -> Names {
         let t = Tid::from_bytes([5; 15]);
         let list = cs.iter().map(|c| crate::Name { thing: t, key: crate::Key { ts: u64::from(*c), node: t, commit: cid(*c) } }).collect();
-        Names { list, keysets: BTreeSet::new(), departs: departs.then_some(crate::Own { ts: 99, node: t }) }
+        Names { list, departs: departs.then_some(crate::Own { ts: 99, node: t }) }
     }
 
     // spec/crypto.md §4 (established; names): an epoch established by its rotation commit or a
@@ -705,16 +699,6 @@ mod tests {
         r.add_names(ep(3, 0), names(&[7], false));
         r.establish(&Holding { have: [7].into(), departed: false });
         assert!(r.is_established(&ep(3, 0)));
-        // a keyset name is met only where that keyset epoch is held (here: its nonce's first byte)
-        let mut k = RoleEpochs::default();
-        k.set_rotation(ep(5, 0), cid(5), BTreeSet::new());
-        k.set_secret(ep(5, 0), Secret32::from_bytes([5; 32]));
-        let kn = crate::KeysetName { thing: Tid::from_bytes([6; 15]), role: osis_base::Role::Read, epoch: ep(1, 9) };
-        k.add_names(ep(5, 0), Names { keysets: [kn].into(), ..Names::default() });
-        k.establish(&Holding { have: [7].into(), departed: true });
-        assert!(!k.is_established(&ep(5, 0)), "keyset epoch not held");
-        k.establish(&Holding { have: [9].into(), departed: false });
-        assert!(k.is_established(&ep(5, 0)));
         // by snapshot alone, alike
         let mut x = RoleEpochs::default();
         x.set_snapshot(ep(4, 0));

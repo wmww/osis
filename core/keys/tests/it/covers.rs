@@ -7,8 +7,8 @@ use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Name, Names, Opener, ROLES, Recipient, box_holder, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate,
-    rotate_first,
+    ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Name, Names, Opener, Recipient, box_holder, ingest, may_encrypt_under, merge_due, reseal_needed, roles_up_to,
+    rotate,
 };
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
@@ -42,45 +42,6 @@ fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpoc
     (view, s)
 }
 
-// spec/crypto.md §4 (departure inside a holder, covers by names) and §3 (derived secrets): a
-// device removed from person P; a thing T with secrets of its own whose epochs do not name it
-// does not cover it, so a node that may rotate T rotates first; T's rotation naming it covers it;
-// a plain thing owned by P derives from P's new epoch and needs nothing.
-#[test]
-fn lost_device_owner_rotation() {
-    let (t, p) = (tid(1), tid(2));
-    let pe = person(0x20);
-    let (tview, _) = switched(t, p, &pe, &[]);
-    let removal = name(p, 7);
-    let deps = [Departure::inside(p, &Departure::holder(tid(9), Role::Read).at(Some(removal)))];
-    let all = roles_up_to(Role::Admin);
-    for r in ROLES {
-        let (e, _) = tview.role(r).newest_held().unwrap();
-        assert!(!may_encrypt_under(&t, &tview, r, &e, &deps, &AllHeld));
-    }
-    assert_eq!(rotate_first(&t, &tview, &all, &all, &deps, &AllHeld), all);
-    // A writer of T may rotate read and write only.
-    let rw: BTreeSet<Role> = [Role::Read, Role::Write].into_iter().collect();
-    assert_eq!(rotate_first(&t, &tview, &all, &rw, &deps, &AllHeld), rw);
-    // T rotates naming the removal: covered. Naming something else covers nothing.
-    let mut pe2 = pe.clone();
-    for (i, r) in ROLES.into_iter().enumerate() {
-        pe2.role_mut(r).rotation(ep(2, 0x21), [ep(1, 0x20)]);
-        pe2.role_mut(r).set_established(ep(2, 0x21), osis_keys::Provenance::Fixed);
-        pe2.role_mut(r).set_secret(ep(2, 0x21), Secret32::from_bytes([0x90 + i as u8; 32]));
-    }
-    let ts = osis_schema::core_types::Secrets::default();
-    for (names, covered) in [(naming(name(p, 8)), false), (naming(removal), true)] {
-        let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &names, &mut rng(2)).unwrap();
-        let tv2 = r.preview(&tview).unwrap();
-        assert_eq!(rotate_first(&t, &tv2, &all, &all, &deps, &AllHeld).is_empty(), covered);
-    }
-    // A plain thing U owned by P: its derived epoch is at P's newest's n.
-    let u = ActorEpochs::derived(&pe2, &tid(3));
-    let s = osis_crypto::thing_role_secret(pe2.read.secret(&ep(2, 0x21)).unwrap(), Role::Read, &tid(3));
-    assert_eq!(u.read.newest(), Some(osis_crypto::Epoch::derive(&tid(3), Role::Read, 2, &s).unwrap()));
-}
-
 // spec/permissions.md §3: a grant raced by a rotation leaves the grantee without a box at the
 // current epoch; the re-seal trigger finds it, and the re-seal clears it.
 #[test]
@@ -105,10 +66,10 @@ fn grant_raced_by_rotation() {
     assert!(gv.read.secret(&v.read.newest().unwrap()).is_some());
 }
 
-// spec/crypto.md §4, spec/permissions.md §3: a node holding an eager rotation that boxes M, but
-// not yet the removal of M (which travels with its own rotation, forking), may encrypt under it;
-// once the removal arrives the eager epoch does not cover it and the node rotates first, past
-// both forks, excluding M.
+// spec/crypto.md §4 (merge), spec/permissions.md §3: a node holding an eager rotation that boxes
+// M, but not yet the removal of M (which travels with its own rotation, forking), may encrypt
+// under it; once the removal arrives the eager epoch does not cover it, and the node rotates
+// while it stays current, newest or not, past both forks, excluding M.
 #[test]
 fn rotation_held_before_the_removal() {
     let (a, p, m) = (tid(1), tid(2), tid(3));
@@ -131,8 +92,7 @@ fn rotation_held_before_the_removal() {
     let deps = [Departure::holder(m, Role::Read).at(Some(removed))];
     assert!(!may_encrypt_under(&a, &v, Role::Read, &e2, &deps, &AllHeld));
     assert!(may_encrypt_under(&a, &v, Role::Read, &e2r, &deps, &AllHeld));
-    let first = rotate_first(&a, &v, &read(), &read(), &deps, &AllHeld);
-    assert_eq!(first.contains(&Role::Read), v.read.newest() == Some(e2));
+    assert!(merge_due(&a, &v, Role::Read, &deps, &AllHeld), "the eager fork is current, whichever is newest");
     // Rotating past both forks excludes M.
     let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &naming(removed), &mut rng(8)).unwrap();
     let history: BTreeSet<_> = v.read.held_established().map(|x| x.0).collect();
@@ -142,6 +102,7 @@ fn rotation_held_before_the_removal() {
     v = heal.preview(&v).unwrap();
     let e3 = heal.rotated[0].epoch;
     assert!(may_encrypt_under(&a, &v, Role::Read, &e3, &deps, &AllHeld));
+    assert!(!merge_due(&a, &v, Role::Read, &deps, &AllHeld));
     let mut mv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { holder: m, epochs: &me }, &mut mv, None).unwrap();
     assert!(mv.read.secret(&e3).is_none());
@@ -170,7 +131,7 @@ fn missing_box_covers_nothing() {
     let removed = name(a, 7);
     let dep = [Departure::holder(m, Role::Read).at(Some(removed))];
     assert!(!may_encrypt_under(&a, &v, Role::Read, &e1, &dep, &AllHeld));
-    assert_eq!(rotate_first(&a, &v, &read(), &read(), &dep, &AllHeld), read());
+    assert!(merge_due(&a, &v, Role::Read, &dep, &AllHeld));
     let named = rotate(&a, &read(), &v, &base, &[owner_rcpt(p, &pe)], &naming(removed), &mut rng(8)).unwrap();
     let v2 = named.preview(&v).unwrap();
     let e2 = named.rotated[0].epoch;
@@ -179,9 +140,6 @@ fn missing_box_covers_nothing() {
     impl osis_keys::Held for Unmet {
         fn met(&self, _: &Name) -> bool {
             false
-        }
-        fn keyset(&self, _: &osis_keys::KeysetName) -> bool {
-            true
         }
         fn departed(&self, _: &osis_keys::Own) -> bool {
             true

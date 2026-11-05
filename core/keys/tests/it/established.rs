@@ -36,9 +36,6 @@ impl osis_keys::Held for Holding {
     fn met(&self, n: &osis_keys::Name) -> bool {
         self.0.contains(&n.key.commit)
     }
-    fn keyset(&self, _: &osis_keys::KeysetName) -> bool {
-        true
-    }
     fn departed(&self, own: &osis_keys::Own) -> bool {
         u8::try_from(own.ts).is_ok_and(|b| self.0.contains(&cid(b)))
     }

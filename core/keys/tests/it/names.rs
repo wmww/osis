@@ -2,18 +2,16 @@
 //! Establishment by names (spec/crypto.md §4): random rotation histories of one role (forks,
 //! departures in plain commits and in the rotation commits themselves, keyset lists, rotators
 //! each holding a random part of what came before, writers' forged history entries, invalid
-//! rotation commits, snapshots, an epoch start, holder actors' keyset epochs named), observed by a
-//! node holding a random part of it (withheld commits, keyset epochs, secrets held or
-//! reading-only, verdicts flipping on the way, any order).
+//! rotation commits, snapshots, an epoch start), observed by a node holding a random part of it
+//! (withheld commits, secrets held or reading-only, verdicts flipping on the way, any order).
 //! Checked: the established set and current epochs equal a direct reading of the rule over the
 //! final held set, and the invariant: a node uses (holds the secret of an established epoch) no
 //! epoch made by an honest rotator unless it holds every departure that rotator held, or the
-//! departure lies before its epoch start, and every keyset epoch it named (no epoch start stands
-//! in for those); a departed holder thus never gets a later epoch from it.
+//! departure lies before its epoch start; a departed holder thus never gets a later epoch from it.
 
-use osis_base::{CommitId, Role, Tid};
+use osis_base::{CommitId, Tid};
 use osis_crypto::{Epoch, Secret32};
-use osis_keys::{Held, Key, KeysetName, Name, Names, Own, Provenance, RoleEpochs, Unchecked};
+use osis_keys::{Held, Key, Name, Names, Own, Provenance, RoleEpochs, Unchecked};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
 
@@ -32,13 +30,6 @@ fn key(i: usize) -> Key {
 
 const THING: Tid = Tid::from_bytes([3; 15]);
 
-/// The holder actor whose keyset epochs rotations name.
-const HOLDER: Tid = Tid::from_bytes([4; 15]);
-
-/// Keyset epoch `k` of `HOLDER`.
-fn keyset(k: u8) -> KeysetName {
-    KeysetName { thing: HOLDER, role: Role::Read, epoch: ep(9, k) }
-}
 
 #[derive(Clone, Debug)]
 enum Kind {
@@ -55,8 +46,6 @@ struct Commit {
     valid: bool,
     /// The departures its rotator held (indices of earlier departing commits): its names.
     knew: BTreeSet<usize>,
-    /// The holder actor's keyset epochs its boxes named.
-    keysets: BTreeSet<u8>,
     /// A writer holding its epoch forged a second history entry naming only these.
     forged: Option<BTreeSet<usize>>,
 }
@@ -73,8 +62,6 @@ struct History {
     snapshots: BTreeSet<Epoch>,
     /// Its epoch start: names ordered before commit `start` are met.
     start: usize,
-    /// The holder actor's keyset epochs it holds.
-    keysets: BTreeSet<u8>,
 }
 
 impl History {
@@ -91,8 +78,8 @@ impl History {
         let c = &self.commits[i];
         let Kind::Rotation { departs, .. } = c.kind else { return Vec::new() };
         let own = departs.then_some(Own { ts: key(i).ts, node: key(i).node });
-        let names = |ks: &BTreeSet<usize>| Names { list: ks.iter().map(|k| Name { thing: THING, key: key(*k) }).collect(), keysets: c.keysets.iter().map(|k| keyset(*k)).collect(), departs: own };
-        std::iter::once(names(&c.knew)).chain(c.forged.iter().map(|f| Names { departs: None, keysets: BTreeSet::new(), ..names(f) })).collect()
+        let names = |ks: &BTreeSet<usize>| Names { list: ks.iter().map(|k| Name { thing: THING, key: key(*k) }).collect(), departs: own };
+        std::iter::once(names(&c.knew)).chain(c.forged.iter().map(|f| Names { departs: None, ..names(f) })).collect()
     }
 
     fn met(&self, k: usize) -> bool {
@@ -100,7 +87,7 @@ impl History {
     }
 
     fn entry_met(&self, n: &Names) -> bool {
-        n.list.iter().all(|x| self.met(x.key.ts as usize - 1)) && n.keysets.iter().all(|k| self.keysets.contains(&k.epoch.nonce()[0])) && n.departs.is_none_or(|o| self.met(o.ts as usize - 1))
+        n.list.iter().all(|x| self.met(x.key.ts as usize - 1)) && n.departs.is_none_or(|o| self.met(o.ts as usize - 1))
     }
 }
 
@@ -110,9 +97,6 @@ impl Held for Observer<'_> {
     fn met(&self, n: &Name) -> bool {
         self.0.met(n.key.ts as usize - 1)
     }
-    fn keyset(&self, k: &KeysetName) -> bool {
-        self.0.keysets.contains(&k.epoch.nonce()[0])
-    }
     fn departed(&self, own: &Own) -> bool {
         self.0.met(own.ts as usize - 1)
     }
@@ -121,17 +105,17 @@ impl Held for Observer<'_> {
 const LEVELS: u64 = 4;
 
 fn history() -> impl Strategy<Value = History> {
-    let commit = (any::<bool>(), 1..=LEVELS, 0u8..2, proptest::collection::btree_set((0..LEVELS, 0u8..2), 0..3), any::<bool>(), proptest::bool::weighted(0.85), proptest::collection::btree_set(0usize..12, 0..12), proptest::option::weighted(0.2, proptest::collection::btree_set(0usize..12, 0..3)), proptest::collection::btree_set(0u8..3, 0..2));
-    let rest = (proptest::collection::btree_set(0usize..12, 0..12), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..6), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..2), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..2), 0usize..6, proptest::collection::btree_set(0u8..3, 0..4));
-    (proptest::collection::vec(commit, 1..12), rest).prop_map(|(cs, (held, secrets, reading, snaps, start, keysets))| {
+    let commit = (any::<bool>(), 1..=LEVELS, 0u8..2, proptest::collection::btree_set((0..LEVELS, 0u8..2), 0..3), any::<bool>(), proptest::bool::weighted(0.85), proptest::collection::btree_set(0usize..12, 0..12), proptest::option::weighted(0.2, proptest::collection::btree_set(0usize..12, 0..3)));
+    let rest = (proptest::collection::btree_set(0usize..12, 0..12), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..6), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..2), proptest::collection::btree_set((0..=LEVELS, 0u8..2), 0..2), 0usize..6);
+    (proptest::collection::vec(commit, 1..12), rest).prop_map(|(cs, (held, secrets, reading, snaps, start))| {
         let mut commits: Vec<Commit> = Vec::new();
-        for (i, (rot, n, k, list, departs, valid, knew, forged, named)) in cs.into_iter().enumerate() {
+        for (i, (rot, n, k, list, departs, valid, knew, forged)) in cs.into_iter().enumerate() {
             let departing: Vec<usize> = (0..i).filter(|j| matches!(commits[*j].kind, Kind::Departure | Kind::Rotation { departs: true, .. })).collect();
             // a rotator holds some of the earlier departures (an honest one names all it holds)
             let knew: BTreeSet<usize> = departing.iter().copied().filter(|j| knew.contains(j)).collect();
             let forged = forged.map(|f| f.into_iter().filter(|j| departing.contains(j)).collect());
             let kind = if rot { Kind::Rotation { epoch: ep(n, k), list: list.into_iter().filter(|(m, _)| *m < n).map(|(m, x)| ep(m, x)).collect(), departs } } else { Kind::Departure };
-            commits.push(Commit { kind, valid, knew, forged, keysets: named });
+            commits.push(Commit { kind, valid, knew, forged });
         }
         let len = commits.len();
         History {
@@ -141,7 +125,6 @@ fn history() -> impl Strategy<Value = History> {
             reading: reading.iter().map(|(n, k)| ep(*n, *k)).filter(|e| !secrets.contains(&(e.n(), e.nonce()[0]))).collect(),
             snapshots: snaps.into_iter().map(|(n, k)| ep(n, k)).collect(),
             start: start.min(len),
-            keysets,
         }
     })
 }
@@ -313,8 +296,8 @@ proptest! {
             if h.rotations_of(*e).any(|(_, c)| c.forged.is_some()) {
                 continue;
             }
-            let ok = h.rotations_of(*e).filter(|(i, _)| carried(*i, e)).any(|(i, c)| c.knew.iter().all(|k| h.met(*k)) && c.keysets.is_subset(&h.keysets) && (!h.departs(i) || h.met(i)));
-            prop_assert!(ok, "epoch {e:?} used without a departure or keyset epoch its rotator held");
+            let ok = h.rotations_of(*e).filter(|(i, _)| carried(*i, e)).any(|(i, c)| c.knew.iter().all(|k| h.met(*k)) && (!h.departs(i) || h.met(i)));
+            prop_assert!(ok, "epoch {e:?} used without a departure its rotator held");
         }
     }
 }
@@ -327,7 +310,7 @@ fn forged_entry_by_a_holder_is_accepted() {
     let mut r = RoleEpochs::default();
     r.set_rotation(e, cid(1), BTreeSet::new());
     r.set_secret(e, Secret32::from_bytes([1; 32]));
-    let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new(), start: 0, keysets: BTreeSet::new() };
+    let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new(), start: 0 };
     r.add_names(e, Names { list: [Name { thing: THING, key: key(0) }].into(), ..Names::default() });
     r.establish(&Observer(&h));
     assert!(!r.is_established(&e));

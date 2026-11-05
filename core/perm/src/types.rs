@@ -35,10 +35,6 @@ pub struct Edge {
     /// The placement of the target in its holder group this edge is tied to
     /// (spec/permissions.md §2): carried, never an authority.
     pub tied: Option<Tie>,
-    /// A holder actor's edge: the key of its `keys.0` commit the last grant or raise sealed to
-    /// (spec/crypto.md §4); carried by every later write of the edge and by roster snapshots,
-    /// never an authority.
-    pub keyset: Option<Point>,
 }
 
 /// The `group.0` element a tied edge names (spec/permissions.md §2): its creation stamp (`ts`,
@@ -61,12 +57,12 @@ pub enum TieSource {
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }
+        Edge { role, until: None, invite: None, since: None, tied: None }
     }
     /// The value a removal saying keep writes (spec/permissions.md §3): `until` 0, gone at every
-    /// clock. `keyset`: the standing edge's, so that it lowers (§2).
-    pub fn kept_end(keyset: Option<Point>) -> Edge {
-        Edge { until: Some(osis_base::WallMs(0)), keyset, ..Edge::new(osis_base::Role::Read) }
+    /// clock.
+    pub fn kept_end() -> Edge {
+        Edge { until: Some(osis_base::WallMs(0)), ..Edge::new(osis_base::Role::Read) }
     }
     /// Whether this value is a removal's saying keep.
     pub fn says_keep(&self) -> bool {
@@ -82,10 +78,8 @@ impl Edge {
     }
 }
 
-/// `new` removes `old` or lowers it in every component (role, invite, `until`) keeping its
-/// `keyset`: the shape of a self-removal (spec/permissions.md §2). A changed `keyset` is not: a
-/// holder actor's member could otherwise point the boxers bound by it (spec/crypto.md §4) at a
-/// keyset of its own choice.
+/// `new` removes `old` or lowers it in every component (role, invite, `until`): the shape of a
+/// self-removal (spec/permissions.md §2).
 pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
     match (new, old) {
         (None, _) => true,
@@ -96,7 +90,7 @@ pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
                 (None, Some(_)) => false,
                 (Some(a), Some(b)) => a <= b,
             };
-            n.role <= o.role && n.invite <= o.invite && until_le && n.keyset == o.keyset
+            n.role <= o.role && n.invite <= o.invite && until_le
         }
     }
 }
