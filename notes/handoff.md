@@ -13,7 +13,7 @@ Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md, notes/questi
 ## Branches in flight (local; agents told to commit WIP and release)
 | branch | state | next |
 |---|---|---|
-| `keys-tidy` | rotation names bounded by supersession (issues/rotation-names-grow.md) + grant to a blocked holder goes through as Out (spec §4 Seal). Status section at the top of the issue. | finish, review, merge; then lockout recovery (issues/lockout-recovery-without-omission.md) on the same area |
+| `keys-tidy` | WIP, not fully tested. Done: grant to a blocked holder goes through as Out; fix in `NamesHeld::departed` (a removal's own epoch counted before its edge write; on main too). Blocked: bounding rotation names: the issue's proposal leaks (TLA `F_naive_chain`); a sound base-chain rule breaks when a base rotation turns invalid; three options for Tess in issues/rotation-names-grow.md (state at top). Prototype on local `keys-tidy-names-proto`. | run tier 1/clippy/harnesses, review, merge the done parts; put the names options to Tess; then lockout recovery |
 | `readers-leak` | TLA model of issues/blocked-walk-stops-at-readers.md (older leak via actors the writer can't rotate). | read results in the issue; build the chosen rule or state the limit |
 | `firstadmin-model` | TLA model of first-admin edge removal and derived secrets (risk before step 2 stage B). | read results in issues/owner-to-first-admin.md Risks |
 Check `git branch` and `wt list`; any worktree still claimed with no running agent: commit WIP and release.
@@ -22,6 +22,9 @@ Check `git branch` and `wt list`; any worktree still claimed with no running age
 - Step 0 keys at depth 0: built (items 295-297). Step 1 roster snapshots deleted: built (298).
 - Step 2 owners → first admins: staged build plan in issues/owner-to-first-admin.md (A derive from first admin, B one record/one authority class, C renames, D API/CLI). Start A after keys-tidy merges (both touch key derivation). Build step 3 right after B (security gap between them). Stage D conflicts with Tess's other session's API work (issues/api-after-owners.md): coordinate.
 - Step 3 disputes: de-risked (core/test/roles-model trust.rs; three rule problems in plan step 3). Step 6 hosts: de-risked and Q9 closed (core/test/tla/sides; host branching + "no side needs it").
+
+## Security first
+- issues/forged-departs-mark-entry.md (new, untested): a self-removing member may add a history entry saying its own removal is covered, so nobody rotates and it keeps reading. Confirm with a test and fix before other keys work.
 
 ## Open questions for Tess (notes/questions-for-tess.md)
 - Q12: depth 0 bends slightly (a device holding a member group's keys won't hand out its stale key). Recommended: accept. Already built (297).
