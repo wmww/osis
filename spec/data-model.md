@@ -21,7 +21,7 @@
   - The **lifetime marker** decides where writes of the AK go, for every AK alike, declared by a schema or not:
     - none: durable commits;
     - `~` **ephemeral**: a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9);
-    - `*` **signal**: an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set).
+    - `*` **signal**: an ephemeral write with no lasting value (delivered to listeners here and on the nodes connected now, never in state; only a whole-value set).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
   - Core aspects are durable but `placed.0~` (§8), which is ephemeral.
@@ -144,12 +144,12 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `tag.0` | marks a group as a user-facing tag: its items are the tag's contents, its subgroups its sub-tags (§8) |
 
 - **`host.0^`** present: the node hosts (spec/sync.md §4). Absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). Never part of the node card (spec/permissions.md §4).
-  - `admit` `own`: it takes registrations of the labels of groups its person owns whose hosts name its host address, and of `labels`. A group its person owns: the node or its person (the person it was created or paired for) is on the group's owner chain; no role edge, on the group or an owner above it, held by the node or the person, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
+  - `admit` `own`: it takes registrations of the labels of groups its account owns whose hosts name its host address, and of `labels`. A group its account owns: the node or its account (the account it was created or paired for) is on the group's owner chain; no role edge, on the group or an owner above it, held by the node or the account, qualifies. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5).
   - `admit` `open`: it takes registrations of any label.
   - `replicate`: peer hosts. `policy`, `caps`: local policy.
 - **`clients.0^`**: thin clients by client actor (spec/sync.md §10). Never part of the node card.
   - `secret_hash`: BLAKE3 of the client's 32-byte bearer secret. `until`: when its sessions end.
-  - The client actor is a thing the node's person owns, with secrets of its own, and what the client may do is that actor's roles.
+  - The client actor is a thing the node's account owns, with secrets of its own, and what the client may do is that actor's roles.
 
 **Role-class aspects**: `roles.0`, `secrets.0`, `keys.0`, `label.0`, `tenures.0`. Their rules: spec/commits.md §2, spec/permissions.md.
 

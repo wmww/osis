@@ -181,6 +181,18 @@ pub(crate) struct Served {
     client: Option<ClientBinding>,
 }
 
+impl Served {
+    /// Whether the session has label `l` open.
+    pub(crate) fn opens(&self, l: &LabelId) -> bool {
+        self.conn.opened().any(|x| x == l)
+    }
+
+    /// Whether it syncs at all (a client's session opens no label).
+    pub(crate) fn syncing(&self) -> bool {
+        !self.conn.none_opened()
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ClientBinding {
     hash: [u8; 32],

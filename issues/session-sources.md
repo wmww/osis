@@ -76,7 +76,7 @@ B never needs to know which case it is in. Per construct:
 | Validity re-judge (`rejudge_once`, `Judge::part`) | Every meta | Nothing to judge | None. Writes live in snapshots |
 | Node-sync header reads (work.rs, pass/delete.rs, local.rs, inbound.rs) | Header per entry | Stuck deletes | Rule 8 waits for entries to go |
 | Counters and restore (`node_form_ok`, `counters_sure`/`unsure`, `raise_counter`, examine adoption, `join_part` adoption, `MAX_NODE_COUNTER`, store COUNTER rows) | Item 193 | Not needed | Deleted (step 2) |
-| `flows/tied.rs` `TieSource` (Node, Commit), retention/mod.rs:1020 (scan from `Source::node(zeros)`), perm walk overlap `Dots::Node` | Node only | n/a | Generalize to Session (step 2), delete Node (step 4) |
+| `flows/tied.rs` `TieSource` (Node, Commit), retention/mod.rs:1020 (scan from `Origin::node(zeros)`), perm walk overlap `Dots::Node` | Node only | n/a | Generalize to Session (step 2), delete Node (step 4) |
 
 ## What goes
 - Item 193's machinery (notes/node.md Counters), its commit-form window and `Absorbed` cost (~110 B per commit while unsure), and the 2^62 lying-frontier residue.
@@ -163,7 +163,7 @@ Each step merges alone, passes the gate, and updates the spec sections it change
 3. **Demoter compacts first** (rule 7's MAY, local policy). In the revoke flow (`flows/edges.rs` before `frontier`), when `as_of` is now: `compaction_snapshot` for each scope aspect where this node holds an uncovered part of a demoted node, in the same transaction as the demotion.
    - Test: the frontier lists nothing for those aspects, X's live writes reach a fresh node through the snapshot, and a backdated revoke compacts nothing.
    - Tess's choice (below): with or without this step.
-4. **Per-node source kind deleted.** **Built** (branch node-source), mechanical, no behaviour change: sources are `Session` and `Commit` (plus `Derived`), a 15-byte `Sources` entry is malformed, `Frontiers` is per session only; the header form is 0 (commit) or `[1, nonce]` (session), every other value malformed (review renumbered it from 1 / `[2, nonce]`: every commit ID moved); schema `source` is `{0 commit, 1 session}`; local encodings (perm tie cache, index meta form byte, `dot_key`, `dot_value`) renumbered. Tests write session sources (osis-crdt `testutil::sess`, crdt-model `Source::session(n, 0)`); crdt and commit vectors and the fuzz seeds regenerated.
+4. **Per-node source kind deleted.** **Built** (branch node-source), mechanical, no behaviour change: sources are `Session` and `Commit` (plus `Derived`), a 15-byte `Sources` entry is malformed, `Frontiers` is per session only; the header form is 0 (commit) or `[1, nonce]` (session), every other value malformed (review renumbered it from 1 / `[2, nonce]`: every commit ID moved); schema `source` is `{0 commit, 1 session}`; local encodings (perm tie cache, index meta form byte, `dot_key`, `dot_value`) renumbered. Tests write session sources (osis-crdt `testutil::sess`, crdt-model `Origin::session(n, 0)`); crdt and commit vectors and the fuzz seeds regenerated.
 5. **Traced tables** (rules 3-5):
    - snapshot writers list only occurring sources (`retention/mod.rs` frontier build, `Absorbed`);
    - decode refuses an untraced listed source;

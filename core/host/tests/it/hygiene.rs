@@ -1,5 +1,4 @@
-//! What a host learns (spec/requirements.md, Untrusted nodes; notes/sync.md "What a blind
-//! node learns"): a scripted run whose blobs carry tids, AKs and author keys in their plaintext,
+//! What a host learns (spec/requirements.md Data a node cannot read; notes/sync.md What a node learns): a scripted run whose blobs carry tids, AKs and author keys in their plaintext,
 //! then every byte the node ever wrote, and every host-store row an attacker holding the device
 //! decrypts from it, is searched for them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -19,7 +18,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-// spec/sync.md §4, spec/requirements.md Untrusted nodes: no tid, AK or author key reaches the host's storage
+// spec/sync.md §4, spec/requirements.md Data a node cannot read: no tid, AK or author key reaches the host's storage
 #[test]
 fn stored_bytes_hold_no_plaintext_identifiers() {
     let mut w = World::new();

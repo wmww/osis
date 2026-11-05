@@ -1,4 +1,4 @@
-//! Contacts and profiles (notes/std.md): a profile is contact aspects on the person's profile
+//! Contacts and profiles (notes/std.md): a profile is contact aspects on the account's profile
 //! thing, read by everyone holding its card; a contact of mine links the profile and overrides
 //! it field by field; a contact without a profile is just my data. Tier 1.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -99,10 +99,10 @@ fn profile_and_contact_overlay() {
     assert_eq!(bob.at(d, DATES).get().unwrap().unwrap()["birthday"].year, None);
 }
 
-/// spec/sync.md §3: a contact card needs hosts; on a hostless database `contact_card` and
+/// spec/sync.md §3: a contact card needs peers; on a peerless node `contact_card` and
 /// `profile` fail before writing anything, so each try leaves no commit or thing behind.
 #[test]
-fn hostless_contact_card_writes_nothing() {
+fn contact_card_without_peers_writes_nothing() {
     let db = crate::common::db(7);
     let all = osis::CommitQuery::default();
     let before = db.commits(&all).unwrap().len();

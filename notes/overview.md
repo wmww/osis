@@ -1,7 +1,7 @@
 # Overview
 > Summary: Project state, where things live (spec vs notes vs issues), the code so far, MVP scope, and the index of notes.
 
-osis (Open Structured Information System) is a decentralized data layer optimized for flexibility and robustness: end-user apps managing small-to-large interconnected data across users and devices (notes, calendars, spreadsheets), shared by many apps, app versions, generic tools and AI agents like a file format. Handles device sync, sharing, encryption and simple data APIs. Somewhere between Git, Obsidian, Google Drive and Syncthing.
+osis (Open Structured Information System) is a decentralized data layer optimized for flexibility and robustness: end-user apps managing small-to-large interconnected data across users and their machines (notes, calendars, spreadsheets), shared by many apps, app versions, generic tools and AI agents like a file format. Handles device sync, sharing, encryption and simple data APIs. Somewhere between Git, Obsidian, Google Drive and Syncthing.
 
 ## Where things live
 The repo is meant to become a small monorepo of projects worked on independently (Tess): core (with cli and schema), `libs/` (what some but not all users of osis want: chat, the kit UI toolkit) and app (notes/app.md), each with its own checks (the gate picks them by changed paths, notes/build.md).
@@ -25,8 +25,8 @@ What runs where (details and latest numbers: notes/testing.md):
 - Behind features, off by default: iroh P2P (`iroh`, transport and node only), LAN announcements (`lan`). Tests of those run with `cargo test-net` (tier 2). QUIC and the redb file store are always built.
 
 How to run:
-- CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` for a local host (notes/cli.md).
-- Host: `osis -s DIR serve --admit open` (a node hosting, listening on UDP 4040); prints `quic://host:port#key`.
+- CLI: `cargo run --bin osis -- --help`; `osis -s DIR init`, writes, `osis serve` to keep a node running (notes/cli.md).
+- Serving for others: `osis -s DIR serve --admit open` (listens on UDP 4040); prints its address, `quic://IP:PORT#KEY`.
 - Standard data scenarios: core/osis's `contact`, `event`, `notes`, `tags` tests in `cargo test --workspace`.
 - Sim: `cargo run --bin sim-sweep -- --seeds N --budget-secs T`; replay a failing seed with `osis_sim::replay("<scenario>", <seed>)`.
 - Models: `core/test/tla/run.sh small` (Java); their tests run in `cargo test --workspace`; `cargo run --bin roles-model`.
@@ -40,7 +40,7 @@ Known open (issues/): cost residues (perm-eval-cost, node-core-gaps, node-sequen
 - notes/architecture.md: crate map and DAG, fixed abstractions, error classes, build and test rules, dependency allowlist, osis-base and osis-schema surfaces, where each crate's notes live.
 - notes/mvp-progress.md: the MVP final report and how to resume.
 - notes/api-design.md: Tess's API philosophy and the checklist for any API change.
-- notes/api.md: the designed API shape (sync data API, typed keys, watches, `Write` with `set`/`edit`, sharing and sync surface), fixed directions, footguns closed, rejected shapes.
+- notes/api.md: the `osis` API as it stands (sync data API, typed keys, watches, `Write`, sharing, peers and serving), why each is so, rejected shapes.
 - notes/data-model.md: tids, CBOR, large values, AK grammar, schema DSL sketch.
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
 - notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.

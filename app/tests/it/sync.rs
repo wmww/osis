@@ -1,4 +1,4 @@
-//! The actions layer across two devices of one person (commits delivered by hand, the engine-level
+//! The actions layer across two nodes of one account (commits delivered by hand, the engine-level
 //! path of core's tests) and over malformed synced data.
 use osis::internals::Internals as _;
 use osis::core::{BODY};
@@ -16,7 +16,7 @@ fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     c
 }
 
-/// Two devices of one person, paired; nothing synced yet beyond the pairing.
+/// Two nodes of one account, paired; nothing synced yet beyond the pairing.
 fn two() -> (Data, Data) {
     let (a, b, _) = two_clocked();
     (a, b)
@@ -51,7 +51,7 @@ fn views_in(d: &Data, v: &[Tid]) -> Vec<View> {
     }).collect()
 }
 
-/// Both devices make an app group before they sync: afterwards both write to the same one, the
+/// Both nodes make an app group before they sync: afterwards both write to the same one, the
 /// views and favorites are not doubled, and a favorite made in the other group can be removed.
 #[test]
 fn two_devices_race_the_app_group() {
@@ -73,7 +73,7 @@ fn two_devices_race_the_app_group() {
         assert!(favs.contains(&n));
         assert_eq!(d.search("calendar").unwrap().scopes.len(), 1, "one Calendar scope");
         assert_eq!(d.view_items(&View::Tags).unwrap().len(), 0);
-        // everything the app shows is a member of home, so it syncs to every device
+        // everything the app shows is a member of home, so it syncs to every node
         for t in d.things().unwrap() {
             assert!(d.db.groups_of(t).unwrap().within.contains(&d.db.me()), "{t} not under home");
         }
@@ -120,7 +120,7 @@ fn concurrent_reorder_and_delete() {
     assert_eq!(fa.len(), len - 2);
 }
 
-/// This device's open thing stays open when the other device's group (smaller tid) arrives.
+/// This node's open thing stays open when the other node's group (smaller tid) arrives.
 #[test]
 fn open_survives_a_merged_group() {
     let (a, b) = two();
@@ -135,7 +135,7 @@ fn open_survives_a_merged_group() {
     assert_eq!(late.opened().unwrap(), None, "home clears it everywhere");
 }
 
-/// Demo data once per person: a second device sees it and adds none; existing favorites stay.
+/// Demo data once per account: a second node sees it and adds none; existing favorites stay.
 #[test]
 fn demo_once_per_person() {
     let (a, b) = two();
@@ -163,7 +163,7 @@ fn deleted_tag_is_gone() {
     assert!(!a.view_items(&View::Recent).unwrap().contains(&garden));
 }
 
-/// The other device deletes the open thing: this one goes home, and the open editor's sessions,
+/// The other node deletes the open thing: this one goes home, and the open editor's sessions,
 /// dropped then, do not bring it back.
 #[test]
 fn remote_delete_of_the_open_thing() {
@@ -193,7 +193,7 @@ fn malformed_aspects_do_not_break_reads() {
     let bad = |w: &mut osis::Write<'_>, ak: &str, v: Value| -> osis::Result<()> {
         let t = w.create()?;
         w.group(g).add(osis::Member::Item(t))?;
-        w.at(t, osis::Key::untyped(Ak::new(ak).unwrap())).set(&v)?;
+        w.at(t, osis::DynamicAspectKey::untyped(Ak::new(ak).unwrap())).set(&v)?;
         Ok(())
     };
     let mut w = a.db.write();
@@ -232,14 +232,14 @@ fn malformed_aspects_do_not_break_reads() {
     assert!(a.db.at(g, GROUP).get().unwrap().is_some());
 }
 
-/// One device empties the other's group into the main one while that device, not yet knowing
+/// One node empties the other's group into the main one while that node, not yet knowing
 /// the main group, favorites something in its own: nothing is lost.
 #[test]
 fn emptying_a_group_keeps_a_concurrent_favorite() {
     let (a, b) = two();
     let ga = a.main_group().unwrap();
     let gb = b.main_group().unwrap();
-    // `big` is the device whose group loses; it learns of the other group only at the end
+    // `big` is the node whose group loses; it learns of the other group only at the end
     let (small, big) = if ga < gb { (&a, &b) } else { (&b, &a) };
     let x = big.create_note().unwrap();
     big.toggle_favorite(x).unwrap();
@@ -258,7 +258,7 @@ fn emptying_a_group_keeps_a_concurrent_favorite() {
     assert_eq!(a.favorites().unwrap(), b.favorites().unwrap());
 }
 
-/// Concurrent first writes after the merge: both devices settle on one list.
+/// Concurrent first writes after the merge: both nodes settle on one list.
 #[test]
 fn concurrent_writes_after_the_merge_converge() {
     let (a, b) = two();
@@ -286,7 +286,7 @@ fn concurrent_writes_after_the_merge_converge() {
     assert_eq!(a.db.engine(|e| e.commit_ids().len()), before);
 }
 
-/// One device unfavorites a thing still held in the other group while the other device, also
+/// One node unfavorites a thing still held in the other group while the other node, also
 /// writing for the first time since the merge, favorites something else.
 #[test]
 fn unfavorite_survives_a_concurrent_first_write() {
@@ -308,7 +308,7 @@ fn unfavorite_survives_a_concurrent_first_write() {
     assert!(!f.contains(&n), "unfavorite lost: {f:?}");
 }
 
-/// The look across two devices' racing app groups and over malformed synced values: both read
+/// The look across two nodes' racing app groups and over malformed synced values: both read
 /// one choice, a value of another shape or an unknown mode reads as unset, an unknown theme id
 /// is only a string (the UI falls back to the default theme).
 #[test]
@@ -326,8 +326,8 @@ fn look_merges_and_tolerates_odd_values() {
     assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main group's theme, the other's mode");
     let main = a.main_group().unwrap();
     let mut w = a.db.write();
-    w.at(main, osis::Key::untyped(Ak::new("osis_app:theme.0").unwrap())).set(&Value::Int(3)).unwrap();
-    w.at(main, osis::Key::untyped(Ak::new("osis_app:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
+    w.at(main, osis::DynamicAspectKey::untyped(Ak::new("osis_app:theme.0").unwrap())).set(&Value::Int(3)).unwrap();
+    w.at(main, osis::DynamicAspectKey::untyped(Ak::new("osis_app:mode.0").unwrap())).set(&Value::Enum(7, None)).unwrap();
     w.commit().unwrap();
     // the other group's choice shows through (b's mode lived on gb)
     let other = if main == ga { (Some("slate".into()), Mode::Dark) } else { (Some("cel".into()), Mode::Auto) };
@@ -336,8 +336,8 @@ fn look_merges_and_tolerates_odd_values() {
     assert_eq!(a.look().unwrap().0.as_deref(), Some("no-such-theme"));
 }
 
-/// Reordering is a sequence move: a favorite one device moves while the other removes it stays
-/// removed, and both devices end with the same order.
+/// Reordering is a sequence move: a favorite one node moves while the other removes it stays
+/// removed, and both nodes end with the same order.
 #[test]
 fn reorder_against_concurrent_unfavorite() {
     let (a, b) = two();
@@ -365,8 +365,8 @@ fn reorder_against_concurrent_unfavorite() {
     assert_eq!(a.favorites().unwrap().len(), f.len());
 }
 
-/// Two devices fill in different fields of a contact's absent org (and names) at once: both
-/// fields survive, whichever device writes later (a whole-struct write with defaults would
+/// Two nodes fill in different fields of a contact's absent org (and names) at once: both
+/// fields survive, whichever node writes later (a whole-struct write with defaults would
 /// overwrite the other's field with an empty one).
 #[test]
 fn contact_fields_of_an_absent_struct_race() {
@@ -398,7 +398,7 @@ fn contact_fields_of_an_absent_struct_race() {
     }
 }
 
-/// Renaming an email on one device while the other relabels it: one entry under the new
+/// Renaming an email on one node while the other relabels it: one entry under the new
 /// address. (The relabel is a field write into the renamed-away entry, which brings that entry
 /// back with the field alone: spec'd CRDT behaviour, notes/crdt.md Known anomalies.)
 #[test]
@@ -430,7 +430,7 @@ fn email_rename_against_concurrent_edits() {
     assert_eq!(keys(&b), vec!["w@a.org".to_string(), "z@a.org".to_string()]);
 }
 
-/// An "All fields" edit of one field and a nudge of the same aspect on the other device: both
+/// An "All fields" edit of one field and a nudge of the same aspect on the other node: both
 /// survive (the nudge's whole-value write diffs against what it read).
 #[test]
 fn field_edit_and_nudge_merge() {
@@ -454,7 +454,7 @@ fn field_edit_and_nudge_merge() {
 }
 
 /// Adversarial favorites interleavings: concurrent moves of one entry, a move against a
-/// remove-and-re-add, moves onto entries held in the other group's list. Both devices end with
+/// remove-and-re-add, moves onto entries held in the other group's list. Both nodes end with
 /// one order, without duplicates, and a removal is never undone by a move.
 #[test]
 fn favorites_moves_adversarial() {
@@ -551,7 +551,7 @@ fn favorite_from_the_other_group_moves_within_its_list() {
     assert_eq!(after.len(), f.len());
 }
 
-/// Both devices favorite the same thing at once (two entries in one list): it shows once, and
+/// Both nodes favorite the same thing at once (two entries in one list): it shows once, and
 /// dragging it to the end puts it at the end.
 #[test]
 fn favorite_twice_then_moved() {
@@ -574,7 +574,7 @@ fn favorite_twice_then_moved() {
 }
 
 /// A form saved on focus loss after its thing was deleted (here, or concurrently on the other
-/// device) must not bring the thing back into the app.
+/// node) must not bring the thing back into the app.
 #[test]
 fn form_save_after_a_delete() {
     use osis_app::data::NewKind;

@@ -20,7 +20,7 @@ With `serve` running on the store (the host box), every other `osis` invocation 
 No channel is running. The last two generations (host4 at 01d5db6c, host5 at d87601bf) were stopped and deleted at Tess's word; she will have someone set up a new instance on a newer osis. A new one: new binary, host, stores and chat, as below. Start the daemon only after any direct command on the store ended, or wait for it: a command racing a daemon's start fails `store in use`, and a daemon that lost the race exits.
 
 No history carried over from the old channel. Set up beside it, so the old channel runs until the switch: `chat` needs a newer binary than the pin, and no newer binary promises to open the old stores. So: a second binary (`bin2/osis`), new stores (`host3/`, `me3/`), a host on another port with that UDP port open (`serve --listen quic://0.0.0.0:<port> --admit open` and the caps above), neither old unit touched. Every command names its store (`-s me3`); each store has its own socket. `$C` a chat. Switch: post the new address and link in the old channel; once both sides read the new one, stop the old units.
-- Each box: `osis -s me3 init --host ADDR`, printing a recovery card to keep.
+- Each box: `osis -s me3 init --peer ADDR`, printing a recovery card to keep.
 - Make it, on one store (a daemon may hold it): `C=$(osis chat create --name channel)`; `osis chat link $C`.
 - Daemon on each: `osis serve` (a transient unit, as above). Everything below goes through its socket, with no order to keep between the daemon and these commands; it reconnects by itself after a host restart, up to a minute's pause, and a host down at its start is the same.
 - Join, on the other box: `osis chat join LINK`.

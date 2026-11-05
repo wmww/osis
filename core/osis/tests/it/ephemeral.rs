@@ -10,7 +10,7 @@ use osis::internals::Internals as _;
 use crate::common::*;
 use crate::common::CreateIn;
 use osis_sim::world::World;
-use osis::{Error, MemStore, Osis, Role, Source, Store, Value};
+use osis::{Error, MemStore, Osis, Role, Origin, Store, Value};
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
@@ -29,7 +29,7 @@ fn setup(seed: u64) -> (Osis, std::sync::Arc<osis::internals::ManualClock>) {
     (db, c)
 }
 
-/// The held commits: a batch that fails leaves none (its transaction rolls back; the engine
+/// The held commits: a commit that fails leaves none (its transaction rolls back; the engine
 /// generation moves with the rollback, so it is no mark).
 fn durable_marks(db: &Osis) -> usize {
     db.engine(|e| e.commit_ids().len())
@@ -49,7 +49,7 @@ fn s(x: &str) -> Value {
 #[test]
 fn write_and_watch_without_commit_spec_data_model_2() {
     let (db, _c) = setup(1);
-    let state = db.key("win:state.0~").unwrap();
+    let state = db.aspect_key("win:state.0~").unwrap();
     let before = durable_marks(&db);
     let mut w = db.write();
     let win = w.create().unwrap();
@@ -57,7 +57,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let done = w.commit().unwrap().unwrap();
     assert!(done.id.commit().is_none());
     assert_eq!(durable_marks(&db), before, "no commit, no store write");
-    assert!(db.knows(win).unwrap());
+    assert!(db.has_content(win).unwrap());
     assert_eq!(db.owner_of(win).unwrap(), Some(db.me()));
     let c = db.created(win).unwrap().unwrap();
     assert_eq!((c.id, c.ts(), c.node, c.actor), (None, done.ts(), db.node(), db.me()));
@@ -65,15 +65,15 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     assert_eq!(db.at(win, state.clone()).path(field(0)).get::<String>().unwrap().as_deref(), Some("draft"));
     let (tx, rx) = channel();
     let _sub = db.at(win, state.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
-    assert_eq!(recv(&rx).source, Source::Initial);
+    assert_eq!(recv(&rx).origin, Origin::Initial);
     let watch = watched(&db, win, state.clone()).unwrap();
     // a path op on the list inside the value
     let mut w = db.write();
     w.at(win, state.clone()).path(field(1)).splice(1..1, &[s("b")]).unwrap();
     let done = w.commit().unwrap().unwrap();
     let ch = recv(&rx);
-    match ch.source {
-        Source::Local(i) => assert_eq!((i.id, i.ts(), i.node), (done.id, done.ts(), db.node())),
+    match ch.origin {
+        Origin::Local(i) => assert_eq!((i.id, i.ts(), i.node), (done.id, done.ts(), db.node())),
         other => panic!("{other:?}"),
     }
     assert_eq!(db.at(win, state.clone()).path(field(1)).get::<Vec<String>>().unwrap(), Some(vec!["a".to_string(), "b".to_string()]));
@@ -82,8 +82,8 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     assert_eq!(db.aspects(win).unwrap(), vec![osis::Ak::new("win:state.0~").unwrap()]);
     // an ephemeral aspect of a durable thing
     let cur = ak("app:selection.0~");
-    db.commit_set(db.me(), osis::Key::untyped(cur.clone()), &Value::Int(7)).unwrap();
-    assert_eq!(db.at(db.me(), osis::Key::untyped(cur)).get().unwrap(), Some(Value::Int(7)));
+    db.commit_set(db.me(), osis::DynamicAspectKey::untyped(cur.clone()), &Value::Int(7)).unwrap();
+    assert_eq!(db.at(db.me(), osis::DynamicAspectKey::untyped(cur)).get().unwrap(), Some(Value::Int(7)));
     assert_eq!(durable_marks(&db), before);
     assert!(db.aspects(db.me()).unwrap().contains(&ak("app:selection.0~")));
 }
@@ -94,14 +94,14 @@ fn write_and_watch_without_commit_spec_data_model_2() {
 #[test]
 fn first_durable_write_persists_chain_spec_commits_2() {
     let (db, _c) = setup(2);
-    let state = db.key("win:state.0~").unwrap();
-    let saved = db.key("win:saved.0").unwrap();
+    let state = db.aspect_key("win:state.0~").unwrap();
+    let saved = db.aspect_key("win:saved.0").unwrap();
     let (top, mid, leaf) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let top = w.create()?;
             let mid = w.create_owned_by(top)?;
             let leaf = w.create_owned_by(mid)?;
-            w.at(leaf, osis::Key::untyped(ak("app:draft.0~"))).set(&s("hello"))?;
+            w.at(leaf, osis::DynamicAspectKey::untyped(ak("app:draft.0~"))).set(&s("hello"))?;
             Ok((top, mid, leaf))
         })
         .unwrap();
@@ -126,7 +126,7 @@ fn first_durable_write_persists_chain_spec_commits_2() {
     assert!([top, mid, leaf].iter().all(|t| created.contains(t)));
     assert!(h.aspects.iter().all(|a| a.ak.as_str() != "win:state.0~" && a.ak.as_str() != "app:draft.0~"), "ephemeral aspects stay out of the commit");
     assert_eq!(db.at(leaf, saved).get().unwrap(), Some(s("hello")));
-    assert_eq!(db.at(leaf, osis::Key::untyped(ak("app:draft.0~"))).get().unwrap(), Some(s("hello")));
+    assert_eq!(db.at(leaf, osis::DynamicAspectKey::untyped(ak("app:draft.0~"))).get().unwrap(), Some(s("hello")));
     assert!(db.at(leaf, state).get().unwrap().is_some());
     // placing an ephemeral thing keeps it ephemeral (notes/ephemeral.md Ephemeral placements)
     let mut w = db.write();
@@ -154,25 +154,25 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
     let db = osis::internals::create(at(1)).unwrap().0;
     let draft = ak("app:draft.0~");
     let (d, e) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let d = w.create()?;
-            w.at(d, osis::Key::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
+            w.at(d, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
             let e = w.create()?;
             Ok((d, e))
         })
         .unwrap();
-    db.batch(|w| {
-        w.at(d, osis::Key::untyped(draft.clone())).set(&Value::Int(2))?;
-        w.at(e, osis::Key::untyped(draft.clone())).set(&Value::Int(3))
+    db.commit_with(|w| {
+        w.at(d, osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(2))?;
+        w.at(e, osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(3))
     })
     .unwrap();
-    assert_eq!(db.at(e, osis::Key::untyped(draft.clone())).get().unwrap(), Some(Value::Int(3)));
+    assert_eq!(db.at(e, osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap(), Some(Value::Int(3)));
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let db = osis::internals::open(at(2)).unwrap();
-    assert!(!db.knows(e).unwrap());
-    assert_eq!(db.at(e, osis::Key::untyped(draft.clone())).get().unwrap(), None);
-    assert_eq!(db.at(d, osis::Key::untyped(ak("app:kept.0"))).get().unwrap(), Some(Value::Int(1)));
-    assert_eq!(db.at(d, osis::Key::untyped(draft)).get().unwrap(), None);
+    assert!(!db.has_content(e).unwrap());
+    assert_eq!(db.at(e, osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap(), None);
+    assert_eq!(db.at(d, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).get().unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(d, osis::DynamicAspectKey::untyped(draft)).get().unwrap(), None);
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -186,7 +186,7 @@ fn rights_through_nearest_durable_owner_spec_permissions_1() {
     let (b, _c2) = setup(4);
     let mut w = a.write();
     let t = w.create().unwrap();
-    w.at(t, osis::Key::untyped(ak("app:kept.0"))).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     deliver(&a, &b);
     assert_eq!(b.role_on(t).unwrap(), None);
@@ -197,13 +197,13 @@ fn rights_through_nearest_durable_owner_spec_permissions_1() {
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // ephemeral data on another actor's durable thing
     let mut w = b.write();
-    w.at(t, osis::Key::untyped(ak("app:cursor.0~"))).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("app:cursor.0~"))).set(&Value::Int(1)).unwrap();
     assert_eq!(w.commit(), Err(Error::Permission { tid: t, needs: Role::Write }));
-    assert_eq!(b.at(t, osis::Key::untyped(ak("app:cursor.0~"))).get().unwrap(), None);
+    assert_eq!(b.at(t, osis::DynamicAspectKey::untyped(ak("app:cursor.0~"))).get().unwrap(), None);
     assert_eq!(durable_marks(&b), before);
     // a's own ephemeral chain under t: admin through t
     let (x, y) = a
-        .batch(|w| {
+        .commit_with(|w| {
             let x = w.create_owned_by(t)?;
             let y = w.create_owned_by(x)?;
             Ok((x, y))
@@ -211,7 +211,7 @@ fn rights_through_nearest_durable_owner_spec_permissions_1() {
         .unwrap();
     assert_eq!(a.role_on(y).unwrap(), a.role_on(t).unwrap());
     assert_eq!(a.role_on(x).unwrap(), Some(Role::Admin));
-    assert!(!b.knows(y).unwrap());
+    assert!(!b.has_content(y).unwrap());
 }
 
 // notes/ephemeral.md Expiry: an expiring ephemeral write (explicit, or the key's default) goes
@@ -219,7 +219,7 @@ fn rights_through_nearest_durable_owner_spec_permissions_1() {
 #[test]
 fn ephemeral_expiry_spec_crdt_4_7() {
     let (db, c) = setup(5);
-    let typing = db.key("win:typing.0~").unwrap();
+    let typing = db.aspect_key("win:typing.0~").unwrap();
     let note = ak("app:note.0~");
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -227,7 +227,7 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     w.commit().unwrap();
     let mut w = db.write();
     w.expires(osis::Expiry::In(Duration::from_secs(60)));
-    w.at(t, osis::Key::untyped(note.clone())).set(&s("bye")).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(note.clone())).set(&s("bye")).unwrap();
     w.commit().unwrap();
     let before = durable_marks(&db);
     let (tx, rx) = channel();
@@ -240,8 +240,8 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     c.advance(2_000);
     db.engine(|e| e.tick().unwrap());
     let ch = recv(&rx);
-    assert_eq!((ch.source, ch.value), (Source::Derived(osis::DerivedFrom::Expired), Ok(None)));
-    assert_eq!(db.at(t, osis::Key::untyped(note.clone())).get().unwrap(), Some(s("bye")));
+    assert_eq!((ch.origin, ch.value), (Origin::Derived(osis::DerivedFrom::Expired), Ok(None)));
+    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(note.clone())).get().unwrap(), Some(s("bye")));
     // a later write of the same aspect is not touched by the old class
     let mut w = db.write();
     w.expires(osis::Expiry::In(Duration::from_secs(30)));
@@ -250,11 +250,11 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     assert_eq!(db.at(t, typing).get().unwrap(), Some(Value::Bool(true)));
     c.advance(60_000);
     db.engine(|e| e.tick().unwrap());
-    assert_eq!(db.at(t, osis::Key::untyped(note)).get().unwrap(), None);
+    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(note)).get().unwrap(), None);
     assert_eq!(durable_marks(&db), before);
     let mut w = db.write();
     w.expires(osis::Expiry::In(Duration::ZERO));
-    w.at(t, osis::Key::untyped(ak("app:x.0~"))).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("app:x.0~"))).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
@@ -263,7 +263,7 @@ fn ephemeral_expiry_spec_crdt_4_7() {
 #[test]
 fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     let (db, _c) = setup(6);
-    let ring = db.key("win:ring.0*").unwrap();
+    let ring = db.aspect_key("win:ring.0*").unwrap();
     let mut w = db.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
@@ -279,7 +279,7 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     for _ in 0..2 {
         let c = recv(&rx);
         assert_eq!(c.value, Ok(Some(s("ding"))));
-        assert!(matches!(c.source, Source::Local(_)));
+        assert!(matches!(c.origin, Origin::Local(_)));
         assert_eq!(recv(&trx).value, Ok(Some(s("ding"))));
     }
     db.settle();
@@ -291,7 +291,7 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     w.at(t, ring.clone()).remove().unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
     let mut w = db.write();
-    w.at(t, osis::Key::untyped(ak("app:sig.0*"))).path(osis::p!["k"]).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("app:sig.0*"))).path(osis::p!["k"]).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
@@ -304,78 +304,78 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
     let (b, _c2) = setup(8);
     let mut w = a.write();
     let t = w.create().unwrap();
-    w.at(t, osis::Key::untyped(ak("app:kept.0"))).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     deliver(&a, &b);
     let draft = ak("app:draft.0~");
     let kept = ak("app:kept.0");
     let mut w = b.write();
     let e = w.create().unwrap();
-    w.at(b.me(), osis::Key::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
-    w.at(t, osis::Key::untyped(kept.clone())).set(&Value::Int(2)).unwrap();
+    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(2)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:draft.0~") && m.contains("app:kept.0")));
-    assert!(!b.knows(e).unwrap());
-    assert_eq!(b.at(b.me(), osis::Key::untyped(draft.clone())).get().unwrap(), None);
+    assert!(!b.has_content(e).unwrap());
+    assert_eq!(b.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap(), None);
     // an ephemeral op takes no retention
     let before = durable_marks(&b);
     let mut w = b.write();
-    w.at(b.me(), osis::Key::untyped(draft.clone())).retention(osis::Retention::default()).set(&Value::Int(1)).unwrap();
+    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).retention(osis::Retention::default()).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
     assert_eq!(durable_marks(&b), before);
     // a draft's membership in a durable group is ephemeral: not beside a durable write
-    let group = b.batch(|w| {
+    let group = b.commit_with(|w| {
         let g = w.create()?;
-        w.at(g, osis::Key::untyped(kept.clone())).set(&Value::Int(1))?;
+        w.at(g, osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(1))?;
         Ok(g)
     })
     .unwrap();
     let mut w = b.write();
     let d = w.create().unwrap();
     w.group(group).add(osis::Member::Item(d)).unwrap();
-    w.at(b.me(), osis::Key::untyped(kept.clone())).set(&Value::Int(3)).unwrap();
+    w.at(b.me(), osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(3)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("the members of") && m.contains("app:kept.0")));
     // nor a signal beside an ephemeral write
     let mut w = b.write();
-    w.at(b.me(), osis::Key::untyped(ak("app:ring.0*"))).set(&Value::Int(1)).unwrap();
-    w.at(b.me(), osis::Key::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    w.at(b.me(), osis::DynamicAspectKey::untyped(ak("app:ring.0*"))).set(&Value::Int(1)).unwrap();
+    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("signal")));
     // nor ephemeral writes of two expiries
     b.register_schema("cursor.osis", "version 1;\naspect app:cursor.0~: int [expires: 30s];").unwrap();
     let mut w = b.write();
-    w.at(b.me(), b.key("app:cursor.0~").unwrap()).set(&Value::Int(1)).unwrap();
-    w.at(b.me(), osis::Key::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    w.at(b.me(), b.aspect_key("app:cursor.0~").unwrap()).set(&Value::Int(1)).unwrap();
+    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("one expiry")));
     assert_eq!(durable_marks(&b), before + 1, "only the group's commit applied");
     // a delete is no way past it: what it ends follows the durable commit, what is asked beside it
     // does not, a durable thing's delete with an ephemeral write elsewhere or a signal on it
-    let gone = b.batch(|w| {
+    let gone = b.commit_with(|w| {
         let g = w.create()?;
-        w.at(g, osis::Key::untyped(kept.clone())).set(&Value::Int(1))?;
+        w.at(g, osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(1))?;
         Ok(g)
     })
     .unwrap();
     let marks = durable_marks(&b);
     let mut w = b.write();
     w.delete(gone).unwrap();
-    w.at(b.me(), osis::Key::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+    w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:draft.0~") && m.contains("app:kept.0")));
     let mut w = b.write();
     w.delete(gone).unwrap();
-    w.at(gone, osis::Key::untyped(ak("app:ring.0*"))).set(&Value::Int(1)).unwrap();
+    w.at(gone, osis::DynamicAspectKey::untyped(ak("app:ring.0*"))).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("app:ring.0*")));
-    assert_eq!((durable_marks(&b), b.knows(gone).unwrap()), (marks, true), "nothing applied");
+    assert_eq!((durable_marks(&b), b.has_content(gone).unwrap()), (marks, true), "nothing applied");
     // apart: the durable one a commit, the ephemeral one with an id of its own, each what its watch names
     let (tx, rx) = channel();
-    let _sub = b.at(b.me(), osis::Key::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let _sub = b.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
-    let done = commit_with(&b, |w| w.at(b.me(), osis::Key::untyped(kept.clone())).set(&Value::Int(3)));
+    let done = commit_with(&b, |w| w.at(b.me(), osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(3)));
     let c = done.id.commit().expect("a commit");
     assert_eq!(b.engine(|e| e.header(&c)).unwrap().ts, done.ts());
-    let own = commit_with(&b, |w| w.at(b.me(), osis::Key::untyped(draft.clone())).set(&Value::Int(4)));
+    let own = commit_with(&b, |w| w.at(b.me(), osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(4)));
     assert!(own.id.commit().is_none());
     assert_ne!(own.id, done.id);
-    match recv(&rx).source {
-        Source::Local(i) => assert_eq!((i.id, i.ts()), (own.id, own.ts())),
+    match recv(&rx).origin {
+        Origin::Local(i) => assert_eq!((i.id, i.ts()), (own.id, own.ts())),
         other => panic!("{other:?}"),
     }
     // a draft with only an expiring ephemeral write is one commit: its record rides beside it
@@ -383,18 +383,18 @@ fn durable_beside_ephemeral_refused_spec_commits_2() {
         let mut w = b.write();
         let x = w.create().unwrap();
         w.expires(osis::Expiry::In(Duration::from_secs(5)));
-        w.at(x, osis::Key::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
+        w.at(x, osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1)).unwrap();
         (x, w.commit().unwrap().unwrap())
     };
     assert!(soon.id.commit().is_none());
-    assert_eq!(b.at(draft_t, osis::Key::untyped(draft.clone())).get().unwrap(), Some(Value::Int(1)));
+    assert_eq!(b.at(draft_t, osis::DynamicAspectKey::untyped(draft.clone())).get().unwrap(), Some(Value::Int(1)));
     // a draft with only an expiring durable write is refused: its record does not expire
     let mut w = b.write();
     let x = w.create().unwrap();
     w.expires(osis::Expiry::In(Duration::from_secs(5)));
-    w.at(x, osis::Key::untyped(kept.clone())).set(&Value::Int(1)).unwrap();
+    w.at(x, osis::DynamicAspectKey::untyped(kept.clone())).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("record")));
-    assert!(!b.knows(x).unwrap());
+    assert!(!b.has_content(x).unwrap());
 }
 
 // notes/ephemeral.md Deletion: deleting an ephemeral thing in no labeled closure frees it with
@@ -405,24 +405,24 @@ fn delete_frees_ephemeral_things() {
     let (db, _c) = setup(9);
     let draft = ak("app:draft.0~");
     let (x, y) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let x = w.create()?;
             let y = w.create_owned_by(x)?;
-            w.at(x, osis::Key::untyped(draft.clone())).set(&Value::Int(1))?;
-            w.at(y, osis::Key::untyped(draft.clone())).set(&Value::Int(2))?;
+            w.at(x, osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1))?;
+            w.at(y, osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(2))?;
             w.group(db.me()).add(osis::Member::Item(y))?;
             Ok((x, y))
         })
         .unwrap();
     let (tx, rx) = channel();
-    let _sub = db.at(x, osis::Key::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let _sub = db.at(x, osis::DynamicAspectKey::untyped(draft.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
     let mut w = db.write();
     w.delete(x).unwrap();
     w.commit().unwrap();
     assert_eq!(recv(&rx).value, Ok(None));
-    assert!(!db.knows(x).unwrap() && !db.knows(y).unwrap());
-    assert_eq!(db.at(y, osis::Key::untyped(draft)).get().unwrap(), None);
+    assert!(!db.has_content(x).unwrap() && !db.has_content(y).unwrap());
+    assert_eq!(db.at(y, osis::DynamicAspectKey::untyped(draft)).get().unwrap(), None);
     assert!(!group_of(&db, db.me()).items.contains(&y), "an owned thing's placement goes with it");
     let mut w = db.write();
     assert_eq!(w.create_owned_by(x), Err(Error::UnknownThing { tid: x }));
@@ -433,7 +433,7 @@ fn bench_n() -> i64 {
 }
 
 // notes/ephemeral.md Local engine (cost): `OSIS_BENCH_N` local ephemeral sets of one aspect,
-// each its own batch, against `bench_btreemap_sets`; compare with tools/icount on a release
+// each its own commit, against `bench_btreemap_sets`; compare with tools/icount on a release
 // build (notes/testing.md), subtracting a run with `OSIS_BENCH_N=0`. spec: none (cost)
 #[test]
 #[ignore = "bench: release, by hand"]
@@ -446,13 +446,13 @@ fn bench_ephemeral_sets() {
     let t = w.create_durable(db.me()).unwrap();
     w.commit().unwrap();
     for i in 0..n {
-        db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(i)).unwrap();
+        db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(i)).unwrap();
     }
-    assert_eq!(db.at(t, osis::Key::untyped(k)).get().unwrap(), (n > 0).then(|| Value::Int(n - 1)));
+    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), (n > 0).then(|| Value::Int(n - 1)));
 }
 
-// The write path's batch cost (notes/client-port.md §1): `OSIS_BENCH_N` map puts into one
-// durable aspect in one batch: recording, building the mutation, one commit. spec: none (cost)
+// The write path's commit cost (notes/client-port.md §1): `OSIS_BENCH_N` map puts into one
+// durable aspect in one commit: recording, building the mutation, one commit. spec: none (cost)
 #[test]
 #[ignore = "bench: release, by hand"]
 fn bench_batch_puts() {
@@ -463,12 +463,12 @@ fn bench_batch_puts() {
     let t = w.create_durable(db.me()).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let mut a = w.at(t, osis::Key::untyped(k.clone()));
+    let mut a = w.at(t, osis::DynamicAspectKey::untyped(k.clone()));
     for i in 0..n {
         a.path(osis::p!(Value::Int(i))).set(&Value::Int(i)).unwrap();
     }
     w.commit().unwrap();
-    assert_eq!(db.at(t, osis::Key::untyped(k)).path(osis::p!(Value::Int(0))).get::<Value>().unwrap().is_some(), n > 0);
+    assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).path(osis::p!(Value::Int(0))).get::<Value>().unwrap().is_some(), n > 0);
 }
 
 // The baseline of `bench_ephemeral_sets`: the same sets into an in-memory map. spec: none (cost)
@@ -534,17 +534,17 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
     w.create_owned_by(g).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a reader creates under g");
     let mut w = bob.write();
-    w.at(g, osis::Key::untyped(ak("app:cursor.0~"))).set(&Value::Int(1)).unwrap();
+    w.at(g, osis::DynamicAspectKey::untyped(ak("app:cursor.0~"))).set(&Value::Int(1)).unwrap();
     assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
     let mut w = bob.write();
-    w.at(g, osis::Key::untyped(ak("app:sig.0*"))).set(&Value::Int(1)).unwrap();
+    w.at(g, osis::DynamicAspectKey::untyped(ak("app:sig.0*"))).set(&Value::Int(1)).unwrap();
     assert_eq!(w.commit(), Err(Error::Permission { tid: g, needs: Role::Write }));
     assert_eq!(durable_marks(&bob), before);
     let (_w, _alice, bob, g) = shared(Role::Write);
     let mut w = bob.write();
     let e = w.create_owned_by(g).unwrap();
-    w.at(e, osis::Key::untyped(ak("app:d.0~"))).set(&Value::Int(1)).unwrap();
-    w.at(g, osis::Key::untyped(ak("app:cursor.0~"))).set(&Value::Int(1)).unwrap();
+    w.at(e, osis::DynamicAspectKey::untyped(ak("app:d.0~"))).set(&Value::Int(1)).unwrap();
+    w.at(g, osis::DynamicAspectKey::untyped(ak("app:cursor.0~"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     assert_eq!(bob.role_on(e).unwrap(), Some(Role::Write));
 }
@@ -555,16 +555,16 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
 #[test]
 fn roles_persist_first_spec_data_model_1() {
     let (_w, alice, bob, g) = shared(Role::Read);
-    let e = alice.batch(|w| w.create_owned_by(g)).unwrap();
+    let e = alice.commit_with(|w| w.create_owned_by(g)).unwrap();
     alice.grant(e, bob.me(), Role::Write, Default::default()).unwrap();
     assert!(alice.created(e).unwrap().unwrap().id.is_some(), "persisted first");
     assert!(alice.grants(e).unwrap().contains_key(&bob.me()));
     let (db, _c) = setup(20);
     let (d, e) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let e = w.create()?;
             let d = w.create_durable(db.me())?;
-            w.at(d, osis::Key::untyped(ak("app:ref.0"))).set(&Value::Tid(e))?;
+            w.at(d, osis::DynamicAspectKey::untyped(ak("app:ref.0"))).set(&Value::Tid(e))?;
             Ok((d, e))
         })
         .unwrap();
@@ -573,43 +573,43 @@ fn roles_persist_first_spec_data_model_1() {
 }
 
 // notes/ephemeral.md API delta (Writes): an ephemeral op that fails when it resolves (a list
-// index past the end) fails the whole batch: no commit, no new thing. Persisting a thing leaves
+// index past the end) fails the whole commit: no commit, no new thing. Persisting a thing leaves
 // the ephemeral things it owns ephemeral; ephemeral placements are written only through group
 // ops (a raw `placed.0~` write is Invalid).
 // spec/data-model.md §1, §2
 #[test]
 fn mixed_batch_resolution_failure_and_partial_chain() {
     let (db, _c) = setup(21);
-    let state = db.key("win:state.0~").unwrap();
+    let state = db.aspect_key("win:state.0~").unwrap();
     let before = durable_marks(&db);
     let mut w = db.write();
     let e = w.create().unwrap();
-    w.at(db.me(), osis::Key::untyped(ak("app:kept.0"))).set(&Value::Int(3)).unwrap();
+    w.at(db.me(), osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(3)).unwrap();
     w.at(e, state.clone()).path(field(1)).splice(5..5, &[s("x")]).unwrap();
     assert!(w.commit().is_err());
-    assert!(!db.knows(e).unwrap());
+    assert!(!db.has_content(e).unwrap());
     assert_eq!(durable_marks(&db), before);
-    assert_eq!(db.at(db.me(), osis::Key::untyped(ak("app:kept.0"))).get().unwrap(), None);
+    assert_eq!(db.at(db.me(), osis::DynamicAspectKey::untyped(ak("app:kept.0"))).get().unwrap(), None);
     let draft = ak("app:d.0~");
     let (p, c) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let p = w.create()?;
             let c = w.create_owned_by(p)?;
-            w.at(p, osis::Key::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
+            w.at(p, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
             Ok((p, c))
         })
         .unwrap();
-    db.commit_set(c, osis::Key::untyped(draft.clone()), &Value::Int(1)).unwrap();
+    db.commit_set(c, osis::DynamicAspectKey::untyped(draft.clone()), &Value::Int(1)).unwrap();
     assert!(db.created(p).unwrap().unwrap().id.is_some());
     assert_eq!(db.created(c).unwrap().unwrap().id, None);
     let n = db.engine(|e| e.commit_ids().len());
-    db.commit_set(c, osis::Key::untyped(ak("app:kept.0")), &Value::Int(2)).unwrap();
+    db.commit_set(c, osis::DynamicAspectKey::untyped(ak("app:kept.0")), &Value::Int(2)).unwrap();
     assert_eq!(db.engine(|e| e.commit_ids().len()), n + 1);
     assert!(db.created(c).unwrap().unwrap().id.is_some());
-    assert_eq!(db.at(c, osis::Key::untyped(draft)).get().unwrap(), Some(Value::Int(1)));
+    assert_eq!(db.at(c, osis::DynamicAspectKey::untyped(draft)).get().unwrap(), Some(Value::Int(1)));
     // `placed.0~` is written by group ops only (`group.0`'s key is durable: no ephemeral raw write)
     let mut w = db.write();
-    w.at(p, osis::Key::untyped(ak("placed.0~"))).set(&Value::Int(1)).unwrap();
+    w.at(p, osis::DynamicAspectKey::untyped(ak("placed.0~"))).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
@@ -650,7 +650,7 @@ fn ephemeral_placement_lists_without_commit_spec_data_model_8() {
     assert!(db.groups_of(t).unwrap().within.contains(&home));
     assert_eq!(db.at(t, osis::internals::core_types::GROUPS).get().unwrap().map(|g| g.contains(&home)), Some(true));
     let ch = recv(&rx);
-    assert!(matches!(ch.source, Source::Local(_)));
+    assert!(matches!(ch.origin, Origin::Local(_)));
     assert!(ch.value.unwrap().unwrap().items.contains(&t));
     let mut w = db.write();
     w.group(home).remove(osis::Member::Item(t)).unwrap();
@@ -668,15 +668,15 @@ fn ephemeral_placement_lists_without_commit_spec_data_model_8() {
 fn persisting_makes_placements_durable_spec_data_model_8() {
     let (db, _c) = setup(31);
     let home = db.me();
-    let saved = db.key("win:saved.0").unwrap();
+    let saved = db.aspect_key("win:saved.0").unwrap();
     let (t, g) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let g = w.create_durable(db.me())?;
             Ok((w.create()?, g))
         })
         .unwrap();
-    db.batch(|w| w.group(home).add(osis::Member::Item(t))).unwrap();
-    db.batch(|w| {
+    db.commit_with(|w| w.group(home).add(osis::Member::Item(t))).unwrap();
+    db.commit_with(|w| {
         w.expires(osis::Expiry::In(Duration::from_secs(3600)));
         w.group(g).add(osis::Member::Item(t))
     })
@@ -689,7 +689,7 @@ fn persisting_makes_placements_durable_spec_data_model_8() {
     assert_eq!(db.engine(|e| e.commit_ids().len()), n, "nothing applied");
     assert_eq!(db.created(t).unwrap().unwrap().id, None);
     // out of it first; kept; then a durable membership that expires, in a commit of its own
-    db.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
+    db.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     let done = commit_with(&db, |w| w.at(t, saved.clone()).set(&s("x")));
     assert_eq!(db.engine(|e| e.commit_ids().len()), n + 1, "one commit");
     let c = db.created(t).unwrap().unwrap().id.expect("persisted");
@@ -712,7 +712,7 @@ fn persisting_makes_placements_durable_spec_data_model_8() {
     w.commit().unwrap();
     assert!(!group_of(&db, home).items.contains(&t));
     assert!(db.groups_of(t).unwrap().within.contains(&g) && !db.groups_of(t).unwrap().within.contains(&home));
-    // an unplace in the persisting batch wins over converting that placement
+    // an unplace in the persisting commit wins over converting that placement
     let mut w = db.write();
     let u = w.create().unwrap();
     w.group(home).add(osis::Member::Item(u)).unwrap();
@@ -731,8 +731,8 @@ fn persisting_makes_placements_durable_spec_data_model_8() {
 #[test]
 fn draft_lands_in_folder_at_save_spec_data_model_8() {
     let (db, _c) = setup(32);
-    let state = db.key("win:state.0~").unwrap();
-    let saved = db.key("win:saved.0").unwrap();
+    let state = db.aspect_key("win:state.0~").unwrap();
+    let saved = db.aspect_key("win:saved.0").unwrap();
     let mut w = db.write();
     let f = w.create_durable(db.me()).unwrap();
     w.group(db.me()).add(osis::Member::Item(f)).unwrap();
@@ -754,14 +754,14 @@ fn draft_lands_in_folder_at_save_spec_data_model_8() {
 }
 
 // notes/ephemeral.md Ephemeral placements: an ephemeral thing holding ephemeral placements is a
-// group already: another ephemeral item in a later batch neither clears `placed.0~` nor persists
+// group already: another ephemeral item in a later commit neither clears `placed.0~` nor persists
 // the thing.
 // spec/data-model.md §8
 #[test]
 fn adding_to_an_ephemeral_group_keeps_it_ephemeral_spec_data_model_8() {
     let (db, _c) = setup(37);
     let (g, t) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let g = w.create()?;
             let t = w.create()?;
             w.group(g).add(osis::Member::Item(t))?;
@@ -769,7 +769,7 @@ fn adding_to_an_ephemeral_group_keeps_it_ephemeral_spec_data_model_8() {
         })
         .unwrap();
     assert!(group_of(&db, g).items.contains(&t));
-    let u = db.batch(|w| { let u = w.create()?; w.group(g).add(osis::Member::Item(u))?; Ok(u) }).unwrap();
+    let u = db.commit_with(|w| { let u = w.create()?; w.group(g).add(osis::Member::Item(u))?; Ok(u) }).unwrap();
     assert!(group_of(&db, g).items.contains(&t) && group_of(&db, g).items.contains(&u), "its placements kept");
     assert!(db.created(g).unwrap().unwrap().id.is_none(), "still ephemeral");
 }
@@ -790,9 +790,9 @@ fn restart_leaves_no_dead_tids_in_groups_spec_data_model_8() {
     };
     let db = osis::internals::create(at(1)).unwrap().0;
     let home = db.me();
-    let g = db.batch(|w| w.create_durable(db.me())).unwrap();
+    let g = db.commit_with(|w| w.create_durable(db.me())).unwrap();
     let (g, e, sub) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let e = w.create()?;
             w.group(home).add(osis::Member::Item(e))?;
             w.group(g).add(osis::Member::Item(e))?;
@@ -805,7 +805,7 @@ fn restart_leaves_no_dead_tids_in_groups_spec_data_model_8() {
     assert!(group_of(&db, g).items.contains(&e) && group_of(&db, g).subgroups.contains(&sub));
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     let db = osis::internals::open(at(2)).unwrap();
-    assert!(!db.knows(e).unwrap() && !db.knows(sub).unwrap());
+    assert!(!db.has_content(e).unwrap() && !db.has_content(sub).unwrap());
     for x in [home, g] {
         let gr = group_of(&db, x);
         assert!(!gr.items.contains(&e) && !gr.subgroups.contains(&sub), "{x}");
@@ -826,7 +826,7 @@ fn durable_item_persists_ephemeral_group_spec_data_model_8() {
     let home = db.me();
     let before = durable_marks(&db);
     let (g, a, b) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let g = w.create()?;
             w.group(home).add(osis::Member::Item(g))?;
             w.group(home).add(osis::Member::Subgroup(g))?;
@@ -862,7 +862,7 @@ fn durable_item_persists_ephemeral_group_spec_data_model_8() {
     let i = w.create().unwrap();
     w.group(e).add(osis::Member::Item(i)).unwrap();
     w.commit().unwrap();
-    db.commit_set(e, osis::Key::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
+    db.commit_set(e, osis::DynamicAspectKey::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
     assert!(db.engine(|x| x.core.ix.by_aspect.get(&(e, ak("group.0"))).is_some_and(|s| !s.is_empty())));
 }
 
@@ -890,7 +890,7 @@ fn placement_not_persisted_without_write_on_group_spec_permissions_1() {
             let _ = tx.send(vec![item, group]);
         }
     }).unwrap();
-    bob.commit_set(t, osis::Key::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
+    bob.commit_set(t, osis::DynamicAspectKey::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
     assert!(bob.created(t).unwrap().unwrap().id.is_some());
     assert_eq!(recv(&rx), vec![t, g2]);
     assert!(group_of(&bob, g2).items.contains(&t), "still placed, ephemerally");
@@ -907,7 +907,7 @@ fn expiring_placement_persists_ephemeral_group_spec_data_model_8() {
     for order in 0..4 {
         let (db, c) = setup(40 + order);
         let (g, x) = db
-            .batch(|w| {
+            .commit_with(|w| {
                 let a = w.create()?;
                 let b = w.create()?;
                 let (g, x) = if (a < b) == (order % 2 == 0) { (a, b) } else { (b, a) };
@@ -918,8 +918,8 @@ fn expiring_placement_persists_ephemeral_group_spec_data_model_8() {
         w.expires(osis::Expiry::In(Duration::from_secs(60)));
         w.group(g).add(osis::Member::Item(x)).unwrap();
         w.commit().unwrap();
-        assert!(matches!(db.commit_set(x, osis::Key::untyped(ak("app:kept.0")), &Value::Int(1)), Err(Error::Invalid(_))), "order {order}: its membership expires");
-        db.commit_set(g, osis::Key::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
+        assert!(matches!(db.commit_set(x, osis::DynamicAspectKey::untyped(ak("app:kept.0")), &Value::Int(1)), Err(Error::Invalid(_))), "order {order}: its membership expires");
+        db.commit_set(g, osis::DynamicAspectKey::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
         assert!(db.created(g).unwrap().unwrap().id.is_some(), "order {order}");
         c.advance(120_000);
         db.engine(|e| e.tick().unwrap());
@@ -945,7 +945,7 @@ fn persistence_through_group_cycles_spec_data_model_8() {
     let db = osis::internals::create(at(1)).unwrap().0;
     let home = db.me();
     let (g, g1, g2, x) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let g = w.create()?;
             w.group(g).add(osis::Member::Subgroup(g))?;
             w.group(g).add(osis::Member::Item(g))?;
@@ -961,8 +961,8 @@ fn persistence_through_group_cycles_spec_data_model_8() {
         .unwrap();
     assert!(db.groups_of(g).unwrap().within.contains(&g));
     assert!(db.groups_of(x).unwrap().within.contains(&g1) && db.groups_of(x).unwrap().within.contains(&home));
-    db.commit_set(g, osis::Key::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
-    db.commit_set(x, osis::Key::untyped(ak("app:kept.0")), &Value::Int(2)).unwrap();
+    db.commit_set(g, osis::DynamicAspectKey::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
+    db.commit_set(x, osis::DynamicAspectKey::untyped(ak("app:kept.0")), &Value::Int(2)).unwrap();
     for t in [g, g1, g2, x] {
         assert!(db.created(t).unwrap().unwrap().id.is_some(), "{t} persisted");
     }
@@ -980,12 +980,12 @@ fn persistence_through_group_cycles_spec_data_model_8() {
 }
 
 // notes/ephemeral.md Persistence: a placement that does not convert (unplaced by the
-// persisting batch) does not persist its ephemeral group. spec/data-model.md §8
+// persisting commit) does not persist its ephemeral group. spec/data-model.md §8
 #[test]
 fn unplaced_placement_does_not_persist_its_group_spec_data_model_8() {
     let (db, _c) = setup(45);
     let (g, x) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let g = w.create()?;
             let x = w.create()?;
             w.group(g).add(osis::Member::Item(x))?;
@@ -993,23 +993,23 @@ fn unplaced_placement_does_not_persist_its_group_spec_data_model_8() {
         })
         .unwrap();
     let mut w = db.write();
-    w.at(x, osis::Key::untyped(ak("app:kept.0"))).set(&Value::Int(1)).unwrap();
+    w.at(x, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1)).unwrap();
     w.group(g).remove(osis::Member::Item(x)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))), "g stays ephemeral: a removal there is an ephemeral write");
-    db.batch(|w| w.group(g).remove(osis::Member::Item(x))).unwrap();
-    db.commit_set(x, osis::Key::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
+    db.commit_with(|w| w.group(g).remove(osis::Member::Item(x))).unwrap();
+    db.commit_set(x, osis::DynamicAspectKey::untyped(ak("app:kept.0")), &Value::Int(1)).unwrap();
     assert!(db.created(x).unwrap().unwrap().id.is_some());
     assert_eq!(db.created(g).unwrap().unwrap().id, None);
     assert!(!group_of(&db, g).items.contains(&x));
 }
 
-// spec/permissions.md §4: a memory commit acting for the person counts among the actors this
+// spec/permissions.md §4: a memory commit acting for the account counts among the actors this
 // node acts for (its chain certificates go under every label it places in): the actors cache
 // keyed on the durable generation alone missed it, and the sync driver's check of it died
 #[test]
 fn ephemeral_write_counts_as_acting_spec_permissions_4() {
     let (db, _c) = setup(1);
-    let state = db.key("win:state.0~").unwrap();
+    let state = db.aspect_key("win:state.0~").unwrap();
     let before = db.engine(|e| e.core.acting());
     assert!(!before.contains(&db.me()), "nothing acted for the person yet: {before:?}");
     let mut w = db.write();
@@ -1026,10 +1026,10 @@ fn ephemeral_write_counts_as_acting_spec_permissions_4() {
 #[test]
 fn a_thing_with_only_expiring_content_spec_commits_6() {
     let (db, c) = setup(40);
-    let (body, hour) = (osis::Key::untyped(ak("app:body.0")), Duration::from_secs(3600));
-    let g = db.batch(|w| {
+    let (body, hour) = (osis::DynamicAspectKey::untyped(ak("app:body.0")), Duration::from_secs(3600));
+    let g = db.commit_with(|w| {
         let g = w.create()?;
-        w.at(g, osis::Key::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
+        w.at(g, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
         Ok(g)
     })
     .unwrap();

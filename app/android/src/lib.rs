@@ -1,6 +1,6 @@
 //! The osis app on Android (experimental; notes/android.md): the same app as desktop, opened by
 //! NativeActivity through `android_main`. The store lives in the app's private files dir, made
-//! without a host (desktop's `--host`): home's "Paste host address" adds one. The system clipboard
+//! without a peer (desktop's `--peer`): home's "Paste peer address" adds one. The system clipboard
 //! backs the app's paste chips (no soft-keyboard text yet).
 #![cfg(target_os = "android")]
 

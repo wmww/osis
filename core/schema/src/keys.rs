@@ -57,8 +57,8 @@ pub trait RawKey {
     }
 }
 
-/// What a call of the `osis` API takes as an aspect's key: generated keys and `osis::Key`, not a
-/// bare name.
+/// What a call of the `osis` API takes as an aspect's key: generated keys and `osis::DynamicAspectKey`, not
+/// a bare name.
 pub trait AspectKey: RawKey {}
 
 impl<T: Codec> AspectKey for Aspect<T> {}

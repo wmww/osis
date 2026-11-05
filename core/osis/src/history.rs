@@ -7,7 +7,7 @@ use crate::commits::CommitKind;
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{AspectRef, Reader, ak_of, lenient};
-use crate::sources::Source;
+use crate::sources::Route;
 use crate::read::Stamp;
 use crate::watch::{Delivery, Filter, Subscription};
 use crate::commit_id::{CommitId, HistoryFrom, HistoryPos};
@@ -28,10 +28,17 @@ pub enum HistoryBody<T> {
     /// write, or it does not read as that type: a `Mismatch` diagnostic).
     Held(Option<T>),
     /// Held, and above `AppConfig::read_limit`.
-    TooLarge { limit: usize },
-    /// Purged, on every honest node: the entry stays to say so. `by` the purge, `actor` who made it
-    /// (`None`: not known here).
-    Purged { by: CommitId, actor: Option<Tid> },
+    TooLarge {
+        /// The limit it is above.
+        limit: usize,
+    },
+    /// Purged, on every honest node: the entry stays to say so.
+    Purged {
+        /// The purge.
+        by: CommitId,
+        /// Who made it (`None`: not known here).
+        actor: Option<Tid>,
+    },
     /// Gone for another reason: it expired, passed a keep bound or was tidied up.
     Gone,
     /// Not on this node yet: known of, and still to arrive. Not an absence.
@@ -41,10 +48,13 @@ pub enum HistoryBody<T> {
 /// One commit's write on an aspect: `commit.actor` is verified exactly when `valid`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryEntry<T> {
+    /// Which commit, who wrote it and when.
     pub commit: Stamp,
+    /// What kind of commit it is.
     pub kind: CommitKind,
     /// Valid here, now: it may change (the watch says when).
     pub valid: bool,
+    /// What is here of what it wrote.
     pub body: HistoryBody<T>,
 }
 
@@ -58,6 +68,7 @@ impl<T> HistoryEntry<T> {
 /// A page of history, in the direction it was asked for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryPage<T> {
+    /// The entries, in the order asked for.
     pub entries: Vec<HistoryEntry<T>>,
     /// More entries lie that way here.
     pub more: bool,
@@ -72,11 +83,16 @@ pub struct HistoryPage<T> {
 pub enum HistoryEvent<T> {
     /// This commit's entry reads otherwise now: new (late ones too), turned valid or invalid, body
     /// arrived, purged, dropped. `None`: it has no entry any more (a memory commit gone).
-    Commit { id: CommitId, entry: Option<HistoryEntry<T>> },
+    Commit {
+        /// The commit.
+        id: CommitId,
+        /// Its entry as it reads now.
+        entry: Option<HistoryEntry<T>>,
+    },
     /// Events may have been missed: a connection to the node dropped or came back, or an entry
     /// did not fit. Read the pages shown again; the subscription goes on.
     Reread,
-    /// The subscription is over (its source moved, or the node ended it): subscribe again.
+    /// The subscription is over (its group's source moved, or the node ended it): subscribe again.
     Ended(Error),
 }
 
@@ -167,8 +183,8 @@ impl<K: AspectKey> AspectRef<'_, K> {
     pub fn history(&self, from: HistoryFrom, limit: usize) -> Result<HistoryPage<K::T>> {
         let ak = ak_of(&self.key)?;
         let page = match self.db.route(self.tid) {
-            Source::Remote(r) => self.db.remote_history(&r, self.tid, &ak, from, limit)?,
-            Source::Local => self.db.history_here(self.tid, &ak, from, limit, usize::MAX)?,
+            Route::Remote(r) => self.db.remote_history(&r, self.tid, &ak, from, limit)?,
+            Route::Local => self.db.history_here(self.tid, &ak, from, limit, usize::MAX)?,
         };
         let entries = page.entries.into_iter().map(|e| typed(self.db, self.tid, &ak, &self.key, e)).collect();
         Ok(HistoryPage { entries, more: page.more, complete: page.complete })
@@ -191,7 +207,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
             HistoryEvent::Ended(e) => HistoryEvent::Ended(e),
         };
         let mut deliver = move |db: &Osis, ev: HistoryEvent<Value>| f(db, typed_event(db, ev));
-        if let Source::Remote(r) = self.db.route(self.tid) {
+        if let Route::Remote(r) = self.db.route(self.tid) {
             return self.db.remote_on_history(&r, self.tid, ak, Box::new(deliver));
         }
         let t = self.tid;

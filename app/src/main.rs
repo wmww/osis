@@ -1,6 +1,6 @@
-//! `osis-app DIR [--host ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]`: opens the store
-//! in DIR (creating it, with its home group on the hosts, when DIR holds none) and shows the app.
-//! `--demo` adds demo data once; the look flags set the person's theme and mode (as the app's
+//! `osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]`: opens the store
+//! in DIR (creating it, with its home group syncing with those peers, when DIR holds none) and shows the app.
+//! `--demo` adds demo data once; the look flags set the account's theme and mode (as the app's
 //! own picker does).
 #![forbid(unsafe_code)]
 
@@ -12,7 +12,7 @@ use osis_kit::theme::Theme;
 use osis_kit::window::App;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: osis-app DIR [--host ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]";
+const USAGE: &str = "usage: osis-app DIR [--peer ADDR]... [--demo] [--theme ID] [--auto|--light|--dark]";
 
 fn main() -> ExitCode {
     match run() {
@@ -26,12 +26,12 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
-    let (mut dir, mut hosts, mut demo, mut theme, mut mode) = (None, Vec::new(), false, None, None);
+    let (mut dir, mut peers, mut demo, mut theme, mut mode) = (None, Vec::new(), false, None, None);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--host" => {
-                let s = args.next().ok_or("--host needs an address")?;
-                hosts.push(s.parse().map_err(|e| format!("--host {s}: {e}"))?);
+            "--peer" => {
+                let s = args.next().ok_or("--peer needs an address")?;
+                peers.push(s.parse().map_err(|e| format!("--peer {s}: {e}"))?);
             }
             "--demo" => demo = true,
             "--theme" => theme = Some(args.next().ok_or("--theme needs an id")?),
@@ -44,7 +44,7 @@ fn run() -> Result<(), String> {
     }
     let dir = dir.ok_or(USAGE)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let db = data::open(&dir, hosts).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let db = data::open(&dir, peers).map_err(|e| format!("{}: {e}", dir.display()))?;
     let data = Data::new(db);
     data.main_group().map_err(|e| e.to_string())?;
     if let Some(t) = theme {

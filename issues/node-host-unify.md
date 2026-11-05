@@ -13,7 +13,7 @@ The code that serves data a node may not read cannot decrypt anything (`osis-hos
 1. **Two stores.** A node hosting a group it also reads keeps it twice: plaintext state in `db.redb`, blobs in `host.redb`.
 2. **Three ways to serve a label.** The hub for hosting (`osis-host`), a peer that reads the label serving it (spec/sync.md §5, "serves it as its own host"), and hosts replicating to each other. Can a peer's serving and the hub be one path, differing only in what proof opens a label?
 3. **Three listening keys.** Host address, dialable key and client listener key, each with its own rules, and the client port is never served on the host address (notes/client-port.md §5). Some of this is privacy (transport keys unlinkable from node keys), so keep what that needs and no more.
-4. **Hosting is opt-in by `Hosting` config.** Fine as a default. Check nothing assumes a host is always on or has a public address (Tess's laptop case), and that `Admit` isn't phrased around servers.
+4. **Hosting is opt-in by `Serving` config.** Fine as a default. Check nothing assumes a host is always on or has a public address (Tess's laptop case), and that `Admit` isn't phrased around servers.
 5. **`osis-proto` session names.** `ClientSession` means the dialing side of a connection, unrelated to a client of the API. `ServingSession::port_only` and friends likewise.
 
 ## No server assumed (Tess)
@@ -41,5 +41,11 @@ Rule text still says "host" here, waiting on this issue and owner removal. Swapp
 - spec/data-model.md §9 (`host.0^`, `own`): admission by owner, also waiting on owner removal.
 - spec/requirements.md: "a hiding host", "Nothing trusts a host's word", an inbox's budget "at a host": each is about a node serving data it cannot read.
 
-## Words left
-"Owner" session and "device" as a term of the model. notes/client-port.md §0 "Two kinds of process" (held for the API steps). API part: issues/api-refactor.md, Names.
+## Names left
+The public API, CLI, app and notes say node, peer, `Address`, serving, `SyncId`, account (`osis`'s notes/api.md). What still says otherwise waits for owner removal, as the owner work is in there:
+- **Engine, perm, proto, `osis-host` names**: `label` and `LabelId`, `HostPolicy`, `host.0^`, `host.redb`, `Tier::Owner`, `Person`/`create_person`, `ChangeId`, `Written`, `Mutation::expires` per aspect, `Edge`, `Hub`, `osis_label::ShareLink.hosts`, `CommitKind` beneath the API's, `Time` as `WallMs` by another name. The harness too (`World::add_host`, `Opening.hosts`, `hosts` in test helpers).
+- **Spec rule text**: "host" and "label" throughout; "edge", "rights", "demotion" and "revocation" where a role is meant, and one word of "part" and "delta". The concept changes are the list above.
+- `required.0^`'s schema field `keep` (core.osis, spec/data-model.md §9, `osis get`): the API's `RequiredRules::retain_copies` wraps it; rename with the spec's "saying keep" in spec/permissions.md §2, §3.
+- **"Sync ID" over "label"**: engine and spec take the word then too. Today the `SyncId` type is an opaque label ID.
+- `sync(thing, &peers)`: a sync ID of its own is mostly a detail of how a thing travels; Tess is unsure how much to encourage single-thing ones. The doc steers sets through a group, and only `make_link` makes one quietly. Reconsider with the peers work.
+- Rendered docs: `lib.rs` keeps no spec citations. A doc-only module embedding spec/ with `#[doc = include_str!(..)]` would give links; not tried, and `tools/gate.sh` would then need that file in its docs step.

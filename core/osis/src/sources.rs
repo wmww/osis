@@ -36,7 +36,7 @@ use crate::error::{Error, Result};
 use crate::handle::{Locked, Osis};
 use crate::port::client::Remote;
 use crate::port::method;
-use crate::share::{HostAddr, Status, SyncScope};
+use crate::share::{Address, Status, SyncScope};
 use crate::watch::{Msg, PortEvent};
 use osis_base::{Tid, Value};
 use osis_node::{ChangeId, Engine};
@@ -51,14 +51,18 @@ const SOURCES: &str = "sources";
 /// who this client is there. The node says which actor that makes it (`Osis::me`).
 #[derive(Clone, Debug)]
 pub struct NodeLogin {
-    pub addr: HostAddr,
+    /// Where it is.
+    pub addr: Address,
+    /// What proves who this client is.
     pub secret: crate::ClientSecret,
 }
 
-/// One connected or routed node in `Status::remotes`.
+/// A node this process is a client of, or that a group's source names (`Status::client_connections`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RemoteStatus {
-    pub address: HostAddr,
+pub struct ClientConnection {
+    /// The node.
+    pub address: Address,
+    /// Whether the connection is up now.
     pub connected: bool,
 }
 
@@ -68,12 +72,12 @@ pub enum GroupSource {
     /// This node: it syncs the group.
     Local,
     /// The node at this address, which must be connected (`Osis::connect_node`).
-    Remote(HostAddr),
+    Node(Address),
 }
 
 /// Where an API call on a thing or group goes. Every call addressed by a tid or group checks it.
 #[derive(Clone)]
-pub(crate) enum Source {
+pub(crate) enum Route {
     /// This process's engine.
     Local,
     /// The node at this connection.
@@ -120,7 +124,7 @@ fn scope_of(e: &Engine, t: Tid) -> BTreeSet<Tid> {
     s
 }
 
-fn remote_named(l: &Locked, addr: &HostAddr) -> Arc<Remote> {
+fn remote_named(l: &Locked, addr: &Address) -> Arc<Remote> {
     l.remotes.iter().find(|r| r.addr == *addr).cloned().unwrap_or_else(|| Remote::absent(addr))
 }
 
@@ -214,21 +218,21 @@ impl Osis {
 
     /// The source of calls on `tid`, a thing or a group (the module's invariant).
     #[inline]
-    pub(crate) fn route(&self, tid: Tid) -> Source {
+    pub(crate) fn route(&self, tid: Tid) -> Route {
         if !self.routed() {
-            return Source::Local;
+            return Route::Local;
         }
         match self.decide(tid) {
-            Decided::Local => Source::Local,
-            Decided::Remote(r) => Source::Remote(self.reachable(r)),
-            Decided::Ask(first, _) if crate::port::serve::on_worker() => Source::Remote(self.reachable(first)),
-            Decided::Ask(first, rs) => Source::Remote(ask(&first, &rs, tid)),
+            Decided::Local => Route::Local,
+            Decided::Remote(r) => Route::Remote(self.reachable(r)),
+            Decided::Ask(first, _) if crate::port::serve::on_worker() => Route::Remote(self.reachable(first)),
+            Decided::Ask(first, rs) => Route::Remote(ask(&first, &rs, tid)),
         }
     }
 
     /// `route` for a call that writes: `Invalid` on a split thing (the module's invariant). The check
     /// comes after the route: a move in between fails it instead of passing a route it never saw.
-    pub(crate) fn route_write(&self, tid: Tid) -> Result<Source> {
+    pub(crate) fn route_write(&self, tid: Tid) -> Result<Route> {
         let s = self.route(tid);
         self.after_route();
         self.check_split(&[tid])?;
@@ -236,7 +240,7 @@ impl Osis {
     }
 
     /// `route_all` for a call that writes.
-    pub(crate) fn route_write_all(&self, things: &[Tid]) -> Result<Source> {
+    pub(crate) fn route_write_all(&self, things: &[Tid]) -> Result<Route> {
         let s = self.route_all(things)?;
         self.after_route();
         self.check_split(things)?;
@@ -245,7 +249,7 @@ impl Osis {
 
     /// `route_scope` for a call that writes. Over a group: whichever of its things the write turns
     /// out to touch, which only the source knows.
-    pub(crate) fn route_write_scope(&self, scope: &crate::commits::Scope) -> Result<Source> {
+    pub(crate) fn route_write_scope(&self, scope: &crate::commits::Scope) -> Result<Route> {
         let s = self.route_scope(Some(scope))?;
         self.after_route();
         match scope {
@@ -265,7 +269,7 @@ impl Osis {
 
     /// `route_commit` for a call that writes. A commit not held here says nothing of what it touched
     /// (a write through a route never comes here): `Invalid` while anything is split.
-    pub(crate) fn route_write_commit(&self, id: ChangeId) -> Result<Source> {
+    pub(crate) fn route_write_commit(&self, id: ChangeId) -> Result<Route> {
         let s = self.route_commit(id)?;
         self.after_route();
         if self.routed() && self.has_store() {
@@ -306,13 +310,13 @@ impl Osis {
 
     /// The one source of calls on all of `things`; `Invalid` when they resolve to two. None: as
     /// a call on no thing (`route_scope(None)`).
-    pub(crate) fn route_all(&self, things: &[Tid]) -> Result<Source> {
-        let mut out: Option<Source> = None;
+    pub(crate) fn route_all(&self, things: &[Tid]) -> Result<Route> {
+        let mut out: Option<Route> = None;
         for t in things.iter().collect::<BTreeSet<_>>() {
             let s = self.route(*t);
             match (&out, &s) {
-                (None, _) | (Some(Source::Local), Source::Local) => {}
-                (Some(Source::Remote(a)), Source::Remote(b)) if Arc::ptr_eq(a, b) => {}
+                (None, _) | (Some(Route::Local), Route::Local) => {}
+                (Some(Route::Remote(a)), Route::Remote(b)) if Arc::ptr_eq(a, b) => {}
                 _ => return Err(Error::Invalid("a call on things at two sources: one call, one source".into())),
             }
             out = Some(s);
@@ -325,29 +329,29 @@ impl Osis {
 
     /// The source of calls over `scope` (`None`: every held commit; for a process with a store,
     /// its own).
-    pub(crate) fn route_scope(&self, scope: Option<&crate::commits::Scope>) -> Result<Source> {
+    pub(crate) fn route_scope(&self, scope: Option<&crate::commits::Scope>) -> Result<Route> {
         Ok(match scope {
             Some(crate::commits::Scope::Thing(t) | crate::commits::Scope::Group(t)) => self.route(*t),
             Some(crate::commits::Scope::Aspects(a)) => return self.route_all(&a.iter().map(|(t, _)| *t).collect::<Vec<_>>()),
             None => match self.inner.client.get() {
-                Some(t) if self.acting.is_none() => Source::Remote(t.primary.clone()),
-                _ => Source::Local,
+                Some(t) if self.acting.is_none() => Route::Remote(t.primary.clone()),
+                _ => Route::Local,
             },
         })
     }
 
     /// The source holding commit `id`: of what it touched when this engine holds it; else an
     /// only connection. `Invalid` among several: a commit id does not say whose it is.
-    pub(crate) fn route_commit(&self, id: ChangeId) -> Result<Source> {
+    pub(crate) fn route_commit(&self, id: ChangeId) -> Result<Route> {
         if !self.routed() {
-            return Ok(Source::Local);
+            return Ok(Route::Local);
         }
         let client = !self.has_store();
         let (known, remotes) = self.locked(|l| (if client { None } else { touched_by(l.engine(), id) }, l.remotes.clone()));
         match (known, remotes.as_slice()) {
             (Some(ts), _) => self.route_all(&ts),
-            (None, []) => Ok(Source::Local),
-            (None, [r]) => Ok(Source::Remote(self.reachable(r.clone()))),
+            (None, []) => Ok(Route::Local),
+            (None, [r]) => Ok(Route::Remote(self.reachable(r.clone()))),
             (None, _) => Err(Error::Invalid("a change this node does not hold, with several nodes connected: revert it through a handle with one".into())),
         }
     }
@@ -419,7 +423,7 @@ impl Osis {
         }
         local.two_sources = split;
         for r in remotes {
-            local.remotes.push(RemoteStatus { address: r.addr.clone(), connected: r.connected() });
+            local.client_connections.push(ClientConnection { address: r.addr.clone(), connected: r.connected() });
             if !self.may_wait() {
                 continue;
             }
@@ -489,16 +493,16 @@ impl Osis {
     /// Moves where `group` is read and written, between this node and a node it is connected to,
     /// never losing a write.
     ///
-    /// To `Remote(addr)`: the connection must be up and the node know the group (else `Network` or
-    /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a host
+    /// To `Node(addr)`: the connection must be up and the node know the group (else `Network` or
+    /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a saved peer
     /// (`wait_synced`'s outcomes; failed or dropped, nothing changed); then this
     /// node stops syncing it, for itself alone (`SyncMode::LogOnly`, not `unsync`, which
-    /// stops it for every holder), and calls go there. `Invalid`: the person's home group, or a
+    /// stops it for every holder), and calls go there. `Invalid`: the account's home group, or a
     /// group still synced here through a parent (its things would have two sources: move the parent). A write made
     /// during the wait fails the move `Unsynced` rather than strand it: call it again.
     ///
     /// To `Local`: this node must hold the group (a program with no store has no keys: `Unsupported`; a node
-    /// without it: `Invalid`). It syncs the group again and, until the node's writes are at a host
+    /// without it: `Invalid`). It syncs the group again and, until the node's writes reached a saved peer
     /// and this node caught up (`wait_synced`'s outcomes; failed or dropped, syncing goes on and
     /// calling this again finishes the move), calls keep going to the node, so nothing reads this
     /// node's old copy. Works with the node gone (what only it held arrives if it returns).
@@ -510,16 +514,16 @@ impl Osis {
     /// the same node: they would miss the other group's holders.
     ///
     /// Every watch whose source this changes gets one last `Err(Network)` and ends: watch again.
-    /// The route survives a restart (the `sources` record); a store-less process has none.
+    /// Where it goes survives a restart; a process with no store has none.
     pub async fn group_source(&self, group: Tid, to: GroupSource) -> Result<()> {
         self.local_only("group_source")?;
         match to {
-            GroupSource::Remote(addr) => self.source_remote(group, addr).await,
+            GroupSource::Node(addr) => self.source_remote(group, addr).await,
             GroupSource::Local => self.source_local(group).await,
         }
     }
 
-    async fn source_remote(&self, group: Tid, addr: HostAddr) -> Result<()> {
+    async fn source_remote(&self, group: Tid, addr: Address) -> Result<()> {
         if group == self.me() {
             return Err(Error::Invalid("the home group stays on this node".into()));
         }
@@ -594,10 +598,10 @@ impl Osis {
         })
     }
 
-    /// Ends the connection to the node at `addr`, and with it what waits on that node there. A route
-    /// naming it stays and fails `Network` until it is connected again or the group moves. `false`: no such connection. `Unsupported` on a
+    /// Ends the connection to the node at `addr`, and with it what waits on that node there. A group
+    /// whose source it is stays so, and fails `Network` until it is connected again or the group moves. `false`: no such connection. `Unsupported` on a
     /// handle with no store of its own.
-    pub fn disconnect_node(&self, addr: &HostAddr) -> Result<bool> {
+    pub fn disconnect_node(&self, addr: &Address) -> Result<bool> {
         self.local_only("disconnect_node")?;
         Ok(self.locked(|l| {
             let (gone, kept) = std::mem::take(&mut l.remotes).into_iter().partition::<Vec<_>, _>(|r| r.addr == *addr);
@@ -608,9 +612,9 @@ impl Osis {
         }))
     }
 
-    /// The groups this node reads and writes at another node, with its address: this process's own
-    /// table, so it cannot fail, and a handle with no store has none.
-    pub fn routes(&self) -> BTreeMap<Tid, HostAddr> {
+    /// The groups whose source is another node, with its address (`group_source`). This process's own
+    /// table, so it cannot fail; a handle with no store has none.
+    pub fn group_sources(&self) -> BTreeMap<Tid, Address> {
         self.locked(|l| l.routes.clone())
     }
 }
@@ -631,7 +635,7 @@ impl Locked {
 }
 
 /// The `sources` record.
-pub(crate) fn load_routes(e: &mut Engine) -> Result<BTreeMap<Tid, HostAddr>> {
+pub(crate) fn load_routes(e: &mut Engine) -> Result<BTreeMap<Tid, Address>> {
     let bad = || Error::Storage("sources record".into());
     let Some(b) = e.app_record(SOURCES)? else { return Ok(BTreeMap::new()) };
     let s = String::from_utf8(b).map_err(|_| bad())?;

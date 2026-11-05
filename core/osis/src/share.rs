@@ -1,4 +1,4 @@
-//! Sharing, links, cards, devices, hosts and sync (notes/api.md Sharing and roles, Sync
+//! Sharing, links, cards, nodes, hosts and sync (notes/api.md Sharing and roles, Sync
 //! configuration and status) over role flows and the sync engine: each sharing call is
 //! one role commit made locally (spec/permissions.md §2), whose deliveries the sync engine
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
@@ -20,7 +20,7 @@ pub struct GrantOpts {
     /// The grant ends at this time.
     pub until: Option<Time>,
     /// The highest role the holder may grant others, at most its own.
-    pub invite: Option<Role>,
+    pub may_grant: Option<Role>,
 }
 
 /// What a group contains. Being a member grants nothing: who may read a thing is who holds a role
@@ -51,6 +51,7 @@ impl Member {
 /// One way an actor holds a role on a thing (`Osis::holders`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Holder {
+    /// The actor holding the role.
     pub actor: Tid,
     /// The role this way gives: the least along it.
     pub role: Role,
@@ -62,46 +63,47 @@ pub struct Holder {
     pub through: Vec<Tid>,
 }
 
-/// What to do about work a holder may have done that this device has not seen, before lowering
+/// What to do about work a holder may have done that this node has not seen, before lowering
 /// or removing its role. Work not seen by then is undone everywhere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SyncFirst {
-    /// Catch up first, for as long as it takes; fail `Unsynced` on a group stranded or without hosts,
-    /// or with no runtime.
+    /// Catch up first, for as long as it takes; fail `Unsynced` on a group stranded or with no saved
+    /// peer, or with no runtime.
     #[default]
     Required,
     /// Try to catch up for this long, then go ahead with a diagnostic. At 0 only what is already
     /// synced counts.
     Try(Duration),
-    /// Go ahead now, keeping what this device has seen: for a stolen device or a hostile holder.
+    /// Go ahead now, keeping what this node has seen: for a stolen node or a hostile holder.
     Skip,
-    /// Go ahead now, keeping only what this device had seen by this time.
+    /// Go ahead now, keeping only what this node had seen by this time.
     Backdate(Time),
 }
 
 /// How `Osis::set_role` takes a role away.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetRoleOpts {
+    /// What to do first about work this node has not seen.
     pub sync: SyncFirst,
-    /// On removal: whether the holder's devices keep a read-only copy (`true`) or erase it
-    /// (`false`). `None`: the thing's default (`core::RequiredRules::keep`), and erase for a device
-    /// leaving its account. `Invalid` when a role remains.
-    pub keep: Option<bool>,
+    /// On removal: whether the holder's nodes retain a read-only copy of what it could read (`true`)
+    /// or erase it (`false`). `None`: the thing's default (`core::RequiredRules::retain_copies`), and
+    /// erase for a node leaving its account. `Invalid` when a role remains.
+    pub retain_copy: Option<bool>,
 }
 
 /// How a link made by `Osis::make_link` ends and is reached.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
-    /// The link expires. It closes when one of your devices next syncs after `until`: until then
+    /// The link expires. It closes when one of your nodes next syncs after `until`: until then
     /// anyone holding the link can still join.
     pub until: Option<Time>,
     /// The first redemption ends the link.
     pub single_use: bool,
-    /// Opt-in: the link text says how to reach this device directly, so a redeemer that shares no
-    /// host with it reaches it while it is online. Anyone holding the link can dial this device until
-    /// the link ends by revocation or expiry, when the device's address changes (a single-use link's
-    /// redemption keeps it: the redeemer keeps the direct path). Needs this device reachable (a runtime, `Config.peers`); a
-    /// database without hosts can only make direct links.
+    /// Opt-in: the link text says how to reach this node directly, so a redeemer that shares no saved
+    /// peer with it reaches it while it is online. Anyone holding the link can dial this node until
+    /// the link ends by revocation or expiry, when the node's address changes (a single-use link's
+    /// redemption keeps it: the redeemer keeps the direct path). Needs a runtime and
+    /// `Config::direct_sync`; a node with no saved peers can only make direct links.
     pub direct: bool,
 }
 
@@ -130,22 +132,23 @@ impl std::str::FromStr for LinkId {
     }
 }
 
-/// A link of this person (`links`).
+/// A link of this account (`links`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkInfo {
     /// What `revoke_link` takes.
     pub id: LinkId,
+    /// The thing it shares.
     pub target: Tid,
+    /// The role it gives.
     pub role: Role,
+    /// When it expires.
     pub until: Option<Time>,
+    /// The first redemption ends it.
     pub single_use: bool,
 }
 
-/// An invite from a sender with no known connection to this database (spec/sync.md §3, invite
-/// requests): nothing it names is fetched or dialed until `accept_invite`. It says nothing about
-/// sender or thing: both would be the sender's unverified word, and a
-/// request never comes from a node known to be connected, so a known name there would be a
-/// spoof or a device not seen yet.
+/// An invite from a stranger: nothing it names is fetched or dialed until `accept_invite`. It says
+/// nothing about sender or thing, as both would be the sender's unverified word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InviteId(osis_base::CommitId);
 
@@ -206,7 +209,7 @@ impl ShareLink {
     }
 }
 text_type!(
-    /// A contact card: a read link to the person's profile (spec/sync.md §3).
+    /// A contact card: a read link to an account's profile.
     ContactCard, osis_label::ShareLink, osis_label::ShareLink::from_text, "contact card"
 );
 text_type!(
@@ -221,6 +224,7 @@ text_type!(
 pub struct Url(String);
 
 impl Url {
+    /// Its text.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -252,49 +256,52 @@ impl std::fmt::Display for Url {
     }
 }
 
-/// Where a node is reached: transport URL plus its key (`<url>#<base64url key>`).
+/// How to reach a node: a transport URL and the node's key (`<url>#<base64url key>`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct HostAddr(pub(crate) osis_label::Address);
+pub struct Address(pub(crate) osis_label::Address);
 
-impl std::str::FromStr for HostAddr {
+impl std::str::FromStr for Address {
     type Err = Error;
-    /// A `quic://` URL without a port gets `:4040` spelled out, so one host has one address
-    /// (`hosts rm` matches what `hosts add` stored).
-    fn from_str(s: &str) -> Result<HostAddr> {
-        let mut a = osis_label::address_from_text(s.trim()).map_err(bad("host address"))?;
+    /// A `quic://` URL without a port gets `:4040` spelled out, so one node has one address.
+    fn from_str(s: &str) -> Result<Address> {
+        let mut a = osis_label::address_from_text(s.trim()).map_err(bad("address"))?;
         a.url = osis_transport::quic::explicit_port(&a.url);
         if a.url.len() > osis_base::format::MAX_URL_BYTES {
-            return Err(Error::Invalid(format!("host address: URL over {} bytes", osis_base::format::MAX_URL_BYTES)));
+            return Err(Error::Invalid(format!("address: URL over {} bytes", osis_base::format::MAX_URL_BYTES)));
         }
-        Ok(HostAddr(a))
+        Ok(Address(a))
     }
 }
 
-impl std::fmt::Display for HostAddr {
+impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&osis_label::address_to_text(&self.0))
     }
 }
 
-impl HostAddr {
+impl Address {
     /// From a transport URL and the node's 32-byte key.
-    pub fn new(url: &Url, key: [u8; 32]) -> HostAddr {
-        HostAddr(osis_label::Address { url: url.0.clone(), key })
+    pub fn new(url: &Url, key: [u8; 32]) -> Address {
+        Address(osis_label::Address { url: url.0.clone(), key })
     }
 
+    /// Where to dial.
     pub fn url(&self) -> Url {
         Url(self.0.url.clone())
     }
 
+    /// The node's key, which it proves when dialed.
     pub fn key(&self) -> [u8; 32] {
         self.0.key
     }
 }
 
-/// A device of the person.
+/// A node of this account (`Osis::nodes`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Device {
+pub struct AccountNode {
+    /// The node.
     pub node: Tid,
+    /// Its role on the account.
     pub role: Role,
 }
 
@@ -305,12 +312,15 @@ pub enum SyncState {
     Synced,
     /// Sending or fetching.
     Syncing,
-    /// No host of it answers now. It keeps trying.
+    /// No saved peer, but other readers are connected: changes go to them as they happen, and nothing
+    /// says either side holds all the other does.
+    Connected,
+    /// No saved peer of it answers now. It keeps trying.
     Unreachable,
-    /// It has no host to sync with.
-    NoHosts,
-    /// A host does not take it (yet; `GroupSync::refused_by` names them) and no other host has it
-    /// open. It keeps asking.
+    /// No saved peer, and no other node connected on it now: what is written here stays here for now.
+    NoPeers,
+    /// A saved peer does not take it (yet; `GroupSync::refused_by` names them) and no other has it open.
+    /// It keeps asking.
     Refused,
     /// This node lost the keys to it, and can read nothing new until another holder gives them again.
     Stranded,
@@ -325,13 +335,15 @@ pub enum SyncState {
 /// How one group syncs here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupSync {
+    /// How it stands.
     pub state: SyncState,
+    /// When it was last caught up.
     pub last_sync: Option<Time>,
-    /// Hosts that do not take it (yet): state `Refused` when no other host has it open, else
+    /// Saved peers that do not take it (yet): state `Refused` when no other has it open, else
     /// informational.
-    pub refused_by: Vec<HostAddr>,
-    /// This node left the group and keeps it until a host has its removal; stays set while no
-    /// host takes it.
+    pub refused_by: Vec<Address>,
+    /// This node left the group and keeps it until a saved peer has its removal; stays set while none
+    /// takes it.
     pub leaving: bool,
     /// Holders of a role on the thing that no sync carries it to, as far as this node knows: this
     /// account among them when it is the one cut off. Not this node's own clients on a thing of this
@@ -339,14 +351,16 @@ pub struct GroupSync {
     pub not_carried_to: Vec<Tid>,
 }
 
-/// Sync status: hosts connected and each group this node syncs or holds the log of, and each thing
-/// shared with no sync to carry it.
+/// How sync stands: connections, each group this node syncs or holds the log of, and each thing shared
+/// with no sync to carry it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
+    /// Sync connections up now, whichever side dialed.
     pub connected: usize,
+    /// How each group stands.
     pub groups: BTreeMap<Tid, GroupSync>,
-    /// The nodes this process is connected to, and those its routes name.
-    pub remotes: Vec<crate::sources::RemoteStatus>,
+    /// The nodes this process is a client of, and those a group's source names.
+    pub client_connections: Vec<crate::sources::ClientConnection>,
     /// Things read at a connected node and also in a group that carries them to another source:
     /// writes on them are refused until one of the groups moves (`Osis::group_source`).
     pub two_sources: BTreeSet<Tid>,
@@ -355,18 +369,24 @@ pub struct Status {
 /// What `Osis::wait_synced` waits for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncScope {
-    /// Every synced group with hosts (one with none has nothing to wait for) and every pending
-    /// delivery.
-    All,
-    /// The sync of this thing (its own, or of groups containing it; one with no hosts fails
+    /// Every synced group with a saved peer, and every pending delivery. A group with none is left
+    /// out, so `Ok` says nothing of it: what was written there may have reached nobody (`status` shows
+    /// such a group as `NoPeers` or `Connected`).
+    AllWithPeers,
+    /// The sync of this thing (its own, or of groups containing it; one with no saved peer fails
     /// `Unsynced`) and the deliveries about it, what it holds or those groups.
     Thing(Tid),
+}
+
+/// Nothing a wait can judge by: a group with no saved peer (issues/no-server-audit.md, Fixes 4).
+fn no_saved_peer(s: SyncState) -> bool {
+    matches!(s, SyncState::NoPeers | SyncState::Connected)
 }
 
 /// One synced label's state.
 fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
     if s.hosts == 0 {
-        SyncState::NoHosts
+        if s.peers_connected > 0 { SyncState::Connected } else { SyncState::NoPeers }
     } else if s.stranded {
         SyncState::Stranded
     } else if !s.not_admitted.is_empty() && s.open == 0 {
@@ -383,7 +403,7 @@ fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
 }
 
 /// The status from the sync engine's labels (a group with several labels shows the worst) and
-/// the engine's routes; `me`: this database's person.
+/// the engine's routes; `me`: this node's account.
 pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
     for s in sync.label_status() {
@@ -394,7 +414,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
         g.last_sync = g.last_sync.max(last);
         g.leaving |= s.leaving;
         for a in s.not_admitted {
-            let a = HostAddr(a);
+            let a = Address(a);
             if !g.refused_by.contains(&a) {
                 g.refused_by.push(a);
             }
@@ -404,8 +424,8 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
         groups.insert(*g, GroupSync { state: SyncState::LogOnly, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to: Vec::new() });
     }
     // things a holder has a role on and no route to (spec/sync.md §2): none has a label of its
-    // own, so none is listed above. On a thing this person administers (it can `sync` it) nobody
-    // misses a route who reads only what this node holds: this person, its clients, and a group
+    // own, so none is listed above. On a thing this account administers (it can `sync` it) nobody
+    // misses a route who reads only what this node holds: this account, its clients, and a group
     // of its own held by no one else
     let e = sync.engine_mut();
     let node = e.tid();
@@ -421,11 +441,11 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
             groups.insert(t, GroupSync { state: SyncState::NotCarried, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to });
         }
     }
-    Ok(Status { connected: sync.connected(), groups, remotes: Vec::new(), two_sources: BTreeSet::new() })
+    Ok(Status { connected: sync.connected(), groups, client_connections: Vec::new(), two_sources: BTreeSet::new() })
 }
 
 fn edge(role: Role, o: GrantOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: None, keyset: None }
+    ct::Edge { role, until: o.until, invite: o.may_grant, since: None, tied: None, keyset: None }
 }
 
 /// Whether a grant of `role` to `h`, with no grant on `t` now, would be written by an admin below
@@ -460,7 +480,7 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
     let mut groups = e.groups_of(&t);
     groups.insert(t);
     let stale = l.sync.receipts_only().iter().any(|g| groups.contains(g));
-    !stale && l.sync.label_status().iter().filter(|s| groups.contains(&s.group)).all(|s| matches!(label_state(s), SyncState::Synced | SyncState::NoHosts))
+    !stale && l.sync.label_status().iter().filter(|s| groups.contains(&s.group)).all(|s| matches!(label_state(s), SyncState::Synced | SyncState::Connected | SyncState::NoPeers))
 }
 
 /// Synced groups holding any of `things` (the thing itself or its closure).
@@ -507,16 +527,16 @@ fn group_synced(sync: &mut SyncEngine, me: Tid, t: Tid) -> Option<Result<()>> {
 fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveries: Option<&BTreeSet<Tid>>, late: bool) -> Option<Result<()>> {
     let skip = sync.receipts_only().clone();
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect();
-    // a replaced hostless label beside another of its group takes nothing (it retires after
+    // a replaced label with no peer beside another of its group takes nothing (it retires after
     // ROLE_KEEP): left out, else `Group(t)` failed until then
     let gone = |s: &osis_node::sync::LabelStatus| s.hosts == 0 && s.replaced;
     let labels: Vec<(Tid, SyncState)> = all
         .iter()
         .filter(|s| !gone(s) || !all.iter().any(|x| x.group == s.group && !gone(x)))
         .map(|s| (s.group, label_state(s)))
-        .filter(|(_, st)| groups.is_some() || *st != SyncState::NoHosts)
+        .filter(|(_, st)| groups.is_some() || !no_saved_peer(*st))
         .collect();
-    let mut bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| matches!(s, SyncState::Stranded | SyncState::NoHosts) || late && *s == SyncState::Refused).map(|(g, _)| *g).collect();
+    let mut bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| *s == SyncState::Stranded || no_saved_peer(*s) || late && *s == SyncState::Refused).map(|(g, _)| *g).collect();
     let read = sync.receipts_read(reads);
     if let Some(Err(b)) = &read {
         bad.extend(b);
@@ -547,8 +567,8 @@ impl Osis {
     /// `Unsupported` when calls on `t` go to another node: a flow the port does not carry.
     pub(crate) fn not_routed(&self, what: &str, t: Tid) -> Result<()> {
         match self.route(t) {
-            crate::sources::Source::Local => Ok(()),
-            crate::sources::Source::Remote(_) => Err(Error::Unsupported(format!("{what} of a thing this node reads at another node: move its group home first"))),
+            crate::sources::Route::Local => Ok(()),
+            crate::sources::Route::Remote(_) => Err(Error::Unsupported(format!("{what} of a thing this node reads at another node: move its group home first"))),
         }
     }
 
@@ -561,26 +581,26 @@ impl Osis {
     }
 
     /// Grants `holder` `role` on `target`: adds a holder, raises a role, or changes `until` and
-    /// `invite` (what `opts` leaves out goes). It never waits and never lowers a role: a role below
+    /// `may_grant` (what `opts` leaves out goes). It never waits and never lowers a role: a role below
     /// the holder's present one, or below one it lost when its grant ended or it left, is `Invalid`
     /// and takes `set_role`, which keeps what the holder wrote.
     ///
     /// `set_role` also adds and raises, and this overlap is on purpose: `grant` is the call that
     /// does not block and takes no role away, for sync code and for callers that mean only that, and
-    /// the only one that sets `until` and `invite`. One thing it does take: an `invite` below the
-    /// present one undoes every grant the holder made by its invite.
+    /// the only one that sets `until` and `may_grant`. One thing it does take: a `may_grant` below the
+    /// present one undoes every grant the holder made by it.
     ///
     /// This records the permission and nothing else. The holder reads the target only once a synced
     /// group it reads holds the target, or the target's own `sync` carries it; until then `status`
     /// shows `SyncState::NotCarried` and names the holder (`GroupSync::not_carried_to`).
     ///
-    /// Needs admin on the target (or an `invite` of at least `role`, for someone with no grant yet;
+    /// Needs admin on the target (or a `may_grant` of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
     /// and the holder's keys here (a contact card, a shared group, pairing), else `UnknownActor`.
     /// Each grant costs about 2.6 KB of keys: to share with many, grant one group. `Unsupported` on
     /// a client with its own actor.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: GrantOpts) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
+        if let crate::sources::Route::Remote(r) = self.route_write(target)? {
             return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::grant_opts_v(&opts)]).map(drop);
         }
         if !self.holds(target) {
@@ -614,12 +634,12 @@ impl Osis {
     /// Several commits, not one: keeping a draft, the membership, the grant. A crash between them
     /// leaves the earlier ones, and calling this again finishes the rest.
     ///
-    /// Needs write on the group and admin on the thing (or an `invite` of at least `role`, the
+    /// Needs write on the group and admin on the thing (or a `may_grant` of at least `role`, the
     /// group having no grant yet), else `Permission` before anything is written. `Invalid`, as for
     /// `grant`, below a role the group lost. To add without granting: `Write::group`. `Unsupported` on a client with its own actor.
     pub fn add_with_grant(&self, member: Member, group: Tid, role: Role) -> Result<()> {
         let (tid, subgroup) = member.parts();
-        if let crate::sources::Source::Remote(r) = self.route_write_all(&[tid, group])? {
+        if let crate::sources::Route::Remote(r) = self.route_write_all(&[tid, group])? {
             return r.call(crate::port::method::ADD_WITH_GRANT, vec![crate::port::codec::member_v(member), Value::Tid(group), crate::port::codec::role_v(role)]).map(drop);
         }
         for x in [tid, group] {
@@ -660,7 +680,7 @@ impl Osis {
         let tied = existing.is_none_or(|x| x.with_membership);
         let done = self.guarded(&[tid, group], |e| {
             let tie = match tied {
-                true => Some(e.placement(&tid, &group, subgroup)?.ok_or_else(|| Error::Invalid(format!("{tid} is not placed in {group} here")))?),
+                true => Some(e.placement(&tid, &group, subgroup)?.ok_or_else(|| Error::Invalid(format!("{tid} is not in {group} here")))?),
                 false => None,
             };
             let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct), keyset: None };
@@ -684,15 +704,15 @@ impl Osis {
         }
     }
 
-    /// Everyone who holds a role on `target`, directly or through an actor that holds one (a person
+    /// Everyone who holds a role on `target`, directly or through an actor that holds one (an account
     /// through a group, a joiner through a link), nearest first. An actor with several ways in is
     /// listed once per way: the shortest to each grant it holds them by, and a longer one when it
     /// gives more, so its best role and latest end are among its entries. Who holds through an actor:
     /// `holders` of that actor, or those here with it in `through`. Grants one level down, with
-    /// `invite` and whether a grant goes with a membership: `grants`. On a client with its own actor,
+    /// `may_grant` and whether a grant goes with a membership: `grants`. On a client with its own actor,
     /// what that actor may read: nothing behind an actor it may not read.
     pub fn holders(&self, target: Tid) -> Result<Vec<Holder>> {
-        if let crate::sources::Source::Remote(r) = self.route(target) {
+        if let crate::sources::Route::Remote(r) = self.route(target) {
             return crate::port::codec::holders(r.call(crate::port::method::HOLDERS, vec![Value::Tid(target)])?);
         }
         Ok(self.read_local(|r| {
@@ -770,7 +790,7 @@ impl Osis {
     /// are done (with `deliveries`, also once no delivery about one of those things is
     /// pending, any delivery for `groups` `None`); fails `Unsynced` when a label in scope is
     /// stranded; after `give_up` (a `SyncFirst::Try`), `Unsynced` for a refused one, else `Network`.
-    /// The scope: every label of `groups` (a hostless one fails `Unsynced`), or for `None` every
+    /// The scope: every label of `groups` (one with no peer fails `Unsynced`), or for `None` every
     /// label with hosts of a synced group.
     fn groups_synced(&self, groups: Option<Vec<Tid>>, reads: Vec<Tid>, give_up: Option<Duration>, deliveries: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
         self.wait_until(give_up, Box::new(move |sync, _, late| synced(sync, groups.as_deref(), &reads, deliveries.as_ref(), late).or_else(|| late.then(|| Err(Error::Network("not caught up in time".into()))))))
@@ -779,13 +799,13 @@ impl Osis {
     /// Makes `holder`'s role on `target` this one: raises, lowers, or with `None` removes. The usual
     /// way to change a role (`grant` says why both exist). A role that does not change writes
     /// nothing. Someone with no role gets a `grant` with default options, or with `None` nothing is
-    /// written. `until` and `invite` stay as they are (`invite` capped at the new role): `grant` sets
-    /// those.
+    /// written. `until` and `may_grant` stay as they are (`may_grant` capped at the new role): `grant`
+    /// sets those.
     ///
     /// A raise waits for nothing. Lowering or removing first does as `SetRoleOpts::sync` says, so that
     /// what the holder did while it could is kept; so does a role below one the holder lost when its
     /// grant ended or it left, which ends the old grant in a commit of its own (a failure between
-    /// the two leaves the holder with no role, as it had: call again). `SetRoleOpts::keep` with a role
+    /// the two leaves the holder with no role, as it had: call again). `SetRoleOpts::retain_copy` with a role
     /// is `Invalid`.
     ///
     /// A removal follows every way the holder has in (`holders`) until none is left: dropped or
@@ -800,7 +820,7 @@ impl Osis {
     /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its group
     /// home first. A removal written to the copy here would never leave it.
     pub async fn set_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
-        keep_only_on_removal(role, o)?;
+        retain_only_on_removal(role, o)?;
         if !self.has_store() {
             return self.rtask(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
         }
@@ -826,7 +846,7 @@ impl Osis {
                     let cur = self.grants(target)?.get(&holder).copied().ok_or(Error::Invalid(format!("{holder} is no holder of {target}")))?;
                     match role {
                         Some(r) if r == cur.role => return Ok(()),
-                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, invite: cur.invite }),
+                        Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, may_grant: cur.may_grant }),
                         _ => self.lower(target, holder, role, left(o), false).await?,
                     }
                 }
@@ -847,15 +867,15 @@ impl Osis {
 
     /// `set_role` for one who locked everyone else out: a writer that replaced the keys of `target`
     /// and sealed the new ones to itself alone, so that `set_role` fails here. Also undoes, everywhere,
-    /// that holder's key changes this device cannot open, and changes the keys from those before
+    /// that holder's key changes this node cannot open, and changes the keys from those before
     /// them; what was written under the undone keys stays readable only where they are already held.
     ///
-    /// Only after a lockout: on a device that merely lacks a key someone has yet to send it, this
+    /// Only after a lockout: on a node that merely lacks a key someone has yet to send it, this
     /// discards an honest change. `holder` must hold a grant on `target` itself (else `Invalid`), and
     /// only that grant is touched; `role` can lower or remove, not raise. Nothing to undo: that grant
     /// changes as `set_role` would change it. `Unsupported` as for `set_role`.
     pub async fn repudiate(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
-        keep_only_on_removal(role, o)?;
+        retain_only_on_removal(role, o)?;
         if !self.has_store() {
             return self.rtask(crate::port::method::REPUDIATE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
         }
@@ -877,14 +897,14 @@ impl Osis {
         let new = match role {
             Some(role) => {
                 let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
-                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None })
+                Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None })
             }
             None => None,
         };
         let things = self.engine(|e| e.presync_scope(&t, &m, new.as_ref()));
         let presync = self.presync(things, o.sync).await?;
-        // a person's default does not reach its devices (spec/permissions.md §2)
-        let keep = o.keep.or((t == self.inner.me).then_some(false));
+        // an account's default does not reach its nodes (spec/permissions.md §2)
+        let keep = o.retain_copy.or((t == self.inner.me).then_some(false));
         let fd = flows::Demotion { holder: m, new, presync, keep };
         let done = self.guarded(&[t], |e| (if repudiate { e.demote_repudiating(&t, &fd) } else { e.demote(&t, &fd) }).map_err(needs_admin))?;
         self.carry(done)
@@ -907,7 +927,7 @@ impl Osis {
             return Err(Error::Permission { tid: holder, needs: Role::Admin });
         }
         let route = if own { self.route_write(target)? } else { self.route_write_all(&[holder, target])? };
-        if let crate::sources::Source::Remote(r) = route {
+        if let crate::sources::Route::Remote(r) = route {
             return r.call(crate::port::method::LEAVE, vec![Value::Tid(holder), Value::Tid(target)]).map(drop);
         }
         if !self.grants(target)?.contains_key(&holder) {
@@ -926,12 +946,12 @@ impl Osis {
         self.carry(done)
     }
 
-    /// The actors whose read-only copy this node keeps after losing them (spec/permissions.md §3,
-    /// Keep), for a client with its own actor those it reads. The copy reads as before; nothing syncs or writes
-    /// it. `drop_kept` erases one (for this node's main actor).
-    pub fn kept_copies(&self) -> Result<Vec<Tid>> {
+    /// The actors this node retains a read-only copy of after being removed from them (for a client
+    /// with its own actor, those it reads). A copy reads as before, and nothing syncs or writes it.
+    /// `drop_retained_copy` erases one.
+    pub fn retained_copies(&self) -> Result<Vec<Tid>> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::KEPT, vec![])?;
+            let v = self.rcall(crate::port::method::RETAINED_COPIES, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|x| crate::port::codec::Args::of(vec![x]).tid()).collect();
         }
         Ok(self.engine(|e| {
@@ -944,30 +964,30 @@ impl Osis {
         }))
     }
 
-    /// Erases kept copy `actor`, and what it alone kept: its disk space is this user's.
-    pub fn drop_kept(&self, actor: Tid) -> Result<()> {
+    /// Erases the retained copy of `actor`, and what only it retained: its disk space is this user's.
+    pub fn drop_retained_copy(&self, actor: Tid) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::DROP_KEPT, vec![Value::Tid(actor)]).map(drop);
+            return self.rcall(crate::port::method::DROP_RETAINED_COPY, vec![Value::Tid(actor)]).map(drop);
         }
         self.locked(|l| l.sync.drop_kept(&[actor]))?;
         Ok(())
     }
 
-    /// Makes a share link to `target` with `role`, on this database's hosts. Anyone holding the link
+    /// Makes a share link to `target` with `role`, reached through this node's saved peers. Anyone holding the link
     /// can redeem it until `until` or `revoke_link`. It also syncs `target` when it does not sync on
     /// its own, or the link could not work.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
-        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
+        if let crate::sources::Route::Remote(r) = self.route_write(target)? {
             let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
             return Ok(ShareLink(crate::port::codec::Args::of(vec![v]).text()?));
         }
         let hosts = self.host_addrs();
         let me = self.me();
         if hosts.is_empty() && !opts.direct {
-            return Err(Error::Invalid("this database has no hosts: a link reaches nobody unless it is direct (LinkOpts.direct)".into()));
+            return Err(Error::Invalid("this node has no saved peers: a link reaches nobody unless it is direct (LinkOpts.direct)".into()));
         }
         if opts.direct && self.locked(|x| x.sync.own_reach()).is_none() {
-            return Err(Error::Invalid("a direct link needs this device reachable: a runtime with Config.peers on".into()));
+            return Err(Error::Invalid("a direct link needs this node reachable: a runtime with Config.direct_sync on".into()));
         }
         self.persist(&[target])?;
         self.after_route();
@@ -976,14 +996,14 @@ impl Osis {
             // K reads the target's own label alone (spec/sync.md §2): a link syncs the target
             let label = !l.engine().labeled(&target);
             let made = l.engine().create_link(&me, &flows::LinkSpec { target, role, until: opts.until, hosts: hosts.clone(), peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin)?;
-            // K is on it before the label's first pass: this device's `reach.0` never goes under
+            // K is on it before the label's first pass: this node's `reach.0` never goes under
             // it, and nothing rotates (spec/permissions.md §4, §8)
             if label {
                 self.make_label(l, target, hosts)?;
             }
             Ok::<_, Error>(made)
         })?;
-        // the seed thing in the home group: every device of this person holds it and may
+        // the seed thing in the home group: every node of this account holds it and may
         // finalize the link (spec/permissions.md §8)
         let mut w = self.write();
         w.group(self.me()).add(Member::Item(keep))?;
@@ -993,12 +1013,12 @@ impl Osis {
             x.links.insert(link.k, MadeLink { l, target, single_use: opts.single_use, direct: opts.direct, ended: false });
             save_links(x)
         })?;
-        // K joining the target may rotate this device's reach (the target no longer qualifies,
+        // K joining the target may rotate this node's reach (the target no longer qualifies,
         // spec/permissions.md §4): the link carries the key it listens with after that
         self.carry(done)?;
         if opts.direct {
             // only the dialable key and relays, never the lan secret (spec/permissions.md §8)
-            let r = self.locked(|x| x.sync.own_reach()).ok_or(Error::Invalid("this device's reach is gone".into()))?;
+            let r = self.locked(|x| x.sync.own_reach()).ok_or(Error::Invalid("this node's reach is gone".into()))?;
             link.peers = vec![osis_label::Peer { dialable: r.dialable, relays: r.relays }];
             if let Some(until) = opts.until {
                 // the link ends by expiry: `upkeep_links` rotates the key then
@@ -1015,7 +1035,7 @@ impl Osis {
     }
 
     /// Redeems a link: reaches what it names and joins it, returning the thing. A link known to have
-    /// ended (used, revoked, expired, its hosts no longer knowing it) fails `Invalid` at once. A link
+    /// ended (used, revoked, expired, its peers no longer knowing it) fails `Invalid` at once. A link
     /// that cannot be judged yet, its maker's upload on the way or nobody answering, waits until
     /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
     /// forgotten on every outcome, a dropped future included; dropped once joined (the last moments),
@@ -1081,13 +1101,13 @@ impl Osis {
         Ok(target)
     }
 
-    /// Holds a link's key and follows K's label at its hosts and at the sharer's device when
+    /// Holds a link's key and follows K's label at its hosts and at the sharer's node when
     /// the link names it (first contact, spec/permissions.md §8: dialed at the link's dialable
     /// key and relays like a co-reader, for K and the target only, `follow_link_peer`); the key
     /// goes with the guard, and with it the follow unless the redemption went through.
     fn follow_link(&self, link: &osis_label::ShareLink) -> Result<KeyGuard> {
         if link.hosts.is_empty() && !self.inner.dials_peers {
-            return Err(Error::Network("this link names no host and this node does not dial others directly".into()));
+            return Err(Error::Network("this link names no peer and this node does not dial others directly".into()));
         }
         let l = self.locked(|x| -> Result<Tid> {
             let l = x.engine().hold_key_actor(link.seed.clone())?;
@@ -1100,7 +1120,7 @@ impl Osis {
         Ok(KeyGuard { db: self.downgrade(), l, link: Some(link.k) })
     }
 
-    /// The person's links that still work, whichever device made them (each holds the seed thing;
+    /// The account's links that still work, whichever node made them (each holds the seed thing;
     /// one whose seed has not arrived is not listed); filter by `LinkInfo::target`. `Unsupported` on
     /// a client with its own actor, which is also why a node connected with a client secret adds none.
     pub fn links(&self) -> Result<Vec<LinkInfo>> {
@@ -1121,7 +1141,7 @@ impl Osis {
             .collect())
     }
 
-    /// The links whose seed thing is the person's and whose K it owns (a co-reader can place a
+    /// The links whose seed thing is the account's and whose K it owns (a co-reader can place a
     /// seed thing in a shared group: it names no link of ours).
     fn held_links(&self) -> Result<Vec<flows::HeldLink>> {
         let me = self.me();
@@ -1130,7 +1150,7 @@ impl Osis {
 
     /// Link actor `k`'s key L (`held_links`).
     fn link_key(&self, k: Tid) -> Result<Tid> {
-        self.held_links()?.iter().find(|h| h.k == k).map(|h| h.l).ok_or(Error::Invalid(format!("no link {k} of this person")))
+        self.held_links()?.iter().find(|h| h.k == k).map(|h| h.l).ok_or(Error::Invalid(format!("no link {k} of this account")))
     }
 
     /// Ends a link: nobody can use it from now on. Those who joined by it keep their role; to remove
@@ -1142,7 +1162,7 @@ impl Osis {
         }
         self.not_routed("revoke_link", id.0)?;
         let l = self.link_key(id.0)?;
-        self.lower(id.0, l, None, SetRoleOpts { sync, keep: None }, false).await
+        self.lower(id.0, l, None, SetRoleOpts { sync, retain_copy: None }, false).await
     }
 
     /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
@@ -1157,16 +1177,16 @@ impl Osis {
             s
         });
         let presync = self.presync(things, o.sync).await?;
-        let done = self.guarded(&[k], |e| e.revoke_joiner(&k, &l, &joiner, presync, o.keep).map_err(needs_admin))?;
+        let done = self.guarded(&[k], |e| e.revoke_joiner(&k, &l, &joiner, presync, o.retain_copy).map_err(needs_admin))?;
         self.carry(done)
     }
 
-    /// Rotates this device's dialable key when a direct link it made ended (spec/permissions.md
+    /// Rotates this node's dialable key when a direct link it made ended (spec/permissions.md
     /// §8): after every change, at open and at the link's expiry. Finalizing links is
     /// node-sync's (`SyncEngine::finalize_links`). `ended` is persisted.
     pub(crate) fn upkeep_links(&self, l: &mut Locked) {
         let mut any = false;
-        // a direct link that ended (its key left K, or its edge expired) gave out this device's
+        // a direct link that ended (its key left K, or its edge expired) gave out this node's
         // dialable key: rotate it (spec/permissions.md §8), unless a single-use link ended by its
         // redemption (the one who could use it is now a holder and keeps the direct path)
         let now = l.engine().now();
@@ -1214,8 +1234,8 @@ impl Osis {
         Ok(())
     }
 
-    /// This person's contact card: a read link to its profile, a thing that also carries what others
-    /// need to grant this person a role. Made once; later calls return the same card. `Invalid` on a database without hosts.
+    /// This account's contact card: a read link to its profile, a thing that also carries what others
+    /// need to grant this account a role. Made once; later calls return the same card. `Invalid` on a node with no saved peers.
     pub fn contact_card(&self) -> Result<ContactCard> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::CONTACT_CARD, vec![])?;
@@ -1228,7 +1248,7 @@ impl Osis {
         let hosts = self.host_addrs();
         // checked before anything is written: the card's link needs hosts (`make_link`)
         if hosts.is_empty() {
-            return Err(Error::Invalid("this database has no hosts: a contact card needs one".into()));
+            return Err(Error::Invalid("this node has no saved peers: a contact card needs one".into()));
         }
         let mut w = self.write();
         let p = w.create()?;
@@ -1241,7 +1261,7 @@ impl Osis {
             self.inner.apply(acts);
             let (_, acts) = x.sync.create_label(&p, hosts.clone())?;
             self.inner.apply(acts);
-            // the person's creation and `keys.0` commits, as certificates under P's label
+            // the account's creation and `keys.0` commits, as certificates under P's label
             let e = x.engine();
             let created = Ak::new("created.0").map_err(|_| Error::Invalid("ak".into()))?;
             let keys = Ak::new("keys.0").map_err(|_| Error::Invalid("ak".into()))?;
@@ -1265,15 +1285,15 @@ impl Osis {
         Ok(card)
     }
 
-    /// This person's profile thing: the target of its contact card, made on first
-    /// use. The person writes its profile aspects on it (`name.0`, `contact:*`); everyone holding
+    /// This account's profile thing: the target of its contact card, made on first
+    /// use. The account writes its profile aspects on it (`name.0`, `contact:*`); everyone holding
     /// the card reads them.
     pub fn profile(&self) -> Result<Tid> {
         let card = self.contact_card()?;
         Ok(card.parse()?.target)
     }
 
-    /// The profile thing of a person whose card this database imported, if any.
+    /// The profile thing of an account whose card this node imported, if any.
     pub fn profile_of(&self, person: Tid) -> Result<Option<Tid>> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(person)])?;
@@ -1284,8 +1304,8 @@ impl Osis {
         t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
     }
 
-    /// Imports a contact card: reads the profile by the card, nothing written, until the person's keys
-    /// are here. Returns the person, usable in `grant`. `Invalid` as for `redeem` when the card is known to have ended; otherwise it waits
+    /// Imports a contact card: reads the profile by the card, nothing written, until the account's keys
+    /// are here. Returns the account, usable in `grant`. `Invalid` as for `redeem` when the card is known to have ended; otherwise it waits
     /// until dropped, and calling again is safe. The card's key is forgotten on every outcome, a
     /// dropped future included.
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
@@ -1332,7 +1352,7 @@ impl Osis {
             self.act(|l| l.sync.set_contact(who, true));
             self.engine(|e| e.set_app_record(&format!("{PROFILE_OF}{who}"), p.to_string().as_bytes()))?;
         }
-        who.ok_or(Error::Invalid("contact card: no person".into()))
+        who.ok_or(Error::Invalid("contact card: no account".into()))
     }
 
     /// The invite requests waiting for the user (`InviteId`).
@@ -1344,8 +1364,8 @@ impl Osis {
         Ok(self.locked(|x| x.sync.invite_requests())?.into_iter().map(InviteId).collect())
     }
 
-    /// Accepts an invite request: its grant applies and its thing's hosts are dialed (then
-    /// joined as for any invite). `Invalid` when no such request waits (accepted, declined or
+    /// Accepts an invite request: its grant applies and its thing's peers are dialed (then joined as
+    /// for any invite). `Invalid` when no such request waits (accepted, declined or
     /// expired).
     pub fn accept_invite(&self, id: InviteId) -> Result<()> {
         if !self.has_store() {
@@ -1372,88 +1392,104 @@ impl Osis {
         Ok(())
     }
 
-    /// The person's devices: nodes holding a role on the person actor.
-    pub fn devices(&self) -> Result<Vec<Device>> {
+    /// This account's nodes: those holding a role on it.
+    pub fn nodes(&self) -> Result<Vec<AccountNode>> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::DEVICES, vec![])?;
+            let v = self.rcall(crate::port::method::NODES, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|d| {
                 let mut a = crate::port::codec::Args::new(d)?;
-                Ok(Device { node: a.tid()?, role: crate::port::codec::role(&a.next()?)? })
+                Ok(AccountNode { node: a.tid()?, role: crate::port::codec::role(&a.next()?)? })
             }).collect();
         }
         let me = self.me();
         let node_ak = Ak::new("node.0").map_err(|_| Error::Invalid("ak".into()))?;
-        self.engine(|e| -> Result<Vec<Device>> {
+        self.engine(|e| -> Result<Vec<AccountNode>> {
             let mut out = Vec::new();
             for (m, edge) in e.roster(&me) {
                 if m == e.tid() || e.get(&m, &node_ak)?.is_some() {
-                    out.push(Device { node: m, role: edge.role });
+                    out.push(AccountNode { node: m, role: edge.role });
                 }
             }
             Ok(out)
         })
     }
 
-    /// Removes a device from this account (a lost or stolen one: `SyncFirst::Skip` or
+    /// Removes a node from this account (a lost or stolen one: `SyncFirst::Skip` or
     /// `SyncFirst::Backdate`). This is `set_role(me, node, None, o)`, here because of what it
-    /// returns, which is easy to forget: this account's links still working. The device keeps their
+    /// returns, which is easy to forget: this account's links still working. The node keeps their
     /// keys, so whoever holds it can read and join through each until `revoke_link`, and ending
-    /// them is the caller's choice. None when `node` was no device. `Unsupported` on a client with its own actor.
-    pub async fn remove_device(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
+    /// them is the caller's choice. None when `node` was not one of this account's. `Unsupported` on a client with its own actor.
+    pub async fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
         let me = self.me();
         let was = self.grants(me)?.contains_key(&node);
         self.set_role(me, node, None, o).await?;
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
-    /// The hosts newly synced groups go to (and kept connected). `Unsupported` on a client with its own actor: they are
-    /// its node's.
-    pub fn hosts(&self) -> Result<Vec<HostAddr>> {
+    /// The peers this node saved with `add_peer`: it stays connected to them, and groups sync with
+    /// them unless `sync` names others. `Unsupported` on a client with its own actor: they are its
+    /// node's.
+    pub fn saved_peers(&self) -> Result<Vec<Address>> {
         if !self.has_store() {
-            let v = self.rcall(crate::port::method::HOSTS, vec![])?;
+            let v = self.rcall(crate::port::method::SAVED_PEERS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
         }
-        Ok(self.host_addrs().into_iter().map(HostAddr).collect())
+        Ok(self.host_addrs().into_iter().map(Address).collect())
+    }
+
+    /// Whom `group` syncs with, as far as this node knows: the peers saved on the group, then the
+    /// other readers that published an address and that this node would dial. Empty for a group that
+    /// does not sync here, and for one nobody else is known for. `Unsupported` on a client with its
+    /// own actor.
+    pub fn peers(&self, group: Tid) -> Result<Vec<Address>> {
+        let parse = |v: Value| -> Result<Vec<Address>> { crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect() };
+        if !self.has_store() {
+            return parse(self.rcall(crate::port::method::PEERS, vec![Value::Tid(group)])?);
+        }
+        if let crate::sources::Route::Remote(r) = self.route(group) {
+            return parse(r.call(crate::port::method::PEERS, vec![Value::Tid(group)])?);
+        }
+        Ok(self.locked(|l| l.sync.group_peers(&group)).into_iter().map(Address).collect())
     }
 
     fn host_addrs(&self) -> Vec<osis_label::Address> {
         self.locked(|x| x.sync.config().hosts.clone())
     }
 
-    /// Adds a host for what syncs from now on (links, `sync`) and keeps a connection to it. What
-    /// already syncs on all the database's hosts moves to the new list: the home group and groups the
-    /// person owns (directly or through its actors) that this node administers; not links or the contact card (their text names
-    /// their hosts), not groups owned by others. A database created without hosts becomes
-    /// reachable once one is added. With `Runtime::None` the list is only stored, for the next open
-    /// with a runtime: until then `status` shows nothing connected and `wait_synced` fails `Network`.
-    pub fn add_host(&self, s: &HostAddr) -> Result<()> {
+    /// Saves a peer: this node stays connected to it, and what syncs from now on syncs with it (links,
+    /// `sync`). What already syncs with all the saved peers moves to the new list: the home group and
+    /// groups this account owns that this node administers; not links or the contact card (their text
+    /// names their peers), not others' groups. With `Runtime::None` the list is only stored, for the
+    /// next open with a runtime: until then `status` shows nothing connected and `wait_synced` fails
+    /// `Network`.
+    pub fn add_peer(&self, s: &Address) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::ADD_HOST, vec![Value::Str(s.to_string())]).map(drop);
+            return self.rcall(crate::port::method::ADD_PEER, vec![Value::Str(s.to_string())]).map(drop);
         }
-        let mut v = self.hosts()?;
+        let mut v = self.saved_peers()?;
         if !v.contains(s) {
             v.push(s.clone());
         }
         self.set_hosts(v)
     }
 
-    /// Removes a host, from the database's list and the groups that follow it (`add_host`);
-    /// a group with holders besides the person's devices keeps its last host.
-    pub fn remove_host(&self, s: &HostAddr) -> Result<()> {
+    /// Removes a saved peer, from the list and the groups that follow it (`add_peer`); a group with
+    /// holders besides this account's nodes keeps its last one.
+    pub fn remove_peer(&self, s: &Address) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::REMOVE_HOST, vec![Value::Str(s.to_string())]).map(drop);
+            return self.rcall(crate::port::method::REMOVE_PEER, vec![Value::Str(s.to_string())]).map(drop);
         }
-        let mut v = self.hosts()?;
+        let mut v = self.saved_peers()?;
         v.retain(|x| x != s);
         self.set_hosts(v)
     }
 
-    fn set_hosts(&self, v: Vec<HostAddr>) -> Result<()> {
+    fn set_hosts(&self, v: Vec<Address>) -> Result<()> {
         let me = self.me();
         self.locked(|x| -> Result<()> {
             let old: BTreeSet<osis_label::Address> = x.sync.config().hosts.iter().cloned().collect();
             let new: Vec<osis_label::Address> = v.iter().map(|s| s.0.clone()).collect();
-            // links, whichever device made them, and the contact card name their label's hosts in
+            // links, whichever node made them, and the contact card name their label's hosts in
             // their text: they stay; a routed group too: nothing written here leaves, and a stale
             // list would move it on the way home
             let links = person_links(x.engine(), me)?;
@@ -1469,25 +1505,28 @@ impl Osis {
             x.sync.set_hosts(new.clone());
             follow_inbox(x.engine(), me, &old, &new)
         })?;
-        self.sync_now()
+        self.nudge_sync()
     }
 
-    /// Makes `group` synced through `hosts` (default: this database's); needs admin on the group. A
-    /// no-op when it syncs already, unless `hosts` names others: `Invalid`, for a group keeps its hosts.
-    pub fn sync(&self, group: Tid, hosts: &[HostAddr]) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route_write(group)? {
-            return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(hosts.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
+    /// Makes `group` synced with `peers` (empty: the saved peers), needing admin on the group; other
+    /// readers it publishes an address to sync with it as well. Any thing can be a group of itself, but
+    /// prefer sets: share many things through one group, as each thing synced alone costs its own keys
+    /// and its own sync. A no-op when it syncs already, unless `peers` names others: `Invalid`, for a
+    /// group keeps its peers.
+    pub fn sync(&self, group: Tid, peers: &[Address]) -> Result<()> {
+        if let crate::sources::Route::Remote(r) = self.route_write(group)? {
+            return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(peers.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
         }
-        self.sync_here(group, hosts, false)
+        self.sync_here(group, peers, false)
     }
 
-    /// Creates an ownerless thing (spec/permissions.md §1): no owner, so nobody holds
+    /// Creates an ownerless thing: no owner, so nobody holds
     /// owner-chain authority on it; its admins are holders of a grant, all equal, starting with `admin`
-    /// (`me()`, or an actor this device is an admin of), fixed by its tid. It has secrets of its
+    /// (`me()`, or an actor this node is an admin of), fixed by its tid. It has secrets of its
     /// own at once; give it a label with `sync` or place it like any thing. Its grants are never
     /// compacted, and once no admin is left nobody can change it (members keep their roles).
     /// `Permission` (admin on `admin`), `UnknownActor` (no `keys.0` of `admin` here).
-    // Removed with owners (issues/api-refactor.md Decided).
+    // Removed with owners (issues/api-after-owners.md).
     #[doc(hidden)]
     pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
         if !self.has_store() {
@@ -1508,7 +1547,7 @@ impl Osis {
     /// `sync` on this engine. `home`: `group_source` bringing it back, while its route still stands
     /// (calls keep going to the node until this engine caught up); else a move since the route was
     /// decided fails this, as any flow.
-    pub(crate) fn sync_here(&self, group: Tid, hosts: &[HostAddr], home: bool) -> Result<()> {
+    pub(crate) fn sync_here(&self, group: Tid, hosts: &[Address], home: bool) -> Result<()> {
         if !self.holds(group) {
             return Err(Error::UnknownThing { tid: group });
         }
@@ -1532,7 +1571,7 @@ impl Osis {
                 self.guard_local(x, &[group])?;
             }
             if !named.is_empty() && x.engine().group_labels(&group)?.iter().any(|l| !l.replaced && !same_set(&l.hosts, &named)) {
-                return Err(Error::Invalid(format!("{group} already syncs through other hosts")));
+                return Err(Error::Invalid(format!("{group} already syncs with other peers")));
             }
             self.make_label(x, group, hosts)
         })
@@ -1555,7 +1594,7 @@ impl Osis {
 
     /// Stops syncing `group` for all its holders (it stays in other synced groups it is a member of).
     pub fn unsync(&self, group: Tid) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route_write(group)? {
+        if let crate::sources::Route::Remote(r) = self.route_write(group)? {
             return r.call(crate::port::method::UNSYNC, vec![Value::Tid(group)]).map(drop);
         }
         self.guarded(&[group], |e| {
@@ -1574,7 +1613,7 @@ impl Osis {
         })
     }
 
-    /// Sync status now.
+    /// How sync stands now.
     pub fn status(&self) -> Result<Status> {
         let acting = self.acting;
         let me = self.inner.me;
@@ -1592,7 +1631,7 @@ impl Osis {
     }
 
     /// Calls `f` with the status now (through the dispatcher) and on every change, a node that
-    /// cannot be reached shown as such (`Status::remotes`). `Err`: the store could not say; the
+    /// cannot be reached shown as such (`Status::client_connections`). `Err`: the store could not say; the
     /// next status that can be read follows.
     pub fn on_status_change(&self, mut f: impl FnMut(&Osis, Result<Status>) + Send + 'static) -> Result<Subscription> {
         if !self.has_store() {
@@ -1614,23 +1653,24 @@ impl Osis {
         }))
     }
 
-    /// Resolves once this node's writes so far in scope are at a host, nothing more is outstanding, and
-    /// every pending delivery in scope was taken. Fails `Unsynced` at once on a stranded group in
-    /// scope (`SyncState::Stranded`, for now), and for `Thing(t)` on a group with no hosts; `Network`
-    /// without a runtime. A host out of reach, or one that does not take a group or a delivery for now
-    /// (`SyncState::Refused`), may yet: this waits (`status` shows them). `Thing(t)`: the groups
+    /// Resolves once this node's writes so far in scope reached a saved peer, nothing more is
+    /// outstanding, and every pending delivery in scope was taken. Fails `Unsynced` at once on a
+    /// stranded group in scope (`SyncState::Stranded`, for now), and for `Thing(t)` on a group with no
+    /// saved peer; `Network` without a runtime. A peer out of reach, or one that does not take a group
+    /// or a delivery for now (`SyncState::Refused`), may yet: this waits (`status` shows them). `Thing(t)`: the groups
     /// holding `t` and the deliveries about `t`, a thing it holds or one of those groups. With no group
     /// holding `t` it fails `Unsynced` at once, unless one may still arrive: a grant named it, or this
-    /// node does not administer `t` and something it syncs has more to bring (a first sync). `All`:
-    /// every group with hosts (`status` shows the `NoHosts` ones) and every delivery.
+    /// node does not administer `t` and something it syncs has more to bring (a first sync).
+    /// `AllWithPeers`: every group with a saved peer and every delivery. Groups with none are left out,
+    /// and `Ok` says nothing of them: look at `status`.
     ///
     /// On a thin client the node waits with the same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
         let r = match scope {
             SyncScope::Thing(t) => self.route(t),
-            SyncScope::All => self.route_scope(None)?,
+            SyncScope::AllWithPeers => self.route_scope(None)?,
         };
-        if let crate::sources::Source::Remote(r) = r {
+        if let crate::sources::Route::Remote(r) = r {
             return self.remote_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::sync_scope_v(scope)]).await.map(drop);
         }
         self.wait_synced_pending(scope).await
@@ -1641,7 +1681,7 @@ impl Osis {
         let me = self.inner.me;
         use crate::net::Pending;
         match scope {
-            SyncScope::All => {
+            SyncScope::AllWithPeers => {
                 // nothing to wait for: done, also without a runtime
                 let idle = self.locked(|x| {
                     let skip = x.sync.receipts_only().clone();
@@ -1665,11 +1705,11 @@ impl Osis {
         }
     }
 
-    /// Catches up now and waits for nothing. Cheap at any rate, so an app may
-    /// poll it. To wait until this node's writes are at a host: `wait_synced`.
-    pub fn sync_now(&self) -> Result<()> {
+    /// Asks sync to catch up now, and waits for nothing. Cheap at any rate, so an app may poll it. To
+    /// wait until this node's writes reached a peer: `wait_synced`.
+    pub fn nudge_sync(&self) -> Result<()> {
         if !self.has_store() {
-            return self.rcall(crate::port::method::SYNC_NOW, vec![]).map(drop);
+            return self.rcall(crate::port::method::NUDGE_SYNC, vec![]).map(drop);
         }
         self.act(|x| x.sync.refresh());
         Ok(())
@@ -1680,7 +1720,8 @@ impl Osis {
         self.act(|x| x.sync.sync_now());
     }
 
-    /// Writes a bundle of `groups` to `out`, for another node's `import_bundle`.
+    /// Writes `groups` as a bundle to `out`, for another node's `import_bundle`: sync by hand, carried
+    /// any way you like.
     pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
         if !self.has_store() {
             use crate::port::{STREAM_CHUNK, codec::{Args, tids_v}, method};
@@ -1723,10 +1764,10 @@ impl Osis {
     }
 }
 
-/// `SetRoleOpts::keep` is a removal's word.
-fn keep_only_on_removal(role: Option<Role>, o: SetRoleOpts) -> Result<()> {
-    if role.is_some() && o.keep.is_some() {
-        return Err(Error::Invalid("keep is for removing a role: there is no copy to keep while a role remains".into()));
+/// `SetRoleOpts::retain_copy` is a removal's word.
+fn retain_only_on_removal(role: Option<Role>, o: SetRoleOpts) -> Result<()> {
+    if role.is_some() && o.retain_copy.is_some() {
+        return Err(Error::Invalid("retain_copy is for removing a role: there is no copy to retain while a role remains".into()));
     }
     Ok(())
 }
@@ -1754,10 +1795,10 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
 
 /// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync.md §2 `label.0`
 /// hosts; the sync engine registers a label's path at a host that does not know it): the
-/// home label and the labels of groups in the person's own owner tree this node administers,
+/// home label and the labels of groups in the account's own owner tree this node administers,
 /// except `fixed` ones (links, the contact card) and groups with a holder of no owner here (a
-/// person, a link's key actor). A group with holders besides the person and its
-/// devices never loses its last host.
+/// account, a link's key actor). A group with holders besides the account and its
+/// nodes never loses its last one.
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
     let devices: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
@@ -1784,7 +1825,7 @@ fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old:
     Ok(())
 }
 
-/// Moves the person's inbox to `new` when it is on `old`.
+/// Moves the account's inbox to `new` when it is on `old`.
 fn follow_inbox(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
     if e.get_typed(&me, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| same_set(&i.hosts, old)) {
@@ -1796,7 +1837,7 @@ fn follow_inbox(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::A
 }
 
 const CONTACT: &str = "contact";
-/// App record prefix: `profile/<person tid>` -> profile tid text, written by `import_contact`.
+/// App record prefix: `profile/<account tid>` -> profile tid text, written by `import_contact`.
 const PROFILE_OF: &str = "profile/";
 
 /// Stores the links made here (one local record).

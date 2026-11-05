@@ -1,6 +1,6 @@
 //! Values that live while their author is there (notes/ephemeral.md Values that live while
 //! their author is there): an ephemeral aspect with a default expiry, rewritten by its author
-//! before each write expires. When the author's device goes away the rewrites stop and the
+//! before each write expires. When the author's node goes away the rewrites stop and the
 //! value expires everywhere by its last write's expiry; nobody needs to notice the departure.
 
 use crate::error::{Error, Result};
@@ -23,7 +23,7 @@ const REFRESH_DIVISOR: u32 = 2;
 
 struct Kept {
     tid: Tid,
-    key: crate::Key,
+    key: crate::DynamicAspectKey,
     path: Path,
     value: Value,
     /// Writes made (tests).
@@ -81,17 +81,17 @@ fn arm(db: &Osis, st: Weak<Mutex<Kept>>, every: Duration) -> bool {
 }
 
 impl<K: AspectKey> PathRef<'_, '_, K> {
-    /// Writes `value` here (a map key, such as this device's key `node()` in a cursor map, or a
+    /// Writes `value` here (a map key, such as this node's key `node()` in a cursor map, or a
     /// register position) and writes it again every half of the key's default expiry while the
-    /// returned `KeepAlive` lives. Two devices keeping one position alive (a person's key)
-    /// overwrite each other at every rewrite: key by device. The key must be ephemeral (`~`) with
+    /// returned `KeepAlive` lives. Two nodes keeping one position alive (an account's key)
+    /// overwrite each other at every rewrite: key by node. The key must be ephemeral (`~`) with
     /// a default expiry (schema `[expires: ...]`) well above the network delay and the clock
-    /// differences between nodes; the database needs a runtime (`Config::runtime`) for the
+    /// differences between nodes; the node needs a runtime (`Config::runtime`) for the
     /// timer. Nothing outlives the process: after a restart the app calls this again.
     /// `Unsupported` through a connected node.
     pub fn keep_alive<U: Codec>(&self, value: &U) -> Result<KeepAlive> {
         let (db, tid, key, path) = self.parts();
-        if let crate::sources::Source::Remote(_) = db.route(tid) {
+        if let crate::sources::Route::Remote(_) = db.route(tid) {
             return Err(Error::Unsupported("keep_alive through a connected node".into()));
         }
         let d = key.defaults();
@@ -100,13 +100,13 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
         };
         let value = value.to_value();
         check(key, path, &value)?;
-        let key = crate::Key { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
+        let key = crate::DynamicAspectKey { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
         let mut k = Kept { tid, key, path: path.clone(), value, writes: 0 };
         write(db, &mut k)?;
         let st = Arc::new(Mutex::new(k));
         let every = Duration::from_millis((exp / u64::from(REFRESH_DIVISOR)).max(1));
         if !arm(db, Arc::downgrade(&st), every) {
-            return Err(Error::Invalid("keep_alive needs the database's runtime".into()));
+            return Err(Error::Invalid("keep_alive needs the node's runtime".into()));
         }
         Ok(KeepAlive { db: db.clone(), st })
     }

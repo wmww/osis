@@ -7,7 +7,7 @@ use osis_node::Engine;
 
 pub use crate::history::HISTORY_PAGE;
 pub use crate::net::ManualNet;
-pub use crate::person::OFFER_LIFETIME_MS;
+pub use crate::account::OFFER_LIFETIME_MS;
 pub use crate::port::client::{own_uid, socket_dir, socket_path, socket_path_under};
 pub use crate::port::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES};
 pub use crate::value_type::of_schema;
@@ -73,18 +73,18 @@ impl Exact for crate::HistoryPos {
 }
 
 /// The label an admission id stands for.
-pub fn label_of(a: &crate::AdmissionId) -> LabelId {
+pub fn label_of(a: &crate::SyncId) -> LabelId {
     a.0
 }
 
-/// Sets a host limit by name, `HostPolicy`'s or one it does not show (`--policy`, tests). `Err` on a
+/// Sets a host limit by name, `ServingPolicy`'s or one it does not show (`--policy`, tests). `Err` on a
 /// name or value the host cannot run by.
-pub fn host_limit(p: &mut crate::HostPolicy, name: &str, n: u64) -> Result<(), String> {
+pub fn host_limit(p: &mut crate::ServingPolicy, name: &str, n: u64) -> Result<(), String> {
     p.set(name, n)
 }
 
-/// The host limits set that `HostPolicy` does not show, by name.
-pub fn host_limits_unshown(p: &crate::HostPolicy) -> std::collections::BTreeMap<String, u64> {
+/// The host limits set that `ServingPolicy` does not show, by name.
+pub fn host_limits_unshown(p: &crate::ServingPolicy) -> std::collections::BTreeMap<String, u64> {
     p.tuning.known.clone()
 }
 
@@ -172,7 +172,7 @@ pub trait Internals {
     /// Runs `f` between each local write's route and its lock.
     fn after_route(&self, f: Box<dyn Fn() + Send>);
     /// Sets a route with nothing else `group_source` does.
-    fn set_route(&self, group: osis_base::Tid, to: Option<crate::HostAddr>);
+    fn set_route(&self, group: osis_base::Tid, to: Option<crate::Address>);
     /// Serves clients at the unix socket `path` (`Osis::listen_socket` picks the store's).
     fn listen_socket_at(&self, path: &std::path::Path) -> crate::Result<()>;
 }
@@ -231,7 +231,7 @@ impl Internals for Osis {
     fn after_route(&self, f: Box<dyn Fn() + Send>) {
         *crate::watch::lock(&self.inner.port.after_route) = Some(f);
     }
-    fn set_route(&self, group: osis_base::Tid, to: Option<crate::HostAddr>) {
+    fn set_route(&self, group: osis_base::Tid, to: Option<crate::Address>) {
         self.inner.routing.store(true, std::sync::atomic::Ordering::Release);
         self.locked(|l| match to {
             Some(a) => l.routes.insert(group, a),
@@ -251,7 +251,7 @@ fn here(db: &Osis) {
 #[derive(Clone)]
 pub struct Opening {
     pub store: crate::Store,
-    pub hosts: Vec<crate::HostAddr>,
+    pub hosts: Vec<crate::Address>,
     pub cfg: crate::Config,
 }
 
@@ -303,7 +303,7 @@ pub async fn connect_socket(socket: &std::path::Path, o: Opening) -> crate::Resu
     Osis::connect_socket_at(socket, o.cfg.app).await
 }
 
-pub async fn connect(addr: &crate::HostAddr, secret: &crate::ClientSecret, o: Opening) -> crate::Result<Osis> {
+pub async fn connect(addr: &crate::Address, secret: &crate::ClientSecret, o: Opening) -> crate::Result<Osis> {
     connect_all(&[crate::NodeLogin { addr: addr.clone(), secret: secret.clone() }], o).await
 }
 

@@ -1,6 +1,6 @@
 //! A real thin client over the client port (no sim: it needs a running node). spec: none (notes/client-port.md).
 use osis_chat::*;
-use osis::{HostAddr, MemStore, Osis, Role, Runtime, Store, SyncScope};
+use osis::{Address, MemStore, Osis, Role, Runtime, Store, SyncScope};
 use std::future::Future;
 use std::sync::mpsc::channel;
 use std::task::{Context, Poll, Waker};
@@ -8,13 +8,13 @@ use std::time::{Duration, Instant};
 
 const W: Duration = Duration::from_secs(20);
 
-fn on(net: &osis_transport::Net, ep: &str, hosts: Vec<HostAddr>) -> osis::internals::Opening {
+fn on(net: &osis_transport::Net, ep: &str, hosts: Vec<Address>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.runtime = Runtime::Own;
     c.app.internals.transport = Some(net.endpoint(ep));
     c.hosts = hosts;
     c.app.internals.connection_wait = Some(W);
-    c.peers = false;
+    c.direct_sync = false;
     c
 }
 
@@ -40,16 +40,16 @@ fn newest_text(db: &Osis, c: osis::Tid) -> Option<Body> {
 fn thin_client_reads_watches_posts_spec_client_port() {
     let net = osis_transport::Net::new(5);
     let host = osis::internals::create(on(&net, "s", vec![])).unwrap().0;
-    host.set_hosting(Some(osis::Hosting { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    host.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
     let end = Instant::now() + W;
-    while host.host_address().unwrap().is_none() {
+    while host.serving_address().unwrap().is_none() {
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
-    let addr = host.host_address().unwrap().unwrap();
+    let addr = host.serving_address().unwrap().unwrap();
     let n = osis::internals::create(on(&net, "n", vec![addr])).unwrap().0;
     let c = create(&n, &Options::default()).unwrap();
-    block_on(n.wait_synced(SyncScope::All)).unwrap();
+    block_on(n.wait_synced(SyncScope::AllWithPeers)).unwrap();
     post(&n, c, "first").unwrap();
     let nc = n.client_listen(&["mem://clients".parse().unwrap()]).unwrap().remove(0);
     let (actor, secret) = n.add_client(None).unwrap();
@@ -83,7 +83,7 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     net.partition("app", "n");
     net.disconnect("app", "n");
     let end = Instant::now() + W;
-    while app.knows(c).is_ok() {
+    while app.has_content(c).is_ok() {
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
@@ -93,12 +93,12 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     // back: a client leaves as anyone does, and what it left reads as unknown
     net.heal("app", "n");
     let end = Instant::now() + W;
-    while app.knows(c).is_err() {
+    while app.has_content(c).is_err() {
         assert!(Instant::now() < end);
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(participants(&app, c).unwrap().contains_key(&actor));
     leave(&app, c).unwrap();
     assert!(!n.grants(c).unwrap().contains_key(&actor));
-    assert!(!app.knows(c).unwrap());
+    assert!(!app.has_content(c).unwrap());
 }

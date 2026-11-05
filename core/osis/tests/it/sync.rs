@@ -1,4 +1,4 @@
-//! Sharing and sync through hosts in process (notes/api.md Sharing and roles,
+//! Sharing and sync through peers in process (notes/api.md Sharing and roles,
 //! Sync configuration and status), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -21,22 +21,22 @@ fn s(x: &str) -> Value {
 fn item(db: &Osis, owner: Tid, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
     let t = w.create_in(owner, &[g]).unwrap();
-    w.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s(v)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v)).unwrap();
     w.commit().unwrap();
     t
 }
 
 fn write_refused(db: &Osis, t: Tid) -> bool {
     let mut w = db.write();
-    w.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s("no")).is_err() || w.commit().is_err()
+    w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("no")).is_err() || w.commit().is_err()
 }
 
 fn x(db: &Osis, t: Tid) -> Option<Value> {
-    db.at(t, osis::Key::untyped(ak("t:x.0"))).get().unwrap()
+    db.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap()
 }
 
-// notes/api.md Handle (create), Sync status; spec/sync.md §2 (home label): a new person's home
-// label registers at its host; status turns Synced and wait_synced resolves after a write.
+// notes/api.md Handle (create), Sync status; spec/sync.md §2 (home label): a new account's home
+// label registers at its peer; status turns Synced and wait_synced resolves after a write.
 #[test]
 fn create_syncs_home_spec_sync_2() {
     let mut w = World::new();
@@ -48,12 +48,12 @@ fn create_syncs_home_spec_sync_2() {
     assert_eq!(st.connected, 1);
     item(&db, db.me(), db.me(), "hello");
     assert_ne!(db.status().unwrap().groups.get(&db.me()).map(|g| g.state), Some(SyncState::Synced), "a local commit is not at the host yet");
-    w.until(db.wait_synced(SyncScope::All), 1000, 10).unwrap();
+    w.until(db.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
 }
 
-// notes/api.md Sharing (devices), spec/sync.md §2 (pairing: the only way a node receives a
-// grant): the app carries the request and the reply; the new device becomes an admin of the
-// person, reads the home group and its writes reach the first device.
+// notes/api.md Sharing (nodes), spec/sync.md §2 (pairing: the only way a node receives a
+// grant): the app carries the request and the reply; the new node becomes an admin of the
+// account, reads the home group and its writes reach the first node.
 #[test]
 fn pairing_spec_permissions_1() {
     let mut w = World::new();
@@ -78,18 +78,18 @@ fn pairing_spec_permissions_1() {
     let u = item(&db, db.me(), db.me(), "from the new device");
     w.run();
     assert_eq!(x(&da, u), Some(s("from the new device")));
-    let devs: Vec<Tid> = da.devices().unwrap().into_iter().map(|d| d.node).collect();
+    let devs: Vec<Tid> = da.nodes().unwrap().into_iter().map(|d| d.node).collect();
     assert!(devs.contains(&da.node()) && devs.contains(&db.node()), "{devs:?}");
-    // a lost device, removed without waiting (spec/permissions.md §5.3 `Skip`)
-    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
-    w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
-    assert!(!da.devices().unwrap().iter().any(|d| d.node == db.node()));
+    // a lost node, removed without waiting (spec/permissions.md §5.3 `Skip`)
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
+    w.until(da.remove_node(db.node(), skip), 1000, 5).unwrap();
+    assert!(!da.nodes().unwrap().iter().any(|d| d.node == db.node()));
     let after = item(&da, da.me(), da.me(), "after the removal");
     w.run();
     assert_eq!(x(&db, after), None, "the removed device reads nothing new");
 }
 
-// spec/permissions.md §8 (recovery card), notes/api.md Handle (restore): a fresh device with
+// spec/permissions.md §8 (recovery card), notes/api.md Handle (restore): a fresh node with
 // the card claims the home label by the recovery key, downloads it and becomes an admin.
 #[test]
 fn restore_from_card_spec_permissions_8() {
@@ -133,19 +133,19 @@ fn delete_reaches_other_node_spec_api_writes() {
     wr.group(ro).add(osis::Member::Item(t)).unwrap();
     wr.commit().unwrap();
     w.run();
-    assert!(bob.knows(t).unwrap());
+    assert!(bob.has_content(t).unwrap());
     assert_eq!(bob.groups_of(t).unwrap().item_of.len(), 2);
     let mut wr = bob.write();
     wr.delete(t).unwrap();
     wr.commit().unwrap();
-    assert!(!bob.knows(t).unwrap());
+    assert!(!bob.has_content(t).unwrap());
     w.run();
-    assert!(!alice.knows(t).unwrap() && alice.created(t).unwrap().is_some());
+    assert!(!alice.has_content(t).unwrap() && alice.created(t).unwrap().is_some());
     assert_eq!(x(&alice, t), None);
     assert_eq!(alice.groups_of(t).unwrap().item_of, vec![ro]);
 }
 
-/// A group owned by `db`'s person, synced on its hosts.
+/// A group owned by `db`'s account, synced on its hosts.
 fn group(db: &Osis) -> Tid {
     let mut w = db.write();
     let g = w.create_in(db.me(), &[db.me()]).unwrap();
@@ -154,7 +154,7 @@ fn group(db: &Osis) -> Tid {
     g
 }
 
-// spec/permissions.md §4, spec/sync.md §10, notes/client-port.md §3 (attribution): a thin client's commit, written by its node as the client's actor, reaches another account holding the group through sync, applied there with that actor and that node in its header (the actor's creation record travels with its edge); its grants to the actor reach the account's other device through the home group
+// spec/permissions.md §4, spec/sync.md §10, notes/client-port.md §3 (attribution): a thin client's commit, written by its node as the client's actor, reaches another account holding the group through sync, applied there with that actor and that node in its header (the actor's creation record travels with its edge); its grants to the actor reach the account's other node through the home group
 #[test]
 fn client_commit_reaches_a_third_device() {
     let mut w = World::new();
@@ -172,7 +172,7 @@ fn client_commit_reaches_a_third_device() {
     alice.grant(g, actor, Role::Write, Default::default()).unwrap();
     let c = alice.acting_as(actor);
     let mut wr = c.write();
-    wr.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s("by the client")).unwrap();
+    wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("by the client")).unwrap();
     wr.commit().unwrap();
     w.run();
     assert_eq!(x(&bob, t), Some(s("by the client")));
@@ -181,14 +181,14 @@ fn client_commit_reaches_a_third_device() {
     assert_eq!(bob.grants(g).unwrap().get(&actor).map(|e| e.role), Some(Role::Write));
     // and Bob's writes still reach Alice's client view
     let mut wr = bob.write();
-    wr.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s("by bob")).unwrap();
+    wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("by bob")).unwrap();
     wr.commit().unwrap();
     w.run();
-    assert_eq!(c.at(t, osis::Key::untyped(ak("t:x.0"))).get().unwrap(), Some(s("by bob")));
+    assert_eq!(c.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(s("by bob")));
 }
 
 // spec/sync.md §3 (contact card, inbox), spec/permissions.md §2 (grant): Alice imports Bob's
-// contact card and grants him write on a synced group; the grant reaches Bob's device through
+// contact card and grants him write on a synced group; the grant reaches Bob's node through
 // his inbox; both read and write things the group owns (entitlement: things owned elsewhere
 // stay unshared, notes/sync.md).
 #[test]
@@ -214,7 +214,7 @@ fn grant_by_inbox_spec_sync_3() {
     assert_eq!(x(&alice, u), Some(s("from bob")));
 }
 
-/// Alice and `n` other people on one host; each other person's card imported by Alice.
+/// Alice and `n` other accounts on one peer; each other account's card imported by Alice.
 fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
     let host = w.add_host();
     let (alice, _) = w.person(1, &[host]);
@@ -231,7 +231,7 @@ fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
 
 // spec/permissions.md §8 (links): Bob redeems a single-use write link to Alice's group and
 // reads what was there before; his redemption removes the link key (the link's `flags`,
-// spec/wire.md §10); Alice's device finalizes it when it sees that (K rotates), Bob stays a holder and
+// spec/wire.md §10); Alice's node finalizes it when it sees that (K rotates), Bob stays a holder and
 // a second redeemer is told the link ended.
 #[test]
 fn link_redeem_spec_permissions_8() {
@@ -345,9 +345,9 @@ fn finalized(db: &Osis, k: Tid, l: Tid) -> bool {
     db.engine(|e| e.held_links().unwrap().iter().any(|x| (x.k, x.l) == (k, l)) && e.links_due().unwrap().is_empty())
 }
 
-// spec/permissions.md §8 (link finalized): `until` finalized by a sharer device's removal of L; with Alice's
-// device offline when the link expires, her other device (which holds the seed thing, not the
-// link record) removes L at expiry; back online, Alice's device writes nothing more; Bob stays.
+// spec/permissions.md §8 (link finalized): `until` finalized by a sharer node's removal of L; with Alice's
+// node offline when the link expires, her other node (which holds the seed thing, not the
+// link record) removes L at expiry; back online, Alice's node writes nothing more; Bob stays.
 #[test]
 fn until_link_finalized_by_other_device_spec_permissions_8() {
     let mut w = World::new();
@@ -362,7 +362,7 @@ fn until_link_finalized_by_other_device_spec_permissions_8() {
     w.run();
     assert!(finalized(&alice2, k, l), "finalized at expiry");
     assert!(!finalized(&alice, k, l), "offline: not yet here");
-    // removals of L on K written by a database
+    // removals of L on K written by a node
     let removals = |db: &Osis| db.engine(|e| e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == db.node() && h.frontier.is_some() && h.aspects.iter().any(|a| a.tid == k && a.ak.as_str() == "roles.0"))).count());
     assert_eq!(removals(&alice2), 1);
     w.set_online(&alice, true);
@@ -373,7 +373,7 @@ fn until_link_finalized_by_other_device_spec_permissions_8() {
     assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && bob.role_on(g).unwrap().is_some(), "the joiner stays");
 }
 
-// spec/permissions.md §8 (link finalized): Alice's only device is offline when the link expires; it removes L
+// spec/permissions.md §8 (link finalized): Alice's only node is offline when the link expires; it removes L
 // once it is back and synced K's label; Bob stays.
 #[test]
 fn until_link_finalized_when_sharer_returns_spec_permissions_8() {
@@ -425,7 +425,7 @@ fn demote_link_joiner_spec_permissions_8() {
     assert!(w.try_until(alice.set_role(g, bob.me(), None, SetRoleOpts::default()), 1000, 60).is_none());
     assert!(alice.grants(k).unwrap().contains_key(&bob.me()) && alice.grants(k).unwrap().contains_key(&l), "no half-removal");
     w.set_online(&alice, true);
-    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
     let before: std::collections::BTreeSet<_> = alice.engine(|e| e.commit_ids().into_iter().collect());
     w.until(alice.set_role(g, bob.me(), None, skip), 1000, 10).unwrap();
     let r = alice.grants(k).unwrap();
@@ -442,7 +442,7 @@ fn demote_link_joiner_spec_permissions_8() {
 }
 
 // spec/permissions.md §8, notes/api.md Sharing (`demote`): after a joiner's removal the other
-// joiner reads new content and the removed one does not; another device of the sharer can do the
+// joiner reads new content and the removed one does not; another node of the sharer can do the
 // removal, holding the link's seed thing, and syncs it to rest (spec/permissions.md §3: it once rotated the target without end,
 // since a late part of a joiner's redemption was judged without its `roles.0` part and the
 // rotation of K that removal made never established there).
@@ -453,7 +453,7 @@ fn demote_link_joiner_content_spec_permissions_8() {
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let alice2 = join.finish(&reply).unwrap();
     w.run();
-    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
     w.until(alice2.set_role(g, bob.me(), None, skip), 1000, 20).unwrap();
     let after = item(&alice, g, g, "after bob left");
     w.run();
@@ -598,12 +598,12 @@ fn receipts_only_status_spec_permissions_5_3() {
     assert_eq!(st.groups.get(&h).map(|s| s.state), Some(SyncState::LogOnly), "{st:?}");
     assert_eq!(st.groups.get(&g).map(|s| s.state), Some(SyncState::Synced), "{st:?}");
     // nothing of H goes into a wait for it
-    w.until(phone.wait_synced(SyncScope::All), 1000, 10).unwrap();
+    w.until(phone.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
     assert!(w.until(phone.wait_synced(SyncScope::Thing(h)), 1000, 10).is_err(), "H is not synced here");
 }
 
 // spec/sync.md §5 (relay-only entries), notes/api.md Signals: a signal aspect set on a shared
-// thing reaches another person's connected device through the host once; local callbacks fire
+// thing reaches another account's connected node through the peer once; local callbacks fire
 // too; nothing is held.
 #[test]
 fn remote_signal_spec_sync_5() {
@@ -616,19 +616,19 @@ fn remote_signal_spec_sync_5() {
     let ring = ak("t:typing.0*");
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
-    let _a = alice.at(g, osis::Key::untyped(ring.clone())).on_change(move |_, c| tx.send(("alice", c)).unwrap()).unwrap();
-    let _b = bob.at(g, osis::Key::untyped(ring.clone())).on_change(move |_, c| tx2.send(("bob", c)).unwrap()).unwrap();
+    let _a = alice.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_change(move |_, c| tx.send(("alice", c)).unwrap()).unwrap();
+    let _b = bob.at(g, osis::DynamicAspectKey::untyped(ring.clone())).on_change(move |_, c| tx2.send(("bob", c)).unwrap()).unwrap();
     let _ = (recv(&rx), recv(&rx));
-    bob.commit_set(g, osis::Key::untyped(ring.clone()), &Value::Int(1)).unwrap();
+    bob.commit_set(g, osis::DynamicAspectKey::untyped(ring.clone()), &Value::Int(1)).unwrap();
     w.run();
     let mut got = [recv(&rx), recv(&rx)];
     got.sort_by_key(|g| g.0);
     assert_eq!(got.iter().map(|(n, c)| (*n, c.value.clone())).collect::<Vec<_>>(), vec![("alice", Ok(Some(Value::Int(1)))), ("bob", Ok(Some(Value::Int(1))))]);
-    assert!(matches!(got[0].1.source, osis::Source::Remote(i) if i.actor == bob.me() && i.node == bob.node()));
-    assert!(matches!(got[1].1.source, osis::Source::Local(_)));
+    assert!(matches!(got[0].1.origin, osis::Origin::Remote(i) if i.actor == bob.me() && i.node == bob.node()));
+    assert!(matches!(got[1].1.origin, osis::Origin::Local(_)));
     alice.settle();
     assert!(rx.try_recv().is_err(), "once");
-    assert_eq!(alice.at(g, osis::Key::untyped(ring)).get().unwrap(), None);
+    assert_eq!(alice.at(g, osis::DynamicAspectKey::untyped(ring)).get().unwrap(), None);
 }
 
 // spec/commits.md §6 (expiry), notes/chat.md (disappearing messages): a message written with an
@@ -643,11 +643,11 @@ fn disappearing_message_spec_commits_6() {
     w.run();
     let mut wr = alice.write();
     let m = wr.create_in(g, &[g]).unwrap();
-    wr.at(m, osis::Key::untyped(ak("t:kept.0"))).set(&s("kept")).unwrap();
+    wr.at(m, osis::DynamicAspectKey::untyped(ak("t:kept.0"))).set(&s("kept")).unwrap();
     wr.commit().unwrap();
     let mut wr = alice.write();
     wr.expires(osis::Expiry::In(Duration::from_secs(10)));
-    wr.at(m, osis::Key::untyped(ak("t:x.0"))).set(&s("gone soon")).unwrap();
+    wr.at(m, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("gone soon")).unwrap();
     wr.commit().unwrap();
     w.run();
     assert_eq!(x(bob, m), Some(s("gone soon")));
@@ -659,7 +659,7 @@ fn disappearing_message_spec_commits_6() {
 const TEXT_SCHEMA: &str = "version 1;\naspect n:body.0: text;\n";
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
-// pause): two devices edit one text concurrently in sessions; each commit is one edit, the
+// pause): two nodes edit one text concurrently in sessions; each commit is one edit, the
 // remote edit merges into the other buffer and both converge with both edits.
 // spec/crdt.md §5.7
 #[test]
@@ -674,7 +674,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     for d in [&da, &db] {
         d.register_schema("t.osis", TEXT_SCHEMA).unwrap();
     }
-    let body = da.key("n:body.0").unwrap();
+    let body = da.aspect_key("n:body.0").unwrap();
     let mut wr = da.write();
     let t = wr.create_in(da.me(), &[da.me()]).unwrap();
     wr.commit().unwrap();
@@ -683,7 +683,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     assert!(sa.commit().unwrap().is_some());
     assert_eq!(sa.commit().unwrap(), None, "nothing new");
     w.run();
-    let sb = db.at(t, db.key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
+    let sb = db.at(t, db.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     assert_eq!(sb.text(), "hello");
     let (tx, rx) = std::sync::mpsc::channel();
     let _r = sa.on_remote(move |_, s, _| {
@@ -701,7 +701,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     assert_eq!(sb.text(), merged);
 }
 
-/// Two paired devices with a text thing `t` reading "hello world", and a session on it from
+/// Two paired nodes with a text thing `t` reading "hello world", and a session on it from
 /// the first.
 fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     let mut w = World::new();
@@ -714,8 +714,8 @@ fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
     for d in [&da, &db] {
         d.register_schema("t.osis", TEXT_SCHEMA).unwrap();
     }
-    let t = da.batch(|w| w.create_in(da.me(), &[da.me()])).unwrap();
-    let sa = da.at(t, da.key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
+    let t = da.commit_with(|w| w.create_in(da.me(), &[da.me()])).unwrap();
+    let sa = da.at(t, da.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     sa.splice(0..0, "hello world").unwrap();
     sa.commit().unwrap();
     w.run();
@@ -745,7 +745,7 @@ fn text_session_remote_splices_map_caret() {
     let _r = sa.on_remote(move |_, s, e| {
         let _ = tx.send((s.to_string(), e.to_vec()));
     }).unwrap();
-    let sb = db.at(t, db.key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
+    let sb = db.at(t, db.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     assert_eq!(sb.text(), "hello world");
     sb.splice(0..1, "H").unwrap();
     sb.splice(6..6, "big ").unwrap();
@@ -767,24 +767,24 @@ fn text_session_remote_splices_map_caret() {
     assert_eq!(map(11), text.len(), "the end stays the end");
 }
 
-// notes/api.md Text sessions: a session whose thing another device deleted drops its pending
+// notes/api.md Text sessions: a session whose thing another node deleted drops its pending
 // text when it is dropped and reports it (`Uncommitted`): it never recreates the thing.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_after_remote_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
     let (_d, rx) = uncommitted(&da);
-    db.batch(|w| w.delete(t)).unwrap();
+    db.commit_with(|w| w.delete(t)).unwrap();
     sa.splice(11..11, "!").unwrap();
     w.run();
-    assert!(!da.knows(t).unwrap(), "deleted here");
+    assert!(!da.has_content(t).unwrap(), "deleted here");
     sa.splice(0..0, "> ").unwrap();
     drop(sa);
     assert_eq!(recv(&rx), vec![t]);
     w.run();
     for d in [&da, &db] {
-        assert!(!d.knows(t).unwrap(), "not recreated");
-        assert_eq!(d.at(t, d.key("n:body.0").unwrap()).get().unwrap(), None);
+        assert!(!d.has_content(t).unwrap(), "not recreated");
+        assert_eq!(d.at(t, d.aspect_key("n:body.0").unwrap()).get().unwrap(), None);
     }
 }
 
@@ -796,10 +796,10 @@ fn text_session_after_remote_delete_drops() {
 fn text_session_refused_commit_keeps_edits() {
     let db = db(70);
     db.register_schema("t.osis", "version 1;\naspect n:t.0: text;").unwrap();
-    let key = db.key("n:t.0").unwrap();
-    let g = db.batch(|w| {
+    let key = db.aspect_key("n:t.0").unwrap();
+    let g = db.commit_with(|w| {
         let g = w.create()?;
-        w.at(g, osis::Key::untyped(osis::Ak::new("app:s.0").unwrap())).set(&Value::Int(1))?;
+        w.at(g, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap())).set(&Value::Int(1))?;
         Ok(g)
     })
     .unwrap();
@@ -816,7 +816,7 @@ fn text_session_refused_commit_keeps_edits() {
     s.splice(0..0, "kept").unwrap();
     assert!(matches!(s.commit(), Err(osis::Error::Invalid(m)) if m.contains("member of")));
     assert_eq!(s.text(), "kept");
-    db.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
+    db.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     s.commit().unwrap().unwrap();
     assert_eq!(db.at(t, key.clone()).get().unwrap(), Some(Value::Str("kept".into())));
     let (_d, rx) = uncommitted(&db);
@@ -827,20 +827,20 @@ fn text_session_refused_commit_keeps_edits() {
     assert_eq!(recv(&rx), vec![t]);
 }
 
-// notes/api.md Text sessions: the same for a delete on the session's own device.
+// notes/api.md Text sessions: the same for a delete on the session's own node.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_after_local_delete_drops() {
     let (mut w, da, db, t, sa) = text_pair();
     let (_d, rx) = uncommitted(&da);
     sa.splice(11..11, "!").unwrap();
-    da.batch(|w| w.delete(t)).unwrap();
+    da.commit_with(|w| w.delete(t)).unwrap();
     drop(sa);
     assert_eq!(recv(&rx), vec![t]);
     w.run();
     for d in [&da, &db] {
-        assert!(!d.knows(t).unwrap(), "not recreated");
-        assert_eq!(d.at(t, d.key("n:body.0").unwrap()).get().unwrap(), None);
+        assert!(!d.has_content(t).unwrap(), "not recreated");
+        assert_eq!(d.at(t, d.aspect_key("n:body.0").unwrap()).get().unwrap(), None);
     }
 }
 
@@ -855,42 +855,42 @@ fn text_session_keeps_edits_across_delete_undo() {
     w.delete(t).unwrap();
     w.commit().unwrap();
     assert!(matches!(sa.commit(), Err(osis::Error::UnknownThing { .. })));
-    assert!(!da.knows(t).unwrap(), "not recreated");
+    assert!(!da.has_content(t).unwrap(), "not recreated");
     assert_eq!(sa.text(), "hello world!", "kept");
     da.undo(&osis::Scope::Thing(t)).unwrap().unwrap();
-    assert!(da.knows(t).unwrap());
+    assert!(da.has_content(t).unwrap());
     sa.commit().unwrap().unwrap();
-    assert_eq!(da.at(t, da.key("n:body.0").unwrap()).get().unwrap(), Some(osis::Value::Str("hello world!".into())));
+    assert_eq!(da.at(t, da.aspect_key("n:body.0").unwrap()).get().unwrap(), Some(osis::Value::Str("hello world!".into())));
 }
 
-// notes/api.md Sync configuration (`add_host`), spec/sync.md §2 (`label.0` hosts, inbox): a
-// database created without hosts has its home label on none; adding a host moves the home
-// label and the person's inbox there, and the home group syncs.
+// notes/api.md Sync configuration (`add_host`), spec/sync.md §2 (`label.0` peers, inbox): a
+// node created without peers has its home label on none; adding a peer moves the home
+// label and the account's inbox there, and the home group syncs.
 #[test]
-fn add_host_moves_labels_spec_sync_2() {
+fn add_peer_moves_groups_spec_sync_2() {
     let mut w = World::new();
     let host = w.add_host();
     let (a, card) = osis::internals::create(w.cfg(1, &[])).unwrap();
     assert!(card.is_none());
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoHosts);
-    a.add_host(&w.addr(host).unwrap()).unwrap();
+    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoPeers);
+    a.add_peer(&w.addr(host).unwrap()).unwrap();
     w.run();
     assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::Synced);
     let inbox = a.at(a.me(), osis::internals::core_types::KEYS).get().unwrap().unwrap().inbox.unwrap();
     assert_eq!(inbox.hosts.len(), 1);
-    w.until(a.wait_synced(SyncScope::All), 1000, 10).unwrap();
-    a.remove_host(&w.addr(host).unwrap()).unwrap();
+    w.until(a.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
+    a.remove_peer(&w.addr(host).unwrap()).unwrap();
     w.run();
-    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoHosts);
+    assert_eq!(a.status().unwrap().groups[&a.me()].state, SyncState::NoPeers);
 }
 
 // notes/api.md Sync status (`wait_synced(All)` leaves `NoHosts` groups out): Carol has no
-// hosts (her home is `NoHosts`) and joined Alice's hosted group by a link; Alice's later
+// peers (her home is `NoHosts`) and joined Alice's served group by a link; Alice's later
 // write reaches her through `wait_synced(All)`, while `Group(home)` still fails `Unsynced`.
 // spec: none (API surface, notes/api.md)
 #[test]
-fn wait_synced_all_skips_hostless_groups() {
+fn wait_synced_skips_groups_without_peers() {
     let mut w = World::new();
     let (alice, _, _) = people(&mut w, 0);
     let g = group(&alice);
@@ -900,17 +900,17 @@ fn wait_synced_all_skips_hostless_groups() {
     w.run();
     assert_eq!(w.until(carol.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
-    assert_eq!(carol.status().unwrap().groups[&carol.me()].state, SyncState::NoHosts);
+    assert_eq!(carol.status().unwrap().groups[&carol.me()].state, SyncState::NoPeers);
     let t = item(&alice, g, g, "after the redeem");
-    w.until(alice.wait_synced(SyncScope::All), 1000, 10).unwrap();
-    w.until(carol.wait_synced(SyncScope::All), 1000, 10).unwrap();
+    w.until(alice.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
+    w.until(carol.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
     assert_eq!(x(&carol, t), Some(s("after the redeem")));
     assert!(matches!(w.until(carol.wait_synced(SyncScope::Thing(carol.me())), 1000, 10), Err(osis::Error::Unsynced { .. })));
 }
 
-// notes/api.md Sync status (`wait_synced` scopes the deliveries): Bob's inbox is on a host
+// notes/api.md Sync status (`wait_synced` scopes the deliveries): Bob's inbox is on a peer
 // Alice cannot reach, so her grant to him stays queued; `Group(other)` resolves meanwhile,
-// `Group(g)` and `All` wait for it until the host is back.
+// `Group(g)` and `All` wait for it until the peer is back.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn wait_synced_scopes_deliveries() {
@@ -929,17 +929,17 @@ fn wait_synced_scopes_deliveries() {
     item(&alice, other, other, "unrelated");
     w.until(alice.wait_synced(SyncScope::Thing(other)), 1000, 10).unwrap();
     assert!(w.try_until(alice.wait_synced(SyncScope::Thing(g)), 1000, 10).is_none());
-    assert!(w.try_until(alice.wait_synced(SyncScope::All), 1000, 10).is_none());
+    assert!(w.try_until(alice.wait_synced(SyncScope::AllWithPeers), 1000, 10).is_none());
     w.set_reachable(&alice, h2, true);
-    w.until(alice.wait_synced(SyncScope::All), 1000, 130).unwrap();
+    w.until(alice.wait_synced(SyncScope::AllWithPeers), 1000, 130).unwrap();
 }
 
-// notes/api.md Sync status (`wait_synced(All)` waits on every label with hosts): Carol's group
-// has a hostless label and, after `unsync` and `sync` with a host, a hosted one; the group
-// shows `NoHosts`, yet `All` waits for her write under the hosted label.
+// notes/api.md Sync status (`wait_synced(All)` waits on every label with peers): Carol's group
+// has a peerless label and, after `unsync` and `sync` with a peer, a served one; the group
+// shows `NoHosts`, yet `All` waits for her write under the served label.
 // spec: none (API surface, notes/api.md)
 #[test]
-fn wait_synced_all_waits_on_hosted_label_of_mixed_group() {
+fn wait_synced_waits_on_peered_label_of_mixed_group() {
     let mut w = World::new();
     let h = w.add_host();
     let carol = osis::internals::create(w.cfg(9, &[])).unwrap().0;
@@ -949,26 +949,26 @@ fn wait_synced_all_waits_on_hosted_label_of_mixed_group() {
     carol.sync(g, &[w.addr(h).unwrap()]).unwrap();
     w.run();
     let st = carol.status().unwrap().groups[&g].clone();
-    assert_eq!((st.state, carol.admission_ids(g).unwrap().len()), (SyncState::NoHosts, 2), "a hostless and a hosted label");
-    w.until(carol.wait_synced(SyncScope::All), 1000, 10).unwrap();
-    // the hostless one is replaced (it takes nothing until it retires): `Group(g)` fails only
-    // on her hostless home, which holds `g`
+    assert_eq!((st.state, carol.sync_ids(g).unwrap().len()), (SyncState::NoPeers, 2), "a hostless and a hosted label");
+    w.until(carol.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
+    // the peerless one is replaced (it takes nothing until it retires): `Group(g)` fails only
+    // on her peerless home, which holds `g`
     let r = w.until(carol.wait_synced(SyncScope::Thing(g)), 1000, 10);
     assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [carol.me()]), "{r:?}");
     w.set_reachable(&carol, h, false);
     item(&carol, g, g, "while cut off");
-    assert!(w.try_until(carol.wait_synced(SyncScope::All), 1000, 10).is_none());
+    assert!(w.try_until(carol.wait_synced(SyncScope::AllWithPeers), 1000, 10).is_none());
     w.set_reachable(&carol, h, true);
-    w.until(carol.wait_synced(SyncScope::All), 1000, 130).unwrap();
+    w.until(carol.wait_synced(SyncScope::AllWithPeers), 1000, 130).unwrap();
 }
 
-// notes/api.md Sync status (`All` waits for every delivery): Carol syncs no label with hosts;
-// her grant on her hostless group to Bob is queued for his inbox host, which she cannot
+// notes/api.md Sync status (`All` waits for every delivery): Carol syncs no label with peers;
+// her grant on her peerless group to Bob is queued for his inbox peer, which she cannot
 // reach: `All` does not resolve before it lands, `Group(g)` fails `Unsynced` (Bob can never
 // fetch `g`).
 // spec: none (API surface, notes/api.md)
 #[test]
-fn wait_synced_all_waits_for_deliveries_without_hosted_groups() {
+fn wait_synced_waits_for_deliveries_without_peered_groups() {
     let mut w = World::new();
     let h = w.add_host();
     let (bob, _) = w.person(2, &[h]);
@@ -980,29 +980,29 @@ fn wait_synced_all_waits_for_deliveries_without_hosted_groups() {
     let g = group(&carol);
     w.run();
     w.set_reachable(&carol, h, false);
-    // the groups learned from Bob's card held for receipts only: no label of hers with hosts
+    // the groups learned from Bob's card held for receipts only: no label of hers with peers
     // is synced
-    for (h, _) in carol.status().unwrap().groups.into_iter().filter(|(_, s)| s.state != SyncState::NoHosts) {
+    for (h, _) in carol.status().unwrap().groups.into_iter().filter(|(_, s)| s.state != SyncState::NoPeers) {
         carol.set_sync_options(h, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() }).unwrap();
     }
     carol.grant(g, b, Role::Read, Default::default()).unwrap();
-    assert!(w.try_until(carol.wait_synced(SyncScope::All), 1000, 10).is_none());
+    assert!(w.try_until(carol.wait_synced(SyncScope::AllWithPeers), 1000, 10).is_none());
     assert!(matches!(w.until(carol.wait_synced(SyncScope::Thing(g)), 1000, 10), Err(osis::Error::Unsynced { .. })));
-    // a group with no hosts can never catch up: `Required` knows at once, and nothing changes
+    // a group with no peers can never catch up: `Required` knows at once, and nothing changes
     carol.grant(g, b, Role::Write, Default::default()).unwrap();
     let r = w.until(carol.set_role(g, b, None, SetRoleOpts::default()), 10, 2);
     assert!(matches!(r, Err(osis::Error::Unsynced { .. })), "{r:?}");
     assert!(carol.grants(g).unwrap().contains_key(&b));
     w.set_reachable(&carol, h, true);
-    w.until(carol.wait_synced(SyncScope::All), 1000, 130).unwrap();
+    w.until(carol.wait_synced(SyncScope::AllWithPeers), 1000, 130).unwrap();
 }
 
-// notes/api.md Sync configuration (`add_host` scope), spec/sync.md §2: Alice's host changes
+// notes/api.md Sync configuration (`add_host` scope), spec/sync.md §2: Alice's peer changes
 // move her home label and her own shared group, not a group Bob owns that she co-administers,
-// not her link's actor (the link text names its hosts); her shared group keeps its last
+// not her link's actor (the link text names its peers); her shared group keeps its last
 // host.
 #[test]
-fn add_host_scope_spec_sync_2() {
+fn add_peer_scope_spec_sync_2() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let (s0, s1) = (0, w.add_host());
@@ -1020,19 +1020,19 @@ fn add_host_scope_spec_sync_2() {
     let k = alice.links_of(mine).unwrap()[0].id.actor();
     w.run();
     let hosts = |g: Tid| alice.engine(|e| e.group_labels(&g).unwrap().into_iter().find(|l| !l.replaced).unwrap().hosts.len());
-    alice.add_host(&w.addr(s1).unwrap()).unwrap();
+    alice.add_peer(&w.addr(s1).unwrap()).unwrap();
     w.run();
     assert_eq!((hosts(alice.me()), hosts(mine), hosts(his), hosts(k)), (2, 2, 1, 1));
-    alice.remove_host(&w.addr(s0).unwrap()).unwrap();
-    alice.remove_host(&w.addr(s1).unwrap()).unwrap();
+    alice.remove_peer(&w.addr(s0).unwrap()).unwrap();
+    alice.remove_peer(&w.addr(s1).unwrap()).unwrap();
     w.run();
     assert_eq!((hosts(alice.me()), hosts(mine), hosts(his), hosts(k)), (0, 1, 1, 1), "a shared group keeps its last host");
 }
 
-// spec/crdt.md §2.1 (a session per open): a device restored from a backup of its store keeps
+// spec/crdt.md §2.1 (a session per open): a node restored from a backup of its store keeps
 // its signing key; it writes at once under a new session, so the commits written after the
 // backup (which the pass brings back) and its new ones never share a source: nothing is void
-// (spec/commits.md §4) and every write stands, at the device, its peers and a fresh device.
+// (spec/commits.md §4) and every write stands, at the node, its peers and a fresh node.
 // (see also `reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1`)
 #[test]
 fn restored_store_writes_at_once_spec_crdt_2_1() {
@@ -1048,13 +1048,13 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     w.run();
     let backup = store.backup();
     for v in ["after the backup 1", "after the backup 2"] {
-        a.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s(v)).unwrap();
-        a.commit_set(u, osis::Key::untyped(ak("t:x.0")), &s(v)).unwrap();
+        a.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s(v)).unwrap();
+        a.commit_set(u, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s(v)).unwrap();
     }
     w.run();
-    w.until(a.wait_synced(SyncScope::All), 1000, 10).unwrap();
+    w.until(a.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
     let node = a.node();
-    let lost = commit_with(&a, |wr| wr.at(u, osis::Key::untyped(ak("t:x.0"))).set(&s("after the backup 3"))).id.commit().unwrap();
+    let lost = commit_with(&a, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("after the backup 3"))).id.commit().unwrap();
     w.run();
     assert_eq!(a.close().unwrap(), osis::Close::Closed);
     w.advance(1000);
@@ -1065,7 +1065,7 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     assert_eq!(b.node(), node, "the same device identity");
     assert_eq!(x(&b, t), Some(s("before the backup")), "the backup's state");
     // written before any pass: session form, a new session
-    let first = commit_with(&b, |wr| wr.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s("restored"))).id.commit().unwrap();
+    let first = commit_with(&b, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored"))).id.commit().unwrap();
     let form = |db: &Osis, c| db.engine(|e| e.header(&c).unwrap().form);
     assert!(matches!(form(&b, first), osis_commit::Form::Session(_)));
     // an undo before the pass too: of a creation, which also edits the home group's `group.0`
@@ -1077,13 +1077,13 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     assert_eq!(x(&b, t), Some(s("restored")), "the restored write stands");
     assert_eq!(x(&b, u), Some(s("after the backup 3")), "the lost writes came back");
     assert_ne!(form(&b, lost), form(&b, first), "the lost commits are another session's");
-    let next = commit_with(&b, |wr| wr.at(u, osis::Key::untyped(ak("t:x.0"))).set(&s("restored, caught up"))).id.commit().unwrap();
+    let next = commit_with(&b, |wr| wr.at(u, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("restored, caught up"))).id.commit().unwrap();
     assert_eq!(form(&b, next), form(&b, first), "one session per open");
     w.run();
     assert_eq!(x(&b, u), Some(s("restored, caught up")));
     let diags = w.diagnostics(&b);
     assert!(!diags.iter().any(|d| d.contains("OverlappingCounters")), "{diags:?}");
-    // a fresh device of the person reads every write
+    // a fresh node of the account reads every write
     let card = card.unwrap();
     let c = w.until(osis::internals::restore(w.cfg(3, &[]), &card), 1000, 10).unwrap();
     w.run();
@@ -1091,11 +1091,11 @@ fn restored_store_writes_at_once_spec_crdt_2_1() {
     assert!(!c.groups_of(v).unwrap().item_of.contains(&c.me()), "the undone creation left the home group");
 }
 
-/// A thing of `db`'s person with `t:x.0` = `v`, placed nowhere.
+/// A thing of `db`'s account with `t:x.0` = `v`, placed nowhere.
 fn plain(db: &Osis, v: &str) -> Tid {
-    db.batch(|w| {
+    db.commit_with(|w| {
         let t = w.create()?;
-        w.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s(v))?;
+        w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v))?;
         Ok(t)
     })
     .unwrap()
@@ -1124,22 +1124,22 @@ fn a_grant_then_a_sync_gives_the_route() {
     assert_eq!(bob.grants(t).unwrap().get(&ids[0]).map(|e| e.role), Some(Role::Write), "the role is held: the blob carried the granter's chain");
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    assert!(alice.admission_ids(t).unwrap().is_empty(), "no label on a grant");
+    assert!(alice.sync_ids(t).unwrap().is_empty(), "no label on a grant");
     alice.sync(t, &[]).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("for bob")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
     assert_eq!(bob.status().unwrap().groups[&t].state, SyncState::Synced);
-    bob.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("from bob")).unwrap();
+    bob.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("from bob")).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("from bob")));
-    let label = alice.admission_ids(t).unwrap();
+    let label = alice.sync_ids(t).unwrap();
     assert_eq!(label.len(), 1);
     alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
     assert!(unrouted(&alice, t).is_empty(), "a labeled thing is a route for every holder");
     w.run();
     assert_eq!(x(carol, t), Some(s("from bob")));
-    assert_eq!(alice.admission_ids(t).unwrap(), label);
+    assert_eq!(alice.sync_ids(t).unwrap(), label);
 }
 
 // spec/sync.md §2: synced first, then granted: a route from the start
@@ -1156,7 +1156,7 @@ fn a_sync_then_a_grant() {
     assert!(unrouted(&others[0], t).is_empty());
 }
 
-// spec/sync.md §2 (Route), notes/api.md Sharing: `grant` syncs nothing; a holder who reads a label that carries it, this node's own client on this person's thing, need none
+// spec/sync.md §2 (Route), notes/api.md Sharing: `grant` syncs nothing; a holder who reads a label that carries it, this node's own client on this account's thing, need none
 #[test]
 fn grant_syncs_nothing_and_a_route_may_exist() {
     let mut w = World::new();
@@ -1197,7 +1197,7 @@ fn an_unsync_after_a_share_cuts_the_route() {
     w.run();
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("two")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("two")).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("one")), "nothing carries the write");
     alice.sync(t, &[]).unwrap();
@@ -1219,14 +1219,14 @@ fn a_thing_leaving_its_group_loses_the_route() {
     w.run();
     assert_eq!(x(bob, t), Some(s("in g")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
-    alice.batch(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
+    alice.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
     w.run();
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    alice.batch(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
+    alice.commit_with(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
     w.run();
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("back")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("back")).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("back")));
 }
@@ -1248,7 +1248,7 @@ fn losing_the_group_but_keeping_the_edge_loses_the_route() {
     assert!(bob.grants(t).unwrap().contains_key(&ids[0]) && !bob.grants(g).unwrap().contains_key(&ids[0]));
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("after")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("after")).unwrap();
     alice.sync(t, &[]).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("after")));
@@ -1268,13 +1268,13 @@ fn a_thing_in_a_synced_group_shared_with_an_outsider() {
     assert_eq!(x(bob, t), None);
     assert_eq!(unrouted(&alice, t), vec![ids[0]]);
     assert_eq!(unrouted(bob, t), vec![ids[0]]);
-    assert!(!bob.knows(g).unwrap());
+    assert!(!bob.has_content(g).unwrap());
     alice.sync(t, &[]).unwrap();
     alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("in g")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
-    assert!(!bob.knows(g).unwrap(), "G's label stays closed to him");
+    assert!(!bob.has_content(g).unwrap(), "G's label stays closed to him");
 }
 
 // spec/sync.md §2, spec/permissions.md §8: a link to a thing placed nowhere resolves: the link syncs the thing (K reads its label alone), redeem returns and the thing reads
@@ -1291,7 +1291,7 @@ fn a_link_to_a_plain_item_resolves() {
     assert_eq!(x(&others[0], t), Some(s("linked")));
 }
 
-// spec/sync.md §2: a thing owned by someone else: an admin by an edge shares it (the label on his hosts); an invite edge alone grants the role, cannot sync (`sync` says so and writes nothing) and leaves the holder without a route
+// spec/sync.md §2: a thing owned by someone else: an admin by an edge shares it (the label on his peers); an invite edge alone grants the role, cannot sync (`sync` says so and writes nothing) and leaves the holder without a route
 #[test]
 fn a_grant_on_someone_elses_item() {
     let mut w = World::new();
@@ -1308,7 +1308,7 @@ fn a_grant_on_someone_elses_item() {
     let t = shared("alice's");
     alice.grant(t, ids[0], Role::Admin, Default::default()).unwrap();
     let u = shared("invite");
-    alice.grant(u, ids[1], Role::Read, osis::GrantOpts { invite: Some(Role::Read), ..Default::default() }).unwrap();
+    alice.grant(u, ids[1], Role::Read, osis::GrantOpts { may_grant: Some(Role::Read), ..Default::default() }).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t), "both read g");
     let card = dan.contact_card().unwrap();
     w.run();
@@ -1353,7 +1353,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     assert!(bob.groups_of(t).unwrap().item_of.is_empty() && alice.groups_of(t).unwrap().item_of.is_empty(), "no placement");
     assert!(bob.status().unwrap().two_sources.is_empty() && alice.status().unwrap().two_sources.is_empty());
     assert!(write_refused(bob, t), "read only");
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("later")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("later")).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("later")));
     // a later reader finds it under the group's label
@@ -1363,7 +1363,7 @@ fn a_grant_to_a_group_reaches_its_readers() {
     // and the edge's end reaches them
     w.until(alice.set_role(t, h, None, SetRoleOpts { sync: SyncFirst::Skip, ..Default::default() }), 1000, 10).unwrap();
     w.run();
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("after")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("after")).unwrap();
     w.run();
     assert_ne!(x(bob, t), Some(s("after")));
     assert_ne!(x(carol, t), Some(s("after")));
@@ -1393,7 +1393,7 @@ fn a_sync_long_after_the_grant_reaches_the_groups_readers() {
     assert!(unrouted(bob, t).is_empty());
 }
 
-// spec/sync.md §3: a co-admin who never met the group syncs the thing: no blob reaches the group (he cannot seal to it), but the owner's device learns the label under a group that carries the thing and copies it from the grant's blob: the group's readers read
+// spec/sync.md §3: a co-admin who never met the group syncs the thing: no blob reaches the group (he cannot seal to it), but the owner's node learns the label under a group that carries the thing and copies it from the grant's blob: the group's readers read
 #[test]
 fn a_sync_by_a_co_admin_who_never_met_the_group_reaches_its_readers() {
     let mut w = World::new();
@@ -1410,7 +1410,7 @@ fn a_sync_by_a_co_admin_who_never_met_the_group_reaches_its_readers() {
     alice.grant(t, h, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(unrouted(bob, t), vec![h], "bob reads h, not g2");
-    assert!(!carol.knows(h).unwrap());
+    assert!(!carol.has_content(h).unwrap());
     carol.sync(t, &[]).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("in g2")));
@@ -1423,14 +1423,14 @@ fn a_grant_to_a_group_with_no_label() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
-    let h = alice.batch(|w| {
+    let h = alice.commit_with(|w| {
         let g = w.create()?;
         Ok(g)
     })
     .unwrap();
-    let private = alice.batch(|w| {
+    let private = alice.commit_with(|w| {
         let t = w.create_in(h, &[h])?;
-        w.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s("private"))?;
+        w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("private"))?;
         Ok(t)
     })
     .unwrap();
@@ -1454,7 +1454,7 @@ fn an_excluded_thing_is_no_route_through_its_group() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
-    let g = alice.batch(|w| {
+    let g = alice.commit_with(|w| {
         let g = w.create()?;
         Ok(g)
     })
@@ -1463,7 +1463,7 @@ fn an_excluded_thing_is_no_route_through_its_group() {
     alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     let t = plain(&alice, "excluded");
-    alice.batch(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
+    alice.commit_with(|w| w.group(g).add(osis::Member::Item(t))).unwrap();
     alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
     w.advance(120_000);
@@ -1485,9 +1485,9 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     let bob = &others[0];
     let group = |text: &str| {
         alice
-            .batch(|w| {
+            .commit_with(|w| {
                 let g = w.create()?;
-                w.at(g, osis::Key::untyped(ak("t:x.0"))).set(&s(text))?;
+                w.at(g, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(text))?;
                 Ok(g)
             })
             .unwrap()
@@ -1499,7 +1499,7 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     let t = plain(&alice, "deep");
     alice.add_with_grant(Member::Subgroup(sub), g, Role::Read).unwrap();
     alice.add_with_grant(Member::Item(t), sub, Role::Read).unwrap();
-    alice.batch(|w| w.group(g).add(osis::Member::Item(sub))).unwrap();
+    alice.commit_with(|w| w.group(g).add(osis::Member::Item(sub))).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("deep")));
     assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
@@ -1521,7 +1521,7 @@ fn no_missing_route_where_nobody_misses_one() {
     w.run();
     assert!(unrouted(&alice, t).is_empty(), "a private tag in home");
     // a group Bob leaves behind: he read its item; he has no business with its route now
-    let g = alice.batch(|w| {
+    let g = alice.commit_with(|w| {
         let g = w.create()?;
         Ok(g)
     })
@@ -1540,7 +1540,7 @@ fn no_missing_route_where_nobody_misses_one() {
     assert!(unrouted(bob, item).is_empty(), "no business of Bob's now");
     assert!(no_routes(bob));
     // a writer's chain through a thing whose label Bob does not read
-    let owner = alice.batch(|w| {
+    let owner = alice.commit_with(|w| {
         let g = w.create()?;
         Ok(g)
     })
@@ -1549,16 +1549,16 @@ fn no_missing_route_where_nobody_misses_one() {
     alice.grant(owner, ids[1], Role::Admin, Default::default()).unwrap();
     w.run();
     let shared = alice
-        .batch(|w| {
+        .commit_with(|w| {
             let c = w.create_owned_by(owner)?;
-            w.at(c, osis::Key::untyped(ak("t:x.0"))).set(&s("shared"))?;
+            w.at(c, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("shared"))?;
             Ok(c)
         })
         .unwrap();
     alice.sync(shared, &[]).unwrap();
     alice.grant(shared, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
-    frank.commit_set(shared, osis::Key::untyped(ak("t:x.0")), &s("by frank")).unwrap();
+    frank.commit_set(shared, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("by frank")).unwrap();
     w.run();
     w.advance(120_000);
     w.run();
@@ -1577,7 +1577,7 @@ fn waiting_on_a_thing_with_no_route_fails_at_once() {
     assert!(matches!(w.until(f, 1, 1), Err(osis::Error::Unsynced { .. })));
 }
 
-// spec/sync.md §2: a grant to a node that reads nothing of the thing is recorded and shown without a route (no inbox can tell it; a node is reached through its person); one that reads it sees the edge
+// spec/sync.md §2: a grant to a node that reads nothing of the thing is recorded and shown without a route (no inbox can tell it; a node is reached through its account); one that reads it sees the edge
 #[test]
 fn a_grant_to_a_bare_node() {
     let mut w = World::new();
@@ -1630,7 +1630,7 @@ fn a_grant_to_a_group_is_copied_only_by_its_admin() {
         }
         w.run();
         w.set_online(&alice, false);
-        let label = osis::internals::label_of(&alice.admission_ids(f).unwrap()[0]);
+        let label = osis::internals::label_of(&alice.sync_ids(f).unwrap()[0]);
         let log = |w: &World| osis_proto::store::LabelStore::log_head(w.hosts[0].hub.store(), &label).unwrap().1;
         let before = log(&w);
         let t = plain(&others[0], "for f");
@@ -1680,9 +1680,9 @@ fn chunks_under_an_inbox_label_cost_no_kem() {
     let before = bob.sync_engine(|e| e.pass_stats().inbox_tries);
     let big: String = (0..3_000_000u32).map(|i| char::from(b'a' + ((i.wrapping_mul(2654435761) >> 13) % 26) as u8)).collect();
     let t = alice
-        .batch(|w| {
+        .commit_with(|w| {
             let t = w.create_in(f, &[f])?;
-            w.at(t, osis::Key::untyped(ak("t:x.0"))).set(&Value::Str(big.clone()))?;
+            w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Str(big.clone()))?;
             Ok(t)
         })
         .unwrap();
@@ -1742,7 +1742,7 @@ fn a_grant_to_a_holder_nothing_reaches() {
     w.run();
     assert!(dave.grants(t).unwrap().contains_key(&f));
     assert_eq!(unrouted(dave, t), vec![f]);
-    assert!(!alice.knows(t).unwrap());
+    assert!(!alice.has_content(t).unwrap());
 }
 
 // spec/sync.md §6, spec/permissions.md §4: an admin by an edge on a group's item reaches a holder outside the group: he keeps the creation records of its owner chain under the item's label, though their commit wrote more
@@ -1785,12 +1785,12 @@ fn a_grant_to_a_client_or_a_refused_one_makes_no_label() {
     alice.grant(t, a, Role::Read, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t));
     assert!(matches!(alice.grant(t, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
-    let r = alice.grant(t, ids[0], Role::Read, osis::GrantOpts { invite: Some(Role::Write), ..Default::default() });
+    let r = alice.grant(t, ids[0], Role::Read, osis::GrantOpts { may_grant: Some(Role::Write), ..Default::default() });
     assert!(matches!(r, Err(osis::Error::Invalid(_))), "{r:?}");
     assert!(!alice.status().unwrap().groups.contains_key(&t));
 }
 
-// spec/permissions.md §3, Keep: a removal keeping leaves the holder's database a read-only copy it
+// spec/permissions.md §3, Keep: a removal keeping leaves the holder's node a read-only copy it
 // reads and may drop; a removal saying erase over the same grant does not; a grant without `keep`
 // erases.
 #[test]
@@ -1802,20 +1802,20 @@ fn removal_keeps_a_copy_spec_permissions_3() {
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
         if let Some(k) = keep {
-            alice.set_keep_default(g, k).unwrap();
+            alice.set_retain_copies_default(g, k).unwrap();
         }
         alice.grant(g, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        let d = SetRoleOpts { sync: SyncFirst::Skip, keep: say };
+        let d = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: say };
         w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
-        assert_eq!(bob.kept_copies().unwrap().contains(&g), kept);
+        assert_eq!(bob.retained_copies().unwrap().contains(&g), kept);
         assert_eq!(x(bob, t), kept.then(|| s("before")));
         if kept {
             assert!(write_refused(bob, t), "read-only");
-            bob.drop_kept(g).unwrap();
-            assert!(bob.kept_copies().unwrap().is_empty());
+            bob.drop_retained_copy(g).unwrap();
+            assert!(bob.retained_copies().unwrap().is_empty());
             assert_eq!(x(bob, t), None);
         }
     }
@@ -1832,23 +1832,23 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
         if let Some(k) = keep {
-            alice.set_keep_default(g, k).unwrap();
+            alice.set_retain_copies_default(g, k).unwrap();
         }
         alice.grant(g, bob.me(), Role::Read, osis::GrantOpts::default()).unwrap();
         w.run();
-        let d = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
+        let d = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
         w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), keep.map(|_| s("before")));
         let mut wr = alice.write();
-        wr.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s("during")).unwrap();
+        wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("during")).unwrap();
         wr.commit().unwrap();
         w.run();
         assert_eq!(x(bob, t), keep.map(|_| s("before")), "frozen");
         alice.grant(g, bob.me(), Role::Read, Default::default()).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("during")));
-        assert!(bob.kept_copies().unwrap().is_empty());
+        assert!(bob.retained_copies().unwrap().is_empty());
         assert!(bob.status().unwrap().groups.contains_key(&g));
     }
 }
@@ -1864,14 +1864,14 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
         if link {
-            alice.set_keep_default(g, true).unwrap();
+            alice.set_retain_copies_default(g, true).unwrap();
         }
         let l = alice.make_link(g, Role::Read, osis::LinkOpts { until: None, single_use: false, direct: false }).unwrap();
         w.run();
         w.until(bob.redeem(&l), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        let d = SetRoleOpts { sync: SyncFirst::Skip, keep: say };
+        let d = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: say };
         w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
         w.run();
         assert_eq!(x(bob, t), kept.then(|| s("before")), "link {link} say {say:?}");
@@ -1879,7 +1879,7 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
 }
 
 
-// spec/permissions.md §2: a person's keep default does not reach a device's removal: the device erases.
+// spec/permissions.md §2: an account's keep default does not reach a node's removal: the node erases.
 #[test]
 fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
     let mut w = World::new();
@@ -1891,13 +1891,13 @@ fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
     let db = join.finish(&reply).unwrap();
     w.run();
     assert_eq!(x(&db, t), Some(s("before")));
-    da.set_keep_default(da.me(), true).unwrap();
+    da.set_retain_copies_default(da.me(), true).unwrap();
     w.run();
-    let skip = SetRoleOpts { sync: SyncFirst::Skip, keep: None };
-    w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
+    let skip = SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None };
+    w.until(da.remove_node(db.node(), skip), 1000, 5).unwrap();
     w.run();
     assert_eq!(x(&db, t), None, "the device erases");
-    assert!(db.kept_copies().unwrap().is_empty());
+    assert!(db.retained_copies().unwrap().is_empty());
 }
 
 fn skip() -> SetRoleOpts {
@@ -1919,12 +1919,12 @@ fn kicked_from_a_group_ends_what_it_holds() {
     alice.grant(t, h, Role::Write, Default::default()).unwrap();
     w.run();
     assert_eq!(x(bob, t), Some(s("one")));
-    bob.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("bob's")).unwrap();
+    bob.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("bob's")).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("bob's")));
     w.until(alice.set_role(h, ids[0], None, skip()), 1000, 10).unwrap();
     w.run();
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("after")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("after")).unwrap();
     w.run();
     assert_ne!(x(bob, t), Some(s("after")));
     assert_eq!(x(carol, t), Some(s("after")));
@@ -1936,7 +1936,7 @@ fn kicked_from_a_group_ends_what_it_holds() {
     // the edge's end is under the group's label too: a reader after it reads nothing later
     w.until(alice.set_role(t, h, None, skip()), 1000, 10).unwrap();
     w.run();
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("edge gone")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("edge gone")).unwrap();
     w.run();
     alice.grant(h, ids[3], Role::Read, Default::default()).unwrap();
     w.run();
@@ -1969,14 +1969,14 @@ fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
     assert_eq!(x(dan, t), Some(s("one")), "joiner");
     w.until(alice.set_role(p, ids[0], None, skip()), 1000, 10).unwrap();
     w.run();
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("after")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("after")).unwrap();
     w.run();
     assert_ne!(x(bob, t), Some(s("after")));
     assert_eq!(x(carol, t), Some(s("after")));
     assert_eq!(x(dan, t), Some(s("after")));
     w.until(alice.set_role(p, dan.me(), None, skip()), 1000, 10).unwrap();
     w.run();
-    alice.commit_set(t, osis::Key::untyped(ak("t:x.0")), &s("last")).unwrap();
+    alice.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("last")).unwrap();
     w.run();
     assert_ne!(x(dan, t), Some(s("last")));
     assert_eq!(x(carol, t), Some(s("last")));
@@ -2053,7 +2053,7 @@ fn poll_now<F: std::future::Future + Unpin>(f: &mut F) -> Option<F::Output> {
     }
 }
 
-// spec/sync.md §3, notes/api.md (`wait_synced`): a holder whose grant names a label it has not read yet (its host out of reach for now) waits for it; its grant is pending there, so no missing route shows
+// spec/sync.md §3, notes/api.md (`wait_synced`): a holder whose grant names a label it has not read yet (its peer out of reach for now) waits for it; its grant is pending there, so no missing route shows
 #[test]
 fn a_holder_waits_for_the_label_its_grant_names() {
     let mut w = World::new();
@@ -2100,7 +2100,7 @@ fn a_wait_right_after_accepting_a_grant() {
     assert_eq!(x(bob, t), Some(s("there")));
 }
 
-// spec/sync.md §3, notes/api.md (`wait_synced`): a brand new device of a holder, on a thing granted to its person before it existed and on one its person owns: its first sync brings both, and it waits
+// spec/sync.md §3, notes/api.md (`wait_synced`): a brand new node of a holder, on a thing granted to its account before it existed and on one its account owns: its first sync brings both, and it waits
 #[test]
 fn a_new_devices_first_wait_on_a_shared_thing() {
     let mut w = World::new();
@@ -2137,7 +2137,7 @@ fn share_of_a_group_carries_its_items() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
-    let g = alice.batch(|w| {
+    let g = alice.commit_with(|w| {
         let g = w.create()?;
         Ok(g)
     })
@@ -2168,7 +2168,7 @@ fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
         assert_eq!(db.close().unwrap(), osis::Close::Closed);
         w.advance(1000);
         db = osis::internals::open(cfg.clone()).unwrap();
-        let c = commit_with(&db, |wr| wr.at(t, osis::Key::untyped(ak("t:x.0"))).set(&s(v))).id.commit().unwrap();
+        let c = commit_with(&db, |wr| wr.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s(v))).id.commit().unwrap();
         forms.push(db.engine(|e| e.header(&c).unwrap().form));
         w.run();
         assert_eq!(x(&db, t), Some(s(v)));
@@ -2178,7 +2178,7 @@ fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
     assert!(!diags.iter().any(|d| d.contains("OverlappingCounters")), "{diags:?}");
 }
 
-// spec: none (notes/api.md Text sessions): `on_remote` is a subscription like any: its callback gets the database and may ask the session anything, and dropping it ends the calls
+// spec: none (notes/api.md Text sessions): `on_remote` is a subscription like any: its callback gets the node and may ask the session anything, and dropping it ends the calls
 #[test]
 fn text_on_remote_is_a_subscription() {
     let (mut w, _da, db, t, sa) = text_pair();
@@ -2189,7 +2189,7 @@ fn text_on_remote_is_a_subscription() {
         assert!(db.has_store());
         let _ = tx.send((merged.to_string(), s2.text()));
     }).unwrap();
-    let sb = db.at(t, db.key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
+    let sb = db.at(t, db.aspect_key("n:body.0").unwrap()).path(osis::p![]).edit_text().unwrap();
     sb.splice(0..0, ">").unwrap();
     sb.commit().unwrap();
     w.run();
@@ -2206,7 +2206,7 @@ fn text_on_remote_is_a_subscription() {
     assert!(sa.text().starts_with(">>"), "the session still merges");
 }
 
-// spec/permissions.md §8, notes/api.md Handle (restore), issues/restore-head-moved.md: a head that moves in the moments a fresh device reads the home group leaves it no key to reopen with, for good: `Unsynced` at once, not a wait nothing answers, and a fresh attempt restores. Each round moves the head at another point.
+// spec/permissions.md §8, notes/api.md Handle (restore), issues/restore-head-moved.md: a head that moves in the moments a fresh node reads the home group leaves it no key to reopen with, for good: `Unsynced` at once, not a wait nothing answers, and a fresh attempt restores. Each round moves the head at another point.
 #[test]
 fn restore_fails_when_the_head_moves_under_it_and_a_fresh_attempt_works() {
     use std::future::Future as _;
@@ -2229,7 +2229,7 @@ fn restore_fails_when_the_head_moves_under_it_and_a_fresh_attempt_works() {
             w.step(None);
             assert!(restore.as_mut().poll(&mut cx).is_pending(), "done before the head moved: start the rounds earlier");
         }
-        w.until(da.remove_device(node, SetRoleOpts { sync: SyncFirst::Skip, keep: None }), 1000, 1).unwrap();
+        w.until(da.remove_node(node, SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None }), 1000, 1).unwrap();
         item(&da, da.me(), da.me(), "after the removal");
         match w.until(restore, 1000, 200) {
             Ok(dc) => assert_eq!(dc.me(), da.me()),

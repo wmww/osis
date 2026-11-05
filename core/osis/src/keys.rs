@@ -1,15 +1,14 @@
-//! `Key`: an aspect key by name, typed by a schema registered at run time (`Osis::key`), and the
+//! `DynamicAspectKey`: an aspect key by name, typed by a schema registered at run time (`Osis::aspect_key`), and the
 //! core keys apps write. Typed `Aspect<T>` come from codegen (osis-schema).
 
 use osis_base::{Ak, Value};
 use osis_schema::{RawKey, Codec, PathError, Schema, typed_read};
 use std::sync::Arc;
 
-/// An aspect key by name (`Osis::key`), its values plain `Value`s. Under a registered schema reads
-/// are typed reads projected back to `Value` (reader defaults, failures with the path) and writes
-/// are validated.
+/// An aspect key made at run time (`Osis::aspect_key`), its values plain `Value`s. Under a registered
+/// schema its reads are typed and its writes validated.
 #[derive(Clone, Debug)]
-pub struct Key {
+pub struct DynamicAspectKey {
     pub(crate) ak: Ak,
     pub(crate) schema: Option<Arc<Schema>>,
 }
@@ -20,10 +19,10 @@ pub(crate) fn core_schema() -> Arc<Schema> {
     CORE.get_or_init(|| Arc::new(osis_schema::core_schema().clone())).clone()
 }
 
-impl Key {
+impl DynamicAspectKey {
     /// The key named `ak` with no schema, even where one is registered: any stored value as it is.
-    pub fn untyped(ak: Ak) -> Key {
-        Key { ak, schema: None }
+    pub fn untyped(ak: Ak) -> DynamicAspectKey {
+        DynamicAspectKey { ak, schema: None }
     }
 
     /// Its name.
@@ -39,15 +38,15 @@ impl Key {
         Some(crate::value_type::nested(s, ty))
     }
 
-    /// What a write through this key is kept by, unless it says otherwise (`AspectWrite::retention`).
-    pub fn default_retention(&self) -> osis_schema::Retention {
-        self.defaults().retention
+    /// Who may purge a write through this key and how long it is held, unless it says otherwise (`AspectWrite::retention`).
+    pub fn default_retention(&self) -> crate::Retention {
+        self.defaults().retention.into()
     }
 }
 
-impl osis_schema::AspectKey for Key {}
+impl osis_schema::AspectKey for DynamicAspectKey {}
 
-impl RawKey for Key {
+impl RawKey for DynamicAspectKey {
     type T = Value;
     fn ak(&self) -> &str {
         self.ak.as_str()
@@ -83,8 +82,8 @@ pub mod core {
     /// Marks a thing as a tag.
     pub use osis_schema::core_types::TAG;
     pub use osis_schema::core_types::Tag;
-    /// What every write to a thing must keep to, by aspect name prefix: how long it is kept, when it
+    pub use crate::retention::{Required, RequiredRules};
+    /// What every write to a thing must keep to, by aspect name prefix: how long it is held, when it
     /// expires. An admin sets it; a write that breaks it is refused.
-    pub use osis_schema::core_types::REQUIRED;
-    pub use osis_schema::core_types::{Required, RequiredBound, RequiredRules};
+    pub const REQUIRED: osis_schema::Aspect<RequiredRules> = osis_schema::Aspect::new("required.0^", &osis_schema::CORE);
 }

@@ -17,7 +17,7 @@ use anyhow::anyhow;
 use args::{Cli, Global};
 use clap::Parser;
 use json::J;
-use osis::{AppConfig, Config, Error, Key, MemStore, Osis, Store, Tid};
+use osis::{AppConfig, Config, DynamicAspectKey, Error, MemStore, Osis, Store, Tid};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{BufRead, Write};
@@ -247,7 +247,7 @@ fn open(sel: &StoreSel, g: &Global, net: bool, use_daemon: bool) -> anyhow::Resu
             Ok(db)
         }
         StoreSel::Memory(_) => Osis::open(store_of(sel), config(g, net)).map_err(|e| match e {
-            Error::Storage(m) if m.contains("not an osis database") => exit(8, "no store (run osis init)"),
+            Error::Storage(m) if m.contains("not an osis store") => exit(8, "no store (run osis init)"),
             e => e.into(),
         }),
     }
@@ -280,16 +280,16 @@ pub(crate) fn listen(sel: &StoreSel, db: &Osis) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates a store with its home group on `hosts`; refuses a non-empty directory. Returns the
-/// recovery card (none without hosts).
-fn create(sel: &StoreSel, g: &Global, hosts: Vec<osis::HostAddr>) -> anyhow::Result<(Osis, Option<osis::RecoveryCard>)> {
+/// Creates a store with its home group syncing with `peers`; refuses a non-empty directory. Returns
+/// the recovery card (none without peers).
+fn create(sel: &StoreSel, g: &Global, peers: Vec<osis::Address>) -> anyhow::Result<(Osis, Option<osis::RecoveryCard>)> {
     if let StoreSel::Dir(d) = sel
         && d.read_dir().is_ok_and(|mut r| r.next().is_some())
     {
         return Err(exit(8, format!("{} is not empty", d.display())));
     }
-    let net = !hosts.is_empty();
-    let db = Osis::create(store_of(sel), &hosts, config(g, net)).map_err(|e| match sel {
+    let net = !peers.is_empty();
+    let db = Osis::create(store_of(sel), &peers, config(g, net)).map_err(|e| match sel {
         StoreSel::Dir(d) => lock_err(d, e),
         _ => e.into(),
     })?;
@@ -344,7 +344,7 @@ pub(crate) fn arg_text(stdin: &mut dyn BufRead, s: &str) -> anyhow::Result<Strin
     }
 }
 
-/// One invocation's state: the open database, flags, output, script variables.
+/// One invocation's state: the open store, flags, output, script variables.
 pub(crate) struct Ctx<'a> {
     pub g: Global,
     pub db: Osis,
@@ -424,11 +424,11 @@ impl Ctx<'_> {
     }
 
     /// The key for an AK: typed by a registered schema unless `--raw`.
-    pub fn key(&self, ak: &str) -> anyhow::Result<Key> {
+    pub fn aspect_key(&self, ak: &str) -> anyhow::Result<DynamicAspectKey> {
         if self.g.raw {
-            Ok(Key::untyped(parse_ak(ak, "AK")?))
+            Ok(DynamicAspectKey::untyped(parse_ak(ak, "AK")?))
         } else {
-            self.db.key(ak).map_err(|_| usage(format!("bad AK {ak:?}")))
+            self.db.aspect_key(ak).map_err(|_| usage(format!("bad AK {ak:?}")))
         }
     }
 

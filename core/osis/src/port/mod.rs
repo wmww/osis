@@ -2,8 +2,9 @@
 //! client-port kinds (spec/wire.md §11.2). `serve`: a node answers the requests its served
 //! sessions make, on a worker thread off the handle lock; `client`: a process connected to such
 //! a node (`Osis::connect_socket`, `Osis::connect`) routes its tid-addressed calls there
-//! (`Source::Remote`). Sessions: the Owner (the unix socket, `Peer::Unix`) and thin clients (a
-//! bearer secret matching `clients.0^`), whose rows run as the client's actor (`serve`).
+//! (`Route::Remote`). Sessions: the node's own user (the unix socket, `Peer::Unix`), acting as its
+//! main actor, and thin clients (a bearer secret matching `clients.0^`), whose rows run as the
+//! client's actor (`serve`).
 
 pub(crate) mod client;
 pub(crate) mod codec;
@@ -11,7 +12,7 @@ pub(crate) mod serve;
 
 
 /// The method table (`Call.method`): each row's args and result in `codec` forms. A method number
-/// not listed is answered `Unsupported`; a row is Owner-only unless `for_client` lists it.
+/// not listed is answered `Unsupported`; a row is the main actor's alone unless `for_client` lists it.
 pub(crate) mod method {
     /// `[]` -> `[me, node]`
     pub const WHOAMI: u64 = 0;
@@ -20,7 +21,7 @@ pub(crate) mod method {
     /// `[tid]` -> `[ak*]`
     pub const ASPECTS: u64 = 2;
     /// `[tid]` -> bool
-    pub const KNOWS: u64 = 3;
+    pub const HAS_CONTENT: u64 = 3;
     /// `[tid]` -> bool: its creation is here, content or not (what routing asks of a node)
     pub const HOLDS: u64 = 69;
     /// `[tid]` -> groups
@@ -45,10 +46,10 @@ pub(crate) mod method {
     pub const REVERT: u64 = 14;
     /// `[]` -> status
     pub const STATUS: u64 = 15;
-    /// `[file, source]` -> `[]` (registered on the node: Owner only)
+    /// `[file, source]` -> `[]` (registered on the node: the main actor only)
     pub const REGISTER_SCHEMA: u64 = 16;
     /// `[tid, ak, path]` -> Opt(len)
-    pub const LEN: u64 = 17;
+    pub const BYTE_LEN: u64 = 17;
     /// `[tid, ak, path, offset, n]` -> bytes (`n` at most `STREAM_CHUNK`)
     pub const STREAM_READ: u64 = 18;
     /// `[]` -> `[]` once every Notify for changes before it went (`Osis::settle`). The worker
@@ -57,11 +58,13 @@ pub(crate) mod method {
     pub const SETTLE: u64 = 19;
     /// `[]` -> wall ms
     pub const NOW: u64 = 20;
-    /// `[]` -> `[host addr text*]`
-    pub const HOSTS: u64 = 21;
-    /// `[]` -> `[]` (`Osis::sync_now`: pokes the driver, waits for nothing)
-    pub const SYNC_NOW: u64 = 22;
-    /// `[group, [host addr text*]]` -> `[]`
+    /// `[]` -> `[address text*]`
+    pub const SAVED_PEERS: u64 = 21;
+    /// `[group]` -> `[address text*]`
+    pub const PEERS: u64 = 73;
+    /// `[]` -> `[]` (`Osis::nudge_sync`: pokes the driver, waits for nothing)
+    pub const NUDGE_SYNC: u64 = 22;
+    /// `[group, [address text*]]` -> `[]`
     pub const SYNC: u64 = 23;
     /// `[group]` -> `[]`
     pub const UNSYNC: u64 = 24;
@@ -88,27 +91,27 @@ pub(crate) mod method {
     /// `[]` -> `[node addr text*]`
     pub const ROTATE_CLIENT_ADDRESS: u64 = 38;
     /// `[]` -> `[actor*]`
-    pub const KEPT: u64 = 39;
+    pub const RETAINED_COPIES: u64 = 39;
     /// `[actor]` -> `[]`
-    pub const DROP_KEPT: u64 = 40;
+    pub const DROP_RETAINED_COPY: u64 = 40;
     /// `[tid, ak, from, limit, max bytes]` -> `[[entry*], more, complete]`
     pub const HISTORY: u64 = 41;
     /// `[admin]` -> tid (`Osis::create_ownerless`)
     pub const CREATE_OWNERLESS: u64 = 43;
     /// `[]` -> `[[node, role]*]`
-    pub const DEVICES: u64 = 44;
-    /// `[host addr text]` -> `[]`
-    pub const ADD_HOST: u64 = 45;
-    pub const REMOVE_HOST: u64 = 46;
+    pub const NODES: u64 = 44;
+    /// `[address text]` -> `[]`
+    pub const ADD_PEER: u64 = 45;
+    pub const REMOVE_PEER: u64 = 46;
     /// `[]` -> Opt(key bytes)
-    pub const HOST_KEY: u64 = 47;
+    pub const SERVING_KEY: u64 = 47;
     /// `[]` -> offer text
     pub const PAIR_OFFER: u64 = 48;
     /// `[request text]` -> `[node, reply text]`
     pub const PAIR_ACCEPT: u64 = 49;
     /// `[]` -> card text
     pub const CONTACT_CARD: u64 = 50;
-    /// `[person]` -> Opt(tid)
+    /// `[account]` -> Opt(tid)
     pub const PROFILE_OF: u64 = 51;
     /// `[]` -> `[invite id bytes*]`
     pub const INVITE_REQUESTS: u64 = 52;
@@ -122,7 +125,7 @@ pub(crate) mod method {
     /// `[]` -> `[]`
     pub const ROTATE_PEER_ADDRESS: u64 = 57;
     /// `[group]` -> `[text*]`
-    pub const ADMISSION_IDS: u64 = 72;
+    pub const SYNC_IDS: u64 = 72;
     /// `[scope]` -> Opt(entry)
     pub const UNDO_TARGET: u64 = 70;
     pub const REDO_TARGET: u64 = 71;
@@ -149,7 +152,7 @@ pub(crate) mod method {
     pub const REVOKE_LINK: u64 = 65;
     /// `[target, holder, Opt(role), set role]` -> `[]`
     pub const REPUDIATE: u64 = 66;
-    /// `[card text]` -> person
+    /// `[card text]` -> account
     pub const IMPORT_CONTACT: u64 = 67;
 
     /// The rows a client's session by a secret may call, each running on a handle acting as its
@@ -157,7 +160,7 @@ pub(crate) mod method {
     /// this node's authority and take no actor (they would be a confused deputy). `LEAVE` is such a
     /// flow, and only ever on the actor's own grant (`Osis::leave`).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
+        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | HISTORY)
     }
 }
 
@@ -185,7 +188,7 @@ pub const WRITE_NONCES: usize = 64;
 /// Resource bound: 0 drops every signal under backpressure, infinity lets a slow client hold
 /// unbounded memory.
 pub const SIGNAL_BYTES: usize = 1 << 20;
-/// Distinct schema source bytes the node's Owners may register through the port (per node:
+/// Distinct schema source bytes the node's main-actor sessions may register through the port (per node:
 /// registrations are process-wide and kept). Resource bound: 0 forbids typed sets through
 /// the port, infinity lets one client fill memory.
 pub const MAX_SCHEMA_BYTES: usize = 1 << 20;
@@ -203,5 +206,5 @@ pub const HISTORY_SEND: usize = 64;
 /// Bytes of a `stream_read` page. Performance switch: 0 moves nothing, infinity is one page
 /// bounded by `REPLY_BUDGET`.
 pub const STREAM_CHUNK: usize = 1 << 20;
-/// Ops of one `write` batch (spec/wire.md §13 decoder limits).
-pub const MAX_BATCH_OPS: usize = 1024;
+/// Ops of one write sent to another node (spec/wire.md §13 decoder limits).
+pub const MAX_WRITE_OPS: usize = 1024;

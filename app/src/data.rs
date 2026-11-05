@@ -3,7 +3,7 @@
 //!
 //! The app's internal group (marked `osis_app:app.0`, no `tag.0`) is an item and a subgroup of
 //! home: its own aspects sync (favorites, the views) and so do its items. Every thing the app
-//! makes is placed in it; tags are also its subgroups, so their items sync too. Two devices that
+//! makes is placed in it; tags are also its subgroups, so their items sync too. Two nodes that
 //! start before syncing each make one: every marked group among home's subgroups is read, and
 //! writes go to the smallest tid (notes/app.md kit and app).
 //!
@@ -12,24 +12,24 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, NAME, TAG};
-use osis::{CommitId, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Store, Tid, p};
+use osis::{CommitId, CommitKind, CommitQuery, Config, Grant, Address, Member, Osis, Result, Runtime, Scope, Store, Tid, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Opens the store in `dir`, creating it (with its home group on `hosts`) when `dir` holds
-/// none; an existing store adds the `hosts` it lacks. Sync runs on osis's own runtime over QUIC
+/// Opens the store in `dir`, creating it (with its home group syncing with `peers`) when `dir` holds
+/// none; an existing store adds the `peers` it lacks. Sync runs on osis's own runtime over QUIC
 /// while the app runs.
-pub fn open(dir: &Path, hosts: Vec<HostAddr>) -> Result<Osis> {
+pub fn open(dir: &Path, peers: Vec<Address>) -> Result<Osis> {
     let cfg = Config { runtime: Runtime::Own, ..Config::default() };
     let store = Store::Dir(dir.to_path_buf());
     if dir.join("db.redb").exists() {
         let db = Osis::open(store, cfg)?;
-        for h in &hosts {
-            db.add_host(h)?;
+        for p in &peers {
+            db.add_peer(p)?;
         }
         Ok(db)
     } else {
-        Ok(Osis::create(store, &hosts, cfg)?.0)
+        Ok(Osis::create(store, &peers, cfg)?.0)
     }
 }
 
@@ -136,7 +136,7 @@ impl Found {
     }
 }
 
-/// What the app does with a database.
+/// What the app does with a store.
 #[derive(Clone)]
 pub struct Data {
     pub db: Osis,
@@ -217,7 +217,7 @@ impl Data {
                 todo.extend(self.db.members(t)?.into_iter().map(Member::tid).filter(|x| !groups.contains(x) && !seen.contains(x)));
             }
         }
-        // one view per kind: where two devices both made the views, the smallest tid
+        // one view per kind: where two nodes both made the views, the smallest tid
         let mut views = BTreeSet::new();
         let mut dup = Vec::new();
         for t in &seen {
@@ -233,7 +233,7 @@ impl Data {
         Ok(seen)
     }
 
-    /// The app's views, one per kind (the smallest tid where two devices both made one).
+    /// The app's views, one per kind (the smallest tid where two nodes both made one).
     pub fn views(&self) -> Result<Vec<(View, Tid)>> {
         let mut out: Vec<(View, Tid)> = Vec::new();
         for t in self.things()? {
@@ -357,7 +357,7 @@ impl Data {
     }
 
     /// When `t` last changed: wall ms of its newest content change, else its creation, each at
-    /// `min(ts, received)` (a device whose clock runs ahead cannot date a change into the future).
+    /// `min(ts, received)` (a node whose clock runs ahead cannot date a change into the future).
     /// Works around issues/api-change-time.md.
     pub fn changed(&self, t: Tid) -> Result<Option<u64>> {
         let q = CommitQuery { scope: Some(Scope::Thing(t)), kinds: vec![CommitKind::Content, CommitKind::Revert], limit: Some(1), ..Default::default() };
@@ -457,7 +457,7 @@ impl Data {
     }
 
     /// Who can see `t`: its owner and its holders, through holder actors (shared tags, with their
-    /// owners) down to people; me and my devices are "you". Grants with an `until` count until it
+    /// owners) down to people; me and my nodes are "you". Grants with an `until` count until it
     /// passes.
     pub fn reach(&self, t: Tid) -> Result<Reach> {
         let db = &self.db;
@@ -477,13 +477,13 @@ impl Data {
             if x != t && mine.contains(&x) {
                 continue;
             }
-            if x != t && db.knows(x)? && self.db.at(x, TAG).get()?.is_some() {
+            if x != t && db.has_content(x)? && self.db.at(x, TAG).get()?.is_some() {
                 // a shared tag: its holders see what it holds, and so does its owner (implicitly
                 // its admin, with no grant)
                 r.via.push(x);
                 todo.extend(db.owner_of(x)?);
             } else if x != t {
-                let name = self.person_name(x)?;
+                let name = self.account_name(x)?;
                 if !r.people.contains(&name) {
                     r.people.push(name);
                 }
@@ -495,9 +495,9 @@ impl Data {
         Ok(r)
     }
 
-    /// A person's display name: their profile's `name.0`, else a contact naming that profile,
+    /// An account's display name: their profile's `name.0`, else a contact naming that profile,
     /// else a short id.
-    pub fn person_name(&self, p: Tid) -> Result<String> {
+    pub fn account_name(&self, p: Tid) -> Result<String> {
         let db = &self.db;
         if let Some(prof) = db.profile_of(p)? {
             if let Some(n) = self.db.at(prof, NAME).get()?.filter(|n| !n.is_empty()) {
@@ -535,7 +535,7 @@ impl Data {
         Ok(())
     }
 
-    /// Undoes my newest change to `t` (made on any of my devices; never someone else's); `false`
+    /// Undoes my newest change to `t` (made on any of my nodes; never someone else's); `false`
     /// when there is none. Its creation is not undone: that commit also placed it, so reverting
     /// it would leave the thing in no group, gone from the app but not deleted.
     /// Works around issues/undo-creation-unplaces.md (with `next_undo`).
@@ -729,7 +729,7 @@ impl Data {
 
     /// Adds `t` at the end of the main group's favorites, or removes it from every group's list.
     /// Entries stay in the group holding them: copying another group's entries into the main
-    /// list would bring back one that a device removes meanwhile.
+    /// list would bring back one that a node removes meanwhile.
     pub fn toggle_favorite(&self, t: Tid) -> Result<()> {
         let mut edits = Vec::new();
         if self.is_favorite(t)? {
@@ -757,7 +757,7 @@ impl Data {
     }
 
     /// Moves the favorite at `from` to `to` (indices into `favorites()`), by a sequence move
-    /// inside the list that holds it: a device removing it meanwhile wins (a move never brings
+    /// inside the list that holds it: a node removing it meanwhile wins (a move never brings
     /// back a deleted element, where delete-and-insert would), and nothing is copied between
     /// groups. An entry moves among its own group's entries only: placed before the first of
     /// them that follows it in the new order, else after their last.
@@ -800,7 +800,7 @@ impl Data {
         Ok(())
     }
 
-    // ---- the look (per person, on the app group)
+    // ---- the look (per account, on the app group)
 
     /// The chosen theme id (`None`: the default) and mode.
     pub fn look(&self) -> Result<(Option<String>, Mode)> {
@@ -835,9 +835,9 @@ impl Data {
         Ok(())
     }
 
-    // ---- navigation (per-device ephemeral view state on the main group)
+    // ---- navigation (per-node ephemeral view state on the main group)
 
-    /// This device's entry in the app groups (the main group's first: an entry made before a
+    /// This node's entry in the app groups (the main group's first: an entry made before a
     /// smaller group arrived is on another one).
     fn open_entry(&self) -> Result<Option<Tid>> {
         let node = self.db.node();
@@ -849,14 +849,14 @@ impl Data {
         Ok(None)
     }
 
-    /// The thing this device has open; `None`: home (also when it was deleted meanwhile).
+    /// The thing this node has open; `None`: home (also when it was deleted meanwhile).
     /// Works around issues/api-deleted-known.md (a deleted thing stays known).
     pub fn opened(&self) -> Result<Option<Tid>> {
         let Some(t) = self.open_entry()? else { return Ok(None) };
         Ok(Some(t).filter(|t| self.things().is_ok_and(|all| all.contains(t))))
     }
 
-    /// Opens `t` on this device (`None`: home); the entry lives on the main group only.
+    /// Opens `t` on this node (`None`: home); the entry lives on the main group only.
     pub fn set_open(&self, t: Option<Tid>) -> Result<()> {
         let main = self.main_group()?;
         let node = self.db.node();
@@ -885,12 +885,12 @@ impl Data {
 
     // ---- writes
 
-    /// A new empty note in the app group, opened on this device.
+    /// A new empty note in the app group, opened on this node.
     pub fn create_note(&self) -> Result<Tid> {
         self.create(NewKind::Note)
     }
 
-    /// A new thing of `kind` in the app group, opened on this device. An event starts at the
+    /// A new thing of `kind` in the app group, opened on this node. An event starts at the
     /// next full hour for an hour; a contact gets an empty `contact:names.0`; a tag the next
     /// colour of `TAG_COLORS`.
     pub fn create(&self, kind: NewKind) -> Result<Tid> {
@@ -951,7 +951,7 @@ impl Data {
         if was { self.set_open(None) } else { Ok(()) }
     }
 
-    /// Whether demo data was added to this person's app group.
+    /// Whether demo data was added to this account's app group.
     pub fn has_demo(&self) -> Result<bool> {
         for g in self.groups()? {
             if self.db.at(g, DEMO).get()? == Some(true) {

@@ -143,7 +143,7 @@ fn store_dir_init_lock_plan_cli_2() {
     let (c, out, _) = call(&["init"]);
     assert_eq!(c, 0);
     assert!(out.starts_with("me\tosis://"));
-    // spec/requirements.md, Deletion (local keys): the store directory, its database and its
+    // spec/requirements.md, Deletion (local keys): the store directory, its node and its
     // root key are the owner's only
     #[cfg(unix)]
     for (p, m) in [(d.clone(), 0o700), (d.join("db.redb"), 0o600), (d.join("root"), 0o600)] {
@@ -172,7 +172,7 @@ fn json_output_plan_cli_5() {
     let t = o.out.split("\"tid\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
     assert_eq!(s.ok(&["--json", "get", &t, "a:b.0"]).line(), "1.5");
     let w = s.ok(&["--json", "whoami"]).out;
-    assert!(w.contains("\"me\":\"osis://") && w.contains("\"node\":\"osis://") && w.contains("\"hosts\":[]"), "{w}");
+    assert!(w.contains("\"me\":\"osis://") && w.contains("\"node\":\"osis://") && w.contains("\"peers\":[]"), "{w}");
     let e = s.call(&["--json", "get", &t, "a:b.0", ".x"], "");
     assert_eq!(e.code, 2);
     assert!(e.err.contains("\"kind\":\"Usage\""), "{}", e.err);
@@ -205,7 +205,7 @@ fn write_script_atomic_plan_cli_4() {
 }
 
 // notes/cli.md Paths: `[n]` on an untyped position. Reads index a saved list; writes never turn
-// an index into a map key: a saved untyped list or an aspect written earlier in the same batch
+// an index into a map key: a saved untyped list or an aspect written earlier in the same commit
 // (whose pending state is invisible) is an error, and nothing is committed.
 #[test]
 fn untyped_index_paths_notes_cli() {
@@ -317,18 +317,18 @@ fn stream_and_len_plan_cli_4() {
     assert_eq!(s.code(&["get", &t, "a:none.0", "--len"]), 3);
 }
 
-// notes/cli.md: `group sync G` names no hosts: on a group already synced elsewhere it does nothing, as
+// notes/cli.md: `group sync G` names no peers: on a group already synced elsewhere it does nothing, as
 // the API's empty list; naming others is `Invalid`.
 #[test]
-fn group_sync_without_hosts_keeps_the_label() {
+fn group_sync_without_peers_keeps_the_sync() {
     let s = S::mem();
-    let (a, b) = (osis::HostAddr::new(&"mem://a".parse().unwrap(), [1; 32]).to_string(), osis::HostAddr::new(&"mem://b".parse().unwrap(), [2; 32]).to_string());
-    s.ok(&["hosts", "add", &a]);
+    let (a, b) = (osis::Address::new(&"mem://a".parse().unwrap(), [1; 32]).to_string(), osis::Address::new(&"mem://b".parse().unwrap(), [2; 32]).to_string());
+    s.ok(&["peers", "add", &a]);
     let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();
-    // 6: done, and no host to deliver to in this test
-    assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g, "--host", &b]), 6);
+    // 6: done, and no peer to deliver to in this test
+    assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g, "--peer", &b]), 6);
     assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g]), 6);
-    assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g, "--host", &a]), 7);
+    assert_eq!(s.code(&["--timeout", "1ms", "group", "sync", &g, "--peer", &a]), 7);
 }
 
 // notes/api.md Materialization bound: `[0]` on an untyped aspect needs its value to tell list from map:
@@ -341,30 +341,30 @@ fn an_untyped_index_past_the_limit_says_so() {
     assert_eq!(s.code(&["--limit", "4", "get", &t, "t:l.0", "[0]"]), 5);
 }
 
-// notes/cli.md Command table Sharing and roles, Sync, Identity and devices: the local half of the
-// sharing commands on one store (no hosts): links, cards, devices, grants by error category,
+// notes/cli.md Command table Sharing and roles, Sync, Identity and nodes: the local half of the
+// sharing commands on one store (no peers): links, cards, nodes, grants by error category,
 // status (bundles are binary: the localhost e2e).
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
     let g = s.ok(&["create", "--in", "me", "t:made.0", "true"]).line().to_string();
     s.ok(&["group", "sync", &g]);
-    // spec/permissions.md §8: without hosts a link reaches nobody unless direct (opt-in)
+    // spec/permissions.md §8: without peers a link reaches nobody unless direct (opt-in)
     assert_eq!(s.code(&["link", "make", &g, "write", "--single-use"]), 7);
     assert_eq!(s.code(&["card", "show"]), 7);
     assert_eq!(s.ok(&["--json", "link", "ls", &g]).line(), "[]");
-    assert_eq!(s.ok(&["device", "ls"]).out.lines().count(), 1);
+    assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1);
     let other = S::mem();
     let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
-    assert_eq!(s.code(&["device", "rm", &stranger]), 0, "no device of this person: nothing to do");
+    assert_eq!(s.code(&["node", "rm", &stranger]), 0, "no device of this person: nothing to do");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
     let st = s.ok(&["--json", "status"]).line().to_string();
     assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"two_sources\":[]}"), "{st}");
 }
 
 // notes/cli.md Command table: commands over API pieces not built yet (queries, backlinks) parse and
-// report it; sharing commands without a runtime or hosts fail as the API does.
+// report it; sharing commands without a runtime or peers fail as the API does.
 #[test]
 fn unbuilt_commands_say_so_plan_cli_4() {
     let s = S::mem();
@@ -374,8 +374,8 @@ fn unbuilt_commands_say_so_plan_cli_4() {
         assert_eq!(o.code, 1, "{args:?}: {}", o.err);
         assert!(o.err.contains("not built yet"), "{args:?}: {}", o.err);
     }
-    assert_eq!(s.ok(&["device", "ls"]).out.lines().count(), 1, "this device");
-    assert_eq!(s.ok(&["hosts", "ls"]).out, "");
+    assert_eq!(s.ok(&["node", "ls"]).out.lines().count(), 1, "this device");
+    assert_eq!(s.ok(&["peers", "ls"]).out, "");
     assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
 }
 
@@ -391,7 +391,7 @@ fn watch_initial_not_counted_plan_cli_4() {
     assert_eq!(o.code, 6, "{}", o.err);
     // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`), none counted
     assert_eq!(o.out.lines().count(), 2, "{}", o.out);
-    assert!(o.out.lines().all(|l| l.contains("\"source\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
+    assert!(o.out.lines().all(|l| l.contains("\"origin\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
     let o = s.call(&["--timeout", "50ms", "grants", "me", "--watch", "--count", "1"], "");
     assert_eq!((o.code, o.out.lines().count(), o.err.trim()), (6, 1, "error: timed out after 0 change(s)"), "{}", o.out);
 }
@@ -588,51 +588,51 @@ fn clients_commands_plan_cli() {
     assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "actor", "me"]), 2);
 }
 
-// notes/cli.md Command table `hosting`: `host.0^` written field by field, shown (with the host
+// notes/cli.md Command table `hosting`: `host.0^` written field by field, shown (with the peer
 // address each listen URL will have, known without serving), stopped (a new start, a new key); a
 // group names its labels (as `status` lists them), a label ID works too, `''` clears a field.
 #[test]
-fn hosting_commands_plan_cli_4() {
+fn serving_commands_plan_cli_4() {
     let s = S::mem();
-    assert_eq!(s.code(&["hosting", "show"]), 3, "not hosting");
-    s.ok(&["hosting", "set", "--listen", "quic://0.0.0.0:7400", "--admitted", "me", "--policy", "group_entries=10", "--cap", "me=5,500"]);
-    let ids = s.ok(&["hosting", "ids", "me"]).out;
+    assert_eq!(s.code(&["serving", "show"]), 3, "not hosting");
+    s.ok(&["serving", "set", "--listen", "quic://0.0.0.0:7400", "--admitted", "me", "--policy", "group_entries=10", "--cap", "me=5,500"]);
+    let ids = s.ok(&["serving", "ids", "me"]).out;
     let home_label = ids.trim().to_string();
     assert_eq!(home_label.len(), 32, "{ids}");
     assert!(!s.ok(&["--json", "status"]).out.contains(&home_label), "the id stays with hosting");
-    let show = s.ok(&["hosting", "show"]).out;
+    let show = s.ok(&["serving", "show"]).out;
     let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
     let key = addr.strip_prefix("quic://0.0.0.0:7400#").unwrap_or_else(|| panic!("{addr}"));
     assert_eq!(key.len(), 43, "a base64url 32-byte key: {addr}");
     assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit own\nadmitted {home_label}\npolicy group_entries 10\ncap {home_label} 5 500\n"));
-    // the address works as a host to add (`hosts add` on the host device itself)
-    s.ok(&["hosts", "add", &addr]);
-    assert_eq!(s.ok(&["hosts", "ls"]).out, format!("{addr}\n"));
-    s.ok(&["hosts", "rm", &addr]);
+    // the address works as a peer to add (`peers add` on the peer node itself)
+    s.ok(&["peers", "add", &addr]);
+    assert_eq!(s.ok(&["peers", "ls"]).out, format!("{addr}\n"));
+    s.ok(&["peers", "rm", &addr]);
     // one flag replaces its field, the rest kept; '' clears
     let other = "00112233445566778899aabbccddeeff";
-    s.ok(&["hosting", "set", "--admit", "open", "--admitted", other, "--policy", ""]);
-    let show = s.ok(&["hosting", "show"]).out;
+    s.ok(&["serving", "set", "--admit", "open", "--admitted", other, "--policy", ""]);
+    let show = s.ok(&["serving", "show"]).out;
     assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit open\nadmitted {other}\ncap {home_label} 5 500\n"), "the key kept");
-    let j = s.ok(&["--json", "hosting", "show"]).out;
+    let j = s.ok(&["--json", "serving", "show"]).out;
     assert!(j.contains(&format!("\"admitted\":[\"{other}\"]")) && j.contains("\"admit\":\"open\"") && j.contains(&format!("\"addresses\":[\"{addr}\"]")), "{j}");
     // bad input: an unknown knob (Invalid), a group not synced here, not a label
-    assert_eq!(s.code(&["hosting", "set", "--policy", "no_such_knob=1"]), 7);
+    assert_eq!(s.code(&["serving", "set", "--policy", "no_such_knob=1"]), 7);
     let t = s.thing();
-    assert_eq!(s.code(&["hosting", "set", "--admitted", &t]), 3);
-    assert_eq!(s.code(&["hosting", "set", "--admitted", "abc"]), 2);
-    assert_eq!(s.code(&["hosting", "set", "--cap", "me=5"]), 2);
-    s.ok(&["hosting", "off"]);
-    assert_eq!(s.code(&["hosting", "show"]), 3);
-    // stopping shreds the host secret: a new start has a new address; no listen URL, no address
-    s.ok(&["hosting", "set"]);
-    assert_eq!(s.ok(&["hosting", "show"]).out, "admit own\n");
-    s.ok(&["hosting", "set", "--listen", "quic://0.0.0.0:7400"]);
-    let again = s.ok(&["hosting", "show"]).out;
+    assert_eq!(s.code(&["serving", "set", "--admitted", &t]), 3);
+    assert_eq!(s.code(&["serving", "set", "--admitted", "abc"]), 2);
+    assert_eq!(s.code(&["serving", "set", "--cap", "me=5"]), 2);
+    s.ok(&["serving", "off"]);
+    assert_eq!(s.code(&["serving", "show"]), 3);
+    // stopping shreds the peer secret: a new start has a new address; no listen URL, no address
+    s.ok(&["serving", "set"]);
+    assert_eq!(s.ok(&["serving", "show"]).out, "admit own\n");
+    s.ok(&["serving", "set", "--listen", "quic://0.0.0.0:7400"]);
+    let again = s.ok(&["serving", "show"]).out;
     assert!(again.contains("address quic://0.0.0.0:7400#") && !again.contains(&addr), "{again}");
     // a port 0 is picked when it listens: no address printed for it
-    s.ok(&["hosting", "set", "--listen", "quic://127.0.0.1:0", "--listen", "quic://0.0.0.0:7400"]);
-    let two = s.ok(&["hosting", "show"]).out;
+    s.ok(&["serving", "set", "--listen", "quic://127.0.0.1:0", "--listen", "quic://0.0.0.0:7400"]);
+    let two = s.ok(&["serving", "show"]).out;
     assert_eq!(two.lines().filter(|l| l.starts_with("address ")).collect::<Vec<_>>().len(), 1, "{two}");
     assert!(two.contains("address quic://0.0.0.0:7400#"), "{two}");
 }
@@ -647,7 +647,7 @@ fn verbose_prints_diagnostics_plan_cli_4() {
     let group = || s.ok(&["create", "t:made.0", "true"]).line().to_string();
     let (g, g2, g3, g4, g5) = (group(), group(), group(), group(), group());
     let t = s.ok(&["create", "--in", &g, "t:x.0", "1"]).line().to_string();
-    let line = format!("NotSynced {t} placed only in groups no synced group holds: it stays on this device");
+    let line = format!("NotSynced {t} only in groups no synced group holds: it stays on this node");
     let o = s.ok(&["-v", "add-with-grant", &t, &g2, "read"]);
     assert_eq!(o.err.lines().filter(|l| *l == line).count(), 1, "{}", o.err);
     let o = s.ok(&["add-with-grant", &t, &g3, "read"]);
@@ -721,7 +721,7 @@ fn serve_survives_a_bad_socket_dir() {
 }
 
 // notes/cli.md Command table `ownerless`, spec/permissions.md §1: an ownerless thing has no owner
-// and this person as first admin; a key actor or unknown actor as admin is refused.
+// and this account as first admin; a key actor or unknown actor as admin is refused.
 #[test]
 fn ownerless_plan_cli() {
     let s = S::mem();
@@ -783,8 +783,8 @@ fn group_and_splice_commands() {
 #[test]
 fn redeem_past_its_wait_says_retrying_is_safe_notes_cli() {
     let s = S::mem();
-    let a = osis::HostAddr::new(&"mem://a".parse().unwrap(), [1; 32]).to_string();
-    s.ok(&["hosts", "add", &a]);
+    let a = osis::Address::new(&"mem://a".parse().unwrap(), [1; 32]).to_string();
+    s.ok(&["peers", "add", &a]);
     let g = s.thing();
     let link = s.call(&["--timeout", "1ms", "link", "make", &g, "read"], "");
     let link = link.out.lines().next().unwrap_or_else(|| panic!("{}", link.err)).to_string();

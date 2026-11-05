@@ -6,7 +6,7 @@ use osis_sim::world::World;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-/// A world with one host, Alice and Bob who know each other, and Alice's chat with Bob in it.
+/// A world with one peer, Alice and Bob who know each other, and Alice's chat with Bob in it.
 struct Room {
     w: World,
     a: Osis,
@@ -126,7 +126,7 @@ fn edit_modes_spec_perm_5() {
     assert_eq!(texts(&a, c), ["fixed", "a plain message"]);
 }
 
-// notes/chat-designs/e.md Edit: two devices' edits arrive in either order; the same newest wins
+// notes/chat-designs/e.md Edit: two nodes' edits arrive in either order; the same newest wins
 #[test]
 fn concurrent_edits_agree_spec_crdt_1() {
     let mut w = World::new();
@@ -155,7 +155,7 @@ fn concurrent_edits_agree_spec_crdt_1() {
     assert_eq!(texts(&a, c), ["from two"]);
 }
 
-// spec/commits.md §5, spec/sync.md §6: delete for everyone by author and moderator; a participant cannot delete another's; a tombstone reaches a new device with its sender
+// spec/commits.md §5, spec/sync.md §6: delete for everyone by author and moderator; a participant cannot delete another's; a tombstone reaches a new node with its sender
 #[test]
 fn delete_for_everyone_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -163,22 +163,22 @@ fn delete_for_everyone_spec_commits_5() {
     w.advance(10);
     let his = post(&b, c, "his").unwrap();
     w.advance(10);
-    post(&b, c, "kept").unwrap();
+    post(&b, c, "retained").unwrap();
     w.run();
     let at = |db: &Osis, id: &Id| find(db, c, id).unwrap().unwrap();
     assert!(matches!(delete(&b, c, &at(&b, &mine)), Err(osis::Error::Permission { .. })));
     // past the library: the request drops nothing
     let mut x = b.write();
-    x.at(c, osis::Key::untyped(osis::Ak::new(format!("{MSGS}y{}.0", mine.year)).unwrap())).purge(osis::Purge::Commit(mine.pos.commit().unwrap())).unwrap();
+    x.at(c, osis::DynamicAspectKey::untyped(osis::Ak::new(format!("{MSGS}y{}.0", mine.year)).unwrap())).purge(osis::Purge::Commit(mine.pos.commit().unwrap())).unwrap();
     x.commit().unwrap();
     w.run();
     assert!(matches!(at(&a, &mine).body, Body::Text(_)));
     delete(&b, c, &at(&b, &his)).unwrap();
     w.run();
-    assert_eq!(texts(&a, c), ["mine", "<deleted>", "kept"]);
+    assert_eq!(texts(&a, c), ["mine", "<deleted>", "retained"]);
     delete(&a, c, &at(&a, &mine)).unwrap();
     w.run();
-    assert_eq!(texts(&b, c), ["<deleted>", "<deleted>", "kept"]);
+    assert_eq!(texts(&b, c), ["<deleted>", "<deleted>", "retained"]);
     // a moderator's delete of Bob's
     delete(&a, c, &newest(&a, c)).unwrap();
     w.run();
@@ -226,8 +226,8 @@ fn kick_keep_erase_purge_spec_perm_3() {
     w.run();
     w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
-    assert_eq!(b.kept_copies().unwrap(), vec![c]);
-    assert_eq!(texts(&b, c).len(), 2, "kept");
+    assert_eq!(b.retained_copies().unwrap(), vec![c]);
+    assert_eq!(texts(&b, c).len(), 2, "retained");
     assert!(post(&b, c, "after").is_err(), "the copy is read-only");
     post(&a, c, "new").unwrap();
     w.run();
@@ -242,9 +242,9 @@ fn kick_keep_erase_purge_spec_perm_3() {
     w.run();
     w.until(kick(&a, c, bob, Some(false), SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
-    assert!(b.kept_copies().unwrap().is_empty());
+    assert!(b.retained_copies().unwrap().is_empty());
     assert!(texts(&b, c).is_empty(), "erased");
-    assert!(!b.knows(c).unwrap());
+    assert!(!b.has_content(c).unwrap());
 }
 
 // spec/commits.md §5: required retention refuses a participant's other retention: refused at its writer, and if forged past it, invalid and unshown; every other aspect too; a stale writer is told
@@ -256,7 +256,7 @@ fn required_and_stale_writer_spec_commits_5() {
     let k = osis::Ak::new(format!("{MSGS}y{year}.0")).unwrap();
     let mut x = b.write();
     let bad = osis::Retention { by: PurgeBy::Nobody, ..Default::default() };
-    assert!(x.at(c, osis::Key::untyped(k.clone())).retention(bad).overwrite(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
+    assert!(x.at(c, osis::DynamicAspectKey::untyped(k.clone())).retention(bad).overwrite(&Value::Str("x".into())).is_err() || x.commit().is_err(), "refused at its writer");
     let (tx, rx) = std::sync::mpsc::channel();
     let _s = on_rejected(&b, c, move |id| tx.send(id).unwrap()).unwrap();
     // Bob offline: the timer changes, he posts under the old rule
@@ -433,7 +433,7 @@ fn no_forged_sender_spec_perm_5() {
     let k = osis::Ak::new(format!("{MSGS}y2023.0")).unwrap();
     let mut x = b.write();
     x.act_as(a.me());
-    x.at(c, osis::Key::untyped(k)).overwrite(&Value::Str("as alice".into())).unwrap();
+    x.at(c, osis::DynamicAspectKey::untyped(k)).overwrite(&Value::Str("as alice".into())).unwrap();
     assert!(matches!(x.commit(), Err(osis::Error::Permission { .. })));
 }
 
@@ -461,14 +461,14 @@ fn kicked_while_offline_spec_perm_5() {
     // a re-grant: the copy ends, it follows again; the late post stays what design E says: revived
     add(&a, c, bob, Role::Write).unwrap();
     w.run();
-    assert!(b.kept_copies().unwrap().is_empty());
+    assert!(b.retained_copies().unwrap().is_empty());
     post(&b, c, "back").unwrap();
     w.run();
     assert_eq!(texts(&a, c).last().unwrap(), "back");
     assert!(texts(&a, c).contains(&"late".to_string()), "a known forced yes: re-adding revives it (notes/chat-cases.md)");
 }
 
-// spec/permissions.md §3 (Keep): a kept copy's device of the kicked participant; a new device sees nothing of it (the design's forced "no")
+// spec/permissions.md §3 (Keep): a kept copy's node of the kicked participant; a new node sees nothing of it (the design's forced "no")
 #[test]
 fn new_device_of_a_participant_sees_history_spec_sync_6() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -502,7 +502,7 @@ fn new_device_of_a_participant_sees_history_spec_sync_6() {
     w.run();
     assert_eq!(newest(&a, c).sender, bob, "one sender across devices");
     assert_eq!(newest(&a, c).body, Body::Text("from the new device".into()));
-    // a device removed erases, a kicked person's new device gets nothing
+    // a node removed erases, a kicked account's new node gets nothing
     w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
     let late = new_device(&mut w, 8);
@@ -517,7 +517,7 @@ fn kept_copy_still_disappears_spec_commits_6() {
     w.run();
     w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
-    assert_eq!(b.kept_copies().unwrap(), vec![c]);
+    assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert_eq!(texts(&b, c), ["short"]);
     w.advance(120_000);
     w.run();
@@ -568,7 +568,7 @@ fn erased_then_added_again_spec_perm_3() {
     assert_eq!(texts(&a, c), ["one", "two", "back"]);
 }
 
-// spec/sync.md §2-3: the creator's device paired or restored after the chat exists finds it, unplaced as it is
+// spec/sync.md §2-3: the creator's node paired or restored after the chat exists finds it, unplaced as it is
 #[test]
 fn creator_on_a_new_device_spec_sync_3() {
     let mut w = World::new();
@@ -578,7 +578,7 @@ fn creator_on_a_new_device_spec_sync_3() {
     let c = create(&a, &Options::default()).unwrap();
     post(&a, c, "hello").unwrap();
     w.run();
-    w.until(a.wait_synced(osis::SyncScope::All), 1000, 60).unwrap();
+    w.until(a.wait_synced(osis::SyncScope::AllWithPeers), 1000, 60).unwrap();
     let offer = a.pair_offer().unwrap();
     let join = osis::internals::pair(w.cfg(2, &[]), &offer).unwrap();
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();
@@ -705,7 +705,7 @@ fn link_joiner_leaves_spec_perm_8() {
     assert!(!texts(&b, c).contains(&"still here".to_string()));
 }
 
-// spec/permissions.md §8, spec/sync.md §2: a link shared in advance keeps working: someone joins by it and leaves, the next person joins by it, reads, posts; a leaver comes back by it; a kick ends it, says so, and a new link works
+// spec/permissions.md §8, spec/sync.md §2: a link shared in advance keeps working: someone joins by it and leaves, the next account joins by it, reads, posts; a leaver comes back by it; a kick ends it, says so, and a new link works
 #[test]
 fn link_after_leave_and_kick_spec_perm_8() {
     let mut w = World::new();
@@ -769,7 +769,7 @@ fn expired_link_not_shown_spec_perm_8() {
     assert!(osis_chat::links(&a, c).unwrap().is_empty());
 }
 
-// spec/permissions.md §8: `participants` lists the people who joined by a link, not its actor; a direct participant learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a participant
+// spec/permissions.md §8: `participants` lists the accounts who joined by a link, not its actor; a direct participant learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a participant
 #[test]
 fn link_joiners_are_participants_spec_perm_8() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -991,7 +991,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert_eq!(participants(&a, c).unwrap().len(), 1);
 }
 
-// notes/chat-designs/e.md What is different: per-year aspects: reads merge across the new year; a watch hears the next year's first message; a new device gets both
+// notes/chat-designs/e.md What is different: per-year aspects: reads merge across the new year; a watch hears the next year's first message; a new node gets both
 #[test]
 fn across_a_new_year_spec_data_model_2() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
@@ -1043,7 +1043,7 @@ fn chats_lists_held_chats() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
     w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
-    assert_eq!(b.kept_copies().unwrap(), vec![c]);
+    assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert!(chats(&b).unwrap().is_empty());
 }
 
@@ -1084,14 +1084,14 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
 
     w.until(kick(&a, c, bob, None, SyncFirst::Skip), 1000, 10).unwrap();
     w.run();
-    assert_eq!(b.kept_copies().unwrap(), vec![c]);
+    assert_eq!(b.retained_copies().unwrap(), vec![c]);
     assert!(w.try_until(join(&b, &crafted), 1000, 200).is_none(), "known, not held: the link's own key does not reach it, and nothing says it never will");
     w.run();
     assert!(chats(&b).unwrap().is_empty(), "c2 not joined");
     assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c);
     w.run();
     assert_eq!(chats(&b).unwrap(), vec![c], "rejoined");
-    assert!(b.kept_copies().unwrap().is_empty());
+    assert!(b.retained_copies().unwrap().is_empty());
 }
 
 // spec: none. notes/chat.md Hostile participant, notes/api-design.md (stored data never fails a read): a message id is text another writer chose: what does not parse is no reply, a claim to replace what does not parse reads as a plain odd entry, and neither fails anyone's read, a delete or a kick
@@ -1100,7 +1100,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
     let good = post(&a, c, "good").unwrap();
     let year = good.year;
-    let key = osis::Key::untyped(osis::Ak::new(format!("{MSGS}y{year}.0")).unwrap());
+    let key = osis::DynamicAspectKey::untyped(osis::Ak::new(format!("{MSGS}y{year}.0")).unwrap());
     let raw = |entries: Vec<(i64, Value)>| {
         let mut m = osis::ValueMap::from([(Value::Int(0), Value::Str("odd".into()))]);
         for (k, v) in entries {
@@ -1115,7 +1115,7 @@ fn odd_ids_from_another_writer_fail_no_read() {
         raw(vec![(4, j.clone())]);
         raw(vec![(1, j.clone()), (2, Value::List(vec![j.clone()]))]);
     }
-    // parses, and names nothing here: a time's place, an ephemeral batch
+    // parses, and names nothing here: a time's place, an ephemeral commit
     let places = [format!("{year}/{}/{}", 1u64 << 20, "0".repeat(64)), format!("{year}/{}/ephemeral:{}:1", 1u64 << 20, "0".repeat(32))];
     for p in places.map(Value::Str) {
         raw(vec![(4, p.clone())]);

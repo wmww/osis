@@ -10,7 +10,7 @@
 use osis::internals::MemStoreMeasures as _;
 use osis::internals::schema::core_types as ct;
 use osis::internals::schema::{Bound, PurgeBy};
-use osis::{Ak, GrantOpts, MemStore, Osis, Retention, Role, Store, Tid, Value};
+use osis::{Ak, GrantOpts, MemStore, Osis, Role, Store, Tid, Value};
 use osis_sim::world::World;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -23,8 +23,8 @@ fn env(k: &str, or: usize) -> usize {
 
 fn create(a: &Osis) -> Tid {
     let c = a.create_ownerless(a.me()).unwrap();
-    let msgs = ct::Required::new(Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(i64::MAX as u64), rel: None }, at_most: Bound::default() }, None);
-    let rest = ct::Required::new(Retention::default(), None);
+    let msgs = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(i64::MAX as u64), rel: None }, at_most: Bound::default() }, None);
+    let rest = ct::Required::new(Default::default(), None);
     let rules = ct::RequiredRules { rules: BTreeMap::from([("chat:msgs:".to_string(), msgs), (String::new(), rest)]), keep: true };
     let mut w = a.write();
     w.at(c, ct::REQUIRED).set(&rules).unwrap();
@@ -35,7 +35,7 @@ fn create(a: &Osis) -> Tid {
 
 fn post(a: &Osis, c: Tid, i: usize) {
     let mut w = a.write();
-    w.at(c, osis::Key::untyped(Ak::new(MSGS).unwrap())).overwrite(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
+    w.at(c, osis::DynamicAspectKey::untyped(Ak::new(MSGS).unwrap())).overwrite(&Value::Bytes(format!("message number {i:0>180}").into_bytes())).unwrap();
     w.commit().unwrap();
 }
 
@@ -221,11 +221,11 @@ fn joiner_reads_newest(w: &mut World, b: &Osis, c: Tid, newest: &[u8]) -> u64 {
                 b.accept_invite(r).unwrap();
             }
             idle += 1;
-            assert!(idle < 200, "the fill stopped: {:?}", b.at(c, osis::Key::untyped(k.clone())).history(osis::HistoryFrom::Newest, 50).map(|p| p.entries.len()));
+            assert!(idle < 200, "the fill stopped: {:?}", b.at(c, osis::DynamicAspectKey::untyped(k.clone())).history(osis::HistoryFrom::Newest, 50).map(|p| p.entries.len()));
             w.tick(1000);
         }
         if steps % 8 == 0 {
-            let Ok(p) = b.at(c, osis::Key::untyped(k.clone())).history(osis::HistoryFrom::Newest, 50) else { continue };
+            let Ok(p) = b.at(c, osis::DynamicAspectKey::untyped(k.clone())).history(osis::HistoryFrom::Newest, 50) else { continue };
             let held = |e: &osis::HistoryEntry<Value>| matches!(e.body, osis::HistoryBody::Held(Some(_)));
             if p.entries.len() == 50 && p.entries.iter().all(held) && matches!(&p.entries[0].body, osis::HistoryBody::Held(Some(v)) if *v == want) {
                 return steps;
@@ -353,7 +353,7 @@ fn post_reads_nothing_per_member() {
     check(&n, "in a quiet chat");
     // a pass at each node holding the chat, not one per label per node
     assert!(n.get("pass").copied().unwrap_or(0) <= 2 * 2 * (members.len() as u64 + 1), "passes for two posts: {n:?}");
-    w.until(a.set_role(c, tids[1], None, osis::SetRoleOpts { sync: osis::SyncFirst::Skip, keep: None }), 1000, 100).unwrap();
+    w.until(a.set_role(c, tids[1], None, osis::SetRoleOpts { sync: osis::SyncFirst::Skip, retain_copy: None }), 1000, 100).unwrap();
     w.run();
     post(&a, c, 3);
     w.advance(1);
@@ -362,7 +362,7 @@ fn post_reads_nothing_per_member() {
         w.advance(1);
     });
     check(&n, "after a kick");
-    let texts = members[0].at(c, osis::Key::untyped(Ak::new(MSGS).unwrap())).history(osis::HistoryFrom::Oldest, 50).unwrap();
+    let texts = members[0].at(c, osis::DynamicAspectKey::untyped(Ak::new(MSGS).unwrap())).history(osis::HistoryFrom::Oldest, 50).unwrap();
     assert_eq!(texts.entries.len(), 5, "every post arrived");
 }
 
@@ -396,13 +396,13 @@ const TEXT: &str = "app:text:y1.0";
 
 fn write(a: &Osis, t: Tid, i: usize) {
     let mut w = a.write();
-    w.at(t, osis::Key::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
     w.commit().unwrap();
 }
 
 /// The one thing's text, as `b` reads it.
 fn read(b: &Osis, t: Tid) -> Option<Value> {
-    b.at(t, osis::Key::untyped(Ak::new(TEXT).unwrap())).get().unwrap()
+    b.at(t, osis::DynamicAspectKey::untyped(Ak::new(TEXT).unwrap())).get().unwrap()
 }
 
 fn node(w: &mut World, seed: u64, host: usize) -> (Osis, MemStore) {
@@ -480,7 +480,7 @@ fn many_labels() {
         for i in 0..n {
             let mut x = a.write();
             let t = x.create().unwrap();
-            x.at(t, osis::Key::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+            x.at(t, osis::DynamicAspectKey::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
             x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             things.push(t);
@@ -517,8 +517,8 @@ fn many_labels() {
     // what one pass costs at this many labels, now that idle runs none: a refresh judges all
     for name in ["pass each", "pass again"] {
         phase(&mut w, name, n, &[&a, &b], |w| {
-            a.sync_now().unwrap();
-            b.sync_now().unwrap();
+            a.nudge_sync().unwrap();
+            b.nudge_sync().unwrap();
             w.run();
         });
     }
@@ -559,7 +559,7 @@ fn labels_world(n: usize) -> (World, Osis, Osis, Tid, Vec<Tid>) {
 fn share_new(w: &mut World, a: &Osis, p: Tid, i: usize) -> Tid {
     let mut x = a.write();
     let t = x.create().unwrap();
-    x.at(t, osis::Key::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+    x.at(t, osis::DynamicAspectKey::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
     x.commit().unwrap();
     a.sync(t, &[]).unwrap();
     a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();
@@ -710,7 +710,7 @@ fn a_burst_of_shares_costs_each_about_once() {
         for i in 0..BURST {
             let mut x = a.write();
             let t = x.create().unwrap();
-            x.at(t, osis::Key::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {}", from + i).into_bytes())).unwrap();
+            x.at(t, osis::DynamicAspectKey::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {}", from + i).into_bytes())).unwrap();
             x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();
@@ -744,7 +744,7 @@ fn a_burst_past_the_budget_sends_each_body_about_once() {
         .map(|i| {
             let mut x = a.write();
             let t = x.create().unwrap();
-            x.at(t, osis::Key::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
+            x.at(t, osis::DynamicAspectKey::untyped(Ak::new(TEXT).unwrap())).overwrite(&Value::Bytes(format!("text {i}").into_bytes())).unwrap();
             x.commit().unwrap();
             a.sync(t, &[]).unwrap();
             a.grant(t, p, Role::Read, GrantOpts::default()).unwrap();

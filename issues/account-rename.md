@@ -1,5 +1,5 @@
 # Rename the "person actor" to "account"
-> Summary: the API and types still call the actor a recovery key owns, whose admins are a user's devices, the "person actor" (`me()`; notes and spec prose now say account); nothing ties it 1:1 to a human and people will use it for teams, bots and shared identities, so the name misleads (Tess). Rename to "account" (what it is: the root of what a user owns, administered by their devices) across spec, notes, the API docs and the CLI's `whoami`; `me()` keeps its name.
+> Summary: the engine still calls the actor a recovery key owns, whose admins are an account's nodes, the "person actor" (`create_person`, `set_person`); the name misleads, as nothing ties it 1:1 to a human (Tess). Everything public says account.
 > Tags: spec, api, naming
 
-Tess's direction. Pre-stability; no wire change (the thing is an actor like any other). Notes and spec prose are done, but for spec lines the owner removal is rewriting (spec/permissions.md recovery card, spec/data-model.md §9 `own` and the client actor). Left: type names (`Person` in core/osis, `set_person`, `create_person`, `PERSON` records), the CLI's `whoami`, notes/api.md, notes/cli.md, notes/client-port.md. Do it together with issues/grant-rename-multi-actor.md or right after.
+Tess's direction. Pre-stability; no wire change. The API, CLI, app, chat, notes and spec prose are done. Left: engine and node names (`create_person`, `set_person`, `flows`, `c.person`, the `person` local record), after owner removal.

@@ -1,57 +1,63 @@
-//! osis is a decentralized, reactive data layer for interconnected applications. Apps read and
-//! write structured data locally, online or not; osis syncs it between a user's devices and the
-//! people it is shared with, and tells apps when it changes.
+//! osis stores an app's data on the user's own machines and keeps it in sync between them and with
+//! whoever it is shared with, with no server in the middle unless you want one. Apps read and write
+//! plain values locally, online or not, and are told when anything changes.
 //!
-//! # Open a database
-//! You are the first admin of a thing you create. Things sync through groups: `me()` is a group
-//! synced to all your devices, and any thing becomes a group with its first member. A new thing
-//! lives in memory until its first durable write.
+//! The data is made of **things**. A thing has an identity (a `Tid`) and any number of **aspects**,
+//! each one typed value under a name like `note:title.0`, so many apps can share one thing and each
+//! read the parts it understands. **Groups** are things that list other things; they are what syncs.
+//! A running osis with its own store is a **node**, and `Osis` is a handle to one. An **account** is
+//! an identity held by a set of nodes: a person's, a team's, a bot's. Anything that can hold a role and
+//! act (an account, a node, a shared space) is an **actor**.
+//!
+//! # A first write
+//! You are the first admin of a thing you create. `me()` is your account, and also a group synced to
+//! all your nodes. A new thing lives in memory until its first durable write.
 //! ```
 //! use osis::{Config, Member, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
 //! let mut w = db.write();
 //! let note = w.create()?;
 //! w.group(db.me()).add(Member::Item(note))?;
-//! w.at(note, db.key("note:title.0")?).set(&Value::Str("Groceries".into()))?;
+//! w.at(note, db.aspect_key("note:title.0")?).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
 //! assert!(db.members(db.me())?.contains(&Member::Item(note)));
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
 //! # Keys and reads
-//! Generated keys (`Aspect<T>`) read and write typed values; `db.key(name)` is the key of that
-//! name, its values `Value`s, typed by a schema if one is registered. An absent aspect reads as
-//! `None`.
+//! An aspect key says which aspect, and what type its values are. Code generated from a schema gives
+//! typed constants (`Aspect<T>`); `db.aspect_key(name)` gives one at run time, its values `Value`s. An
+//! absent aspect reads as `None`.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let title = db.key("note:title.0")?;
+//! let title = db.aspect_key("note:title.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.at(t, title.clone()).set(&Value::Str("Groceries".into()))?;
 //! w.commit()?;
 //! assert_eq!(db.at(t, title.clone()).get()?, Some(Value::Str("Groceries".into())));
-//! assert_eq!(db.at(t, db.key("note:other.0")?).get()?, None);
+//! assert_eq!(db.at(t, db.aspect_key("note:other.0")?).get()?, None);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
-//! A key says what its values look like, for code that handles aspects it was not generated for.
+//! A key can say what its values look like, for code that handles aspects it was not generated for.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, ValueType};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
 //! db.register_schema("t.osis", "version 1; aspect t:done.0: bool;")?;
-//! assert_eq!(db.key("t:done.0")?.value_type().map(|t| t.get()), Some(ValueType::Bool));
-//! assert_eq!(db.key("t:other.0")?.value_type(), None);
+//! assert_eq!(db.aspect_key("t:done.0")?.value_type().map(|t| t.get()), Some(ValueType::Bool));
+//! assert_eq!(db.aspect_key("t:other.0")?.value_type(), None);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
 //! # Paths
-//! `at(tid, key).path(p![..])` reads or writes one position; only that position is
+//! `at(tid, key).path(p![..])` reads or writes one position inside a value; only that position is
 //! loaded.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, p};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let tags = db.key("note:tags.0")?;
+//! let tags = db.aspect_key("note:tags.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.at(t, tags.clone()).path(p!["color"]).set(&"red".to_string())?;
@@ -62,16 +68,16 @@
 //! ```
 //!
 //! # Set, edit, overwrite
-//! `set` makes the value equal to what you pass, writing only what differs (fields you did not
-//! touch are written back, and an equal value writes nothing). `edit(base, new)` writes only what
-//! the user changed since `base`, so a concurrent change to another field survives: use it for
-//! what users edit. `overwrite` always writes, the whole value: use it where each write counts,
-//! such as a message in a log, where a set equal to the last one would be lost.
+//! Others may be writing the same value. `edit(base, new)` writes only what the user changed since
+//! `base`, so their change to another field survives: use it, or path writes, for anything a user
+//! edits. `set` makes the value equal to what you pass: fields you did not touch are written back,
+//! and an equal value writes nothing. `overwrite` always writes the whole value, for where each write
+//! counts, such as a message in a log.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! # use osis::ValueMap;
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let form = db.key("app:form.0")?;
+//! let form = db.aspect_key("app:form.0")?;
 //! let shown = Value::Map(ValueMap::from([(Value::Int(0), Value::Str("a".into())), (Value::Int(1), Value::Int(1))]));
 //! let mut w = db.write();
 //! let t = w.create()?;
@@ -87,12 +93,13 @@
 //! ```
 //!
 //! # One write, one commit
-//! A `Write` is one commit, whole at every node, or it fails `Invalid` before anything applies,
-//! saying what cannot share a commit. Writing several commits is up to you.
+//! A `Write` is one commit, whole at every node, or it fails `Invalid` before anything applies, saying
+//! what cannot share a commit. Writing several commits is up to you. Keys ending in `~` are
+//! **ephemeral**: shared with other nodes, held in memory, never stored.
 //! ```
 //! # use osis::{Config, Error, Expiry, MemStore, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let (title, typing) = (db.key("app:title.0")?, db.key("app:typing.0~")?);
+//! let (title, typing) = (db.aspect_key("app:title.0")?, db.aspect_key("app:typing.0~")?);
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.at(t, title.clone()).set(&Value::Str("note".into()))?;
@@ -112,13 +119,13 @@
 //! ```
 //!
 //! # Watching
-//! Callbacks run on one dispatcher (a thread, or the app's thread calling `settle` with
-//! `Dispatcher::Pump`), after the commit is durable, never under a lock;
-//! dropping the `Subscription` unsubscribes. `on_change` first delivers the current value.
+//! `on_change` calls you with the current value, then after every change, wherever it came from.
+//! Callbacks run one at a time on a thread osis starts, or on your thread when you call `settle`
+//! (`Dispatcher::Pump`), and may call anything. Dropping the `Subscription` unsubscribes.
 //! ```
-//! # use osis::{Config, MemStore, Osis, Store, Value, Source};
+//! # use osis::{Config, MemStore, Origin, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let k = db.key("app:count.0")?;
+//! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.commit()?;
@@ -127,21 +134,19 @@
 //! let mut w = db.write();
 //! w.at(t, k.clone()).set(&Value::Int(1))?;
 //! w.commit()?;
-//! assert_eq!(rx.recv().unwrap().source, Source::Initial);
+//! assert_eq!(rx.recv().unwrap().origin, Origin::Initial);
 //! let c = rx.recv().unwrap();
-//! assert!(matches!(c.source, Source::Local(_)));
+//! assert!(matches!(c.origin, Origin::Local(_)));
 //! assert_eq!(c.value, Ok(Some(Value::Int(1))));
 //! drop(sub);
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
-//! # Watching from async code
-//! Forward `on_change` to a channel of whichever runtime you use and await that. The current
-//! value comes first and no change is missed between reading it and subscribing.
+//! From async code, forward `on_change` to a channel of whichever runtime you use and await that.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let k = db.key("app:count.0")?;
+//! let k = db.aspect_key("app:count.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.commit()?;
@@ -158,12 +163,12 @@
 //! ```
 //!
 //! # Commits, undo, redo, revert
-//! `commits` queries the held commits (anyone's); undo and redo revert this actor's own
-//! newest commit or undo in a scope; `revert` reverts any commit.
+//! `commits` lists the commits held here, anyone's. `undo` and `redo` revert this actor's own newest
+//! commit or undo in a scope; `revert` reverts any commit.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value, Scope, CommitQuery, CommitKind};
 //! # let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let k = db.key("app:x.0")?;
+//! let k = db.aspect_key("app:x.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.at(t, k.clone()).set(&Value::Int(1))?;
@@ -180,92 +185,61 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
-//! # Sync, hosts and the recovery card
-//! `create` makes a person, with a recovery key, whose home group is synced on the hosts
-//! given; it returns the recovery card, the only copy of that key. Sync runs on a runtime
-//! (`Runtime::Own`, or the app's tokio handle); without one everything works locally, and hosts are
-//! refused. Status, waiting until synced and restoring from the card are the network-facing calls.
+//! # Sync and peers
+//! Nodes that share a group sync directly with each other. You can also name **peers** by address,
+//! nodes a group syncs with whether or not they can read it: another of your machines, a friend's, or
+//! a rented box that serves data for others (`set_serving`). What a peer cannot read reaches it
+//! encrypted. Everything works with nobody online; sync catches up whenever two nodes meet.
 //!
-//! A call that waits for another node is `async`, works on any runtime or none, and lasts until it
-//! is done or dropped: to give up, wrap it in your runtime's timeout. Dropping one leaves nothing
-//! half done; where a part of it stands, its doc says so. When it is known that it can never finish
-//! it fails (a group with no way to sync: `Unsynced`; sync stopped: `Network`; a closed database:
-//! `Closed`), so a wait that lasts has something that may yet answer it, such as a host out of reach.
-//! A group this node is cut off from (`SyncState::Stranded`) also fails such a wait at once, for now,
-//! though another holder may yet let it back in.
-//! Tokio's timeout, as here, works only inside a tokio runtime with time enabled, and panics elsewhere.
-//! ```no_run
-//! # use osis::{Osis, SyncScope};
-//! # use std::time::Duration;
-//! # async fn demo(db: Osis) {
-//! match tokio::time::timeout(Duration::from_secs(10), db.wait_synced(SyncScope::All)).await {
-//!     Ok(Ok(())) => println!("at a host"),
-//!     Ok(Err(e)) => println!("cannot sync: {e}"),
-//!     Err(_) => println!("not yet: see db.status()"),
-//! }
-//! # }
+//! Sync runs on a runtime (`Runtime::Own`, or your tokio handle); without one everything local still
+//! works, and peers are refused. `Osis::create` given peers also returns a recovery card, the only copy
+//! of the key that restores the account on a new node. `status` says how each group stands.
+//! ```
+//! # use osis::{Config, MemStore, Osis, Store, SyncState};
+//! let (db, card) = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
+//! assert!(card.is_none(), "no peers: nothing to restore from");
+//! assert_eq!(db.status()?.groups[&db.me()].state, SyncState::NoPeers);
+//! # Ok::<(), osis::Error>(())
 //! ```
 //! ```no_run
 //! # use osis::{Config, MemStore, Osis, Runtime, Store, SyncScope};
 //! # async fn demo() -> osis::Result<()> {
 //! let cfg = Config { runtime: Runtime::Own, ..Default::default() };
-//! let hosts = ["quic://example.org:4433#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse()?];
-//! let (db, card) = Osis::create(Store::Memory(MemStore::new()), &hosts, cfg.clone())?;
-//! db.wait_synced(SyncScope::All).await?;
-//! // on a fresh device: the same person from the card
+//! let peers = ["quic://example.org:4433#AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".parse()?];
+//! let (db, card) = Osis::create(Store::Memory(MemStore::new()), &peers, cfg.clone())?;
+//! db.wait_synced(SyncScope::AllWithPeers).await?;
+//! // on a fresh node: the same account from the card
 //! let again = Osis::restore(Store::Memory(MemStore::new()), &[], &card.unwrap(), cfg).await?;
 //! assert_eq!(again.me(), db.me());
 //! # Ok(()) }
 //! ```
-//! ```
-//! # use osis::{Config, MemStore, Osis, Store, SyncState};
-//! let (db, card) = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
-//! assert!(card.is_none(), "no hosts: nothing to restore from");
-//! assert_eq!(db.status()?.groups[&db.me()].state, SyncState::NoHosts);
-//! # Ok::<(), osis::Error>(())
-//! ```
 //!
-//! # Using a node from another program
-//! A client is a program using a node through the client protocol. A thin client has no store of
-//! its own: `Osis::connect` and `Osis::connect_socket` make one, and it reads and writes at the
-//! node as if it were local. A node can be a client too (`Osis::connect_node`).
+//! A call that waits for another node is `async`, works on any runtime or none, and lasts until it is
+//! done or dropped: to give up, wrap it in your runtime's timeout. Dropping one leaves nothing half
+//! done. When it is known that it can never finish it fails instead (`Unsynced`, `Network`, `Closed`).
 //! ```no_run
-//! # use osis::{AppConfig, NodeLogin, Osis};
-//! # async fn demo(node: &Osis, addr: osis::HostAddr) -> osis::Result<()> {
-//! let (actor, secret) = node.add_client(None)?;
-//! // on the other program, given `addr` and `secret`:
-//! let client = Osis::connect(&[NodeLogin { addr, secret }], AppConfig::default()).await?;
-//! assert_eq!(client.me(), actor);
-//! assert!(!client.has_store());
-//! # Ok(()) }
-//! ```
-//!
-//! # Pairing a device
-//! Transport-agnostic: the app carries the offer to the new device, its request back, and the
-//! reply to it (QR, clipboard, a local socket).
-//! ```
-//! # use osis::{Config, MemStore, Osis, Store};
-//! let phone = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let offer = phone.pair_offer()?;
-//! let joining = Osis::pair(Store::Memory(MemStore::new()), &[], &offer, Config::default())?;
-//! let (node, reply) = phone.pair_accept(joining.request())?;
-//! let laptop = joining.finish(&reply)?;
-//! assert_eq!(laptop.me(), phone.me());
-//! assert!(phone.devices()?.iter().any(|d| d.node == node));
-//! # Ok::<(), osis::Error>(())
+//! # use osis::{Osis, SyncScope};
+//! # use std::time::Duration;
+//! # async fn demo(db: Osis) {
+//! match tokio::time::timeout(Duration::from_secs(10), db.wait_synced(SyncScope::AllWithPeers)).await {
+//!     Ok(Ok(())) => println!("reached its peers"),
+//!     Ok(Err(e)) => println!("cannot sync: {e}"),
+//!     Err(_) => println!("not yet: see db.status()"),
+//! }
+//! # }
 //! ```
 //!
 //! # Sharing
-//! A role says who may; sync says where the data goes. `grant` records a role and needs the
-//! holder's keys (a contact card, a shared group); the holder reads once a synced group it reads
-//! holds the thing, or the thing's own `sync` carries it. `set_role` changes or removes a role. A
-//! link needs no keys and syncs its thing. Being in a group grants nothing: `add_with_grant` adds
-//! a member and lets the group's holders read it.
+//! A role says who may; sync says where the data goes. `grant` gives an actor a role on a thing and
+//! needs the actor's keys (a contact card, a shared group). The holder reads once a synced group it
+//! reads holds the thing, or the thing's own `sync` carries it. `set_role` changes or removes a role.
+//! A link needs no keys and syncs its thing. Being in a group grants nothing: `add_with_grant` adds a
+//! member and lets the group's holders read it.
 //! ```
-//! # use osis::{Config, GrantOpts, MemStore, Osis, Role, LinkOpts, HostAddr, Store, Value};
-//! // a link names hosts (or is direct, `LinkOpts::direct`)
+//! # use osis::{Address, Config, GrantOpts, MemStore, Osis, Role, LinkOpts, Store, Value};
+//! // a link names peers (or is direct, `LinkOpts::direct`)
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! db.add_host(&HostAddr::new(&"quic://example.org:4433".parse()?, [7; 32]))?;
+//! db.add_peer(&Address::new(&"quic://example.org:4433".parse()?, [7; 32]))?;
 //! let mut w = db.write();
 //! let g = w.create()?;
 //! w.at(g, osis::core::NAME).set(&"Trip".to_string())?;
@@ -283,16 +257,46 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! # A second node for an account
+//! Pairing needs no connection: your app carries the offer to the new node, its request back, and the
+//! reply to it (a QR code, the clipboard, a local socket).
+//! ```
+//! # use osis::{Config, MemStore, Osis, Store};
+//! let phone = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
+//! let offer = phone.pair_offer()?;
+//! let joining = Osis::pair(Store::Memory(MemStore::new()), &[], &offer, Config::default())?;
+//! let (node, reply) = phone.pair_accept(joining.request())?;
+//! let laptop = joining.finish(&reply)?;
+//! assert_eq!(laptop.me(), phone.me());
+//! assert!(phone.nodes()?.iter().any(|n| n.node == node));
+//! # Ok::<(), osis::Error>(())
+//! ```
+//!
+//! # Using a node from another program
+//! A client is a program using a node from outside its process. A thin client has no store of its
+//! own: `Osis::connect` and `Osis::connect_socket` make one, and it reads and writes at the node as if
+//! it were local. A node can be a client too (`Osis::connect_node`).
+//! ```no_run
+//! # use osis::{AppConfig, NodeLogin, Osis};
+//! # async fn demo(node: &Osis, addr: osis::Address) -> osis::Result<()> {
+//! let (actor, secret) = node.add_client(None)?;
+//! // on the other program, given `addr` and `secret`:
+//! let client = Osis::connect(&[NodeLogin { addr, secret }], AppConfig::default()).await?;
+//! assert_eq!(client.me(), actor);
+//! assert!(!client.has_store());
+//! # Ok(()) }
+//! ```
+//!
 //! # Signals
-//! A signal aspect (key marker `*`) holds nothing: each set fires every callback on it once, here and on the
-//! devices connected now that read the thing.
+//! A key ending in `*` holds nothing: each set fires every callback on it once, here and on the nodes
+//! connected now that read the thing.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.commit()?;
-//! let ring = db.key("app:ring.0*")?;
+//! let ring = db.aspect_key("app:ring.0*")?;
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let _sub = db.at(t, ring.clone()).on_change(move |_, c| { let _ = tx.send(c.value); })?;
 //! assert_eq!(rx.recv().unwrap(), Ok(None));
@@ -304,14 +308,15 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
-//! # Large values and text sessions
-//! A string or blob above the bound streams; text edited by a user goes through a session that
-//! commits once per pause.
+//! # Large values and text
+//! A read fails `TooLarge` above `AppConfig::read_limit` rather than run out of memory: read a large
+//! string or blob by `stream`, a large collection by path. Text a user types goes through a session,
+//! which commits once per pause rather than per keystroke.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Store, p};
 //! # use std::io::Read;
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
-//! let k = db.key("app:body.0")?;
+//! let k = db.aspect_key("app:body.0")?;
 //! let mut w = db.write();
 //! let t = w.create()?;
 //! w.at(t, k.clone()).path(p![]).set_stream(&b"some bytes"[..])?;
@@ -319,7 +324,7 @@
 //! let mut s = String::new();
 //! db.at(t, k.clone()).path(p![]).stream()?.unwrap().read_to_string(&mut s).unwrap();
 //! assert_eq!(s, "some bytes");
-//! let title = db.key("app:title.0")?;
+//! let title = db.aspect_key("app:title.0")?;
 //! let ed = db.at(t, title.clone()).path(p![]).edit_text()?;
 //! ed.splice(0..0, "Hello")?;
 //! ed.splice(5..5, " world")?;
@@ -329,51 +334,35 @@
 //! ```
 //!
 //! # Errors
-//! One `Error` with stable categories; rights are checked locally before signing.
+//! One `Error`, with stable categories. Roles are checked before a write is signed, so a write that
+//! fails here was never sent. What another node does wrong is a `Diagnostic`, never an error.
 //! ```
 //! # use osis::{Config, MemStore, Osis, Error, Store};
 //! let a = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
 //! let b = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?.0;
 //! let mut w = a.write();
-//! w.at(b.me(), a.key("app:x.0")?).set(&osis::Value::Int(1))?;
+//! w.at(b.me(), a.aspect_key("app:x.0")?).set(&osis::Value::Int(1))?;
 //! assert!(matches!(w.commit(), Err(Error::UnknownThing { .. })));
 //! # Ok::<(), osis::Error>(())
 //! ```
-//!
-//! # Footguns closed
-//! - Read-modify-write clobber: use `edit(base, new)` or path ops for what users edit; `set`
-//!   is for "must be exactly this".
-//! - Out of memory on a huge value: reads fail `TooLarge` past `AppConfig::read_limit`;
-//!   read by path instead.
-//! - A thing that never syncs: membership is said per group (`NotSynced` diagnostic).
-//! - A forgotten unsubscribe: `Subscription` is RAII, and dropping it at once is a lint:
-//! ```compile_fail
-//! #![deny(unused_must_use)]
-//! let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap().0;
-//! db.on_diagnostic(|_, _| {}).unwrap();
-//! ```
-//! - A forgotten commit: `Write` is `#[must_use]`:
-//! ```compile_fail
-//! #![deny(unused_must_use)]
-//! let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap().0;
-//! db.write();
-//! ```
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod commit_id;
 mod clients;
 mod diagnostic;
 mod error;
 mod handle;
-mod hosting;
+mod serving;
 #[doc(hidden)]
 pub mod internals;
 mod keep;
 mod keys;
 mod large;
 mod net;
-mod person;
+mod account;
 mod read;
+mod retention;
 mod share;
 mod sources;
 mod text;
@@ -388,28 +377,27 @@ pub use commit_id::{CommitId, HistoryFrom, HistoryPos};
 pub use clients::{Client, ClientSecret};
 pub use error::{Error, Result};
 pub use diagnostic::Diagnostic;
-pub use hosting::{Admit, AdmissionId, HostCaps, HostPolicy, Hosting};
+pub use serving::{Admit, ServingCaps, Serving, ServingPolicy, SyncId};
 pub use handle::{Close, Config, AppConfig, MemStore, Osis, Store, WeakOsis};
 pub use net::{Runtime, ShareAddress, SyncMode, SyncOptions};
-pub use person::{Joining, PairOffer, PairReply, PairRequest};
+pub use account::{Joining, PairOffer, PairReply, PairRequest};
 pub use keep::KeepAlive;
-pub use keys::{Key, core};
+pub use keys::{DynamicAspectKey, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Grant, Grants, GroupsOf, PathRef, Stamp, ThingStamp};
-pub use share::{ContactCard, Device, GrantOpts, GroupSync, Holder, HostAddr, InviteId, LinkId, LinkInfo, LinkOpts, Member, RecoveryCard, SetRoleOpts, ShareLink, Status, SyncFirst, SyncScope, SyncState, Url};
-pub use sources::{GroupSource, NodeLogin, RemoteStatus};
+pub use retention::{Bound, Retention};
+pub use share::{AccountNode, Address, ContactCard, GrantOpts, GroupSync, Holder, InviteId, LinkId, LinkInfo, LinkOpts, Member, RecoveryCard, SetRoleOpts, ShareLink, Status, SyncFirst, SyncScope, SyncState, Url};
+pub use sources::{GroupSource, NodeLogin, ClientConnection};
 pub use text::{Splice, TextSession};
-pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
+pub use commits::{CommitEntry, CommitKind, CommitQuery, NotUndoableReason, Scope};
 pub use history::{HistoryBody, HistoryEntry, HistoryEvent, HistoryPage};
 pub use value_type::{NestedType, RecordField, TypeCase, ValueType};
-pub use watch::{Change, DerivedFrom, Dispatcher, Source, Subscription};
+pub use watch::{Change, DerivedFrom, Dispatcher, Origin, Subscription};
 pub use write::{AspectWrite, Commit, Expiry, GroupWrite, PathWrite, Purge, SpliceItems, Write};
 
-/// A retention bound's absolute time for "for good" (`Bound::abs`).
-pub use osis_commit::FOREVER;
 pub use osis_base::{Ak, Float, Role, Tid, Value, ValueMap, ValueSet};
 pub use osis_base::{AkError, Time, TidParseError};
-pub use osis_schema::{Aspect, AspectKey, Bound, CaseId, Codec, FieldId, Lifetime, Path, PathError, PathErrorKind, PurgeBy, Retention, Step, p};
+pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Lifetime, Path, PathError, PathErrorKind, PurgeBy, Step, p};
 
 /// What code generated from a schema (`osis schema gen`) refers to: `use osis::generated as
 /// osis_schema;` beside the `include!`.

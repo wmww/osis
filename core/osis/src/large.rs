@@ -1,5 +1,5 @@
 //! Large values (notes/api.md Large values; spec/data-model.md §6): a string or blob read as a
-//! stream (`Read + Seek`, chunks fetched one at a time under the database lock, memory one chunk
+//! stream (`Read + Seek`, chunks fetched one at a time under the node lock, memory one chunk
 //! plus the tree path), its payload length, and `set_stream` writes. A seek fetches nothing; the
 //! next read fetches only the tree path to the chunk holding the position (tree nodes carry
 //! lengths, spec/wire.md §6).
@@ -98,6 +98,7 @@ impl ValueStream {
         self.len
     }
 
+    /// Whether the value is empty.
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -205,7 +206,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// The string or blob here as a stream (`Read + Seek`), of any size. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.parts();
-        if let crate::sources::Source::Remote(r) = db.route(tid) {
+        if let crate::sources::Route::Remote(r) = db.route(tid) {
             let ak = ak_of(key)?;
             let Some(len) = db.remote_len(&r, tid, &ak, path)? else { return Ok(None) };
             return Ok(Some(ValueStream { db: db.clone(), tid, len, pos: 0, src: Src::Remote { r, ak, path: path.clone(), buf: Vec::new(), start: 0 } }));
@@ -217,7 +218,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     }
 
     /// The length in bytes of the string or blob here, without reading it whole.
-    pub fn len(&self) -> Result<Option<u64>> {
+    pub fn byte_len(&self) -> Result<Option<u64>> {
         Ok(self.stream()?.map(|s| s.len()))
     }
 }

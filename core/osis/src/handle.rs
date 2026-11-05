@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Waiter};
-use crate::share::{HostAddr, RecoveryCard, Status, Url};
+use crate::share::{Address, RecoveryCard, Status, Url};
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
@@ -25,7 +25,7 @@ const DEFAULT_LIMIT: usize = 64 << 20;
 /// Default inactivity before a text session commits.
 const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 
-/// An in-memory store; clones share it, so a test can close a database and open it again.
+/// A store in memory; clones share it, so a test can close a node and open it again.
 #[derive(Clone, Debug, Default)]
 pub struct MemStore {
     backend: MemoryBackend,
@@ -38,6 +38,7 @@ pub struct MemStore {
 }
 
 impl MemStore {
+    /// An empty store.
     pub fn new() -> MemStore {
         MemStore::default()
     }
@@ -56,27 +57,28 @@ impl MemStore {
     }
 }
 
-/// Where the database lives.
+/// Where a node's data lives.
 #[derive(Clone, Debug)]
 pub enum Store {
+    /// In memory, gone with the last clone of the `MemStore`.
     Memory(MemStore),
-    /// A directory: `db.redb`, the key root `root` and, while it hosts, the host's own store
-    /// `host.redb` with its key root `host.root`.
+    /// In this directory.
     Dir(std::path::PathBuf),
 }
 
-/// How a database with a store of its own runs (`Osis::create`, `open`, `restore`, `pair`).
+/// How a node with a store of its own runs (`Osis::create`, `open`, `restore`, `pair`).
 #[derive(Clone)]
 pub struct Config {
     /// How this handle behaves, as a thin client's does.
     pub app: AppConfig,
-    /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with hosts given).
+    /// Where background sync runs (default `Runtime::None`: no network; `Invalid` with peers given).
     pub runtime: Runtime,
     /// Sync directly with other nodes that read the same data (default on): this node listens and
     /// tells them how to reach it, and with feature `lan` announces itself on the LAN. It takes
-    /// feature `iroh`: without it no such node is dialed, on or off.
-    pub peers: bool,
-    /// Relays this node tells those nodes it can be reached through (self-hosted `iroh-relay`s;
+    /// feature `iroh`: without it no such node is dialed, on or off. Turn it off to sync only with
+    /// saved peers.
+    pub direct_sync: bool,
+    /// Relays this node tells those nodes it can be reached through (`iroh-relay`s you run;
     /// feature `iroh`, without it `Invalid`).
     pub relays: Vec<Url>,
     /// Bytes of this session's ephemeral commits kept for undo (default 16 MiB); older ones are
@@ -86,16 +88,16 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { app: AppConfig::default(), runtime: Runtime::None, peers: true, relays: Vec::new(), ephemeral_undo_bytes: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY }
+        Config { app: AppConfig::default(), runtime: Runtime::None, direct_sync: true, relays: Vec::new(), ephemeral_undo_bytes: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY }
     }
 }
 
 impl Config {
-    /// `Invalid` for what would silently do nothing: hosts with no runtime to reach them, relays
+    /// `Invalid` for what would silently do nothing: peers with no runtime to reach them, relays
     /// in a build with no transport to use them.
-    pub(crate) fn check(&self, hosts: &[HostAddr]) -> Result<()> {
-        if !hosts.is_empty() && matches!(self.runtime, Runtime::None) {
-            return Err(Error::Invalid("hosts with Runtime::None: nothing would sync; set Config.runtime".into()));
+    pub(crate) fn check(&self, peers: &[Address]) -> Result<()> {
+        if !peers.is_empty() && matches!(self.runtime, Runtime::None) {
+            return Err(Error::Invalid("peers with Runtime::None: nothing would sync; set Config.runtime".into()));
         }
         if !self.relays.is_empty() && self.app.internals.transport.is_none() && !cfg!(feature = "iroh") {
             return Err(Error::Invalid("Config.relays needs feature `iroh`".into()));
@@ -105,7 +107,7 @@ impl Config {
 }
 
 /// How one `Osis` handle behaves, whether its data is here or at another node: all of a thin
-/// client's config (`Osis::connect`, `connect_socket`), and `Config::handle` of a node.
+/// client's config (`Osis::connect`, `connect_socket`), and `Config::app` of a node.
 #[derive(Clone)]
 pub struct AppConfig {
     /// Reads of values larger than this many bytes fail `TooLarge` (read those by stream or path).
@@ -131,7 +133,7 @@ pub(crate) struct MadeLink {
     pub l: Tid,
     pub target: Tid,
     pub single_use: bool,
-    /// The link text carries this device's dialable key (`LinkOpts.direct`).
+    /// The link text carries this node's dialable key (`LinkOpts.direct`).
     pub direct: bool,
     /// A direct link that ended (revoked, finalized, expired): the key it carried was rotated.
     pub ended: bool,
@@ -152,8 +154,8 @@ pub(crate) struct Locked {
     /// This process's connections to other nodes, in the order they connected.
     pub remotes: Vec<Arc<crate::port::client::Remote>>,
     /// Groups this node reads and writes at another node: its address, persisted as the `sources`
-    /// record (notes/client-port.md §6). See `crate::sources`.
-    pub routes: BTreeMap<Tid, HostAddr>,
+    /// record. See `crate::sources`.
+    pub routes: BTreeMap<Tid, Address>,
     /// The store failure the last status change met, told to status watches once.
     pub status_failed: bool,
 }
@@ -205,9 +207,9 @@ pub(crate) struct Inner {
     /// Serializes undo and redo: candidate selection and commit.
     pub undo: Mutex<()>,
     pub net: Net,
-    /// The client port this node serves (notes/client-port.md): requests its served sessions make.
+    /// The client port this node serves: requests its served sessions make.
     pub port: crate::port::serve::Port,
-    /// A process with no store of its own (`Osis::connect`): the scratch database stands in.
+    /// A process with no store of its own (`Osis::connect`): the scratch node stands in.
     pub client: std::sync::OnceLock<ClientOf>,
     /// Any connection or route exists: only then is a route looked up (no cost on a local path).
     pub routing: std::sync::atomic::AtomicBool,
@@ -252,14 +254,17 @@ impl Drop for LifeGuard {
 #[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Close {
-    /// The database is closed: its store can be opened again.
+    /// The node is closed: its store can be opened again.
     Closed,
-    /// `handles` other handles keep the database open.
-    StillOpen { handles: usize },
+    /// `handles` other handles keep the node open.
+    StillOpen {
+        /// How many.
+        handles: usize,
+    },
 }
 
-/// A database handle: `Clone + Send + Sync`; clones share one database, which closes with the
-/// last handle.
+/// A handle to a node, or for a thin client to a node elsewhere. Clones share it, and it closes
+/// with the last one.
 pub struct Osis {
     pub(crate) inner: Arc<Inner>,
     /// Counted in `Life` (an app's handle; internal short-lived ones are not).
@@ -292,12 +297,12 @@ impl std::fmt::Debug for Osis {
     }
 }
 
-/// A non-owning handle (`Osis::downgrade`).
+/// A handle that does not keep the node open (`Osis::downgrade`).
 #[derive(Clone, Debug)]
 pub struct WeakOsis(pub(crate) std::sync::Weak<Inner>);
 
 impl WeakOsis {
-    /// The database, if still open.
+    /// The node, if still open.
     pub fn upgrade(&self) -> Option<Osis> {
         self.0.upgrade().map(Osis::user)
     }
@@ -369,19 +374,19 @@ fn engine_cfg(cfg: &Config) -> osis_node::Config {
 }
 
 fn tid_record(e: &mut Engine, name: &str) -> Result<Tid> {
-    let b = e.app_record(name)?.ok_or(Error::Storage(format!("no {name} record: not an osis database")))?;
+    let b = e.app_record(name)?.ok_or(Error::Storage(format!("no {name} record: not an osis store")))?;
     let a: [u8; osis_base::format::TID_LEN] = b.as_slice().try_into().map_err(|_| Error::Storage(format!("{name} record")))?;
     Ok(Tid::from_bytes(a))
 }
 
 /// Host addresses as one local record (text lines).
-pub(crate) fn save_hosts(e: &mut Engine, s: &[HostAddr]) -> Result<()> {
+pub(crate) fn save_hosts(e: &mut Engine, s: &[Address]) -> Result<()> {
     let text: Vec<String> = s.iter().map(|a| a.to_string()).collect();
     e.set_app_record(HOSTS, text.join("\n").as_bytes())?;
     Ok(())
 }
 
-fn load_hosts(e: &mut Engine) -> Result<Option<Vec<HostAddr>>> {
+fn load_hosts(e: &mut Engine) -> Result<Option<Vec<Address>>> {
     let Some(b) = e.app_record(HOSTS)? else { return Ok(None) };
     let s = String::from_utf8(b).map_err(|_| Error::Storage("hosts record".into()))?;
     Ok(Some(s.lines().filter(|l| !l.is_empty()).map(|l| l.parse()).collect::<Result<_>>()?))
@@ -393,13 +398,13 @@ pub(crate) struct Fresh {
     pub clock: Arc<dyn Clock>,
 }
 
-fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, hosts: &[HostAddr]) -> Result<SyncEngine> {
-    let scfg = SyncConfig { hosts: hosts.iter().map(|s| s.0.clone()).collect(), peers: cfg.peers, ..SyncConfig::default() };
+fn sync_over(engine: Engine, clock: &Arc<dyn Clock>, cfg: &Config, hosts: &[Address]) -> Result<SyncEngine> {
+    let scfg = SyncConfig { hosts: hosts.iter().map(|s| s.0.clone()).collect(), peers: cfg.direct_sync, ..SyncConfig::default() };
     Ok(SyncEngine::new(engine, clock.clone(), rng(cfg, 7), scfg)?)
 }
 
 /// A new store's sync engine (its hosts set later by `set_hosts` where they change).
-pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[HostAddr]) -> Result<Fresh> {
+pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[Address]) -> Result<Fresh> {
     let (b, r) = parts(store)?;
     let clock = clock(cfg);
     let engine = Engine::create(b, r, engine_cfg(cfg), clock.clone(), rng(cfg, 0))?;
@@ -407,29 +412,28 @@ pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[HostAddr]) -> R
 }
 
 impl Osis {
-    /// Creates a database (spec/permissions.md §1): a new node and a new person
-    /// actor owned by a fresh recovery key, this node its admin, its home group (the person
-    /// itself, spec/sync.md §2) synced on `hosts`. Returns the recovery card, the only copy of the
-    /// recovery key: show or store it, osis keeps none of it. Without hosts there is nothing to
-    /// restore from: no card (the key is discarded). Hosts need `Config::runtime` (`Invalid`).
-    pub fn create(store: Store, hosts: &[HostAddr], cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
-        cfg.check(hosts)?;
-        let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, hosts)?;
+    /// Creates a node and a new account with this node its admin. The account is also its home group,
+    /// synced with `peers`. Returns the recovery card, the only copy of the key that restores the
+    /// account on a new node: show or store it, osis keeps none of it. With no peers there is nothing
+    /// to restore from: no card (the key is discarded). Peers need `Config::runtime` (`Invalid`).
+    pub fn create(store: Store, peers: &[Address], cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
+        cfg.check(peers)?;
+        let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, peers)?;
         let engine = sync.engine_mut();
-        let addrs: Vec<osis_label::Address> = hosts.iter().map(|s| s.0.clone()).collect();
+        let addrs: Vec<osis_label::Address> = peers.iter().map(|s| s.0.clone()).collect();
         let (p, done) = engine.create_person(&addrs)?;
         let mut m = osis_node::Mutation::new();
         m.set(p.person, &ct::GROUP, &ct::Group::default())?;
         engine.commit(m)?;
         engine.set_app_record(PERSON, p.person.as_bytes())?;
-        save_hosts(engine, hosts)?;
+        save_hosts(engine, peers)?;
         let card = if addrs.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
         let db = Osis::start(sync, clock, store, &cfg, p.person)?;
         db.carry(done)?;
         Ok((db, card))
     }
 
-    /// Opens an existing database. Its hosts are the stored ones (`add_host`, `remove_host`).
+    /// Opens an existing store. Its peers are those saved in it (`add_peer`, `remove_peer`).
     pub fn open(store: Store, cfg: Config) -> Result<Osis> {
         cfg.check(&[])?;
         let (b, r) = parts(&store)?;
@@ -463,7 +467,7 @@ impl Osis {
         let routing = !routes.is_empty();
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), remotes: Vec::new(), routes, status_failed: false };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.peers && (cfg.app.internals.transport.is_some() || cfg!(feature = "iroh")), connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.app.read_limit, idle_commit: cfg.app.idle_commit, transport: cfg.app.internals.transport.clone(), store_dir: match &store { Store::Dir(p) => Some(p.clone()), Store::Memory(_) => None }, dials_peers: cfg.direct_sync && (cfg.app.internals.transport.is_some() || cfg!(feature = "iroh")), connection_wait: cfg.app.internals.connection_wait.unwrap_or(crate::port::client::CONNECTION_WAIT), clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, client: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, store, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
@@ -496,22 +500,22 @@ impl Osis {
         Osis { inner: self.inner.clone(), user: false, acting: Some(actor) }
     }
 
-    /// A handle that does not keep the database open (for the rare callback that must capture
+    /// A handle that does not keep the node open (for the rare callback that must capture
     /// one; callbacks are passed `&Osis`).
     pub fn downgrade(&self) -> WeakOsis {
         WeakOsis(Arc::downgrade(&self.inner))
     }
 
     /// Closes this handle. With no other handle left (clones, upgraded `WeakOsis`, value streams,
-    /// text sessions, a `Joining`), returns once the database is closed (every commit is already
+    /// text sessions, a `Joining`), returns once the node is closed (every commit is already
     /// durable), so the store can be opened again at once; a callback or sync engine call still
-    /// running ends first, and so does background sync, the host included (its store is closed
-    /// too): with `Runtime::Own` its runtime is shut down (about 10 s at worst; a task still
-    /// running then may keep the host store a little longer), with `Runtime::Tokio` on a
+    /// running ends first, and so does background sync, serving for others included: with `Runtime::Own` its runtime is
+    /// shut down (about 10 s at worst; a task still running then may keep the store of what it serves
+    /// a little longer), with `Runtime::Tokio` on a
     /// multi-thread runtime its task ends (so the app may shut that runtime down); on a
     /// current-thread runtime `close` does not wait for sync, which ends once the app drives that
     /// runtime again. While other handles keep it open, this one is closed and it returns
-    /// `Close::StillOpen` at once. From a callback (the dispatcher, which holds the database while it
+    /// `Close::StillOpen` at once. From a callback (the dispatcher, which holds the node while it
     /// runs) it fails `Invalid` at once: drop the handle instead. Never call it while holding
     /// something a running callback may wait for (a lock, a channel it awaits): close waits for
     /// that callback.
@@ -536,18 +540,18 @@ impl Osis {
         Ok(Close::Closed)
     }
 
-    /// This device's node tid (a thin client: its node's).
+    /// This node's node tid (a thin client: its node's).
     pub fn node(&self) -> Tid {
         self.inner.client.get().map_or(self.inner.node, |t| t.who.node)
     }
 
-    /// The account this database belongs to (a thin client: the actor its node acts as for
-    /// it). It is a group too: things placed in it reach every device of the person.
+    /// The account this node belongs to (a thin client: the actor its node acts as for
+    /// it). It is a group too: things in it reach every node of the account.
     pub fn me(&self) -> Tid {
         self.acting.unwrap_or_else(|| self.inner.client.get().map_or(self.inner.me, |t| t.who.me))
     }
 
-    /// Runs `f` on the engine under the database lock, then queues its events for the
+    /// Runs `f` on the engine under the node lock, then queues its events for the
     /// dispatcher (`internals::Internals::engine` outside the crate).
     pub(crate) fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
         self.locked(|l| f(l.engine()))
@@ -677,10 +681,10 @@ impl Osis {
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
-    /// Registers a `*.osis` schema source, here and at any connected node: `key` then types its
+    /// Registers a `*.osis` schema source, here and at any connected node: `aspect_key` then types its
     /// aspects, and undo and large values follow the schema. `name` appears in its errors
     /// (name:line:col). Generated keys carry their schema and need no registration. The newest
-    /// registration of an aspect types `key` for this session; the store keeps the highest version.
+    /// registration of an aspect types `aspect_key` for this session; the store keeps the highest version.
     /// A schema of an app declares no core aspect.
     pub fn register_schema(&self, name: &str, source: &str) -> Result<()> {
         let s = osis_schema::parse(name, source).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -698,7 +702,7 @@ impl Osis {
     }
 
     /// The key named `ak`: typed by the registered schema that declares it, else untyped.
-    pub fn key(&self, ak: &str) -> Result<crate::Key> {
+    pub fn aspect_key(&self, ak: &str) -> Result<crate::DynamicAspectKey> {
         let ak = osis_base::Ak::new(ak).map_err(|_| Error::Invalid(format!("bad AK {ak:?}")))?;
         let core = crate::keys::core_schema();
         let schema = if core.aspects.contains_key(ak.as_str()) {
@@ -706,6 +710,6 @@ impl Osis {
         } else {
             lock(&self.inner.schemas).iter().rev().find(|s| s.aspects.contains_key(ak.as_str())).cloned()
         };
-        Ok(crate::Key { ak, schema })
+        Ok(crate::DynamicAspectKey { ak, schema })
     }
 }

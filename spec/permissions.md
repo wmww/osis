@@ -11,7 +11,7 @@
   - A value in a CRDT set is an **element**.
 - **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
   - A **key actor** (node, recovery key, link key) also has a signing key committed by its tid and owns itself.
-  - A **node** is a key actor whose seed never leaves its device.
+  - A **node** is a key actor whose seed never leaves it.
   - An **account** is the actor apps treat as a user, team, bot or shared identity; its nodes hold roles on it (by app convention its owner is a recovery key and its nodes are its admins).
 - **Ownership**: every thing but an ownerless one has exactly one owner actor, fixed by its creation record. An actor is a thing, so it has an owner too.
   - Owner chains end at a key actor or an ownerless thing (the chain's **top**), within `MAX_OWNER_DEPTH` owner links.
@@ -87,7 +87,7 @@
 - A plain thing uses derived role secrets until it gets a non-owner holder. It then gets random secrets of its own by a rotation from the derived epochs (spec/crypto.md §3), boxed to its owner and each holder, and a `keys.0`.
   - A thing that is to be granted a role on anything gets secrets of its own first.
   - An admin node that sees a current non-owner holder of a plain thing (left so by its only keyset part turning invalid, spec/crypto.md §3) SHOULD give it secrets of its own the same way, boxing every current holder, deciding at the end of a complete sync pass (below) of the labels of the actor its secrets derive from. Concurrent ones fork (spec/crypto.md §4).
-- **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, finalize) of holder M from actor A (a device removal is one, on the account) requires rotating every role secret M could open through A:
+- **Required rotation**: a departure (spec/crypto.md §4: removal, demotion, finalize) of holder M from actor A (a node removal is one, on the account) requires rotating every role secret M could open through A:
   - on A, the roles M left;
   - on every thing with secrets of its own that A's roles open (what A owns, the targets of A's grants, and so on transitively), the roles A holds there among those the roles M left open through A (a role secret opens only boxes of that role, spec/crypto.md §4).
   - Content is not re-encrypted.
@@ -120,7 +120,7 @@
   - it holds an epoch newer than a host's head;
   - its actor's deposit seed derives a deposit key other than the head's, and it has opened every entry it can open under the label at the hosts it reaches and holds no unapplied `keys.0` write of the actor signed by a current admin of it.
 - A host serves a label only to holders of its current sync key or of a claim key in its current step (spec/sync.md §5). A holder that missed rotations claims its way through the steps it missed, then downloads them and opens each under the epoch before it (spec/crypto.md §5), or is re-sealed (a claim set dropped on the way, or a rotation compacted, strands it until then).
-- A node that removes a holder or device MUST, in the same sync and before any other upload, place the removal and the affected actors' new `keys.0` under every label it tracks that the removed party could read (as certificates, §4).
+- A node that removes a holder, a node included, MUST, in the same sync and before any other upload, place the removal and the affected actors' new `keys.0` under every label it tracks that the removed party could read (as certificates, §4).
 - **Lost access**: a node that learns it lost read access to an actor MUST drop those role secrets and every local unit it can no longer read by another path, except what it keeps (Keep, below).
   - A held pending role commit boxing the node secrets of the actor (or of one a role on which gives one on it) is no loss of access only if either holds:
     - the node holds no secret of the actor but those kept for reading (learned only from pending or invalid commits, spec/crypto.md §4);
@@ -373,16 +373,16 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
   3. Wait until the held role history shows K's grant on the target (a client making a link delivers that grant under K's label), and grant nothing without it: the target is the link text's word, unsigned.
   4. Then, signing as L, invite-grant the redeemer's actor (or a fresh node) to K with role r and seal K's secrets to it. L writes in commit form and deposits the commit under K's label (spec/sync.md §5) unless r is write or above.
   - A redeemer SHOULD discard the seed afterwards.
-  - A rotation of K by a holder's departure (a joiner's leave, a device removal) changes nothing for the link: L stays a holder and the next step lists it.
+  - A rotation of K by a holder's departure (a joiner's leave, a node removal) changes nothing for the link: L stays a holder and the next step lists it.
   - The link has ended, and the redeemer stops there, when either holds:
     - every route of K's label (the link's hosts and node, as known) has failed to open it, at least one by refusing L's static entry;
     - a held role history shows L's grant, or K's on the target, removed or past `until`.
   - A redeemer that stops, for any reason, forgets the seed and so loses read access to K and what K holds (§3).
 - `until` on L's grant expires the link. **Single use** (the link's `flags` bit 0, spec/wire.md §10) = the redemption also removes L's own grant in the same commit (a self-removal).
-- **Finalized**: L's grant past `until` is finalized like any ended grant (§2), by any writer of K: that removal rotates K and audits nothing. Besides, an expired or self-removed L is finalized by a sharer device writing an explicit removal of L (§5.1), which audits L's invite grants: a node that holds the link's seed thing and admin on K MUST write it once L's edge expired or was self-removed (or finalized) with no explicit write on it since, after a complete pass of K's labels (§3) that ended, for an expiry, after `until` (when K's labels have no host, at once and only by the node that wrote the seed thing; with hosts it waits for that pass however long it takes).
+- **Finalized**: L's grant past `until` is finalized like any ended grant (§2), by any writer of K: that removal rotates K and audits nothing. Besides, an expired or self-removed L is finalized by a sharer node writing an explicit removal of L (§5.1), which audits L's invite grants: a node that holds the link's seed thing and admin on K MUST write it once L's edge expired or was self-removed (or finalized) with no explicit write on it since, after a complete pass of K's labels (§3) that ended, for an expiry, after `until` (when K's labels have no host, at once and only by the node that wrote the seed thing; with hosts it waits for that pass however long it takes).
   - An invite grant as L that the removal's frontier does not cover is dropped (§5.1 step 4); one received before it stands.
-- The sharer's link seed thing is placed in the sharer's home group, so every device of the sharer holds it. A device removal does not end a link: the removed device reads through L until L is removed from K. An implementation MUST tell the one removing a device which of the account's links still work, and let any device of the sharer remove their L.
+- The sharer's link seed thing is placed in the sharer's home group, so every node of the sharer holds it. A node removal does not end a link: the removed node reads through L until L is removed from K. An implementation MUST tell the one removing a node which of the account's links still work, and let any node of the sharer remove their L.
 - **Bearer use**: act as L without writing anything. Read only. A node that read as L may forget the seed and keep what L reads and follow it (a contact card, spec/sync.md §3): it counts as read access while L holds a role on it (§3).
 - A joiner that may still hold the seed is revoked only together with L, both removals in one commit with one rotation of K (spec/commits.md §2); a new link is a new L.
 - The sharer keeps the seed on a thing only its own actor reads (the seed thing: aspect `link:seed.0`, a map {0: K's tid, 1: the seed, 2: the target's tid, 3: single use}) and writes L's `keys.0` and K's deposit seed.
-- **Recovery card**: recovery key seed, person actor tid, home label, several host addresses (spec/wire.md §10). The recovery key owns the person actor, so every step of the home label lists it with an entry box. A device holding the card claims the home label's current step by the key's static entry (spec/sync.md §5), takes the read secret from the entry box, then its boxes, `label.0` and `created.0`.
+- **Recovery card**: recovery key seed, account actor tid, home label, several host addresses (spec/wire.md §10). The recovery key owns the account actor, so every step of the home label lists it with an entry box. A node holding the card claims the home label's current step by the key's static entry (spec/sync.md §5), takes the read secret from the entry box, then its boxes, `label.0` and `created.0`.

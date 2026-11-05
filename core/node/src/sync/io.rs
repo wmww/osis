@@ -204,6 +204,9 @@ pub struct LabelStatus {
     pub hosts: usize,
     /// Connections up to its hosts.
     pub connected: usize,
+    /// Other nodes connected on it directly, whichever side dialed: co-readers and served sessions
+    /// with it open.
+    pub peers_connected: usize,
     /// Connections on which it is open.
     pub open: usize,
     /// Of those, the ones whose last pass ended with nothing outstanding.
