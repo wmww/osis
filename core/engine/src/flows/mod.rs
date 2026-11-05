@@ -298,7 +298,7 @@ pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u
 
 /// Whether key actor `t` is a node (it has a `node.0` card), not a recovery or link key.
 pub(crate) fn is_node(tx: &mut Tx<'_>, t: &Tid) -> Result<bool> {
-    Ok(*t == tx.core.id.tid() || tx.core.ix.by_aspect.contains_key(&(*t, ak("node.0")?)))
+    Ok(*t == tx.core.id.tid() || tx.has_state(t, &ak("node.0")?)?)
 }
 
 /// The deposit seed in `keys.0` of `actor`.
@@ -402,6 +402,12 @@ impl Engine {
         self.core.waits.clear();
         self.run(reopen_all)?;
         Ok(t)
+    }
+
+    /// Whether key actor `t` is a node (`is_node`): it has a `node.0` card here.
+    pub fn is_node(&mut self, t: &Tid) -> Result<bool> {
+        let t = *t;
+        self.run(|tx| is_node(tx, &t))
     }
 
     /// How many key actors this node holds now (tests: a redeemer forgets the seed).

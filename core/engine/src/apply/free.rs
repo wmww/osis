@@ -194,6 +194,9 @@ fn unindex_aspect(core: &mut Core, tid: &Tid, ak: &Ak) {
         core.ix.placed.remove(tid);
         core.placed_gen += 1;
     }
+    if ak.as_str() == "label.0" {
+        core.ix.labeled.remove(tid);
+    }
     core.ix.snapshots.remove(&k);
     core.ix.carried.remove(&k);
     core.ix.valueless.remove(&k);

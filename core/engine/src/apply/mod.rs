@@ -1550,6 +1550,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 tx.core.ix.groups.set_def(tid, atomic::group_def(v));
             }
             "secrets.0" | "keys.0" if fast => {}
+            // a state-list row is a state (`Tx::derive`)
+            "label.0" => {
+                tx.core.ix.labeled.insert(tid);
+            }
             _ => atomic::observe_state(tx, &tid, &ak)?,
         }
     }

@@ -65,9 +65,6 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
-        if a.ak.as_str() == "label.0" {
-            core.ix.labeled.insert(a.tid);
-        }
         if a.ak.as_str() == crate::flows::LINK_SEED {
             core.links = None;
         }
