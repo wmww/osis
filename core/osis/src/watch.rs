@@ -1,4 +1,4 @@
-//! Watching (notes/api.md Watching): one dispatcher per database runs every callback, in
+//! Watching (notes/api.md Watching): one dispatcher per node runs every callback, in
 //! commit order, after the commit is durable, never under a lock. Its driver is a thread osis
 //! starts (`Dispatcher::Thread`) or whichever thread calls `Osis::settle` (`Dispatcher::Pump`,
 //! woken by the app's callback); both run the same `Pump::step`. Engine events are drained into
@@ -6,7 +6,7 @@
 //! ignores messages queued before it registered, so a watch taken atomically with the current
 //! value misses nothing and sees nothing twice. A call reads the aspect's latest state
 //! (coalescing: later queued events for that aspect are folded in, and the call carries the
-//! source of the newest of them); a value equal to the last one delivered is skipped, an error
+//! origin of the newest of them); a value equal to the last one delivered is skipped, an error
 //! never is. A panicking callback becomes a diagnostic; the dispatcher lives on.
 
 use crate::error::{Error, Result};
@@ -14,7 +14,7 @@ use crate::handle::{Inner, Osis};
 use crate::read::Stamp;
 use osis_base::{Ak, Tid, Ts, Value, Time};
 use crate::commit_id::CommitId;
-use osis_node::{Cause, Diagnostic, DiagnosticKind, Event, Origin};
+use osis_node::{Cause, Diagnostic, DiagnosticKind, Event, Origin as EventOrigin};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -27,7 +27,7 @@ pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Why a watched value changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
+pub enum Origin {
     /// The first call of `on_change`, with the value at registration.
     Initial,
     /// A commit made on this node.
@@ -38,7 +38,7 @@ pub enum Source {
     Derived(DerivedFrom),
 }
 
-/// What changed a read when no new commit did (`Source::Derived`).
+/// What changed a read when no new commit did (`Origin::Derived`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DerivedFrom {
     /// A write was found valid or invalid after all, as its author's roles became known.
@@ -69,12 +69,15 @@ impl From<Cause> for DerivedFrom {
 /// One change of an aspect.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Change<T> {
+    /// The thing.
     pub tid: Tid,
+    /// The aspect.
     pub ak: Ak,
     /// The value now (`None`: absent, or not matching the key's type: a `Mismatch`
     /// diagnostic), or why it cannot be read (`TooLarge`, `Storage`).
     pub value: Result<Option<T>>,
-    pub source: Source,
+    /// Why it changed.
+    pub origin: Origin,
 }
 
 /// What a subscription listens to.
@@ -108,12 +111,12 @@ pub(crate) enum PortEvent {
 #[derive(Clone, Debug)]
 pub(crate) enum Delivery {
     Initial,
-    /// `value` is the aspect read when the call was prepared; `source` the last event whose
+    /// `value` is the aspect read when the call was prepared; `origin` the last event whose
     /// effect it shows.
-    Aspect { tid: Tid, ak: Ak, source: Source, value: Result<Option<Value>> },
-    /// A signal aspect fired (notes/ephemeral.md): once per callback, never coalesced, never in
+    Aspect { tid: Tid, ak: Ak, origin: Origin, value: Result<Option<Value>> },
+    /// A signal aspect fired: once per callback, never coalesced, never in
     /// state.
-    Fired { tid: Tid, ak: Ak, source: Source, value: Value },
+    Fired { tid: Tid, ak: Ak, origin: Origin, value: Value },
     Grants,
     /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise.
     History { tid: Tid, id: CommitId },
@@ -122,7 +125,7 @@ pub(crate) enum Delivery {
     Port(PortEvent),
     /// A text session's merged text.
     Text { text: String, edits: Vec<crate::text::Splice> },
-    /// The group's source moved (`Osis::group_source`): the last call of this subscription, which
+    /// The group's origin moved (`Osis::group_source`): the last call of this subscription, which
     /// would otherwise go silent.
     Moved,
 }
@@ -132,7 +135,7 @@ pub(crate) enum Msg {
     Initial(u64),
     Status(Result<crate::share::Status>),
     Port(u64, PortEvent),
-    /// This subscription's source moved.
+    /// This subscription's origin moved.
     Moved(u64),
     Barrier(Sender<()>),
 }
@@ -156,12 +159,12 @@ pub(crate) struct Registry {
 /// Where watch callbacks run (`AppConfig::dispatch`).
 #[derive(Clone, Default)]
 pub enum Dispatcher {
-    /// On a dispatcher thread the database starts (the default).
+    /// On a dispatcher thread the node starts (the default).
     #[default]
     Thread,
     /// On the thread that calls `Osis::settle` (an app's UI thread), which then runs every
     /// callback due. `wake` is called once when callbacks become due after the last `settle`
-    /// began, on whatever thread queued them, after the database lock is released: it should
+    /// began, on whatever thread queued them, after the node lock is released: it should
     /// only arrange for a `settle` soon (post an event to the UI loop).
     Pump(Arc<dyn Fn() + Send + Sync>),
 }
@@ -175,7 +178,7 @@ impl std::fmt::Debug for Dispatcher {
     }
 }
 
-/// State shared by the database, the dispatcher and subscriptions.
+/// State shared by the node, the dispatcher and subscriptions.
 #[derive(Default)]
 pub(crate) struct Shared {
     registry: Mutex<Registry>,
@@ -193,7 +196,7 @@ impl Shared {
     }
 }
 
-/// The dispatcher's sending side, kept by the database, with the queue until a thread takes it
+/// The dispatcher's sending side, kept by the node, with the queue until a thread takes it
 /// (`Dispatcher::Thread`) or for `settle` to pump (`Dispatcher::Pump`).
 pub(crate) struct Dispatch {
     tx: Sender<(u64, Msg)>,
@@ -218,7 +221,7 @@ impl Dispatch {
         Dispatch { tx, shared: Arc::default(), pump: Mutex::new(Some(Pump::new(rx))), wake, due: AtomicBool::new(false), owed: AtomicBool::new(false) }
     }
 
-    /// With `Dispatcher::Thread`, starts the dispatcher thread; it runs until the database
+    /// With `Dispatcher::Thread`, starts the dispatcher thread; it runs until the node
     /// closes.
     pub fn start(&self, db: Weak<Inner>) -> Result<()> {
         if self.wake.is_some() {
@@ -324,24 +327,24 @@ impl Dispatch {
     }
 }
 
-fn source(id: CommitId, origin: Origin, node: Tid, actor: Tid, ts: Ts, received: Time) -> Source {
+fn origin_of(id: CommitId, from: EventOrigin, node: Tid, actor: Tid, ts: Ts, received: Time) -> Origin {
     let i = Stamp::new(id, actor, node, ts, received);
-    if origin == Origin::Local { Source::Local(i) } else { Source::Remote(i) }
+    if from == EventOrigin::Local { Origin::Local(i) } else { Origin::Remote(i) }
 }
 
-/// The aspects an event changed, with its source.
-fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Source)> {
+/// The aspects an event changed, with its origin.
+fn aspect_event(m: &Msg) -> Option<(&[(Tid, Ak)], Origin)> {
     match m {
-        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => Some((changed, source(CommitId::commit(*id), *origin, *author, *actor, *ts, *received))),
-        Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, source(CommitId(*id), *origin, *author, *actor, *ts, *received))),
-        Msg::Event(Event::Changed { cause, changed }) => Some((changed, Source::Derived((*cause).into()))),
+        Msg::Event(Event::Applied { id, origin, author, actor, ts, received, changed }) => Some((changed, origin_of(CommitId::commit(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Ephemeral { id, origin, author, actor, ts, received, changed, .. }) => Some((changed, origin_of(CommitId(*id), *origin, *author, *actor, *ts, *received))),
+        Msg::Event(Event::Changed { cause, changed }) => Some((changed, Origin::Derived((*cause).into()))),
         _ => None,
     }
 }
 
 /// A call before its value is read.
 enum Pre {
-    Aspect { tid: Tid, ak: Ak, source: Source },
+    Aspect { tid: Tid, ak: Ak, origin: Origin },
     Ready(Delivery),
 }
 
@@ -355,7 +358,7 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     }
     let live: Vec<Arc<Sub>> = lock(&sh.registry).subs.values().filter(|s| s.since <= seq).cloned().collect();
     let to = |f: &dyn Fn(&Filter) -> bool, d: Delivery| live.iter().filter(|s| f(&s.filter)).map(|s| (s.clone(), Pre::Ready(d.clone()))).collect();
-    if let Some((changed, source)) = aspect_event(m) {
+    if let Some((changed, origin)) = aspect_event(m) {
         let mut out = Vec::new();
         let fired: &[(Tid, Ak, Value)] = match m {
             Msg::Event(Event::Ephemeral { signals, .. }) => signals,
@@ -373,7 +376,7 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                         _ => true,
                     };
                 if hit {
-                    out.push((s.clone(), Pre::Aspect { tid: *t, ak: ak.clone(), source }));
+                    out.push((s.clone(), Pre::Aspect { tid: *t, ak: ak.clone(), origin }));
                 }
             }
             for (t, ak, value) in fired {
@@ -383,7 +386,7 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                         _ => true,
                     };
                 if hit {
-                    out.push((s.clone(), Pre::Ready(Delivery::Fired { tid: *t, ak: ak.clone(), source, value: value.clone() })));
+                    out.push((s.clone(), Pre::Ready(Delivery::Fired { tid: *t, ak: ak.clone(), origin, value: value.clone() })));
                 }
             }
         }
@@ -424,7 +427,7 @@ impl Pump {
     }
 
     /// Dispatches the next message, waiting for one if `wait`; `false` when there was none
-    /// (or the database closed).
+    /// (or the node closed).
     fn step(&mut self, sh: &Shared, db: &Weak<Inner>, wait: bool) -> bool {
         let next = match self.buf.pop_front() {
             Some(x) => Some(x),
@@ -442,13 +445,13 @@ impl Pump {
         for (s, pre) in targets(sh, seq, &m) {
             let d = match pre {
                 Pre::Ready(d) => d,
-                Pre::Aspect { tid, ak, mut source } => {
+                Pre::Aspect { tid, ak, mut origin } => {
                     let key = (s.id, tid, ak.clone());
                     if self.covered.contains_key(&key) {
                         continue;
                     }
                     // read under the engine lock, queueing every event whose effect it shows;
-                    // the call carries the source of the newest such event for this aspect
+                    // the call carries the origin of the newest such event for this aspect
                     let (rx, buf) = (&self.rx, &mut self.buf);
                     let value = db.value_with(tid, &ak, || buf.extend(rx.try_iter()));
                     let mut last = seq;
@@ -456,14 +459,14 @@ impl Pump {
                         if let Some((changed, src)) = aspect_event(m2)
                             && changed.iter().any(|(t, a)| *t == tid && *a == ak)
                         {
-                            source = src;
+                            origin = src;
                             last = *s2;
                         }
                     }
                     if last > seq {
                         self.covered.insert(key, last);
                     }
-                    Delivery::Aspect { tid, ak, source, value }
+                    Delivery::Aspect { tid, ak, origin, value }
                 }
             };
             call(&db, &s, d);
@@ -492,9 +495,13 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
     }
 }
 
-/// A registration; dropping it unsubscribes. Off the
-/// dispatcher thread, drop waits for a call in flight, so no call starts or runs after it
-/// returns.
+/// A registered callback; dropping this unsubscribes. Off the dispatcher thread, drop waits for a call
+/// in flight, so no call starts or runs after it returns. Dropping it at once is a lint:
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap().0;
+/// db.on_diagnostic(|_, _| {}).unwrap();
+/// ```
 // The exception: a thread holding the engine lock (inside `Internals::engine`) cannot wait, so a
 // call may still be running then.
 #[must_use = "dropping a Subscription unsubscribes at once; use detach() to keep it"]
@@ -506,7 +513,7 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// Keeps the subscription for the database's life.
+    /// Keeps the subscription for the node's life.
     pub fn detach(mut self) {
         self.id = None;
         self.port = None;

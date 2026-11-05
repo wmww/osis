@@ -1,4 +1,4 @@
-//! Typing spliced into text sessions (`edit::splice`) over an in-memory database.
+//! Typing spliced into text sessions (`edit::splice`) over an in-memory node.
 use osis::core::BODY;
 use osis_app::data::Data;
 use osis_app::edit::{map_byte, shown_edits, splice};

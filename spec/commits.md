@@ -69,7 +69,7 @@ Encoding: spec/wire.md §4. Fields:
 
 ## 3. Dot forms
 - **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any content commit but an ephemeral one may use it.
-  - A key actor whose key is used from more than one device (link key, recovery key) MUST use it, and every role commit (roster snapshots included) and every compaction snapshot MUST use it.
+  - A key actor whose key is used from more than one node (link key, recovery key) MUST use it, and every role commit (roster snapshots included) and every compaction snapshot MUST use it.
 - **Session form**: dots `(Session(author node, nonce), counter)` (spec/crdt.md §2.1), counters per (aspect, session), contiguous from 1; the header carries the 16-byte nonce.
   - Content commits (§2) with own writes otherwise use it, durable and ephemeral alike; an ephemeral content commit MUST use it.
   - Session form on any other kind (§2: role, compaction snapshot) is bad input.

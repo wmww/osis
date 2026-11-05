@@ -58,7 +58,9 @@ pub enum ValueType {
 pub struct TypeCase {
     /// Its id: `Value::Enum(id, ..)`, `Step::Case(id)`.
     pub id: u64,
+    /// Its name.
     pub name: String,
+    /// Its payload's type, if it has one.
     pub value: Option<NestedType>,
 }
 
@@ -67,13 +69,15 @@ pub struct TypeCase {
 pub struct RecordField {
     /// Its id: `Value::Int(id)`, `Step::Field(id)`.
     pub id: u64,
+    /// Its name.
     pub name: String,
+    /// Its type.
     pub ty: NestedType,
     /// What it reads as when absent.
     pub default: Option<Value>,
 }
 
-/// A type as a schema declares it: of a key's values (`Key::value_type`), or inside another.
+/// A type as a schema declares it: of a key's values (`DynamicAspectKey::value_type`), or inside another.
 #[derive(Clone)]
 pub struct NestedType {
     schema: Arc<Schema>,

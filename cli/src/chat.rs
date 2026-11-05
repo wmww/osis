@@ -117,7 +117,7 @@ fn print_since(ctx: &mut Ctx<'_>, s: &osis_chat::Since, from: Option<&Id>) -> an
 pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match c {
-        ChatCmd::Create { name, purge, edit, disappear, no_keep, host } => {
+        ChatCmd::Create { name, purge, edit, disappear, no_retain_copy, peer } => {
             let purge = match purge.as_str() {
                 "author-or-admin" => PurgeBy::AuthorOrAdmin,
                 "author" => PurgeBy::Author,
@@ -125,15 +125,15 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                 "nobody" => PurgeBy::Nobody,
                 x => return Err(usage(format!("--purge: author-or-admin, author, admin or nobody, not {x:?}"))),
             };
-            let hosts = host.iter().map(|h| h.parse()).collect::<Result<Vec<osis::HostAddr>, _>>()?;
-            let o = Options { name, purge, edit: edit.parse::<EditMode>()?, disappear: disappear.as_deref().map(parse_dur).transpose()?, keep: !no_keep, hosts };
+            let peers = peer.iter().map(|h| h.parse()).collect::<Result<Vec<osis::Address>, _>>()?;
+            let o = Options { name, purge, edit: edit.parse::<EditMode>()?, disappear: disappear.as_deref().map(parse_dur).transpose()?, retain_copies: !no_retain_copy, peers };
             let t = osis_chat::create(&db, &o)?;
             send_out(ctx, Some(t))?;
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
-        ChatCmd::Add { chat, person, role } => {
+        ChatCmd::Add { chat, account, role } => {
             let t = ctx.tid(&chat)?;
-            osis_chat::add(&db, t, ctx.tid(&person)?, parse_role(&role)?)?;
+            osis_chat::add(&db, t, ctx.tid(&account)?, parse_role(&role)?)?;
             send_out(ctx, Some(t))
         }
         ChatCmd::Link { chat, role, single_use } => {
@@ -152,11 +152,11 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             }
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
-        ChatCmd::Kick { chat, person, erase, keep, purge, no_sync } => {
-            let (t, p) = (ctx.tid(&chat)?, ctx.tid(&person)?);
+        ChatCmd::Kick { chat, account, erase, retain_copy, purge, no_sync } => {
+            let (t, p) = (ctx.tid(&chat)?, ctx.tid(&account)?);
             let word = if erase {
                 Some(false)
-            } else if keep {
+            } else if retain_copy {
                 Some(true)
             } else {
                 None
@@ -290,7 +290,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             text.extend(links.iter().map(|(k, r)| format!("link {} {r:?}", k.to_uri())));
             let j = J::obj([
                 ("name", J::str(s.name)),
-                ("participants", J::Arr(m.iter().map(|(p, r)| J::obj([("person", J::tid(*p)), ("role", J::str(format!("{r:?}"))), ("via", J::opt(via(*p).map(J::tid)))])).collect())),
+                ("participants", J::Arr(m.iter().map(|(p, r)| J::obj([("account", J::tid(*p)), ("role", J::str(format!("{r:?}"))), ("via", J::opt(via(*p).map(J::tid)))])).collect())),
                 ("links", J::Arr(links.iter().map(|(k, r)| J::obj([("link", J::tid(*k)), ("role", J::str(format!("{r:?}")))])).collect())),
             ]);
             ctx.emit(&text, j)
@@ -304,25 +304,25 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
     }
 }
 
-/// A store this command just opened brings what the hosts have (best effort: reading works offline).
+/// A store this command just opened brings what its peers have (best effort: reading works offline).
 fn pull(ctx: &mut Ctx<'_>, t: Tid) {
     if ctx.db.has_store() {
         catch_up(ctx, t);
     }
 }
 
-/// Waits a moment for what the hosts have of `t` (best effort).
+/// Waits a moment for what its peers have of `t` (best effort).
 fn catch_up(ctx: &mut Ctx<'_>, t: Tid) {
     let db = ctx.db.clone();
-    if db.hosts().is_ok_and(|h| !h.is_empty()) {
-        let _ = db.sync_now();
+    if db.saved_peers().is_ok_and(|h| !h.is_empty()) {
+        let _ = db.nudge_sync();
         let _ = crate::cmd::within(Some(crate::DEFAULT_WAIT.min(std::time::Duration::from_secs(10))), db.wait_synced(osis::SyncScope::Thing(t)));
     }
 }
 
-/// What this command wrote reaches the hosts before the process exits; a daemon sees to it itself.
+/// What this command wrote reaches its peers before the process exits; a daemon sees to it itself.
 fn send_out(ctx: &mut Ctx<'_>, shared: Option<Tid>) -> anyhow::Result<()> {
-    if !ctx.db.has_store() || ctx.db.hosts()?.is_empty() {
+    if !ctx.db.has_store() || ctx.db.saved_peers()?.is_empty() {
         return Ok(());
     }
     deliver(ctx, shared.map(|t| t.to_uri()))

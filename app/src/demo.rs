@@ -1,5 +1,5 @@
 //! Demo data (`osis-app DIR --demo`): tags, people, notes and events to play with, written once
-//! per person (marked `osis_app:demo.0` on the app group).
+//! per account (marked `osis_app:demo.0` on the app group).
 
 use crate::contact::{EMAILS, Labeled, ORG, Org, PHONES};
 use crate::data::Data;
@@ -80,7 +80,7 @@ impl Ctx<'_, '_> {
     }
 }
 
-/// Adds the demo data unless this person has it already; returns whether it added it.
+/// Adds the demo data unless this account has it already; returns whether it added it.
 pub fn add(data: &Data) -> Result<bool> {
     if data.has_demo()? {
         return Ok(false);
@@ -89,7 +89,7 @@ pub fn add(data: &Data) -> Result<bool> {
     let db = &data.db;
     let monday = crate::time::monday_of(crate::time::now_local());
     let views: Vec<Tid> = data.views()?.into_iter().map(|(_, t)| t).collect();
-    // the person's own favorites stay, after the demo's
+    // the account's own favorites stay, after the demo's
     let had = data.favorites()?;
     let base = data.db.at(group, FAVORITES).get()?.unwrap_or_default();
     let mut w = db.write();

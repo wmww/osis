@@ -16,12 +16,12 @@ pub const MSGS: &str = "chat:msgs:";
 /// The chat's settings, admins only.
 pub const SETTINGS: &str = "chat:settings.0^";
 
-fn year_key(db: &Osis, year: u32) -> Result<osis::Key> {
-    db.key(&format!("{MSGS}y{year}.0"))
+fn year_key(db: &Osis, year: u32) -> Result<osis::DynamicAspectKey> {
+    db.aspect_key(&format!("{MSGS}y{year}.0"))
 }
 
-fn settings_key(db: &Osis) -> Result<osis::Key> {
-    db.key(SETTINGS)
+fn settings_key(db: &Osis) -> Result<osis::DynamicAspectKey> {
+    db.aspect_key(SETTINGS)
 }
 
 /// The civil year of a time (Gregorian, UTC).
@@ -66,7 +66,7 @@ impl std::str::FromStr for EditMode {
 }
 
 /// How a chat starts. Default: Signal-like: author or admin deletes, edits purge, nothing
-/// disappears, a kicked participant keeps a read-only copy.
+/// disappears, a kicked participant retains a read-only copy.
 #[derive(Clone, Debug)]
 pub struct Options {
     pub name: String,
@@ -75,38 +75,36 @@ pub struct Options {
     pub edit: EditMode,
     /// Messages disappear this long after they are sent.
     pub disappear: Option<Duration>,
-    /// A kicked participant keeps a read-only copy, unless the kick says otherwise.
-    pub keep: bool,
-    /// Where the chat syncs; empty: the database's hosts. A host must admit an ownerless thing by
-    /// its label or admit anyone: `admit own` does not take it.
-    pub hosts: Vec<osis::HostAddr>,
+    /// A kicked participant retains a read-only copy, unless the kick says otherwise.
+    pub retain_copies: bool,
+    /// Whom the chat syncs with; empty: this node's saved peers. A serving node must admit it by its
+    /// sync ID or admit anyone: `admit own` does not take it.
+    pub peers: Vec<osis::Address>,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { name: String::new(), purge: PurgeBy::AuthorOrAdmin, edit: EditMode::Purge, disappear: None, keep: true, hosts: Vec::new() }
+        Options { name: String::new(), purge: PurgeBy::AuthorOrAdmin, edit: EditMode::Purge, disappear: None, retain_copies: true, peers: Vec::new() }
     }
 }
 
 /// The retention rules of a chat: the message rule, and the plain default for every other aspect, so
-/// junk that nobody could erase is invalid (design E, Hostile participant).
-fn rules(purge: PurgeBy, disappear: Option<Duration>, keep: bool) -> Result<RequiredRules> {
-    let ms = disappear.map(|d| u64::try_from(d.as_millis()).map_err(|_| Error::Invalid("too long".into()))).transpose()?;
-    let at_least = if ms.is_some() { Bound::default() } else { Bound { abs: Some(osis::FOREVER), rel: None } };
-    let msgs = Required::new(Retention { by: purge, at_least, at_most: Bound::default() }, ms);
-    let rest = Required::new(Retention::default(), None);
-    Ok(RequiredRules { rules: BTreeMap::from([(MSGS.to_string(), msgs), (String::new(), rest)]), keep })
+/// junk that nobody could erase is invalid .
+fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> Result<RequiredRules> {
+    let at_least = if disappear.is_some() { Bound::default() } else { Bound::FOREVER };
+    let msgs = Required { retention: Retention { by: purge, at_least, at_most: Bound::default() }, expires: disappear };
+    Ok(RequiredRules { rules: BTreeMap::from([(MSGS.to_string(), msgs), (String::new(), Required::default())]), retain_copies })
 }
 
-/// A new chat, this person its first admin: required retention set before anyone is granted, so no
+/// A new chat, this account its first admin: required retention set before anyone is granted, so no
 /// participant can write under an earlier key. One flow, several commits: a crash leaves a chat of one.
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
     let c = db.create_ownerless(db.me())?;
     let mut w = db.write();
-    w.at(c, REQUIRED).set(&rules(o.purge, o.disappear, o.keep)?)?;
+    w.at(c, REQUIRED).set(&rules(o.purge, o.disappear, o.retain_copies)?)?;
     w.at(c, settings_key(db)?).set(&settings_value(&o.name, o.edit))?;
     w.commit()?;
-    db.sync(c, &o.hosts)?;
+    db.sync(c, &o.peers)?;
     Ok(c)
 }
 
@@ -121,7 +119,7 @@ pub struct Settings {
     pub edit: EditMode,
     pub purge: PurgeBy,
     pub disappear: Option<Duration>,
-    pub keep: bool,
+    pub retain_copies: bool,
 }
 
 /// What this node knows of a chat's settings.
@@ -136,16 +134,16 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
         }
     }
     let r = db.at(c, REQUIRED).get()?.unwrap_or_default();
-    s.keep = r.keep;
+    s.retain_copies = r.retain_copies;
     if let Some(m) = r.rules.get(MSGS) {
-        s.purge = m.by;
-        s.disappear = m.expires.map(Duration::from_millis);
+        s.purge = m.retention.by;
+        s.disappear = m.expires;
     }
     Ok(s)
 }
 
 /// The chats this node syncs: its synced groups (`Osis::status`) with chat settings, in tid order;
-/// not one this person is leaving, nor a joined one before its settings arrive. A copy kept after
+/// not one this account is leaving, nor a joined one before its settings arrive. A copy retained after
 /// a kick or leave is not synced: `Osis::kept_copies`. Re-list on `Osis::on_status_change`.
 pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
     let ak = settings_key(db)?;
@@ -158,22 +156,22 @@ pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
 pub fn set_disappearing(db: &Osis, c: Tid, d: Option<Duration>) -> Result<()> {
     let s = settings(db, c)?;
     let mut w = db.write();
-    w.at(c, REQUIRED).set(&rules(s.purge, d, s.keep)?)?;
+    w.at(c, REQUIRED).set(&rules(s.purge, d, s.retain_copies)?)?;
     w.commit()?;
     Ok(())
 }
 
 /// Adds a participant (an admin's call): `Write` to post, `Admin` to moderate, `Read` for a channel.
-/// A chat is synced from `create`, so this only grants. Below a role the person lost by leaving
+/// A chat is synced from `create`, so this only grants. Below a role the account lost by leaving
 /// or an ending grant it is `Invalid`: `Osis::set_role` keeps what they wrote.
-pub fn add(db: &Osis, c: Tid, person: Tid, role: Role) -> Result<()> {
-    db.grant(c, person, role, GrantOpts::default())
+pub fn add(db: &Osis, c: Tid, account: Tid, role: Role) -> Result<()> {
+    db.grant(c, account, role, GrantOpts::default())
 }
 
-/// Removes a participant, a read-only copy left to them or not by `keep` (`None`: the chat's
+/// Removes a participant, a read-only copy left to them or not by `retain_copy` (`None`: the chat's
 /// default).
-pub async fn kick(db: &Osis, c: Tid, person: Tid, keep: Option<bool>, sync: SyncFirst) -> Result<()> {
-    db.set_role(c, person, None, SetRoleOpts { sync, keep }).await
+pub async fn kick(db: &Osis, c: Tid, account: Tid, retain_copy: Option<bool>, sync: SyncFirst) -> Result<()> {
+    db.set_role(c, account, None, SetRoleOpts { sync, retain_copy }).await
 }
 
 /// A link anyone holding it can join by, as `role`.
@@ -195,7 +193,7 @@ pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
     db.redeem(l).await.or_else(|e| if held() { Ok(c) } else { Err(e) })
 }
 
-/// Removes this person: every grant it holds the chat through (a link joiner's is on the link's
+/// Removes this account: every grant it holds the chat through (a link joiner's is on the link's
 /// actor).
 pub fn leave(db: &Osis, c: Tid) -> Result<()> {
     let me = db.me();
@@ -205,17 +203,17 @@ pub fn leave(db: &Osis, c: Tid) -> Result<()> {
     Ok(())
 }
 
-/// Whether `h` is an actor people hold the chat through, as a link's actor K (spec/permissions.md
-/// §8) or a team: owned by an actor that has an owner itself. A person's owner is a key, and the
-/// holders of a person are its devices.
+/// Whether `h` is an actor accounts hold the chat through, as a link's actor K (spec/permissions.md
+/// §8) or a team: owned by an actor that has an owner itself. An account's owner is a key, and the
+/// holders of an account are its nodes.
 fn held_through(db: &Osis, h: Tid) -> Result<bool> {
     let Some(o) = db.owner_of(h)? else { return Ok(false) };
     Ok(db.owner_of(o)?.is_some())
 }
 
-/// A link's key on K: a key actor with invite. Never a person.
+/// A link's key on K: a key actor with invite. Never an account.
 fn link_key(db: &Osis, m: Tid, e: &osis::Grant) -> Result<bool> {
-    Ok(e.invite.is_some() && db.owner_of(m)?.is_none())
+    Ok(e.may_grant.is_some() && db.owner_of(m)?.is_none())
 }
 
 /// Who holds the chat, with the role they have: its direct holders and those holding it through an
@@ -371,7 +369,7 @@ pub fn post(db: &Osis, c: Tid, text: &str) -> Result<Id> {
 }
 
 /// Sends again one's own message that turned invalid (`Message::valid`, `on_rejected`): the same
-/// text, name and reply, as a new message. The old one stays, to this person alone.
+/// text, name and reply, as a new message. The old one stays, to this account alone.
 pub fn resend(db: &Osis, c: Tid, m: &Message) -> Result<Id> {
     let Body::Text(text) = &m.body else { return Err(Error::Invalid("its text is not here".into())) };
     if m.valid || m.sender != db.me() {
@@ -404,7 +402,7 @@ pub fn write_raw_replaces(db: &Osis, c: Tid, text: &str, r: &Replaces) -> Id {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
     Text(String),
-    /// Deleted for everyone: a tombstone that new devices get too. `who`: verified, as a sender is
+    /// Deleted for everyone: a tombstone that new nodes get too. `who`: verified, as a sender is
     /// (`None`: the request's header is not here).
     Deleted { by: CommitId, who: Option<Tid> },
     /// Expired, or dropped by a keep bound: leaves the timeline.
@@ -526,7 +524,7 @@ pub struct Message {
     pub id: Id,
     pub sender: Tid,
     pub time: u64,
-    /// Valid. `false` only for this person's own write, turned invalid (a stale writer's, a kicked
+    /// Valid. `false` only for this account's own write, turned invalid (a stale writer's, a kicked
     /// participant's): others' invalid writes are not shown.
     pub valid: bool,
     pub body: Body,
@@ -763,7 +761,7 @@ fn purge(db: &Osis, c: Tid, ids: &[Id]) -> Result<()> {
     w.commit().map(drop)
 }
 
-/// Whether this person's request would drop a body of `sender`'s, by the chat's purge set: a request
+/// Whether this account's request would drop a body of `sender`'s, by the chat's purge set: a request
 /// without the right drops nothing anywhere, so it is refused here.
 pub fn may_delete(db: &Osis, c: Tid, sender: Tid) -> Result<bool> {
     let role = db.role_on(c)?;
@@ -780,7 +778,7 @@ pub fn may_delete(db: &Osis, c: Tid, sender: Tid) -> Result<bool> {
 }
 
 /// Deletes a message for everyone, every version known, by its author or a moderator as the chat's
-/// purge set says. Its tombstone stays and reaches new devices.
+/// purge set says. Its tombstone stays and reaches new nodes.
 pub fn delete(db: &Osis, c: Tid, m: &Message) -> Result<()> {
     if !may_delete(db, c, m.sender)? {
         return Err(Error::Permission { tid: c, needs: Role::Admin });
@@ -789,7 +787,7 @@ pub fn delete(db: &Osis, c: Tid, m: &Message) -> Result<()> {
 }
 
 /// Erases everything `actor` sent, within each write's purge rights; later writes stay, so kick too.
-/// One header actor: a person's devices share theirs, each of its thin clients has its own.
+/// One header actor: an account's nodes share theirs, each of its thin clients has its own.
 pub fn purge_participant(db: &Osis, c: Tid, actor: Tid) -> Result<()> {
     let mut w = db.write();
     for y in years(db, c)? {
@@ -838,7 +836,7 @@ pub fn watch(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) ->
     Ok(subs)
 }
 
-/// Tells of this person's own writes on the chat turned invalid: a participant who had not seen a
+/// Tells of this account's own writes on the chat turned invalid: a participant who had not seen a
 /// retention change or its own kick. Its message is the commit named: `resend` it.
 pub fn on_rejected(db: &Osis, c: Tid, mut f: impl FnMut(CommitId) + Send + 'static) -> Result<Subscription> {
     db.on_diagnostic(move |_, d| {

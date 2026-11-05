@@ -24,10 +24,12 @@ impl ClientSecret {
         ClientSecret(Secret32::random(&mut osis_crypto::OsRng))
     }
 
+    /// A secret from its 32 bytes, as `expose` gave them.
     pub fn from_bytes(b: [u8; 32]) -> ClientSecret {
         ClientSecret(Secret32::from_bytes(b))
     }
 
+    /// The secret's bytes, to hand to the client.
     pub fn expose(&self) -> &[u8; 32] {
         self.0.expose()
     }
@@ -51,10 +53,8 @@ fn secret_of(v: Value) -> Result<ClientSecret> {
 }
 
 impl Osis {
-    /// Registers a client: mints its actor, of the account,
-    /// with secrets of its own, placed in the home group so the account's devices can grant to
-    /// it, all in one transaction. Returns the actor and the
-    /// secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
+    /// Registers a client: a new actor of this account, which the account's nodes can grant to.
+    /// Returns the actor and the secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
     /// client reaches (it starts with none).
     pub fn add_client(&self, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
         if !self.has_store() {
@@ -82,7 +82,7 @@ impl Osis {
         Ok((actor, secret))
     }
 
-    /// This node's clients by a secret.
+    /// The clients registered with `add_client`.
     pub fn clients(&self) -> Result<Vec<Client>> {
         if !self.has_store() {
             let v = self.rcall(method::CLIENTS, vec![])?;
@@ -100,9 +100,9 @@ impl Osis {
     /// the entry goes. `false` when there is no entry. The entry stays, ended, until every role is
     /// gone, so a failure or a crash halfway is retried by calling this again.
     ///
-    /// Unlike `set_role` and `remove_device`, this takes no options and never waits: all a client
+    /// Unlike `set_role` and `remove_node`, this takes no options and never waits: all a client
     /// wrote went through this node, so there is nothing elsewhere to catch up on, and a client's
-    /// actor has no device to keep a copy. A role this node may not remove fails here, as does one
+    /// actor has no node to keep a copy. A role this node may not remove fails here, as does one
     /// on a thing this node reads at another node (`Unsupported`, the sessions ended, the entry
     /// staying: move its group home and call this again).
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {

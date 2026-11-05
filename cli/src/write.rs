@@ -5,7 +5,7 @@ use crate::args::{CreateArgs, MemberCmd, OpArgs, PlaceArgs, RmArgs, ScriptCmd, S
 use crate::text::{self, PStep};
 use crate::{Ctx, parse_dur, parse_ts, usage};
 use clap::Parser;
-use osis::{AspectWrite, Bound, Expiry, Key, Member, Path, PurgeBy, Retention, Step, Tid, Time, Value, ValueType};
+use osis::{AspectWrite, Bound, DynamicAspectKey, Expiry, Member, Path, PurgeBy, Retention, Step, Tid, Time, Value, ValueType};
 use std::ops::Range;
 
 /// What a write command produced.
@@ -17,7 +17,7 @@ pub struct Did {
     pub expires: Option<Expiry>,
 }
 
-/// The groups a new thing goes into (none: placed later, or device-local).
+/// The groups a new thing goes into (none: placed later, or on this node alone).
 pub fn place(ctx: &Ctx<'_>, p: &PlaceArgs) -> anyhow::Result<Vec<Tid>> {
     if p.in_.is_some() && !p.in_all.is_empty() {
         return Err(usage("give at most one of --in G, --in-all G,G"));
@@ -29,7 +29,7 @@ pub fn place(ctx: &Ctx<'_>, p: &PlaceArgs) -> anyhow::Result<Vec<Tid>> {
 /// there is a list, else a map key; for a write (`write: true`), a map key, and an error when
 /// the saved value there is a list (untyped lists take no index writes) or when this script
 /// already wrote the aspect (its pending state is invisible, so the saved one cannot decide).
-pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyhow::Result<Path> {
+pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &DynamicAspectKey, s: &str, write: bool) -> anyhow::Result<Path> {
     let al = |w: &str| ctx.alias(w);
     let ty = key.value_type().map(|t| t.get());
     let steps = text::parse_path(s, ty.as_ref(), &al).map_err(|e| usage(format!("bad path {s:?}: {e}")))?;
@@ -43,7 +43,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
                     return Err(usage(format!("[{i}] on untyped {} written earlier in this script: list index or map key is unknown (register a schema, or write in a separate step)", key.name().as_str())));
                 }
                 if cur.is_none() {
-                    let untyped = Key::untyped(key.name().clone());
+                    let untyped = DynamicAspectKey::untyped(key.name().clone());
                     cur = Some(ctx.db.at(t, untyped).get()?);
                 }
                 let here = cur.as_ref().and_then(|v| v.as_ref()).and_then(|v| osis_schema::value_at(v, &Path(out.clone())));
@@ -60,7 +60,7 @@ pub fn path(ctx: &mut Ctx<'_>, t: Tid, key: &Key, s: &str, write: bool) -> anyho
 }
 
 /// The schema type at a path, for parsing what is written there.
-fn type_at(key: &Key, p: &Path) -> Option<ValueType> {
+fn type_at(key: &DynamicAspectKey, p: &Path) -> Option<ValueType> {
     text::type_at_path(key.value_type()?.get(), &p.0)
 }
 
@@ -83,7 +83,7 @@ fn commit_expiry(w: &mut osis::Write<'_>, did: &mut Did, e: Option<Expiry>) -> a
     Ok(())
 }
 
-fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key) -> anyhow::Result<AspectWrite<'w, 'd, Key>> {
+fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, DynamicAspectKey>, f: &WriteFlags, key: &DynamicAspectKey) -> anyhow::Result<AspectWrite<'w, 'd, DynamicAspectKey>> {
     if let Some(r) = &f.retention {
         a = a.retention(retention(r, key.default_retention())?);
     }
@@ -94,9 +94,8 @@ fn with_flags<'w, 'd>(mut a: AspectWrite<'w, 'd, Key>, f: &WriteFlags, key: &Key
 pub fn retention(s: &str, mut r: Retention) -> anyhow::Result<Retention> {
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let (k, v) = part.split_once('=').ok_or_else(|| usage(format!("bad retention item {part:?}")))?;
-        let dur = || parse_dur(v).map(|d| d.as_millis() as u64);
         let b = |r: &mut Bound, abs: bool| -> anyhow::Result<()> {
-            if abs { r.abs = Some(parse_ts(v)?) } else { r.rel = Some(dur()?) }
+            if abs { r.until = Some(Time(parse_ts(v)?)) } else { r.after_replaced = Some(parse_dur(v)?) }
             Ok(())
         };
         match k {
@@ -139,7 +138,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
         w.group(g).add(Member::Item(t))?;
     }
     for pair in a.pairs.chunks(2) {
-        let key = ctx.key(&pair[0])?;
+        let key = ctx.aspect_key(&pair[0])?;
         let v = ctx.value(&pair[1], key.value_type().map(|t| t.get()).as_ref())?;
         w.at(t, key).set(&v)?;
     }
@@ -152,7 +151,7 @@ pub fn create(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &CreateArgs, did: &
 
 fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, overwrite: bool) -> anyhow::Result<()> {
     let t = ctx.tid(&a.t)?;
-    let key = ctx.key(&a.ak)?;
+    let key = ctx.aspect_key(&a.ak)?;
     if a.stream {
         let p = match a.rest.as_slice() {
             [] => Path::root(),
@@ -177,7 +176,7 @@ fn set(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &SetArgs, overwrite: bool)
 
 fn rm(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &RmArgs) -> anyhow::Result<()> {
     let t = ctx.tid(&a.t)?;
-    let key = ctx.key(&a.ak)?;
+    let key = ctx.aspect_key(&a.ak)?;
     let p = match a.path.as_deref() {
         None | Some("") => Path::root(),
         Some(s) => path(ctx, t, &key, s, true)?,
@@ -188,7 +187,7 @@ fn rm(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &RmArgs) -> anyhow::Result<
 
 fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<()> {
     let t = ctx.tid(&a.t)?;
-    let key = ctx.key(&a.ak)?;
+    let key = ctx.aspect_key(&a.ak)?;
     let p = path(ctx, t, &key, &a.path, true)?;
     let pt = type_at(&key, &p);
     let et = pt.as_ref().and_then(text::element_type);

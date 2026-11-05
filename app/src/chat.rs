@@ -2,8 +2,8 @@
 //! link, the newest messages of one, sending, and the name to send under.
 //!
 //! The chats are `osis_chat::chats`: those made or joined here or by the CLI on this store alike.
-//! The sender's name is the profile's `name.0` (the same word `reach` shows for this person), else
-//! `OSIS_CHAT_NAME`, as the CLI's `--from`. A store without hosts has no profile (`profile()`
+//! The sender's name is the profile's `name.0` (the same word `reach` shows for this account), else
+//! `OSIS_CHAT_NAME`, as the CLI's `--from`. A store without peers has no profile (`profile()`
 //! fails): only the variable names it.
 
 use osis::core::NAME;
@@ -47,7 +47,7 @@ pub fn name(db: &Osis, c: Tid) -> Result<String> {
     Ok(if n.trim().is_empty() { "Chat".into() } else { n })
 }
 
-/// How long the app waits to confirm a link: it runs off the UI thread, and a person is watching.
+/// How long the app waits to confirm a link: it runs off the UI thread, and an account is watching.
 /// Minor: at 0 every join fails, at infinity one that nobody answers waits for good.
 const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -59,9 +59,9 @@ pub fn join(db: &Osis, link: &str) -> Result<Tid> {
     rt.block_on(async { tokio::time::timeout(JOIN_WAIT, osis_chat::join(db, &l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))
 }
 
-/// The profile, made on first use; `None` on a store without hosts.
+/// The profile, made on first use; `None` on a store without peers.
 fn profile(db: &Osis) -> Result<Option<Tid>> {
-    if db.hosts()?.is_empty() { Ok(None) } else { db.profile().map(Some) }
+    if db.saved_peers()?.is_empty() { Ok(None) } else { db.profile().map(Some) }
 }
 
 /// The name messages go out under: the profile's `name.0`, else `OSIS_CHAT_NAME`.
@@ -75,7 +75,7 @@ pub fn my_name(db: &Osis) -> Result<Option<String>> {
 
 /// Sets the profile's name (empty: none).
 pub fn set_name(db: &Osis, name: &str) -> Result<()> {
-    let p = profile(db)?.ok_or_else(|| osis::Error::Invalid("a name needs a host: start with --host".into()))?;
+    let p = profile(db)?.ok_or_else(|| osis::Error::Invalid("a name needs a peer: start with --peer".into()))?;
     let mut w = db.write();
     if name.trim().is_empty() { w.at(p, NAME).remove()? } else { w.at(p, NAME).set(&name.trim().to_string())? }
     w.commit()?;

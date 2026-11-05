@@ -1,12 +1,15 @@
-//! The one `Error` of the API (notes/api.md Errors). Absent aspects, unknown tids and stored
-//! values of another type read as `None`, never as errors; peer-caused problems are diagnostics, never errors.
+//! The one `Error` of the API (notes/api.md Errors).
 
-use crate::commits::DropReason;
+use crate::commits::NotUndoableReason;
 use osis_base::{Role, Tid};
 use crate::commit_id::CommitId;
 use osis_schema::{Path, PathError};
 
+/// What a call can fail with. What is absent reads as `None`, and what another node does wrong is a
+/// `Diagnostic`: neither is an error.
 #[derive(Clone, Debug, PartialEq, Eq)]
+// each variant's doc says what its fields are
+#[allow(missing_docs)]
 pub enum Error {
     /// A write or call names a thing not known here.
     UnknownThing { tid: Tid },
@@ -22,7 +25,7 @@ pub enum Error {
     TooLarge { limit: usize },
     /// The newest commit in an undo or redo scope cannot be undone (its body was dropped, or a
     /// register it wrote is no longer its winner). Nothing older is undone instead.
-    NotUndoable { commit: CommitId, reason: DropReason },
+    NotUndoable { commit: CommitId, reason: NotUndoableReason },
     /// Catching up before lowering a role (`SyncFirst`) could not reach these groups.
     Unsynced { groups: Vec<Tid> },
     /// A malformed argument: value, link, card, path, op, retention.
@@ -41,7 +44,7 @@ pub enum Error {
     /// The node at the other end will not take this session: it refused the client secret or the
     /// uid, or the address serves no client port.
     Refused(String),
-    /// The database is closed.
+    /// The node is closed.
     Closed,
 }
 
@@ -59,9 +62,10 @@ osis_base::impl_error!(Error {
     OutcomeUnknown => ("outcome unknown: the write may have applied, read before repeating it"),
     Unsupported(m) => ("not available on this handle: {m}"),
     Refused(m) => ("refused by the node: {m}"),
-    Closed => ("database closed"),
+    Closed => ("node closed"),
 });
 
+/// A result whose failure is an `Error`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<PathError> for Error {
@@ -82,7 +86,7 @@ impl From<osis_node::Error> for Error {
             N::Corrupt(m) => Error::Storage(m.into()),
             N::Misuse(m) => Error::Invalid(m.into()),
             N::Clash(m) => Error::Invalid(m),
-            N::Unsynced { tid, group } => Error::Invalid(format!("{tid} is in {group}, whose own aspects sync but whose items reach no synced group: add {group} as a subgroup of a synced group (same batch or before), or add {tid} elsewhere")),
+            N::Unsynced { tid, group } => Error::Invalid(format!("{tid} is in {group}, whose own aspects sync but whose items reach no synced group: add {group} as a subgroup of a synced group (same commit or before), or add {tid} elsewhere")),
             e => Error::Invalid(e.to_string()),
         }
     }

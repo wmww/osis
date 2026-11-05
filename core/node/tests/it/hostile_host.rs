@@ -356,7 +356,7 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
 }
 
 // spec/requirements.md, Deletion ("an admin's [purge of a large value] removes all of [its
-// chunks]" at untrusted nodes), spec/sync.md §5 (delete-key holders delete must-not-hold bodies): a
+// chunks]" at nodes that cannot read them), spec/sync.md §5 (delete-key holders delete must-not-hold bodies): a
 // purged large value's chunk blobs leave the host.
 #[test]
 fn purged_chunks_leave_the_host_spec_sync_5() {

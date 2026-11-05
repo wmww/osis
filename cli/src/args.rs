@@ -85,7 +85,7 @@ pub struct Scope {
     pub group: Option<String>,
 }
 
-/// Groups a new thing goes into (none: device-local, or a group synced itself).
+/// Groups a new thing goes into (none: on this node alone, or a group synced itself).
 #[derive(Args, Debug, Clone, Default)]
 pub struct PlaceArgs {
     /// Item of group G
@@ -96,13 +96,13 @@ pub struct PlaceArgs {
     pub in_all: Vec<String>,
 }
 
-/// What to do first about work this device has not seen.
+/// What to do first about work this node has not seen.
 #[derive(Args, Debug, Clone, Default)]
 pub struct SyncFlags {
     /// Catch up first: required (default), try, skip
     #[arg(long, value_name = "MODE", conflicts_with = "backdate")]
     pub sync: Option<String>,
-    /// No catching up: keep what this device had seen by TS
+    /// No catching up: keep what this node had seen by TS
     #[arg(long, value_name = "TS")]
     pub backdate: Option<String>,
 }
@@ -112,49 +112,51 @@ pub struct SyncFlags {
 pub struct SetRoleFlags {
     #[command(flatten)]
     pub sync: SyncFlags,
-    /// On a removal: the removed holder's devices keep a read-only copy (true) or erase (false); default: the thing's (`required.0^`, field keep)
-    #[arg(long, value_name = "BOOL")]
-    pub keep: Option<bool>,
+    /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required.0^`, field keep)
+    #[arg(long = "retain-copy", value_name = "BOOL")]
+    pub retain_copy: Option<bool>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// Create a store: new device, person and home group
+    /// Create a store: a new node, account and home group
     Init {
+        /// A peer to sync with (repeatable)
         #[arg(long, value_name = "ADDR")]
-        host: Vec<String>,
+        peer: Vec<String>,
     },
-    /// Restore a person on a fresh store from its recovery card
+    /// Restore an account on a fresh store from its recovery card
     Restore {
         /// The card, `@FILE` or `-` (stdin)
         card: String,
+        /// A peer to sync with (repeatable)
         #[arg(long, value_name = "ADDR")]
-        host: Vec<String>,
+        peer: Vec<String>,
     },
-    /// This store's person (also its home group), device and hosts
+    /// This store's account (also its home group), node and saved peers
     Whoami,
-    /// Pair devices
+    /// Add a node to this account
     #[command(subcommand)]
     Pair(PairCmd),
-    /// This person's devices
+    /// This account's nodes
     #[command(subcommand)]
-    Device(DeviceCmd),
-    /// Hosts this store syncs through
+    Node(NodeCmd),
+    /// Nodes this store syncs with
     #[command(subcommand)]
-    Hosts(HostsCmd),
-    /// What this node hosts (`host.0^`): show, set or stop it
+    Peers(PeersCmd),
+    /// Whether this node stores and serves data for others, and on what terms: show, set or stop it
     #[command(subcommand)]
-    Hosting(HostingCmd),
+    Serving(ServingCmd),
     /// Thin clients this node serves (`clients.0^`)
     #[command(subcommand)]
     Clients(ClientsCmd),
-    /// Keep the store open: sync, host as `host.0^` says (the flags write it, as `hosting set`;
-    /// the host address prints first), print diagnostics
+    /// Keep the store open: sync, serve data for others if set to (the flags set it, as `serving set`;
+    /// the serving address prints first), print diagnostics
     Serve {
         #[command(flatten)]
-        host: HostFlags,
+        serving: ServingFlags,
         /// Serve clients at this URL, with the client listener's own key (repeatable): a
-        /// line `client URL#KEY` per listener prints after the host address
+        /// line `client URL#KEY` per listener prints after the serving address
         #[arg(long = "client-listen", value_name = "URL")]
         client_listen: Vec<String>,
     },
@@ -263,7 +265,7 @@ pub enum Cmd {
         /// By this actor (repeatable)
         #[arg(long, value_name = "A")]
         actor: Vec<String>,
-        /// content, revert, role, summary or ephemeral (repeatable)
+        /// content, revert, role, snapshot or ephemeral (repeatable)
         #[arg(long, value_name = "KIND")]
         kind: Vec<String>,
         /// Reverts of commit C
@@ -288,12 +290,12 @@ pub enum Cmd {
         #[arg(long, value_name = "undo|redo")]
         next: Option<String>,
     },
-    /// Undo this person's newest commit in scope
+    /// Undo this account's newest commit in scope
     Undo {
         #[command(flatten)]
         scope: Scope,
     },
-    /// Redo this person's newest undo in scope
+    /// Redo this account's newest undo in scope
     Redo {
         #[command(flatten)]
         scope: Scope,
@@ -313,14 +315,14 @@ pub enum Cmd {
         #[arg(long)]
         count: Option<usize>,
     },
-    /// This device's role on T
+    /// This node's role on T
     Role { t: String },
     /// Everyone holding a role on T, directly or through another actor: actor, role, when it ends,
     /// and the actors in between, one line per grant that makes it a holder
     Holders { t: String },
-    /// The database's corrected clock
+    /// This node's corrected clock
     Now,
-    /// Grant HOLDER ROLE (read, write, admin) on T, or change the grant's --until and --invite (no
+    /// Grant HOLDER ROLE (read, write, admin) on T, or change the grant's --until and --may-grant (no
     /// ROLE: as it is). Never lowers. Records the role only: HOLDER reads T once a synced group it
     /// reads holds T or T syncs (`group sync`); `status` shows otherwise
     Grant {
@@ -329,8 +331,9 @@ pub enum Cmd {
         role: Option<String>,
         #[arg(long, value_name = "TS")]
         until: Option<String>,
-        #[arg(long, value_name = "ROLE")]
-        invite: Option<String>,
+        /// The highest role HOLDER may grant others
+        #[arg(long = "may-grant", value_name = "ROLE")]
+        may_grant: Option<String>,
     },
     /// Make HOLDER's role on T this one: read, write, admin, or none to remove (lowering and removing
     /// catch up first)
@@ -341,7 +344,7 @@ pub enum Cmd {
         #[command(flatten)]
         d: SetRoleFlags,
     },
-    /// Lower or remove (ROLE none) HOLDER as `set-role` does, also undoing its key changes this device
+    /// Lower or remove (ROLE none) HOLDER as `set-role` does, also undoing its key changes this node
     /// cannot open: for a writer that locked everyone out, and nothing else
     Repudiate {
         t: String,
@@ -350,15 +353,15 @@ pub enum Cmd {
         #[command(flatten)]
         d: SetRoleFlags,
     },
-    /// Remove this person's own grant on T, or with --holder that of an actor this device is an
+    /// Remove this account's own grant on T, or with --holder that of an actor this node is an
     /// admin of (no catching up)
     Leave {
         t: String,
         #[arg(long, value_name = "ACTOR")]
         holder: Option<String>,
     },
-    /// List this device's kept read-only copies of what it was removed from, or erase ACTOR's
-    Kept {
+    /// List this node's read-only copies of what it was removed from, or erase ACTOR's
+    Retained {
         #[arg(long, value_name = "ACTOR")]
         drop: Option<String>,
     },
@@ -388,12 +391,12 @@ pub enum Cmd {
         #[arg(long)]
         watch: bool,
     },
-    /// Sync now and wait until everything (or G) is at a host
+    /// Sync now and wait until everything (or G) reached a peer; groups with no peer are named, not waited for
     Sync {
         #[arg(long, value_name = "G")]
         group: Option<String>,
     },
-    /// Wait until everything (or G) is at a host
+    /// Wait until everything (or G) reached a peer; groups with no peer are named, not waited for
     Wait {
         #[arg(long, value_name = "G")]
         group: Option<String>,
@@ -468,34 +471,39 @@ pub struct OpArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum PairCmd {
-    /// Print an offer and wait for a device to join
+    /// Print an offer and wait for a new node to join
     Offer,
-    /// Join as a new device (fresh store)
+    /// Join as a new node (fresh store)
     Join {
         offer: String,
+        /// A peer to sync with (repeatable)
         #[arg(long, value_name = "ADDR")]
-        host: Vec<String>,
+        peer: Vec<String>,
     },
 }
 
 #[derive(Subcommand, Debug)]
-pub enum DeviceCmd {
+pub enum NodeCmd {
     Ls,
     Rm {
         /// (Its own id: `node` is the global `--node`'s, whose value this would become.)
-        #[arg(id = "device", value_name = "NODE")]
+        #[arg(id = "removed_node", value_name = "NODE")]
         node: String,
         #[command(flatten)]
         d: SetRoleFlags,
-        /// Also end the person's links: the device keeps their seeds. Without it they are listed
+        /// Also end the account's links: the node keeps their seeds. Without it they are listed
         #[arg(long)]
         end_links: bool,
     },
 }
 
 #[derive(Subcommand, Debug)]
-pub enum HostsCmd {
-    Ls,
+pub enum PeersCmd {
+    /// The saved peers; with --group, whom G syncs with: its saved peers and readers' published addresses
+    Ls {
+        #[arg(long, value_name = "G")]
+        group: Option<String>,
+    },
     Add { addr: String },
     Rm { addr: String },
 }
@@ -522,42 +530,42 @@ pub enum ClientsCmd {
 }
 
 #[derive(Subcommand, Debug)]
-pub enum HostingCmd {
-    /// Print `host.0^` (not hosting: exit 3)
+pub enum ServingCmd {
+    /// Print the terms (not serving: exit 3)
     Show,
-    /// Start or change hosting: each flag given replaces its field, the rest kept
-    Set(HostFlags),
-    /// What names a synced group for a host's `--admitted` and `--cap`, one per line
+    /// Start or change serving: each flag given replaces its field, the rest kept
+    Set(ServingFlags),
+    /// The sync IDs of a synced group, for a serving node's `--admitted` and `--cap`, one per line
     Ids { g: String },
-    /// Stop hosting (the host address is dropped; a later start has a new one)
+    /// Stop serving (what was stored and the serving address are dropped; a later start has a new one)
     Off,
 }
 
-/// `host.0^` fields (`hosting set`, `serve`): each flag given replaces its field; a flag given
+/// The terms of serving (`serving set`, `serve`): each flag given replaces its field; a flag given
 /// once as `''` clears it.
 #[derive(clap::Args, Debug, Default)]
-pub struct HostFlags {
-    /// Listen for hosted sessions at this transport URL (repeatable)
+pub struct ServingFlags {
+    /// Listen at this transport URL (repeatable)
     #[arg(long, value_name = "URL")]
     pub listen: Vec<String>,
-    /// Which groups this node takes: those its account owns naming its host address, or any
+    /// Which groups this node takes: those its account owns naming its serving address, or any
     #[arg(long, value_enum)]
     pub admit: Option<AdmitArg>,
-    /// Also admit a group (one synced here) or an admission ID, 32 hex digits (repeatable)
+    /// Also admit a group (one synced here) or a sync ID, 32 hex digits (repeatable)
     #[arg(long, value_name = "GROUP|ID")]
     pub admitted: Vec<String>,
-    /// Push what it hosts to this peer host, `url#key` (repeatable)
+    /// Push what it stores for others to this serving node, `url#key` (repeatable)
     #[arg(long, value_name = "ADDR")]
     pub replicate: Vec<String>,
-    /// A host limit: group_entries, group_bytes, groups, entries, bytes, connections (repeatable)
+    /// A limit: group_entries, group_bytes, groups, entries, bytes, connections (repeatable)
     #[arg(long, value_name = "NAME=N")]
     pub policy: Vec<String>,
-    /// Caps for a group or an admission ID, in place of the policy's (repeatable)
+    /// Caps for a group or a sync ID, in place of the policy's (repeatable)
     #[arg(long, value_name = "GROUP|ID=ENTRIES,BYTES")]
     pub cap: Vec<String>,
 }
 
-impl HostFlags {
+impl ServingFlags {
     pub fn any(&self) -> bool {
         !self.listen.is_empty() || self.admit.is_some() || !self.admitted.is_empty() || !self.replicate.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
     }
@@ -599,7 +607,7 @@ pub enum LinkCmd {
         single_use: bool,
     },
     Redeem { link: String },
-    /// The person's working links (of thing T)
+    /// The account's working links (of thing T)
     Ls { t: Option<String> },
     /// End link ID; with --joiner, also remove that joiner in the same commit
     Revoke {
@@ -611,7 +619,7 @@ pub enum LinkCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum ChatCmd {
-    /// A new chat, this person its admin: prints its tid
+    /// A new chat, this account its admin: prints its tid
     Create {
         #[arg(long, default_value = "")]
         name: String,
@@ -624,17 +632,17 @@ pub enum ChatCmd {
         /// Messages disappear after DUR
         #[arg(long, value_name = "DUR")]
         disappear: Option<String>,
-        /// A kicked member erases what it holds, unless the kick says otherwise
+        /// A kicked participant erases what it holds, unless the kick says otherwise
         #[arg(long)]
-        no_keep: bool,
-        /// Where it syncs (default: the store's hosts); it must admit it (`admit own` does not)
+        no_retain_copy: bool,
+        /// Who it syncs with (default: the store's saved peers); a serving node must admit it (`admit own` does not)
         #[arg(long, value_name = "ADDR")]
-        host: Vec<String>,
+        peer: Vec<String>,
     },
-    /// Adds a person (a tid from `card import`)
+    /// Adds an account (a tid from `card import`)
     Add {
         chat: String,
-        person: String,
+        account: String,
         #[arg(long, default_value = "write")]
         role: String,
     },
@@ -648,16 +656,16 @@ pub enum ChatCmd {
     },
     /// Joins by link: prints the chat's tid
     Join { link: String },
-    /// Removes a person
+    /// Removes a participant
     Kick {
         chat: String,
-        person: String,
+        account: String,
         /// They erase what they hold, whatever the chat's default
         #[arg(long)]
         erase: bool,
-        /// They keep a read-only copy, whatever the chat's default
+        /// They retain a read-only copy, whatever the chat's default
         #[arg(long, conflicts_with = "erase")]
-        keep: bool,
+        retain_copy: bool,
         /// Also erase everything they sent
         #[arg(long)]
         purge: bool,
@@ -717,19 +725,20 @@ pub enum ChatCmd {
 pub enum CardCmd {
     Show,
     Import { card: String },
-    /// This person's profile thing, or the profile a card import brought for PERSON
-    Profile { person: Option<String> },
+    /// This account's profile thing, or the profile a card import brought for ACCOUNT
+    Profile { account: Option<String> },
 }
 
 #[derive(Subcommand, Debug)]
 pub enum GroupCmd {
     #[command(flatten)]
     Member(MemberCmd),
-    /// Make G synced (default: the store's hosts)
+    /// Make G synced (default: the store's saved peers)
     Sync {
         g: String,
+        /// A peer to sync with (repeatable)
         #[arg(long, value_name = "ADDR")]
-        host: Vec<String>,
+        peer: Vec<String>,
     },
     Unsync { g: String },
     /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node connected by --remote; held in the

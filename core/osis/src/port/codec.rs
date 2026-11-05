@@ -1,11 +1,11 @@
 //! Values of the client port's method table (notes/client-port.md §2): API types to and from
 //! untyped `Value`s, and API errors to and from Reply error codes (`osis_proto::ApiCode`).
 
-use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Scope};
+use crate::commits::{CommitEntry, CommitKind, CommitQuery, NotUndoableReason, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Grant, Grants, GroupsOf, Stamp, ThingStamp};
-use crate::share::{GrantOpts, GroupSync, Holder, HostAddr, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncFirst, SyncScope, SyncState};
-use crate::watch::{DerivedFrom, Source};
+use crate::share::{GrantOpts, GroupSync, Holder, Address, LinkId, LinkInfo, Member, SetRoleOpts, Status, SyncFirst, SyncScope, SyncState};
+use crate::watch::{DerivedFrom, Origin};
 use crate::write::Commit;
 use crate::commit_id::CommitId;
 use osis_base::{Ak, CommitId as RawCommitId, Role, Tid, Ts, Value, Time};
@@ -258,7 +258,7 @@ pub(crate) fn groups(v: Value) -> Result<GroupsOf> {
 }
 
 pub(crate) fn grants_v(r: &Grants) -> Value {
-    Value::List(r.iter().map(|(t, e)| Value::List(vec![Value::Tid(*t), role_v(e.role), opt(e.until, |w| u(w.0)), opt(e.invite, role_v), Value::Bool(e.with_membership)])).collect())
+    Value::List(r.iter().map(|(t, e)| Value::List(vec![Value::Tid(*t), role_v(e.role), opt(e.until, |w| u(w.0)), opt(e.may_grant, role_v), Value::Bool(e.with_membership)])).collect())
 }
 
 pub(crate) fn grants(v: Value) -> Result<Grants> {
@@ -266,7 +266,7 @@ pub(crate) fn grants(v: Value) -> Result<Grants> {
     for x in Args::of(vec![v]).list()? {
         let mut a = Args::new(x)?;
         let t = a.tid()?;
-        let e = Grant { role: role(&a.next()?)?, until: a.opt_wall()?, invite: a.opt()?.map(|r| role(&r)).transpose()?, with_membership: a.bool()? };
+        let e = Grant { role: role(&a.next()?)?, until: a.opt_wall()?, may_grant: a.opt()?.map(|r| role(&r)).transpose()?, with_membership: a.bool()? };
         a.end()?;
         out.insert(t, e);
     }
@@ -283,22 +283,22 @@ fn reasons_listed(c: DerivedFrom) {
     }
 }
 
-pub(crate) fn source_v(s: &Source) -> Value {
+pub(crate) fn origin_v(s: &Origin) -> Value {
     Value::List(match s {
-        Source::Initial => vec![u(0)],
-        Source::Local(i) => vec![u(1), stamp_v(i)],
-        Source::Remote(i) => vec![u(2), stamp_v(i)],
-        Source::Derived(c) => vec![u(3), u(REASONS.iter().position(|x| x == c).unwrap_or(0) as u64)],
+        Origin::Initial => vec![u(0)],
+        Origin::Local(i) => vec![u(1), stamp_v(i)],
+        Origin::Remote(i) => vec![u(2), stamp_v(i)],
+        Origin::Derived(c) => vec![u(3), u(REASONS.iter().position(|x| x == c).unwrap_or(0) as u64)],
     })
 }
 
-pub(crate) fn source(v: Value) -> Result<Source> {
+pub(crate) fn source(v: Value) -> Result<Origin> {
     let mut a = Args::new(v)?;
     let s = match a.uint()? {
-        0 => Source::Initial,
-        1 => Source::Local(stamp(a.next()?)?),
-        2 => Source::Remote(stamp(a.next()?)?),
-        3 => Source::Derived(*usize::try_from(a.uint()?).ok().and_then(|i| REASONS.get(i)).ok_or_else(|| bad("reason"))?),
+        0 => Origin::Initial,
+        1 => Origin::Local(stamp(a.next()?)?),
+        2 => Origin::Remote(stamp(a.next()?)?),
+        3 => Origin::Derived(*usize::try_from(a.uint()?).ok().and_then(|i| REASONS.get(i)).ok_or_else(|| bad("reason"))?),
         _ => return Err(bad("source")),
     };
     a.end()?;
@@ -329,7 +329,7 @@ pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
     }
 }
 
-const STATES: [SyncState; 8] = [SyncState::Synced, SyncState::Syncing, SyncState::Unreachable, SyncState::NoHosts, SyncState::Refused, SyncState::Stranded, SyncState::LogOnly, SyncState::NotCarried];
+const STATES: [SyncState; 9] = [SyncState::Synced, SyncState::Syncing, SyncState::Connected, SyncState::Unreachable, SyncState::NoPeers, SyncState::Refused, SyncState::Stranded, SyncState::LogOnly, SyncState::NotCarried];
 
 pub(crate) fn status_v(s: &Status) -> Value {
     let groups = s
@@ -352,13 +352,13 @@ pub(crate) fn status_v(s: &Status) -> Value {
 pub(crate) fn status(v: Value) -> Result<Status> {
     let mut a = Args::new(v)?;
     let connected = usize::try_from(a.uint()?).map_err(|_| bad("count"))?;
-    let mut st = Status { connected, groups: Default::default(), remotes: Vec::new(), two_sources: Default::default() };
+    let mut st = Status { connected, groups: Default::default(), client_connections: Vec::new(), two_sources: Default::default() };
     for g in a.list()? {
         let mut b = Args::new(g)?;
         let t = b.tid()?;
         let state = *usize::try_from(b.uint()?).ok().and_then(|i| STATES.get(i)).ok_or_else(|| bad("state"))?;
         let last_sync = b.opt_wall()?;
-        let refused_by = b.list()?.into_iter().map(|h| Args::of(vec![h]).text().and_then(|t| t.parse::<HostAddr>())).collect::<Result<_>>()?;
+        let refused_by = b.list()?.into_iter().map(|h| Args::of(vec![h]).text().and_then(|t| t.parse::<Address>())).collect::<Result<_>>()?;
         let leaving = b.bool()?;
         let not_carried_to = b.list()?.into_iter().map(|t| Args::of(vec![t]).tid()).collect::<Result<_>>()?;
         b.end()?;
@@ -452,7 +452,7 @@ pub(crate) fn scope(v: Value) -> Result<Scope> {
     Ok(s)
 }
 
-const CKINDS: [CommitKind; 5] = [CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Summary, CommitKind::Ephemeral];
+const CKINDS: [CommitKind; 5] = [CommitKind::Content, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot, CommitKind::Ephemeral];
 
 fn ckind_v(k: &CommitKind) -> Value {
     u(CKINDS.iter().position(|x| x == k).unwrap_or(0) as u64)
@@ -693,7 +693,7 @@ pub(crate) fn retention(v: Value) -> Result<Retention> {
 
 /// Grant options: `[Opt(until), Opt(invite)]`.
 pub(crate) fn grant_opts_v(o: &GrantOpts) -> Value {
-    Value::List(vec![opt(o.until, |w| u(w.0)), opt(o.invite, role_v)])
+    Value::List(vec![opt(o.until, |w| u(w.0)), opt(o.may_grant, role_v)])
 }
 
 pub(crate) fn grant_opts(v: Value) -> Result<GrantOpts> {
@@ -701,7 +701,7 @@ pub(crate) fn grant_opts(v: Value) -> Result<GrantOpts> {
     let until = a.opt_wall()?;
     let invite = a.opt()?.map(|r| role(&r)).transpose()?;
     a.end()?;
-    Ok(GrantOpts { until, invite })
+    Ok(GrantOpts { until, may_grant: invite })
 }
 
 /// A member of a group: `[0, tid]` item, `[1, tid]` subgroup.
@@ -753,7 +753,7 @@ pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
 /// A sync scope: `[]` all, `[tid]` the groups holding it.
 pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
     Value::List(match s {
-        SyncScope::All => vec![],
+        SyncScope::AllWithPeers => vec![],
         SyncScope::Thing(t) => vec![Value::Tid(t)],
     })
 }
@@ -761,7 +761,7 @@ pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
 pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     let mut a = Args::new(v)?;
     let s = match a.opt_tid()? {
-        None => SyncScope::All,
+        None => SyncScope::AllWithPeers,
         Some(t) => SyncScope::Thing(t),
     };
     a.end()?;
@@ -793,7 +793,7 @@ pub(crate) fn sync_first(v: Value) -> Result<SyncFirst> {
 
 /// A `SetRoleOpts`: `[sync first, Opt(keep)]`.
 pub(crate) fn set_role_v(o: &SetRoleOpts) -> Value {
-    Value::List(vec![sync_first_v(o.sync), opt(o.keep, Value::Bool)])
+    Value::List(vec![sync_first_v(o.sync), opt(o.retain_copy, Value::Bool)])
 }
 
 pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
@@ -801,7 +801,7 @@ pub(crate) fn set_role(v: Value) -> Result<SetRoleOpts> {
     let sync = sync_first(a.next()?)?;
     let keep = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
     a.end()?;
-    Ok(SetRoleOpts { sync, keep })
+    Ok(SetRoleOpts { sync, retain_copy: keep })
 }
 
 /// `SyncOptions`' fields.
@@ -853,7 +853,7 @@ pub(crate) fn outcome_err(e: &Error) -> Outcome {
         Error::Permission { tid, needs } => (ApiCode::PERMISSION, vec![Value::Tid(*tid), role_v(*needs)]),
         Error::Type { path, reason } => (ApiCode::TYPE, vec![path_v(path), t(reason)]),
         Error::TooLarge { limit } => (ApiCode::TOO_LARGE, vec![u(*limit as u64)]),
-        Error::NotUndoable { commit, reason } => (ApiCode::NOT_UNDOABLE, vec![commit_id_v(commit), u(u64::from(*reason == DropReason::Superseded))]),
+        Error::NotUndoable { commit, reason } => (ApiCode::NOT_UNDOABLE, vec![commit_id_v(commit), u(u64::from(*reason == NotUndoableReason::Superseded))]),
         Error::Unsynced { groups } => (ApiCode::UNSYNCED, vec![tids_v(groups)]),
         Error::Invalid(m) => (ApiCode::INVALID, vec![t(m)]),
         Error::Storage(m) => (ApiCode::STORAGE, vec![t(m)]),
@@ -861,7 +861,7 @@ pub(crate) fn outcome_err(e: &Error) -> Outcome {
         Error::OutcomeUnknown => (ApiCode::OUTCOME_UNKNOWN, vec![]),
         Error::Unsupported(m) => (ApiCode::UNSUPPORTED, vec![t(m)]),
         Error::Refused(m) => (ApiCode::REFUSED, vec![t(m)]),
-        Error::Closed => (ApiCode::STORAGE, vec![t("the node's database closed")]),
+        Error::Closed => (ApiCode::STORAGE, vec![t("the node closed")]),
     };
     Outcome::Err { code, detail }
 }
@@ -877,7 +877,7 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
             ApiCode::PERMISSION => Error::Permission { tid: a.tid()?, needs: role(&a.next()?)? },
             ApiCode::TYPE => Error::Type { path: path(a.next()?)?, reason: a.text()? },
             ApiCode::TOO_LARGE => Error::TooLarge { limit: usize::try_from(a.uint()?).unwrap_or(usize::MAX) },
-            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: commit_id(a.next()?)?, reason: if a.uint()? == 1 { DropReason::Superseded } else { DropReason::ContentGone } },
+            ApiCode::NOT_UNDOABLE => Error::NotUndoable { commit: commit_id(a.next()?)?, reason: if a.uint()? == 1 { NotUndoableReason::Superseded } else { NotUndoableReason::ContentGone } },
             ApiCode::UNSYNCED => Error::Unsynced { groups: tids(a.next()?)? },
             ApiCode::INVALID => Error::Invalid(text(&mut a)),
             ApiCode::STORAGE => Error::Storage(text(&mut a)),

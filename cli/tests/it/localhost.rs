@@ -1,6 +1,6 @@
 //! The localhost end-to-end session (notes/apps.md, notes/cli.md Tests), tier 2: a node
-//! hosting in an `osis serve` process over QUIC on 127.0.0.1 and three more store directories
-//! (Alice's two devices, Bob), driven only through the `osis` binary: init, pair offer/join, link make/redeem, writes
+//! serving in an `osis serve` process over QUIC on 127.0.0.1 and three more store directories
+//! (Alice's two nodes, Bob), driven only through the `osis` binary: init, pair offer/join, link make/redeem, writes
 //! on all three, sync, status, undo, bundles, inspect. Assertions read `--json` output.
 //! Run: `cargo test --workspace --test it localhost:: -- --ignored`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -26,7 +26,7 @@ fn cmd() -> Command {
     c
 }
 
-/// Kills the host when the test ends, also on a panic.
+/// Kills the peer when the test ends, also on a panic.
 struct Host(Child);
 
 impl Drop for Host {
@@ -62,14 +62,14 @@ fn field<'a>(json: &'a str, key: &str) -> &'a str {
     &json[i..i + json[i..].find('"').unwrap()]
 }
 
-/// Pairs `new` (an empty store) to the person of `old`: the offer and request/reply lines are
-/// carried between the two processes, as a person would by QR code. `host`: the new store's.
+/// Pairs `new` (an empty store) to the account of `old`: the offer and request/reply lines are
+/// carried between the two processes, as an account would by QR code. `host`: the new store's.
 fn pair(old: &Path, new: &Path, host: Option<&str>) {
     let mut offer = Command::new(OSIS).arg("-s").arg(old).args(["--timeout", "60s", "pair", "offer"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut offer_out = BufReader::new(offer.stdout.take().unwrap());
     let mut line = String::new();
     offer_out.read_line(&mut line).unwrap();
-    let host = host.map(|h| vec!["--host", h]).unwrap_or_default();
+    let host = host.map(|h| vec!["--peer", h]).unwrap_or_default();
     let mut join = Command::new(OSIS).arg("-s").arg(new).args(["--timeout", "60s", "pair", "join"]).args(host).arg(line.trim()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut join_out = BufReader::new(join.stdout.take().unwrap());
     let mut req = String::new();
@@ -83,25 +83,25 @@ fn pair(old: &Path, new: &Path, host: Option<&str>) {
 }
 
 // spec/sync.md §10 (QUIC to a known address), spec/permissions.md §8 (links), notes/api.md
-// (Devices, Sync), notes/cli.md Tests (tier 2): two people and three devices meet only through
-// one host process.
+// (Nodes, Sync), notes/cli.md Tests (tier 2): two accounts and three nodes meet only through
+// one peer process.
 #[test]
 #[ignore]
-fn two_people_three_devices_one_host_localhost() {
-    // a fresh box: `init`, then `serve` hosting any label (`host.0^` written by the flags)
+fn two_accounts_three_nodes_one_peer_localhost() {
+    // a fresh box: `init`, then `serve` serving any label (`host.0^` written by the flags)
     let sd = dir("host");
     osis(&sd, &["init"]);
     let (_host, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
     assert!(addr.starts_with("quic://127.0.0.1:"), "{addr}");
 
     let (a1, a2, b) = (dir("alice1"), dir("alice2"), dir("bob"));
-    osis(&a1, &["init", "--host", &addr]);
-    osis(&b, &["init", "--host", &addr]);
+    osis(&a1, &["init", "--peer", &addr]);
+    osis(&b, &["init", "--peer", &addr]);
     pair(&a1, &a2, Some(&addr));
     let me1 = osis(&a1, &["--json", "whoami"]);
     let me2 = osis(&a2, &["--json", "whoami"]);
     assert_eq!(field(&me1, "me"), field(&me2, "me"), "one person, two devices");
-    assert_eq!(osis(&a1, &["device", "ls"]).lines().count(), 2);
+    assert_eq!(osis(&a1, &["node", "ls"]).lines().count(), 2);
 
     // Alice shares a group by link; Bob redeems it
     let g = osis(&a1, &["create", "--in", "me", "t:made.0", "true"]);
@@ -109,12 +109,12 @@ fn two_people_three_devices_one_host_localhost() {
     let t = osis(&a1, &["create", "--admin", &g, "--in", &g, "t:x.0", "\"hello\""]);
     let link = osis(&a1, &["link", "make", &g, "write"]);
     osis(&a1, &["sync"]);
-    // Alice's devices are all closed now: the link works from the host alone
+    // Alice's nodes are all closed now: the link works from the peer alone
     assert_eq!(osis(&b, &["link", "redeem", &link]), g);
     osis(&b, &["sync"]);
     assert_eq!(osis(&b, &["get", &t, "t:x.0"]), "\"hello\"");
 
-    // writes on all three devices meet
+    // writes on all three nodes meet
     osis(&b, &["set", &t, "t:y.0", "1"]);
     osis(&a2, &["sync"]);
     osis(&a2, &["set", &t, "t:z.0", "2"]);
@@ -130,16 +130,16 @@ fn two_people_three_devices_one_host_localhost() {
     let st = osis(&a1, &["--json", "status"]);
     assert!(st.contains(&g) && !st.contains("unreachable"), "{st}");
 
-    // undo on the other device of the same person
+    // undo on the other node of the same account
     osis(&a1, &["undo", "--thing", &t]);
     osis(&a1, &["sync"]);
     osis(&b, &["sync"]);
     let absent = Command::new(OSIS).arg("-s").arg(&b).args(["get", &t, "t:z.0"]).output().unwrap();
     assert_eq!(absent.status.code(), Some(3), "Alice's last change undone everywhere: absent");
 
-    // a bundle carries the home group to the other device by hand
+    // a bundle carries the home group to the other node by hand
     let n = osis(&a1, &["create", "--in", "me", "t:x.0", "\"by hand\""]);
-    // a bundle holds what is placed under the label: a pass places it (the device syncs; a2 does not)
+    // a bundle holds what is placed under the label: a pass places it (the node syncs; a2 does not)
     osis(&a1, &["sync"]);
     let bundle = osis_in(&a1, &["bundle", "export", "me"], b"");
     osis_in(&a2, &["bundle", "import"], &bundle);
@@ -147,9 +147,9 @@ fn two_people_three_devices_one_host_localhost() {
     assert!(osis(&a2, &["inspect", "thing", &n]).contains("t:x.0"));
 }
 
-/// Runs `osis -s STORE serve ARGS` until dropped; returns it and the host address it prints.
+/// Runs `osis -s STORE serve ARGS` until dropped; returns it and the peer address it prints.
 /// Only that first line is read, then stdout is closed: the diagnostics `serve` prints after it
-/// are best effort (notes/cli.md serve), so the host goes on (the tests below need it).
+/// are best effort (notes/cli.md serve), so the peer goes on (the tests below need it).
 fn serve(store: &Path, args: &[&str]) -> (Host, String) {
     let mut c = cmd().arg("-s").arg(store).arg("serve").args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut out = BufReader::new(c.stdout.take().unwrap());
@@ -252,15 +252,15 @@ fn daemon(store: &Path) -> Host {
     host
 }
 
-// spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a host taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined through the daemon on the other (again by either: the chat), `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick through the daemon
+// spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a peer taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined through the daemon on the other (again by either: the chat), `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick through the daemon
 #[test]
 #[ignore]
 fn chat_channel_localhost() {
     let (hs, a, b) = (dir("chat-host"), dir("chat-a"), dir("chat-b"));
     osis(&hs, &["init"]);
     let (_host, addr) = serve(&hs, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
-    osis(&a, &["init", "--host", &addr]);
-    osis(&b, &["init", "--host", &addr]);
+    osis(&a, &["init", "--peer", &addr]);
+    osis(&b, &["init", "--peer", &addr]);
     // stores already in use
     osis(&b, &["create", "note:title.0", "\"before\""]);
     let da = daemon(&a);
@@ -297,7 +297,7 @@ fn chat_channel_localhost() {
     let caught = osis(&b, &["--json", "chat", "watch", &c, "--after", &cursor, "--count", "1"]);
     assert_eq!(field(&caught, "id"), second);
     let mine = osis(&b, &["chat", "post", &c, "--from", "bob", "from bob"]);
-    // the people who joined, by their link; not the link's actor
+    // the accounts who joined, by their link; not the link's actor
     let whom = field(&osis(&b, &["--json", "whoami"]), "me").to_string();
     let m = osis(&a, &["chat", "participants", &c]);
     assert!(m.lines().any(|l| l.starts_with(&format!("{whom} Write via "))) && m.lines().any(|l| l.starts_with("link ")), "{m}");
@@ -329,41 +329,41 @@ fn chat_channel_localhost() {
     assert!(osis(&b, &["chat", "read", &c]).contains("from bob, fixed"), "a kicked member keeps a copy");
 }
 
-// spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Hosting: a dedicated host device of
-// Alice's, paired and then hosting under `own` (its address from `hosting show`, before it
-// serves, so one port picked up front), the only host she has: her home, a group made afterwards and a
-// link to it reach it; Bob, on that host only, redeems the link (his own home it refuses:
-// his `sync` exits 6 naming the host that does not admit it).
+// spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Serving: a dedicated peer node of
+// Alice's, paired and then serving under `own` (its address from `serving show`, before it
+// serves, so one port picked up front), the only peer she has: her home, a group made afterwards and a
+// link to it reach it; Bob, on that peer only, redeems the link (his own home it refuses:
+// his `sync` exits 6 naming the peer that does not admit it).
 #[test]
 #[ignore]
-fn own_host_device_localhost() {
+fn own_serving_node_localhost() {
     let (a, h, b) = (dir("own-alice"), dir("own-host"), dir("own-bob"));
     osis(&a, &["init"]);
     pair(&a, &h, None);
     let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let url = format!("quic://127.0.0.1:{port}");
-    osis(&h, &["hosting", "set", "--listen", &url, "--admit", "own"]);
-    let show = osis(&h, &["hosting", "show"]);
+    osis(&h, &["serving", "set", "--listen", &url, "--admit", "own"]);
+    let show = osis(&h, &["serving", "show"]);
     let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
     assert!(addr.starts_with(&format!("{url}#")), "{addr}");
-    osis(&h, &["hosts", "add", &addr]);
-    osis(&a, &["hosts", "add", &addr]);
+    osis(&h, &["peers", "add", &addr]);
+    osis(&a, &["peers", "add", &addr]);
     let (_host, served) = serve(&h, &[]);
-    assert_eq!(served, addr, "the address `hosting show` said");
+    assert_eq!(served, addr, "the address `serving show` said");
 
     let g = osis(&a, &["create", "--in", "me", "t:made.0", "true"]);
     osis(&a, &["group", "sync", &g]);
     let t = osis(&a, &["create", "--admin", &g, "--in", &g, "t:x.0", "\"hello\""]);
     let link = osis(&a, &["link", "make", &g, "write"]);
     osis(&a, &["sync"]);
-    osis(&b, &["init", "--host", &addr]);
+    osis(&b, &["init", "--peer", &addr]);
     assert_eq!(osis(&b, &["link", "redeem", &link]), g);
     assert_eq!(osis(&b, &["get", &t, "t:x.0"]), "\"hello\"");
     let home = osis(&b, &["whoami", "--json"]);
     let o = Command::new(OSIS).arg("-s").arg(&b).args(["--timeout", "5s", "sync"]).output().unwrap();
     let err = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(6), "{err}");
-    assert!(err.contains(&format!("host {addr} does not admit group {} (yet)", field(&home, "me"))), "{err}");
+    assert!(err.contains(&format!("{addr} does not admit group {} (yet)", field(&home, "me"))), "{err}");
 }
 
 /// Runs `osis` once; (exit code, stdout, stderr).
@@ -382,18 +382,18 @@ fn run_in(store: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
 /// A `write` script whose last line names an unknown thing (exit 3, nothing committed).
 const BAD_SCRIPT: &[u8] = b"create --in me --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
 
-// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally; `device ls`, `card show`, `hosting set/show/off`, `hosts add/rm`, `link redeem/revoke`, `demote`, `bundle export/import`, `pair offer`, `device rm`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as the main actor, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally; `node ls`, `card show`, `serving set/show/off`, `peers add/rm`, `link redeem/revoke`, `demote`, `bundle export/import`, `pair offer`, `node rm`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
 #[ignore]
 fn daemon_clients_localhost() {
-    // a host, and Bob on it, a contact of the daemon's person both ways (before it serves)
+    // a peer, and Bob on it, a contact of the daemon's account both ways (before it serves)
     let sd = dir("daemon-host");
     osis(&sd, &["init"]);
     let (_hosting, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
     let s = dir("daemon");
-    osis(&s, &["init", "--host", &addr]);
+    osis(&s, &["init", "--peer", &addr]);
     let b = dir("daemon-bob");
-    osis(&b, &["init", "--host", &addr]);
+    osis(&b, &["init", "--peer", &addr]);
     let card = osis(&b, &["card", "show"]);
     let bob = osis(&s, &["card", "import", &card]);
     // contacts both ways: Bob takes the grant without an invite request
@@ -468,19 +468,19 @@ fn daemon_clients_localhost() {
         // so does `group source`: it says what to do
         let src = run(&s, &["group", "source", &t, "local"]);
         assert!(src.0 == 1 && src.2.contains("stop `osis serve`"), "{src:?}");
-        // the node's own commands through the socket: its devices, hosts, hosting, cards, links
+        // the node's own commands through the socket: its nodes, peers, serving, cards, links
         if xdg {
-            assert_eq!(osis(&s, &["device", "ls"]).lines().count(), 1);
+            assert_eq!(osis(&s, &["node", "ls"]).lines().count(), 1);
             assert_eq!(osis(&s, &["card", "show"]), scard);
             let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-            osis(&s, &["hosting", "set", "--listen", &format!("quic://127.0.0.1:{port}"), "--admit", "open"]);
-            let show = osis(&s, &["hosting", "show"]);
+            osis(&s, &["serving", "set", "--listen", &format!("quic://127.0.0.1:{port}"), "--admit", "open"]);
+            let show = osis(&s, &["serving", "show"]);
             let own = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
-            osis(&s, &["hosts", "add", &own]);
-            assert!(osis(&s, &["hosts", "ls"]).contains(&own));
-            osis(&s, &["hosts", "rm", &own]);
-            osis(&s, &["hosting", "off"]);
-            assert_eq!(run(&s, &["hosting", "show"]).0, 3);
+            osis(&s, &["peers", "add", &own]);
+            assert!(osis(&s, &["peers", "ls"]).contains(&own));
+            osis(&s, &["peers", "rm", &own]);
+            osis(&s, &["serving", "off"]);
+            assert_eq!(run(&s, &["serving", "show"]).0, 3);
             // a link redeemed and ended through daemons
             let g = osis(&b, &["create", "--in", "me", "t:made.0", "true"]);
             osis(&b, &["group", "sync", &g]);
@@ -505,28 +505,28 @@ fn daemon_clients_localhost() {
             let id = ls.split_whitespace().next().unwrap_or_else(|| panic!("{ls}")).to_string();
             osis(&s, &["link", "revoke", &id]);
             assert_eq!(osis(&s, &["link", "ls", &sg]), "");
-            // a bundle, and a new device paired through the daemon's stdin flow
+            // a bundle, and a new node paired through the daemon's stdin flow
             let bundle = cmd().arg("-s").arg(&s).args(["bundle", "export", "me"]).output().unwrap();
             assert!(bundle.status.success() && bundle.stdout.starts_with(b"osisbndl"), "{}", String::from_utf8_lossy(&bundle.stderr));
             assert_eq!(run_in(&s, &["bundle", "import"], &bundle.stdout).0, 0);
             let dev = dir("daemon-device");
             pair(&s, &dev, Some(&addr));
-            let ls = osis(&s, &["device", "ls"]);
+            let ls = osis(&s, &["node", "ls"]);
             assert_eq!(ls.lines().count(), 2);
             let node = field(&osis(&s, &["--json", "whoami"]), "node").to_string();
             let other = ls.lines().find(|l| *l != node).unwrap().to_string();
-            // spec/permissions.md §8: the removed device keeps the seeds: `device rm` says so, or
+            // spec/permissions.md §8: the removed node keeps the seeds: `node rm` says so, or
             // with --end-links ends them
             osis(&s, &["link", "make", &sg, "read"]);
-            let open = osis(&s, &["device", "rm", &other, "--sync", "skip"]);
+            let open = osis(&s, &["node", "rm", &other, "--sync", "skip"]);
             assert!(open.contains("osis link revoke"), "{open}");
-            assert_eq!(osis(&s, &["device", "ls"]).lines().count(), 1);
+            assert_eq!(osis(&s, &["node", "ls"]).lines().count(), 1);
             assert_eq!(osis(&s, &["link", "ls"]).lines().count(), open.lines().count(), "the person's links");
             let dev = dir("daemon-device-2");
             pair(&s, &dev, Some(&addr));
-            let ls = osis(&s, &["device", "ls"]);
+            let ls = osis(&s, &["node", "ls"]);
             let other = ls.lines().find(|l| *l != node).unwrap().to_string();
-            let ended = osis(&s, &["device", "rm", &other, "--sync", "skip", "--end-links"]);
+            let ended = osis(&s, &["node", "rm", &other, "--sync", "skip", "--end-links"]);
             assert!(ended.starts_with("ended link"), "{ended}");
             assert_eq!(osis(&s, &["link", "ls"]), "");
         }

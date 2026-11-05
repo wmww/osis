@@ -1,4 +1,4 @@
-//! The actions layer over an in-memory database.
+//! The actions layer over an in-memory node.
 use osis::core::{NAME, TAG};
 use osis::internals::core_types::{GROUP};
 use osis_app::data::{Data, Kind, snippet};
@@ -92,7 +92,7 @@ fn snippets() {
     assert!(snippet("İzmir", &osis_app::data::fold("İZMİR")).is_some());
 }
 
-/// The look is per person, on the app group: default until set.
+/// The look is per account, on the app group: default until set.
 #[test]
 fn look_choice() {
     use osis_app::schema::Mode;

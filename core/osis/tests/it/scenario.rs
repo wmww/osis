@@ -1,4 +1,4 @@
-//! Shared setup for the standard-data scenarios: databases and a host in process
+//! Shared setup for the standard-data scenarios: nodes and a peer in process
 //! (osis-sim's `World`: manual clock, in-memory hubs, no sleeps, no network).
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -8,21 +8,21 @@ use osis::core::{NAME, TAG, Tag};
 use osis::{Osis, Result, Tid};
 use osis_sim::world::World;
 
-/// A person on host `host`, settled.
+/// An account on peer `host`, settled.
 pub fn person(w: &mut World, seed: u64, host: usize) -> Osis {
     let db = w.person(seed, &[host]).0;
     w.run();
     db
 }
 
-/// `db` imports `other`'s contact card; returns `other`'s person actor.
+/// `db` imports `other`'s contact card; returns `other`'s account actor.
 pub fn introduce(w: &mut World, db: &Osis, other: &Osis) -> Tid {
     let card = other.contact_card().unwrap();
     w.run();
     w.until(db.import_contact(&card), 1000, 10).unwrap()
 }
 
-/// A tag owned by the person, synced under its own label (a shareable root, not placed in home).
+/// A tag owned by the account, synced under its own label (a shareable root, not placed in home).
 pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
     let mut w = db.write();
     let t = w.create()?;
@@ -33,10 +33,10 @@ pub fn new_tag(db: &Osis, name: &str) -> Result<Tid> {
     Ok(t)
 }
 
-/// A person's private tag: a tag group in its home, an item (its own aspects sync) and a
-/// subgroup (its items sync), so every device has it and nobody else does.
+/// An account's private tag: a tag group in its home, an item (its own aspects sync) and a
+/// subgroup (its items sync), so every node has it and nobody else does.
 pub fn private_tag(db: &Osis, name: &str) -> Result<Tid> {
-    db.batch(|w| {
+    db.commit_with(|w| {
         let t = w.create_in(db.me(), &[db.me()])?;
         w.group(db.me()).add(osis::Member::Subgroup(t))?;
         w.at(t, TAG).set(&Tag::default())?;

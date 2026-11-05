@@ -7,7 +7,7 @@ mod commits;
 mod ephemeral;
 mod ephemeral_undo;
 mod history;
-mod hosting;
+mod serving;
 mod runtime;
 mod sharing;
 mod sync;

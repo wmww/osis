@@ -1,5 +1,5 @@
-//! The `Write` recorder (notes/client-port.md §1): a batch of API ops commits to the
-//! same state as the same ops committed one batch each, for random op lists.
+//! The `Write` recorder (notes/client-port.md §1): a commit of API ops commits to the
+//! same state as the same ops committed one commit each, for random op lists.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common::TestWrites as _;
@@ -18,9 +18,9 @@ mod notes {
 const AKS: [&str; 3] = ["app:a.0", "app:e.0~", "app:m.0"];
 const HOUR: Duration = Duration::from_secs(3600);
 
-/// One API call of a batch; things by index into the case's things (setup ones first, then
+/// One API call of a commit; things by index into the case's things (setup ones first, then
 /// the case's creates), groups by index into its two groups (`g0`: plain placements, `g1`:
-/// placements expiring in an hour; one expiry per group and batch).
+/// placements expiring in an hour; one expiry per group and commit).
 #[derive(Clone, Debug)]
 enum Call {
     Set(usize, usize, i64),
@@ -75,7 +75,7 @@ impl Rng {
 /// one), `t0` placed in `g0`.
 const SETUP: usize = 4;
 
-/// A case: how many things it creates (first in the batch: they draw the same tids either
+/// A case: how many things it creates (first in the commit: they draw the same tids either
 /// way), then its calls. Lists that would read differently batched and unbatched are
 /// normalized away (a commit's `delete` removes what is held when it commits, not what
 /// was written before it in it): a thing has no call before its delete, and a created thing is
@@ -139,10 +139,10 @@ struct World {
 fn world() -> World {
     let db = db(7);
     let (things, groups) = db
-        .batch(|w| {
+        .commit_with(|w| {
             let things: Vec<Tid> = (0..SETUP).map(|_| w.create_durable(db.me())).collect::<osis::Result<_>>()?;
             for t in &things {
-                w.at(*t, osis::Key::untyped(ak(AKS[2]))).set(&Value::Map(osis_base::ValueMap::new()))?;
+                w.at(*t, osis::DynamicAspectKey::untyped(ak(AKS[2]))).set(&Value::Map(osis_base::ValueMap::new()))?;
             }
             let g0 = w.create_durable(db.me())?;
             let g1 = w.create_durable(db.me())?;
@@ -158,16 +158,16 @@ fn apply(w: &mut osis::Write<'_>, wd: &World, things: &[Tid], c: &Call) -> osis:
     let m = |v: &[(i64, i64)]| Value::Map(v.iter().map(|(k, x)| (Value::Int(*k), Value::Int(*x))).collect::<BTreeMap<_, _>>().into_iter().collect());
     let [g0, g1] = wd.groups;
     match c {
-        Call::Set(t, k, v) => w.at(things[*t], osis::Key::untyped(key(*k))).set(&Value::Int(*v)),
+        Call::Set(t, k, v) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(*k))).set(&Value::Int(*v)),
         Call::SetExpiring(t, k, v) => {
             w.expires(osis::Expiry::In(HOUR));
-            w.at(things[*t], osis::Key::untyped(key(*k))).set(&Value::Int(*v))
+            w.at(things[*t], osis::DynamicAspectKey::untyped(key(*k))).set(&Value::Int(*v))
         }
-        Call::Replace(t, k, v) => w.at(things[*t], osis::Key::untyped(key(*k))).overwrite(&Value::Int(*v)),
-        Call::Remove(t, k) => w.at(things[*t], osis::Key::untyped(key(*k))).remove(),
-        Call::Put(t, k, v) => w.at(things[*t], osis::Key::untyped(key(2))).path(p!(Value::Int(*k))).set(&Value::Int(*v)),
-        Call::RemoveKey(t, k) => w.at(things[*t], osis::Key::untyped(key(2))).path(p!(Value::Int(*k))).remove(),
-        Call::Edit(t, b, n) => w.at(things[*t], osis::Key::untyped(key(2))).edit(&m(b), &m(n)),
+        Call::Replace(t, k, v) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(*k))).overwrite(&Value::Int(*v)),
+        Call::Remove(t, k) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(*k))).remove(),
+        Call::Put(t, k, v) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(2))).path(p!(Value::Int(*k))).set(&Value::Int(*v)),
+        Call::RemoveKey(t, k) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(2))).path(p!(Value::Int(*k))).remove(),
+        Call::Edit(t, b, n) => w.at(things[*t], osis::DynamicAspectKey::untyped(key(2))).edit(&m(b), &m(n)),
         Call::Title(t, s) => w.at(things[*t], notes::TITLE).set(s),
         Call::Views(t, n) => w.at(things[*t], notes::VIEWS).path(osis::Path::root()).contribute(n),
         Call::Opened(t, v) => w.at(things[*t], notes::LAST_OPENED).set(v),
@@ -209,7 +209,7 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
     let runs: Vec<&[Call]> = if batched { calls.chunk_by(|a, b| commit_class(a) == commit_class(b)).collect() } else { calls.chunks(1).collect() };
     if !batched || calls.is_empty() {
         for _ in 0..std::mem::take(&mut fresh) {
-            things.push(db.batch(|w| w.create()).unwrap());
+            things.push(db.commit_with(|w| w.create()).unwrap());
         }
     }
     for run in runs {
@@ -233,10 +233,10 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
             Err(osis::Error::Invalid(_)) if batched && run.len() > 1 => {
                 REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 for _ in 0..std::mem::take(&mut fresh) {
-                    things.push(db.batch(|w| w.create()).unwrap());
+                    things.push(db.commit_with(|w| w.create()).unwrap());
                 }
                 for c in run {
-                    db.batch(|w| apply(w, &wd, &things, c)).unwrap_or_else(|e| panic!("{c:?}: {e}"));
+                    db.commit_with(|w| apply(w, &wd, &things, c)).unwrap_or_else(|e| panic!("{c:?}: {e}"));
                 }
             }
             Err(e) => panic!("{run:?}: {e}"),
@@ -248,7 +248,7 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
 /// Every aspect value, placement and existence of the case's things and groups.
 fn state(wd: &World, things: &[Tid]) -> Vec<String> {
     let db = &wd.db;
-    // created things are named by position: a creation-only batch is a commit (its blind drawn
+    // created things are named by position: a creation-only commit is a commit (its blind drawn
     // from the engine's rng), so the tids drawn after one differ between the modes
     let name = |s: String| things.iter().enumerate().fold(s, |s, (i, t)| s.replace(&t.to_string(), &format!("T{i}")));
     let mut out = Vec::new();
@@ -260,9 +260,9 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
             if a.as_str() == "created.0" || a.as_str() == "placed.0~" {
                 continue;
             }
-            vals.push(format!("{a}={:?}", db.at(*t, osis::Key::untyped(a.clone())).get().unwrap()));
+            vals.push(format!("{a}={:?}", db.at(*t, osis::DynamicAspectKey::untyped(a.clone())).get().unwrap()));
         }
-        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t).unwrap(), db.at(*t, osis::internals::core_types::GROUP).get().unwrap(), db.groups_of(*t).unwrap(), vals.join(" "))));
+        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.has_content(*t).unwrap(), db.at(*t, osis::internals::core_types::GROUP).get().unwrap(), db.groups_of(*t).unwrap(), vals.join(" "))));
     }
     out
 }
@@ -273,10 +273,10 @@ const CASES: u64 = 64;
 
 // notes/client-port.md §1: a `Write` records API ops and builds the engine mutation at
 // commit; a random op list (sets, edits, path ops, typed writes with schema defaults, expiry,
-// group ops, `delete`, creates) commits to the state its ops reach one batch each.
+// group ops, `delete`, creates) commits to the state its ops reach one commit each.
 // spec: none (API surface, notes/api.md Writes)
 #[test]
-fn batch_equals_single_op_batches() {
+fn commit_equals_single_op_commits() {
     for seed in 0..CASES {
         let (creates, calls) = case(seed);
         let (a, ta, id) = run(creates, &calls, true);
@@ -286,13 +286,13 @@ fn batch_equals_single_op_batches() {
         // with --nocapture and compare)
         eprintln!("write_ops seed {seed}: {id:?}");
     }
-    // the point is batches: most runs of several calls must commit whole
+    // the point is commits: most runs of several calls must commit whole
     let (whole, refused) = (WHOLE.load(std::sync::atomic::Ordering::Relaxed), REFUSED.load(std::sync::atomic::Ordering::Relaxed));
     eprintln!("write_ops: {whole} batches whole, {refused} refused");
     assert!(whole > refused, "{whole} batches whole, {refused} refused");
 }
 
-// spec: none (notes/api.md Keys): an app's generic helper names `osis::AspectKey` alone, with or without a value type, and takes generated keys and `osis::Key`
+// spec: none (notes/api.md Keys): an app's generic helper names `osis::AspectKey` alone, with or without a value type, and takes generated keys and `osis::DynamicAspectKey`
 #[test]
 fn a_generic_helper_names_aspect_key() {
     fn set_and_read<K: osis::AspectKey + Clone>(db: &Osis, t: Tid, k: K, v: &K::T) -> osis::Result<Option<K::T>> {
@@ -308,7 +308,7 @@ fn a_generic_helper_names_aspect_key() {
     let mut w = db.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
-    let key = db.key("app:h.0").unwrap();
+    let key = db.aspect_key("app:h.0").unwrap();
     assert_eq!(set_and_read(&db, t, key, &Value::Int(1)).unwrap(), Some(Value::Int(1)));
     assert_eq!(set_and_read(&db, t, notes::TITLE, &"x".to_string()).unwrap().as_deref(), Some("x"));
     assert_eq!(title_of(&db, t, notes::TITLE).unwrap(), "x");
@@ -323,7 +323,7 @@ fn a_backward_move_range_is_invalid() {
     let t = w.create().unwrap();
     #[allow(clippy::reversed_empty_ranges)]
     let back = 2..1;
-    assert!(matches!(w.at(t, osis::Key::untyped(k)).path(p![]).move_range(back, 0), Err(osis::Error::Invalid(_))));
+    assert!(matches!(w.at(t, osis::DynamicAspectKey::untyped(k)).path(p![]).move_range(back, 0), Err(osis::Error::Invalid(_))));
 }
 
 // spec/commits.md §6, notes/api.md Writes: what clashes is judged on what the ops ask, not on what they
@@ -333,13 +333,13 @@ fn a_backward_move_range_is_invalid() {
 fn a_clash_is_judged_on_what_is_asked() {
     let db = db(2);
     db.register_schema("rv.osis", "version 1;\naspect app:d.0: int [expires: 30d];\naspect app:p.0: int;").unwrap();
-    let t = db.batch(|w| {
+    let t = db.commit_with(|w| {
         let t = w.create()?;
-        w.at(t, osis::Key::untyped(ak("app:a.0"))).set(&Value::Int(0))?;
+        w.at(t, osis::DynamicAspectKey::untyped(ak("app:a.0"))).set(&Value::Int(0))?;
         Ok(t)
     })
     .unwrap();
-    let (d, plain) = (db.key("app:d.0").unwrap(), db.key("app:p.0").unwrap());
+    let (d, plain) = (db.aspect_key("app:d.0").unwrap(), db.aspect_key("app:p.0").unwrap());
     db.commit_set(t, d.clone(), &Value::Int(1)).unwrap();
     let mut w = db.write();
     w.at(t, d.clone()).set(&Value::Int(1)).unwrap();

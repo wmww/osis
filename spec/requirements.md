@@ -11,7 +11,7 @@ Terms:
 - **Peer**: another node a node syncs with directly. **Relay**: forwards a connection's encrypted bytes and stores nothing; not a node. **Client**: anything using the osis client protocol to reach a node out of process, on the same machine or another; a node may be one too, for data it doesn't sync itself. **Thin client**: a client that is not a node. Machine, transport and acting actor are independent: which actors a client may act as is a node's policy, not a property of where the client runs.
 
 ## Purpose
-- End-user apps with small-to-large interconnected data across users and devices. Many apps, app versions, generic tools and agents share the same data, like a file format.
+- End-user apps with small-to-large interconnected data across users and their machines. Many apps, app versions, generic tools and agents share the same data, like a file format.
 - Simple, safe Rust. Nothing on the wire path depends on third-party parsers or serialization frameworks. Runs in browsers.
 
 ## Threat model
@@ -40,7 +40,7 @@ Terms:
 - Nodes that share data sync directly by default, between different users too. Privacy of who sees whose address is handled without turning that off.
 - Nothing is special-cased by how much of a store is readable: a normal store holds some data it can read and some it cannot.
 - No dependence on one transport. Sync works over any ordered byte stream, including files carried by hand.
-- To relays, and to nodes for data they cannot read, the network layer reveals no more about a device than the network itself does: addresses, never identities.
+- To relays, and to nodes for data they cannot read, the network layer reveals no more about a node than the network itself does: addresses, never identities.
 - Nothing syncs by being owned: apps place things into synced groups explicitly, and a thing placed nowhere stays local.
 
 ## Cost (goal)
@@ -53,18 +53,18 @@ Terms:
 
 ## Data a node cannot read
 - Holding and serving data it cannot read is a first-class feature of every node; one node may read some groups and not others.
-- For such data a node may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap (a change spanning groups links them), counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion classes and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, device identities, or structure beyond that.
+- For such data a node may learn volume and the structure selective sync needs: which opaque groups a blob is in and how groups overlap (a change spanning groups links them), counts, padded sizes, timing, addresses, and what they must act on: each blob's expiry, its class (durable, ephemeral, relayed), its deletion classes and whether a reader deposited it. They must not learn identifiers, keys, values, authors, role grants, node identities, or structure beyond that.
 - Nothing stored or relayed links different groups of one owner beyond their overlap and the changes that span them. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Peers differ only in which keys they hold.
 - A node that cannot read data may hold its only copy. Reading never allows deleting data or forcing a re-upload.
 - For data it cannot read, a node knows no role holders and never waits on their liveness.
-- Read access never allows storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small budget per group open to anyone who must reach the group's readers (grants, readers' own edge writes). Limit: anyone holding an actor's public keys can fill its inbox's budget at a host, up to the host's rates, while none of the inbox's admin devices is online or by flooding without pause; meanwhile grants wait and unanswered invites may be pushed out.
+- Read access never allows storing arbitrary content at a node that cannot read it. Such a node stores content only with a writer's signature, beyond a small budget per group open to anyone who must reach the group's readers (grants, readers' own edge writes). Limit: anyone holding an actor's public keys can fill its inbox's budget at a host, up to the host's rates, while none of the inbox's admin nodes is online or by flooding without pause; meanwhile grants wait and unanswered invites may be pushed out.
 - Goal: a node can limit abuse (storage, rate) of data it cannot read without learning identities.
 
 ## Confidentiality between readers
 - A reader learns only what it may read. Sharing one thing does not reveal values from another, and only metadata if both things are part of the same commit.
 - No identifier on the wire is predictable without a read key. Nothing derives from plaintext that could be guessed.
-- Readers of shared data may learn each other's device identities, the chain that authorizes each author, and the sizes of the rosters in that chain, never the entries of rosters they are not part of.
+- Readers of shared data may learn each other's node identities, the chain that authorizes each author, and the sizes of the rosters in that chain, never the entries of rosters they are not part of.
 - Deleting content leaves the fact, time, author and aspect of the edit visible to readers.
 - No secret ever passes where a node without the keys meant to open it could read it.
 - Secrets that must stay secret for years resist a future quantum attacker. Signatures need not.
@@ -73,7 +73,7 @@ Terms:
 - Retention per edit: who may purge it (nobody, admins, the author, the author or admins, any writer) and how long its history is kept (at least: absolute or a while after it is replaced; at most: absolute, or gone once replaced). Defaults per aspect, overridable per change, immutable once written.
 - A purge counts only if its author had the right to make it, judged as the validity of an edit is (removals and re-grants included). Limit: a node that cannot read the data checks only the role the deleter held when the edit was written and current roles, so a demoted holder can still delete there what its old role allowed, until a reader holding the data next syncs it back.
 - Data may carry an expiry at which every node, whether or not it can read it, drops it with nobody online.
-- Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged, once the undoing device has seen the purge; an earlier undo is its own change, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
+- Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged, once the undoing node has seen the purge; an earlier undo is its own change, purged on its own. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Limit: deletion does not reach offline copies, copies a removed holder kept, dishonest nodes, memory or swap.
 - On data it cannot read, a node acts on its own only for expiry. Every other retention bound takes effect there when a right holder next syncs.
 - Keep-at-most bounds storage, not visibility: if the write that replaced a dropped body turns out invalid, its value is live again and returns from any node still holding it. Expired and purged content never returns while the purge counts.
@@ -85,7 +85,7 @@ Terms:
 ## Ephemeral data
 - Ephemeral state lives in memory, converges among the nodes holding it like any state, outlives contact with its author, and may be lost when no node holds it. A node that restarts gets it back from those that still do.
 - A value that should live only while its author is there (a cursor, a selection) is ephemeral with an expiry its author renews by rewriting it while there; once the author is gone it is gone everywhere by its last write's expiry, with no departure seen by anyone.
-- Signals have no lasting value: they reach the devices connected at the time, once, with no delivery guarantee, and are held by nobody.
+- Signals have no lasting value: they reach the nodes connected at the time, once, with no delivery guarantee, and are held by nobody.
 - Ephemeral writes need the rights the durable write would need and are verified like it; readers cannot write ephemeral data. Memory spent on others' ephemeral data is bounded per group, with a defined outcome past the bound.
 - "Deterministic" and "Convergence" bind ephemeral data too.
 - Nothing is kept "until everyone has seen it". Whether others are alive is never a protocol condition.
@@ -126,7 +126,7 @@ Binds released formats only; until a stable release formats change in place.
 - Three concepts only: actor, role, ownership. Every thing has exactly one owner, fixed at creation; a thing never changes owner. Sharing never changes a thing's identity.
 - Grouping for sync grants no rights. A placement may be written together with a grant tied to it, which ends when the placement does.
 - Readers only read: posting into a shared space needs write on its actor.
-- Every write is attributable to a signing key actor (normally a device) and verifiable. Hiding authorship is a deliberate choice, never the default.
+- Every write is attributable to a signing key actor (normally a node) and verifiable. Hiding authorship is a deliberate choice, never the default.
 - Rights held by different parties never combine into a right neither has alone.
 - Whether an edit by a revoked holder counts is judged by what the revoker had received, never by the author's own timestamps. Limit: edits the revoker had not received when it revoked may be lost until re-grant.
 - A removal nobody stamps (a timed grant ending, a self-removal, a link expiring) cuts off nothing by itself: until another holder publishes an explicit demotion, the removed holder's own timestamps decide, within the allowed clock drift.

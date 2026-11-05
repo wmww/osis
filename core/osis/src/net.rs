@@ -29,21 +29,22 @@ pub enum Runtime {
     /// A small tokio runtime of osis's own.
     Own,
     /// A test harness carries the actions (`internals::Internals::take_actions`, `feed`) of
-    /// every database opened with this registry.
+    /// every node opened with this registry.
     #[doc(hidden)]
     Manual(ManualNet),
 }
 
-/// The databases a test harness drives (`Runtime::Manual`), in the order they started.
+/// The nodes a test harness drives (`Runtime::Manual`), in the order they started.
 #[derive(Clone, Debug, Default)]
 pub struct ManualNet(Arc<Mutex<Vec<WeakOsis>>>);
 
 impl ManualNet {
+    /// A new one, with no nodes.
     pub fn new() -> ManualNet {
         ManualNet::default()
     }
 
-    /// The databases still open, by start order (`None`: closed).
+    /// The nodes still open, by start order (`None`: closed).
     pub fn dbs(&self) -> Vec<Option<crate::Osis>> {
         lock(&self.0).iter().map(|w| w.upgrade()).collect()
     }
@@ -56,7 +57,7 @@ impl ManualNet {
 pub(crate) enum Net {
     Off,
     Manual(Mutex<Vec<Action>>),
-    /// `died`: why the driver task ended while the database was open (set under the engine
+    /// `died`: why the driver task ended while the node was open (set under the engine
     /// lock, `driver_died`).
     Driver { ctl: mpsc::UnboundedSender<Control>, handle: tokio::runtime::Handle, stop: Mutex<Option<Stop>>, died: Mutex<Option<String>> },
 }
@@ -91,7 +92,7 @@ impl Drop for Net {
         let j = job.clone();
         let spawned = std::thread::Builder::new().name("osis-sync-stop".into()).spawn(move || {
             if let Some((rt, ended, _freed)) = lock(&j).take() {
-                // bounded: a driver awaiting the network is not in an engine call (the database
+                // bounded: a driver awaiting the network is not in an engine call (the node
                 // is gone) and may be dropped
                 let _ = lock(&ended).recv_timeout(STOP_WAIT);
                 rt.shutdown_timeout(STOP_WAIT);
@@ -114,8 +115,8 @@ const STOP_WAIT: Duration = Duration::from_secs(5);
 pub(crate) type Ended = Arc<Mutex<std::sync::mpsc::Receiver<()>>>;
 
 /// Waits until the driver is gone (`Net::ended`): the task ends at the `Shutdown` the closed
-/// database's `Net` queued (it polls no timer while a control message waits, and runs no engine
-/// call: the database is gone); on osis's own runtime the stopping thread then shuts it down.
+/// node's `Net` queued (it polls no timer while a control message waits, and runs no engine
+/// call: the node is gone); on osis's own runtime the stopping thread then shuts it down.
 pub(crate) fn wait_ended(ended: &Ended) {
     blocking(|| {
         let _ = lock(ended).recv();
@@ -192,14 +193,14 @@ impl Net {
         }
     }
 
-    /// Starts the driver task over one transport for hosts and other nodes (`Multi`; its host's
-    /// store beside the database). With `p2p` (`Config.peers`) and a peer transport, it listens with the dialable secret
+    /// Starts the driver task over one transport for every node it dials (`Multi`; what it serves
+    /// for others stored beside the node). With `p2p` (`Config::direct_sync`) and a peer transport, it listens with the dialable secret
     /// (registered at `relays`) and publishes `reach.0`; with feature `lan` and QUIC it also runs
     /// the LAN loop. Without a peer transport no peer is dialed.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
         let shared = OsisShared(db.clone(), store);
-        let (transport, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.peers, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
+        let (transport, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.direct_sync, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         // the client port's unix socket (`Osis::listen_socket`)
         let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
@@ -242,7 +243,7 @@ impl Net {
         Ok(())
     }
 
-    /// Serves the client port on a listener at `url` (`unix://PATH`; notes/client-port.md §5):
+    /// Serves the client port on a listener at `url`:
     /// its sessions are clients of this node. `Network` without a runtime.
     pub fn listen(&self, url: String) -> Result<()> {
         let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: the client port needs one (Config.runtime)".into())) };
@@ -255,7 +256,7 @@ impl Net {
         }
     }
 
-    /// Replaces the client listeners (notes/client-port.md §5).
+    /// Replaces the client listeners.
     pub fn client_listen(&self, urls: driver::ClientUrls) -> Result<Vec<osis_transport::Address>> {
         let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: the client listener needs one (Config.runtime)".into())) };
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -271,7 +272,7 @@ impl Net {
         self.died().unwrap_or_else(|| Error::Network("sync stopped".into()))
     }
 
-    /// How the driver task died while the database was open (`driver_died`).
+    /// How the driver task died while the node was open (`driver_died`).
     pub fn died(&self) -> Option<Error> {
         let Net::Driver { died, .. } = self else { return None };
         lock(died).clone().map(Error::Network)
@@ -290,7 +291,7 @@ impl Net {
         let Net::Driver { handle, .. } = self else { return false };
         handle.spawn(async move {
             tokio::time::sleep(d).await;
-            // off the runtime's workers: `f` may take the database lock
+            // off the runtime's workers: `f` may take the node lock
             let _ = tokio::task::spawn_blocking(f).await;
         });
         true
@@ -312,7 +313,7 @@ impl Net {
 }
 
 /// The driver task's future. A panic in it, or its runtime dropping it unfinished (the app shut
-/// its runtime down with the database open), ends the database's sync: `driver_died`. The panic
+/// its runtime down with the node open), ends the node's sync: `driver_died`. The panic
 /// then goes on to the runtime as before, so its message shows where task panics do.
 struct Watched<F> {
     f: Pin<Box<F>>,
@@ -348,7 +349,7 @@ impl<F> Drop for Watched<F> {
     }
 }
 
-/// The driver is gone while the database may be open: every waiter fails with `why`, and so does
+/// The driver is gone while the node may be open: every waiter fails with `why`, and so does
 /// every later wait (`Net::died`, looked at under the same lock); reported as
 /// `DiagnosticKind::SyncStopped`.
 fn driver_died(db: &WeakOsis, why: String) {
@@ -374,8 +375,8 @@ fn log_line(m: &str) {
     }
 }
 
-/// The driver's view of the handle: the sync engine behind the database lock, and where the
-/// database lives (the host's store goes beside it).
+/// The driver's view of the handle: the sync engine behind the node lock, and where the
+/// node lives (the host's store goes beside it).
 struct OsisShared(WeakOsis, crate::Store);
 
 impl Shared for OsisShared {
@@ -500,7 +501,7 @@ impl Waiter {
     }
 }
 
-/// A database going away answers whoever still waits on it: a future holding no handle
+/// A node going away answers whoever still waits on it: a future holding no handle
 /// (`Osis::wait_synced_pending`) would hear nothing else.
 impl Drop for Waiter {
     fn drop(&mut self) {
@@ -544,10 +545,12 @@ impl crate::Osis {
 /// it off the LAN too.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ShareAddress {
-    /// Only when every reader of the group is this person, a thing it owns or a contact.
+    /// Only when every reader of the group is this account, a thing it owns or a contact.
     #[default]
     Auto,
+    /// Tell its readers, whoever they are.
     Always,
+    /// Tell no one, so its readers do not dial this node.
     Never,
 }
 
@@ -566,7 +569,9 @@ pub enum SyncMode {
 /// How this node syncs a group (`Osis::sync_options`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SyncOptions {
+    /// Who is told this node's address.
     pub share_address: ShareAddress,
+    /// How much of the group this node holds.
     pub mode: SyncMode,
 }
 
@@ -633,7 +638,7 @@ impl crate::Osis {
         self.inner.net.listen(url)
     }
 
-    /// Serves clients at `urls` (`quic://host:port`), by default only as actors they authenticate for
+    /// Serves clients at `urls` (`quic://example.org:4040`), by default only as actors they authenticate for
     /// (`add_client`), with a key of
     /// the client listener's own, made on first use and kept in the store: `rotate_peer_address` leaves it
     /// be, and nothing ties it to this node's other keys. Returns each
@@ -641,10 +646,10 @@ impl crate::Osis {
     /// (their sessions end; clients reconnect by themselves). No URL: stops listening, ends those sessions, shreds the key (a later
     /// call makes a new one, so clients need a new address). All or none: on an error nothing
     /// listens. Needs a runtime. Listening does not last past this process: call it at each start.
-    pub fn client_listen(&self, urls: &[crate::Url]) -> crate::Result<Vec<crate::HostAddr>> {
+    pub fn client_listen(&self, urls: &[crate::Url]) -> crate::Result<Vec<crate::Address>> {
         self.local_only("client_listen")?;
         let a = self.inner.net.client_listen(driver::ClientUrls::Listen(urls.iter().map(ToString::to_string).collect()))?;
-        Ok(a.into_iter().map(|a| crate::HostAddr(osis_label::Address { url: a.url, key: a.key })).collect())
+        Ok(a.into_iter().map(|a| crate::Address(osis_label::Address { url: a.url, key: a.key })).collect())
     }
 
     /// New client addresses (by hand only): the old key is shredded,
@@ -652,19 +657,19 @@ impl crate::Osis {
     /// here. A client holding the old address sees `Network` on every call and `connected: false`
     /// until it connects to a new address, handed to it out of band. No listener up (a process
     /// that has not called `client_listen`): only the key changes. Needs a runtime.
-    pub fn rotate_client_address(&self) -> crate::Result<Vec<crate::HostAddr>> {
+    pub fn rotate_client_address(&self) -> crate::Result<Vec<crate::Address>> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::ROTATE_CLIENT_ADDRESS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
         }
         let a = self.inner.net.client_listen(driver::ClientUrls::Rotate)?;
-        Ok(a.into_iter().map(|a| crate::HostAddr(osis_label::Address { url: a.url, key: a.key })).collect())
+        Ok(a.into_iter().map(|a| crate::Address(osis_label::Address { url: a.url, key: a.key })).collect())
     }
 
-    /// Gives this node a new address other nodes dial it directly at (`Config::peers`): it listens
+    /// Gives this node a new address other nodes dial it directly at (`Config::direct_sync`): it listens
     /// there at once and tells only the groups whose `ShareAddress` allows it. A node removed from
     /// those since can no longer dial it or recognise it on a LAN, nor can a holder of a direct link.
-    /// Direct links still open no longer reach this node directly (they still work through hosts).
+    /// Direct links still open no longer reach this node directly (they still work through saved peers).
     /// Done by itself when a group told the old address no longer qualifies and when a direct link
     /// ends.
     pub fn rotate_peer_address(&self) -> crate::Result<()> {

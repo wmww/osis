@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! What a host learns (spec/requirements.md, Untrusted nodes; notes/sync.md "What a blind
-//! node learns"): real engines sync scripted scenarios through an osis-host hub, then the
+//! What a host learns (spec/requirements.md Data a node cannot read; notes/sync.md What a node learns): real engines sync scripted scenarios through an osis-host hub, then the
 //! hub's stored bytes are searched for every secret and identifier of the scenario, blob sizes
 //! checked against Padmé, labels checked for shared bytes, claim sets for reader counts and
 //! heartbeats for content beyond `seen.0`.
@@ -70,7 +69,7 @@ fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
     (net, host, [a, b, c], g, t)
 }
 
-// spec/sync.md §4, spec/requirements.md Untrusted nodes: no plaintext value or map key, tid, AK,
+// spec/sync.md §4, spec/requirements.md Data a node cannot read: no plaintext value or map key, tid, AK,
 // holder identity (node tid or signing key) or role secret reaches the host's
 // storage, live or overwritten
 #[test]

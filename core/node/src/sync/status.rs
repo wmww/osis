@@ -12,7 +12,7 @@ impl SyncEngine {
         let now = self.raw_now();
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, peers_connected: 0, open: 0, idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
             for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
                 if c.up {
                     st.connected += 1;
@@ -40,6 +40,7 @@ impl SyncEngine {
                     _ => {}
                 }
             }
+            st.peers_connected = self.conns.values().filter(|c| c.peer && c.up && c.labels.contains_key(&l.id)).count() + self.served.values().filter(|s| s.opens(&l.id)).count();
             out.push(st);
         }
         out
@@ -61,9 +62,23 @@ impl SyncEngine {
         self.state.hints.values().any(|h| h.thing == *t)
     }
 
-    /// Hosts with a connection up.
+    /// Sync connections up, whichever side dialed: a client's session is none.
     pub fn connected(&self) -> usize {
-        self.conns.values().filter(|c| c.up).count()
+        self.conns.values().filter(|c| c.up).count() + self.served.values().filter(|s| s.syncing()).count()
+    }
+
+    /// The addresses `g` syncs with as this node knows them: its live labels' hosts, then the
+    /// co-readers it dials for them (`reach.0`, a link's sharer).
+    pub fn group_peers(&mut self, g: &Tid) -> Vec<Address> {
+        let ids: BTreeSet<LabelId> = self.labels().iter().filter(|(x, l)| x == g && !l.replaced).map(|(_, l)| l.id).collect();
+        let mut out: Vec<Address> = self.labels().iter().filter(|(x, l)| x == g && !l.replaced).flat_map(|(_, l)| l.hosts.clone()).collect();
+        if self.cfg.peers {
+            let direct = self.peer_addresses().into_values().chain(self.link_routes().into_values());
+            out.extend(direct.filter(|(_, ls)| !ls.is_disjoint(&ids)).map(|(a, _)| a).collect::<Vec<_>>());
+        }
+        let mut seen = BTreeSet::new();
+        out.retain(|a| seen.insert(a.key));
+        out
     }
 
     /// Inbox blobs (grants, notices) not yet sent or not yet answered by a host (the outbox

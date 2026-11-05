@@ -1,4 +1,4 @@
-//! Shared test helpers: deterministic databases, waiting on channels (never on time).
+//! Shared test helpers: deterministic nodes, waiting on channels (never on time).
 #![allow(dead_code)]
 
 
@@ -24,7 +24,7 @@ pub fn cfg(seed: u64, store: MemStore, clock: &Arc<ManualClock>) -> osis::intern
     c
 }
 
-/// A fresh database at `T0`.
+/// A fresh node at `T0`.
 pub fn db(seed: u64) -> Osis {
     osis::internals::create(cfg(seed, MemStore::new(), &clock())).unwrap().0
 }
@@ -40,27 +40,27 @@ pub fn link_id(k: Tid) -> osis::LinkId {
 }
 
 pub trait TestWrites {
-    /// `write()`, `f`, `commit()`: for a batch whose outcome the test inspects as one `Result`.
-    fn batch<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R>;
-    /// A batch of one `at(t, key).set(v)`.
+    /// `write()`, `f`, `commit()`: for a commit whose outcome the test inspects as one `Result`.
+    fn commit_with<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R>;
+    /// A commit of one `at(t, key).set(v)`.
     fn commit_set<K: AspectKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()>;
     /// `required.0^`'s `keep`, its other rules as they are.
-    fn set_keep_default(&self, t: Tid, keep: bool) -> Result<()>;
+    fn set_retain_copies_default(&self, t: Tid, keep: bool) -> Result<()>;
     /// The links to `t`.
     fn links_of(&self, t: Tid) -> Result<Vec<LinkInfo>>;
 }
 
 impl TestWrites for Osis {
-    fn batch<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R> {
+    fn commit_with<R>(&self, f: impl FnOnce(&mut Write<'_>) -> Result<R>) -> Result<R> {
         let mut w = self.write();
         let r = f(&mut w)?;
         w.commit()?;
         Ok(r)
     }
     fn commit_set<K: AspectKey>(&self, t: Tid, key: K, v: &K::T) -> Result<()> {
-        self.batch(|w| w.at(t, key).set(v))
+        self.commit_with(|w| w.at(t, key).set(v))
     }
-    fn set_keep_default(&self, t: Tid, keep: bool) -> Result<()> {
+    fn set_retain_copies_default(&self, t: Tid, keep: bool) -> Result<()> {
         let rules = self.at(t, ct::REQUIRED).get()?.unwrap_or_default();
         self.commit_set(t, ct::REQUIRED, &ct::RequiredRules { keep, ..rules })
     }
@@ -159,7 +159,7 @@ pub fn deliver(from: &Osis, to: &Osis) {
     }
 }
 
-/// Two devices of one person on one clock; commits travel by `deliver`.
+/// Two nodes of one account on one clock; commits travel by `deliver`.
 pub fn paired() -> (Osis, Osis, Arc<ManualClock>) {
     let c = clock();
     let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
@@ -173,7 +173,7 @@ pub fn paired() -> (Osis, Osis, Arc<ManualClock>) {
 const HUNG: Duration = Duration::from_secs(120);
 
 /// Runs a future to completion on this thread (no runtime: the API's futures are resolved by
-/// the database, notes/api.md Design rules). Panics if it hangs.
+/// the node, notes/api.md Design rules). Panics if it hangs.
 pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
     within(HUNG, f).expect("a wait hung")
 }
@@ -201,7 +201,7 @@ pub fn within<F: std::future::Future>(d: Duration, f: F) -> Option<F::Output> {
     }
 }
 
-/// Commits the ops `f` makes in one batch; the commit.
+/// Commits the ops `f` makes in one commit; the commit.
 pub fn commit_with(db: &Osis, f: impl FnOnce(&mut osis::Write<'_>) -> osis::Result<()>) -> osis::Commit {
     let mut w = db.write();
     f(&mut w).unwrap();
@@ -223,10 +223,10 @@ impl MembersOf for Osis {
     }
 }
 
-/// `create` and add to `groups` in one batch.
+/// `create` and add to `groups` in one commit.
 pub trait CreateIn {
     fn create_in(&mut self, owner: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
-    /// `create` with a durable write (`t:made.0`), so the thing is persisted by this batch.
+    /// `create` with a durable write (`t:made.0`), so the thing is persisted by this commit.
     fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid>;
 }
 
@@ -240,7 +240,7 @@ impl CreateIn for osis::Write<'_> {
     }
     fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid> {
         let t = self.create_owned_by(owner)?;
-        self.at(t, osis::Key::untyped(ak("t:made.0"))).set(&osis::Value::Bool(true))?;
+        self.at(t, osis::DynamicAspectKey::untyped(ak("t:made.0"))).set(&osis::Value::Bool(true))?;
         Ok(t)
     }
 }

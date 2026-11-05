@@ -8,7 +8,7 @@ use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
-use osis::{DerivedFrom, MemStore, Osis, Source, Value};
+use osis::{DerivedFrom, MemStore, Osis, Origin, Value};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -34,19 +34,19 @@ fn on_change_initial_then_local() {
     let db = db(1);
     let k = ak("t:x.0");
     let t = thing(&db);
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     let (tx, rx) = channel();
-    let _s = db.at(t, osis::Key::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let _s = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     // a write racing the initial call: initial still shows the value at registration
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(2)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(2)).unwrap();
     let c = recv(&rx);
-    assert_eq!((c.source, c.value), (Source::Initial, Ok(Some(Value::Int(1)))));
+    assert_eq!((c.origin, c.value), (Origin::Initial, Ok(Some(Value::Int(1)))));
     let c = recv(&rx);
-    assert!(matches!(c.source, Source::Local(i) if i.node == db.node() && i.actor == db.me()));
+    assert!(matches!(c.origin, Origin::Local(i) if i.node == db.node() && i.actor == db.me()));
     assert_eq!(c.value, Ok(Some(Value::Int(2))));
     // the initial call runs on the dispatcher thread like every later one
     let (tx, rx) = channel();
-    let _s2 = db.at(t, osis::Key::untyped(k)).on_change(move |_, _| tx.send(std::thread::current().name().map(String::from)).unwrap()).unwrap();
+    let _s2 = db.at(t, osis::DynamicAspectKey::untyped(k)).on_change(move |_, _| tx.send(std::thread::current().name().map(String::from)).unwrap()).unwrap();
     assert_eq!(recv(&rx).as_deref(), Some("osis-dispatch"));
 }
 
@@ -115,13 +115,13 @@ fn subscription_raii_and_detach() {
     let t = thing(&db);
     let (tx, rx) = channel();
     let tx2 = tx.clone();
-    let s = db.at(t, osis::Key::untyped(k.clone())).on_change(move |_, c| tx.send(("dropped", c.value)).unwrap()).unwrap();
-    db.at(t, osis::Key::untyped(k.clone())).on_change(move |_, c| tx2.send(("kept", c.value)).unwrap()).unwrap().detach();
+    let s = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(("dropped", c.value)).unwrap()).unwrap();
+    db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx2.send(("kept", c.value)).unwrap()).unwrap().detach();
     db.settle();
     let first: Vec<_> = rx.try_iter().map(|x| x.0).collect();
     assert_eq!(first.len(), 2);
     drop(s);
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     db.settle();
     let after: Vec<_> = rx.try_iter().collect();
     assert_eq!(after, vec![("kept", Ok(Some(Value::Int(1))))]);
@@ -137,16 +137,16 @@ fn api_usable_from_callback() {
     let (tx, rx) = channel();
     let b2 = b.clone();
     let _s = db
-        .at(t, osis::Key::untyped(a.clone()))
+        .at(t, osis::DynamicAspectKey::untyped(a.clone()))
         .on_change(move |db2, c| {
             if let Ok(Some(Value::Int(n))) = c.value {
-                db2.commit_set(t, osis::Key::untyped(b2.clone()), &Value::Int(n * 10)).unwrap();
+                db2.commit_set(t, osis::DynamicAspectKey::untyped(b2.clone()), &Value::Int(n * 10)).unwrap();
                 db2.settle();
-                tx.send(db2.at(t, osis::Key::untyped(b2.clone())).get().unwrap()).unwrap();
+                tx.send(db2.at(t, osis::DynamicAspectKey::untyped(b2.clone())).get().unwrap()).unwrap();
             }
         })
         .unwrap();
-    db.commit_set(t, osis::Key::untyped(a.clone()), &Value::Int(4)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(a.clone()), &Value::Int(4)).unwrap();
     assert_eq!(recv(&rx), Some(Value::Int(40)));
 }
 
@@ -155,10 +155,10 @@ fn api_usable_from_callback() {
 fn watch_thing_all_aspects() {
     let db = db(1);
     let t = thing(&db);
-    db.commit_set(t, osis::Key::untyped(ak("t:a.0")), &Value::Int(1)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:a.0")), &Value::Int(1)).unwrap();
     let (tx, rx) = channel();
-    let _s = db.on_thing_change(t, move |_, c| tx.send((c.ak.as_str().to_string(), c.source == Source::Initial, c.value)).unwrap()).unwrap();
-    db.commit_set(t, osis::Key::untyped(ak("t:b.0")), &Value::Int(2)).unwrap();
+    let _s = db.on_thing_change(t, move |_, c| tx.send((c.ak.as_str().to_string(), c.origin == Origin::Initial, c.value)).unwrap()).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:b.0")), &Value::Int(2)).unwrap();
     db.settle();
     let all: Vec<_> = rx.try_iter().collect();
     let initial: std::collections::BTreeSet<&str> = all.iter().filter(|r| r.1).map(|r| r.0.as_str()).collect();
@@ -169,25 +169,25 @@ fn watch_thing_all_aspects() {
 }
 
 // spec/commits.md §6, notes/api.md Watching: an expiry changes a value without a commit;
-// watches see it as Source::Derived.
+// watches see it as Origin::Derived.
 #[test]
 fn derived_change_on_expiry() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
     let k = ak("t:x.0");
     let t = thing(&db);
-    db.commit_set(t, osis::Key::untyped(ak("t:kept.0")), &Value::Int(0)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:kept.0")), &Value::Int(0)).unwrap();
     let mut w = db.write();
     w.expires(osis::Expiry::In(Duration::from_secs(5)));
-    w.at(t, osis::Key::untyped(k.clone())).set(&Value::Int(1)).unwrap();
+    w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     let (tx, rx) = channel();
-    let _s = db.at(t, osis::Key::untyped(k)).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let _s = db.at(t, osis::DynamicAspectKey::untyped(k)).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
     c.advance(6_000);
     db.engine(|e| e.tick()).unwrap();
     let ch = recv(&rx);
-    assert_eq!((ch.source, ch.value), (Source::Derived(DerivedFrom::Expired), Ok(None)));
+    assert_eq!((ch.origin, ch.value), (Origin::Derived(DerivedFrom::Expired), Ok(None)));
 }
 
 // notes/api.md Diagnostics: bad input from a peer is a diagnostic, never an error the app
@@ -213,7 +213,7 @@ fn watch_roster_initial() {
 
 // notes/api.md Watching, Fixed directions: watches fire on remote writes: a commit made on
 // node A and delivered to node B (engine-level delivery, as LocalPeer does) fires B's watch
-// with Source::Remote naming A.
+// with Origin::Remote naming A.
 #[test]
 fn two_nodes_remote_watch() {
     let a = db(1);
@@ -222,13 +222,13 @@ fn two_nodes_remote_watch() {
     let t = thing(&a);
     deliver(&a, &b);
     let (tx, rx) = channel();
-    let _s = b.at(t, osis::Key::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
-    let w = watched(&b, t, osis::Key::untyped(k.clone())).unwrap();
-    assert_eq!(recv(&rx).source, Source::Initial);
-    let done = commit_with(&a, |w| w.at(t, osis::Key::untyped(k.clone())).set(&Value::Int(9)));
+    let _s = b.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let w = watched(&b, t, osis::DynamicAspectKey::untyped(k.clone())).unwrap();
+    assert_eq!(recv(&rx).origin, Origin::Initial);
+    let done = commit_with(&a, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(9)));
     deliver(&a, &b);
     let c = recv(&rx);
-    assert!(matches!(c.source, Source::Remote(i) if i.node == a.node() && i.actor == a.me() && i.id == done.id));
+    assert!(matches!(c.origin, Origin::Remote(i) if i.node == a.node() && i.actor == a.me() && i.id == done.id));
     assert_eq!(c.value, Ok(Some(Value::Int(9))));
     assert!(w.changed_timeout(Duration::from_secs(20)));
     assert_eq!(w.current().unwrap(), Some(Value::Int(9)));
@@ -242,16 +242,16 @@ fn block_dispatcher(db: &Osis) -> (osis::Subscription, std::sync::mpsc::Sender<(
     let (in_tx, in_rx) = channel();
     let go_rx = Mutex::new(go_rx);
     let s = db
-        .at(t, osis::Key::untyped(k.clone()))
+        .at(t, osis::DynamicAspectKey::untyped(k.clone()))
         .on_change(move |_, c| {
-            if c.source != Source::Initial {
+            if c.origin != Origin::Initial {
                 in_tx.send(()).unwrap();
                 go_rx.lock().unwrap().recv().unwrap();
             }
         })
         .unwrap();
     db.settle();
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     recv(&in_rx);
     (s, go_tx)
 }
@@ -264,17 +264,17 @@ fn coalesced_call_carries_newest_source() {
     let k = ak("t:x.0");
     let t = thing(&db);
     let (tx, rx) = channel();
-    let _s = db.at(t, osis::Key::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let _s = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     db.settle();
-    assert_eq!(recv(&rx).source, Source::Initial);
+    assert_eq!(recv(&rx).origin, Origin::Initial);
     let (_gate, go) = block_dispatcher(&db);
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
-    let last = commit_with(&db, |w| w.at(t, osis::Key::untyped(k.clone())).set(&Value::Int(2)));
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
+    let last = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(2)));
     go.send(()).unwrap();
     db.settle();
     let calls: Vec<_> = rx.try_iter().collect();
     assert_eq!(calls.len(), 1);
-    assert!(matches!(calls[0].source, Source::Local(i) if i.id == last.id));
+    assert!(matches!(calls[0].origin, Origin::Local(i) if i.id == last.id));
     assert_eq!(calls[0].value, Ok(Some(Value::Int(2))));
 }
 
@@ -289,10 +289,10 @@ fn errors_not_coalesced() {
     let k = ak("t:big.0");
     let t = thing(&db);
     let (tx, rx) = channel();
-    let _s = db.at(t, osis::Key::untyped(k.clone())).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
-    let w = watched(&db, t, osis::Key::untyped(k.clone())).unwrap();
+    let _s = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
+    let w = watched(&db, t, osis::DynamicAspectKey::untyped(k.clone())).unwrap();
     for i in 0..2u8 {
-        db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Bytes(vec![i; 2000])).unwrap();
+        db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Bytes(vec![i; 2000])).unwrap();
         db.settle();
     }
     let errs: Vec<_> = rx.try_iter().filter(|v| matches!(v, Err(osis::Error::TooLarge { limit: 1000 }))).collect();
@@ -309,10 +309,10 @@ fn panicking_callback_is_a_diagnostic() {
     let t = thing(&db);
     let (dtx, drx) = channel();
     let _d = db.on_diagnostic(move |_, d| dtx.send(d).unwrap()).unwrap();
-    let _p = db.at(t, osis::Key::untyped(k.clone())).on_change(|_, c| assert_eq!(c.source, Source::Initial)).unwrap();
+    let _p = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(|_, c| assert_eq!(c.origin, Origin::Initial)).unwrap();
     let (tx, rx) = channel();
-    let _s = db.at(t, osis::Key::untyped(k.clone())).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
+    let _s = db.at(t, osis::DynamicAspectKey::untyped(k.clone())).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     assert!(matches!(recv(&drx), osis::Diagnostic::Callback { .. }));
     db.settle();
     assert_eq!(rx.try_iter().last(), Some(Ok(Some(Value::Int(1)))));
@@ -331,22 +331,22 @@ fn drop_waits_for_call_in_flight() {
     let (go_tx, go_rx) = channel::<()>();
     let go_rx = Mutex::new(go_rx);
     let s = db
-        .at(t, osis::Key::untyped(k.clone()))
+        .at(t, osis::DynamicAspectKey::untyped(k.clone()))
         .on_change(move |_, c| {
-            if c.source != Source::Initial {
+            if c.origin != Origin::Initial {
                 in_tx.send(()).unwrap();
                 go_rx.lock().unwrap().recv().unwrap();
                 *d2.lock().unwrap() += 1;
             }
         })
         .unwrap();
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     recv(&in_rx);
     let h = std::thread::spawn(move || go_tx.send(()).unwrap());
     drop(s);
     assert_eq!(*done.lock().unwrap(), 1);
     h.join().unwrap();
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(2)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(2)).unwrap();
     db.settle();
     assert_eq!(*done.lock().unwrap(), 1);
 }
@@ -362,7 +362,7 @@ fn mistyped_value_watches_absent() {
     let (tx, rx) = channel();
     let _s = db.at(t, notes::TITLE).on_change(move |_, c| tx.send(c.value).unwrap()).unwrap();
     assert_eq!(recv(&rx), Ok(Some("a".to_string())));
-    db.commit_set(t, osis::Key::untyped(ak("note:title.0")), &Value::Int(3)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(ak("note:title.0")), &Value::Int(3)).unwrap();
     assert_eq!(recv(&rx), Ok(None));
     db.settle();
     assert!(w.try_changed());
@@ -372,8 +372,8 @@ fn mistyped_value_watches_absent() {
 }
 
 // notes/api.md Watching: with `Dispatcher::Pump` callbacks run only inside `settle`, on the
-// calling thread, in order; the wake callback fires once per batch of due callbacks, outside the
-// database lock; inside a callback `settle` returns at once, `close` fails, a write's callback
+// calling thread, in order; the wake callback fires once per commit of due callbacks, outside the
+// node lock; inside a callback `settle` returns at once, `close` fails, a write's callback
 // runs in the same pump, and a subscription dropped there stops.
 #[test]
 fn pump_dispatcher_runs_callbacks_in_settle() {
@@ -381,13 +381,13 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     let wakes = Arc::new(AtomicUsize::new(0));
     let mut c = cfg(1, MemStore::new(), &clock());
     let w2 = wakes.clone();
-    // the wake runs after the database lock is released: calling the database there is safe
+    // the wake runs after the node lock is released: calling the node there is safe
     let weak: Arc<std::sync::OnceLock<osis::WeakOsis>> = Arc::default();
     let weak2 = weak.clone();
     c.app.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
         w2.fetch_add(1, Ordering::SeqCst);
         if let Some(db) = weak2.get().and_then(|w| w.upgrade()) {
-            let _ = db.knows(db.me());
+            let _ = db.has_content(db.me());
         }
     }));
     let db = osis::internals::create(c).unwrap().0;
@@ -402,17 +402,17 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     let c2 = calls.clone();
     let k2 = k.clone();
     let _s = db
-        .at(t, osis::Key::untyped(k.clone()))
+        .at(t, osis::DynamicAspectKey::untyped(k.clone()))
         .on_change(move |db, c| {
             db.settle();
             assert!(db.clone().close().is_err());
             if c.value == Ok(Some(Value::Int(1))) {
-                db.commit_set(t, osis::Key::untyped(k2.clone()), &Value::Int(2)).unwrap();
+                db.commit_set(t, osis::DynamicAspectKey::untyped(k2.clone()), &Value::Int(2)).unwrap();
             }
             c2.lock().unwrap().push((std::thread::current().id(), c.value.unwrap()));
         })
         .unwrap();
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(1)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     assert!(calls.lock().unwrap().is_empty(), "nothing runs before settle");
     assert_eq!(wakes.load(Ordering::SeqCst), base + 1, "one wake for the batch");
     db.settle();
@@ -424,7 +424,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     let slot: Arc<Mutex<Option<osis::Subscription>>> = Arc::new(Mutex::new(None));
     let (n2, slot2) = (n.clone(), slot.clone());
     let s = db
-        .at(t, osis::Key::untyped(k.clone()))
+        .at(t, osis::DynamicAspectKey::untyped(k.clone()))
         .on_change(move |_, _| {
             *n2.lock().unwrap() += 1;
             drop(slot2.lock().unwrap().take());
@@ -432,12 +432,12 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
         .unwrap();
     *slot.lock().unwrap() = Some(s);
     db.settle();
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(3)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(3)).unwrap();
     db.settle();
     assert_eq!(*n.lock().unwrap(), 1);
     // another thread's settle pumps too
     let db2 = db.clone();
-    db.commit_set(t, osis::Key::untyped(k.clone()), &Value::Int(4)).unwrap();
+    db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(4)).unwrap();
     let other = std::thread::spawn(move || {
         db2.settle();
         std::thread::current().id()

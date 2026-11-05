@@ -13,7 +13,7 @@ use osis_sim::world::World;
 
 /// A new note in `notebook`, owned by it (so the notebook's holders read and write it).
 fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
-    db.batch(|w| {
+    db.commit_with(|w| {
         let note = w.create_in(notebook, &[notebook])?;
         w.at(note, NAME).set(&title.to_string())?;
         Ok(note)
@@ -29,7 +29,7 @@ fn title(db: &Osis, note: Tid) -> Result<Option<String>> {
 }
 
 fn rename(db: &Osis, note: Tid, shown: &str, new: &str) -> Result<()> {
-    db.batch(|w| w.at(note, NAME).edit(&shown.to_string(), &new.to_string()))
+    db.commit_with(|w| w.at(note, NAME).edit(&shown.to_string(), &new.to_string()))
 }
 
 fn body(db: &Osis, note: Tid) -> Result<String> {
@@ -59,9 +59,9 @@ fn add_device(existing: &Osis, cfg: osis::internals::Opening) -> Result<Osis> {
 }
 
 // spec/requirements.md (Offline and network: every operation completes offline; Data model:
-// collaborative text), notes/api.md Undo (per actor, across devices): two devices of one person
-// see each other's notes; offline edits on both merge on reconnect; undo on one device undoes
-// the person's last change wherever it was made (spec/crdt.md §4.6: undo is per actor, derived
+// collaborative text), notes/api.md Undo (per actor, across nodes): two nodes of one account
+// see each other's notes; offline edits on both merge on reconnect; undo on one node undoes
+// the account's last change wherever it was made (spec/crdt.md §4.6: undo is per actor, derived
 // from its commits).
 #[test]
 fn two_devices_offline_edits_and_undo() {
@@ -82,7 +82,7 @@ fn two_devices_offline_edits_and_undo() {
     w.run();
     assert_eq!(body(&laptop, note).unwrap(), "- milk", "the phone's edit waits for the network");
     w.set_online(&phone, true);
-    w.until(phone.wait_synced(SyncScope::All), 1000, 10).unwrap();
+    w.until(phone.wait_synced(SyncScope::AllWithPeers), 1000, 10).unwrap();
     w.run();
     assert_eq!(body(&laptop, note).unwrap(), "- milk, eggs");
     assert_eq!(body(&phone, note).unwrap(), "- milk, eggs");
@@ -118,7 +118,7 @@ fn share_notebook_with_a_second_person() {
 
     rename(&bob, plan, "Plan", "Plan: Lisbon").unwrap();
     let travel = private_tag(&alice, "travel").unwrap();
-    alice.batch(|w| w.group(travel).add(osis::Member::Item(plan))).unwrap();
+    alice.commit_with(|w| w.group(travel).add(osis::Member::Item(plan))).unwrap();
     type_text(&alice, plan, 0, "flights").unwrap();
     w.run();
     for db in [&alice, &bob] {
@@ -140,7 +140,7 @@ fn share_notebook_with_a_second_person() {
 }
 
 // spec/data-model.md §6 (large atomic values), notes/api.md Large values (materialization bound,
-// streams): a large body syncs to the other device, which reads it by stream and length while a
+// streams): a large body syncs to the other node, which reads it by stream and length while a
 // whole read fails `TooLarge` explicitly.
 #[test]
 fn large_body_streams() {
@@ -154,7 +154,7 @@ fn large_body_streams() {
     let note = new_note(&laptop, nb, "Draft").unwrap();
     // just above `CHUNK_THRESHOLD`: a large value
     let doc: String = (0..13_000).map(|i| format!("line {i}\n")).collect();
-    laptop.batch(|w| w.at(note, BODY).path(osis::p![]).set_stream(doc.as_bytes())).unwrap();
+    laptop.commit_with(|w| w.at(note, BODY).path(osis::p![]).set_stream(doc.as_bytes())).unwrap();
     w.run();
     assert!(matches!(phone.at(note, BODY).get(), Err(Error::TooLarge { .. })));
     let mut s = phone.at(note, BODY).path(osis::p![]).stream().unwrap().expect("synced");
@@ -165,7 +165,7 @@ fn large_body_streams() {
 }
 
 // spec/crdt.md §4.6 (undo and redo); notes/api.md Undo (history lists everyone's changes; undo
-// and redo own ones), offline: one device without hosts keeps a full local history. The stack
+// and redo own ones), offline: one node without peers keeps a full local history. The stack
 // here walks two aspects.
 #[test]
 fn local_undo_redo_and_history() {

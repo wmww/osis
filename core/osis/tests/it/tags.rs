@@ -31,14 +31,14 @@ fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Re
 
 /// A card: a thing with a body, owned by `owner`, placed nowhere yet.
 fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
-    db.batch(|w| {
+    db.commit_with(|w| {
         let c = w.create_owned_by(owner)?;
         w.at(c, BODY).set(&text.to_string())?;
         Ok(c)
     })
 }
 
-/// Adds a thing the person owns to a tag: a placement plus a tied edge for the tag's actor, so
+/// Adds a thing the account owns to a tag: a placement plus a tied edge for the tag's actor, so
 /// the tag's holders reach it (capped by their role on the tag) and it syncs under the tag's
 /// label (spec/sync.md §3, entitlement). Placing alone shares nothing.
 fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
@@ -48,17 +48,17 @@ fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
 }
 
 fn place(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
-    db.batch(|w| w.group(tag).add(osis::Member::Item(thing)))
+    db.commit_with(|w| w.group(tag).add(osis::Member::Item(thing)))
 }
 
 /// Removes a thing from a tag; the tag's tied edge on it goes once the unplace synced (the
 /// thing's admin removes it with a rotation, spec/permissions.md §2).
 fn remove(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
-    db.batch(|w| w.group(tag).remove(osis::Member::Item(thing)))
+    db.commit_with(|w| w.group(tag).remove(osis::Member::Item(thing)))
 }
 
 fn edit(db: &Osis, card: Tid, shown: &str, new: &str) -> Result<()> {
-    db.batch(|w| w.at(card, BODY).edit(&shown.to_string(), &new.to_string()))
+    db.commit_with(|w| w.at(card, BODY).edit(&shown.to_string(), &new.to_string()))
 }
 
 fn text(db: &Osis, card: Tid) -> Result<Option<String>> {
@@ -78,8 +78,8 @@ fn list(db: &Osis, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
     Ok((things, subs))
 }
 
-fn share(db: &Osis, tag: Tid, person: Tid, role: Role, invite: Option<Role>) -> Result<()> {
-    db.grant(tag, person, role, GrantOpts { until: None, invite })
+fn share(db: &Osis, tag: Tid, person: Tid, role: Role, may_grant: Option<Role>) -> Result<()> {
+    db.grant(tag, person, role, GrantOpts { until: None, may_grant })
 }
 
 // notes/tags.md (sharing a tag per item through one roster), spec/sync.md §3 (entitlement),

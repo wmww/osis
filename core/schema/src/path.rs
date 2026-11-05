@@ -58,6 +58,7 @@ impl From<Value> for Step {
     }
 }
 
+/// A position inside an aspect's value: steps from the top. Empty: the whole value. `p!` builds one.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Path(pub Vec<Step>);
 
@@ -124,6 +125,7 @@ pub enum PathErrorKind {
     Schema(String),
 }
 
+/// A typed read or a write validation failed: where, and why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PathError {
     pub path: Path,

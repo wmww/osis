@@ -107,9 +107,13 @@ impl std::str::FromStr for HistoryPos {
 /// entries, `Oldest` and `After` towards newer ones. Neither bound counts itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HistoryFrom {
+    /// The newest entry, going older.
     Newest,
+    /// The oldest entry, going newer.
     Oldest,
+    /// Before this place, going older.
     Before(HistoryPos),
+    /// After this place, going newer.
     After(HistoryPos),
 }
 

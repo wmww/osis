@@ -33,7 +33,7 @@ fn local(y: i64, m: i64, d: i64, h: i64, min: i64) -> i64 {
 }
 
 fn new_event(db: &Osis, calendar: Tid, name: &str, start: Start, end: Option<End>) -> Result<Tid> {
-    db.batch(|w| {
+    db.commit_with(|w| {
         let e = w.create_in(calendar, &[calendar])?;
         w.at(e, NAME).set(&name.to_string())?;
         w.at(e, START).set(&start)?;

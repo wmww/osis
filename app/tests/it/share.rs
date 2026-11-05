@@ -1,5 +1,5 @@
-//! Two people (commits delivered by hand, as in `sync`): who can see a thing, tagging (places or
-//! nests only: sharing through a tag waits on issues/tag-sharing-op.md), undo across people.
+//! Two accounts (commits delivered by hand, as in `sync`): who can see a thing, tagging (places or
+//! nests only: sharing through a tag waits on issues/tag-sharing-op.md), undo across accounts.
 use osis::internals::Internals as _;
 use osis::core::NAME;
 use osis::{GrantOpts, MemStore, Osis, Role, Store, Time};
@@ -14,7 +14,7 @@ fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     c
 }
 
-/// Every commit `from` holds that `to` takes (another person's private commits it cannot use
+/// Every commit `from` holds that `to` takes (another account's private commits it cannot use
 /// are refused; that is fine here).
 fn deliver(from: &Osis, to: &Osis) {
     let pks = from.engine(|e| e.commit_ids().iter().filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
@@ -30,7 +30,7 @@ fn sync(a: &Data, b: &Data) {
     }
 }
 
-/// Alice and Bob, two people, each with an app group; each holds the other's commits.
+/// Alice and Bob, two accounts, each with an app group; each holds the other's commits.
 fn two_people() -> (Data, Data) {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = Data::new(osis::internals::create(cfg(1, &clock)).unwrap().0);
@@ -90,7 +90,7 @@ fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
     let tag = a.create(NewKind::Tag).unwrap();
     let until = Time(a.db.now().unwrap().0 + 86_400_000);
-    a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), invite: None }).unwrap();
+    a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), may_grant: None }).unwrap();
     assert_eq!(a.reach(tag).unwrap().people.len(), 1);
 }
 

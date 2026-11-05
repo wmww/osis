@@ -11,6 +11,7 @@ fn strictly_sorted<T>(s: &[T], key: impl Fn(&T) -> &Value) -> bool {
     s.windows(2).all(|w| matches!(w, [a, b] if key(a) < key(b)))
 }
 
+/// A `Value::Map`'s contents: entries in canonical key order.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ValueMap(Vec<(Value, Value)>);
 
@@ -145,6 +146,7 @@ impl<'a> IntoIterator for &'a ValueMap {
     }
 }
 
+/// A `Value::Set`'s contents: elements in canonical order.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ValueSet(Vec<Value>);
 

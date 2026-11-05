@@ -158,7 +158,7 @@ struct Pending {
     /// The grants or status changed since the last Notify.
     dirty: bool,
     /// Aspect or thing subscription: aspects changed, with their newest source.
-    aks: BTreeMap<Ak, crate::watch::Source>,
+    aks: BTreeMap<Ak, crate::watch::Origin>,
     /// Fired signals and diagnostics, never coalesced, each with its bytes.
     queue: VecDeque<(Value, usize)>,
     /// History subscription: the commits whose entries changed (`HISTORY_DIRTY_BYTES` each).
@@ -253,7 +253,7 @@ impl Conn {
     }
 }
 
-/// Whose write outcomes: the Owner's, or a client actor's (a session id of one identity never
+/// Whose write outcomes: the main actor's, or a client actor's (a session id of one identity never
 /// reads another's).
 type Identity = Option<Tid>;
 
@@ -297,7 +297,7 @@ fn nothing() -> Value {
     Value::List(vec![])
 }
 
-/// Starts a row that waits (`filter::TASK`), an Owner's. Each runs as the node's own async call,
+/// Starts a row that waits (`filter::TASK`), a main-actor. Each runs as the node's own async call,
 /// polled when its waker fires.
 fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
     let mut a = Args::of(args);
@@ -421,7 +421,7 @@ impl Worker {
     }
 
     /// The handle a row or a send of session `conn` runs on (the module's invariant): the
-    /// Owner's as it is, a client's acting as its actor while it is live. A client no longer live
+    /// main actor's as it is, a client's acting as its actor while it is live. A client no longer live
     /// is ended here; `None` then, as for a session this worker does not hold.
     fn session(&mut self, db: &Osis, conn: ConnId) -> Option<Osis> {
         match self.conns.get(&conn)?.tier {
@@ -552,12 +552,12 @@ impl Worker {
             method::WHOAMI => Value::List(vec![Value::Tid(db.me()), Value::Tid(db.node())]),
             method::GET => {
                 let (tid, ak, path) = (a.tid()?, a.ak()?, c::path(a.next()?)?);
-                let key = db.key(ak.as_str())?;
-                let r = if path.0.is_empty() { db.at(tid, crate::Key::untyped(ak)).get() } else { db.at(tid, key).path(path).get() };
+                let key = db.aspect_key(ak.as_str())?;
+                let r = if path.0.is_empty() { db.at(tid, crate::DynamicAspectKey::untyped(ak)).get() } else { db.at(tid, key).path(path).get() };
                 c::read_v(&r)
             }
             method::ASPECTS => Value::List(db.aspects(a.tid()?)?.iter().map(c::ak_v).collect()),
-            method::KNOWS => b(db.knows(a.tid()?)?),
+            method::HAS_CONTENT => b(db.has_content(a.tid()?)?),
             method::HOLDS => b(db.holds(a.tid()?)),
             method::GROUPS_OF => c::groups_v(&db.groups_of(a.tid()?)?),
             method::GRANTS => c::grants_v(&db.grants(a.tid()?)?),
@@ -586,7 +586,7 @@ impl Worker {
             method::HISTORY => {
                 let (tid, ak, from) = (a.tid()?, a.ak()?, c::from(a.next()?)?);
                 let (limit, bytes) = (a.uint()?, a.uint()?);
-                // the Owner's handle routes: this engine's copy would be stale
+                // the main actor's handle routes: this engine's copy would be stale
                 if !db.is_local(tid) {
                     return Err(unsupported("a history of a group this node reads at another node"));
                 }
@@ -608,10 +608,10 @@ impl Worker {
                 self.schemas.insert(h, src.len());
                 Value::List(vec![])
             }
-            method::LEN | method::STREAM_READ => {
+            method::BYTE_LEN | method::STREAM_READ => {
                 let (tid, ak, path) = (a.tid()?, a.ak()?, c::path(a.next()?)?);
-                let s = db.at(tid, crate::Key::untyped(ak)).path(path).stream()?;
-                if m == method::LEN {
+                let s = db.at(tid, crate::DynamicAspectKey::untyped(ak)).path(path).stream()?;
+                if m == method::BYTE_LEN {
                     c::opt(s, |s| u(s.len()))
                 } else {
                     let (off, n) = (a.uint()?, usize::try_from(a.uint()?).unwrap_or(usize::MAX).min(STREAM_CHUNK));
@@ -632,19 +632,20 @@ impl Worker {
             method::REMOVE_CLIENT => b(db.remove_client(a.tid()?)?),
             method::ROTATE_CLIENT_SECRET => Value::bytes(db.rotate_client_secret(a.tid()?)?.expose()),
             method::ROTATE_CLIENT_ADDRESS => Value::List(db.rotate_client_address()?.iter().map(|h| Value::Str(h.to_string())).collect()),
-            method::KEPT => Value::List(db.kept_copies()?.into_iter().map(Value::Tid).collect()),
-            method::DROP_KEPT => {
-                db.drop_kept(a.tid()?)?;
+            method::RETAINED_COPIES => Value::List(db.retained_copies()?.into_iter().map(Value::Tid).collect()),
+            method::DROP_RETAINED_COPY => {
+                db.drop_retained_copy(a.tid()?)?;
                 Value::List(vec![])
             }
-            method::HOSTS => Value::List(db.hosts()?.iter().map(|h| Value::Str(h.to_string())).collect()),
-            method::SYNC_NOW => {
-                db.sync_now()?;
+            method::SAVED_PEERS => Value::List(db.saved_peers()?.iter().map(|h| Value::Str(h.to_string())).collect()),
+            method::PEERS => Value::List(db.peers(a.tid()?)?.iter().map(|h| Value::Str(h.to_string())).collect()),
+            method::NUDGE_SYNC => {
+                db.nudge_sync()?;
                 Value::List(vec![])
             }
             method::SYNC => {
                 let g = a.tid()?;
-                let hosts = a.list()?.into_iter().map(|h| c::Args::of(vec![h]).text()?.parse()).collect::<Result<Vec<crate::HostAddr>>>()?;
+                let hosts = a.list()?.into_iter().map(|h| c::Args::of(vec![h]).text()?.parse()).collect::<Result<Vec<crate::Address>>>()?;
                 db.sync(g, &hosts)?;
                 Value::List(vec![])
             }
@@ -661,13 +662,13 @@ impl Worker {
                 Value::List(vec![])
             }
             method::CREATE_OWNERLESS => Value::Tid(db.create_ownerless(a.tid()?)?),
-            method::DEVICES => Value::List(db.devices()?.iter().map(|x| Value::List(vec![Value::Tid(x.node), c::role_v(x.role)])).collect()),
-            method::ADD_HOST | method::REMOVE_HOST => {
-                let h: crate::HostAddr = a.text()?.parse()?;
-                if m == method::ADD_HOST { db.add_host(&h)? } else { db.remove_host(&h)? }
+            method::NODES => Value::List(db.nodes()?.iter().map(|x| Value::List(vec![Value::Tid(x.node), c::role_v(x.role)])).collect()),
+            method::ADD_PEER | method::REMOVE_PEER => {
+                let h: crate::Address = a.text()?.parse()?;
+                if m == method::ADD_PEER { db.add_peer(&h)? } else { db.remove_peer(&h)? }
                 nothing()
             }
-            method::HOST_KEY => c::opt(db.host_key()?, |k| Value::bytes(&k)),
+            method::SERVING_KEY => c::opt(db.serving_key()?, |k| Value::bytes(&k)),
             method::PAIR_OFFER => Value::Str(db.pair_offer()?.to_string()),
             method::PAIR_ACCEPT => {
                 let (node, reply) = db.pair_accept(&a.text()?.parse()?)?;
@@ -685,7 +686,7 @@ impl Worker {
                 db.decline_invite(crate::InviteId::from_bytes(&a.bytes()?)?)?;
                 nothing()
             }
-            method::ADMISSION_IDS => Value::List(db.admission_ids(a.tid()?)?.iter().map(|x| Value::Str(x.to_string())).collect()),
+            method::SYNC_IDS => Value::List(db.sync_ids(a.tid()?)?.iter().map(|x| Value::Str(x.to_string())).collect()),
             method::SYNC_OPTIONS => Value::List(c::sync_options_v(&db.sync_options(a.tid()?)?)),
             method::SET_SYNC_OPTIONS => {
                 let g = a.tid()?;
@@ -751,7 +752,7 @@ impl Worker {
         let held = c.held.clone();
         let acting = db.acting;
         let mut a = Args::new(f)?;
-        // the Owner's handle routes; this subscription would watch this engine's stale copy
+        // the main actor's handle routes; this subscription would watch this engine's stale copy
         let thing = |t: Tid| {
             if !db.is_local(t) {
                 return Err(unsupported("a watch of a group this node reads at another node"));
@@ -816,11 +817,11 @@ impl Worker {
                 Delivery::Diagnostic(x) if acting.is_some_and(|a| x.tids.is_empty() || !db.engine(|e| x.tids.iter().all(|t| e.readable_by(&a, t)))) => return,
                 // a signal of what it may not read takes none of its budget (a lapse would tell)
                 Delivery::Fired { tid, .. } | Delivery::History { tid, .. } if acting.is_some_and(|a| !db.engine(|e| e.readable_by(&a, &tid))) => return,
-                Delivery::Aspect { ak, source, .. } => {
-                    lock(&p).aks.insert(ak, source);
+                Delivery::Aspect { ak, origin, .. } => {
+                    lock(&p).aks.insert(ak, origin);
                 }
                 // a fired signal carries a fifth item: delivered even when equal to the last
-                Delivery::Fired { tid, ak, source, value } => queue(&mut lock(&p), Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::source_v(&source), Value::Bool(true)])),
+                Delivery::Fired { tid, ak, origin, value } => queue(&mut lock(&p), Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::origin_v(&origin), Value::Bool(true)])),
                 Delivery::History { id, .. } => lock(&p).note_history(id, &held2),
                 Delivery::Grants | Delivery::Status(_) => lock(&p).dirty = true,
                 // this node's own source for it moved: the client's subscription ends
@@ -961,12 +962,12 @@ impl Worker {
 
 /// What a subscription would send now, oldest first: queued deliveries, then what changed
 /// (a value, with its source when it has one), read now.
-fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::Source>)> {
+fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::Origin>)> {
     let mut out: Vec<_> = g.queue.iter().map(|(v, _)| (v.clone(), None)).collect();
     match kind {
         Kind::Aspect(t, _) | Kind::Thing(t) => {
             for (ak, src) in &g.aks {
-                let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::source_v(src)]);
+                let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::origin_v(src)]);
                 out.push((v, Some(*src)));
             }
         }
@@ -987,7 +988,7 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
 }
 
 /// A delivery as the Notify payload that fits `max_reply`, with its message's size.
-fn fit(id: Id, max_reply: usize, v: &Value, src: &Option<crate::watch::Source>) -> (Payload, usize) {
+fn fit(id: Id, max_reply: usize, v: &Value, src: &Option<crate::watch::Origin>) -> (Payload, usize) {
     let size_of = |p: &Payload| Message::Notify { sub: id, payload: p.clone() }.encode().len();
     let p = Payload::Delivery { value: v.clone() };
     let size = size_of(&p);
@@ -995,7 +996,7 @@ fn fit(id: Id, max_reply: usize, v: &Value, src: &Option<crate::watch::Source>) 
         return (p, size);
     }
     // above the subscription's bound: what changed, read by path or stream
-    let p = Payload::TooLarge { source: c::source_v(&src.unwrap_or(crate::watch::Source::Initial)) };
+    let p = Payload::TooLarge { source: c::origin_v(&src.unwrap_or(crate::watch::Origin::Initial)) };
     let size = size_of(&p);
     if size <= max_reply {
         return (p, size);

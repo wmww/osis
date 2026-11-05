@@ -1,5 +1,5 @@
-//! Chats across two people (commits delivered by hand, as in `share`): list, open, send, receive,
-//! replies and the sender's name. Joining a new chat by link needs a host: checked by hand (notes/app.md
+//! Chats across two accounts (commits delivered by hand, as in `share`): list, open, send, receive,
+//! replies and the sender's name. Joining a new chat by link needs a peer: checked by hand (notes/app.md
 //! Chat); a link to a chat already here does not.
 use osis::internals::Internals as _;
 use osis::{MemStore, Osis, Role, Store, Time};
@@ -11,8 +11,8 @@ fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.app.internals.seed = Some(seed);
     c.app.internals.clock = Some(clock.clone());
-    // a host that never runs: a profile (where the sender's name lives) needs one named
-    c.hosts = vec![osis::HostAddr::new(&"quic://127.0.0.1:9".parse().unwrap(), [7; 32])];
+    // a peer that never runs: a profile (where the sender's name lives) needs one named
+    c.hosts = vec![osis::Address::new(&"quic://127.0.0.1:9".parse().unwrap(), [7; 32])];
     c.runtime = osis::Runtime::Manual(osis::internals::ManualNet::new());
     c
 }
@@ -103,10 +103,10 @@ fn edited_deleted_and_nameless() {
     assert_eq!(got[3].reply_to, Some((first, "Alice: fixed".to_string())));
 }
 
-/// A store without hosts has no profile: reading the name writes nothing and sending works,
+/// A store without peers has no profile: reading the name writes nothing and sending works,
 /// nameless.
 #[test]
-fn hostless_store_sends_without_a_name() {
+fn store_without_peers_sends_without_a_name() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let mut cfg = cfg(1, &clock);
     cfg.hosts.clear();
@@ -121,7 +121,7 @@ fn hostless_store_sends_without_a_name() {
 }
 
 /// A link to a chat already here (pasted by its maker or a member) opens it without the link's
-/// host; text that is no link still fails.
+/// peer; text that is no link still fails.
 #[test]
 fn join_held_chat_opens_it() {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
@@ -133,7 +133,7 @@ fn join_held_chat_opens_it() {
     let link = osis_chat::link(&a, c, Role::Write, false).unwrap().to_string();
     sync(&a, &b);
     for db in [a, b] {
-        // the host never answers: before, this waited on it
+        // the peer never answers: before, this waited on it
         let (tx, rx) = std::sync::mpsc::channel();
         let l = link.clone();
         std::thread::spawn(move || tx.send(chat::join(&db, &format!(" {l}\n")).map_err(|e| e.to_string())));

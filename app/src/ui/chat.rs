@@ -28,7 +28,7 @@ const CHAT_SCROLL: WidgetTag<Portal<Flex>> = WidgetTag::new("chat-scroll");
 #[cfg(target_os = "android")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PasteTo {
-    Host,
+    Peer,
     Join,
     Name,
     Send(Tid),
@@ -111,14 +111,14 @@ impl Ui {
 
     /// Android's additions to the join section. A phone has no Ctrl+V, and winit 0.30 has no
     /// soft keyboard text on Android (notes/android.md), so the clipboard stands in for typing:
-    /// the host (the store starts without one), the link, the name.
+    /// a peer (the store starts without one), the link, the name.
     #[cfg(target_os = "android")]
     fn android_join(&mut self, col: Flex) -> Flex {
         let look = self.look.clone();
-        let col = match self.data.db.hosts().map(|h| h.first().cloned()) {
-            Ok(Some(h)) => col.with_child(style::label(&look, &format!("Host: {h}"), Text::Small)),
-            Ok(None) => col.with_child(style::label(&look, "No host yet: copy its quic:// address first", Text::Small)).with_child(self.paste_chip("Paste host address", PasteTo::Host)),
-            Err(e) => col.with_child(style::label(&look, &format!("Hosts unknown: {e}"), Text::Small)),
+        let col = match self.data.db.saved_peers().map(|h| h.first().cloned()) {
+            Ok(Some(h)) => col.with_child(style::label(&look, &format!("Peer: {h}"), Text::Small)),
+            Ok(None) => col.with_child(style::label(&look, "No peer yet: copy a node's address first", Text::Small)).with_child(self.paste_chip("Paste peer address", PasteTo::Peer)),
+            Err(e) => col.with_child(style::label(&look, &format!("Peers unknown: {e}"), Text::Small)),
         };
         let row = Flex::row().with_gap(Length::px(look.sp(8.0))).with_child(self.paste_chip("Paste link and join", PasteTo::Join)).with_child(self.paste_chip("Paste name", PasteTo::Name));
         col.with_child(NewWidget::new(row))
@@ -138,10 +138,10 @@ impl Ui {
             return Err(osis::Error::Invalid("the clipboard holds no text".into()));
         }
         match to {
-            PasteTo::Host => {
-                let h: osis::HostAddr = text.parse().map_err(|e| osis::Error::Invalid(format!("not a host address: {e}")))?;
-                self.data.db.add_host(&h)?;
-                self.status(ctx, format!("host {h} added"));
+            PasteTo::Peer => {
+                let h: osis::Address = text.parse().map_err(|e| osis::Error::Invalid(format!("not an address: {e}")))?;
+                self.data.db.add_peer(&h)?;
+                self.status(ctx, format!("peer {h} added"));
             }
             PasteTo::Join => {
                 self.compose.join = text;
@@ -344,7 +344,7 @@ impl Ui {
         }
     }
 
-    /// Redeems the typed link off the UI thread (it waits for the link's host).
+    /// Redeems the typed link off the UI thread (it waits for the link's peer).
     fn start_join(&mut self, ctx: &mut DriverCtx<'_, '_>) {
         let link = self.compose.join.trim().to_string();
         if link.is_empty() || self.compose.joining {

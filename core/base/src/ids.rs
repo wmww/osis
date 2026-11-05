@@ -63,6 +63,7 @@ impl std::str::FromStr for Tid {
     }
 }
 
+/// Text that is no tid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TidParseError;
 crate::impl_error!(TidParseError, "invalid tid text form");
@@ -169,7 +170,7 @@ impl Lifetime {
     }
 }
 
-/// Aspect key (spec/data-model.md §2): name segments `[a-z_][a-z0-9_]*` joined by `:`, after an
+/// An aspect key: name segments `[a-z_][a-z0-9_]*` joined by `:`, after an
 /// optional leading `:<tid>` segment; then `.N`, the aspect version; then the markers `^`
 /// (admin-only) and at most one of `~` (ephemeral) or `*` (signal): `name.0`,
 /// `contact:names.0`, `:<tid>:foo.1^~`.
@@ -337,6 +338,7 @@ impl fmt::Display for Ak {
     }
 }
 
+/// Text that is no aspect key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AkError;
 crate::impl_error!(AkError, "invalid aspect key");
@@ -393,8 +395,7 @@ impl fmt::Debug for Link {
     }
 }
 
-/// Who may purge a write (spec/commits.md §5; wire codes spec/wire.md §1). Named sets, not a
-/// scale: `Author` excludes admins, `Admin` the author.
+/// Who may purge a write. Named sets, not a scale: `Author` excludes admins, `Admin` the author.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PurgeBy {
     Nobody = 0,

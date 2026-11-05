@@ -43,7 +43,7 @@ pub enum CommitKind {
     Role,
     /// Older commits tidied into one, which then stands in for them. It names who made it, not who
     /// wrote what it carries: commits known only from it have no entry of their own.
-    Summary,
+    Snapshot,
     /// An own ephemeral commit of this session, a revert too (`reverts`).
     Ephemeral,
 }
@@ -52,6 +52,7 @@ pub enum CommitKind {
 /// everything; results are newest first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitQuery {
+    /// Which aspects.
     pub scope: Option<Scope>,
     /// By any of these actors.
     pub actors: Vec<Tid>,
@@ -61,6 +62,7 @@ pub struct CommitQuery {
     pub reverts: Option<CommitId>,
     /// The commit this one reverts.
     pub reverted_by: Option<CommitId>,
+    /// Whether no revert in effect reverts it.
     pub in_effect: Option<bool>,
     /// Written at this time or later. Several commits can share a moment: to page, use `after`.
     pub since: Option<Time>,
@@ -68,12 +70,13 @@ pub struct CommitQuery {
     pub until: Option<Time>,
     /// Paging: only commits after this one in result order (older).
     pub after: Option<CommitId>,
+    /// At most this many.
     pub limit: Option<usize>,
 }
 
 /// Why a commit cannot be reverted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DropReason {
+pub enum NotUndoableReason {
     /// What it wrote is no longer here (tidied up, past a keep bound or purged), or an ephemeral
     /// commit left the undo memory (`Config::ephemeral_undo_bytes`).
     ContentGone,
@@ -82,11 +85,13 @@ pub enum DropReason {
 }
 
 /// One commit held here, attributed by what it signs itself (a commit known only from a
-/// `CommitKind::Summary` has no entry), or an own ephemeral commit of this session; with what
+/// `CommitKind::Snapshot` has no entry), or an own ephemeral commit of this session; with what
 /// reverted what among them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitEntry {
+    /// Which commit, who wrote it and when.
     pub commit: Stamp,
+    /// What kind of commit it is.
     pub kind: CommitKind,
     /// The commit it reverts.
     pub reverts: Option<CommitId>,
@@ -115,7 +120,7 @@ pub(crate) fn kind_of_commit(k: Kind) -> CommitKind {
     match k {
         Kind::Content => CommitKind::Content,
         Kind::Role => CommitKind::Role,
-        Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot => CommitKind::Summary,
+        Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot => CommitKind::Snapshot,
     }
 }
 
@@ -311,7 +316,7 @@ impl Osis {
 
     /// Commits matching `q`, newest first.
     pub fn commits(&self, q: &CommitQuery) -> Result<Vec<CommitEntry>> {
-        if let crate::sources::Source::Remote(r) = self.route_scope(q.scope.as_ref())? {
+        if let crate::sources::Route::Remote(r) = self.route_scope(q.scope.as_ref())? {
             let v = r.call(crate::port::method::COMMITS, vec![crate::port::codec::query_v(q)])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(crate::port::codec::entry).collect();
         }
@@ -350,7 +355,7 @@ impl Osis {
     }
 
     fn target(&self, scope: &Scope, redo: bool) -> Result<Option<CommitEntry>> {
-        if let crate::sources::Source::Remote(r) = self.route_scope(Some(scope))? {
+        if let crate::sources::Route::Remote(r) = self.route_scope(Some(scope))? {
             let m = if redo { crate::port::method::REDO_TARGET } else { crate::port::method::UNDO_TARGET };
             let v = r.call(m, vec![crate::port::codec::scope_v(scope)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::entry).transpose();
@@ -363,7 +368,7 @@ impl Osis {
     /// it. `None` when there is none, `NotUndoable` when it cannot be reverted (nothing older is
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Commit>> {
-        if let crate::sources::Source::Remote(r) = self.route_write_scope(scope)? {
+        if let crate::sources::Route::Remote(r) = self.route_write_scope(scope)? {
             let v = r.call_once(crate::port::method::UNDO, vec![crate::port::codec::scope_v(scope)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::commit).transpose();
         }
@@ -373,7 +378,7 @@ impl Osis {
     /// Redoes this actor's newest undo in effect in `scope`, unless a new commit of this actor
     /// came after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Commit>> {
-        if let crate::sources::Source::Remote(r) = self.route_write_scope(scope)? {
+        if let crate::sources::Route::Remote(r) = self.route_write_scope(scope)? {
             let v = r.call_once(crate::port::method::REDO, vec![crate::port::codec::scope_v(scope)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::commit).transpose();
         }
@@ -384,7 +389,7 @@ impl Osis {
     /// else's), or an own ephemeral commit of this session. An ephemeral commit without a log here (another node's, or from before a
     /// restart) is `Invalid`.
     pub fn revert(&self, id: CommitId) -> Result<Commit> {
-        if let crate::sources::Source::Remote(r) = self.route_write_commit(id.0)? {
+        if let crate::sources::Route::Remote(r) = self.route_write_commit(id.0)? {
             return crate::port::codec::commit(r.call_once(crate::port::method::REVERT, vec![crate::port::codec::commit_id_v(&id)])?);
         }
         let _g = lock(&self.inner.undo);
@@ -414,7 +419,7 @@ impl Osis {
         if let Some((ts, id, revert)) = gone
             && target.as_ref().is_none_or(|f| f.entry.commit.ts < ts)
         {
-            return if redo && !revert { Ok(None) } else { Err(Error::NotUndoable { commit: CommitId(id), reason: DropReason::ContentGone }) };
+            return if redo && !revert { Ok(None) } else { Err(Error::NotUndoable { commit: CommitId(id), reason: NotUndoableReason::ContentGone }) };
         }
         Ok(target)
     }
@@ -434,7 +439,7 @@ impl Osis {
                 }
                 // of what the actor may not read, not asked: `revert_as` refuses it whichever
                 if h.aspects.iter().any(|a| a.ak.as_str() != "created.0" && self.acting.is_none_or(|x| e.readable_by(&x, &a.tid)) && !e.body_not_dropped(&c, &a.tid, &a.ak)) {
-                    return Err(blocked(DropReason::ContentGone));
+                    return Err(blocked(NotUndoableReason::ContentGone));
                 }
             }
             if let Some(a) = self.acting {
@@ -442,7 +447,7 @@ impl Osis {
                 if let RawChange::Ephemeral(_) = target.0
                     && !e.ephemeral_log().iter().filter(|l| l.id == target.0).all(|l| l.aspects.iter().any(|(t, _)| e.readable_by(&a, t)))
                 {
-                    return Err(blocked(DropReason::ContentGone));
+                    return Err(blocked(NotUndoableReason::ContentGone));
                 }
             }
             let r = match self.acting {
@@ -451,8 +456,8 @@ impl Osis {
             };
             match r {
                 Reverted::Written(w) => Ok(Commit::of(w)),
-                Reverted::Superseded => Err(blocked(DropReason::Superseded)),
-                Reverted::Compacted => Err(blocked(DropReason::ContentGone)),
+                Reverted::Superseded => Err(blocked(NotUndoableReason::Superseded)),
+                Reverted::Compacted => Err(blocked(NotUndoableReason::ContentGone)),
             }
         })
     }

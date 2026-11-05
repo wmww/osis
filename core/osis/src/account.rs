@@ -1,12 +1,12 @@
-//! The person across devices (spec/permissions.md §1, §8; notes/api.md Handle and lifecycle):
-//! restoring from a recovery card on a fresh device, and pairing a new device. Pairing is
-//! transport-agnostic: the app carries two messages between the devices (QR, clipboard, a local
-//! socket): the new device's request (its node card) and the existing device's reply (the grant
+//! The account across nodes (spec/permissions.md §1, §8; notes/api.md Handle and lifecycle):
+//! restoring from a recovery card on a fresh node, and pairing a new node. Pairing is
+//! transport-agnostic: the app carries two messages between the nodes (QR, clipboard, a local
+//! socket): the new node's request (its node card) and the existing node's reply (the grant
 //! and the commits it needs), both authenticated by the offer's one-time secret.
 
 use crate::error::{Error, Result};
 use crate::handle::{Fresh, Osis, PERSON, fresh_engine, save_hosts};
-use crate::share::{RecoveryCard, HostAddr, SyncState};
+use crate::share::{RecoveryCard, Address, SyncState};
 use crate::{Config, Store};
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::{BlobId, CommitId as RawCommitId, Tid, Value, base64url};
@@ -47,18 +47,18 @@ macro_rules! pair_text {
 }
 
 pair_text!(
-    /// A short-lived offer to pair a new device, made on an existing one (holds a one-time
-    /// secret: show it only to the new device).
+    /// A short-lived offer to pair a new node, made on an existing one (holds a one-time
+    /// secret: show it only to the new node).
     PairOffer,
     OFFER
 );
 pair_text!(
-    /// The new device's answer to an offer, for `Osis::pair_accept` on the offering device.
+    /// The new node's answer to an offer, for `Osis::pair_accept` on the offering node.
     PairRequest,
     REQUEST
 );
 pair_text!(
-    /// The offering device's answer to a request, for `Joining::finish` on the new device.
+    /// The offering node's answer to a request, for `Joining::finish` on the new node.
     PairReply,
     REPLY
 );
@@ -96,7 +96,7 @@ fn tag_ok(secret: &[u8; 32], purpose: &str, items: &[Value]) -> bool {
 }
 
 /// `hosts` plus those of `more` it lacks.
-fn with_hosts(hosts: &[HostAddr], more: Vec<HostAddr>) -> Vec<HostAddr> {
+fn with_hosts(hosts: &[Address], more: Vec<Address>) -> Vec<Address> {
     let mut hosts = hosts.to_vec();
     for a in more {
         if !hosts.contains(&a) {
@@ -135,7 +135,7 @@ fn packages_of(v: &Value) -> Result<Packages> {
     Ok(out)
 }
 
-/// A new device waiting for the offering device's reply.
+/// A new node waiting for the offering node's reply.
 pub struct Joining {
     db: Osis,
     secret: [u8; 32],
@@ -150,17 +150,17 @@ impl std::fmt::Debug for Joining {
 }
 
 impl Joining {
-    /// The request to carry to the offering device.
+    /// The request to carry to the offering node.
     pub fn request(&self) -> &PairRequest {
         &self.request
     }
 
-    /// This new device's node tid (`internals::joining_node`).
+    /// This new node's node tid (`internals::joining_node`).
     pub(crate) fn node(&self) -> Tid {
         self.db.node()
     }
 
-    /// Takes the offering device's reply and returns the database, now a device of the person.
+    /// Takes the offering node's reply and returns the node, now a node of the account.
     pub fn finish(self, reply: &PairReply) -> Result<Osis> {
         let items = unpack(&reply.0, REPLY)?;
         let [_, Value::Bytes(grant), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing reply".into())) };
@@ -174,11 +174,11 @@ impl Joining {
             for (bytes, blobs) in pks {
                 e.ingest(&bytes, blobs)?;
             }
-            let done = e.paired(&person, &grant).map_err(|_| Error::Invalid("pairing reply: this device was not made an admin of the person".into()))?;
+            let done = e.paired(&person, &grant).map_err(|_| Error::Invalid("pairing reply: this node was not made an admin of the account".into()))?;
             e.set_app_record(PERSON, person.as_bytes())?;
             Ok(done)
         })?;
-        let hosts = self.db.hosts()?;
+        let hosts = self.db.saved_peers()?;
         self.db.engine(|e| save_hosts(e, &hosts))?;
         self.db.carry(done)?;
         Ok(self.db)
@@ -186,21 +186,20 @@ impl Joining {
 }
 
 impl Osis {
-    /// Restores the person of a recovery card on this fresh device: downloads its home group by the
-    /// card's key, then makes this node an admin of the person. Needs a runtime; the card's hosts are added
-    /// to `hosts`. `Invalid` when its hosts refuse the card's key; `Unsynced` when the home group stops
-    /// opening under this attempt's keys (changed at a host meanwhile: try again); with nobody
-    /// answering it waits. On any
-    /// failure (or a dropped future) the recovery key is forgotten and the store gets no person
-    /// record (it does not open as a database; use a fresh store for the next attempt).
-    pub async fn restore(store: Store, hosts: &[HostAddr], card: &RecoveryCard, cfg: Config) -> Result<Osis> {
-        cfg.check(hosts)?;
+    /// Restores the account of a recovery card on this fresh node: downloads its home group by the
+    /// card's key, then makes this node an admin of the account. Needs a runtime; the card's peers
+    /// join `peers`. `Invalid` when they refuse the card's key; `Unsynced` when the home group stops
+    /// opening under this attempt's keys (it changed meanwhile: try again); with nobody answering
+    /// it waits. On any failure, or a dropped future, the recovery key is forgotten and the store
+    /// does not open: use a fresh store for the next attempt.
+    pub async fn restore(store: Store, peers: &[Address], card: &RecoveryCard, cfg: Config) -> Result<Osis> {
+        cfg.check(peers)?;
         let c = card.parse()?;
-        let hosts = with_hosts(hosts, c.hosts.iter().cloned().map(HostAddr).collect());
-        let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, &hosts)?;
+        let peers = with_hosts(peers, c.hosts.iter().cloned().map(Address).collect());
+        let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, &peers)?;
         let engine = sync.engine_mut();
         let r = engine.hold_key_actor(c.seed.clone())?;
-        save_hosts(engine, &hosts)?;
+        save_hosts(engine, &peers)?;
         let db = Osis::start(sync, clock, store, &cfg, c.person)?;
         let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
         db.act(|x| x.sync.follow(r, c.person, c.home_label, c.hosts.clone()));
@@ -221,22 +220,22 @@ impl Osis {
         let done = db.engine(|e| e.recover(&c, &[], PreSync::Synced))?;
         drop(key);
         db.carry(done)?;
-        // the person record last: a store without it is no osis database yet
+        // the account record last: a store without it is no osis node yet
         db.engine(|e| e.set_app_record(PERSON, c.person.as_bytes()))?;
         Ok(db)
     }
 
-    /// An offer to pair a new device, good once: the new device runs
+    /// An offer to pair a new node, good once: the new node runs
     /// `Osis::pair` with it and the app carries the request back to `pair_accept`. Whoever holds
-    /// the offer can make their device a full admin device of this person until it is used or
-    /// expires (10 minutes): show it only to the new device.
+    /// the offer can make their node a full admin node of this account until it is used or
+    /// expires (10 minutes): show it only to the new node.
     pub fn pair_offer(&self) -> Result<PairOffer> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::PAIR_OFFER, vec![])?;
             return crate::port::codec::Args::of(vec![v]).text()?.parse();
         }
         let (me, node) = (self.me(), self.node());
-        let hosts: Vec<Value> = self.hosts()?.iter().map(|s| Value::Str(s.to_string())).collect();
+        let hosts: Vec<Value> = self.saved_peers()?.iter().map(|s| Value::Str(s.to_string())).collect();
         let now = self.inner.clock.now_wall_ms().0;
         let secret = self.locked(|x| {
             let mut s = [0u8; 32];
@@ -248,8 +247,8 @@ impl Osis {
         Ok(PairOffer(pack(OFFER, &Value::List(vec![Value::Int(1), Value::Tid(me), Value::Tid(node), Value::Bytes(secret.to_vec()), Value::List(hosts)]))))
     }
 
-    /// Accepts a new device's request to an offer of this device: makes it an admin of the
-    /// person (or lets back in a device already one) and returns its node tid
+    /// Accepts a new node's request to an offer of this node: makes it an admin of the
+    /// account (or lets back in a node already one) and returns its node tid
     /// with the reply to carry back.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
         if !self.has_store() {
@@ -285,17 +284,17 @@ impl Osis {
         Ok((node, PairReply(seal(REPLY, &secret, "osis pair reply", vec![Value::Bytes(grant.0.to_vec()), packages_value(&mine)]))))
     }
 
-    /// Starts pairing this fresh store as a new device of the person that made `offer`: returns
-    /// the request to carry to the offering device and, with its reply, `Joining::finish`. The
-    /// offer's hosts are added to `hosts`.
-    pub fn pair(store: Store, hosts: &[HostAddr], offer: &PairOffer, cfg: Config) -> Result<Joining> {
-        cfg.check(hosts)?;
+    /// Starts pairing this fresh store as a new node of the account that made `offer`: returns
+    /// the request to carry to the offering node and, with its reply, `Joining::finish`. The
+    /// offer's peers join `peers`.
+    pub fn pair(store: Store, peers: &[Address], offer: &PairOffer, cfg: Config) -> Result<Joining> {
+        cfg.check(peers)?;
         let items = unpack(&offer.0, OFFER)?;
         let [_, Value::Tid(person), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
         let addrs = addrs.iter().map(|a| if let Value::Str(s) = a { s.parse() } else { Err(Error::Invalid("malformed pairing offer".into())) }).collect::<Result<_>>()?;
-        let hosts = with_hosts(hosts, addrs);
-        let Fresh { sync, clock } = fresh_engine(&store, &cfg, &hosts)?;
+        let peers = with_hosts(peers, addrs);
+        let Fresh { sync, clock } = fresh_engine(&store, &cfg, &peers)?;
         let db = Osis::start(sync, clock, store, &cfg, *person)?;
         let node = db.node();
         let pks = db.engine(|e| -> Result<Vec<Package>> {

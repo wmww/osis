@@ -4,7 +4,7 @@
 //! for a `text` position, a register write otherwise); remote changes are merged into the buffer
 //! (local edits are committed first) and reported through `on_remote` with the edits as
 //! `Splice`s. A session commits on `commit`, after `Config::idle_commit` without edits (a timer
-//! on the database's runtime; without one, at the next edit), and on drop. A session whose thing
+//! on the node's runtime; without one, at the next edit), and on drop. A session whose thing
 //! was deleted since it was known keeps its pending text uncommitted instead (`UnknownThing`,
 //! reported as `Uncommitted` where no caller sees the error; dropped with the session): it never
 //! recreates the thing, and commits if the thing comes back.
@@ -13,7 +13,7 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::read::{PathRef, ak_of};
-use crate::watch::{Delivery, Filter, Source, Subscription, lock};
+use crate::watch::{Delivery, Filter, Origin, Subscription, lock};
 use crate::write::Commit;
 use osis_base::{Tid, Value};
 use osis_crdt::{Op, PathOp};
@@ -23,12 +23,15 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
-/// One edit of a session's text by a remote commit, in chars: `del` chars at `at` replaced by
+/// One edit of a session's text by another node's commit, in chars: `del` chars at `at` replaced by
 /// `text`, at the text as it was before this edit (a list applies in order).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Splice {
+    /// Where the edit is.
     pub at: usize,
+    /// How many chars it replaces.
     pub del: usize,
+    /// What it puts there.
     pub text: String,
 }
 
@@ -71,7 +74,7 @@ struct State {
 #[derive(Clone)]
 struct Bind {
     tid: Tid,
-    key: crate::Key,
+    key: crate::DynamicAspectKey,
     path: Path,
     seq: bool,
 }
@@ -150,21 +153,21 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// through a connected node.
     pub fn edit_text(&self) -> Result<TextSession> {
         let (db, tid, key, path) = self.parts();
-        if let crate::sources::Source::Remote(_) = db.route(tid) {
+        if let crate::sources::Route::Remote(_) = db.route(tid) {
             return Err(Error::Unsupported("edit_text through a connected node".into()));
         }
         let seq = matches!(crate::large::type_of(key, path)?, Some(Type::Text));
-        let key = crate::Key { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
+        let key = crate::DynamicAspectKey { ak: ak_of(key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
         let now = match db.read_local(|r| r.get_path(tid, &key, path))? {
             Some(Value::Str(s)) => s,
             None => String::new(),
             Some(_) => return Err(Error::Invalid("not a string".into())),
         };
-        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: Vec::new(), known: db.knows(tid)? }));
+        let st = Arc::new(Mutex::new(State { base: now.clone(), buf: now, last_edit: None, armed: false, on_remote: Vec::new(), known: db.has_content(tid)? }));
         let b = Bind { tid, key, path: path.clone(), seq };
         let (st2, b2) = (st.clone(), b.clone());
         let sub = db.at(tid, b.key.clone()).on_change(move |db, c| {
-            if !matches!(c.source, Source::Remote(_) | Source::Derived(_)) {
+            if !matches!(c.origin, Origin::Remote(_) | Origin::Derived(_)) {
                 return;
             }
             let mut s = lock(&st2);
@@ -199,7 +202,7 @@ impl TextSession {
         lock(&self.st).buf.clone()
     }
 
-    /// Calls `f` with the merged text and the edits from the buffer before, after a remote commit.
+    /// Calls `f` with the merged text and the edits from the buffer before, after another node's commit.
     pub fn on_remote(&self, mut f: impl FnMut(&Osis, &str, &[Splice]) + Send + 'static) -> Result<Subscription> {
         let cb: crate::watch::Callback = Box::new(move |db, d| {
             if let Delivery::Text { text, edits } = d {

@@ -7,7 +7,7 @@
 
 use osis::internals::node::sync::{Action, ConnId, Event, HostStatus};
 use osis::internals::{Internals, ManualNet};
-use osis::{MemStore, Osis, RecoveryCard, Runtime, HostAddr, Store, Time};
+use osis::{MemStore, Osis, RecoveryCard, Runtime, Address, Store, Time};
 use osis::internals::{ManualClock};
 use osis_crypto::SeededRng;
 use osis_proto::{FrameDecoder, Message};
@@ -31,7 +31,7 @@ const STORM_TRACE: usize = 500;
 /// One host.
 pub struct Host {
     pub hub: Hub,
-    pub addr: HostAddr,
+    pub addr: Address,
     /// The database running it (by start order), if not the world's own.
     pub node: Option<usize>,
     /// It runs (a database's host stops when its `host.0^` goes).
@@ -204,7 +204,7 @@ impl World {
         self.with(d, |db| db.sync_engine(|e| e.set_host_status(HostStatus::Listening(vec![a]))));
     }
 
-    pub fn addr(&self, s: usize) -> Option<HostAddr> {
+    pub fn addr(&self, s: usize) -> Option<Address> {
         self.hosts.get(s).map(|x| x.addr.clone())
     }
 

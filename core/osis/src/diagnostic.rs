@@ -9,6 +9,8 @@ use osis_node::DiagnosticKind as K;
 /// something about; more kinds may come.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
+// each variant's doc says what its fields are
+#[allow(missing_docs)]
 pub enum Diagnostic {
     /// `thing` reaches no other node: no synced group holds it, or `group`, which was to, has holders
     /// who may not read it. Add it to a synced group, `sync` it, or grant the group a role on it.
@@ -25,7 +27,7 @@ pub enum Diagnostic {
     Mismatch { thing: Tid, detail: String },
     /// A large value could not be read (not fetched yet, or failing verification), and read as absent.
     Unreadable { thing: Tid, detail: String },
-    /// This node lost read access to `actor` and dropped its secrets (a copy may stay: `kept_copies`).
+    /// This node lost read access to `actor` and dropped its secrets (a copy may stay: `retained_copies`).
     LostAccess { actor: Tid, detail: String },
     /// A role was lowered without catching up on `groups` (`SyncFirst::Try`): what its holder wrote
     /// that this node had not seen is undone.
@@ -38,7 +40,7 @@ pub enum Diagnostic {
     Storage { detail: String },
     /// An app callback panicked.
     Callback { detail: String },
-    /// Background sync died: nothing syncs until the database is opened again, and waits fail
+    /// Background sync died: nothing syncs until the node is opened again, and waits fail
     /// `Network`.
     SyncStopped { detail: String },
     /// A commit from a newer format than this build reads: it waits here, and an update may read it.

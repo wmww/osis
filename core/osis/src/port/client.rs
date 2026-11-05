@@ -14,7 +14,7 @@
 //! - a write in flight when it drops: blocks until reconnected, then its one result;
 //!   `OutcomeUnknown` if the node restarted, forgot the nonce, refused the session or
 //!   `CONNECTION_WAIT` passed with no connection;
-//! - a watch: `Err(Network)` while down, then the value again as a new `Source::Initial`;
+//! - a watch: `Err(Network)` while down, then the value again as a new `Origin::Initial`;
 //! - a watch started while down: `Err(Network)` from the call, except what does not need the node
 //!   to answer: `on_status_change`, which reports it down, and `on_diagnostic`, quiet until it is up
 //!   (`Refused` once the node has ended the session: it will never be up).
@@ -27,7 +27,7 @@ use super::codec::{self as c, outcome_err, u};
 use super::method;
 use crate::error::{Error, Result};
 use crate::handle::{AppConfig, Config, Osis, WeakOsis};
-use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Source, Subscription, lock};
+use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Origin, Subscription, lock};
 use osis_base::{Clock, Tid, Value};
 use osis_proto::client::SMALL_REPLY;
 use osis_proto::serving::REPLY_BUDGET;
@@ -213,7 +213,7 @@ impl Drop for Unsub {
 /// One connection: its command channel and the session's state.
 pub(crate) struct Remote {
     /// What routes name.
-    pub addr: crate::HostAddr,
+    pub addr: crate::Address,
     /// Its command channel; none once `end` closed it, which ends the connection's thread.
     tx: Mutex<Option<mpsc::UnboundedSender<Cmd>>>,
     link: Arc<LinkState>,
@@ -235,12 +235,12 @@ fn net(m: impl std::fmt::Display) -> Error {
 impl Remote {
     /// A route's stand-in for a node no connection names (notes/client-port.md §6): every call
     /// fails `Network`, never reaches another source.
-    pub fn absent(addr: &crate::HostAddr) -> Arc<Remote> {
+    pub fn absent(addr: &crate::Address) -> Arc<Remote> {
         Remote::failing(addr, net(format!("not connected to node {addr}")))
     }
 
     /// A stand-in whose every call fails `e`.
-    pub fn failing(addr: &crate::HostAddr, e: Error) -> Arc<Remote> {
+    pub fn failing(addr: &crate::Address, e: Error) -> Arc<Remote> {
         let (tx, _) = mpsc::unbounded_channel();
         let link = Arc::new(LinkState::default());
         lock(&link.m).ended = Some(e);
@@ -839,7 +839,7 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
 }
 
 /// Starts a connection's thread; the connection comes up behind it.
-fn spawn_remote(via: Via, addr: Address, shown: crate::HostAddr, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+fn spawn_remote(via: Via, addr: Address, shown: crate::Address, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
     let (tx, rx) = mpsc::unbounded_channel();
     let session = random();
     let link = Arc::new(LinkState::default());
@@ -889,7 +889,7 @@ impl Osis {
         let uid = own_uid()?;
         let url = osis_transport::unix::url_of(socket);
         let addr = Address { url: url.clone(), key: osis_transport::unix::uid_key(uid) };
-        let shown = crate::HostAddr(osis_label::Address { url, key: addr.key });
+        let shown = crate::Address(osis_label::Address { url, key: addr.key });
         let limit = cfg.read_limit;
         let db = Osis::scratch(cfg)?;
         let r = spawn_remote(Via::Unix, addr, shown, None, limit, db.inner.connection_wait, db.inner.clock.clone())?;
@@ -1021,7 +1021,7 @@ impl Osis {
         if !self.has_store() { Err(Error::Unsupported(format!("{what} on a thin client"))) } else { Ok(()) }
     }
 
-    /// A write batch at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
+    /// A write at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
     /// again from the node's memory).
     pub(crate) fn remote_write(&self, r: &Remote, wire: Vec<Value>) -> Result<Option<crate::write::Commit>> {
         let v = r.call_once(method::WRITE, wire)?;
@@ -1116,7 +1116,7 @@ fn sub_error(v: &Value) -> Option<Error> {
 }
 
 /// What an aspect delivery holds: thing, aspect, read result, source, fired.
-type Delivered = (Tid, osis_base::Ak, Result<Option<Value>>, crate::watch::Source, bool);
+type Delivered = (Tid, osis_base::Ak, Result<Option<Value>>, crate::watch::Origin, bool);
 
 /// An aspect delivery `[tid, ak, read, source]`, or a fired signal `[.., true]`.
 fn delivery(v: Value) -> Result<Delivered> {
@@ -1161,7 +1161,7 @@ impl Osis {
 
     /// The length of a string or blob at the connected node (`None`: absent).
     pub(crate) fn remote_len(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
-        let v = r.call(method::LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
+        let v = r.call(method::BYTE_LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
         c::Args::of(vec![v]).opt()?.map(|n| n.as_uint().ok_or_else(|| c::bad("length"))).transpose()
     }
 
@@ -1182,24 +1182,24 @@ impl Osis {
                 PortEvent::Initial(v) => {
                     let value = c::read(v).unwrap_or_else(Err);
                     last = Some(value.clone());
-                    f(db, Change { tid, ak: ak2.clone(), value, source: Source::Initial });
+                    f(db, Change { tid, ak: ak2.clone(), value, origin: Origin::Initial });
                 }
                 PortEvent::Notify(Payload::Delivery { value }) => {
                     let Ok((t, ak, value, source, fired)) = delivery(value) else { return };
                     if fired {
-                        f(db, Change { tid: t, ak, value, source });
+                        f(db, Change { tid: t, ak, value, origin: source });
                     } else if value.is_err() || last.as_ref() != Some(&value) {
                         last = Some(value.clone());
-                        f(db, Change { tid: t, ak, value, source });
+                        f(db, Change { tid: t, ak, value, origin: source });
                     }
                 }
                 PortEvent::Notify(Payload::TooLarge { source }) => {
-                    let source = c::source(source).unwrap_or(Source::Initial);
+                    let source = c::source(source).unwrap_or(Origin::Initial);
                     last = None;
-                    f(db, Change { tid, ak: ak2.clone(), value: Err(Error::TooLarge { limit: REPLY_BUDGET }), source });
+                    f(db, Change { tid, ak: ak2.clone(), value: Err(Error::TooLarge { limit: REPLY_BUDGET }), origin: source });
                 }
                 PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
-                    f(db, Change { tid, ak: ak2.clone(), value: Err(sub_ended()), source: Source::Initial });
+                    f(db, Change { tid, ak: ak2.clone(), value: Err(sub_ended()), origin: Origin::Initial });
                 }
             }
         });
@@ -1254,11 +1254,11 @@ impl Osis {
                     }
                     for ak in std::mem::take(&mut last).into_keys() {
                         if !now.contains_key(&ak) {
-                            f(db, Change { tid, ak, value: Ok(None), source: Source::Initial });
+                            f(db, Change { tid, ak, value: Ok(None), origin: Origin::Initial });
                         }
                     }
                     for (ak, value) in &now {
-                        f(db, Change { tid, ak: ak.clone(), value: value.clone(), source: Source::Initial });
+                        f(db, Change { tid, ak: ak.clone(), value: value.clone(), origin: Origin::Initial });
                     }
                     last = now;
                 }
@@ -1266,14 +1266,14 @@ impl Osis {
                     let Ok((t, ak, value, source, fired)) = delivery(value) else { return };
                     if fired || value.is_err() || last.get(&ak) != Some(&value) {
                         last.insert(ak.clone(), value.clone());
-                        f(db, Change { tid: t, ak, value, source });
+                        f(db, Change { tid: t, ak, value, origin: source });
                     }
                 }
                 PortEvent::Notify(Payload::TooLarge { .. }) => {}
                 // what the callback sees of an end: an error on the thing's own `tid.0`
                 PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
                     if let Ok(ak) = osis_base::Ak::new("tid.0") {
-                        f(db, Change { tid, ak, value: Err(sub_ended()), source: Source::Initial });
+                        f(db, Change { tid, ak, value: Err(sub_ended()), origin: Origin::Initial });
                     }
                 }
             }
@@ -1393,7 +1393,7 @@ impl Osis {
             // a Notify naming no status: the node's store could not say
             match c::status(v).ok()?.groups.get(&g).map(|s| s.state) {
                 None | Some(S::Synced) => Some(Ok(())),
-                Some(S::Stranded | S::NoHosts) => Some(Err(Error::Unsynced { groups: vec![g] })),
+                Some(S::Stranded | S::NoPeers | S::Connected) => Some(Err(Error::Unsynced { groups: vec![g] })),
                 Some(_) => None,
             }
         };

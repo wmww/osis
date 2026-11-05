@@ -48,7 +48,7 @@ impl Data {
         aks.sort();
         let mut rows = Vec::new();
         for ak in aks {
-            let key = self.db.key(&ak)?;
+            let key = self.db.aspect_key(&ak)?;
             let value = match self.db.at(t, key.clone()).get() {
                 Ok(v) => v,
                 // shown read-only: an empty editable row could overwrite it
@@ -68,7 +68,7 @@ impl Data {
 
     /// Writes the text of an edited row. An unparsable number or case is `Invalid`.
     pub fn set_field(&self, t: Tid, row: &Row, text: &str) -> Result<()> {
-        let key = self.db.key(&row.ak)?;
+        let key = self.db.aspect_key(&row.ak)?;
         let text = text.trim();
         let v = if row.optional && text.is_empty() {
             Value::Enum(0, None)
@@ -276,7 +276,7 @@ impl Data {
             // writing the whole struct first would overwrite a concurrent write to a sibling
             FormAct::Field(row) => self.set_field(t, row, text),
             FormAct::RenameKey { ak, old } => {
-                let key = self.db.key(ak)?;
+                let key = self.db.aspect_key(ak)?;
                 let entry: Labeled = self.db.at(t, key.clone()).path(Path::root().push(old.as_str())).get()?.unwrap_or(Labeled { label: String::new(), pref: false });
                 if text == old {
                     return Ok(());
@@ -293,7 +293,7 @@ impl Data {
                 if text.is_empty() {
                     return Ok(());
                 }
-                let key = self.db.key(ak)?;
+                let key = self.db.aspect_key(ak)?;
                 let mut w = self.db.write();
                 w.at(t, key).path(Path::root().push(text)).set(&Labeled { label: String::new(), pref: false })?;
                 w.commit()?;

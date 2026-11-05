@@ -10,8 +10,8 @@
 use crate::error::{Error, Result};
 use crate::handle::Osis;
 use crate::share::Member;
-use crate::sources::Source;
-use crate::keys::Key;
+use crate::sources::Route;
+use crate::keys::DynamicAspectKey;
 use crate::read::{Reader, ak_of};
 use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, Time};
 use osis_commit::PurgeItem;
@@ -29,6 +29,7 @@ use std::time::Duration;
 /// freed only a draft has nothing for other nodes to apply, and an id all the same.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
+    /// Names this commit.
     pub id: CommitId,
     /// When it was written.
     pub written: Time,
@@ -59,7 +60,7 @@ pub enum Purge {
     /// The aspect's whole history, and the aspect itself with it.
     All,
     /// One commit's write. Its entry stays in the history as purged. If it is what the aspect
-    /// reads now the value goes with it: `set` in the same commit to keep one.
+    /// reads now the value goes with it: `set` in the same commit to keep a value.
     Commit(CommitId),
     /// Every write by this actor stamped before this commit, those arriving later too. What the
     /// actor writes later stays.
@@ -84,7 +85,7 @@ pub(crate) enum WriteOp {
     PurgeCommit { tid: Tid, key: u32, commit: osis_base::CommitId },
     /// Purges an author's deltas on the aspect.
     PurgeAuthor { tid: Tid, key: u32, actor: Tid },
-    /// Removes the thing's aspects and the placements this node may remove, as held at commit.
+    /// Removes the thing's aspects and the memberships this node may remove, as held at commit.
     Delete(Tid),
 }
 
@@ -114,12 +115,19 @@ impl WriteOp {
 ///
 /// This is judged on what the ops ask, not on what they turn out to write: a `set` of the value
 /// already there still counts.
+///
+/// Dropped uncommitted, its writes are lost, and forgetting to commit is a lint:
+/// ```compile_fail
+/// #![deny(unused_must_use)]
+/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap().0;
+/// db.write();
+/// ```
 #[must_use = "a Write does nothing until commit()"]
 pub struct Write<'d> {
     db: &'d Osis,
     ops: Vec<WriteOp>,
     /// The aspect keys the ops name, each once per (AK, schema).
-    keys: Vec<Key>,
+    keys: Vec<DynamicAspectKey>,
     /// `keys` by AK and the address of the writer's schema (0: untyped).
     key_ix: BTreeMap<(Ak, usize), u32>,
     actor: Tid,
@@ -224,7 +232,7 @@ impl<'d> Write<'d> {
             return *i;
         }
         let i = u32::try_from(self.keys.len()).unwrap_or(u32::MAX);
-        self.keys.push(Key { ak: id.0.clone(), schema: key.shared_schema() });
+        self.keys.push(DynamicAspectKey { ak: id.0.clone(), schema: key.shared_schema() });
         self.key_ix.insert(id, i);
         i
     }
@@ -242,13 +250,13 @@ impl<'d> Write<'d> {
     /// first admin is fixed when it is made: a thin client's things need one that outlives the
     /// client, and a thing made for a group's holders needs no grant to reach them.
     // Today `admin` is its owner; the owner work makes this the record's first admin
-    // (issues/api-refactor.md Decided).
+    // (issues/api-after-owners.md).
     pub fn create_with_admin(&mut self, admin: Tid) -> Result<Tid> {
         self.create_owned_by(admin)
     }
 
     /// A new thing owned by `owner` (fixed forever; needs write on it).
-    // Removed with owners (issues/api-refactor.md Decided).
+    // Removed with owners (issues/api-after-owners.md).
     #[doc(hidden)]
     pub fn create_owned_by(&mut self, owner: Tid) -> Result<Tid> {
         let owner = self.known(owner)?;
@@ -273,9 +281,9 @@ impl<'d> Write<'d> {
         Ok(())
     }
 
-    /// Removes every aspect the node knows of `tid` and its placements and subgroup memberships in
+    /// Removes every aspect the node knows of `tid` and its memberships in
     /// every group this node may write (one it may not keeps listing it; it reads deleted
-    /// there), as held when the write commits. Afterwards `knows(tid)` is `false`; the tid stays
+    /// there), as held when the write commits. Afterwards `has_content(tid)` is `false`; the tid stays
     /// valid and a later write recreates the thing.
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
@@ -284,7 +292,7 @@ impl<'d> Write<'d> {
     }
 
     /// A raw path op through `key` (text sessions).
-    pub(crate) fn raw_op(&mut self, tid: Tid, key: &Key, op: PathOp) -> Result<()> {
+    pub(crate) fn raw_op(&mut self, tid: Tid, key: &DynamicAspectKey, op: PathOp) -> Result<()> {
         let t = self.known(tid)?;
         if let Some(why) = not_writable(key.ak.as_str()) {
             return Err(Error::Invalid(why));
@@ -322,7 +330,7 @@ impl<'d> Write<'d> {
     /// repeating it.
     pub fn commit(self) -> Result<Option<Commit>> {
         let deciders = self.deciders();
-        if let Source::Remote(r) = self.db.route_write_all(&deciders)? {
+        if let Route::Remote(r) = self.db.route_write_all(&deciders)? {
             let db = self.db;
             if self.alive.is_some() {
                 return Err(Error::Unsupported("text sessions through a remote node".into()));
@@ -348,7 +356,7 @@ impl<'d> Write<'d> {
             let sharing = self.sharing;
             let Built { mut m, placed, unplaced, cut } = self.build(&mut Reader { e, limit, actor }, expires)?;
             let carried = carried_under(e, &cut);
-            // whatever actor the batch names, an acting handle's write is that actor's alone
+            // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
                 m.confine(a);
             }
@@ -371,8 +379,8 @@ impl<'d> Write<'d> {
     /// The write in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*], expires?]`.
     fn wire(&self, there: &crate::port::client::Remote) -> Result<Vec<Value>> {
         use crate::port::codec::{op_v, opt, retention_v, u};
-        if self.ops.len() > crate::port::MAX_BATCH_OPS {
-            return Err(Error::Invalid(format!("a write to another node holds at most {} ops", crate::port::MAX_BATCH_OPS)));
+        if self.ops.len() > crate::port::MAX_WRITE_OPS {
+            return Err(Error::Invalid(format!("a write to another node holds at most {} ops", crate::port::MAX_WRITE_OPS)));
         }
         let t = Value::Tid;
         let ops = self
@@ -401,13 +409,13 @@ impl<'d> Write<'d> {
     fn build(self, r: &mut Reader<'_>, expires: Option<Time>) -> Result<Built> {
         let acting = self.db.acting;
         let Write { ops, keys, actor, created, .. } = self;
-        let gk = Key { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
+        let gk = DynamicAspectKey { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
         let mut b = Built { m: Mutation::new(), placed: Vec::new(), unplaced: Vec::new(), cut: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         for op in ops {
             match op {
                 WriteOp::Create(rec) => {
-                    // the account's devices administer what a client makes through the groups;
+                    // the account's nodes administer what a client makes through the groups;
                     // the client's actor goes away with the client (notes/client-port.md §3)
                     if let (Some(a), CreationRecord::Thing { owner, .. }) = (acting, &rec)
                         && *owner == a
@@ -473,15 +481,15 @@ impl Osis {
         if self.acting.is_some_and(|x| x != actor) {
             return Err(Error::Invalid("a client writes only as its own actor".into()));
         }
-        let keys: Vec<Key> = a.list()?.iter().map(|v| crate::port::codec::ak(v).and_then(|ak| self.key(ak.as_str()))).collect::<Result<_>>()?;
+        let keys: Vec<DynamicAspectKey> = a.list()?.iter().map(|v| crate::port::codec::ak(v).and_then(|ak| self.aspect_key(ak.as_str()))).collect::<Result<_>>()?;
         if let Some(why) = keys.iter().find_map(|k| not_writable(k.ak.as_str())) {
             return Err(Error::Invalid(why));
         }
         let raw = a.list()?;
         let expires = a.opt()?.map(|v| crate::port::codec::Args::of(vec![v]).uint().map(|t| Expiry::At(Time(t)))).transpose()?;
         a.end()?;
-        if raw.len() > crate::port::MAX_BATCH_OPS {
-            return Err(bad("batch (too many ops)"));
+        if raw.len() > crate::port::MAX_WRITE_OPS {
+            return Err(bad("write (too many ops)"));
         }
         let mut w = self.write();
         w.act_as(actor);
@@ -561,7 +569,7 @@ struct Built {
 }
 
 impl Built {
-    fn group(&mut self, gk: &Key, g: Tid, member: Tid, items: bool, add: bool) -> Result<()> {
+    fn group(&mut self, gk: &DynamicAspectKey, g: Tid, member: Tid, items: bool, add: bool) -> Result<()> {
         self.m.op(g, gk, group_op(items, member, add))?;
         if items && add {
             self.m.require_synced(member, g);
@@ -592,7 +600,7 @@ fn carried_under(e: &osis_node::Engine, cut: &[Tid]) -> BTreeSet<Tid> {
 }
 
 /// Reports what the commit took out of every synced group, of `was` (`carried_under`): it stays on
-/// this device from now on.
+/// this node from now on.
 fn cut_off(e: &mut osis_node::Engine, was: BTreeSet<Tid>) {
     if was.is_empty() {
         return;
@@ -621,9 +629,9 @@ fn not_synced(e: &mut osis_node::Engine, placed: &[(Tid, Tid)], sharing: bool) {
             if sharing {
                 continue;
             }
-            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "placed in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
+            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
         } else if !(labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g))) {
-            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "placed only in groups no synced group holds: it stays on this device".into() });
+            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "only in groups no synced group holds: it stays on this node".into() });
         }
     }
 }
@@ -644,7 +652,7 @@ impl<'w, 'd> GroupWrite<'w, 'd> {
     /// items and its subgroups' members, not its items' items. So when an item stays durable, is
     /// in no synced group, and the group's own aspects sync (the group is an item of a synced
     /// group, no subgroup of one), the commit fails `Invalid` before anything applies: add the
-    /// group as a subgroup too. An item only in groups that do not sync at all (device-local
+    /// group as a subgroup too. An item only in groups that do not sync at all (node-local
     /// data) is allowed and reported by a `NotSynced` diagnostic, as is one in a synced group
     /// whose holders may not read it: it does not reach them (`Osis::add_with_grant`).
     pub fn add(&mut self, member: Member) -> Result<()> {
@@ -757,10 +765,10 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         Ok(())
     }
 
-    /// How this write is kept, instead of as the key says; checked at commit (`Invalid`).
-    pub fn retention(mut self, r: Retention) -> Self {
+    /// How this write's history is held, instead of as the key says; checked at commit (`Invalid`).
+    pub fn retention(mut self, r: crate::Retention) -> Self {
         if let Ok(key) = self.ix {
-            self.push(WriteOp::Retention { tid: self.tid, key, r });
+            self.push(WriteOp::Retention { tid: self.tid, key, r: r.into() });
         }
         self
     }

@@ -9,7 +9,7 @@ use crate::{Ctx, StoreSel, exit, open, opt_ts, parse_ak, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    Change, CommitId, CommitKind, CommitQuery, Error, GrantOpts, Key, LinkOpts, Member, Osis, Role, SetRoleOpts, Source, SyncFirst, SyncScope, SyncState, Tid, Value,
+    Change, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncFirst, SyncScope, SyncState, Tid, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -27,8 +27,8 @@ pub fn role_text(r: Role) -> &'static str {
     }
 }
 
-fn grant_opts(until: &Option<String>, invite: &Option<String>) -> anyhow::Result<GrantOpts> {
-    Ok(GrantOpts { until: opt_ts(until)?, invite: invite.as_deref().map(parse_role).transpose()? })
+fn grant_opts(until: &Option<String>, may_grant: &Option<String>) -> anyhow::Result<GrantOpts> {
+    Ok(GrantOpts { until: opt_ts(until)?, may_grant: may_grant.as_deref().map(parse_role).transpose()? })
 }
 
 pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
@@ -124,7 +124,7 @@ pub(crate) fn wait_after<T>(ctx: &Ctx<'_>, sync: SyncFirst, f: impl Future<Outpu
     Ok(within(if matches!(sync, SyncFirst::Try(_)) { t.map(|t| t.saturating_mul(2)) } else { t }, f)?)
 }
 
-/// `wait_synced` within `limit`; past it `Network`, or the hosts that do not admit a group (state
+/// `wait_synced` within `limit`; past it `Network`, or the serving nodes that do not admit a group (state
 /// `Refused`) when there are any.
 fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
@@ -137,13 +137,26 @@ fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Re
     }
 }
 
-/// `e` with the hosts that do not admit the groups it names (state `Refused`), if any.
+/// Names the groups `wait_synced(AllWithPeers)` left out: what was written there reached nobody.
+fn say_no_peers(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
+    if ctx.g.quiet {
+        return Ok(());
+    }
+    for (g, x) in ctx.db.status()?.groups {
+        if matches!(x.state, SyncState::NoPeers | SyncState::Connected) {
+            eprintln!("{}: no saved peer, so not waited for", g.to_uri());
+        }
+    }
+    Ok(())
+}
+
+/// `e` with the serving nodes that do not admit the groups it names (state `Refused`), if any.
 fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
     let (Error::Unsynced { groups }, Ok(st)) = (&e, db.status()) else { return e.into() };
     let hint: Vec<String> = groups
         .iter()
         .filter_map(|g| st.groups.get(g).filter(|x| x.state == SyncState::Refused).map(|x| (g, x)))
-        .flat_map(|(g, x)| x.refused_by.iter().map(move |h| format!("host {h} does not admit group {} (yet)", g.to_uri())))
+        .flat_map(|(g, x)| x.refused_by.iter().map(move |h| format!("{h} does not admit group {} (yet)", g.to_uri())))
         .collect();
     if hint.is_empty() { e.into() } else { anyhow::Error::from(e).context(hint.join("; ")) }
 }
@@ -165,7 +178,7 @@ fn sync_first(ctx: &Ctx<'_>, d: &SyncFlags) -> anyhow::Result<SyncFirst> {
 }
 
 fn set_role_opts(ctx: &Ctx<'_>, d: &SetRoleFlags) -> anyhow::Result<SetRoleOpts> {
-    Ok(SetRoleOpts { sync: sync_first(ctx, &d.sync)?, keep: d.keep })
+    Ok(SetRoleOpts { sync: sync_first(ctx, &d.sync)?, retain_copy: d.retain_copy })
 }
 
 /// A role, or `none`.
@@ -190,8 +203,8 @@ fn opt_scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<Option<osis::Scope>> {
     }
 }
 
-fn hosts(ctx: &mut Ctx<'_>, list: &[String]) -> anyhow::Result<Vec<osis::HostAddr>> {
-    list.iter().map(|s| Ok(ctx.arg_text(s)?.parse::<osis::HostAddr>()?)).collect()
+fn peers(ctx: &mut Ctx<'_>, list: &[String]) -> anyhow::Result<Vec<osis::Address>> {
+    list.iter().map(|s| Ok(ctx.arg_text(s)?.parse::<osis::Address>()?)).collect()
 }
 
 /// A value as text or JSON at a key's type (`--raw`: numbered).
@@ -215,7 +228,7 @@ fn needs_net(c: &Cmd) -> bool {
     matches!(
         c,
         Cmd::Pair(_)
-            | Cmd::Device(DeviceCmd::Rm { .. })
+            | Cmd::Node(NodeCmd::Rm { .. })
             | Cmd::SetRole { .. }
             | Cmd::Repudiate { .. }
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
@@ -235,7 +248,7 @@ fn needs_net(c: &Cmd) -> bool {
 
 /// Commands whose API call hands other nodes something the engine keeps only in memory until
 /// sent (inbox grants, a new label's first commits):
-/// they run with sync on and wait until it is at the hosts before the process exits.
+/// they run with sync on and wait until it reached a peer before the process exits.
 fn delivers(c: &Cmd) -> bool {
     // a role that stays may have been granted or raised, which goes to the holder's inbox
     matches!(c, Cmd::SetRole { role, .. } if role != "none") || matches!(c, Cmd::Grant { .. } | Cmd::Leave { .. } | Cmd::AddWithGrant { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
@@ -250,27 +263,27 @@ fn shared(c: &Cmd) -> Option<String> {
     }
 }
 
-/// The hosts this process delivers to: a thin client has none, its node delivers.
-fn own_hosts(db: &Osis) -> osis::Result<Vec<osis::HostAddr>> {
-    match db.hosts() {
+/// The peers this process delivers to: a thin client has none, its node delivers.
+fn own_peers(db: &Osis) -> osis::Result<Vec<osis::Address>> {
+    match db.saved_peers() {
         Err(Error::Unsupported(_)) => Ok(Vec::new()),
         h => h,
     }
 }
 
 /// Sends what a `delivers` command queued (within `--timeout`): `wait_synced` on the shared
-/// thing's groups (a hostless one fails: its holders can never fetch it), then on `All`.
+/// thing's groups (one with no peer fails: its holders can never fetch it), then on all with peers.
 pub(crate) fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
-    db.sync_now()?;
+    db.nudge_sync()?;
     let end = deadline(ctx.timeout()?);
-    let mut scopes = vec![SyncScope::All];
+    let mut scopes = vec![SyncScope::AllWithPeers];
     if let Some(x) = shared {
         scopes.insert(0, SyncScope::Thing(ctx.tid(&x)?));
     }
     for s in scopes {
         let left = end.map(|e| e.saturating_duration_since(Instant::now()));
-        wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at the hosts: {e:#}")))?;
+        wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at its peers: {e:#}")))?;
     }
     Ok(())
 }
@@ -294,24 +307,24 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         }
         _ => {}
     }
-    let seed = |list: &[String]| list.iter().map(|s| s.parse::<osis::HostAddr>().map_err(anyhow::Error::from)).collect::<anyhow::Result<Vec<_>>>();
+    let seed = |list: &[String]| list.iter().map(|s| s.parse::<osis::Address>().map_err(anyhow::Error::from)).collect::<anyhow::Result<Vec<_>>>();
     let mut card = None;
     let db = match &cli.cmd {
-        Cmd::Init { host } => {
-            let (db, c) = crate::create(&sel, &g, seed(host)?)?;
+        Cmd::Init { peer } => {
+            let (db, c) = crate::create(&sel, &g, seed(peer)?)?;
             card = c;
             db
         }
-        Cmd::Restore { card, host } => {
+        Cmd::Restore { card, peer } => {
             let cfg = crate::config(&g, true);
             let card: osis::RecoveryCard = crate::arg_text(&mut *stdin, card)?.parse()?;
-            within(crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?, Osis::restore(crate::store_of(&sel), &seed(host)?, &card, cfg))?
+            within(crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?, Osis::restore(crate::store_of(&sel), &seed(peer)?, &card, cfg))?
         }
-        Cmd::Pair(PairCmd::Join { offer, host }) => {
+        Cmd::Pair(PairCmd::Join { offer, peer }) => {
             // the app carries two messages: print the request, read the reply
             let cfg = crate::config(&g, true);
             let offer: osis::PairOffer = offer.parse()?;
-            let join = Osis::pair(crate::store_of(&sel), &seed(host)?, &offer, cfg)?;
+            let join = Osis::pair(crate::store_of(&sel), &seed(peer)?, &offer, cfg)?;
             writeln!(out, "{}", join.request())?;
             out.flush()?;
             let mut line = String::new();
@@ -340,7 +353,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         let (flush, shared) = (delivers(&cli.cmd), shared(&cli.cmd));
         let mut r = run(&mut ctx, cli.cmd);
         if r.is_ok() && flush {
-            r = match own_hosts(&ctx.db) {
+            r = match own_peers(&ctx.db) {
                 Ok(h) if h.is_empty() => Ok(()),
                 Ok(_) => deliver(&mut ctx, shared),
                 Err(e) => Err(e.into()),
@@ -389,15 +402,15 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
 fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match cmd {
-        Cmd::Init { host } | Cmd::Restore { host, .. } | Cmd::Pair(PairCmd::Join { host, .. }) => {
-            for s in hosts(ctx, &host)? {
-                db.add_host(&s)?;
+        Cmd::Init { peer } | Cmd::Restore { peer, .. } | Cmd::Pair(PairCmd::Join { peer, .. }) => {
+            for s in peers(ctx, &peer)? {
+                db.add_peer(&s)?;
             }
             whoami(ctx)
         }
         Cmd::Whoami => whoami(ctx),
         Cmd::Pair(PairCmd::Offer) => {
-            // print the offer, read the new device's request, print the reply and its node
+            // print the offer, read the new node's request, print the reply and its node
             let o = db.pair_offer()?;
             ctx.emit(&[o.to_string()], J::obj([("offer", J::str(o.to_string()))]))?;
             let mut line = String::new();
@@ -405,14 +418,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let (node, reply) = db.pair_accept(&line.parse()?)?;
             ctx.emit(&[reply.to_string(), node.to_uri()], J::obj([("reply", J::str(reply.to_string())), ("node", J::tid(node))]))
         }
-        Cmd::Device(DeviceCmd::Ls) => {
-            let ds = db.devices()?;
+        Cmd::Node(NodeCmd::Ls) => {
+            let ds = db.nodes()?;
             ctx.emit(&ds.iter().map(|d| d.node.to_uri()).collect::<Vec<_>>(), J::Arr(ds.iter().map(|d| J::obj([("node", J::tid(d.node))])).collect()))
         }
-        Cmd::Device(DeviceCmd::Rm { node, d, end_links }) => {
+        Cmd::Node(NodeCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
             let d = set_role_opts(ctx, &d)?;
-            let open = wait_after(ctx, d.sync, db.remove_device(n, d))?;
+            let open = wait_after(ctx, d.sync, db.remove_node(n, d))?;
             if end_links {
                 // not backdated: joiners since that time stay joiners, as with any link revoked
                 let end = if matches!(d.sync, SyncFirst::Backdate(_)) { SyncFirst::Skip } else { d.sync };
@@ -424,27 +437,30 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 if end_links {
                     format!("ended link {} to {}", l.id, l.target.to_uri())
                 } else {
-                    format!("link {} to {} still works for whoever holds that device: osis link revoke {}", l.id, l.target.to_uri(), l.id)
+                    format!("link {} to {} still works for whoever holds that node: osis link revoke {}", l.id, l.target.to_uri(), l.id)
                 }
             };
             ctx.emit(&open.iter().map(say).collect::<Vec<_>>(), J::obj([("links", links_j(&open)), ("ended", J::Bool(end_links))]))
         }
-        Cmd::Hosts(HostsCmd::Ls) => {
-            let s = db.hosts()?;
+        Cmd::Peers(PeersCmd::Ls { group }) => {
+            let s = match group {
+                Some(g) => db.peers(ctx.tid(&g)?)?,
+                None => db.saved_peers()?,
+            };
             ctx.emit(&s.iter().map(|s| s.to_string()).collect::<Vec<_>>(), J::Arr(s.iter().map(|s| J::str(s.to_string())).collect()))
         }
-        Cmd::Hosts(HostsCmd::Add { addr }) => Ok(db.add_host(&ctx.arg_text(&addr)?.parse()?)?),
-        Cmd::Hosts(HostsCmd::Rm { addr }) => Ok(db.remove_host(&ctx.arg_text(&addr)?.parse()?)?),
-        Cmd::Hosting(HostingCmd::Show) => hosting_show(ctx),
-        Cmd::Hosting(HostingCmd::Set(f)) => set_hosting(ctx, f),
-        Cmd::Hosting(HostingCmd::Off) => Ok(db.set_hosting(None)?),
-        Cmd::Hosting(HostingCmd::Ids { g }) => {
-            let ids: Vec<String> = db.admission_ids(ctx.tid(&g)?)?.iter().map(ToString::to_string).collect();
+        Cmd::Peers(PeersCmd::Add { addr }) => Ok(db.add_peer(&ctx.arg_text(&addr)?.parse()?)?),
+        Cmd::Peers(PeersCmd::Rm { addr }) => Ok(db.remove_peer(&ctx.arg_text(&addr)?.parse()?)?),
+        Cmd::Serving(ServingCmd::Show) => serving_show(ctx),
+        Cmd::Serving(ServingCmd::Set(f)) => set_serving(ctx, f),
+        Cmd::Serving(ServingCmd::Off) => Ok(db.set_serving(None)?),
+        Cmd::Serving(ServingCmd::Ids { g }) => {
+            let ids: Vec<String> = db.sync_ids(ctx.tid(&g)?)?.iter().map(ToString::to_string).collect();
             let j = J::Arr(ids.iter().map(|x| J::str(x.clone())).collect());
             ctx.emit(&ids, j)
         }
         Cmd::Clients(c) => clients(ctx, &c),
-        Cmd::Serve { host, client_listen } => serve(ctx, host, &client_listen),
+        Cmd::Serve { serving, client_listen } => serve(ctx, serving, &client_listen),
         Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
@@ -500,7 +516,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Purge { t, ak, commit, author } => {
             let tid = ctx.tid(&t)?;
-            let key = ctx.key(&ak)?;
+            let key = ctx.aspect_key(&ak)?;
             let commit = commit.as_deref().map(parse_id).transpose()?;
             let author = author.as_deref().map(|a| ctx.tid(a)).transpose()?;
             let mut w = db.write();
@@ -573,13 +589,13 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let r = db.role_on(ctx.tid(&t)?)?;
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
-        Cmd::Grant { t, holder, role, until, invite } => {
+        Cmd::Grant { t, holder, role, until, may_grant } => {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
             let role = match role {
                 Some(r) => parse_role(&r)?,
                 None => db.grants(t)?.get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such grant"))?,
             };
-            Ok(db.grant(t, m, role, grant_opts(&until, &invite)?)?)
+            Ok(db.grant(t, m, role, grant_opts(&until, &may_grant)?)?)
         }
         Cmd::SetRole { t, holder, role, d } => {
             let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(ctx, &d)?);
@@ -593,9 +609,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
             Ok(db.leave(holder, ctx.tid(&t)?)?)
         }
-        Cmd::Kept { drop: Some(a) } => Ok(db.drop_kept(ctx.tid(&a)?)?),
-        Cmd::Kept { drop: None } => {
-            for a in db.kept_copies()? {
+        Cmd::Retained { drop: Some(a) } => Ok(db.drop_retained_copy(ctx.tid(&a)?)?),
+        Cmd::Retained { drop: None } => {
+            for a in db.retained_copies()? {
                 println!("{}", a.to_uri());
             }
             Ok(())
@@ -633,14 +649,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let c = db.contact_card()?;
             ctx.emit(&[c.to_string()], J::obj([("card", J::str(c.to_string()))]))
         }
-        Cmd::Card(CardCmd::Profile { person }) => {
-            let p = match person {
+        Cmd::Card(CardCmd::Profile { account }) => {
+            let p = match account {
                 Some(a) => db.profile_of(ctx.tid(&a)?)?,
                 None => Some(db.profile()?),
             };
             match p {
                 Some(p) => ctx.emit(&[p.to_uri()], J::obj([("profile", J::tid(p))])),
-                None => Err(exit(3, "no profile known for that person")),
+                None => Err(exit(3, "no profile known for that account")),
             }
         }
         Cmd::Card(CardCmd::Import { card }) => {
@@ -669,18 +685,22 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let timeout = ctx.timeout_or(None)?;
             stream_lines(ctx, &rx, None, timeout)
         }
-        // `wait_synced` asks the hosts to sync first: `sync` and `wait` are one call
+        // `wait_synced` asks its peers to sync first: `sync` and `wait` are one call
         Cmd::Sync { group } | Cmd::Wait { group } => {
             let s = match group {
                 Some(g) => SyncScope::Thing(ctx.tid(&g)?),
-                None => SyncScope::All,
+                None => SyncScope::AllWithPeers,
             };
             let t = ctx.timeout()?;
-            wait_sync(ctx, s, t)
+            wait_sync(ctx, s, t)?;
+            if matches!(s, SyncScope::AllWithPeers) {
+                say_no_peers(ctx)?;
+            }
+            Ok(())
         }
-        Cmd::Group(GroupCmd::Sync { g, host }) => {
+        Cmd::Group(GroupCmd::Sync { g, peer }) => {
             let g = ctx.tid(&g)?;
-            let s = hosts(ctx, &host)?;
+            let s = peers(ctx, &peer)?;
             Ok(db.sync(g, &s)?)
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
@@ -690,7 +710,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 return Err(exit(1, "group source needs the store itself: stop `osis serve` on this store, run it with --remote, start `serve` again"));
             }
             let g = ctx.tid(&g)?;
-            let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Remote(to.parse()?) };
+            let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Node(to.parse()?) };
             wait(ctx, db.group_source(g, to))
         }
         Cmd::Group(GroupCmd::Policy { .. }) => Err(not_built("set_sync_options (issues/api-deferred.md)")),
@@ -713,16 +733,16 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         StoreSel::Dir(d) => d.display().to_string(),
         StoreSel::Memory(_) => "(memory)".into(),
     };
-    let hosts = own_hosts(&db)?;
+    let peers = own_peers(&db)?;
     let sw = format!("osis {}", env!("CARGO_PKG_VERSION"));
     let mut lines = vec![format!("me\t{}", db.me().to_uri()), format!("node\t{}", db.node().to_uri())];
-    lines.extend(hosts.iter().map(|s| format!("host\t{s}")));
+    lines.extend(peers.iter().map(|s| format!("peer\t{s}")));
     lines.push(format!("store\t{store}"));
     lines.push(format!("software\t{sw}"));
     let j = J::obj([
         ("me", J::tid(db.me())),
         ("node", J::tid(db.node())),
-        ("hosts", J::Arr(hosts.iter().map(|s| J::str(s.to_string())).collect())),
+        ("peers", J::Arr(peers.iter().map(|s| J::str(s.to_string())).collect())),
         ("store", J::str(store)),
         ("software", J::str(sw)),
     ]);
@@ -731,7 +751,7 @@ fn whoami(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 
 fn get(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, stream: bool, len: bool) -> anyhow::Result<()> {
     let t = ctx.tid(t)?;
-    let key = ctx.key(ak)?;
+    let key = ctx.aspect_key(ak)?;
     let db = ctx.db.clone();
     if stream || len {
         let p = match path {
@@ -765,7 +785,7 @@ fn edit(ctx: &mut Ctx<'_>, t: &str, ak: &str, path: Option<&str>, base: Option<S
         return Err(usage("edit takes the whole aspect (the API edits aspects; use op or set for a path)"));
     }
     let t = ctx.tid(t)?;
-    let key = ctx.key(ak)?;
+    let key = ctx.aspect_key(ak)?;
     let db = ctx.db.clone();
     let ty = key.value_type().map(|t| t.get());
     let ty = ty.as_ref();
@@ -863,7 +883,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let t = ctx.tid(t)?;
     let aks = db.aspects(t)?;
-    let known = db.knows(t)?;
+    let known = db.has_content(t)?;
     let created = db.created(t)?;
     if aks.is_empty() && !known && created.is_none() {
         return Err(Error::UnknownThing { tid: t }.into());
@@ -871,11 +891,11 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     let mut lines = vec![format!("tid\t{}", t.to_uri())];
     let mut fields = Vec::new();
     for ak in &aks {
-        let key = ctx.key(ak.as_str())?;
+        let key = ctx.aspect_key(ak.as_str())?;
         let (s, j) = match db.at(t, key.clone()).get() {
             Ok(Some(v)) => show_value(ctx, &v, key.value_type().map(|t| t.get()).as_ref()),
             // a value its schema does not read (a `Mismatch` diagnostic): shown untyped
-            Ok(None) => match db.at(t, Key::untyped(ak.clone())).get() {
+            Ok(None) => match db.at(t, DynamicAspectKey::untyped(ak.clone())).get() {
                 Ok(Some(v)) => show_value(ctx, &v, None),
                 _ => ("(absent)".to_string(), J::Null),
             },
@@ -916,14 +936,14 @@ fn stamp_json(c: osis::ThingStamp) -> J {
 }
 
 fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
-    let key = ctx.key(c.ak.as_str()).ok();
-    let ty = key.as_ref().and_then(Key::value_type).map(|t| t.get());
+    let key = ctx.aspect_key(c.ak.as_str()).ok();
+    let ty = key.as_ref().and_then(DynamicAspectKey::value_type).map(|t| t.get());
     let ty = ty.as_ref();
-    let (src, info) = match &c.source {
-        Source::Initial => ("initial", None),
-        Source::Local(i) => ("local", Some(i)),
-        Source::Remote(i) => ("remote", Some(i)),
-        Source::Derived(_) => ("derived", None),
+    let (src, info) = match &c.origin {
+        Origin::Initial => ("initial", None),
+        Origin::Local(i) => ("local", Some(i)),
+        Origin::Remote(i) => ("remote", Some(i)),
+        Origin::Derived(_) => ("derived", None),
     };
     let (vt, vj) = match &c.value {
         Ok(Some(v)) => show_value(ctx, v, ty),
@@ -934,7 +954,7 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
         J::obj([
             ("tid", J::tid(c.tid)),
             ("ak", J::str(c.ak.as_str())),
-            ("source", J::str(src)),
+            ("origin", J::str(src)),
             ("commit", J::opt(info.map(|i| J::str(i.id.to_string())))),
             ("actor", J::opt(info.map(|i| J::tid(i.actor)))),
             ("node", J::opt(info.map(|i| J::tid(i.node)))),
@@ -992,7 +1012,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
     let (tx, rx) = mpsc::channel::<Change<Value>>();
     let _sub = match ak {
         Some(ak) => {
-            let key = Key::untyped(parse_ak(ak, "AK")?);
+            let key = DynamicAspectKey::untyped(parse_ak(ak, "AK")?);
             db.at(t, key).on_change(move |_, c| {
                 let _ = tx.send(c);
             })?
@@ -1002,14 +1022,14 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
         })?,
     };
     let timeout = ctx.timeout_or(None)?;
-    stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c), !matches!(c.source, Source::Initial)))
+    stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c), !matches!(c.origin, Origin::Initial)))
 }
 
 const KINDS: [(&str, CommitKind); 5] =
-    [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("summary", CommitKind::Summary), ("ephemeral", CommitKind::Ephemeral)];
+    [("content", CommitKind::Content), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot), ("ephemeral", CommitKind::Ephemeral)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
-    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: content, revert, role, summary or ephemeral")))
+    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: content, revert, role, snapshot or ephemeral")))
 }
 
 fn kind_text(k: CommitKind) -> &'static str {
@@ -1024,7 +1044,7 @@ fn parse_pos(s: &str) -> anyhow::Result<osis::HistoryPos> {
 fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: usize) -> anyhow::Result<()> {
     let tid = ctx.tid(t)?;
     let key = osis::Ak::new(ak).map_err(|e| usage(format!("{ak}: {e:?}")))?;
-    let page = ctx.db.at(tid, Key::untyped(key)).history(from, max)?;
+    let page = ctx.db.at(tid, DynamicAspectKey::untyped(key)).history(from, max)?;
     let raw = ctx.g.raw;
     let body = |b: &osis::HistoryBody<osis::Value>| match b {
         osis::HistoryBody::Held(Some(v)) => format!("{v:?}"),
@@ -1105,7 +1125,7 @@ fn grants_lines(r: &osis::Grants, raw: bool) -> Vec<String> {
     r.iter()
         .map(|(m, e)| {
             let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.invite.map_or("-", role_text), if e.with_membership { " with-membership" } else { "" })
+            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.may_grant.map_or("-", role_text), if e.with_membership { " with-membership" } else { "" })
         })
         .collect()
 }
@@ -1113,7 +1133,7 @@ fn grants_lines(r: &osis::Grants, raw: bool) -> Vec<String> {
 fn grants_json(r: &osis::Grants) -> J {
     J::Arr(
         r.iter()
-            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("invite", J::opt(e.invite.map(|r| J::str(role_text(r))))), ("with_membership", J::Bool(e.with_membership))]))
+            .map(|(m, e)| J::obj([("actor", J::tid(*m)), ("role", J::str(role_text(e.role))), ("until", J::opt(e.until.map(|u| J::int(u.0)))), ("may_grant", J::opt(e.may_grant.map(|r| J::str(role_text(r))))), ("with_membership", J::Bool(e.with_membership))]))
             .collect(),
     )
 }
@@ -1249,7 +1269,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     match i {
         InspectCmd::Thing { t } => {
             let t = ctx.tid(&t)?;
-            lines.push(format!("tid {} known={} role={}", t.to_uri(), db.knows(t)?, db.role_on(t)?.map_or("none", role_text)));
+            lines.push(format!("tid {} known={} role={}", t.to_uri(), db.has_content(t)?, db.role_on(t)?.map_or("none", role_text)));
             let aks = db.aspects(t)?;
             for ak in aks {
                 let (changes, size, frag) = db.engine(|e| {
@@ -1311,37 +1331,37 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     ctx.emit(&lines, j)
 }
 
-/// How long `serve` waits for its host to listen. Listening is local (milliseconds); at 0 a
-/// host never prints its address, at infinity a stuck listen hangs the command silently.
-const HOST_START_WAIT: Duration = Duration::from_secs(30);
+/// How long `serve` waits to start listening. Listening is local (milliseconds); at 0 it
+/// never prints its address, at infinity a stuck listen hangs the command silently.
+const SERVING_START_WAIT: Duration = Duration::from_secs(30);
 
-/// What `serve` listens on when hosting with no listen URL (osis's default port, spec/sync.md §10).
+/// What `serve` listens on when serving with no listen URL (osis's default port, spec/sync.md §10).
 const DEFAULT_LISTEN: &str = "quic://0.0.0.0:4040";
 
-fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow::Result<()> {
+fn serve(ctx: &mut Ctx<'_>, serving: ServingFlags, client_listen: &[String]) -> anyhow::Result<()> {
     let client_listen = client_listen.iter().map(|u| u.parse()).collect::<osis::Result<Vec<osis::Url>>>()?;
     let db = ctx.db.clone();
     // other invocations on this store become its clients (notes/cli.md Design)
     crate::listen(&ctx.sel, &db)?;
-    if host.any() {
-        set_hosting(ctx, host)?;
+    if serving.any() {
+        set_serving(ctx, serving)?;
     }
-    if let Some(mut h) = db.hosting()? {
+    if let Some(mut h) = db.serving()? {
         if h.listen.is_empty() {
             h.listen = vec![DEFAULT_LISTEN.parse()?];
-            db.set_hosting(Some(h))?;
+            db.set_serving(Some(h))?;
         }
-        let until = std::time::Instant::now() + HOST_START_WAIT;
+        let until = std::time::Instant::now() + SERVING_START_WAIT;
         let a = loop {
-            if let Some(a) = db.host_address().map_err(|e| exit(6, format!("hosting: {e}")))? {
+            if let Some(a) = db.serving_address().map_err(|e| exit(6, format!("serving: {e}")))? {
                 break a;
             }
             if std::time::Instant::now() >= until {
-                return Err(exit(6, "hosting: the host did not start listening"));
+                return Err(exit(6, "serving: did not start listening"));
             }
             std::thread::sleep(Duration::from_millis(20));
         };
-        ctx.emit(&[a.to_string()], J::obj([("host", J::str(a.to_string()))]))?;
+        ctx.emit(&[a.to_string()], J::obj([("address", J::str(a.to_string()))]))?;
         ctx.out.flush()?;
     }
     if !client_listen.is_empty() {
@@ -1352,16 +1372,16 @@ fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow
         ctx.out.flush()?;
     }
     // the address line above is a hard failure; the diagnostics after it are best effort (a
-    // caller that read only the address and closed the pipe does not end the host)
+    // caller that read only the address and closed the pipe does not end it)
     let t = ctx.timeout_or(None)?;
     diag(ctx, t, true)
 }
 
-/// Writes `host.0^`: each flag given replaces its field (one `''` clears it), the rest kept;
-/// starts hosting (`own`, no listener) when it was off.
-fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
+/// Sets the terms of serving: each flag given replaces its field (one `''` clears it), the rest kept;
+/// starts serving (`own`, no listener) when it was off.
+fn set_serving(ctx: &mut Ctx<'_>, f: ServingFlags) -> anyhow::Result<()> {
     let db = ctx.db.clone();
-    let mut h = db.hosting()?.unwrap_or_default();
+    let mut h = db.serving()?.unwrap_or_default();
     // a flag given once as '' clears its field; otherwise its values replace it
     let given = |v: &[String]| (!v.is_empty()).then(|| v.iter().filter(|x| !(v.len() == 1 && x.is_empty())).cloned().collect::<Vec<_>>());
     if let Some(v) = given(&f.listen) {
@@ -1376,14 +1396,14 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
     if let Some(v) = given(&f.admitted) {
         h.admitted = BTreeSet::new();
         for l in v {
-            h.admitted.extend(admission_ids(ctx, &l)?);
+            h.admitted.extend(sync_ids(ctx, &l)?);
         }
     }
     if let Some(v) = given(&f.replicate) {
-        h.replicate = hosts(ctx, &v)?;
+        h.replicate = peers(ctx, &v)?;
     }
     if let Some(v) = given(&f.policy) {
-        h.policy = osis::HostPolicy::default();
+        h.policy = osis::ServingPolicy::default();
         for p in v {
             let (k, n) = p.split_once('=').ok_or_else(|| usage(format!("not NAME=N: {p}")))?;
             osis::internals::host_limit(&mut h.policy, k, n.parse().map_err(|_| usage(format!("not NAME=N: {p}")))?).map_err(Error::Invalid)?;
@@ -1395,13 +1415,13 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
             let bad = || usage(format!("not GROUP|ID=ENTRIES,BYTES: {c}"));
             let (l, n) = c.rsplit_once('=').ok_or_else(bad)?;
             let (e, b) = n.split_once(',').ok_or_else(bad)?;
-            let caps = osis::HostCaps { entries: e.parse().map_err(|_| bad())?, bytes: b.parse().map_err(|_| bad())? };
-            for id in admission_ids(ctx, l)? {
+            let caps = osis::ServingCaps { entries: e.parse().map_err(|_| bad())?, bytes: b.parse().map_err(|_| bad())? };
+            for id in sync_ids(ctx, l)? {
                 h.caps.insert(id, caps);
             }
         }
     }
-    Ok(db.set_hosting(Some(h))?)
+    Ok(db.set_serving(Some(h))?)
 }
 
 /// `clients add|ls|rm|rotate` (notes/cli.md): `clients.0^` of this node.
@@ -1436,17 +1456,17 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
     }
 }
 
-/// `host.0^` as lines (`listen URL`, `address URL#KEY` per listen URL but a port 0, `admit own|open`, `admitted ID`, `replicate ADDR`,
-/// `policy NAME N`, `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not hosting.
-fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
-    let h = ctx.db.hosting()?.ok_or_else(|| exit(3, "not hosting"))?;
+/// The terms of serving as lines (`listen URL`, `address URL#KEY` per listen URL but a port 0, `admit own|open`, `admitted ID`, `replicate ADDR`,
+/// `policy NAME N`, `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not serving.
+fn serving_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
+    let h = ctx.db.serving()?.ok_or_else(|| exit(3, "not serving"))?;
     let admit = match h.admit {
         osis::Admit::Own => "own",
         osis::Admit::Open => "open",
     };
     // the address each listen URL will have; none for a port 0 (picked only when it listens)
-    let addrs: Vec<String> = match ctx.db.host_key()? {
-        Some(k) => h.listen.iter().map(|u| osis::HostAddr::new(u, k).to_string()).filter(|a| !a.split('#').next().is_some_and(|u| u.ends_with(":0"))).collect(),
+    let addrs: Vec<String> = match ctx.db.serving_key()? {
+        Some(k) => h.listen.iter().map(|u| osis::Address::new(u, k).to_string()).filter(|a| !a.split('#').next().is_some_and(|u| u.ends_with(":0"))).collect(),
         None => vec![],
     };
     let mut lines: Vec<String> = h.listen.iter().map(|u| format!("listen {u}")).collect();
@@ -1470,21 +1490,21 @@ fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 }
 
 /// The limits set apart from the defaults, by name.
-fn policy_lines(p: &osis::HostPolicy) -> BTreeMap<String, u64> {
-    let d = osis::HostPolicy::default();
+fn policy_lines(p: &osis::ServingPolicy) -> BTreeMap<String, u64> {
+    let d = osis::ServingPolicy::default();
     let plain = [("group_entries", p.group_entries, d.group_entries), ("group_bytes", p.group_bytes, d.group_bytes), ("groups", p.groups, d.groups), ("entries", p.entries, d.entries), ("bytes", p.bytes, d.bytes), ("connections", p.connections as u64, d.connections as u64)];
     plain.into_iter().filter(|(_, v, def)| v != def).map(|(k, v, _)| (k.to_string(), v)).chain(osis::internals::host_limits_unshown(p)).collect()
 }
 
-/// An admission ID, or a group synced here: its IDs.
-fn admission_ids(ctx: &mut Ctx<'_>, s: &str) -> anyhow::Result<Vec<osis::AdmissionId>> {
+/// A sync ID, or a group synced here: its IDs.
+fn sync_ids(ctx: &mut Ctx<'_>, s: &str) -> anyhow::Result<Vec<osis::SyncId>> {
     if let Ok(id) = s.parse() {
         return Ok(vec![id]);
     }
-    let g = ctx.tid(s).map_err(|_| usage(format!("not a group or an admission ID (32 hex digits): {s}")))?;
-    let ls = ctx.db.admission_ids(g)?;
+    let g = ctx.tid(s).map_err(|_| usage(format!("not a group or a sync ID (32 hex digits): {s}")))?;
+    let ls = ctx.db.sync_ids(g)?;
     if ls.is_empty() {
-        return Err(exit(3, format!("{s} is not synced here: give its admission ID (`osis hosting ids` on a device that reads it)")));
+        return Err(exit(3, format!("{s} is not synced here: give its sync ID (`osis serving ids` on a node that reads it)")));
     }
     Ok(ls)
 }

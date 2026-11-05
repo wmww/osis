@@ -69,7 +69,7 @@
 - **Inbox**: the label an actor with role secrets names in `keys.0` for inbox blobs (§3): a label of a group its admins administer (by default its home label).
   - An actor that names none uses the inbox of the nearest actor above it in its owner chain.
   - An ownerless thing that names none uses its own label, so its readers read those blobs.
-  - Key actors have none: a node receives a direct grant only over a direct connection to the granting device (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
+  - Key actors have none: a node receives a direct grant only over a direct connection to the granting node (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
 - A thing in no labeled group is not synced. Only an admin's `label.0` write makes a label; a grant makes none.
 - **Route**: a holder of a role on a thing reads it only through a live label it can open whose closure holds the thing (§3).
   - That label is either:
@@ -102,7 +102,7 @@
     - a rotation boxing G where G held no box at the read epoch before it;
     - the `label.0` write giving a thing G holds a grant on its first live label: sent by its writer to every actor on the thing's roster that is not a key actor and whose read keyset and inbox it knows.
   - **Placement**: under G's inbox (§2) by deposit, or by upload when the sender holds the inbox label's write key. The inbox group's admins may delete it earlier than its expiry.
-  - **Re-send**: its prefix expiry is `INBOX_LIFETIME`, after which the sender re-sends unless the recipient has since acted on it: a commit by it or a device of it writing a thing the blob names or a thing such a thing owns. Acting elsewhere does not count. A sender MAY bound the number of re-sends.
+  - **Re-send**: its prefix expiry is `INBOX_LIFETIME`, after which the sender re-sends unless the recipient has since acted on it: a commit by it or a node of it writing a thing the blob names or a thing such a thing owns. Acting elsewhere does not count. A sender MAY bound the number of re-sends.
   - **Stamping in place**: a writer of the inbox's group stamps a deposited inbox blob in place (§5).
     - It does so when either:
       - its commit is applied, valid in every part the blob carries, and about an actor whose inbox the label is (it has parts a copy below would take for that actor); or
@@ -122,13 +122,13 @@
   - What a connection delivers under a label is read under the thing the label is opened under on that connection; elsewhere a label belongs to the group whose held `label.0` records it.
 - **Invite requests**: a recipient node applies the commit of an opened inbox blob, and follows what it names, only once it **admits** the blob.
   - It admits the blob when either:
-    - the commit is already held (applied or pending; a sibling device that accepted it places its copy under the home label); or
+    - the commit is already held (applied or pending; a sibling node that accepted it places its copy under the home label); or
     - its sender is **connected**: the header's author is a key actor whose creation record the node holds and under whose key the commit's signature verifies, and the author has an effective role now (spec/permissions.md §1, as this node judges it) on a group the node syncs (§2), on a thing on such a group's owner chain, or on an account whose contact card the node imported.
   - A blob not admitted is an invite request: its commit is not applied, its chain certificates (spec/wire.md §9) are not ingested, and nothing it names is fetched, followed or dialed until the user accepts it.
   - It is judged again as the node's state changes.
   - Accepting admits it.
-  - Declining one leaves its commit unapplied, at that node and for good, from every inbox blob carrying it. The same commit arriving in a blob under a label the node syncs (a sibling device that accepted it placed its copy under home) is applied as any commit: the acceptance wins.
-- **Grant copy**: a grantee device that accepts a grant for an actor (from the inbox, from K's label, or by pairing) places a certificate copy of the grant, with the `label.0` commits of the labels it reached, under that actor's home label; not when an entry there already holds the grant's parts, counted as for chain certificates (spec/permissions.md §4).
+  - Declining one leaves its commit unapplied, at that node and for good, from every inbox blob carrying it. The same commit arriving in a blob under a label the node syncs (a sibling node that accepted it placed its copy under home) is applied as any commit: the acceptance wins.
+- **Grant copy**: a grantee node that accepts a grant for an actor (from the inbox, from K's label, or by pairing) places a certificate copy of the grant, with the `label.0` commits of the labels it reached, under that actor's home label; not when an entry there already holds the grant's parts, counted as for chain certificates (spec/permissions.md §4).
   - From an inbox blob only a node with admin on the actor copies, and only, of a valid applied role commit:
     - the carried parts on the things where a `roles.0` delta writes the grant of the actor or an actor it owns or a `secrets.0` delta boxes one, or, of a `label.0` write, on the named things where the actor or an actor it owns holds a grant;
     - with the `created.0` commit and every `label.0` commit of those things that the payload names (no `label.0` commit of a thing the actor reads no more);
