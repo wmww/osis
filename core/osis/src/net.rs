@@ -24,7 +24,7 @@ pub enum Runtime {
     /// No network: everything works locally; calls that wait for another node fail `Network`.
     #[default]
     None,
-    /// The app's tokio runtime (multi-thread recommended: engine calls block in place).
+    /// The app's tokio runtime (multi-thread recommended: osis's work blocks its thread for a moment).
     Tokio(tokio::runtime::Handle),
     /// A small tokio runtime of osis's own.
     Own,
@@ -618,7 +618,7 @@ impl crate::Osis {
     /// connect (`Osis::connect_socket` with this store's directory) act as this node's main actor
     /// with no authentication (there is no security boundary between them); others are refused by
     /// the kernel's word for their uid. A stale socket is replaced, one in use is `Network`; `Storage`
-    /// when the socket's directory is not safely this user's; `Invalid` for a store in memory, which
+    /// when the socket's directory is not safely this user's or too long a path; `Invalid` for a store in memory, which
     /// has no directory to name it by. Needs a runtime.
     pub fn listen_socket(&self) -> crate::Result<()> {
         self.local_only("listen_socket")?;

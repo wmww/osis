@@ -11,7 +11,8 @@ use crate::ids::{Link, Tid};
 use crate::sorted::{ValueMap, ValueSet};
 use std::cmp::Ordering;
 
-/// The large variants are boxed: every item of a decoded value costs this enum's size (`cbor::decode`).
+/// A value of any shape, as an aspect holds it.
+// The large variants are boxed: every item of a decoded value costs this enum's size (`cbor::decode`).
 #[derive(Clone, Debug)]
 pub enum Value {
     Int(i64),
@@ -26,8 +27,11 @@ pub enum Value {
     Map(ValueMap),
     List(Vec<Value>),
     Set(ValueSet),
+    /// Never in a value the API returns: a large value's reference, replaced when read.
+    #[doc(hidden)]
     Link(Box<Link>),
-    /// A tag this build does not know, with its content as received.
+    /// A kind of value this build does not know, as another writer's newer version wrote it. Kept and
+    /// passed on as it is.
     Unknown(Box<Unknown>),
 }
 
@@ -92,9 +96,11 @@ impl Value {
         crate::cbor::decode(b, &crate::cbor::Limits::default()).ok()
     }
 
+    #[doc(hidden)]
     pub fn link(l: Link) -> Value {
         Value::Link(Box::new(l))
     }
+    #[doc(hidden)]
     pub fn unknown(u: Unknown) -> Value {
         Value::Unknown(Box::new(u))
     }

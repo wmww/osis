@@ -53,7 +53,7 @@ fn secret_of(v: Value) -> Result<ClientSecret> {
 impl Osis {
     /// Registers a client: mints its actor, of the account,
     /// with secrets of its own, placed in the home group so the account's devices can grant to
-    /// it, and writes its `clients.0^` entry, all in one transaction. Returns the actor and the
+    /// it, all in one transaction. Returns the actor and the
     /// secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
     /// client reaches (it starts with none).
     pub fn add_client(&self, until: Option<Time>) -> Result<(Tid, ClientSecret)> {
@@ -82,7 +82,7 @@ impl Osis {
         Ok((actor, secret))
     }
 
-    /// This node's clients by a secret (`clients.0^`).
+    /// This node's clients by a secret.
     pub fn clients(&self) -> Result<Vec<Client>> {
         if !self.has_store() {
             let v = self.rcall(method::CLIENTS, vec![])?;

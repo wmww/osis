@@ -8,10 +8,14 @@ use crate::path::{PathError, PathErrorKind, Step};
 use osis_base::{BlobId, CommitId, Float, LabelId, Link, Role, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A type a key's value or a path's position reads and writes as: `Value` for any value, the plain
+/// types (`String`, `bool`, `i64`, `u64`, `f64`, `Vec<u8>`, `Tid`), `Option`, `Vec`, sets and maps of
+/// those, and what a schema generates.
 pub trait Codec: Sized {
     /// `from_value` validates the raw value completely, so typed keys skip the schema's typed
     /// read (the creation record: its fields 0 and 1 are exclusive, which the type system cannot
     /// say; spec/data-model.md §9).
+    #[doc(hidden)]
     const CHECKS_ITSELF: bool = false;
     fn to_value(&self) -> Value;
     fn from_value(v: &Value) -> Result<Self, PathError>;
@@ -81,6 +85,7 @@ impl Codec for WallMs {
     }
 }
 
+#[doc(hidden)]
 impl Codec for Ts {
     fn to_value(&self) -> Value {
         self.to_u64().to_value()
@@ -117,6 +122,7 @@ impl<const N: usize> Codec for [u8; N] {
 
 macro_rules! byte_id {
     ($t:ident) => {
+        #[doc(hidden)]
         impl Codec for $t {
             fn to_value(&self) -> Value {
                 self.0.to_value()
@@ -229,6 +235,7 @@ pub enum Chunked<T> {
     Link(Link),
 }
 
+#[doc(hidden)]
 impl<T: Codec> Codec for Chunked<T> {
     fn to_value(&self) -> Value {
         match self {
@@ -287,6 +294,7 @@ macro_rules! codec_struct {
     ($(#[$m:meta])* $vis:vis struct $name:ident $(<$($g:ident),*>)? { $($(#[$fm:meta])* $id:literal $f:ident : $t:ty),* $(,)? }) => {
         $(#[$m])*
         $vis struct $name $(<$($g),*>)? { $($(#[$fm])* pub $f: $t),* }
+        #[doc(hidden)]
         impl $(<$($g: $crate::Codec),*>)? $crate::Codec for $name $(<$($g),*>)? {
             fn to_value(&self) -> $crate::codec::rt::Value {
                 $crate::codec::rt::struct_value(vec![$(($id, $crate::Codec::to_value(&self.$f))),*])
@@ -315,6 +323,7 @@ macro_rules! codec_enum {
     ($(#[$m:meta])* $vis:vis enum $name:ident $(<$($g:ident),*>)? { $($(#[$cm:meta])* $id:literal $c:ident $(($x:ident : $t:ty))?),* $(,)? }) => {
         $(#[$m])*
         $vis enum $name $(<$($g),*>)? { $($(#[$cm])* $c $(($t))?),* }
+        #[doc(hidden)]
         impl $(<$($g: $crate::Codec),*>)? $crate::Codec for $name $(<$($g),*>)? {
             fn to_value(&self) -> $crate::codec::rt::Value {
                 match self {

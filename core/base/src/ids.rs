@@ -19,6 +19,7 @@ impl Tid {
         &self.0
     }
     /// The tid of a creation record (spec/wire.md §3).
+    #[doc(hidden)]
     pub fn of_record(record: &CreationRecord) -> Tid {
         let h = hash::hash(&encode(&record.to_value()));
         let mut b = [0u8; TID_LEN];
@@ -326,6 +327,7 @@ impl Ak {
         self.0.get(..p.dot) == other.0.get(..q.dot) && p.version > q.version
     }
     /// Sorts before every key, valid none: the start of a range over one thing's aspects.
+    #[doc(hidden)]
     pub const MIN: Ak = Ak(String::new());
 }
 

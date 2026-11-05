@@ -430,6 +430,21 @@ fn socket_dir_rules() {
     let p = osis::internals::socket_path(&d.0.join("store")).unwrap();
     assert!(p.as_os_str().len() <= osis_transport::unix::MAX_PATH, "{p:?}");
     assert!(p.extension().is_some_and(|e| e == "sock"));
+    // one store, one socket, however its path is spelled
+    let store = d.0.join("real-store");
+    std::fs::create_dir(&store).unwrap();
+    let alias = d.0.join("alias");
+    std::os::unix::fs::symlink(&store, &alias).unwrap();
+    let sock = osis::internals::socket_path(&store).unwrap();
+    assert_eq!(osis::internals::socket_path(&alias).unwrap(), sock, "through a symlink");
+    assert_eq!(osis::internals::socket_path(&store.join(".")).unwrap(), sock);
+    assert_eq!(osis::internals::socket_path(&d.0.join("alias").join("..").join("real-store")).unwrap(), sock, "with ..");
+    assert_ne!(osis::internals::socket_path(&ok).unwrap(), sock, "another store, another socket");
+    // a runtime directory too long for a socket: said here, as `Storage`, which a daemon survives
+    let deep = d.0.join("d".repeat(osis_transport::unix::MAX_PATH));
+    std::fs::create_dir(&deep).unwrap();
+    std::fs::set_permissions(&deep, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(matches!(osis::internals::socket_path_under(Some(&deep), &store), Err(osis::Error::Storage(_))));
 }
 
 /// A node on `net` at endpoint `ep` with `hosts` and a runtime, serving the client port at `sock`.
@@ -998,4 +1013,23 @@ fn listen_socket_names_the_store_notes_client_port() {
     o.runtime = Runtime::Own;
     let m = osis::internals::create(o).unwrap().0;
     assert!(matches!(m.listen_socket(), Err(osis::Error::Invalid(_))));
+}
+
+// spec: none (API surface); notes/api.md Hosting: a thin client on a node's socket asks the node what names a group for hosts
+#[test]
+fn admission_ids_through_the_socket_api_design() {
+    use crate::common::block_on;
+    let d = Dir::new();
+    let net = osis_transport::Net::new(2);
+    let sock = d.0.join("n.sock");
+    let n = node_on(&net, "n", vec![], &sock);
+    let mut w = n.write();
+    let g = w.create().unwrap();
+    w.at(g, osis::core::NAME).set(&"g".to_string()).unwrap();
+    w.commit().unwrap();
+    n.sync(g, &[]).unwrap();
+    let ids = n.admission_ids(g).unwrap();
+    assert!(!ids.is_empty());
+    let thin = block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
+    assert_eq!(thin.admission_ids(g).unwrap(), ids);
 }

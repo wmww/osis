@@ -27,6 +27,10 @@ pub enum ValueType {
     Time,
     /// A length of time, in milliseconds (`Value::Int`).
     Duration,
+    /// A calendar day with no zone: days since 1970-01-01 (`Value::Int`).
+    Date,
+    /// A wall-clock time with no zone: milliseconds since 1970-01-01T00:00 (`Value::Int`).
+    LocalTime,
     /// Anything.
     Any,
     /// A value or nothing: `Value::Enum(0, None)`, or `Value::Enum(1, Some(value))`.
@@ -70,10 +74,16 @@ pub struct RecordField {
 }
 
 /// A type inside another.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NestedType {
     schema: Arc<Schema>,
     ty: Type,
+}
+
+impl std::fmt::Debug for NestedType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name())
+    }
 }
 
 impl PartialEq for NestedType {
@@ -138,6 +148,8 @@ fn describe(s: &Arc<Schema>, t: &Type) -> ValueType {
         match n.as_str() {
             "timestamp" => return ValueType::Time,
             "duration" => return ValueType::Duration,
+            "date" => return ValueType::Date,
+            "localtime" => return ValueType::LocalTime,
             _ => {}
         }
     }

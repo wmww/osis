@@ -83,7 +83,7 @@ impl Bound {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Retention {
     pub by: PurgeBy,
-    /// Before this bound a write leaves only by a purge, never by tidying up. Who wrote a change and
+    /// Before this bound a replaced write stays, and leaves only by a purge. Who wrote a change and
     /// when is reported only while the change itself is held: `abs` forever keeps that provable.
     pub at_least: Bound,
     pub at_most: Bound,

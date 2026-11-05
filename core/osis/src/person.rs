@@ -226,7 +226,7 @@ impl Osis {
         Ok(db)
     }
 
-    /// An offer to pair a new device (valid `OFFER_LIFETIME_MS`, once): the new device runs
+    /// An offer to pair a new device, good once: the new device runs
     /// `Osis::pair` with it and the app carries the request back to `pair_accept`. Whoever holds
     /// the offer can make their device a full admin device of this person until it is used or
     /// expires (10 minutes): show it only to the new device.

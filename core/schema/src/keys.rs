@@ -93,6 +93,7 @@ pub struct Aspect<T> {
 impl<T> Aspect<T> {
     /// Fails the build, in a `const` item, unless `ak` parses as an AK: every generated key
     /// constant is checked so (`Ak::check`).
+    #[doc(hidden)]
     pub const fn new(ak: &'static str, schema: &'static StaticSchema) -> Aspect<T> {
         Aspect { ak: Ak::check(ak), schema, _t: PhantomData }
     }

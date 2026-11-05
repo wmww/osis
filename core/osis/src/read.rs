@@ -91,13 +91,12 @@ fn stamp(c: osis_node::Creation) -> ThingStamp {
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GroupsOf {
-    /// Groups whose `group.0` lists it as an item.
+    /// Groups it is an item of.
     pub item_of: Vec<Tid>,
-    /// Groups whose `group.0` lists it as a subgroup (its items count as theirs).
+    /// Groups it is a subgroup of (its items count as theirs).
     pub subgroup_of: Vec<Tid>,
-    /// Every group holding it as an item, directly or through subgroup lists (`groups.0`,
-    /// spec/data-model.md §8): what sync follows for its own aspects. Not the groups it is
-    /// only a subgroup of.
+    /// Every group holding it as an item, directly or through subgroups: what carries its own
+    /// aspects when they sync. Not the groups it is only a subgroup of.
     pub within: Vec<Tid>,
 }
 

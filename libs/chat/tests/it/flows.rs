@@ -1093,3 +1093,44 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
     assert_eq!(chats(&b).unwrap(), vec![c], "rejoined");
     assert!(b.kept_copies().unwrap().is_empty());
 }
+
+// spec: none. notes/chat.md Hostile participant, notes/api-design.md (stored data never fails a read): a message id is text another writer chose: what does not parse is no reply, a claim to replace what does not parse reads as a plain odd entry, and neither fails anyone's read, a delete or a kick
+#[test]
+fn odd_ids_from_another_writer_fail_no_read() {
+    let Room { mut w, a, b, c, .. } = room(Options::default());
+    let good = post(&a, c, "good").unwrap();
+    let year = good.year;
+    let key = osis::Key::untyped(osis::Ak::new(format!("{MSGS}y{year}.0")).unwrap());
+    let raw = |entries: Vec<(i64, Value)>| {
+        let mut m = osis::ValueMap::from([(Value::Int(0), Value::Str("odd".into()))]);
+        for (k, v) in entries {
+            m.insert(Value::Int(k), v);
+        }
+        let mut x = b.write();
+        x.at(c, key.clone()).overwrite(&Value::Bytes(Value::Map(m).to_bytes())).unwrap();
+        x.commit().unwrap();
+    };
+    let junk = ["", "x", "2026", "2026/", "2026/1", "2026/x/y", "2026/1/zz", "2026/1/ephemeral:zz:1", "99999999999/1/00", &format!("2026/{}/{}", u64::MAX, "0".repeat(64))].map(|s| Value::Str(s.to_string()));
+    for j in junk.iter().cloned().chain([Value::Int(3), Value::Bytes(vec![1])]) {
+        raw(vec![(4, j.clone())]);
+        raw(vec![(1, j.clone()), (2, Value::List(vec![j.clone()]))]);
+    }
+    // parses, and names nothing here: a time's place, an ephemeral batch
+    let places = [format!("{year}/{}/{}", 1u64 << 20, "0".repeat(64)), format!("{year}/{}/ephemeral:{}:1", 1u64 << 20, "0".repeat(32))];
+    for p in places.map(Value::Str) {
+        raw(vec![(4, p.clone())]);
+        raw(vec![(1, p.clone()), (2, Value::List(vec![p.clone()]))]);
+    }
+    w.run();
+    for db in [&a, &b] {
+        let t = texts(db, c);
+        assert!(t.contains(&"good".to_string()) && t.contains(&"odd".to_string()), "{t:?}");
+        assert_eq!(find(db, c, &good).unwrap().unwrap().id, good);
+    }
+    // what reads as messages can be deleted, whatever others claimed
+    let m = newest(&b, c);
+    delete(&b, c, &m).unwrap();
+    edit(&a, c, &find(&a, c, &good).unwrap().unwrap(), "better").unwrap();
+    w.run();
+    assert!(texts(&a, c).contains(&"better".to_string()));
+}

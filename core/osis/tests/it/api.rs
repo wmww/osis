@@ -1682,11 +1682,12 @@ fn urls_and_host_policy_are_typed() {
     let long = format!("quic://{}", "h".repeat(osis::internals::schema::osis_base::format::MAX_URL_BYTES));
     assert!(matches!(long.parse::<osis::Url>(), Err(Error::Invalid(_))));
     let db = db(1);
-    let policy = osis::HostPolicy { group_bytes: 77, tuning: [("deletes".to_string(), 9)].into(), ..Default::default() };
+    let mut policy = osis::HostPolicy { group_bytes: 77, ..Default::default() };
+    osis::internals::host_limit(&mut policy, "deletes", 9).unwrap();
     db.set_hosting(Some(osis::Hosting { policy: policy.clone(), ..Default::default() })).unwrap();
     assert_eq!(db.hosting().unwrap().unwrap().policy, policy);
-    let bad = osis::HostPolicy { tuning: [("max_queued_bytes".to_string(), 1)].into(), ..Default::default() };
-    assert!(matches!(db.set_hosting(Some(osis::Hosting { policy: bad, ..Default::default() })), Err(Error::Invalid(_))));
+    let mut bad = osis::HostPolicy::default();
+    assert!(osis::internals::host_limit(&mut bad, "max_queued_bytes", 1).is_err(), "a limit the host cannot run by");
 }
 
 // spec: none (API surface); notes/api.md Futures: what waits can go on any runtime's spawn
@@ -1810,12 +1811,92 @@ fn admission_ids_and_host_policy_api_design() {
     let id: osis::AdmissionId = "00112233445566778899aabbccddeeff".parse().unwrap();
     assert_eq!(id.to_string(), "00112233445566778899aabbccddeeff");
     let mut p = osis::HostPolicy { groups: 7, ..Default::default() };
-    p.set("connections", 3).unwrap();
-    p.set("deletes", 9).unwrap();
-    assert!(p.set("no_such_limit", 1).is_err());
+    osis::internals::host_limit(&mut p, "connections", 3).unwrap();
+    osis::internals::host_limit(&mut p, "deletes", 9).unwrap();
+    assert!(osis::internals::host_limit(&mut p, "no_such_limit", 1).is_err());
+    // one limit, one place, by either name
+    osis::internals::host_limit(&mut p, "cap_bytes", 55).unwrap();
+    assert_eq!(p.group_bytes, 55);
+    assert!(!osis::internals::host_limits_unshown(&p).contains_key("cap_bytes"));
+    p.group_bytes = osis::HostPolicy::default().group_bytes;
     db.set_hosting(Some(osis::Hosting { admitted: [id].into(), caps: [(id, osis::HostCaps { entries: 1, bytes: 2 })].into(), policy: p.clone(), ..Default::default() })).unwrap();
     let h = db.hosting().unwrap().unwrap();
-    assert_eq!((h.policy.groups, h.policy.connections, h.policy.tuning.get("deletes").copied()), (7, 3, Some(9)));
+    assert_eq!((h.policy.groups, h.policy.connections, osis::internals::host_limits_unshown(&h.policy).get("deletes").copied()), (7, 3, Some(9)));
     assert_eq!(h.policy, p);
     assert!(h.admitted.contains(&id) && h.caps.contains_key(&id));
+}
+
+// spec/data-model.md §5 (standard types); notes/api.md Keys: a description sees through aliases and generics to what a type is, `timestamp`, `date` and the like by their own words; what a schema cannot declare never reaches it
+#[test]
+fn value_type_through_aliases_and_generics_api_design() {
+    use osis::ValueType as V;
+    let db = db(1);
+    db.register_schema(
+        "t.osis",
+        "version 1;
+type stamp = timestamp;
+type stamp2 = stamp;
+type box<T> = struct { 0 v: T };
+type maybe = option<int>;
+type rec = struct { 0 a: stamp2, 1 b: box<stamp>, 2 c: maybe, 3 d: date, 4 e: localtime, 5 f: map<string, option<duration>>, 6 g: list<box<box<date>>> };
+aspect t:rec.0: rec;
+aspect t:when.0: stamp;
+",
+    )
+    .unwrap();
+    assert_eq!(db.key("t:when.0").unwrap().value_type(), Some(V::Time));
+    assert_eq!(db.key("t:when.0").unwrap().type_name().as_deref(), Some("stamp"));
+    let V::Record(f) = db.key("t:rec.0").unwrap().value_type().unwrap() else { panic!("a record") };
+    let by = |n: &str| f.iter().find(|x| x.name == n).unwrap().ty.clone();
+    assert_eq!(by("a").get(), V::Time);
+    let V::Record(b) = by("b").get() else { panic!("a record") };
+    assert_eq!(b[0].ty.get(), V::Time, "a parameter is filled in");
+    assert!(matches!(by("c").get(), V::Optional(p) if p.get() == V::Int), "an option by another name");
+    assert_eq!((by("d").get(), by("e").get()), (V::Date, V::LocalTime));
+    let V::Map(k, v) = by("f").get() else { panic!("a map") };
+    assert_eq!(k.get(), V::String);
+    assert!(matches!(v.get(), V::Optional(p) if p.get() == V::Duration));
+    let V::List(g) = by("g").get() else { panic!("a list") };
+    let V::Record(o) = g.get() else { panic!("a record") };
+    let V::Record(i) = o[0].ty.get() else { panic!("a record") };
+    assert_eq!(i[0].ty.get(), V::Date);
+    assert_eq!(format!("{:?}", by("a")), "stamp2", "a type's debug form is its name, not its whole schema");
+    // types that never reach a shape, or take a standard name, are refused before a key sees them
+    for bad in ["type a = a; aspect t:a.0: a;", "type a = b; type b = a; aspect t:a.0: a;", "type a<T> = a<list<T>>; aspect t:a.0: a<int>;", "type c = counter<c>; aspect t:a.0: c;", "type timestamp = string; aspect t:a.0: timestamp;"] {
+        assert!(matches!(db.register_schema("bad.osis", &format!("version 1; {bad}")), Err(Error::Invalid(_))), "{bad}");
+    }
+}
+
+// spec: none (API surface); notes/api-design.md No leaks: what a public signature shows can be named: a type in a public field or a call's error is exported
+#[test]
+fn what_public_signatures_show_can_be_named_api_design() {
+    let b: osis::core::RequiredBound = Default::default();
+    let r = osis::core::Required { by: osis::PurgeBy::default(), at_least: b, at_most: b, expires: None };
+    assert_eq!(r.at_least, osis::core::RequiredBound { abs: None, rel: None });
+    let e = osis::PathError::new(osis::Path::root(), osis::PathErrorKind::Mismatch { expected: "x" });
+    assert!(matches!(e.kind, osis::PathErrorKind::Mismatch { .. }));
+    let _: Result<osis::Ak, osis::AkError> = osis::Ak::new("t:x.0");
+    let _: Result<osis::Tid, osis::TidParseError> = osis::Tid::parse("nope");
+}
+
+// spec: none (API surface); notes/api.md History: a place past the last time there is names the end, whichever way a page goes; a place's text round-trips, a time's too, and a time's names no change
+#[test]
+fn history_place_of_any_time_api_design() {
+    use osis::{HistoryFrom as F, HistoryPos as P, Time};
+    let db = db(1);
+    let k = osis::Key::untyped(ak("t:x.0"));
+    let t = db.batch(|w| w.create()).unwrap();
+    let c = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
+    let page = |f| db.at(t, k.clone()).history(f, 10).unwrap().entries.len();
+    let (zero, end) = (P::time(Time(0)), P::time(Time(u64::MAX)));
+    assert!(zero < c.pos() && c.pos() < end);
+    assert_eq!((page(F::Before(end)), page(F::After(end))), (1, 0));
+    assert_eq!((page(F::Before(zero)), page(F::After(zero))), (0, 1));
+    assert_eq!(page(F::After(P::time(c.written))), 1, "from that moment on");
+    assert_eq!(page(F::Before(P::time(c.written))), 0, "stamped earlier");
+    assert_eq!((page(F::Before(c.pos())), page(F::After(c.pos()))), (0, 0), "neither bound counts itself");
+    for p in [zero, end, P::time(c.written), c.pos()] {
+        assert_eq!(p.to_string().parse::<P>().unwrap(), p);
+    }
+    assert_eq!((end.change(), c.pos().change()), (None, Some(c.id)));
 }

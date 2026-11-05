@@ -57,6 +57,18 @@ fn title() -> osis::Ak {
     ak("note:title.0")
 }
 
+// spec: none (API surface); notes/api.md Hosting: a group read at another node is that node's to name for hosts: never an empty answer from this one's copy
+#[test]
+fn admission_ids_of_a_group_read_elsewhere_api_design() {
+    let x = world();
+    x.attach_p();
+    let here = x.p.admission_ids(x.g).unwrap();
+    assert!(!here.is_empty(), "synced here");
+    assert_eq!(x.n.admission_ids(x.g).unwrap(), here, "one group, one name");
+    x.to_remote();
+    assert!(matches!(x.p.admission_ids(x.g), Err(Error::Unsupported(_))), "asked of the node, which keeps it from this client's actor");
+}
+
 fn world() -> World {
     world_waiting(W)
 }
