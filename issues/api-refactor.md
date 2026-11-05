@@ -23,8 +23,8 @@ let text = db.at(note, notes::BODY).edit_text()?;
 
 db.sync(note, &[])?;                                       // only if no synced group carries it
 db.grant(note, friend, Role::Write, GrantOpts::default())?;
-db.set_role(note, friend, Role::Read, SetRole::default()).await?;
-db.revoke(note, friend, Revocation::default()).await?;
+db.set_role(note, friend, Some(Role::Read), SetRole::default()).await?;
+db.set_role(note, friend, None, SetRole::default()).await?;      // no access
 ```
 
 ## Decided
@@ -72,14 +72,13 @@ Design for the world after it:
 All of this speaks of granting a role (F, Vocabulary). Today: `grant`, `share`, `share_into`, `change_edge`, `demote(Lower)`, `leave`, `remove_edge_of`, `remove_device`, `remove_client`, `revoke_link`, `revoke_joiner`.
 1. **`grant(target, holder, role, GrantOpts)`** is the one call that adds, raises or changes `until` and `invite`, and nothing else (Decided 1). Removes `share` and `change_edge`. `grant` refuses lowering (done).
 2. **Demote and remove become separate functions.** `demote(.., Lower::{To, Remove}, Demotion)` is centered wrongly: the two cases differ in what is allowed (a joiner can only be removed) and what applies (`keep` only on removal).
-   - `set_role(target, holder, role, SetRole { sync: SyncFirst, until, invite })`, async: makes the holder's role this one, raising or lowering. The usual call (Tess). Replaces lowering by `demote`; a link joiner's role still can't be lowered (`Invalid`).
+   - `set_role(target, holder, Option<Role>, SetRole { sync: SyncFirst, keep })`, async: makes the holder's role this one, raising, lowering or (`None`) removing (Tess). The usual call. Replaces `demote`, with no separate revoke. It keeps `until` and `invite` as they are (`invite` capped at the new role, as today); `grant` is what sets them. `keep` is the removal's word: `Invalid` with `Some`. A link joiner's role still can't be lowered, only removed (`Invalid`).
    - `grant` stays beside it, the one justified overlap: it never waits and never takes anything away, for sync code and for callers that mean only that. Say so at its definition.
-   - `revoke(target, holder, Revocation { sync: SyncFirst, keep })`, the natural opposite of `grant`.
-   - `repudiate(target, holder)` as its own call: today's `Demotion.repudiate` is a rare recovery with its own rules ("a direct edge only", "only after a lockout").
-   - Decide whether removing a link joiner stays in `revoke` or is only `revoke_joiner`; one route.
+   -    - `repudiate(target, holder)` as its own call: today's `Demotion.repudiate` is a rare recovery with its own rules ("a direct edge only", "only after a lockout").
+   - Decide whether removing a link joiner stays in `set_role(.., None, ..)` or is only `revoke_joiner`; one route.
 3. **`share_into`** stays as "add to a group and let its holders in", without `ShareOpts`: `share_into(member: Member, group, role)`. `place_anyway` goes: an app that wants it calls `Write::group(..).add`. It returns nothing unless an app needs `Share`; `reach` answers that.
 4. **`leave(target)` and `remove_edge_of(group, target)`** are both self-removals: one `leave(holder, target)`, with `me()` as the usual holder.
-5. **`remove_device` and `remove_client`**: both a removal of a holder of the account plus cleanup. Keep them, but give each the same `Revocation` shape where it applies; `remove_client` is sync and takes none, and that difference should be justified or removed.
+5. **`remove_device` and `remove_client`**: both a removal of a holder of the account plus cleanup. Keep them, but give each the same `SetRole` options where it applies; `remove_client` is sync and takes none, and that difference should be justified or removed.
 6. **`Share::{Tied, Untied, Excluded}`, `Edge.tied`, `GroupReach`, `reach`, `holder_path`**: tie and path are internals. Keep a way to answer "who can get at this, through what, and will it go when the membership goes", in plain words: `via_group` on a grant, say. `holder_path` is used by chat, and the old api-review notes the missing reverse ("who holds through this"), so design one `holders(target)` answering both.
 7. **Links**: `LinkInfo.id` is documented as "the link's actor K"; make an opaque `LinkId`. `revoke_joiner` is named for link internals; `joiner` is fine, but see B2.
 
@@ -105,7 +104,7 @@ Change:
 16. **`edit_text(tid, key, path)` and `keep_alive(tid, key, path, v)`** take positions differently from everything else → `at(t, k).path(p).edit_text()` and `.keep_alive(v)`.
 17. **Callback naming**: `watch_*` take a callback here but `watch()` returns a handle there. All callbacks are `on_*`: `on_thing_change`, `on_roster_change`, `on_status_change`, `on_change`, `on_history`, `on_diagnostic`. All return `Result<Subscription>` and all get `&Osis`; `TextSession::on_remote` currently does neither.
 18. **`AspectKey`**: three implementations (`Aspect<T>`, `Ak`, `Key`) plus `db.key`. `Key` with no schema is `Ak`. One dynamic key: `db.key(name)` typed when a schema is registered, else untyped. `Ak` becomes a name only, if the examples stay readable. The trait's methods exist for generated code and the crate: seal it or hide them.
-19. **`LinkOpts`, `GrantOpts` and `Revocation`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
+19. **`LinkOpts`, `GrantOpts` and `SetRole`** stay structs, but `..Default::default()` should work on all three; `LinkOpts` is spelled out in full in the crate docs today.
 20. **`now()`** on an attached handle that cannot reach its node falls back to this process's clock, unsaid. A time is no decision-maker's default, but it should say so or return `Result`.
 
 Keep as they are:
@@ -157,9 +156,9 @@ Keep as they are:
 
 ### Vocabulary
 - **Account**, not person or user: an account may be a team, a bot or a shared identity. `me()` keeps its name.
-- **Roles**: one sentence for all of it: an actor is *granted a role* on a thing, and is then a *holder* of that role. A role can be set, or revoked. Clean out older words wherever API, CLI, spec and notes use them:
+- **Roles**: one sentence for all of it: an actor is *granted a role* on a thing, and is then a *holder* of that role. A role can be set, or removed. Clean out older words wherever API, CLI, spec and notes use them:
   - *edge* for a grant (70 lines in `core/osis/src`, 131 in `spec/`), including "tied edge", `EdgeKey` and the CLI's `edge`.
-  - *rights* where a role is meant, *demotion* and *removal* for a revocation (55 and more lines). `Error::Permission` may stay as the general word, or become `NeedsRole`.
+  - *rights* where a role is meant, *demotion* and *revocation* for setting or removing a role (55 and more lines). `Error::Permission` may stay as the general word, or become `NeedsRole`.
   - *entitlement* and *tenure*: internal, keep them out of anything public; the spec may keep what it must define.
   - *share*: only for a composite that also gives access (`share_into`), or dropped with it. `Share::{Tied, Untied, Excluded}` follows B6.
 - **Membership**: being in a group grants nothing (spec/permissions.md §1 already says so) and a thing can be in many groups. The docs must keep "a group's members" (what it contains) clearly apart from "a group's holders" (who has a role on it), since people will confuse them. Sync's other "placed" (a commit held at a host, spec/sync.md §5) becomes "uploaded" or "at a host".
