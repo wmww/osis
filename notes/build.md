@@ -66,7 +66,7 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 | osis-engine and osis-node from scratch (their incremental state gone) | 27 s: osis-node starts on osis-engine's metadata at 5 s and the two codegen in parallel (one osis-node: 40 s) |
 | gate, warm, everything (on main) | 237 s quiet: tier 1 143 s, sim sweep 26 s, GUI tests 46 s, both clippy runs, unification, deny and the instant checks about 20 s; 2-4x while other all-core runs share the box (hence one at a time, notes/coordination.md) |
 | sim sweep 5 / 30 / 300 seeds | 5: 38 s, 600 CPU-s quiet (45 scenarios; at 5 jobs per scenario the per-scenario costs sum to 270 CPU-s: 16 jobs on 8 cores buy little wall for twice the CPU); heaviest per seed `concurrent_writers`, `future_format`, `work_sets`, `link_race` about 2.5 CPU-s; 30 seeds 2.2 min / 300 about 20 min quiet (5 in the gate, 150 per periodic check); 30 seeds 6-10 min at load 30-36 |
-| `core/test/tla/run.sh small` | 213 s quiet (one worker) |
+| `core/test/tla/run.sh small` | about 6 min at load (one worker; 16 min before `D0_fork_live`, `MC_samets`, `L_list`, `D0_fork_old` moved to `all`) |
 | release `cargo test --release --workspace --no-run`: clean / after an edit (thin LTO relinks every test binary) | about 5 / 4 min at load 10-16; faster quiet |
 | release, one crate: `cargo test --release -p osis-node --test it --no-run` clean / after an osis-node edit | 2.9 / 1.7 min at load 20-30 (no other test binary relinks) |
 | `unification_check` in the gate (after the build) | 7 s |
