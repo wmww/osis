@@ -2526,7 +2526,20 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             let k = if i < 2 || clocks <= 2 { i } else { 2 + (i - 2) * (orders.len() - 2) / (clocks - 2) };
             let order = &orders[k];
             let c = clock_of(played, order, &mut Rng(clock_base ^ (k as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1));
-            let mut p = deliver_with(played, order, None, Some(c), &mut |_| {});
+            // `Cfg::model`: held-model judges the node after every ingest too, at the early clock
+            // and after the move (a drop before its bound or a value kept past its expiry shows
+            // only between ticks)
+            let mut early: Option<String> = None;
+            let mut done = 0;
+            let mut p = deliver_with(played, order, None, Some(c), &mut |p| {
+                done += 1;
+                if early.is_none() {
+                    early = model_differs(p, played, &o).map(|d| format!("after {done} ingests at {:?}: {d}", p.engine.now()));
+                }
+            });
+            if let Some(d) = early {
+                return Err(format!("{of}: order #{k} at an earlier clock {c:?} {order:?}, {d}"));
+            }
             let flips = |t: &str, a: &str| flipped(played, &orders[0], Way::Plain, t, a) || flipped(played, order, Way::Clocked(c), t, a);
             let d = judged_checked(&mut p, played, &o, &flips).map(|got| alike_exchanged(played, &want, &orders[0], &Judged { early: true, ..got }, order, Way::Clocked(c), &flips));
             match d {

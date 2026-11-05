@@ -82,8 +82,9 @@ pub struct Outcome {
     /// First and last death of each held body of an applied commit, wall ms.
     pub deaths: BTreeMap<PartRef, (Option<u64>, Option<u64>)>,
     /// Keep-at-most bound (wall ms) of each held body whose keep bounds decide its fate: the node
-    /// drops it no earlier and by then (spec/commits.md §5). From the model's dates (the earliest
-    /// superseder, ASSUMPTIONS.md), so an engine's bound may be later, never earlier.
+    /// drops it no earlier and by then (spec/commits.md §5); 0 when it goes at the kill. From the
+    /// model's dates (the earliest superseder, ASSUMPTIONS.md), so an engine's bound may be later,
+    /// never earlier.
     pub at_most: BTreeMap<PartRef, u64>,
     /// Every clock value after `now` at which the output may change with the held set unchanged
     /// (unparking, expiry, keep bounds): between two of them, and after the last, it is constant.
@@ -539,12 +540,14 @@ pub fn evaluate(h: &Held) -> Outcome {
 
 /// A joined body's keep-at-most and keep-at-least bounds, wall ms (spec/commits.md §5 Keep bounds),
 /// from its first and last deaths and whether it has a live write. Keep at most: T, or the first
-/// death (plus `AT_MOST_GRACE` while it has a live write), the earlier. Keep at least: T and the
-/// last death plus D, the later; a body with no dead write is past a relative bound.
+/// death plus `AT_MOST_GRACE` while it has a live write, the earlier; under 0 after replaced a body
+/// with a death and no live write goes at the kill, whatever the clock (0, AMBIGUITIES.md 45).
+/// Keep at least: T and the last death plus D, the later; a body with no dead write is past a
+/// relative bound.
 fn bounds(p: &Part, deaths: Option<(Option<u64>, Option<u64>)>, live_writes: bool) -> (Option<u64>, Option<u64>) {
     let r = p.retention;
     let (first, last) = deaths.unwrap_or((None, None));
-    let rel = if r.most_zero { first.map(|d| d + if live_writes { AT_MOST_GRACE } else { 0 }) } else { None };
+    let rel = if r.most_zero { first.map(|d| if live_writes { d + AT_MOST_GRACE } else { 0 }) } else { None };
     let at_most = [r.most_abs, rel].into_iter().flatten().min();
     let least = [r.least_abs, r.least_rel.and_then(|d| last.map(|l| l.saturating_add(d)))].into_iter().flatten().max();
     (at_most, least)
