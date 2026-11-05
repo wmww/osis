@@ -3952,6 +3952,18 @@ fn text_creation_deleted_into_empty_state_dies_seed_9605_spec_crdt_4_8() {
     check(9605, &h, Cfg { par_orders: false, sync: true, ..EXHAUST }).unwrap();
 }
 
+// spec/permissions.md §5.2: exhaustive order seed 9310189, shrunk. A compaction snapshot carrying
+// a write whose own delta is never received drops while valid at one node (its copy stays in the
+// state), then turns invalid there; given again, it is judged invalid and takes back what it
+// gave, as at a node that held it when it turned invalid.
+#[test]
+fn dropped_valid_snapshot_given_again_invalid_takes_back_seed_9310189_spec_perm_5_2() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(Typed { by: 2, t: 0, op: 30, k: 1, v: 2 }), Sync { from: 2, to: 1 }, Advance { who: Some(0), ms: 1006 }, Forged { by: 2, a: 0, b: 0, how: 1, op: 20, k: 1, v: 3 }, aim(Undo { by: 0, back: 0 }), aim(Compact { by: 0, t: 0, op: 30 }), aim(Compact { by: 0, t: 1, op: 30 }), Edge { by: 0, t: 0, holder: 1, role: None }];
+    check(9310189, &h, Cfg { random: 16, all_up_to: 0, every_held: false, clock: 24, par_orders: false, sync: true, ..EXHAUST }).unwrap();
+}
+
 // spec/commits.md §5 (dropping a body destroys every local index entry derived from it),
 // spec/requirements.md Decentralization (a rebuild judges alike): seed 1291, a keep-at-most-0
 // write, its compaction snapshot, the write undone: both bodies drop dead, and the snapshot's

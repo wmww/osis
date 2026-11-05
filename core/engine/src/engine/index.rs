@@ -480,7 +480,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | u8::from(d.live) << 1 | role << 2 | u8::from(d.overreach) << 4 | u8::from(d.why == super::DropFor::Invalid) << 5).u32(d.covered_by.len() as u32);
+        w = w.u32(*a as u32).u8(u8::from(d.as_cover()) | u8::from(d.live) << 1 | role << 2 | u8::from(d.overreach) << 4 | u8::from(d.why == super::DropFor::Invalid) << 5 | u8::from(d.gave) << 6).u32(d.covered_by.len() as u32);
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
@@ -630,7 +630,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         }
         let stands_in = r.u8()? != 0;
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, live: flags & 2 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, names });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, live: flags & 2 != 0, gave: flags & 64 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, names });
     }
     let (mut stripped, mut valued) = (BTreeSet::new(), BTreeSet::new());
     for _ in 0..r.u32()? {

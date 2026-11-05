@@ -261,7 +261,7 @@ The timeline covers **edge writes**: writes to `roles.0` and roster snapshots. E
 - Otherwise the delta's writes count while it is valid. An invalid delta's writes are un-merged (spec/crdt.md §4.6), and the held valid snapshots' copies of them stay, as the snapshots' writes with the payload they carry (a copy of a deleted text element's creation without its char never gives the char).
 - A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
 - **A valid snapshot's body dropped** leaves what it gave in the state and vouches no more, except its misstatements of held deltas, which go (those deltas give their writes again).
-- **When a held snapshot turns invalid**, what it gave goes: exactly those writes, and its records carrying no write, such as bare anchors, under the same dots. Others' writes nested under them stay; a record left with no write goes (spec/crdt.md §4.2).
+- **When a held snapshot turns invalid**, or a copy of one whose body dropped while it was valid arrives again (spec/commits.md §5 Never received) and is judged invalid, what it gave goes: exactly those writes, and its records carrying no write, such as bare anchors, under the same dots. Others' writes nested under them stay; a record left with no write goes (spec/crdt.md §4.2).
   - The held deltas and the other held valid snapshots give their writes again.
   - The writes that go are those it carries under dots of deltas in these states (a copy placed otherwise, as in a map entry's key-erased record, spec/crdt.md §4.7, included):
     - held with their bodies;

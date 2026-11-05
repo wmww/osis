@@ -111,6 +111,8 @@ fn reconcile_differences_capped_spec_wire_11_3() {
         }
         let out = reply(&mut c, Message::ReconcileReply { id: rid, ranges: out_ranges });
         replies += 1;
+        // the window lets more requests out as replies come
+        asked.extend(sent(&out).into_iter().filter_map(|m| if let Message::Reconcile { id, ranges, .. } = m { Some((id, ranges)) } else { None }));
         if out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::Refused { kind: osis_proto::Request::Reconcile, .. }))) {
             abandoned = true;
             break;
