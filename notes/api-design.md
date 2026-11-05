@@ -21,7 +21,7 @@ What `cargo doc` shows is for someone who has never seen this project.
 - Say what a thing is and does, in plain words. Don't restate its name or where it sits ("the public API" of the crate you just opened; "layer 8").
 - Don't lean on internals to explain ("over the node engine").
 - No lists of undefined terms: they tell a new reader nothing.
-- Rendered docs never cite notes/ or issues/; ordinary comments may. A spec reference is fine when it actually helps the reader, as a link if possible.
+- Rendered docs never cite notes/ or issues/; ordinary comments may. API users mostly need not care how things are implemented, so a spec reference is rarely wanted; where one really helps, link it if possible.
 - Less is more. Don't define every word; often the fix is to say less. Judge each case.
 
 ## Patterns to flag and fix
