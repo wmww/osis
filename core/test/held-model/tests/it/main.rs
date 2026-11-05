@@ -3,4 +3,7 @@ mod util;
 mod spec_commits;
 mod spec_crdt;
 mod spec_permissions;
+mod spec_roles;
+mod spec_undo;
+mod spec_waits;
 mod props;

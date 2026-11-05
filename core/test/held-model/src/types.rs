@@ -1,6 +1,8 @@
 //! Input types: what a node holds. Abstract on purpose: ids are small integers, values are `u32`.
 
 pub type CommitId = u32;
+/// Things, actors and nodes share one id space (spec/permissions.md §1: an actor is a thing; a
+/// node is a key actor). `NodeId` names a signer, `ThingId` a target.
 pub type NodeId = u32;
 pub type ThingId = u32;
 pub type Val = u32;
@@ -66,6 +68,14 @@ impl Aspect {
     pub const fn admin_reg(name: u32) -> Aspect {
         Aspect { name, kind: AspectKind::Register, admin_only: true }
     }
+    /// `tenures.0`: roster snapshots' ledger entries only.
+    pub const TENURES: Aspect = Aspect { name: 7, kind: AspectKind::Map, admin_only: true };
+    /// `required.0^` (spec/commits.md §5 Required retention).
+    pub const REQUIRED: Aspect = Aspect { name: 8, kind: AspectKind::Register, admin_only: true };
+    /// Role-class or fixed retention: answers to no required retention (spec/commits.md §5).
+    pub fn fixed(&self) -> bool {
+        self.name == 0 || self.name == 7 || self.name == 8 || self.name == 9
+    }
 }
 
 /// One write (spec/crdt.md §1). Value fields are `None` when held value-less (spec/crdt.md §4.7).
@@ -86,6 +96,9 @@ pub enum Op {
     Insert { anchor: Option<Dot>, ch: Option<Val> },
     /// Text: deleted-flag write `true` on an element.
     Delete { elem: Dot },
+    /// Text: deleted-flag write `false` (an undelete, spec/crdt.md §5.7) carrying a copy of the
+    /// element's char, owned by the element's creating delta (spec/crdt.md §4.7).
+    Undelete { elem: Dot, ch: Option<Val> },
     /// Text: a bare anchor record (no write). Only snapshots and the node's own state carry it;
     /// its stamp is `(0, element dot)`.
     Anchor,
@@ -112,6 +125,7 @@ impl Write {
             Op::Insert { .. } => (s, 5, s.dot),
             Op::Delete { elem } => (s, 6, *elem),
             Op::Anchor => (s, 7, s.dot),
+            Op::Undelete { elem, .. } => (s, 8, *elem),
         }
     }
     /// The commit whose delta owns the write (attribution by dot, spec/crdt.md §4.7).
@@ -126,6 +140,7 @@ impl Write {
             Op::Create { key } => vec![(own, *key)],
             Op::SetIn { entry, key, value } => vec![(entry.commit, *key), (own, *value)],
             Op::Insert { ch, .. } => vec![(own, *ch)],
+            Op::Undelete { elem, ch } => vec![(elem.commit, *ch)],
             _ => vec![],
         }
     }
@@ -144,6 +159,7 @@ impl Write {
                 }
             }
             Op::Insert { ch, .. } if drop(own) => *ch = None,
+            Op::Undelete { elem, ch } if drop(elem.commit) => *ch = None,
             _ => {}
         }
     }
@@ -161,6 +177,7 @@ impl Write {
                 *aa = (*aa).max(*ab);
                 *ca = (*ca).max(*cb);
             }
+            (Op::Undelete { ch: a, .. }, Op::Undelete { ch: b, .. }) => *a = (*a).max(*b),
             _ => {}
         }
     }
@@ -168,7 +185,7 @@ impl Write {
     pub fn elem(&self) -> Option<Dot> {
         match &self.op {
             Op::Insert { .. } | Op::Anchor => Some(self.stamp.dot),
-            Op::Delete { elem } => Some(*elem),
+            Op::Delete { elem } | Op::Undelete { elem, .. } => Some(*elem),
             _ => None,
         }
     }
@@ -178,7 +195,7 @@ impl Write {
             (_, Op::Reset)
                 | (AspectKind::Register, Op::Set { .. })
                 | (AspectKind::Map, Op::Create { .. } | Op::SetIn { .. } | Op::Remove { .. })
-                | (AspectKind::Text, Op::Insert { .. } | Op::Delete { .. } | Op::Anchor)
+                | (AspectKind::Text, Op::Insert { .. } | Op::Delete { .. } | Op::Undelete { .. } | Op::Anchor)
         )
     }
 }
@@ -190,17 +207,47 @@ pub enum Role {
     Admin,
 }
 
-/// One edge write in `roles.0` (spec/permissions.md §2): `role` None is a removal.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// One edge write in `roles.0` (spec/permissions.md §2): `role` None is a removal (erase); a
+/// value with `until` 0 is a removal saying keep. `until` is wall ms; `invite` at most `role`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EdgeWrite {
     pub holder: NodeId,
     pub role: Option<Role>,
+    pub invite: Option<Role>,
+    pub until: Option<u64>,
+}
+
+impl EdgeWrite {
+    pub const fn role(holder: NodeId, role: Option<Role>) -> EdgeWrite {
+        EdgeWrite { holder, role, invite: None, until: None }
+    }
+}
+
+/// One delta of a roster snapshot (spec/permissions.md §6): a `roles.0` edge with its `since`, or a
+/// `tenures.0` ledger entry. Keys are §5.1 keys; `None` since counts from the beginning.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RosterItem {
+    Edge { edge: EdgeWrite, since: Option<Key> },
+    Tenure { holder: NodeId, role: Role, since: Option<Key>, until: Key, frontier: Option<Vec<CommitId>> },
+}
+
+/// One entry of a `required.0^` setting (spec/commits.md §5 Required retention): `prefix` None is
+/// the empty prefix (every AK), else an aspect name (the model's AKs have no longer prefixes).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Rule {
+    pub prefix: Option<u32>,
+    pub retention: Retention,
+    /// Expiry as a duration from the commit's `wall_ms(ts)`, ms.
+    pub expiry: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Delta {
     Writes(Vec<Write>),
     Edge(EdgeWrite),
+    Roster(RosterItem),
+    /// A whole `required.0^` setting (its `rules`; `keep` is not modeled).
+    Required(Vec<Rule>),
 }
 
 /// What the node holds of one part's body.
@@ -212,6 +259,8 @@ pub enum Body {
     /// Dropped for its keep bounds or as covered: counts as held for atomic apply (spec/commits.md
     /// §4), contributes nothing; its live writes, if any, are in [`Held::own_state`].
     Dropped,
+    /// Held as bytes the node cannot interpret (spec/versioning.md §2): the part waits.
+    Parked,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -240,6 +289,8 @@ impl Retention {
         Retention { by: PurgeBy::AuthorOrAdmin, least_abs: None, least_rel: None, most_abs: None, most_zero: false };
     pub const WRITER: Retention = Retention { by: PurgeBy::Writer, ..Retention::PLAIN };
     pub const ROLE: Retention = Retention { by: PurgeBy::Admin, least_rel: Some(ROLE_KEEP), ..Retention::PLAIN };
+    /// `created.0` and `required.0^` (spec/commits.md §5 Fixed retention).
+    pub const FIXED: Retention = Retention { by: PurgeBy::Nobody, least_abs: Some(FOREVER), ..Retention::PLAIN };
     pub fn with_by(self, by: PurgeBy) -> Retention {
         Retention { by, ..self }
     }
@@ -269,6 +320,8 @@ pub enum CommitKind {
     Role,
     /// A compaction snapshot: its writes are copies under their own stamps.
     Snapshot,
+    /// A roster snapshot (spec/permissions.md §6): a role commit whose parts are `RosterItem`s.
+    Roster,
 }
 
 /// spec/commits.md §5 Purge: what a request names (deltas of commits with a smaller `ts`).
@@ -284,8 +337,10 @@ pub enum PurgeItem {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Commit {
     pub id: CommitId,
-    /// Author node; it acts for itself (no acting-for in this model).
+    /// Author node (the signer).
     pub author: NodeId,
+    /// The header's actor (spec/permissions.md §5.2 Acting); the author when it acts for itself.
+    pub actor: NodeId,
     pub ts: u64,
     /// `expires: T`, wall ms.
     pub expires: Option<u64>,
@@ -295,6 +350,8 @@ pub struct Commit {
     pub purge: Vec<PurgeItem>,
     /// Demotions only: commit IDs the author had received (spec/permissions.md §5.1).
     pub frontier: Option<Vec<CommitId>>,
+    /// `undoes` (spec/commits.md §7).
+    pub undoes: Option<CommitId>,
 }
 
 /// A position in the role timeline's order: `(ts, author node, commit ID)` (spec/permissions.md §6).
@@ -307,13 +364,28 @@ impl Commit {
     pub fn lists(&self, c: CommitId) -> bool {
         self.frontier.as_ref().is_some_and(|f| f.contains(&c))
     }
+    pub fn is_role(&self) -> bool {
+        matches!(self.kind, CommitKind::Role | CommitKind::Roster)
+    }
 }
 
-/// A thing: its owner is a node holding owner-chain (admin) authority, never removable.
+/// Who a creation record makes the owner (spec/permissions.md §1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Owner {
+    /// A key actor (node, link key, recovery key): it owns itself.
+    Key,
+    /// Owned by that actor (a key actor or a thing that is an actor).
+    Actor(NodeId),
+    /// Ownerless, with its first admin's record edge.
+    Ownerless { first_admin: NodeId },
+}
+
+/// A known creation record. A thing, node or actor not listed has an unknown record
+/// (spec/commits.md §4: it waits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Thing {
     pub id: ThingId,
-    pub owner: NodeId,
+    pub owner: Owner,
 }
 
 /// A write the node's state holds while no held body does (a body dropped for its keep bounds
@@ -332,6 +404,7 @@ pub struct Held {
     pub now: u64,
     /// The node itself (for "may drop" judgments that need the right).
     pub me: NodeId,
+    /// Every creation record the node knows, key actors' included.
     pub things: Vec<Thing>,
     /// Commit IDs are unique.
     pub commits: Vec<Commit>,

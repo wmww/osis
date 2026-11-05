@@ -92,3 +92,4 @@ fn late_commit_converges_off_bounded_aspects_spec_commits_5() {
         assert_eq!(ra, rb, "seed {seed}: late {:?}", full.commits[late]);
     }
 }
+

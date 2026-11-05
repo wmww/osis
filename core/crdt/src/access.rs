@@ -249,6 +249,8 @@ pub enum Flat {
     Insert { at: Stamp, anchor: Option<Dot>, ch: Option<char> },
     /// A text element's deleted flag set `true`.
     Delete { elem: Dot, at: Stamp },
+    /// A text element's deleted flag set `false` (an undelete) with its copy of the char.
+    Undelete { elem: Dot, at: Stamp, ch: Option<char> },
     /// A text element record without its creation.
     Anchor(Dot),
 }
@@ -294,9 +296,6 @@ impl Fragment {
             Fragment::Seq(s) if s.text => {
                 meta(&s.meta, &mut out)?;
                 for (d, e) in crate::seq_span::expand(s.elems().clone()) {
-                    if e.undel.is_some() {
-                        return Err("undelete");
-                    }
                     match &e.created {
                         Some(c @ (at, anchor)) => {
                             if e.pos.iter().any(|p| !crate::seq::is_creation(p, c)) {
@@ -318,7 +317,7 @@ impl Fragment {
                     }
                     match &e.deleted {
                         Some((at, true)) => out.push(Flat::Delete { elem: d.clone(), at: at.clone() }),
-                        Some((_, false)) => return Err("undelete"),
+                        Some((at, false)) => out.push(Flat::Undelete { elem: d.clone(), at: at.clone(), ch: e.undel }),
                         None => {}
                     }
                 }
