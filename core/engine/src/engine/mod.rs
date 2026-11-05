@@ -883,7 +883,7 @@ pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (T
 
 impl Core {
     /// Whether the node syncs `t`: it was asked to, or a `group.0` it holds puts `t` in a group it
-    /// was asked to (a function of held data, whenever it was learned; spec/commits.md §4).
+    /// was asked to (a function of held data, whenever it was learned; spec/sync.md §3).
     pub fn syncs(&self, t: &Tid) -> bool {
         let s = &self.ix.syncing;
         s.contains(t) || self.ix.groups.of.get(t).is_some_and(|gs| !gs.is_disjoint(s))

@@ -50,11 +50,8 @@ pub struct Held {
     touched: BTreeSet<Tid>,
     /// The same, for `take_moved`.
     moved: BTreeSet<Tid>,
-    /// Count changes (rollbacks included), of anything and of what `validity::reaches` reads:
-    /// the edge writes, a record replaced or removed, and a new record of a thing named as a
-    /// holder or owning a held thing (its owner link) (`apply::waits`).
+    /// Counts changes (rollbacks included).
     generation: u64,
-    edges: u64,
     /// Things whose creation record `create` added since `take_records`.
     records: Vec<Tid>,
 }
@@ -82,9 +79,6 @@ impl Held {
     }
     pub fn generation(&self) -> u64 {
         self.generation
-    }
-    pub fn edges(&self) -> u64 {
-        self.edges
     }
     /// Edge commits with a write on `t`, of any validity.
     pub fn commits_on(&self, t: &Tid) -> &[Arc<RoleCommit>] {
@@ -261,16 +255,10 @@ impl Held {
         if was != now {
             self.count(was, false);
             self.count(now, true);
-            self.edges += 1;
         }
         self.touched.insert(t);
         self.moved.insert(t);
         self.generation += 1;
-        // `reaches` climbs from a holder to its owners: a record of a holder or of an owner
-        // of held things may complete a path
-        if old.is_some() || self.holders.contains_key(&t) || self.owned.contains_key(&t) {
-            self.edges += 1;
-        }
         old
     }
 
@@ -310,7 +298,6 @@ impl Held {
         self.moved.insert(c.author);
         self.count(named(&c), true);
         self.generation += 1;
-        self.edges += 1;
         let id = c.id;
         self.ids.entry(id).or_default().0 = Some(c);
     }
@@ -321,7 +308,6 @@ impl Held {
         self.moved.insert(s.thing);
         self.count(named_snapshot(&s), true);
         self.generation += 1;
-        self.edges += 1;
         self.ids.entry(s.id).or_default().1.push(s);
     }
 
@@ -330,7 +316,6 @@ impl Held {
         self.moved.insert(s.thing);
         self.count(named_snapshot(&s), true);
         self.generation += 1;
-        self.edges += 1;
         self.ids.entry(s.id).or_default().2.push(s);
     }
 
@@ -338,7 +323,6 @@ impl Held {
     fn take(&mut self, id: &CommitId) -> Taken {
         let Some((c, ss, ws)) = self.ids.remove(id) else { return Taken::default() };
         self.generation += 1;
-        self.edges += 1;
         let mut cs = Vec::new();
         if let Some(c) = c {
             for o in &c.ops {
