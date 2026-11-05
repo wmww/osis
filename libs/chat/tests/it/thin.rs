@@ -1,6 +1,6 @@
 //! A real thin client over the client port (no sim: it needs a running node). spec: none (notes/client-port.md).
 use osis_chat::*;
-use osis::{HostAddr, MemStore, Osis, Role, Runtime, Store, SyncScope, Transport};
+use osis::{HostAddr, MemStore, Osis, Role, Runtime, Store, SyncScope};
 use std::future::Future;
 use std::sync::mpsc::channel;
 use std::task::{Context, Poll, Waker};
@@ -11,9 +11,9 @@ const W: Duration = Duration::from_secs(20);
 fn on(net: &osis_transport::Net, ep: &str, hosts: Vec<HostAddr>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
     c.runtime = Runtime::Own;
-    c.client.transport = Some(Transport::InProcess(net.endpoint(ep)));
+    c.handle.internals.transport = Some(net.endpoint(ep));
     c.hosts = hosts;
-    c.client.internals.connection_wait = Some(W);
+    c.handle.internals.connection_wait = Some(W);
     c.peers = false;
     c
 }
@@ -55,8 +55,8 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     let (actor, secret) = n.add_client(None).unwrap();
     n.grant(c, actor, Role::Read, Default::default()).unwrap();
     let mut cfg = osis::internals::Opening::memory();
-    cfg.client.transport = Some(Transport::InProcess(net.endpoint("app")));
-    cfg.client.internals.connection_wait = Some(W);
+    cfg.handle.internals.transport = Some(net.endpoint("app"));
+    cfg.handle.internals.connection_wait = Some(W);
     let app = block_on(osis::internals::connect(&nc, &secret, cfg)).unwrap();
     assert_eq!(app.me(), actor);
     assert_eq!(newest_text(&app, c), Some(Body::Text("first".into())));

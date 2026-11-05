@@ -2,14 +2,15 @@
 //! nests only: sharing through a tag waits on issues/tag-sharing-op.md), undo across people.
 use osis::internals::Internals as _;
 use osis::core::NAME;
-use osis::{GrantOpts, ManualClock, MemStore, Osis, Role, Store, WallMs};
+use osis::{GrantOpts, MemStore, Osis, Role, Store, Time};
+use osis::internals::{ManualClock};
 use osis_app::data::{Data, NewKind};
 use std::sync::Arc;
 
 fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.client.internals.seed = Some(seed);
-    c.client.internals.clock = Some(clock.clone());
+    c.handle.internals.seed = Some(seed);
+    c.handle.internals.clock = Some(clock.clone());
     c
 }
 
@@ -31,7 +32,7 @@ fn sync(a: &Data, b: &Data) {
 
 /// Alice and Bob, two people, each with an app group; each holds the other's commits.
 fn two_people() -> (Data, Data) {
-    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = Data::new(osis::internals::create(cfg(1, &clock)).unwrap().0);
     let b = Data::new(osis::internals::create(cfg(2, &clock)).unwrap().0);
     a.main_group().unwrap();
@@ -88,7 +89,7 @@ fn reach_through_someone_elses_tag() {
 fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
     let tag = a.create(NewKind::Tag).unwrap();
-    let until = WallMs(a.db.now().unwrap().0 + 86_400_000);
+    let until = Time(a.db.now().unwrap().0 + 86_400_000);
     a.db.grant(tag, b.db.me(), Role::Read, GrantOpts { until: Some(until), invite: None }).unwrap();
     assert_eq!(a.reach(tag).unwrap().people.len(), 1);
 }
@@ -151,7 +152,7 @@ fn tagging_a_tag_nests_it() {
     let n = a.create(NewKind::Note).unwrap();
     a.add_tag(n, inner).unwrap();
     a.add_tag(deeper, inner).unwrap();
-    let g = a.db.at(inner, osis::core::GROUP).get().unwrap().unwrap();
+    let g = a.db.at(inner, osis::internals::core_types::GROUP).get().unwrap().unwrap();
     assert!(g.subgroups.contains(&deeper) && !g.items.contains(&deeper), "a tag nests as a subgroup");
     assert_eq!(a.tags_of(deeper).unwrap(), vec![inner]);
     assert_eq!(a.tag_contents(inner).unwrap(), (vec![deeper], vec![n]));

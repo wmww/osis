@@ -7,8 +7,9 @@
 //! member sleeps once its join settled; `OSIS_SCALE_CARDS=0`: before it, so no card (an admin's cost
 //! at sizes where every joiner reading all before it takes hours).
 
-use osis::schema::core_types as ct;
-use osis::schema::{Bound, PurgeBy};
+use osis::internals::MemStoreMeasures as _;
+use osis::internals::schema::core_types as ct;
+use osis::internals::schema::{Bound, PurgeBy};
 use osis::{Ak, GrantOpts, MemStore, Osis, Retention, Role, Store, Tid, Value};
 use osis_sim::world::World;
 use std::collections::BTreeMap;

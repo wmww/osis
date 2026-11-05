@@ -26,7 +26,7 @@
 use super::codec::{self as c, outcome_err, u};
 use super::method;
 use crate::error::{Error, Result};
-use crate::handle::{ClientConfig, Config, Osis, WeakOsis};
+use crate::handle::{HandleConfig, Config, Osis, WeakOsis};
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Source, Subscription, lock};
 use osis_base::{Clock, Tid, Value};
 use osis_proto::client::SMALL_REPLY;
@@ -65,10 +65,7 @@ fn next_token() -> u64 {
     TOKENS.fetch_add(1, Ordering::AcqRel)
 }
 
-/// The name of the file in a store directory naming the socket a daemon listens on.
-pub const SOCK_FILE: &str = "sock";
-
-/// The socket a daemon serving `store` listens on: in osis's own
+/// The socket a node on `store` listens on: in osis's own
 /// directory under `$XDG_RUNTIME_DIR` (`osis/`), else `/tmp/osis-<uid>/`, named by the store
 /// path's hash (`sun_path` holds 108 bytes, a store path may not). The directory is created 0700
 /// and checked: owned by this uid, mode 0700, not a symlink.
@@ -848,23 +845,23 @@ fn spawn_remote(via: Via, addr: Address, shown: crate::HostAddr, secret: Option<
 }
 
 /// A connection to the node at `login`'s address as the client its secret stands for.
-pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<crate::Transport>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+pub(crate) fn spawn_client(login: &crate::NodeLogin, transport: &Option<osis_transport::InProcess>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
     let addr = &login.addr;
     // the secret goes only over a transport pinned to the node's key
     if addr.0.url.starts_with("unix://") {
         return Err(Error::Invalid("a client secret goes only to a key-pinned transport, not a unix socket".into()));
     }
     let via = match transport {
-        Some(crate::Transport::InProcess(t)) => Via::Mem(t.clone()),
-        _ => Via::Net,
+        Some(t) => Via::Mem(t.clone()),
+        None => Via::Net,
     };
     let a = Address { url: addr.0.url.clone(), key: addr.0.key };
     spawn_remote(via, a, addr.clone(), Some(login.secret.0.clone()), limit, wait, clock)
 }
 
 impl Osis {
-    /// Makes a thin client of the node serving the unix socket at `socket`. A node offers its
-    /// socket to its own user, by default, with no authentication and as its main actor, so `me()`
+    /// Makes a thin client of the node running on the store at `store_dir`, over its unix socket
+    /// (`Osis::listen_socket`). A node offers its socket to its own user, by default, with no authentication and as its main actor, so `me()`
     /// and `node()` are the node's. Every call addressed by a tid or group goes there, and `settle`
     /// waits for the node's deliveries too. What needs this process to be the node fails
     /// `Unsupported`.
@@ -873,20 +870,23 @@ impl Osis {
     /// returns once connected or fails with why the one attempt it makes did not connect (`Network`
     /// for a node not there; call again to try again): nothing stays behind. Connected, it
     /// reconnects by itself.
-    pub async fn connect_socket(socket: &Path, cfg: ClientConfig) -> Result<Osis> {
+    pub async fn connect_socket(store_dir: &Path, cfg: HandleConfig) -> Result<Osis> {
+        Osis::connect_socket_at(&socket_path(store_dir)?, cfg).await
+    }
+
+    pub(crate) async fn connect_socket_at(socket: &Path, cfg: HandleConfig) -> Result<Osis> {
         let uid = own_uid()?;
         let url = osis_transport::unix::url_of(socket);
         let addr = Address { url: url.clone(), key: osis_transport::unix::uid_key(uid) };
         let shown = crate::HostAddr(osis_label::Address { url, key: addr.key });
-        let limit = cfg.materialize_limit;
+        let limit = cfg.read_limit;
         let db = Osis::scratch(cfg)?;
         let r = spawn_remote(Via::Unix, addr, shown, None, limit, db.inner.connection_wait, db.inner.clock.clone())?;
         db.client_over(vec![r]).await?;
         Ok(db)
     }
 
-    /// Makes a thin client of the nodes it logs in to, each dialed at its address with
-    /// `cfg.transport` (default QUIC), which pins the address's key. Every call goes to them: the
+    /// Makes a thin client of the nodes it logs in to, each dialed at its address, which pins the node's key. Every call goes to them: the
     /// first in `logins` that holds a thing answers for it, the first for what is not about one
     /// thing. A listener lets a client act, by default, only as actors it has authenticated for: a
     /// node says which actor a login makes this program, `me()` (one made for its secret by
@@ -897,11 +897,11 @@ impl Osis {
     /// Returns once connected to all, as `connect_socket`: `Refused` when a node refuses the secret,
     /// `Invalid` for a unix address (the secret goes only over a keyed transport), `Network` past
     /// its connection cap or when it cannot be reached.
-    pub async fn connect(logins: &[crate::NodeLogin], cfg: ClientConfig) -> Result<Osis> {
+    pub async fn connect(logins: &[crate::NodeLogin], cfg: HandleConfig) -> Result<Osis> {
         if logins.is_empty() {
             return Err(Error::Invalid("connect needs a node to log in to".into()));
         }
-        let (transport, limit) = (cfg.transport.clone(), cfg.materialize_limit);
+        let (transport, limit) = (cfg.internals.transport.clone(), cfg.read_limit);
         let db = Osis::scratch(cfg)?;
         let list = logins.iter().map(|x| spawn_client(x, &transport, limit, db.inner.connection_wait, db.inner.clock.clone())).collect::<Result<Vec<_>>>()?;
         db.client_over(list).await?;
@@ -909,8 +909,8 @@ impl Osis {
     }
 
     /// The stand-in database of a process without a store.
-    fn scratch(cfg: ClientConfig) -> Result<Osis> {
-        Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], Config { client: cfg, ..Config::default() })?.0)
+    fn scratch(cfg: HandleConfig) -> Result<Osis> {
+        Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], Config { handle: cfg, ..Config::default() })?.0)
     }
 
     /// Makes this handle a process with no store of its own over `list`, each up.
@@ -1119,7 +1119,7 @@ fn delivery(v: Value) -> Result<Delivered> {
 const HISTORY_ENTRY_HEAD: usize = 256;
 
 /// A history subscription's Notify.
-fn history_note(v: Value) -> Result<(osis_node::ChangeId, Option<crate::HistoryEntry<Value>>)> {
+fn history_note(v: Value) -> Result<(crate::ChangeId, Option<crate::HistoryEntry<Value>>)> {
     let mut a = c::Args::new(v)?;
     let id = c::change(a.next()?)?;
     let entry = a.opt()?.map(c::hist_entry).transpose()?;
@@ -1199,7 +1199,7 @@ impl Osis {
     pub(crate) fn remote_history(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, from: crate::HistoryFrom, limit: usize) -> Result<crate::HistoryPage<Value>> {
         // a page ends past this, so it holds up to twice it, and every entry's header: it must fit
         // one reply, or nothing could page past those entries
-        let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::HISTORY_PAGE * HISTORY_ENTRY_HEAD) / 2);
+        let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::history::HISTORY_PAGE * HISTORY_ENTRY_HEAD) / 2);
         c::hist_page(r.call(method::HISTORY, vec![Value::Tid(tid), c::ak_v(ak), c::from_v(&from), u(limit as u64), u(bytes as u64)])?)
     }
 

@@ -65,7 +65,7 @@ impl Flag {
     }
 }
 
-/// A keep bound: absolute wall ms, a duration after the body is replaced, or both.
+/// A keep bound: an absolute time in ms, a duration after the write is replaced, or both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Bound {
     pub abs: Option<u64>,
@@ -78,14 +78,13 @@ impl Bound {
     }
 }
 
-/// Retention a writer puts into every delta (spec/commits.md §5). `Default` is the untyped
-/// default: `author_or_admin`, no keep bounds.
+/// How a write is kept and who may purge it. `Default` is the untyped default: `author_or_admin`,
+/// no keep bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Retention {
     pub by: PurgeBy,
-    /// Before this bound a body leaves only by purge request, never by compaction. Who wrote a
-    /// change and when is reported only while its signed original is held: `abs` forever keeps
-    /// every change's authorship provable.
+    /// Before this bound a write leaves only by a purge, never by tidying up. Who wrote a change and
+    /// when is reported only while the change itself is held: `abs` forever keeps that provable.
     pub at_least: Bound,
     pub at_most: Bound,
 }

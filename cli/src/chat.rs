@@ -144,7 +144,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
         }
         ChatCmd::Join { link } => {
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
-            let t = wait(ctx, osis_chat::join(&db, &l))?;
+            let t = crate::cmd::confirm(ctx, osis_chat::join(&db, &l))?;
             send_out(ctx, None)?;
             // a `read` through the daemon does not pull: the first messages are here when this ends
             if !db.has_store() {
@@ -230,7 +230,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             if let Some(a) = after {
                 let mut at = id(&a)?;
                 loop {
-                    let s = osis_chat::since(&db, t, Some(&at), osis::HISTORY_PAGE)?;
+                    let s = osis_chat::since(&db, t, Some(&at), crate::args::PAGE)?;
                     for m in &s.messages {
                         let _ = wake.send(message_line(json, m));
                     }

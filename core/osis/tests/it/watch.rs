@@ -8,7 +8,7 @@ use crate::common::TestWrites as _;
 use osis::internals::Internals as _;
 use crate::common;
 use common::*;
-use osis::{Cause, MemStore, Osis, Source, Value};
+use osis::{ChangeReason, MemStore, Osis, Source, Value};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
@@ -16,7 +16,7 @@ use std::time::Duration;
 
 #[allow(clippy::all, dead_code)]
 mod notes {
-    use osis::schema as osis_schema;
+    use osis::internals::schema as osis_schema;
     include!("../../../schema/tests/gen/notes.rs");
 }
 
@@ -185,7 +185,7 @@ fn derived_change_on_expiry() {
     c.advance(6_000);
     db.engine(|e| e.tick()).unwrap();
     let ch = recv(&rx);
-    assert_eq!((ch.source, ch.value), (Source::Derived(Cause::Expiry), Ok(None)));
+    assert_eq!((ch.source, ch.value), (Source::Derived(ChangeReason::Expired), Ok(None)));
 }
 
 // notes/api.md Diagnostics: bad input from a peer is a diagnostic, never an error the app
@@ -282,7 +282,7 @@ fn coalesced_call_carries_newest_source() {
 fn errors_not_coalesced() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
-    cf.client.materialize_limit = 1000;
+    cf.handle.read_limit = 1000;
     let db = osis::internals::create(cf).unwrap().0;
     let k = ak("t:big.0");
     let t = thing(&db);
@@ -382,7 +382,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     // the wake runs after the database lock is released: calling the database there is safe
     let weak: Arc<std::sync::OnceLock<osis::WeakOsis>> = Arc::default();
     let weak2 = weak.clone();
-    c.client.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
+    c.handle.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
         w2.fetch_add(1, Ordering::SeqCst);
         if let Some(db) = weak2.get().and_then(|w| w.upgrade()) {
             let _ = db.knows(db.me());

@@ -49,11 +49,7 @@ Design for the world after it:
 Done.
 
 ## D. Shape, re-decided
-Done (step 4), notes/api.md has the shapes. Where they left the proposal: async calls and connecting take no timeout (a caller's runtime races them; `SyncFirst::Try(Duration)` alone holds one), `Config` nests `ClientConfig`, a thin client takes `ClientConfig`, not `Config`; `db.connect_node` and `disconnect_node` in place of `attach_node` and `detach_node`; `Stamp.id` is a plain `ChangeId`, and `created` and `changed` return a `ThingStamp` with `commit: Option<CommitId>` (an ephemeral thing's creation names no batch, and no id stands in for one); `Ak` stays a key to the engine, `AspectKey` is what the API takes (`RawKey` beneath it, hidden).
-
-Left over:
-- **Client socket path**: `connect_socket(path)` is still a path, E's socket helpers can make it `store_dir`.
-- **`Key::schema` for apps**: app/src/fields.rs builds forms from `key.schema()`, through the hidden trait method (`osis::schema::RawKey`). E takes `Schema` out of the API: it needs a plain way to ask an aspect's type, or the app's forms stay on internals.
+Done (step 4), notes/api.md has the shapes. Where they left the proposal: async calls and connecting take no timeout (a caller's runtime races them; `SyncFirst::Try(Duration)` alone holds one), `Config` nests `ClientConfig`, a thin client takes `ClientConfig`, not `Config`; `db.connect_node` and `disconnect_node` in place of `attach_node` and `detach_node`; `created` and `changed` return a `ThingStamp` with `id: Option<ChangeId>` (an ephemeral thing's creation names no batch, and no id stands in for one); `Ak` stays a key to the engine, `AspectKey` is what the API takes (`RawKey` beneath it, hidden).
 
 Keep as they are:
 - `undo` and `redo` as two functions: different results, no shared target to enum over.
@@ -72,20 +68,7 @@ Keep as they are:
 - Port every caller: chat's disappearing messages, the CLI, undo's and `revert`'s handling of `also`, and spec/commits.md's "a writer splits".
 
 ## E. Leaks
-- **Exported implementation numbers**: `MAX_CONNS_PER_CLIENT`, `HISTORY_DIRTY_BYTES`, `HISTORY_SEND`, `MAX_SCHEMA_BYTES`, `SIGNAL_BYTES`, `STREAM_CHUNK`, `WRITE_NONCES`, `REFRESH_DIVISOR`, `OFFER_LIFETIME_MS`, `DEFAULT_*`. Make them private or move them to `internals` for tests. `HISTORY_PAGE` stays only if a page limit is the caller's business.
-- **Socket helpers**: `socket_path`, `SOCK_FILE`, `own_uid`, `socket_dir`: the CLI's needs, not an app's. `connect_socket(store_dir)` can resolve the path itself.
-- **Test tools in app API**: `MemStore::{held_bytes, rows, held_split, backup}`, `Transport::InProcess`, `ManualClock`, `Clock`, `Joining::node`. `Transport` itself may go, leaving what the app really chooses.
-- **`osis::core`**: re-exports `KEYS`, `SECRETS`, `LABEL`, `ROLES`, `TENURES`, `REACH`, `SEEN`, `NODE`, `PLACED`, `GROUPS`, `ASPECTS`, `TID`, `group::{ITEMS, SUBGROUPS}`. Keep `NAME`, `BODY`, `TAG`, whatever else apps truly write, and the required-retention keys (`REQUIRED`, `Required`, `RequiredRules`: no typed calls, one rule for all of it).
-- **`pub use osis_schema as schema`** exports the whole crate for generated code. Give generated code a narrow doc-hidden path.
-- **`CreationRecord`, `Cause`, `EphemeralId`, `CommitId` beside `ChangeId`, `LabelId`**:
-  - One opaque `ChangeId`.
-  - `Source::Derived(Cause)` has `LateDelta`, `Validity` and so on: keep `Derived` with a small plain reason, or none.
-- **`Ts`** is a hybrid clock value, exposed in `Stamp`, `Committed` and `CommitQuery.since` next to `WallMs`. One `Time` type for apps; ordering is opaque in `HistoryPos`.
-- **`CommitKind::{Role, Snapshot}`**, `HistoryBody::Dropped`, `CommitEntry.dropped`: "snapshot" is compaction. Keep what an app must see to explain history (notes/api.md Attribution), and rename it in plain words.
-- **Sync status**: `GroupSync.labels`, `not_admitted`, `Stranded`, `ReceiptsOnly`, `NoRoute`, `unrouted`, `Status.split`. Labels are needed to configure hosts, so call them what they are for hosts (`host_ids`?) and keep them with hosting.
-- **Other words to translate or hide**: `rotate_reach`, `publish_reach`, `rotate_client_key`, `materialize_limit`, "pre-sync", "co-reader", "K", "L".
-- **`Schema`** in the public API (`register_schema` takes a source now): see `Key::schema` under D.
-- **`KeepAlive::writes`** doc-hidden on an app type: move to `internals`.
+Done (step 5), notes/api.md has the shapes. Left: `Admit`, `HostCaps`, `HostPolicy`, `Hosting`, `Device`, `host_*` go with step 6 (`Serving`, `Address`). `Value` still shows `Link` and `Unknown` variants: a value an app reads holds neither unless written by an odd peer, and the enum is the data model's.
 
 ## F. Names
 | Now | Proposed | Why |
@@ -124,7 +107,7 @@ Decided with Tess (concepts, not only words; notes/api-design.md):
 - **Membership**: being in a group grants nothing (spec/permissions.md §1 already says so) and a thing can be in many groups. The docs must keep "a group's members" (what it contains) clearly apart from "a group's holders" (who has a role on it), since people will confuse them. Sync's other "placed" (a commit held at a host, spec/sync.md §5) becomes "uploaded" or "at a host".
 
 ## G. From building osis-chat (old api-review, not re-checked)
-- No `at.history_entry(id)`: a lookup is a walk from `After(HistoryPos::time(ts))`, so an id must carry its `ts` and aspect.
+- No `at.history_entry(id)`: a lookup is a walk from `After(HistoryPos::time(pos.at()))`, so an id must carry its place and aspect.
 - `on_history` is per aspect, so a per-year chat holds one subscription per year, none for a year beyond next.
 - `HistoryBody::Purged { by }` once needed a commit query with no by-id filter; check it's solved by `actor`.
 
@@ -143,7 +126,7 @@ Decided with Tess (concepts, not only words; notes/api-design.md):
 ## Execution
 One branch per step, in order; each merges before the next starts.
 - **4. Shapes**: D. Done.
-- **5. Leaks**: E, once `internals` has what tests need.
+- **5. Leaks**: E. Done.
 - **6. Names and docs**: F, the Vocabulary, and H's doc rewrite.
 
 Rules for each step's worker:

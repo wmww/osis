@@ -2,12 +2,13 @@
 //! client listener. Two devices P and N of one person sync through a host; P attaches to N's client
 //! listener as a thin client whose actor N minted.
 
-use osis::schema::RawKey as _;
+use osis::internals::ChangeRaw as _;
+use osis::internals::schema::RawKey as _;
 use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::{ak, block_on};
 use osis::internals::Internals as _;
-use osis::{SetRoleOpts, SyncFirst, Member, ClientSecret, Error, GroupSource, HostAddr, MemStore, NodeLogin, Osis, Role, Runtime, Store, SyncScope, SyncState, Tid, Transport, Value};
+use osis::{SetRoleOpts, SyncFirst, Member, ClientSecret, Error, GroupSource, HostAddr, MemStore, NodeLogin, Osis, Role, Runtime, Store, SyncScope, SyncState, Tid, Value};
 use std::sync::mpsc::channel;
 use std::time::{Duration, Instant};
 
@@ -25,9 +26,9 @@ fn until(what: &str, f: impl Fn() -> bool) {
 fn cfg_on(net: &osis_transport::Net, ep: &str, store: &MemStore, hosts: Vec<HostAddr>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
-    c.client.transport = Some(Transport::InProcess(net.endpoint(ep)));
+    c.handle.internals.transport = Some(net.endpoint(ep));
     c.hosts = hosts;
-    c.client.internals.connection_wait = Some(W);
+    c.handle.internals.connection_wait = Some(W);
     // no co-reader sessions: N and P meet only through the host, and through the client port
     c.peers = false;
     c
@@ -117,8 +118,8 @@ impl World {
 
     fn thin(&self, ep: &str) -> Osis {
         let mut c = osis::internals::Opening::memory();
-        c.client.transport = Some(Transport::InProcess(self.net.endpoint(ep)));
-        c.client.internals.connection_wait = Some(W);
+        c.handle.internals.transport = Some(self.net.endpoint(ep));
+        c.handle.internals.connection_wait = Some(W);
         crate::common::block_on(osis::internals::connect(&self.nc, &self.secret, c)).unwrap()
     }
 
@@ -181,7 +182,7 @@ fn moving_a_group_both_ways() {
     assert!(x.p.routes().is_empty());
     x.to_remote();
     assert_eq!(x.p.routes().get(&x.g), Some(&x.nc));
-    assert!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::HeadersOnly);
+    assert!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::LogOnly);
     // only for P: N's label lives and syncs
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     until("N synced", || x.n.status().unwrap().groups[&x.g].state == SyncState::Synced);
@@ -212,7 +213,7 @@ fn moving_a_group_both_ways() {
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     x.move_group(x.g, GroupSource::Local).unwrap();
     assert!(x.p.routes().is_empty());
-    assert!(!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::HeadersOnly));
+    assert!(!(x.p.sync_options(x.g).unwrap().mode == osis::SyncMode::LogOnly));
     // what P wrote through N is here: no stale read after the move
     assert_eq!(x.p.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("p1")));
     assert_eq!(x.p_local_copy(), Some(s("p1")));
@@ -260,7 +261,7 @@ fn moves_with_pending_writes_refuse() {
     let r = x.move_group(x.g, GroupSource::Remote(x.nc.clone()));
     assert!(matches!(r, Err(Error::Network(_) | Error::Unsynced { .. })), "{r:?}");
     assert!(x.p.routes().is_empty());
-    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::HeadersOnly);
+    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::LogOnly);
     assert_eq!(x.p.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("pending")));
     // another world: away with nothing pending, then home with P cut from the host
     let x = world_waiting(Duration::from_millis(300));
@@ -405,7 +406,7 @@ fn a_nodes_client_does_not_read_what_it_moved_away() {
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
     let pc = x.p.client_listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
     let mut c = osis::internals::Opening::memory();
-    c.client.transport = Some(Transport::InProcess(x.net.endpoint("pc")));
+    c.handle.internals.transport = Some(x.net.endpoint("pc"));
     let client = crate::common::block_on(osis::internals::connect(&pc, &sec, c)).unwrap();
     assert_eq!(client.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("first")));
     let w = watched(&client, x.t, osis::Key::untyped(title())).unwrap();
@@ -500,8 +501,8 @@ fn a_worker_panic_ends_one_session_and_the_port_lives() {
 fn restart_keeps_the_attachment_working() {
     let mut x = world();
     let mut cc = osis::internals::Opening::memory();
-    cc.client.transport = Some(Transport::InProcess(x.net.endpoint("c1")));
-    cc.client.internals.connection_wait = Some(W);
+    cc.handle.internals.transport = Some(x.net.endpoint("c1"));
+    cc.handle.internals.connection_wait = Some(W);
     let c = crate::common::block_on(osis::internals::connect(&x.nc, &x.secret, cc)).unwrap();
     let w = watched(&c, x.t, osis::Key::untyped(title())).unwrap();
     let (c2, t) = (c.clone(), x.t);
@@ -531,8 +532,8 @@ fn restart_keeps_the_attachment_working() {
 fn write_in_flight_across_a_restart_is_unknown() {
     let mut x = world();
     let mut cc = osis::internals::Opening::memory();
-    cc.client.transport = Some(Transport::InProcess(x.net.endpoint("c1")));
-    cc.client.internals.connection_wait = Some(W);
+    cc.handle.internals.transport = Some(x.net.endpoint("c1"));
+    cc.handle.internals.connection_wait = Some(W);
     let c = crate::common::block_on(osis::internals::connect(&x.nc, &x.secret, cc)).unwrap();
     let before = commits_of(&x.n, x.t);
     // the reply goes missing, the connection drops, and before a redial (at least 100 ms) the node
@@ -597,7 +598,7 @@ fn owner_reconnect_registers_schemas_again() {
         let mut c = cfg_on(&net, "n", &store, vec![]);
         c.peers = false;
         let db = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
-        db.listen_unix(&sock).unwrap();
+        db.listen_socket_at(&sock).unwrap();
         db
     };
     let n = open(true);
@@ -625,8 +626,8 @@ fn owner_reconnect_registers_schemas_again() {
 fn write_in_flight_gives_up_after_connection_wait() {
     let x = world();
     let mut cc = osis::internals::Opening::memory();
-    cc.client.transport = Some(Transport::InProcess(x.net.endpoint("c1")));
-    cc.client.internals.connection_wait = Some(SHORT);
+    cc.handle.internals.transport = Some(x.net.endpoint("c1"));
+    cc.handle.internals.connection_wait = Some(SHORT);
     let c = crate::common::block_on(osis::internals::connect(&x.nc, &x.secret, cc)).unwrap();
     let before = commits_of(&x.n, x.t);
     x.n.port_panic_next(true);
@@ -650,7 +651,7 @@ fn client_listener_key_is_its_own() {
     let key = x.nc.key();
     // nor the node's signing key
     let node = x.n.node();
-    let Some(osis::CreationRecord::KeyActor { public_key, .. }) = x.n.engine(|e| e.core.created(&node).cloned()) else { panic!("a node is a key actor") };
+    let Some(osis::internals::CreationRecord::KeyActor { public_key, .. }) = x.n.engine(|e| e.core.created(&node).cloned()) else { panic!("a node is a key actor") };
     assert_ne!(public_key, key);
     let dialable = x.n.sync_engine(|s| s.dialable_secret());
     let own = |sec: &[u8; 32]| osis_transport::InProcess::public_key(&osis_transport::StaticSecret::from_bytes(*sec));
@@ -660,12 +661,12 @@ fn client_listener_key_is_its_own() {
     assert_ne!(Some(key), x.n.host_key().unwrap());
     assert_eq!(x.n.sync_engine(|s| s.client_listen_key()), Some(key));
     // rotate_reach: nothing changes for clients
-    x.n.rotate_reach().unwrap();
+    x.n.rotate_address().unwrap();
     until("dialable key rotated", || own(x.n.sync_engine(|s| s.dialable_secret()).expose()) != own(dialable.expose()));
     assert_eq!(c.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("first")));
     assert_eq!(x.n.sync_engine(|s| s.client_listen_key()), Some(key));
     // rotate_client_key: the old client is out for good
-    let new = x.n.rotate_client_key().unwrap().remove(0);
+    let new = x.n.rotate_client_address().unwrap().remove(0);
     assert_ne!(new.key(), key);
     assert_ne!(new.key(), own(x.n.sync_engine(|s| s.dialable_secret()).expose()));
     until("old-key client down", || !c.status().unwrap().remotes[0].connected);
@@ -674,8 +675,8 @@ fn client_listener_key_is_its_own() {
     assert!(matches!(c.at(x.t, osis::Key::untyped(title())).get(), Err(Error::Network(_))));
     // same URL, new key: the old address cannot reach it, a new one can
     let mut cfg = osis::internals::Opening::memory();
-    cfg.client.transport = Some(Transport::InProcess(x.net.endpoint("c2")));
-    cfg.client.internals.connection_wait = Some(SHORT);
+    cfg.handle.internals.transport = Some(x.net.endpoint("c2"));
+    cfg.handle.internals.connection_wait = Some(SHORT);
     assert!(matches!(crate::common::block_on(osis::internals::connect(&x.nc, &x.secret, cfg.clone())), Err(Error::Network(_))));
     let c2 = crate::common::block_on(osis::internals::connect(&new, &x.secret, cfg.clone())).unwrap();
     assert_eq!(c2.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("first")));
@@ -693,8 +694,8 @@ fn client_listener_key_is_its_own() {
 fn bearer_secret_only_to_the_pinned_key() {
     let x = world();
     let mut cfg = osis::internals::Opening::memory();
-    cfg.client.transport = Some(Transport::InProcess(x.net.endpoint("c1")));
-    cfg.client.internals.connection_wait = Some(SHORT);
+    cfg.handle.internals.transport = Some(x.net.endpoint("c1"));
+    cfg.handle.internals.connection_wait = Some(SHORT);
     let wrong = HostAddr::new(&x.nc.url(), [9; 32]);
     assert!(matches!(crate::common::block_on(osis::internals::connect(&wrong, &x.secret, cfg.clone())), Err(Error::Network(_))));
     let unix = HostAddr::new(&"unix:///tmp/x.sock".parse().unwrap(), x.nc.key());
@@ -720,8 +721,8 @@ fn attach_to_a_silent_listener_ends() {
         }
     });
     let mut cfg = osis::internals::Opening::memory();
-    cfg.client.transport = Some(Transport::InProcess(net.endpoint("c")));
-    cfg.client.internals.connection_wait = Some(SHORT);
+    cfg.handle.internals.transport = Some(net.endpoint("c"));
+    cfg.handle.internals.connection_wait = Some(SHORT);
     let (tx, rx) = channel();
     let addr = HostAddr::new(&"mem://silent".parse().unwrap(), key);
     std::thread::spawn(move || {
@@ -737,8 +738,8 @@ fn config_remotes_and_the_persisted_route() {
     let mut x = world();
     // no store
     let mut c = osis::internals::Opening::memory();
-    c.client.transport = Some(Transport::InProcess(x.net.endpoint("c1")));
-    c.client.internals.connection_wait = Some(W);
+    c.handle.internals.transport = Some(x.net.endpoint("c1"));
+    c.handle.internals.connection_wait = Some(W);
     let thin = crate::common::block_on(osis::internals::connect(&x.nc, &x.secret, c)).unwrap();
     assert_eq!(thin.me(), x.actor);
     assert_eq!(thin.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("first")));
@@ -748,8 +749,8 @@ fn config_remotes_and_the_persisted_route() {
     let (other, sec2) = x.n.add_client(None).unwrap();
     x.n.grant(x.g, other, Role::Read, Default::default()).unwrap();
     let mut c = osis::internals::Opening::memory();
-    c.client.transport = Some(Transport::InProcess(x.net.endpoint("c2")));
-    c.client.internals.connection_wait = Some(W);
+    c.handle.internals.transport = Some(x.net.endpoint("c2"));
+    c.handle.internals.connection_wait = Some(W);
     assert!(matches!(crate::common::block_on(osis::internals::connect_all(&[NodeLogin { addr: x.nc.clone(), secret: x.secret.clone() }, NodeLogin { addr: x.nc.clone(), secret: sec2 }], c)), Err(Error::Invalid(_))));
     // with a store: the record
     x.attach_p();
@@ -787,7 +788,7 @@ fn a_write_overtaken_by_a_move_fails() {
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
     x.p.after_route(Box::new(move || {
         p.set_route(g, Some(addr.clone()));
-        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::HeadersOnly, ..Default::default() });
+        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
     }));
     let before = x.p_local_copy();
     let r = x.p.commit_set(x.t, osis::Key::untyped(title()), &s("stranded?"));
@@ -805,8 +806,7 @@ fn thin_client_over_quic() {
     let open = |create: bool| {
         let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
         c.runtime = Runtime::Own;
-        c.client.transport = Some(Transport::Quic);
-        c.peers = false;
+                c.peers = false;
         if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() }
     };
     let n = open(true);
@@ -822,8 +822,7 @@ fn thin_client_over_quic() {
     let addr = n.client_listen(&["quic://127.0.0.1:0".parse().unwrap()]).unwrap().remove(0);
     assert!(addr.url().as_str().starts_with("quic://127.0.0.1:"), "{addr}");
     let mut cfg = osis::internals::Opening::memory();
-    cfg.client.transport = Some(Transport::Quic);
-    cfg.client.internals.connection_wait = Some(W);
+        cfg.handle.internals.connection_wait = Some(W);
     let c = crate::common::block_on(osis::internals::connect(&addr, &secret, cfg.clone())).unwrap();
     assert_eq!(c.me(), actor);
     assert_eq!(c.at(t, osis::Key::untyped(title())).get().unwrap(), Some(s("first")));
@@ -833,7 +832,7 @@ fn thin_client_over_quic() {
     until("watch", || watch.current().ok().flatten() == Some(s("from client")));
     // an impostor key at the same URL: the handshake fails, no secret sent
     let mut short = cfg.clone();
-    short.client.internals.connection_wait = Some(Duration::from_secs(3));
+    short.handle.internals.connection_wait = Some(Duration::from_secs(3));
     assert!(matches!(crate::common::block_on(osis::internals::connect(&HostAddr::new(&addr.url(), [8; 32]), &secret, short.clone())), Err(Error::Network(_))));
     assert!(matches!(crate::common::block_on(osis::internals::connect(&addr, &ClientSecret::from_bytes([1; 32]), short.clone())), Err(Error::Refused(_))));
     // restart on the same store and port: the same address, the session comes back
@@ -848,7 +847,7 @@ fn thin_client_over_quic() {
     c.commit_set(t, osis::Key::untyped(title()), &s("again")).unwrap();
     assert_eq!(n.at(t, osis::Key::untyped(title())).get().unwrap(), Some(s("again")));
     // a rotation: the old address never answers again
-    let new = n.rotate_client_key().unwrap().remove(0);
+    let new = n.rotate_client_address().unwrap().remove(0);
     assert_ne!(new.key(), addr.key());
     assert_eq!(new.url(), addr.url());
     until("old-key client down", || !c.status().unwrap().remotes[0].connected);
@@ -1002,7 +1001,7 @@ fn differential(seed: u64) -> usize {
             2 => {
                 let i = r.next(3) as usize;
                 stopped[i] = !stopped[i];
-                x.p.set_sync_options(gs[i], osis::SyncOptions { mode: if stopped[i] { osis::SyncMode::HeadersOnly } else { osis::SyncMode::Full }, ..Default::default() }).unwrap();
+                x.p.set_sync_options(gs[i], osis::SyncOptions { mode: if stopped[i] { osis::SyncMode::LogOnly } else { osis::SyncMode::Full }, ..Default::default() }).unwrap();
             }
             3 => {
                 if attached {
@@ -1088,7 +1087,7 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
     x.p.after_route(Box::new(move || {
         if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
             p.set_route(g, Some(addr.clone()));
-            let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::HeadersOnly, ..Default::default() });
+            let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
         }
     }));
     let roster = x.p.engine(|e| e.roster(&x.g).len());
@@ -1130,7 +1129,7 @@ fn a_move_tells_a_client_nothing_of_what_it_never_read() {
     let (_, sec) = x.p.add_client(None).unwrap();
     let pc = x.p.client_listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
     let mut c = osis::internals::Opening::memory();
-    c.client.transport = Some(Transport::InProcess(x.net.endpoint("pc")));
+    c.handle.internals.transport = Some(x.net.endpoint("pc"));
     let client = crate::common::block_on(osis::internals::connect(&pc, &sec, c)).unwrap();
     assert_eq!(client.at(x.t, osis::Key::untyped(title())).get().unwrap(), None);
     let w = watched(&client, x.t, osis::Key::untyped(title())).unwrap();
@@ -1150,7 +1149,7 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     block_on(x.p.wait_synced(SyncScope::Thing(x.g))).unwrap();
     let pc = x.p.client_listen(&["mem://p-clients".parse().unwrap()]).unwrap().remove(0);
     let mut c = osis::internals::Opening::memory();
-    c.client.transport = Some(Transport::InProcess(x.net.endpoint("pc")));
+    c.handle.internals.transport = Some(x.net.endpoint("pc"));
     let client = crate::common::block_on(osis::internals::connect(&pc, &sec, c)).unwrap();
     x.attach_p();
     x.to_remote();
@@ -1158,7 +1157,7 @@ fn a_nodes_client_reads_nothing_during_the_catch_up() {
     x.net.partition("p", "s");
     x.net.disconnect("p", "s");
     assert!(x.move_group(x.g, GroupSource::Local).is_err());
-    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::HeadersOnly, "syncing again, behind");
+    assert!(x.p.sync_options(x.g).unwrap().mode != osis::SyncMode::LogOnly, "syncing again, behind");
     assert_eq!(x.p.routes().get(&x.g), Some(&x.nc));
     assert_eq!(client.at(x.t, osis::Key::untyped(title())).get().unwrap(), None, "a stale value, as if current");
     drop(x.host);
@@ -1197,7 +1196,7 @@ fn a_silent_remote_holds_no_client_of_this_node() {
     let d = std::env::temp_dir().join(format!("osis-sources-silent-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let sock = d.join("p.sock");
-    x.p.listen_unix(&sock).unwrap();
+    x.p.listen_socket_at(&sock).unwrap();
     let o1 = crate::common::block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
     let o2 = crate::common::block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
     let mut w = x.p.write();
@@ -1373,8 +1372,8 @@ fn moves_differential(seed: u64) -> (usize, usize) {
             let write = x.p.commit_set(both, osis::Key::untyped(title()), &s(&v));
             assert!(matches!(write, Err(Error::Invalid(_))), "step {step} seed {seed}: a write through the route misses H: {write:?}");
             refused += 1;
-            assert!(x.p.status().unwrap().split.contains(&both), "step {step}");
-            assert!(!x.p.status().unwrap().split.contains(&placed), "step {step}: H does not carry it");
+            assert!(x.p.status().unwrap().two_sources.contains(&both), "step {step}");
+            assert!(!x.p.status().unwrap().two_sources.contains(&placed), "step {step}: H does not carry it");
             let read = x.p.at(both, osis::Key::untyped(title())).get();
             if cut {
                 assert!(matches!(read, Err(Error::Network(_))), "step {step} seed {seed}: this engine's copy answered: {read:?}");
@@ -1453,7 +1452,7 @@ fn a_split_thing_reads_at_the_route_and_refuses_writes() {
     block_on(x.p.wait_synced(SyncScope::Thing(h))).unwrap();
     x.attach_p();
     x.to_remote();
-    assert_eq!(x.p.status().unwrap().split.iter().copied().collect::<Vec<_>>(), vec![x.t]);
+    assert_eq!(x.p.status().unwrap().two_sources.iter().copied().collect::<Vec<_>>(), vec![x.t]);
     // what only G carries: W syncs G alone
     w_db.batch(|w| w.at(x.t, osis::Key::untyped(title())).set(&s("from w"))).unwrap();
     block_on(w_db.wait_synced(SyncScope::All)).unwrap();
@@ -1472,7 +1471,7 @@ fn a_split_thing_reads_at_the_route_and_refuses_writes() {
     // home: no split left, and the write reaches W through G
     block_on(x.n.wait_synced(SyncScope::Thing(x.g))).unwrap();
     x.move_group(x.g, GroupSource::Local).unwrap();
-    assert!(x.p.status().unwrap().split.is_empty());
+    assert!(x.p.status().unwrap().two_sources.is_empty());
     x.p.commit_set(x.t, osis::Key::untyped(title()), &s("from p")).unwrap();
     block_on(x.p.wait_synced(SyncScope::Thing(x.t))).unwrap();
     until("W and N have it", || {
@@ -1495,12 +1494,12 @@ fn a_split_arriving_from_another_node_refuses_the_next_write() {
     x.attach_p();
     x.to_remote();
     x.p.commit_set(x.t, osis::Key::untyped(title()), &s("acked")).unwrap();
-    assert!(x.p.status().unwrap().split.is_empty());
+    assert!(x.p.status().unwrap().two_sources.is_empty());
     x.n.add_with_grant(Member::Item(x.t), h, Role::Write).unwrap();
     block_on(x.n.wait_synced(SyncScope::Thing(h))).unwrap();
     until("P learnt it through H", || {
         let _ = x.p.sync_now();
-        x.p.status().unwrap().split.contains(&x.t)
+        x.p.status().unwrap().two_sources.contains(&x.t)
     });
     assert_eq!(x.p.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("acked")));
     let r = x.p.commit_set(x.t, osis::Key::untyped(title()), &s("again"));
@@ -1522,7 +1521,7 @@ fn placing_a_routed_thing_in_a_local_group_changes_nothing() {
     w.group(h).add(osis::Member::Item(x.t)).unwrap();
     w.commit().unwrap();
     assert_eq!(x.p.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("acked")));
-    assert!(x.p.status().unwrap().split.is_empty());
+    assert!(x.p.status().unwrap().two_sources.is_empty());
     x.p.commit_set(x.t, osis::Key::untyped(title()), &s("again")).unwrap();
     assert_eq!(x.n.at(x.t, osis::Key::untyped(title())).get().unwrap(), Some(s("again")));
     // with a shared edge it would be split: refused, two sources
@@ -1568,8 +1567,8 @@ fn routing_to_what_the_actor_may_not_read_is_as_to_nothing() {
 fn a_host_address_refuses_a_client() {
     let x = world();
     let mut c = osis::internals::Opening::memory();
-    c.client.transport = Some(Transport::InProcess(x.net.endpoint("at-host")));
-    c.client.internals.connection_wait = Some(W);
+    c.handle.internals.transport = Some(x.net.endpoint("at-host"));
+    c.handle.internals.connection_wait = Some(W);
     let r = crate::common::block_on(osis::internals::connect(&x.addr, &x.secret, c));
     assert!(matches!(&r, Err(Error::Refused(m)) if m.contains("client port")), "{:?}", r.map(|_| ()));
     drop(x.host);
@@ -1718,7 +1717,7 @@ fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
     block_on(x.n.wait_synced(SyncScope::Thing(h))).unwrap();
     until("P learnt it through H", || {
         let _ = x.p.sync_now();
-        x.p.status().unwrap().split.contains(&x.t)
+        x.p.status().unwrap().two_sources.contains(&x.t)
     });
     let r = x.p.undo(&osis::Scope::Group(x.g));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
@@ -1742,9 +1741,9 @@ fn split_shows_through_the_port_and_after_a_restart() {
     let d = std::env::temp_dir().join(format!("osis-sources-split-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let sock = d.join("p.sock");
-    x.p.listen_unix(&sock).unwrap();
+    x.p.listen_socket_at(&sock).unwrap();
     let o = crate::common::block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
-    assert!(o.status().unwrap().split.contains(&x.t));
+    assert!(o.status().unwrap().two_sources.contains(&x.t));
     let r = o.commit_set(x.t, osis::Key::untyped(title()), &s("via owner"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     drop(o);
@@ -1752,7 +1751,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
     assert_eq!(std::mem::replace(&mut x.p, osis::internals::create(osis::internals::Opening::memory()).unwrap().0).close().unwrap(), osis::Close::Closed);
     let p = osis::internals::open(cfg_on(&net, "p", &pstore, vec![addr])).unwrap();
     crate::common::block_on(p.connect_node(&NodeLogin { addr: x.nc.clone(), secret: x.secret.clone() })).unwrap();
-    assert!(p.status().unwrap().split.contains(&x.t));
+    assert!(p.status().unwrap().two_sources.contains(&x.t));
     let r = p.commit_set(x.t, osis::Key::untyped(title()), &s("reopened"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     until("the attachment came up", || p.at(x.t, osis::Key::untyped(title())).get().ok().flatten() == Some(s("first")));
@@ -1772,7 +1771,7 @@ fn a_split_made_after_the_route_refuses_the_write() {
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
     x.p.after_route(Box::new(move || {
         p.set_route(g, Some(addr.clone()));
-        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::HeadersOnly, ..Default::default() });
+        let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
     }));
     let r = x.p.commit_set(x.t, osis::Key::untyped(title()), &s("late"));
     x.p.after_route(Box::new(|| {}));
@@ -1807,7 +1806,7 @@ fn an_ephemeral_placement_in_a_routed_group_counts() {
     x.to_remote();
     assert!(x.p.engine(|d| d.groups_of(&e).contains(&x.g)), "still placed here");
     assert!(!x.p.engine(|d| d.readable_by(&a, &e)), "this node's copy is stale");
-    let split = x.p.status().unwrap().split;
+    let split = x.p.status().unwrap().two_sources;
     assert!(split.contains(&both) && !split.contains(&e), "{split:?}");
     let r = x.p.commit_set(both, osis::Key::untyped(draft.clone()), &s("again"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
@@ -1822,8 +1821,8 @@ fn connecting_at_zero_and_infinity() {
     let x = world();
     let at = |t: Duration, ep: &str| {
         let mut c = osis::internals::Opening::memory();
-        c.client.transport = Some(Transport::InProcess(x.net.endpoint(ep)));
-        c.client.internals.connection_wait = Some(t);
+        c.handle.internals.transport = Some(x.net.endpoint(ep));
+        c.handle.internals.connection_wait = Some(t);
         crate::common::block_on(osis::internals::connect(&x.nc, &x.secret, c))
     };
     assert!(matches!(at(Duration::ZERO, "z0"), Err(Error::Network(_))));

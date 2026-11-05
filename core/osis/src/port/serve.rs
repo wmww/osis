@@ -162,7 +162,7 @@ struct Pending {
     /// Fired signals and diagnostics, never coalesced, each with its bytes.
     queue: VecDeque<(Value, usize)>,
     /// History subscription: the commits whose entries changed (`HISTORY_DIRTY_BYTES` each).
-    history: BTreeSet<osis_node::ChangeId>,
+    history: BTreeSet<crate::ChangeId>,
     /// A delivery did not fit `SIGNAL_BYTES`: the subscription ends.
     lapsed: bool,
 }
@@ -170,7 +170,7 @@ struct Pending {
 impl Pending {
     /// Commit `id`'s entry changed. Past the connection's budget the subscription lapses: the client
     /// reads its pages again.
-    fn note_history(&mut self, id: osis_node::ChangeId, held: &AtomicUsize) {
+    fn note_history(&mut self, id: crate::ChangeId, held: &AtomicUsize) {
         if self.history.contains(&id) {
             return;
         }
@@ -631,7 +631,7 @@ impl Worker {
             method::CLIENTS => Value::List(db.clients()?.iter().map(|x| Value::List(vec![Value::Tid(x.actor), c::opt(x.until, |w| Value::uint(w.0))])).collect()),
             method::REMOVE_CLIENT => b(db.remove_client(a.tid()?)?),
             method::ROTATE_CLIENT_SECRET => Value::bytes(db.rotate_client_secret(a.tid()?)?.expose()),
-            method::ROTATE_CLIENT_KEY => Value::List(db.rotate_client_key()?.iter().map(|h| Value::Str(h.to_string())).collect()),
+            method::ROTATE_CLIENT_ADDRESS => Value::List(db.rotate_client_address()?.iter().map(|h| Value::Str(h.to_string())).collect()),
             method::KEPT => Value::List(db.kept_copies()?.into_iter().map(Value::Tid).collect()),
             method::DROP_KEPT => {
                 db.drop_kept(a.tid()?)?;
@@ -685,14 +685,15 @@ impl Worker {
                 db.decline_invite(crate::InviteId::from_bytes(&a.bytes()?)?)?;
                 nothing()
             }
+            method::ADMISSION_IDS => Value::List(db.admission_ids(a.tid()?)?.iter().map(|x| Value::Str(x.to_string())).collect()),
             method::SYNC_OPTIONS => Value::List(c::sync_options_v(&db.sync_options(a.tid()?)?)),
             method::SET_SYNC_OPTIONS => {
                 let g = a.tid()?;
                 db.set_sync_options(g, c::sync_options(&mut a)?)?;
                 nothing()
             }
-            method::ROTATE_REACH => {
-                db.rotate_reach()?;
+            method::ROTATE_ADDRESS => {
+                db.rotate_address()?;
                 nothing()
             }
             method::EXPORT_BUNDLE => {

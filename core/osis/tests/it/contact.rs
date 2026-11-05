@@ -26,7 +26,7 @@ struct View {
 
 fn view(db: &Osis, contact: Tid) -> Result<View> {
     let profile = db.at(contact, PROFILE).get()?;
-    let own_or = |db: &Osis, key: osis::schema::Aspect<BTreeMap<String, Labeled>>| -> Result<BTreeMap<String, Labeled>> {
+    let own_or = |db: &Osis, key: osis::internals::schema::Aspect<BTreeMap<String, Labeled>>| -> Result<BTreeMap<String, Labeled>> {
         let mut m = match profile {
             Some(p) => db.at(p, key).get()?.unwrap_or_default(),
             None => BTreeMap::new(),

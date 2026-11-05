@@ -2,14 +2,15 @@
 //! replies and the sender's name. Joining a new chat by link needs a host: checked by hand (notes/app.md
 //! Chat); a link to a chat already here does not.
 use osis::internals::Internals as _;
-use osis::{ManualClock, MemStore, Osis, Role, Store, WallMs};
+use osis::{MemStore, Osis, Role, Store, Time};
+use osis::internals::{ManualClock};
 use osis_app::chat;
 use std::sync::Arc;
 
 fn cfg(seed: u64, clock: &Arc<ManualClock>) -> osis::internals::Opening {
     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-    c.client.internals.seed = Some(seed);
-    c.client.internals.clock = Some(clock.clone());
+    c.handle.internals.seed = Some(seed);
+    c.handle.internals.clock = Some(clock.clone());
     // a host that never runs: a profile (where the sender's name lives) needs one named
     c.hosts = vec![osis::HostAddr::new(&"quic://127.0.0.1:9".parse().unwrap(), [7; 32])];
     c.runtime = osis::Runtime::Manual(osis::internals::ManualNet::new());
@@ -32,7 +33,7 @@ fn sync(a: &Osis, b: &Osis) {
 
 #[test]
 fn two_people_chat() {
-    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
     let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
     sync(&a, &b);
@@ -71,7 +72,7 @@ fn two_people_chat() {
 /// replies quoting it), a delete, a sender with no name or a blank one.
 #[test]
 fn edited_deleted_and_nameless() {
-    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
     let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
     sync(&a, &b);
@@ -106,7 +107,7 @@ fn edited_deleted_and_nameless() {
 /// nameless.
 #[test]
 fn hostless_store_sends_without_a_name() {
-    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let mut cfg = cfg(1, &clock);
     cfg.hosts.clear();
     let a = osis::internals::create(cfg).unwrap().0;
@@ -123,7 +124,7 @@ fn hostless_store_sends_without_a_name() {
 /// host; text that is no link still fails.
 #[test]
 fn join_held_chat_opens_it() {
-    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
     let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
     let b = osis::internals::create(cfg(2, &clock)).unwrap().0;
     sync(&a, &b);

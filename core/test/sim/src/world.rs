@@ -7,7 +7,8 @@
 
 use osis::internals::node::sync::{Action, ConnId, Event, HostStatus};
 use osis::internals::{Internals, ManualNet};
-use osis::{ManualClock, MemStore, Osis, RecoveryCard, Runtime, HostAddr, Store, WallMs};
+use osis::{MemStore, Osis, RecoveryCard, Runtime, HostAddr, Store, Time};
+use osis::internals::{ManualClock};
 use osis_crypto::SeededRng;
 use osis_proto::{FrameDecoder, Message};
 use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
@@ -103,7 +104,7 @@ impl Default for World {
 impl World {
     pub fn new() -> World {
         World {
-            clock: Arc::new(ManualClock::new(WallMs(T0))),
+            clock: Arc::new(ManualClock::new(Time(T0))),
             hosts: Vec::new(),
             net: ManualNet::new(),
             links: BTreeMap::new(),
@@ -126,7 +127,7 @@ impl World {
     }
 
     pub fn now(&self) -> u64 {
-        osis::Clock::now_wall_ms(&*self.clock).0
+        osis::internals::Clock::now_wall_ms(&*self.clock).0
     }
 
     /// A new host (keys and rng from its index).
@@ -211,8 +212,8 @@ impl World {
     /// given hosts, a fresh memory store.
     pub fn cfg(&self, seed: u64, hosts: &[usize]) -> osis::internals::Opening {
         let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-        c.client.internals.seed = Some(seed);
-        c.client.internals.clock = Some(self.clock.clone());
+        c.handle.internals.seed = Some(seed);
+        c.handle.internals.clock = Some(self.clock.clone());
         c.runtime = Runtime::Manual(self.net.clone());
         c.hosts = hosts.iter().filter_map(|s| self.addr(*s)).collect();
         c

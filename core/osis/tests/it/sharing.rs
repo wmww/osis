@@ -109,7 +109,7 @@ fn grant_refuses_a_lower_role() {
     w.run();
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Write));
     // the same role changes the rest of the grant
-    let until = osis::WallMs(alice.now().unwrap().0 + 1_000_000);
+    let until = osis::Time(alice.now().unwrap().0 + 1_000_000);
     alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(until), invite: None }).unwrap();
     assert_eq!(alice.grants(g).unwrap()[&b].until, Some(until));
     alice.grant(g, b, Role::Admin, Default::default()).unwrap();
@@ -331,7 +331,7 @@ fn ended_link_fails_clearly_spec_permissions_8() {
     w.run();
     assert!(alice.links_of(g).unwrap().is_empty());
     assert!(matches!(w.until(carol.redeem(&kicked), 1000, 30), Err(Error::Invalid(_))));
-    let until = osis::WallMs(alice.now().unwrap().0 + 1000);
+    let until = osis::Time(alice.now().unwrap().0 + 1000);
     let expired = alice.make_link(g, Role::Write, osis::LinkOpts { until: Some(until), single_use: false, direct: false }).unwrap();
     w.run();
     assert_eq!(alice.links_of(g).unwrap().len(), 1);
@@ -447,7 +447,7 @@ fn redeem_of_a_mismatched_target_joins_nothing_spec_permissions_8() {
     assert_eq!(carol.role_on(held).unwrap(), Some(Role::Read));
     let bad = naming(&link, held);
     for (who, db) in [("holds the target", &carol), ("does not know it", &dave)] {
-        assert!(matches!(w.until(db.redeem(&bad), 1000, 200), Err(Error::Invalid(_))), "{who}");
+        assert!(w.try_until(db.redeem(&bad), 1000, 200).is_none(), "{who}: nothing says the grant will not come");
         w.run();
         assert_eq!(db.role_on(other).unwrap(), None, "{who}");
         assert_eq!(x(db, t), None, "{who}: what the key read went with it");
@@ -522,7 +522,7 @@ fn contact_card_with_a_mismatched_target_spec_permissions_8() {
     let mut bad = osis_label::ShareLink::from_text(&card.to_string()).unwrap();
     bad.target = g;
     let bad: osis::ContactCard = bad.to_text().unwrap().parse().unwrap();
-    assert!(matches!(w.until(carol.import_contact(&bad), 1000, 200), Err(Error::Invalid(_))));
+    assert!(w.try_until(carol.import_contact(&bad), 1000, 200).is_none(), "nothing says the grant will not come");
     assert!(carol.profile_of(alice.me()).unwrap().is_none());
     assert_eq!(w.until(carol.import_contact(&card), 1000, 30).unwrap(), eve.me());
 }
@@ -640,7 +640,7 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     let mut bad = osis_label::ShareLink::from_text(&card.to_string()).unwrap();
     bad.target = carol.me();
     let bad: osis::ContactCard = bad.to_text().unwrap().parse().unwrap();
-    assert!(w.until(carol.import_contact(&bad), 1000, 200).is_err());
+    assert!(w.try_until(carol.import_contact(&bad), 1000, 200).is_none());
     w.run();
     assert!(carol.profile_of(alice.me()).unwrap().is_some());
     let mine = group(&carol);
@@ -652,7 +652,7 @@ fn failed_redemption_drops_only_what_only_the_key_read_spec_permissions_3() {
     w.until(alice.set_role(g, bob.me(), None, d), 1000, 10).unwrap();
     w.run();
     assert_eq!(bob.kept_copies().unwrap(), vec![g]);
-    assert!(w.until(bob.redeem(&naming(&link, alice.me())), 1000, 200).is_err());
+    assert!(w.try_until(bob.redeem(&naming(&link, alice.me())), 1000, 200).is_none());
     w.run();
     assert_eq!((bob.kept_copies().unwrap(), x(&bob, t)), (vec![g], Some(s("x"))), "a wrong target");
     assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
@@ -869,27 +869,27 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     // Carol's own clock: kept with the world's, then left behind while she is offline
     let cl = clock();
     let mut c = w.cfg(3, &[host]);
-    c.client.internals.clock = Some(cl.clone());
+    c.handle.internals.clock = Some(cl.clone());
     let carol = osis::internals::create(c).unwrap().0;
     w.run();
     let (bc, cc) = (bob.contact_card().unwrap(), carol.contact_card().unwrap());
     w.run();
     let b = w.until(alice.import_contact(&bc), 1000, 10).unwrap();
-    cl.set(osis::WallMs(w.now()));
+    cl.set(osis::Time(w.now()));
     let c = w.until(alice.import_contact(&cc), 1000, 10).unwrap();
-    cl.set(osis::WallMs(w.now()));
+    cl.set(osis::Time(w.now()));
     let g = group(&alice);
     alice.grant(g, b, Role::Admin, Default::default()).unwrap();
     alice.grant(g, c, Role::Admin, Default::default()).unwrap();
     w.run();
-    cl.set(osis::WallMs(w.now()));
+    cl.set(osis::Time(w.now()));
     w.run();
     assert_eq!((bob.role_on(g).unwrap(), carol.role_on(g).unwrap()), (Some(Role::Admin), Some(Role::Admin)));
     w.set_online(&carol, false);
     w.advance(60_000);
     w.until(bob.set_role(g, c, None, SetRoleOpts { sync: SyncFirst::Skip, keep: None }), 1000, 10).unwrap();
     w.run();
-    let until = osis::WallMs(w.now() + 3_600_000);
+    let until = osis::Time(w.now() + 3_600_000);
     carol.grant(g, b, Role::Admin, osis::GrantOpts { until: Some(until), invite: None }).unwrap();
     assert_eq!(carol.grants(g).unwrap().get(&b).and_then(|e| e.until), Some(until), "carol wrote it");
     // straight to Alice and Bob (G's hosts refuse her stale write key)
@@ -1221,7 +1221,7 @@ fn set_role_raises_lowers_and_writes_nothing_when_nothing_changes() {
     let (alice, bob, g) = alice_bob(&mut w, Role::Write);
     let b = bob.me();
     let commits = |db: &Osis| db.engine(|e| e.commit_ids().len());
-    let until = osis::WallMs(alice.now().unwrap().0 + 1_000_000);
+    let until = osis::Time(alice.now().unwrap().0 + 1_000_000);
     alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(until), invite: Some(Role::Write) }).unwrap();
 
     let before = commits(&alice);
@@ -1262,7 +1262,7 @@ fn a_role_below_an_ended_grant_takes_set_role() {
         let mut w = World::new();
         let (alice, bob, g) = alice_bob(&mut w, role);
         let b = bob.me();
-        let until = osis::WallMs(alice.now().unwrap().0 + 1000);
+        let until = osis::Time(alice.now().unwrap().0 + 1000);
         alice.grant(g, b, role, osis::GrantOpts { until: Some(until), invite: None }).unwrap();
         w.run();
         w.advance(2000);
@@ -1276,7 +1276,7 @@ fn a_role_below_an_ended_grant_takes_set_role() {
         assert_eq!(alice.grants(g).unwrap()[&b].role, Role::Read);
         assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
         // ended once more: renewed at its role
-        alice.grant(g, b, Role::Read, osis::GrantOpts { until: Some(osis::WallMs(alice.now().unwrap().0 + 1000)), invite: None }).unwrap();
+        alice.grant(g, b, Role::Read, osis::GrantOpts { until: Some(osis::Time(alice.now().unwrap().0 + 1000)), invite: None }).unwrap();
         w.run();
         w.advance(2000);
         alice.grant(g, b, Role::Read, Default::default()).unwrap();
@@ -1344,7 +1344,7 @@ fn holders_finds_the_best_way_through_a_nested_actor() {
     let mut gs = [group(&alice), group(&alice), group(&alice), group(&alice)];
     gs.sort();
     let team = group(&alice);
-    let soon = osis::WallMs(alice.now().unwrap().0 + 1_000_000);
+    let soon = osis::Time(alice.now().unwrap().0 + 1_000_000);
     alice.grant(t, gs[0], Role::Read, Default::default()).unwrap();
     alice.grant(t, gs[1], Role::Write, osis::GrantOpts { until: Some(soon), invite: None }).unwrap();
     alice.grant(t, gs[2], Role::Write, Default::default()).unwrap();
@@ -1353,7 +1353,7 @@ fn holders_finds_the_best_way_through_a_nested_actor() {
         alice.grant(g, team, Role::Admin, Default::default()).unwrap();
     }
     alice.grant(team, b, Role::Admin, Default::default()).unwrap();
-    let ways: Vec<(Role, Option<osis::WallMs>, Tid)> = alice.holders(t).unwrap().into_iter().filter(|h| h.actor == b && h.through.len() == 2).map(|h| (h.role, h.until, h.through[0])).collect();
+    let ways: Vec<(Role, Option<osis::Time>, Tid)> = alice.holders(t).unwrap().into_iter().filter(|h| h.actor == b && h.through.len() == 2).map(|h| (h.role, h.until, h.through[0])).collect();
     assert_eq!(ways, [(Role::Read, None, gs[0]), (Role::Write, Some(soon), gs[1]), (Role::Write, None, gs[2])], "the last way beats none before it");
     assert_eq!(alice.holders(t).unwrap().iter().filter(|h| h.actor == team).count(), 4, "each grant the team holds by");
 }
@@ -1394,7 +1394,7 @@ fn a_role_below_one_lost_keeps_what_the_holder_wrote_spec_permissions_5_1() {
         let (alice, bob, g) = alice_bob(&mut w, Role::Write);
         let b = bob.me();
         if ended {
-            alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(osis::WallMs(alice.now().unwrap().0 + 5000)), invite: None }).unwrap();
+            alice.grant(g, b, Role::Write, osis::GrantOpts { until: Some(osis::Time(alice.now().unwrap().0 + 5000)), invite: None }).unwrap();
             w.run();
         }
         let mine = item(&bob, g, g, "by bob");
@@ -1451,7 +1451,7 @@ fn invite_grant_over_an_ended_grant_spec_permissions_2() {
     w.run();
     let d = w.until(alice.import_contact(&card), 1000, 10).unwrap();
     w.until(carol.import_contact(&card), 1000, 10).unwrap();
-    alice.grant(g, d, Role::Write, osis::GrantOpts { until: Some(osis::WallMs(alice.now().unwrap().0 + 1000)), invite: None }).unwrap();
+    alice.grant(g, d, Role::Write, osis::GrantOpts { until: Some(osis::Time(alice.now().unwrap().0 + 1000)), invite: None }).unwrap();
     w.run();
     let by_dan = item(&dan, g, g, "by dan");
     w.run();

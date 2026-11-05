@@ -3,7 +3,8 @@
 //! spec: none (client surface).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
-use osis::{Schema, Tid, Value};
+use osis::{Tid, Value};
+use osis::internals::{schema::Schema};
 use osis_cli::json;
 use osis_cli::text::{self, no_aliases, parse, print};
 use osis_schema::osis_base::{CanonicalBytes, Unknown};
@@ -127,11 +128,11 @@ proptest! {
     #[test]
     fn named_round_trip(v in rec()) {
         let sc = schema();
-        let ty = &sc.aspects["t:rec.0"].ty;
-        let s = print(&v, Some((&sc, ty)));
-        prop_assert_eq!(parse(&s, Some((&sc, ty)), &no_aliases), Ok(v.clone()), "{}", s);
+        let ty = osis::internals::of_schema(sc.clone().into(), sc.aspects["t:rec.0"].ty.clone());
+        let s = print(&v, Some(&ty));
+        prop_assert_eq!(parse(&s, Some(&ty), &no_aliases), Ok(v.clone()), "{}", s);
         // numbered text reads at the type too
-        prop_assert_eq!(parse(&print(&v, None), Some((&sc, ty)), &no_aliases), Ok(v), "numbered at type");
+        prop_assert_eq!(parse(&print(&v, None), Some(&ty), &no_aliases), Ok(v), "numbered at type");
     }
 
     // notes/cli.md: durations and timestamps print and read back.
@@ -197,8 +198,8 @@ fn input_forms_plan_cli_3() {
     assert_eq!(parse("[me]", None, &al), Ok(Value::List(vec![Value::Tid(t)])));
     // with a schema, JSON objects read as the struct
     let sc = schema();
-    let ty = &sc.aspects["t:rec.0"].ty;
-    let v = parse(r#"{"title": "x", "done": true, "when": 0}"#, Some((&sc, ty)), &no_aliases).unwrap();
+    let ty = osis::internals::of_schema(sc.clone().into(), sc.aspects["t:rec.0"].ty.clone());
+    let v = parse(r#"{"title": "x", "done": true, "when": 0}"#, Some(&ty), &no_aliases).unwrap();
     assert_eq!(v, m(vec![(Value::Int(0), Value::Str("x".into())), (Value::Int(1), Value::Bool(true)), (Value::Int(2), Value::Int(0))]));
 }
 
@@ -207,13 +208,13 @@ fn input_forms_plan_cli_3() {
 #[test]
 fn time_keys_and_edges_notes_cli() {
     let sc = schema();
-    let ty = &sc.aspects["t:rec.0"].ty;
-    let v = parse("{at: {2026-01-02T03:04:05Z: 1, 2026-01-02: 2}, lens: {1h30m: true, -5s: false}}", Some((&sc, ty)), &no_aliases).unwrap();
-    assert_eq!(print(&v, Some((&sc, ty))), "{at: {2026-01-02T00:00:00Z: 2, 2026-01-02T03:04:05Z: 1}, lens: {1h30m: true, -5s: false}}");
-    assert!(parse("{at: {2026-02-31T00:00:00Z: 1}}", Some((&sc, ty)), &no_aliases).is_err());
+    let ty = osis::internals::of_schema(sc.clone().into(), sc.aspects["t:rec.0"].ty.clone());
+    let v = parse("{at: {2026-01-02T03:04:05Z: 1, 2026-01-02: 2}, lens: {1h30m: true, -5s: false}}", Some(&ty), &no_aliases).unwrap();
+    assert_eq!(print(&v, Some(&ty)), "{at: {2026-01-02T00:00:00Z: 2, 2026-01-02T03:04:05Z: 1}, lens: {1h30m: true, -5s: false}}");
+    assert!(parse("{at: {2026-02-31T00:00:00Z: 1}}", Some(&ty), &no_aliases).is_err());
     assert_eq!(text::parse_rfc3339("2024-02-29"), Some(1_709_164_800_000));
     assert_eq!(text::parse_rfc3339("2023-02-29"), None);
-    let e = parse("{when: 2026-13-01T00:00:00Z}", Some((&sc, ty)), &no_aliases).unwrap_err();
+    let e = parse("{when: 2026-13-01T00:00:00Z}", Some(&ty), &no_aliases).unwrap_err();
     assert!(e.ends_with("column 8"), "{e}");
     assert_eq!(text::parse_duration(&text::duration_text(i64::MIN)), Some(i64::MIN));
     assert_eq!(text::parse_duration(&text::duration_text(i64::MAX)), Some(i64::MAX));
@@ -223,16 +224,16 @@ fn time_keys_and_edges_notes_cli() {
 #[test]
 fn named_forms_notes_cli() {
     let sc = schema();
-    let ty = &sc.aspects["t:rec.0"].ty;
+    let ty = osis::internals::of_schema(sc.clone().into(), sc.aspects["t:rec.0"].ty.clone());
     let src = r#"{title: "x", when: 2026-10-19T12:00:00.5+02:00, tags: #{"a"}, prio: #high(3), waits: {1: 1h30m}, score: #some(1.5), 99: 1}"#;
-    let v = parse(src, Some((&sc, ty)), &no_aliases).unwrap();
+    let v = parse(src, Some(&ty), &no_aliases).unwrap();
     assert_eq!(
-        print(&v, Some((&sc, ty))),
+        print(&v, Some(&ty)),
         r#"{title: "x", when: 2026-10-19T10:00:00.500Z, tags: #{"a"}, prio: #high(3), waits: {1: 1h30m}, score: #some(1.5), 99: 1}"#
     );
     assert_eq!(print(&v, None), r#"{0: "x", 2: 1792404000500, 3: #{"a"}, 4: #1(3), 5: {1: 5400000}, 6: #1(1.5), 99: 1}"#);
-    assert!(parse("{nope: 1}", Some((&sc, ty)), &no_aliases).is_err());
-    assert!(parse("{prio: #nope}", Some((&sc, ty)), &no_aliases).is_err());
+    assert!(parse("{nope: 1}", Some(&ty), &no_aliases).is_err());
+    assert!(parse("{prio: #nope}", Some(&ty), &no_aliases).is_err());
 }
 
 // notes/cli.md JSON mapping JSON mapping.
@@ -258,9 +259,9 @@ fn json_mapping_plan_cli_5() {
     assert_eq!(j(&m(vec![(Value::Str("set".into()), Value::Int(1))])), r#"{"set":1}"#);
     assert_eq!(j(&Value::unknown(Unknown::new(259, CanonicalBytes::from_value(&Value::Int(7))).unwrap())), r#"{"$tag":259,"$bytes":"Bw"}"#);
     let sc = schema();
-    let ty = &sc.aspects["t:rec.0"].ty;
-    let v = parse(r#"{title: "x", prio: #high(3), waits: {1: 2s}}"#, Some((&sc, ty)), &no_aliases).unwrap();
-    assert_eq!(json::value(&v, Some((&sc, ty))).text(), r#"{"title":"x","prio":{"$case":"high","$payload":3},"waits":{"$map":[[1,2000]]}}"#);
+    let ty = osis::internals::of_schema(sc.clone().into(), sc.aspects["t:rec.0"].ty.clone());
+    let v = parse(r#"{title: "x", prio: #high(3), waits: {1: 2s}}"#, Some(&ty), &no_aliases).unwrap();
+    assert_eq!(json::value(&v, Some(&ty)).text(), r#"{"title":"x","prio":{"$case":"high","$payload":3},"waits":{"$map":[[1,2000]]}}"#);
     let mut m2 = BTreeMap::new();
     m2.insert(Value::Int(-1), Value::Int(1));
     assert_eq!(j(&Value::Map(m2.into_iter().collect())), r#"{"$map":[[-1,1]]}"#);

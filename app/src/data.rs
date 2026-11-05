@@ -12,7 +12,7 @@
 
 use crate::schema::{APP, COLOR, DEMO, FAVORITES, MODE, Mode, OPEN, THEME, VIEW, View};
 use osis::core::{BODY, NAME, TAG};
-use osis::{ChangeId, ClientConfig, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Store, Tid, Transport, p};
+use osis::{ChangeId, CommitKind, CommitQuery, Config, Grant, HostAddr, Member, Osis, Result, Runtime, Scope, Store, Tid, p};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -20,7 +20,7 @@ use std::path::Path;
 /// none; an existing store adds the `hosts` it lacks. Sync runs on osis's own runtime over QUIC
 /// while the app runs.
 pub fn open(dir: &Path, hosts: Vec<HostAddr>) -> Result<Osis> {
-    let cfg = Config { runtime: Runtime::Own, client: ClientConfig { transport: Some(Transport::Quic), ..ClientConfig::default() }, ..Config::default() };
+    let cfg = Config { runtime: Runtime::Own, ..Config::default() };
     let store = Store::Dir(dir.to_path_buf());
     if dir.join("db.redb").exists() {
         let db = Osis::open(store, cfg)?;
@@ -361,12 +361,12 @@ impl Data {
     /// Works around issues/api-change-time.md.
     pub fn changed(&self, t: Tid) -> Result<Option<u64>> {
         let q = CommitQuery { scope: Some(Scope::Thing(t)), kinds: vec![CommitKind::Change, CommitKind::Revert], limit: Some(1), ..Default::default() };
-        let newest = self.db.commits(&q)?.first().map(|e| (e.commit.ts, e.commit.received));
+        let newest = self.db.commits(&q)?.first().map(|e| e.commit.shown());
         let at = match newest {
             Some(x) => Some(x),
-            None => self.db.created(t)?.map(|c| (c.ts, c.received)),
+            None => self.db.created(t)?.map(|c| c.shown()),
         };
-        Ok(at.map(|(ts, received)| ts.wall_ms().0.min(received.0)))
+        Ok(at.map(|t| t.0))
     }
 
     fn sort_by_name(&self, v: &mut [Tid]) -> Result<()> {
@@ -541,8 +541,8 @@ impl Data {
     /// Works around issues/undo-creation-unplaces.md (with `next_undo`).
     pub fn undo(&self, t: Tid) -> Result<bool> {
         let scope = Scope::Thing(t);
-        if let Some(c) = self.db.created(t)?.and_then(|c| c.commit)
-            && self.next_undo(&scope)? == Some(ChangeId::Commit(c))
+        if let Some(c) = self.db.created(t)?.and_then(|c| c.id)
+            && self.next_undo(&scope)? == Some(c)
         {
             return Ok(false);
         }
@@ -1023,7 +1023,7 @@ impl Data {
 }
 
 /// Whether a grant is in force at `now` (an `until` ends it).
-fn live(e: &Grant, now: osis::WallMs) -> bool {
+fn live(e: &Grant, now: osis::Time) -> bool {
     e.until.is_none_or(|u| u > now)
 }
 

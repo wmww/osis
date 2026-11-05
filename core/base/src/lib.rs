@@ -25,6 +25,6 @@ pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, Reader, decode, decod
 pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};
 pub use ids::{Ak, AkError, BlobId, CommitId, CreationRecord, LabelId, Lifetime, Link, PurgeBy, Role, Tid, TidParseError};
-pub use time::{Clock, ManualClock, SystemClock, Ts, WallMs};
+pub use time::{Clock, ManualClock, SystemClock, Time, Ts, WallMs};
 pub use sorted::{ValueMap, ValueSet};
 pub use value::{Float, Unknown, Value, is_known_tag};

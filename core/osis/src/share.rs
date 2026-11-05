@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::handle::{LINKS, Locked, MadeLink, Osis, save_hosts};
 use crate::watch::{Delivery, Filter, Subscription};
-use osis_base::{Ak, LabelId, Role, Tid, Value, WallMs};
+use osis_base::{Ak, Role, Tid, Value, Time};
 use osis_node::flows::{self, PreSync};
 use osis_node::sync::SyncEngine;
 use osis_schema::Codec;
@@ -18,7 +18,7 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GrantOpts {
     /// The grant ends at this time.
-    pub until: Option<WallMs>,
+    pub until: Option<Time>,
     /// The highest role the holder may grant others, at most its own.
     pub invite: Option<Role>,
 }
@@ -55,7 +55,7 @@ pub struct Holder {
     /// The role this way gives: the least along it.
     pub role: Role,
     /// When this way ends: the earliest end along it. One that has ended is not listed.
-    pub until: Option<WallMs>,
+    pub until: Option<Time>,
     /// The actors between the thing and this holder, nearest the thing first: empty for a grant
     /// on the thing itself, the link's actor for someone who joined by a link, a team for its
     /// members.
@@ -66,8 +66,8 @@ pub struct Holder {
 /// or removing its role. Work not seen by then is undone everywhere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SyncFirst {
-    /// Catch up first, for as long as it takes; fail `Unsynced` when it is known it cannot be done
-    /// (a group stranded or without hosts, or no runtime).
+    /// Catch up first, for as long as it takes; fail `Unsynced` on a group stranded or without hosts,
+    /// or with no runtime.
     #[default]
     Required,
     /// Try to catch up for this long, then go ahead with a diagnostic. At 0 only what is already
@@ -76,7 +76,7 @@ pub enum SyncFirst {
     /// Go ahead now, keeping what this device has seen: for a stolen device or a hostile holder.
     Skip,
     /// Go ahead now, keeping only what this device had seen by this time.
-    Backdate(WallMs),
+    Backdate(Time),
 }
 
 /// How `Osis::set_role` takes a role away.
@@ -91,19 +91,15 @@ pub struct SetRoleOpts {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
-    /// The link expires: a device of this person removes the link key once it passed and K's
-    /// label synced (spec/permissions.md §8). An expiring link closes when one of your devices
-    /// next syncs after `until`: until then anyone holding the link can still join.
-    pub until: Option<WallMs>,
-    /// The first redemption ends the link: the link says so (`flags`, spec/wire.md §10), the
-    /// redeemer removes the link key in its redemption, and a device of this person finalizes
-    /// the link when it sees that (spec/permissions.md §8).
+    /// The link expires. It closes when one of your devices next syncs after `until`: until then
+    /// anyone holding the link can still join.
+    pub until: Option<Time>,
+    /// The first redemption ends the link.
     pub single_use: bool,
-    /// Opt-in: the link text carries this device's dialable key and relays (never its lan
-    /// secret; spec/permissions.md §8), so a redeemer that shares no host with it reaches it
-    /// directly while it is online. Anyone holding the link can dial this device until the link
-    /// ends by revocation or expiry, when the key rotates (a single-use link's redemption keeps
-    /// it: the redeemer keeps the direct path). Needs this device reachable (a runtime, `Config.peers`); a
+    /// Opt-in: the link text says how to reach this device directly, so a redeemer that shares no
+    /// host with it reaches it while it is online. Anyone holding the link can dial this device until
+    /// the link ends by revocation or expiry, when the device's address changes (a single-use link's
+    /// redemption keeps it: the redeemer keeps the direct path). Needs this device reachable (a runtime, `Config.peers`); a
     /// database without hosts can only make direct links.
     pub direct: bool,
 }
@@ -140,7 +136,7 @@ pub struct LinkInfo {
     pub id: LinkId,
     pub target: Tid,
     pub role: Role,
-    pub until: Option<WallMs>,
+    pub until: Option<Time>,
     pub single_use: bool,
 }
 
@@ -307,61 +303,56 @@ pub enum SyncState {
     Syncing,
     Unreachable,
     NoHosts,
-    /// A host does not admit it (yet: code 14, spec/wire.md §11.2; `GroupSync::not_admitted`
-    /// names them) and no other host has it open; registered again after a back-off. Ranks
-    /// above `NoHosts`, below `Stranded`.
+    /// A host does not take it (yet; `GroupSync::refused_by` names them) and no other host has it
+    /// open. It keeps asking.
     Refused,
-    /// Waiting for a re-seal (spec/permissions.md §3). Ranks above `NoHosts` (a group shows
-    /// its worst label's state; `wait_synced` judges each label on its own).
+    /// This node lost the keys to it, and can read nothing new until another holder gives them again.
     Stranded,
-    /// Held for commit headers only (`SyncMode::HeadersOnly`): not synced, what is here is stale.
-    HeadersOnly,
-    /// No label carries the thing to one of its holders (`GroupSync::unrouted`): it holds a role
-    /// and reads nothing until `sync` gives the thing a label or a synced group it reads takes
-    /// the thing in. Only on things with no label of their own, so never beside another state.
-    NoRoute,
+    /// Only the log of its changes is held (`SyncMode::LogOnly`): not synced, what is here is stale.
+    LogOnly,
+    /// A holder of a role on this thing gets none of its data (`GroupSync::not_carried_to`): the role
+    /// stands, and it reads nothing until `sync` syncs the thing or a synced group the holder reads
+    /// takes it in.
+    NotCarried,
 }
 
+/// How one group syncs here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupSync {
     pub state: SyncState,
-    pub last_sync: Option<WallMs>,
-    /// The labels this node syncs it under (several while one replaces another): what a host
-    /// admits it by (`Hosting::labels`, `caps`).
-    pub labels: Vec<LabelId>,
-    /// Hosts that do not admit one of those labels (yet): state `Refused` when no other host
-    /// has it open, else informational.
-    pub not_admitted: Vec<HostAddr>,
-    /// This node left the group and keeps it until a host has its removal (spec/permissions.md
-    /// §3); stays set while no host takes it.
+    pub last_sync: Option<Time>,
+    /// Hosts that do not take it (yet): state `Refused` when no other host has it open, else
+    /// informational.
+    pub refused_by: Vec<HostAddr>,
+    /// This node left the group and keeps it until a host has its removal; stays set while no
+    /// host takes it.
     pub leaving: bool,
-    /// Holders of a role on the thing that read no live label carrying it, as this node knows
-    /// labels (`Engine::unrouted`; the holder's own node and the granter's show the same): this
-    /// person among them when it is the one without a route. Not this node's own clients on a
-    /// thing this person owns: they read what this node holds.
-    pub unrouted: Vec<Tid>,
+    /// Holders of a role on the thing that no sync carries it to, as far as this node knows: this
+    /// account among them when it is the one cut off. Not this node's own clients on a thing of this
+    /// account's: they read what this node holds.
+    pub not_carried_to: Vec<Tid>,
 }
 
-/// Sync status: hosts connected and each synced group (`groups`: groups with a label this
-/// node reads, and those it holds for receipts only).
+/// Sync status: hosts connected and each group this node syncs or holds the log of, and each thing
+/// shared with no sync to carry it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status {
     pub connected: usize,
     pub groups: BTreeMap<Tid, GroupSync>,
     /// The nodes this process is connected to, and those its routes name.
     pub remotes: Vec<crate::sources::RemoteStatus>,
-    /// Things read at a route and also in a group that carries them elsewhere: writes on them are
-    /// refused until one of the groups moves (`Osis::group_source`).
-    pub split: BTreeSet<Tid>,
+    /// Things read at a connected node and also in a group that carries them to another source:
+    /// writes on them are refused until one of the groups moves (`Osis::group_source`).
+    pub two_sources: BTreeSet<Tid>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncScope {
-    /// Every synced label with hosts (a hostless one has nothing to wait for) and every
-    /// pending delivery.
+    /// Every synced group with hosts (one with none has nothing to wait for) and every pending
+    /// delivery.
     All,
-    /// The labels holding this thing (its own, or those of groups containing it; a hostless one
-    /// fails `Unsynced`) and the deliveries about it, what it holds or those groups.
+    /// The sync of this thing (its own, or of groups containing it; one with no hosts fails
+    /// `Unsynced`) and the deliveries about it, what it holds or those groups.
     Thing(Tid),
 }
 
@@ -390,21 +381,20 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
     for s in sync.label_status() {
         let state = label_state(&s);
-        let last = s.last_sync.map(WallMs);
-        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted: Vec::new() });
+        let last = s.last_sync.map(Time);
+        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, refused_by: Vec::new(), leaving: false, not_carried_to: Vec::new() });
         g.state = g.state.max(state);
         g.last_sync = g.last_sync.max(last);
-        g.labels.push(s.label);
         g.leaving |= s.leaving;
         for a in s.not_admitted {
             let a = HostAddr(a);
-            if !g.not_admitted.contains(&a) {
-                g.not_admitted.push(a);
+            if !g.refused_by.contains(&a) {
+                g.refused_by.push(a);
             }
         }
     }
     for g in sync.receipts_only() {
-        groups.insert(*g, GroupSync { state: SyncState::HeadersOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted: Vec::new() });
+        groups.insert(*g, GroupSync { state: SyncState::LogOnly, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to: Vec::new() });
     }
     // things a holder has a role on and no route to (spec/sync.md §2): none has a label of its
     // own, so none is listed above. On a thing this person administers (it can `sync` it) nobody
@@ -419,12 +409,12 @@ pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Result<Status> {
         let t = *t;
         let own = e.core.role_now(&me, &t) == Some(Role::Admin);
         let local = |e: &osis_node::Engine, h: &Tid| served.contains(h) || (e.owner_chain(h).any(|x| x == me) && e.core.current_holders(h).iter().all(|(m, _, _)| served.contains(m)));
-        let unrouted: Vec<Tid> = holders.iter().copied().filter(|h| !(own && local(e, h))).collect();
-        if !unrouted.is_empty() && !groups.contains_key(&t) {
-            groups.insert(t, GroupSync { state: SyncState::NoRoute, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted });
+        let not_carried_to: Vec<Tid> = holders.iter().copied().filter(|h| !(own && local(e, h))).collect();
+        if !not_carried_to.is_empty() && !groups.contains_key(&t) {
+            groups.insert(t, GroupSync { state: SyncState::NotCarried, last_sync: None, refused_by: Vec::new(), leaving: false, not_carried_to });
         }
     }
-    Ok(Status { connected: sync.connected(), groups, remotes: Vec::new(), split: BTreeSet::new() })
+    Ok(Status { connected: sync.connected(), groups, remotes: Vec::new(), two_sources: BTreeSet::new() })
 }
 
 fn edge(role: Role, o: GrantOpts) -> ct::Edge {
@@ -468,7 +458,7 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
 
 /// Synced groups holding any of `things` (the thing itself or its closure).
 fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>) -> Vec<Tid> {
-    status.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::HeadersOnly | SyncState::NoRoute)).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
+    status.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::LogOnly | SyncState::NotCarried)).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
 }
 
 /// Whether a route to `t`, which no group here holds yet, may still arrive: a hint names its label,
@@ -575,7 +565,7 @@ impl Osis {
     ///
     /// This records the permission and nothing else. The holder reads the target only once a synced
     /// group it reads holds the target, or the target's own `sync` carries it; until then `status`
-    /// shows `SyncState::NoRoute` and names the holder (`GroupSync::unrouted`).
+    /// shows `SyncState::NotCarried` and names the holder (`GroupSync::not_carried_to`).
     ///
     /// Needs admin on the target (or an `invite` of at least `role`, for someone with no grant yet;
     /// a grant that ended above `role` counts as one until an admin takes it away), else `Permission`,
@@ -699,11 +689,11 @@ impl Osis {
             let mut out: Vec<Holder> = Vec::new();
             // the ways looked behind so far, per actor: a way none of them beats goes behind it too,
             // else a member's role through a nested actor is that of the actor's first way in
-            let mut seen: BTreeMap<Tid, Vec<(Role, Option<WallMs>)>> = BTreeMap::new();
+            let mut seen: BTreeMap<Tid, Vec<(Role, Option<Time>)>> = BTreeMap::new();
             let mut queue = std::collections::VecDeque::from([(target, None, None, Vec::new())]);
             while let Some((at, role, until, through)) = queue.pop_front() {
                 let role: Option<Role> = role;
-                let until: Option<WallMs> = until;
+                let until: Option<Time> = until;
                 let through: Vec<Tid> = through;
                 for (actor, g) in r.grants(at) {
                     if actor == target || through.contains(&actor) {
@@ -953,10 +943,9 @@ impl Osis {
         Ok(())
     }
 
-    /// Makes a share link to `target` with `role` (spec/permissions.md §8): its actor K and key L
-    /// on this database's hosts. Anyone holding the link can redeem it until `until` or
-    /// `revoke_link`. It also syncs `target` when it has no label of its own, the only place K
-    /// can read it, so a link always works.
+    /// Makes a share link to `target` with `role`, on this database's hosts. Anyone holding the link
+    /// can redeem it until `until` or `revoke_link`. It also syncs `target` when it does not sync on
+    /// its own, or the link could not work.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
@@ -1015,14 +1004,12 @@ impl Osis {
         Ok(ShareLink(link.to_text().map_err(bad("link"))?))
     }
 
-    /// Redeems a link (spec/permissions.md §8): reaches its label by the link key, waits until K's
-    /// grant on the target is here, joins K as this person (removing the link key in the same
-    /// commit when the link is single use). Returns the target. A link known to have ended (used,
-    /// revoked, expired, its hosts no longer listing its key, K off the target) fails `Invalid` at
-    /// once; so does, a while in, one whose K's label, read to its end, shows no grant on the target
-    /// (the target is the link text's word: such a link joins nothing). With nobody answering it
-    /// waits. The link key is forgotten on every outcome, a dropped future included; dropped once
-    /// joined (the last moments, a commit here waiting for what it follows), the join stands.
+    /// Redeems a link: reaches what it names and joins it, returning the thing. A link known to have
+    /// ended (used, revoked, expired, its hosts no longer knowing it) fails `Invalid` at once. A link
+    /// that cannot be judged yet, its maker's upload on the way or nobody answering, waits until
+    /// dropped: nothing says it will not work, and calling again is safe. What the link holds is
+    /// forgotten on every outcome, a dropped future included; dropped once joined (the last moments),
+    /// the join stands.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if !self.has_store() {
             link.parse()?;
@@ -1036,7 +1023,7 @@ impl Osis {
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
         let label = link.k_label;
-        self.wait_until(Some(LINK_VERDICT_WAIT), Box::new(move |s, _, late| {
+        self.wait_until(None, Box::new(move |s, _, _| {
             if s.static_entry_refused(&label) {
                 return Some(Err(link_ended()));
             }
@@ -1064,11 +1051,8 @@ impl Osis {
             if e.edge_gone(&target, &k) {
                 return Some(Err(link_ended()));
             }
-            if !late || pending_on(e, &target) || !s.complete_pass(&k) {
-                return None;
-            }
-            // K's label read to its end: a cut-off node or a commit still waiting says nothing
-            Some(Err(Error::Invalid("this link gives no access to what it names: ask for a new one".into())))
+            // no such edge yet: it may be on its way from the maker's node, so nothing here is sure
+            None
         }))
         .await?;
         let me = self.me();
@@ -1220,9 +1204,8 @@ impl Osis {
         Ok(())
     }
 
-    /// This person's contact card (spec/sync.md §3): a read link to its profile P, a group of
-    /// itself under its own label carrying the person's `created.0` and `keys.0` as certificates.
-    /// Made once; later calls return the same card. `Invalid` on a database without hosts.
+    /// This person's contact card: a read link to its profile, a thing that also carries what others
+    /// need to grant this person a role. Made once; later calls return the same card. `Invalid` on a database without hosts.
     pub fn contact_card(&self) -> Result<ContactCard> {
         if !self.has_store() {
             let v = self.rcall(crate::port::method::CONTACT_CARD, vec![])?;
@@ -1291,12 +1274,10 @@ impl Osis {
         t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
     }
 
-    /// Imports a contact card: reads the profile by the card's link key (bearer use, nothing
-    /// written) until the person's `keys.0` is here and the key's actor K has its grant on the
-    /// profile (as in `redeem`, the card's target is its text's word). Returns the person, usable
-    /// in `grant`. `Invalid` as for `redeem`: a card known to have ended, or one whose K's label, read
-    /// to its end, shows no grant on the profile. With nobody answering it waits. The card's key is
-    /// forgotten on every outcome, a dropped future included.
+    /// Imports a contact card: reads the profile by the card, nothing written, until the person's keys
+    /// are here. Returns the person, usable in `grant`. `Invalid` as for `redeem` when the card is known to have ended; otherwise it waits
+    /// until dropped, and calling again is safe. The card's key is forgotten on every outcome, a
+    /// dropped future included.
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
         if !self.has_store() {
             card.parse()?;
@@ -1310,8 +1291,8 @@ impl Osis {
         let f2 = found.clone();
         let r = self
             .wait_until(
-                Some(LINK_VERDICT_WAIT),
-                Box::new(move |s, _, late| {
+                None,
+                Box::new(move |s, _, _| {
                     if s.static_entry_refused(&label) {
                         return Some(Err(link_ended()));
                     }
@@ -1323,11 +1304,8 @@ impl Osis {
                         *crate::watch::lock(&f2) = Some(owner);
                         return Some(Ok(()));
                     }
-                    if holds || !late || s.fill_before_passes() || pending_on(s.engine_mut(), &k) || pending_on(s.engine_mut(), &p) || !s.complete_pass(&k) {
-                        return None;
-                    }
-                    // K's label read to its end, as in `redeem`
-                    Some(Err(Error::Invalid("this card gives no access to what it names: ask for a new one".into())))
+                    // as in `redeem`: nothing here says it will not come
+                    None
                 }),
             )
             .await;
@@ -1418,7 +1396,7 @@ impl Osis {
         if was { self.links() } else { Ok(Vec::new()) }
     }
 
-    /// The hosts new labels go to (and kept connected). `Unsupported` on a client with its own actor: they are
+    /// The hosts newly synced groups go to (and kept connected). `Unsupported` on a client with its own actor: they are
     /// its node's.
     pub fn hosts(&self) -> Result<Vec<HostAddr>> {
         if !self.has_store() {
@@ -1432,10 +1410,9 @@ impl Osis {
         self.locked(|x| x.sync.config().hosts.clone())
     }
 
-    /// Adds a host for new labels (links, `sync`) and keeps a connection to it. The person's
-    /// inbox and existing labels on the database's hosts (those whose list equals it) move to
-    /// the new list: the home label and groups the person owns (directly or through its
-    /// actors) that this node administers; not links or the contact card (their text names
+    /// Adds a host for what syncs from now on (links, `sync`) and keeps a connection to it. What
+    /// already syncs on all the database's hosts moves to the new list: the home group and groups the
+    /// person owns (directly or through its actors) that this node administers; not links or the contact card (their text names
     /// their hosts), not groups owned by others. A database created without hosts becomes
     /// reachable once one is added. With `Runtime::None` the list is only stored, for the next open
     /// with a runtime: until then `status` shows nothing connected and `wait_synced` fails `Network`.
@@ -1450,7 +1427,7 @@ impl Osis {
         self.set_hosts(v)
     }
 
-    /// Removes a host, from the database's list and the labels that follow it (`add_host`);
+    /// Removes a host, from the database's list and the groups that follow it (`add_host`);
     /// a group with holders besides the person's devices keeps its last host.
     pub fn remove_host(&self, s: &HostAddr) -> Result<()> {
         if !self.has_store() {
@@ -1485,9 +1462,8 @@ impl Osis {
         self.sync_now()
     }
 
-    /// Makes `group` synced through `hosts` (default: this database's): its own label
-    /// (spec/sync.md §2); needs admin on the group. A no-op when it has one, unless `hosts` names
-    /// others: `Invalid`, for a group's label keeps its hosts.
+    /// Makes `group` synced through `hosts` (default: this database's); needs admin on the group. A
+    /// no-op when it syncs already, unless `hosts` names others: `Invalid`, for a group keeps its hosts.
     pub fn sync(&self, group: Tid, hosts: &[HostAddr]) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(group)? {
             return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(hosts.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
@@ -1567,8 +1543,7 @@ impl Osis {
         Ok(())
     }
 
-    /// Stops syncing `group` under its own labels (marks them replaced without a successor;
-    /// the group stays in other synced groups it is placed in).
+    /// Stops syncing `group` for all its holders (it stays in other synced groups it is a member of).
     pub fn unsync(&self, group: Tid) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(group)? {
             return r.call(crate::port::method::UNSYNC, vec![Value::Tid(group)]).map(drop);
@@ -1629,17 +1604,15 @@ impl Osis {
         }))
     }
 
-    /// Resolves once every label in scope finished a pass with nothing outstanding after the
-    /// local commits so far (they are at a host) and every pending delivery in scope was
-    /// taken. Fails `Unsynced` when it is known this cannot happen: a stranded label in scope, or
-    /// `Thing(t)` with a hostless label; `Network` without a runtime. A host out of reach, or one that
-    /// does not admit a label or take a delivery for now (`SyncState::Refused`), may yet: this waits
-    /// (`status` shows them). `Thing(t)`: the labels of the groups holding `t` (a replaced hostless
-    /// one beside another does not count) and the deliveries about `t`, a thing it holds or one of
-    /// those groups (a grant on one, a non-writer's write under its label). With no group holding
-    /// `t` it fails `Unsynced` at once, unless a route may still arrive: a grant named its label, or
-    /// this node does not administer `t` and a label of its own has more to bring (a first sync).
-    /// `All`: every label with hosts (`status` shows the `NoHosts` ones) and every delivery.
+    /// Resolves once this node's writes so far in scope are at a host, nothing more is outstanding, and
+    /// every pending delivery in scope was taken. Fails `Unsynced` at once on a stranded group in
+    /// scope (`SyncState::Stranded`, for now), and for `Thing(t)` on a group with no hosts; `Network`
+    /// without a runtime. A host out of reach, or one that does not take a group or a delivery for now
+    /// (`SyncState::Refused`), may yet: this waits (`status` shows them). `Thing(t)`: the groups
+    /// holding `t` and the deliveries about `t`, a thing it holds or one of those groups. With no group
+    /// holding `t` it fails `Unsynced` at once, unless one may still arrive: a grant named it, or this
+    /// node does not administer `t` and something it syncs has more to bring (a first sync). `All`:
+    /// every group with hosts (`status` shows the `NoHosts` ones) and every delivery.
     ///
     /// On a thin client the node waits with the same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope) -> Result<()> {
@@ -1682,8 +1655,7 @@ impl Osis {
         }
     }
 
-    /// Catches up now and waits for nothing: labels not live at a host sync, live ones (their host
-    /// pushes what it gets) judge again what is left to send. Cheap at any rate, so an app may
+    /// Catches up now and waits for nothing. Cheap at any rate, so an app may
     /// poll it. To wait until this node's writes are at a host: `wait_synced`.
     pub fn sync_now(&self) -> Result<()> {
         if !self.has_store() {
@@ -1698,7 +1670,7 @@ impl Osis {
         self.act(|x| x.sync.sync_now());
     }
 
-    /// Writes a bundle of `groups`' labels (spec/sync.md §11) to `out`.
+    /// Writes a bundle of `groups` to `out`, for another node's `import_bundle`.
     pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
         if !self.has_store() {
             use crate::port::{STREAM_CHUNK, codec::{Args, tids_v}, method};
@@ -1812,12 +1784,6 @@ fn follow_inbox(e: &mut osis_node::Engine, me: Tid, old: &BTreeSet<osis_label::A
     }
     Ok(())
 }
-
-/// How long a link or card, whose K's label reads to its end with no grant on what its text names,
-/// is given for that grant to arrive before it is `Invalid`: it may be on its way from the maker's
-/// node. Minor: 0 fails an honest link racing its own upload, infinity leaves a bad one waiting
-/// until dropped.
-const LINK_VERDICT_WAIT: Duration = Duration::from_secs(60);
 
 const CONTACT: &str = "contact";
 /// App record prefix: `profile/<person tid>` -> profile tid text, written by `import_contact`.

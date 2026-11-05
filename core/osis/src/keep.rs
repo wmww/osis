@@ -19,7 +19,7 @@ use std::time::Duration;
 /// value blinks off at a holder until the rewrite arrives. 1 (no slack): it blinks at every
 /// refresh; infinity: a write per moment. Each rewrite supersedes the one before (spec/sync.md
 /// §9), so holders and hosts keep about one write per kept value.
-pub const REFRESH_DIVISOR: u32 = 2;
+const REFRESH_DIVISOR: u32 = 2;
 
 struct Kept {
     tid: Tid,
@@ -86,7 +86,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// returned `KeepAlive` lives. Two devices keeping one position alive (a person's key)
     /// overwrite each other at every rewrite: key by device. The key must be ephemeral (`~`) with
     /// a default expiry (schema `[expires: ...]`) well above the network delay and the clock
-    /// differences between nodes; the database needs its runtime (a `Config::transport`) for the
+    /// differences between nodes; the database needs a runtime (`Config::runtime`) for the
     /// timer. Nothing outlives the process: after a restart the app calls this again.
     /// `Unsupported` through a connected node.
     pub fn keep_alive<U: Codec>(&self, value: &U) -> Result<KeepAlive> {
@@ -134,9 +134,8 @@ impl KeepAlive {
         Ok(())
     }
 
-    /// Writes made so far (tests).
-    #[doc(hidden)]
-    pub fn writes(&self) -> u64 {
+    /// Writes made so far (`internals::kept_writes`).
+    pub(crate) fn writes(&self) -> u64 {
         lock(&self.st).writes
     }
 }

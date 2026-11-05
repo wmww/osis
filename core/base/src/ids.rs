@@ -391,7 +391,7 @@ impl fmt::Debug for Link {
     }
 }
 
-/// Who may purge a delta (spec/commits.md §5; wire codes spec/wire.md §1). Named sets, not a
+/// Who may purge a write (spec/commits.md §5; wire codes spec/wire.md §1). Named sets, not a
 /// scale: `Author` excludes admins, `Admin` the author.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PurgeBy {

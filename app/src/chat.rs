@@ -47,16 +47,16 @@ pub fn name(db: &Osis, c: Tid) -> Result<String> {
     Ok(if n.trim().is_empty() { "Chat".into() } else { n })
 }
 
-/// How long the app waits for a link's host to answer: it runs off the UI thread, and a person is
-/// watching. Minor: at 0 every join fails, at infinity one that nobody answers waits for good.
+/// How long the app waits to confirm a link: it runs off the UI thread, and a person is watching.
+/// Minor: at 0 every join fails, at infinity one that nobody answers waits for good.
 const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Joins by an `osis://` link (`osis chat link`): the chat, once here. Blocks until the link's
-/// host answers or `JOIN_WAIT` passes.
+/// Joins by an `osis://` link (`osis chat link`): the chat, once here. Blocks until the link is
+/// confirmed or `JOIN_WAIT` passes, which says so: nothing is left half done.
 pub fn join(db: &Osis, link: &str) -> Result<Tid> {
     let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a chat link: {e}")))?;
     let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().map_err(|e| osis::Error::Network(e.to_string()))?;
-    rt.block_on(async { tokio::time::timeout(JOIN_WAIT, osis_chat::join(db, &l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("timed out".into())))
+    rt.block_on(async { tokio::time::timeout(JOIN_WAIT, osis_chat::join(db, &l)).await }).unwrap_or_else(|_| Err(osis::Error::Network("could not confirm this link yet; trying again is safe".into())))
 }
 
 /// The profile, made on first use; `None` on a store without hosts.

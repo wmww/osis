@@ -60,11 +60,11 @@ fn page_and_watch() {
     assert!(!page.more);
     assert!(page.entries[0].commit.received.0 > 0);
     // a page past the bound ends early and says more
-    for i in 0..osis::HISTORY_PAGE {
+    for i in 0..osis::internals::HISTORY_PAGE {
         say(&db, t, &format!("m{i}"));
     }
     let page = db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Newest, usize::MAX).unwrap();
-    assert_eq!(page.entries.len(), osis::HISTORY_PAGE);
+    assert_eq!(page.entries.len(), osis::internals::HISTORY_PAGE);
     assert!(page.more);
     let next = db.at(t, osis::Key::untyped(msgs())).history(HistoryFrom::Before(page.entries.last().unwrap().pos()), 1).unwrap();
     assert_eq!(next.entries.len(), 1);
@@ -261,7 +261,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
 #[test]
 fn page_bound_counts_large_values() {
     let mut c = osis::internals::Opening::memory();
-    c.client.materialize_limit = 3 << 20;
+    c.handle.read_limit = 3 << 20;
     let db = osis::internals::create(c).unwrap().0;
     let t = thing(&db);
     let k = ak("t:big.0");
@@ -289,7 +289,7 @@ fn page_bound_counts_large_values() {
 // disappearing chat, and a kept-for-good one adds no permanent delta per delete.
 #[test]
 fn purge_answers_to_no_required_retention_spec_commits_5() {
-    use osis::schema::core_types as ct;
+    use osis::internals::schema::core_types as ct;
     let db = db(11);
     let t = thing(&db);
     let a = say(&db, t, "x");
@@ -304,7 +304,7 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
 // spec/commits.md §5 (a writer does not undo `required.0^`), notes/api.md `knows`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
 #[test]
 fn required_is_no_content_spec_commits_5() {
-    use osis::schema::core_types as ct;
+    use osis::internals::schema::core_types as ct;
     let db = db(12);
     let rules = ct::RequiredRules { keep: true, ..Default::default() };
     let t = thing(&db);

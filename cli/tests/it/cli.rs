@@ -4,6 +4,7 @@
 //! spec: none (client surface: notes/cli.md).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
+use osis::internals::Internals as _;
 use clap::CommandFactory;
 use osis::MemStore;
 use osis_cli::args::Cli;
@@ -359,7 +360,7 @@ fn sharing_commands_local_plan_cli_4() {
     assert_eq!(s.code(&["device", "rm", &stranger]), 0, "no device of this person: nothing to do");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
     let st = s.ok(&["--json", "status"]).line().to_string();
-    assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"split\":[]}"), "{st}");
+    assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"two_sources\":[]}"), "{st}");
 }
 
 // notes/cli.md Command table: commands over API pieces not built yet (queries, backlinks) parse and
@@ -594,31 +595,32 @@ fn clients_commands_plan_cli() {
 fn hosting_commands_plan_cli_4() {
     let s = S::mem();
     assert_eq!(s.code(&["hosting", "show"]), 3, "not hosting");
-    s.ok(&["hosting", "set", "--listen", "quic://0.0.0.0:7400", "--label", "me", "--policy", "cap_entries=10", "--cap", "me=5,500"]);
-    let st = s.ok(&["--json", "status"]).out;
-    let home_label = st.split("\"labels\":[\"").nth(1).unwrap().split('"').next().unwrap().to_string();
-    assert_eq!(home_label.len(), 32, "{st}");
+    s.ok(&["hosting", "set", "--listen", "quic://0.0.0.0:7400", "--admitted", "me", "--policy", "group_entries=10", "--cap", "me=5,500"]);
+    let ids = s.ok(&["hosting", "ids", "me"]).out;
+    let home_label = ids.trim().to_string();
+    assert_eq!(home_label.len(), 32, "{ids}");
+    assert!(!s.ok(&["--json", "status"]).out.contains(&home_label), "the id stays with hosting");
     let show = s.ok(&["hosting", "show"]).out;
     let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
     let key = addr.strip_prefix("quic://0.0.0.0:7400#").unwrap_or_else(|| panic!("{addr}"));
     assert_eq!(key.len(), 43, "a base64url 32-byte key: {addr}");
-    assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit own\nlabel {home_label}\npolicy cap_entries 10\ncap {home_label} 5 500\n"));
+    assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit own\nadmitted {home_label}\npolicy group_entries 10\ncap {home_label} 5 500\n"));
     // the address works as a host to add (`hosts add` on the host device itself)
     s.ok(&["hosts", "add", &addr]);
     assert_eq!(s.ok(&["hosts", "ls"]).out, format!("{addr}\n"));
     s.ok(&["hosts", "rm", &addr]);
     // one flag replaces its field, the rest kept; '' clears
     let other = "00112233445566778899aabbccddeeff";
-    s.ok(&["hosting", "set", "--admit", "open", "--label", other, "--policy", ""]);
+    s.ok(&["hosting", "set", "--admit", "open", "--admitted", other, "--policy", ""]);
     let show = s.ok(&["hosting", "show"]).out;
-    assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit open\nlabel {other}\ncap {home_label} 5 500\n"), "the key kept");
+    assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit open\nadmitted {other}\ncap {home_label} 5 500\n"), "the key kept");
     let j = s.ok(&["--json", "hosting", "show"]).out;
-    assert!(j.contains(&format!("\"labels\":[\"{other}\"]")) && j.contains("\"admit\":\"open\"") && j.contains(&format!("\"addresses\":[\"{addr}\"]")), "{j}");
+    assert!(j.contains(&format!("\"admitted\":[\"{other}\"]")) && j.contains("\"admit\":\"open\"") && j.contains(&format!("\"addresses\":[\"{addr}\"]")), "{j}");
     // bad input: an unknown knob (Invalid), a group not synced here, not a label
     assert_eq!(s.code(&["hosting", "set", "--policy", "no_such_knob=1"]), 7);
     let t = s.thing();
-    assert_eq!(s.code(&["hosting", "set", "--label", &t]), 3);
-    assert_eq!(s.code(&["hosting", "set", "--label", "abc"]), 2);
+    assert_eq!(s.code(&["hosting", "set", "--admitted", &t]), 3);
+    assert_eq!(s.code(&["hosting", "set", "--admitted", "abc"]), 2);
     assert_eq!(s.code(&["hosting", "set", "--cap", "me=5"]), 2);
     s.ok(&["hosting", "off"]);
     assert_eq!(s.code(&["hosting", "show"]), 3);
@@ -676,8 +678,8 @@ fn sock_pointer_must_be_the_stores() {
     c.runtime = osis::Runtime::Own;
     let (n, _) = osis::internals::create(c).unwrap();
     let sock = other.join("n.sock");
-    n.listen_unix(&sock).unwrap();
-    std::fs::write(d.join(osis::SOCK_FILE), format!("{}\n", sock.display())).unwrap();
+    n.listen_socket_at(&sock).unwrap();
+    std::fs::write(d.join("sock"), format!("{}\n", sock.display())).unwrap();
     let (code, err) = call(&["whoami"]);
     assert_eq!(code, 8, "{err}");
     assert!(err.contains("store in use"), "{err}");
@@ -707,7 +709,6 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = c.kill();
     let _ = c.wait();
     assert!(warned && running);
-    assert!(!d.join(osis::SOCK_FILE).exists());
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&xdg);
 }
@@ -765,4 +766,19 @@ fn group_and_splice_commands() {
     assert!(s.ok(&["show", &owned]).out.contains(&format!("owner\t{g}")), "{}", s.ok(&["show", &owned]).out);
     let schema = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");
+}
+
+// notes/cli.md Futures: a link that cannot be judged within `--timeout` says it could not be confirmed and that retrying is safe; nothing says it is bad
+#[test]
+fn redeem_past_its_wait_says_retrying_is_safe_notes_cli() {
+    let s = S::mem();
+    let a = osis::HostAddr::new(&"mem://a".parse().unwrap(), [1; 32]).to_string();
+    s.ok(&["hosts", "add", &a]);
+    let g = s.thing();
+    let link = s.call(&["--timeout", "1ms", "link", "make", &g, "read"], "");
+    let link = link.out.lines().next().unwrap_or_else(|| panic!("{}", link.err)).to_string();
+    let other = S::mem();
+    let o = other.call(&["--timeout", "100ms", "link", "redeem", &link], "");
+    assert_eq!(o.code, 6, "{}", o.err);
+    assert!(o.err.contains("could not confirm this link yet; trying again is safe"), "{}", o.err);
 }

@@ -10,16 +10,15 @@ use crate::read::{AspectRef, Reader, ak_of, lenient};
 use crate::sources::Source;
 use crate::read::Stamp;
 use crate::watch::{Delivery, Filter, Subscription};
+use crate::change::{ChangeId, HistoryFrom, HistoryPos};
 use osis_base::{Ak, Tid, Value};
-use osis_node::ChangeId;
 use osis_node::engine::history::{HistoryRow, RowBody};
 use osis_schema::AspectKey;
-
-pub use osis_node::engine::history::{HistoryFrom, HistoryPos};
 
 /// Entries of a page at most. Resource bound against a caller asking for everything at once under
 /// the engine lock: past it a page ends early and says `more`. 0 would read nothing, infinity a
 /// whole aspect in one call.
+#[doc(hidden)]
 pub const HISTORY_PAGE: usize = 256;
 
 /// What is here of an entry's body.
@@ -28,19 +27,18 @@ pub enum HistoryBody<T> {
     /// Its value (`None`: the write holds no whole value of the key's type, a removal or a path
     /// write, or it does not read as that type: a `Mismatch` diagnostic).
     Held(Option<T>),
-    /// Held, and above the materialization bound.
+    /// Held, and above `HandleConfig::read_limit`.
     TooLarge { limit: usize },
-    /// A purge request dropped it, for everyone honest: the entry is its tombstone. `by` the request,
-    /// `actor` who made it, verified (`None`: its header is not held here).
+    /// Purged, on every honest node: the entry stays to say so. `by` the purge, `actor` who made it
+    /// (`None`: not known here).
     Purged { by: ChangeId, actor: Option<Tid> },
-    /// Gone for another reason: expiry, a keep bound, compaction.
-    Dropped,
-    /// Not on this node (yet): its header came and its body did not. Not an absence.
+    /// Gone for another reason: it expired, passed a keep bound or was tidied up.
+    Gone,
+    /// Not on this node yet: known of, and still to arrive. Not an absence.
     NotFetched,
 }
 
-/// One commit's delta on an aspect, attributed by its signed header: `commit.actor` is verified
-/// exactly when `valid` (spec/permissions.md §5.2, Acting).
+/// One change's write on an aspect: `commit.actor` is verified exactly when `valid`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryEntry<T> {
     pub commit: Stamp,
@@ -53,7 +51,7 @@ pub struct HistoryEntry<T> {
 impl<T> HistoryEntry<T> {
     /// This entry's place, for `HistoryFrom::Before` and `After`.
     pub fn pos(&self) -> HistoryPos {
-        HistoryPos { ts: self.commit.ts, id: self.commit.id }
+        self.commit.pos()
     }
 }
 
@@ -63,9 +61,9 @@ pub struct HistoryPage<T> {
     pub entries: Vec<HistoryEntry<T>>,
     /// More entries lie that way here.
     pub more: bool,
-    /// Every label carrying the thing finished a pass here, so past the last entry there is nothing
-    /// this node knows of. `false`: entries may yet arrive anywhere in the history, older ones
-    /// too (offline, syncing): not fetched, not absent.
+    /// Every sync carrying the thing finished here, so past the last entry there is nothing this
+    /// node knows of. `false`: entries may yet arrive anywhere in the history, older ones too
+    /// (offline, syncing): not fetched, not absent.
     pub complete: bool,
 }
 
@@ -94,12 +92,12 @@ fn entry_of(r: &mut Reader<'_>, tid: &Tid, ak: &Ak, row: HistoryRow, limit: usiz
             Err(_) => HistoryBody::NotFetched,
         },
         RowBody::TooLarge => HistoryBody::TooLarge { limit },
-        RowBody::Purged(by) => HistoryBody::Purged { by: ChangeId::Commit(by), actor: r.e.header(&by).map(|h| h.actor) },
-        RowBody::Dropped => HistoryBody::Dropped,
+        RowBody::Purged(by) => HistoryBody::Purged { by: ChangeId::commit(by), actor: r.e.header(&by).map(|h| h.actor) },
+        RowBody::Dropped => HistoryBody::Gone,
         RowBody::NotFetched => HistoryBody::NotFetched,
     };
     let kind = row.kind.map_or(CommitKind::Ephemeral, crate::commits::kind_of_commit);
-    Ok(HistoryEntry { commit: Stamp { id: row.id, actor: row.actor, node: row.node, ts: row.ts, received: row.received }, kind, valid: row.valid, body })
+    Ok(HistoryEntry { commit: Stamp::new(row.id.into(), row.actor, row.node, row.ts, row.received), kind, valid: row.valid, body })
 }
 
 /// `e` through the key's type.
@@ -108,7 +106,7 @@ pub(crate) fn typed<K: AspectKey>(db: &Osis, tid: Tid, ak: &Ak, key: &K, e: Hist
         HistoryBody::Held(v) => HistoryBody::Held(v.and_then(|v| lenient(tid, ak, key.decode(&v), |d| db.engine(|e| e.report(d))))),
         HistoryBody::TooLarge { limit } => HistoryBody::TooLarge { limit },
         HistoryBody::Purged { by, actor } => HistoryBody::Purged { by, actor },
-        HistoryBody::Dropped => HistoryBody::Dropped,
+        HistoryBody::Gone => HistoryBody::Gone,
         HistoryBody::NotFetched => HistoryBody::NotFetched,
     };
     HistoryEntry { commit: e.commit, kind: e.kind, valid: e.valid, body }
@@ -127,7 +125,7 @@ impl Osis {
             if r.hidden(tid) {
                 return Ok(HistoryPage { entries: Vec::new(), more: false, complete: true });
             }
-            let (rows, mut more) = r.e.history(&tid, ak, from, limit, budget)?;
+            let (rows, mut more) = r.e.history(&tid, ak, from.into(), limit, budget)?;
             more |= cut && rows.len() == limit;
             let (n, mut used) = (rows.len(), 0usize);
             let mut entries = Vec::with_capacity(n);
@@ -156,16 +154,16 @@ impl Osis {
             if r.hidden(tid) {
                 return Ok(None);
             }
-            let Some(row) = r.e.history_entry(&tid, ak, id, mat)? else { return Ok(None) };
+            let Some(row) = r.e.history_entry(&tid, ak, &id.0, mat)? else { return Ok(None) };
             entry_of(&mut r, &tid, ak, row, mat).map(Some)
         })
     }
 }
 
 impl<K: AspectKey> AspectRef<'_, K> {
-    /// A page of the aspect's history here: at most `limit` entries (`HISTORY_PAGE` at most) from
-    /// `from`, in its direction, fewer past the materialization bound. No walk: a page costs its
-    /// entries. An unknown thing, or one the caller may not read, has none.
+    /// A page of the aspect's history here: at most `limit` entries from `from`, in its direction; it
+    /// may end sooner, and `more` says so. A page costs its entries, however long the history. An
+    /// unknown thing, or one the caller may not read, has none.
     pub fn history(&self, from: HistoryFrom, limit: usize) -> Result<HistoryPage<K::T>> {
         let ak = ak_of(&self.key)?;
         let page = match self.db.route(self.tid) {

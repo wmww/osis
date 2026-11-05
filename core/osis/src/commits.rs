@@ -10,9 +10,10 @@ use crate::handle::Osis;
 use crate::read::Stamp;
 use crate::watch::lock;
 use crate::write::Committed;
-use osis_base::{Ak, Tid, Ts};
+use crate::change::ChangeId;
+use osis_base::{Ak, Tid, Ts, Time};
 use osis_commit::Kind;
-use osis_node::ChangeId;
+use osis_node::ChangeId as RawChange;
 use osis_node::ephemeral::Reverted;
 use osis_node::undo::HeldCommit;
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,10 +39,11 @@ pub enum CommitKind {
     Change,
     /// A content commit reverting another (an undo, or a redo: a revert of a revert).
     Revert,
-    /// A role change (grants, removals, rotations, labels).
+    /// A change of who holds which role, and what keeps that working.
     Role,
-    /// A compaction or roster snapshot.
-    Snapshot,
+    /// Older changes tidied into one, which then stands in for them. It names who made it, not who
+    /// wrote what it carries: changes known only from it have no entry of their own.
+    Summary,
     /// An own ephemeral-only batch of this session: a change, or a revert (`reverts`).
     Ephemeral,
 }
@@ -60,10 +62,10 @@ pub struct CommitQuery {
     /// The change this one reverts.
     pub reverted_by: Option<ChangeId>,
     pub in_effect: Option<bool>,
-    /// `ts >= since`.
-    pub since: Option<Ts>,
-    /// `ts < until`.
-    pub until: Option<Ts>,
+    /// Written at this time or later.
+    pub since: Option<Time>,
+    /// Written before this time.
+    pub until: Option<Time>,
     /// Paging: only changes after this one in result order (older).
     pub after: Option<ChangeId>,
     pub limit: Option<usize>,
@@ -72,16 +74,16 @@ pub struct CommitQuery {
 /// Why a change cannot be reverted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DropReason {
-    /// A body of it was dropped (compaction, keep-at-most, purge: spec/crdt.md §4.6), or an
-    /// ephemeral change left the undo log (`Config::ephemeral_history`).
-    Compacted,
-    /// Reverting it writes nothing: everything it wrote was superseded since (spec/crdt.md §4.6).
+    /// What it wrote is no longer here (tidied up, past a keep bound or purged), or an ephemeral
+    /// change left the undo memory (`Config::ephemeral_undo_bytes`).
+    ContentGone,
+    /// Reverting it writes nothing: everything it wrote was overwritten since.
     Superseded,
 }
 
-/// One change: a held commit, attributed by its own signed header only (a change known only
-/// from a snapshot has no entry), or an own ephemeral change of this
-/// session; with its relations among them. A batch with both halves is its commit.
+/// One change held here, attributed by what it signs itself (a change known only from a
+/// `CommitKind::Summary` has no entry), or an own ephemeral change of this session; with what
+/// reverted what among them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitEntry {
     pub commit: Stamp,
@@ -94,10 +96,10 @@ pub struct CommitEntry {
     pub in_effect: bool,
     /// Aspects it validly touches (in the query's scope, if any), its ephemeral ones included.
     pub aspects: Vec<(Tid, Ak)>,
-    /// A body in `aspects` is gone: reverting fails `NotUndoable(Compacted)`.
-    pub dropped: bool,
-    /// Of `aspects`, those a purge request dropped, with the earliest such request held: the change
-    /// is a tombstone there (spec/commits.md §5). Lasting for a permanent delta, also at a new device.
+    /// What it wrote on one of `aspects` is gone: reverting fails `NotUndoable(ContentGone)`.
+    pub content_gone: bool,
+    /// Of `aspects`, those a purge took it from, with the earliest such purge held: the change stays
+    /// listed there, its content gone.
     pub purged: Vec<(Tid, Ak, ChangeId)>,
 }
 
@@ -113,13 +115,13 @@ pub(crate) fn kind_of_commit(k: Kind) -> CommitKind {
     match k {
         Kind::Content => CommitKind::Change,
         Kind::Role => CommitKind::Role,
-        Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot => CommitKind::Snapshot,
+        Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot => CommitKind::Summary,
     }
 }
 
 /// The change a commit header reverts.
 fn undoes(h: &osis_commit::Header) -> Option<ChangeId> {
-    h.undoes.filter(|_| h.kind == Kind::Content).map(ChangeId::Commit)
+    h.undoes.filter(|_| h.kind == Kind::Content).map(ChangeId::commit)
 }
 
 /// A resolved scope.
@@ -185,7 +187,7 @@ impl Osis {
             let mut purges: BTreeMap<(Tid, Ak), BTreeMap<osis_base::CommitId, osis_base::CommitId>> = BTreeMap::new();
             for c in base {
                 let h = &c.header;
-                let id = ChangeId::Commit(c.id);
+                let id = ChangeId::commit(c.id);
                 at.insert(id, h.ts);
                 let mut purged = Vec::new();
                 for (t, a, _) in c.aspects.iter().filter(|a| !a.2) {
@@ -194,18 +196,18 @@ impl Osis {
                         std::collections::btree_map::Entry::Vacant(x) => x.insert(e.purged_on(t, a)?),
                     };
                     if let Some(by) = on.get(&c.id) {
-                        purged.push((*t, a.clone(), ChangeId::Commit(*by)));
+                        purged.push((*t, a.clone(), ChangeId::commit(*by)));
                     }
                 }
                 entries.insert(
                     (h.ts, id),
                     CommitEntry {
-                        commit: Stamp { id, actor: h.actor, node: h.author, ts: h.ts, received: c.received },
+                        commit: Stamp::new(id, h.actor, h.author, h.ts, c.received),
                         kind: kind_of(h),
                         reverts: undoes(h),
                         reverted_by: Vec::new(),
                         in_effect: true,
-                        dropped: c.aspects.iter().any(|a| !a.2 && a.1.as_str() != "created.0"),
+                        content_gone: c.aspects.iter().any(|a| !a.2 && a.1.as_str() != "created.0"),
                         purged,
                         aspects: c.aspects.into_iter().map(|(t, a, _)| (t, a)).collect(),
                     },
@@ -216,21 +218,22 @@ impl Osis {
                 if asp.is_empty() {
                     continue;
                 }
-                if let Some(ts) = at.get(&l.id)
-                    && let Some(en) = entries.get_mut(&(*ts, l.id))
+                let id = ChangeId(l.id);
+                if let Some(ts) = at.get(&id)
+                    && let Some(en) = entries.get_mut(&(*ts, id))
                 {
                     en.aspects.extend(asp);
                     continue;
                 }
                 let (kind, actor, node, ts) = match l.id {
-                    ChangeId::Commit(c) => match e.header(&c) {
+                    RawChange::Commit(c) => match e.header(&c) {
                         Some(h) => (kind_of(&h), h.actor, h.author, h.ts),
                         None => continue,
                     },
-                    ChangeId::Ephemeral(_) => (CommitKind::Ephemeral, l.actor, e.tid(), l.ts),
+                    RawChange::Ephemeral(_) => (CommitKind::Ephemeral, l.actor, e.tid(), l.ts),
                 };
-                at.insert(l.id, ts);
-                entries.insert((ts, l.id), CommitEntry { commit: Stamp { id: l.id, actor, node, ts, received: l.received }, kind, reverts: l.reverts, reverted_by: Vec::new(), in_effect: true, dropped: false, purged: Vec::new(), aspects: asp });
+                at.insert(id, ts);
+                entries.insert((ts, id), CommitEntry { commit: Stamp::new(id, actor, node, ts, l.received), kind, reverts: l.reverts.map(ChangeId), reverted_by: Vec::new(), in_effect: true, content_gone: false, purged: Vec::new(), aspects: asp });
             }
             // acting as an actor: only the aspects it may read; a change touching none is unknown
             if let Some(a) = self.acting {
@@ -241,14 +244,14 @@ impl Osis {
                 });
             }
             // relations over the related commits and the whole log, oldest first
-            let mut rel: BTreeMap<(Ts, ChangeId), Option<ChangeId>> = related.iter().map(|c| ((c.header.ts, ChangeId::Commit(c.id)), undoes(&c.header))).collect();
+            let mut rel: BTreeMap<(Ts, ChangeId), Option<ChangeId>> = related.iter().map(|c| ((c.header.ts, ChangeId::commit(c.id)), undoes(&c.header))).collect();
             for l in &log {
                 let ts = match l.id {
-                    ChangeId::Commit(c) => e.header(&c).map_or(l.ts, |h| h.ts),
-                    ChangeId::Ephemeral(_) => l.ts,
+                    RawChange::Commit(c) => e.header(&c).map_or(l.ts, |h| h.ts),
+                    RawChange::Ephemeral(_) => l.ts,
                 };
-                let r = rel.entry((ts, l.id)).or_default();
-                *r = r.or(l.reverts);
+                let r = rel.entry((ts, ChangeId(l.id))).or_default();
+                *r = r.or(l.reverts.map(ChangeId));
             }
             let mut by: BTreeMap<ChangeId, Vec<ChangeId>> = BTreeMap::new();
             for ((_, id), r) in &rel {
@@ -278,7 +281,7 @@ impl Osis {
                     chain.push(cur);
                     let next = match reverts.get(&cur) {
                         Some(r) => *r,
-                        None => cur.commit().and_then(|c| e.header(&c)).and_then(|h| undoes(&h)),
+                        None => cur.0.commit().and_then(|c| e.header(&c)).and_then(|h| undoes(&h)),
                     };
                     match next {
                         Some(u) => cur = u,
@@ -328,8 +331,8 @@ impl Osis {
                     && q.reverts.is_none_or(|c| e.reverts == Some(c))
                     && q.reverted_by.is_none_or(|c| e.reverted_by.contains(&c))
                     && q.in_effect.is_none_or(|b| e.in_effect == b)
-                    && q.since.is_none_or(|t| e.commit.ts >= t)
-                    && q.until.is_none_or(|t| e.commit.ts < t)
+                    && q.since.is_none_or(|t| e.commit.written >= t)
+                    && q.until.is_none_or(|t| e.commit.written < t)
             })
             .take(q.limit.unwrap_or(usize::MAX))
             .collect())
@@ -382,7 +385,7 @@ impl Osis {
     /// as one). An ephemeral change without a log here (another node's, or from before a
     /// restart) is `Invalid`.
     pub fn revert(&self, id: ChangeId) -> Result<Committed> {
-        if let crate::sources::Source::Remote(r) = self.route_write_change(id)? {
+        if let crate::sources::Source::Remote(r) = self.route_write_change(id.0)? {
             return crate::port::codec::committed(r.call_once(crate::port::method::REVERT, vec![crate::port::codec::change_v(&id)])?);
         }
         let _g = lock(&self.inner.undo);
@@ -412,7 +415,7 @@ impl Osis {
         if let Some((ts, id, revert)) = gone
             && target.as_ref().is_none_or(|f| f.entry.commit.ts < ts)
         {
-            return if redo && !revert { Ok(None) } else { Err(Error::NotUndoable { commit: id, reason: DropReason::Compacted }) };
+            return if redo && !revert { Ok(None) } else { Err(Error::NotUndoable { commit: ChangeId(id), reason: DropReason::ContentGone }) };
         }
         Ok(target)
     }
@@ -423,34 +426,34 @@ impl Osis {
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
         self.locked(|l| {
             // what the revert writes is still this engine's (a move since the route was decided)
-            self.guard_change(l, target)?;
+            self.guard_change(l, target.0)?;
             let e = l.engine();
-            if let ChangeId::Commit(c) = target {
+            if let RawChange::Commit(c) = target.0 {
                 let h = e.header(&c).filter(|h| self.acting.is_none_or(|a| h.aspects.iter().any(|x| e.readable_by(&a, &x.tid)))).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
                 if h.kind != Kind::Content {
                     return Err(Error::Invalid("only changes and reverts are reverted".into()));
                 }
                 // of what the actor may not read, not asked: `revert_as` refuses it whichever
                 if h.aspects.iter().any(|a| a.ak.as_str() != "created.0" && self.acting.is_none_or(|x| e.readable_by(&x, &a.tid)) && !e.body_not_dropped(&c, &a.tid, &a.ak)) {
-                    return Err(blocked(DropReason::Compacted));
+                    return Err(blocked(DropReason::ContentGone));
                 }
             }
             if let Some(a) = self.acting {
                 // an ephemeral change of what it may not read: as one with no log here
-                if let ChangeId::Ephemeral(_) = target
-                    && !e.ephemeral_log().iter().filter(|l| l.id == target).all(|l| l.aspects.iter().any(|(t, _)| e.readable_by(&a, t)))
+                if let RawChange::Ephemeral(_) = target.0
+                    && !e.ephemeral_log().iter().filter(|l| l.id == target.0).all(|l| l.aspects.iter().any(|(t, _)| e.readable_by(&a, t)))
                 {
-                    return Err(blocked(DropReason::Compacted));
+                    return Err(blocked(DropReason::ContentGone));
                 }
             }
             let r = match self.acting {
-                Some(a) => e.revert_as(target, a)?,
-                None => e.revert_change(target, me)?,
+                Some(a) => e.revert_as(target.0, a)?,
+                None => e.revert_change(target.0, me)?,
             };
             match r {
                 Reverted::Written(w) => Ok(Committed::of(w)),
                 Reverted::Superseded => Err(blocked(DropReason::Superseded)),
-                Reverted::Compacted => Err(blocked(DropReason::Compacted)),
+                Reverted::Compacted => Err(blocked(DropReason::ContentGone)),
             }
         })
     }
