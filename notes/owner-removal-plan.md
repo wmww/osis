@@ -105,6 +105,8 @@ A dispute is a fork of an actor, and forks are permanent: two sides may live sid
 
 **Problems for Tess** (question 9): the permanent host cost of one-side deletes; the rule's form (no side needs it, against the plain rule's permanent garbage); a removed admin opening a branch; the abandoned branch after a concession. Not modelled: several hosts, several forks, honest races under branching.
 
+- From the lockout study (notes/lockout-recovery.md): a hostile admin can register a host step from its locked epochs; the recoverer accepts the step but lacks its delete key. Branch also when the head's epochs are superseded and the node lacks its delete key.
+
 ## Testing
 Oracles are the design's statement of itself; change them once in the harness, not per test.
 - **Alike**: same held data and same trust set read the same. The order, alike and sim oracles compare after equalizing trust sets; any other difference is a bug, as today.
