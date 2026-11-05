@@ -27,7 +27,8 @@
 //! Compared on in-scope aspects: which commits applied (role commits too, not the node's own from
 //! outside the history), each content part's validity, reads, no held body the model says must be
 //! gone (`MustDrop`; at keep at most only once the node has recomputed the aspect's deaths, which
-//! it does at its next tick, before any read) or counts as never received, no forbidden value
+//! it does at its next tick, before any read, and at a header's absolute bound only once its due
+//! timer has run, at that tick, after any carrier) or counts as never received, no forbidden value
 //! (expired or purged), and every body the node dropped, given back as the order harness's
 //! keep-everything node holds it (a snapshot dropped while valid as `Held::dropped_valid`), one
 //! the model lets go (`MayDrop`, `MustDrop`; a leftover is a held body, spec/crdt.md §4.7). The
@@ -737,7 +738,13 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
             }
             // deaths the node has yet to recompute (at its next tick, before any read) are not
             // learned: a bound they pass is not yet one it knows (spec/commits.md §5)
-            let unlearned = |f: &hm::Fate| matches!(f, hm::Fate::MustDrop(hm::DropWhy::AtMost { .. })) && e.core.ix.deaths_due.contains(&(*t, a.clone()));
+            // a header's absolute bound (T, or the purge floor over it) drops by the node's next
+            // tick, even one past at the apply, so that a carrier can go first (spec/commits.md
+            // §5: "drops a body applied at or past it only after its apply"); deathless parts
+            // have no model bound but that one
+            let hb = hist.headers[&id].aspects.iter().find(|x| x.tid == *t && x.ak == *a).filter(|x| x.retention.at_most.abs.is_some()).and_then(|x| osis_commit::retention::body_keep(&hist.headers[&id], &x.retention, None, None, false).at_most);
+            let at_header = hb.is_some() && o.at_most.get(&(c.id, i)).copied().or(hb) == hb && e.timers_due();
+            let unlearned = |f: &hm::Fate| matches!(f, hm::Fate::MustDrop(hm::DropWhy::AtMost { .. })) && (at_header || e.core.ix.deaths_due.contains(&(*t, a.clone())));
             if let Some(f) = o.fates.get(&(c.id, i))
                 && matches!(f, hm::Fate::MustDrop(_) | hm::Fate::NeverReceived)
                 && !unlearned(f)

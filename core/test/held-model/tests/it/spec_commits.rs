@@ -121,6 +121,20 @@ fn keep_at_most_zero_drops_after_first_death_spec_commits_5() {
     assert_eq!(fate(&held(2, cs), 10), Fate::MustDrop(none));
 }
 
+// spec/commits.md §5 (Purge): a commit carrying a purge request keeps its blobs until wall(ts) +
+// ROLE_KEEP, whatever its keep at most (seed 9450000)
+#[test]
+fn purge_request_floor_beats_keep_at_most_spec_commits_5() {
+    let zero = Retention { most_zero: true, ..Retention::WRITER };
+    let mut a = reg(10, OWNER, 1, REG, zero, 1);
+    a.purge = vec![PurgeItem::Commit { commit: 3, thing: T, aspect: OTHER }];
+    let cs = vec![a, reg(11, OWNER, 2, REG, Retention::PLAIN, 2)];
+    let o = evaluate(&held(3, cs.clone()));
+    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::AtLeast));
+    assert_eq!(o.at_most[&(10, 0)], at(1) + ROLE_KEEP);
+    assert_eq!(fate(&held(1 + ROLE_KEEP / HOUR, cs), 10), Fate::MustDrop(DropWhy::AtMost { carrier: false }));
+}
+
 // spec/commits.md §5 (Keep at most): the bound is the first death, plus AT_MOST_GRACE while the body
 // has a live write; the node drops it no earlier
 #[test]
