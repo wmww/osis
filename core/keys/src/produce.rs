@@ -223,7 +223,7 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
         // the keyset lists its current epochs but derived ones (held only where the owner's
         // secret is: superseded through the history box)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
-        keys.keysets.insert(r, keyset(&epoch, &secret, &listed));
+        keys.keysets.insert(r, keyset(&epoch, &secret, &listed, names));
         let supersedes = listed.iter().copied().chain(earlier.iter().map(|(e, _)| *e)).collect();
         rotated.push(Rotated { role: r, epoch, secret, supersedes });
     }

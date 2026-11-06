@@ -11,6 +11,7 @@
 
 use osis_base::{CommitId, Tid};
 use osis_crypto::{Epoch, Secret32};
+use osis_base::Role;
 use osis_keys::{Held, Key, Name, Names, Own, Provenance, RoleEpochs, Unchecked};
 use proptest::prelude::*;
 use std::collections::BTreeSet;
@@ -95,8 +96,14 @@ impl Held for Observer<'_> {
     fn met(&self, n: &Name) -> bool {
         self.0.met(n.key.ts as usize - 1)
     }
+    fn holds(&self, _: &Tid, _: Role) -> bool {
+        true
+    }
     fn departed(&self, own: &Own) -> bool {
         self.0.met(own.ts as usize - 1)
+    }
+    fn publishes(&self, _: Role, _: &Epoch, _: &osis_keys::NamesDigest) -> bool {
+        true
     }
 }
 
@@ -308,7 +315,7 @@ fn forged_entry_by_a_holder_is_accepted() {
     r.set_rotation(e, cid(1), BTreeSet::new());
     r.set_secret(e, Secret32::from_bytes([1; 32]));
     let h = History { commits: Vec::new(), held: BTreeSet::new(), secrets: BTreeSet::new(), reading: BTreeSet::new(), snapshots: BTreeSet::new() };
-    r.add_names(e, Names { list: [Name { thing: THING, key: key(0) }].into(), ..Names::default() });
+    r.add_names(e, Names { list: [Name { thing: THING, key: key(0) }].into(), departs: None });
     r.establish(&Observer(&h));
     assert!(!r.is_established(&e));
     r.add_names(e, Names::default());

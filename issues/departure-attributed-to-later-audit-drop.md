@@ -1,9 +1,0 @@
-# A departure attributed to a later audit drop is covered by a rotator that missed it
-> Summary: A holder's departure is attributed to the newest of its lowering write and any audit drop of a write on its edge; when that is a later drop (of a write that had lowered it, so the drop raises it), a rotator holding the drop but not the real departure names it, sees the holder present, boxes it, and its epoch then covers the departure: the departed peer reads new content. Found by `forged_departs_leak_nothing_large` with no forging.
-> Tags: security, keys, tests
-
-Shape (seed 1336 of `rotation::tests_departs::forged_departs_leak_nothing_large`, plain self-removals reproduce it): admin P4 demotes admin P1 to read; P1, not yet knowing, self-removes (ts 9); the owner demotes P4 (ts 11), whose audit drops P4's demotion of P1. P1's departure is attributed to the owner's commit (newest event, spec/crypto.md §4 Attributes; `rotation::departures::events` turns every dropped edge write into an event, whatever it did). P4, holding the owner's commit but not P1's self-removal, sees P1 as admin again, rotates read boxing P1, and names the owner's commit: at the owner that epoch covers P1's departure, so the owner encrypts under an epoch P1 holds.
-
-7 of 10000 seeds (1336 4419 6830 8524 9101 9196 9277), each leaking peer's departure attributed to an audit-drop event. Replay: `OSIS_FORGED_DEPARTS_START=1336 OSIS_FORGED_DEPARTS_SEEDS=1 cargo test -p osis-engine --lib rotation::tests_departs::forged_departs_leak_nothing_large -- --ignored --exact`.
-
-Direction (unverified): an audit drop is a departure event only for a dropped write that put a grant above what the holder holds without it (a drop of a lowering write raises the holder); or attribute a departure to its own lowering write and let a drop name only the roles it took away. Check against `withheld_departures_leak_nothing_large` and the TLA rotation models before changing the spec's Attributes rule.

@@ -67,7 +67,7 @@ Terms in this section depend on each other; each is defined once, under its bold
   - the epochs below e's n its keyset lists;
   - at a node holding e's secret, the epochs e's history box lists below e's n.
 - **Fork**: concurrent rotations of one role create several epochs with one n. Nodes keep all of them.
-- A **rotation commit of** an epoch is a role commit writing its keyset in `keys.0` (and its history box).
+- A **rotation commit of** an epoch is a role commit writing its keyset in `keys.0` (and its history box). The keyset carries the digest of the rotation's names (Names, below; spec/wire.md §7).
 
 ### Boxes
 - **`secrets.0`** = `{ boxes: map<(holder tid, role, epoch), box>, history: map<(role, epoch), history box> }`.
@@ -91,17 +91,16 @@ Terms in this section depend on each other; each is defined once, under its bold
   - A reader tries each live entry of a history key (spec/crdt.md §5.6), not only their merged read, with the secret of e it holds.
 
 ### Names
-- **Names**: a rotation of actor A names the departures from A its rotator holds, read from its own role timeline (spec/permissions.md §5.1), never copied from another history box:
-  - every applied commit that applies an edge write on A lowering a grant (a removal, demotion, self-removal or finalize), named on A;
-  - every applied commit whose demotion's audit dropped (spec/permissions.md §5.1) an edge write on A, named once per thing its edge writes target.
+- **Lowering**: a point of A's role timeline (spec/permissions.md §5.1) at which a holder's grant on A for keys (Departures and covering, below) is lowered: an applied edge write on A after which the holder holds less for keys than just before it (a removal, demotion, self-removal or finalize; A's grants for keys are constant between applied edge writes on A), or a demotion elsewhere whose audit dropped (spec/permissions.md §5.1) an edge write on A that had raised the holder (its value above the holder's grant for keys just before its own point): the holder leaves the roles from read up to that value. A dropped write that lowered the holder raised nobody and lowers nobody by going; a renewal lowers nobody.
+- **Names**: a rotation of actor A names the lowerings on A its rotator holds, read from its own role timeline, never copied from another history box: an edge write's commit named on A; a demotion elsewhere named once per thing its edge writes target.
 - A name is that thing and the commit's key (spec/permissions.md §5.1).
 - **Departs mark**: when the rotation commit itself writes such a grant on A it cannot name itself. The names then carry its departs mark, its `ts` and signing node.
-- Every history box of one rotation carries the same names.
+- Every history box of one rotation carries the same names, and the rotated roles' keysets carry their digest (spec/wire.md §7): an entry is **bound** to each held valid rotation commit of its epoch whose keyset carries the digest of its names; a held valid `keys.0` compaction snapshot carrying the keyset beside a `secrets.0` snapshot carrying the entry counts as one, by its author.
 - The rotator places every named commit under each label it places the rotation commit under (spec/sync.md §5).
 - **Met**: the names of a history box entry are met at a node when both hold:
   - each name's commit is applied at the node with its `roles.0` delta on the name's thing held, or, having none there, its `keys.0` delta there (a dropped one counts; a copy of the commit lacking it does not) and resolved (spec/permissions.md §2: every entry its removals reset known, so its edge writes take part in the walk; a finalize held without the write it ends removes nobody).
-  - its departs mark, if any, is met: the node holds that commit (by those two) with its `roles.0` delta on A, resolved (as above), naming a `keys.0` delta on A in its header (a rotation commit), and making no self-removal on A (spec/permissions.md §2: no edge write of it on A applies as one).
-  - Limit: a writer holding an epoch's secret may put an entry at its history key naming any departure it holds but its own, so that the epoch covers it; it could hand that party the secret anyway.
+  - its departs mark, if any, is met: the node holds a role commit by that `ts` and signing node with its `roles.0` delta on A, resolved (as above).
+  - Limit: a writer holding an epoch's secret may put an entry at its history key with any names, bound to nothing: it establishes the epoch where the genuine entry would not (the writer could hand the secret on anyway) and covers nothing.
 
 ### Established and current
 - **Established**: an epoch e of r is established at a node in either of two cases.
@@ -119,11 +118,11 @@ Terms in this section depend on each other; each is defined once, under its bold
 ### Departures and covering
 - **Holders for keys**: the holders of A by the role timeline (spec/permissions.md §5.1) with every applied edge write in effect and `until` disregarded, a removal's value saying retain (`until` 0, spec/permissions.md §2) counting as no edge; the owner holds admin. Keys read no clock: an edge past its `until` stays a holder until its finalize (spec/permissions.md §2). "Current holder" in this section and in spec/permissions.md §3 means a holder for keys.
 - **Departure** from role r of actor A: an applied edge write removing a holder M or demoting it below r, as holders for keys see it (a finalize is a removal). It **concerns** the roles of A that M left. A departure from a holder actor of A, or below one, is none of A's (Holder actors, below).
-- **Attributes**: a node attributes a departure of holder H from A it knows of to the name of the newest (by key; one commit named on two things by the greater thing) of:
-  - an applied commit whose edge write lowered H's grant on A;
-  - an applied commit whose demotion's audit dropped an edge write putting H's grant on A (named on the first of the things its edge writes target).
-  - A holder with a box (Boxes) at a current epoch of A whose role it no longer holds and no such commit is attributed to nothing.
-- **Covers**: an epoch e of role r of A **covers** a departure that concerns r when some live entry of e's history box whose names are met at the node names it: its name is among the names, or it is a departure from A by the rotation commit itself (its departs mark). Boxes decide nothing: an epoch is relied on only for what its rotator held.
+- **Attributes**: a node attributes a departure of holder H from A it knows of to the name of the newest lowering of H (Names; by key, one commit named on two things by the greater thing). A holder with a box (Boxes) at a current epoch of A whose role it no longer holds and no such lowering is attributed to nothing.
+- **Holds**: the author of a commit holds r on A at a node when its effective role on A (spec/permissions.md §1) over the node's applied edge writes, every `until` disregarded and a removal's retain value counting as no edge (Holders for keys), is at least r.
+- **Covers**: an epoch e of role r of A **covers** a departure that concerns r when some live entry of e's history box, its names met and bound (Names) to a held valid keyset of e whose body's author holds r on A, names it: its name is among the entry's names, or it is a departure from A attributed to the commit the entry's departs mark names (by `ts` and signing node) and that node holds r on A.
+  - Boxes decide nothing: an epoch is relied on only for what its rotator held. What covers a departure is the signed word of a rotator holding the role: the departed party can write entries (bound to nothing), backdate a rotation of its own or rotate in its self-removal, and holds the role in none of them.
+  - Limit: a rotator holding the role may name a departure it holds while boxing the departed party; it could hand that party the secret anyway.
 
 ### Encrypting under
 - **Encrypting under** an epoch means:

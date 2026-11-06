@@ -112,8 +112,7 @@ impl Mutation {
         self
     }
 
-    /// Takes the commit's `ts` now, from the engine's clock, and returns it: for a commit that must
-    /// name itself before it exists (a removal's departs mark, spec/crypto.md §4).
+    /// Takes the commit's `ts` now, from the engine's clock, and returns it.
     pub fn take_ts(&mut self, e: &mut crate::Engine) -> Ts {
         *self.ts.get_or_insert_with(|| e.core.hlc.next())
     }

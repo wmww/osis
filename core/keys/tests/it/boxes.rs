@@ -461,7 +461,7 @@ fn bogus_keyset_drops_nothing_spec_crypto_4() {
     let mut s = f.s.clone();
     grant.apply(&mut s);
     // the writer's commit: E's keyset with another epoch's keys, and nothing else
-    let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default());
+    let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
     let bogus = osis_keys::KeysWrite { keysets: [(Role::Read, junk)].into_iter().collect() };
     let opener = Opener::Actor { holder: g, epochs: &ge };
     let commit = osis_base::CommitId([0x77; 32]);

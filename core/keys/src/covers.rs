@@ -62,16 +62,27 @@ impl Departure {
 }
 
 /// Whether names `n` of an epoch of `actor` name `d` (spec/crypto.md §4): its name is among
-/// them, or it is a departure from `actor` made by the rotation commit itself (its departs mark).
-pub fn named(n: &Names, actor: &Tid, d: &Departure) -> bool {
-    d.at.is_some_and(|at| n.list.contains(&at) || (at.thing == *actor && n.departs.is_some_and(|o| o.ts == at.key.ts && o.node == at.key.node)))
+/// them, or it is a departure from `actor` made by the rotation commit itself (its departs
+/// mark, by the commit's `ts` and signer), that signer holding `r` under `held`.
+pub fn named(n: &Names, actor: &Tid, r: Role, d: &Departure, held: &dyn Held) -> bool {
+    d.at.is_some_and(|at| n.list.contains(&at) || (at.thing == *actor && n.departs.is_some_and(|o| o.ts == at.key.ts && o.node == at.key.node) && held.holds(&at.key.node, r)))
 }
 
 /// The covers rule (spec/crypto.md §4): epoch `e` of role `r` of `actor` covers `d` when `d`
-/// does not concern `r`, or a history entry of `e` with its names met under `held` names
-/// it. Boxes decide nothing: an epoch is relied on only for what its rotator held.
+/// does not concern `r`, or a history entry of `e` bound to a held valid keyset of `e` by an
+/// author holding `r`, its names met (`EpochInfo::covering_names`), names `d`. Boxes decide
+/// nothing: an epoch is relied on only for what its rotator held.
+///
+/// Invariant: what covers a departure is unforgeable by the departed party. A history entry
+/// counts only as the keyset body (a rotation commit's, or a compaction snapshot's) that
+/// publishes its names' digest, and only while that body's author, and for the entry's own
+/// departure its rotation commit's signer, holds the role: a leaver holding the secret can write
+/// entries, backdate a rotation naming its own self-removal, or rotate in the self-removal
+/// itself, and each is its own (so it must hold the role, which it does not), or nobody's (an
+/// entry no keyset commits to). A rotator that is no leaver naming a departure it holds while
+/// boxing the departed party could hand it the secret anyway (the stated limit).
 pub fn covers(actor: &Tid, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &Departure, held: &dyn Held) -> bool {
-    !d.concerns(r) || epochs.role(r).get(e).is_some_and(|i| i.met_names(held).any(|n| named(n, actor, d)))
+    !d.concerns(r) || epochs.role(r).get(e).is_some_and(|i| i.covering_names(r, e, held).any(|n| named(n, actor, r, d, held)))
 }
 
 /// The known departures epoch `e` of role `r` does not cover.

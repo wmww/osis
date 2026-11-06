@@ -29,15 +29,21 @@ fn r1_name(w: &World) -> osis_keys::Name {
     osis_keys::Name { thing: w.a, key: osis_keys::Key { ts: 4, node: tid(9), commit: cid(4) } }
 }
 
-/// Holds the commits listed (a departing commit by its `ts` as its ID's byte).
+/// Holds the commits listed; every rotator holds its role.
 struct Holding(BTreeSet<osis_base::CommitId>);
 
 impl osis_keys::Held for Holding {
     fn met(&self, n: &osis_keys::Name) -> bool {
         self.0.contains(&n.key.commit)
     }
+    fn holds(&self, _: &osis_base::Tid, _: Role) -> bool {
+        true
+    }
     fn departed(&self, own: &osis_keys::Own) -> bool {
         u8::try_from(own.ts).is_ok_and(|b| self.0.contains(&cid(b)))
+    }
+    fn publishes(&self, _: Role, _: &Epoch, _: &osis_keys::NamesDigest) -> bool {
+        true
     }
 }
 
@@ -100,7 +106,7 @@ impl World {
     }
 
     /// a1 removes m1 (commit `cid(4)`): the removal commit's rotation (no box for m1, its names'
-    /// departs flag set), held by a1 only.
+    /// departs mark set), held by a1 only.
     fn remove_m1(&mut self) -> (Rotation, ActorEpochs, Secrets) {
         let (v0, s0) = (self.a1v.clone(), self.s0.clone());
         let r1 = self.rotate_naming(&v0, &s0, &[self.p, self.a2], &Names { departs: Some(osis_keys::Own { ts: 4, node: tid(9) }), ..Names::default() });
@@ -155,7 +161,7 @@ fn r9_reseal_before_rotation_commit() {
     assert!(m1v.read.secret(&e1).is_none(), "e2's history box carries e1");
 
     // e1's commit reaches a2: established, and e2 (its rotator did not know it) does not cover the
-    // departure; e1 does (its departs mark).
+    // departure; e1 does (its own rotation commit).
     assert!(r1.secrets.applied(&mut a2v, cid(4), &r1.keys).unwrap());
     r1.secrets.apply(&mut s3);
     ingest(&w.a, &s3, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
@@ -176,7 +182,7 @@ fn reorder_holding_e2_without_e1() {
     let mut w = World::new();
     let (r1, a1v1, s1) = w.remove_m1();
     let e1 = r1.rotated[0].epoch;
-    let names = Names { list: [r1_name(&w)].into(), ..Names::default() };
+    let names = Names { list: [r1_name(&w)].into(), departs: None };
     let r2 = w.rotate_naming(&a1v1, &s1, &[w.p, w.a2], &names);
     let e2 = r2.rotated[0].epoch;
     let (mut a1v2, mut s1b) = (a1v1.clone(), s1.clone());
@@ -398,7 +404,7 @@ fn rewrite_then_invalidated_keeps_rotation() {
     let s0 = v.read.secret(&w.e0).unwrap().clone();
     let mut again = osis_keys::SecretsWrite::default();
     again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[], &osis_keys::Names::default().to_value()).unwrap());
-    let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0, &Default::default()))].into_iter().collect() };
+    let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0, &Default::default(), &Default::default()))].into_iter().collect() };
     assert!(again.applied(&mut v, cid(2), &ks).unwrap());
     assert_eq!(v.read.get(&w.e0).unwrap().rotations.len(), 2);
     v.invalidate(&cid(2));

@@ -2,6 +2,7 @@
 //! (spec/crypto.md §3, §4; types: osis-schema `core_types`).
 
 use crate::epoch::{ActorEpochs, SUITE};
+use crate::names::Names;
 use crate::Error;
 use osis_base::{CommitId, Role};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, role_kem};
@@ -25,8 +26,9 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
 }
 
 /// The keyset of a role epoch: its KEM public key `kdf("kem", secret)`, delete key and
-/// possession key (spec/crypto.md §3, §7, §4), listing `supersedes` (§4).
-pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>) -> Keyset {
+/// possession key (spec/crypto.md §3, §7, §4), listing `supersedes` and the digest of the
+/// rotation's `names` (§4).
+pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>, names: &Names) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
         kem_key: KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec()),
@@ -34,6 +36,7 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>) ->
         delete_key: SigningKey::Ed25519(DeleteSecret::derive(secret).verifying_key().to_bytes().to_vec()),
         supersedes: supersedes.iter().map(to_schema).collect(),
         possession_key: SigningKey::Ed25519(crate::possession::possession_key(secret).to_bytes().to_vec()),
+        names: names.digest(),
     }
 }
 

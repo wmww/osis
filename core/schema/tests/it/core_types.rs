@@ -22,7 +22,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         (tid(7), Edge { role: Role::Admin, until: None, invite: None, tied: None }),
     ]);
     let keys = Keys {
-        read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), possession_key: SigningKey::Ed25519(vec![7; 32]) }),
+        read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]), possession_key: SigningKey::Ed25519(vec![7; 32]), names: [6; 32] }),
         inbox: Some(Inbox { label: LabelId([10; 16]), hosts: vec![Address { url: "quic://s.example:4433".into(), key: [11; 32] }] }),
         deposit_seed: Some([12; 32]),
         ..Keys::default()

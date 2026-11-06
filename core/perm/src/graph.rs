@@ -510,6 +510,7 @@ type Patch = (Tid, Tid, Option<Edge>);
 
 /// Authority queries over owners and an edge state (optionally a base with an overlay), with
 /// edges alive at `ts` (`None`: the end of time), and optionally one edge patched.
+#[derive(Clone)]
 pub struct View<'a> {
     pub owners: &'a Owners,
     edges: &'a Edges,

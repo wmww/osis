@@ -894,6 +894,7 @@ dependencies = [
 name = "osis-keys"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "osis-base",
  "osis-crypto",
  "osis-perm",

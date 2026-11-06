@@ -1,9 +1,10 @@
 //! A rotation's names (spec/crypto.md §4): the departures from the actor its rotator held, read
-//! from its own role timeline and carried in every history box the rotation writes. An epoch
+//! from its own role timeline and carried in every history box the rotation writes; the keyset
+//! commits to them by their digest, so an entry counts only as its rotation commit's. An epoch
 //! whose secret a node holds is established there only once some history entry of it has its
 //! names met, so a node never uses an epoch while it lacks a departure the epoch's rotator held.
 
-use osis_base::{CommitId, Tid, Value};
+use osis_base::{CommitId, Role, Tid, Value};
 use std::collections::BTreeSet;
 
 /// A commit's key (spec/permissions.md §5.1): its position in the role timeline's order.
@@ -29,13 +30,16 @@ pub struct Own {
     pub node: Tid,
 }
 
-/// What one history entry names: the commits, and the rotation commit itself when it departs a
-/// holder.
+/// What one history entry names: the departure commits its rotator held, and the rotation
+/// commit itself when it departs a holder.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Names {
     pub list: BTreeSet<Name>,
     pub departs: Option<Own>,
 }
+
+/// The digest of a rotation's names, as its keyset publishes it (spec/wire.md §7).
+pub type NamesDigest = [u8; 32];
 
 impl Names {
     /// `[[name*], Opt([ts, node])]`, each name `[thing, ts, node, commit]`, ascending
@@ -80,9 +84,13 @@ impl Names {
         }
         Some(Names { list, departs })
     }
-}
 
-impl Names {
+    /// BLAKE3 of the canonical bytes of `to_value` (spec/wire.md §7): what the rotation's keyset
+    /// carries, binding the history entry to the signed rotation commit.
+    pub fn digest(&self) -> NamesDigest {
+        *blake3::hash(&osis_base::encode(&self.to_value())).as_bytes()
+    }
+
     /// Every name and the departs mark met under `held` (spec/crypto.md §4).
     pub fn met(&self, held: &dyn Held) -> bool {
         self.list.iter().all(|x| held.met(x)) && self.departs.is_none_or(|o| held.departed(&o))
@@ -94,21 +102,33 @@ pub trait Held {
     /// `n`'s commit is applied here with its part on `n.thing`, every entry its edge writes reset
     /// known.
     fn met(&self, n: &Name) -> bool;
-    /// The commit `own` names (by `ts` and author) is applied here with its edge writes on the
-    /// actor, every entry they reset known; it writes a keyset of the actor (a rotation commit)
-    /// and makes no self-removal on it (spec/crypto.md §4).
+    /// `node` holds role `r` on the actor now, for keys (spec/crypto.md §4, Holds): a departure
+    /// a rotation commit itself makes is covered by it while its signer does.
+    fn holds(&self, node: &Tid, r: Role) -> bool;
+    /// A held valid keyset of epoch `e` of role `r` (a rotation commit's or a compaction
+    /// snapshot's body) publishes `digest` as its names' and its author holds `r` now
+    /// (spec/crypto.md §4, Names: the entry is bound to that body; Covers).
+    fn publishes(&self, r: Role, e: &osis_crypto::Epoch, digest: &NamesDigest) -> bool;
+    /// The commit `own` names (by `ts` and author) is a role commit applied here with its
+    /// `roles.0` delta on the actor, resolved (spec/crypto.md §4, Met).
     fn departed(&self, own: &Own) -> bool;
 }
 
-/// Every name met (a node holding everything: tests, and the views whose names were checked when
-/// they were made).
+/// Every name met and every rotator holding its role (a node holding everything: tests, and the
+/// views whose names were checked when they were made).
 pub struct AllHeld;
 
 impl Held for AllHeld {
     fn met(&self, _: &Name) -> bool {
         true
     }
+    fn holds(&self, _: &Tid, _: Role) -> bool {
+        true
+    }
     fn departed(&self, _: &Own) -> bool {
+        true
+    }
+    fn publishes(&self, _: Role, _: &osis_crypto::Epoch, _: &NamesDigest) -> bool {
         true
     }
 }

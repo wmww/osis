@@ -34,7 +34,7 @@ pub fn keys_of(a: &ActorEpochs) -> Keys {
     let mut k = Keys::default();
     for r in ROLES {
         if let Some((e, s)) = a.role(r).newest_held() {
-            let ks = Some(keyset(&e, s, &Default::default()));
+            let ks = Some(keyset(&e, s, &Default::default(), &Default::default()));
             match r {
                 Role::Read => k.read = ks,
                 Role::Write => k.write = ks,

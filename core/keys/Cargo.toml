@@ -18,6 +18,7 @@ osis-base.workspace = true
 osis-crypto.workspace = true
 osis-schema.workspace = true
 osis-perm.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

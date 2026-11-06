@@ -1619,10 +1619,15 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usiz
     let new = op.edge;
     let st = view.standing(&a, best, &t);
     // Self-removal (§2): lowering one's own edge, or an edge of a holder one is admin of
-    // when that is the only authority one has (no owner-chain or edge-admin authority on
-    // the target); otherwise the write is an explicit demotion by its class there.
-    let authority_on_target = matches!(st.class, Class::Chain | Class::Edge);
-    if lowers(new.as_ref(), old) && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target)) {
+    // when that is the only authority one has: no owner-chain or edge-admin authority on
+    // the target with the holder's edge there disregarded (authority through the holder
+    // does not count); otherwise the write is an explicit demotion by its class there.
+    let authority_on_target = || {
+        let v = view.clone().patched(m, t, None);
+        let b = v.roles_from(&a);
+        matches!(v.standing(&a, &b, &t).class, Class::Chain | Class::Edge)
+    };
+    if lowers(new.as_ref(), old) && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target())) {
         // Attributed to the author's class on the holder it is admin of, or on the target
         // for its own edge (a single-use redemption's: like its grant), §5.1 step 3.
         let class = if m == a { st.class } else { view.standing(&a, best, &m).class };

@@ -53,8 +53,8 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
     out.into_iter().collect()
 }
 
-/// Each keyset a `keys.0` body writes: its role, epoch, listed epochs, KEM key (suite 1) and
-/// possession key.
+/// Each keyset a `keys.0` body writes: its role, epoch, listed epochs, KEM key (suite 1),
+/// possession key and names digest.
 fn keyset_recs(body: &Fragment) -> Vec<KeysetRec> {
     keys_write(body)
         .keysets
@@ -66,7 +66,7 @@ fn keyset_recs(body: &Fragment) -> Vec<KeysetRec> {
             let kem = (ks.suite == osis_keys::SUITE && osis_crypto::KemPublicKey::from_slice(&b).is_ok()).then_some(b);
             let ct::SigningKey::Ed25519(p) = ks.possession_key;
             let possession = <[u8; 32]>::try_from(p.as_slice()).ok().filter(|p| osis_crypto::VerifyingKey::from_bytes(p).is_ok());
-            Some(KeysetRec { role, epoch, lists, kem, possession })
+            Some(KeysetRec { role, epoch, lists, kem, possession, names: ks.names })
         })
         .collect()
 }
@@ -129,6 +129,7 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[
             held.kem = k.kem.clone();
         }
         held.possession.extend(k.possession);
+        held.names.insert((k.names, h.author));
         if held != before || !core.ix.keysets.contains_key(&key) {
             core.ix.keysets.insert(key, held);
             core.touch();
@@ -988,7 +989,7 @@ mod tests {
             let genuine = e0.read.secret(&e).cloned().unwrap();
             lp.sync(0, 1).unwrap();
             // the writer's `keys.0`: E's keyset with another secret's keys
-            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default());
+            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default(), &Default::default());
             let mut mu = Mutation::new();
             mu.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(junk.clone()).to_value()) }).unwrap();
             mu.unchecked();

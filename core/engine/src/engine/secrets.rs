@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 use osis_base::{ChainStep, CreationRecord, Owner, OwnerChain, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Name, Opener, Own, Provenance, ROLES, Unchecked};
+use osis_perm::At;
 use osis_schema::RawKey;
 use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
@@ -357,15 +358,20 @@ impl Core {
     }
 }
 
-/// The names a node holds (spec/crypto.md §4) for epochs of `actor`: applied commits (a departing
-/// rotation commit by its `ts` and author among the held `roles.0` deltas of `actor`) and epoch
-/// starts.
+/// The names a node holds (spec/crypto.md §4) for epochs of `actor`: applied commits, and the
+/// roles the authors of its rotation commits hold now.
 pub(crate) struct NamesHeld<'c> {
     core: &'c Core,
     actor: Tid,
 }
 
 impl NamesHeld<'_> {
+    /// Whether `who` holds `r` on the actor now, for keys (`At::KEYS`: every `until`
+    /// disregarded), over its owner chain and through holder actors alike.
+    fn holder(&self, who: &Tid, r: Role) -> bool {
+        self.core.timelines.get(&self.actor).and_then(|tl| tl.role(who, &self.actor, At::KEYS)) >= Some(r)
+    }
+
     /// Commit `c` is applied here with what its edge writes end: no reset of it names an entry
     /// whose creation is not held (spec/permissions.md §2; such a commit applies none of its edge
     /// writes, `apply::validity`). Invariant: a met name is a departure this node holds whole,
@@ -387,29 +393,32 @@ impl osis_keys::Held for NamesHeld<'_> {
         });
         applied && self.resolved(&n.key.commit)
     }
-    /// The commit by `own`'s `ts` and author among the held `roles.0` deltas of the actor, resolved,
-    /// writing a keyset of the actor (a rotation commit), and making no self-removal on it.
+    /// The author of held commit `c` holds `r` on the actor now, for keys (`At::KEYS`: every
+    /// `until` disregarded), over its owner chain and through holder actors alike.
     ///
-    /// Invariant: a departs mark covers only departures its rotation commit makes by an
-    /// explicit demotion or finalize, whose author stays a holder or was never the leaver. Any
-    /// writer holding an epoch's secret may put an entry at its history key naming any mark, and
-    /// a mark is predictable by its author: a leaver could name its own self-removal (in that
-    /// commit, an earlier one, or a rotation of its own in it, whose secrets it made), and a
-    /// leaver's guess at an admin's removal that carries no rotation (Seal waits) would name a
-    /// commit with no keyset. A self-removal carries no rotation (spec/permissions.md §3), so an
-    /// honest mark never names one.
+    /// Invariant: what covers a departure is its rotator's word, and a rotator's word counts
+    /// only while it holds the role (spec/crypto.md §4, covers). A rotator lowered below `r`
+    /// after rotating has a departure of its own that its epochs of `r` do not name, so `r` is
+    /// due for rotation anyway: this costs honest flows nothing. A leaver's rotation (backdated,
+    /// or in its self-removal) and its entries at others' epochs cover nothing, and an entry
+    /// nobody's keyset commits to is nobody's.
+    fn holds(&self, node: &Tid, r: Role) -> bool {
+        self.holder(node, r)
+    }
+    /// A held valid keyset of `e` (`Indexes::keysets`, from valid `keys.0` bodies, rotation
+    /// commits and compaction snapshots alike) publishes `digest` by an author holding `r` now.
+    fn publishes(&self, r: Role, e: &Epoch, digest: &osis_keys::NamesDigest) -> bool {
+        self.core.ix.keysets.get(&(self.actor, r, *e)).is_some_and(|k| k.names.iter().any(|(d, author)| d == digest && self.holder(author, r)))
+    }
+    /// The role commit by `own`'s `ts` and author among the held `roles.0` deltas of the actor,
+    /// resolved: an entry naming its own rotation commit is met only beside that commit's edge
+    /// writes, so a snapshot keying the epoch establishes it only once they are held. The mark
+    /// is predictable by its author, which forges nothing by it: coverage never reads it.
     fn departed(&self, own: &Own) -> bool {
         let Ok(roles) = osis_base::Ak::new("roles.0") else { return false };
         let Some(set) = self.core.ix.by_aspect.get(&(self.actor, roles)) else { return false };
         let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
-        let tl = self.core.timelines.get(&self.actor);
-        set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| {
-            let rotates = self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node && m.header.aspects.iter().any(|a| a.tid == self.actor && a.ak.as_str() == "keys.0"));
-            let leaves = tl.is_some_and(|tl| {
-                tl.applied().range(osis_perm::WriteId(*c, 0)..=osis_perm::WriteId(*c, u32::MAX)).any(|(_, w)| w.target == self.actor && matches!(w.attr, osis_perm::Attr::SelfRemoval(..)))
-            });
-            rotates && !leaves && self.resolved(c)
-        })
+        set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node && m.view.kind.is_role()) && self.resolved(c))
     }
 }
 

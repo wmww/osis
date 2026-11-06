@@ -378,7 +378,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             // while Seal waits the removal goes alone (spec/permissions.md §3)
             if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)? {
-                let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
+                let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
                 if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
                     rotation::fresh_deposit_seed(tx, &mut m, target)?;
                 }
@@ -502,7 +502,7 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
         let skip: Vec<(Tid, Option<Role>)> = ended.iter().map(|(x, _, _)| (*x, None)).collect();
         // while Seal waits the finalize goes alone (spec/permissions.md §3)
         if let Some(holders) = rotation::recipients(tx, &who, &target, &skip)? {
-            let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
+            let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, !pending.is_empty())?;
             if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
                 rotation::fresh_deposit_seed(tx, &mut m, target)?;
             }
