@@ -1,6 +1,8 @@
 # One kind of node
 > Summary: There is no fundamental distinction between nodes by how much of their data they can read (Tess). Words are fixed by spec/requirements.md Terms; this lists what still separates them in code and notes, and what to decide about each. The same binary already runs every case; the remaining question is three serving paths, two stores and three keys on one node.
-> Tags: node, host, api
+> Tags: node, sync, api, tess-call
+
+**End state (Tess):** one concept of a node, and one of a peer: any node a group syncs with, readable to it or not. "Host" is historical and deprecated: in the remaining code, spec and notes it's a leftover to remove, never a concept to build on. Networking needs its own session (Tess), which owns this issue together with issues/no-server-audit.md, and turning on `iroh` and `lan` waits for it. Needs Tess's input on the open choices below.
 
 An ordinary node (a laptop, a phone) may keep data it cannot read for others, and a backup machine may read some of what it holds (its settings, a website's data). Same binary, run the same way, any mix.
 
