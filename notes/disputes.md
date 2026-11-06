@@ -1,24 +1,25 @@
-# Removing immutable owners: reasoning
-> Summary: Why owners went (built: every thing's first admin is an ordinary admin, notes/disputes-plan.md step 2) and why disputes are settled per node (option F, chosen with Tess): what an owner did and what replaced it, the limit on any conflict rule, the options compared, the dispute rules, model results, review findings, the optional recovery key. The build plan is notes/disputes-plan.md.
+# Admin disputes: reasoning
+> Summary: Why no authority sits above the admins (built: every thing's first admin is an ordinary admin, notes/disputes-plan.md step 2) and why disputes are settled per node (option F, chosen with Tess): what a fixed top authority did and what replaced it, the limit on any conflict rule, the options compared, the dispute rules, model results, review findings, the optional recovery key. The build plan is notes/disputes-plan.md.
 
-## What an owner did, and what replaced it
-1. Fixed the tid (the creation record commits to it), so nobody can publish a competing creation. Needs only a genesis, not an owner.
-2. Inheritance: a role on an actor reached what it owned, so a million things need no edges.
-3. Plain things derived secrets from the owner and stored none.
-4. Irremovable top authority: the only thing that settled a backdating fight between admins (issues/ownerless-first-admin-backdate.md).
+## What a fixed top authority did, and what replaced it
+The rejected design: each thing had an irremovable top authority fixed by its record.
+1. Fixed the tid (the creation record commits to it), so nobody can publish a competing creation. Needs only a genesis, not a top authority.
+2. Inheritance: a role on an actor reached what was under it, so a million things need no edges.
+3. Plain things derived secrets from it and stored none.
+4. Irremovable top authority: the only thing that settled a backdating fight between admins.
 
-**Common base of every option: the first admin (built).** Every record names a first admin; its edge is implicit, costs no bytes and is removable. Walks follow these edges while they stand, so 1-3 keep working: same tid forever, plain things stay free and derive secrets until they get another holder, then rotate. A move is grant then remove; a large set moves by handing over a shared actor. Key actors stay: a node is its key, not an owned thing. Verifiers must see a record edge's removal, with the eventual reach of any edge.
+**Common base of every option: the first admin (built).** Every record names a first admin; its edge is implicit, costs no bytes and is removable. Walks follow these edges while they stand, so 1-3 keep working: same tid forever, plain things stay free and derive secrets until they get another holder, then rotate. A move is grant then remove; a large set moves by handing over a shared actor. Key actors stay: a node is its key, with no first admin. Verifiers must see a record edge's removal, with the eventual reach of any edge.
 
 ## The limit on any conflict rule
 An ex-holder signs two conflicting writes and controls everything in them (stamps, hashes, frontiers). A rule reading only signed data has three outcomes: the signer picks the winner (any tiebreak), nobody wins (burn), or someone else's signature decides (quorum, witness). Age cannot bound it without breaking "state is a function of held data".
 
 ## Options
-- A. Admins only, earliest stamp wins (today's ownerless rule everywhere). An ex-admin can steal back.
+- A. Admins only, earliest stamp wins (the walk's rule with no dispute handling). An ex-admin can steal back.
 - B. Admins only, a mutual removal neither side listed removes both. An ex-admin can only burn; a stolen node can wipe out every admin of an account.
-- C. Owner as a mutable role above admin (zero or many holders, B's rule at the top). A stolen node loses to a recovery key holding the role; an ex-owner burns the top tier only. Two concurrent hand-offs make two co-owners. An admin of P must still act fully on things P holds, or an account's nodes lose power over its things.
+- C. A mutable top role above admin (zero or many holders, B's rule at the top). A stolen node loses to a recovery key holding the role; an ex-holder burns the top tier only. Two concurrent hand-offs make two top holders. An admin of P must still act fully on things P holds, or an account's nodes lose power over its things.
 - D. Majority of the other admins on contested removals: a thief loses 2 to 1. Falls back to B below 3 admins; sock-puppet grants need a baseline. An add-on.
 - E. An optional witness a thing names, ordering its role changes. The only real prevention; conflicts with "no trusted coordinator" unless opt-in; the witness needs its own hand-off.
-- **F (Tess's idea, chosen): admins only; a fight goes to each user.** Touches spec/requirements.md Permissions (three concepts, fixed owner), Deterministic and API.
+- **F (Tess's idea, chosen): admins only; a fight goes to each user.** Touches spec/requirements.md Permissions (three concepts), Deterministic and API.
 
 ## F: disputes
 - **Dispute**: an admin removal R of X, and a write W by X not listed in R's frontier that would void R. Every other conflict keeps today's rules, so honest histories prompt only when two admins really remove each other (or knock out the other's grantor).
@@ -29,7 +30,7 @@ An ex-holder signs two conflicting writes and controls everything in them (stamp
 - **Costs**: users choosing differently split one tid until someone switches (a social fork); contacts judge an account's dispute out of band, like a safety-number warning; tests need convergence "given equal trust sets".
 
 ## Model results
-`core/test/roles-model` `trust` (commands and rules: the `trust` paragraph of its `src/lib.rs`). Trust sets on the `edges` walk (one thing: `until` with finalizes, invites, links, read, write, admin, receipts skewed up to 2 units around the stamp) and the `joint` walk (several actors, actor holders, mutual roles), both in the post-owner shape: first admin as an edge before every write, removable, no owner authority. About 25M histories: exhaustive edge tiers (2.0M) and 2M random per shape. Hard properties, 0 failures: an empty trust set reads as today's walk; nobody offline raises no dispute; equal trust sets read alike in any write order; T, then T', then T reads as T; a choice changes nothing outside its target's reach.
+`core/test/roles-model` `trust` (commands and rules: the `trust` paragraph of its `src/lib.rs`). Trust sets on the `edges` walk (one thing: `until` with finalizes, invites, links, read, write, admin, receipts skewed up to 2 units around the stamp) and the `joint` walk (several actors, actor holders, mutual roles), both in the built shape: first admin as an edge before every write, removable, no top authority. About 25M histories: exhaustive edge tiers (2.0M) and 2M random per shape. Hard properties, 0 failures: an empty trust set reads as today's walk; nobody offline raises no dispute; equal trust sets read alike in any write order; T, then T', then T reads as T; a choice changes nothing outside its target's reach.
 - **Rule**: R (A lowering X) seeds D with X's writes ordered before R that R's frontier does not list, X's writes lowering its own edges excepted. Trusted ops that turn void lose their seeds and stay out, all at once ("shrink"), D rebuilt from scratch: at most 2 shrink rounds, at most 4 rounds of a node choosing each new dispute at random; a choice never left its own dispute open. Failed variants (prototype): fixed seeds backfire; re-judging "void" each round loops on 1.6% of random histories; removing void ops one at a time depends on order.
 - **Seeds stop at R**: seeding every unlisted write of X whenever stamped changed the state when trusting a demotion that applies anyway (1.7% edges, 14% joint), dropped X's writes after a re-grant by a third admin for good, and raised extra disputes from X's later demotions. Stopping at R: 0.03-0.2% (edges), 2.8% (joint, from the static victim set). The price: "a choice rejects the author" no longer holds.
 - **X's writes lowering its own edge are no seeds** (below the value the last held write on the edge before it set, in every component, not equal): a self-removal never contests R. Seeded, they raised false disputes and kept X in place. A self-grant is a seed: excepting every own-edge write let a removed admin keep a backdated self-grant on every thing below at nodes trusting its removal.

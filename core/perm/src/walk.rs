@@ -344,17 +344,17 @@ struct Effects {
     /// Its undo entries but those of demotions and falls, which `records` holds by key, sorted
     /// (their order within an item is not kept: `alias_leaves`, falls placed later).
     log: Vec<Undo>,
-    records: Records,
+    records: UndoKeys,
     applied: Vec<Option<Applied>>,
     demotions: BTreeMap<(Tid, Tid), Vec<Demotion>>,
     falls: BTreeMap<(Tid, Tid), Vec<Fall>>,
 }
 
 /// Demotion (false) and fall (true) undo entries by key.
-type Records = Vec<(bool, (Tid, Tid))>;
+type UndoKeys = Vec<(bool, (Tid, Tid))>;
 
 /// `log` split into its entries but demotions and falls, and those by key, sorted.
-fn split_log(log: &[Undo]) -> (Vec<Undo>, Records) {
+fn split_log(log: &[Undo]) -> (Vec<Undo>, UndoKeys) {
     let mut records = Vec::new();
     let mut rest = Vec::new();
     for u in log {
