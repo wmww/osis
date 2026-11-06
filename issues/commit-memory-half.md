@@ -1,33 +1,40 @@
-# A durable write's memory half is a second commit
-> Summary: Four calls make one durable commit plus one memory commit under the same `ts` (a `delete` of a thing with ephemeral state, a draft's memberships leaving `placed.0~` when it is kept, a durable removal of a member also listed in `placed.0~`, a revert of such a write); the wire has no commit carrying both, so a peer can hold one without the other. What one commit would take, and the alternatives.
+# A write that makes two commits, and writes refused for mixing
+> Summary: For Tess. Four kinds of `Write::commit` (or revert) still make a durable commit plus a memory commit under one `ts`, which a peer may hold one without the other; seven mixes are refused (`Invalid`) though a user may not expect it. The wire has no commit of two storage classes. A rule at every receiver ("`placed.0~` lists drafts only") removes two of the four without a wire change; `delete` and some reverts remain. What to decide, with a recommendation.
 > Tags: engine, sync, spec, tess-call
 
-Tess: a commit is an atomic write and is never quietly split. Today these `Write::commit` (and `revert`) cases make two commits, the durable one and a memory commit after it under its `ts` (engine `Engine::write`: `m.free`'s ephemeral resets and `Placed::eph` beside a durable half; `revert_batch` for a logged batch with a commit):
-1. `delete(t)` of a thing with ephemeral aspects or `placed.0~` memberships: the durable resets, then the ephemeral ones.
-2. A draft's first durable write (or any durable write of a durable thing still in a `placed.0~`): the durable `group.0` adds, then the `placed.0~` resets.
-3. A durable `w.group(g).remove` of a member also listed in `g`'s `placed.0~`: the durable removal, then the `placed.0~` one.
-4. `revert`/`undo`/`redo` of a write that made two commits: the durable undo commit, then the memory one.
+## For Tess
+**Still two commits** (durable, then memory, same `ts`; engine `Engine::write`, `revert_batch`):
+1. `delete(t)` of a thing with ephemeral state: the durable resets, then its ephemeral aspects' resets and its `placed.0~` entries.
+2. Saving a draft that is an ephemeral member of groups (or any durable write on a durable thing still in a `placed.0~`): the durable `group.0` adds, then the `placed.0~` removals.
+3. A durable `w.group(g).remove(m)` of a member also listed in `g`'s `placed.0~`: the durable removal, then the `placed.0~` one.
+4. `revert`/`undo`/`redo` of a write that made two, and the undo of a save (the thing a draft again here: durable undo, then its ephemeral memberships restored).
 
-Nothing else splits: a user's own ephemeral writes beside durable ones, or plain beside expiring ones, are refused (`Clash`); a draft made with no write beside a durable write commits nothing for it (its record is held here). The sharing calls (`grant`, `sync`, `make_link` on a draft; `set_role` over a lost grant) make several commits on purpose and say so.
+**Refused though a user may not expect it** (`Invalid`/`Clash`, nothing applies; the app writes two commits itself): durable and ephemeral writes in one `Write` (a title and a cursor); plain and expiring ephemeral writes; a signal beside any other write; deltas wanting different expiries; saving a draft whose ephemeral membership expires (spec/data-model.md §8); a `delete` of a thing whose aspects or groups fall under different `required.0^` rules; an ephemeral delta larger than a blob.
+
+**Why**: on the wire a commit has one storage class (below), and the two halves are stored differently: durable in logs and stores, memory only in memory. Effects today: with the durable half alone, a deleted thing's ephemeral values or a stale `placed.0~` entry show until the memory half arrives or the holders restart (mild); with the memory half alone (the ephemeral lane uploads apart from the durable passes), a saved draft is briefly in none of its groups at that peer (cases 2 and 4), until the durable half arrives.
+
+**Decide**:
+- (a) Cases 2 and 3: adopt the receiver rule "`placed.0~` lists drafts only" (below). Then neither makes a memory commit. Needs a call on `MembershipNotSaved` (a saving node that may not write the group): the membership is lost (recommended: an ephemeral membership is already lossy), or the save is refused (one more surprising refusal).
+- (b) Case 1: keep two commits, documented (recommended for now: nothing reads a deleted thing's ephemeral side after it left its groups), or a durable floor (below: one commit, a new core aspect).
+- (c) Case 4: with (a), the undo of a save keeps the memberships durable (one commit; recommended), and only reverts of case 1 stay two.
+- (d) The refusals: keep. Each is a write the wire cannot carry as one commit; splitting them quietly is what Tess ruled out.
+
+Recommendation: (a) with the membership lost, (b) two commits, (c) memberships stay durable, (d) keep. Then the only split is `delete` of a thing with ephemeral state and its revert.
 
 ## Why the wire cannot carry it now
-- spec/commits.md §2: a commit is one kind; an AK with `~` in a durable commit, or without `~` in an ephemeral one, is a bad part dropped alone; "a commit spanning several kinds is invalid".
-- The marker is in the header (spec/wire.md §4) and the class in the blob prefix (spec/sync.md §1, §3): one commit is one blob per label, stored by hosts and nodes either in their logs and stores or in memory only (spec/sync.md §4, §9). Forms differ too: durable is commit form with retention, pages and `created.0`; ephemeral is session form, retention `writer`, no pages, records beside each part.
-- So a peer can hold the durable commit without the memory one: after a restart, a host that lost its memory entries, a cap refusal (spec/sync.md §9 Caps), or a holder that forgot the memory commit. The case is benign today (the durable half reads right alone: a deleted thing's ephemeral values or a stale `placed.0~` entry show until the memory half arrives or the holders restart), but it is two commits.
+- spec/commits.md §2: an AK with `~` in a durable commit, or without `~` in an ephemeral one, is a bad part dropped alone; "a commit spanning several kinds is invalid". The marker is in the header (spec/wire.md §4), the class in the blob prefix (spec/sync.md §1, §3): one commit is one blob per label, held in logs and stores or in memory only (spec/sync.md §4, §9). Durable is commit form with retention and pages; ephemeral is session form, retention `writer`, no pages, records beside each part.
+- One commit of both classes needs a class per part in the header, and either one blob whose durable entry holds the memory parts (hosts keep it in their logs: no longer ephemeral) or two blobs under one ID applied only together (a durable commit then waits on a memory blob a restarted host lost; letting it apply alone is today's split). Plus a durable commit whose memory parts are forgotten at restart while its header stays, and two `dot` forms in one header. No small version exists.
 
-## What one commit would take
-A commit with parts of two storage classes, applied whole:
-- Header: per part (or per delta entry) a storage class instead of one marker; the commit ID and signature cover both.
-- Blob and prefix: either one blob whose durable entry holds the memory parts too (hosts keep it in their logs, so the memory half outlives restarts, against "never stored"), or two blobs under one commit ID (a durable one and a memory one, each with its class), applied by a receiver only once both are held (a durable commit then waits on a memory blob a restarted host lost: it must not; so the durable blob alone must apply, which is today's split again).
-- Holding: a durable commit whose memory parts are forgotten at restart while the header stays, and verification of a part missing at one node and held at another (today `Meta::missing` for durable bodies).
-- Forms: session-form memory parts inside a commit-form durable commit (two `dot` sources in one header).
-None of this is small: every option either stores the memory half (no longer ephemeral) or lets the durable half apply alone (still two units on the wire).
+## Derived at every receiver
+**"`placed.0~` lists drafts only"** (cases 2, 3): an entry of a `placed.0~` naming a thing whose `created.0` the node holds reads as nothing, and the node may forget it (a durable thing never becomes a draft, so it never reads again). The saving commit already carries the durable adds where the saver may write the group; a durable removal leaves nothing in `placed.0~` to remove. Converges as the saving commit arrives (it goes under the group's labels: the thing is in the group's closure). Costs: spec/data-model.md §8 read rule and the "join of held parts" invariant for this one aspect; the membership index (`Indexes::placed`, `groups.0`, closures, spec/sync.md §3) filters by held records; the `MembershipNotSaved` call above; the undo of a save cannot restore ephemeral memberships (they would read as nothing), hence (c).
 
-## Alternatives without the wire change
-- **Derive the memory half at every receiver.** A `placed.0~` entry of a thing that a durable `group.0` names in the same group reads as nothing (cases 2, 3: no reset needed; the stale entry goes at restart or by compaction). Changes spec/data-model.md §8 and the "a memory aspect's state is the join of its held parts" invariant only at read; needs a rule for a durable thing kept in `placed.0~` of a group the persisting node may not write (`MembershipNotSaved`).
-- **Refuse instead of splitting.** `delete` of a thing with ephemeral state is `Invalid`, saying to delete its ephemeral side in a write of its own first (as `required.0^` mismatches already are, issues/delete-required-rules.md); the conversion in case 2 likewise. Explicit, but every app deleting a thing with a cursor writes two commits by hand, and an app that does not know about `placed.0~` cannot.
-- **Keep two commits, documented** (today): notes/api.md Writes, spec/sync.md §9 and spec/commits.md §6 say these calls make two commits.
+A stamp rule ("an entry reads as nothing where `group.0` has a later write on that member") was weighed and does not work for case 3: a set's tombstone keeps the dot and reset stamp, not the value (spec/crdt.md §5.5), so a node that got `group.0` as a snapshot after the removal cannot tell which member it removed.
 
-Tess: which? Until then, the docs say two commits.
+**Not derivable: `delete`** (case 1). A delete is not on the wire: it is resets of every aspect the deleter holds and its group removals (notes/api.md Writes; spec/crdt.md §4.6 for undoing a creation), which a receiver cannot tell from "this commit clears these aspects". The ephemeral resets are per observed dot, which only the deleter knows. Ways to one commit:
+- **Durable floor**: a new core durable aspect, say `ephemeral_floor.0` (a register of a `ts`), written by `delete` in its durable commit; every node reads the thing's ephemeral writes stamped at or below it as nothing and may forget them. Undoing the delete restores the floor in its one durable commit (values come back where still held). Costs: a core aspect and a cross-class read rule; a floor drops concurrent unseen ephemeral writes stamped earlier too (what a delete means anyway).
+- **Refuse**: `delete` of a thing with ephemeral state is `Invalid` until the app removes that state in a commit of its own. Every app deleting a thing with a cursor writes two commits by hand, and one that does not know of `placed.0~` cannot.
 
-Left: `core/osis/src/lib.rs` "One write, one commit" still says a `Write` is one commit, whole at every node; it needs the exception's sentence (the file was another branch's, api-setrole-now, when this was written).
+## Left
+- spec/requirements.md (Atomic, line "A commit is never split") conflicts with the four cases, and its Limit lists only expiry and `nobody` mixes, not durable beside ephemeral or signal: left for Tess with this call (a requirements change).
+- `core/osis/src/lib.rs` "One write, one commit" still says a `Write` is one commit, whole at every node; it needs this exception (the file was api-setrole-now's when this was written).
+- Fixed alongside: signal writes went as one relay-only commit per actor per pass, so two writes of one signal aspect before a pass made a commit repeating it, refused, and both were lost; now one per write (`signal_writes_one_commit_each_spec_sync_9`).

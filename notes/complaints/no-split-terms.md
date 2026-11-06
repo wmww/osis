@@ -3,3 +3,4 @@
 - The handoff named a security issue (forged-departs-mark-entry) whose file was never committed: a "new" issue named only in notes/handoff.md is easily lost.
 - Engine `WriteId` was taken (osis_perm's edge write id), so `ChangeId` became `BatchId`: check the whole workspace for a name before a rename, not one crate.
 - The other branch's files (share.rs, handle.rs, lib.rs, app, cli) block renames that are otherwise mechanical (`Route`/`Remote`, app links, lib.rs's one-commit line); listed in issues/deprecated-terms.md.
+- Review: `grep` is ugrep here and refuses `-o` patterns with `.{0,N}` context past a complexity limit ("exceeds complexity limits"); python over a saved diff was the way to scan 400 rewritten links.
