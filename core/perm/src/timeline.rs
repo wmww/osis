@@ -228,7 +228,7 @@ impl Timeline {
     }
 
     /// The trusted ops in force: held here, applied, their seeds in D.
-    pub fn active(&self) -> &BTreeSet<WriteId> {
+    pub fn trusted_active(&self) -> &BTreeSet<WriteId> {
         &self.active
     }
 
