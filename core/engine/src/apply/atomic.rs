@@ -478,13 +478,17 @@ impl Unmerge {
     /// a keyed map entry, its creation's copy under that key or the record itself (its
     /// creation pruned by a reset, alive by a later nested write); else any write under `d`.
     /// A key-erased record (its writer held the dot value-less, spec/crdt.md §4.7) keeps every
-    /// record of its dot, whether or not this node holds it value-less yet (seed 7340007): the
-    /// answer must not change when the dot goes value-less here, since no rebuild runs then.
+    /// record of its dot, the state's own key-erased record (asked with no key) included:
+    /// nested writes of other deltas live there (order seed 91703), and the answer must not
+    /// change when the dot goes value-less here, since no rebuild runs then (seed 7340007).
     /// Limit: with the dot value-less here, the state's key-erased record is asked with no
     /// key, so a misstated copy under another key keeps it there but not in a body.
     fn vouches(&self, d: &osis_crdt::Dot, key: Option<&osis_base::Value>) -> bool {
+        if self.erased.contains(d) {
+            return true;
+        }
         match key {
-            Some(k) => self.erased.contains(d) || self.vouched.contains(&(d.clone(), Some(k.clone()))),
+            Some(k) => self.vouched.contains(&(d.clone(), Some(k.clone()))),
             None => self.vouched.range((d.clone(), None)..).next().is_some_and(|x| x.0 == *d),
         }
     }
@@ -637,6 +641,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     crate::retention::fetch_fallen(tx, &h, &id, &meta.missing)?;
     tx.core.put_meta(id, meta.clone());
     tx.core.index_validity(&id);
+    crate::retention::note_requests(tx, &id, &h)?;
 
     if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
         let order = in_order(&parts);

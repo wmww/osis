@@ -1619,13 +1619,17 @@ fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
 }
 
 /// The commits with a body held at one node and dropped at the other where that is a drop
-/// before a validity flip (`flip`), as `facts_text` prints their IDs: a body dropped for its keep
-/// bounds counts as never received (spec/commits.md §5), so the two nodes hold the same bodies
-/// once each is given these again (`alike_exchanged`).
-fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
+/// before a validity flip (`flip`, or any flip of its aspect on the way, `flips`: a delta
+/// invalid on the way and valid at the end un-merges the writes nested under its creations,
+/// and a keep-at-most-0 body left with none counts replaced and drops, seed 913022), as
+/// `facts_text` prints their IDs: a body dropped for its keep bounds counts as never received
+/// (spec/commits.md §5; spec/crdt.md §4.6 Function of the held set), so the two nodes hold the
+/// same bodies once each is given these again (`alike_exchanged`).
+fn drop_flips(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> BTreeSet<String> {
     let ((wf, inv), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
     let again = refetched(want, got);
-    wf.keys().filter(|k| gf.contains_key(*k) && (flip(&wf, &gf, &inv, k) || again.contains(&k.0))).map(|k| k.0.clone()).collect()
+    let on_the_way = |k: &BodyKey| wf[k].at_most && wf[k].held != gf[k].held && flips(&k.1, &k.2);
+    wf.keys().filter(|k| gf.contains_key(*k) && (flip(&wf, &gf, &inv, k) || on_the_way(k) || again.contains(&k.0))).map(|k| k.0.clone()).collect()
 }
 
 /// The commits with a keep-at-most part missing at either node: dropped while invalid and valid
@@ -1732,7 +1736,7 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
     }
     let (rng, clock) = way.parts();
     let fallen = purge_flips(played, want, got);
-    let mut apart = drop_flips(want, got);
+    let mut apart = drop_flips(want, got, flips);
     apart.extend(fallen.iter().cloned());
     apart.extend(both_dropped_flips(want, got, flips));
     if apart.is_empty() {
@@ -4196,7 +4200,7 @@ fn keep_at_most_drop_joins_again_after_flip_spec_commits_5() {
     let rev: Vec<usize> = made.iter().rev().copied().collect();
     let (want, got) = (judged(&mut deliver(&played, &made), &played), judged(&mut deliver(&played, &rev), &played));
     assert!(alike(&want, &got).is_some(), "the orders differ until the body is given again");
-    let apart = drop_flips(&want, &got);
+    let apart = drop_flips(&want, &got, &|_, _| false);
     assert_eq!(apart.len(), 1, "one body dropped before the flip: {apart:?}");
     assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, Way::Plain, &|_, _| false), None);
     // the node that dropped it holds it again once a copy arrives
@@ -5000,3 +5004,72 @@ fn stripped_snapshot_named_by_purge_drops_seed_9500003() {
     check(9500003, &h, Cfg { sync: true, model: true, ..LARGE }).unwrap();
 }
 
+
+// A commit that kills the last live write of a body under keep at most 0 after replaced and
+// whose purge request names that body: the node holds the body when it judges both, so it holds
+// its leftover (spec/commits.md §5: a purged leftover is never dropped for keep bounds), in
+// whichever order the request and the named delta arrive (purge seeds 913006, 913022).
+#[test]
+fn kill_and_purge_in_one_commit_keeps_leftover_spec_commits_5() {
+    use Step::*;
+    let h = vec![Require { by: 0, t: 0, op: 17, rule: 3 }, Sync { from: 0, to: 1 }, Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Purge { by: 0, t: 0, of: 1, back: 0, v: 2 }];
+    let played = play(913006, &h);
+    let n = played.packs.len();
+    let (t, a) = (played.things[0], ak("t:reg.0"));
+    assert_eq!(n, played.base + 3, "{:?}", played.tally.show());
+    let (write, purge) = (played.packs[n - 2].id, played.packs[n - 1].id);
+    let made: Vec<usize> = (0..n).collect();
+    let request_first: Vec<usize> = (0..played.base).chain([n - 1, n - 2]).collect();
+    for order in [made, request_first] {
+        let mut p = deliver(&played, &order);
+        let h = p.engine.header(&write).unwrap();
+        assert_eq!(h.aspects[0].retention.at_most.rel, Some(0), "the write is under the required keep at most 0: {:?}", h.aspects[0].retention);
+        assert_eq!(p.engine.get(&t, &a).unwrap(), Some(s("p2")), "the request's write killed it");
+        assert!(p.engine.purge_stands(&purge, &write, &t, &a), "the request names the write and stands");
+        let m = p.engine.core.ix.commits.get(&write).unwrap();
+        let ai = m.header.aspects.iter().position(|x| x.tid == t && x.ak == a).unwrap();
+        assert!(m.stripped.contains(&ai) && !m.dropped.contains_key(&ai), "order {order:?}: held as its leftover, not dropped: dropped {:?} stripped {:?}", m.dropped, m.stripped);
+    }
+}
+
+// Settled harness seed 91703, its reversed order after a reopen: a writer's two expiring
+// commits (a map entry, its nested entries), invalid at a fresh node and dropped at T while they
+// waited for the thing's record (never received), their writes live through an admin's valid
+// snapshot held as its leftover, the entry key-erased with no creation copy. Given the commits
+// again, the entry's copy joins as an invalid delta and the un-merge keeps the record the
+// snapshot holds key-erased (spec/crdt.md §4.6), so the nested writes stay live, as at the node
+// keeping every body. Before the reopen the snapshot's copy index, built from its whole body
+// before the strip, vouched by the creation copy; read anew from the leftover it holds the
+// record key-erased only, and a keyless query must count that.
+#[test]
+fn settled_seed_91703_live_write_kept_after_reopen_spec_crdt_4_6() {
+    let cfg = Cfg { settled: true, sync: true, ..LARGE };
+    let played = play(91703, &settled(history(91703, 60, cfg)));
+    let played = Played { settled: true, ..with_syncs(played, 91703, true) };
+    let held: Vec<usize> = (0..played.packs.len()).collect();
+    let o = oracle(&played, &held);
+    let rev: Vec<usize> = held.iter().rev().copied().collect();
+    let mut p = deliver(&played, &rev);
+    p.engine.reload().unwrap();
+    p.engine.reexamine().unwrap();
+    let mut got = judged_now(&mut p, &played.things);
+    later(&mut got, &mut p, &played);
+    assert_eq!(live_write_lost(&mut p, &o, &played, &|t, a| flipped(&played, &rev, Way::Plain, t, a)), None);
+}
+
+// Alike seed 913022, shrunk: a writer's put of a text entry under keep at most 0 (required),
+// another's insert inside it. In an order where the put arrives invalid (its writer's grant
+// later) it drops at once, and the insert, un-merged with the entry's record and left with no
+// write in the state, counts replaced and drops too (spec/commits.md §5); the grant turns the
+// put valid: missing, fetched again, the aspect flagged. The insert's body comes back only
+// with a copy (spec/crdt.md §4.6 Function of the held set), which the oracle gives both nodes
+// (`drop_flips`: a body held at one node and dropped at the other on an aspect that flipped on
+// the way).
+#[test]
+fn alike_seed_913022_nested_write_dropped_before_flip_spec_crdt_4_6() {
+    use Step::*;
+    let a = |x: Step| Aim(Box::new(x));
+    let h = vec![a(Demote { by: 0, t: 7, holder: 2, at: 2, to_read: true }), a(Demote { by: 0, t: 6, holder: 2, at: 0, to_read: true }), a(Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }), a(Require { by: 2, t: 0, op: 18, rule: 3 }), a(Leave { by: 1, t: 2 }), Sync { from: 0, to: 2 }, a(Nested { by: 1, other: 0, t: 3, k: 2, text: true, compact: false, also: false })];
+    let r = check(913022, &h, Cfg { sync: true, ..LARGE });
+    assert!(r.is_ok(), "{}", r.err().unwrap());
+}

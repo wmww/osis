@@ -790,12 +790,23 @@ fn parts_seed(seed: u64) -> PartsSeed {
             for t in sync.iter() {
                 p.engine.set_syncing(*t, true).unwrap();
             }
+            // a part missing again (dropped at a keep-at-most bound while invalid, valid since:
+            // never received, spec/commits.md §5) node-sync fetches: its copy comes from a holder
+            let refetch = |p: &mut Peer, relay: &mut Relay| {
+                for (id, ais) in p.engine.commit_parts_missing() {
+                    if let Some(i) = blobs.iter().find(|i| !ais.is_empty() && played.packs[**i].id == id) {
+                        relay.give(p, &played.packs[*i].bytes, away_from(*i));
+                    }
+                }
+            };
             relay.settle(&mut p);
+            refetch(&mut p, &mut relay);
             let first = held_of(&mut p);
             for i in blobs {
                 p.engine.put_blobs(played.packs[*i].blobs.clone()).unwrap();
             }
             relay.settle(&mut p);
+            refetch(&mut p, &mut relay);
             (first, held_of(&mut p))
         };
         let whole: Vec<Vec<u8>> = keep.iter().map(|i| played.packs[*i].bytes.clone()).collect();

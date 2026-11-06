@@ -756,10 +756,16 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         let ob = hm::evaluate(&back);
         for (label, i, id, t, a) in &given {
             let f = ob.fates.get(&(*label, *i));
-            let lets_go = matches!(f, Some(hm::Fate::MayDrop(_) | hm::Fate::MustDrop(_)));
+            let why = e.core.ix.commits.get(id).and_then(|m| m.dropped.get(i)).map(|d| (d.why, d.covered_by.clone(), d.live));
+            // a body dropped at its keep-at-most bound before a request naming it arrived stays
+            // dropped (never received, spec/commits.md §5: the request strips what the node
+            // holds); the model holds the set whole and cannot tell when the request came, so a
+            // purged fate lets a body dropped for its bounds go. A body held when the request
+            // and its kill are judged is its leftover (`kill_and_purge_in_one_commit_*`).
+            let purged_after = matches!(f, Some(hm::Fate::Leftover(hm::LeftoverWhy::Purged))) && matches!(why, Some((osis_node::engine::DropFor::Other, _, _)));
+            let lets_go = matches!(f, Some(hm::Fate::MayDrop(_) | hm::Fate::MustDrop(_))) || purged_after;
             if !lets_go {
                 let bound = ob.at_most.get(&(*label, *i));
-                let why = e.core.ix.commits.get(id).and_then(|m| m.dropped.get(i)).map(|d| (d.why, d.covered_by.clone(), d.live));
                 return differ(format!("commit {id:?} (#{label}) on {t:?} {}: the node dropped its body ({why:?}), the model's fate for it is {f:?} (keep-at-most bound {bound:?}, deaths {:?}, valid {:?} at the node {:?})", a.as_str(), ob.deaths.get(&(*label, *i)), ob.valid.get(&(*label, *i)), e.body_valid(id, t, a)), &[input.inside[&(*t, a.clone())].0]);
             }
         }
