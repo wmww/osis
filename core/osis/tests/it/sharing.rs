@@ -215,7 +215,7 @@ fn redeem_link_after_a_rotation_and_a_late_peer_spec_permissions_4() {
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
 }
 
-// spec/permissions.md §4, spec/sync.md §5: a first admin's new node holds K's keyset under the target's label before any secret of K (K's box is under K's label alone): it still opens K's label, by the epochs its owner's derive, and gets K's secrets
+// spec/permissions.md §4, spec/sync.md §5: a first admin's new node holds K's keyset under the target's label before any secret of K (K's box is under K's label alone): it still opens K's label, by the epochs its first admin's derive, and gets K's secrets
 #[test]
 fn new_node_gets_k_keyset_before_its_box_spec_permissions_4() {
     let mut w = World::new();
