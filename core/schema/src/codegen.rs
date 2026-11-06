@@ -41,15 +41,16 @@ pub fn generate(schema: &Schema, file: &str, src: &str) -> Result<Generated, Err
     let drop_first = shared_first_segment(schema.aspects.keys());
     let mut consts = String::new();
     let mut cnames = BTreeSet::from(["SCHEMA".to_string()]);
+    // keys differing only in markers (`group.0`, `group.0~`): the ephemeral or signal one takes
+    // a suffix
+    let unmarked = |ak: &str| ak.trim_end_matches(['~', '*']).trim_end_matches('^').to_string();
     let mut shared: BTreeMap<String, usize> = BTreeMap::new();
     for ak in schema.aspects.keys() {
-        *shared.entry(const_name(ak, drop_first)).or_default() += 1;
+        *shared.entry(unmarked(ak)).or_default() += 1;
     }
     for (ak, def) in &schema.aspects {
         let mut cname = const_name(ak, drop_first);
-        // keys differing only in markers (`group.0`, `group.0~`): the ephemeral or signal one
-        // takes a suffix
-        if shared.get(&cname).is_some_and(|n| *n > 1) {
+        if shared.get(&unmarked(ak)).is_some_and(|n| *n > 1) {
             match Ak::markers_of(ak).1 {
                 osis_base::Lifetime::Durable => {}
                 osis_base::Lifetime::Ephemeral => cname.push_str("_EPHEMERAL"),
