@@ -290,3 +290,9 @@ pub fn forge_pending_grant(by: &mut Engine, rcpt: osis_keys::Recipient, t: Tid, 
     let rec = by.get_typed(&t, &ct::CREATED).unwrap().unwrap();
     cb.build(&by.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
+
+/// The keep bounds of the body holding part `(t, a)` of `c` (`Engine::body_keeps`).
+pub fn body_keep(e: &mut Engine, c: &CommitId, t: &Tid, a: &Ak) -> osis_commit::retention::Keep {
+    let ai = e.header(c).unwrap().aspects.iter().position(|x| x.tid == *t && x.ak == *a).unwrap();
+    e.body_keeps(c).unwrap()[ai]
+}

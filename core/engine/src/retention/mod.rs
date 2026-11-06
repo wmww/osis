@@ -136,13 +136,39 @@ fn snapshots_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
 /// a part's death record with its aspect: a class moves as records and keys arrive (the reader
 /// actor, `Core::reader_of`), a death record must not.
 pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (BlobId, Vec<usize>) {
-    let key = |a: &osis_commit::AspectEntry| (core.reader_of(&a.tid), a.retention, a.keys.clone());
     let Some(me) = h.aspects.get(ai) else { return (BlobId(c.0), vec![ai]) };
-    let k = key(me);
-    let holders: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();
+    let k = class_key(core, me);
+    let holders: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| class_key(core, a) == k).map(|(i, _)| i).collect();
+    (body_id(c), holders)
+}
+
+/// The ID keying the death records of commit `c`'s parts (`body_class`).
+fn body_id(c: &CommitId) -> BlobId {
     let mut hs = osis_base::hash::Hasher::new();
     hs.update(&c.0);
-    (BlobId(hs.finalize()), holders)
+    BlobId(hs.finalize())
+}
+
+/// What groups a commit's deltas into bodies (`body_class`).
+fn class_key(core: &Core, a: &osis_commit::AspectEntry) -> (Tid, osis_schema::Retention, Vec<usize>) {
+    (core.reader_of(&a.tid), a.retention, a.keys.clone())
+}
+
+/// Every retention class of header `h` (`body_class`), as the aspect indexes each holds, keyed
+/// once per aspect: grouping all of a commit's parts costs O(parts), not O(parts²).
+pub(crate) fn body_classes(core: &Core, h: &Header) -> Vec<Vec<usize>> {
+    let mut at: std::collections::HashMap<_, usize> = std::collections::HashMap::new();
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for (i, a) in h.aspects.iter().enumerate() {
+        let n = *at.entry(class_key(core, a)).or_insert_with(|| {
+            out.push(Vec::new());
+            out.len() - 1
+        });
+        if let Some(v) = out.get_mut(n) {
+            v.push(i);
+        }
+    }
+    out
 }
 
 /// The ID of the body holding aspect `ai` of known commit `c` (`body_class`).
@@ -157,11 +183,17 @@ fn deaths_of(tx: &mut Tx<'_>, h: &Header, c: &CommitId, ai: usize) -> Result<Opt
     class_deaths(tx, h, &body, &holders)
 }
 
-/// First and last death so far over a body's deltas.
+/// First and last death so far over a body's deltas: one record read per delta of a bounded body
+/// (`Core::death_reads`), none for an unbounded one (it has no death records, `bounded`; its
+/// class shares one retention).
 fn class_deaths(tx: &mut Tx<'_>, h: &Header, body: &BlobId, holders: &[usize]) -> Result<Option<(Ts, Ts)>> {
     let mut out: Option<(Ts, Ts)> = None;
+    if !holders.first().and_then(|ai| h.aspects.get(*ai)).is_some_and(bounded) {
+        return Ok(None);
+    }
     for ai in holders {
         let Some(a) = h.aspects.get(*ai) else { continue };
+        tx.core.death_reads += 1;
         if let Some(d) = tx.txn.death(&a.tid, &a.ak, body)? {
             out = Some(match out {
                 Some((f, l)) => (f.min(d.first), l.max(d.last)),

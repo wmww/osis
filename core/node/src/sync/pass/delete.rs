@@ -208,9 +208,10 @@ impl SyncEngine {
             // carries nothing more: this blob is one a right holder dropped them from
             // (spec/sync.md §6, §7)
             let mut sup = false;
+            let keeps = if sups.is_empty() { Vec::new() } else { self.engine.body_keeps(commit)? };
             'sups: for p2 in sups {
                 for ai in p2.iter().filter(|ai| !parts.contains(ai)) {
-                    if self.must_carry(&h, commit, *ai, snaps, note)? {
+                    if self.must_carry(&h, commit, &keeps, *ai, snaps, note)? {
                         sup = true;
                         break 'sups;
                     }

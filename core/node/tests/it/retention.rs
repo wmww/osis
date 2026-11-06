@@ -29,7 +29,7 @@ fn deaths_and_bounds_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.deaths(&c1, &t, &ak("t:kept.0")).unwrap(), Some((ts2, ts2)));
     assert_eq!(e.deaths(&c2, &t, &ak("t:kept.0")).unwrap(), None);
-    let k = e.body_keep(&c1, &t, &ak("t:kept.0")).unwrap();
+    let k = body_keep(e, &c1, &t, &ak("t:kept.0"));
     assert_eq!(k.at_least, ts2.wall_ms().0 + 86_400_000);
     assert_eq!(k.at_most, None);
     assert!(e.body_not_dropped(&c1, &t, &ak("t:kept.0")));
@@ -1145,7 +1145,7 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
         let e = &mut lp.peers[to].engine;
         for x in &ids[..2] {
             assert_eq!(e.deaths(x, &t, &a).unwrap(), Some((ts[2], ts[2])), "node {to}");
-            assert_eq!(e.body_keep(x, &t, &a).unwrap().at_least, ts[2].wall_ms().0 + 86_400_000, "node {to}");
+            assert_eq!(body_keep(e, x, &t, &a).at_least, ts[2].wall_ms().0 + 86_400_000, "node {to}");
         }
         assert_eq!(e.deaths(&ids[2], &t, &a).unwrap(), None);
     }
@@ -2048,7 +2048,7 @@ fn invalid_write_drops_as_invalid_spec_commits_5() {
     let e = &mut lp.peers[2].engine;
     let own = e.header(&c).unwrap().ts;
     assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((own, own)), "the write's own `ts`");
-    assert_eq!(e.body_keep(&c, &t, &a).unwrap().at_most, Some(own.wall_ms().0));
+    assert_eq!(body_keep(e, &c, &t, &a).at_most, Some(own.wall_ms().0));
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&t, &a).unwrap(), None);
     assert!(!e.body_not_dropped(&c, &t, &a), "at its fall");

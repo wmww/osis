@@ -400,6 +400,13 @@ impl Engine {
         out
     }
 
+    /// Death records read so far to judge bodies' bounds. Tests: a judgment's cost grows with
+    /// the parts judged, not their square.
+    #[doc(hidden)]
+    pub fn death_reads(&self) -> u64 {
+        self.core.death_reads
+    }
+
     /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
     /// dropped parts standing in (`Dropped::stands_in`). Tests: what a random history reached.
     #[doc(hidden)]

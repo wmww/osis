@@ -829,6 +829,9 @@ pub struct Core {
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<CommitId, BTreeMap<(Tid, Ak), bool>>,
+    /// Death records read to judge bodies' bounds (`retention::class_deaths`), for cost tests
+    /// (`Engine::death_reads`).
+    pub death_reads: u64,
     /// Held snapshots' writes by dot (`copies::differing_copies`: deltas arriving after
     /// snapshots that copied their writes compare against it; `copies::vouched`). A snapshot never changes, so
     /// entries never go stale; all go past `COPY_CACHE_MAX` writes.
@@ -1292,6 +1295,7 @@ impl Core {
             missed: BTreeSet::new(),
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
+            death_reads: 0,
             copy_index: BTreeMap::new(),
             unrouted: None,
             generation: 0,
