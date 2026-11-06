@@ -2,7 +2,7 @@
 > Summary: An edit against a stale read (or a list edit whose window the list does not lend) and writing a whole collection load a paged sequence whole; a cold edit writes about twice the store bytes it did before the stored placement (two more B-tree leaves). Reads by index, local inserts, deletes, moves and pastes, text and list edits, anything inside a list element at an index, undos and received joins load only their pages.
 > Tags: performance, node, store, crdt
 
-Repro: `cargo test --release --workspace --test it scale::text_ -- --ignored --nocapture` (`text_undo_and_first_access_cost`, `text_range_and_edit_cost`; `OSIS_SCALE_ROWS=1` prints each step's store rows and cost spans).
+Repro: `cargo test --release -p osis-node --test it -- --ignored --nocapture scale::text_` (`text_undo_and_first_access_cost`, `text_range_and_edit_cost`; `OSIS_SCALE_ROWS=1` prints each step's store rows and cost spans).
 
 Done (notes/engine-paged.md, Paged state): collections paged at any depth below struct fields, enum payloads and map entries; lazy loading of what a read or write touches; sequences through the crdt's placement held in part (joins, ops by index, text and list `Op::Edit` resolved around its change, ops and reads inside an element at an index, undos); a local insert's follow without its anchor's records (placement lookup, newest-stamp bound); whole fallbacks of ops counted (`paged op whole:` cost spans). Cold insert (10^5 chars, release): 2 → 1 pages loaded (only the page its record goes to), received insert 2 → 1; store rows and bytes unchanged (top +34 B).
 

@@ -612,7 +612,7 @@ fn gap_cover_large_spec_commits_5() {
 }
 
 fn pruned_replay(seed: u64) -> String {
-    format!("OSIS_SESSIONS_START={seed} OSIS_SESSIONS_SEEDS=1 cargo test --workspace --test it sessions::pruned_sessions_converge_large_spec_crdt_8 -- --ignored --exact")
+    format!("OSIS_SESSIONS_START={seed} OSIS_SESSIONS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact sessions::pruned_sessions_converge_large_spec_crdt_8")
 }
 
 // spec/crdt.md §8, spec/commits.md §4, §5 (traced tables): `pruned_sessions_check`.

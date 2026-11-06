@@ -12,7 +12,7 @@ use osis_base::{CommitId, Float, Tid, Ts, Value};
 use std::collections::BTreeMap;
 
 /// A random test's seed: `seed`, or `seed` xor a hash of `OSIS_CRDT_SEED` (decimal) to sample
-/// other runs (`OSIS_CRDT_SEED=7 cargo test --workspace`); unset, the committed seed. Hashed: a
+/// other runs (`OSIS_CRDT_SEED=7 cargo test -p osis-crdt`); unset, the committed seed. Hashed: a
 /// small value xored into a loop's consecutive seeds would only reorder them.
 pub fn seeded(seed: u64) -> u64 {
     // (a zero xorshift state never leaves zero)

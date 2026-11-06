@@ -2077,8 +2077,7 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clo
 
 /// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects),
 /// each order's reads as they change after every ingest, and both nodes' judged parts. Every
-/// failing check prints, the shrink's too: use it on a pinned history or with
-/// `OSIS_ORDER_SHRINK=0`.
+/// failing check prints, the shrink's too (`OSIS_ORDER_SHRINK=1`).
 fn dump_orders(played: &Played, want_order: &[usize], got_order: &[usize], want: &Judged, got: &Judged) {
     if std::env::var("OSIS_ORDER_DUMP").is_err() {
         return;
@@ -2795,11 +2794,12 @@ fn seq_compact_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
         .collect()
 }
 
-/// Checks the histories `gen` makes from `seeds` (one seed per task, a thread per core), shrinks
-/// every failing one and reports them all, each with the command that replays it.
+/// Checks the histories `gen` makes from `seeds` (one seed per task, a thread per core) and reports
+/// every failing one, each with the command that replays it.
 /// `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
 /// `OSIS_ORDER_LEN=n` set the first seed, how many seeds and steps; a seed's history and orders
-/// depend on the seed, the length and the test alone. `OSIS_ORDER_SHRINK=0` reports a failure unshrunk.
+/// depend on the seed, the length and the test alone. `OSIS_ORDER_SHRINK=1` shrinks each failure first
+/// (slow: a shrink reruns the check per dropped step).
 fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
     use osis_base::testenv::{Seeds, u64_var};
     let only = u64_var("OSIS_ORDER_SEED");
@@ -2823,9 +2823,10 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
         }
         let r = check(seed, &steps, cfg);
         let fail = r.as_ref().is_err().then(|| {
-            // `OSIS_ORDER_SHRINK=0`: the failure as found, unshrunk
-            let (steps, err) = if u64_var("OSIS_ORDER_SHRINK") == Some(0) { (steps, r.clone().unwrap_err()) } else { shrink(seed, steps, cfg) };
-            let msg = format!("seed {seed} (replay: OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={len} cargo test --workspace --test it order::{name} -- --include-ignored; shrunk for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}");
+            let shrunk = u64_var("OSIS_ORDER_SHRINK").is_some_and(|n| n != 0);
+            let (steps, err) = if shrunk { shrink(seed, steps, cfg) } else { (steps, r.clone().unwrap_err()) };
+            let what = if shrunk { "shrunk" } else { "as made; OSIS_ORDER_SHRINK=1 shrinks it" };
+            let msg = format!("seed {seed} (replay: OSIS_ORDER_SEED={seed} OSIS_ORDER_LEN={len} cargo test -p osis-node --test it -- --include-ignored order::{name}; {what}, for check({seed}, &h, {cfg:?})): h = vec!{steps:?}\n{err}");
             eprintln!("{msg}\n");
             msg
         });

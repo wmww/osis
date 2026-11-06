@@ -2146,7 +2146,7 @@ fn eph_seeds() -> osis_base::testenv::Seeds {
 }
 
 fn eph_replay(name: &str, seed: u64) -> String {
-    format!("OSIS_EPH_START={seed} OSIS_EPH_SEEDS=1 cargo test --workspace --test it {name} -- --ignored --exact")
+    format!("OSIS_EPH_START={seed} OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact {name}")
 }
 
 // the same with one capped host: holders converge through what it holds, or an entry stays out

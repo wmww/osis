@@ -105,7 +105,7 @@ async fn runtime_peers_in_process_spec_sync_5() {
 }
 
 // spec/sync.md §10: the same over localhost QUIC (tier 2: touches the network).
-// Run: `cargo test --workspace --test it runtime:: -- --ignored`.
+// Run: `cargo test -p osis --test it -- --ignored runtime::`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn runtime_quic_localhost_spec_sync_10() {

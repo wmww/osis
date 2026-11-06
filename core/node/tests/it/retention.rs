@@ -1236,7 +1236,7 @@ fn deaths_never_early_random_large() {
 }
 
 fn dating_replay(s: u64) -> String {
-    format!("OSIS_STRAYS_START={s} OSIS_STRAYS_SEEDS=1 cargo test --workspace --test it retention::deaths_never_early_random_large -- --ignored --exact")
+    format!("OSIS_STRAYS_START={s} OSIS_STRAYS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact retention::deaths_never_early_random_large")
 }
 
 /// One history of `deaths_never_early_random_*`.
@@ -1565,7 +1565,7 @@ fn undo_never_outlives_expiry_random_large() {
 }
 
 fn undo_replay(s: u64) -> String {
-    format!("OSIS_UNDOEXP_START={s} OSIS_UNDOEXP_SEEDS=1 cargo test --workspace --test it retention::undo_never_outlives_expiry_random_large -- --ignored --exact")
+    format!("OSIS_UNDOEXP_START={s} OSIS_UNDOEXP_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact retention::undo_never_outlives_expiry_random_large")
 }
 
 /// One history of `undo_never_outlives_expiry_random_*`.

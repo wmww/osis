@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 const GUARD: Duration = Duration::from_secs(30);
 
 fn log() -> driver::Log {
-    Arc::new(|_: &str| {})
+    Arc::new(|s: &str| eprintln!("{s}"))
 }
 
 /// Waits (off the async workers) until `rx` reports commit `id` applied.

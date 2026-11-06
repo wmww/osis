@@ -297,7 +297,7 @@ pub fn gen_id(n: usize) -> CommitId {
 }
 
 /// A random run's seed: `seed`, or `seed` xor `OSIS_PERM_SEED` (decimal) to sample other
-/// histories (`OSIS_PERM_SEED=1 cargo test --workspace -- --ignored`).
+/// histories (`OSIS_PERM_SEED=1 cargo test -p osis-perm -- --ignored`).
 pub fn seeded(seed: u64) -> u64 {
     osis_base::testenv::u64_var("OSIS_PERM_SEED").map_or(seed, |v| seed ^ v)
 }
