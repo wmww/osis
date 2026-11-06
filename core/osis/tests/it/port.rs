@@ -5,7 +5,7 @@ use crate::common::watched;
 use crate::common::TestWrites as _;
 use crate::common::ak;
 use osis::internals::Internals as _;
-use osis::{SetRoleOpts, SyncFirst, Ak, Change, CommitQuery, MemStore, Osis, Runtime, Scope, Origin, Store, Value};
+use osis::{SetRoleOpts, Ak, Change, CommitQuery, MemStore, Osis, Runtime, Scope, Origin, Store, Value};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, Outcome};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
@@ -36,7 +36,7 @@ fn node(store: &MemStore, net: &osis_transport::Net, sock: &std::path::Path, cre
     let mut c = osis::internals::Opening::at(Store::Memory(store.clone()));
     c.runtime = Runtime::Own;
     c.app.internals.transport = Some(net.endpoint("n"));
-    let db = if create { osis::internals::create(c).unwrap().0 } else { osis::internals::open(c).unwrap() };
+    let db = if create { osis::internals::create(c).unwrap() } else { osis::internals::open(c).unwrap() };
     db.listen_socket_at(sock).unwrap();
     db
 }
@@ -453,7 +453,7 @@ fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::Address>, sock:
     c.runtime = Runtime::Own;
     c.app.internals.transport = Some(net.endpoint(ep));
     c.hosts = hosts;
-    let db = osis::internals::create(c).unwrap().0;
+    let db = osis::internals::create(c).unwrap();
     db.listen_socket_at(sock).unwrap();
     db
 }
@@ -562,7 +562,7 @@ fn mem_host(net: &osis_transport::Net) -> (Osis, osis::Address) {
     hc.runtime = Runtime::Own;
     hc.app.internals.transport = Some(net.endpoint("s"));
     hc.direct_sync = false;
-    let host = osis::internals::create(hc).unwrap().0;
+    let host = osis::internals::create(hc).unwrap();
     host.set_serving(Some(osis::Serving { listen: vec!["mem://s".parse().unwrap()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
     let end = std::time::Instant::now() + W;
     let addr = loop {
@@ -583,7 +583,7 @@ fn until(mut f: impl FnMut() -> bool, what: &str) {
     }
 }
 
-// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (rows that wait), spec/permissions.md §7: the flows that wait on other nodes run at the node with the node's outcomes, all through the socket: redeem, set_role (a link joiner, a direct holder lowered, an error), revoke_link, removing a joiner, import_contact
+// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (rows that wait), spec/permissions.md §7: the flows that wait on other nodes run at the node with the node's outcomes, all through the socket: redeem, set_role (a link joiner, a direct holder lowered, an error), revoke_link (and `revoke_link_now`, a plain call), removing a joiner, import_contact
 #[test]
 fn rows_that_wait_through_the_socket() {
     use crate::common::block_on;
@@ -610,7 +610,7 @@ fn rows_that_wait_through_the_socket() {
         (g, t)
     };
     let (g, t) = group("x");
-    let plain = SetRoleOpts { sync: SyncFirst::Required, retain_copy: None };
+    let plain = SetRoleOpts { retain_copy: None };
     // a joiner by link, through its daemon
     let link = ca.make_link(g, Role::Write, Default::default()).unwrap();
     block_on(ca.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
@@ -628,21 +628,26 @@ fn rows_that_wait_through_the_socket() {
     // a direct holder lowered: the role goes over the wire
     let (g2, _) = group("y");
     ca.grant(g2, bob, Role::Write, Default::default()).unwrap();
-    block_on(ca.set_role(g2, bob, Some(Role::Read), SetRoleOpts { sync: SyncFirst::Try(Duration::from_secs(5)), ..plain })).unwrap();
+    block_on(ca.set_role(g2, bob, Some(Role::Read), plain)).unwrap();
     assert_eq!(a.grants(g2).unwrap().get(&bob).map(|e| e.role), Some(Role::Read));
     // ending a link, and a joiner of one
     let (g3, _) = group("z");
     let l3 = ca.make_link(g3, Role::Read, Default::default()).unwrap();
     let id = ca.links_of(g3).unwrap()[0].id.actor();
-    block_on(ca.revoke_link(crate::common::link_id(id), SyncFirst::Required)).unwrap();
+    block_on(ca.revoke_link(crate::common::link_id(id))).unwrap();
     assert_eq!(ca.links_of(g3).unwrap().len(), 0);
     assert!(!l3.to_string().is_empty());
+    // and at once, a plain call
+    ca.make_link(g3, Role::Read, Default::default()).unwrap();
+    let id = ca.links_of(g3).unwrap()[0].id.actor();
+    ca.revoke_link_now(crate::common::link_id(id)).unwrap();
+    assert_eq!(ca.links_of(g3).unwrap().len(), 0);
     let (g4, _) = group("w");
     let l4 = ca.make_link(g4, Role::Read, Default::default()).unwrap();
     block_on(ca.wait_synced(SyncScope::AllWithSavedPeers)).unwrap();
     assert_eq!(block_on(cb.redeem(&l4)).unwrap(), g4);
     until(|| ca.holders(g4).unwrap().iter().any(|h| h.actor == bob), "the second join reached Alice");
-    block_on(ca.set_role(g4, bob, None, SetRoleOpts { retain_copy: Some(false), ..plain })).unwrap();
+    block_on(ca.set_role(g4, bob, None, SetRoleOpts { retain_copy: Some(false) })).unwrap();
     assert!(!ca.holders(g4).unwrap().iter().any(|h| h.actor == bob));
     // a contact card made and imported through the sockets
     let card = cb.contact_card().unwrap();
@@ -676,7 +681,7 @@ fn a_waiting_row_holds_nothing() {
     cfg.runtime = Runtime::Own;
     cfg.app.internals.transport = Some(net.endpoint("n"));
     cfg.app.internals.connection_wait = Some(Duration::from_secs(3600));
-    let n = osis::internals::create(cfg).unwrap().0;
+    let n = osis::internals::create(cfg).unwrap();
     n.listen_socket_at(&sock).unwrap();
     let c = connect(&sock);
     let (tx, rx) = channel();
@@ -809,7 +814,7 @@ fn process_wide_rows_through_the_socket() {
     c3.import_bundle(&out[..]).unwrap();
     until(|| p2.at(t, osis::DynamicAspectKey::untyped(ak("note:big.0"))).get().is_ok_and(|v| v == Some(Value::Str(big.clone()))), "the bundle's value at the other node");
     // the new node removed, through the socket
-    crate::common::block_on(c.remove_node(node, SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None })).unwrap();
+    c.set_role_now(c.me(), node, None, SetRoleOpts { retain_copy: None }).unwrap();
     assert_eq!(c.nodes().unwrap().len(), 1);
     // pages lost to a reconnect: the import says so and runs nothing
     let mut raw = Raw::unix(&sock);
@@ -1003,7 +1008,7 @@ fn listen_socket_names_the_store_notes_client_port() {
     let store = d.0.join("store");
     let mut o = osis::internals::Opening::dir(&store);
     o.runtime = Runtime::Own;
-    let n = osis::internals::create(o).unwrap().0;
+    let n = osis::internals::create(o).unwrap();
     n.listen_socket().unwrap();
     let c = crate::common::block_on(Osis::connect_socket(&store, osis::AppConfig::default())).unwrap();
     assert_eq!(c.me(), n.me());
@@ -1011,7 +1016,7 @@ fn listen_socket_names_the_store_notes_client_port() {
     assert!(crate::common::block_on(Osis::connect_socket(&d.0.join("no-such-store"), osis::AppConfig::default())).is_err());
     let mut o = osis::internals::Opening::memory();
     o.runtime = Runtime::Own;
-    let m = osis::internals::create(o).unwrap().0;
+    let m = osis::internals::create(o).unwrap();
     assert!(matches!(m.listen_socket(), Err(osis::Error::Invalid(_))));
 }
 

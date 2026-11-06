@@ -9,7 +9,7 @@ use crate::{Ctx, StoreSel, exit, open, opt_ts, parse_ak, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    Change, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncFirst, SyncScope, SyncState, Tid, Value,
+    Change, CommitId, CommitKind, CommitQuery, DynamicAspectKey, Error, GrantOpts, LinkOpts, Member, Origin, Osis, Role, SetRoleOpts, SyncScope, SyncState, Tid, Value,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -117,13 +117,6 @@ pub(crate) fn confirm<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>
     race(ctx.timeout()?, f).unwrap_or_else(|| Err(Error::Network("could not confirm this link yet; trying again is safe".into()))).map_err(Into::into)
 }
 
-/// `wait` of a call catching up as `sync` says: a `SyncFirst::Try` spends `--timeout` on that and
-/// goes ahead, and what follows gets as long again.
-pub(crate) fn wait_after<T>(ctx: &Ctx<'_>, sync: SyncFirst, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
-    let t = ctx.timeout()?;
-    Ok(within(if matches!(sync, SyncFirst::Try(_)) { t.map(|t| t.saturating_mul(2)) } else { t }, f)?)
-}
-
 /// `wait_synced` within `limit`; past it `Network`, or the serving nodes that do not admit a group (state
 /// `Refused`) when there are any.
 fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, limit: Option<Duration>) -> anyhow::Result<()> {
@@ -165,20 +158,13 @@ fn links_j(ls: &[osis::LinkInfo]) -> J {
     J::Arr(ls.iter().map(|l| J::obj([("id", J::str(l.id.to_string())), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
 }
 
-fn sync_first(ctx: &Ctx<'_>, d: &SyncFlags) -> anyhow::Result<SyncFirst> {
-    if let Some(t) = opt_ts(&d.backdate)? {
-        return Ok(SyncFirst::Backdate(t));
-    }
-    match d.sync.as_deref() {
-        None | Some("required") => Ok(SyncFirst::Required),
-        Some("try") => Ok(SyncFirst::Try(ctx.wait_for()?)),
-        Some("skip") => Ok(SyncFirst::Skip),
-        Some(o) => Err(usage(format!("--sync: required, try or skip (got {o:?})"))),
-    }
+fn set_role_opts(d: &SetRoleFlags) -> SetRoleOpts {
+    SetRoleOpts { retain_copy: d.retain_copy }
 }
 
-fn set_role_opts(ctx: &Ctx<'_>, d: &SetRoleFlags) -> anyhow::Result<SetRoleOpts> {
-    Ok(SetRoleOpts { sync: sync_first(ctx, &d.sync)?, retain_copy: d.retain_copy })
+/// `--timeout` for a call that catches up before it writes: past it nothing was written.
+fn catching_up<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
+    race(ctx.timeout()?, f).unwrap_or_else(|| Err(Error::Network("timed out catching up; nothing was written (--now writes at once)".into()))).map_err(Into::into)
 }
 
 /// A role, or `none`.
@@ -308,18 +294,8 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         _ => {}
     }
     let seed = |list: &[String]| list.iter().map(|s| s.parse::<osis::Address>().map_err(anyhow::Error::from)).collect::<anyhow::Result<Vec<_>>>();
-    let mut card = None;
     let db = match &cli.cmd {
-        Cmd::Init { peer } => {
-            let (db, c) = crate::create(&sel, &g, seed(peer)?)?;
-            card = c;
-            db
-        }
-        Cmd::Restore { card, peer } => {
-            let cfg = crate::config(&g, true);
-            let card: osis::RecoveryCard = crate::arg_text(&mut *stdin, card)?.parse()?;
-            within(crate::timeout_of(&g, Some(crate::DEFAULT_WAIT))?, Osis::restore(crate::store_of(&sel), &seed(peer)?, &card, cfg))?
-        }
+        Cmd::Init { peer } => crate::create(&sel, &g, seed(peer)?)?,
         Cmd::Pair(PairCmd::Join { offer, peer }) => {
             // the app carries two messages: print the request, read the reply
             let cfg = crate::config(&g, true);
@@ -333,9 +309,6 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
         }
         c => open(&sel, &g, needs_net(c), !matches!(c, Cmd::Inspect(_) | Cmd::Serve { .. }))?,
     };
-    if let Some(c) = card {
-        writeln!(out, "{c}")?;
-    }
     // -v on a command that syncs: diagnostics to stderr while it runs, best effort (not for
     // those that already print them on stdout)
     let streams = matches!(cli.cmd, Cmd::Serve { .. } | Cmd::Diag { follow: true });
@@ -402,7 +375,7 @@ fn one_write(ctx: &mut Ctx<'_>, c: ScriptCmd) -> anyhow::Result<()> {
 fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     match cmd {
-        Cmd::Init { peer } | Cmd::Restore { peer, .. } | Cmd::Pair(PairCmd::Join { peer, .. }) => {
+        Cmd::Init { peer } | Cmd::Pair(PairCmd::Join { peer, .. }) => {
             for s in peers(ctx, &peer)? {
                 db.add_peer(&s)?;
             }
@@ -424,13 +397,17 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Node(NodeCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
-            let d = set_role_opts(ctx, &d)?;
-            let open = wait_after(ctx, d.sync, db.remove_node(n, d))?;
+            let o = set_role_opts(&d);
+            let open = if d.now {
+                let was = db.grants(db.me())?.contains_key(&n);
+                db.set_role_now(db.me(), n, None, o)?;
+                if was { db.links()? } else { Vec::new() }
+            } else {
+                catching_up(ctx, db.remove_node(n, o))?
+            };
             if end_links {
-                // not backdated: joiners since that time stay joiners, as with any link revoked
-                let end = if matches!(d.sync, SyncFirst::Backdate(_)) { SyncFirst::Skip } else { d.sync };
                 for l in &open {
-                    wait_after(ctx, end, db.revoke_link(l.id, end))?;
+                    if d.now { db.revoke_link_now(l.id)? } else { catching_up(ctx, db.revoke_link(l.id))? }
                 }
             }
             let say = |l: &osis::LinkInfo| {
@@ -598,12 +575,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(db.grant(t, m, role, grant_opts(&until, &may_grant)?)?)
         }
         Cmd::SetRole { t, holder, role, d } => {
-            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(ctx, &d)?);
-            wait_after(ctx, d.sync, db.set_role(t, m, role, d))
+            let (t, m, role, o) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(&d));
+            if d.now { Ok(db.set_role_now(t, m, role, o)?) } else { catching_up(ctx, db.set_role(t, m, role, o)) }
         }
-        Cmd::Repudiate { t, holder, role, d } => {
-            let (t, m, role, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?, set_role_opts(ctx, &d)?);
-            wait_after(ctx, d.sync, db.repudiate(t, m, role, d))
+        Cmd::Repudiate { t, holder, role, retain_copy } => {
+            let (t, m, role) = (ctx.tid(&t)?, ctx.tid(&holder)?, opt_role(&role)?);
+            catching_up(ctx, db.repudiate(t, m, role, SetRoleOpts { retain_copy }))
         }
         Cmd::Leave { t, holder } => {
             let holder = holder.map_or(Ok(db.me()), |h| ctx.tid(&h))?;
@@ -640,10 +617,9 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {}", l.id, role_text(l.role), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
             ctx.emit(&lines, links_j(&ls))
         }
-        Cmd::Link(LinkCmd::Revoke { id, d }) => {
+        Cmd::Link(LinkCmd::Revoke { id, now }) => {
             let id: osis::LinkId = id.parse()?;
-            let sync = sync_first(ctx, &d)?;
-            wait_after(ctx, sync, db.revoke_link(id, sync))
+            if now { Ok(db.revoke_link_now(id)?) } else { catching_up(ctx, db.revoke_link(id)) }
         }
         Cmd::Card(CardCmd::Show) => {
             let c = db.contact_card()?;
@@ -1199,7 +1175,6 @@ fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
         D::Mismatch { thing, detail } => ("Mismatch", vec![*thing], None, None, detail),
         D::Unreadable { thing, detail } => ("Unreadable", vec![*thing], None, None, detail),
         D::LostAccess { actor, detail } => ("LostAccess", vec![*actor], None, None, detail),
-        D::RoleLoweredUnsynced { groups, detail } => ("RoleLoweredUnsynced", groups.clone(), None, None, detail),
         D::Stranded { group, detail } => ("Stranded", vec![*group], None, None, detail),
         D::EphemeralRefused { things, detail } => ("EphemeralRefused", things.clone(), None, None, detail),
         D::Storage { detail } => ("Storage", vec![], None, None, detail),

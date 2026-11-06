@@ -5,7 +5,7 @@ use crate::Ctx;
 use crate::cmd::{deliver, parse_role, wait};
 use crate::json::J;
 use crate::{exit, parse_dur, usage};
-use osis::{SyncFirst, Tid};
+use osis::Tid;
 use osis_chat::{Body, Draft, EditMode, Entry, Event, Id, Message, Options, PurgeBy, Timeline};
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -152,7 +152,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             }
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
-        ChatCmd::Kick { chat, account, erase, retain_copy, purge, no_sync } => {
+        ChatCmd::Kick { chat, account, erase, retain_copy, purge, now } => {
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&account)?);
             let word = if erase {
                 Some(false)
@@ -161,7 +161,11 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             } else {
                 None
             };
-            wait(ctx, osis_chat::kick(&db, t, p, word, if no_sync { SyncFirst::Skip } else { SyncFirst::Required }))?;
+            if now {
+                osis_chat::kick_now(&db, t, p, word)?;
+            } else {
+                wait(ctx, osis_chat::kick(&db, t, p, word))?;
+            }
             if purge {
                 osis_chat::purge_participant(&db, t, p)?;
             }

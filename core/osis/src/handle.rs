@@ -6,7 +6,7 @@
 
 use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Waiter};
-use crate::share::{Address, RecoveryCard, Status, Url};
+use crate::share::{Address, Status, Url};
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
 use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
@@ -66,7 +66,7 @@ pub enum Store {
     Dir(std::path::PathBuf),
 }
 
-/// How a node with a store of its own runs (`Osis::create`, `open`, `restore`, `pair`).
+/// How a node with a store of its own runs (`Osis::create`, `open`, `pair`).
 #[derive(Clone)]
 pub struct Config {
     /// How this handle behaves, as a thin client's does.
@@ -413,11 +413,8 @@ pub(crate) fn fresh_engine(store: &Store, cfg: &Config, hosts: &[Address]) -> Re
 
 impl Osis {
     /// Creates a node and a new account with this node its admin. The account is also its home group,
-    /// synced with `peers`. Returns the recovery card, the only copy of the key that restores the
-    /// account on a new node: show or store it, osis keeps none of it. A restore finds the account
-    /// through saved peers alone, so with none there is no card (the key is discarded). Peers need
-    /// `Config::runtime` (`Invalid`).
-    pub fn create(store: Store, peers: &[Address], cfg: Config) -> Result<(Osis, Option<RecoveryCard>)> {
+    /// synced with `peers`. Peers need `Config::runtime` (`Invalid`).
+    pub fn create(store: Store, peers: &[Address], cfg: Config) -> Result<Osis> {
         cfg.check(peers)?;
         let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, peers)?;
         let engine = sync.engine_mut();
@@ -428,10 +425,10 @@ impl Osis {
         engine.commit(m)?;
         engine.set_app_record(ACCOUNT, p.person.as_bytes())?;
         save_peers(engine, peers)?;
-        let card = if addrs.is_empty() { None } else { Some(RecoveryCard(p.card.to_text().map_err(|e| Error::Invalid(e.to_string()))?)) };
+        // the creation record's key goes with `p` (owner removal ends it, notes/owner-removal-plan.md)
         let db = Osis::start(sync, clock, store, &cfg, p.person)?;
         db.carry(done)?;
-        Ok((db, card))
+        Ok(db)
     }
 
     /// Opens an existing store. Its peers are those saved in it (`add_peer`, `remove_peer`).
@@ -610,11 +607,10 @@ impl Osis {
             self.drain(l);
         }
         if !(any || handled) {
-            // nothing changed, but a waiter's `late` may have passed
+            // nothing changed: a waiter whose future was dropped still goes
             if !l.waiters.is_empty() {
-                let now = self.inner.clock.now_wall_ms().0;
                 let Locked { waiters, sync, status, .. } = l;
-                waiters.retain_mut(|w| !w.poll(sync, status, now));
+                waiters.retain_mut(|w| !w.poll(sync, status));
             }
             return;
         }
@@ -641,9 +637,8 @@ impl Osis {
             Err(_) => {}
         }
         self.drain(l);
-        let now = self.inner.clock.now_wall_ms().0;
         let Locked { waiters, sync, status, .. } = l;
-        waiters.retain_mut(|w| !w.poll(sync, status, now));
+        waiters.retain_mut(|w| !w.poll(sync, status));
     }
 
     /// Runs `f` under the lock and hands the actions it returns to the network, in order.

@@ -109,8 +109,6 @@ pub enum DiagnosticKind {
     /// A saved thing's ephemeral membership stayed ephemeral: this node may not write the
     /// group (`tids`: item, group).
     MembershipNotSaved,
-    /// A demotion was stamped without its pre-sync (spec/permissions.md §5.3).
-    Unsynced,
     /// This node cannot open a label it should read: it waits for a re-seal
     /// (spec/permissions.md §3).
     Stranded,

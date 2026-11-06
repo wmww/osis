@@ -122,7 +122,7 @@ impl WriteOp {
 /// Dropped uncommitted, its writes are lost, and forgetting to commit is a lint:
 /// ```compile_fail
 /// #![deny(unused_must_use)]
-/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap().0;
+/// let db = osis::Osis::create(osis::Store::Memory(osis::MemStore::new()), &[], osis::Config::default()).unwrap();
 /// db.write();
 /// ```
 #[must_use = "a Write does nothing until commit()"]

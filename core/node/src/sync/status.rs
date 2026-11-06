@@ -5,14 +5,14 @@ use super::*;
 impl SyncEngine {
     /// Where each synced label stands (the API's status): per label, its group, its hosts,
     /// how many connections are up and have it open, whether every one of those finished a pass
-    /// with nothing outstanding, whether any could not open it (stranded), and when it last
+    /// with nothing outstanding (and likewise of the other readers dialed), whether any could not open it (stranded), and when it last
     /// synced (raw wall ms).
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
         let now = self.raw_now();
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, peers_connected: 0, open: 0, idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, peers_connected: 0, open: 0, idle: 0, peers_open: 0, peers_idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
             for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
                 if c.up {
                     st.connected += 1;
@@ -38,6 +38,14 @@ impl SyncEngine {
                         }
                     }
                     _ => {}
+                }
+            }
+            for c in self.conns.values().filter(|c| c.peer && c.up && !l.hosts.iter().any(|a| a.key == c.host)) {
+                if let Some(x) = c.labels.get(&l.id).filter(|x| x.phase == Phase::Open && !x.receipts) {
+                    st.peers_open += 1;
+                    if x.idle() && c.session.outstanding() == 0 {
+                        st.peers_idle += 1;
+                    }
                 }
             }
             st.peers_connected = self.conns.values().filter(|c| c.peer && c.up && c.labels.get(&l.id).is_some_and(|x| matches!(x.phase, Phase::Open))).count() + self.served.values().filter(|s| s.opens(&l.id)).count();

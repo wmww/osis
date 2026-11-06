@@ -169,7 +169,7 @@ fn large_body_streams() {
 // here walks two aspects.
 #[test]
 fn local_undo_redo_and_history() {
-    let db = osis::internals::create(osis::internals::Opening::memory()).unwrap().0;
+    let db = osis::internals::create(osis::internals::Opening::memory()).unwrap();
     let nb = new_tag(&db, "Local").unwrap();
     let note = new_note(&db, nb, "a").unwrap();
     rename(&db, note, "a", "b").unwrap();

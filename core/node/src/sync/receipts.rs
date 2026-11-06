@@ -96,15 +96,15 @@ impl SyncEngine {
     }
 
     /// Whether the receipts-only reads of `groups` are done: `None` while one runs, `Err` with
-    /// the groups whose read cannot finish (a label with no host, or one no held key opens at
-    /// some host), `Ok` once every label was listed to its end at each of its hosts and
-    /// every commit blob listed there was taken.
+    /// the groups whose read cannot finish (one no held key opens at some host), `Ok` once every
+    /// label was listed to its end at each of its hosts and every commit blob listed there was
+    /// taken. A label with no host has nobody to read it from: done at once.
     pub fn receipts_read(&self, groups: &[Tid]) -> Option<std::result::Result<(), Vec<Tid>>> {
         let mut bad = Vec::new();
         let mut done = true;
         for (l, r) in self.receipts.iter().filter(|(_, r)| groups.contains(&r.group)) {
             let failed = self.conns.values().any(|c| c.labels.get(l).is_some_and(|x| x.receipts && x.phase == Phase::Failed));
-            if r.hosts.is_empty() || failed {
+            if failed {
                 bad.push(r.group);
                 continue;
             }

@@ -29,7 +29,7 @@ pub fn open(dir: &Path, peers: Vec<Address>) -> Result<Osis> {
         }
         Ok(db)
     } else {
-        Ok(Osis::create(store, &peers, cfg)?.0)
+        Osis::create(store, &peers, cfg)
     }
 }
 

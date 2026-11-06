@@ -3,7 +3,7 @@
 use crate::common::TestWrites as _;
 use crate::common::ak;
 use osis::internals::Internals as _;
-use osis::{SetRoleOpts, SyncFirst, Member, Address, MemStore, Osis, Role, Store, SyncScope, SyncState, Tid, Value};
+use osis::{SetRoleOpts, Member, Address, MemStore, Osis, Role, Store, SyncScope, SyncState, Tid, Value};
 use osis_sim::world::World;
 use std::sync::{Arc, Mutex};
 
@@ -42,8 +42,8 @@ fn message(db: &Osis, g: Tid, v: &str) -> Tid {
 
 /// Alice and Bob at `hosts`, Bob a contact of Alice's: (alice, bob, Bob's account).
 fn pair(w: &mut World, hosts: &[usize]) -> (Osis, Osis, Tid) {
-    let (a, _) = w.account(1, hosts);
-    let (b, _) = w.account(2, hosts);
+    let a = w.account(1, hosts);
+    let b = w.account(2, hosts);
     w.run();
     let card = b.contact_card().unwrap();
     w.run();
@@ -52,7 +52,7 @@ fn pair(w: &mut World, hosts: &[usize]) -> (Osis, Osis, Tid) {
 }
 
 fn skip() -> SetRoleOpts {
-    SetRoleOpts { sync: SyncFirst::Skip, retain_copy: None }
+    SetRoleOpts { retain_copy: None }
 }
 
 // spec/sync.md §3 (a recipient looks for what an inbox blob names), §5: the invite to a chat its maker has not registered at the chat's peer yet: the invitee is told "not here" and looks again after a back-off, well before the periodic resync, not stranded meanwhile
@@ -106,7 +106,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     let mut w = World::new();
     let h0 = w.add_host();
     let (a, b, bob) = pair(&mut w, &[h0]);
-    let (c, _) = w.account(3, &[h0]);
+    let c = w.account(3, &[h0]);
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
@@ -269,7 +269,7 @@ fn write_beside_a_removed_thing_reaches_the_peer_spec_commits_4() {
     assert_eq!(says(&b, u), Some(s("live")));
     w.set_online(&b, false);
     write_across(&b, u, m);
-    w.until(a.set_role(g, bob, None, skip()), 1000, 10).unwrap();
+    a.set_role_now(g, bob, None, skip()).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -286,7 +286,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     let h0 = w.add_host();
     let h1 = w.add_host();
     let (a, b, bob) = pair(&mut w, &[h0, h1]);
-    let (c, _) = w.account(3, &[h0, h1]);
+    let c = w.account(3, &[h0, h1]);
     w.run();
     let card = c.contact_card().unwrap();
     w.run();
@@ -307,7 +307,7 @@ fn live_part_shows_whatever_the_removal_spec_commits_4() {
     w.run();
     w.set_online(&b, false);
     write_across(&b, u, m);
-    w.until(a.set_role(g, bob, None, skip()), 1000, 10).unwrap();
+    a.set_role_now(g, bob, None, skip()).unwrap();
     w.run();
     w.set_online(&b, true);
     w.run();
@@ -333,8 +333,8 @@ fn contact_outlives_the_accounts_role_changes_spec_permissions_7() {
         c.store = Store::Memory(store.clone());
         c
     };
-    let a = osis::internals::create(at(&w, 1)).unwrap().0;
-    let (b, _) = w.account(2, &[h0]);
+    let a = osis::internals::create(at(&w, 1)).unwrap();
+    let b = w.account(2, &[h0]);
     w.run();
     let card = b.contact_card().unwrap();
     let p = b.profile().unwrap();
@@ -358,7 +358,7 @@ fn contact_outlives_the_accounts_role_changes_spec_permissions_7() {
     w.run();
     assert_eq!(a.at(p, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(s("Robert")));
     let link = b.links_of(p).unwrap().remove(0).id;
-    w.until(b.revoke_link(link, SyncFirst::Skip), 1000, 10).unwrap();
+    b.revoke_link_now(link).unwrap();
     w.run();
     assert_eq!(a.at(p, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), None, "the link ended: what it read goes (spec/permissions.md §3)");
     assert!(w.diagnostics(&a).iter().any(|d| d.starts_with("lost access")));

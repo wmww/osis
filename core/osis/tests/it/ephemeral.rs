@@ -24,7 +24,7 @@ aspect win:saved.0: string;\n";
 
 fn setup(seed: u64) -> (Osis, std::sync::Arc<osis::internals::ManualClock>) {
     let c = clock();
-    let db = osis::internals::create(cfg(seed, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(seed, MemStore::new(), &c)).unwrap();
     db.register_schema("win.osis", SCHEMA).unwrap();
     (db, c)
 }
@@ -151,7 +151,7 @@ fn restart_forgets_ephemeral_spec_requirements_ephemeral() {
         x.app.internals.clock = Some(c.clone());
         x
     };
-    let db = osis::internals::create(at(1)).unwrap().0;
+    let db = osis::internals::create(at(1)).unwrap();
     let draft = ak("app:draft.0~");
     let (d, e) = db
         .commit_with(|w| {
@@ -505,8 +505,8 @@ fn shared_two(role: Role, role2: Role) -> (World, Osis, Osis, osis::Tid, osis::T
 fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -788,7 +788,7 @@ fn restart_leaves_no_dead_tids_in_groups_spec_data_model_8() {
         x.app.internals.clock = Some(c.clone());
         x
     };
-    let db = osis::internals::create(at(1)).unwrap().0;
+    let db = osis::internals::create(at(1)).unwrap();
     let home = db.me();
     let g = db.commit_with(|w| w.create_durable(db.me())).unwrap();
     let (g, e, sub) = db
@@ -942,7 +942,7 @@ fn persistence_through_group_cycles_spec_data_model_8() {
         x.app.internals.clock = Some(c.clone());
         x
     };
-    let db = osis::internals::create(at(1)).unwrap().0;
+    let db = osis::internals::create(at(1)).unwrap();
     let home = db.me();
     let (g, g1, g2, x) = db
         .commit_with(|w| {

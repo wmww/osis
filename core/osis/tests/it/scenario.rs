@@ -10,7 +10,7 @@ use osis_sim::world::World;
 
 /// An account on peer `host`, settled.
 pub fn account(w: &mut World, seed: u64, host: usize) -> Osis {
-    let db = w.account(seed, &[host]).0;
+    let db = w.account(seed, &[host]);
     w.run();
     db
 }

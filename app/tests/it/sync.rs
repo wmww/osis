@@ -25,7 +25,7 @@ fn two() -> (Data, Data) {
 /// `two`, with the clock both read.
 fn two_clocked() -> (Data, Data, Arc<ManualClock>) {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = osis::internals::create(cfg(1, &clock)).unwrap().0;
+    let a = osis::internals::create(cfg(1, &clock)).unwrap();
     let j = osis::internals::pair(cfg(2, &clock), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();

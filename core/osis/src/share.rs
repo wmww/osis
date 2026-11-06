@@ -63,28 +63,9 @@ pub struct Holder {
     pub through: Vec<Tid>,
 }
 
-/// What to do about work a holder may have done that this node has not seen, before lowering
-/// or removing its role. Work not seen by then is undone everywhere.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SyncFirst {
-    /// Catch up first, for as long as it takes; fail `Unsynced` on a group stranded or with no saved
-    /// peer, or with no runtime.
-    #[default]
-    Required,
-    /// Try to catch up for this long, then go ahead with a diagnostic. At 0 only what is already
-    /// synced counts.
-    Try(Duration),
-    /// Go ahead now, keeping what this node has seen: for a stolen node or a hostile holder.
-    Skip,
-    /// Go ahead now, keeping only what this node had seen by this time.
-    Backdate(Time),
-}
-
 /// How `Osis::set_role` takes a role away.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetRoleOpts {
-    /// What to do first about work this node has not seen.
-    pub sync: SyncFirst,
     /// On removal: whether the holder's nodes retain a read-only copy of what it could read (`true`)
     /// or erase it (`false`). `None`: the thing's default (`core::RequiredRules::retain_copies`), and
     /// erase for a node leaving its account. `Invalid` when a role remains.
@@ -212,11 +193,6 @@ impl ShareLink {
 text_type!(
     /// A contact card: a read link to an account's profile.
     ContactCard, osis_label::ShareLink, osis_label::ShareLink::from_text, "contact card"
-);
-text_type!(
-    /// A recovery card (`osis://card/...`): whoever holds it can act as the account; show or store it, osis
-    /// keeps none of it.
-    RecoveryCard, osis_label::RecoveryCard, osis_label::RecoveryCard::from_text, "recovery card"
 );
 
 /// A transport URL, such as `quic://example.org:4040`: where something listens or is dialed.
@@ -459,7 +435,7 @@ fn below_lost(e: &osis_node::Engine, t: &Tid, h: &Tid, role: Role) -> bool {
 }
 
 /// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with an owner,
-/// or a key actor (a node, a recovery or link key) whose `keys.0` is held.
+/// or a key actor (a node or a link key) whose `keys.0` is held.
 fn known_actor(e: &mut osis_node::Engine, h: Tid) -> Result<()> {
     if !e.knows(&h) || (e.owner(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
         return Err(Error::UnknownActor { tid: h });
@@ -519,35 +495,25 @@ fn group_synced(sync: &mut SyncEngine, me: Tid, t: Tid) -> Option<Result<()>> {
     let mut about: BTreeSet<Tid> = sync.engine().closure(&t).iter().copied().collect();
     about.insert(t);
     about.extend(groups.iter().copied());
-    synced(sync, Some(&groups), &[], Some(&about), false)
+    synced(sync, Some(&groups), Some(&about))
 }
 
 /// The sync wait's check (`Osis::groups_synced`): one rule over the labels in scope, `groups`
 /// (all their labels but a replaced hostless one beside another) or `None` (every label with hosts), then the pending deliveries about
-/// `deliveries` (every one when `groups` is `None`). `late` (a `SyncFirst::Try` gives up): a refused
-/// label's group fails `Unsynced` (else it may yet be admitted).
-fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveries: Option<&BTreeSet<Tid>>, late: bool) -> Option<Result<()>> {
+/// `deliveries` (every one when `groups` is `None`).
+fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, deliveries: Option<&BTreeSet<Tid>>) -> Option<Result<()>> {
     let skip = sync.receipts_only().clone();
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect();
-    // a replaced label with no peer beside another of its group takes nothing (it retires after
-    // ROLE_KEEP): left out, else `Thing(t)` failed until then
-    let gone = |s: &osis_node::sync::LabelStatus| s.hosts == 0 && s.replaced;
-    let labels: Vec<(Tid, SyncState)> = all
-        .iter()
-        .filter(|s| !gone(s) || !all.iter().any(|x| x.group == s.group && !gone(x)))
+    let labels: Vec<(Tid, SyncState)> = live_labels(&all)
         .map(|s| (s.group, label_state(s)))
         .filter(|(_, st)| groups.is_some() || !no_saved_peer(*st))
         .collect();
-    let mut bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| *s == SyncState::Stranded || no_saved_peer(*s) || late && *s == SyncState::Refused).map(|(g, _)| *g).collect();
-    let read = sync.receipts_read(reads);
-    if let Some(Err(b)) = &read {
-        bad.extend(b);
-    }
+    let bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| *s == SyncState::Stranded || no_saved_peer(*s)).map(|(g, _)| *g).collect();
     if !bad.is_empty() {
         return Some(Err(Error::Unsynced { groups: bad.into_iter().collect() }));
     }
     let labeled = groups.is_none_or(|gs| gs.iter().all(|g| labels.iter().any(|(x, _)| x == g)));
-    if read.is_none() || !labeled || labels.iter().any(|(_, s)| *s != SyncState::Synced) {
+    if !labeled || labels.iter().any(|(_, s)| *s != SyncState::Synced) {
         return None;
     }
     if let Some(about) = deliveries
@@ -559,10 +525,50 @@ fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveri
     Some(Ok(()))
 }
 
+/// `all` but a replaced label with no peer beside another of its group: it takes nothing (it
+/// retires after ROLE_KEEP), and waiting on it would fail until then.
+fn live_labels(all: &[osis_node::sync::LabelStatus]) -> impl Iterator<Item = &osis_node::sync::LabelStatus> {
+    let gone = |s: &osis_node::sync::LabelStatus| s.hosts == 0 && s.replaced;
+    all.iter().filter(move |s| !gone(s) || !all.iter().any(|x| x.group == s.group && !gone(x)))
+}
+
+/// Catching up before a role change (`Osis::set_role`, spec/permissions.md §5.3): done once every
+/// label of `groups` had a pass that changed nothing with each peer reachable now, and the
+/// receipts-only reads of `reads` are done. A label with saved peers waits for them as long as it
+/// takes (`SyncState::Synced`); the other readers it has open on a connection this node dialed
+/// count as they are connected; one that dialed this node is not judged (nothing here says what it
+/// still holds). With nobody reachable a label is done at once. Fails `Unsynced` on a stranded label
+/// or a receipts read no held key opens: those can never finish.
+fn caught_up(sync: &mut SyncEngine, groups: &[Tid], reads: &[Tid]) -> Option<Result<()>> {
+    let skip = sync.receipts_only().clone();
+    let all: Vec<_> = sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.contains(&s.group)).collect();
+    let mut bad = BTreeSet::new();
+    let mut done = true;
+    for s in live_labels(&all) {
+        match label_state(s) {
+            SyncState::Stranded => {
+                bad.insert(s.group);
+            }
+            st if s.hosts > 0 && st != SyncState::Synced => done = false,
+            _ => {}
+        }
+        done &= s.peers_idle == s.peers_open;
+    }
+    match sync.receipts_read(reads) {
+        Some(Err(b)) => bad.extend(b),
+        None => done = false,
+        Some(Ok(())) => {}
+    }
+    if !bad.is_empty() {
+        return Some(Err(Error::Unsynced { groups: bad.into_iter().collect() }));
+    }
+    done.then_some(Ok(()))
+}
+
 /// Whether `g`'s labels are done now: nothing written here still waits (`Osis::group_source`).
 pub(crate) fn synced_now(l: &mut crate::handle::Locked, g: Tid) -> Option<Result<()>> {
     let about: BTreeSet<Tid> = l.sync.engine().closure(&g).iter().copied().chain([g]).collect();
-    synced(&mut l.sync, Some(&[g]), &[], Some(&about), false)
+    synced(&mut l.sync, Some(&[g]), Some(&about))
 }
 
 impl Osis {
@@ -752,50 +758,40 @@ impl Osis {
         }))
     }
 
-    /// Runs the pre-sync of a demotion (spec/permissions.md §5.3) over the labels holding
-    /// `things`, as `sync` says.
-    async fn presync(&self, things: BTreeSet<Tid>, sync: SyncFirst) -> Result<PreSync> {
-        let give_up = match sync {
-            SyncFirst::Backdate(t) => return Ok(PreSync::Backdated(t)),
-            SyncFirst::Skip => return Ok(PreSync::Unsynced { proceed: true }),
-            SyncFirst::Required => None,
-            SyncFirst::Try(d) => Some(d),
-        };
-        // groups held here are synced; those held for receipts only are read for receipts
-        // (their commit headers, notes/sync.md Receipts-only reads)
+    /// Catches up before a demotion (spec/permissions.md §5.3) over the labels holding `things`,
+    /// with every peer reachable now (`caught_up`): groups held here are synced, those held for
+    /// receipts only read for receipts (their commit headers, notes/sync.md Receipts-only reads).
+    /// Nothing to wait for: done at once, with no runtime too; anything else without a runtime
+    /// fails `Network`.
+    async fn catch_up(&self, things: BTreeSet<Tid>) -> Result<()> {
+        if things.is_empty() {
+            return Ok(());
+        }
         let (groups, reads) = self.locked(|l| {
             let st = l.status.clone();
             (groups_holding(&mut l.sync, &st, &things), l.sync.receipts_groups(&things))
         });
         if groups.is_empty() && reads.is_empty() {
-            return Ok(PreSync::Synced);
+            return Ok(());
         }
         self.act(|l| l.sync.read_receipts(&reads));
         // ended on a dropped future too: a daemon outlives a client gone midway
         let reading = ReceiptsGuard { db: self.downgrade(), groups: reads.clone() };
         self.sync_labels();
-        let r = self.groups_synced(Some(groups.clone()), reads.clone(), give_up, None).await;
+        let r = match self.locked(|l| caught_up(&mut l.sync, &groups, &reads)) {
+            Some(r) => r,
+            None => self.wait_until(Box::new(move |sync, _| caught_up(sync, &groups, &reads))).await,
+        };
         drop(reading);
-        let mut all = groups;
-        all.extend(reads);
-        match (r, sync) {
-            (Ok(()), _) => Ok(PreSync::Synced),
-            (Err(_), SyncFirst::Try(_)) => {
-                self.engine(|e| e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Unsynced, tids: all, commit: None, peer: None, detail: "demotion proceeded without its pre-sync".into() }));
-                Ok(PreSync::Unsynced { proceed: true })
-            }
-            (Err(_), _) => Err(Error::Unsynced { groups: all }),
-        }
+        r
     }
 
-    /// Resolves once every label in scope is `Synced` and the receipts-only reads of `reads`
-    /// are done (with `deliveries`, also once no delivery about one of those things is
-    /// pending, any delivery for `groups` `None`); fails `Unsynced` when a label in scope is
-    /// stranded; after `give_up` (a `SyncFirst::Try`), `Unsynced` for a refused one, else `Network`.
-    /// The scope: every label of `groups` (one with no peer fails `Unsynced`), or for `None` every
-    /// label with hosts of a synced group.
-    fn groups_synced(&self, groups: Option<Vec<Tid>>, reads: Vec<Tid>, give_up: Option<Duration>, deliveries: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
-        self.wait_until(give_up, Box::new(move |sync, _, late| synced(sync, groups.as_deref(), &reads, deliveries.as_ref(), late).or_else(|| late.then(|| Err(Error::Network("not caught up in time".into()))))))
+    /// Resolves once every label in scope is `Synced` (with `deliveries`, also once no delivery
+    /// about one of those things is pending, any delivery for `groups` `None`); fails `Unsynced`
+    /// when a label in scope is stranded. The scope: every label of `groups` (one with no peer
+    /// fails `Unsynced`), or for `None` every label with hosts of a synced group.
+    fn groups_synced(&self, groups: Option<Vec<Tid>>, deliveries: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
+        self.wait_until(Box::new(move |sync, _| synced(sync, groups.as_deref(), deliveries.as_ref())))
     }
 
     /// Makes `holder`'s role on `target` this one: raises, lowers, or with `None` removes. The usual
@@ -804,11 +800,20 @@ impl Osis {
     /// written. `until` and `may_grant` stay as they are (`may_grant` capped at the new role): `grant`
     /// sets those.
     ///
-    /// A raise waits for nothing. Lowering or removing first does as `SetRoleOpts::sync` says, so that
-    /// what the holder did while it could is kept; so does a role below one the holder lost when its
-    /// grant ended or it left, which ends the old grant in a commit of its own (a failure between
-    /// the two leaves the holder with no role, as it had: call again). `SetRoleOpts::retain_copy` with a role
-    /// is `Invalid`.
+    /// Lowering or removing a role undoes, everywhere, what the holder wrote while it could and this
+    /// node had not received. So this first catches up with every peer reachable now, then writes:
+    /// with the saved peers, for as long as that takes, and with the other readers it syncs with at
+    /// the time. With nobody reachable it writes at once. A raise waits for nothing. `set_role_now`
+    /// writes at once in every case; for a limit, wrap this in your runtime's timeout and fall back
+    /// to it (crate docs, Sharing).
+    ///
+    /// Fails `Unsynced` at once, writing nothing, when a group to catch up on is stranded
+    /// (`SyncState::Stranded`): that can never finish until another holder gives the keys again.
+    /// Without a runtime, catching up with a saved peer fails `Network`.
+    ///
+    /// A role below one the holder lost when its grant ended or it left ends the old grant in a
+    /// commit of its own (a failure between the two leaves the holder with no role, as it had: call
+    /// again). `SetRoleOpts::retain_copy` with a role is `Invalid`.
     ///
     /// A removal follows every way the holder has in (`holders`) until none is left: dropped or
     /// failed midway, the ways already removed stay so (call again). A holder who
@@ -827,19 +832,72 @@ impl Osis {
             return self.rtask(crate::port::method::SET_ROLE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).await.map(drop);
         }
         self.not_routed("set_role", target)?;
-        // `Try` gives the call this long, however many ways in it takes
-        let start = self.inner.clock.now_wall_ms().0;
-        let left = |o: SetRoleOpts| match o.sync {
-            SyncFirst::Try(d) => SetRoleOpts { sync: SyncFirst::Try(d.saturating_sub(Duration::from_millis(self.inner.clock.now_wall_ms().0.saturating_sub(start)))), ..o },
-            _ => o,
-        };
+        let things = self.role_scope(target, holder, role)?;
+        self.catch_up(things).await?;
+        self.change_role(target, holder, role, o, PreSync::Synced)
+    }
+
+    /// `set_role` without catching up: writes at once, keeping only what this node has received of
+    /// the holder's work, for any caller that will not wait (a lost or stolen node, a hostile
+    /// holder, a UI with no time to give).
+    pub fn set_role_now(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
+        retain_only_on_removal(role, o)?;
+        if !self.has_store() {
+            return self.rcall(crate::port::method::SET_ROLE_NOW, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::opt(role, crate::port::codec::role_v), crate::port::codec::set_role_v(&o)]).map(drop);
+        }
+        self.not_routed("set_role_now", target)?;
+        self.change_role(target, holder, role, o, PreSync::Unsynced { proceed: true })
+    }
+
+    /// What `change_role` would demote, to catch up on first: the things the lost authority gave
+    /// write or role authority on (`Engine::presync_scope`), over each way in it would remove.
+    /// Empty for a raise or no change. Fails as `change_role` would before its first write.
+    fn role_scope(&self, target: Tid, holder: Tid, role: Option<Role>) -> Result<BTreeSet<Tid>> {
+        let ways: Vec<Holder> = self.holders(target)?.into_iter().filter(|h| h.actor == holder).collect();
+        let mut out = BTreeSet::new();
+        if ways.is_empty() {
+            if let Some(r) = role
+                && self.engine(|e| below_lost(e, &target, &holder, r))
+            {
+                out = self.engine(|e| e.presync_scope(&target, &holder, None));
+            }
+            return Ok(out);
+        }
+        for (i, way) in ways.iter().enumerate() {
+            match way.through.as_slice() {
+                [] => {
+                    let cur = self.grants(target)?.get(&holder).copied().ok_or(Error::Invalid(format!("{holder} is no holder of {target}")))?;
+                    if role.is_none_or(|r| r < cur.role) {
+                        let new = self.lowered_edge(target, holder, role)?;
+                        out.extend(self.engine(|e| e.presync_scope(&target, &holder, new.as_ref())));
+                    }
+                }
+                [k] if self.held_links()?.iter().any(|h| h.k == *k && h.target == target) => {
+                    if role.is_some() {
+                        return Err(Error::Invalid(format!("{holder} joined {target} by a link: it can only be removed")));
+                    }
+                    out.extend(self.joiner_scope(*k, holder)?);
+                }
+                [k, ..] if i == 0 => return Err(Error::Invalid(format!("{holder} reaches {target} through {k}: set its role there"))),
+                // `change_role` stops here, after the ways before
+                _ => break,
+            }
+            if role.is_some() {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// `set_role`'s writes, with `presync` saying whether it caught up first.
+    fn change_role(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts, presync: PreSync) -> Result<()> {
         // each round removes one way in; the bound only guards against grants that never settle
         for _ in 0..16 {
             let Some(way) = self.holders(target)?.into_iter().find(|h| h.actor == holder) else {
                 let Some(r) = role else { return Ok(()) };
-                // a role lost above `r`: its end made explicit first, with what that takes
+                // a role lost above `r`: its end made explicit first
                 if self.engine(|e| below_lost(e, &target, &holder, r)) {
-                    self.lower(target, holder, None, left(o), false).await?;
+                    self.lower(target, holder, None, o, presync, false)?;
                 }
                 return self.grant(target, holder, r, GrantOpts::default());
             };
@@ -849,14 +907,14 @@ impl Osis {
                     match role {
                         Some(r) if r == cur.role => return Ok(()),
                         Some(r) if r > cur.role => return self.grant(target, holder, r, GrantOpts { until: cur.until, may_grant: cur.may_grant }),
-                        _ => self.lower(target, holder, role, left(o), false).await?,
+                        _ => self.lower(target, holder, role, o, presync, false)?,
                     }
                 }
                 [k] if self.held_links()?.iter().any(|h| h.k == *k && h.target == target) => {
                     if role.is_some() {
                         return Err(Error::Invalid(format!("{holder} joined {target} by a link: it can only be removed")));
                     }
-                    self.remove_joiner(*k, holder, left(o)).await?;
+                    self.remove_joiner(*k, holder, o, presync)?;
                 }
                 [k, ..] => return Err(Error::Invalid(format!("{holder} reaches {target} through {k}: set its role there"))),
             }
@@ -871,6 +929,7 @@ impl Osis {
     /// and sealed the new ones to itself alone, so that `set_role` fails here. Also undoes, everywhere,
     /// that holder's key changes this node cannot open, and changes the keys from those before
     /// them; what was written under the undone keys stays readable only where they are already held.
+    /// Catches up first as `set_role` does.
     ///
     /// Only after a lockout: on a node that merely lacks a key someone has yet to send it, this
     /// undoes an honest key change. `holder` must hold a grant on `target` itself (else `Invalid`), and
@@ -889,22 +948,24 @@ impl Osis {
             (Some(way), Some(r)) if r > way.role => return Err(Error::Invalid("repudiating cannot raise a role".into())),
             _ => {}
         }
-        self.lower(target, holder, role, o, true).await
+        let new = self.lowered_edge(target, holder, role)?;
+        self.catch_up(self.engine(|e| e.presync_scope(&target, &holder, new.as_ref()))).await?;
+        self.lower(target, holder, role, o, PreSync::Synced, true)
     }
 
-    /// Lowers or removes the grant of `m` on `t`: the pre-sync of every label the lost authority
-    /// wrote under, then the demotion with this node's frontier and the target's rotation, in one
-    /// commit (spec/permissions.md §2, §3, §5).
-    async fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts, repudiate: bool) -> Result<()> {
-        let new = match role {
-            Some(role) => {
-                let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
-                Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct) })
-            }
-            None => None,
-        };
-        let things = self.engine(|e| e.presync_scope(&t, &m, new.as_ref()));
-        let presync = self.presync(things, o.sync).await?;
+    /// The edge `m` holds on `t` after lowering it to `role` (`None`: removed): `until` kept,
+    /// `may_grant` capped, the tie kept.
+    fn lowered_edge(&self, t: Tid, m: Tid, role: Option<Role>) -> Result<Option<ct::Edge>> {
+        let Some(role) = role else { return Ok(None) };
+        let cur = self.grants(t)?.get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
+        Ok(Some(ct::Edge { role, until: cur.until, invite: cur.may_grant.map(|i| i.min(role)), tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct) }))
+    }
+
+    /// Lowers or removes the grant of `m` on `t`: the demotion with this node's frontier and the
+    /// target's rotation, in one commit (spec/permissions.md §2, §3, §5), after catching up or not
+    /// as `presync` says.
+    fn lower(&self, t: Tid, m: Tid, role: Option<Role>, o: SetRoleOpts, presync: PreSync, repudiate: bool) -> Result<()> {
+        let new = self.lowered_edge(t, m, role)?;
         // an account's default does not reach its nodes (spec/permissions.md §2)
         let keep = o.retain_copy.or((t == self.inner.me).then_some(false));
         let fd = flows::Demotion { holder: m, new, presync, keep };
@@ -1055,7 +1116,7 @@ impl Osis {
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
         let label = link.k_label;
-        self.wait_until(None, Box::new(move |s, _, _| {
+        self.wait_until(Box::new(move |s, _| {
             if s.static_entry_refused(&label) {
                 return Some(Err(link_ended()));
             }
@@ -1095,7 +1156,7 @@ impl Osis {
         drop(key);
         self.carry(done)?;
         // joined: the grant stands in a view with nothing on K pending
-        self.wait_until(None, Box::new(move |s, _, _| {
+        self.wait_until(Box::new(move |s, _| {
             let e = s.engine_mut();
             (e.roster(&k).contains_key(&me) && !pending_on(e, &k)).then_some(Ok(()))
         }))
@@ -1156,29 +1217,45 @@ impl Osis {
     }
 
     /// Ends a link: nobody can use it from now on. Those who joined by it keep their role; to remove
-    /// one, `set_role`. `sync` as for `set_role`: anyone holding the link's text may have used it.
-    /// `Unsupported` on a client with its own actor.
-    pub async fn revoke_link(&self, id: LinkId, sync: SyncFirst) -> Result<()> {
+    /// one, `set_role`. Catches up first as `set_role` does: a join this node has not received yet
+    /// would be undone. `Unsupported` on a client with its own actor.
+    pub async fn revoke_link(&self, id: LinkId) -> Result<()> {
         if !self.has_store() {
-            return self.rtask(crate::port::method::REVOKE_LINK, vec![Value::Tid(id.0), crate::port::codec::sync_first_v(sync)]).await.map(drop);
+            return self.rtask(crate::port::method::REVOKE_LINK, vec![Value::Tid(id.0)]).await.map(drop);
         }
         self.not_routed("revoke_link", id.0)?;
         let l = self.link_key(id.0)?;
-        self.lower(id.0, l, None, SetRoleOpts { sync, retain_copy: None }, false).await
+        self.catch_up(self.engine(|e| e.presync_scope(&id.0, &l, None))).await?;
+        self.lower(id.0, l, None, SetRoleOpts::default(), PreSync::Synced, false)
+    }
+
+    /// `revoke_link` at once, without catching up: a join this node has not received is undone. For
+    /// a link that leaked, ended where nobody can be reached.
+    pub fn revoke_link_now(&self, id: LinkId) -> Result<()> {
+        if !self.has_store() {
+            return self.rcall(crate::port::method::REVOKE_LINK_NOW, vec![Value::Tid(id.0)]).map(drop);
+        }
+        self.not_routed("revoke_link_now", id.0)?;
+        let l = self.link_key(id.0)?;
+        self.lower(id.0, l, None, SetRoleOpts::default(), PreSync::Unsynced { proceed: true }, false)
+    }
+
+    /// What removing `joiner` from link actor `k` demotes: the joiner's authority and the link key's.
+    fn joiner_scope(&self, k: Tid, joiner: Tid) -> Result<BTreeSet<Tid>> {
+        let l = self.link_key(k)?;
+        Ok(self.engine(|e| {
+            let mut s = e.presync_scope(&k, &joiner, None);
+            s.extend(e.presync_scope(&k, &l, None));
+            s
+        }))
     }
 
     /// Removes `joiner` from link actor `k` and ends the link in the same commit, under one rotation
     /// (spec/permissions.md §7: a joiner may keep the seed); the other joiners stay holders of K and
-    /// need a new link to invite anyone. After the pre-sync.
-    async fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts) -> Result<()> {
+    /// need a new link to invite anyone. After catching up on `joiner_scope`, or not, as `presync` says.
+    fn remove_joiner(&self, k: Tid, joiner: Tid, o: SetRoleOpts, presync: PreSync) -> Result<()> {
         self.not_routed("set_role", k)?;
         let l = self.link_key(k)?;
-        let things = self.engine(|e| {
-            let mut s = e.presync_scope(&k, &joiner, None);
-            s.extend(e.presync_scope(&k, &l, None));
-            s
-        });
-        let presync = self.presync(things, o.sync).await?;
         let done = self.guarded(&[k], |e| e.revoke_joiner(&k, &l, &joiner, presync, o.retain_copy).map_err(needs_admin))?;
         self.carry(done)
     }
@@ -1326,8 +1403,7 @@ impl Osis {
         let f2 = found.clone();
         let r = self
             .wait_until(
-                None,
-                Box::new(move |s, _, _| {
+                Box::new(move |s, _| {
                     if s.static_entry_refused(&label) {
                         return Some(Err(link_ended()));
                     }
@@ -1423,11 +1499,12 @@ impl Osis {
         })
     }
 
-    /// Removes a node from this account (a lost or stolen one: `SyncFirst::Skip` or
-    /// `SyncFirst::Backdate`). This is `set_role(me, node, None, o)`, here because of what it
-    /// returns, which is easy to forget: this account's links still working. The node keeps their
-    /// keys, so whoever holds it can read and join through each until `revoke_link`, and ending
-    /// them is the caller's choice. None when `node` was not one of this account's. `Unsupported` on a client with its own actor.
+    /// Removes a node from this account. This is `set_role(me, node, None, o)`, catching up first,
+    /// here because of what it returns, which is easy to forget: this account's links still working.
+    /// The node keeps their keys, so whoever holds it can read and join through each until
+    /// `revoke_link`, and ending them is the caller's choice. None when `node` was not one of this
+    /// account's. A lost or stolen node need not be waited for: `set_role_now(me, node, None, o)`,
+    /// then `links`. `Unsupported` on a client with its own actor.
     pub async fn remove_node(&self, node: Tid, o: SetRoleOpts) -> Result<Vec<LinkInfo>> {
         let me = self.me();
         let was = self.grants(me)?.contains_key(&node);
@@ -1705,7 +1782,7 @@ impl Osis {
                     return Pending::ready(Ok(()));
                 }
                 self.sync_labels();
-                self.groups_synced(None, Vec::new(), None, Some(BTreeSet::new()))
+                self.groups_synced(None, Some(BTreeSet::new()))
             }
             SyncScope::Thing(t) => {
                 // first, so that a label with more to bring counts as such
@@ -1714,7 +1791,7 @@ impl Osis {
                 if let Some(Err(e)) = self.locked(|x| group_synced(&mut x.sync, me, t)).filter(Result::is_err) {
                     return Pending::ready(Err(e));
                 }
-                self.wait_until(None, Box::new(move |sync, _, _| group_synced(sync, me, t)))
+                self.wait_until(Box::new(move |sync, _| group_synced(sync, me, t)))
             }
         }
     }
@@ -1863,7 +1940,7 @@ fn save_links(l: &mut Locked) -> Result<()> {
     Ok(())
 }
 
-/// A held link or recovery key, forgotten when the guard goes: every outcome of a waiting call,
+/// A held link key, forgotten when the guard goes: every outcome of a waiting call,
 /// a dropped future included.
 pub(crate) struct KeyGuard {
     pub db: crate::handle::WeakOsis,
@@ -1883,7 +1960,7 @@ impl Drop for KeyGuard {
     }
 }
 
-/// A pre-sync's receipts-only reads, ended when it goes.
+/// Catching up's receipts-only reads, ended when it goes.
 struct ReceiptsGuard {
     db: crate::handle::WeakOsis,
     groups: Vec<Tid>,

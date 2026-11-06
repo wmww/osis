@@ -96,22 +96,13 @@ pub struct GroupsArgs {
     pub in_all: Vec<String>,
 }
 
-/// What to do first about work this node has not seen.
-#[derive(Args, Debug, Clone, Default)]
-pub struct SyncFlags {
-    /// Catch up first: required (default), try, skip
-    #[arg(long, value_name = "MODE", conflicts_with = "backdate")]
-    pub sync: Option<String>,
-    /// No catching up: keep what this node had seen by TS
-    #[arg(long, value_name = "TS")]
-    pub backdate: Option<String>,
-}
-
 /// How a role is taken away.
 #[derive(Args, Debug, Clone, Default)]
 pub struct SetRoleFlags {
-    #[command(flatten)]
-    pub sync: SyncFlags,
+    /// Write at once, without first catching up with the peers reachable now: what the holder
+    /// wrote that this node has not received is undone
+    #[arg(long)]
+    pub now: bool,
     /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required.0^`, field keep)
     #[arg(long = "retain-copy", value_name = "BOOL")]
     pub retain_copy: Option<bool>,
@@ -121,14 +112,6 @@ pub struct SetRoleFlags {
 pub enum Cmd {
     /// Create a store: a new node, account and home group
     Init {
-        /// A peer to sync with (repeatable)
-        #[arg(long, value_name = "ADDR")]
-        peer: Vec<String>,
-    },
-    /// Restore an account on a fresh store from its recovery card
-    Restore {
-        /// The card, `@FILE` or `-` (stdin)
-        card: String,
         /// A peer to sync with (repeatable)
         #[arg(long, value_name = "ADDR")]
         peer: Vec<String>,
@@ -336,7 +319,7 @@ pub enum Cmd {
         may_grant: Option<String>,
     },
     /// Make HOLDER's role on T this one: read, write, admin, or none to remove (lowering and removing
-    /// catch up first)
+    /// catch up with the peers reachable now first, unless --now)
     SetRole {
         t: String,
         holder: String,
@@ -344,14 +327,15 @@ pub enum Cmd {
         #[command(flatten)]
         d: SetRoleFlags,
     },
-    /// Lower or remove (ROLE none) HOLDER as `set-role` does, also undoing its key changes this node
-    /// cannot open: for a writer that locked everyone out, and nothing else
+    /// Lower or remove (ROLE none) HOLDER as `set-role` does, catching up first, also undoing its key
+    /// changes this node cannot open: for a writer that locked everyone out, and nothing else
     Repudiate {
         t: String,
         holder: String,
         role: String,
-        #[command(flatten)]
-        d: SetRoleFlags,
+        /// On a removal: the removed holder's nodes retain a read-only copy (true) or erase it (false); default: the thing's (`required.0^`, field keep)
+        #[arg(long = "retain-copy", value_name = "BOOL")]
+        retain_copy: Option<bool>,
     },
     /// Remove this account's own grant on T, or with --holder that of an actor this node is an
     /// admin of (no catching up)
@@ -486,7 +470,7 @@ pub enum PairCmd {
 pub enum NodeCmd {
     /// List them: `NODE ROLE`
     Ls,
-    /// Remove a node from this account (a lost or stolen one: `--sync skip`), listing the links it can still use
+    /// Remove a node from this account (a lost or stolen one: `--now`), listing the links it can still use
     Rm {
         // its own id: `node` is the global `--node`'s, whose value this would become
         #[arg(id = "removed_node", value_name = "NODE")]
@@ -615,11 +599,12 @@ pub enum LinkCmd {
     Redeem { link: String },
     /// The account's working links (of thing T)
     Ls { t: Option<String> },
-    /// End link ID; with --joiner, also remove that joiner in the same commit
+    /// End link ID, after catching up with the peers reachable now (a join not received yet would be undone)
     Revoke {
         id: String,
-        #[command(flatten)]
-        d: SyncFlags,
+        /// Write at once, without catching up
+        #[arg(long)]
+        now: bool,
     },
 }
 
@@ -675,9 +660,9 @@ pub enum ChatCmd {
         /// Also erase everything they sent
         #[arg(long)]
         purge: bool,
-        /// Stamp now, without first syncing what they wrote (a hostile member)
+        /// Write at once, without first catching up on what they wrote (a hostile member)
         #[arg(long)]
-        no_sync: bool,
+        now: bool,
     },
     /// Sends a message (TEXT, `@FILE`, or `-` for stdin): prints its id
     Post {

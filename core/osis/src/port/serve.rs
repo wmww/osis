@@ -326,9 +326,9 @@ fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
             }
         }
         method::REVOKE_LINK => {
-            let (id, sync) = (crate::share::LinkId(a.tid()?), c::sync_first(a.next()?)?);
+            let id = crate::share::LinkId(a.tid()?);
             a.end()?;
-            Box::pin(async move { db.revoke_link(id, sync).await.map(|()| nothing()) })
+            Box::pin(async move { db.revoke_link(id).await.map(|()| nothing()) })
         }
         method::IMPORT_CONTACT => {
             let card: crate::ContactCard = a.text()?.parse()?;
@@ -655,6 +655,16 @@ impl Worker {
             }
             method::GRANT => {
                 db.grant(a.tid()?, a.tid()?, c::role(&a.next()?)?, c::grant_opts(a.next()?)?)?;
+                Value::List(vec![])
+            }
+            method::REVOKE_LINK_NOW => {
+                db.revoke_link_now(crate::share::LinkId(a.tid()?))?;
+                Value::List(vec![])
+            }
+            method::SET_ROLE_NOW => {
+                let (target, holder) = (a.tid()?, a.tid()?);
+                let role = a.opt()?.map(|r| c::role(&r)).transpose()?;
+                db.set_role_now(target, holder, role, c::set_role(a.next()?)?)?;
                 Value::List(vec![])
             }
             method::ADD_WITH_GRANT => {

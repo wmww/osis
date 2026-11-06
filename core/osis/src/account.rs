@@ -1,16 +1,15 @@
 //! The account across nodes (spec/permissions.md §1, §7; notes/api.md Handle and lifecycle):
-//! restoring from a recovery card on a fresh node, and pairing a new node. Pairing is
+//! pairing a new node. Pairing is
 //! transport-agnostic: the app carries two messages between the nodes (QR, clipboard, a local
 //! socket): the new node's request (its node card) and the existing node's reply (the grant
 //! and the commits it needs), both authenticated by the offer's one-time secret.
 
 use crate::error::{Error, Result};
 use crate::handle::{Fresh, Osis, ACCOUNT, fresh_engine, save_peers};
-use crate::share::{RecoveryCard, Address, SyncState};
+use crate::share::Address;
 use crate::{Config, Store};
 use osis_base::cbor::{Limits, decode, encode};
 use osis_base::{BlobId, CommitId as RawCommitId, Tid, Value, base64url};
-use osis_node::flows::PreSync;
 use osis_node::local_peer::Package;
 
 /// How long a pairing offer can be accepted.
@@ -186,45 +185,6 @@ impl Joining {
 }
 
 impl Osis {
-    /// Restores the account of a recovery card on this fresh node: downloads its home group by the
-    /// card's key, then makes this node an admin of the account. Needs a runtime; the card's peers
-    /// join `peers`. `Invalid` when they refuse the card's key; `Unsynced` when the home group stops
-    /// opening under this attempt's keys (it changed meanwhile: try again); with nobody answering
-    /// it waits. On any failure, or a dropped future, the recovery key is forgotten and the store
-    /// does not open: use a fresh store for the next attempt.
-    pub async fn restore(store: Store, peers: &[Address], card: &RecoveryCard, cfg: Config) -> Result<Osis> {
-        cfg.check(peers)?;
-        let c = card.parse()?;
-        let peers = with_peers(peers, c.hosts.iter().cloned().map(Address).collect());
-        let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, &peers)?;
-        let engine = sync.engine_mut();
-        let r = engine.hold_key_actor(c.seed.clone())?;
-        save_peers(engine, &peers)?;
-        let db = Osis::start(sync, clock, store, &cfg, c.person)?;
-        let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
-        db.act(|x| x.sync.follow(r, c.person, c.home_label, c.hosts.clone()));
-        let (p, home) = (c.person, c.home_label);
-        db.wait_until(None, Box::new(move |s, st, _| {
-            if s.static_entry_refused(&home) {
-                return Some(Err(Error::Invalid("this recovery card no longer works".into())));
-            }
-            // `Stranded`: the head moved while this read the roster that lists the card's key, and
-            // nothing here opens it now. A fresh attempt opens the new head.
-            match st.groups.get(&p).map(|g| g.state) {
-                Some(SyncState::Stranded) => Some(Err(Error::Unsynced { groups: vec![p] })),
-                Some(SyncState::Synced) if s.engine().knows(&p) => Some(Ok(())),
-                _ => None,
-            }
-        }))
-        .await?;
-        let done = db.engine(|e| e.recover(&c, &[], PreSync::Synced))?;
-        drop(key);
-        db.carry(done)?;
-        // the account record last: a store without it is no osis node yet
-        db.engine(|e| e.set_app_record(ACCOUNT, c.person.as_bytes()))?;
-        Ok(db)
-    }
-
     /// An offer to pair a new node, good once: the new node runs
     /// `Osis::pair` with it and the app carries the request back to `pair_accept`. Whoever holds
     /// the offer can make their node a full admin node of this account until it is used or

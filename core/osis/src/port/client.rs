@@ -921,7 +921,7 @@ impl Osis {
 
     /// The stand-in node of a process without a store.
     fn scratch(cfg: AppConfig) -> Result<Osis> {
-        Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], Config { app: cfg, ..Config::default() })?.0)
+        Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], Config { app: cfg, ..Config::default() })
     }
 
     /// Makes this handle a process with no store of its own over `list`, each up.

@@ -296,20 +296,6 @@ impl Net {
         });
         true
     }
-
-    /// Wakes the driver after `d` so waiters with a `late` time are looked at.
-    pub fn timer(&self, d: Duration) {
-        if let Net::Driver { ctl, handle, .. } = self {
-            // a weak sender: a pending timer does not keep the driver alive
-            let ctl = ctl.downgrade();
-            handle.spawn(async move {
-                tokio::time::sleep(d).await;
-                if let Some(ctl) = ctl.upgrade() {
-                    let _ = ctl.send(Control::Call(Box::new(|_| Vec::new())));
-                }
-            });
-        }
-    }
 }
 
 /// The driver task's future. A panic in it, or its runtime dropping it unfinished (the app shut
@@ -475,25 +461,23 @@ impl<T> Future for Pending<T> {
     }
 }
 
-/// The check gets whether its `late` time passed (`Osis::wait_until`).
-pub(crate) type Check = Box<dyn FnMut(&mut SyncEngine, &Status, bool) -> Option<Result<()>> + Send>;
+/// A condition `Osis::wait_until` looks at.
+pub(crate) type Check = Box<dyn FnMut(&mut SyncEngine, &Status) -> Option<Result<()>> + Send>;
 
 /// A condition on the sync state, looked at after every change.
 pub(crate) struct Waiter {
     check: Check,
-    late: Option<u64>,
     slot: Arc<Slot<Result<()>>>,
 }
 
 impl Waiter {
     /// Resolves the slot when the check answers; `true` when done.
-    pub fn poll(&mut self, sync: &mut SyncEngine, status: &Status, now: u64) -> bool {
+    pub fn poll(&mut self, sync: &mut SyncEngine, status: &Status) -> bool {
         // the future was dropped: nobody waits any more
         if Arc::strong_count(&self.slot) == 1 {
             return true;
         }
-        let late = self.late.is_some_and(|d| now >= d);
-        if let Some(r) = (self.check)(sync, status, late) {
+        if let Some(r) = (self.check)(sync, status) {
             self.slot.put(r);
             return true;
         }
@@ -510,20 +494,17 @@ impl Drop for Waiter {
 }
 
 impl crate::Osis {
-    /// A future resolving once `check` answers. `late`: from this long on the check is told so
-    /// (first at once for 0; past what a clock can name, never): it may then answer what it would
-    /// not before. Fails at once with `Network` when nothing carries the network (`Runtime::None`).
-    pub(crate) fn wait_until(&self, late: Option<Duration>, check: Check) -> Pending<Result<()>> {
+    /// A future resolving once `check` answers. Fails at once with `Network` when nothing carries
+    /// the network (`Runtime::None`).
+    pub(crate) fn wait_until(&self, check: Check) -> Pending<Result<()>> {
         let slot = Slot::new();
         if !self.inner.net.online() {
             slot.put(Err(Error::Network("no runtime: sync is off (Config.runtime)".into())));
             return Pending { slot };
         }
-        let now = self.inner.clock.now_wall_ms().0;
-        let at = late.and_then(|d| u64::try_from(d.as_millis()).ok()).and_then(|d| now.checked_add(d));
-        let mut w = Waiter { check, late: at, slot: slot.clone() };
-        let waiting = self.locked(|l| {
-            if w.poll(&mut l.sync, &l.status, now) {
+        let mut w = Waiter { check, slot: slot.clone() };
+        self.locked(|l| {
+            if w.poll(&mut l.sync, &l.status) {
                 return false;
             }
             // the driver died: nothing would answer
@@ -534,9 +515,6 @@ impl crate::Osis {
             l.waiters.push(w);
             true
         });
-        if let (true, Some(_), Some(d)) = (waiting, at, late) {
-            self.inner.net.timer(d);
-        }
         Pending { slot }
     }
 }

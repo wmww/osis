@@ -283,7 +283,7 @@ impl Opening {
 
 }
 
-pub fn create(o: Opening) -> crate::Result<(Osis, Option<crate::RecoveryCard>)> {
+pub fn create(o: Opening) -> crate::Result<Osis> {
     Osis::create(o.store, &o.hosts, o.cfg)
 }
 
@@ -293,10 +293,6 @@ pub fn open(o: Opening) -> crate::Result<Osis> {
 
 pub fn pair(o: Opening, offer: &crate::PairOffer) -> crate::Result<crate::Joining> {
     Osis::pair(o.store, &o.hosts, offer, o.cfg)
-}
-
-pub async fn restore(o: Opening, card: &crate::RecoveryCard) -> crate::Result<Osis> {
-    Osis::restore(o.store, &o.hosts, card, o.cfg).await
 }
 
 pub async fn connect_socket(socket: &std::path::Path, o: Opening) -> crate::Result<Osis> {

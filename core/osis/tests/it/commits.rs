@@ -154,7 +154,7 @@ fn query_relations_spec_crdt_4_6() {
 #[test]
 fn query_filters_api_commits() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     let t = db.commit_with(|w| w.create()).unwrap();
     let c1 = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)));
@@ -190,7 +190,7 @@ fn query_filters_api_commits() {
 /// Two nodes of one account, paired locally; commits travel by `deliver`.
 fn two_nodes() -> (Osis, Osis) {
     let c = clock();
-    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let j = osis::internals::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
@@ -622,7 +622,7 @@ fn creation_revert_found_by_created_scope_api_commits() {
 #[test]
 fn one_moment_many_commits_lose_none_api_commits() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let k = osis::DynamicAspectKey::untyped(ak("t:x.0"));
     let t = db.commit_with(|w| w.create()).unwrap();
     let made: Vec<_> = (0..5).map(|i| commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(i)))).collect();

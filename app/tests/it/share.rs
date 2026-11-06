@@ -33,8 +33,8 @@ fn sync(a: &Data, b: &Data) {
 /// Alice and Bob, two accounts, each with an app group; each holds the other's commits.
 fn two_people() -> (Data, Data) {
     let clock = Arc::new(ManualClock::new(Time(1_760_000_000_000)));
-    let a = Data::new(osis::internals::create(cfg(1, &clock)).unwrap().0);
-    let b = Data::new(osis::internals::create(cfg(2, &clock)).unwrap().0);
+    let a = Data::new(osis::internals::create(cfg(1, &clock)).unwrap());
+    let b = Data::new(osis::internals::create(cfg(2, &clock)).unwrap());
     a.main_group().unwrap();
     b.main_group().unwrap();
     sync(&a, &b);

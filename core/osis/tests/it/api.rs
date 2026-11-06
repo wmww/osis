@@ -38,7 +38,7 @@ fn create_and_reopen_spec_api_handle() {
     let store = MemStore::new();
     let c = clock();
     let (node, me) = {
-        let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap().0;
+        let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
         assert_ne!(db.me(), db.node());
         assert_eq!(db.at(db.me(), osis::internals::core_types::GROUP).get().unwrap(), Some(Group::default()));
         assert_eq!(db.role_on(db.me()).unwrap(), Some(Role::Admin));
@@ -383,7 +383,7 @@ fn materialization_bound_spec_data_model_6() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
     cf.app.read_limit = 64 * 1024;
-    let db = osis::internals::create(cf).unwrap().0;
+    let db = osis::internals::create(cf).unwrap();
     let k = ak("t:doc.0");
     let big = Value::Bytes(vec![7u8; osis::internals::schema::osis_base::format::CHUNK_THRESHOLD + 1000]);
     let mid = Value::Bytes(vec![1u8; 100 * 1024]);
@@ -549,7 +549,7 @@ fn role_class_refused_spec_permissions_1() {
 #[test]
 fn expired_unseen_before_tick_spec_crdt_4_7() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let (k, e) = (ak("t:msg.0"), ak("t:typing.0~"));
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -572,7 +572,7 @@ fn expired_unseen_before_tick_spec_crdt_4_7() {
 #[test]
 fn expiry_retention_purge_spec_commits_5_6() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let (k, r) = (ak("t:msg.0"), ak("t:keep.0"));
     let mut w = db.write();
     let t = w.create().unwrap();
@@ -625,7 +625,7 @@ fn act_as_spec_commits_1() {
 fn local_sync_surface_spec_api_sync() {
     let c = clock();
     let store = MemStore::new();
-    let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, store.clone(), &c)).unwrap();
     assert!(db.saved_peers().unwrap().is_empty());
     let st = db.status().unwrap();
     assert_eq!(st.groups.get(&db.me()).map(|g| g.state), Some(osis::SyncState::NoPeers));
@@ -647,7 +647,7 @@ fn local_sync_surface_spec_api_sync() {
 // missing-field rule, so a run-time core key (`Osis::key`, the CLI's) reads it.
 #[test]
 fn created_reads_through_run_time_key_spec_data_model_9() {
-    let db = osis::internals::create(osis::internals::Opening::memory()).unwrap().0;
+    let db = osis::internals::create(osis::internals::Opening::memory()).unwrap();
     let mut w = db.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
@@ -663,7 +663,7 @@ fn stream_len_set_stream_spec_data_model_6() {
     let c = clock();
     let mut cf = cfg(1, MemStore::new(), &c);
     cf.app.read_limit = 64 * 1024;
-    let db = osis::internals::create(cf).unwrap().0;
+    let db = osis::internals::create(cf).unwrap();
     let k = ak("t:blob.0");
     let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
     let mut w = db.write();
@@ -967,7 +967,7 @@ fn values_past_limits_huge_spec_data_model() {
 #[test]
 fn expiring_membership_api_writes() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let x = ak("t:x.0");
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     // a thing's record does not expire: the thing first, then what expires
@@ -1015,7 +1015,7 @@ fn expiring_membership_api_writes() {
 #[test]
 fn owner_created_now_api_reads() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     assert_eq!(db.now().unwrap(), osis::Time(T0));
     c.advance(5);
     assert_eq!(db.now().unwrap(), osis::Time(T0 + 5));
@@ -1043,7 +1043,7 @@ fn owner_created_now_api_reads() {
 #[test]
 fn changed_content_only_api_reads() {
     let (ca, cb) = (clock(), clock());
-    let a = osis::internals::create(cfg(1, MemStore::new(), &ca)).unwrap().0;
+    let a = osis::internals::create(cfg(1, MemStore::new(), &ca)).unwrap();
     let j = osis::internals::pair(cfg(2, MemStore::new(), &cb), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
@@ -1105,7 +1105,7 @@ fn newest(db: &Osis, t: osis::Tid) -> osis::internals::RawCommitId {
 #[test]
 fn path_op_into_absent_key_spec_crdt_5_6() {
     let c = clock();
-    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let j = osis::internals::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
@@ -1133,7 +1133,7 @@ fn path_op_into_absent_key_spec_crdt_5_6() {
 #[test]
 fn created_not_a_snapshot_spec_commits_2() {
     let c = clock();
-    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let a = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let j = osis::internals::pair(cfg(2, MemStore::new(), &c), &a.pair_offer().unwrap()).unwrap();
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
@@ -1163,8 +1163,7 @@ fn peers_without_a_runtime_are_refused() {
     c.hosts = vec![host.clone()];
     let r = osis::internals::create(c.clone());
     assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("runtime")), "{:?}", r.map(|_| ()));
-    let card_free = osis::internals::create(osis::internals::Opening::memory()).unwrap();
-    assert!(card_free.1.is_none());
+    assert!(osis::internals::create(osis::internals::Opening::memory()).is_ok());
     c.runtime = osis::Runtime::Manual(osis::internals::ManualNet::new());
     assert!(osis::internals::create(c).is_ok());
 }
@@ -1532,7 +1531,7 @@ fn a_member_added_after_a_delete_stays() {
 #[test]
 fn a_lasting_member_outlives_an_expiring_first() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let (g, x, s, y) = (made(&db), made(&db), made(&db), made(&db));
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     db.commit_with(|w| {
@@ -1573,7 +1572,7 @@ fn a_revert_of_a_first_member_takes_only_it() {
 #[test]
 fn membership_expires_item_or_subgroup_spec_commits_6() {
     let c = clock();
-    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     let mut w = db.write();
     let (g, t, s, kept) = (w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap());
@@ -1721,18 +1720,18 @@ fn urls_and_serving_policy_are_typed() {
 #[test]
 fn waiting_calls_are_send() {
     fn send<T: Send>(_: T) {}
-    fn all(db: Osis, login: osis::NodeLogin, link: osis::ShareLink, card: osis::ContactCard, recovery: osis::RecoveryCard, t: osis::Tid, o: osis::SetRoleOpts) {
+    fn all(db: Osis, login: osis::NodeLogin, link: osis::ShareLink, card: osis::ContactCard, id: osis::LinkId, t: osis::Tid, o: osis::SetRoleOpts) {
         send(db.wait_synced(osis::SyncScope::AllWithSavedPeers));
         send(db.redeem(&link));
         send(db.import_contact(&card));
         send(db.set_role(t, t, None, o));
         send(db.repudiate(t, t, None, o));
         send(db.remove_node(t, o));
+        send(db.revoke_link(id));
         send(db.connect_node(&login));
         send(db.group_source(t, osis::GroupSource::Local));
         send(Osis::connect(std::slice::from_ref(&login), osis::AppConfig::default()));
         send(Osis::connect_socket(std::path::Path::new("x"), osis::AppConfig::default()));
-        send(Osis::restore(osis::Store::Memory(MemStore::new()), &[], &recovery, osis::Config::default()));
     }
     let _ = all;
 }

@@ -70,6 +70,10 @@ pub(crate) mod method {
     pub const UNSYNC: u64 = 24;
     /// `[target, holder, role, grant opts]` -> `[]`
     pub const GRANT: u64 = 25;
+    /// `[target, holder, Opt(role), set role]` -> `[]` (no role: removed)
+    pub const SET_ROLE_NOW: u64 = 74;
+    /// `[link id]` -> `[]`
+    pub const REVOKE_LINK_NOW: u64 = 75;
     /// `[member, group, role]` -> `[]`
     pub const ADD_WITH_GRANT: u64 = 27;
     /// `[holder, target]` -> `[]`
@@ -148,7 +152,7 @@ pub(crate) mod method {
     pub const REDEEM: u64 = 63;
     /// `[target, holder, Opt(role), set role]` -> `[]` (no role: removed)
     pub const SET_ROLE: u64 = 64;
-    /// `[link id, sync first]` -> `[]`
+    /// `[link id]` -> `[]`
     pub const REVOKE_LINK: u64 = 65;
     /// `[target, holder, Opt(role), set role]` -> `[]`
     pub const REPUDIATE: u64 = 66;

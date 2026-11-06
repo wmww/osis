@@ -79,7 +79,7 @@ fn joins(w: &mut World, a: &Osis, c: Tid, host: usize, m: usize, every: usize, s
         stores.push(store.clone());
         let mut cfg = w.cfg(100 + i as u64, &[host]);
         cfg.store = Store::Memory(store);
-        let (b, _) = osis::internals::create(cfg).unwrap();
+        let b = osis::internals::create(cfg).unwrap();
         w.run();
         let p = meet(w, a, &b);
         // `OSIS_SCALE_CARDS=0`: asleep before its join, no card uploaded, so an admin's cost at sizes
@@ -242,7 +242,7 @@ fn chat_members() {
     let every = (m / 10).max(1);
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
+    let a = w.account(1, &[host]);
     w.run();
     let c = create(&a);
     w.run();
@@ -262,7 +262,7 @@ fn chat_members() {
     let (member1, host1) = held(&w);
     println!("STORE m={m} n={n} per message: a member {} B, host {} B", (member1 - member0) / n.max(1) as u64, (host1 - host0) / n.max(1) as u64);
     // one more member, with the messages there
-    let (b, _) = w.account(50, &[host]);
+    let b = w.account(50, &[host]);
     w.run();
     let p = meet(&mut w, &a, &b);
     let before = w.busy_all();
@@ -284,7 +284,7 @@ fn chat_members() {
     let others: Vec<Duration> = d.iter().enumerate().filter(|(j, _)| *j != 0 && *j != joiner && *j <= env("OSIS_SCALE_ACTIVE", m)).map(|(_, t)| *t).collect();
     println!("JOIN after the {n} messages m={m}: other member median {:.1?}, joiner {:.1?}, joiner down {} B, sim {:.1?}", median(others), d[joiner], w.traffic(&b).down, t.elapsed());
     // and one with its joiner asleep: what the others spend
-    let (b2, _) = w.account(51, &[host]);
+    let b2 = w.account(51, &[host]);
     w.run();
     let p = meet(&mut w, &a, &b2);
     w.sleep(&b2);
@@ -312,13 +312,13 @@ fn counted(w: &mut World, f: impl FnOnce(&mut World)) -> BTreeMap<&'static str, 
 fn chat_of(m: usize) -> (World, usize, Osis, Vec<Osis>, Tid, Vec<Tid>) {
     let mut w = World::new();
     let host = w.add_host();
-    let (a, _) = w.account(1, &[host]);
+    let a = w.account(1, &[host]);
     w.run();
     let c = create(&a);
     w.run();
     let (mut members, mut tids) = (Vec::new(), Vec::new());
     for i in 0..m {
-        let (b, _) = w.account(100 + i as u64, &[host]);
+        let b = w.account(100 + i as u64, &[host]);
         w.run();
         let p = meet(&mut w, &a, &b);
         a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
@@ -353,7 +353,7 @@ fn post_reads_nothing_per_member() {
     check(&n, "in a quiet chat");
     // a pass at each node holding the chat, not one per label per node
     assert!(n.get("pass").copied().unwrap_or(0) <= 2 * 2 * (members.len() as u64 + 1), "passes for two posts: {n:?}");
-    w.until(a.set_role(c, tids[1], None, osis::SetRoleOpts { sync: osis::SyncFirst::Skip, retain_copy: None }), 1000, 100).unwrap();
+    a.set_role_now(c, tids[1], None, osis::SetRoleOpts { retain_copy: None }).unwrap();
     w.run();
     post(&a, c, 3);
     w.advance(1);
@@ -373,7 +373,7 @@ fn post_reads_nothing_per_member() {
 fn joiner_reads_each_pending_commit_few_times() {
     let reads = |m: usize| {
         let (mut w, host, a, _, c, _) = chat_of(m);
-        let (b, _) = w.account(50, &[host]);
+        let b = w.account(50, &[host]);
         w.run();
         let p = meet(&mut w, &a, &b);
         let n = counted(&mut w, |w| {
@@ -409,7 +409,7 @@ fn node(w: &mut World, seed: u64, host: usize) -> (Osis, MemStore) {
     let store = MemStore::new();
     let mut cfg = w.cfg(seed, &[host]);
     cfg.store = Store::Memory(store.clone());
-    let (db, _) = osis::internals::create(cfg).unwrap();
+    let db = osis::internals::create(cfg).unwrap();
     (db, store)
 }
 
@@ -778,13 +778,13 @@ fn add_judges_nothing_per_message() {
         }
         w.run();
         // one add passes the labels no post did: what they had waiting is a post's cost
-        let (d, _) = w.account(51, &[host]);
+        let d = w.account(51, &[host]);
         w.run();
         let p = meet(&mut w, &a, &d);
         a.grant(c, p, Role::Write, GrantOpts::default()).unwrap();
         w.run();
         // the joiner asleep: it has all to judge (its first pass)
-        let (b, _) = w.account(50, &[host]);
+        let b = w.account(50, &[host]);
         w.run();
         let p = meet(&mut w, &a, &b);
         w.sleep(&b);

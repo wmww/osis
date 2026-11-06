@@ -106,8 +106,8 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
 fn purge_author_through_the_api_spec_perm_6() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -149,7 +149,7 @@ fn purge_author_through_the_api_spec_perm_6() {
 fn page_says_when_it_may_miss_entries() {
     let mut w = World::new();
     let host = w.add_host();
-    let (db, _) = w.account(1, &[host]);
+    let db = w.account(1, &[host]);
     let t = db.commit_with(|x| {
         let t = x.create()?;
         x.group(db.me()).add(osis::Member::Item(t))?;
@@ -174,7 +174,7 @@ fn a_new_node_reads_newest_first_spec_sync_6() {
     const N: usize = 400;
     let mut w = World::new();
     let host = w.add_host();
-    let (db, _) = w.account(1, &[host]);
+    let db = w.account(1, &[host]);
     let mut x = db.write();
     let t = x.create().unwrap();
     x.group(db.me()).add(osis::Member::Item(t)).unwrap();
@@ -217,8 +217,8 @@ fn a_new_node_reads_newest_first_spec_sync_6() {
 fn memory_commits_read_and_tell_spec_sync_9() {
     let mut w = World::new();
     let host = w.add_host();
-    let (alice, _) = w.account(1, &[host]);
-    let (bob, _) = w.account(2, &[host]);
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
     w.run();
     let card = bob.contact_card().unwrap();
     w.run();
@@ -263,7 +263,7 @@ fn memory_commits_read_and_tell_spec_sync_9() {
 fn page_bound_counts_large_values() {
     let mut c = osis::internals::Opening::memory();
     c.app.read_limit = 3 << 20;
-    let db = osis::internals::create(c).unwrap().0;
+    let db = osis::internals::create(c).unwrap();
     let t = thing(&db);
     let k = ak("t:big.0");
     let put = |n: usize, b: u8| {

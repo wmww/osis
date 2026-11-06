@@ -10,7 +10,7 @@ use crate::common::CreateIn;
 use osis::{CommitKind, CommitQuery, NotUndoableReason, Error, MemStore, Osis, Scope, Value};
 
 fn setup(seed: u64) -> Osis {
-    osis::internals::create(cfg(seed, MemStore::new(), &clock())).unwrap().0
+    osis::internals::create(cfg(seed, MemStore::new(), &clock())).unwrap()
 }
 
 fn int(n: i64) -> Option<Value> {
@@ -191,7 +191,7 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     let c = clock();
     let mut x = cfg(6, MemStore::new(), &c);
     x.ephemeral_undo_bytes = 8_000;
-    let db = osis::internals::create(x).unwrap().0;
+    let db = osis::internals::create(x).unwrap();
     let k = ak("app:n.0~");
     let t = db.commit_with(|w| w.create()).unwrap();
     let mut ids = Vec::new();
@@ -216,7 +216,7 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     // at 0 no ephemeral change is undoable
     let mut x = cfg(7, MemStore::new(), &c);
     x.ephemeral_undo_bytes = 0;
-    let db = osis::internals::create(x).unwrap().0;
+    let db = osis::internals::create(x).unwrap();
     let mut w = db.write();
     let t = w.create().unwrap();
     w.commit().unwrap();
@@ -356,7 +356,7 @@ fn undo_takes_no_key_default_spec_crdt_4_6() {
 #[test]
 fn undo_needing_two_expiries_waits_spec_crdt_4_6() {
     let c = clock();
-    let db = osis::internals::create(cfg(31, MemStore::new(), &c)).unwrap().0;
+    let db = osis::internals::create(cfg(31, MemStore::new(), &c)).unwrap();
     let t = db.commit_with(|w| w.create_durable(db.me())).unwrap();
     for (x, y) in [("app:a.0", "app:b.0"), ("app:a.0~", "app:b.0~")] {
         let (a, b) = (osis::DynamicAspectKey::untyped(ak(x)), osis::DynamicAspectKey::untyped(ak(y)));

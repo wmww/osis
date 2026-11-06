@@ -28,9 +28,6 @@ pub enum Diagnostic {
     Unreadable { thing: Tid, detail: String },
     /// This node lost read access to `actor` and dropped its secrets (a copy may stay: `retained_copies`).
     LostAccess { actor: Tid, detail: String },
-    /// A role was lowered without catching up on `groups` (`SyncFirst::Try`): what its holder wrote
-    /// that this node had not seen is undone.
-    RoleLoweredUnsynced { groups: Vec<Tid>, detail: String },
     /// This node cannot open `group`'s sync (`SyncState::Stranded`) until a holder gives it the keys.
     Stranded { group: Tid, detail: String },
     /// Ephemeral data was not synced or not applied: a cap was reached.
@@ -62,7 +59,6 @@ impl From<osis_node::Diagnostic> for Diagnostic {
             (K::Mismatch, Some(thing), ..) => Diagnostic::Mismatch { thing, detail },
             (K::Unreadable, Some(thing), ..) => Diagnostic::Unreadable { thing, detail },
             (K::Removed, Some(actor), ..) => Diagnostic::LostAccess { actor, detail },
-            (K::Unsynced, ..) => Diagnostic::RoleLoweredUnsynced { groups: tids, detail },
             (K::Stranded, Some(group), ..) => Diagnostic::Stranded { group, detail },
             (K::EphemeralRefused, ..) => Diagnostic::EphemeralRefused { things: tids, detail },
             (K::Storage, ..) => Diagnostic::Storage { detail },
@@ -84,7 +80,6 @@ impl std::fmt::Display for Diagnostic {
             Diagnostic::Mismatch { detail, .. } => ("mismatch", detail),
             Diagnostic::Unreadable { detail, .. } => ("unreadable", detail),
             Diagnostic::LostAccess { detail, .. } => ("lost access", detail),
-            Diagnostic::RoleLoweredUnsynced { detail, .. } => ("role lowered unsynced", detail),
             Diagnostic::Stranded { detail, .. } => ("stranded", detail),
             Diagnostic::EphemeralRefused { detail, .. } => ("ephemeral refused", detail),
             Diagnostic::Storage { detail } => ("storage", detail),

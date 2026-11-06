@@ -280,9 +280,8 @@ pub(crate) fn listen(sel: &StoreSel, db: &Osis) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Creates a store with its home group syncing with `peers`; refuses a non-empty directory. Returns
-/// the recovery card (none without peers).
-fn create(sel: &StoreSel, g: &Global, peers: Vec<osis::Address>) -> anyhow::Result<(Osis, Option<osis::RecoveryCard>)> {
+/// Creates a store with its home group syncing with `peers`; refuses a non-empty directory.
+fn create(sel: &StoreSel, g: &Global, peers: Vec<osis::Address>) -> anyhow::Result<Osis> {
     if let StoreSel::Dir(d) = sel
         && d.read_dir().is_ok_and(|mut r| r.next().is_some())
     {
@@ -330,7 +329,7 @@ fn save_registered(dir: &Path, paths: &[PathBuf]) -> anyhow::Result<()> {
     std::fs::write(dir.join(SCHEMAS_FILE), s).map_err(|e| anyhow!("{}: {e}", dir.join(SCHEMAS_FILE).display()))
 }
 
-/// Reads an argument: a literal, `@FILE`, or `-` (stdin): a secret (a recovery card, a link)
+/// Reads an argument: a literal, `@FILE`, or `-` (stdin): a secret (a link, a pairing offer)
 /// need not appear in the process list or shell history.
 pub(crate) fn arg_text(stdin: &mut dyn BufRead, s: &str) -> anyhow::Result<String> {
     if s == "-" {
@@ -394,11 +393,6 @@ impl Ctx<'_> {
             }
             Ok(())
         }
-    }
-
-    /// What a call that waits on other nodes gets: the `--timeout` bound (default 30 s; `0`: none).
-    pub fn wait_for(&self) -> anyhow::Result<Duration> {
-        Ok(self.timeout()?.unwrap_or(Duration::MAX))
     }
 
     /// The `--timeout` bound (default 30 s; `0`: none).

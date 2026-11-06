@@ -5,7 +5,7 @@ use osis_app::edit::{map_byte, shown_edits, splice};
 use osis::Splice;
 
 fn data() -> Data {
-    Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap().0)
+    Data::new(osis::internals::create(osis::internals::Opening::memory()).unwrap())
 }
 
 /// Typing spliced into a session whose buffer holds a remote merge the widget does not show yet

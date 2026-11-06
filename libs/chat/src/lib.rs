@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 use osis::core::{REQUIRED, Required, RequiredRules};
-use osis::{Bound, CommitId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, SyncFirst, Tid, Value};
+use osis::{Bound, CommitId, CommitKind, Error, GrantOpts, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPos, Osis, Result, Retention, Role, SetRoleOpts, Subscription, Tid, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 
@@ -169,9 +169,15 @@ pub fn add(db: &Osis, c: Tid, account: Tid, role: Role) -> Result<()> {
 }
 
 /// Removes a participant, a read-only copy left to them or not by `retain_copy` (`None`: the chat's
-/// default).
-pub async fn kick(db: &Osis, c: Tid, account: Tid, retain_copy: Option<bool>, sync: SyncFirst) -> Result<()> {
-    db.set_role(c, account, None, SetRoleOpts { sync, retain_copy }).await
+/// default), after catching up with the peers reachable now, so what they sent stays
+/// (`Osis::set_role`).
+pub async fn kick(db: &Osis, c: Tid, account: Tid, retain_copy: Option<bool>) -> Result<()> {
+    db.set_role(c, account, None, SetRoleOpts { retain_copy }).await
+}
+
+/// `kick` at once: what they sent that this node has not received is undone (a hostile member).
+pub fn kick_now(db: &Osis, c: Tid, account: Tid, retain_copy: Option<bool>) -> Result<()> {
+    db.set_role_now(c, account, None, SetRoleOpts { retain_copy })
 }
 
 /// A link anyone holding it can join by, as `role`.
