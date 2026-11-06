@@ -232,14 +232,14 @@ pub trait CreateIn {
 
 impl CreateIn for osis::Write<'_> {
     fn create_in(&mut self, admin: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid> {
-        let t = self.create_owned_by(admin)?;
+        let t = self.create_with_admin(admin)?;
         for g in groups {
             self.group(*g).add(osis::Member::Item(t))?;
         }
         Ok(t)
     }
     fn create_durable(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid> {
-        let t = self.create_owned_by(admin)?;
+        let t = self.create_with_admin(admin)?;
         self.at(t, osis::DynamicAspectKey::untyped(ak("t:made.0"))).set(&osis::Value::Bool(true))?;
         Ok(t)
     }

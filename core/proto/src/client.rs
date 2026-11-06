@@ -114,7 +114,7 @@ pub enum Command {
     /// Stop following a label's Path pages (the node no longer wants them).
     StopPath { label: LabelId },
     /// Client port (notes/client-port.md §2): `token` is the caller's, echoed in the events.
-    /// Auth with the client's session id: an Owner session's without a secret, a thin client's
+    /// Auth with the client's session id: a main session's without a secret, a thin client's
     /// with its bearer secret.
     Auth { token: u64, session: [u8; 16], secret: Option<osis_crypto::Secret32> },
     Call { token: u64, max_reply: u64, method: u64, args: Vec<osis_base::Value> },

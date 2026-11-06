@@ -56,7 +56,7 @@ fn value() -> impl Strategy<Value = Value> {
 const SRC: &str = "version 1;
 type prio = enum { 0 low, 1 high(int), 2 tagged(list<string>) };
 type rec = struct { 0 title: string, 1 done: bool, 2 when: timestamp, 3 tags: set<string>, 4 prio: prio,
-  5 waits: map<int, duration>, 6 score: option<float>, 7 extra: any, 8 owner: tid, 9 body: markdown,
+  5 waits: map<int, duration>, 6 score: option<float>, 7 extra: any, 8 parent: tid, 9 body: markdown,
   10 n: counter<int>, 11 at: map<timestamp, int>, 12 lens: map<duration, bool>, 13 when_set: set<timestamp> };
 aspect t:rec.0: rec;
 ";
@@ -92,7 +92,7 @@ fn rec() -> impl Strategy<Value = Value> {
         prop::collection::btree_map(ms(), any::<bool>().prop_map(Value::Bool), 0..3),
         prop::collection::btree_set(ms(), 0..3),
     );
-    (fields, maps).prop_map(|((t, d, w, tags, p, waits, score, extra, owner, body, n), (at, lens, when_set))| {
+    (fields, maps).prop_map(|((t, d, w, tags, p, waits, score, extra, parent, body, n), (at, lens, when_set))| {
         let f = [
             t,
             Value::Bool(d),
@@ -102,7 +102,7 @@ fn rec() -> impl Strategy<Value = Value> {
             Value::Map(waits.into_iter().collect()),
             score,
             extra,
-            Value::Tid(Tid::from_bytes(owner)),
+            Value::Tid(Tid::from_bytes(parent)),
             body,
             Value::Int(n),
             Value::Map(at.into_iter().collect()),

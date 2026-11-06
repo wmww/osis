@@ -58,7 +58,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     assert!(done.id.commit().is_none());
     assert_eq!(durable_marks(&db), before, "no commit, no store write");
     assert!(db.has_content(win).unwrap());
-    assert_eq!(db.owner_of(win).unwrap(), Some(db.me()));
+    assert_eq!(db.grants(win).unwrap().get(&db.me()).map(|e| e.role), Some(Role::Admin), "its first admin");
     let c = db.created(win).unwrap().unwrap();
     assert_eq!((c.id, c.ts(), c.node, c.actor), (None, done.ts(), db.node(), db.me()));
     assert_eq!(db.role_on(win).unwrap(), Some(Role::Admin));
@@ -99,8 +99,8 @@ fn first_durable_write_persists_chain_spec_commits_2() {
     let (top, mid, leaf) = db
         .commit_with(|w| {
             let top = w.create()?;
-            let mid = w.create_owned_by(top)?;
-            let leaf = w.create_owned_by(mid)?;
+            let mid = w.create_with_admin(top)?;
+            let leaf = w.create_with_admin(mid)?;
             w.at(leaf, osis::DynamicAspectKey::untyped(ak("app:draft.0~"))).set(&s("hello"))?;
             Ok((top, mid, leaf))
         })
@@ -193,7 +193,7 @@ fn rights_through_nearest_durable_first_admin_spec_permissions_1() {
     let before = durable_marks(&b);
     // a draft under another actor's thing
     let mut w = b.write();
-    w.create_owned_by(t).unwrap();
+    w.create_with_admin(t).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // ephemeral data on another actor's durable thing
     let mut w = b.write();
@@ -204,8 +204,8 @@ fn rights_through_nearest_durable_first_admin_spec_permissions_1() {
     // a's own ephemeral chain under t: admin through t
     let (x, y) = a
         .commit_with(|w| {
-            let x = w.create_owned_by(t)?;
-            let y = w.create_owned_by(x)?;
+            let x = w.create_with_admin(t)?;
+            let y = w.create_with_admin(x)?;
             Ok((x, y))
         })
         .unwrap();
@@ -407,7 +407,7 @@ fn delete_frees_drafts() {
     let (x, y) = db
         .commit_with(|w| {
             let x = w.create()?;
-            let y = w.create_owned_by(x)?;
+            let y = w.create_with_admin(x)?;
             w.at(x, osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(1))?;
             w.at(y, osis::DynamicAspectKey::untyped(draft.clone())).set(&Value::Int(2))?;
             w.group(db.me()).add(osis::Member::Item(y))?;
@@ -425,7 +425,7 @@ fn delete_frees_drafts() {
     assert_eq!(db.at(y, osis::DynamicAspectKey::untyped(draft)).get().unwrap(), None);
     assert!(!group_of(&db, db.me()).items.contains(&y), "a thing under it: its membership goes with it");
     let mut w = db.write();
-    assert_eq!(w.create_owned_by(x), Err(Error::UnknownThing { tid: x }));
+    assert_eq!(w.create_with_admin(x), Err(Error::UnknownThing { tid: x }));
 }
 
 fn bench_n() -> i64 {
@@ -531,7 +531,7 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
     assert_eq!(bob.role_on(g).unwrap(), Some(Role::Read));
     let before = durable_marks(&bob);
     let mut w = bob.write();
-    w.create_owned_by(g).unwrap();
+    w.create_with_admin(g).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a reader creates under g");
     let mut w = bob.write();
     w.at(g, osis::DynamicAspectKey::untyped(ak("app:cursor.0~"))).set(&Value::Int(1)).unwrap();
@@ -542,7 +542,7 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
     assert_eq!(durable_marks(&bob), before);
     let (_w, _alice, bob, g) = shared(Role::Write);
     let mut w = bob.write();
-    let e = w.create_owned_by(g).unwrap();
+    let e = w.create_with_admin(g).unwrap();
     w.at(e, osis::DynamicAspectKey::untyped(ak("app:d.0~"))).set(&Value::Int(1)).unwrap();
     w.at(g, osis::DynamicAspectKey::untyped(ak("app:cursor.0~"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
@@ -555,7 +555,7 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
 #[test]
 fn roles_persist_first_spec_data_model_1() {
     let (_w, alice, bob, g) = shared(Role::Read);
-    let e = alice.commit_with(|w| w.create_owned_by(g)).unwrap();
+    let e = alice.commit_with(|w| w.create_with_admin(g)).unwrap();
     alice.grant(e, bob.me(), Role::Write, Default::default()).unwrap();
     assert!(alice.created(e).unwrap().unwrap().id.is_some(), "persisted first");
     assert!(alice.grants(e).unwrap().contains_key(&bob.me()));
@@ -594,7 +594,7 @@ fn mixed_commit_resolution_failure_and_partial_chain() {
     let (p, c) = db
         .commit_with(|w| {
             let p = w.create()?;
-            let c = w.create_owned_by(p)?;
+            let c = w.create_with_admin(p)?;
             w.at(p, osis::DynamicAspectKey::untyped(ak("app:kept.0"))).set(&Value::Int(1))?;
             Ok((p, c))
         })
@@ -873,7 +873,7 @@ fn durable_item_persists_ephemeral_group_spec_data_model_8() {
 fn membership_not_saved_without_write_on_group_spec_permissions_1() {
     let (mut w, alice, bob, g1, g2) = shared_two(Role::Write, Role::Read);
     let mut x = bob.write();
-    let t = x.create_owned_by(g1).unwrap();
+    let t = x.create_with_admin(g1).unwrap();
     x.group(g1).add(osis::Member::Item(t)).unwrap();
     x.commit().unwrap();
     w.run();
@@ -950,11 +950,11 @@ fn persistence_through_group_cycles_spec_data_model_8() {
             w.group(g).add(osis::Member::Subgroup(g))?;
             w.group(g).add(osis::Member::Item(g))?;
             let g1 = w.create()?;
-            let g2 = w.create_owned_by(g1)?;
+            let g2 = w.create_with_admin(g1)?;
             w.group(g1).add(osis::Member::Subgroup(g2))?;
             w.group(g2).add(osis::Member::Subgroup(g1))?;
             w.group(home).add(osis::Member::Subgroup(g1))?;
-            let x = w.create_owned_by(g2)?;
+            let x = w.create_with_admin(g2)?;
             w.group(g2).add(osis::Member::Item(x))?;
             Ok((g, g1, g2, x))
         })

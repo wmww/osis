@@ -11,8 +11,8 @@ Read CLAUDE.md, notes/coordination.md, notes/disputes-plan.md and notes/question
 - Ask Tess questions one at a time, explaining the trade-off and why users care.
 
 ## First admins and disputes (notes/disputes-plan.md)
-- Built: steps 0-4 (keys at depth 0; no roster snapshots; first admins in meaning and words, stages A-C; disputes in the walk; per-node sides with defaults, API and CLI).
-- Next: stage D (API and CLI, overlapping issues/api-after-owners.md), nodes following their account's published side, steps 5-6.
+- Built: steps 0-4 (keys at depth 0; no roster snapshots; first admins, API and apps included; disputes in the walk; per-node sides with defaults, API and CLI).
+- Next: nodes following their account's published side, steps 5-6.
 
 ## Findings from branches that never reached main
 These branches are gone; what they found is recorded only here. Redo the work from these notes.

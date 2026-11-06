@@ -539,7 +539,7 @@ impl crate::Osis {
 /// taken back).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ShareAddress {
-    /// Only when every reader of the group is this account, a thing it owns or a contact.
+    /// Only when every reader of the group is this account, a thing made under it (its record chain reaches the account) or a contact.
     #[default]
     Auto,
     /// Tell its readers, whoever they are.

@@ -93,7 +93,7 @@ instances=(
   "rotation Depth0MC D0_readers_g2.cfg small fail"    # ... a second admin of G re-seals A where it was left out
   "rotation Depth0MC D0_readers_g2_mark.cfg all pass" # ... the rotation records the keyset it left A out at
   "rotation Depth0MC D0_above_g2.cfg small fail"      # alone-above has the same re-seal hole
-  "rotation Depth0MC D0_fa_flip.cfg small pass"         # first admin removed: a keyless grant turns keyed, re-sealed (issues/owner-to-first-admin.md)
+  "rotation Depth0MC D0_fa_flip.cfg small pass"         # first admin removed: a keyless grant turns keyed, re-sealed (spec/crypto.md §4 Key access)
   "rotation Depth0MC D0_fa_derive.cfg small fail"       # a derived write after the own-secrets switch stays unread
   "rotation Depth0MC D0_fa_dmerge.cfg small pass"       # ... the writer merges it (DMerge)
   "rotation Depth0MC D0_fa_dmerge_rm.cfg small fail"    # ... unless it learns its removal first (stated limit)

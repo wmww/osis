@@ -451,7 +451,7 @@ fn create_add_delete_spec_data_model_8() {
     // an unknown group or first admin
     let mut w = db.write();
     let stranger = db_other_thing();
-    assert_eq!(w.create_owned_by(stranger), Err(Error::UnknownThing { tid: stranger }));
+    assert_eq!(w.create_with_admin(stranger), Err(Error::UnknownThing { tid: stranger }));
     assert_eq!(w.create_in(db.me(), &[stranger]), Err(Error::UnknownThing { tid: stranger }));
 }
 
@@ -480,7 +480,7 @@ fn local_rights_check_spec_permissions_1() {
     assert_eq!(b.engine(|e| e.commit_ids().len()), before);
     // creating under someone else's actor
     let mut w = b.write();
-    w.create_owned_by(a.me()).unwrap();
+    w.create_with_admin(a.me()).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // signals need write too
     let mut w = b.write();
@@ -497,28 +497,28 @@ fn tree_in_one_commit_spec_permissions_1() {
     let b = db(2);
     let mut w = a.write();
     let x = w.create().unwrap();
-    let y = w.create_owned_by(x).unwrap();
-    let z = w.create_owned_by(y).unwrap();
+    let y = w.create_with_admin(x).unwrap();
+    let z = w.create_with_admin(y).unwrap();
     for (i, t) in [x, y, z].into_iter().enumerate() {
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(i as i64)).unwrap();
     }
     w.commit().unwrap().unwrap();
     deliver(&a, &b);
     for (i, t) in [x, y, z].into_iter().enumerate() {
-        assert_eq!(b.owner_of(t).unwrap(), Some([a.me(), x, y][i]));
+        assert_eq!(b.grants(t).unwrap().get(&[a.me(), x, y][i]).map(|e| e.role), Some(Role::Admin), "its first admin");
         assert!(b.created(t).unwrap().is_some());
         assert_eq!(b.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).get().unwrap(), Some(Value::Int(i as i64)));
     }
     let before = b.engine(|e| e.commit_ids().len());
     let mut w = b.write();
-    let p = w.create_owned_by(x).unwrap();
-    w.create_owned_by(p).unwrap();
+    let p = w.create_with_admin(x).unwrap();
+    w.create_with_admin(p).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     let mut w = b.write();
     let p = w.create().unwrap();
-    let q = w.create_owned_by(z).unwrap();
-    w.create_owned_by(p).unwrap();
-    w.create_owned_by(q).unwrap();
+    let q = w.create_with_admin(z).unwrap();
+    w.create_with_admin(p).unwrap();
+    w.create_with_admin(q).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     assert_eq!(b.engine(|e| e.commit_ids().len()), before);
 }
@@ -1010,10 +1010,10 @@ fn expiring_membership_api_writes() {
     assert_eq!(db.at(db.me(), osis::internals::core_types::GROUP).path(p![osis::internals::GROUP_ITEMS]).get::<BTreeSet<osis::Tid>>().unwrap(), Some(items(&db)));
 }
 
-// spec/commits.md §2 (`created.0`); notes/api.md Reads (`owner_of`, `created`, `now`): the owner fixed at creation, the creating
-// commit with its time and receipt, the corrected clock.
+// spec/commits.md §2 (`created.0`); notes/api.md Reads (`created`, `now`): the creating commit with its time and
+// receipt, the corrected clock.
 #[test]
-fn owner_created_now_api_reads() {
+fn created_now_api_reads() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     assert_eq!(db.now().unwrap(), osis::Time(T0));
@@ -1022,7 +1022,6 @@ fn owner_created_now_api_reads() {
     let mut w = db.write();
     let t = w.create_durable(db.me()).unwrap();
     let done = w.commit().unwrap().unwrap();
-    assert_eq!(db.owner_of(t).unwrap(), Some(db.me()));
     let ci = db.created(t).unwrap().unwrap();
     assert_eq!((ci.id, ci.ts(), ci.node, ci.actor, ci.received), (Some(done.id), done.ts(), db.node(), db.me(), osis::Time(T0 + 5)));
     assert_eq!(ci.shown(), osis::Time(T0 + 5));
@@ -1030,7 +1029,6 @@ fn owner_created_now_api_reads() {
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("later")).unwrap();
     assert_eq!(db.created(t).unwrap().unwrap(), ci, "the creation, not the newest commit");
     let other = common::db(2);
-    assert_eq!(db.owner_of(other.me()).unwrap(), None);
     assert_eq!(db.created(other.me()).unwrap(), None);
 }
 
@@ -1269,7 +1267,7 @@ fn a_cut_tells_exactly_what_it_took_out_of_sync() {
     // `dual` is an item too: its own aspects keep syncing, its items do not
     w.group(synced).add(osis::Member::Subgroup(dual)).unwrap();
     w.group(synced).add(osis::Member::Item(dual)).unwrap();
-    let (below, never, in_tag, also_synced, in_dual) = (w.create().unwrap(), w.create().unwrap(), w.create().unwrap(), w.create_owned_by(synced).unwrap(), w.create().unwrap());
+    let (below, never, in_tag, also_synced, in_dual) = (w.create().unwrap(), w.create().unwrap(), w.create().unwrap(), w.create_with_admin(synced).unwrap(), w.create().unwrap());
     for t in [below, never, in_tag, also_synced, in_dual] {
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
     }
@@ -1325,7 +1323,7 @@ fn cutting_a_subgroup_reports_what_it_strands() {
     let mut w = db.write();
     let sub = w.create().unwrap();
     w.group(synced).add(osis::Member::Subgroup(sub)).unwrap();
-    let (stranded, kept) = (w.create().unwrap(), w.create_owned_by(synced).unwrap());
+    let (stranded, kept) = (w.create().unwrap(), w.create_with_admin(synced).unwrap());
     for t in [stranded, kept] {
         w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
         w.group(sub).add(osis::Member::Item(t)).unwrap();
@@ -1443,7 +1441,7 @@ fn a_first_member_makes_a_group() {
     let t = w.create().unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.owner_of(t).unwrap(), Some(group_actor));
+    assert_eq!(db.grants(t).unwrap().get(&group_actor).map(|e| e.role), Some(Role::Admin), "its first admin");
     // a new thing in the commit, and a member that stays in memory: nothing durable
     let before = db.engine(|e| e.commit_ids().len());
     let (g, e) = db.commit_with(|w| {

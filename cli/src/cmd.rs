@@ -653,10 +653,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             };
             Ok(db.choose_side(id.parse()?, side)?)
         }
-        Cmd::Ownerless { admin } => {
-            let t = db.create_ownerless(ctx.tid(&admin)?)?;
-            ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
-        }
         Cmd::Status { watch: false } => status(ctx),
         Cmd::Status { watch: true } => {
             let (tx, rx) = mpsc::channel::<String>();
@@ -919,13 +915,11 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
     }
     let groups = db.groups_of(t)?;
     let role = db.role_on(t)?;
-    let owner = db.owner_of(t)?;
     let uris = |v: &[Tid]| v.iter().map(Tid::to_uri).collect::<Vec<_>>().join(" ");
     lines.push(format!("state\t{}", if known { "present" } else { "empty" }));
     lines.push(format!("groups\t{}", uris(&groups.within)));
     lines.push(format!("subgroup_of\t{}", uris(&groups.subgroup_of)));
     lines.push(format!("role\t{}", role.map_or("none", role_text)));
-    lines.push(format!("owner\t{}", owner.map_or("none".into(), |o| o.to_uri())));
     let changed = db.changed(t)?;
     let stamp = |c: Option<osis::ThingStamp>| c.map_or("unknown".into(), |c| format!("{} by {}", ts_text(ctx.g.raw, c.written.0), c.node.to_uri()));
     lines.push(format!("created\t{}", stamp(created)));
@@ -937,7 +931,6 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
         ("groups", J::Arr(groups.within.iter().map(|g| J::tid(*g)).collect())),
         ("subgroup_of", J::Arr(groups.subgroup_of.iter().map(|g| J::tid(*g)).collect())),
         ("role", J::opt(role.map(|r| J::str(role_text(r))))),
-        ("owner", J::opt(owner.map(J::tid))),
         ("created", J::opt(created.map(stamp_json))),
         ("changed", J::opt(changed.map(stamp_json))),
     ]);

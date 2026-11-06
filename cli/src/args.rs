@@ -357,9 +357,6 @@ pub enum Cmd {
     /// Group chat
     #[command(subcommand)]
     Chat(ChatCmd),
-    /// Create an ownerless thing, ADMIN its first admin (prints its tid). Transitional: goes with
-    /// owners, when `create` is this
-    Ownerless { admin: String },
     /// Admin disputes: fights this node settles for itself
     #[command(subcommand)]
     Disputes(DisputeCmd),
@@ -537,7 +534,7 @@ pub struct ServingFlags {
     /// Listen at this transport URL (repeatable)
     #[arg(long, value_name = "URL")]
     pub listen: Vec<String>,
-    /// Which groups this node takes: those its account owns naming its serving address, or any
+    /// Which groups this node takes: its own (made under it or its account) naming its serving address, or any
     #[arg(long, value_enum)]
     pub admit: Option<AdmitArg>,
     /// Also admit a group (one synced here) or a sync ID, 32 hex digits (repeatable)
@@ -627,7 +624,7 @@ pub enum ChatCmd {
         /// A kicked participant erases what it holds, unless the kick says otherwise
         #[arg(long)]
         no_retain_copy: bool,
-        /// Who it syncs with (default: the store's saved peers); a serving node must admit it (`admit own` does not)
+        /// Who it syncs with (default: the store's saved peers); another account's serving node must admit it (`admit own` takes only the maker's)
         #[arg(long, value_name = "ADDR")]
         peer: Vec<String>,
     },

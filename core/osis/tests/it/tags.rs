@@ -32,7 +32,7 @@ fn new_sub_tag(db: &Osis, admin: Tid, parent: Tid, name: &str, role: Role) -> Re
 /// A card: a thing with a body, first admin `admin`, in no group yet.
 fn new_card(db: &Osis, admin: Tid, text: &str) -> Result<Tid> {
     db.commit_with(|w| {
-        let c = w.create_owned_by(admin)?;
+        let c = w.create_with_admin(admin)?;
         w.at(c, BODY).set(&text.to_string())?;
         Ok(c)
     })

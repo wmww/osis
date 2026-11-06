@@ -91,7 +91,7 @@ fn world_waiting(p_wait: Duration) -> World {
     let (g, t) = n
         .commit_with(|w| {
             let g = w.create()?;
-            let t = w.create_owned_by(g)?;
+            let t = w.create_with_admin(g)?;
             w.group(g).add(osis::Member::Item(t))?;
             w.at(t, osis::DynamicAspectKey::untyped(title())).set(&Value::Str("first".into()))?;
             Ok((g, t))
@@ -152,7 +152,7 @@ fn known_stays_here_and_unknown_goes_to_the_node() {
     // only at N, in the group the client may read, not synced to P yet (N is cut from the peer)
     x.net.partition("n", "s");
     let only_n = x.n.commit_with(|w| {
-        let o = w.create_owned_by(x.g)?;
+        let o = w.create_with_admin(x.g)?;
         w.group(x.g).add(osis::Member::Item(o))?;
         w.at(o, osis::DynamicAspectKey::untyped(title())).set(&s("at n"))?;
         Ok(o)
@@ -208,7 +208,7 @@ fn moving_a_group_both_ways() {
     assert_eq!(x.p_local_copy(), Some(s("first")));
     // a new thing in the routed group is made there; this engine never hears of it
     let mut w = x.p.write();
-    let o = w.create_owned_by(x.g).unwrap();
+    let o = w.create_with_admin(x.g).unwrap();
     w.group(x.g).add(osis::Member::Item(o)).unwrap();
     w.at(o, osis::DynamicAspectKey::untyped(title())).set(&s("made through p")).unwrap();
     let made = o;
@@ -365,7 +365,6 @@ fn disconnected_node_is_network_never_stale() {
     assert!(matches!(x.p.groups_of(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.grants(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.role_on(x.t), Err(Error::Network(_))));
-    assert!(matches!(x.p.owner_of(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.created(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.changed(x.t), Err(Error::Network(_))));
     assert!(matches!(x.p.holders(x.t), Err(Error::Network(_))));
@@ -601,7 +600,7 @@ fn resent_nonce_of_an_unknown_session_is_unknown() {
 
 // spec/sync.md §10, notes/client-port.md §1: schemas registered through a main-actor connection are registered again after a node restart, and watches come back over the unix socket
 #[test]
-fn owner_reconnect_registers_schemas_again() {
+fn main_reconnect_registers_schemas_again() {
     let d = std::env::temp_dir().join(format!("osis-sources-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     let sock = d.join("n.sock");
@@ -824,7 +823,7 @@ fn thin_client_over_quic() {
     let n = open(true);
     let (g, t) = n.commit_with(|w| {
         let g = w.create()?;
-        let t = w.create_owned_by(g)?;
+        let t = w.create_with_admin(g)?;
         w.group(g).add(osis::Member::Item(t))?;
         w.at(t, osis::DynamicAspectKey::untyped(title())).set(&s("first"))?;
         Ok((g, t))
@@ -905,7 +904,7 @@ fn several_node_connections_never_skip_a_down_one() {
     w.commit().unwrap();
     m.grant(g2, ma, Role::Write, Default::default()).unwrap();
     let mut w = m.write();
-    let o = w.create_owned_by(g2).unwrap();
+    let o = w.create_with_admin(g2).unwrap();
     w.group(g2).add(osis::Member::Item(o)).unwrap();
     w.at(o, osis::DynamicAspectKey::untyped(title())).set(&s("at m")).unwrap();
     let there = o;
@@ -967,7 +966,7 @@ fn differential(seed: u64) -> usize {
     for mask in 1u8..8 {
         let of: Vec<Tid> = gs.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, g)| *g).collect();
         let mut w = x.n.write();
-        let t = w.create_owned_by(of[0]).unwrap();
+        let t = w.create_with_admin(of[0]).unwrap();
         for g in &of {
             w.group(*g).add(osis::Member::Item(t)).unwrap();
         }
@@ -1273,7 +1272,7 @@ fn moves_differential(seed: u64) -> (usize, usize) {
     }).unwrap();
     x.n.sync(h, &[]).unwrap();
     let thing = || x.n.commit_with(|w| {
-        let t = w.create_owned_by(x.g)?;
+        let t = w.create_with_admin(x.g)?;
         w.group(x.g).add(osis::Member::Item(t))?;
         w.at(t, osis::DynamicAspectKey::untyped(title())).set(&s("first"))?;
         Ok(t)
@@ -1756,7 +1755,7 @@ fn split_shows_through_the_port_and_after_a_restart() {
     x.p.listen_socket_at(&sock).unwrap();
     let o = crate::common::block_on(osis::internals::connect_socket(&sock, osis::internals::Opening::memory())).unwrap();
     assert!(o.status().unwrap().two_sources.contains(&x.t));
-    let r = o.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("via owner"));
+    let r = o.commit_set(x.t, osis::DynamicAspectKey::untyped(title()), &s("via main"));
     assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     drop(o);
     let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
@@ -1802,7 +1801,7 @@ fn an_ephemeral_membership_in_a_routed_group_counts() {
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
     let thing = |admin: Tid, also: Option<Tid>| {
         x.p.commit_with(|w| {
-            let e = w.create_owned_by(admin)?;
+            let e = w.create_with_admin(admin)?;
             w.at(e, osis::DynamicAspectKey::untyped(draft.clone())).set(&s("here"))?;
             w.group(x.g).add(osis::Member::Item(e))?;
             if let Some(h) = also {

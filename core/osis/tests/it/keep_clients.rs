@@ -246,7 +246,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
             assert!(matches!(app.undo(&Scope::Thing(x.m)), Err(Error::Permission { .. })), "undo writes nothing");
             assert_eq!(app.at(x.m, osis::DynamicAspectKey::untyped(ak("msg:seen.0"))).get().unwrap(), Some(s("by the app")));
             assert!(hidden(&app, new), "not seen");
-            assert!(matches!(app.drop_retained_copy(x.g), Err(Error::Unsupported(_))), "the owner's call");
+            assert!(matches!(app.drop_retained_copy(x.g), Err(Error::Unsupported(_))), "the main actor's call");
         } else {
             assert!(hidden(&app, x.m) && hidden(&app, x.g));
             assert_eq!(watch.current().ok().flatten(), None);
@@ -275,7 +275,7 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
             // a new connection of the same client, after the restart
             let again = connect(&net, &nc, &secret);
             assert_eq!(again.at(m, osis::DynamicAspectKey::untyped(text())).get().unwrap(), Some(s("hello")));
-            // the owner drops it: gone for the app too
+            // the main actor drops it: gone for the app too
             b2.drop_retained_copy(g).unwrap();
             assert!(hidden(&app, m));
             assert!(app.retained_copies().unwrap().is_empty());
@@ -635,7 +635,7 @@ fn a_chat_by_record_keeps_spec_permissions_3() {
     let card = b.contact_card().unwrap();
     w.run();
     let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
-    let g = a.create_ownerless(a.me()).unwrap();
+    let g = a.commit_with(|w| w.create()).unwrap();
     let mut x = a.write();
     x.group(a.me()).add(osis::Member::Item(g)).unwrap();
     x.commit().unwrap();
