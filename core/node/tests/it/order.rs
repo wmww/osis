@@ -2523,6 +2523,9 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             }
             let mut got = judged_now(&mut p, &played.things);
             p.engine.reload().unwrap();
+            if let Some(d) = p.engine.misjudged() {
+                return Err(format!("{of}, order #{k} {order:?}: judged anew after a reopen: {d}"));
+            }
             p.engine.reexamine().unwrap();
             if let Some(d) = first_diff(&got, &judged_now(&mut p, &played.things)) {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
