@@ -7,7 +7,7 @@ use crate::engine::Tx;
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_commit::{Decoded, Header};
-use osis_crdt::{Changes, Fragment};
+use osis_crdt::Changes;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
