@@ -224,7 +224,9 @@ impl Schema {
         let mut unmarked: BTreeMap<&str, &str> = BTreeMap::new();
         for (ak, def) in &self.aspects {
             let item = format!("aspect {ak}");
-            if let Some(other) = unmarked.insert(ak.trim_end_matches(['~', '*']).trim_end_matches('^'), ak) {
+            let name = ak.strip_suffix(['~', '*']).unwrap_or(ak);
+            let name = name.strip_suffix('^').unwrap_or(name);
+            if Ak::new(ak.as_str()).is_ok() && let Some(other) = unmarked.insert(name, ak) {
                 bad(&item, format!("differs from {other} only in markers: a change of markers takes a new version (spec/data-model.md §2)"));
             }
             let lifetime = match Ak::new(ak.as_str()) {
