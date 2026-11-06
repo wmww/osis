@@ -714,9 +714,9 @@ fn demotion_frontier_spec_perm_5_1() {
     }
 }
 
-// notes/permissions.md (roles model: mutual removal): two admins removing each other, the
-// removed party keeping its own side
-// concurrently resolve to the earlier removal; the later one's author was already out.
+// notes/permissions.md (roles model: mutual removal): two admins removing each other
+// concurrently resolve to the earlier removal; the later one's author was already out, and
+// keeps its own side (notes/owner-removal-plan.md step 4).
 // spec/permissions.md §5.1
 #[test]
 fn mutual_removal_spec_perm_5_1() {
