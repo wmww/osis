@@ -274,22 +274,23 @@ impl Timeline {
     /// skipped) examined: each with seeds costs one walk, at most `max` of them; the rest are
     /// counted, not examined. `stood` marks those applied before the update that asks; `me`
     /// (if any) gives the standing facts (`Detected`). Returns the disputes found, the walks
-    /// made and the candidates left.
+    /// made and the candidates left that needed one.
     pub(crate) fn scan(&self, cands: &[WriteId], max: usize, stood: &BTreeSet<WriteId>, me: Option<Tid>) -> (Vec<Detected>, usize, usize) {
         let ix = TrustIndex::new(&self.input);
         let mut out = Vec::new();
-        let mut walked = 0;
+        let (mut walked, mut left) = (0, 0);
         let mut own: Option<(BTreeMap<Tid, Role>, BTreeMap<Tid, BTreeSet<Tid>>)> = None;
-        for (i, id) in cands.iter().enumerate() {
-            if walked >= max {
-                return (out, walked, cands.len() - i);
-            }
+        for id in cands {
             let Some((c, op)) = self.input.trustable(id) else { continue };
             if self.walked.applied.contains_key(id) || self.seeds.contains_key(id) {
                 continue;
             }
             let mut d = self.input.seeds(&ix, id);
             if d.is_empty() {
+                continue;
+            }
+            if walked >= max {
+                left += 1;
                 continue;
             }
             for (w, p) in &self.seeds {
@@ -312,7 +313,7 @@ impl Timeline {
             };
             out.push(Detected { dispute: Dispute { op: *id, holder: op.holder }, author: c.author, target: op.target, stood: stood.contains(id), standing });
         }
-        (out, walked, 0)
+        (out, walked, left)
     }
 
     /// This timeline's walk and inputs without its memos, to append to (`demotion_scope`).

@@ -4,6 +4,7 @@
 mod common;
 mod api;
 mod commits;
+mod disputes;
 mod ephemeral;
 mod ephemeral_undo;
 mod history;

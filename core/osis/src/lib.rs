@@ -249,6 +249,10 @@
 //! # Ok::<(), osis::Error>(())
 //! ```
 //!
+//! Two admins who remove each other without having seen the other's removal start a dispute that
+//! every node settles for itself: `disputes` lists them with the side this node took (by default,
+//! whichever removal it held first), `on_dispute` tells when one is found, `choose_side` switches.
+//!
 //! Lowering or removing a role undoes what the holder wrote that this node has not received, so
 //! `set_role` first catches up with the peers it can reach now; `set_role_now` does not wait. To
 //! wait at most so long:
