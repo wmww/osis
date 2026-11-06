@@ -51,12 +51,14 @@ pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) 
 pub(crate) fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, l: &Leftover) -> Result<()> {
     let key = records::leftover_key(tid, ak, c, ai);
     let enc = l.encode()?;
+    tx.core.copy_index.remove(c);
     let memory = tx.txn.is_memory_aspect(tid, ak);
     tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::Yes)?))
 }
 
 /// Forgets the leftover of part `ai` of `c`, shredded.
 pub(crate) fn remove(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize) -> Result<()> {
+    tx.core.copy_index.remove(c);
     tx.txn.remove_local(&records::leftover_key(tid, ak, c, ai), Shred::Yes)?;
     Ok(())
 }

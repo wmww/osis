@@ -837,9 +837,11 @@ pub struct Core {
     /// (`Engine::death_reads`).
     pub death_reads: u64,
     /// Held snapshots' writes by dot (`copies::differing_copies`: deltas arriving after
-    /// snapshots that copied their writes compare against it; `copies::vouched`). A snapshot never changes, so
-    /// entries never go stale; all go past `COPY_CACHE_MAX` writes.
-    pub copy_index: BTreeMap<(CommitId, Tid, Ak), Arc<osis_crdt::CopyIndex>>,
+    /// snapshots that copied their writes compare against it; `copies::vouched`), per commit.
+    /// A commit's entries go whenever its stored body or leftover changes (`put_commit`,
+    /// `remove_commit`, `leftover::put`/`remove`: a strip erases keys and values, a late part
+    /// or an unstrip brings writes) and on rollback; all go past `COPY_CACHE_MAX` writes.
+    pub copy_index: BTreeMap<CommitId, BTreeMap<(Tid, Ak), Arc<osis_crdt::CopyIndex>>>,
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
     /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
     /// `Engine::unrouted`, until a role, label or placement is written.
@@ -1177,6 +1179,7 @@ impl Core {
             self.live_trees.clear();
             self.live_bodies.clear();
             self.bodies.clear();
+            self.copy_index.clear();
             if self.memory_tx {
                 self.memory_generation += 1;
             } else {
@@ -1819,6 +1822,7 @@ impl Tx<'_> {
         // missing as neither in the blob nor dropped)
         debug_assert!(meta.dropped.keys().all(|ai| !meta.missing.contains(ai)), "{id:?}: parts both dropped and missing: dropped {:?} missing {:?}", meta.dropped, meta.missing);
         self.core.bodies.remove(id);
+        self.core.copy_index.remove(id);
         self.core.mark_changed(*id);
         let v = [index::record_head(meta), blob.encode()].concat();
         self.txn.put_local(&records::commit_key(id), &v, shred)?;
@@ -1838,6 +1842,7 @@ impl Tx<'_> {
     /// Removes a commit record (shredded) with what the index keeps beside it.
     pub fn remove_commit(&mut self, id: &CommitId) -> Result<()> {
         self.core.bodies.remove(id);
+        self.core.copy_index.remove(id);
         self.txn.remove_local(&records::commit_key(id), Shred::Yes)?;
         index::remove_edges(self, id)
     }

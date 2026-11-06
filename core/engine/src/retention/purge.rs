@@ -466,6 +466,15 @@ pub(super) fn apply_request(tx: &mut Tx<'_>, id: &CommitId, h: &Header, purged: 
         // pending commits holding a part it names: examined again, the part held value-less
         // (`pending_drops`)
         tx.core.waits.wake_thing(item.tid());
+    }
+    Ok(())
+}
+
+/// Notes request `id` (header `h`) on the lists later deltas find it by (`requests_on`), before
+/// its commit's joins: a kill and the request naming the killed body in one commit purges it
+/// (`judge_at_most` asks `purged_by`), never drops it.
+pub(crate) fn note_requests(tx: &mut Tx<'_>, id: &CommitId, h: &Header) -> Result<()> {
+    for item in &h.purge {
         let key = match item {
             PurgeItem::Commit { commit, tid, ak } => records::purges_named_key(tid, ak, commit),
             _ => records::aspect_key(records::PURGES, item.tid(), item.ak()),

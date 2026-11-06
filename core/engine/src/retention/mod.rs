@@ -42,7 +42,7 @@ pub(crate) use bounds::drop_from;
 use bounds::{live, snapshot_live};
 pub(crate) use pending::{emptied, fetch_fallen, forget_joined_leftovers, forget_waiting_leftovers, pending_drops, pending_expired, stripped_joined, waiting_stripped};
 use pending::{purge_pending, strip_pending};
-pub(crate) use purge::{counts_as_purged, known_purged, lasting, purged_aspects, purged_by, rejudge_purges, requests_resting_on, snapshot_right};
+pub(crate) use purge::{counts_as_purged, known_purged, lasting, note_requests, purged_aspects, purged_by, rejudge_purges, requests_resting_on, snapshot_right};
 pub(crate) use snapshot::covered;
 pub(crate) use deaths::{any_bounded, load_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
@@ -261,11 +261,19 @@ fn judge_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize, by_timer: bool) -> Re
     }
     let (_, holders) = body_class(tx.core, &m.header, c, ai);
     // a part of the body still missing has nothing here to drop: it stays missing (never
-    // received, fetched as such), as at a node that judged the body before it was held
+    // received, fetched as such), as at a node that judged the body before it was held. One a
+    // standing request names is purged instead (spec/commits.md §5: a purged leftover is never
+    // dropped for keep bounds), whichever judgment comes first: a kill and the request naming
+    // the killed body in one commit (`note_requests` lists it before the joins)
     let drop_body = |tx: &mut Tx<'_>| -> Result<()> {
+        let mut purged = BTreeSet::new();
         for x in holders.iter().copied().filter(|x| !m.missing.contains(x)) {
-            drop_part_for(tx, c, x, if m.valid_at(x) { DropFor::Other } else { DropFor::Invalid })?;
+            match purge::purged_by(tx, &m.header, c, x)? {
+                Some(pc) => purge::purge_one(tx, &pc, c, x, &mut purged)?,
+                None => drop_part_for(tx, c, x, if m.valid_at(x) { DropFor::Other } else { DropFor::Invalid })?,
+            }
         }
+        purged_changed(tx, purged, &mut BTreeSet::new());
         Ok(())
     };
     // the header's bound passed: no death moves it earlier than due

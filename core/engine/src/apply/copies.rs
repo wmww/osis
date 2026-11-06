@@ -224,8 +224,8 @@ pub(crate) fn owned_ranges(h: &Header, id: &CommitId, ai: usize) -> Vec<(osis_cr
 /// Held snapshot `s`'s writes on `(tid, ak)` by dot (`Core::copy_index`), indexed a piece at
 /// a time.
 pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Arc<osis_crdt::CopyIndex>>> {
-    let k = (*s, *tid, ak.clone());
-    if let Some(ix) = tx.core.copy_index.get(&k) {
+    let k = (*tid, ak.clone());
+    if let Some(ix) = tx.core.copy_index.get(s).and_then(|m| m.get(&k)) {
         return Ok(Some(ix.clone()));
     }
     let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
@@ -239,10 +239,10 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> R
         return Ok(None);
     }
     let ix = Arc::new(ix);
-    if tx.core.copy_index.values().map(|x| x.len()).sum::<usize>() + ix.len() > COPY_CACHE_MAX {
+    if tx.core.copy_index.values().flat_map(|m| m.values()).map(|x| x.len()).sum::<usize>() + ix.len() > COPY_CACHE_MAX {
         tx.core.copy_index.clear();
     }
-    tx.core.copy_index.insert(k, ix.clone());
+    tx.core.copy_index.entry(*s).or_default().insert(k, ix.clone());
     Ok(Some(ix))
 }
 
