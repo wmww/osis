@@ -130,6 +130,65 @@ fn maker(core: &Core, who: &Tid, a: &Tid, r: Role, e: &osis_crypto::Epoch) -> Op
     Some(osis_keys::Maker { me: author == *who, may_rotate: may_rotate(core, &author, a).contains(&r) })
 }
 
+/// Whether a removal of `removed` may rotate role `r` of `a` (`epochs`, this node's view) while
+/// lacking current secrets of it (spec/crypto.md §4, Boxes; spec/permissions.md §3, Lockout
+/// recovery): every current epoch of `r` whose secret this node lacks was made by a removed
+/// holder, each of its held valid rotation commits signed by one or by a node holding write or
+/// above on one. An epoch known only from a snapshot has no maker.
+pub(crate) fn lacked_made_by(core: &Core, epochs: &ActorEpochs, r: Role, removed: &[Tid]) -> bool {
+    let re = epochs.role(r);
+    re.current().iter().filter(|e| re.secret(e).is_none()).all(|e| {
+        let made = re.get(e).map(|i| &i.rotations).filter(|c| !c.is_empty());
+        made.is_some_and(|c| {
+            c.keys().all(|c| {
+                core.ix.commits.get(c).is_some_and(|m| removed.iter().any(|x| m.view.author == *x || core.role_now(&m.view.author, x) >= Some(Role::Write)))
+            })
+        })
+    })
+}
+
+/// After a removal of `removed` from `target` by `who` (its rotation of `target` recorded): the
+/// rotations of the things `target`'s roles open (transitively, nearest first, not through the
+/// first of `removed`) that `who` may rotate but holds no current secret of, made now while
+/// `lacked_made_by` allows them (spec/permissions.md §3, Lockout recovery). Later, the removal's
+/// context is gone and such a rotation could never be made. Rotations Seal or Possession holds
+/// back stay due.
+pub(crate) fn recover_reached(tx: &mut Tx<'_>, who: Tid, target: Tid, removed: &[Tid], done: &mut Done) -> Result<()> {
+    let Some(&avoid) = removed.first() else { return Ok(()) };
+    let order: Vec<Tid> = {
+        let Some(tl) = tx.core.timelines.get(&target) else { return Ok(()) };
+        let graph = osis_keys::PermGraph { timeline: tl, at: osis_perm::At::now(flows::now_ts(tx.core)) };
+        let mut seen = BTreeSet::from([target, avoid]);
+        let mut order = Vec::new();
+        let mut next = std::collections::VecDeque::from([target]);
+        while let Some(v) = next.pop_front() {
+            for (t, _) in osis_keys::Graph::edges(&graph, &v) {
+                if seen.insert(t) {
+                    order.push(t);
+                    next.push_back(t);
+                }
+            }
+        }
+        order
+    };
+    for t in order {
+        let Some(epochs) = tx.core.epochs(&t).filter(|_| tx.core.has_own_secrets(&t)) else { continue };
+        let roles: BTreeSet<Role> = may_rotate(tx.core, &who, &t)
+            .into_iter()
+            .filter(|r| epochs.role(*r).newest_held().is_none() && !epochs.role(*r).current().is_empty() && lacked_made_by(tx.core, &epochs, *r, removed))
+            .collect();
+        if roles.is_empty() {
+            continue;
+        }
+        if let Some(holders) = recipients(tx, &who, &t, &[])?
+            && possessed(tx.core, &who, &t, &roles, &holders)
+        {
+            done.extend(rotate_boxing(tx, who, t, &roles, &holders)?);
+        }
+    }
+    Ok(())
+}
+
 /// Current holders of `a` for keys (`Core::key_holders`) as a rotation by `who` boxes them
 /// (`members::sealed`); each of `skip` gets its new role or is left out (departing holders).
 /// Holders boxed nothing (keys unknown, no keyset to seal to or encrypt under, no key access) are left out:

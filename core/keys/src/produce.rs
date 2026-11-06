@@ -168,8 +168,8 @@ impl Rotation {
         Ok(a)
     }
 
-    /// The newest read epoch it supersedes whose secret the rotator holds: what the rotation
-    /// commit is wrapped under (spec/crypto.md §5). None when read is not rotated.
+    /// The read epoch it supersedes whose secret the rotator holds with the greatest n: what the
+    /// rotation commit is wrapped under (spec/crypto.md §5). None when read is not rotated.
     pub fn wrap_epoch(&self) -> Option<Epoch> {
         self.wrap
     }
@@ -213,12 +213,14 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
         };
         let secret = Secret32::random(rng);
         let epoch = Epoch::derive(actor, r, n + 1, &secret)?;
-        if r == Role::Read {
-            // by n, not order n (spec/crypto.md §5): uploaders judge from the thing's own epochs,
-            // where derived ones keep no order n
-            wrap = newest_of(current.iter().filter(|e| re.secret(e).is_some()));
-        }
         let earlier: Vec<(Epoch, Secret32)> = re.held_established().map(|(e, s)| (e, s.clone())).collect();
+        if r == Role::Read {
+            // the greatest n it supersedes whose secret is held: its history box lists every
+            // held established secret, so one exists even with no current secret held (a lockout
+            // recovery). By n, not order n (spec/crypto.md §5): uploaders judge from the thing's
+            // own epochs, where derived ones keep no order n
+            wrap = newest_of(earlier.iter().map(|(e, _)| e));
+        }
         secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &earlier, &names.to_value())?);
         // the keyset lists its current epochs but derived ones (held only where the owner's
         // secret is: superseded through the history box)

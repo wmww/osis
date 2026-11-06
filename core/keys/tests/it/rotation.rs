@@ -101,6 +101,24 @@ fn wrap_under_held_superseded() {
     assert_eq!(rot.wrap_epoch(), Some(e1));
 }
 
+// spec/crypto.md §4, §5; spec/permissions.md §3 (lockout recovery): a rotator holding no
+// current read secret (another's epoch superseded its own) lists that epoch, carries the
+// secrets it holds in the history box, and wraps under the newest of those.
+#[test]
+fn wrap_without_current_secret() {
+    let (a, p, pe, mut view, s) = switched(&[]);
+    let e1 = view.read.newest().unwrap();
+    let ew = Epoch::new(e1.n() + 1, [7; 32]).unwrap();
+    view.read.rotation(ew, [e1]);
+    view.read.set_established(ew, osis_keys::Provenance::Fixed);
+    assert_eq!(view.read.newest_held(), None);
+    let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[owner(p, &pe)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    assert_eq!(rot.rotated[0].epoch.n(), ew.n() + 1);
+    assert!(rot.rotated[0].supersedes.contains(&ew) && rot.rotated[0].supersedes.contains(&e1));
+    assert_eq!(rot.wrap_epoch(), Some(e1));
+    assert_eq!(rot.preview(&view).unwrap().read.current(), vec![rot.rotated[0].epoch]);
+}
+
 // spec/crypto.md §4: what a rotation supersedes is read from its commit alone, so every node
 // holding the same commits agrees on the current epochs, in whatever order they arrived. X and
 // Y fork read; Z rotates read unaware of Y. A non-holder applying them in any order counts Y and

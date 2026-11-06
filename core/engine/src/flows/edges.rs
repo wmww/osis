@@ -261,12 +261,12 @@ fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Op
 /// explicit removal of an absent edge resets its dead entries (spec/permissions.md §2). With
 /// `others`, an explicit removal of those holders' edges too, under the same frontier and one
 /// rotation (spec/commits.md §2). Then the inbox copy to each holder, and placement before any
-/// other upload under every label the removed parties could read. `repudiate`: the rotations
-/// the frontier leaves out on purpose (`Engine::demote_repudiating`), each with an actor it
-/// locked: that part judged invalid before the rotation, as every node judges it once the
-/// commit applies, and checked so after it (the commit's parts on things not in question keep
-/// their validity).
-pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>, repudiate: Option<&BTreeSet<(CommitId, Tid)>>) -> Result<Done> {
+/// other upload under every label the removed parties could read. A rotated role whose current
+/// secrets this node lacks rotates only when the removed holders made every such epoch
+/// (`rotation::lacked_made_by`): the keyset lists them, so they are superseded (lockout
+/// recovery, spec/permissions.md §3); the things below it so locked rotate next
+/// (`rotation::recover_reached`).
+pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     let holder = d.holder;
     let ts = now_ts(tx.core);
@@ -294,9 +294,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && let PreSync::Unsynced { proceed: false } = d.presync {
         return Err(Error::Misuse("labels not synced before a demotion; proceed to stamp anyway"));
     }
-    if selfr && repudiate.is_some() {
-        return Err(Error::Misuse("a self-removal carries no frontier to repudiate rotations with"));
-    }
     // a plain thing's only holder for keys is its owner or first admin (a grant gives it secrets
     // of its own first): lowering the first admin's edge would leave it no admin, refused
     // (spec/permissions.md §1)
@@ -304,14 +301,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         let lowered: Vec<(Tid, Option<Role>)> = std::iter::once((holder, rotation::key_role(new_p.as_ref()))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
         if leaves_no_admin(tx.core, &target, &lowered) && !tx.core.skip_writer_rules {
             return Err(Error::Misuse("this would leave a plain thing with no admin: grant another admin first"));
-        }
-    }
-    let omit = repudiate.cloned().unwrap_or_default();
-    // under the new frontier the omitted rotations are invalid: the epochs they superseded are
-    // current again, and the rotation below goes from those (spec/permissions.md §3)
-    for (c, a) in &omit {
-        for ai in secrets_parts(tx, c, a) {
-            crate::apply::keys::invalidated(tx, c, ai)?;
         }
     }
     let mut done = Done::default();
@@ -350,6 +339,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let new_role = rotation::key_role(new_p.as_ref());
     let mut left: BTreeSet<Role> = BTreeSet::new();
     let mut pending = Vec::new();
+    let removing: Vec<Tid> = std::iter::once(holder).chain(gone.iter().map(|(x, _)| *x)).collect();
     for (x, o, n) in std::iter::once((holder, old, new_role)).chain(gone.iter().map(|(x, e)| (*x, Some(*e), None))) {
         let held_role = rotation::key_role(o.as_ref());
         if let Some(dep) = Departure::of_change(x, held_role, n) {
@@ -360,20 +350,15 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && !left.is_empty() && tx.core.has_own_secrets(&target) {
         // boxing to the remaining holders encrypts under their keysets: the cascade first (no
         // finalize of an edge this commit removes)
-        let removing: Vec<Tid> = std::iter::once(holder).chain(gone.iter().map(|(x, _)| *x)).collect();
         rotation::ensure_rotated_but(tx, who, target, &removing, &mut done)?;
         let may = rotation::may_rotate(tx.core, &who, &target);
         let roles: BTreeSet<Role> = left.into_iter().filter(|r| may.contains(r)).collect();
         if !roles.is_empty() {
             let held = tx.core.epochs(&target).ok_or(Error::Misuse("no secrets held for the target"))?;
             // rotating a role without its current secret would drop that secret from the
-            // history boxes (it reaches the target through a holder actor a rotation left out)
-            if roles.iter().any(|r| held.role(*r).newest_held().is_none()) {
-                return Err(Error::Misuse(if repudiate.is_none() {
-                    "this node lacks a current secret of the target its rotation needs: it waits for a re-seal, or, if the demoted holder rotated the target to itself, removes it repudiating that rotation"
-                } else {
-                    "this node lacks a current secret of the target even with the demoted holders' rotations it cannot open repudiated (only those of a holder this demotion audits are; another node's rotation or a compaction snapshot can keep such an epoch current)"
-                }));
+            // history boxes, unless the removed holders made those epochs (spec/crypto.md §4)
+            if roles.iter().any(|r| held.role(*r).newest_held().is_none() && !rotation::lacked_made_by(tx.core, &held, *r, &removing)) {
+                return Err(Error::Misuse("this node lacks a current secret of the target its rotation needs, of an epoch a holder it keeps made: it waits for a re-seal"));
             }
             let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             // while Seal waits the removal goes alone (spec/permissions.md §3)
@@ -394,18 +379,15 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if let Some(r) = &rot {
         rotation::record(tx, target, r)?;
     }
-    // a repudiation that did not take (its author keeps its role another way) would leave the
-    // target locked with the holder gone: nothing is written
-    if omit.iter().any(|(c, a)| secrets_parts(tx, c, a).into_iter().any(|ai| tx.core.ix.commits.get(c).is_some_and(|m| m.valid_at(ai)))) {
-        return Err(Error::Misuse("a repudiated rotation stays valid (its author keeps write on that thing another way): remove that first"));
-    }
     done.add(c);
     if let Some(c) = c {
-        let removed: Vec<Tid> = std::iter::once(holder).chain(gone.iter().map(|(x, _)| *x)).collect();
         // a removal of another actor G's edge (explicit, or a self-removal by an admin of G,
         // lowering too) leaves G's closure bodies
-        let gone_from = if new_role.is_none() || selfr { &removed[..] } else { removed.get(1..).unwrap_or_default() };
-        lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removed, gone_from, &mut done)?;
+        let gone_from = if new_role.is_none() || selfr { &removing[..] } else { removing.get(1..).unwrap_or_default() };
+        lowered_deliveries(tx, who, target, c, rot.as_ref(), &unreached, &removing, gone_from, &mut done)?;
+    }
+    if rot.is_some() {
+        rotation::recover_reached(tx, who, target, &removing, &mut done)?;
     }
     // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must
     // still seal the removal under the labels it leaves
@@ -524,12 +506,6 @@ pub(crate) fn finalize_in(tx: &mut Tx<'_>, who: Tid, target: Tid, ended: &[(Tid,
     Ok(true)
 }
 
-/// The parts of held commit `c` on `actor`'s `secrets.0`.
-fn secrets_parts(tx: &Tx<'_>, c: &CommitId, actor: &Tid) -> Vec<usize> {
-    let Some(m) = tx.core.ix.commits.get(c) else { return Vec::new() };
-    m.view.aspects.iter().enumerate().filter(|(_, a)| a.tid == *actor && a.ak.as_str() == "secrets.0").map(|(i, _)| i).collect()
-}
-
 impl Engine {
     /// Grants `holder` the edge `edge` on `target`, or raises its edge (spec/permissions.md §2),
     /// as an admin of the target or by invite. Gives the target (and a plain holder) secrets of
@@ -587,69 +563,16 @@ impl Engine {
         self.demote_signed(Some(*signer), target, d)
     }
 
-    /// `demote`, repudiating the demoted holder's rotations that lock this node out (an explicit
-    /// act, spec/permissions.md §3, §5.1): a holder with write that rotated the target and sealed
-    /// the new secrets to itself alone leaves every other node without a current secret, and a
-    /// plain demotion then fails. Here the frontier leaves out each received rotation by a
-    /// demoted node, on a thing in question, to a current epoch whose secret this node does not
-    /// hold (`lockout_rotations`); those turn invalid everywhere, the epochs they superseded are
-    /// current again, and the rotation in the same commit goes from them. Nothing to repudiate:
-    /// a plain demotion. Fails, writing nothing, when a repudiated rotation would stay valid.
-    /// Deprecated, used only by tests (issues/deprecated-terms.md; Tess Q6, Q7).
-    pub fn demote_repudiating(&mut self, target: &Tid, d: &Demotion) -> Result<Done> {
-        self.remove_signed(None, target, d, &[], true)
-    }
-
     fn demote_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion) -> Result<Done> {
-        self.remove_signed(signer, target, d, &[], false)
-    }
-
-    /// The rotations a demotion repudiating lockouts leaves out of its frontier `f`
-    /// (`demote_repudiating`): listed commits of a node `scope` demotes whose `secrets.0` delta
-    /// on a thing in question for it rotated that thing to a current epoch whose secret this node
-    /// does not hold, each with that thing; repeatedly, since each one left out makes current
-    /// again the epochs it superseded (a second rotation from the first).
-    fn lockout_rotations(&self, f: &BTreeSet<CommitId>, scope: &osis_perm::DemotionScope) -> BTreeSet<(CommitId, Tid)> {
-        let mut by_actor: std::collections::BTreeMap<Tid, BTreeSet<CommitId>> = std::collections::BTreeMap::new();
-        for c in f {
-            let Some(m) = self.core.ix.commits.get(c) else { continue };
-            let Some(things) = scope.roles.get(&m.view.author) else { continue };
-            for a in m.view.aspects.iter().filter(|a| a.ak.as_str() == "secrets.0" && things.contains(&a.tid)) {
-                by_actor.entry(a.tid).or_default().insert(*c);
-            }
-        }
-        let mut out = BTreeSet::new();
-        for (a, candidates) in by_actor {
-            let Some(mut e) = self.core.own_record(&a).cloned() else { continue };
-            let held = self.core.names_held(&a);
-            loop {
-                e.establish(&held);
-                let mut locking = BTreeSet::new();
-                for r in ROLES {
-                    let re = e.role(r);
-                    for x in re.current().into_iter().filter(|x| re.secret(x).is_none()) {
-                        locking.extend(re.get(&x).into_iter().flat_map(|i| i.rotations.keys()).filter(|c| candidates.contains(*c)));
-                    }
-                }
-                if locking.is_empty() {
-                    break;
-                }
-                for c in &locking {
-                    e.invalidate(c);
-                }
-                out.extend(locking.into_iter().map(|c| (c, a)));
-            }
-        }
-        out
+        self.remove_signed(signer, target, d, &[])
     }
 
     /// `demote_signed` that also removes `others` in the same commit under one rotation
-    /// (spec/commits.md §2); `d.new` must then be `None`. `repudiate`: as `demote_repudiating`.
-    pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid], repudiate: bool) -> Result<Done> {
+    /// (spec/commits.md §2); `d.new` must then be `None`.
+    pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
         let who = signer.unwrap_or(self.tid());
         let t = *target;
         let as_of = self.now();
-        let mut omit = BTreeSet::new();
         let frontier = match self.core.timelines.get(&t) {
             Some(tl) => {
                 // this node's own chain counts only as listed: its chain certificates for the
@@ -664,10 +587,6 @@ impl Engine {
                 loop {
                     let (mut f, requests) = self.frontier_and_requests(&scope, as_of)?;
                     f.commits.extend(own.iter().copied());
-                    if repudiate {
-                        omit = self.lockout_rotations(&f.commits, &scope);
-                        f.commits.retain(|c| !omit.iter().any(|(o, _)| o == c));
-                    }
                     let requests: Vec<CommitId> = requests.into_iter().filter(|c| !own.contains(c)).collect();
                     crate::apply::receipt::fit_requests(&mut f, &requests, self.core.list_bound);
                     let pf = osis_perm::Frontier { commits: f.commits.clone() };
@@ -682,7 +601,7 @@ impl Engine {
             None => None,
         };
         let d = d.clone();
-        self.run(|tx| demote_in(tx, signer, t, &d, others, frontier, repudiate.then_some(&omit)))
+        self.run(|tx| demote_in(tx, signer, t, &d, others, frontier))
     }
 
     /// Opens an inbox blob addressed to an actor this node holds the read secret of
