@@ -883,7 +883,7 @@ mod tests {
         let (one, many) = (e.new_thing(&mut m, me), e.new_thing(&mut m, me));
         m.set(one, &Ak::new("x:a.0").unwrap(), &Value::Str("PLANTED-ONE".into())).unwrap();
         for i in 0..30 {
-            m.set(many, &Ak::new(&format!("x:a{i:02}.0")).unwrap(), &Value::Str(format!("PLANTED-MANY-{i}"))).unwrap();
+            m.set(many, &Ak::new(format!("x:a{i:02}.0")).unwrap(), &Value::Str(format!("PLANTED-MANY-{i}"))).unwrap();
         }
         let id = e.commit(m).unwrap().unwrap();
         // the commit blob as labels carry it: its key planted, no wrap or read secret on the device
