@@ -25,7 +25,7 @@ pub use incremental::{Changed, SaveDone, Saves, Timelines};
 pub use osis_base::PurgeBy;
 pub use scope::DemotionScope;
 pub use timeline::{At, EdgeEnd, Timeline};
-pub use trust::{Detected, Dispute, Trust, DETECT_MAX};
+pub use trust::{Detected, Detection, Dispute, Trust, DETECT_MAX};
 pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, Tie, TieSource, WriteId, ROLES};
 pub use walk::{Applied, Attr, Demotion, Fall};
 #[cfg(debug_assertions)]

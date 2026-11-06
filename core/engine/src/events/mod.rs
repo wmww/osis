@@ -145,7 +145,8 @@ pub enum DiagnosticKind {
     /// (spec/data-model.md §6; `tids`: the thing).
     Unreadable,
     /// Contestable role writes arrived or stopped applying beyond what one update examines
-    /// (`osis_perm::DETECT_MAX`): the dispute list shows them, no side taken by default.
+    /// (`osis_perm::DETECT_MAX`): those that stopped applying keep their side (trusted, listed
+    /// as disputes), the newly held ones get the walk's.
     DisputesUnexamined,
     /// The `osis` sync driver died (a panic, or its runtime shut down with the store open):
     /// nothing syncs until the store is opened again; waits fail `Network` (`detail`: why).

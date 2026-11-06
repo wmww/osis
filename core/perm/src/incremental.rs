@@ -9,7 +9,7 @@
 use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::trust::{Detected, Trust, DETECT_MAX};
+use crate::trust::{Detection, Trust, DETECT_MAX};
 use crate::types::{Point, RoleCommit, WriteId};
 use crate::walk::Change;
 use osis_base::{CommitId, CreationRecord, Tid};
@@ -139,8 +139,7 @@ pub struct Timelines {
     /// the last update found.
     detect: Option<Tid>,
     pending: Vec<(u64, Vec<ExplicitKey>, BTreeSet<CommitId>)>,
-    detected: Vec<Detected>,
-    unexamined: usize,
+    detected: Detection,
 }
 
 /// An applied explicit write in a history: its point (commit), holder and target.
@@ -231,50 +230,61 @@ impl Timelines {
 
     /// Detects disputes from here on (`take_detected`): after each update, the trustable ops
     /// of its components that stopped applying and those newly held unapplied are examined
-    /// (`Timeline::scan`, at most `DETECT_MAX` walked per update, those that stopped applying
-    /// first), `me` giving the standing facts. Not during a `set_trust`. `None`: off, as at
-    /// open (a held set loaded again has no arrivals).
+    /// (`Timeline::scan`, at most `DETECT_MAX` walked per update, every component's ops that
+    /// stopped applying before any newly held one), `me` giving the standing facts. Not during
+    /// a `set_trust`. `None`: off, as at open (a held set loaded again has no arrivals).
     pub fn detect(&mut self, me: Option<Tid>) {
         self.detect = me;
         self.pending.clear();
     }
 
-    /// What the last update detected, and how many candidates it left unexamined.
-    pub fn take_detected(&mut self) -> (Vec<Detected>, usize) {
-        (std::mem::take(&mut self.detected), std::mem::take(&mut self.unexamined))
+    /// What the last update detected (`Detection`).
+    pub fn take_detected(&mut self) -> Detection {
+        std::mem::take(&mut self.detected)
     }
 
-    /// Runs detection over what the update gathered (`pending`).
+    /// Runs detection over what the update gathered (`pending`): first the ops that stopped
+    /// applying, in every component, then the newly held ones, so writes a hostile author signs
+    /// (newly held, unapplied) never push an op that stood out of the bound.
     fn run_detection(&mut self) {
         let pending = std::mem::take(&mut self.pending);
         let Some(me) = self.detect else { return };
         let mut budget = DETECT_MAX;
-        for (i, flipped, new) in pending {
-            let Some(c) = self.comps.get(&i) else { continue };
-            let tl = &c.tl;
-            let mut stood: BTreeSet<WriteId> = BTreeSet::new();
-            let mut cands: Vec<(bool, Point, WriteId)> = Vec::new();
-            for (p, h, t) in &flipped {
-                if let Some(w) = tl.op_of(&p.commit, h, t) {
-                    stood.insert(w);
-                    cands.push((false, *p, w));
-                }
-            }
-            for id in &new {
-                let Some(c) = tl.input.commits.get(id) else { continue };
-                for k in 0..c.ops.len() {
-                    if let Ok(k) = u32::try_from(k) {
-                        cands.push((true, c.point(), WriteId(*id, k)));
+        for pass_new in [false, true] {
+            for (i, flipped, new) in &pending {
+                let Some(c) = self.comps.get(i) else { continue };
+                let tl = &c.tl;
+                let mut stood: BTreeSet<WriteId> = BTreeSet::new();
+                let mut cands: Vec<(Point, WriteId)> = Vec::new();
+                if pass_new {
+                    for id in new {
+                        let Some(c) = tl.input.commits.get(id) else { continue };
+                        for k in 0..c.ops.len() {
+                            if let Ok(k) = u32::try_from(k) {
+                                cands.push((c.point(), WriteId(*id, k)));
+                            }
+                        }
+                    }
+                } else {
+                    for (p, h, t) in flipped {
+                        if let Some(w) = tl.op_of(&p.commit, h, t) {
+                            stood.insert(w);
+                            cands.push((*p, w));
+                        }
                     }
                 }
+                cands.sort_unstable_by_key(|x| (x.0, x.1.1));
+                cands.dedup_by_key(|x| x.1);
+                let ids: Vec<WriteId> = cands.iter().map(|x| x.1).collect();
+                let (found, walked, left) = tl.scan(&ids, budget, &stood, Some(me));
+                budget -= walked;
+                if pass_new {
+                    self.detected.unexamined += left.len();
+                } else {
+                    self.detected.kept.extend(left);
+                }
+                self.detected.found.extend(found);
             }
-            cands.sort_unstable_by_key(|x| (x.0, x.1, x.2.1));
-            cands.dedup_by_key(|x| x.2);
-            let ids: Vec<WriteId> = cands.iter().map(|x| x.2).collect();
-            let (found, walked, left) = tl.scan(&ids, budget, &stood, Some(me));
-            budget -= walked;
-            self.unexamined += left;
-            self.detected.extend(found);
         }
     }
 
