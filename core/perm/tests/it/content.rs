@@ -78,7 +78,7 @@ fn per_delta_validity() {
     assert_eq!((valid(&tl, e, d0, Write), valid(&tl, e, d1, Write)), (false, true));
 }
 
-/// §5.2 through the owner chain: a device removed from P by a node that had not received its
+/// §5.2 through the owner chain: a node removed from P by a node that had not received its
 /// write on G (owned by P) loses it; one it had received stands.
 #[test]
 fn node_removal_reaches_owned_things() {

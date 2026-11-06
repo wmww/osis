@@ -1436,7 +1436,7 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
     assert!(again.commits.is_empty(), "covered by the finalize's own rotation");
 }
 
-// notes/sync.md Limits (stranded device re-paired), spec/permissions.md §3: a node whose
+// notes/sync.md Limits (stranded node re-paired), spec/permissions.md §3: a node whose
 // grant raced a rotation of its account is re-sealed over the pairing channel.
 #[test]
 fn stranded_node_repaired_spec_perm_3() {
@@ -1902,7 +1902,7 @@ fn create_label_after_inside_removal_spec_sync_2() {
     assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &read, 0).verifying_key());
 }
 
-// notes/permissions.md Revocation (stolen device): the thief backdates a write; the honest
+// notes/permissions.md Revocation (stolen node): the thief backdates a write; the honest
 // node's backdated revoke takes its frontier from its receipts as of the theft, so the
 // thief's edits are dropped and the node's earlier ones stay.
 // spec/permissions.md §5.3

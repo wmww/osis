@@ -44,8 +44,8 @@ fn mutual_removal_earlier_wins() {
     assert_eq!((edge_role(&tl, n[1], g), edge_role(&tl, n[2], g)), (Some(Admin), None));
 }
 
-/// §5.1 frontier: a stolen admin device's backdated removals stand iff the node removing the
-/// device had received them before its revoke; another admin having seen them is no witness.
+/// §5.1 frontier: a stolen admin node's backdated removals stand iff the node removing the
+/// node had received them before its revoke; another admin having seen them is no witness.
 #[test]
 fn stolen_node_backdated_removals() {
     for owner_saw in [false, true] {
@@ -61,7 +61,7 @@ fn stolen_node_backdated_removals() {
     }
 }
 
-/// §5.1: the owner's further-backdated revoke of the stolen device cancels its removal.
+/// §5.1: the owner's further-backdated revoke of the stolen node cancels its removal.
 #[test]
 fn owner_further_backdated_revoke_cancels() {
     let (mut w, n, g) = group();

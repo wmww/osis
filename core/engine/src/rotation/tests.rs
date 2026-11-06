@@ -1324,7 +1324,7 @@ fn withheld_departures(seed: u64, more: bool) {
 }
 
 
-/// The epochs of `g` that `holder` (its device `seed`) opens from the boxes to it in the invalid
+/// The epochs of `g` that `holder` (its node `seed`) opens from the boxes to it in the invalid
 /// `secrets.0` deltas peer `i` holds, and from there by the history boxes of `state`; with those
 /// deltas' authors.
 fn opened_by_invalid(lp: &mut LocalPeer, i: usize, g: Tid, holder: Tid, seed: &osis_crypto::Secret32, state: &ct::Secrets) -> (osis_keys::ActorEpochs, BTreeSet<Tid>) {

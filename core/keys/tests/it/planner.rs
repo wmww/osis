@@ -145,7 +145,7 @@ fn label_epochs() {
     assert!(registration_epochs(&a).is_none());
 }
 
-/// Person P (devices `k1`, `k2`) whose epochs a writer jumped past the cap, every role at
+/// Account P (nodes `k1`, `k2`) whose epochs a writer jumped past the cap, every role at
 /// `MAX_FREE_N + 5`, secrets varying with `b`.
 fn jumped_person(b: u8) -> ActorEpochs {
     let mut pe = ActorEpochs::default();
@@ -158,7 +158,7 @@ fn jumped_person(b: u8) -> ActorEpochs {
 }
 
 // spec/crypto.md §3, §4, spec/sync.md §5: past the cap derived epochs all sit at n 2^62 − 1 but
-// order as the owner's, so after P's rotation removing a device the plain group U's head (its
+// order as the owner's, so after P's rotation removing a node the plain group U's head (its
 // epochs before) is stepped every time, not by nonce luck.
 #[test]
 fn jumped_owner_rotation_steps_plain_group() {

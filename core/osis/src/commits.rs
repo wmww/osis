@@ -452,7 +452,7 @@ impl Osis {
             }
             let r = match self.acting {
                 Some(a) => e.revert_as(target.0, a)?,
-                None => e.revert_change(target.0, me)?,
+                None => e.revert_batch(target.0, me)?,
             };
             match r {
                 Reverted::Written(w) => Ok(Commit::of(w)),

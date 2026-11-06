@@ -740,7 +740,7 @@ fn ephemeral_membership_of_durable_thing_converts_spec_data_model_8() {
     net.run();
     assert!(net.engine(b).durable_groups_of(&w).contains(&g));
     let me = net.tid(a);
-    net.engine(a).revert_change(saved, me).unwrap();
+    net.engine(a).revert_batch(saved, me).unwrap();
     local(&mut net, a);
     net.run();
     for n in [a, b] {
@@ -1152,7 +1152,7 @@ fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
     net.run();
     net.advance(1_000);
     let me = net.tid(a);
-    net.engine(a).revert_change(rm, me).unwrap();
+    net.engine(a).revert_batch(rm, me).unwrap();
     local(&mut net, a);
     net.run();
     for n in [a, b] {
@@ -1197,7 +1197,7 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     net.run();
     net.advance(6_000);
     let me = net.tid(a);
-    let _ = net.engine(a).revert_change(rm, me).unwrap();
+    let _ = net.engine(a).revert_batch(rm, me).unwrap();
     local(&mut net, a);
     net.run();
     for n in [a, b] {
@@ -1239,7 +1239,7 @@ fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
         assert_eq!(notes(&mut net, n, w), map(&[]), "node {n}: the set went with the entries");
     }
     let me = net.tid(a);
-    let _ = net.engine(a).revert_change(set, me).unwrap();
+    let _ = net.engine(a).revert_batch(set, me).unwrap();
     local(&mut net, a);
     net.run();
     for n in [a, b] {
@@ -2231,7 +2231,7 @@ fn random_churn_run(seed: u64) {
             }
             7 => {
                 if let Some(c) = last.remove(&n) {
-                    let r = net.engine(n).revert_change(c, tids[i]);
+                    let r = net.engine(n).revert_batch(c, tids[i]);
                     log.push(format!("{n} undoes its last: {r:?}"));
                 }
                 ""
@@ -3093,7 +3093,7 @@ fn membership_superseded_like_any_write_spec_sync_9() {
     let placed = |net: &mut Net, n: usize| net.engine(n).groups_of(&w).contains(&g);
     assert!(placed(&mut net, a) && placed(&mut net, b));
     let me = net.tid(a);
-    net.engine(a).revert_change(again, me).unwrap();
+    net.engine(a).revert_batch(again, me).unwrap();
     local(&mut net, a);
     net.run();
     net.advance(10_000);
@@ -4952,7 +4952,7 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     };
     let (empty, unmake_empty) = bare(&mut net);
     let (back, unmake_back) = bare(&mut net);
-    let osis_node::ephemeral::Reverted::Written(w) = net.engine(b).revert_change(unmake_back, tb).unwrap() else { panic!("the undo") };
+    let osis_node::ephemeral::Reverted::Written(w) = net.engine(b).revert_batch(unmake_back, tb).unwrap() else { panic!("the undo") };
     let remake = w.id;
     assert!(net.engine(b).ephemeral_thing(&back).unwrap().deleted);
     net.run();
@@ -4972,7 +4972,7 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     net.advance(15_000);
     let logged = net.engine(b).ephemeral_log().len();
     for id in [wrote, unmake, unmake_empty, remake] {
-        let r = net.engine(b).revert_change(id, tb);
+        let r = net.engine(b).revert_batch(id, tb);
         assert!(matches!(r, Err(osis_node::Error::Permission { .. })), "{r:?}");
     }
     for x in [lost, empty] {
@@ -4980,7 +4980,7 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     }
     assert!(net.engine(b).ephemeral_thing(&back).unwrap().deleted, "it stays undone");
     assert_eq!(net.engine(b).ephemeral_log().len(), logged);
-    net.engine(b).revert_change(unmake_kept, tb).unwrap();
+    net.engine(b).revert_batch(unmake_kept, tb).unwrap();
     let groups = net.engine(b).groups_of(&kept);
     assert!(groups.contains(&g) && !groups.contains(&keep), "{groups:?}");
 }
@@ -5061,7 +5061,7 @@ fn revert_run_with(seed: u64, restarts: bool) {
                 let id = ids[rnd(ids.len() as u64) as usize];
                 let reads = |net: &mut Net, things: &[Tid]| things.iter().map(|t| net.eph_read(b, *t, STATE)).collect::<Vec<_>>();
                 let (before, logged) = (reads(&mut net, &things), net.engine(b).ephemeral_log().len());
-                match net.engine(b).revert_change(id, tb) {
+                match net.engine(b).revert_batch(id, tb) {
                     Ok(osis_node::ephemeral::Reverted::Written(w)) => {
                         let log = net.engine(b).ephemeral_log();
                         let touched: Vec<_> = log.iter().filter(|l| l.id == w.id).flat_map(|l| l.aspects.clone()).collect();
@@ -5166,7 +5166,7 @@ fn written(r: osis_node::ephemeral::Reverted) -> osis_node::BatchId {
 fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
     assert_eq!(net.eph_read(a, w, STATE), Some(s("v")));
-    net.engine(b).revert_change(id, tb).unwrap();
+    net.engine(b).revert_batch(id, tb).unwrap();
     local(&mut net, b);
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), None);
@@ -5184,7 +5184,7 @@ fn undo_of_creation_not_coalesced_away_spec_sync_9() {
     let mut m = Mutation::new();
     m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k2"))], op: Op::Put(s("v2")) }).unwrap();
     net.engine(b).write(m).unwrap();
-    net.engine(b).revert_change(id, tb).unwrap();
+    net.engine(b).revert_batch(id, tb).unwrap();
     local(&mut net, b);
     net.run();
     assert_eq!(notes(&mut net, a, w), BTreeMap::new(), "the reset reaches a holder");
@@ -5194,9 +5194,9 @@ fn undo_of_creation_not_coalesced_away_spec_sync_9() {
 #[test]
 fn redo_keeps_later_membership_spec_crdt_4_6() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
-    let undo = written(net.engine(b).revert_change(id, tb).unwrap());
+    let undo = written(net.engine(b).revert_batch(id, tb).unwrap());
     let (later, _) = made_window(&mut net, b, g, "later");
-    let redo = written(net.engine(b).revert_change(undo, tb).unwrap());
+    let redo = written(net.engine(b).revert_batch(undo, tb).unwrap());
     local(&mut net, b);
     net.run();
     for n in [a, b] {
@@ -5205,7 +5205,7 @@ fn redo_keeps_later_membership_spec_crdt_4_6() {
         assert!(net.engine(n).groups_of(&w).contains(&g));
     }
     // and undoing the redo takes out only what it brought back
-    net.engine(b).revert_change(redo, tb).unwrap();
+    net.engine(b).revert_batch(redo, tb).unwrap();
     assert!(net.engine(b).groups_of(&later).contains(&g));
     assert!(!net.engine(b).groups_of(&w).contains(&g));
 }
@@ -5214,14 +5214,14 @@ fn redo_keeps_later_membership_spec_crdt_4_6() {
 #[test]
 fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
     let (mut net, a, b, g, tb, w, id) = undo_world();
-    let undo = written(net.engine(b).revert_change(id, tb).unwrap());
+    let undo = written(net.engine(b).revert_batch(id, tb).unwrap());
     local(&mut net, b);
     net.run();
-    net.engine(b).revert_change(undo, tb).unwrap();
+    net.engine(b).revert_batch(undo, tb).unwrap();
     local(&mut net, b);
     net.run();
     assert!(net.engine(b).groups_of(&w).contains(&g));
-    net.engine(b).revert_change(id, tb).unwrap();
+    net.engine(b).revert_batch(id, tb).unwrap();
     local(&mut net, b);
     net.run();
     for n in [a, b] {
@@ -5234,9 +5234,9 @@ fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
 #[test]
 fn reverting_second_undo_leaves_thing_undone_spec_crdt_4_6() {
     let (mut net, _, b, _, tb, w, id) = undo_world();
-    written(net.engine(b).revert_change(id, tb).unwrap());
-    let second = written(net.engine(b).revert_change(id, tb).unwrap());
-    net.engine(b).revert_change(second, tb).unwrap();
+    written(net.engine(b).revert_batch(id, tb).unwrap());
+    let second = written(net.engine(b).revert_batch(id, tb).unwrap());
+    net.engine(b).revert_batch(second, tb).unwrap();
     assert!(net.engine(b).ephemeral_thing(&w).unwrap().deleted);
 }
 
