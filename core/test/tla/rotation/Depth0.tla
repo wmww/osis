@@ -585,6 +585,12 @@ GCur(a) == {e \in Ids : ep[e].act = a /\ ~ep[e].forged /\
 \* one, a fork's box at a keyset it did not hold yet, would supersede an
 \* epoch it can never read again: nothing re-seals a superseded epoch)
 HistWhole == \A e \in 1..Len(ep) : ep[e].whole
+\* a node whose due rotation HeldAll holds back lacks a current epoch's secret
+\* only through a box at a holder actor's keyset whose secret it does not hold
+\* yet (learned later: Late, or a re-seal), never for good
+HeldWaits == \A x \in Learners, a \in Acts :
+  (NeedRot(x, a) /\ ~(Cur(x, a) \subseteq Sec(x))) =>
+    \E e \in Cur(x, a) \ Sec(x) : \E b \in BoxesAt(x, e) : b.key.t = "k" /\ b.key.k \notin Sec(x)
 \* a directly removed holder reads no content written by a writer that knew
 NoLeakDirect == \A c \in wr : \A dp \in c.p1 : ~Opens(RD(dp[1], c.a), c)
 \* a device removed from a holder actor M of a reads no content of a written
