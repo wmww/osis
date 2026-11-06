@@ -137,14 +137,14 @@ impl Engine {
             return l;
         }
         let l = self.inbox_candidates_read(a);
-        let uppers: Vec<Tid> = self.core.inbox_chain(a).into_iter().filter(|t| t != a).collect();
+        let uppers: Vec<Tid> = self.core.standing_chain(a).into_iter().filter(|t| t != a).collect();
         self.core.inbox_uppers.extend(uppers);
         self.core.inbox_labels.insert(*a, l.clone());
         l
     }
 
     fn inbox_candidates_read(&mut self, a: &Tid) -> Vec<LabelId> {
-        let mut out: Vec<LabelId> = self.core.inbox_chain(a).iter().filter_map(|t| self.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)).map(|i| i.label).collect();
+        let mut out: Vec<LabelId> = self.core.standing_chain(a).iter().filter_map(|t| self.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)).map(|i| i.label).collect();
         out.dedup();
         out
     }
@@ -168,7 +168,7 @@ impl Engine {
     fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
         let mut by: BTreeMap<LabelId, Vec<(usize, Tid)>> = BTreeMap::new();
         for a in self.core.ix.secrets.keys().copied().collect::<Vec<_>>() {
-            let depth = self.core.inbox_chain(&a).len();
+            let depth = self.core.standing_chain(&a).len();
             for l in self.inbox_candidates(&a) {
                 by.entry(l).or_default().push((depth, a));
             }

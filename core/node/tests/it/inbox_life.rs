@@ -1159,6 +1159,61 @@ fn stamped_inbox_blob_reaches_a_sibling_spec_sync_5() {
     assert_eq!(net.read(b2, t), Some(s("for bob")));
 }
 
+// spec/sync.md §3 (grant copy, stamping in place: actors below the inbox's through record
+// edges standing at the node): Bob makes Y under his account and X under Y, gives Alice admin on
+// Y and himself and Alice read on X. Alice grants X read on G: X and Y name no inbox, so the blob goes to
+// Bob's, and his node, holding it as an invite request, opens it. Offline, Bob accepts (the
+// commit applies) and leaves Y (his record edge on it goes) before his node's next pass judges
+// the opened blob: X is no longer below him, so it neither stamps the blob nor copies the grant
+// under his home label.
+#[test]
+fn inbox_of_a_removed_first_admin_neither_stamps_nor_copies_spec_sync_3() {
+    let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
+    net.pair(a, b);
+    let e = net.engine(b);
+    let mut m = Mutation::new();
+    let y = e.new_thing(&mut m, bob);
+    m.set(y, &ct::GROUP, &ct::Group::default()).unwrap();
+    let x = e.new_thing(&mut m, y);
+    m.set(x, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let edge = |role| ct::Edge { role, until: None, invite: None, tied: None };
+    // Alice reads X by a grant of its own (no label carries X to her)
+    for (t, h, r) in [(y, alice, Role::Admin), (x, bob, Role::Read), (x, alice, Role::Read)] {
+        let done = net.engine(b).grant(&t, &h, &edge(r)).unwrap();
+        let acts = net.sync(b).carry_out(done).unwrap();
+        net.actions(b, acts);
+    }
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(a).role_on(&x), Some(Role::Admin));
+    net.nodes[b].accepts = false;
+    let left = budget_left(&mut net, host, &home);
+    let c = grant_commit(&mut net, a, g, x);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(requests(&mut net, b), vec![c], "opened under Bob's inbox, held as a request");
+    net.set_online(b, false);
+    let (_, acts) = net.sync(b).accept_invite(c).unwrap();
+    net.actions(b, acts);
+    let leave = osis_node::flows::Demotion { holder: bob, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
+    let done = net.engine(b).demote(&y, &leave).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    assert!(net.engine(b).commit_ids().contains(&c), "the grant applied");
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&x), Some(Role::Read), "Bob still reads X");
+    let id = net.sync(b).entries(&home).into_iter().find(|(_, k)| matches!(k, EntryKind::Inbox(Some(y)) if *y == c)).unwrap().0;
+    assert!(net.sync(b).entry_meta(&home, &id).unwrap().1.is_none(), "not stamped");
+    assert_eq!(budget_left(&mut net, host, &home), left - 1, "it stays deposited");
+    assert_eq!(under(&mut net, b, host, &home, g, "roles.0"), 0, "no copy of the grant under Bob's home label");
+}
+
 // spec/sync.md §5: a stranger's request holds its budget slot until the user answers it; declining frees the slot and the blob stays until it expires
 #[test]
 fn declined_request_leaves_the_budget_spec_sync_5() {

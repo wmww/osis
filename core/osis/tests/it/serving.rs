@@ -210,6 +210,30 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     assert!(admitted(&alice).contains(&label_of(&alice, mine)), "own: the account kept across a driver restart");
 }
 
+// spec/data-model.md §9 (`host.0^` `own`, record edges standing at the node): Alice makes Y and
+// G under Y naming her peer; Bob, admin of Y by her grant, gives her account a read grant on G
+// and removes her record edge on Y. She still reads G, but its record chain reaches her only
+// through the cut edge: no longer admitted.
+#[test]
+fn own_stops_at_a_cut_record_edge_spec_data_model_9() {
+    let (mut w, alice, bob, base, ha, a, b) = own_pair(5);
+    let hosts = [w.addr(base).unwrap(), ha.clone()];
+    let y = group_of(&alice, alice.me(), alice.me(), &[]);
+    let g = group_of(&alice, y, y, &hosts);
+    alice.grant(y, b, Role::Admin, Default::default()).unwrap();
+    w.run();
+    let lg = label_of(&alice, g);
+    assert!(admitted(&alice).contains(&lg), "own: under an actor Alice's account made");
+    bob.grant(g, a, Role::Read, Default::default()).unwrap();
+    w.run();
+    bob.set_role_now(y, a, None, Default::default()).unwrap();
+    w.run();
+    w.advance(70_000);
+    assert_eq!(alice.role_on(y).unwrap(), None, "her record edge on Y is gone");
+    assert_eq!(alice.role_on(g).unwrap(), Some(Role::Read), "she still reads G");
+    assert!(!admitted(&alice).contains(&label_of(&alice, g)), "own: a cut record edge on the way up");
+}
+
 // spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random record and grant graphs: Alice
 // admits exactly the groups she reads that name her peer and whose record chain (as created)
 // reaches her account, whatever read or admin grants Bob gives her account or node, or she gives
