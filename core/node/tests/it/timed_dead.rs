@@ -63,6 +63,8 @@ fn late_holder_judges_revoke_alike_spec_permissions_5() {
     net.advance(1_000);
     net.write(b, t, "v2");
     net.run();
+    assert_eq!(net.read(a, t), Some(s("v2")), "taken before the revoke");
+    assert_eq!(net.read(x, t), Some(s("v1")), "the revoker never received it");
     net.advance(1_000);
     let bt = net.tid(b);
     net.set_online(b, false);

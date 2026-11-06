@@ -1593,6 +1593,7 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     net.run();
     let kill = net.engine(b).package(&kill).unwrap().unwrap();
     assert_eq!(net.engine(a).get(&t, &gone).unwrap().is_some_and(|v| v == s("v0")), a_saw_kill);
+    assert_eq!(net.engine(x).get(&t, &gone).unwrap(), Some(s("v1")), "the lowering's frontier leaves the killer out");
     let holder = net.tid(b);
     let new = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
     let done = net.engine(x).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Unsynced { proceed: true }, retain: None }).unwrap();
