@@ -9,5 +9,5 @@ Seal waits (`flows::edges::demote_in`, `finalize_in`). Not for possession: `demo
 keyset secret, the rotation's `secrets.0` delta fails Authority and `apply_local` refuses the whole
 commit. Fix: write the removal alone there too (`recipients` Some and `possessed`, else alone),
 with a test in `tests_possession`. A lockout recovery (a remover lacking current secrets of A
-that the removed holder made) still waits on purpose: only its own rotation may list those epochs
+that the removed holder made) fails `SEAL_WAITS` instead: only its own rotation may list those epochs
 (spec/permissions.md §3).
