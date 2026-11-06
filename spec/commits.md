@@ -230,7 +230,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - A writer whose `ts` has reached the T it was given (its HLC ahead of its clock) writes `wall_ms(ts) + 1`.
 - The schema may give a default per AK as a duration from the write.
 - The blob prefix carries the commit's T (spec/sync.md §1, §3).
-- A write is one commit. A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect or a purge request; and one mixing durable, ephemeral and relay-only writes (§2, spec/sync.md §9).
+- A write is one commit, with one exception: what a durable write does in memory goes as a second, ephemeral commit under its `ts` (spec/sync.md §9 Sending). A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect or a purge request; and one asking for durable, ephemeral and relay-only writes together (§2, spec/sync.md §9).
 - At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less, the body and every held body carrying a copy of their values as its leftover, whatever the delta's keep-at-least bound.
 - A delta never received stays never received: a copy arriving after T joins value-less (held as its leftover from then on), and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
 - Hosts delete the blob at T unattended (spec/sync.md §5).
