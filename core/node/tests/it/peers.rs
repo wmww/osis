@@ -54,7 +54,8 @@ fn reader_served_by_co_reader_peer_spec_sync_5() {
 
 // spec/sync.md §5, §10: co-readers are the nodes with a `reach.0` this node holds that may read
 // a label it syncs; a node with `reach.0` that is no holder is not dialed, and nothing is dialed
-// while it is the only one known.
+// while it is the only one known. Co-readers are dialed with the dialable key, a link's sharer
+// with an ephemeral one.
 #[test]
 fn co_reader_selection_spec_sync_5() {
     let mut net = Net::new();
@@ -71,11 +72,15 @@ fn co_reader_selection_spec_sync_5() {
     assert_eq!(peers.keys().copied().collect::<Vec<_>>(), vec![[0xb3; 32]]);
     assert!(peers[&[0xb3; 32]].labels.contains(&l));
     assert_eq!(peers[&[0xb3; 32]].node, net.tid(b));
-    let _ = g;
-    // the dial goes to the peer scheme with the relays from its `reach.0`
+    // a link's sharer node (first contact): no co-reader
+    let tc = net.tid(c);
+    net.sync(a).follow_link_peer(g, tc, vec![Address { url: osis_transport::peer_url(&[]), key: [0x5e; 32] }]);
+    // the dial goes to the peer scheme with the relays from its `reach.0`, with this node's
+    // dialable key (spec/sync.md §10, IP consent); the sharer's with an ephemeral one
     let acts = net.sync(a).handle(osis_node::sync::Event::Local);
-    let dials: Vec<Address> = acts.iter().filter_map(|x| if let osis_node::sync::Action::Dial { address, .. } = x { Some(address.clone()) } else { None }).collect();
-    assert!(dials.iter().all(|d| d.key == [0xb3; 32] && d.url == "peer://https://relay.example"), "{dials:?}");
+    let dials: Vec<(Address, bool)> = acts.iter().filter_map(|x| if let osis_node::sync::Action::Dial { address, dialable, .. } = x { Some((address.clone(), *dialable)) } else { None }).collect();
+    assert_eq!(dials.len(), 2, "{dials:?}");
+    assert!(dials.iter().all(|(d, dialable)| if d.key == [0x5e; 32] { !dialable } else { *dialable && d.key == [0xb3; 32] && d.url == "peer://https://relay.example" }), "{dials:?}");
 }
 
 // spec/sync.md §10: LAN tags are the kdf of the lan secret and the 10-minute window: equal
@@ -388,4 +393,34 @@ fn failed_lan_route_keeps_relay_spec_sync_10() {
     let t = net.item(a, g, g, "still over the relay");
     net.run();
     assert_eq!(net.read(b, t), Some(s("still over the relay")));
+}
+
+/// The connection of the dial to `key` among `acts`.
+fn dial_to(acts: &[Action], key: [u8; 32]) -> Option<osis_node::sync::ConnId> {
+    acts.iter().find_map(|x| if let Action::Dial { conn, address, .. } = x { (address.key == key).then_some(*conn) } else { None })
+}
+
+// spec: none (notes/peers.md, redial): a co-reader whose connection was up is redialed at once
+// (a P2P dial that punched through ends its relayed connection; the redial takes the direct
+// one), at most once per `peer_retry_ms`; a dial that never came up waits the pause.
+#[test]
+fn co_reader_redialed_at_once_after_up() {
+    use osis_node::sync::Event;
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    reach(&mut net, a, 0xa4);
+    reach(&mut net, b, 0xb4);
+    let _g = net.group_at(a, &[(b, Role::Read)], vec![]);
+    let kb = [0xb4; 32];
+    let conn = dial_to(&net.sync(a).handle(Event::Local), kb).expect("dialed");
+    net.sync(a).handle(Event::Up { conn });
+    let conn = dial_to(&net.sync(a).handle(Event::Down { conn }), kb).expect("redialed at once");
+    // again within the pause: it waits
+    net.sync(a).handle(Event::Up { conn });
+    assert_eq!(dial_to(&net.sync(a).handle(Event::Down { conn }), kb), None);
+    net.clock.advance(60_001);
+    let conn = dial_to(&net.sync(a).handle(Event::Tick), kb).expect("dialed after the pause");
+    // never up: it waits
+    assert_eq!(dial_to(&net.sync(a).handle(Event::Down { conn }), kb), None);
 }
