@@ -1,5 +1,4 @@
 # App chat: no multi-line messages
-
 > Summary: the app's message box is one line: Enter sends, and Shift+Enter sends too, so Tess's two-line message arrived as two messages. Low priority (Tess). Needs a newline key and a box that grows; `style::input` already takes a `multiline` flag.
 > Tags: app, chat
 

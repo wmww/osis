@@ -71,5 +71,5 @@ Conflicts with the API work (notes/api-design.md checklist applies); A-C touch o
 5. **Record-chain reads that outlive removal**: `admit own` (hosting only, ciphertext: kept static), inbox and `label.0` cross-publish (rules above so nothing goes to a removed first admin).
 6. **Depth**: ownerless tops no longer reset the cap; chats add two links. Check app trees stay far under 64.
 
-## Question for Tess
+## Question for Tess (notes/questions-for-tess.md 13)
 - May anyone with write on G make a thing whose first admin is G (G's admins then administer it, its writers write it)? This is today's rule for owned things and what `create_with_admin` checks; the alternative, admin on G, would stop a team's writers creating things in it. Recommended: write.
