@@ -616,7 +616,9 @@ impl SyncEngine {
     }
 
     /// A right holder that must delete a body with live writes and finds no carrier writes a
-    /// covering snapshot first when it may write the aspect (spec/sync.md §7).
+    /// covering snapshot first when it may write the aspect (spec/sync.md §7). A held valid
+    /// snapshot covering the body (another writer's carrier, arrived with the kill) is its
+    /// carrier; else every writer dropping the body writes one (duplicates are harmless).
     pub(in crate::sync) fn snapshot_first(&mut self, aspects: &[(Tid, Ak)], body: &CommitId) -> Result<()> {
         if aspects.iter().all(|(t, a)| self.carrier_of(body, t, a).is_some()) {
             return Ok(());
@@ -627,6 +629,18 @@ impl SyncEngine {
                 continue;
             }
             if self.carrier_of(body, t, a).is_some() {
+                continue;
+            }
+            let held: Vec<CommitId> = self.engine.core.ix.snapshots.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1).filter(|s| s != body).collect();
+            let mut covering = None;
+            for s in held {
+                if self.engine.covered(&s, body, t, a)? == Some(true) {
+                    covering = Some(s);
+                    break;
+                }
+            }
+            if let Some(s) = covering {
+                self.state.set_carrier(*body, s);
                 continue;
             }
             // a snapshot from this node's whole state covers every body of the aspect it applied

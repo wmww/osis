@@ -56,7 +56,7 @@ fn expiry_judges_only_the_expired_commit_spec_sync_5() {
 
 // spec/commits.md §5 (keep at most 0: a body whose writes all died goes with the kill, here and at
 // hosts in the same sync), §6: a write re-judges the keep-at-most bodies it killed, not every
-// live one of the aspect (bodies holding a map entry stay live, waiting).
+// live one of the aspect (bodies holding a map entry stay live).
 #[test]
 fn keep_at_most_write_judges_the_bodies_it_killed_spec_commits_5() {
     let mut net = Net::new();
@@ -65,14 +65,17 @@ fn keep_at_most_write_judges_the_bodies_it_killed_spec_commits_5() {
     let g = net.group(a, &[], &[host]);
     let t = net.item(a, g, g, "t");
     let live: Vec<CommitId> = (0..6).map(|i| put_key(&mut net, a, t, &GONEMAP, &format!("k{i}"), "v")).collect();
-    // writes only k0's value: dead once that is overwritten
-    let over = put_key(&mut net, a, t, &GONEMAP, "k0", "w");
+    // creates k6 and writes its value: dead once the entry is removed (overwriting the value
+    // alone would leave the creation live, and the carrier then written covers every body)
+    let over = put_key(&mut net, a, t, &GONEMAP, "k6", "w");
     net.run();
     net.advance(61_000);
     let l = net.label(a);
     let s0 = net.sync(a).pass_stats();
     assert_eq!(at_host(&mut net, a, host, &l, &over), 1);
-    put_key(&mut net, a, t, &GONEMAP, "k0", "x");
+    let mut m = Mutation::new();
+    m.op(t, &GONEMAP, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(s("k6")) }).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
     net.run();
     let s1 = net.sync(a).pass_stats();
     assert!(s1.passes > s0.passes);

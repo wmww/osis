@@ -15,7 +15,6 @@ pub fn wall(ts: u64) -> u64 {
 pub const HOUR: u64 = 3_600_000;
 /// spec/wire.md §1 constants, in wall ms.
 pub const MAX_DRIFT: u64 = HOUR;
-pub const AT_MOST_GRACE: u64 = HOUR;
 pub const ROLE_KEEP: u64 = 90 * 24 * HOUR;
 /// An absolute keep-at-least of forever (`abs` forever).
 pub const FOREVER: u64 = u64::MAX;

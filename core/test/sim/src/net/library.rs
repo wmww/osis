@@ -747,8 +747,6 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
     }
     sim.run(30)?;
     sim.quiet(40)?;
-    sim.advance(HOUR_MS)?;
-    sim.run(20)?;
     sim.run_until_quiescent(40)?;
     let k = super::scenarios::ak(&sim, &workload::LATEST)?;
     let v = sim.engine(a)?.get(&t, &k).map_err(|e| sim.fail(e.to_string()))?;

@@ -135,22 +135,19 @@ fn purge_request_floor_beats_keep_at_most_spec_commits_5() {
     assert_eq!(fate(&held(1 + ROLE_KEEP / HOUR, cs), 10), Fate::MustDrop(DropWhy::AtMost { carrier: false }));
 }
 
-// spec/commits.md §5 (Keep at most): the bound is the first death, plus AT_MOST_GRACE while the body
-// has a live write; the node drops it no earlier
+// spec/commits.md §5 (Keep at most): under 0 after replaced the bound is the first death, whatever
+// the clock; a body with a live write goes after its carrier, one without at the kill
 #[test]
-fn keep_at_most_zero_bound_adds_grace_for_a_live_write_spec_commits_5() {
+fn keep_at_most_zero_live_write_goes_with_a_carrier_spec_commits_5() {
     let zero = Retention { most_zero: true, ..Retention::WRITER };
     let e = st(1, 10, 1);
     let mk = Write { stamp: e, op: Op::Create { key: Some(1) } };
     let put = |h: u64, c: CommitId, v: Val| Write { stamp: st(h, c, 1), op: Op::SetIn { entry: e.dot, key: Some(1), value: Some(v) } };
     let a = content(10, OWNER, 1, vec![part(MAP, zero, vec![mk, put(1, 10, 5)])]);
     let b = content(11, OWNER, 2, vec![part(MAP, Retention::PLAIN, vec![put(2, 11, 6)])]);
-    let o = evaluate(&held(2, vec![a.clone(), b.clone()]));
-    assert_eq!(o.at_most[&(10, 0)], at(2) + AT_MOST_GRACE, "the creation is live");
-    assert_eq!(o.fates[&(10, 0)], Fate::Keep(KeepWhy::Plain));
-    assert!(o.deadlines.contains(&(at(2) + AT_MOST_GRACE)));
-    let o = evaluate(&held(3, vec![a, b]));
-    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::AtMost { carrier: true }));
+    let o = evaluate(&held(2, vec![a, b]));
+    assert_eq!(o.at_most[&(10, 0)], 0, "the first death, whatever the clock");
+    assert_eq!(o.fates[&(10, 0)], Fate::MustDrop(DropWhy::AtMost { carrier: true }), "the creation is live");
     // a register write superseded has no live write: it goes at the kill
     let cs = vec![reg(20, OWNER, 1, REG, zero, 1), reg(21, OWNER, 2, REG, Retention::PLAIN, 2)];
     assert_eq!(evaluate(&held(1, cs)).at_most[&(20, 0)], 0);

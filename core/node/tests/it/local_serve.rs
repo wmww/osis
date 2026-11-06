@@ -113,10 +113,9 @@ fn expired_body_leaves_local_label_spec_sync_5() {
 }
 
 // spec/sync.md §7 (a right holder that must delete a body with live writes and finds no carrier
-// writes a covering snapshot first), spec/commits.md §5 (keep at most 0 after replaced, plus
-// `AT_MOST_GRACE` while the body has a live write): a map body partly replaced, its other key
-// still live, is kept and served past its first death with no snapshot, then leaves the label
-// served with no host only with a snapshot carrying that key under it.
+// writes a covering snapshot first), spec/commits.md §5 (keep at most 0 after replaced): a map
+// body partly replaced, its other key still live, leaves the label served with no host at its
+// first death, with a snapshot carrying that key under it.
 #[test]
 fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
     use osis_crdt::{Op, PathOp, PathSeg};
@@ -139,18 +138,10 @@ fn keep_at_most_body_carried_on_local_label_spec_sync_7() {
         })
     };
     let c1_held = |net: &mut Net| net.sync(a).entries(&l).iter().any(|(id, x)| matches!(x, EntryKind::Commit { commit, .. } if *commit == c1) && net.sync(a).holds_blob(id));
-    // past first death, before the grace bound
-    for _ in 0..3 {
-        net.advance(1_000_000);
-    }
-    assert!(net.engine(a).body_not_dropped(&c1, &t, &kmap) && c1_held(&mut net), "kept and served before the grace bound");
-    assert!(!snap(&mut net), "no carrier before the bound");
-    for _ in 0..2 {
-        net.advance(1_000_000);
-    }
     let v = net.engine(a).get(&t, &kmap).unwrap().unwrap();
     assert_eq!(v, osis_base::Value::Map([(k("k1"), k("v1b")), (k("k2"), k("v2"))].into_iter().collect()), "k2 is still read");
-    assert!(!net.engine(a).body_not_dropped(&c1, &t, &kmap), "dropped at the grace bound");
+    assert!(!net.engine(a).body_not_dropped(&c1, &t, &kmap), "dropped at its first death");
+    assert!(!c1_held(&mut net), "its blob left the label");
     assert!(snap(&mut net), "k2 is carried under the label by a snapshot");
 }
 

@@ -496,7 +496,7 @@ pub fn evaluate(h: &Held) -> Outcome {
     }
     for (&pr, &d) in &o.deaths {
         let p = &by_id[&pr.0].parts[pr.1];
-        let (at_most, least) = bounds(&by_id[&pr.0], p, Some(d), o.keep_in_state.contains_key(&pr));
+        let (at_most, least) = bounds(&by_id[&pr.0], p, Some(d));
         o.deadlines.extend(at_most.into_iter().chain(least).chain(least.map(|b| b.saturating_add(MAX_DRIFT))));
         let bounded = matches!(
             o.fates.get(&pr),
@@ -538,16 +538,16 @@ pub fn evaluate(h: &Held) -> Outcome {
 }
 
 /// A joined body's keep-at-most and keep-at-least bounds, wall ms (spec/commits.md §5 Keep bounds),
-/// from its first and last deaths and whether it has a live write. Keep at most: T, or the first
-/// death plus `AT_MOST_GRACE` while it has a live write, the earlier; under 0 after replaced a body
-/// with a death and no live write goes at the kill, whatever the clock (0, AMBIGUITIES.md 44).
-/// Keep at least: T and the last death plus D, the later; a body with no dead write is past a
-/// relative bound. A commit carrying a purge request is kept at least until `wall(ts) +
-/// ROLE_KEEP`, whatever its deltas' bounds (spec/commits.md §5 Purge): it raises both.
-fn bounds(c: &Commit, p: &Part, deaths: Option<(Option<u64>, Option<u64>)>, live_writes: bool) -> (Option<u64>, Option<u64>) {
+/// from its first and last deaths. Keep at most: T, or under 0 after replaced the first death,
+/// the earlier; a body with a death goes at the kill, whatever the clock (0, AMBIGUITIES.md 44),
+/// with a live write after its carrier. Keep at least: T and the last death plus D, the later; a
+/// body with no dead write is past a relative bound. A commit carrying a purge request is kept
+/// at least until `wall(ts) + ROLE_KEEP`, whatever its deltas' bounds (spec/commits.md §5
+/// Purge): it raises both.
+fn bounds(c: &Commit, p: &Part, deaths: Option<(Option<u64>, Option<u64>)>) -> (Option<u64>, Option<u64>) {
     let r = p.retention;
     let (first, last) = deaths.unwrap_or((None, None));
-    let rel = if r.most_zero { first.map(|d| if live_writes { d + AT_MOST_GRACE } else { 0 }) } else { None };
+    let rel = if r.most_zero { first.map(|_| 0) } else { None };
     let at_most = [r.most_abs, rel].into_iter().flatten().min();
     let least = [r.least_abs, r.least_rel.and_then(|d| last.map(|l| l.saturating_add(d)))].into_iter().flatten().max();
     let floor = (!c.purge.is_empty()).then(|| wall(c.ts).saturating_add(ROLE_KEEP));
@@ -609,7 +609,7 @@ fn fate(
     }
     let keep = |why| if copy { Fate::Leftover(LeftoverWhy::Copy) } else { Fate::Keep(why) };
     let r = p.retention;
-    let (at_most, least) = bounds(c, p, o.deaths.get(&pr).copied(), o.keep_in_state.contains_key(&pr));
+    let (at_most, least) = bounds(c, p, o.deaths.get(&pr).copied());
     if at_most.is_some_and(|b| now >= b) {
         return Fate::MustDrop(DropWhy::AtMost { carrier: o.keep_in_state.contains_key(&pr) });
     }

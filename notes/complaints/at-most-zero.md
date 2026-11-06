@@ -1,0 +1,3 @@
+# at-most-zero
+- `LocalPeer::sync` delivers only the bodies the source still holds: a test that drops a body at the writer before syncing then finds the part missing (held, no death) at the receiver, which read like a bug for a while. A one-line doc on `sync` saying "what `from` holds now" would have saved it.
+- A full-size order harness's shrunk history can fail a different check than the unshrunk seed (the shrink keeps any failure): classifying "new or pre-existing" needed both the unshrunk seed and the pinned shrunk history on main's binary (`tools/bin-at`, two builds of about 2-3 min each).

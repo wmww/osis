@@ -213,34 +213,34 @@ fn retention_rules() {
     let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(100), rel: Some(50) }, at_most: Bound { abs: Some(400), rel: Some(0) } };
     assert_eq!(keep_at_least(&r, None), 100);
     assert_eq!(keep_at_least(&r, Some(80)), 130);
-    assert_eq!(keep_at_most(&r, None, false), Some(400));
-    assert_eq!(keep_at_most(&r, Some(20), false), Some(20));
+    assert_eq!(keep_at_most(&r, None), Some(400));
+    assert_eq!(keep_at_most(&r, Some(20)), Some(20));
     let h = sample_header();
-    assert_eq!(body_keep(&h, &r, Some(20), Some(80), false), Keep { at_least: 20, at_most: Some(20) });
+    assert_eq!(body_keep(&h, &r, Some(20), Some(80)), Keep { at_least: 20, at_most: Some(20) });
     let mut p = h.clone();
     p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("app:title.0").unwrap() });
     let floor = h.ts.wall_ms().0 + ROLE_KEEP_MS;
     assert_eq!(purge_keep_until(&p), Some(floor));
-    assert_eq!(body_keep(&p, &r, Some(20), Some(80), false), Keep { at_least: floor, at_most: Some(floor) });
+    assert_eq!(body_keep(&p, &r, Some(20), Some(80)), Keep { at_least: floor, at_most: Some(floor) });
 }
 
-// spec/commits.md §5 (keep at most): under at most 0 after replaced, a body's bound is its
-// first death, plus `AT_MOST_GRACE` while it has a live write, whatever its kind.
+// spec/commits.md §5 (keep at most): under 0 after replaced a body's bound is its first death,
+// whatever its kind; an absolute bound stands alone, the earlier of the two counts.
 #[test]
-fn at_most_grace_spec_commits_5() {
+fn at_most_zero_is_the_first_death_spec_commits_5() {
     use crate::retention::body_keep;
-    use osis_base::format::AT_MOST_GRACE_MS as G;
     let r = Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } };
     let h = sample_header();
     let mut s = h.clone();
     s.kind = Kind::ContentSnapshot;
     for x in [&h, &s] {
-        assert_eq!(body_keep(x, &r, Some(20), Some(80), false).at_most, Some(20));
-        assert_eq!(body_keep(x, &r, Some(20), Some(80), true).at_most, Some(20 + G));
-        assert_eq!(body_keep(x, &r, None, None, true).at_most, None);
-        // an absolute bound is not extended
+        assert_eq!(body_keep(x, &r, Some(20), Some(80)).at_most, Some(20));
+        assert_eq!(body_keep(x, &r, None, None).at_most, None);
         let t = Retention { at_most: Bound { abs: Some(30), rel: None }, ..r };
-        assert_eq!(body_keep(x, &t, Some(20), Some(80), true).at_most, Some(30));
+        assert_eq!(body_keep(x, &t, Some(20), Some(80)).at_most, Some(30));
+        let both = Retention { at_most: Bound { abs: Some(30), rel: Some(0) }, ..r };
+        assert_eq!(body_keep(x, &both, Some(20), Some(80)).at_most, Some(20));
+        assert_eq!(body_keep(x, &both, Some(40), Some(80)).at_most, Some(30));
     }
 }
 

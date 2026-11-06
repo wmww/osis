@@ -1212,8 +1212,8 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     Oracle { held: held.to_vec(), deaths, facts, carried, live_later, reads_later, expired_pending, bodies }
 }
 
-/// Past every keep bound, grace and expiry the ops draw (30 min, plus 1 h with a live write), from
-/// any death by `played.now`; close enough that a body held long past its bound shows.
+/// Past every keep bound and expiry the ops draw (30 min) from any death by `played.now`; close
+/// enough that a body held long past its bound shows.
 fn later_than(played: &Played) -> WallMs {
     WallMs(played.now.0 + 2 * HOUR)
 }
@@ -1271,8 +1271,9 @@ fn bound_kept_now(p: &mut Peer, o: &Oracle, played: &Played, fell: &Fell) -> Opt
 }
 
 /// Check (a), later (the node ticked): no applied body under a keep at most is held past its
-/// bound (spec/commits.md §5): an absolute one, valid or not; first death plus grace, live writes
-/// or not; and, whatever its deaths say, none under 0 after replaced without a live write.
+/// bound (spec/commits.md §5): an absolute one, valid or not; under 0 after replaced any death,
+/// live writes or not; and, whatever its deaths say, none under 0 after replaced without a live
+/// write.
 fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> {
     let e = &mut p.engine;
     let mut ids = e.commit_ids();
@@ -1293,7 +1294,7 @@ fn body_past_bound(p: &mut Peer, played: &Played, o: &Oracle) -> Option<String> 
             if missing || !e.body_not_dropped(&id, &a.tid, &a.ak) {
                 continue;
             }
-            let dead_long = rel.is_some() && e.deaths(&id, &a.tid, &a.ak).unwrap().is_some_and(|x| x.0.wall_ms().0 + osis_base::format::AT_MOST_GRACE_MS <= later_than(played).0);
+            let dead_long = rel.is_some() && e.deaths(&id, &a.tid, &a.ak).unwrap().is_some();
             if !abs_past && !dead_long && e.body_live(&id, &a.tid, &a.ak).unwrap() {
                 continue;
             }
@@ -3966,7 +3967,7 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
 }
 
 // spec/commits.md §5: one body under keep at most 0 with two keys, one replaced: the other stays
-// read, the body goes at its grace bound (`body_past_bound`, `live_write_lost`). The generator
+// read, the body goes at its first death (`body_past_bound`, `live_write_lost`). The generator
 // rarely reaches this.
 #[test]
 fn live_write_outlives_its_body_at_the_bound_spec_commits_5() {
@@ -4167,7 +4168,7 @@ fn keep_at_most_drop_joins_again_after_flip_spec_commits_5() {
 // spec/commits.md §5 (under at most 0 the kill that leaves a body no live write drops it in that
 // transaction): order seed 64197. A's write of a keep-at-most-0 map entry, undone (a reset of the
 // entry): the tombstone left, keyed by the entry's dot, counted as a live write of the body, so
-// it was kept to its grace bound; a later reset of the whole map (undoing A's first write,
+// it was kept as live; a later reset of the whole map (undoing A's first write,
 // absent before) pruned the tombstone and left a dead body held.
 #[test]
 fn undone_entry_body_dropped_at_once_spec_commits_5() {
