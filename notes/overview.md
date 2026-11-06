@@ -45,9 +45,15 @@ Known open (issues/): cost residues (perm-eval-cost, node-core-gaps, node-sequen
 - notes/data-model.md: tids, CBOR, large values, AK grammar, schema DSL sketch.
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
 - notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.
-- notes/permissions.md: permission rules' reasons, roles model findings, revocation reasoning, sharing patterns.
+- notes/permissions.md: permission rules' reasons, roles model findings, revocation reasoning, role history cost, links, sharing patterns, osis-perm implementation.
+- notes/owners.md, notes/owner-removal-plan.md: why owners become first admins with disputes settled per node, and the step plan.
+- notes/lockout-recovery.md: recovering from a writer rotating keys to itself (designed, not built).
+- notes/moves.md: moving a thing (not built; the removed import design).
+- notes/realms.md: realms, user-facing actors (on hold).
+- notes/frontier-study.md, notes/keys-requirements-study.md: designs studied and dropped (compact frontiers; key-rotation relaxations and cycle rules).
+- notes/questions-for-tess.md: open questions for Tess. notes/handoff.md: state for the next coordinator.
 - notes/sync.md: sync and serving reasons, limits, what a node learns about data it cannot read, policy defaults.
-- notes/crypto.md: suite choices, costs, crates.
+- notes/crypto.md: suite choices, epochs and establishment, holder actors at depth 0, delete keys, costs, crates.
 - notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, memberships, undo, ephemeral commits held in memory at every node holding them, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: chat as built on design E (examples/chat), with costs.
 - notes/tags.md: the standard core aspects (`name.0`, `body.0`, `tag.0`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
