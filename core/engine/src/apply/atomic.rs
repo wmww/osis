@@ -804,7 +804,7 @@ fn observe_all(tx: &mut Tx<'_>, j: &Joins) -> Result<()> {
 
 /// Re-judges held deltas when the held set changed or something is stale
 /// (`validity::rejudge_all`), and observes the aspects that flipped; returns them.
-fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, Ak)>> {
+pub(crate) fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, Ak)>> {
     if !held_changed && !tx.core.stale() {
         return Ok(Vec::new());
     }

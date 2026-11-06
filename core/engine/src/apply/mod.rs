@@ -3,7 +3,7 @@
 //! store transaction (role before content), late deltas of applied commits. Loading the
 //! engine's indexes from the store lives here too, since it replays what apply records.
 
-mod atomic;
+pub(crate) mod atomic;
 pub(crate) mod copies;
 pub(crate) mod free;
 pub(crate) mod memory;
@@ -1290,6 +1290,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     {
         tx.core.hlc.observe(ts);
     }
+    crate::sides::load(tx)?;
     let mut created = Vec::new();
     tx.scan(records::CREATED, |k, v| {
         let lim = osis_base::Limits { max_depth: 8, max_bytes: v.len() };

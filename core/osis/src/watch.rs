@@ -89,6 +89,7 @@ pub(crate) enum Filter {
     /// Per commit: an aspect's history (`AspectRef::on_history`).
     History(Tid, Ak),
     Diagnostics,
+    Disputes,
     Status,
     /// A text session's `on_remote`: called by the session, no message reaches it.
     Text,
@@ -121,6 +122,7 @@ pub(crate) enum Delivery {
     /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise.
     History { tid: Tid, id: CommitId },
     Diagnostic(Diagnostic),
+    Dispute(crate::Dispute),
     Status(Result<crate::share::Status>),
     Port(PortEvent),
     /// A text session's merged text.
@@ -406,6 +408,11 @@ fn targets(sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     match m {
         Msg::Event(Event::Roster { thing }) => to(&|f| *f == Filter::Grants(*thing), Delivery::Grants),
         Msg::Event(Event::Diagnostic(d)) => to(&|f| *f == Filter::Diagnostics, Delivery::Diagnostic(d.clone())),
+        Msg::Event(Event::DisputeDetected { commit, op, holder, target, author, trust }) => {
+            let side = osis_node::sides::Side { trust: *trust, chosen: false };
+            let d = crate::Dispute::of(&osis_node::sides::DisputeInfo { commit: *commit, op: *op, holder: *holder, target: *target, author: *author, side: Some(side) });
+            to(&|f| *f == Filter::Disputes, Delivery::Dispute(d))
+        }
         Msg::Status(st) => to(&|f| *f == Filter::Status, Delivery::Status(st.clone())),
         Msg::Port(t, ev) => to(&|f| matches!(f, Filter::Port(x, _) if x == t), Delivery::Port(ev.clone())),
         _ => Vec::new(),

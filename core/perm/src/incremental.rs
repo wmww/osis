@@ -9,8 +9,8 @@
 use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::trust::Trust;
-use crate::types::{Point, RoleCommit};
+use crate::trust::{Detected, Trust, DETECT_MAX};
+use crate::types::{Point, RoleCommit, WriteId};
 use crate::walk::Change;
 use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -130,6 +130,20 @@ pub struct Timelines {
     /// The node's trust set (`crate::trust`): a component holding one of its ops is only
     /// evaluated from scratch, never continued, saved or restored.
     trust: Trust,
+    /// Dispute detection (`detect`): the node, what the update underway gathered per
+    /// component (its explicit history entries before, the commits new to it), and what the
+    /// last update found.
+    detect: Option<Tid>,
+    pending: Vec<(u64, BTreeSet<ExplicitKey>, BTreeSet<CommitId>)>,
+    detected: Vec<Detected>,
+    unexamined: usize,
+}
+
+/// An applied explicit write in a history: its point (commit), holder and target.
+type ExplicitKey = (Point, Tid, Tid);
+
+fn explicit_keys(history: &[Change]) -> BTreeSet<ExplicitKey> {
+    history.iter().filter(|h| h.explicit.is_some()).map(|h| (h.point, h.holder, h.target)).collect()
 }
 
 /// Walks to write to and delete from a node's cache, by component root (`Timelines::to_save`).
@@ -191,6 +205,14 @@ impl Timelines {
     /// Sets the trust set (`crate::trust`) and evaluates the components it touched or touches
     /// anew; what changed, as `update_touched`.
     pub fn set_trust(&mut self, held: &dyn HeldSet, trust: Trust) -> Changed {
+        // a switch is no arrival: what stops applying under the new set gets no default side
+        let detect = self.detect.take();
+        let c = self.set_trust_detecting(held, trust);
+        self.detect = detect;
+        c
+    }
+
+    fn set_trust_detecting(&mut self, held: &dyn HeldSet, trust: Trust) -> Changed {
         let old = std::mem::replace(&mut self.trust, trust);
         let touched: Vec<u64> = self.comps.iter().filter(|(_, c)| c.inputs.1.iter().any(|id| old.names(id) || self.trust.names(id))).map(|(i, _)| *i).collect();
         let mut things = BTreeSet::new();
@@ -205,6 +227,56 @@ impl Timelines {
             }
         }
         self.update_touched(held, &things)
+    }
+
+    /// Detects disputes from here on (`take_detected`): after each update, the trustable ops
+    /// of its components that stopped applying and those newly held unapplied are examined
+    /// (`Timeline::scan`, at most `DETECT_MAX` walked per update, those that stopped applying
+    /// first), `me` giving the standing facts. Not during a `set_trust`. `None`: off, as at
+    /// open (a held set loaded again has no arrivals).
+    pub fn detect(&mut self, me: Option<Tid>) {
+        self.detect = me;
+        self.pending.clear();
+    }
+
+    /// What the last update detected, and how many candidates it left unexamined.
+    pub fn take_detected(&mut self) -> (Vec<Detected>, usize) {
+        (std::mem::take(&mut self.detected), std::mem::take(&mut self.unexamined))
+    }
+
+    /// Runs detection over what the update gathered (`pending`).
+    fn run_detection(&mut self) {
+        let pending = std::mem::take(&mut self.pending);
+        let Some(me) = self.detect else { return };
+        let mut budget = DETECT_MAX;
+        for (i, old, new) in pending {
+            let Some(c) = self.comps.get(&i) else { continue };
+            let tl = &c.tl;
+            let now = explicit_keys(tl.history());
+            let mut stood: BTreeSet<WriteId> = BTreeSet::new();
+            let mut cands: Vec<(bool, Point, WriteId)> = Vec::new();
+            for (p, h, t) in old.difference(&now) {
+                if let Some(w) = tl.op_of(&p.commit, h, t) {
+                    stood.insert(w);
+                    cands.push((false, *p, w));
+                }
+            }
+            for id in &new {
+                let Some(c) = tl.input.commits.get(id) else { continue };
+                for k in 0..c.ops.len() {
+                    if let Ok(k) = u32::try_from(k) {
+                        cands.push((true, c.point(), WriteId(*id, k)));
+                    }
+                }
+            }
+            cands.sort_unstable_by_key(|x| (x.0, x.1, x.2.1));
+            cands.dedup_by_key(|x| x.2);
+            let ids: Vec<WriteId> = cands.iter().map(|x| x.2).collect();
+            let (found, walked, left) = tl.scan(&ids, budget, &stood, Some(me));
+            budget -= walked;
+            self.unexamined += left;
+            self.detected.extend(found);
+        }
     }
 
     /// Whether the trust set names one of `commits` (such a component is evaluated from scratch).
@@ -237,6 +309,7 @@ impl Timelines {
             Some((c, things, true)) => {
                 self.changed = things;
                 self.restored = 0;
+                self.run_detection();
                 return c;
             }
             f => f,
@@ -268,6 +341,7 @@ impl Timelines {
             changed.created.extend(c.created);
             self.changed.extend(things);
         }
+        self.run_detection();
         changed
     }
 
@@ -413,7 +487,14 @@ impl Timelines {
                 let list: Vec<Arc<RoleCommit>> = new.values().cloned().collect();
                 let keys: Vec<(Tid, CreationRecord)> = join.iter().filter_map(|(x, r)| r.clone().map(|r| (*x, r))).collect();
                 match c.tl.append(&list, &keys) {
-                    Ok(tl) => c.tl = tl,
+                    Ok(tl) => {
+                        c.tl = tl;
+                        if self.detect.is_some()
+                            && let Some(w) = &was
+                        {
+                            self.pending.push((i, explicit_keys(&w.history), new.keys().copied().collect()));
+                        }
+                    }
                     Err(tl) => {
                         c.tl = *tl;
                         if let Some(w) = &was {
@@ -485,6 +566,9 @@ impl Timelines {
                 cache.insert(comp.inputs, (comp.tl, comp.basis, dirty));
             }
         }
+        // for dispute detection: the commits held before, and the explicit writes applied before
+        let old_ids: BTreeSet<CommitId> = if self.detect.is_some() { cache.keys().flat_map(|k| k.1.iter().copied()).collect() } else { BTreeSet::new() };
+        let old_explicit = if self.detect.is_some() { explicit_keys(&history) } else { BTreeSet::new() };
         let mut dsu = Dsu::default();
         let mut ids: BTreeMap<Tid, BTreeSet<CommitId>> = BTreeMap::new();
         let mut created: BTreeSet<Tid> = BTreeSet::new();
@@ -528,6 +612,7 @@ impl Timelines {
                 }
                 x => x,
             };
+            let fresh = hit.is_none();
             let (tl, basis, dirty) = match hit {
                 Some(x) => x,
                 None => {
@@ -601,6 +686,11 @@ impl Timelines {
                 self.unsaved.insert(i);
             }
             let per = inputs.0.iter().filter_map(|t| ids.get(t).map(|s| (*t, s.clone()))).collect();
+            if self.detect.is_some() && fresh {
+                let was = old_explicit.iter().filter(|k| inputs.1.contains(&k.0.commit)).copied().collect();
+                let new = inputs.1.difference(&old_ids).copied().collect();
+                self.pending.push((i, was, new));
+            }
             self.comps.insert(i, Comp { inputs, tl, basis, per });
         }
         for (k, (_, basis, _)) in cache {
@@ -747,6 +837,11 @@ impl Timelines {
     /// Every thing with a timeline (one with edge writes held).
     pub fn things(&self) -> impl Iterator<Item = &Tid> {
         self.of.keys()
+    }
+
+    /// Every component's timeline.
+    pub fn each(&self) -> impl Iterator<Item = &Timeline> {
+        self.comps.values().map(|c| &c.tl)
     }
 
     pub fn get(&self, thing: &Tid) -> Option<&Timeline> {

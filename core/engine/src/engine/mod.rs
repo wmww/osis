@@ -719,6 +719,10 @@ pub struct Core {
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     pub timelines: Timelines,
+    /// The sides taken in admin disputes (`crate::sides`), the walk's trust set; `detect`:
+    /// dispute detection is on (after open: a held set loaded again has no arrivals).
+    pub sides: crate::sides::Sides,
+    pub detect: bool,
     /// Components with fewer commits and snapshots are not saved (`index::WALK_CACHE_MIN`;
     /// tests lower it).
     pub walk_cache_min: usize,
@@ -954,7 +958,7 @@ impl Core {
     /// Notes what a timeline update changed (`osis_perm::Changed`): a role at any point moves
     /// only for those upstream of a changed edge's holder or a new record, and only down from
     /// its target or that record; what is below a new record has a new owner chain.
-    fn timelines_changed(&mut self, c: osis_perm::Changed) {
+    pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
         self.stale_things.extend(c.evaluated);
         self.stale_things.extend(self.ix.held.below(&c.created));
         // a write on a changed edge may have stopped or started applying, whoever signed it, and
@@ -1046,6 +1050,9 @@ impl Core {
             self.unrouted = None;
             let changed = self.timelines.update_touched(&self.ix.held, &touched);
             self.timelines_changed(changed);
+            if self.detect {
+                crate::sides::after_update(self);
+            }
         }
         self.role_changed();
     }
@@ -1155,6 +1162,7 @@ impl Core {
     fn commit_journal(&mut self) {
         self.ix.commit();
         self.memory.commit();
+        self.sides.commit();
         self.written.clear();
         self.dirty = false;
     }
@@ -1162,6 +1170,7 @@ impl Core {
     /// Undoes the aborted transaction's changes to the caches and indexes (the caches stay when
     /// it changed nothing: a failed read keeps them).
     fn rollback(&mut self) {
+        self.sides.rollback();
         if self.dirty || !self.written.is_empty() {
             self.waits.clear();
             self.dirty = false;
@@ -1195,6 +1204,8 @@ impl Core {
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
             self.timelines.update_touched(&self.ix.held, &touched);
+            // the restored held set brings nothing new
+            self.timelines.take_detected();
         }
         self.stale_things.clear();
         self.stale_authors.clear();
@@ -1249,6 +1260,8 @@ impl Core {
             inbox_actors: None,
             pages: HashMap::new(),
             timelines: Timelines::new(),
+            sides: crate::sides::Sides::default(),
+            detect: false,
             walk_cache_min: index::WALK_CACHE_MIN,
             walks_done: None,
             stale_things: BTreeSet::new(),
@@ -2124,7 +2137,7 @@ impl Engine {
                 }
                 let persisted = {
                     let _s = crate::costs::span("tx: persist index");
-                    r.and_then(|v| index::persist(&mut tx).map(|_| v))
+                    r.and_then(|v| crate::sides::persist(&mut tx).map(|_| v)).and_then(|v| index::persist(&mut tx).map(|_| v))
                 };
                 match persisted {
                     Ok(v) => {
@@ -2218,6 +2231,8 @@ impl Engine {
             // leaves the open as it is)
             let _ = self.run(|_| Ok(()));
         }
+        self.core.detect = true;
+        self.core.timelines.detect(Some(self.core.id.tid()));
         Ok(())
     }
 }

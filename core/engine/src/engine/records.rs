@@ -51,6 +51,8 @@ pub const SUSPECT: &[u8] = b"q/";
 pub const SCHEMAS: &[u8] = b"d/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
+/// The sides taken in admin disputes (`crate::sides`), one record.
+pub const SIDES: &[u8] = b"sides";
 
 /// A dot as a value (local records).
 pub fn dot_value(d: &osis_crdt::Dot) -> osis_base::Value {

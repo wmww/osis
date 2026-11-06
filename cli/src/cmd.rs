@@ -635,6 +635,24 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let a = confirm(ctx, db.import_contact(&c))?;
             ctx.emit(&[a.to_uri()], J::obj([("actor", J::tid(a))]))
         }
+        Cmd::Disputes(DisputeCmd::Ls) => {
+            let (ds, left) = db.disputes()?;
+            let side = |s: osis::Side| if s == osis::Side::Author { "author" } else { "holder" };
+            let mut lines: Vec<String> = ds.iter().map(|d| format!("{} {} {} {} {}{}", d.id, d.target.to_uri(), d.author.to_uri(), d.holder.to_uri(), side(d.side), if d.chosen { " chosen" } else { "" })).collect();
+            if left > 0 {
+                lines.push(format!("{left} not examined"));
+            }
+            let j = J::obj([("disputes", J::Arr(ds.iter().map(|d| J::obj([("id", J::str(d.id.to_string())), ("target", J::tid(d.target)), ("author", J::tid(d.author)), ("holder", J::tid(d.holder)), ("side", J::str(side(d.side))), ("chosen", J::str(if d.chosen { "true" } else { "false" }))])).collect())), ("unexamined", J::int(left as i64))]);
+            ctx.emit(&lines, j)
+        }
+        Cmd::Disputes(DisputeCmd::Choose { id, side }) => {
+            let side = match side.as_str() {
+                "author" => osis::Side::Author,
+                "holder" => osis::Side::Holder,
+                _ => return Err(exit(2, "side: author or holder")),
+            };
+            Ok(db.choose_side(id.parse()?, side)?)
+        }
         Cmd::Ownerless { admin } => {
             let t = db.create_ownerless(ctx.tid(&admin)?)?;
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))

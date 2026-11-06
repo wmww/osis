@@ -84,6 +84,9 @@ pub enum Event {
     History(Arc<Vec<(Tid, Ak, BatchId)>>),
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_base::LabelId, detail: String },
+    /// An admin dispute was detected and a side taken by default (`crate::sides`): `author`'s
+    /// edge write `op` of `commit` lowering `holder` on `target`, `trust`: this node sides with it.
+    DisputeDetected { commit: CommitId, op: u32, holder: Tid, target: Tid, author: Tid, trust: bool },
     Diagnostic(Diagnostic),
 }
 
@@ -141,6 +144,9 @@ pub enum DiagnosticKind {
     /// yet, or named by no blob) or failing verification. That position read as absent
     /// (spec/data-model.md §6; `tids`: the thing).
     Unreadable,
+    /// Contestable role writes arrived or stopped applying beyond what one update examines
+    /// (`osis_perm::DETECT_MAX`): the dispute list shows them, no side taken by default.
+    DisputesUnexamined,
     /// The `osis` sync driver died (a panic, or its runtime shut down with the store open):
     /// nothing syncs until the store is opened again; waits fail `Network` (`detail`: why).
     SyncStopped,

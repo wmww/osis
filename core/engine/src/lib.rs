@@ -17,6 +17,7 @@ pub mod labeling;
 pub mod local_peer;
 pub mod retention;
 pub mod rotation;
+pub mod sides;
 pub mod undo;
 
 pub use apply::{Creation, Ingested, Reason};
@@ -25,3 +26,4 @@ pub use error::{Error, Result};
 pub use ephemeral::Written;
 pub use events::{Cause, BatchId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
 pub use identity::Identity;
+pub use sides::{DisputeInfo, Side};

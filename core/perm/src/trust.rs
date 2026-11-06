@@ -49,6 +49,27 @@ pub struct Dispute {
     pub holder: Tid,
 }
 
+/// A dispute an update detected (`Timelines::take_detected`), with what a default side reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Detected {
+    pub dispute: Dispute,
+    pub author: Tid,
+    pub target: Tid,
+    /// R applied in this node's walk before the update (it stood here, then stopped applying),
+    /// as against arriving unapplied.
+    pub stood: bool,
+    /// Whether the node (`Timelines::detect`) holds a role on something the target reaches: on
+    /// the walk's side, and with R trusted.
+    pub standing: (bool, bool),
+}
+
+/// Candidates walked per update by dispute detection (`Timelines::detect`): a resource bound
+/// against a hostile author, whose every contestable write costs a walk once, when it arrives
+/// or stops applying. Past it candidates wait for the scan (`Timeline::disputes`), reported
+/// as unexamined, with no default side. At 0 detection records no default (the walk's side
+/// everywhere, as before step 4); at infinity a batch of k hostile writes costs k walks.
+pub const DETECT_MAX: usize = 16;
+
 /// A held write on an edge: (point, op, value).
 type EdgeWrite = (Point, u32, Option<Edge>);
 
