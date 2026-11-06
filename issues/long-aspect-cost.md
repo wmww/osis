@@ -8,7 +8,7 @@ Fixed here: the join's walk of the aspect (`Indexes::bounded_held`), the quadrat
 
 In order of damage:
 
-1. **A kick over about 1.9*10^6 commits cannot be sent.** The frontier passes `MAX_LIST_BYTES`, so `demote` fails with `Commit(TooLarge("header list"))` and the member stays. Before it succeeded and every receiver refused it. Tess chose IDs only (spec/requirements.md Cost); ID batches are the fallback (notes/frontier-study.md §11).
+1. **A kick over about 1.9*10^6 commits cannot be sent.** The frontier passes `MAX_LIST_BYTES`, so `demote` fails with `Commit(TooLarge("header list"))` and the member stays. Before it succeeded and every receiver refused it. Tess chose IDs only (spec/requirements.md Cost); ID batches are the fallback (notes/frontier-study.md (ID batches)).
 2. **Every flip walks the thing's commits**, under the engine lock (`validity::rejudge_all`, its `judge` over `by_thing`): 0.6 s at 10^6 for one flipped write. The first after an open also decodes every header: 3 s more and resident from 2.6 to 4.7 GiB. 
 3. **Open at 10^6**: 5 s CPU, 2.6 GiB resident (2.6 KB per message). Lazy headers: issues/node-core-gaps.md. The first open after a long fill also rewrites the index.
 4. **A write while many deltas are invalid** costs 1 us per invalid delta (`Unmerge::probe` walks them per join): 0.30 s at 3*10^5. A received invalid delta runs `Unmerge::of` each, so a node first learning a kicked member's writes is quadratic in them (not measured). Asking per dot which delta owns it would remove both.
