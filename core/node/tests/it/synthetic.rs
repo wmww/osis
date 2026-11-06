@@ -46,9 +46,9 @@ fn diagnostics_deduped() {
     let mut lp = net(2, 63);
     new_thing(&mut lp, 0);
     let pk = lp.packages(0).unwrap().pop().unwrap();
+    // malformed: the blob's outer array one short
     let mut bad = pk.bytes.clone();
-    let n = bad.len();
-    bad[n - 1] ^= 1;
+    bad[0] ^= 1;
     for _ in 0..3 {
         let _ = lp.peers[1].engine.ingest(&bad, Vec::new());
     }

@@ -68,20 +68,24 @@ impl NetSim {
         Ak::new(ak).map_err(|e| self.fail(e.to_string()))
     }
 
-    /// Node `n` makes a window under and added to `g`, then sets its state, and tracks it.
-    pub fn window(&mut self, n: usize, g: Tid) -> Res<Tid> {
+    /// Node `n` makes a window under and added to `g`, then sets its state, and tracks it; none
+    /// when the node crashed making it.
+    pub fn window(&mut self, n: usize, g: Tid) -> Res<Option<Tid>> {
         let state = self.eph_ak(STATE)?;
         let e = self.engine(n)?;
         let mut m = Mutation::new();
         let w = e.new_thing(&mut m, g);
         let add = PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) };
         m.op(g, &ct::GROUP, add).map_err(|e| self.fail(e.to_string()))?;
-        self.eph_write(n, m, format!("makes window {w}"))?;
+        if self.write(n, m)?.is_empty() {
+            return Ok(None);
+        }
+        self.note(format!("node {n} makes window {w}"));
         let mut m = Mutation::new();
         m.set(w, &state, &Value::Str("w".into())).map_err(|e| self.fail(e.to_string()))?;
         self.eph_write(n, m, format!("sets window {w}"))?;
         self.eph.things.push((w, g));
-        Ok(w)
+        Ok(Some(w))
     }
 
     /// A random up node of `ns` makes a window in `g` (none if all are down).
