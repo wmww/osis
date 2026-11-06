@@ -1,4 +1,4 @@
-//! One aspect with very many retained writes: chat design E (notes/chat-designs/e.md), every
+//! One aspect with very many retained writes: chat design E (notes/chat.md), every
 //! message one register write on an aspect of the chat, kept forever. spec/requirements.md, Scale.
 //! Numbers in notes/testing.md, "Scale checks". By hand, release, one size at a time:
 //! `OSIS_SCALE_N=100000 OSIS_SCALE_DIR=/some/dir cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::long_aspect::cost`

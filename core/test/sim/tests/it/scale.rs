@@ -1,4 +1,4 @@
-//! A chat with many members (design E, notes/chat-designs/e.md), each member a node on the sim:
+//! A chat with many members (design E, notes/chat.md), each member a node on the sim:
 //! one ownerless thing with one label, members hold write grants, each message one kept write on
 //! one aspect. Numbers in notes/testing.md, "Scale checks". By hand, release, one size at a time:
 //! `OSIS_SCALE_M=100 OSIS_SCALE_N=200 cargo test --release -p osis-sim --test it -- --ignored --nocapture --test-threads 1 scale::chat_members`

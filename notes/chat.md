@@ -1,5 +1,22 @@
 # Chat
-> Summary: Chat as built on design E (notes/chat-designs/e.md): crate `osis-chat` (libs/chat) over the `osis` API, and `osis chat`: one ownerless actor per chat, participants hold write, a message is one kept write on `chat:msgs:y<year>.0`, the sender the verified actor. What is built, what is left out, costs, rotation costs and Tess's decision on them.
+> Summary: Chat (design E): crate `osis-chat` (libs/chat) over the `osis` API, and `osis chat`: one ownerless actor per chat, participants hold write, a message is one kept write on `chat:msgs:y<year>.0`, the sender the verified actor; the chat's history is the chat. Why this shape, Tess's decisions, what is built, what is left out, costs, realms (servers and channels), the rejected designs. Behavior case by case: notes/chat-cases.md.
+
+## Design E
+- A chat C is one thing, actor and label, ownerless by default (`create_ownerless`, spec/permissions.md §1), synced as a group of itself with an empty member list; its label carries its own aspects, participants are its roster. No member actor, no member list, no per-message thing.
+- A message is a delta on `chat:msgs:y<year>.0` (one aspect name per year; that bounds only re-merge, not open, sync or frontiers, which span all aspects); author, time and retention come from the signed header. The held bodies are the chat: reads are history (held bodies with author, time, validity), not state. Retention `author_or_admin`, keep at least forever (a permanent delta): a body is must-hold for good, compaction may not drop it, only purge rights decide, and a non-admin holds no delete key for it, so at honest nodes no non-admin can destroy or hide another's message, by snapshot, purge, reset, `ts` or delete key.
+- A required retention (`required.0^`, spec/commits.md §5) set at creation, before anyone is granted, refuses deltas with any other, so no participant can write under an earlier key.
+- The sender is the header's `actor`, checked by validity (spec/permissions.md §5.2 Acting): nobody can speak as another.
+- Why the message is the write, not a register holding a message thing's tid: the closure runs only through member lists (spec/data-model.md §8), so a message thing would need a member actor and a placement again.
+- Cost of the shape: validity after a demotion lists every surviving message of the removed author in the frontier (about 34 B per message, a kick caps near 1.9×10^6 messages of one participant) until frontier heads land (notes/frontier-study.md, unbuilt); no compaction; open is O(all commits) (issues/long-aspect-cost.md).
+
+## Tess's decisions
+- Ownerless is the default app's default, not a rule: a chat may be owned, by a realm or anyone. A chat keeps all messages, so it keeps its member history too and needs no roster compaction. Recovery from a vandal writer needs only an admin able to demote, owned or not.
+- Accepted: a stolen unlocked device shows history; no deniability; deletion binds only honest clients; hosts see metadata. Eventual revocation is a general osis limit, not chat's.
+- Member forward secrecy is probably undesirable (and would need erasable per-device KEM keys, MLS-sized; against spec/crypto.md §3).
+- Adding without history should be a core op (issues/history-less-grant.md); segments (below) are the fallback.
+- Edit is the one place chat does not use ordinary osis editing (an edit is a new message).
+- A removed participant keeps its copy by default (`required.0^` `keep`, filled by a kick); erasing is a setting.
+- Defaults: moderator delete; lasting tombstones; others keep a kicked participant's messages; block is local; disappearing timer per chat; add with history; edits purge the old text. Settings: add without history; permanent chat (`nobody`); admin-only or author-only delete; edit history kept or editing off; private read position; participants may invite. Target realm size 10,000 members.
 
 ## As built
 - **Create** (`create`, one flow): `create_ownerless(me)` (plain `create()` once owners go, issues/owner-to-first-admin.md), `required.0^` (`chat:msgs:` the message rule; the empty prefix the plain default, so `nobody` junk on another aspect is invalid; `retain_copies` true), `chat:settings.0^` (name, edit mode) in one commit, then `sync`. A serving node must take it by sync ID or `--admit open`: `admit own` does not.
@@ -14,6 +31,7 @@
 - **Client with its own actor**: reads and watches over the port; with its own write grant it is its own sender, so it cannot edit what its account's nodes sent.
 
 ## Left out
+- Segments (no core change, unbuilt): adding without history as a chain of chats; an admin creates C2, grants every current participant and the newcomer, copies the settings, and adds C2 to C1's `chat:next.0^` (admin-only set). Old participants stitch by time; the newcomer holds only C2 and learns nothing of C1. Any admin re-applies roster changes across segments on seeing `next`; links made on C1 die at each segment; a kick is one commit per segment; `next` is a set, so a fork shows both branches to old participants and one to each newcomer. About 15 KB per member per segment.
 - Unbuilt core: adding without history (issues/history-less-grant.md), stopping a fetch short of old messages (issues/partial-history-fetch.md; a label does fill newest first, so old messages reach a new node late, each past a cursor), a kick past about 1.9×10^6 messages of one participant (frontier heads), realms (notes/realms.md: servers and channels; a channel is a chat a realm holds write on).
 - Not done here: reactions, read marker, typing, hidden set, `chat:next.0^` segments, attachments, the leave audit.
 - Known and small: an edited message deleted leaves a tombstone per version (the link was in the purged bodies). A watch hears an edit under `Purge` as an edit and then a deletion of the old version: a read tells them apart. A concurrent edit landing after a delete brings the text back on the versions it did not purge. Re-adding a participant revives posts it made while kicked (a design E forced answer; `kicked_while_offline` asserts it). A kicked account's new node gets nothing, its own messages included.
@@ -21,7 +39,8 @@
 ## Costs
 On the sim (`--release`, every node in one process, `scale_long`, `scale_small`, `scale_post_read`):
 - 10^4 messages, 1 participant: 624 B up per message; a local post at the end 8.8 ms, its pass included; newest 50 read 1.5 ms; all 10^4 by pages 0.2 s; `find` 5000 back 0.36 s; a new participant's fetch 23 s, 6 MB down; a kick 3 s.
-- Many participants: `scale::chat_members`, notes/testing.md; what is left: issues/chat-add-cost.md.
+- Many participants (`scale::chat_members`, notes/testing.md): per node a receive and a plain post stay about 2 ms from 10 to 500 participants; an add costs each node about 10-35 ms, flat in messages; a joiner reads its newest page in about 11 ms per participant plus 0.1 ms per message (100 participants, 10^4 messages: 2 s), the rest of its fill behind at 1.1 ms per message; each participant stores about 52 KB at every device, so 10^4 participants would be 520 MB per device: issues/chat-add-cost.md.
+- Per message: about 0.5 KB on the wire, about 1.2 KB stored at every device for good (body plus header row); expired or purged about 33 B residue; a purged permanent delta keeps its 300 B header and its purge commit's. At 10^6 messages (extrapolated): open about 6 s, first sync about 15 min. A hostile 10^7-message flood costs every participant about 5 GB until purged by author (about 11 purge commits, 750 MB, kept 90 days); `purge_author` never overrides author-only or `nobody` purge sets, so under those settings a flood stays.
 
 ## Rotation costs
 - A read+write rotation costs 2.7 KB per remaining holder (`scale.rs` `roster_removal_cost`: 272 KB at 100 writers, 2.70 MB at 1000; 1.05 s to commit at 1000). Downloads multiply by the holder count, only on removals.
@@ -29,3 +48,15 @@ On the sim (`--release`, every node in one process, `scale_long`, `scale_small`,
 
 ## Links: why joiners stay on K
 A joiner's own grant on C would need L to grant on C: K with `may_grant` on C, a spec change. It would not end shared fate: the joiner may keep the seed, so a kick that leaves the link lets it rejoin. So `kick` ends the link either way. Kept; `participants` reads through K.
+
+## Realms: servers, channels, roles
+notes/realms.md (in discussion) applied to chat: a server or team is a realm R (members hold write on R, admins admin); a channel is a chat with an edge for R at write, or owned by R (members post at the path minimum; read-only announcements: R holds read); a mod role is a realm M holding admin on R or on some channels (its members hold admin on M, since admin passes only through admin); realms nest by grants at the path minimum. A plain chat is no realm. The chat app's sidebar (categories, order, names of unsynced channels) is a layout aspect on R, admin-written. Chat must not preclude a realm's edge on a chat, a chat owned by a realm, or a role realm holding admin on a chat; nothing does.
+- Removal: one commit protects new content everywhere; cutting the removed member's sync and upload keys at hosts needs an admin step per channel per host, by whichever admin device next syncs that label; until then it reads ciphertext and can upload.
+- Fits about 1000 to a few thousand members today. Core asks for big realms: default-off sync of a realm's things (today `compute_labels` syncs every label whose secret the node holds); a settle rule for cascade rotations (any writer's next pass re-keys a child, eagerly, and online writers may fork); pure readers placing no chain (11.5 KB per account), card (1.5 KB) or heartbeats under big labels (about 13 MB once and 2.4 MB a day per device at 1000 members); frontier heads by commit ID, so private channels' tids do not leak in kick certificates.
+- Not traced to depth: per-channel mute and timeouts (client-honored; rights cannot deny), delete-only mods (messages on a chat-owned thing with an admin edge), unread counts (a latest-time register per channel on R), mentions in unsynced channels, the audit log (an ownerless realm's role history), read-only channels filling deposit budgets.
+
+## Rejected designs
+- **A** messages as things owned by a member actor M in M's own group, C granted read on M: any member can edit C's member list (remove another's M, deleting their history at hosts; kicking the vandal does not undo it), and a kicked member's writes on M stay valid, stopped only by the upload stamp.
+- **B** as A with every message added to C's list: one-commit send leaves a removed message's body at hosts, pre-kick messages the kicker had not received vanish, any member can unlist any message, every message is a thing.
+- **C** messages as map entries on M, an add-only member list (a core change): no admin erase of one message, a kicked member's late writes are stopped only by stamps, a sender bound by M's owner. Better than E only on compaction and kick cost while frontiers list commits.
+- **D** C plus an hourly content key chain for forward secrecy against a host recording: refuted, the seed's box is in the recording and opens under keys the device keeps, so a thief rebuilds every hour key. Real member forward secrecy needs erasable per-device keys.
