@@ -69,7 +69,7 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/ephemeral.md: ephemeral data as built (drafts, `~` aspects, persistence, draft memberships, undo, memory commits held at every node holding them, relay-only signals, values kept alive by their author's rewrites, superseded expiring writes, bounds), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: chat (design E, libs/chat): why that shape, Tess's decisions, what is built, costs, realms, rejected designs; notes/chat-cases.md: chat behavior case by case.
 - notes/tags.md: the standard core aspects (`name.0`, `body.0`, `tag.0`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
-- notes/networking.md: network design (own transport abstraction, iroh for P2P, official infrastructure, reachability, transport keys), first contact by link, risks, push wake-up proposal, osis-transport as built.
+- notes/networking.md: network design (own transport abstraction, own P2P replacing iroh, no central server, reachability, transport keys), first contact by link, risks, push wake-up proposal, osis-transport as built.
 - notes/peers.md: co-reader peers as built: `reach.0`, dialing, LAN announcements and routes, co-reader serving, local passes.
 - notes/client-port.md: using the API from another process or machine: sources, the client protocol, client actors, the daemon socket.
 - notes/local-store.md: encrypted local store and key-erasure deletion, osis-store as built.
