@@ -418,6 +418,7 @@ fn create_add_delete_spec_data_model_8() {
     let db = db(1);
     let mut w = db.write();
     let folder = w.create_in(db.me(), &[db.me()]).unwrap();
+    w.group(db.me()).add(osis::Member::Subgroup(folder)).unwrap();
     let a = w.create_in(db.me(), &[folder, db.me()]).unwrap();
     let b = w.create().unwrap();
     w.at(a, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
@@ -430,7 +431,7 @@ fn create_add_delete_spec_data_model_8() {
     let mut w = db.write();
     w.group(db.me()).remove(osis::Member::Item(a)).unwrap();
     w.commit().unwrap();
-    assert_eq!(db.groups_of(a).unwrap().within, vec![folder]);
+    assert_eq!(db.groups_of(a).unwrap().item_of, vec![folder]);
     let mut w = db.write();
     let s = w.create().unwrap();
     w.group(folder).add(osis::Member::Subgroup(s)).unwrap();
@@ -1375,15 +1376,15 @@ fn members_list_a_groups_members() {
     w.group(g).add(osis::Member::Item(kept)).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let (draft, sub) = (w.create().unwrap(), w.create().unwrap());
-    w.group(g).add(osis::Member::Item(draft)).unwrap();
+    let (item, sub) = (w.create().unwrap(), w.create().unwrap());
+    w.group(g).add(osis::Member::Item(item)).unwrap();
     w.group(g).add(osis::Member::Subgroup(sub)).unwrap();
     w.commit().unwrap();
-    let mut want = vec![kept, draft];
+    let mut want = vec![kept, item];
     want.sort();
     assert_eq!(db.items(g).unwrap(), want);
     assert_eq!(db.subgroups(g).unwrap(), vec![sub]);
-    assert!(db.groups_of(draft).unwrap().item_of.contains(&g), "the same answer from the other side");
+    assert!(db.groups_of(item).unwrap().item_of.contains(&g), "the same answer from the other side");
     assert_eq!(db.items(kept).unwrap(), Vec::<osis::Tid>::new());
 }
 
@@ -1430,25 +1431,15 @@ fn a_first_member_makes_a_group() {
     w.at(t, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&Value::Int(1)).unwrap();
     w.commit().unwrap();
     assert_eq!(db.grants(t).unwrap().get(&group_actor).map(|e| e.role), Some(Role::Admin), "its first admin");
-    // a new thing in the commit, and a member that stays in memory: nothing durable
+    // a new thing in the commit, its member new too: one commit
     let before = db.engine(|e| e.commit_ids().len());
     let (g, e) = db.commit_with(|w| {
         let (g, e) = (w.create()?, w.create()?);
         w.group(g).add(osis::Member::Item(e))?;
         Ok((g, e))
     }).unwrap();
-    assert_eq!(db.engine(|e| e.commit_ids().len()), before);
+    assert_eq!(db.engine(|e| e.commit_ids().len()), before + 1);
     assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(e)]);
-    // a durable group's first member, still in memory: nothing durable either
-    let durable = made(&db);
-    let before = db.engine(|e| e.commit_ids().len());
-    let e = db.commit_with(|w| {
-        let e = w.create()?;
-        w.group(durable).add(osis::Member::Item(e))?;
-        Ok(e)
-    }).unwrap();
-    assert_eq!(db.engine(|e| e.commit_ids().len()), before);
-    assert_eq!(db.members(durable).unwrap(), vec![osis::Member::Item(e)]);
 }
 
 /// A durable thing of `db`'s.

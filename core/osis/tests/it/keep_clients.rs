@@ -746,7 +746,7 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
 fn a_client_adds_no_copy_spec_permissions_3() {
     let c = chat(GrantOpts::default(), Role::Write);
     let (actor, _, app) = c.app(Role::Admin);
-    let own = c.b.commit_with(|w| { let o = w.create()?; w.group(c.b.me()).add(osis::Member::Item(o))?; Ok(o) }).unwrap();
+    let own = c.b.commit_with(|w| { let o = w.create()?; w.group(c.b.me()).add(osis::Member::Item(o))?; w.group(c.b.me()).add(osis::Member::Subgroup(o))?; Ok(o) }).unwrap();
     c.b.grant(own, actor, Role::Write, Default::default()).unwrap();
     c.kick(c.bob, Some(true));
     until("the app reads the copy", || app.at(c.m, osis::DynamicAspectKey::untyped(text())).get().ok().flatten().is_some());
@@ -754,7 +754,7 @@ fn a_client_adds_no_copy_spec_permissions_3() {
     assert!(matches!(app.commit_with(|w| w.group(own).add(osis::Member::Item(c.m))), Err(Error::Permission { .. })));
 }
 
-// spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issue ephemeral-data (closed)): an ephemeral write reaches no copy, and neither the node nor its client writes one; a client reads no draft of the chat
+// spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issue ephemeral-data (closed)): an ephemeral write reaches no copy, and neither the node nor its client writes one
 #[test]
 fn ephemeral_data_and_a_copy_spec_permissions_3() {
     let mut w = World::new();
@@ -763,12 +763,14 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
     b.grant(bob, app, Role::Read, Default::default()).unwrap();
     let e = ak("t:e.0~");
     a.commit_set(m, osis::DynamicAspectKey::untyped(e.clone()), &s("before")).unwrap();
-    let mut x = a.write();
-    let t = x.create_with_admin(g).unwrap();
-    x.group(g).add(osis::Member::Item(t)).unwrap();
-    x.at(t, osis::DynamicAspectKey::untyped(e.clone())).set(&s("before")).unwrap();
-    let thing = t;
-    x.commit().unwrap();
+    let thing = a
+        .commit_with(|x| {
+            let t = x.create_with_admin(g)?;
+            x.group(g).add(osis::Member::Item(t))?;
+            Ok(t)
+        })
+        .unwrap();
+    a.commit_set(thing, osis::DynamicAspectKey::untyped(e.clone()), &s("before")).unwrap();
     w.run();
     assert_eq!(b.at(thing, osis::DynamicAspectKey::untyped(e.clone())).get().unwrap(), Some(s("before")));
     sim_kick(&mut w, &a, g, bob, None);
@@ -778,7 +780,6 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
     let c = b.acting_as(app);
     assert_eq!(b.at(m, osis::DynamicAspectKey::untyped(e.clone())).get().unwrap(), Some(s("before")));
     assert_eq!(b.at(thing, osis::DynamicAspectKey::untyped(e.clone())).get().unwrap(), Some(s("before")));
-    assert!(!c.has_content(thing).unwrap());
     for db in [&b, &c] {
         assert!(matches!(db.commit_set(m, osis::DynamicAspectKey::untyped(e.clone()), &s("no")), Err(Error::Permission { .. })));
         assert!(db.commit_set(thing, osis::DynamicAspectKey::untyped(e.clone()), &s("no")).is_err());

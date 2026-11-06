@@ -7,7 +7,7 @@
   - A **role commit** (spec/commits.md §2) carries writes of **role-class aspects** (spec/data-model.md §9).
   - The **role timeline** (§5.1) orders edge writes.
   - A **co-reader open** (proof 3, spec/sync.md §5) is a label open by a node that reads the label.
-  - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0` or `ephemeral_group.0~`, spec/data-model.md §8), which grants no rights.
+  - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0`, spec/data-model.md §8), which grants no rights.
   - A value in a CRDT set is an **element**.
 - **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
   - A **key actor** (node, recovery key, link key) also has a signing key committed by its tid and holds admin on itself.
@@ -25,7 +25,7 @@
 - Admins are equal and may remove each other, the first admin included.
 - An edge write whose holder is its target is not applied (§5.1).
 - The role-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants, self-removals and finalizes (§2), and what rotations and re-seals write into `secrets.0` and `keys.0` (§3).
-- A draft (spec/data-model.md §1) has no role-class aspects: a node's role on it is its role on a new thing whose first admin is the nearest durable thing up its record chain. Ephemeral writes need the role the durable write would need.
+- Ephemeral writes (spec/data-model.md §2) need the role the durable write would need.
 
 ## 2. Role grant writes
 - **Edge writes**: granting, changing and removing a grant are writes to the target's `roles.0`, each in its own role commit (spec/commits.md §2), by a node with admin on the target (a finalize, below: with write).
@@ -263,10 +263,10 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - Role commits act for their author, so the role timeline never depends on this.
 - One dot names one write: two commits of one session with overlapping ranges on one aspect are both invalid (spec/commits.md §4).
 - A delta that becomes invalid is un-merged (spec/crdt.md §4.6).
-- **Ephemeral parts**: a part of an ephemeral commit (spec/commits.md §2) is judged as the durable part of its kind would be, at the commit's key, needing the aspect's role (§1; on a draft, through the nearest durable thing up its record chain):
+- **Ephemeral parts**: a part of an ephemeral commit (spec/commits.md §2) is judged as the durable part of its kind would be, at the commit's key, needing the aspect's role (§1):
   - a session-form one as its author's content delta;
   - a snapshot one as its author's compaction snapshot delta.
-  - A part on a core aspect other than `ephemeral_group.0~` (spec/data-model.md §9) is invalid.
+  - A part on a core aspect (spec/data-model.md §9) is invalid.
   - A demotion's frontier lists no ephemeral commit, so an explicit demotion invalidates all the demoted node's ephemeral commits, its snapshots included. What a valid ephemeral snapshot carries it vouches for, as any snapshot does; one turned invalid gives nothing, and a body dropped as covered by it counts as never received, as for a durable snapshot. What becomes invalid is un-merged (spec/crdt.md §4.6).
 
 ### 5.3 Revoking (client behavior)

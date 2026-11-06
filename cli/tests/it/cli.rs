@@ -280,8 +280,8 @@ fn commits_undo_redo_plan_cli_4() {
 #[test]
 fn groups_plan_cli_4() {
     let s = S::mem();
-    assert_eq!(s.code(&["create"]), 2, "nothing durable: gone at exit");
-    assert_eq!(s.code(&["create", "--in", "me"]), 2, "an ephemeral member");
+    s.ok(&["create"]);
+    s.ok(&["create", "--in", "me"]);
     let g = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     let t = s.thing();
     s.ok(&["group", "add", &g, &t]);

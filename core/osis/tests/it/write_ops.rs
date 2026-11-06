@@ -213,6 +213,12 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
         }
     }
     for run in runs {
+        // a new thing's record is durable and never expires: never beside ephemeral or expiring writes
+        if fresh > 0 && run.iter().any(|c| commit_class(c) != (0, false)) {
+            for _ in 0..std::mem::take(&mut fresh) {
+                things.push(db.commit_with(|w| w.create()).unwrap());
+            }
+        }
         let mut w = db.write();
         let mut all = things.clone();
         for _ in 0..fresh {
@@ -255,9 +261,7 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
     for t in things.iter().chain(&wd.groups) {
         let mut vals = Vec::new();
         for a in db.aspects(*t).unwrap() {
-            // `ephemeral_group.0~`: a draft's memberships, left empty where it persisted
-            // (unbatched: added while ephemeral); `groups_of` compares what they mean
-            if a.as_str() == "created.0" || a.as_str() == "ephemeral_group.0~" {
+            if a.as_str() == "created.0" {
                 continue;
             }
             vals.push(format!("{a}={:?}", db.at(*t, osis::DynamicAspectKey::untyped(a.clone())).get().unwrap()));

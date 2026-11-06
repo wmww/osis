@@ -81,7 +81,7 @@ Chunk     := [blob_id, [ki*]]
 PurgeItem := [commit_id, tid, ak] | [tid, ak] | [tid, ak, actor]
 CommitBlobPlaintext := [Header, signature, [Section*]]
 Section   := [[ai*], [chain*], wrap, ciphertext]
-Part      := [ai, delta, [creation*]]
+Part      := [ai, delta]
 ```
 Header fields by position:
 0. `version`: uint, the format version (1).
@@ -105,7 +105,7 @@ Aspect fields: `tid`; `ak` (text, spec/data-model.md §2, at most `MAX_AK_BYTES`
 - **Commit blob** plaintext: `CommitBlobPlaintext`: one blob carries the whole commit, every part sealed to its thing's readers (spec/sync.md §3).
   - A `Section` holds the parts of one thing: `[ai*]` the aspect indices of its parts, ascending, distinct, each with a part inside; `[chain*]` the thing's derivation chain (spec/crypto.md §3) as the writer knows it, nearest first (empty for an actor with secrets of its own or a key actor; at most `MAX_CHAIN_DEPTH`, no tid twice: else bad input); `ciphertext` = XChaCha20-Poly1305 of the canonical `[Part*]` list under a fresh random 32-byte section key, nonce 24 zero bytes (the key encrypts this one plaintext and nothing else), AD = the commit ID; `wrap` = a random 24-byte nonce `||` XChaCha20-Poly1305 of the section key under `kdf("section", read secret of the thing)` (its own, or derived from its base actor's by tid, spec/crypto.md §3) at the newest epoch the writer holds (a rotation's section under the epoch it supersedes, spec/crypto.md §5), that nonce, AD = the commit ID: 72 bytes. Sections sorted by their first `ai`; an aspect in two sections is bad input; zero sections is allowed (every delta purged). A per-label copy (spec/sync.md §3) is one section of its parts, with an empty chain, under the read secret of the label's group.
   - A reader tries, per section, the read secrets it holds of the section's thing, those derived by tid through the listed chain from the epochs it holds of any member of it (the thing's record may be inside the section; a member given secrets of its own since holds the derived epoch in its history), and the read secret of the group of the label the blob came under, newest first. Parts that open on an aspect the section does not list, or a listed aspect with no part, are bad input. A section no held secret opens is kept as it is: a non-reader learns nothing of it beyond its size, `ai` list and chain, and copies it verbatim into a fresh encryption of the commit.
-  - A `Part` holds one delta: `ai` indexes `aspects`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that aspect's `hash`, then the creation records (§3) carried beside it (spec/commits.md §2), sorted by tid, distinct; empty in a commit without the ephemeral marker, else bad input. Records are outside the header and delta hash: each hashes to its tid. Within a section parts sorted by `ai`, distinct.
+  - A `Part` holds one delta: `ai` indexes `aspects`, `delta` is the embedded `Delta` or `Snapshot` array (spec/crdt.md §3.2, §8) whose canonical bytes hash to that aspect's `hash`. Within a section parts sorted by `ai`, distinct.
   - The blob's prefix commitment groups are those of the delete keys its sections' aspects list (§5); its expiry is the header's `expires`. The whole commit stays within `MAX_BLOB` (a writer pages its deltas, spec/crdt.md §8, and refuses a commit that still does not fit).
 - A header violating a rule of spec/commits.md §2, §5 or §6 is bad input:
   - an aspect of the wrong class for its kind (`created.0` fits either kind);

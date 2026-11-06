@@ -43,7 +43,7 @@ fn deaths_and_bounds_spec_commits_5() {
 fn keep_at_most_zero_spec_commits_5() {
     let mut lp = net(2, 52);
     let t = new_thing(&mut lp, 0);
-    let c1 = set(&mut lp, 0, t, &GONE, "draft");
+    let c1 = set(&mut lp, 0, t, &GONE, "first");
     sync(&mut lp, 0, 1);
     lp.advance(5);
     set(&mut lp, 0, t, &GONE, "final");
@@ -1166,7 +1166,7 @@ fn deaths_dated_from_first_superseder_held_spec_commits_5() {
 fn keep_at_most_zero_late_body_dropped_on_arrival_spec_commits_5() {
     let mut lp = net(2, 56);
     let t = new_thing(&mut lp, 0);
-    let c1 = set(&mut lp, 0, t, &GONE, "draft");
+    let c1 = set(&mut lp, 0, t, &GONE, "first");
     let p1 = packages(&mut lp, 0).into_iter().find(|p| p.id == c1).unwrap();
     lp.advance(5);
     set(&mut lp, 0, t, &GONE, "final");

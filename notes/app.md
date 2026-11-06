@@ -22,9 +22,9 @@
 ## State in osis
 - All app state lives in osis; widgets hold only what is too hot to be data (drag positions, caret blink, animation).
 - Durable view state (open things, lens, filters, layout) as things in an account-private group: a view can move between devices, apps or toolkits, and be saved and restored. Not specified yet; the architecture assumes it.
-- Ephemeral view state (selection, expanded panels, scroll anchor) as drafts and ephemeral aspects (notes/ephemeral.md): in memory, local unless added to a synced group; hot live state across devices is synced ephemeral data, not commits.
+- Ephemeral view state (selection, expanded panels, scroll anchor) as ephemeral aspects (notes/ephemeral.md): in memory, local unless the thing is in a synced group; hot live state across devices is synced ephemeral data, not commits.
 - An app's own per-account data (favorites, view state, themes) lives in an internal group found by scanning home's subgroups for the app's marker aspect, reading the union and writing to the smallest tid (Tess: a well-known per-app thing is incoherent, since a tid depends on its first admin; the scan is the convention).
-- Asks of the library: in-memory things support watches, queries and backlinks like stored things; the app can pump the watch dispatcher on its own UI thread (`Dispatcher::Pump`).
+- Asks of the library: ephemeral aspects support watches, queries and backlinks like stored ones; the app can pump the watch dispatcher on its own UI thread (`Dispatcher::Pump`).
 
 ## Layers
 - **State**: osis.
