@@ -418,7 +418,7 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
   - The host's key is the address key; a client's is fresh per connection, or a host's own address key when it dials another host.
   - SNI is ignored.
   - Each sync session (spec/wire.md §11.1) runs on a bidirectional stream the client opens; the dialer closes the connection.
-- **Node keys**: a node's dialable key and its LAN transport keys are Ed25519 public keys (RFC 8032), each with a 32-byte seed as its transport secret. A node dials a co-reader's node with its dialable key as its transport key, and any other node (such as a link's sharer) with an ephemeral one; it proves itself a co-reader's node inside the session either way (open proof 3, §5).
+- **Node keys**: a node's dialable key and its LAN transport keys are Ed25519 public keys (RFC 8032), each with a 32-byte seed as its transport secret. A node dials a co-reader's node with its dialable key as its transport key, and any other node (such as a link's sharer) with an ephemeral one. It proves itself a co-reader's node inside the session (open proof 3, §5), never by its transport key.
 - **P2P transports**: a node dials a co-reader by dialable key over a P2P transport, each named by its own address scheme; only `peer://` is defined.
 - **`peer://`** nodes are dialed by dialable or LAN transport key:
   - The URL is `peer://` then items separated by single spaces, each a socket address of the node (`ip:port`, an IPv6 address in brackets) or a relay, written `<key>@<socket address>` with the relay node's dialable key as 64 lowercase hex digits. Other items are skipped, and items past the 16th; none means LAN only. No address lookup service or default relay is used.

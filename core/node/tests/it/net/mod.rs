@@ -356,10 +356,10 @@ impl Net {
             self.queue.push_back(Msg::Close(m, self.nodes[m].life, pc));
             self.forget_conn(n, c);
             if let Some(sy) = self.nodes[n].sync.as_mut() {
-                // a redial made while going offline fails at once
-                let mut acts = sy.handle(Event::Down { conn: c });
-                while let Some(d) = acts.iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(*conn) } else { None }) {
-                    acts = sy.handle(Event::Down { conn: d });
+                // dials made while going offline fail at once
+                let mut down = vec![c];
+                while let Some(d) = down.pop() {
+                    down.extend(sy.handle(Event::Down { conn: d }).iter().filter_map(|a| if let Action::Dial { conn, .. } = a { Some(*conn) } else { None }));
                 }
             }
         }

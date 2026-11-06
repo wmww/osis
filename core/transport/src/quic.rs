@@ -344,13 +344,12 @@ pub(crate) fn server_tls(me: Arc<CertifiedKey>, alpn: &[&[u8]]) -> Result<rustls
     Ok(tls)
 }
 
-/// quinn client settings over `client_tls`; the server may open the streams `alpn` grants
-/// (`p2p::dialer_limits`).
-pub(crate) fn client_config(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8]) -> Result<quinn::ClientConfig, Error> {
+/// quinn client settings over `client_tls`; the server may open streams and send within
+/// `limits` (`p2p::dialer_limits`).
+pub(crate) fn client_config(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8], limits: (u32, u32, u64)) -> Result<quinn::ClientConfig, Error> {
     let qc = quinn::crypto::rustls::QuicClientConfig::try_from(client_tls(me, verifier, alpn)?).map_err(|e| Error::Io(e.to_string()))?;
     let mut cfg = quinn::ClientConfig::new(Arc::new(qc));
-    let kind = if alpn == crate::p2p::RELAY_ALPN { crate::p2p::Alpn::Relay } else { crate::p2p::Alpn::Osis };
-    cfg.transport_config(transport_config(crate::p2p::dialer_limits(kind))?);
+    cfg.transport_config(transport_config(limits)?);
     Ok(cfg)
 }
 
@@ -385,7 +384,7 @@ async fn handshake(
     verifier: Arc<dyn ServerCertVerifier>,
     alpn: &[u8],
 ) -> Result<quinn::Connection, Error> {
-    let cfg = client_config(me, verifier, alpn)?;
+    let cfg = client_config(me, verifier, alpn, crate::p2p::dialer_limits(crate::p2p::Alpn::Osis, false))?;
     let bind: SocketAddr = if sa.is_ipv6() { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() };
     let ep = quinn::Endpoint::client(bind).map_err(|e| Error::Io(e.to_string()))?;
     let connecting = ep.connect_with(cfg, sa, SNI_NAME).map_err(|e| Error::BadUrl(format!("{url}: {e}")))?;
@@ -634,12 +633,13 @@ impl crate::p2p::Sock for QuicSock {
     }
 
     async fn dial(&self, to: SocketAddr, key: PublicKey, own: Option<crate::StaticSecret>, alpn: crate::p2p::Alpn) -> Result<QuicConn, Error> {
+        let limits = crate::p2p::dialer_limits(alpn, own.is_some());
         let me = match own {
             Some(s) => keypair(s.as_bytes())?.1,
             None => keypair(&*random_seed()?)?.1,
         };
         let pin = PinnedHost::new(key);
-        let cfg = client_config(me, pin.clone(), alpn.bytes())?;
+        let cfg = client_config(me, pin.clone(), alpn.bytes(), limits)?;
         let connecting = self.ep.connect_with(cfg, to, SNI_NAME).map_err(|e| Error::BadUrl(format!("{to}: {e}")))?;
         match connecting.await {
             Ok(c) => Ok(QuicConn { c, peer: key }),
@@ -655,7 +655,7 @@ impl crate::p2p::Sock for QuicSock {
     /// A QUIC handshake toward `to` that nobody completes (the peer's dialing socket accepts no
     /// connections, and the pinned key is none): its Initial packets open this socket's NAT.
     fn punch(&self, to: SocketAddr) {
-        let cfg = random_seed().and_then(|s| keypair(&s)).and_then(|(_, me)| client_config(me, PinnedHost::new([0; 32]), ALPN));
+        let cfg = random_seed().and_then(|s| keypair(&s)).and_then(|(_, me)| client_config(me, PinnedHost::new([0; 32]), ALPN, crate::p2p::dialer_limits(crate::p2p::Alpn::Osis, false)));
         if let Some(connecting) = cfg.ok().and_then(|cfg| self.ep.connect_with(cfg, to, SNI_NAME).ok()) {
             tokio::spawn(async move {
                 if let Ok(c) = connecting.await {

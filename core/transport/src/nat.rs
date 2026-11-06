@@ -257,7 +257,7 @@ impl MemSock {
             Some(s) => crate::InProcess::public_key(s),
             None => st.rng().bytes32(),
         };
-        let limit = [crate::quic::MAX_STREAMS as usize, crate::p2p::dialer_limits(alpn).0 as usize];
+        let limit = [crate::quic::MAX_STREAMS as usize, crate::p2p::dialer_limits(alpn, own.is_some()).0 as usize];
         let (id, c) = st.new_conn(&self.net, [self.name.clone(), endpoint], [mine, theirs], limit, to);
         if let Some(e) = st.udp.socks.get_mut(&at) {
             e.queue.push_back((id, alpn, src));
