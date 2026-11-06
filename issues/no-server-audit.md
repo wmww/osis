@@ -1,6 +1,6 @@
 # Audit: no saved peers, relays or internet
 > Summary: What each feature does with no saved peers (nodes serving at a fixed address), relays or internet, only nodes that sometimes reach each other (spec/requirements.md, Offline and network). Data sync between nodes that already know each other works; getting to know each other, grants, revocation, recovery and sync status mostly don't, and no shipped build has P2P at all.
-> Tags: node, sync, api
+> Tags: node, sync, api, tess-call
 
 Probes: throwaway tests in `core/osis/tests/it`, two or three `Osis` with no saved peers on `Runtime::Tokio`, not committed (`pNN`/`qN` below). `(tier 2)`: real iroh on localhost under `cargo test-net`. All others ran over `Transport::InProcess`, whose `peer://` finds any listener by key (core/transport/src/multi.rs:39). That is **kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other.
 
