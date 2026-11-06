@@ -102,3 +102,52 @@ fn thin_client_reads_watches_posts_spec_client_port() {
     assert!(!n.grants(c).unwrap().contains_key(&actor));
     assert!(!app.has_content(c).unwrap());
 }
+
+/// Chat `c`'s sync state at `db` once `done` holds of it.
+fn wait_state(db: &Osis, c: osis::Tid, done: impl Fn(&osis::GroupSync) -> bool) -> osis::GroupSync {
+    let end = Instant::now() + W;
+    loop {
+        let s = db.status().unwrap().groups.get(&c).cloned();
+        if let Some(s) = s.clone().filter(&done) {
+            return s;
+        }
+        assert!(Instant::now() < end, "{s:?}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+// notes/chat.md Create, spec/data-model.md §9 (`host.0^` `own`): a chat's first admin is its maker's account, so the maker's serving node takes it under `admit own`; another account's chat it refuses
+#[test]
+fn own_serving_node_takes_a_chat_spec_data_model_9() {
+    use osis::internals::Internals;
+    let net = osis_transport::Net::new(7);
+    let cfg = |ep: &str, hosts: Vec<Address>| {
+        let mut c = on(&net, ep, hosts);
+        c.direct_sync = true;
+        c
+    };
+    let a = osis::internals::create(cfg("a", vec![])).unwrap();
+    let j = osis::internals::pair(cfg("h", vec![]), &a.pair_offer().unwrap()).unwrap();
+    let (_, reply) = a.pair_accept(j.request()).unwrap();
+    let dev = j.finish(&reply).unwrap();
+    dev.set_serving(Some(osis::Serving { listen: vec!["mem://h".parse().unwrap()], admit: osis::Admit::Own, ..Default::default() })).unwrap();
+    let end = Instant::now() + W;
+    let addr = loop {
+        if let Some(x) = dev.serving_address().unwrap() {
+            break x;
+        }
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    a.add_peer(&addr).unwrap();
+    let b = osis::internals::create(cfg("b", vec![addr.clone()])).unwrap();
+    // the refused-for-now back-off (5 s) shortened: a new label is refused until the host has its record
+    for x in [&a, &b] {
+        x.sync_engine(|s| s.config_mut().retry_ms = 100);
+    }
+    let theirs = create(&b, &Options::default()).unwrap();
+    let mine = create(&a, &Options::default()).unwrap();
+    wait_state(&a, mine, |s| s.state == osis::SyncState::Synced && s.refused_by.is_empty());
+    let s = wait_state(&b, theirs, |s| !s.refused_by.is_empty());
+    assert_eq!((s.state, s.refused_by), (osis::SyncState::Refused, vec![addr]), "another account's chat");
+}
