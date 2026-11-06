@@ -232,7 +232,8 @@ pub fn supersedes(s: &Write, w: &Write) -> bool {
         return true;
     }
     match (&w.op, &s.op) {
-        (Op::Set { .. }, Op::Set { .. }) => true,
+        // a register's later write implies a reset (spec/crdt.md §5.1), pruning a reset too
+        (Op::Set { .. } | Op::Reset, Op::Set { .. }) => true,
         (Op::Create { .. }, Op::Remove { entry }) => *entry == w.stamp.dot,
         (Op::SetIn { entry: a, .. }, Op::Remove { entry: b }) => a == b,
         (Op::SetIn { entry: a, .. }, Op::SetIn { entry: b, .. }) => a == b,

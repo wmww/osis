@@ -4049,6 +4049,19 @@ fn text_redelete_dies_again_spec_crdt_4_8() {
     assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, redel)), "recomputed");
 }
 
+// spec/crdt.md §4.8, §5.1 (a register's later write implies a reset, pruning an earlier reset
+// too): an undo of a keep-at-most-0 register write resets the register; the author's later write
+// replaces that reset, so the undo's body drops, as the held model judges. Purge-harness seed
+// 3023, shrunk.
+#[test]
+fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: true, settled: false, model: true };
+    let h = vec![aim(Write { by: 1, t: 2, op: 18, k: 1, v: 7 }), aim(Purge { by: 1, t: 4, of: 2, back: 2, v: 9 }), aim(Undo { by: 1, back: 1 }), aim(Message { by: 1, t: 3, v: 4 }), Advance { who: Some(0), ms: 1839 }, aim(Typed { by: 0, t: 7, op: 17, k: 1, v: 6 })];
+    check(3023, &h, cfg).unwrap();
+}
+
 // spec/commits.md §5 (a snapshot carries a dying write only when its body holds a write of its
 // stamp): A puts k0 in a keep-at-most-0 map and undoes it; B, holding both, compacts (its
 // snapshot holds nothing of k0); C, holding the put alone, overwrites k0 after the snapshot. A

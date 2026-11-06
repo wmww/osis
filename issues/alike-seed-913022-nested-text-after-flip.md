@@ -1,5 +1,5 @@
 # Alike seed 913022: a nested text write lost after bodies dropped before a flip are given again
-> Summary: `order::arrival_order_alike_large_spec_permissions_5_2` seed 913022 (and `_purge_large_` at the same seed, past its earlier failure) reads `t:docs.0` k2 as "v7v1" in the order as made and "v1" in a shuffled order, after the bodies dropped before a flip were given again (`alike_exchanged`); fails on main alike. Not triaged.
+> Summary: `order::arrival_order_alike_large_spec_permissions_5_2` seed 913022 (and `_purge_large_` at the same seed, past its earlier failure) reads `t:docs.0` k2 as "v7v1" in the order as made and "v1" in a shuffled order, after the bodies dropped before a flip were given again (`alike_exchanged`); fails on main alike and after the death-dating rewrite (same reads). Not triaged.
 > Tags: engine, retention, tests
 
 - Replay: `OSIS_ORDER_SEED=913022 OSIS_ORDER_LEN=60 cargo test -p osis-node --test it -- --include-ignored --exact order::arrival_order_alike_large_spec_permissions_5_2` (4 s).
