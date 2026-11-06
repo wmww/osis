@@ -271,8 +271,9 @@ Each operation names a label. Writes are signed with the role keys of the host's
 - **First sync** of a label at a peer, from no cursor:
   - The node lists it (Sync with `inline_limit` 0, to its end) and then fetches every listed entry it lacks, in the order of the wraps (spec/crypto.md §5):
     1. order 0;
-    2. then the highest order first;
-    3. last what does not open, ranked again as secrets arrive.
+    2. then what does not open that the peer holds deposited (no stamp, §5);
+    3. then the highest order first;
+    4. last the rest of what does not open, ranked again as secrets arrive.
   - Order 0 goes before anything else is asked. How many are asked at a time is local policy.
   - A body not fetched yet is one not received (spec/commits.md §4).
   - A node runs passes once order 0 is here.
