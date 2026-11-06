@@ -1,5 +1,5 @@
 # Questions for Tess
-> Summary: Open requirement and edge-case questions for Tess, each with a recommendation: realms (on hold), three limits kept in spec/requirements.md, depth 0 bending for stale member keys, who may make a thing whose first admin is a group. Coordinators append; an answered question leaves this file and its answer goes to the spec or the relevant note.
+> Summary: Open requirement and edge-case questions for Tess, each with a recommendation: realms (on hold), three limits kept in spec/requirements.md, depth 0 bending for stale member keys. Coordinators append; an answered question leaves this file and its answer goes to the spec or the relevant note.
 
 Background: notes/core-triage.md §2. Ask one at a time, saying the trade-off and why users care.
 
@@ -24,6 +24,3 @@ Three limits stay; say if any should become a guarantee:
 Tess decided a group never looks inside its member groups. One rule bends that: if a node already holds a member group's keys and knows someone left it, it won't hand out that group's old key, and it won't write under a parent key that passes the old key on (notes/crypto.md, Blocked through holder actors). It never fetches or walks anything it doesn't already hold. Why: a removal whose key change has to wait would otherwise let the removed person keep reading everything the group can read. Cost: until a node that may change the member group's key next syncs, that group's members don't see new content in shared things above it (nodes do this every sync pass). Built. Recommended: accept; the alternative is the leak while a removal's key change waits.
 
 Part of the same question: the rule still leaks when a second admin of the parent group cannot read the member group, and stops at actors the node may not rotate (issues/blocked-walk-stops-at-readers.md, models `D0_readers_g2`, `D0_above_g2`). A candidate ("mark": a rotation records the keyset it left a member out at, and a re-seal takes only a keyset listing it) passes one of the two models but needs a wire field. Choice: build the mark, or state the leak as a limit.
-
-## 13. Who may make a thing whose first admin is a group?
-Once owners go, every new thing names a first admin. When Alice, a writer in group G, creates a document "in G", its first admin is G, so G's admins control it, not Alice personally (owned things work this way today). Recommended: anyone with write on G may (it's how "make a doc in this team" works). The alternative, only G's admins, means ordinary members can only create things they control themselves and then share. Needed before step 2 stage B (issues/owner-to-first-admin.md).

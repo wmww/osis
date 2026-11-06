@@ -19,6 +19,7 @@ The build and test mechanics are in notes/build.md; this note is the process aro
 
 ## Standing rules (Tess)
 - Simplicity: keep implementations simple; when a subtle aspect of a design adds a lot of complexity or bug surface, look for a way to avoid it, and in extreme cases bring it to Tess as a possible requirements compromise. Say so in design briefs.
+- Cut tentacles (Tess): when an edge case has grown a wing of fixes, extensions and their own bugs, replace it with the rule that actually works, or a stated limit, or bring it to Tess as a requirements compromise. Cut cruft freely: slow or badly designed tests, notes describing how things aren't, issues stating unfixable facts (e.g. no recovery of intentionally permanent deletes). Tess is often away: don't block on her; take the reversible option and note the question.
 - Performance is the coordinator's: "a little slower than optimal but much simpler, more correct or more verifiable is a good trade". Budgets: notes/testing.md (Performance budgets). A new incremental path needs a measured miss of a budget in a realistic scenario; simple from-scratch code that meets the budget wins.
 - Growth: a change that adds a new kind of permanent data (a row, record, table entry or synced field never dropped) adds or updates a row in notes/growth.md; reviewers check.
 - Hostile-only shapes inside data the writer may write (notes/core-triage.md §1 D): very low priority; fix only when easy, with no added complexity.
