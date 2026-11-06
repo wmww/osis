@@ -434,6 +434,9 @@ impl SyncEngine {
     /// a held commit newer than that, by the holder, for it, or by a node with a role on it (its
     /// nodes), writing one of `things` or a thing whose record chain reaches one of them. Acting elsewhere says nothing of
     /// this delivery (its blob may have been cleared, spec/sync.md §5), so it is sent again.
+    /// The record chain as created, not `Core::standing_chain`: this reads evidence of receipt,
+    /// not standing (a write below a named thing is one whatever edges stood since), and a
+    /// mismatch costs only a re-send more or less.
     fn acted(&self, holder: &Tid, since: Ts, things: &[Tid]) -> bool {
         let tl = self.engine.core.timelines.get(holder);
         // the views: O(commits) without decoding headers

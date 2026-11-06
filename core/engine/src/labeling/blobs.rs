@@ -750,21 +750,13 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
 }
 
 /// Labeled things by the nearest labeled actor with secrets of its own up their record chain
-/// whose record edges up to it stand here (spec/sync.md §2; `Engine::published_under`).
+/// whose record edges up to it stand here (`Core::standing_chain`; spec/sync.md §2; `Engine::published_under`).
 fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
     let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
     for h in labeled {
-        for step in core.record_chain(h) {
-            let osis_base::ChainStep::Up { thing, admin } = step else { break };
-            if !core.key_holders(&thing).iter().any(|(m, _)| *m == admin) {
-                break;
-            }
-            if labeled.contains(&admin) && core.ix.own_keys.contains(&admin) {
-                if admin != *h {
-                    map.entry(admin).or_default().insert(*h);
-                }
-                break;
-            }
+        let up = core.standing_chain(h).into_iter().skip(1).find(|a| labeled.contains(a) && core.ix.own_keys.contains(a));
+        if let Some(a) = up.filter(|a| a != h) {
+            map.entry(a).or_default().insert(*h);
         }
     }
     map

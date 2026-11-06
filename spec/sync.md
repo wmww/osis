@@ -129,7 +129,7 @@
   - Declining one leaves its commit unapplied, at that node and for good, from every inbox blob carrying it. The same commit arriving in a blob under a label the node syncs (a sibling node that accepted it placed its copy under home) is applied as any commit: the acceptance wins.
 - **Grant copy**: a grantee node that accepts a grant for an actor (from the inbox, from K's label, or by pairing) places a certificate copy of the grant, with the `label.0` commits of the labels it reached, under that actor's home label; not when an entry there already holds the grant's parts, counted as for chain certificates (spec/permissions.md §4).
   - From an inbox blob only a node with admin on the actor copies, and only, of a valid applied role commit:
-    - the carried parts on the things where a `roles.0` delta writes the grant of the actor or an actor whose record chain reaches it or a `secrets.0` delta boxes one, or, of a `label.0` write, on the named things where the actor or an actor whose record chain reaches it holds a grant;
+    - the carried parts on the things where a `roles.0` delta writes the grant of the actor or an actor whose record chain reaches it through record edges standing at the node, or a `secrets.0` delta boxes one, or, of a `label.0` write, on the named things where the actor or such an actor holds a grant;
     - with the `created.0` commit and every `label.0` commit of those things that the payload names (no `label.0` commit of a thing the actor reads no more);
     - and the author's chain of each (spec/permissions.md §4), that chain without any `keys.0` but its author's own;
     - and nothing from a blob whose expiry is less than `INBOX_LIFETIME` / 2 away.

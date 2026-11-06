@@ -1,6 +1,6 @@
 //! Hosting (notes/serving.md, Hosting in the node): the node reads its own `host.0^` (spec/data-model.md §9)
 //! and hands its driver a `HostConfig` (`Action::Host`), public data only: the host key, listen
-//! URLs, the admitted label IDs (`own`: the labels of groups whose record chain reaches this
+//! URLs, the admitted label IDs (`own`: the labels of groups whose standing record chain reaches this
 //! node or its person and whose hosts name that key, plus `labels`), replication peers, policy and caps. The host secret is
 //! a local record, made when hosting starts and shredded when it stops; the driver listens
 //! with it.
@@ -95,23 +95,25 @@ impl SyncEngine {
         self.engine.get_typed(&me, &ct::HOST).ok().flatten()
     }
 
-    /// Sets this node's person (the app's, e.g. osis's `me`): `own` admits groups whose record chain reaches it.
+    /// Sets this node's person (the app's, e.g. osis's `me`): `own` admits groups whose record
+    /// chain reaches it through standing record edges.
     pub fn set_person(&mut self, person: Option<Tid>) {
         self.hosting.person = person;
         self.hosting.generation = None;
     }
 
     /// Whether group `g` is this node's own for `own` admission (spec/data-model.md §9): its
-    /// record chain (first-admin links included) reaches the node or its person (`set_person`).
-    /// Invariant: no role edge counts, on `g` or on any thing above it, held by the node or the
-    /// person: a stranger may
-    /// grant either one admin without consent, and must not make this node spend its storage
-    /// that way (the inbox accept step's principle). Record links are fixed by the creation
-    /// record (the tid commits to it); anyone may mint a record naming the person as first admin, but the group's `label.0` takes admin on it, which that chain gives only the
-    /// person's admins (or whom they granted).
+    /// record chain reaches the node or its person (`set_person`) through standing record edges
+    /// (`Core::standing_chain`), so a person removed from a group it made stops hosting it.
+    /// Invariant: no role edge but a record edge counts, on `g` or on any thing above it, held
+    /// by the node or the person: a stranger may grant either one admin without consent, and
+    /// must not make this node spend its storage that way (the inbox accept step's principle).
+    /// Record links are fixed by the creation record (the tid commits to it); anyone may mint a
+    /// record naming the person as first admin, but the group's `label.0` takes admin on it,
+    /// which that chain gives only the person's admins (or whom they granted).
     fn owns(&self, g: &Tid) -> bool {
         let node = self.engine.tid();
-        self.engine.record_chain(g).any(|x| x == node || Some(x) == self.hosting.person)
+        self.engine.core.standing_chain(g).into_iter().any(|x| x == node || Some(x) == self.hosting.person)
     }
 
     /// What the host runs with now: from `host.0^` (none: not hosting).

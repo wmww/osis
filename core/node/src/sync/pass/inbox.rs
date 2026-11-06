@@ -115,12 +115,14 @@ impl SyncEngine {
     }
 
     /// The things commit `c` (header in `m`) of opened inbox blob `o` is about for `actors`
-    /// (spec/sync.md §3): where it has an edge or box of one of them or of an actor whose record chain reaches one,
+    /// (spec/sync.md §3): where it has an edge or box of one of them or of an actor whose record
+    /// chain reaches one through standing record edges (`Core::standing_chain`: a removed first
+    /// admin no longer administers what is below),
     /// and, of a `label.0` write (it names no holder), the things the payload names that one of
     /// them holds an edge on, by the roster as applied here, not the payload's word.
     pub(super) fn inbox_about(&mut self, actors: &[Tid], c: &CommitId, m: &osis_engine::engine::Meta, o: &crate::sync::inbound::Opened) -> BTreeSet<Tid> {
         let named = self.engine.holders_named(c);
-        let mine = |x: &Tid| self.engine.record_chain(x).any(|y| actors.contains(&y));
+        let mine = |x: &Tid| self.engine.core.standing_chain(x).iter().any(|y| actors.contains(y));
         let mut on: BTreeSet<Tid> = named.iter().filter(|(_, ms)| ms.iter().any(mine)).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect();
         for t in o.things.iter().map(|t| t.tid) {
             if m.header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "label.0") && self.engine.roster(&t).keys().any(mine) {
@@ -144,9 +146,9 @@ impl SyncEngine {
     /// What a grantee node copies of what `g`'s inbox brought, once applied, under `g`'s home
     /// label `l` (spec/sync.md §3; the inbox may be another label, its first admin's: a group's holders
     /// learn its edges there, its inbox reaching only its admins): of a role commit, the carried
-    /// parts on the things it writes an edge of `g` or an actor it is first admin of on, or boxes one on (boxes
+    /// parts on the things it writes an edge of `g` or an actor below it through standing record edges on, or boxes one on (boxes
     /// are sealed to the actor anyway), or, of a `label.0` write, its parts on the named things `g`
-    /// or an actor whose record chain reaches it holds an edge on (a thing's first label, delivered to its holders), with
+    /// or an actor whose record chain reaches it through standing record edges holds an edge on (a thing's first label, delivered to its holders), with
     /// the `label.0` and `created.0` commits of those things
     /// and their authors' chains (a granter who is no co-reader has placed none there), so the
     /// actor's other nodes and readers find the grant and its labels there; nothing from a blob
@@ -218,7 +220,12 @@ impl SyncEngine {
             if held {
                 if !copied {
                     // what moves the answer: an edge, record or label on these, or their holders
-                    let mut on: BTreeSet<Tid> = self.engine.holders_named(&c).values().flat_map(|ms| ms.iter().copied()).collect();
+                    // (and the record chains above the holders: `inbox_about` reads their edges)
+                    let mut holders: BTreeSet<Tid> = self.engine.holders_named(&c).values().flat_map(|ms| ms.iter().copied()).collect();
+                    for t in &o.things {
+                        holders.extend(self.engine.roster(&t.tid).into_keys());
+                    }
+                    let mut on: BTreeSet<Tid> = holders.iter().flat_map(|x| self.engine.record_chain(x).collect::<Vec<_>>()).collect();
                     on.extend(o.things.iter().map(|t| t.tid));
                     for (x, _) in &copy {
                         on.extend(self.engine.header(x).iter().flat_map(|h| h.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()));

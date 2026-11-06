@@ -209,13 +209,18 @@ impl Core {
         matches!(self.created(tid), Some(CreationRecord::KeyActor { .. }))
     }
 
-    /// The things whose inbox `a` may use (spec/sync.md §2): `a`, then its first admin while
-    /// `a`'s record edge stands here, and so on up its record chain (key actors have none).
-    pub(crate) fn inbox_chain(&self, a: &Tid) -> Vec<Tid> {
+    /// `a`'s record chain through standing record edges (spec/permissions.md §1): `a`, then its
+    /// first admin while `a`'s record edge stands here (any role), and so on up, the top
+    /// included (a key actor, or a thing whose record is not held). The one walk for node rules
+    /// that read the record chain as standing: inboxes, `label.0` cross-publishing, hosting
+    /// admission, inbox stamps and copies (spec/sync.md §2, §3; spec/data-model.md §9).
+    /// Derivation and entitlement read the records alone (`record_chain`).
+    pub fn standing_chain(&self, a: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
         for step in self.record_chain(a) {
-            let osis_base::ChainStep::Up { thing, admin } = step else { break };
+            let Some(thing) = step.thing() else { break };
             out.push(thing);
+            let osis_base::ChainStep::Up { admin, .. } = step else { break };
             if !self.key_holders(&thing).iter().any(|(m, _)| *m == admin) {
                 break;
             }
@@ -276,13 +281,13 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
 
 /// The inbox a role write about `holder` goes to (spec/sync.md §2): the one its `keys.0` names;
 /// else its first admin's, the same way, while its record edge stands here, and so on up
-/// (`Core::inbox_chain`; the first of `Engine::inbox_candidates`). `None` for a key actor
+/// (`Core::standing_chain`; the first of `Engine::inbox_candidates`). `None` for a key actor
 /// (direct delivery only) and when none is known here.
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
     if tx.core.is_key_actor(holder) {
         return Ok(None);
     }
-    for t in tx.core.inbox_chain(holder) {
+    for t in tx.core.standing_chain(holder) {
         if let Some(i) = Core::keys_in(tx, &t)?.and_then(|k| k.inbox) {
             return Ok(Some((t, i)));
         }
