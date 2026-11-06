@@ -2,7 +2,7 @@
 > Summary: There is no fundamental distinction between nodes by how much of their data they can read (Tess). Words are fixed by spec/requirements.md Terms; this lists what still separates them in code and notes, and what to decide about each. The same binary already runs every case; the remaining question is three serving paths, two stores and three keys on one node.
 > Tags: node, host, api
 
-A normal device may keep data it cannot read for others, and a backup machine may read some of what it holds (its settings, a website's data). Same binary, run the same way, any mix.
+An ordinary node (a laptop, a phone) may keep data it cannot read for others, and a backup machine may read some of what it holds (its settings, a website's data). Same binary, run the same way, any mix.
 
 What already holds: hosting runs inside a node, from its `host.0^` (notes/sync.md, Hosting in the node), and there is no separate host program. So a laptop can already host, and a mostly encrypted machine already has an account and data of its own.
 
@@ -30,7 +30,7 @@ Default policy (Tess):
 - **Unix socket**: open without authentication to the current user, as the node's main actor. There is no security boundary there anyway.
 - **Localhost or network listener**: a client may act only as actors it has cryptographically authenticated for.
 
-To build: a credential names the actor it acts as, the main one included if the node's owner chooses. Today the transport decides (socket: main actor; secret: an actor minted for it), and notes/client-port.md Rejected ("Thin devices") argues from a threat model it shouldn't impose: reword it as a default. Today's credential is a bearer secret inside TLS; decide whether "cryptographically authenticated" needs a signature by the actor's key instead. Also: acting as several actors in process, issues/grant-rename-multi-actor.md (public `act_as`).
+To build: a credential names the actor it acts as, the main one included if the node's owner chooses. Today the transport decides (socket: main actor; secret: an actor minted for it), and notes/client-port.md Rejected ("Thin nodes", now phrased as a default) argues from one threat model. Today's credential is a bearer secret inside TLS; decide whether "cryptographically authenticated" needs a signature by the actor's key instead. Also: acting as several actors in process, issues/grant-rename-multi-actor.md (public `act_as`).
 
 ## Spec needing a concept change, not a word change
 Rule text still says "host" here, waiting on this issue and owner removal. Swapping the word would keep the picture:
