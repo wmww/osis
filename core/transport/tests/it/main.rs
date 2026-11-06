@@ -4,4 +4,5 @@
 mod common;
 mod manage;
 mod mem;
+mod p2p;
 mod quic;

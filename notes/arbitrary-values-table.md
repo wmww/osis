@@ -84,6 +84,12 @@ Each was a number that only made a bug unlikely (class X); the code ends by a fi
 | link `READ_CHUNK` 64 KiB, `READ_AHEAD` 16 | P | |
 | manage `Backoff` 0.5-60 s | M | |
 | quic `DEFAULT_PORT` 4040 (a `quic://` URL without a port; CLI `serve` listens on `quic://0.0.0.0:4040` when hosting without a listen URL) | O (Tess's pick; any free port works, spec/sync.md §10) | not a port (0 binds a random one, unreachable by URL) / no such port |
+| p2p `MAX_ITEMS` 16 (`peer://` items looked at) | R (items past it ignored) | dials nothing / a published URL starts unbounded attempts |
+| p2p `RELAY_RATE` 1 MiB/s per source, one-second burst (`RelayConfig::rate`, provisional) | R (forwarding past it waits) | 0 taken as 1 B/s: nothing flows / one source takes the relay's link |
+| p2p `RELAY_CONNS` 1024 (`RelayConfig::max_conns`, provisional) | R (past it fair shares by source, `evict_for`, else refused) | relays nothing / unbounded connections |
+| p2p `COPY_BUF` 16 KiB (per forwarded direction) | M (memory per stream vs reads per byte) | no progress / unbounded buffer |
+| p2p `PARK_MS` 60 s (= `IDLE_TIMEOUT`; a direct connection found after a relayed one waits for the redial) | M (past it the next dial goes relayed and punches again) | never switches / an unclaimed connection kept alive forever |
+| nat model `RESEND_MS` 100, `DIAL_MS` 60 s (= `IDLE_TIMEOUT`) | M (test timing only) | busy loop / a failing dial never ends |
 
 ### Node sync (`node/sync/`)
 | value | class | 0 / ∞ |
