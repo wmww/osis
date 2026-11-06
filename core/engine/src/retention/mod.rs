@@ -581,7 +581,7 @@ pub(crate) fn never_received(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result
     Ok(!leftover::has(tx, &a.tid, &a.ak, c, ai)?)
 }
 
-/// The owners of the writes delta `ai` of `id` holds as its own: its counters or commit ID, a
+/// The writes delta `ai` of `id` holds as its own: its counters or commit ID, a
 /// snapshot's none (it copies). What invalidity, expiry and purge of the delta take.
 pub(crate) fn writes_of(h: &Header, id: &CommitId, ai: usize) -> Vec<Owned> {
     if h.aspects.get(ai).is_some() && h.kind.has_own_writes() { Owned::of(h, id, ai).into_iter().collect() } else { Vec::new() }
@@ -1196,8 +1196,8 @@ mod tests {
     use osis_schema::core_types as ct;
 
     // spec/sync.md §3 Entitlement: a thing's reader actor is the nearest actor up its record
-    // chain with secrets of its own, through first-admin links as through owner links: a plain
-    // ownerless thing's is its first admin's, and so is that of a thing it owns; once a grant
+    // chain with secrets of its own, through first-admin links: a plain thing's is its first
+    // admin's, and so is that of a thing below it; once a grant
     // gives it secrets of its own, its own.
     #[test]
     fn reader_actor_up_the_record_chain_spec_sync_3() {

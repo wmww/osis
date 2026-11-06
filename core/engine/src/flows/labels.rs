@@ -237,8 +237,8 @@ impl Engine {
                 // the roster's actors: not the first admin (its nodes read `label.0` under its
                 // home label), not a key actor (a node reads the thing's labels or has no route;
                 // a recovery or link key reads by static entry)
-                let owner = tx.core.first_admin(&g);
-                let holders: Vec<Tid> = tx.core.current_holders(&g).into_iter().map(|(m, _, _)| m).filter(|m| Some(*m) != owner && !tx.core.is_key_actor(m)).collect();
+                let first = tx.core.first_admin(&g);
+                let holders: Vec<Tid> = tx.core.current_holders(&g).into_iter().map(|(m, _, _)| m).filter(|m| Some(*m) != first && !tx.core.is_key_actor(m)).collect();
                 for h in holders {
                     done.deliveries.extend(super::edges::deliver_to(tx, h, c, &[g])?);
                 }

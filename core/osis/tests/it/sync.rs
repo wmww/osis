@@ -1722,7 +1722,7 @@ fn a_grant_to_a_holder_nothing_reaches() {
     assert!(!alice.has_content(t).unwrap());
 }
 
-// spec/sync.md §6, spec/permissions.md §4: an admin by a grant on a group's item reaches a holder outside the group: he keeps the creation records of its owner chain under the item's label, though their commit wrote more
+// spec/sync.md §6, spec/permissions.md §4: an admin by a grant on a group's item reaches a holder outside the group: he keeps the creation records of its record chain under the item's label, though their commit wrote more
 #[test]
 fn a_grant_on_a_group_owned_item_by_an_admin_grant() {
     let mut w = World::new();

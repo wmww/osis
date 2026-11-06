@@ -662,7 +662,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         }
         tx.core.update_timelines();
     } else {
-        // a durable write on a thing held as memory class persists it with its memory owner
+        // a durable write on a thing held as memory class persists it with its memory record
         // chain (spec/data-model.md §1)
         for t in m.aspects.keys().map(|k| k.0).collect::<BTreeSet<Tid>>() {
             for (x, rec) in memory_chain(tx.core, &t) {
@@ -895,10 +895,10 @@ fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, ops: &[PathO
         None => run_ops(&state, w, ops, &AnyView)?,
     };
     let Some((f, _)) = out else { return Ok(None) };
-    let mut owners = BTreeSet::new();
-    f.origin_dots(&mut owners);
+    let mut origins = BTreeSet::new();
+    f.origin_dots(&mut origins);
     let mut first: Option<u64> = None;
-    for d in owners {
+    for d in origins {
         let Some(Some(t)) = tx.core.write_expiry(tid, ak, &d) else { continue };
         if t <= now || first.is_some_and(|x| x <= t) {
             continue;
@@ -912,7 +912,7 @@ fn copy_expiry(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, am: &AspectMut, ops: &[PathO
     Ok(first)
 }
 
-/// The memory-class records from `t` up its owner chain (each with its tid): what persisting `t`
+/// The memory-class records from `t` up its record chain (each with its tid): what persisting `t`
 /// carries, and what a memory commit on `t` carries beside its delta.
 pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
     let mut out = Vec::new();

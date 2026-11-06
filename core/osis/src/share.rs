@@ -588,7 +588,7 @@ impl Osis {
         }
     }
 
-    /// Persists the ephemeral things among `tids` with their owner chains by a content commit
+    /// Persists the ephemeral things among `tids` with their record chains by a content commit
     /// of their own (notes/ephemeral.md Persistence: a role operation on an ephemeral thing
     /// persists it first); durable ones are left alone.
     fn persist(&self, tids: &[Tid]) -> Result<()> {

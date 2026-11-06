@@ -280,33 +280,33 @@ mod tests {
         assert_eq!(box_entries(&forged).remove(0).0, a_dot);
         assert!(!super::super::validity::grantee_boxes_only(&t, &forged, &granted, &own), "a write into the admin's entry");
     }
-    // spec/permissions.md §1: an owner chain reaches its key actor within `MAX_CHAIN_DEPTH` owner
+    // spec/permissions.md §1: a record chain reaches its key actor within `MAX_CHAIN_DEPTH`
     // links; a delta written on a thing deeper is invalid and the rest of its commit applies, at
     // every node alike. The writer refuses such a commit.
     #[test]
-    fn owner_chain_deeper_than_cap_invalid_spec_permissions_1() {
+    fn record_chain_deeper_than_cap_invalid_spec_permissions_1() {
         use osis_base::format::MAX_CHAIN_DEPTH;
         let mut lp = LocalPeer::new(3, 905, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let x = osis_base::Ak::new("x:a.0").unwrap();
-        let mut owner = lp.peers[0].engine.tid();
-        let mut shallow = owner;
+        let mut up = lp.peers[0].engine.tid();
+        let mut shallow = up;
         for i in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
-            let t = lp.peers[0].engine.new_thing(&mut m, owner);
+            let t = lp.peers[0].engine.new_thing(&mut m, up);
             m.set(t, &x, &Value::Int(1)).unwrap();
             lp.peers[0].commit(m).unwrap();
             if i == 0 {
                 shallow = t;
             }
-            owner = t;
+            up = t;
         }
-        let at_cap = owner;
+        let at_cap = up;
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.get(&at_cap, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
         // one commit writing a shallow thing and a thing one link too deep
         let mut m = Mutation::new();
-        let d = lp.peers[0].engine.new_thing(&mut m, owner);
+        let d = lp.peers[0].engine.new_thing(&mut m, up);
         m.set(d, &x, &Value::Int(9)).unwrap();
         m.set(shallow, &x, &Value::Int(2)).unwrap();
         assert!(lp.peers[0].commit(m.clone()).is_err(), "the writer refuses it");
@@ -321,9 +321,9 @@ mod tests {
             assert_eq!(lp.peers[r].engine.get(&d, &x).unwrap(), None, "peer {r}");
         }
     }
-    // spec/permissions.md §1: the cap counts first-admin links like owner links (the record
-    // chain): a chain mixing owned and ownerless things at `MAX_CHAIN_DEPTH` links applies; one
-    // link more is invalid, at the writer and at receivers.
+    // spec/permissions.md §1: the cap counts first-admin links (the record chain), whether the
+    // things were made with a write or by their record alone: a chain at `MAX_CHAIN_DEPTH`
+    // links applies; one link more is invalid, at the writer and at receivers.
     #[test]
     fn record_chain_through_first_admins_capped_spec_permissions_1() {
         use osis_base::format::MAX_CHAIN_DEPTH;
@@ -372,10 +372,10 @@ mod tests {
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let x = lp.peers[1].engine.tid();
-        let mut owner = me;
+        let mut up = me;
         for _ in 0..MAX_CHAIN_DEPTH {
             let mut m = Mutation::new();
-            owner = lp.peers[0].engine.new_thing(&mut m, owner);
+            up = lp.peers[0].engine.new_thing(&mut m, up);
             lp.peers[0].commit(m).unwrap();
         }
         let mut m = Mutation::new();
@@ -391,7 +391,7 @@ mod tests {
         };
         lp.peers[0].engine.core.skip_writer_rules = true;
         let mut m = Mutation::new();
-        let deep = lp.peers[0].engine.new_thing(&mut m, owner);
+        let deep = lp.peers[0].engine.new_thing(&mut m, up);
         edge_in(&mut m, deep, x);
         let c = lp.peers[0].commit(m).unwrap().unwrap();
         lp.peers[0].commit(edge(shallow, deep)).unwrap();
@@ -646,7 +646,7 @@ mod keys_tests {
     }
 
     // spec/crypto.md §4 (Carried: a keyset's rotation commit; held keyset), spec/commits.md §5:
-    // admin P rotates read (removing R); the owner grants X at that epoch, compacts and drops P's
+    // admin P rotates read (removing R); the first admin grants X at that epoch, compacts and drops P's
     // rotation bodies. The epoch's introducer stays P's rotation (not the later grant), at open and
     // after a rebuild; the keyset stays held.
     #[test]

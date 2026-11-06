@@ -742,9 +742,9 @@ fn lacking_carried_keyset_spec_crypto_4() {
 // is encrypting under its epoch): D never reads T.
 #[test]
 fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
-    // granter: 0 T's admin reading M, 2 M's admin owning T, 0 by invite on T owned by 3; whether
+    // granter: 0 T's admin reading M, 2 M's admin and T's first admin, 0 by invite on T whose first admin is 3; whether
     // the granter has learned D's departure
-    for (g, owner, knows) in [(0, 0, false), (0, 0, true), (2, 2, true), (0, 3, false), (0, 3, true)] {
+    for (g, first, knows) in [(0, 0, false), (0, 0, true), (2, 2, true), (0, 3, false), (0, 3, true)] {
         let mut lp = LocalPeer::new(4, 957, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let d = lp.peers[1].engine.tid();
@@ -752,9 +752,9 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
         let m = group(&mut lp, 2);
         lp.peers[2].engine.grant(&m, &d, &edge(Role::Read)).unwrap();
         lp.peers[2].engine.grant(&m, &p0, &edge(Role::Read)).unwrap();
-        let t = group(&mut lp, owner);
-        if owner != g {
-            lp.peers[owner].engine.grant(&t, &p0, &ct::Edge { invite: Some(Role::Write), ..edge(Role::Write) }).unwrap();
+        let t = group(&mut lp, first);
+        if first != g {
+            lp.peers[first].engine.grant(&t, &p0, &ct::Edge { invite: Some(Role::Write), ..edge(Role::Write) }).unwrap();
         }
         lp.sync_all().unwrap();
         let start = held_by(&lp, 1, &[m]);
@@ -771,14 +771,14 @@ fn grant_to_unrotated_holder_stated_limit_spec_permissions_3() {
         }
         lp.peers[g].engine.grant(&t, &m, &edge(Role::Write)).unwrap();
         lp.sync_all().unwrap();
-        assert_eq!(lp.peers[owner].engine.roster(&t).get(&m).map(|e| e.role), Some(Role::Write), "a valid grant");
-        let reads = leaked(&mut lp, owner, &[m, t], d, start.clone()).contains(&t);
+        assert_eq!(lp.peers[first].engine.roster(&t).get(&m).map(|e| e.role), Some(Role::Write), "a valid grant");
+        let reads = leaked(&mut lp, first, &[m, t], d, start.clone()).contains(&t);
         assert_eq!(reads, !knows, "granter {g}: D reads T until M's knowing keyset reaches T's writers");
         let _ = lp.peers[2].engine.ensure_rotated(&m).unwrap();
         lp.sync_all().unwrap();
-        settle(&mut lp, &[2, owner], &[m, t]);
-        assert!(all_boxed(&mut lp, owner, &[m, t]), "M boxed");
-        assert_eq!(leaked(&mut lp, owner, &[m, t], d, start), Vec::<Tid>::new(), "granter {g}: once M rotated, not");
+        settle(&mut lp, &[2, first], &[m, t]);
+        assert!(all_boxed(&mut lp, first, &[m, t]), "M boxed");
+        assert_eq!(leaked(&mut lp, first, &[m, t], d, start), Vec::<Tid>::new(), "granter {g}: once M rotated, not");
     }
 }
 
@@ -969,10 +969,10 @@ fn second_admin_ignorant_fork_in_cycle_spec_crypto_4() {
 }
 
 // spec/permissions.md §3 (Lockout recovery aside: one role lacking), spec/crypto.md §4 (one box
-// per role and epoch): P writes A only through holder actor M (owned by peer 2). A's owner
+// per role and epoch): P writes A only through holder actor M (first admin: peer 2). A's first admin
 // rotates A's read leaving M out (Seal found no keyset; here by hand), so P holds A's write but
 // no current read. E, a writer of A, leaves by itself. P rotates A's write, which needs no other
-// role's secret; its heartbeat reports it stranded on read until A's owner re-seals M.
+// role's secret; its heartbeat reports it stranded on read until A's first admin re-seals M.
 #[test]
 fn rotator_lacking_read_rotates_write_spec_permissions_3() {
     let mut lp = LocalPeer::new(5, 961, WallMs(1_700_000_000_000)).unwrap();
@@ -1007,7 +1007,7 @@ fn rotator_lacking_read_rotates_write_spec_permissions_3() {
 }
 
 /// The write-lacking shape of `rotator_lacking_read_rotates_write_spec_permissions_3`: P is A's
-/// admin only through holder actor M (owned by peer 2), and A's owner rotates A's write leaving
+/// admin only through holder actor M (first admin: peer 2), and A's first admin rotates A's write leaving
 /// M out, so P holds A's read and admin but no current write; F (5) is an admin of A. Returns
 /// the peers and A, M.
 fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
@@ -1032,7 +1032,7 @@ fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
 
 // spec/permissions.md §3 (re-seal trigger, forks): F, an admin of A, leaves by itself. P,
 // lacking A's current write, rotates A's read and admin and leaves write to a node holding it.
-// Its read is current, so no heartbeat reports it stranded: the re-seal trigger of A's owner (M
+// Its read is current, so no heartbeat reports it stranded: the re-seal trigger of A's first admin (M
 // lacks a box at A's current write) re-seals M, and P holds A's write again.
 #[test]
 fn rotator_lacking_write_resealed_spec_permissions_3() {
@@ -1081,7 +1081,7 @@ fn removal_lacking_rotated_secret_refused_spec_permissions_3() {
 }
 
 // spec/crypto.md §4, spec/permissions.md §3 (Role cycles, key access): random role graphs of
-// 2-4 actors through a forced cycle, owned by one or two peers (sometimes with a common admin),
+// 2-4 actors through a forced cycle, with one or two peers as first admins (sometimes with a common admin),
 // every grant held by every node before D's (half the seeds: each as soon as made); a party D
 // on one or two of them, removed or demoted on one, or leaving by itself. After the removal (writers rotating what is due, synced: each holds every
 // knowing keyset), and after each admin acting alone until nothing changes, D's old secrets open

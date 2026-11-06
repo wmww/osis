@@ -83,8 +83,8 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     // sealed to the holder's newest read keyset (its own, else the inbox actor's)
     let mut to = holder;
     let mut kem = None;
-    let owners: Vec<Tid> = tx.core.record_chain(&holder).filter_map(|s| s.thing()).collect();
-    for cur in owners {
+    let chain: Vec<Tid> = tx.core.record_chain(&holder).filter_map(|s| s.thing()).collect();
+    for cur in chain {
         if let Some(ks) = super::Core::keys_in(tx, &cur)?.and_then(|k| k.read) {
             let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
             kem = Some(osis_crypto::KemPublicKey::from_slice(b)?);
@@ -156,7 +156,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     }
     let mut done = Done::default();
     // a thing is made a holder only with secrets of its own; a target gets them on its first
-    // non-owner holder (spec/permissions.md §3)
+    // holder other than its first admin (spec/permissions.md §3)
     if !tx.core.is_key_actor(&holder) && !tx.core.has_own_secrets(&holder) {
         rotation::own_secrets(tx, holder, &mut done)?;
     }
@@ -294,7 +294,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && let PreSync::Unsynced { proceed: false } = d.presync {
         return Err(Error::Misuse("labels not synced before a demotion; proceed to stamp anyway"));
     }
-    // a plain thing's only holder for keys is its owner or first admin (a grant gives it secrets
+    // a plain thing's only holder for keys is its first admin (a grant gives it secrets
     // of its own first): lowering the first admin's edge would leave it no admin, refused
     // (spec/permissions.md §1)
     if !tx.core.has_own_secrets(&target) && !tx.core.is_key_actor(&target) {

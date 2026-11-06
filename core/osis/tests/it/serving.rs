@@ -156,7 +156,7 @@ fn own_pair(seed: u64) -> (World, Osis, Osis, usize, Address, Tid, Tid) {
 }
 
 // spec/data-model.md §9 (`host.0^` `own`), spec/requirements.md Data a node cannot read: `own` admits
-// the groups whose owner chain reaches Alice's account, not every group she reads. Bob, a contact,
+// the groups whose record chain reaches Alice's account, not every group she reads. Bob, a contact,
 // grants her account read, then admin, and her node admin, on a group he owns that names her
 // peer: not admitted; nor a group under an actor of Bob's that Bob made her account admin of
 // (grants need no consent). A group under an actor her account owns is.
@@ -211,7 +211,7 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
 }
 
 // spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random ownership and grant graphs: Alice
-// admits exactly the groups she reads that name her peer and whose owner chain (as created)
+// admits exactly the groups she reads that name her peer and whose record chain (as created)
 // reaches her account, whatever read or admin grants Bob gives her account or node, or she gives
 // Bob (who then creates under her actors). Seeds picked so each fails with the rule that also
 // counted admin grants (on the group, or on an owner above it).

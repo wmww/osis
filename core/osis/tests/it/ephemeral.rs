@@ -1,5 +1,5 @@
 //! Local drafts and aspects (notes/ephemeral.md, step 1): in memory, no commit, no
-//! store write; persistence at the first durable write with the owner chain; restart forgets;
+//! store write; persistence at the first durable write with the record chain; restart forgets;
 //! rights through the nearest durable owner; expiry in memory; signal aspects.
 
 use osis::internals::Exact as _;
@@ -89,7 +89,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
 }
 
 // notes/ephemeral.md Persistence: the first durable write on a draft persists it
-// and its ephemeral owner chain in one commit, keeping the tids; its ephemeral aspects stay
+// and its ephemeral record chain in one commit, keeping the tids; its ephemeral aspects stay
 // ephemeral. spec/data-model.md §1, spec/commits.md §2
 #[test]
 fn first_durable_write_persists_chain_spec_commits_2() {
@@ -878,7 +878,7 @@ fn membership_not_saved_without_write_on_group_spec_permissions_1() {
     x.commit().unwrap();
     w.run();
     // alice adds it to g2 too (ephemerally: t is ephemeral at alice, its record carried
-    // under g1's label, whose reader t's owner chain reaches)
+    // under g1's label, whose reader t's record chain reaches)
     let mut x = alice.write();
     x.group(g2).add(osis::Member::Item(t)).unwrap();
     x.commit().unwrap();

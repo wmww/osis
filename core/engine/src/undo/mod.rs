@@ -89,7 +89,7 @@ pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, pre: 
 pub(crate) type Copies = BTreeSet<Option<u64>>;
 
 /// The undo delta of `undone` against `state`, `pre` the state before it (spec/crdt.md §4.6),
-/// and the expiries still ahead of the writes it copies back (`expiry` of an owner dot: `None`
+/// and the expiries still ahead of the writes it copies back (`expiry` of an origin dot: `None`
 /// for none, or for a dot whose commit is not known; a header outlives its body, so the commit
 /// of a write still held is known). Invariant (§4.6, §4.7): an undo never extends a value's
 /// lifetime, and never writes back content gone by expiry or purge: what has expired by `wall`

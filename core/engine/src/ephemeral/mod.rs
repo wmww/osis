@@ -203,7 +203,7 @@ impl Engine {
             }
         }
         // what the durable half persists: each ephemeral thing it writes, persists or adds to a group
-        // durably, with its ephemeral owner chain (the durable set stays closed under owner),
+        // durably, with its ephemeral record chain (the durable set stays closed under first admins),
         // and the groups its ephemeral memberships convert into
         let plan = self.membership_plan(&m, gops)?;
         let gak = membership::group_ak()?;
@@ -456,7 +456,7 @@ impl Engine {
         let synced = |t: &Tid| self.core.syncs(t) || self.core.memory.synced.contains(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g) && !removed.contains(&(*g, *t)));
         let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.core.ix.held.is_memory(t) && !synced(t)).copied().collect();
         loop {
-            let more: Vec<Tid> = gone.iter().flat_map(|t| self.core.ix.held.owned(t)).filter(|x| !gone.contains(x) && self.core.ix.held.is_memory(x) && !synced(x)).copied().collect();
+            let more: Vec<Tid> = gone.iter().flat_map(|t| self.core.ix.held.first_admin_of(t)).filter(|x| !gone.contains(x) && self.core.ix.held.is_memory(x) && !synced(x)).copied().collect();
             if more.is_empty() {
                 return gone;
             }

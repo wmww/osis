@@ -403,7 +403,7 @@ impl std::fmt::Debug for LazyHeader {
     }
 }
 
-/// Owner of writes: one delta of one node (`[lo, hi)`), a commit-form commit, or exact dots of
+/// The writes one delta holds as its own: one delta of one node (`[lo, hi)`), a commit-form commit, or exact dots of
 /// one node (writes snapshots carry, `ctrs` sorted).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Owned {
@@ -437,7 +437,7 @@ impl Owned {
         }
         by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }).collect()
     }
-    /// Whether `d` (an owner dot, never `Derived`) belongs to this delta.
+    /// Whether `d` (an origin dot, never `Derived`) belongs to this delta.
     pub fn owns(&self, d: &Dot) -> bool {
         match (self, d.src.kind()) {
             (Owned::Range { src, lo, hi }, _) => d.src == *src && *lo <= d.ctr && d.ctr < *hi,
@@ -828,7 +828,7 @@ pub struct Core {
     /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
     /// when the commit's record is written (late parts, drops), when a thing it touches gets
     /// its creation record, and all when an actor gets secrets of its own (reader actors move);
-    /// only commits whose things' owner chains are known are kept.
+    /// only commits whose things' record chains are known are kept.
     pub bodies: BTreeMap<CommitId, Option<crate::labeling::Body>>,
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
@@ -959,7 +959,7 @@ impl Core {
 
     /// Notes what a timeline update changed (`osis_perm::Changed`): a role at any point moves
     /// only for those upstream of a changed edge's holder or a new record, and only down from
-    /// its target or that record; what is below a new record has a new owner chain.
+    /// its target or that record; what is below a new record has a new record chain.
     pub(crate) fn timelines_changed(&mut self, c: osis_perm::Changed) {
         self.stale_things.extend(c.evaluated);
         self.stale_things.extend(self.ix.held.below(&c.created));
@@ -2332,9 +2332,9 @@ mod tests {
         lp.sync_all().unwrap();
         let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut failed = 0;
-        let new_thing = |e: &mut super::Engine, owner: Tid| {
+        let new_thing = |e: &mut super::Engine, admin: Tid| {
             let mut m = Mutation::new();
-            let t = e.new_thing(&mut m, owner);
+            let t = e.new_thing(&mut m, admin);
             write(&mut m, t, "new");
             e.commit(m).map(|_| t)
         };

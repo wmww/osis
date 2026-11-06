@@ -102,7 +102,7 @@ impl SyncEngine {
                 continue;
             }
             self.resealed.insert(c);
-            // the holder of the actor the node reads through: itself or up its owner chain
+            // the holder of the actor the node reads through: itself or up its record chain
             let holders: BTreeSet<Tid> = self.engine.core.current_holders(&a).into_iter().map(|x| x.0).collect();
             // a node that may not re-seal that holder leaves it to one that may
             let holder = self.engine.record_chain(&node).find(|t| holders.contains(t));

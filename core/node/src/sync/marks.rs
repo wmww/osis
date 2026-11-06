@@ -174,7 +174,7 @@ impl SyncEngine {
     }
 
     /// Whose roles changed where (`work::RoleMoves`, for each label to judge): the edges that
-    /// changed, the things with a new record (whose owner chains also moved). A role comes from
+    /// changed, the things with a new record (whose record chains also moved). A role comes from
     /// a holder up: it changes only upstream of the edge, and only below it.
     pub(super) fn note_role_moves(&mut self, records: &BTreeSet<Tid>, edges: &BTreeSet<(Tid, Tid)>) {
         if edges.is_empty() && records.is_empty() {
@@ -215,7 +215,7 @@ impl SyncEngine {
     /// What a role, creation or group change on `things` can concern: where authority flows from
     /// them (`Held::reach`: owned things, things they are named on as a holder); up their owner
     /// chains, whose home labels carry their `label.0` and `created.0` (spec/sync.md §3); and
-    /// their holders with those holders' owner chains, whose labels carry a route to them.
+    /// their holders with those holders' record chains, whose labels carry a route to them.
     pub(crate) fn downstream(&self, things: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         let held = &self.engine.core.ix.held;
         let mut out = held.reach(things);

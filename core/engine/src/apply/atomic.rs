@@ -470,7 +470,7 @@ impl Unmerge {
     pub(crate) fn is_empty(&self) -> bool {
         self.owned.is_empty()
     }
-    /// Whether what a delta body or the state holds under owner dot `d` goes.
+    /// Whether what a delta body or the state holds under origin dot `d` goes.
     pub(crate) fn bad(&self, d: &osis_crdt::Dot) -> bool {
         self.owned.owns(d)
     }
@@ -492,7 +492,7 @@ impl Unmerge {
             None => self.vouched.range((d.clone(), None)..).next().is_some_and(|x| x.0 == *d),
         }
     }
-    /// Whether what a valid snapshot's body holds under owner dot `d` goes.
+    /// Whether what a valid snapshot's body holds under origin dot `d` goes.
     pub(crate) fn unvouched(&self, d: &osis_crdt::Dot) -> bool {
         self.bad(d) && !self.vouches(d, None)
     }
@@ -520,7 +520,7 @@ pub(crate) fn carries_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owned: &[Own
     Ok(carries)
 }
 
-/// The owners of writes of the held deltas on `(tid, ak)` that are invalid here.
+/// The writes of the held deltas on `(tid, ak)` that are invalid here.
 pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     let mut out = Vec::new();
     for c in core.ix.invalid.get(&(*tid, ak.clone())).into_iter().flatten() {
@@ -742,7 +742,7 @@ fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result
     rebuild_changed(tx, tid, ak, &[], j)
 }
 
-/// Whether a dot of `src` with a counter in `lo..hi` may have a received owner (a cheap filter
+/// Whether a dot of `src` with a counter in `lo..hi` may have a received delta (a cheap filter
 /// before `strip_copies`: a session range overlapping a held one, any commit source).
 pub(super) fn core_holds_delta(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt::Source, lo: u64, hi: u64) -> bool {
     match src.kind() {

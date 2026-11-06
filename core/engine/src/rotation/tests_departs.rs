@@ -21,7 +21,7 @@ const A: usize = 0;
 const W: usize = 1;
 const X: usize = 2;
 
-/// Peers A (owner of `g`), W (a writer), X (an admin), all synced. Returns `g` and the tids.
+/// Peers A (first admin of `g`), W (a writer), X (an admin), all synced. Returns `g` and the tids.
 fn shape(seed: u64, w_role: Role) -> (LocalPeer, Tid, Vec<Tid>) {
     let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
@@ -207,8 +207,8 @@ fn forged_departs_leak_nothing_large() {
 
 // spec/crypto.md §4 (covers; attributes; encrypting under): random removals and demotions by
 // admins, self-removals (writers forging as `Forge` says, or not), rotations and partial syncs
-// on a group of five peers; then everything synced and the owner rotating what is due. The
-// owner encrypts under no epoch that a peer now below its role held or made at any point, or
+// on a group of five peers; then everything synced and the first admin rotating what is due. The
+// first admin encrypts under no epoch that a peer now below its role held or made at any point, or
 // opens from the final boxes with what it held. Seeds 9, 16, 22 and 44 leak with departs marks
 // met by any held commit of that `ts` and author; 1336 (`_large`) with a departure attributed
 // to a later audit drop.
@@ -289,7 +289,7 @@ fn forged_departs(seed: u64) {
         let opens = super::tests::openable(&mut lp, 0, &[g], tids[d], ever[d].clone());
         for r in roles.into_iter().filter(|r| role_d < Some(*r) && !blocked.contains(r)) {
             if let Some(e) = now.role(r).newest() {
-                assert!(!opens.contains(&(g, r, e)), "seed {seed}: owner encrypts under {r:?} epoch {e:?}, held by peer {d} (now {role_d:?})");
+                assert!(!opens.contains(&(g, r, e)), "seed {seed}: first admin encrypts under {r:?} epoch {e:?}, held by peer {d} (now {role_d:?})");
             }
         }
     }
@@ -298,9 +298,9 @@ fn forged_departs(seed: u64) {
 // spec/crypto.md §4 (attributes: a departure goes to the newest commit at whose point the holder
 // was lowered for keys; an audit drop that raises it is no event): seed 1336 of
 // `forged_departs_leak_nothing_large`. Admin P4 demotes admin P1 to read (K); P1, not knowing,
-// self-removes (S); the owner, not knowing K, demotes P4 to read (D), whose audit drops K. Admin
+// self-removes (S); the first admin, not knowing K, demotes P4 to read (D), whose audit drops K. Admin
 // Q holds K and D but not S: P1 is admin again there, and Q's rotation for P4 boxes P1, naming D.
-// At the owner P1's departure is S's, which Q's epochs do not name: the owner rotates.
+// At the first admin P1's departure is S's, which Q's epochs do not name: the first admin rotates.
 #[test]
 fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
     let (o, p1, p4, q) = (0, 1, 2, 3);
@@ -336,16 +336,16 @@ fn departure_attributed_to_its_lowering_not_a_later_drop_spec_crypto_4() {
     let opens = super::tests::openable(&mut lp, o, &[g], tids[p1], p1_held.into_iter().map(|(r, e)| (g, r, e)).collect());
     for r in [Role::Read, Role::Write, Role::Admin] {
         let e = now.role(r).newest().unwrap();
-        assert!(!opens.contains(&(g, r, e)), "owner encrypts under {r:?} epoch {e:?}, which P1 opens");
+        assert!(!opens.contains(&(g, r, e)), "first admin encrypts under {r:?} epoch {e:?}, which P1 opens");
     }
 }
 
 // spec/permissions.md §2 (self-removal: authority through the holder does not count),
 // spec/crypto.md §4 (covers: a rotation commit counts while its author holds the role): group M
-// holds admin on A; P1, M's owner, holds admin on A only through M. P1 demotes M to write in a
+// holds admin on A; P1, M's first admin, holds admin on A only through M. P1 demotes M to write in a
 // commit carrying a frontier and a rotation of admin and read (boxing M, which shows M:
 // Authority holds). It applies as a self-removal; P1 made the new admin secret and holds only
-// write after, so the owner rotates admin again.
+// write after, so the first admin rotates admin again.
 #[test]
 fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 5_107, WallMs(1_700_000_000_000)).unwrap();
@@ -381,11 +381,11 @@ fn holder_actor_demoted_by_its_own_admin_spec_crypto_4() {
     assert!(super::tests::blocked_at(&mut lp, 0, a).contains(&Role::Admin), "M's departure from admin covered by P1's epoch");
     lp.peers[0].engine.ensure_rotated(&a).unwrap();
     let now = lp.peers[0].engine.epochs(&a).unwrap().admin.newest_held().map(|x| x.0).unwrap();
-    assert!(!made.contains(&now), "owner's admin epoch {now:?} is one P1 made");
+    assert!(!made.contains(&now), "first admin's admin epoch {now:?} is one P1 made");
 }
 
 // spec/permissions.md §2 (self-removal: authority through the holder does not count): group M
-// holds admin on A; P1, M's owner, has admin on A only through M. Its removal of M (no frontier,
+// holds admin on A; P1, M's first admin, has admin on A only through M. Its removal of M (no frontier,
 // no rotation) is a self-removal at every node: it applies.
 #[test]
 fn own_group_removal_is_a_self_removal_spec_permissions_2() {

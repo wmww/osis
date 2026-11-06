@@ -213,7 +213,7 @@ impl Engine {
         self.run(|tx| crate::retention::rejudge_deaths(tx, &tid, &ak))
     }
 
-    /// The owner dots of the writes of `(tid, ak)` held valid snapshots carry whose own delta
+    /// The origin dots of the writes of `(tid, ak)` held valid snapshots carry whose own delta
     /// was never received (tests: a recompute plays them at their snapshot, not at their own
     /// `ts`; an invalid snapshot gives nothing, spec/permissions.md §5.2).
     #[doc(hidden)]

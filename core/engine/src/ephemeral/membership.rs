@@ -96,7 +96,7 @@ pub(crate) fn gains(before: Option<&Fragment>, delta: &Fragment) -> BTreeSet<Tid
 
 /// How a batch's group ops and the ephemeral memberships of the things it persists split.
 pub(super) struct MembershipPlan {
-    /// Ephemeral things (and new ones) the durable half persists, owner chains included.
+    /// Ephemeral things (and new ones) the durable half persists, record chains included.
     pub persisted: BTreeSet<Tid>,
     /// Drafts again (`Eph::drafts`) the durable half writes: saved again (their ephemeral
     /// memberships convert like any durable thing's written durably).
@@ -118,7 +118,7 @@ impl Engine {
     /// Splits `gops` (the batch's durable-keyed `group.0` writes) and computes what the batch
     /// persists: the things its durable aspects and `persist` name, groups getting a durable
     /// add, and the groups each persisted thing's (or saved draft's) ephemeral memberships
-    /// convert into, each with its ephemeral owner chain, to a fixpoint.
+    /// convert into, each with its ephemeral record chain, to a fixpoint.
     pub(super) fn membership_plan(&mut self, m: &Mutation, gops: Vec<(Tid, AspectMut)>) -> Result<MembershipPlan> {
         let node = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();

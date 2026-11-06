@@ -139,11 +139,11 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[
 }
 
 /// A held valid keyset of `actor` changed: possession (`validity::possessed`) is judged again for
-/// the `secrets.0` parts of what boxes it (`boxes_to`) and of what it holds a role on or owns
+/// the `secrets.0` parts of what boxes it (`boxes_to`) and of what it holds a role on or is first admin of
 /// (their commits only: a thing's other deltas do not depend on it).
 fn keyset_changed(core: &mut Core, actor: &Tid) {
     let mut things: std::collections::BTreeSet<Tid> = core.ix.boxes_to.get(actor).into_iter().flatten().map(|x| x.0).collect();
-    things.extend(core.ix.held.owned(actor).copied());
+    things.extend(core.ix.held.first_admin_of(actor).copied());
     if let Some(tl) = core.timelines.get(actor) {
         things.extend(tl.edges_at(None).targets(actor).copied());
     }
@@ -217,7 +217,7 @@ fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) ->
 /// Re-derives whether each of `things` has secrets of its own (spec/crypto.md §3): a held
 /// commit's valid `keys.0` part wrote a keyset in its body (held, or dropped or missing since).
 /// Called once a part is noted, after validity flips and at load (`!regain`). A thing that loses
-/// it (that commit turned invalid) derives from its owner again; what it learned stays for
+/// it (that commit turned invalid) derives from its base actor again; what it learned stays for
 /// reading (`Core::epochs`). One that regains it starts its epochs again from those.
 pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTreeSet<Tid>, regain: bool) -> Result<()> {
     for t in things {
@@ -641,11 +641,11 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
     use crate::flows::{Delivery, Demotion, Done, PreSync};
 
-    /// A thing owned by `owner`, made by peer `i`.
-    fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
+    /// A thing whose first admin is `admin`, made by peer `i`.
+    fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
         let e = &mut lp.peers[i].engine;
         let mut m = Mutation::new();
-        let t = e.new_thing(&mut m, owner);
+        let t = e.new_thing(&mut m, admin);
         m.set(t, &osis_base::Ak::new("x:reg.0").unwrap(), &Value::Str("new".into())).unwrap();
         e.commit(m).unwrap().unwrap();
         t
@@ -818,7 +818,7 @@ mod tests {
         assert!(held(&lp, &t2), "read once a place is free");
     }
 
-    /// Peer 0 owns thing `t` (`x:a.0` = 1); peer 1 is the grantee, holding nothing of peer 0;
+    /// Peer 0 is first admin of thing `t` (`x:a.0` = 1); peer 1 is the grantee, holding nothing of peer 0;
     /// peers 2.. are throwaway authors unknown to the grantee.
     fn grantee_world(seed: u64, n: usize) -> (LocalPeer, Tid) {
         let mut lp = LocalPeer::new(n, seed, WallMs(1_700_000_000_000)).unwrap();
@@ -1217,10 +1217,10 @@ mod tests {
 
     // spec/crypto.md §3 (a thing has secrets of its own while a valid `keys.0` part wrote a
     // keyset), §4 (secrets of an invalid commit are kept for reading only): admin A of G grants
-    // X on G's plain thing T (T's first `keys.0`, a rotation from derived epochs) after the owner
-    // removed A. Once A's grant is invalid, every node derives T from G again (encrypting under
+    // X on G's plain thing T (T's first `keys.0`, a rotation from derived epochs) after G's first
+    // admin removed A. Once A's grant is invalid, every node derives T from G again (encrypting under
     // G's epoch rotated past A, not A's), delete base G, open = rebuild; peer 3 had A's commit
-    // applied valid first (Y: a reader of G). The owner's own grant then gives T secrets of its own everywhere.
+    // applied valid first (Y: a reader of G). The first admin's own grant then gives T secrets of its own everywhere.
     #[test]
     fn keyset_of_invalid_rotation_leaves_thing_plain_spec_crypto_3() {
         let mut lp = LocalPeer::new(4, 941, WallMs(1_700_000_000_000)).unwrap();
@@ -1263,7 +1263,7 @@ mod tests {
             lp.peers[i].engine.rebuild_index().unwrap();
             assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
         }
-        // the owner's grant: secrets of T's own, from G's derived epochs
+        // the first admin's grant: secrets of T's own, from G's derived epochs
         lp.peers[0].engine.grant(&t, &x, &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
         let own = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
@@ -1281,10 +1281,10 @@ mod tests {
     }
 
     // spec/crypto.md §3: B, an admin of G, grants Z on T while A's rotation (T's first keyset,
-    // made after the owner removed A) still made T own-keyed at B, boxing under A's epochs. Once
+    // made after G's first admin removed A) still made T own-keyed at B, boxing under A's epochs. Once
     // A's commit is invalid, B's valid `secrets.0` part does not make T own-keyed again: its
     // opened epochs are derived from G's epochs from before A's removal (A knows those). T is
-    // plain at every node: encrypted under G's epoch rotated past A, the owner can write.
+    // plain at every node: encrypted under G's epoch rotated past A, G's first admin can write.
     #[test]
     fn valid_grant_under_invalid_keyset_leaves_thing_plain_spec_crypto_3() {
         let mut lp = LocalPeer::new(5, 942, WallMs(1_700_000_000_000)).unwrap();
@@ -1319,12 +1319,12 @@ mod tests {
             assert_eq!(d0.first_diff(&lp.peers[i].engine.index_digest()), None, "peer {i}: open = rebuild");
         }
         // spec/permissions.md §3: at the end of a complete pass of G's labels, each admin (the
-        // owner's node, B) gives T secrets of its own again, boxing Z (concurrently: a fork at
+        // first admin's node, B) gives T secrets of its own again, boxing Z (concurrently: a fork at
         // one n); A (removed), X and Z (readers) do nothing; nothing more once T has them
         let runs: Vec<(usize, Vec<Delivery>)> = (0..5).map(|i| own_due_done(&mut lp, i, &g, &t)).collect();
         assert_eq!(runs.iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 0, 0, 1, 0]);
         // each admin's rotation goes to Z directly (it holds no box at a current epoch of T),
-        // never to T's owner G (it reads the derived epochs), and first under T's labels; Z,
+        // never to T's first admin G (it reads the derived epochs), and first under T's labels; Z,
         // given only B's, holds T's new epochs
         for i in [0usize, 3] {
             let ds = &runs[i].1;
@@ -1390,7 +1390,7 @@ mod tests {
         (n, ds)
     }
 
-    // spec/permissions.md §3: a plain thing with no non-owner holder gets no secrets of its own
+    // spec/permissions.md §3: a plain thing with no holder other than its first admin gets no secrets of its own
     // from the trigger, nor does an own-keyed thing with holders.
     #[test]
     fn no_own_secrets_rotation_without_holders_spec_permissions_3() {

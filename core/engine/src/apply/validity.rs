@@ -99,7 +99,7 @@ impl EdgeParts {
 }
 
 /// Records the holder of every `roles.0` entry these deltas create: (target, entry dot) ->
-/// holder. Only the delta owning the entry's dot (`own`) creates it (a nested write into
+/// holder. Only the delta carrying the entry's dot (`own`) creates it (a nested write into
 /// another's entry is bad input, `check_holders_parts`).
 fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> bool {
     let mut new = false;
@@ -208,7 +208,7 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
     let mut known = true;
     for (ai, es) in &parts.0 {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        // nothing written on a thing too deep applies (spec/permissions.md §1); its owner chain is
+        // nothing written on a thing too deep applies (spec/permissions.md §1); its record chain is
         // held whole at apply (`examine`), so this never changes later
         if too_deep(core, &a.tid) {
             continue;
@@ -235,21 +235,21 @@ pub(crate) fn add_role_commit(core: &mut Core, h: &View, id: &CommitId, parts: &
     }
 }
 
-/// Does a path of held edge writes and owner links lead from `author` to a thing on `chain`?
+/// Does a path of held edge writes and record links lead from `author` to a thing on `chain`?
 /// (The author's chain certificates, spec/permissions.md §1, §4: a path climbs role
-/// grants and owner links, as perm's effective role counts them.) Searched backward from
-/// `chain`, as perm's `roles_to_any`: from a thing to its owner and to the holders named on
+/// grants and record links, as perm's effective role counts them.) Searched backward from
+/// `chain`, as perm's `roles_to_any`: from a thing to its first admin and to the holders named on
 /// it, so the search stays within what has authority over the chain.
 pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
     let held = &core.ix.held;
     let mut stack: Vec<Tid> = chain.to_vec();
     let mut seen: BTreeSet<Tid> = chain.iter().copied().collect();
     while let Some(t) = stack.pop() {
-        let owner = match held.created(&t) {
+        let first = match held.created(&t) {
             Some(CreationRecord::Thing { admin, .. }) => Some(admin),
             _ => None,
         };
-        for y in owner.into_iter().chain(held.holders_of(&t)) {
+        for y in first.into_iter().chain(held.holders_of(&t)) {
             if y == author {
                 return true;
             }
@@ -561,7 +561,7 @@ pub(super) fn meets(q: &ct::Required, h: &Header, a: &osis_commit::AspectEntry) 
     a.retention == q.retention() && q.expires_at(h.ts.wall_ms().0) == Some(h.expires)
 }
 
-/// `part_valid` over many parts: what is per thing (owner depth, timeline) looked up once per
+/// `part_valid` over many parts: what is per thing (chain depth, timeline) looked up once per
 /// run of parts on one thing.
 pub(crate) struct Judge<'a> {
     core: &'a Core,
@@ -664,7 +664,7 @@ impl<'a> Judge<'a> {
         if self.broken(h, id, a).is_some() {
             return false;
         }
-        // a thing more than `MAX_CHAIN_DEPTH` owner links below its key actor: nothing written on
+        // a thing more than `MAX_CHAIN_DEPTH` record links below its key actor: nothing written on
         // it applies (spec/permissions.md §1); judged per delta from creation records alone
         let (deep, tl) = self.thing(&a.tid);
         if deep {

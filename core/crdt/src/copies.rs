@@ -45,7 +45,7 @@ type Key = (Vec<Step>, Kind, Stamp);
 /// Writes by position, kind and stamp, with their values.
 type Writes = Vec<(Key, Option<Val>)>;
 
-/// Collects the writes whose owner dot `keep` accepts, by position, kind and stamp. `Derived`
+/// Collects the writes whose origin dot `keep` accepts, by position, kind and stamp. `Derived`
 /// writes and the copies of a register's write inside its embeddings (spec/crdt.md §7) are skipped: they
 /// repeat the register's.
 struct Copies<'a> {
@@ -220,7 +220,7 @@ impl Fragment {
         mine.into_iter().filter(|(k, v)| !(lax(&k.2.dot) && element_end(k)) && !others.copies.get(k).is_some_and(|t| agrees(&k.1, v, t, lax(&k.2.dot)))).map(|(k, _)| k.2.dot).collect()
     }
 
-    /// Its writes by owner dot, for `CopyIndex::outside` against many deltas in turn.
+    /// Its writes by origin dot, for `CopyIndex::outside` against many deltas in turn.
     pub fn copy_index(&self) -> CopyIndex {
         let mut ix = CopyIndex::default();
         ix.add(self);
@@ -239,7 +239,7 @@ impl Fragment {
         ix
     }
 
-    /// Removes every write whose owner dot `pred` accepts, element and entry creations with
+    /// Removes every write whose origin dot `pred` accepts, element and entry creations with
     /// their chars and anchors included, keeping others' writes nested in what they created,
     /// with the entry's key (their records repeat it, spec/crdt.md §3.2): what an invalid
     /// snapshot body or a snapshot turned invalid gave (spec/permissions.md §5.2).
@@ -335,7 +335,7 @@ impl CopySet {
     }
 }
 
-/// A fragment's writes by owner dot (`Fragment::copy_index`), and its map records (`None`:
+/// A fragment's writes by origin dot (`Fragment::copy_index`), and its map records (`None`:
 /// key-erased).
 #[derive(Debug, Default)]
 pub struct CopyIndex(BTreeMap<Dot, Vec<(Key, Option<Val>)>>, BTreeMap<Dot, BTreeSet<Option<Value>>>);
@@ -366,15 +366,15 @@ impl CopyIndex {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-    /// The owner dots indexed of `src` with a counter in `lo..hi`.
+    /// The origin dots indexed of `src` with a counter in `lo..hi`.
     pub fn dots_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = &Dot> {
         self.0.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).map(|(d, _)| d)
     }
-    /// Every owner dot indexed.
+    /// Every origin dot indexed.
     pub fn dots(&self) -> impl Iterator<Item = &Dot> {
         self.0.keys()
     }
-    /// The records holding the writes indexed under owner dots of `src` with a counter in
+    /// The records holding the writes indexed under origin dots of `src` with a counter in
     /// `lo..hi`, as (dot, key): a map entry creation's copy names its record's key (records of
     /// one dot with different keys are independent, §5.6), any other write `None`; and the
     /// keyed map records of such dots held, a creation's copy or not (one a reset pruned,
@@ -394,7 +394,7 @@ impl CopyIndex {
     pub fn erased_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = &Dot> {
         self.1.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).filter(|(_, ks)| ks.contains(&None)).map(|(d, _)| d)
     }
-    /// Whether a write is indexed under owner dot `d`.
+    /// Whether a write is indexed under origin dot `d`.
     pub fn holds(&self, d: &Dot) -> bool {
         self.0.contains_key(d)
     }

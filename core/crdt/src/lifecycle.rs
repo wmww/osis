@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 impl Fragment {
     /// The value-less copy of the writes `expired` owns (§4.7): what a snapshot carries of an
     /// expiring delta, a residue. It says nothing of whether they expired here: a valued copy
-    /// joined with it reads valued. `expired` is asked about owner dots (never `Derived`).
+    /// joined with it reads valued. `expired` is asked about origin dots (never `Derived`).
     pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
         self.strip_values(expired, false, &mut Changes::new());
         // drops `Derived` records left without a write
@@ -68,7 +68,7 @@ impl Fragment {
 
     /// The writes of a compacting writer's sweep (spec/crdt.md §4.8, spec/sync.md §7): a reset at
     /// `r` of each map entry and list element that is not live and whose reset or expiry here
-    /// (`gone`, owner dots) hid what is written in it, so that it dies and its bytes go. A record
+    /// (`gone`, origin dots) hid what is written in it, so that it dies and its bytes go. A record
     /// merely lacking its creation is no such thing: the creation may still arrive. Below a
     /// record it resets nothing more (that reset takes it all). Not for role-class aspects (a
     /// removal there names its key).
@@ -124,7 +124,7 @@ impl Fragment {
         }
     }
 
-    /// Removes every write whose owner dot (`Derived` dots: the underlying dot) matches `pred`,
+    /// Removes every write whose origin dot (`Derived` dots: the underlying dot) matches `pred`,
     /// with the records such dots created and others' writes nested in them, in place: un-merge
     /// of single deltas (spec/permissions.md §5.2, spec/crdt.md §4.6). The result is for a join
     /// or a `prune`, which give it canonical form (it may keep a map entry holding only its
@@ -142,7 +142,7 @@ impl Fragment {
         self.remove_dots_in(pred, keep);
     }
 
-    /// Removes exactly the writes whose owner dot matches `pred`, keeping others' writes nested
+    /// Removes exactly the writes whose origin dot matches `pred`, keeping others' writes nested
     /// in a record a matching dot created: a snapshot's copies of writes played elsewhere, the
     /// others still superseding there.
     pub fn remove_writes(&mut self, pred: &dyn Fn(&Dot) -> bool) {
@@ -275,12 +275,12 @@ impl Fragment {
         walk(&mut KeyedResets, self)
     }
 
-    /// Adds the owner dot of every write and live record here to `out` (a range record's first).
+    /// Adds the origin dot of every write and live record here to `out` (a range record's first).
     pub fn origin_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
         walk(&mut OriginDots(out), self);
     }
 
-    /// Whether a write of the delta owning dot `d` is here: a write stamped with its dot or a
+    /// Whether a write of the delta carrying dot `d` is here: a write stamped with its dot or a
     /// record's creation; unlike `holds_dots`, a tombstone keyed by `d` (the remover's) is not.
     pub fn holds_write(&self, d: &Dot) -> bool {
         walk(&mut HoldsWrite(d), self)

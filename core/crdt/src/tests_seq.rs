@@ -1195,7 +1195,7 @@ fn rejects_overlapping_runs_spec_3_3() {
 }
 
 proptest! {
-    /// spec/commits.md §5 (a body's live writes, judged by owner dot): `holds_owned` answers as
+    /// spec/commits.md §5 (a body's live writes, judged by origin dot): `holds_owned` answers as
     /// `writes` does, over range records and `Derived` dots too (random histories, as held and
     /// through a snapshot).
     #[test]

@@ -209,8 +209,8 @@ impl Engine {
         frame_envelope(&env, &resolved, class, rng, &c).map(Some)
     }
 
-    /// The record chain a section lists for thing `t` (spec/wire.md §4): from its owner or first
-    /// admin up to and including the actor its read secret derives from; empty for a thing with
+    /// The derivation chain a section lists for thing `t` (spec/wire.md §4): from its first admin
+    /// up to and including the actor its read secret derives from; empty for a thing with
     /// secrets of its own or a key actor.
     fn section_chain(&self, t: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
@@ -225,40 +225,40 @@ impl Engine {
                         return out;
                     }
                 }
-                // a key actor above `t` is the owner the step before pushed: listed once
+                // a key actor above `t` is the first admin the step before pushed: listed once
                 _ => return out,
             }
         }
         out
     }
 
-    /// The epochs of each member of a section's owner chain (`owners`, nearest first, no tid
+    /// The epochs of each member of a section's derivation chain (`chain`, nearest first, no tid
     /// twice: spec/wire.md §4) held here, each derived down the nearer part of the chain to the
-    /// nearest owner (a member given secrets of its own since the section was sealed holds the
+    /// nearest member (a member given secrets of its own since the section was sealed holds the
     /// derived epoch in its history). `last`: the previous chain of this blob opening and its
     /// answer (a commit's sections in one group share a chain: derived once, memory bounded).
-    fn chain_epochs(&self, owners: &[Tid], last: &mut Option<(Vec<Tid>, Vec<ActorEpochs>)>) -> Vec<ActorEpochs> {
+    fn chain_epochs(&self, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<ActorEpochs>)>) -> Vec<ActorEpochs> {
         if let Some((o, v)) = last.as_ref()
-            && o == owners
+            && o == chain
         {
             return v.clone();
         }
         let mut out = Vec::new();
-        for (i, o) in owners.iter().enumerate() {
+        for (i, o) in chain.iter().enumerate() {
             let Some(mut e) = self.epochs(o) else { continue };
-            for x in owners.get(..i).into_iter().flatten().rev() {
+            for x in chain.get(..i).into_iter().flatten().rev() {
                 e = ActorEpochs::derived(&e, x);
             }
             out.push(e);
         }
-        *last = Some((owners.to_vec(), out.clone()));
+        *last = Some((chain.to_vec(), out.clone()));
         out
     }
 
-    /// The read secrets of thing `t` derived by tid from `chain_epochs` of its section's owners.
-    fn derived_through(&self, t: &Tid, owners: &[Tid], last: &mut Option<(Vec<Tid>, Vec<ActorEpochs>)>) -> Vec<Secret32> {
+    /// The read secrets of thing `t` derived by tid from `chain_epochs` of its section's chain.
+    fn derived_through(&self, t: &Tid, chain: &[Tid], last: &mut Option<(Vec<Tid>, Vec<ActorEpochs>)>) -> Vec<Secret32> {
         let mut out: Vec<Secret32> = Vec::new();
-        for e in self.chain_epochs(owners, last) {
+        for e in self.chain_epochs(chain, last) {
             for (_, s) in ActorEpochs::derived(&e, t).read.held_newest_first() {
                 if !out.iter().any(|x| x.expose() == s.expose()) {
                     out.push(s.clone());
@@ -270,7 +270,7 @@ impl Engine {
 
     /// Seals a body as a fresh blob (spec/sync.md §3, spec/wire.md §4): one section per thing
     /// among the commit's held parts, each under that thing's read secret (a plain thing's
-    /// derives from its owner's by tid, spec/crypto.md §3, so a thing given secrets of its own
+    /// derives from its base actor's by tid, spec/crypto.md §3, so a thing given secrets of its own
     /// later opens its earlier sections by its history; `wrap_secret`: the newest current
     /// epoch, a rotation's under the epoch it supersedes), the sections of `extra` (those this
     /// node could not open, from a held blob of the commit) copied verbatim; the prefix commits
@@ -296,8 +296,8 @@ impl Engine {
     }
 
     /// Opens a commit blob (spec/wire.md §4): each section under the read secrets of its thing
-    /// (own, or derived from its owner's; `read_secrets`, newest first), those derived through
-    /// the owner chain the section lists (the thing's record may be inside the section) and
+    /// (own, or derived from its base actor's; `read_secrets`, newest first), those derived through
+    /// the derivation chain the section lists (the thing's record may be inside the section) and
     /// `label`'s group's own (a per-label copy's, `seal_to`), the rest left sealed; checks the
     /// prefix against the header and the sections' aspects (spec/commits.md §4).
     pub fn open_commit(&mut self, blob: &[u8], key: &Secret32, label: Option<&Tid>) -> Result<OpenedBlob> {
@@ -335,7 +335,7 @@ impl Engine {
             let t = thing_of(sec);
             let mut v: Vec<Secret32> = t.map(|t| self.read_secrets(&t)).unwrap_or_default();
             if let Some(t) = t {
-                v.extend(self.derived_through(&t, &sec.owners, &mut last.borrow_mut()));
+                v.extend(self.derived_through(&t, &sec.chain, &mut last.borrow_mut()));
             }
             v
         };
@@ -352,7 +352,7 @@ impl Engine {
     /// The bodies a group's label must hold from its closure (spec/sync.md §3): held commits
     /// touching the closure with a part the group's actor may read. A home label (an actor
     /// synced as a group of itself) also carries the `label.0` and `created.0` writes of the
-    /// labeled groups it is the nearest labeled owner-chain actor of (spec/sync.md §2).
+    /// labeled groups it is the nearest labeled record-chain actor of (spec/sync.md §2).
     pub fn label_bodies(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let mut out = self.label_bodies_meta(g)?;
         for b in &mut out {
@@ -432,7 +432,7 @@ impl Engine {
                     b.plaintext = Vec::new();
                     b
                 });
-                // kept only while every reader actor is resolved (a missing owner record
+                // kept only while every reader actor is resolved (a missing first admin record
                 // arriving later moves it)
                 if h.aspects.iter().all(|a| self.core.secret_actor(&a.tid).is_some()) {
                     self.core.bodies.insert(id, b.clone());
@@ -475,7 +475,7 @@ impl Engine {
         Ok(out)
     }
 
-    /// Labeled groups whose nearest labeled owner-chain actor is `g` (its home label publishes
+    /// Labeled groups whose nearest labeled record-chain actor is `g` (its home label publishes
     /// their `label.0`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
     /// Taken for every actor at once, again only when a creation record, `own_keys` or the
     /// labeled things changed (`Core::published`): O(labeled things) per change, not per pass.
@@ -519,12 +519,12 @@ impl Engine {
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
         // the first admin's epochs; a thing whose `created.0` is not here yet (a recovery card's
         // person) may have any key actor held as first admin
-        let owners: Vec<osis_keys::ActorEpochs> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
+        let firsts: Vec<osis_keys::ActorEpochs> = match self.core.created(g).map(osis_base::CreationRecord::first_admin) {
             Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
             Some(None) => Vec::new(),
             None => self.core.key_actors.values().map(|id| osis_keys::ActorEpochs::key_actor(id.seed())).collect(),
         };
-        for oe in owners {
+        for oe in firsts {
             for (_, s) in osis_keys::ActorEpochs::derived(&oe, g).read.held_newest_first() {
                 if !v.iter().any(|x| x.expose() == s.expose()) {
                     v.push(s.clone());
@@ -624,8 +624,8 @@ impl Engine {
     }
 
     /// Whether `ep` of role `r` is established for `g`: in its own epochs, or, for a thing that
-    /// got secrets of its own, as the epoch derived from an established epoch of its owner or
-    /// first admin it had before (spec/crypto.md §3-§4; the history box carries it without establishment).
+    /// got secrets of its own, as the epoch derived from an established epoch of the base
+    /// actor it had before (spec/crypto.md §3-§4; the history box carries it without establishment).
     fn established(&self, g: &Tid, e: &ActorEpochs, r: Role, ep: &Epoch) -> bool {
         if e.role(r).is_established(ep) {
             return true;
@@ -637,7 +637,7 @@ impl Engine {
     /// The delete secrets this node holds per commitment group of a blob of commit `c` whose
     /// sections list aspects `ais` (spec/crypto.md §7, spec/wire.md §5): one list per group in
     /// prefix order, each entry a level and its secret, matched over every held epoch along the
-    /// owner chains. Needs no blob: a dropped body's copy may be gone.
+    /// record chains. Needs no blob: a dropped body's copy may be gone.
     pub fn delete_secrets_of(&mut self, c: &CommitId, ais: &[usize]) -> Vec<Vec<(u8, DeleteSecret)>> {
         let Some(h) = self.header(c) else { return Vec::new() };
         self.delete_secrets_by_group(&h, ais)
@@ -775,9 +775,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    // spec/crypto.md §3, spec/wire.md §4: a record chain owned-under-ownerless-under-node: ownerless
-    // O, whose first admin is the node, derives from the node's epochs and T, owned by O, from
-    // O's; a section on T lists the chain up to the node, one on O the node.
+    // spec/crypto.md §3, spec/wire.md §4: a record chain of two plain things under the node: O,
+    // whose first admin is the node, derives from the node's epochs and T, whose first admin is
+    // O, from O's; a section on T lists the chain up to the node, one on O the node.
     #[test]
     fn derives_through_a_first_admin_spec_crypto_3() {
         use crate::Mutation;

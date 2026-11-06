@@ -6,7 +6,7 @@
 //! newer card write of its aspects changed under the label, its thing entered or left the
 //! closure, a time bound passed (keep at least, expiry; a local pass: an entry's prefix expiry), the state of an aspect its verdict
 //! waits on changed (liveness), a role it reads changed (`roles_moved`), or it was
-//! judged while unsettled and that ended. Anything else (open, a role or owner chain of the label's
+//! judged while unsettled and that ended. Anything else (open, a role or record chain of the label's
 //! actor moving, its own secrets, lost access, a forget, other inputs of the pass: keys and epochs, the
 //! home label's published things) judges everything. A commit or blob leaves the set only once its pass did
 //! nothing for it and found nothing waiting (no send, delete or relay wait outstanding); so a
@@ -37,7 +37,7 @@ pub(crate) struct Touched {
     pub states: BTreeSet<(Tid, Ak)>,
     /// Blobs that arrived or came with a changed commit (a body linking them uploads them now).
     pub blobs: BTreeSet<BlobId>,
-    /// Things whose owner chains changed (`Held::below` of new owner links), or those `roles` reach.
+    /// Things whose record chains changed (`Held::below` of new record links), or those `roles` reach.
     pub moved: BTreeSet<Tid>,
     /// Whose roles changed and where.
     pub roles: RoleMoves,
@@ -133,7 +133,7 @@ impl Touched {
     }
 }
 
-/// A change of edges or owner links: only `subjects` (`Held::upstream` of the changed edges'
+/// A change of edges or record links: only `subjects` (`Held::upstream` of the changed edges'
 /// holders, and of the things with a new record) gain or lose a role, and only on `reached`
 /// (`Held::reach` of the targets and those things). A pass's verdicts read roles as the label's
 /// actor, its group or this node, and for another node's card as its author: whom a departure
@@ -407,7 +407,7 @@ impl SyncEngine {
         if subjects.contains(&x) || subjects.contains(g) || subjects.contains(&self.engine.tid()) {
             w.touched.moved.extend(reached);
         }
-        // a change of the owner chain or of a role of the label's own actor (every entry's
+        // a change of the record chain or of a role of the label's own actor (every entry's
         // reader may stand anew), or of whether it has secrets of its own
         let own = w.touched.moved.contains(&x) || w.touched.actors.contains(&x);
         let full = w.touched.full || own || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
@@ -452,7 +452,7 @@ impl SyncEngine {
     /// What role changes that leave the actor of `g` alone move under its label `l`
     /// (spec/sync.md §3 entitlement, §6, §7; spec/permissions.md §4): the things of the closure,
     /// and of the `label.0`s its home label publishes, whose roles changed (`Held::reach` of the
-    /// changed rosters and owner links) or whose owner chain holds an actor that got or lost
+    /// changed rosters and record links) or whose record chain holds an actor that got or lost
     /// secrets of its own (reader actors); the label's own commits with a delta on such a thing
     /// (a superset's foreign deltas); other nodes' cards (their author's departure); deletes
     /// waiting for a key. A label they reach takes its roster horizon again. Returns those things.

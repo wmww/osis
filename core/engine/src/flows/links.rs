@@ -1,4 +1,4 @@
-//! Share links (spec/permissions.md §7, spec/wire.md §10): K an actor owned by the sharer with
+//! Share links (spec/permissions.md §7, spec/wire.md §10): K an actor whose first admin is the sharer's actor, with
 //! secrets of its own, a holder of the target with the link's role; L a key actor from the
 //! link's seed with (r, invite r) on K, listed in K's label steps by static entry. Redeem (an
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
@@ -31,7 +31,7 @@ pub struct HeldLink {
     pub l: Tid,
     /// The seed thing's first admin (the sharer's actor): only a K with that first admin counts
     /// (a seed thing a co-reader made and placed in a shared group names no link of ours).
-    pub owner: Tid,
+    pub first_admin: Tid,
     pub target: Tid,
     pub single_use: bool,
     /// This node wrote the seed: it made the link, so a redeemer of a link without hosts
@@ -53,7 +53,7 @@ pub struct LinkSpec {
 
 impl Engine {
     /// Creates a link to `spec.target` for actor `sharer` (an actor this node is admin of):
-    /// K (owned by `sharer`, secrets of its own, home label on `spec.hosts` listing L by
+    /// K (first admin `sharer`, secrets of its own, home label on `spec.hosts` listing L by
     /// static entry), L (key actor from a fresh seed, `created.0` and `keys.0` signed by itself),
     /// L's edge (r, invite r, `until`) on K with its boxes, K's edge on the target, and a
     /// sharer-only thing keeping the seed. Returns the link and the seed thing.
@@ -121,11 +121,11 @@ impl Engine {
                 && let (Some(Value::Tid(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
                 && let (Some(Value::Tid(target)), Some(Value::Bool(single_use))) = (m.get(&Value::Int(2)), m.get(&Value::Int(3)))
-                && let Some(owner) = self.first_admin(&t)
+                && let Some(first_admin) = self.first_admin(&t)
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
-                out.push(HeldLink { k: *k, l: crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), owner, target: *target, single_use: *single_use, here });
+                out.push(HeldLink { k: *k, l: crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), first_admin, target: *target, single_use: *single_use, here });
             }
         }
         out.sort();
@@ -147,7 +147,7 @@ impl Engine {
         let mut out = Vec::new();
         for h in self.held_links()?.iter() {
             let (k, l) = (&h.k, &h.l);
-            let Some(tl) = self.core.timelines.get(k).filter(|_| self.first_admin(k) == Some(h.owner)) else { continue };
+            let Some(tl) = self.core.timelines.get(k).filter(|_| self.first_admin(k) == Some(h.first_admin)) else { continue };
             let due = match tl.edges_at(None).get(l, k) {
                 Some(e) => (!e.alive_at(Some(ts))).then_some(e.until),
                 None => tl.lowered_unaudited(l, k).then_some(None),
@@ -169,7 +169,7 @@ impl Engine {
         let mut next: Option<u64> = None;
         for h in self.held_links()?.iter() {
             let (k, l) = (&h.k, &h.l);
-            let Some(tl) = self.core.timelines.get(k).filter(|_| self.first_admin(k) == Some(h.owner)) else { continue };
+            let Some(tl) = self.core.timelines.get(k).filter(|_| self.first_admin(k) == Some(h.first_admin)) else { continue };
             if let Some(e) = tl.edges_at(None).get(l, k)
                 && let Some(u) = e.until
                 && e.alive_at(Some(ts))

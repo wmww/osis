@@ -73,7 +73,7 @@ fn perms(n: usize) -> Vec<Vec<usize>> {
 }
 
 /// The shape of a history: B's writes (1-2), the frontier's point (0: before B's writes,
-/// backdated; 1 between them; the last: after them), the demoter (0: A, the owner; 2: C, an
+/// backdated; 1 between them; the last: after them), the demoter (0: A, the first admin; 2: C, an
 /// admin of G), the grandchild of G (0: none; 1: created in a later commit, so it can arrive
 /// late under a late parent; 2: in its parent's commit), and what follows the
 /// demotion (0 nothing, 1 B writes again unaware, 2 A grants B again, 3 A gives B read on the
@@ -86,7 +86,7 @@ struct Shape {
     tail: usize,
 }
 
-/// One history of `shape`, the rest random. Peer 0 (A) owns G, gives peer 1 (B) write and
+/// One history of `shape`, the rest random. Peer 0 (A) is first admin of G, gives peer 1 (B) write and
 /// peer 2 (C) admin; A creates two items under G in one commit, and maybe an item under the first
 /// (a grandchild of G) in that commit or the next; B writes on G or on one of them, the demoter receiving each at once or not
 /// before the demotion; the demoter removes B with a frontier as of `shape.at`; then the tail.
@@ -184,7 +184,7 @@ fn sample(seed: u64, shape: Shape) -> usize {
 // a demotion's frontier misses is invalid whatever order it arrives in), spec/crdt.md §4.6:
 // frontiers before (backdated), inside and after the writer's writes; children of the demoted
 // actor created in one commit, a grandchild in a later commit or in theirs; a demotion by an admin other than the
-// owner; a commit naming a former leaf.
+// first admin; a commit naming a former leaf.
 #[test]
 fn validity_alike_in_every_arrival_order_spec_permissions_5_2() {
     let cases = [(1, 0, 0, 1, 0), (1, 1, 2, 1, 0), (2, 1, 2, 2, 0), (2, 1, 0, 0, 0), (1, 0, 2, 0, 3)];
