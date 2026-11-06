@@ -60,5 +60,5 @@ Collected from notes/api.md and notes/client-port.md and spec/requirements.md (A
 3. Is every new word necessary, and is it the word already used for this concept? (Vocabulary: notes/api.md.)
 4. Does anything expose an internal concept, or a number an app has no use for?
 5. Is the shape still right for the whole area, by the tests above?
-6. What happens on an attached handle, offline, on a deleted thing, and with an empty argument? Is each predictable and visible?
+6. What happens on a handle connected to another node, offline, on a deleted thing, and with an empty argument? Is each predictable and visible?
 7. Update notes/api.md and the doc examples in `core/osis/src/lib.rs`; picked numbers pass notes/arbitrary-values.md.

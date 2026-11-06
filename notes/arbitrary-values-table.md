@@ -54,7 +54,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_RECONCILE_MESSAGES` 4096, `MAX_RECONCILE_IDS` 2^21, `MAX_RECONCILE_QUEUED` 2^17 | R (abandon as peer error) | no reconciliation / a splitting responder holds us forever |
 | `MAX_EMPTY_PAGES` 16 | R | first empty page fails / a cursor-only peer loops forever |
 
-### Host (`proto/serving.rs`, `relay.rs`, `host/`)
+### Serving (`proto/serving.rs`, `relay.rs`, `host/`)
 | value | class | 0 / ∞ |
 |---|---|---|
 | `LOG_BATCH` 256, replicate `BATCH_RECORDS` 256, `BATCH_BYTES` 4 MiB, `MAX_STEPS` 64, hub `SWEEP_BUDGET` 1024 | P | no progress per call / unbounded call latency |
@@ -91,7 +91,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_INBOX_RESENDS` 3 | O (sign-off) | |
 | `INBOX_WAITING` 32, `INBOX_WAITING_BYTES` 1 MiB | R | half the recommended minimum deposit budget, so the rest stays free; past it what is no request goes first, then the requests earliest to expire. 0: nobody unconnected can invite; infinity: a stranger holds the budget up to `INBOX_LIFETIME` |
 | `DEPOSIT_RETRY_CAP_MS` 1 h | M | resent every tick / lands that much later once the refusal clears (a deposit taken at that host and label ends the wait of the others there) |
-| `RECORD_SWEEP_MS` 1 h (`serve.rs`) | P | every tick scans every entry and placement (about 100 ms at 10^6 entries) / unneeded carrier and certificate rows are never forgotten (they wait `TOMBSTONE_LIFETIME` anyway, so an hour is noise) |
+| `RECORD_SWEEP_MS` 1 h (`serve.rs`) | P | every tick scans every entry and its presence (about 100 ms at 10^6 entries) / unneeded carrier and certificate rows are never forgotten (they wait `TOMBSTONE_LIFETIME` anyway, so an hour is noise) |
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
 | registration refused for now, or a label unknown at a host with nothing to register (an invitee ahead of the label): back-off `retry_ms` doubling per refusal in a row on a connection (an open resets it), at most `resync_ms` (`open.rs` `refused_for_now`) | M (existing knobs) | opens every tick / a label the host admits or gets later never syncs on that connection |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
@@ -104,10 +104,10 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | link `WRITE_CHUNK` 16 KiB | M (grain of send progress for the stall timeout) | no progress shown / a link under a chunk per stall timeout counts as stalled |
 | `SERVE_IDLE` / `serve_idle_ms` 120 s, `serve_open_ms` 30 s, `max_served` 64 | R | |
 | `work_max` 2^14 (osis-node `SyncConfig`, changes from elsewhere a label's work set takes in before its pass) | R (past it the set goes and the label's next pass is full, always correct, O(what the label holds): over about 270 changes/s sustained, every resync) | a pass after any change full / 32 B per message since the pass, per label |
-| `max_clients` 64 (osis-node `SyncConfig`, client port (b), (c)) | R (past it the oldest unauthenticated Owner session is closed, else the newcomer; thin clients counted apart, a further Auth is Error 4; also the nonce sessions kept for the Owner) | no client served / local dials exhaust memory |
+| `max_clients` 64 (osis-node `SyncConfig`, client port (b), (c)) | R (past it the oldest unauthenticated main session is closed, else the newcomer; client-actor sessions counted apart, a further Auth is Error 4; also the nonce sessions kept for the main session) | no client served / local dials exhaust memory |
 | `client_pending` 64 (osis-node `SyncConfig`, client listener: connections at `link::Slots::Pending`, sessions at `accept_peer`) | R (the oldest unauthenticated gives way to another source's newcomer; a source already holding the most is refused; an authenticated one is out of the count, `max_clients` caps those) | no client ever gets in / a flood holds unbounded memory |
 | `REBIND_WAIT` 5 s, `REBIND_RETRY` 50 ms (osis-node `driver`, replacing a client listener) | M (past it the replace fails `Network`, calling it again works: the old socket lives until its connections finished closing) | fails while they drain / waits forever on a port someone else holds; each try blocks that driver |
-| `RETRY_MIN` 100 ms, `RETRY_MAX` 30 s (osis `port::client`, redial back-off) | M (how late a client notices its node returned; calls fail `Network` meanwhile) | a tight dial loop / never redials, the attachment stays `Network` |
+| `RETRY_MIN` 100 ms, `RETRY_MAX` 30 s (osis `port::client`, redial back-off) | M (how late a client notices its node returned; calls fail `Network` meanwhile) | a tight dial loop / never redials, the connection stays `Network` |
 | `NONCE_RESENT` bit 62 (osis `port::client`, spec/wire.md §11.2) | not a tradeoff (a flag; nonces stay below it: 2^62 writes) | |
 | `CONNECTION_WAIT` 30 s (osis `port::client`: one attempt to reach a node, and a write in flight across a drop before `OutcomeUnknown`) | M (a write's answer is that late; a caller of `connect` races its own timeout) | nothing connects, a write across a drop is unknown / a silent node holds an attempt and a sync write for good |
 | `MAX_SUBS` 4096 per connection (osis-proto `api`, spec/wire.md §11.2) | R (code 4; counted apart from open labels) | no remote watching / one connection grows the dirty-flag table and per-change filter walk without bound |
@@ -119,7 +119,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_WAITS` 16 per connection (osis `port`, rows that wait still running) | R (`Invalid`; a finished wait counts no more) | no waiting through the port / `MAX_SUBS` waiters each O(labels) per change under `eng` |
 | `MAX_CONNS_PER_CLIENT` 8 (osis-node `sync`, client port (c)) | R (a further Auth of that client is Error 4; also the nonce sessions kept per client) | no client served / one client takes the whole `max_clients` pool |
 | `SIGNAL_BYTES` 1 MiB per connection (osis `port`) | R (the subscription whose signal or diagnostic does not fit lapses; the client subscribes again) | every signal dropped under backpressure / a slow client holds unbounded memory |
-| `MAX_SCHEMA_BYTES` 1 MiB per node (osis `port`, distinct sources; registrations are process-wide and kept) | R (`TooLarge`) | no typed set through the port / Owner clients fill memory |
+| `MAX_SCHEMA_BYTES` 1 MiB per node (osis `port`, distinct sources; registrations are process-wide and kept) | R (`TooLarge`) | no typed set through the port / main-session clients fill memory |
 | `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
 | `MAX_AUTHOR_ITEMS` 32 (osis-base `format`, by-author items of one commit's purge) | R (bad input; more in further commits) | no purge by author / one commit stalls every node for items x the aspect's length |
 | `HISTORY_PAGE` 256 (osis `history`, entries of a page) | R (a page ends early, `more`) | reads nothing / a whole aspect in one call under `eng` |

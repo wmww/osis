@@ -16,7 +16,7 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | # | Issue | Cat | Size | Why here |
 |---|---|---|---|---|
 | 2 | order-seed-91730013-expired-in-snapshot | A? | M | Undiagnosed: as made, a snapshot still holds an expired write's value two hours past T. If real, expired content kept. Replay first (unverified). Possibly the copy class fixed by copies-gone (seed 7520036); replay. |
-| 4 | purge-no-reset-older-value | A?/C | S to diagnose | A purge without a reset reads `None` at the admin and an older value at a new device. Check whether content the user believes gone shows, or whether it is the accepted 2B limit. |
+| 4 | purge-no-reset-older-value | A?/C | S to diagnose | A purge without a reset reads `None` at the admin and an older value at a new node. Check whether content the user believes gone shows, or whether it is the accepted 2B limit. |
 | 5 | pending-unbounded | A | M | A reader or inbox sender grows what a node keeps pending, for good. Needs Tess's bound. **WC**: step 3 shrinks pending to parts on unheld things; re-check then. |
 | 6 | purged-values-in-waiting-copies | A | M | Purged values sit in waiting copies (part and request both waiting for the record; a blob kept for a junk-held slot; an unnamed waiting snapshot). **WC**, with #5. |
 | 9 | epoch-establishment-redesign | A | M | Frozen coverage built; the review of the direct-holder model (C2) remains (holder actors at depth 0, issues/keys-depth0.md). |
@@ -31,7 +31,7 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | 18 | eph-churn-delete-upload-loop | C/E | M | A compaction snapshot storm (upload and delete per pass, forever) on an honest path. Fix branch `snapshot-storm` too costly; parked behind **DR**. |
 | 19 | list-mark-lost-on-fall | C | M | An un-merge loses a list creation's value-less mark: order-dependent state. Simplest rule: value-less as its own bit. May go with **DR** item 1. |
 | 20 | list-element-snapshot-before-expiry | C | M | A late node holding a pre-T snapshot shows others' writes in an expired list element until a post-T snapshot. Ignored repro; full fix is a simplification. |
-| 21 | ephemeral-restart-reverts-diverge | C | M | 1 in 3000 seeds: a placement at one node only after restarts. Cause unknown. |
+| 21 | ephemeral-restart-reverts-diverge | C | M | 1 in 3000 seeds: a membership left at one node only after restarts. Cause unknown. |
 | 22 | spec-refactor-leftovers | C | S | A commit of an unknown format version may not park as the spec says; ephemeral writes by a shared key actor undecided; one rule stated twice (goes with **WC** step 3). |
 | 23 | fallen-snapshot-at-its-writer | C | S | Seed 73310002 found when that op was D > 0 (now 0): replay on main first (unverified). Then an oracle decision. Related to **DR**. |
 | 24 | snapshot-late-death-credit | C | S | A late-dated death drops a snapshot early at one node; reads agree. |
@@ -53,7 +53,7 @@ Priority (Tess): shapes only a malicious writer can craft inside data it may wri
 | deposit-seed-reaches-departed, fresh-deposit-seed-readable-by-departed | a departed holder keeps depositing junk | accepted residual |
 | epoch-derived-same-secret | insider disruption above 2^62 | low |
 | host-hub-stall, sync-log-scan, inbox-full-walk-scale | bounded DoS cost at a host or node | rates and caps as stated |
-| cli-proxy follow-ups (rule 4 answer, no call deadline, Auth guesses) | a hostile attached node or client | listed as limits in the issue |
+| cli-proxy follow-ups (rule 4 answer, no call deadline, Auth guesses) | a hostile node or client at the other end | listed as limits in the issue |
 | store-unit-length-leak | plaintext row names link a slot's versions for a forensic reader | state, or hash row names |
 
 ### E: perf and cost (wait)

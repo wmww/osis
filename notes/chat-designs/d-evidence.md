@@ -47,7 +47,7 @@
 ## Alternatives
 
 - Ratcheting the read role secret: the sync key is kdf(read secret) and "only an admin registers" a step (spec/sync.md §2); an hourly step per label per host, and certificates placed under earlier epochs become unreadable to newcomers (notes/permissions.md Certificates: counting only newest-epoch copies cost 40 KB per holder per rotation). Traced.
-- Per-sender chains: a per-sender marker in the clear links one author's blobs, which blind nodes must not learn (spec/requirements.md line 37); without it, readers trial-decrypt against every member's chain state (N members times skipped positions). Estimated.
+- Per-sender chains: a per-sender marker in the clear links one author's blobs, which nodes that cannot read the chat must not learn (spec/requirements.md line 37); without it, readers trial-decrypt against every member's chain state (N members times skipped positions). Estimated.
 - Periodic re-seed: any writer may rotate read and write (spec/permissions.md §3); a re-seed alone is a smaller write (one box per holder, 1.2 KB). Tess rejected periodic rotation (notes/permissions.md Keys); offered as an option only.
 
 ## Requirements touched
@@ -55,7 +55,7 @@
 - Line 61 Deletion (forward secure where the platform offers erasable storage): strengthened, no text change.
 - Line 12 Decentralization "Total data may exceed what any node tracks": for chain actors, host content past the window is unreadable to anyone not already holding it. Needs a note from Tess.
 - Line 125 Out of scope (removed holder keeps its copies): unchanged.
-- Line 37 blind nodes: the hour index adds nothing beyond timing; a per-sender marker would.
+- Line 37 (nodes that cannot read): the hour index adds nothing beyond timing; a per-sender marker would.
 
 ## Costs versus C (estimated)
 
