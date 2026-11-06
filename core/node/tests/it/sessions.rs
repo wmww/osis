@@ -241,7 +241,7 @@ fn overwrite_and_compact(lp: &mut LocalPeer, t: Tid, i: u64) -> Vec<(usize, usiz
         .collect()
 }
 
-// spec: none (notes/growth.md, the owner's session rule). A session that writes nothing leaves
+// spec: none (notes/growth.md, Tess's session rule). A session that writes nothing leaves
 // nothing in the store.
 #[test]
 fn session_writing_nothing_leaves_nothing() {
@@ -256,7 +256,7 @@ fn session_writing_nothing_leaves_nothing() {
     assert_eq!(store_bytes(&lp, 0), before);
 }
 
-// spec: none (notes/growth.md, the owner's session rule). A register and a map written whole,
+// spec: none (notes/growth.md, Tess's session rule). A register and a map written whole,
 // overwritten and compacted once per launch, cost what the same writes cost in one launch: the
 // snapshots hold steady (one session listed; the map also its entry's first), and the store holds
 // no more per launch.

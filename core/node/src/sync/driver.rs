@@ -208,7 +208,7 @@ struct HostTask {
     task: JoinHandle<osis_host::Hub>,
 }
 
-/// A holder owning the engine (`run`).
+/// A holder of the engine itself (`run`).
 pub struct Owned(std::sync::Mutex<SyncEngine>);
 
 impl Shared for Owned {

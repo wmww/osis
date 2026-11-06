@@ -322,7 +322,7 @@ fn label_published_under_home_label_spec_sync_2() {
     let b = net.node(2, &[host]);
     let p = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
-    // a group owned by P, labeled, never delivered to B
+    // a group under P, labeled, never delivered to B
     let e = net.engine(a);
     let mut m = Mutation::new();
     let g2 = e.new_thing(&mut m, p);
@@ -816,7 +816,7 @@ fn body_links_stay_in_the_closure_spec_sync_3() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t1 = net.item(a, g, g, "in");
-    // t2: owned by g, not in its group.0
+    // t2: under g, not in its group.0
     let mut m = Mutation::new();
     let t2 = net.engine(a).new_thing(&mut m, g);
     m.set(t2, &BLOB, &Value::Bytes(noise(1 << 20, 9))).unwrap();

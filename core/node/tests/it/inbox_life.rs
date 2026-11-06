@@ -481,7 +481,7 @@ fn declined_invite_forgotten_spec_sync_3() {
 }
 
 // spec/sync.md §3: once Bob shares g with Alice (he accepted), her next invite comes from a
-// connected sender (her node is named on her account, g's owner) and goes through directly.
+// connected sender (her node is named on her account, g's first admin) and goes through directly.
 #[test]
 fn connected_sender_invite_goes_through_spec_sync_3() {
     let (mut net, _, a, b, alice, bob, g, _) = alice_and_bob();

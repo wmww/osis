@@ -210,7 +210,7 @@ fn purge_rights(orders: &[[usize; 3]]) {
     }
 }
 
-/// Peers 0 (owner) and the admin or writer `x` (1) and `w` (2) of a new thing, a fresh node 3; `w`'s
+/// Peers 0 (first admin) and the admin or writer `x` (1) and `w` (2) of a new thing, a fresh node 3; `w`'s
 /// message `c` and `x`'s request `p` naming it, stamped before 0's demotion of `x`, whose frontier
 /// lacks `p`.
 struct Unlisted {
@@ -2289,7 +2289,7 @@ fn invalid_snapshot_recomputes_no_deaths_spec_commits_5() {
     assert!(osis_node::costs::take().iter().all(|x| x.0 != "deaths: join bodies"), "a role change moving no fall");
 }
 
-/// Peers 0 (owner), `x` (1, admin) and `w` (2, writer) of a new thing; `w`'s message `c` and `x`'s
+/// Peers 0 (first admin), `x` (1, admin) and `w` (2, writer) of a new thing; `w`'s message `c` and `x`'s
 /// request naming it, its own delta on another aspect if `beside`, all synced.
 fn rightful(seed: u64, beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {
     let mut lp = net(3, seed);
@@ -2388,7 +2388,7 @@ fn request_read_by_header_alone_is_listed_spec_perm_5_1() {
 fn a_writers_request_explains_no_delete_spec_sync_6() {
     let (mut lp, t, _, _) = rightful(0x78, false);
     let k = ak("t:reg.0");
-    let c2 = set(&mut lp, 0, t, &REG, "owner's");
+    let c2 = set(&mut lp, 0, t, &REG, "admin's");
     lp.sync_all().unwrap();
     lp.advance(5);
     let mut m = Mutation::new();

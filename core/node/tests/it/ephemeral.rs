@@ -1352,10 +1352,10 @@ fn eph_replace_at_map_key_read_at_holder_spec_crdt_5_1() {
     assert_eq!(net.eph_read(b, w, CURSOR), want);
 }
 
-// spec/data-model.md §1 (an ephemeral thing's owner may be ephemeral): a window owned by an
-// ephemeral workspace syncs with both records; rights come through the nearest durable owner
+// spec/data-model.md §1 (an ephemeral thing's first admin may be ephemeral): a window under an
+// ephemeral workspace syncs with both records; rights come through the nearest durable first admin
 #[test]
-fn ephemeral_owner_chain_travels_spec_data_model_1() {
+fn ephemeral_record_chain_travels_spec_data_model_1() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1372,7 +1372,7 @@ fn ephemeral_owner_chain_travels_spec_data_model_1() {
     local(&mut net, a);
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), Some(s("nested")));
-    assert!(net.engine(b).ephemeral_thing(&ws).is_some(), "the owner's record came too");
+    assert!(net.engine(b).ephemeral_thing(&ws).is_some(), "the first admin's record came too");
     note(&mut net, b, w, "b", "writes through g");
     net.run();
     assert_eq!(notes(&mut net, a, w), map(&[("b", "writes through g")]));
@@ -3451,14 +3451,14 @@ fn ephemeral_chain_depth_counts_durable_links_spec_permissions_1() {
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     // g is one link below a's key; durable things down to one link above the cap
-    let mut owner = g;
+    let mut up = g;
     for _ in 2..MAX_CHAIN_DEPTH {
-        owner = net.item(a, g, owner, "d");
+        up = net.item(a, g, up, "d");
     }
     net.run();
     let e = net.engine(a);
     let mut m = Mutation::new();
-    let at_cap = e.new_thing(&mut m, owner);
+    let at_cap = e.new_thing(&mut m, up);
     m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(at_cap)) }).unwrap();
     m.set(at_cap, &eph(STATE), &s("ok")).unwrap();
     e.write(m).unwrap();
@@ -4958,11 +4958,11 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     let t = net.item(a, g, g, "t");
     net.run();
     let tb = net.tid(b);
-    let made = |net: &mut Net, owner: Tid| {
+    let made = |net: &mut Net, admin: Tid| {
         let e = net.engine(b);
         let mut m = Mutation::new();
-        let w = e.new_thing(&mut m, owner);
-        m.op(owner, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+        let w = e.new_thing(&mut m, admin);
+        m.op(admin, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
         m.set(w, &eph(STATE), &s("v")).unwrap();
         let id = e.write(m).unwrap().unwrap().id;
         local(net, b);

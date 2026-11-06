@@ -115,11 +115,11 @@ fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, tag: &str) {
     lp.peers[i].commit(m).unwrap().unwrap();
 }
 
-/// A thing owned by actor `owner`, written by peer `i`.
-pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
+/// A thing whose first admin is actor `admin`, written by peer `i`.
+pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, admin: Tid) -> Tid {
     let e = &mut lp.peers[i].engine;
     let mut m = Mutation::new();
-    let t = e.new_thing(&mut m, owner);
+    let t = e.new_thing(&mut m, admin);
     m.set(t, &REG, &s("new")).unwrap();
     e.commit(m).unwrap().unwrap();
     t
@@ -1302,7 +1302,7 @@ fn until_link_backdated_grant_void_spec_perm_7() {
     spread(&mut lp);
     for i in [0, 1] {
         assert!(lp.peers[i].engine.get(&keep, &ak(osis_node::flows::LINK_SEED)).unwrap().is_some());
-        assert_eq!(lp.peers[i].engine.held_links().unwrap().iter().map(|h| (h.k, h.l, h.owner, h.here)).collect::<Vec<_>>(), vec![(link.k, l, p, i == 0)], "peer {i}");
+        assert_eq!(lp.peers[i].engine.held_links().unwrap().iter().map(|h| (h.k, h.l, h.first_admin, h.here)).collect::<Vec<_>>(), vec![(link.k, l, p, i == 0)], "peer {i}");
         assert!(lp.peers[i].engine.links_due().unwrap().is_empty(), "peer {i}: not expired yet");
         assert_eq!(lp.peers[i].engine.next_link_expiry().unwrap(), Some(until.0), "peer {i}");
     }
@@ -1639,7 +1639,7 @@ fn inside_member_departure_leaves_holder_out_spec_perm_3() {
 // history box hands it that epoch's secret (it names its epoch), and once the rotation commit is
 // opened its write epoch is established.
 #[test]
-fn grant_in_derived_owner_spec_crypto_4() {
+fn grant_in_derived_base_spec_crypto_4() {
     let (mut lp, ps) = people(2, 519);
     let (pa, pb) = (ps[0], ps[1]);
     let team = thing_of(&mut lp, 0, pa);
@@ -2192,7 +2192,7 @@ fn rotation_within_role_keep_listed_spec_perm_5_1() {
     assert_eq!(lp.peers[0].engine.body_valid(&rotations[0], &t, &keys), Some(true));
 }
 
-/// Peers 0 (admin, owner) and the accounts `ps`; `d` of account 0 with account 1 (the vandal) and
+/// Peers 0 (admin, first admin) and the accounts `ps`; `d` of account 0 with account 1 (the vandal) and
 /// account 2 writers; account 1's node rotates read and write of `d` boxing account 1 alone
 /// (spec/permissions.md §3, Lockout recovery), `times` times. Returns `d`, the epoch before and the
 /// vandal's rotation commits.
@@ -2353,7 +2353,7 @@ fn vandal_with_second_path_recovered_spec_perm_3() {
 
 // spec/permissions.md §3, spec/crypto.md §4 (sealing a holder actor): a team actor holding
 // read on `d` is locked out with the rest; the recovery's rotation seals it again, so the
-// team's owner reads the new epoch through it.
+// team's first admin reads the new epoch through it.
 #[test]
 fn recovery_reseals_holder_actor_spec_perm_3() {
     let (mut lp, ps) = people(4, 575);
@@ -2363,7 +2363,7 @@ fn recovery_reseals_holder_actor_spec_perm_3() {
     let (d, e0, _) = locked_out(&mut lp, &ps[..3], 0);
     lp.peers[0].engine.grant(&d, &t, &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
-    assert_eq!(newest_read(&lp, 3, d), Some(e0), "the team's owner reads through it");
+    assert_eq!(newest_read(&lp, 3, d), Some(e0), "the team's first admin reads through it");
     lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     spread_sealed(&mut lp);
     assert_eq!(newest_read(&lp, 3, d), None, "the team is locked out too");
@@ -2537,15 +2537,15 @@ fn frontier_lists_what_the_demoter_may_not_purge_spec_perm_5_1() {
     }
 }
 
-// spec/permissions.md §1 (ownerless things), §3 (lockout recovery); spec/wire.md §3: account 0
-// creates ownerless O (an ownerless chat) with itself as first admin: its creation commit
+// spec/permissions.md §1 (first admins), §3 (lockout recovery); spec/wire.md §3: account 0
+// creates O (a chat) with itself as first admin: its creation commit
 // carries `created.0` alone, and O derives from account 0's secrets until the first grant gives
-// it secrets of its own. It grants account 1 admin, accounts 2 and 3 write. Nobody owns O; its
-// admins are equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates
-// O to itself; the remaining admin recovers. O's admin grants on a thing O owns through its owner
+// it secrets of its own. It grants account 1 admin, accounts 2 and 3 write. Its admins are
+// equal: account 1 removes account 0's record edge, stored nowhere. Writer 2 rotates
+// O to itself; the remaining admin recovers. O's admin grants on a thing below O through its record
 // chain.
 #[test]
-fn ownerless_chat_spec_perm_1() {
+fn chat_by_record_spec_perm_1() {
     let (mut lp, ps) = people(4, 581);
     let (o, done) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     assert_eq!(done.commits.len(), 1);
@@ -2630,12 +2630,12 @@ fn record_edge_removal_any_order_spec_perm_2() {
     }
 }
 
-// spec/permissions.md §3, spec/crypto.md §3: a plain ownerless thing derives from its first
+// spec/permissions.md §3, spec/crypto.md §3: a plain thing derives from its first
 // admin; the first grant gives it secrets of its own first (its rotation before the grant,
 // history carrying the derived epochs), and once the first admin is removed it opens nothing
 // written since.
 #[test]
-fn first_grant_on_plain_ownerless_rotates_first_spec_perm_3() {
+fn first_grant_on_plain_thing_rotates_first_spec_perm_3() {
     let (mut lp, ps) = people(3, 584);
     let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     let mut m = Mutation::new();
@@ -2656,7 +2656,7 @@ fn first_grant_on_plain_ownerless_rotates_first_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, o, "after"), BTreeSet::new(), "the removed first admin opens nothing new");
 }
 
-// spec/permissions.md §1 (last admin of a plain thing): the last admin edge of a plain ownerless thing is not removed (refused
+// spec/permissions.md §1 (last admin of a plain thing): the last admin edge of a plain thing is not removed (refused
 // locally); signed anyway (here by its first admin, a node, removing itself) it applies, the
 // thing stays plain, the first admin still reads it by derivation, and nobody writes it.
 #[test]
@@ -2687,7 +2687,7 @@ fn last_admin_of_plain_thing_refused_spec_perm_1() {
 }
 
 // spec/permissions.md §2 (self-removal: authority through the holder does not count): a node of
-// account P, the first admin of an ownerless thing, removes P's record edge (another admin
+// account P, the first admin of a thing, removes P's record edge (another admin
 // stays). Its only authority there came through P, so it is a self-removal: no rotation, and
 // it applies at every node.
 #[test]

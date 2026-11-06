@@ -631,9 +631,9 @@ fn role_change_and_open_cost() {
     demotion_heavy_open();
 }
 
-/// Several admins writing edges on 20 docs of one org, the owner demoting and re-granting
-/// them all along (their writes it had not received drop), commits reaching the owner in
-/// batches: the owner's open restored from its saved walk against evaluated anew.
+/// Several admins writing edges on 20 docs of one org, the first admin demoting and re-granting
+/// them all along (their writes it had not received drop), commits reaching the first admin in
+/// batches: the first admin's open restored from its saved walk against evaluated anew.
 fn demotion_heavy_open() {
     use osis_node::local_peer::LocalPeer;
     let n: usize = size("OSIS_SCALE_DEMOTE", 10_000, 1_000);
@@ -674,7 +674,7 @@ fn demotion_heavy_open() {
             p.clock.advance(1);
         }
         if i % 40 == 39 {
-            // the owner demotes an admin to write on the org, and re-grants it 20 writes later
+            // the first admin demotes an admin to write on the org, and re-grants it 20 writes later
             let a = admins[(i / 40) % 5];
             set(&mut lp.peers[0].engine, org, a, Some(Role::Write));
         } else if i % 40 == 19 && i > 40 {
@@ -688,7 +688,7 @@ fn demotion_heavy_open() {
                 queue.push((w, id));
             }
         }
-        // the admins' commits reach the owner in batches, a few late
+        // the admins' commits reach the first admin in batches, a few late
         if i % 50 == 49 {
             let keep = queue.len() / 10;
             let (now, late): (Vec<_>, Vec<_>) = queue.drain(..).enumerate().partition(|(j, _)| !j.is_multiple_of(10) || keep == 0);
@@ -703,16 +703,16 @@ fn demotion_heavy_open() {
         let pk = lp.peers[w].engine.package(&id).unwrap().unwrap();
         let _ = lp.deliver(0, &pk);
     }
-    println!("{n} edge writes by 5 admins with demotions every 40, delivered to the owner: {:?}", t0.elapsed());
+    println!("{n} edge writes by 5 admins with demotions every 40, delivered to the first admin: {:?}", t0.elapsed());
     let roster = lp.peers[0].engine.roster(&docs[0]);
     let t1 = Instant::now();
     lp.peers[0].restart(1).unwrap();
-    println!("owner's open, walk restored: {:?} ({} restored)", t1.elapsed(), lp.peers[0].engine.walks_restored());
+    println!("first admin's open, walk restored: {:?} ({} restored)", t1.elapsed(), lp.peers[0].engine.walks_restored());
     assert_eq!(lp.peers[0].engine.roster(&docs[0]), roster);
     lp.peers[0].engine.damage_walks(0).unwrap();
     let t2 = Instant::now();
     lp.peers[0].restart(2).unwrap();
-    println!("owner's open, walk evaluated anew: {:?} ({} restored)", t2.elapsed(), lp.peers[0].engine.walks_restored());
+    println!("first admin's open, walk evaluated anew: {:?} ({} restored)", t2.elapsed(), lp.peers[0].engine.walks_restored());
     assert_eq!(lp.peers[0].engine.roster(&docs[0]), roster);
 }
 
@@ -1004,9 +1004,9 @@ fn late_delta_deaths_cost_spec_crdt_4_8() {
 
 
 // spec/permissions.md §5.2, spec/crdt.md §4.6 (un-merge a function of the held set), spec/
-// requirements.md, Scale: a set of N one-element commits by the owner (0) and one add by writer B
-// (1); admin C (2), who never saw it, revokes B: the add goes invalid at the owner (a flip). Then
-// B's add written after the revoke reaches the owner invalid. Both un-merge in place (validity only
+// requirements.md, Scale: a set of N one-element commits by the first admin (0) and one add by writer B
+// (1); admin C (2), who never saw it, revokes B: the add goes invalid at the first admin (a flip). Then
+// B's add written after the revoke reaches the first admin invalid. Both un-merge in place (validity only
 // fell, the add supersedes nothing), O(state), no body read. `OSIS_SCALE_N` sets N (default 10^4).
 #[test]
 #[ignore = "tier 2"]
@@ -1176,7 +1176,7 @@ fn sync_aspect_pass_cost() {
 }
 
 // spec/permissions.md §5.2 (a held delta gives its writes; a snapshot's copies of them taken
-// before it are compared), spec/requirements.md, Scale: a fresh node gets an owner's snapshot of a
+// before it are compared), spec/requirements.md, Scale: a fresh node gets the first admin's snapshot of a
 // set of N one-element commits first, then the commits, then a writer's snapshot of the result;
 // each commit compares against the snapshot's copies of its writes (indexed once), so the whole
 // costs O(N log N), not O(N^2). `OSIS_SCALE_N` sets N (default 10^4).
@@ -1223,9 +1223,9 @@ fn snapshot_first_sync_cost_spec_permissions_5_2() {
 }
 
 // spec/commits.md §5 (a snapshot dropped at its bound stands in), spec/permissions.md
-// §5.1, notes/testing.md budgets: B (1) gets the owner's writes only through K snapshots of one
+// §5.1, notes/testing.md budgets: B (1) gets the first admin's writes only through K snapshots of one
 // map key, each received apart and dropped at its keep-at-most bound once the next replaces it;
-// then B's demotion frontier for the owner (it lists the snapshots, received, none covered).
+// then B's demotion frontier for the first admin (it lists the snapshots, received, none covered).
 // `OSIS_SCALE_N` sets K (default 1000; 5 commits per snapshot).
 #[test]
 #[ignore = "tier 2"]
@@ -1509,7 +1509,7 @@ fn big_map_apply_memory() {
 }
 
 // spec/permissions.md §5.2 (a valid snapshot's copies govern a held original), notes/testing.md
-// budgets: B (1) holds N set elements as the owner's delta (one commit); the owner adds one
+// budgets: B (1) holds N set elements as the first admin's delta (one commit); the first admin adds one
 // and snapshots; B joins that snapshot (copies of every held write), then one ordinary delta. For
 // an unbounded and a keep-at-least set. `OSIS_SCALE_N` sets N (default 10^5).
 #[test]

@@ -451,9 +451,9 @@ fn models() -> Vec<Scenario> {
             orders: None,
         },
         Scenario {
-            name: "concurrent cross removals, the owner removes the earlier unseen",
+            name: "concurrent cross removals, the first admin removes the earlier unseen",
             spec: "spec/permissions.md §5.1",
-            source: "roles-model joint::concurrent_cross_removals (the owner's removal of x drops x's removal of y)",
+            source: "roles-model joint::concurrent_cross_removals (the first admin's removal of x drops x's removal of y)",
             steps: vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, tick.clone(), Edge { by: 1, t: 0, holder: 2, role: None }, tick.clone(), Edge { by: 2, t: 0, holder: 1, role: None }, tick.clone(), Edge { by: 0, t: 0, holder: 1, role: None }],
             orders: None,
         },
@@ -664,7 +664,7 @@ fn remerges() -> Vec<Scenario> {
     }]
 }
 
-/// One history over two labels (`bundle`'s `second`): one commit, a part under each. H's owner
+/// One history over two labels (`bundle`'s `second`): one commit, a part under each. H's first admin
 /// is 0, so only H's own edge gives 1 a role on it.
 fn labels() -> Vec<Scenario> {
     use Step::*;

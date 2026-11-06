@@ -193,7 +193,7 @@ impl SyncEngine {
     /// here; deposited, wrapped under the newest established read secret held, no open needed.
     /// Only under the deposit key of the host's head as this node knows it: a deposit seed that
     /// does not derive it (an actor whose `keys.0` has not arrived yet, a link's K seen as
-    /// deriving from its owner) is refused, so nothing is sent.
+    /// deriving from its first admin) is refused, so nothing is sent.
     pub(crate) fn stranded(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<crate::sync::Action>) -> Result<()> {
         if self.state.stranded.get(&l).is_some_and(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > self.now()) {
             return Ok(());

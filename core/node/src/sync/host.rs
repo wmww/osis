@@ -107,8 +107,7 @@ impl SyncEngine {
     /// person: a stranger may
     /// grant either one admin without consent, and must not make this node spend its storage
     /// that way (the inbox accept step's principle). Record links are fixed by the creation
-    /// record (the tid commits to it); anyone may mint a record naming the person as owner or
-    /// first admin, but the group's `label.0` takes admin on it, which that chain gives only the
+    /// record (the tid commits to it); anyone may mint a record naming the person as first admin, but the group's `label.0` takes admin on it, which that chain gives only the
     /// person's admins (or whom they granted).
     fn owns(&self, g: &Tid) -> bool {
         let node = self.engine.tid();

@@ -430,7 +430,7 @@ impl SyncEngine {
 
     /// The actor whose inbox `label` is for `to` (`Engine::inbox_of_actor`; its deposit seed
     /// signs the deposit).
-    pub(crate) fn inbox_owner(&mut self, to: &Tid, label: &LabelId) -> Result<Option<Tid>> {
+    pub(crate) fn inbox_actor(&mut self, to: &Tid, label: &LabelId) -> Result<Option<Tid>> {
         Ok(self.engine.inbox_of_actor(to)?.filter(|(_, i)| i.label == *label).map(|(o, _)| o))
     }
 
