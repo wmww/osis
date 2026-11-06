@@ -13,6 +13,7 @@ pub mod incremental;
 pub mod purge;
 pub mod scope;
 pub mod timeline;
+pub mod trust;
 pub mod types;
 mod walk;
 
@@ -24,6 +25,7 @@ pub use incremental::{Changed, SaveDone, Saves, Timelines};
 pub use osis_base::PurgeBy;
 pub use scope::DemotionScope;
 pub use timeline::{At, EdgeEnd, Timeline};
+pub use trust::{Dispute, Trust};
 pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, Tie, TieSource, WriteId, ROLES};
 pub use walk::{Applied, Attr, Demotion, Fall};
 #[cfg(debug_assertions)]

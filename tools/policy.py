@@ -204,9 +204,33 @@ def host_blind():
             if p in ("*", "as") or not allowed(p, NODE_HOST):
                 yield f"{rel}: osis_host::{p} is not the host's public surface"
 
+# notes/owner-removal-plan.md, the coherence rule: the dispute types are private to osis-perm and
+# the API layer; nothing else names a side or asks whether a dispute is open.
+DISPUTE_DIRS = ("core/perm/", "core/osis/")
+DISPUTE_PATHS = {"Trust", "Dispute", "trust"}
+DISPUTE_CALLS = re.compile(r"\.(set_trust|disputes|evaluate_with|active)\s*\(|\bTrust\s*\{|\bDispute\s*\{")
+
+def dispute_types():
+    for top in ("core", "cli", "libs", "app"):
+        for dirpath, dirs, files in os.walk(os.path.join(ROOT, top)):
+            dirs[:] = [d for d in dirs if d not in ("target", "patches")]
+            for f in files:
+                if not f.endswith(".rs"):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, f), ROOT)
+                if rel.startswith(DISPUTE_DIRS) or rel.startswith("core/test/"):
+                    continue
+                text = open(os.path.join(dirpath, f), errors="replace").read()
+                named = [p for p in paths_of(text, "osis_perm") if p.split("::")[-1] in DISPUTE_PATHS or p.startswith("trust::")]
+                if named:
+                    yield f"{rel}: names osis_perm::{named[0]} (dispute types are private to osis-perm and the API layer)"
+                elif "osis_perm" in text and DISPUTE_CALLS.search(re.sub(r"//[^\n]*", "", text)):
+                    yield f"{rel}: calls a dispute query of osis-perm (private to osis-perm and the API layer)"
+
 if WS == ROOT:
     errs.extend(env_vars())
     errs.extend(host_blind())
+    errs.extend(dispute_types())
 
 for e in errs:
     print(e)

@@ -504,6 +504,19 @@ impl JHist {
         let v = self.reachable(&self.ever(), self.nodes + n);
         (0..self.actors()).map(|x| v[self.nodes + x]).collect()
     }
+
+    /// Whether write `j` lowers its author's own edge: below the value the last held write on
+    /// that edge ordered before it set (else genesis). Static: a function of the history, not
+    /// of any walk.
+    fn lowers_own(&self, j: usize) -> bool {
+        let w = &self.writes[j];
+        if w.holder != w.author {
+            return false;
+        }
+        let key = |i: usize| (self.writes[i].t, self.writes[i].author, self.writes[i].id);
+        let prev = (0..self.writes.len()).filter(|&i| i != j && self.writes[i].holder == w.holder && self.writes[i].target == w.target && key(i) < key(j)).max_by_key(|&i| key(i));
+        w.role < prev.map_or(self.genesis[w.holder][w.target], |i| self.writes[i].role)
+    }
 }
 
 impl crate::trust::Trusting for JHist {
@@ -527,7 +540,8 @@ impl crate::trust::Trusting for JHist {
     }
     /// The writes ordered before R, on its target and below it, by nodes other than the
     /// demoter that ever reach the holder by admin edges, that the demoter had not received
-    /// before `t`, but their writes on their own edges.
+    /// before `t`, but their writes lowering their own edges (`lowers_own`: a self-grant is a
+    /// seed, a self-removal not).
     fn seeds(&self, i: usize) -> u64 {
         let Some(m) = self.victim(i) else { return 0 };
         let r = &self.writes[i];
@@ -536,7 +550,7 @@ impl crate::trust::Trusting for JHist {
         let below = self.reach(r.target);
         let in_question = |w: &JWrite| below[w.target] || w.holder >= self.nodes && below[w.holder - self.nodes];
         (0..self.writes.len())
-            .filter(|&j| j != i && up[self.writes[j].author] && self.writes[j].author != r.author && self.writes[j].holder != self.writes[j].author && in_question(&self.writes[j]) && self.recv[j][r.author] >= r.t && (self.writes[j].t, self.writes[j].author, self.writes[j].id) < (r.t, r.author, r.id))
+            .filter(|&j| j != i && up[self.writes[j].author] && self.writes[j].author != r.author && !self.lowers_own(j) && in_question(&self.writes[j]) && self.recv[j][r.author] >= r.t && (self.writes[j].t, self.writes[j].author, self.writes[j].id) < (r.t, r.author, r.id))
             .fold(0, |m, j| m | 1 << j)
     }
     fn key(&self, i: usize) -> (u32, usize) {

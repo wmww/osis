@@ -91,6 +91,8 @@ pub(crate) struct Ever {
     pub holders: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Holders of an edge with an invite.
     pub invites: BTreeSet<Tid>,
+    /// Target to the holders of an admin edge on it (`crate::trust`, who a demotion demotes).
+    pub admin_holders: BTreeMap<Tid, BTreeSet<Tid>>,
 }
 
 impl Ever {
@@ -99,6 +101,9 @@ impl Ever {
         self.holders.entry(target).or_default().insert(holder);
         if e.invite.is_some() {
             self.invites.insert(holder);
+        }
+        if e.role == Role::Admin {
+            self.admin_holders.entry(target).or_default().insert(holder);
         }
     }
 }
@@ -667,7 +672,7 @@ impl Walked {
         if input.commits.len() > 400 {
             return;
         }
-        let o = run(input);
+        let o = run(input, BTreeMap::new());
         let w = &o.walked;
         debug_assert!(o.dropped == *dropped, "D");
         debug_assert!(w.history == self.history, "history");
@@ -1185,10 +1190,6 @@ impl<'a> Pass<'a> {
         let b = r.best.clone();
         self.roles.insert(x, r);
         b
-    }
-
-    fn new(input: &'a Input, dropped: BTreeMap<WriteId, Point>) -> Pass<'a> {
-        Pass::resume(input, dropped, Walked::default())
     }
 
     fn resume(input: &'a Input, dropped: BTreeMap<WriteId, Point>, w: Walked) -> Pass<'a> {
@@ -1734,27 +1735,31 @@ impl Pass<'_> {
     }
 }
 
-/// Evaluates the timeline from scratch: walks until a walk adds nothing to D (§5.1 step 5).
-pub(crate) fn run(input: &Input) -> Outcome {
-    drive(input, None)
+/// Evaluates the timeline from scratch: walks until a walk adds nothing to D (§5.1 step 5),
+/// D starting at `seeds` (a trust set's, `crate::trust`; empty otherwise).
+pub(crate) fn run(input: &Input, seeds: BTreeMap<WriteId, Point>) -> Outcome {
+    drive(input, Some(seeds), None)
 }
 
 /// Continues a converged evaluation over `input`, which adds role commits at or after
 /// `r.from` (and nothing else): equal to `run`, since the drops found before the first one
 /// found at or after `r.from` are found again in the same order (see `drive`).
 pub(crate) fn resume(input: &Input, r: Resume) -> Outcome {
-    drive(input, Some(r))
+    drive(input, None, Some(r))
 }
 
 /// Walks until a walk adds nothing to D. A walk restarts only when D grew, and D only grows,
 /// so it settles within one walk per write.
-fn drive(input: &Input, resume: Option<Resume>) -> Outcome {
+fn drive(input: &Input, seeds: Option<BTreeMap<WriteId, Point>>, resume: Option<Resume>) -> Outcome {
     let (mut reach, it, mut p, mut from);
     match resume {
         None => {
+            let seeds = seeds.unwrap_or_default();
             reach = None;
             it = items(input);
-            p = Pass::new(input, BTreeMap::new());
+            let mut w = Walked::default();
+            w.found.extend(seeds.keys().copied());
+            p = Pass::resume(input, seeds, w);
             from = 0;
         }
         Some(r) => {
