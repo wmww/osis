@@ -13,7 +13,7 @@ use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, EphClass, Form, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, Unpaged, Writer};
-use osis_crypto::{VerifyingKey, dedup_secret};
+use osis_crypto::VerifyingKey;
 use osis_schema::Lifetime;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -46,13 +46,13 @@ type Signal = (Tid, Ak, Fragment);
 impl Engine {
     /// Notes an own signal write for sync (things in a labeled closure only).
     pub(super) fn note_signal(&mut self, tid: &Tid, ak: &Ak, v: &Value, ts: Ts, actor: Tid) {
-        if self.ephemeral_synced(tid) {
+        if self.core.syncs(tid) || self.groups_of(tid).iter().any(|g| self.core.syncs(g)) {
             self.eph.signals.push((*tid, ak.clone(), v.clone(), ts, actor));
         }
     }
 
     /// The relay-only commits of the unsent signal writes: one per write (its `ts`, spec/sync.md
-    /// §9), each part carrying the records of the ephemeral things it is on (spec/commits.md §2).
+    /// §9).
     pub fn take_signals(&mut self) -> Result<Vec<EphCommit>> {
         // per write (its `ts` and actor): its signal deltas
         let mut by_write: BTreeMap<(Ts, Tid), Vec<Signal>> = BTreeMap::new();
@@ -80,15 +80,13 @@ impl Engine {
         let ts = self.core.hlc.next();
         self.run(|tx| {
             let cx = osis_commit::writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, me, 0, 0);
-            let mut creates: Creates = BTreeMap::new();
+            let creates = Creates::new();
             let mut writes = Vec::with_capacity(deltas.len());
             for (tid, ak, fragment) in deltas {
-                let records = crate::engine::write::memory_records(tx.core, &tid, &ak, std::iter::empty());
-                creates.extend(records.iter().map(|r| (r.tid(), r.clone())));
                 let mut nonce = [0u8; osis_crdt::NONCE_LEN];
                 tx.rng.fill_bytes(&mut nonce);
                 let bytes = osis_crdt::encode_snapshot(&Snapshot { nonce, fragment, frontiers: Frontiers::default(), absorbed: BTreeMap::new() }, &cx, Some(&mut Unpaged))?;
-                writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, delta: bytes, retention: osis_commit::retention::EPHEMERAL_RETENTION, chunks: Vec::new(), records });
+                writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, delta: bytes, retention: osis_commit::retention::EPHEMERAL_RETENTION, chunks: Vec::new() });
             }
             let things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
             let published = published_keys(tx, &creates, things)?;
@@ -118,21 +116,16 @@ impl Engine {
         if r.parts.get(&id).is_some_and(|d| blob.parts.iter().all(|p| d.contains(&p.ai))) || r.floor.get(&h.author).is_some_and(|f| at <= *f) || at.saturating_add(MAX_DRIFT_MS) < now || at > now.saturating_add(MAX_DRIFT_MS) {
             return Ok(false);
         }
-        // its author's record must be durable here (an ephemeral key actor record never ends a
-        // wait, and a relay never waits)
-        let Some(CreationRecord::KeyActor { public_key, .. }) = self.core.durable_created(&h.author) else { return Ok(false) };
+        // its author's record must be held here (a relay never waits)
+        let Some(CreationRecord::KeyActor { public_key, .. }) = self.core.created(&h.author) else { return Ok(false) };
         osis_commit::verify_signature(&id, &blob.signature, &VerifyingKey::from_slice(public_key)?)?;
         h.validate()?;
-        let carried: BTreeMap<Tid, CreationRecord> = blob.parts.iter().flat_map(|p| &p.records).map(|r| (r.tid(), r.clone())).collect();
-        // the records of things not durable here: carried, or held memory ones (the role on a
-        // durable one is its timeline's, `role_with`)
         let core = &self.core;
-        let record = |t: &Tid| carried.get(t).or_else(|| self.memory_record(t));
         let mut interner = Interner::new();
         let mut decoded = Vec::new();
         for p in &blob.parts {
             let Some(a) = h.aspects.get(p.ai) else { continue };
-            let Some(dedup) = core.dedup(&a.tid).or_else(|| carried.get(&a.tid).map(|r| dedup_secret(r.nonce()))) else { continue };
+            let Some(dedup) = core.dedup(&a.tid) else { continue };
             match osis_commit::verify_part(h, &id, p, &dedup, &mut interner, Some(&mut Unpaged))? {
                 osis_commit::Decoded::Snapshot(s) => decoded.push((p.ai, s)),
                 osis_commit::Decoded::Delta(_) => return Err(Error::BadInput("relay-only commit with a writer delta")),
@@ -144,7 +137,7 @@ impl Engine {
         let mut signals = Vec::new();
         for (ai, s) in &decoded {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            let valid = a.ak.lifetime() == Lifetime::Signal && acts && check_role_with(core, h.author, &record, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
+            let valid = a.ak.lifetime() == Lifetime::Signal && acts && check_role_with(core, h.author, &|_| None, &a.tid, a.ak.as_str(), Role::Write, h.ts).is_ok();
             if valid && let Some(v) = s.fragment.read() {
                 signals.push((a.tid, a.ak.clone(), v));
             }

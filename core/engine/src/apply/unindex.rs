@@ -1,0 +1,191 @@
+//! Forgetting a memory commit (expired, superseded, covered): `unindex_commit`, the mirror of
+//! what applying a commit indexes (`tests::forget_equals_never_indexed`).
+
+use crate::engine::records;
+use crate::engine::Tx;
+use crate::error::Result;
+use osis_base::CommitId;
+use osis_store::Shred;
+use std::collections::BTreeSet;
+
+/// Removes commit `id` from every index applying it added to and its records from the store:
+/// the mirror of `index_commit` and the rest of `apply_verified` for a memory commit.
+pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
+    let core = &mut *tx.core;
+    let Some(m) = core.take_meta(id) else { return Ok(()) };
+    let v = &m.view;
+    // reported to the ephemeral lane with why (`MemorySync::reasons`, else covered by what
+    // the dropped parts record, else gone)
+    if v.memory {
+        let why = core.memory.reasons.remove(id).unwrap_or_else(|| {
+            let by: BTreeSet<CommitId> = m.dropped.values().filter(|d| d.why == crate::engine::DropFor::Cover).flat_map(|d| d.covered_by.iter().copied()).collect();
+            if by.is_empty() { crate::engine::MemoryDrop::Gone } else { crate::engine::MemoryDrop::Covered { by } }
+        });
+        core.memory.dropped.push((*id, m.header.arc(), why));
+        core.memory.dirty.extend(v.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+    }
+    for a in &v.aspects {
+        let k = (a.tid, a.ak.clone());
+        core.ix.by_aspect.remove(&k, &(v.ts, *id));
+        core.ix.invalid.remove(&k, id);
+        core.ix.by_thing.remove(&(a.tid, v.author), id);
+        core.ix.dropped_snapshots.remove(&k, id);
+        if v.form.counted() && v.kind.has_own_writes() && a.lo < a.hi {
+            core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &a.lo);
+        }
+        super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
+    }
+    if v.actor != v.author {
+        core.ix.by_actor.remove(&(v.actor, v.author), id);
+    }
+    for b in &v.chunks {
+        core.ix.by_chunk.remove(b, id);
+    }
+    core.ix.void.remove(id);
+    core.ix.pending.remove(id);
+    core.stale_commits.remove(id);
+    // its retention timers (memory rows)
+    let timers: Vec<Vec<u8>> = tx.txn.memory_local_keys(records::TIMER).into_iter().filter(|k| records::parse_timer(k.get(records::TIMER.len()..).unwrap_or_default()).is_ok_and(|(_, c, _)| c == *id)).collect();
+    for k in timers {
+        tx.txn.remove_local(&k, Shred::No)?;
+    }
+    tx.remove_commit(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::engine::journal::Journaled;
+    use crate::local_peer::LocalPeer;
+    use crate::{Engine, Mutation};
+    use osis_base::{Ak, Value, WallMs};
+
+    fn digest(e: &Engine) -> String {
+        e.core.ix.commits.values().for_each(|m| drop(m.header.decoded()));
+        format!("{}\n{}", e.core.ix.contents(), e.perm_digest(false))
+    }
+
+    fn ak(s: &str) -> Ak {
+        Ak::new(s).unwrap()
+    }
+
+    // issues/session-sources.md rule 8 (memory half), spec/crdt.md §4.7: memory commits on a
+    // durable thing that expire, or are superseded and then expire, are forgotten: every
+    // journaled index (and perm's view) as if they had never applied, the state too. spec: none
+    // (internal)
+    #[test]
+    fn forget_equals_never_indexed() {
+        let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        let before = digest(e);
+        let key = Value::Str("k".into());
+        for i in 0..3 {
+            let mut m = Mutation::new();
+            m.op(g, &ak("t:m.0~"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(key.clone())], op: osis_crdt::Op::Put(Value::Str(format!("v{i}"))) }).unwrap();
+            m.expires(g, &ak("t:m.0~"), WallMs(e.now().0 + 1000)).unwrap();
+            e.commit_in_memory(m).unwrap().unwrap();
+        }
+        assert_eq!(e.core.ix.commits.values().filter(|m| m.view.memory).count(), 1, "superseded moves are forgotten");
+        lp.advance(2000);
+        let e = &mut lp.peers[0].engine;
+        e.tick().unwrap();
+        assert_eq!(digest(e), before);
+        assert_eq!(e.get(&g, &ak("t:m.0~")).unwrap(), None);
+    }
+
+    // spec/commits.md §6: an HLC ahead of the clock (a peer's fast clock read, here the clock set
+    // back) has passed a short expiry: the write goes through, expiring just after its `ts`.
+    #[test]
+    fn short_expiry_behind_hlc_is_raised_spec_commits_6() {
+        let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        e.set_clock_offset(-60_000);
+        let mut m = Mutation::new();
+        m.set(g, &ak("t:m.0"), &Value::Str("typing".into())).unwrap();
+        m.expires(g, &ak("t:m.0"), WallMs(e.now().0 + 5_000)).unwrap();
+        let c = e.commit(m).unwrap().unwrap();
+        let h = e.header(&c).unwrap();
+        assert_eq!(h.expires, Some(h.ts.wall_ms().0 + 1));
+        assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), Some(Value::Str("typing".into())));
+        lp.advance(60_002);
+        let e = &mut lp.peers[0].engine;
+        e.tick().unwrap();
+        assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), None);
+    }
+
+    // review (eph-unify-a): a memory body is never dropped for its keep-at-most bound, so its
+    // header (and expiry timer) is never forgotten while its live writes stay in the state; they
+    // vanish at its expiry. spec: none (internal)
+    #[test]
+    fn memory_keep_at_most_ignored() {
+        let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: Default::default(), at_most: osis_schema::Bound { abs: None, rel: Some(0) } };
+        let t = WallMs(e.now().0 + 2 * 3_600_000);
+        let mut m = Mutation::new();
+        for (k, v) in [("t:r.0~", "v"), ("t:s.0~", "live")] {
+            m.retention(g, &ak(k), ret).unwrap();
+            m.set(g, &ak(k), &Value::Str(v.into())).unwrap();
+            m.expires(g, &ak(k), t).unwrap();
+        }
+        let c = e.commit_in_memory(m).unwrap().unwrap();
+        lp.advance(10);
+        let e = &mut lp.peers[0].engine;
+        // kills `r`'s write: a memory body ignores keep bounds (`s` live)
+        let mut m = Mutation::new();
+        m.retention(g, &ak("t:r.0~"), ret).unwrap();
+        m.set(g, &ak("t:r.0~"), &Value::Str("w".into())).unwrap();
+        e.commit_in_memory(m).unwrap().unwrap();
+        lp.advance(2000 + 3_600_000);
+        let e = &mut lp.peers[0].engine;
+        e.tick().unwrap();
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty()));
+        assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), Some(Value::Str("live".into())));
+        lp.advance(2 * 3_600_000);
+        let e = &mut lp.peers[0].engine;
+        e.tick().unwrap();
+        assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), None, "vanished at its expiry");
+        assert!(!e.core.ix.commits.contains_key(&c));
+    }
+
+    // eph-unify-a review (item 216): a memory aspect's state written by a durable transaction
+    // lists the aspect in memory (`records::ASPECTS` routed by the key's marker), so nothing
+    // durable names a memory aspect. spec: none (internal)
+    #[test]
+    fn memory_state_row_follows_key() {
+        let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        let f = osis_crdt::Fragment::default();
+        let rows = e
+            .run(|tx| {
+                // a state no body gives (`apply::check_rebuilt` would refuse it)
+                #[cfg(debug_assertions)]
+                {
+                    tx.core.unchecked_tx = true;
+                }
+                tx.set_state(&g, &ak("t:a.0~"), Some(f.clone()), osis_store::Shred::No, false)?;
+                Ok(tx.txn.memory_local_keys(crate::engine::records::ASPECTS))
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+    }
+}

@@ -2,12 +2,57 @@
 //! (cycles allowed), contain the thing. Kept incrementally: a `group.0` change recomputes only the
 //! changed group and the groups above it (O(their reach)), never every group.
 
-use osis_base::Tid;
+use super::Engine;
+use osis_base::{Tid, Value};
+use osis_crdt::{Fragment, PathSeg};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// A `group.0` definition: (items, subgroups).
 pub(crate) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
+
+/// `group.0` field ids (spec/data-model.md §8).
+pub(crate) const ITEMS: u64 = 0;
+pub(crate) const SUBGROUPS: u64 = 1;
+
+/// The definition a `group.0` state holds: its items and subgroups read field by field.
+pub(crate) fn def_of(f: &Fragment) -> Option<Def> {
+    let tids = |field: u64| -> BTreeSet<Tid> {
+        match f.at(&[PathSeg::Field(field)]).and_then(|x| x.read()) {
+            Some(Value::Set(s)) => s.into_iter().filter_map(|v| if let Value::Tid(t) = v { Some(t) } else { None }).collect(),
+            _ => BTreeSet::new(),
+        }
+    };
+    let present = f.present();
+    let d = (tids(ITEMS), tids(SUBGROUPS));
+    (present || !d.0.is_empty() || !d.1.is_empty()).then_some(d)
+}
+
+/// What `delta` newly lists when joined into a group's state `before`.
+pub(crate) fn gains(before: Option<&Fragment>, delta: &Fragment) -> BTreeSet<Tid> {
+    let def = |f: &Fragment| def_of(f).unwrap_or_default();
+    let (items, subs) = before.map(def).unwrap_or_default();
+    let mut after = before.cloned().unwrap_or_default();
+    after.join(delta.clone());
+    let (i, s) = def(&after);
+    i.difference(&items).chain(s.difference(&subs)).copied().collect()
+}
+
+impl Engine {
+    /// Groups containing the thing, transitively (`groups.0`).
+    pub fn groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
+        self.core.ix.groups.of.get(tid).cloned().unwrap_or_default()
+    }
+
+    /// The groups whose `group.0` lists the thing directly: (as an item, as a subgroup). From
+    /// the in-memory group index, rebuilt from the definitions at open.
+    pub fn listed_in(&self, tid: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {
+        let ix = &self.core.ix.groups;
+        // a group listing it as an item contains it: `of` is a superset of those
+        let items = ix.of.get(tid).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(tid))).copied().collect();
+        (items, ix.parents_of(tid).collect())
+    }
+}
 
 /// The `group.0` definitions and what they derive.
 #[derive(Clone, Debug, Default)]

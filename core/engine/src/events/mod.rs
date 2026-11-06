@@ -109,9 +109,6 @@ pub enum DiagnosticKind {
     /// A thing was placed only in groups whose closure no synced group holds (the `osis` API,
     /// spec/requirements.md Offline and network).
     NotSynced,
-    /// A saved thing's ephemeral membership stayed ephemeral: this node may not write the
-    /// group (`tids`: item, group).
-    MembershipNotSaved,
     /// This node cannot open a label it should read: it waits for a re-seal
     /// (spec/permissions.md §3).
     Stranded,

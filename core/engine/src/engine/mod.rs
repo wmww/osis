@@ -534,7 +534,7 @@ indexes! {
     /// (`records::OWN_KEYS`): thing -> commits.
     pub keyset_parts: JSetMap<Tid, CommitId>,
     /// Things with a `label.0` state (`Engine::labeled_groups`), kept with the state
-    /// (`Tx::derive`) like `ephemeral_group`.
+    /// (`Tx::derive`).
     pub labeled: JSet<Tid>,
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
     /// listed until their `keys.0` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
@@ -542,9 +542,6 @@ indexes! {
     pub delete_hints: JMap<Tid, osis_base::Value>,
     /// `group.0` definitions and `groups.0` (thing -> groups containing it, transitively).
     pub groups: groups::Groups,
-    /// Each `ephemeral_group.0~` state as read: a group's ephemeral memberships (`Engine::groups_of` reads
-    /// them with `groups`; the closure node-sync uses reads `groups` alone).
-    pub ephemeral_group: JMap<Tid, groups::Def>,
     /// Keyed `roles.0` entries seen: (target, entry dot) -> (holder, created value).
     pub holder_keys: JMap<(Tid, Dot), Tid>,
     /// Role commits whose removed keys are not known yet.
@@ -585,9 +582,6 @@ indexes! {
     pub departures: JMap<Tid, Vec<osis_keys::Departure>>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
-    /// Memory things freed while a memory commit on them also touches a thing still held: their
-    /// records and data stay until every thing of those commits is freed (`apply::free`).
-    pub freeing: JSet<Tid>,
 }
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author).
@@ -618,27 +612,11 @@ pub enum MemoryDrop {
     Gone,
 }
 
-/// A memory-class thing's creation as `Engine::creation` reports it (the record is in `Held`).
-#[derive(Clone, Copy, Debug)]
-pub struct MemoryThing {
-    pub ts: Ts,
-    pub node: Tid,
-    pub actor: Tid,
-    pub received: WallMs,
-    /// Made by this node in this session, not received.
-    pub made_here: bool,
-}
-
 /// What memory commits report to the ephemeral lane (node-sync) and to the local write path.
 /// Lists grow inside transactions and are cut back to their length at the start of one that
 /// aborts (`commit`, `rollback`); a reader checks a listed commit is still held before acting.
 #[derive(Default)]
 pub struct MemorySync {
-    /// Memory things a commit on which node-sync kept as a label entry here (made or received,
-    /// `Engine::note_memory_synced`): a holder may have their writes, so a delete of one is
-    /// resets and tombstones, never a free at once (`freeable`), and its aspects compact only
-    /// while in a closure. Rows go with the thing.
-    pub synced: BTreeSet<Tid>,
     /// Memory commits forgotten since the last take, with their header (node-sync deletes
     /// their entries at hosts by it) and why (`Engine::take_memory_drops`).
     pub dropped: Vec<(CommitId, Arc<osis_commit::Header>, MemoryDrop)>,
@@ -652,11 +630,6 @@ pub struct MemorySync {
     /// Why the memory commits about to be forgotten go (`unindex_commit` reads and clears it;
     /// `Gone` when unsaid).
     pub reasons: BTreeMap<CommitId, MemoryDrop>,
-    /// Memory-class things' creations (`MemoryThing`), by tid.
-    pub things: BTreeMap<Tid, MemoryThing>,
-    /// Things of memory commits forgotten since the last sweep: a received one no commit is on
-    /// any more is freed (`Engine::free_unused_memory`), so records do not pile up.
-    pub unused: BTreeSet<Tid>,
     marks: usize,
 }
 
@@ -678,10 +651,6 @@ pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);
 /// In-memory state over the store: caches and indexes, rebuilt by `load`. The indexes are
 /// journaled (`journal`): a failed transaction undoes its own changes to them.
 #[doc(hidden)]
-/// A cached full closure (`Core::full_closures`): the durable closure it was built from, the
-/// `ephemeral_group_gen` then, and the closure through `ephemeral_group.0~` too.
-pub(crate) type FullClosure = (Arc<BTreeSet<Tid>>, u64, Arc<BTreeSet<Tid>>);
-
 pub struct Core {
     /// The journaled indexes: a failed transaction undoes its own changes to them.
     pub ix: Indexes,
@@ -848,11 +817,6 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
-    /// Steps at every change of `Indexes::ephemeral_group` (`Engine::closure` caches by it).
-    pub ephemeral_group_gen: u64,
-    /// `Engine::closure` per group: the durable closure it was built from, the `ephemeral_group_gen` it
-    /// was built at, and the closure through `ephemeral_group.0~` too.
-    pub(crate) full_closures: std::cell::RefCell<HashMap<Tid, FullClosure>>,
     /// Debug builds: the cache hits compared with a fresh read at this point of the store
     /// (`Engine::recheck`).
     #[cfg(debug_assertions)]
@@ -1315,8 +1279,6 @@ impl Core {
             generation: 0,
             memory_generation: 0,
             memory_tx: false,
-            ephemeral_group_gen: 0,
-            full_closures: Default::default(),
             #[cfg(debug_assertions)]
             rechecked: Default::default(),
             labels: BTreeMap::new(),
@@ -1757,25 +1719,14 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Keeps the indexes derived from states at the state `f` of `(tid, ak)`, whatever wrote
-    /// it: `Indexes::ephemeral_group` (the ephemeral memberships, read with `group.0`) and
+    /// Keeps the index derived from states at the state `f` of `(tid, ak)`, whatever wrote it:
     /// `Indexes::labeled`.
     fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
-        match ak.as_str() {
-            "ephemeral_group.0~" => {
-                match f.and_then(crate::ephemeral::def_of) {
-                    Some(d) => self.core.ix.ephemeral_group.insert(*tid, d),
-                    None => self.core.ix.ephemeral_group.remove(tid),
-                };
-                self.core.ephemeral_group_gen += 1;
-            }
-            "label.0" => {
-                match f {
-                    Some(_) => self.core.ix.labeled.insert(*tid),
-                    None => self.core.ix.labeled.remove(tid),
-                };
-            }
-            _ => {}
+        if ak.as_str() == "label.0" {
+            match f {
+                Some(_) => self.core.ix.labeled.insert(*tid),
+                None => self.core.ix.labeled.remove(tid),
+            };
         }
     }
 

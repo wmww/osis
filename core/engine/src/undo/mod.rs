@@ -121,11 +121,11 @@ pub(crate) fn copy_expiry(copies: &Copies) -> Result<Option<u64>> {
     }
 }
 
-/// Builds and applies the undo commit of `target` (spec/crdt.md §4.6). Of the things it
-/// created, `keep` (drafts it saved) are not deleted. `confined`: every write it makes is held to
+/// Builds and applies the undo commit of `target` (spec/crdt.md §4.6): the things it created
+/// are deleted. `confined`: every write it makes is held to
 /// `actor`'s rights (`Engine::revert_as`). It expires with the writes it copies back, refused
 /// while those expire differently (`copy_expiry`).
-pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, keep: &BTreeSet<Tid>, confined: bool) -> Result<CommitId> {
+pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, confined: bool) -> Result<CommitId> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
     if !matches!(h.kind, Kind::Content) {
@@ -135,7 +135,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let mut deltas = Vec::new();
     let mut copies = Copies::new();
-    let made: BTreeSet<Tid> = made_by(&h, &m.valid).difference(keep).copied().collect();
+    let made = made_by(&h, &m.valid);
     let writers: &[Tid] = if confined { &[node, actor] } else { &[node] };
     let mut unmade = unmake_ops(tx, &made, ts, node, writers)?;
     // an undo writes under this open's session, like any content commit (spec/commits.md §3)
@@ -168,7 +168,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
             }
         };
         crate::apply::strip_valueless(tx.core, &a.tid, &a.ak, &mut pre);
-        let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, resets: true };
+        let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi } };
         let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         // the undo reads the current state along the delta's paths, or whole where the aspect was
         // absent before. A spot it resets is judged by its read (it may be made absent again), so
@@ -199,7 +199,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         };
         if let Some((f, r, e)) = out {
             copies.extend(e);
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), records: Vec::new() });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new() });
             // joined into the delta just pushed, so its counters stay the last allocated
             if let Some(ops) = unmade.remove(&(a.tid, a.ak.clone())) {
                 unmake_one(tx, (a.tid, a.ak.clone()), ops, ts, &own, &mut deltas)?;
@@ -226,8 +226,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     build_one(tx, plan, deltas)
 }
 
-/// The things content commit `m` created: those whose `created.0` it validly carries (a
-/// thing's creation, or the save persisting an ephemeral one).
+/// The things content commit `m` created: those whose `created.0` it validly carries.
 pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> {
     if h.kind != Kind::Content {
         return BTreeSet::new();
@@ -236,7 +235,8 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 }
 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
-/// `made`, its held aspects reset (not `created.0` or role-class ones) and its entries
+/// `made`, its held durable aspects reset (not `created.0` or role-class ones; its ephemeral
+/// ones go in the revert's memory commit, `Engine::revert_batch`) and its entries
 /// removed from every `group.0` listing it that all of `writers` may write (this node, a
 /// confined revert's actor too), each resolved after the undo's own delta of that aspect and
 /// joined into it (`unmake_one`). `Permission` when this node may not write one of `made`
@@ -256,7 +256,7 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers:
             aks.push(Rd::new(k).ak()?);
             Ok(())
         })?;
-        for ak in aks.into_iter().filter(|a| osis_schema::core_types::is_content(a.as_str())) {
+        for ak in aks.into_iter().filter(|a| osis_schema::core_types::is_content(a.as_str()) && a.lifetime().is_durable()) {
             ops.entry((*x, ak)).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
         }
     }
@@ -266,7 +266,7 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, writers:
             continue;
         }
         let rm = |field: u64, set: &BTreeSet<Tid>| set.intersection(made).map(|x| PathOp { path: vec![PathSeg::Field(field)], op: Op::Remove(Value::Tid(*x)) }).collect::<Vec<_>>();
-        let v: Vec<PathOp> = [rm(crate::ephemeral::ITEMS, items), rm(crate::ephemeral::SUBGROUPS, subs)].concat();
+        let v: Vec<PathOp> = [rm(crate::engine::groups::ITEMS, items), rm(crate::engine::groups::SUBGROUPS, subs)].concat();
         if !v.is_empty() {
             ops.entry((*g, gak.clone())).or_default().extend(v);
         }
@@ -303,7 +303,7 @@ fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, o
             d.fragment.join(f);
             d.hi = r.hi;
         }
-        _ => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), records: Vec::new() }),
+        _ => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new() }),
     }
     Ok(())
 }
@@ -325,7 +325,7 @@ impl Engine {
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
         let t = *target;
         let me = self.tid();
-        match self.run(|tx| undo_in(tx, t, me, None, &BTreeSet::new(), false)).map(Some) {
+        match self.run(|tx| undo_in(tx, t, me, None, false)).map(Some) {
             Err(Error::Misuse("nothing to undo")) => Ok(None),
             r => r,
         }

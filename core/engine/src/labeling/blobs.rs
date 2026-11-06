@@ -644,7 +644,7 @@ impl Engine {
     }
 
     /// `delete_secrets_of` for header `h`.
-    pub(crate) fn delete_secrets_by_group(&self, h: &osis_commit::Header, ais: &[usize]) -> Vec<Vec<(u8, DeleteSecret)>> {
+    pub fn delete_secrets_by_group(&self, h: &osis_commit::Header, ais: &[usize]) -> Vec<Vec<(u8, DeleteSecret)>> {
         let ais: BTreeSet<usize> = ais.iter().copied().collect();
         let mut sets: Vec<&Vec<usize>> = Vec::new();
         let mut out = Vec::new();

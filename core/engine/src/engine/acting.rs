@@ -4,10 +4,11 @@
 //! the actor's, so only this node can hold it to them. `Mutation::confine` asks for that check before a write;
 //! `readable_by`, `actor_role` and `revert_as` are the same rule for reads and reverts.
 
-use super::write::{check_authority, check_authority_with, check_role_with, role_with, Mutation, Records, Resolved};
+use super::write::{check_authority, check_authority_with, check_role_with, role_of, Mutation, Records, Resolved};
 use super::{Engine, Tx};
 use crate::error::{Error, Result};
-use crate::ephemeral::{gains, Reverted};
+use crate::engine::groups::gains;
+use crate::ephemeral::Reverted;
 use crate::events::BatchId;
 use crate::flows::Done;
 use crate::rotation;
@@ -23,11 +24,9 @@ impl Engine {
         Ts::make(self.now(), 0).unwrap_or_default()
     }
 
-    /// The effective role of `actor` on `t` now; a thing ephemeral here takes its first admin's
-    /// (spec/permissions.md §1).
+    /// The effective role of `actor` on `t` now (spec/permissions.md §1).
     pub fn actor_role(&self, actor: &Tid, t: &Tid) -> Option<Role> {
-        let records: Records<'_> = &|x| self.memory_record(x);
-        role_with(&self.core, *actor, records, t, self.acting_ts())
+        role_of(&self.core, actor, t, self.acting_ts())
     }
 
     /// Whether a client of this node, `actor`, reads `t` here now: `entitled` and this node's copy
@@ -37,7 +36,6 @@ impl Engine {
         // through groups that stopped syncing here: stale here, and this node would serve it to a
         // client as if current (notes/client-port.md §6)
         if !self.core.receipts_only.is_empty() || !self.core.routed_away.is_empty() {
-            // `ephemeral_group.0~` too: as the first admin's calls route (`Osis::route`)
             let gs = self.groups_of(t);
             if self.core.routed_away.contains(t) || gs.iter().any(|g| self.core.routed_away.contains(g)) {
                 return false;
@@ -47,21 +45,17 @@ impl Engine {
                 return false;
             }
         }
-        // a memory thing has no kept copy
-        self.entitled(actor, t) || (!self.core.ix.held.is_memory(t) && self.copy_readable_by(actor, t))
+        self.entitled(actor, t) || self.copy_readable_by(actor, t)
     }
 
-    /// The permission model's entitlement (spec/sync.md §3); a thing ephemeral here by its record
-    /// chain. False for what this node does not know.
+    /// The permission model's entitlement (spec/sync.md §3). False for what this node does not
+    /// know.
     pub fn entitled(&self, actor: &Tid, t: &Tid) -> bool {
-        if self.core.ix.held.is_memory(t) {
-            return self.actor_role(actor, t) >= Some(Role::Read);
-        }
         self.core.may_read(actor, t)
     }
 
     /// Fails `Permission` unless `actor` itself may do all of a confined `m`: every aspect's write,
-    /// every creation (write on the first admin), every thing it persists or frees. A purge needs write:
+    /// every creation (write on the first admin), every thing it deletes. A purge needs write:
     /// what it drops receivers judge by this node's and the actor's rights together
     /// (spec/permissions.md §6). `group.0` gains only what it may
     /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
@@ -70,12 +64,12 @@ impl Engine {
     pub(crate) fn check_confined(&self, m: &Mutation, actor: &Tid) -> Result<()> {
         let ts = self.acting_ts();
         let creates = &m.creates;
-        let records: Records<'_> = &|t| creates.get(t).or_else(|| self.memory_record(t));
+        let records: Records<'_> = &|t| creates.get(t);
         let created = "created.0";
         for (t, ak) in m.aspects.keys() {
             check_authority_with(&self.core, *actor, records, t, ak.as_str(), ts)?;
         }
-        for t in m.creates.keys().chain(&m.persist).chain(&m.free) {
+        for t in m.creates.keys().chain(&m.deleting) {
             check_authority_with(&self.core, *actor, records, t, created, ts)?;
         }
         for p in &m.purge {
@@ -119,8 +113,7 @@ impl Engine {
         }
         let shown = touched.iter().map(|(t, _)| *t).find(|t| self.readable_by(&actor, t));
         let ts = self.acting_ts();
-        let records: Records<'_> = &|t| self.memory_record(t);
-        let check = touched.iter().try_for_each(|(t, ak)| check_authority_with(&self.core, actor, records, t, ak.as_str(), ts));
+        let check = touched.iter().try_for_each(|(t, ak)| check_authority(&self.core, actor, &Default::default(), t, ak.as_str(), ts));
         let r = check.and_then(|()| self.revert_inner(id, actor, true));
         r.map_err(|e| match (e, shown) {
             (Error::Permission { tid }, Some(s)) if !self.readable_by(&actor, &tid) => Error::Permission { tid: s },

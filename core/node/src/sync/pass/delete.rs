@@ -765,20 +765,7 @@ impl SyncEngine {
             Kind::Commit { commit, ais, salt, .. } => {
                 // a forgotten memory commit's keys are in the header kept for it
                 let (dks, hb) = match self.memory.forgotten.get(commit) {
-                    Some(f) => {
-                        let h = f.header.clone();
-                        let mut sets: Vec<Vec<usize>> = Vec::new();
-                        let mut groups = Vec::new();
-                        for a in ais.iter().filter_map(|ai| h.aspects.get(*ai)) {
-                            if sets.contains(&a.keys) {
-                                continue;
-                            }
-                            sets.push(a.keys.clone());
-                            let keys: Vec<osis_commit::DeleteKey> = a.keys.iter().filter_map(|i| h.keys.get(*i).copied()).collect();
-                            groups.push(self.engine.ephemeral_delete_secrets_for(&a.tid, &h.actor, &keys));
-                        }
-                        (groups, Some(h.blind))
-                    }
+                    Some(f) => (self.engine.delete_secrets_by_group(&f.header, ais), Some(f.header.blind)),
                     None => (self.engine.delete_secrets_of(commit, ais), self.engine.header(commit).map(|h| h.blind)),
                 };
                 delete_item(keys, l, *id, None, hb.as_ref().map(|hb| (salt, hb)), &dks, every)

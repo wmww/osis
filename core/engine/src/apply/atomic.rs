@@ -495,44 +495,24 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
     }
 }
 
-/// Records the creation records commit `blob` carries that are not held yet (a durable
-/// commit's `created.0` parts, durable; an ephemeral one's beside its deltas, memory class);
-/// whether any was new. A durable record of a thing held as memory class persists it: its row
-/// moves to the store (rows stay in the class they were written in).
-fn note_created(tx: &mut Tx<'_>, h: &Header, blob: &CommitBlob, parts: &[(usize, Decoded)]) -> Result<bool> {
+/// Records the creation records durable commit `h` carries on `created.0` that are not held
+/// yet; whether any was new.
+fn note_created(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, Decoded)]) -> Result<bool> {
     let mut any = false;
     if h.ephemeral.is_some() {
-        let received = tx.now();
-        for r in blob.parts.iter().flat_map(|p| &p.records) {
-            let t = r.tid();
-            if tx.core.created(&t).is_none() {
-                tx.in_class(true, |tx| Ok(tx.txn.put_local(&[records::CREATED, t.as_bytes()].concat(), &osis_base::encode(&r.to_value()), Shred::No)?))?;
-                tx.core.ix.held.create_memory(r.clone());
-                tx.core.memory.things.insert(t, crate::engine::MemoryThing { ts: h.ts, node: h.author, actor: h.actor, received, made_here: false });
-                any = true;
-            }
-        }
-        return Ok(any);
+        return Ok(false);
     }
     for (ai, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != osis_commit::retention::CREATED || tx.core.durable_created(&a.tid).is_some() {
+        if a.ak.as_str() != osis_commit::retention::CREATED || tx.core.created(&a.tid).is_some() {
             continue;
         }
         let rec = d.fragment().read().as_ref().and_then(CreationRecord::from_value).ok_or(Error::BadInput("created.0"))?;
         if rec.tid() == a.tid {
             let key = [records::CREATED, a.tid.as_bytes()].concat();
-            let persisting = tx.core.ix.held.is_memory(&a.tid);
-            if persisting {
-                // a row stays in its class: the memory one goes first
-                tx.txn.remove_local(&key, Shred::No)?;
-            }
             tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
             tx.core.ix.held.create(rec);
             tx.core.inbox_moved(&a.tid);
-            if persisting {
-                continue;
-            }
             // the reader actor of the thing's deltas is known now
             let touching: Vec<CommitId> = tx.core.aspects_of(&a.tid).flat_map(|(_, s)| s.iter().map(|x| x.1)).collect();
             for c in touching {
@@ -559,7 +539,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
 
     // creation records first: perm and dedup secrets need them
-    let mut held_changed = note_created(tx, &h, blob, &parts.whole)?;
+    let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let view = Arc::new(crate::engine::View::of(&h));
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &parts.whole);
@@ -749,7 +729,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     meta.missing.retain(|ai| !parts.has(*ai));
     tx.core.put_meta(*id, meta.clone());
     let late = parts.ais();
-    let mut held_changed = note_created(tx, &h, merged, &parts.whole)?;
+    let mut held_changed = note_created(tx, &h, &parts.whole)?;
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
     if h.kind.is_role() {
         held_changed |= judge_late(tx, &h, id, &parts, &mut meta)?;
@@ -954,11 +934,7 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
 /// Keeps the indexes derived from states current: secrets opened from `secrets.0`, inbox
 /// delete-key hints `keys.0` replaces, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0" | "ephemeral_group.0~") {
-        return Ok(());
-    }
-    // `ephemeral_group.0~` follows every state write (`Tx::derive`)
-    if ak.as_str() == "ephemeral_group.0~" {
+    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "group.0") {
         return Ok(());
     }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);

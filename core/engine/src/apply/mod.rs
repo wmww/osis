@@ -5,7 +5,7 @@
 
 pub(crate) mod atomic;
 pub(crate) mod copies;
-pub(crate) mod free;
+pub(crate) mod unindex;
 pub(crate) mod memory;
 mod waits;
 pub(crate) mod keys;
@@ -20,7 +20,7 @@ mod oracle;
 #[cfg(test)]
 mod tests_paged;
 
-pub(crate) use free::unindex_commit;
+pub(crate) use unindex::unindex_commit;
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 #[cfg(debug_assertions)]
@@ -209,15 +209,12 @@ fn minted_record(h: &Header, id: &CommitId, p: &osis_commit::Part, tid: &Tid, in
     Ok(rec)
 }
 
-/// Creation records a commit carries: a durable one's on `created.0` (`minted_record`; a part giving
-/// none gives nothing here, and is judged alone in `examine` once it can be), an ephemeral one's
-/// beside its deltas (a record hashes to its tid, spec/commits.md §2).
+/// Creation records a durable commit carries on `created.0` (`minted_record`; a part giving none
+/// gives nothing here, and is judged alone in `examine` once it can be). An ephemeral one carries
+/// none (spec/commits.md §2).
 pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> BTreeMap<Tid, CreationRecord> {
     let mut out = BTreeMap::new();
     if h.ephemeral.is_some() {
-        for r in blob.parts.iter().flat_map(|p| &p.records) {
-            out.insert(r.tid(), r.clone());
-        }
         return out;
     }
     let mut interner = Interner::new();
@@ -281,7 +278,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if !blob.header.is_resolved() {
         // a held author's signature first: a false one costs no list. An author's record carried
         // by this commit waits for the lists: only the aspects say which part holds it
-        if let Some(CreationRecord::KeyActor { public_key, .. }) = tx.core.created_for(&blob.header.author, false) {
+        if let Some(CreationRecord::KeyActor { public_key, .. }) = tx.core.created(&blob.header.author) {
             let vk = VerifyingKey::from_slice(public_key)?;
             check_signature(tx, blob, id, &vk)?;
         }
@@ -294,11 +291,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     }
     let h = blob.header.clone();
     let carried = carried_records(&h, blob, id);
-    // a durable commit sees durable records only: one on a thing held as memory class waits for
-    // the commit persisting it
-    let memory = h.ephemeral.is_some();
-    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.author, h.actor]).filter_map(|t| tx.core.created_for(&t, memory).map(|r| (t, r.clone()))).collect();
-    let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created_for(t, memory).cloned().or_else(|| carried.get(t).cloned()) };
+    let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.author, h.actor]).filter_map(|t| tx.core.created(&t).map(|r| (t, r.clone()))).collect();
+    let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created(t).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
     let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author), Vec::new())) };
     let CreationRecord::KeyActor { public_key, .. } = &author else { return Err(Error::BadInput("author is not a key actor")) };
@@ -330,7 +324,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let stripped_ais: BTreeSet<usize> = stripped.keys().copied().collect();
     let kept = |p: &osis_commit::Part| p.delta == emptied && stripped_ais.contains(&p.ai);
     // a part that does not hash to its header entry is no part of this commit, and one on an aspect
-    // of the wrong storage class (core keys are unmarked but `ephemeral_group.0~`) is never applied: dropped
+    // of the wrong storage class is never applied: dropped
     // alone, before anything reads what is held (spec/commits.md §4)
     let junk: Vec<usize> = blob
         .parts
@@ -677,8 +671,7 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         // brought (its `created.0`) or by anything else
         if signature != merged.signature {
             let carried = carried_records(&merged.header, &merged, id);
-            let memory = merged.header.ephemeral.is_some();
-            let author = tx.core.created_for(&merged.header.author, memory).cloned().or_else(|| carried.get(&merged.header.author).cloned());
+            let author = tx.core.created(&merged.header.author).cloned().or_else(|| carried.get(&merged.header.author).cloned());
             if let Some(CreationRecord::KeyActor { public_key, .. }) = author
                 && VerifyingKey::from_slice(&public_key).is_ok_and(|vk| osis_commit::verify_signature(id, &signature, &vk).is_ok())
             {
@@ -819,17 +812,6 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
 }
 
 impl Engine {
-    /// Frees the memory things among `things` (`free::free`: records, the memory commits all of
-    /// whose things are freed, their aspects' memory rows). Tests until local ephemeral writes
-    /// are memory commits (issues/eph-unify.md step 3).
-    #[doc(hidden)]
-    pub fn free_memory(&mut self, things: &BTreeSet<Tid>) -> Result<()> {
-        self.run(|tx| {
-            tx.set_memory();
-            free::free(tx, things)
-        })
-    }
-
     /// Whether `blob` is a true copy of its commit: every delta hashes to its entry in the commit's
     /// header (the applied, resolved one when held; spec/commits.md §4) and its signature verifies: a
     /// blob of a held commit is otherwise never checked, its parts being skipped as held. `Some(false)`
@@ -1223,24 +1205,18 @@ impl Engine {
     /// `created.0` is kept forever, so every node reading the thing gets that commit; until it
     /// is here (only a snapshot held) `None`.
     pub fn creation(&self, tid: &Tid) -> Option<Creation> {
-        if let Some(e) = self.ephemeral_thing(tid) {
-            return Some(Creation { commit: None, ts: e.ts, node: e.node, actor: e.actor, received: e.received });
-        }
-        if self.core.ix.held.is_memory(tid) {
-            return None;
-        }
         let ak = osis_base::Ak::new("created.0").ok()?;
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.ix.commits.get(id)?;
             let ai = m.aspect(tid, &ak)?;
-            (m.valid_at(ai)).then(|| Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
+            (m.valid_at(ai)).then(|| Creation { commit: *id, ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
         })
     }
 
     /// The thing's last content change: of the held content commits (changes, reverts) validly writing one of its aspects other than `created.0`, `group.0` and the
     /// role-class ones, the one shown latest by `min(ts, received)` (an author's clock may
     /// run ahead; `received` is this node's), else its creation. Snapshots are no change, and
-    /// ephemeral writes do not count (an ephemeral thing reports its creation).
+    /// ephemeral writes do not count.
     pub fn changed(&self, tid: &Tid) -> Option<Creation> {
         let shown = |c: &Creation| c.ts.wall_ms().min(c.received);
         let mut best = self.creation(tid);
@@ -1260,7 +1236,7 @@ impl Engine {
                 if m.header.kind != Kind::Content || !valid {
                     continue;
                 }
-                let c = Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received };
+                let c = Creation { commit: *id, ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received };
                 if best.as_ref().is_none_or(|b| shown(&c) > shown(b)) {
                     best = Some(c);
                 }
@@ -1298,12 +1274,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         created.push((k.to_vec(), rec));
         Ok(())
     })?;
-    for (k, r) in created {
-        // a reload at run time sees the memory overlay's records too
-        match tx.txn.is_memory_local(&[records::CREATED, &k].concat()) {
-            true => tx.core.ix.held.create_memory(r),
-            false => tx.core.ix.held.create(r),
-        }
+    for (_, r) in created {
+        tx.core.ix.held.create(r);
     }
     let mut syncing = Vec::new();
     tx.scan(records::SYNCING, |k, _| {
@@ -1657,8 +1629,7 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
 /// A commit as a thing's time (`Engine::creation`, `Engine::changed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Creation {
-    /// `None` while the thing is ephemeral (notes/ephemeral.md).
-    pub commit: Option<CommitId>,
+    pub commit: CommitId,
     pub ts: osis_base::Ts,
     pub node: Tid,
     pub actor: Tid,
