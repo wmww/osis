@@ -101,6 +101,9 @@ pub struct SyncEngine {
     /// Co-readers redialed at once after an up connection ended, and when (raw ms): at most
     /// once per `peer_retry_ms` each.
     redialed: BTreeMap<HostKey, u64>,
+    /// Followed links (by K) whose redemption is under way: their sharer nodes are redialed after
+    /// `retry_ms`, not `peer_retry_ms` (`lost`). Memory only: no redemption outlives the process.
+    redeeming: BTreeSet<Tid>,
     pub(crate) state: State,
     /// Event counter: pass completions and remote role commits are ordered by it.
     pub(crate) seq: u64,
@@ -300,6 +303,7 @@ impl SyncEngine {
             next_conn: 1,
             retry: BTreeMap::new(),
             redialed: BTreeMap::new(),
+            redeeming: BTreeSet::new(),
             state,
             seq: 0,
             passes: BTreeMap::new(),

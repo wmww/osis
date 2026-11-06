@@ -1100,6 +1100,8 @@ impl Osis {
         let link = link.parse()?;
         let (k, target, single) = (link.k, link.target, link.single_use);
         let key = self.follow_link(&link)?;
+        // its sharer node is redialed at a host's pace until this call ends, whatever the outcome
+        let _redeeming = Redeeming { db: self.downgrade(), k };
         let l = key.l;
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
@@ -1938,6 +1940,20 @@ impl Drop for KeyGuard {
             if let Some(k) = self.link {
                 db.act(|x| x.sync.forget_link(k));
             }
+        }
+    }
+}
+
+/// A link redemption under way (`SyncEngine::link_redeemed` when it goes).
+struct Redeeming {
+    db: crate::handle::WeakOsis,
+    k: Tid,
+}
+
+impl Drop for Redeeming {
+    fn drop(&mut self) {
+        if let Some(db) = self.db.hold() {
+            db.locked(|x| x.sync.link_redeemed(&self.k));
         }
     }
 }

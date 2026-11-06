@@ -199,10 +199,10 @@ impl SyncEngine {
         v
     }
 
-    /// Whether a dial to `key` waits for its retry pause (tests).
+    /// How long (ms) a dial to `key` still waits for its retry pause, if it waits (tests).
     #[doc(hidden)]
-    pub fn retrying(&self, key: &[u8; 32]) -> bool {
-        self.retry.contains_key(key)
+    pub fn retrying(&self, key: &[u8; 32]) -> Option<u64> {
+        self.retry.get(key).map(|(_, t)| t.saturating_sub(self.raw_now()))
     }
 
     /// Diagnostics since the last call (tests).
