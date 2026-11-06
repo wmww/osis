@@ -239,8 +239,8 @@ impl Conv<'_> {
     fn rules(&mut self, f: Option<&Fragment>) -> Result<Vec<hm::Rule>, &'static str> {
         let Some(v) = f.and_then(Fragment::read) else { return Ok(Vec::new()) };
         let rules = ct::required_rules(&v);
-        if rules.keep {
-            return Err("required keep");
+        if rules.retain {
+            return Err("required retain");
         }
         let mut out: Vec<hm::Rule> = Vec::new();
         for (p, q) in &rules.rules {

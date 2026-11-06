@@ -7,7 +7,7 @@ use super::*;
 /// no role, creation or group record.
 fn narrow_aspect(a: &Ak) -> bool {
     let s = a.as_str();
-    !osis_schema::core_types::is_role_class(s) && !matches!(s, "created.0" | "group.0" | "groups.0" | "placed.0~")
+    !osis_schema::core_types::is_role_class(s) && !matches!(s, "created.0" | "group.0" | "groups.0" | "group.0~")
 }
 
 impl SyncEngine {

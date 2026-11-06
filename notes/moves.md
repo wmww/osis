@@ -6,7 +6,7 @@
 3. **Copy with imported history**: rejected. It was built (spec text: `git log -S 'Import commit' -- spec/permissions.md`) and cost 29 merged items, two open issues and an order oracle, while nothing first-party moved: imported writes interact with purge, retention, validity and arrival order.
 
 ## The removed import design, in short
-- **Copy**: a node with rights on new owner X creates M (owner X, fresh nonce, a `creator` field in the creation record naming that node, the only one whose imports M takes). Roles on M are X's to grant; the mover writes T's `keep` default on M when T's says keep.
+- **Copy**: a node with rights on new owner X creates M (owner X, fresh nonce, a `creator` field in the creation record naming that node, the only one whose imports M takes). Roles on M are X's to grant; the mover writes T's `keep` default on M when T's says retain.
 - **Links**: `was.0` on M (what M continues), `moved.0` on T (what T continued as), both role-class, admin-written. A tid t held in thing R's value resolves at read time to the held M with `was.0 = t` in which R's owner chain holds rights (exactly one), else t's `moved.0`, at most 8 hops. Stored values are never rewritten.
 - **Import commit**: a content commit with an import marker, every delta on M, no own writes, commit form, no `expires`, no `created.0` or `required.0^`; its header carries an origins table `[commit_id, author, actor, ts]`.
 - **Re-sourcing**: a write of origin commit C gets dot (`Commit(C)`, k), keeping its `ts`; k is its counter in C for an own-source write, else its rank by (source, counter) among C's dots on that aspect. Referenced dots map the same way, so importing C twice gives the same dots.

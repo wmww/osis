@@ -37,7 +37,7 @@ impl Engine {
         // through groups that stopped syncing here: stale here, and this node would serve it to a
         // client as if current (notes/client-port.md §6)
         if !self.core.receipts_only.is_empty() || !self.core.routed_away.is_empty() {
-            // `placed.0~` too: as the owner's calls route (`Osis::route`)
+            // `group.0~` too: as the owner's calls route (`Osis::route`)
             let gs = self.groups_of(t);
             if self.core.routed_away.contains(t) || gs.iter().any(|g| self.core.routed_away.contains(g)) {
                 return false;
@@ -108,7 +108,7 @@ impl Engine {
     /// Reverts change `id` for `actor`, held to its rights: on everything the change touched,
     /// whether or not the revert still writes it (the answer tells nothing of what it may not
     /// read), and on every write the revert really makes (`undo_in`, `revert_inner`). An error
-    /// names only what it reads. A deleted thing's placement in a group the actor may not write
+    /// names only what it reads. A deleted thing's membership in a group the actor may not write
     /// stays, as for `Write::delete`: the answer tells nothing of it.
     pub fn revert_as(&mut self, id: BatchId, actor: Tid) -> Result<Reverted> {
         let mut touched: BTreeSet<(Tid, Ak)> = self.ephemeral_log().into_iter().filter(|l| l.id == id).flat_map(|l| l.aspects).collect();
@@ -156,7 +156,7 @@ impl Engine {
 }
 
 /// A confined revert's durable writes, as `undo_in` is about to make them: `actor`'s rights on
-/// each, and `group.0` gains only what it may read (a revert of an unplace puts a thing back).
+/// each, and `group.0` gains only what it may read (a revert of a member removal puts a thing back).
 pub(crate) fn check_undo(tx: &mut Tx<'_>, actor: Tid, deltas: &[Resolved], ts: Ts) -> Result<()> {
     for d in deltas {
         check_authority(tx.core, actor, &Default::default(), &d.tid, d.ak.as_str(), ts)?;

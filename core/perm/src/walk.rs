@@ -1633,7 +1633,7 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usiz
     // it, a renewal placed before it included), so a removal of an unended edge does nothing;
     // only by an author with write whose role there is at least the edge's (an ended admin
     // edge needs an admin); judged from held writes and stamps alone, no reader's clock.
-    if c.frontier.is_none() && new.is_none_or(|e| e.says_keep()) && lowers(new.as_ref(), old) {
+    if c.frontier.is_none() && new.is_none_or(|e| e.says_retain()) && lowers(new.as_ref(), old) {
         let ended = old.is_some_and(|o| o.until.is_some() && !o.alive_at(Some(c.ts)));
         let may = st.role >= Some(Role::Write) && old.is_some_and(|o| st.role >= Some(o.role));
         return (ended && may).then_some(Attr::Finalize);

@@ -1622,7 +1622,7 @@ fn purge_rejudge_cost() {
         } else {
             // an honest demotion: the frontier lists the requests
             let t4 = Instant::now();
-            let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+            let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
             let done = lp.peers[0].engine.demote(&t, &d).unwrap();
             let size = done.commits.iter().filter_map(|c| lp.peers[0].engine.header(c)).filter_map(|h| h.frontier.clone()).map(|f| osis_base::encode(&f).len()).max();
             println!("wide {wide}: honest demotion: {:?}, frontier {size:?} bytes", t4.elapsed());

@@ -15,7 +15,7 @@
 - Member forward secrecy is probably undesirable (and would need erasable per-device KEM keys, MLS-sized; against spec/crypto.md §3).
 - Adding without history should be a core op (issues/history-less-grant.md); segments (below) are the fallback.
 - Edit is the one place chat does not use ordinary osis editing (an edit is a new message).
-- A removed participant keeps its copy by default (`required.0^` `keep`, filled by a kick); erasing is a setting.
+- A removed participant keeps its copy by default (`required.0^` `retain`, filled by a kick); erasing is a setting.
 - Defaults: moderator delete; lasting tombstones; others keep a kicked participant's messages; block is local; disappearing timer per chat; add with history; edits purge the old text. Settings: add without history; permanent chat (`nobody`); admin-only or author-only delete; edit history kept or editing off; private read position; participants may invite. Target realm size 10,000 members.
 
 ## As built

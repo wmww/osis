@@ -77,7 +77,7 @@ fn departed_node_card_deleted_spec_permissions_4() {
     let keys = card_entries(&mut net, a, host, &l, rt, "keys.0");
     assert!(!keys.is_empty());
     net.set_online(r, false);
-    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -107,7 +107,7 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
     let first = card_entries(&mut net, a, host, &l, rt, "reach.0");
     assert!(!first.is_empty());
     net.set_online(r, false);
-    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -215,7 +215,7 @@ fn account_removed_node_card_deleted_spec_permissions_4() {
     let (g, p, l) = account_reader(&mut net, a, r, host, None);
     let rt = net.tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
-    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -310,7 +310,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     m.set(h, &REG, &s("h")).unwrap();
     e.commit(m).unwrap();
     set_edge(e, h, r2t, Role::Read);
-    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);

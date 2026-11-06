@@ -217,7 +217,7 @@ fn purge_sets_spec_perm_6() {
     }
 }
 
-// spec/permissions.md §3 (Keep), §5.1: a kicked participant keeps a read-only copy, sees nothing new and writes nothing others accept; the override erases; purge by author erases its messages for those left
+// spec/permissions.md §3 (Retain), §5.1: a kicked participant keeps a read-only copy, sees nothing new and writes nothing others accept; the override erases; purge by author erases its messages for those left
 #[test]
 fn kick_keep_erase_purge_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -468,7 +468,7 @@ fn kicked_while_offline_spec_perm_5() {
     assert!(texts(&a, c).contains(&"late".to_string()), "a known forced yes: re-adding revives it (notes/chat-cases.md)");
 }
 
-// spec/permissions.md §3 (Keep): a kept copy's node of the kicked participant; a new node sees nothing of it (the design's forced "no")
+// spec/permissions.md §3 (Retain): a kept copy's node of the kicked participant; a new node sees nothing of it (the design's forced "no")
 #[test]
 fn new_node_of_a_participant_sees_history_spec_sync_6() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -509,7 +509,7 @@ fn new_node_of_a_participant_sees_history_spec_sync_6() {
     assert!(texts(&late, c).is_empty(), "known forced no: notes/chat-cases.md");
 }
 
-// spec/commits.md §6, spec/permissions.md §3 (Keep): a disappearing message leaves a kept copy at its time too
+// spec/commits.md §6, spec/permissions.md §3 (Retain): a disappearing message leaves a kept copy at its time too
 #[test]
 fn kept_copy_still_disappears_spec_commits_6() {
     let Room { mut w, a, b, c, bob } = room(Options { disappear: Some(Duration::from_secs(60)), ..Options::default() });
@@ -549,7 +549,7 @@ fn admins_are_equal_spec_perm_1() {
     assert_eq!(participants(&a, c).unwrap(), participants(&b, c).unwrap());
 }
 
-// spec/permissions.md §3 (Keep): an erased participant added again gets the chat back
+// spec/permissions.md §3 (Retain): an erased participant added again gets the chat back
 #[test]
 fn erased_then_added_again_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -949,7 +949,7 @@ fn scale(n_participants: u64, n_msgs: usize) {
     eprintln!("kick: {:?}", t.elapsed());
 }
 
-// spec/permissions.md §3 (Keep): leaving keeps by the chat's default, the others keep its messages; a new participant gets the tombstones and history; a participant promoted to moderator deletes another's
+// spec/permissions.md §3 (Retain): leaving keeps by the chat's default, the others keep its messages; a new participant gets the tombstones and history; a participant promoted to moderator deletes another's
 #[test]
 fn leave_promote_newcomer_spec_perm_3() {
     let Room { mut w, a, b, c, bob } = room(Options::default());

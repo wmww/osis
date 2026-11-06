@@ -124,7 +124,7 @@ impl Osis {
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
             self.not_routed("remove_client", t)?;
-            let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced, keep: None })?))?;
+            let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced, retain: None })?))?;
             self.carry(done)?;
         }
         let mut w = self.write();

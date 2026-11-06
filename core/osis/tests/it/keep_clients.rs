@@ -1,4 +1,4 @@
-//! A thin client and its node's kept copy (spec/permissions.md §3, Keep; notes/client-port.md §3): a
+//! A thin client and its node's kept copy (spec/permissions.md §3, Retain; notes/client-port.md §3): a
 //! chat of Alice's, Bob's node serving Bob's app as a thin client over the client port, Bob kicked.
 
 use crate::common::watched;
@@ -197,7 +197,7 @@ fn refused(c: &Osis, t: Tid) -> bool {
     matches!(r, Err(Error::Permission { .. }) | Err(Error::UnknownThing { .. }))
 }
 
-// spec/permissions.md §3 (Keep), notes/client-port.md §3: the chat: Bob's app reads messages, Bob is kicked with keep, the app still reads and watches them frozen, after a restart of the node too, cannot write or undo, sees no new message; another client of the node reads nothing of it; with erase nothing stays
+// spec/permissions.md §3 (Retain), notes/client-port.md §3: the chat: Bob's app reads messages, Bob is kicked with keep, the app still reads and watches them frozen, after a restart of the node too, cannot write or undo, sees no new message; another client of the node reads nothing of it; with erase nothing stays
 #[test]
 fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
     for keep in [true, false] {
@@ -364,7 +364,7 @@ fn assert_ended(b: &Osis, g: Tid, m: Tid, keep: Option<bool>) {
     assert!(b.role_on(g).unwrap().is_none());
 }
 
-// spec/permissions.md §2 (an `until` passing), §3 Keep: a holder online past its `until`, nobody writing a role commit: its labels are heard out at once, and it drops by itself, erasing or keeping as the default says
+// spec/permissions.md §2 (an `until` passing), §3 Retain: a holder online past its `until`, nobody writing a role commit: its labels are heard out at once, and it drops by itself, erasing or keeping as the default says
 #[test]
 fn an_until_ending_drops_by_itself_spec_permissions_2() {
     for keep in [None, Some(true)] {
@@ -406,7 +406,7 @@ fn an_until_passing_offline_loses_nothing_spec_permissions_2() {
     }
 }
 
-// spec/permissions.md §2 (an `until` passing), §3 Keep: no renewal: offline nothing goes; back online its labels are heard out, its unsent write from before the `until` going up first (nobody rotated meanwhile: Alice is away too), and then the default holds: erased or kept; Alice back reads the write
+// spec/permissions.md §2 (an `until` passing), §3 Retain: no renewal: offline nothing goes; back online its labels are heard out, its unsent write from before the `until` going up first (nobody rotated meanwhile: Alice is away too), and then the default holds: erased or kept; Alice back reads the write
 #[test]
 fn an_until_ended_offline_goes_when_heard_out_spec_permissions_2() {
     for keep in [None, Some(true)] {
@@ -474,7 +474,7 @@ fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_2() {
     assert_eq!(b.at(m, osis::DynamicAspectKey::untyped(text())).get().unwrap(), Some(s("during")));
 }
 
-// spec/permissions.md §3 (Keep), notes/client-port.md §3: a client reads the copy while it holds a role on what the copy hangs on: its role ended before the kick or after it, it reads nothing; granted one after the kick (the account's new app), it reads; a client with a role on another thing of the account reads nothing
+// spec/permissions.md §3 (Retain), notes/client-port.md §3: a client reads the copy while it holds a role on what the copy hangs on: its role ended before the kick or after it, it reads nothing; granted one after the kick (the account's new app), it reads; a client with a role on another thing of the account reads nothing
 #[test]
 fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     let mut w = World::new();
@@ -521,7 +521,7 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
     assert!(reads(new), "the account's new app");
 }
 
-// spec/permissions.md §3 (Keep), notes/client-port.md §3: a client on the chat by a grant of its own keeps through that grant: its copy hangs on the client's actor, so it reads, and the account's other clients that hold no role on it do not; its own grant erasing while its account's keeps, it does not read: the grant it lost said so, though the node keeps for the account
+// spec/permissions.md §3 (Retain), notes/client-port.md §3: a client on the chat by a grant of its own keeps through that grant: its copy hangs on the client's actor, so it reads, and the account's other clients that hold no role on it do not; its own grant erasing while its account's keeps, it does not read: the grant it lost said so, though the node keeps for the account
 #[test]
 fn a_client_with_its_own_grant_spec_permissions_3() {
     for (own, account, reads) in [(Some(true), Some(false), true), (Some(false), Some(true), false), (Some(true), Some(true), true)] {
@@ -543,7 +543,7 @@ fn a_client_with_its_own_grant_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3 (Keep), notes/client-port.md §3: a chat read through a realm Bob stays in, the realm kicked from it: the copy is the account's, so his app reads it; a client that is only a member of the realm, from before the kick or after it, reads the realm and nothing of the chat
+// spec/permissions.md §3 (Retain), notes/client-port.md §3: a chat read through a realm Bob stays in, the realm kicked from it: the copy is the account's, so his app reads it; a client that is only a member of the realm, from before the kick or after it, reads the realm and nothing of the chat
 #[test]
 fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     let mut w = World::new();
@@ -598,7 +598,7 @@ fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
     assert!(watch.current().is_err(), "it lapses at the next change, not telling what changed");
 }
 
-// spec/permissions.md §3 (Keep), notes/client-port.md §3: through a holder that is itself kept: a chat read through a realm group, Bob kicked from the group: the app reads both, the chain ending at the account; a client on neither reads neither
+// spec/permissions.md §3 (Retain), notes/client-port.md §3: through a holder that is itself kept: a chat read through a realm group, Bob kicked from the group: the app reads both, the chain ending at the account; a client on neither reads neither
 #[test]
 fn a_client_reads_through_a_retained_holder_spec_permissions_3() {
     let mut w = World::new();
@@ -624,7 +624,7 @@ fn a_client_reads_through_a_retained_holder_spec_permissions_3() {
     assert!(!b.acting_as(app).has_content(m).unwrap(), "what hung on it goes");
 }
 
-// spec/permissions.md §1 (ownerless things), §3 (Keep): a chat with no owner keeps alike: Bob kicked, the copy stands, his app reads it, another client does not
+// spec/permissions.md §1 (ownerless things), §3 (Retain): a chat with no owner keeps alike: Bob kicked, the copy stands, his app reads it, another client does not
 #[test]
 fn an_ownerless_chat_keeps_spec_permissions_3() {
     let mut w = World::new();
@@ -661,7 +661,7 @@ fn an_ownerless_chat_keeps_spec_permissions_3() {
     assert!(refused(&b, m));
 }
 
-// spec/permissions.md §3 (Keep): a commit the node takes for what else it carries: content on a copy stays out, its purge of a copy's aspect applies (nothing promises it does not), and the thing beside it moves on
+// spec/permissions.md §3 (Retain): a commit the node takes for what else it carries: content on a copy stays out, its purge of a copy's aspect applies (nothing promises it does not), and the thing beside it moves on
 #[test]
 fn a_commit_beside_a_copy_spec_permissions_3() {
     let mut w = World::new();
@@ -788,7 +788,7 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
     assert_eq!(a.at(thing, osis::DynamicAspectKey::untyped(e)).get().unwrap(), Some(s("after")));
 }
 
-// spec/permissions.md §3 (Keep): a chat read through a realm Bob stays in: the kick of the realm from the chat leaves a copy beside a label that goes on syncing, through restarts; the label settles, the realm's new items arrive
+// spec/permissions.md §3 (Retain): a chat read through a realm Bob stays in: the kick of the realm from the chat leaves a copy beside a label that goes on syncing, through restarts; the label settles, the realm's new items arrive
 #[test]
 fn a_copy_beside_a_live_holder_spec_permissions_3() {
     let x0 = chat(GrantOpts::default(), Role::Write);

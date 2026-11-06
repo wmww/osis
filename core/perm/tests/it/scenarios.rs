@@ -601,7 +601,7 @@ fn ownerless_has_no_owner_chain() {
     assert_eq!(role(&tl, n[2], d), Some(Write));
 }
 
-fn says_keep() -> Option<Edge> {
+fn says_retain() -> Option<Edge> {
     Some(Edge::kept_end())
 }
 
@@ -609,25 +609,25 @@ fn end_of(tl: &osis_perm::Timeline, g: &Tid, m: &Tid) -> EdgeEnd {
     tl.ended(g, ts(100)).get(m).unwrap().0
 }
 
-// spec/permissions.md §3, Keep: the last applied write decides: a removal's own word, last by key, never
+// spec/permissions.md §3, Retain: the last applied write decides: a removal's own word, last by key, never
 // a write that did not apply; an `until` ending has none and reads the default at its key; a live
 // edge has no end.
 #[test]
 fn ended_gives_the_last_applied_word_spec_permissions_3() {
     let (mut w, n, g) = group();
     let z = w.nodes_salted(4, 77);
-    // a removal saying keep
+    // a removal saying retain
     w.set(n[0], g, z[0], edge(Read), 2, &[]);
-    w.set(n[0], g, z[0], says_keep(), 3, &[]);
+    w.set(n[0], g, z[0], says_retain(), 3, &[]);
     // a later plain removal over it: erase
     w.set(n[0], g, z[1], edge(Read), 2, &[]);
-    w.set(n[0], g, z[1], says_keep(), 3, &[]);
+    w.set(n[0], g, z[1], says_retain(), 3, &[]);
     w.set(n[0], g, z[1], None, 4, &[]);
     // written expired
     w.set(n[0], g, z[2], edge(Read), 2, &[]);
     w.set(n[0], g, z[2], Some(Edge { until: Some(osis_base::WallMs(3)), ..Edge::new(Read) }), 3, &[]);
-    // no authority: z[3] is nobody here, its removal saying keep does not apply
-    w.set(z[3], g, n[4], says_keep(), 5, &[]);
+    // no authority: z[3] is nobody here, its removal saying retain does not apply
+    w.set(z[3], g, n[4], says_retain(), 5, &[]);
     w.set(n[0], g, n[4], None, 6, &[]);
     let tl = eval(&w);
     assert_eq!(end_of(&tl, &g, &z[0]), EdgeEnd::Said(true));
@@ -637,7 +637,7 @@ fn ended_gives_the_last_applied_word_spec_permissions_3() {
     assert!(!tl.ended(&g, ts(100)).contains_key(&n[1]), "alive");
 }
 
-// spec/permissions.md §2, §3: a holder's self-removal says keep whatever anyone wants, no authority on
+// spec/permissions.md §2, §3: a holder's self-removal says retain whatever anyone wants, no authority on
 // the target needed; a stranger's removal of it decides nothing.
 #[test]
 fn self_removal_says_its_own_keep_spec_permissions_2() {
@@ -645,20 +645,20 @@ fn self_removal_says_its_own_keep_spec_permissions_2() {
     let z = w.nodes_salted(1, 78);
     w.set(z[0], g, n[4], None, 4, &[]);
     assert!(eval(&w).roster(&g, At::END).contains_key(&n[4]), "a stranger's removal");
-    w.set(n[4], g, n[4], says_keep(), 5, &[]);
+    w.set(n[4], g, n[4], says_retain(), 5, &[]);
     let tl = eval(&w);
     assert!(!tl.roster(&g, At::END).contains_key(&n[4]));
     assert_eq!(end_of(&tl, &g, &n[4]), EdgeEnd::Said(true));
 }
 
-// spec/permissions.md §2: an invite grants: a value saying keep on an absent edge does not apply, so
+// spec/permissions.md §2: an invite grants: a value saying retain on an absent edge does not apply, so
 // an invite holder cannot make a copy stay.
 #[test]
 fn an_invite_does_not_say_keep_spec_permissions_2() {
     let (mut w, n, g) = group();
     let z = w.nodes_salted(3, 79);
     w.set(n[0], g, z[0], Some(Edge { invite: Some(Read), ..Edge::new(Read) }), 2, &[]);
-    w.set(z[0], g, z[1], says_keep(), 3, &[]);
+    w.set(z[0], g, z[1], says_retain(), 3, &[]);
     assert!(!eval(&w).ended(&g, ts(100)).contains_key(&z[1]));
     w.set(z[0], g, z[2], edge(Read), 4, &[]);
     assert!(eval(&w).roster(&g, At::END).contains_key(&z[2]));

@@ -10,7 +10,7 @@ use crate::commit_id::{CommitId, HistoryPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::AspectKey;
-use osis_schema::core_types::{GROUP, PLACED};
+use osis_schema::core_types::{GROUP, GROUP_EPHEMERAL};
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 
@@ -436,12 +436,12 @@ impl Osis {
     /// never had a member). A thing both item and subgroup appears as both. Being in a group grants
     /// nothing: who holds a role on it is `grants`.
     pub fn members(&self, group: Tid) -> Result<Vec<Member>> {
-        let (durable, placed) = match self.source(group) {
-            crate::sources::Source::Node(_) => (self.at(group, GROUP).get()?, self.at(group, PLACED).get()?),
-            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(group, &GROUP)?, r.get(group, &PLACED)?)))?,
+        let (durable, eph) = match self.source(group) {
+            crate::sources::Source::Node(_) => (self.at(group, GROUP).get()?, self.at(group, GROUP_EPHEMERAL).get()?),
+            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(group, &GROUP)?, r.get(group, &GROUP_EPHEMERAL)?)))?,
         };
         let mut d = durable.unwrap_or_default();
-        let p = placed.unwrap_or_default();
+        let p = eph.unwrap_or_default();
         d.items.extend(p.items);
         d.subgroups.extend(p.subgroups);
         Ok(d.items.into_iter().map(Member::Item).chain(d.subgroups.into_iter().map(Member::Subgroup)).collect())

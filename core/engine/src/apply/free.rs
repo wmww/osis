@@ -77,8 +77,8 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
         tx.core.memory.synced.remove(t);
         tx.core.memory.dirty.retain(|(x, _)| x != t);
         tx.core.memory.weighed.retain(|(x, _), _| x != t);
-        tx.core.ix.placed.remove(t);
-        tx.core.placed_gen += 1;
+        tx.core.ix.eph_members.remove(t);
+        tx.core.eph_members_gen += 1;
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::No)?;
         let leftovers = tx.txn.memory_local_keys(&[records::LEFTOVER, t.as_bytes()].concat());
         let aks = tx.txn.drop_memory_thing(t, |ak| ASPECT_RECORDS.iter().map(|p| records::aspect_key(p, t, ak)).collect())?;
@@ -187,9 +187,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 /// Drops what the indexes and caches keep per aspect of `(tid, ak)` (no commit is on it).
 fn unindex_aspect(core: &mut Core, tid: &Tid, ak: &Ak) {
     let k = (*tid, ak.clone());
-    if ak.as_str() == "placed.0~" {
-        core.ix.placed.remove(tid);
-        core.placed_gen += 1;
+    if ak.as_str() == "group.0~" {
+        core.ix.eph_members.remove(tid);
+        core.eph_members_gen += 1;
     }
     if ak.as_str() == "label.0" {
         core.ix.labeled.remove(tid);

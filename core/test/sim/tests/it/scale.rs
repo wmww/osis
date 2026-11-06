@@ -25,7 +25,7 @@ fn create(a: &Osis) -> Tid {
     let c = a.create_ownerless(a.me()).unwrap();
     let msgs = ct::Required::new(osis::internals::schema::Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(i64::MAX as u64), rel: None }, at_most: Bound::default() }, None);
     let rest = ct::Required::new(Default::default(), None);
-    let rules = ct::RequiredRules { rules: BTreeMap::from([("chat:msgs:".to_string(), msgs), (String::new(), rest)]), keep: true };
+    let rules = ct::RequiredRules { rules: BTreeMap::from([("chat:msgs:".to_string(), msgs), (String::new(), rest)]), retain: true };
     let mut w = a.write();
     w.at(c, ct::REQUIRED).set(&rules).unwrap();
     w.commit().unwrap();

@@ -437,7 +437,7 @@ fn self_removal_crash_still_drops_spec_permissions_3() {
         assert_eq!(net.read(b, t), Some(s("marker")));
         net.set_online(b, false);
         let bt = net.tid(b);
-        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
         let done = net.engine(b).demote(&g, &d).unwrap();
         assert!(done.drop_lost);
         if crash != "before carry_out" {
@@ -475,7 +475,7 @@ fn self_removal_kept_by_trigger_until_placed_spec_permissions_3() {
     assert_eq!(net.read(b, t), Some(s("marker")));
     net.set_online(b, false);
     let (bt, ct_) = (net.tid(b), net.tid(c));
-    let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+    let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
     let done = net.engine(b).demote(&g, &d).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -522,7 +522,7 @@ fn self_removals_drop_per_group_spec_permissions_3() {
     net.set_online(b, false);
     let bt = net.tid(b);
     for g in [g1, g2] {
-        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
         let done = net.engine(b).demote(&g, &d).unwrap();
         let acts = net.sync(b).carry_out(done).unwrap();
         net.actions(b, acts);
@@ -578,7 +578,7 @@ fn self_removal_shared_subgroup_spec_permissions_3() {
     let bt = net.tid(b);
     net.set_online(b, false);
     let leave = |net: &mut Net, g| {
-        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
         let done = net.engine(b).demote(&g, &d).unwrap();
         let acts = net.sync(b).carry_out(done).unwrap();
         net.actions(b, acts);
@@ -735,7 +735,7 @@ fn lost_access_wakes_when_pending_grant_ages_out_spec_permissions_3() {
         net.pair(a, b);
         net.run();
         assert_eq!(net.read(b, t), Some(s("marker")));
-        let d = osis_node::flows::Demotion { holder: net.tid(b), new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+        let d = osis_node::flows::Demotion { holder: net.tid(b), new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
         net.engine(a).demote(&g, &d).unwrap();
         net.pair(a, b);
         let rcpt = crate::common::read_recipient(net.engine(b));
@@ -856,7 +856,7 @@ fn rotation_wrapped_under_epoch_learned_later_is_read_spec_sync_5() {
     let n0 = net.engine(a).epochs(&g).unwrap().read.newest().unwrap().n();
     let remove = |net: &mut Net, x: usize| {
         let holder = net.tid(x);
-        let done = net.engine(b).demote(&g, &osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, keep: None }).unwrap();
+        let done = net.engine(b).demote(&g, &osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
         let c = done.commits.first().copied().unwrap();
         let acts = net.sync(b).carry_out(done).unwrap();
         net.actions(b, acts);

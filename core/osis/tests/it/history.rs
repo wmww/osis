@@ -307,7 +307,7 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
 fn required_is_no_content_spec_commits_5() {
     use osis::internals::schema::core_types as ct;
     let db = db(12);
-    let rules = ct::RequiredRules { keep: true, ..Default::default() };
+    let rules = ct::RequiredRules { retain: true, ..Default::default() };
     let t = thing(&db);
     say(&db, t, "x");
     db.commit_set(t, ct::REQUIRED, &rules).unwrap();
@@ -381,10 +381,10 @@ fn required_rules_are_one_aspect_under_both_keys() {
     db.commit_with(|w| w.at(t, osis::core::REQUIRED).set(&rules)).unwrap();
     assert_eq!(db.at(t, osis::core::REQUIRED).get().unwrap(), Some(rules.clone()));
     let engine = db.at(t, ct::REQUIRED).get().unwrap().unwrap();
-    assert!(engine.keep);
+    assert!(engine.retain);
     assert_eq!(engine.rules["app:b"].expires, Some(60_000));
     assert_eq!(engine.rules["app:a"].at_least.abs, osis::Bound::FOREVER.until.map(|t| t.0));
-    db.commit_set(t, ct::REQUIRED, &ct::RequiredRules { keep: false, ..engine }).unwrap();
+    db.commit_set(t, ct::REQUIRED, &ct::RequiredRules { retain: false, ..engine }).unwrap();
     assert!(!db.at(t, osis::core::REQUIRED).get().unwrap().unwrap().retain_copies);
     let too_long = |d| osis::core::RequiredRules { rules: [("app:c".to_string(), d)].into(), retain_copies: false };
     let held = db.at(t, osis::core::REQUIRED).get().unwrap();

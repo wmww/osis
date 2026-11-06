@@ -731,7 +731,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
     let ct_ = net.tid(c);
     // a content write not yet uploaded, then the removal
     let after = net.write(a, t, "after");
-    let done = net.engine(a).demote(&g, &Demotion { holder: ct_, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: ct_, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     assert!(done.deliveries.iter().any(|d| matches!(d, Delivery::First { .. })));
     let removal = done.commits[0];
     let h = net.engine(a).header(&removal).unwrap();
@@ -1258,7 +1258,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let h = net.engine(b).header(&c).unwrap();
     let admin = net.engine(a).epochs(&g).unwrap().admin.newest_held().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key().to_bytes()).unwrap();
     assert!(h.keys.iter().any(|k| k.level == 1 && k.key == admin), "b lists g's admin delete key");
-    let done = net.engine(b).demote(&g, &Demotion { holder: bob.person, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let done = net.engine(b).demote(&g, &Demotion { holder: bob.person, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let _ = done;
 }
 
@@ -1593,7 +1593,7 @@ fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base:
     assert_eq!(net.engine(a).get(&t, &gone).unwrap().is_some_and(|v| v == s("v0")), a_saw_kill);
     let holder = net.tid(b);
     let new = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(a).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Backdated(cut), keep: None }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Backdated(cut), retain: None }).unwrap();
     let flip = done.commits.first().copied().unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -1661,7 +1661,7 @@ fn flip_after_drop_a_second_reader_dropped_the_repair_spec_sync_7() {
     let kill = net.engine(b).package(&kill).unwrap().unwrap();
     let holder = net.tid(b);
     let new = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
-    let done = net.engine(x).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Backdated(cut), keep: None }).unwrap();
+    let done = net.engine(x).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Backdated(cut), retain: None }).unwrap();
     let flip = done.commits.first().copied().unwrap();
     let flip = net.engine(x).package(&flip).unwrap().unwrap();
     // c: both, flagged, repaired by a

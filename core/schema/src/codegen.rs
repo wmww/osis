@@ -41,8 +41,21 @@ pub fn generate(schema: &Schema, file: &str, src: &str) -> Result<Generated, Err
     let drop_first = shared_first_segment(schema.aspects.keys());
     let mut consts = String::new();
     let mut cnames = BTreeSet::from(["SCHEMA".to_string()]);
+    let mut shared: BTreeMap<String, usize> = BTreeMap::new();
+    for ak in schema.aspects.keys() {
+        *shared.entry(const_name(ak, drop_first)).or_default() += 1;
+    }
     for (ak, def) in &schema.aspects {
-        let cname = const_name(ak, drop_first);
+        let mut cname = const_name(ak, drop_first);
+        // keys differing only in markers (`group.0`, `group.0~`): the ephemeral or signal one
+        // takes a suffix
+        if shared.get(&cname).is_some_and(|n| *n > 1) {
+            match Ak::markers_of(ak).1 {
+                osis_base::Lifetime::Durable => {}
+                osis_base::Lifetime::Ephemeral => cname.push_str("_EPHEMERAL"),
+                osis_base::Lifetime::Signal => cname.push_str("_SIGNAL"),
+            }
+        }
         if !cnames.insert(cname.clone()) {
             return Err(Error::Codegen(format!("aspect {ak}: constant {cname} collides with another key's")));
         }
@@ -326,7 +339,8 @@ fn shared_first_segment<'a>(keys: impl Iterator<Item = &'a String>) -> bool {
 
 /// `note:last_opened.0` → `LAST_OPENED` (shared first segment dropped); a later version adds
 /// `_V<n>`. Not injective (`a:b.0` and `a_b.0`, `x.1` and `x_v1.0`, keys differing in tid or
-/// markers): `generate` refuses a collision.
+/// markers): `generate` suffixes the ephemeral or signal one of keys sharing a name and refuses
+/// any other collision.
 fn const_name(ak: &str, drop_first: bool) -> String {
     let a = Ak::new(ak).ok();
     let mut segs: Vec<&str> = a.as_ref().map(|a| a.segments().collect()).unwrap_or_default();

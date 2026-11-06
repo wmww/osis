@@ -730,7 +730,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     sim.pair(c, extra, pc)?;
     sim.quiet(40)?;
     write(&mut sim, &mut d, extra, 40)?;
-    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None }), presync: PreSync::Synced, keep: None };
+    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, tied: None }), presync: PreSync::Synced, retain: None };
     let r = sim.engine(a)?.demote(&g, &lower);
     let done = r.map_err(|e| sim.fail(format!("lower: {e}")))?;
     sim.carry(a, done)?;

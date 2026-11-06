@@ -84,11 +84,11 @@ pub struct RequiredRules {
 impl Codec for RequiredRules {
     fn to_value(&self) -> Value {
         let rules = self.rules.iter().map(|(p, r)| (p.clone(), osis_schema::core_types::Required::new(r.retention.into(), r.expires.map(ms)))).collect();
-        osis_schema::core_types::RequiredRules { rules, keep: self.retain_copies }.to_value()
+        osis_schema::core_types::RequiredRules { rules, retain: self.retain_copies }.to_value()
     }
     fn from_value(v: &Value) -> Result<RequiredRules, PathError> {
         let r = osis_schema::core_types::RequiredRules::from_value(v)?;
         let rules = r.rules.iter().map(|(p, x)| (p.clone(), Required { retention: x.retention().into(), expires: x.expires.map(Duration::from_millis) })).collect();
-        Ok(RequiredRules { rules, retain_copies: r.keep })
+        Ok(RequiredRules { rules, retain_copies: r.retain })
     }
 }

@@ -35,22 +35,22 @@ pub struct Demotion {
     pub holder: Tid,
     pub new: Option<Edge>,
     pub presync: PreSync,
-    /// A removal's word (`new` `None`): keep or erase; `None`: the thing's default in force
-    /// (spec/permissions.md §3, Keep).
-    pub keep: Option<bool>,
+    /// A removal's word (`new` `None`): retain or erase; `None`: the thing's default in force
+    /// (spec/permissions.md §3, Retain).
+    pub retain: Option<bool>,
 }
 
 /// What `d` writes on the holder's edge on `target`, standing at `old`: `d.new`, or for a removal
-/// saying keep the value that says so (spec/permissions.md §3, Keep).
+/// saying retain the value that says so (spec/permissions.md §3, Retain).
 fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: &Demotion) -> Result<Option<Edge>> {
     if d.new.is_some() {
-        return match d.keep.is_some() || d.new.as_ref().is_some_and(|n| n.until == Some(osis_base::WallMs(0))) {
-            true => Err(Error::Misuse("only a removal says keep or erase, by `keep`")),
+        return match d.retain.is_some() || d.new.as_ref().is_some_and(|n| n.until == Some(osis_base::WallMs(0))) {
+            true => Err(Error::Misuse("only a removal says retain or erase, by `retain`")),
             false => Ok(d.new.clone()),
         };
     }
-    let keep = old.is_some() && d.keep.unwrap_or_else(|| crate::apply::validity::keep_now(core, target));
-    Ok(keep.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, tied: None }))
+    let retain = old.is_some() && d.retain.unwrap_or_else(|| crate::apply::validity::retain_now(core, target));
+    Ok(retain.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, tied: None }))
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
@@ -135,7 +135,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         return Err(Error::Misuse("invite above the edge's role"));
     }
     if edge.until == Some(osis_base::WallMs(0)) {
-        return Err(Error::Misuse("`until` 0 is a removal's saying keep"));
+        return Err(Error::Misuse("`until` 0 is a removal's saying retain"));
     }
     let role = tx.core.role_now(&who, &target);
     let admin = role == Some(Role::Admin);
@@ -421,7 +421,7 @@ fn lowered_deliveries(tx: &mut Tx<'_>, who: Tid, target: Tid, c: CommitId, rot: 
 }
 
 /// The edges on `target` that `who` (this node, or a key actor it signs as) may finalize now
-/// (spec/permissions.md §2), each with whether its finalize says keep: past their `until` by
+/// (spec/permissions.md §2), each with whether its finalize says retain: past their `until` by
 /// this node's clock (an edge the timeline holds with every applied write in effect), of a role
 /// at most `who`'s own there, `who` holding write; not its own (that is a self-removal).
 pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -> Vec<(Tid, PermEdge, bool)> {
@@ -431,17 +431,17 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
     if role < Some(Role::Write) {
         return Vec::new();
     }
-    let ended: Vec<(Tid, PermEdge)> = tl.edges_at(None).holders(target).filter(|(m, e)| *m != who && e.until.is_some() && !e.says_keep() && !e.alive_at(Some(ts)) && Some(e.role) <= role).map(|(m, e)| (*m, *e)).collect();
+    let ended: Vec<(Tid, PermEdge)> = tl.edges_at(None).holders(target).filter(|(m, e)| *m != who && e.until.is_some() && !e.says_retain() && !e.alive_at(Some(ts)) && Some(e.role) <= role).map(|(m, e)| (*m, *e)).collect();
     if ended.is_empty() {
         return Vec::new();
     }
-    // it says what the expiry would (spec/permissions.md §3, Keep): the default at its key
+    // it says what the expiry would (spec/permissions.md §3, Retain): the default at its key
     let ends = tl.ended(target, ts);
     ended
         .into_iter()
         .map(|(m, e)| {
             let keep = match ends.get(&m).map(|x| x.0) {
-                Some(osis_perm::EdgeEnd::Until(key)) => crate::apply::validity::keep_in_force(core, target, &key),
+                Some(osis_perm::EdgeEnd::Until(key)) => crate::apply::validity::retain_in_force(core, target, &key),
                 _ => false,
             };
             (m, e, keep)
@@ -450,7 +450,7 @@ pub(crate) fn finalizable(core: &crate::engine::Core, who: &Tid, target: &Tid) -
 }
 
 /// A finalize by `who` of the edges `ended` on `target` (`finalizable`; spec/permissions.md §2):
-/// their removal with no frontier, each saying keep or erase as its expiry would, and the
+/// their removal with no frontier, each saying retain or erase as its expiry would, and the
 /// rotation of the roles they held that `who` may rotate, in one role commit, or alone while Seal
 /// waits (its rotation then stays due). Not written when `who` holds no current secret of such
 /// a role (it waits for a re-seal, spec/crypto.md §4): false then. The cascade below `target`

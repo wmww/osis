@@ -69,7 +69,7 @@ pub struct Mutation {
     pub(crate) free: std::collections::BTreeSet<Tid>,
     /// The commit's `ts`, when taken before the commit (a batch with an ephemeral half).
     pub(crate) ts: Option<Ts>,
-    /// Placements (thing, group) the commit must not leave unsynced (`require_synced`).
+    /// Memberships (thing, group) the commit must not leave unsynced (`require_synced`).
     pub(crate) synced: Vec<(Tid, Tid)>,
 }
 
@@ -153,7 +153,7 @@ impl Mutation {
     }
 
     /// The commit fails `Error::Unsynced` when, after it, `tid` is durable and reaches no
-    /// synced (labeled) group while `group`'s own data does: a placement into a group that is
+    /// synced (labeled) group while `group`'s own data does: a membership in a group that is
     /// an item of a synced group but no subgroup of one (spec/data-model.md §8).
     pub fn require_synced(&mut self, tid: Tid, group: Tid) -> &mut Self {
         self.synced.push((tid, group));
@@ -827,11 +827,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             keep_schema(tx, s, false)?;
         }
         let records = if memory {
-            let placed = am.ops.iter().filter_map(|o| match &o.op {
+            let added = am.ops.iter().filter_map(|o| match &o.op {
                 Op::Add(Value::Tid(x)) => Some(*x),
                 _ => None,
             });
-            memory_records(tx.core, &tid, &ak, placed)
+            memory_records(tx.core, &tid, &ak, added)
         } else {
             Vec::new()
         };
@@ -924,24 +924,24 @@ pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
 }
 
 /// The records a memory commit carries beside its delta on `(tid, ak)` (spec/commits.md §2):
-/// the memory chains of `tid` and, on `placed.0~`, of the things `placed` its delta places that
+/// the memory chains of `tid` and, on `group.0~`, of the things `members` its delta adds that
 /// have `tid`'s reader (a record names its nonce, its dedup secret: never shown to another
 /// reader).
-pub(crate) fn memory_records(core: &Core, tid: &Tid, ak: &Ak, placed: impl Iterator<Item = Tid>) -> Vec<CreationRecord> {
+pub(crate) fn memory_records(core: &Core, tid: &Tid, ak: &Ak, members: impl Iterator<Item = Tid>) -> Vec<CreationRecord> {
     let mut things = vec![*tid];
-    if ak.as_str() == osis_schema::core_types::PLACED.ak() {
+    if ak.as_str() == osis_schema::core_types::GROUP_EPHEMERAL.ak() {
         let reader = core.reader_of(tid);
-        things.extend(placed.filter(|x| core.reader_of(x) == reader));
+        things.extend(members.filter(|x| core.reader_of(x) == reader));
     }
     let recs: BTreeMap<Tid, CreationRecord> = things.iter().flat_map(|t| memory_chain(core, t)).collect();
     recs.into_values().collect()
 }
 
 /// `Mutation::require_synced`, over the state the commit left.
-fn check_synced(core: &Core, placed: &[(Tid, Tid)]) -> Result<()> {
+fn check_synced(core: &Core, memberships: &[(Tid, Tid)]) -> Result<()> {
     let lab = &core.ix.labeled;
     let in_synced = |x: &Tid| core.ix.groups.of.get(x).is_some_and(|s| s.iter().any(|h| lab.contains(h)));
-    for (t, g) in placed {
+    for (t, g) in memberships {
         if core.durable_created(t).is_some() && !lab.contains(t) && !in_synced(t) && in_synced(g) {
             return Err(Error::Unsynced { tid: *t, group: *g });
         }

@@ -132,7 +132,7 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Ve
             per.insert(*m, Some(*e));
         }
     }
-    let live_put = |m: &Tid| per.get(m).is_some_and(|e| e.is_some_and(|e| !e.says_keep()));
+    let live_put = |m: &Tid| per.get(m).is_some_and(|e| e.is_some_and(|e| !e.says_retain()));
     let mut known = true;
     let mut removed: BTreeSet<Tid> = BTreeSet::new();
     for (d, k, v) in es {
@@ -524,16 +524,16 @@ fn in_force(judge: &mut Judge<'_>, tid: &Tid, ak: &str, at: &Point) -> Option<(P
     Some((*p, ct::required_for(rules, ak).copied()))
 }
 
-/// Whether a removal from `tid` at key `at` keeps by default: the `keep` of the setting in force
+/// Whether a removal from `tid` at key `at` retains by default: the `retain` of the setting in force
 /// (spec/permissions.md §3; none: it erases).
-pub(crate) fn keep_in_force(core: &Core, tid: &Tid, at: &Point) -> bool {
+pub(crate) fn retain_in_force(core: &Core, tid: &Tid, at: &Point) -> bool {
     let valid = Judge::new(core).settings(tid);
-    valid.partition_point(|x| x.0 < *at).checked_sub(1).and_then(|i| valid.get(i)).is_some_and(|x| x.1.keep)
+    valid.partition_point(|x| x.0 < *at).checked_sub(1).and_then(|i| valid.get(i)).is_some_and(|x| x.1.retain)
 }
 
-/// `keep_in_force` for a write this node makes now: after every setting it holds.
-pub(crate) fn keep_now(core: &Core, tid: &Tid) -> bool {
-    keep_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.id.tid(), commit: CommitId([0xff; 32]) })
+/// `retain_in_force` for a write this node makes now: after every setting it holds.
+pub(crate) fn retain_now(core: &Core, tid: &Tid) -> bool {
+    retain_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.id.tid(), commit: CommitId([0xff; 32]) })
 }
 
 /// The requirement in force for a write of `ak` on `tid` by `node` at `ts` (the writer's side).
@@ -1091,9 +1091,9 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
         let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.author && c.2.is_none()) && changed.iter().any(|c| c.1 != h.author && c.2.is_some());
         // or a removal of several others' edges on one target under one rotation (a link joiner
         // with the link key, under one frontier; a finalize of several ended edges): no edge of
-        // it a self-removal, each gone or saying keep
+        // it a self-removal, each gone or saying retain
         let first = holders.first().map(|m| m.0);
-        let removal = changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none_or(|e| e.says_keep()) && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
+        let removal = changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none_or(|e| e.says_retain()) && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
         if !redemption && !removal {
             return Err(Error::BadInput("a role commit changes more than one edge"));
         }
@@ -1112,7 +1112,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, Deco
     if h.frontier.is_none() {
         for (target, m, new) in &changed {
             let old = core.timelines.get(target).and_then(|tl| tl.edges_at(None).get(m, target).copied());
-            let removes = *m != h.author && new.as_ref().is_none_or(|e| e.says_keep()) && !self_removal(core, &h.author, target, m, h.ts);
+            let removes = *m != h.author && new.as_ref().is_none_or(|e| e.says_retain()) && !self_removal(core, &h.author, target, m, h.ts);
             if removes && old.is_some_and(|o| o.until.is_none() || o.alive_at(Some(h.ts))) {
                 return Err(Error::BadInput("a removal with no frontier of an edge not past its until"));
             }

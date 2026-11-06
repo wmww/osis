@@ -163,7 +163,7 @@ impl SyncEngine {
     }
 
     /// Erases these kept copies at the user's word (`Engine::kept_copies`, spec/permissions.md
-    /// §3, Keep).
+    /// §3, Retain).
     pub fn drop_kept(&mut self, actors: &[Tid]) -> Result<()> {
         self.forget_lost(LostScope::Kept(actors)).map(|_| ())
     }

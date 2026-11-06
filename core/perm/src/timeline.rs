@@ -146,10 +146,10 @@ impl Kept {
     }
 }
 
-/// How an edge with no alive value ended (spec/permissions.md §3, Keep).
+/// How an edge with no alive value ended (spec/permissions.md §3, Retain).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeEnd {
-    /// A removal said keep or erase.
+    /// A removal said retain or erase.
     Said(bool),
     /// Its `until` passed (or it was written expired): the thing's default in force at this key.
     Until(Point),
@@ -160,7 +160,7 @@ impl EdgeEnd {
     /// by `until` has the key (first `ts` at `until`, the zero tid and commit ID, §3), or its
     /// write's if later.
     fn of(e: &Edge, at: Option<Point>) -> EdgeEnd {
-        if e.says_keep() {
+        if e.says_retain() {
             return EdgeEnd::Said(true);
         }
         let key = e.until.and_then(|u| Ts::make(u, 0)).map(Point::expiry);
@@ -628,14 +628,14 @@ impl Timeline {
         f(&view, &view.roles_from(node))
     }
 
-    /// Each holder of `thing` whose current edge does not say keep (spec/permissions.md §2), with
+    /// Each holder of `thing` whose current edge does not say retain (spec/permissions.md §2), with
     /// the point of the change since which it has held such an edge without a break (`None`:
     /// since before every change: a first admin's record edge). O(the walk's
     /// history of `thing`).
     pub fn standing_since(&self, thing: &Tid) -> BTreeMap<Tid, Option<Point>> {
-        let mut out: BTreeMap<Tid, Option<Point>> = EdgesAt::new(&self.walked.initial).holders(thing).filter(|(_, e)| !e.says_keep()).map(|(m, _)| (*m, None)).collect();
+        let mut out: BTreeMap<Tid, Option<Point>> = EdgesAt::new(&self.walked.initial).holders(thing).filter(|(_, e)| !e.says_retain()).map(|(m, _)| (*m, None)).collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {
-            if c.edge.is_some_and(|e| !e.says_keep()) {
+            if c.edge.is_some_and(|e| !e.says_retain()) {
                 out.entry(c.holder).or_insert(Some(c.point));
             } else {
                 out.remove(&c.holder);
@@ -647,7 +647,7 @@ impl Timeline {
     /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: how each one's
     /// edge ended and the point of its last write (`None`: a first admin's record edge, never
     /// written).
-    /// O(the walk's history): only a node that lost access asks (spec/permissions.md §3, Keep).
+    /// O(the walk's history): only a node that lost access asks (spec/permissions.md §3, Retain).
     pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (EdgeEnd, Option<Point>)> {
         let mut out: BTreeMap<Tid, (EdgeEnd, Option<Point>)> = EdgesAt::new(&self.walked.initial).holders(thing).map(|(m, e)| (*m, (EdgeEnd::of(e, None), None))).collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {

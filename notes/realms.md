@@ -64,7 +64,7 @@ A shared tag is already an actor (notes/tags.md, Sharing a tag) and may also car
 - For big realms: default-off sync and pure readers (notes/chat-cases.md core s, r).
 
 ## Must not preclude
-A realm being a tag too; realms administered by one account ("family", I stay admin) beside ones with several equal admins; things the realm is first admin of (stay when their maker leaves) beside shared-in things (keep their admins, can be in several realms); realms holding roles on realms both ways; role cycles; links into a realm; keep or erase per removal.
+A realm being a tag too; realms administered by one account ("family", I stay admin) beside ones with several equal admins; things the realm is first admin of (stay when their maker leaves) beside shared-in things (keep their admins, can be in several realms); realms holding roles on realms both ways; role cycles; links into a realm; retain or erase per removal.
 
 ## Open questions (recommendations)
 1. **Tied or plain grants for contents**: plain. Removing a thing from a realm is a permission change, so only the thing's or R's admins do it.

@@ -15,7 +15,7 @@
 //! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!
-//! A kept copy (spec/permissions.md §3, Keep) goes the same way but for its content, which stays
+//! A kept copy (spec/permissions.md §3, Retain) goes the same way but for its content, which stays
 //! whole, state and bodies and timers: only `secrets.0`, the labels' sync records and the blob
 //! ciphertexts nothing still lists go.
 

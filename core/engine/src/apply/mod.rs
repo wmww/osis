@@ -330,7 +330,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let stripped_ais: BTreeSet<usize> = stripped.keys().copied().collect();
     let kept = |p: &osis_commit::Part| p.delta == emptied && stripped_ais.contains(&p.ai);
     // a part that does not hash to its header entry is no part of this commit, and one on an aspect
-    // of the wrong storage class (core keys are unmarked but `placed.0~`) is never applied: dropped
+    // of the wrong storage class (core keys are unmarked but `group.0~`) is never applied: dropped
     // alone, before anything reads what is held (spec/commits.md §4)
     let junk: Vec<usize> = blob
         .parts
@@ -538,7 +538,7 @@ fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Inge
 
 fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     let id = blob.id();
-    // a kept copy takes no new content (spec/permissions.md §3, Keep)
+    // a kept copy takes no new content (spec/permissions.md §3, Retain)
     if !tx.core.ix.kept.is_empty() {
         let n = blob.parts.len();
         blob = crate::rotation::without_frozen(tx.core, blob);

@@ -132,7 +132,7 @@ impl Engine {
             done.extend(self.run(|tx| grant_in(tx, Some(r), p, me, &admin_edge(), false))?);
         }
         for d in lost {
-            done.extend(self.demote_as(&r, &p, &Demotion { holder: *d, new: None, presync, keep: Some(false) })?);
+            done.extend(self.demote_as(&r, &p, &Demotion { holder: *d, new: None, presync, retain: Some(false) })?);
         }
         Ok(done)
     }

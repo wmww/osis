@@ -32,7 +32,7 @@ fn removed_writer(seed: u64, n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::C
         lp.peers[0].engine.grant(&t, &n, &edge(Role::Admin)).unwrap();
     }
     lp.sync_all().unwrap();
-    let r1 = lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Synced, keep: None }).unwrap().commits;
+    let r1 = lp.peers[0].engine.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Synced, retain: None }).unwrap().commits;
     (lp, t, r1)
 }
 
@@ -108,7 +108,7 @@ fn rotation_missing_again_covers_its_names_spec_crypto_4() {
     }
     assert!(r1.iter().any(|c| !lp.peers[3].engine.body_not_dropped(c, &t, &k)), "R1's keys.0 dropped at N");
     assert!(blocked_at(&mut lp, 3, t).is_empty(), "the dropped rotation stays known");
-    lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: Some(edge(Role::Read)), presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: Some(edge(Role::Read)), presync: PreSync::Synced, retain: None }).unwrap();
     lp.sync(0, 3).unwrap();
     assert!(!lp.peers[3].engine.core.ix.commits.get(&s).unwrap().valid.iter().any(|v| *v), "S invalid at N");
     assert!(blocked_at(&mut lp, 3, t).is_empty(), "R1 missing again: still covered by names");
@@ -256,7 +256,7 @@ fn regrant_after_tag_removal_spec_crypto_4() {
     let n = group(&mut lp, 0);
     lp.peers[0].engine.grant(&tag, &bob, &edge(Role::Write)).unwrap();
     lp.peers[0].engine.grant(&n, &tag, &edge(Role::Write)).unwrap();
-    lp.peers[0].engine.demote(&n, &Demotion { holder: tag, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&n, &Demotion { holder: tag, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     lp.peers[0].engine.grant(&n, &tag, &edge(Role::Read)).unwrap();
     assert!(lp.peers[0].engine.ensure_rotated(&n).unwrap().1.is_empty(), "covered");
 }
@@ -547,7 +547,7 @@ fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
             }
         }
     };
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Read)), presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(edge(Role::Read)), presync: PreSync::Synced, retain: None }).unwrap();
     let read = BTreeSet::from([Role::Read]);
     rotate_leaving_out(&mut lp, 4, g, &read, &[]);
     rotate_leaving_out(&mut lp, 1, g, &read, &[0, 1, 3]);
@@ -557,7 +557,7 @@ fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     others(&mut lp);
     let before = lp.peers[2].engine.epochs(&g).unwrap().read.current();
     assert_eq!(before.len(), 2, "G's epoch and 4's fork current at 2: {before:?}");
-    lp.peers[2].engine.demote(&g, &Demotion { holder: tids[3], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[2].engine.demote(&g, &Demotion { holder: tids[3], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     departures_settle(&mut lp, g, 0, &mut Rng(1), was);
 }
 
@@ -603,7 +603,7 @@ fn forged_rotation_withheld_removal_spec_crypto_4() {
     lp.sync_all().unwrap();
     let ids = |lp: &mut LocalPeer, i: usize| -> BTreeSet<osis_base::CommitId> { lp.packages(i).unwrap().into_iter().map(|p| p.id).collect() };
     let before = ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let r_s: BTreeSet<_> = ids(&mut lp, 0).difference(&before).copied().collect();
     let s = newest_read(&lp, 0, g).unwrap();
     lp.sync(0, 1).unwrap();
@@ -613,7 +613,7 @@ fn forged_rotation_withheld_removal_spec_crypto_4() {
     for pk in lp.packages(1).unwrap().into_iter().filter(|p| !before.contains(&p.id)) {
         lp.peers[0].engine.ingest(&pk.bytes, pk.blobs).unwrap();
     }
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
     let mut all = lp.packages(0).unwrap();
@@ -655,7 +655,7 @@ fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
     lp.sync_all().unwrap();
     let ids = |lp: &mut LocalPeer, i: usize| -> BTreeSet<osis_base::CommitId> { lp.packages(i).unwrap().into_iter().map(|p| p.id).collect() };
     let before = ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let r_s: BTreeSet<_> = ids(&mut lp, 0).difference(&before).copied().collect();
     let s = newest_read(&lp, 0, g).unwrap();
     lp.sync(0, 1).unwrap();
@@ -664,7 +664,7 @@ fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
         let _ = lp.peers[0].engine.ingest(&pk.bytes, pk.blobs);
     }
     assert!(lp.peers[0].engine.epochs(&g).unwrap().read.get(&s).unwrap().rotations.contains_key(&f), "F valid at A");
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
     let mut all = lp.packages(0).unwrap();
@@ -697,7 +697,7 @@ fn removed_reader(lp: &mut LocalPeer, extra_admin: bool) -> (Tid, Vec<Tid>, BTre
     }
     lp.sync_all().unwrap();
     let before = commit_ids(lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let r_s: BTreeSet<_> = commit_ids(lp, 0).difference(&before).copied().collect();
     let s = newest_read(lp, 0, g).unwrap();
     (g, tids, r_s, s)
@@ -756,7 +756,7 @@ fn writer_rotation_skips(list_s: bool) {
     let e1 = newest_read(&lp, 0, g).unwrap();
     assert!(e1.n() > s.n(), "W's rotation current at A");
     assert_eq!(lp.peers[0].engine.epochs(&g).unwrap().read.current(), vec![e1]);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > e1.n());
     let mut all = lp.packages(0).unwrap();
@@ -784,7 +784,7 @@ fn snapshot_keyed_without_removal_spec_crypto_4() {
     let (g, tids, r_s, s) = removed_reader(&mut lp, false);
     let snap = lp.peers[0].engine.compaction_snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap()).unwrap();
     assert!(snap.is_some());
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
     let all = lp.packages(0).unwrap();
@@ -808,7 +808,7 @@ fn rotator_beside_forged_rotation_spec_crypto_4() {
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
     let r_p: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     let before = commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let r_s: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     let s = newest_read(&lp, 0, g).unwrap();
     lp.sync(0, 1).unwrap();
@@ -819,7 +819,7 @@ fn rotator_beside_forged_rotation_spec_crypto_4() {
         let _ = lp.peers[4].engine.ingest(&pk.bytes, pk.blobs.clone());
     }
     assert_eq!(lp.peers[4].engine.epochs(&g).unwrap().read.current(), vec![s], "s current at B");
-    lp.peers[4].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[4].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let e = newest_read(&lp, 4, g).unwrap();
     assert!(e.n() > s.n());
     all.extend(lp.packages(4).unwrap());
@@ -870,7 +870,7 @@ fn regrants_after_invalid_rotation(seed: u64) {
     let pick = |rng: &mut Rng| if rng.next(2) == 0 { x } else { y };
     // peer 1 demoted, unaware
     let new = (rng.next(2) == 0).then_some(edge(Role::Read));
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new, presync: PreSync::Synced, retain: None }).unwrap();
     // a valid fork boxing v; 1's invalid rotation leaving v out
     let f = pick(&mut rng);
     let skip: Vec<usize> = (0..N).filter(|j| *j != f && *j != v && rng.next(4) == 0).collect();
@@ -888,7 +888,7 @@ fn regrants_after_invalid_rotation(seed: u64) {
     }
     others(&mut lp);
     let a = pick(&mut rng);
-    let _ = lp.peers[a].engine.demote(&g, &Demotion { holder: tids[v], new: None, presync: PreSync::Synced, keep: None });
+    let _ = lp.peers[a].engine.demote(&g, &Demotion { holder: tids[v], new: None, presync: PreSync::Synced, retain: None });
     departures_settle(&mut lp, g, seed, &mut rng, was);
 }
 
@@ -963,7 +963,7 @@ fn forks_with_departures(seed: u64, regrant: bool) {
                     continue;
                 }
                 // refused (a rotated role's secret not held) changes nothing
-                if lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), presync: PreSync::Synced, keep: None }).is_ok() {
+                if lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), presync: PreSync::Synced, retain: None }).is_ok() {
                     role[j] = new;
                 }
                 continue;
@@ -1179,7 +1179,7 @@ fn withheld_departures(seed: u64, more: bool) {
                         && let Some(r) = lp.peers[i].engine.core.role_now(&tids[j], &g)
                     {
                         let e = ct::Edge { role: r, until: Some(until), invite: None, tied: None };
-                        if let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: Some(e), presync: PreSync::Synced, keep: None }) {
+                        if let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: Some(e), presync: PreSync::Synced, retain: None }) {
                             departing.extend(d.commits);
                         }
                     }
@@ -1189,13 +1189,13 @@ fn withheld_departures(seed: u64, more: bool) {
                     let new = (rng.next(2) == 0).then_some(Role::Read);
                     if j != i
                         && lp.peers[i].engine.core.role_now(&tids[j], &g) > new
-                        && let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), presync: PreSync::Synced, keep: None })
+                        && let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), presync: PreSync::Synced, retain: None })
                     {
                         departing.extend(d.commits);
                     }
                 }
                 2 if i != 0 => {
-                    if let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[i], new: None, presync: PreSync::Synced, keep: None }) {
+                    if let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[i], new: None, presync: PreSync::Synced, retain: None }) {
                         departing.extend(d.commits);
                     }
                 }
@@ -1373,7 +1373,7 @@ fn finalize_due_without_secret_blocks_spec_permissions_2() {
     rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Write]), &[2]);
     let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), presync: PreSync::Synced, retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[2].clock.advance(1_000);
     assert!(lp.peers[2].engine.epochs(&g).unwrap().write.newest_held().is_none(), "X lacks write");
@@ -1401,7 +1401,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
     lp.sync_all().unwrap();
     let until = WallMs(lp.peers[0].engine.core.now().0 + 100);
     let timed = ct::Edge { until: Some(until), ..edge(Role::Write) };
-    let u: BTreeSet<_> = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), presync: PreSync::Synced, keep: None }).unwrap().commits.into_iter().collect();
+    let u: BTreeSet<_> = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: Some(timed), presync: PreSync::Synced, retain: None }).unwrap().commits.into_iter().collect();
     lp.peers[0].clock.advance(1_000);
     lp.peers[0].engine.ensure_rotated(&g).unwrap();
     assert!(lp.peers[0].engine.core.key_holders(&g).iter().all(|h| h.0 != tids[1]), "D finalized at A");
@@ -1440,7 +1440,7 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
     let timed = ct::Edge { until: Some(WallMs(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
     let mut u1 = BTreeSet::new();
     for d in [3, 4] {
-        let c = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[d], new: Some(timed.clone()), presync: PreSync::Synced, keep: None }).unwrap().commits;
+        let c = lp.peers[0].engine.demote(&g, &Demotion { holder: tids[d], new: Some(timed.clone()), presync: PreSync::Synced, retain: None }).unwrap().commits;
         if d == 3 {
             u1.extend(c);
         }
@@ -1521,7 +1521,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
     let c: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
     let before = commit_ids(&mut lp, 0);
-    lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), presync: PreSync::Synced, retain: None }).unwrap();
     let dem: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
     lp.sync(1, 0).unwrap();
     assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "C audited away at A");
@@ -1556,7 +1556,7 @@ fn newest_event_names_departure_spec_crypto_4() {
         lp.peers[0].engine.give_own_secrets(&g).unwrap();
         lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, retain: None }).unwrap();
         lp.sync_all().unwrap();
         let e1 = newest_read(&lp, 0, g).unwrap();
         lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
@@ -1564,7 +1564,7 @@ fn newest_event_names_departure_spec_crypto_4() {
         assert!(lp.peers[2].engine.epochs(&g).is_some_and(|x| x.read.secret(&e1).is_some()), "seed {seed}: D holds e1");
         // ordered after the re-grant, whose author it has not seen: audited, not plain invalid
         lp.peers[0].clock.advance(5_000);
-        lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), presync: PreSync::Synced, keep: None }).unwrap();
+        lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), presync: PreSync::Synced, retain: None }).unwrap();
         lp.sync(1, 0).unwrap();
         assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "seed {seed}: the re-grant audited away at A");
         assert_eq!(newest_read(&lp, 0, g), Some(e1), "seed {seed}");
@@ -1611,7 +1611,7 @@ fn fork_sibling_reseal_spec_crypto_4() {
         send_skipping(&mut lp, 0, 2, &BTreeSet::new());
         let start = held_by(&lp, 2, &[a]);
         let before = commit_ids(&mut lp, 0);
-        lp.peers[0].engine.demote(&a, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+        lp.peers[0].engine.demote(&a, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced, retain: None }).unwrap();
         let removal: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
         send_skipping(&mut lp, 1, 0, &BTreeSet::new());
         if newest_read(&lp, 0, a) != Some(e1) {
@@ -1650,7 +1650,7 @@ fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
     lp.advance(1000);
     lp.peers[0].engine.core.skip_writer_rules = true;
     lp.peers[0].engine.core.forge_bad = bad.iter().map(|a| (g, osis_base::Ak::new(*a).unwrap())).collect();
-    lp.peers[0].engine.demote(&g, &Demotion { holder: ids[3], new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: ids[3], new: None, presync: PreSync::Synced, retain: None }).unwrap();
     lp.peers[0].engine.core.forge_bad = Default::default();
     lp.peers[0].engine.core.skip_writer_rules = false;
     let forged = lp.peers[0].engine.core.forged.take().unwrap();
@@ -1756,7 +1756,7 @@ fn finalize_beside_renewal_settles_spec_crypto_4() {
     lp.sync_all().unwrap();
     let timed = ct::Edge { until: Some(WallMs(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
     for d in [2, 3] {
-        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[d], new: Some(timed.clone()), presync: PreSync::Synced, keep: None }).unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[d], new: Some(timed.clone()), presync: PreSync::Synced, retain: None }).unwrap();
     }
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Write)).unwrap();
@@ -1788,7 +1788,7 @@ fn renewed_holder_resealed_spec_crypto_4() {
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
     lp.sync_all().unwrap();
     let timed = ct::Edge { until: Some(WallMs(lp.peers[0].engine.core.now().0 + 100)), ..edge(Role::Write) };
-    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: Some(timed), presync: PreSync::Synced, keep: None }).unwrap();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: Some(timed), presync: PreSync::Synced, retain: None }).unwrap();
     lp.sync_all().unwrap();
     lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Write)).unwrap();
     lp.peers[1].clock.advance(1_000);
