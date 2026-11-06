@@ -356,7 +356,11 @@ impl Net {
             self.queue.push_back(Msg::Close(m, self.nodes[m].life, pc));
             self.forget_conn(n, c);
             if let Some(sy) = self.nodes[n].sync.as_mut() {
-                sy.handle(Event::Down { conn: c });
+                // a redial made while going offline fails at once
+                let mut acts = sy.handle(Event::Down { conn: c });
+                while let Some(d) = acts.iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(*conn) } else { None }) {
+                    acts = sy.handle(Event::Down { conn: d });
+                }
             }
         }
         let hosts: Vec<usize> = self.links.iter().filter(|((x, _), _)| *x == n).map(|(_, (s, _))| *s).collect();
@@ -450,7 +454,7 @@ impl Net {
                 self.dialed.push((n, address.clone()));
             }
             match a {
-                Action::Dial { conn, address } if address.url.starts_with("peer://") => {
+                Action::Dial { conn, address, .. } if address.url.starts_with("peer://") => {
                     // by dialable key, or by a LAN transport key a node listens with
                     let lan = self.lan_keys.get(&address.key).copied();
                     let target = lan.filter(|m| self.nodes[*m].online).or_else(|| (0..self.nodes.len()).find(|m| *m != n && self.nodes[*m].online && self.nodes[*m].sync.as_mut().and_then(|s| s.own_reach()).is_some_and(|r| r.dialable == address.key)));
@@ -464,7 +468,7 @@ impl Net {
                     self.queue.push_back(Msg::Up(n, self.nodes[n].life, conn));
                     self.actions(m, acts);
                 }
-                Action::Dial { conn, address } => {
+                Action::Dial { conn, address, .. } => {
                     let Some(s) = self.hosts.iter().position(|x| x.address.key == address.key).filter(|s| !self.blocked.contains(&(n, *s))) else {
                         self.queue.push_back(Msg::Close(n, self.nodes[n].life, conn));
                         continue;

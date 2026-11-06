@@ -7,12 +7,14 @@
 //!   with ALPN `osis` (sessions) and, when this transport relays, `osis-relay`. It registers at
 //!   every relay its URL lists from that socket, so a relay sees the address its peers punch to.
 //! - **Dial**: a fresh socket per dial. Every direct address of the URL and every relay is tried
-//!   at once; through a relay the dialer learns the peer's observed address and dials it from the
-//!   same socket (the peer punches back); the first connection up is returned. A direct one
-//!   that completes after a relayed one was returned is parked and the relayed one closed: the
-//!   caller dials again and gets the parked one (switching; sync reconciles after a reconnect).
+//!   at once; the first connection up is returned. A direct one that completes after a relayed
+//!   one was returned is parked and the relayed one closed: the caller dials again and gets the
+//!   parked one (switching; sync reconciles after a reconnect).
 //! - **Relayed connection**: one stream, end-to-end TLS 1.3 with raw keys (as `quic://`) over
-//!   bytes the relay forwards; the relay sees addresses and volume, never keys or data.
+//!   bytes the relay forwards; the relay sees addresses and volume, never keys or data. The relay
+//!   tells neither side the other's address. After the TLS handshake each side sends its own
+//!   observed address if its `punching` accepts the peer's authenticated key, else zeros; when
+//!   both sent one, the target punches and the dialer dials direct from the same socket.
 
 use crate::quic::{self, PinnedHost, ALPN, IDLE_TIMEOUT, SNI_NAME};
 use crate::util::lock;
@@ -31,8 +33,6 @@ pub const RELAY_ALPN: &[u8] = b"osis-relay";
 /// Relay stream kinds and answers (spec/sync.md §10).
 const REGISTER: u8 = 1;
 const DIAL: u8 = 2;
-/// A dial that exchanges no addresses (no hole punching).
-const DIAL_HIDDEN: u8 = 3;
 const OK: u8 = 0;
 const REFUSED: u8 = 1;
 const UNKNOWN: u8 = 2;
@@ -55,7 +55,7 @@ const COPY_BUF: usize = 16 * 1024;
 /// (minor: past it the next dial goes through a relay and punches again): QUIC's idle timeout.
 const PARK_MS: u64 = IDLE_TIMEOUT.as_secs() * 1000;
 /// Connections waiting for `accept` (resource bound: past it relayed ones wait, counted in
-/// `MAX_FORWARDED` and holding their registration's window, and direct ones pause the socket's
+/// `MAX_FORWARDED`, each holding its own stream's window, and direct ones pause the socket's
 /// accepting; 0: tokio refuses it; unbounded: queued connections without bound).
 const ACCEPT_QUEUE: usize = 64;
 /// Forwarded streams a listener holds that `accept` has not handed out (handshaking, or waiting
@@ -69,13 +69,23 @@ pub const MAX_FORWARDED: usize = 1024;
 /// out (a node serves at most `SyncConfig.max_served`) and ended streams the relay has not yet
 /// seen end.
 pub const REG_STREAMS: u32 = 2 * MAX_FORWARDED as u32;
+/// Receive window per stream of a relay connection's dialer (resource bound against
+/// throughput: a relayed session moves at most this per round trip on the relay's hop; 0:
+/// nothing flows; unbounded: a relay makes its registrants buffer without bound). The
+/// connection window is `REG_STREAMS` times it, so no stream's unread bytes hold another's.
+pub const RELAY_STREAM_WINDOW: u32 = 64 * 1024;
+/// The port a node's P2P listener takes when it is free, else any (minor: a fixed port keeps a
+/// node's socket address across restarts, so another node's configuration can name it as a
+/// relay; 0: a new port per run).
+pub const PORT: u16 = 47381;
 
-/// Streams a connection's dialer lets the other side open at once: a relay forwards dials over
-/// a registration (`REG_STREAMS`); otherwise as `quic://`.
-pub(crate) fn streams_granted(alpn: Alpn) -> u32 {
+/// What a connection's dialer lets the other side do at once: open streams, and send per stream
+/// and per connection without our reading. A relay forwards dials over a registration
+/// (`REG_STREAMS`, each with its own `RELAY_STREAM_WINDOW`); otherwise as `quic://`.
+pub(crate) fn dialer_limits(alpn: Alpn) -> (u32, u32, u64) {
     match alpn {
-        Alpn::Relay => REG_STREAMS,
-        Alpn::Osis => quic::MAX_STREAMS,
+        Alpn::Relay => (REG_STREAMS, RELAY_STREAM_WINDOW, u64::from(REG_STREAMS) * u64::from(RELAY_STREAM_WINDOW)),
+        Alpn::Osis => (quic::MAX_STREAMS, quic::STREAM_WINDOW, u64::from(quic::CONN_WINDOW)),
     }
 }
 
@@ -401,13 +411,35 @@ pub struct Relayed<C: Connection> {
     gate: Arc<Gate>,
 }
 
+/// The stream of a relayed connection whose TLS handshake is done (`raw`: bytes read past it).
+fn tls_stream<S: SendStream, R: RecvStream>(tls: rustls::Connection, s: S, r: R, raw: Vec<u8>) -> (TlsSend<S>, TlsRecv<R>) {
+    let (tls, gate) = (Arc::new(Mutex::new(tls)), Arc::new(Gate::default()));
+    let send = TlsSend { tls: tls.clone(), inner: s, gate: gate.clone(), fin: false };
+    let recv = TlsRecv { tls, inner: r, gate, raw, eof: false, buf: vec![0u8; COPY_BUF] };
+    (send, recv)
+}
+
+/// The address exchange that opens a relayed session (IP consent, spec/sync.md §10): sends
+/// `mine` (none: zeros), reads the peer's. The peer's address, only when both sent one.
+///
+/// Invariant: a node's IP address reaches a peer only through this exchange, inside TLS with the
+/// peer's key proven, and only when `punching` accepts that key; the relay never forwards an
+/// address (a Dial answer carries the dialer's own, the target's stream starts with an opaque
+/// tag); a dial of a refused key tries no socket address of the URL; and a node punches or dials
+/// direct only to a peer that sent its own after it sent its own, so a peer it refused gets
+/// neither its address nor a packet from it.
+async fn exchange<S: SendStream, R: RecvStream>(s: &mut TlsSend<S>, r: &mut TlsRecv<R>, mine: Option<SocketAddr>) -> Result<Option<SocketAddr>, Error> {
+    let mut out = Vec::new();
+    put_addr(&mut out, mine.unwrap_or(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0)));
+    s.write_all(&out).await?;
+    let theirs = read_addr(r).await?;
+    Ok(mine.and((!theirs.ip().is_unspecified()).then_some(theirs)))
+}
+
 impl<C: Connection> Relayed<C> {
-    #[allow(clippy::too_many_arguments)]
-    fn new(peer: PublicKey, from: SocketAddr, dialer: bool, tls: rustls::Connection, s: C::Send, r: C::Recv, raw: Vec<u8>, under: Option<C>) -> Relayed<C> {
-        let (tls, gate) = (Arc::new(Mutex::new(tls)), Arc::new(Gate::default()));
-        let send = TlsSend { tls: tls.clone(), inner: s, gate: gate.clone(), fin: false };
-        let recv = TlsRecv { tls, inner: r, gate: gate.clone(), raw, eof: false, buf: vec![0u8; COPY_BUF] };
-        Relayed { peer, source: ip_source(from.ip()), dialer, stream: Mutex::new(Some((send, recv))), under, gate }
+    fn new(peer: PublicKey, source: Source, dialer: bool, stream: Stream<C>, under: Option<C>) -> Relayed<C> {
+        let gate = stream.0.gate.clone();
+        Relayed { peer, source, dialer, stream: Mutex::new(Some(stream)), under, gate }
     }
 
     fn close(&self) {
@@ -460,7 +492,8 @@ impl<C: Connection> Connection for P2pConn<C> {
         }
     }
 
-    /// A relayed connection's source is the peer's address as the relay saw it.
+    /// A relayed connection's source: at the target the relay's tag for the dialer's source, at
+    /// the dialer the relay's address.
     fn source(&self) -> Option<Source> {
         match self {
             P2pConn::Direct(c) => c.source(),
@@ -570,6 +603,8 @@ struct RelayServer<U: Udp> {
     udp: U,
     cfg: RelayConfig,
     st: Mutex<RelayState<SConn<U>>>,
+    /// Keys the tags of dialers' sources (`tag`).
+    tag_key: [u8; 32],
 }
 
 impl<U: Udp> RelayServer<U> {
@@ -645,7 +680,7 @@ impl<U: Udp> RelayServer<U> {
                     st.regs.remove(&key);
                 }
             }
-            Ok(kind @ (DIAL | DIAL_HIDDEN)) => {
+            Ok(DIAL) => {
                 let mut key = [0u8; 32];
                 if read_exact(&mut r, &mut key).await.is_err() {
                     return;
@@ -673,20 +708,23 @@ impl<U: Udp> RelayServer<U> {
                     let _ = s.finish().await;
                     return;
                 };
-                let unspec = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0);
-                let (shown_from, shown_at) = if kind == DIAL { (from, at) } else { (unspec, unspec) };
-                let mut hdr = Vec::new();
-                put_addr(&mut hdr, shown_from);
+                // neither side learns the other's address here (IP consent)
                 let mut msg = vec![OK];
-                put_addr(&mut msg, shown_from);
-                put_addr(&mut msg, shown_at);
-                if ts.write_all(&hdr).await.is_err() || s.write_all(&msg).await.is_err() {
+                put_addr(&mut msg, from);
+                if ts.write_all(&self.tag(from)).await.is_err() || s.write_all(&msg).await.is_err() {
                     return;
                 }
                 tokio::join!(self.copy(r, ts, ip_source(from.ip())), self.copy(tr, s, ip_source(at.ip())));
             }
             _ => {}
         }
+    }
+
+    /// The tag of `from`'s source: the same for every dial from one source, unlinkable to its
+    /// address without `tag_key`, so a target can share its slots by source.
+    fn tag(&self, from: SocketAddr) -> Source {
+        let h = osis_base::hash::keyed_hash(&self.tag_key, &ip_source(from.ip()));
+        h.first_chunk::<16>().copied().unwrap_or_default()
     }
 
     /// Forwards `from` to `to` until it ends, charging `src`.
@@ -753,7 +791,7 @@ struct Parked<C> {
     conns: BTreeMap<(PublicKey, Option<PublicKey>), (u64, C)>,
 }
 
-/// Which dialable keys a dial may exchange IP addresses with (`P2p::punching`).
+/// Which peers' keys a relayed connection exchanges IP addresses with (`P2p::punching`).
 pub type KeyFilter = Arc<dyn Fn(&PublicKey) -> bool + Send + Sync>;
 
 /// The P2P transport over `U`'s sockets (module comment).
@@ -771,18 +809,20 @@ impl<U: Udp> P2p<U> {
         P2p { udp, relay: None, parked: Arc::new(Mutex::new(Parked { next: 0, conns: BTreeMap::new() })), punch: Arc::new(|_| true) }
     }
 
-    /// A dial of a key `punch` refuses goes through the URL's relays only, asking each to pass
-    /// no addresses (no direct attempt, no hole punching): neither side learns the other's IP.
+    /// Whom this node tells its IP address on a relayed connection: the peer's authenticated
+    /// key (the dialed key, or a dialer's TLS key at a listener) must pass `punch`, else it
+    /// sends zeros and neither punches. A dial of a key `punch` refuses also skips the URL's
+    /// socket addresses.
     pub fn punching(mut self, punch: KeyFilter) -> P2p<U> {
         self.punch = punch;
         self
     }
 
     /// Its listeners also relay, by `cfg`.
-    pub fn relaying(mut self, cfg: RelayConfig) -> P2p<U> {
+    pub fn relaying(mut self, cfg: RelayConfig) -> Result<P2p<U>, Error> {
         let st = RelayState { next: 0, conns: BTreeMap::new(), regs: BTreeMap::new(), buckets: BTreeMap::new() };
-        self.relay = Some(Arc::new(RelayServer { udp: self.udp.clone(), cfg, st: Mutex::new(st) }));
-        self
+        self.relay = Some(Arc::new(RelayServer { udp: self.udp.clone(), cfg, st: Mutex::new(st), tag_key: self.udp.seed()? }));
+        Ok(self)
     }
 
     /// Keys registered here as a relay.
@@ -835,6 +875,7 @@ impl<U: Udp> P2p<U> {
         }
         let mut it = items(&addr.url)?;
         let punch = (self.punch)(&addr.key);
+        // dialing an address shows ours
         if !punch {
             it.direct.clear();
         }
@@ -916,7 +957,7 @@ impl<U: Udp> P2p<U> {
         let fwd = Arc::new(Forwarded::default());
         for r in it.relays {
             list.push(r.item());
-            let reg = Registration { udp: self.udp.clone(), sock: sock.clone(), relay: r, secret: cfg.secret.clone(), tx: tx.clone(), observed: observed.clone(), fwd: fwd.clone() };
+            let reg = Registration { udp: self.udp.clone(), sock: sock.clone(), relay: r, secret: cfg.secret.clone(), tx: tx.clone(), observed: observed.clone(), fwd: fwd.clone(), punch: self.punch.clone() };
             self.udp.spawn(reg.run(stop.clone()));
         }
         Ok(P2pListener { rx, addr: Address { url: crate::peer_url(&list), key }, stop, sock, observed })
@@ -931,16 +972,16 @@ fn direct<U: Udp>(udp: &U, sock: &Arc<U::Sock>, to: SocketAddr, key: PublicKey, 
     });
 }
 
-/// An attempt through `relay`: ask it for a stream to `key`, punch to the peer's observed
-/// address (a direct attempt from the same socket; only with `punch`, else the relay passes no
-/// addresses), run TLS over the stream. Ends early once `stop` closes or the dial is no longer
+/// An attempt through `relay`: ask it for a stream to `key`, run TLS over the stream, exchange
+/// addresses (ours only with `punch`) and, when the peer sent its own, dial it from the same
+/// socket (the peer punches back). Ends early once `stop` closes or the dial is no longer
 /// waited for.
 #[allow(clippy::too_many_arguments)]
 async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKey, punch: bool, own: Option<StaticSecret>, tx: mpsc::UnboundedSender<Result<P2pConn<SConn<U>>, Error>>, stop: Arc<Gate>) {
     let work = async {
         let rc = sock.dial(relay.addr, relay.key, None, Alpn::Relay).await?;
         let (mut s, mut r) = rc.open_stream().await?;
-        let mut req = vec![if punch { DIAL } else { DIAL_HIDDEN }];
+        let mut req = vec![DIAL];
         req.extend_from_slice(&key);
         s.write_all(&req).await?;
         match read_u8(&mut r).await? {
@@ -949,11 +990,7 @@ async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKe
             BUSY => return Err(Error::Unreachable(format!("relay {}: {} busy", relay.addr, osis_base::hex::encode(&key)))),
             _ => return Err(Error::Unreachable(format!("relay {} refused", relay.addr))),
         }
-        let _seen = read_addr(&mut r).await?;
-        let theirs = read_addr(&mut r).await?;
-        if punch && !theirs.ip().is_unspecified() {
-            direct(&udp, &sock, theirs, key, own.clone(), tx.clone());
-        }
+        let seen = read_addr(&mut r).await?;
         let seed = zeroize::Zeroizing::new(match &own {
             Some(s) => *s.as_bytes(),
             None => udp.seed()?,
@@ -967,7 +1004,11 @@ async fn relayed<U: Udp>(udp: U, sock: Arc<U::Sock>, relay: Relay, key: PublicKe
             Err(_) if pin.mismatched() => return Err(Error::KeyMismatch),
             x => x?,
         };
-        Ok(P2pConn::Relayed(Arc::new(Relayed::new(key, theirs, true, tls, s, r, raw, Some(rc)))))
+        let (mut ts, mut tr) = tls_stream(tls, s, r, raw);
+        if let Some(theirs) = exchange(&mut ts, &mut tr, punch.then_some(seen)).await? {
+            direct(&udp, &sock, theirs, key, own.clone(), tx.clone());
+        }
+        Ok(P2pConn::Relayed(Arc::new(Relayed::new(key, ip_source(relay.addr.ip()), true, (ts, tr), Some(rc)))))
     };
     let r = tokio::select! {
         biased;
@@ -987,6 +1028,7 @@ struct Registration<U: Udp> {
     tx: mpsc::Sender<P2pConn<SConn<U>>>,
     observed: Arc<Mutex<BTreeMap<Relay, SocketAddr>>>,
     fwd: Arc<Forwarded>,
+    punch: KeyFilter,
 }
 
 /// A listener's forwarded streams that `accept` has not handed out, oldest first, each with the
@@ -1052,7 +1094,10 @@ impl<U: Udp> Registration<U> {
         let incoming = async {
             loop {
                 match c.accept_stream().await {
-                    Ok((bs, br)) => self.udp.spawn(incoming::<U>(self.sock.clone(), self.secret.clone(), bs, br, self.tx.clone(), self.fwd.clone())),
+                    Ok((bs, br)) => {
+                        let consent = Consent { at, punch: self.punch.clone() };
+                        self.udp.spawn(incoming::<U>(self.sock.clone(), self.secret.clone(), consent, bs, br, self.tx.clone(), self.fwd.clone()));
+                    }
                     Err(e) => return Err::<(), Error>(e),
                 }
             }
@@ -1068,27 +1113,37 @@ impl<U: Udp> Registration<U> {
     }
 }
 
-/// A stream a relay forwarded: punch to the dialer's observed address (none: a dial that passes
-/// no addresses), then serve TLS over it and queue the connection for `accept`. Counted in `fwd`
-/// until queued, which may end it first.
-async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, s: <SConn<U> as Connection>::Send, r: <SConn<U> as Connection>::Recv, tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Forwarded>) {
+/// What a listener tells a dialer through one relay: its address as that relay sees it, to the
+/// keys `punch` accepts.
+struct Consent {
+    at: SocketAddr,
+    punch: KeyFilter,
+}
+
+/// A stream a relay forwarded: serve TLS over it, exchange addresses (ours only if `consent`
+/// accepts the dialer's key) and punch to the dialer's when both sent one, then queue the
+/// connection for `accept`. Counted in `fwd` until queued, which may end it first.
+async fn incoming<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, consent: Consent, s: <SConn<U> as Connection>::Send, r: <SConn<U> as Connection>::Recv, tx: mpsc::Sender<P2pConn<SConn<U>>>, fwd: Arc<Forwarded>) {
     let (id, gate) = fwd.start();
-    let _ = race(&gate, serve_forwarded::<U>(sock, secret, s, r, tx)).await;
+    let _ = race(&gate, serve_forwarded::<U>(sock, secret, consent, s, r, tx)).await;
     fwd.end(id);
 }
 
-async fn serve_forwarded<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, mut s: <SConn<U> as Connection>::Send, mut r: <SConn<U> as Connection>::Recv, tx: mpsc::Sender<P2pConn<SConn<U>>>) -> Result<(), Error> {
+async fn serve_forwarded<U: Udp>(sock: Arc<U::Sock>, secret: StaticSecret, consent: Consent, mut s: <SConn<U> as Connection>::Send, mut r: <SConn<U> as Connection>::Recv, tx: mpsc::Sender<P2pConn<SConn<U>>>) -> Result<(), Error> {
     let res: Result<Relayed<SConn<U>>, Error> = async {
-        let from = read_addr(&mut r).await?;
-        if !from.ip().is_unspecified() {
-            sock.punch(from);
-        }
+        let mut tag: Source = [0; 16];
+        read_exact(&mut r, &mut tag).await?;
         let cfg = Arc::new(quic::server_tls(quic::keypair(secret.as_bytes())?.1, &[ALPN])?);
         let mut tls = rustls::Connection::Server(rustls::ServerConnection::new(cfg).map_err(|e| Error::Io(e.to_string()))?);
         tls.set_buffer_limit(None);
         let raw = handshake(&mut tls, &mut s, &mut r).await?;
         let peer = tls.peer_certificates().and_then(|c| c.first()).and_then(|d| quic::key_of_spki(d.as_ref())).ok_or_else(|| Error::Protocol("no client key".into()))?;
-        Ok(Relayed::new(peer, from, false, tls, s, r, raw, None))
+        let (mut ts, mut tr) = tls_stream(tls, s, r, raw);
+        // the TLS key is proven: consent is judged on it, never on anything the relay said
+        if let Some(theirs) = exchange(&mut ts, &mut tr, (consent.punch)(&peer).then_some(consent.at)).await? {
+            sock.punch(theirs);
+        }
+        Ok(Relayed::new(peer, tag, false, (ts, tr), None))
     }
     .await;
     tx.send(P2pConn::Relayed(Arc::new(res?))).await.map_err(|_| Error::Closed)

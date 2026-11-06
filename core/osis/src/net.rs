@@ -205,12 +205,13 @@ impl Net {
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         // the client port's unix socket (`Osis::listen_socket`)
         let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
-        // where the dialable-key listener goes, and whether the LAN loop runs
-        let (reach, lan): (Option<String>, bool) = match transport {
+        // where the dialable-key listener goes (the first URL that listens), and whether the
+        // LAN loop runs
+        let (reach, lan): (Option<Vec<String>>, bool) = match transport {
             Some(t) => {
                 let url = format!("mem://{}-peer", t.name());
                 multi.mem = Some(t);
-                (Some(url), false)
+                (Some(vec![url]), false)
             }
             None => {
                 multi.quic = Some(osis_transport::Quic::new());
@@ -219,15 +220,19 @@ impl Net {
                 let co2 = co.clone();
                 let shares = move |k: &[u8; 32]| co.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(k);
                 let (s1, s2) = (shares.clone(), shares);
-                let p = osis_transport::P2p::new(osis_transport::QuicUdp::new()).relaying(osis_transport::RelayConfig::new(Arc::new(s1))).punching(Arc::new(s2));
+                let p = osis_transport::P2p::new(osis_transport::QuicUdp::new()).relaying(osis_transport::RelayConfig::new(Arc::new(s1))).map_err(|e| Error::Network(e.to_string()))?.punching(Arc::new(s2));
                 multi.p2p = Some(p.clone());
                 let _ = ctl.send(Control::PeerKeys(Arc::new(move |keys| {
                     *co2.write().unwrap_or_else(std::sync::PoisonError::into_inner) = keys.clone();
                     p.recheck_relayed();
                 })));
-                let mut items = vec!["[::]:0".to_string()];
-                items.extend(relays.iter().cloned());
-                (Some(osis_transport::peer_url(&items)), cfg!(feature = "lan"))
+                // the fixed port when free, else any
+                let urls = [osis_transport::p2p::PORT, 0].map(|port| {
+                    let mut items = vec![format!("[::]:{port}")];
+                    items.extend(relays.iter().cloned());
+                    osis_transport::peer_url(&items)
+                });
+                (Some(urls.to_vec()), cfg!(feature = "lan"))
             }
         };
         let alive = lock(stop).as_mut().and_then(|s| s.task.take());
@@ -236,8 +241,8 @@ impl Net {
             Watched { f: Box::pin(driver::run_shared(shared, multi, Vec::new(), clock, rx, log)), db, done: false }.await;
         });
         match reach {
-            Some(url) if p2p => {
-                let _ = ctl.send(Control::Reach { url, relays, reply: None });
+            Some(urls) if p2p => {
+                let _ = ctl.send(Control::Reach { urls, relays, reply: None });
                 if lan {
                     let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
                 }

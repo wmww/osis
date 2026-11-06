@@ -93,10 +93,10 @@ pub enum Control {
     Call(Call),
     /// Actions the holder's own calls produced: carry them out.
     Apply(Vec<Action>),
-    /// Listen at `url` with the engine's dialable secret and publish `reach.0` with that
-    /// listener's key and `relays` (spec/data-model.md §9). For `P2p`, `url` lists the socket
-    /// address to bind and the relays the listener registers at.
-    Reach { url: String, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
+    /// Listen at the first of `urls` that listens, with the engine's dialable secret, and
+    /// publish `reach.0` with that listener's key and `relays` (spec/data-model.md §9). For
+    /// `P2p`, a URL lists the socket address to bind and the relays the listener registers at.
+    Reach { urls: Vec<String>, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
     /// Serve the sessions a listener at `url` accepts (a client socket, `unix://`; its
     /// sessions are clients, notes/client-port.md §5), with a fresh secret of its own.
     Listen { url: String, reply: Option<oneshot::Sender<Result<Address, String>>> },
@@ -296,8 +296,8 @@ struct Driver<T: Transport, H: Shared> {
     /// Network changes from the LAN loop's watch.
     #[cfg_attr(not(feature = "lan"), allow(dead_code))]
     net_tx: mpsc::Sender<()>,
-    /// The dialable listener's URL and relays (`Control::Reach`), and its key.
-    reach: Option<(String, Vec<String>)>,
+    /// The dialable listener's URLs and relays (`Control::Reach`), and its key.
+    reach: Option<(Vec<String>, Vec<String>)>,
     dialable: Option<[u8; 32]>,
     /// Where the co-readers' dialable keys go, and the last keys given (`Control::PeerKeys`).
     peer_keys: Option<(PeerKeys, BTreeSet<[u8; 32]>)>,
@@ -356,11 +356,12 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
         for a in acts {
             match a {
-                Action::Dial { conn, address } => {
+                Action::Dial { conn, address, dialable } => {
                     let t = self.transport.clone();
                     let ev = self.ev_tx.clone();
                     let addr = Address { url: address.url, key: address.key };
                     let own = self.own_host(&addr.key);
+                    let mine = if dialable { self.read(|s| transport_secret(&s.dialable_secret())) } else { None };
                     let task = tokio::spawn(async move {
                         let dialed = match own {
                             // the host this node runs: an in-process session with an ephemeral key
@@ -373,7 +374,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                                     Err(_) => Err("own host stopped".to_string()),
                                 }
                             }
-                            None => link::dial(&*t, &addr, None, FINISH_WAIT).await.map_err(|e| e.to_string()),
+                            None => link::dial(&*t, &addr, mine.as_ref(), FINISH_WAIT).await.map_err(|e| e.to_string()),
                         };
                         let link = match dialed {
                             Ok(l) => l,
@@ -571,10 +572,17 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     /// Listens with the dialable secret and publishes `reach.0` with that listener's key; a
     /// listener of an older dialable key stops.
-    async fn reach(&mut self, url: String, relays: Vec<String>) -> Result<Address, String> {
-        self.reach = Some((url.clone(), relays.clone()));
+    async fn reach(&mut self, urls: Vec<String>, relays: Vec<String>) -> Result<Address, String> {
+        self.reach = Some((urls.clone(), relays.clone()));
         let Some(secret) = self.read(|s| transport_secret(&s.dialable_secret())) else { return Err("engine gone".into()) };
-        let addr = self.listen(ListenConfig { url, secret }).await?;
+        let mut res = Err("no URL to listen at".to_string());
+        for url in urls {
+            res = self.listen(ListenConfig { url, secret: secret.clone() }).await;
+            if res.is_ok() {
+                break;
+            }
+        }
+        let addr = res?;
         let key = addr.key;
         if let Some(old) = self.dialable.replace(key).filter(|k| *k != key) {
             self.unlisten(old);
@@ -775,8 +783,8 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 self.call(&mut |s| f.take().map(|f| f(s)).unwrap_or_default());
             }
             Some(Control::Apply(acts)) => self.apply(acts),
-            Some(Control::Reach { url, relays, reply }) => {
-                let r = self.reach(url, relays).await;
+            Some(Control::Reach { urls, relays, reply }) => {
+                let r = self.reach(urls, relays).await;
                 if let Some(reply) = reply {
                     let _ = reply.send(r);
                 }
@@ -907,12 +915,12 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
         self.relisten = false;
         self.relisten_at = None;
-        if let Some((url, relays)) = self.reach.clone() {
+        if let Some((urls, relays)) = self.reach.clone() {
             // the old listener goes first: the new one takes its place (its URL, its relays)
             if let Some(old) = self.dialable.take() {
                 self.unlisten_now(old).await;
             }
-            if let Err(e) = self.reach(url, relays).await {
+            if let Err(e) = self.reach(urls, relays).await {
                 // `reach.0` already names the new key: keep trying
                 (self.log)(&format!("listening with the new dialable key: {e}; again in {RELISTEN_RETRY:?}"));
                 self.relisten = true;

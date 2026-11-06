@@ -666,7 +666,7 @@ impl NetSim {
     pub fn actions(&mut self, n: usize, acts: Vec<Action>) -> Res<()> {
         for a in acts {
             match a {
-                Action::Dial { conn, address } => self.dial(n, conn, &address)?,
+                Action::Dial { conn, address, .. } => self.dial(n, conn, &address)?,
                 Action::Send { conn, bytes } => {
                     if compared() {
                         self.note_names(n, &bytes);

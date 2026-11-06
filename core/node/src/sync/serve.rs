@@ -507,7 +507,7 @@ impl SyncEngine {
     /// or to the dialable key of its co-reader proof). Returns the session's handle (its bytes come
     /// as `Event::Bytes`, its end as `Event::Down`) and the actions (the Hello). With
     /// `SyncConfig.max_served` sessions running, the oldest one that has opened nothing is
-    /// closed to make room (dialer keys are ephemeral, so a per-key cap would bind nothing);
+    /// closed to make room (a dialer chooses its key, so a per-key cap would bind nothing);
     /// when every one has opened a label, this one is closed. Opens are
     /// checked as a host checks them, plus co-reader proofs by the dialable key of a node
     /// thing currently reading the label (spec/sync.md §5).

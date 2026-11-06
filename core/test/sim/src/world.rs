@@ -419,7 +419,7 @@ impl World {
     fn actions(&mut self, d: usize, acts: Vec<Action>) {
         for a in acts {
             match a {
-                Action::Dial { conn, address } => {
+                Action::Dial { conn, address, .. } => {
                     let want = format!("{}#{}", address.url, osis_schema::osis_base::base64url::encode(&address.key));
                     let s = self.hosts.iter().position(|x| x.up && x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
                     let Some(s) = s else {

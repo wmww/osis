@@ -213,7 +213,22 @@ impl SyncEngine {
             if c.peer && !c.up && self.lan_cut(c.host) {
                 return;
             }
-            let pause = if c.peer { self.cfg.peer_retry_ms } else { self.cfg.retry_ms };
+            // a co-reader whose connection was up is redialed at once, at most once per
+            // `peer_retry_ms` (a peer closing every session must not make a dial loop): a P2P dial
+            // that punched through ends its relayed connection and the redial takes the direct
+            // one (notes/networking.md, switching)
+            let now = self.raw_now();
+            let pause = self.cfg.peer_retry_ms;
+            self.redialed.retain(|_, t| t.saturating_add(pause) > now);
+            let quick = c.peer && c.up && !self.redialed.contains_key(&c.host);
+            let pause = match (quick, c.peer) {
+                (true, _) => {
+                    self.redialed.insert(c.host, now);
+                    0
+                }
+                (false, true) => pause,
+                (false, false) => self.cfg.retry_ms,
+            };
             self.retry.insert(c.host, (c.address, self.raw_now().saturating_add(pause)));
         }
     }
@@ -258,6 +273,7 @@ impl SyncEngine {
     pub(super) fn connect(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let wanted = self.wanted_hosts();
+        let co_readers = if self.cfg.peers { Some(self.peers()) } else { None };
         // a host no longer wanted keeps no retry time (it would hold the wake in the past)
         self.retry.retain(|k, _| wanted.contains_key(k));
         for (key, (addr, peer)) in wanted {
@@ -277,7 +293,8 @@ impl SyncEngine {
             // the key the transport authenticates (a LAN address presents its own)
             let session = ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge });
             self.conns.insert(conn, Conn { host: key, address: addr.clone(), peer, session, up: false, labels: BTreeMap::new(), timer: None, offset: None, req: Requests::default() });
-            out.push(Action::Dial { conn, address: addr });
+            let dialable = peer && co_readers.as_ref().is_some_and(|p| p.contains_key(&key));
+            out.push(Action::Dial { conn, address: addr, dialable });
         }
     }
 

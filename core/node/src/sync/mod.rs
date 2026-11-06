@@ -98,6 +98,9 @@ pub struct SyncEngine {
     next_conn: ConnId,
     /// Hosts not connected: when to dial again.
     retry: BTreeMap<HostKey, (Address, u64)>,
+    /// Co-readers redialed at once after an up connection ended, and when (raw ms): at most
+    /// once per `peer_retry_ms` each.
+    redialed: BTreeMap<HostKey, u64>,
     pub(crate) state: State,
     /// Event counter: pass completions and remote role commits are ordered by it.
     pub(crate) seq: u64,
@@ -296,6 +299,7 @@ impl SyncEngine {
             conns: BTreeMap::new(),
             next_conn: 1,
             retry: BTreeMap::new(),
+            redialed: BTreeMap::new(),
             state,
             seq: 0,
             passes: BTreeMap::new(),

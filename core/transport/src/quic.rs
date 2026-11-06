@@ -263,17 +263,17 @@ fn provider() -> Arc<rustls::crypto::CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
 }
 
-/// Bounded per-connection memory: no uni streams or datagrams, `streams` bidi streams the peer
-/// may open at once, small windows.
-fn transport_config(streams: u32) -> Result<Arc<quinn::TransportConfig>, Error> {
+/// Bounded per-connection memory: no uni streams or datagrams, and the peer may open `streams`
+/// bidi streams at once and send `stream_window` per stream, `conn_window` in all, unread.
+fn transport_config((streams, stream_window, conn_window): (u32, u32, u64)) -> Result<Arc<quinn::TransportConfig>, Error> {
     let mut t = quinn::TransportConfig::default();
     t.keep_alive_interval(Some(KEEP_ALIVE));
     t.max_idle_timeout(Some(IDLE_TIMEOUT.try_into().map_err(|_| Error::Io("idle timeout".into()))?));
     t.max_concurrent_uni_streams(0u32.into());
     t.max_concurrent_bidi_streams(streams.into());
     t.datagram_receive_buffer_size(None);
-    t.stream_receive_window(STREAM_WINDOW.into());
-    t.receive_window(CONN_WINDOW.into());
+    t.stream_receive_window(stream_window.into());
+    t.receive_window(quinn::VarInt::from_u64(conn_window).map_err(|_| Error::Io("window".into()))?);
     Ok(Arc::new(t))
 }
 
@@ -345,12 +345,12 @@ pub(crate) fn server_tls(me: Arc<CertifiedKey>, alpn: &[&[u8]]) -> Result<rustls
 }
 
 /// quinn client settings over `client_tls`; the server may open the streams `alpn` grants
-/// (`p2p::streams_granted`).
+/// (`p2p::dialer_limits`).
 pub(crate) fn client_config(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertVerifier>, alpn: &[u8]) -> Result<quinn::ClientConfig, Error> {
     let qc = quinn::crypto::rustls::QuicClientConfig::try_from(client_tls(me, verifier, alpn)?).map_err(|e| Error::Io(e.to_string()))?;
     let mut cfg = quinn::ClientConfig::new(Arc::new(qc));
     let kind = if alpn == crate::p2p::RELAY_ALPN { crate::p2p::Alpn::Relay } else { crate::p2p::Alpn::Osis };
-    cfg.transport_config(transport_config(crate::p2p::streams_granted(kind))?);
+    cfg.transport_config(transport_config(crate::p2p::dialer_limits(kind))?);
     Ok(cfg)
 }
 
@@ -358,7 +358,7 @@ pub(crate) fn client_config(me: Arc<CertifiedKey>, verifier: Arc<dyn ServerCertV
 pub(crate) fn server_config(me: Arc<CertifiedKey>, alpn: &[&[u8]]) -> Result<quinn::ServerConfig, Error> {
     let qs = quinn::crypto::rustls::QuicServerConfig::try_from(server_tls(me, alpn)?).map_err(|e| Error::Io(e.to_string()))?;
     let mut sc = quinn::ServerConfig::with_crypto(Arc::new(qs));
-    sc.transport_config(transport_config(MAX_STREAMS)?);
+    sc.transport_config(transport_config((MAX_STREAMS, STREAM_WINDOW, u64::from(CONN_WINDOW)))?);
     sc.max_incoming(MAX_INCOMING);
     Ok(sc)
 }
