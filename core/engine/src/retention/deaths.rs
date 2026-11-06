@@ -6,9 +6,9 @@
 //! superseder's `ts`, so never earlier than the earliest. A body carries a dying write when the
 //! write is its own (`Core::commit_of`) or, for a snapshot, when its body holds a write of the
 //! stamp and none of the superseder's (`dies_in`: holding any write of the superseder means its
-//! author applied it). A snapshot arriving takes the deaths of the writes it carries that the
-//! state superseded before it (`note_copies`). A write dies for a body no earlier than the body's
-//! `ts`. A write invalid here, or one an un-merge took, has no superseder: under keep at most 0
+//! author applied it); a death a snapshot's own join reports of a write it carries is its alone.
+//! A snapshot arriving takes the deaths of the writes it carries that the state superseded
+//! before it (`note_copies`). A write dies for a body no earlier than the body's `ts`. A write invalid here, or one an un-merge took, has no superseder: under keep at most 0
 //! after replaced its body counts replaced at its own `ts` (`date_falls`, `date_arrival`).
 
 use super::{body_of, bounded, check_at_most, held_part};
@@ -90,12 +90,26 @@ impl Parts {
         Ok(at.unwrap_or(d.at))
     }
 
-    /// The held bodies with a relative bound carrying the write of death `d` of `(tid, ak)`,
-    /// dated `at`, each with the date it dies for that body (no earlier than the body's `ts`):
-    /// its own commit's, and every valid compaction snapshot whose part holds a write of the
-    /// stamp and none of the superseder's (`dies_in`). A snapshot stamped before the write
-    /// cannot carry it (spec/crdt.md §2.2). Dropped bodies are not.
-    fn carriers(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Death, at: Ts) -> Result<Vec<(CommitId, usize, Ts)>> {
+    /// Whether part `ai` of snapshot `c` carries the write of death `d` (`dies_in`, by the
+    /// index).
+    fn carries(&mut self, tx: &mut Tx<'_>, c: &CommitId, ai: usize, d: &Death) -> Result<bool> {
+        Ok(self.holds(tx, c, ai, &d.stamp)? && !self.holds(tx, c, ai, &killer(d))?)
+    }
+
+    /// The held bodies with a relative bound credited with death `d` of `(tid, ak)`, dated `at`,
+    /// each with the date it dies for that body (no earlier than the body's `ts`). A death the
+    /// join of a snapshot `me` reports of a write it carries (`carries`: a copy of a write dead
+    /// already, or the first copy of one the state superseded) is the snapshot's alone; any
+    /// other credits the write's own commit and every valid compaction snapshot carrying it,
+    /// among `joined` when given (a replay: the snapshots joined so far). A snapshot stamped
+    /// before the write cannot carry it (spec/crdt.md §2.2). Dropped bodies are not credited.
+    fn credit(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Death, me: Option<(CommitId, usize, Ts)>, joined: Option<&BTreeSet<CommitId>>) -> Result<Vec<(CommitId, usize, Ts)>> {
+        let at = self.date(tx, tid, ak, d)?;
+        if let Some((s, ai, ts)) = me
+            && self.carries(tx, &s, ai, d)?
+        {
+            return Ok(vec![(s, ai, at.max(ts))]);
+        }
         let core = &*tx.core;
         let mut out = Vec::new();
         if let Some(c) = core.commit_of(tid, ak, &d.stamp.dot)
@@ -104,18 +118,17 @@ impl Parts {
         {
             out.push((c, ai, at.max(m.header.ts)));
         }
-        let k = killer(d);
         let snaps: Vec<(Ts, CommitId, usize)> = core
             .ix
             .snapshots
             .get(&(*tid, ak.clone()))
             .into_iter()
             .flatten()
-            .filter(|x| x.0 >= d.stamp.ts && !crate::apply::copies::invalid_snapshot(core, &x.1, tid, ak))
+            .filter(|x| x.0 >= d.stamp.ts && joined.is_none_or(|j| j.contains(&x.1)) && !crate::apply::copies::invalid_snapshot(core, &x.1, tid, ak))
             .filter_map(|x| bounded_part(core, &x.1, tid, ak).map(|ai| (x.0, x.1, ai)))
             .collect();
         for (ts, s, ai) in snaps {
-            if self.holds(tx, &s, ai, &d.stamp)? && !self.holds(tx, &s, ai, &k)? {
+            if self.carries(tx, &s, ai, d)? {
                 out.push((s, ai, at.max(ts)));
             }
         }
@@ -136,15 +149,15 @@ fn add_death(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, at: T
     Ok(())
 }
 
-/// Records the deaths a join reported, at the superseder's `ts` the join met: per body, first
-/// and last so far, on every held body with a relative bound carrying the write; drops bodies
-/// past keep at most (spec/commits.md §5), in this transaction.
-pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) -> Result<()> {
+/// Records the deaths the join of commit `c`'s part reported, at the superseder's `ts` the join
+/// met: per body, first and last so far, on every held body with a relative bound credited
+/// (`Parts::credit`); drops bodies past keep at most (spec/commits.md §5), in this transaction.
+pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, deaths: &[Death]) -> Result<()> {
     let mut bodies = BTreeSet::new();
     let mut parts = Parts::default();
+    let me = tx.core.ix.commits.get(c).filter(|m| m.header.kind.is_compaction()).and_then(|m| bounded_part(tx.core, c, tid, ak).map(|ai| (*c, ai, m.header.ts)));
     for d in deaths {
-        let at = parts.date(tx, tid, ak, d)?;
-        for (c, ai, at) in parts.carriers(tx, tid, ak, d, at)? {
+        for (c, ai, at) in parts.credit(tx, tid, ak, d, me, None)? {
             add_death(tx, tid, ak, &c, ai, at)?;
             bodies.insert((c, ai));
         }
@@ -250,75 +263,69 @@ pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> 
     recheck_at_most(tx, tid, ak)
 }
 
-/// Joins `f` into `st`, collecting its deaths. A snapshot's (`copies`) copy of a write already
-/// dead in the replay is not dated again (two snapshots carrying a write whose own commit is
-/// not held: the later one would date it at a later winner): a death whose stamp died before
-/// and that the snapshot holds a write of (`holds_stamp`; not merely a record keyed by its dot,
-/// such as an entry it removed: a write sharing a dead write's stamp then dies here for the
-/// first time, order seed 7855).
-fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, dead: &mut BTreeSet<Stamp>) {
-    let mut ch = Changes::new();
-    let g = copies.then(|| f.clone());
-    st.join_into(f, None, &mut ch);
-    for d in ch.into_deaths() {
-        if let Some(g) = &g
-            && dead.contains(&d.stamp)
-            && g.holds_stamp(&d.stamp)
-        {
-            continue;
-        }
-        dead.insert(d.stamp.clone());
-        deaths.push(d);
-    }
-}
-
 /// Each write dies at the first superseding write among the held bodies joined in `(ts, ID)`
 /// order (valid writes only: the invalid deltas' own writes are left out, and from a valid
 /// snapshot's body only what it holds under such a dot without a write of its own there,
 /// `Unmerge::unvouched`; a leftover as any held body), then the state (live writes of bodies
-/// dropped otherwise); every held body with a relative bound gets the first and last of its
-/// writes' deaths (`Parts::carriers`), then the falls (`date_falls`). A valid write nested in a
-/// record an invalid delta created is un-merged from the state (spec/crdt.md §4.6) but dies like
-/// any other at a valid superseder (§4.8, judged against the write alone: a reset on that
-/// record), whether the record was un-merged before or after it joined (seed 52040). A
-/// superseder whose body was dropped for its keep bounds dates nothing unless its write is live:
-/// a write it superseded dies at a later one here. Cost: the aspect's held bodies and whole
-/// state. Limit: a snapshot's copy of a text element creation whose own delta is not held meets
-/// only the latest delete the state shows (spec/crdt.md §5.7): dated there, later than at its
-/// own delta's play.
+/// dropped otherwise); each death credited as it is reported (`Parts::credit`: a snapshot's
+/// own copies dying at its join credit it alone, so a copy of a write dead already dates no
+/// other body again; the snapshots stamped after a superseder are not joined yet, so they are
+/// judged at their own turn); every held body with a relative bound gets the first and last of
+/// its deaths, then the falls (`date_falls`). A valid write nested in a record an invalid delta
+/// created is un-merged from the state (spec/crdt.md §4.6) but dies like any other at a valid
+/// superseder (§4.8, judged against the write alone: a reset on that record), whether the
+/// record was un-merged before or after it joined (seed 52040). A superseder whose body was
+/// dropped for its keep bounds dates nothing unless its write is live: a write it superseded
+/// dies at a later one here. Cost: the aspect's held bodies and whole state. Limit: a
+/// snapshot's copy of a text element creation whose own delta is not held meets only the latest
+/// delete the state shows (spec/crdt.md §5.7): dated there, later than at its own delta's play.
 fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let un = crate::apply::Unmerge::of(tx, tid, ak)?;
     let mut st = Fragment::default();
-    let mut deaths = Vec::new();
-    let mut dead = BTreeSet::new();
+    let mut parts = Parts::default();
+    let mut joined = BTreeSet::new();
+    let mut got: BTreeMap<(CommitId, usize), (Ts, Ts)> = BTreeMap::new();
+    let take = |got: &mut BTreeMap<(CommitId, usize), (Ts, Ts)>, c: CommitId, ai: usize, at: Ts| {
+        let e = got.entry((c, ai)).or_insert((at, at));
+        *e = (e.0.min(at), e.1.max(at));
+    };
     for c in &held {
         let Some(ai) = held_part(tx.core, c, tid, ak) else { continue };
         if crate::apply::copies::invalid_snapshot(tx.core, c, tid, ak) {
             continue;
         }
         let _s = crate::costs::span("deaths: join bodies");
-        let snap = tx.core.ix.commits.get(c).is_some_and(|m| m.header.kind.is_compaction());
+        let (snap, ts) = tx.core.ix.commits.get(c).map(|m| (m.header.kind.is_compaction(), m.header.ts)).unwrap_or_default();
+        let me = (snap && bounded_part(tx.core, c, tid, ak) == Some(ai)).then_some((*c, ai, ts));
+        let mut deaths = Vec::new();
         crate::apply::each_held_piece(tx, c, ai, &mut |_, mut f| {
             // a valid snapshot's copies all play (spec/permissions.md §5.2)
             f.remove_writes(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
-            join(&mut st, f, snap, &mut deaths, &mut dead);
+            let mut ch = Changes::new();
+            st.join_into(f, None, &mut ch);
+            deaths.extend(ch.into_deaths());
             Ok(())
         })?;
+        for d in &deaths {
+            for (c, ai, at) in parts.credit(tx, tid, ak, d, me, Some(&joined))? {
+                take(&mut got, c, ai, at);
+            }
+        }
+        if snap {
+            joined.insert(*c);
+        }
     }
     {
         let _s = crate::costs::span("deaths: state");
         if let Some(cur) = tx.state(tid, ak)?.cloned() {
-            join(&mut st, cur, false, &mut deaths, &mut dead);
-        }
-    }
-    let mut got: BTreeMap<(CommitId, usize), (Ts, Ts)> = BTreeMap::new();
-    let mut parts = Parts::default();
-    for d in &deaths {
-        let at = parts.date(tx, tid, ak, d)?;
-        for (c, ai, at) in parts.carriers(tx, tid, ak, d, at)? {
-            let e = got.entry((c, ai)).or_insert((at, at));
-            *e = (e.0.min(at), e.1.max(at));
+            let mut ch = Changes::new();
+            st.join_into(cur, None, &mut ch);
+            for d in ch.into_deaths() {
+                for (c, ai, at) in parts.credit(tx, tid, ak, &d, None, None)? {
+                    take(&mut got, c, ai, at);
+                }
+            }
         }
     }
     date_falls(tx, tid, ak, &held, &mut got)?;

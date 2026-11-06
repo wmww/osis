@@ -757,7 +757,7 @@ fn after_store(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak
     }
     refill(tx, h, id, uncarried, j)?;
     for (tid, ak, snap, deaths) in &j.joined {
-        crate::retention::note_deaths(tx, tid, ak, deaths)?;
+        crate::retention::note_deaths(tx, tid, ak, id, deaths)?;
         if *snap {
             crate::retention::note_copies(tx, id, tid, ak)?;
         }

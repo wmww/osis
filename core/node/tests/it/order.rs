@@ -4029,11 +4029,11 @@ fn text_creation_dies_once_seed_4900_spec_crdt_4_8() {
     check(4900, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
-// spec/crdt.md §4.8 (a write dies once, at its earliest superseder): a kept text inserted,
-// deleted, the delete undone and the text deleted again. The insert's body dies at the first
-// delete, live and recomputed; the re-delete over the undelete does not move its last death.
+// spec/crdt.md §4.8 (a text element's creation undeleted and deleted again dies again): a kept
+// text inserted, deleted, the delete undone and the text deleted again. The insert's body dies at
+// the first delete and again at the re-delete over the undelete, live and recomputed alike.
 #[test]
-fn text_redelete_dies_at_first_delete_spec_crdt_4_8() {
+fn text_redelete_dies_again_spec_crdt_4_8() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
     let h = vec![Typed { by: 0, t: 0, op: 23, k: 0, v: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }, tick.clone(), Undo { by: 0, back: 0 }, tick, Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }];
@@ -4044,9 +4044,39 @@ fn text_redelete_dies_at_first_delete_spec_crdt_4_8() {
     ids.sort();
     let [(_, ins, t), (del, ..), _, (redel, ..)] = ids[..] else { panic!("{ids:?}") };
     assert!(del < redel);
-    assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, del)), "live");
+    assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, redel)), "live");
     p.engine.replay_deaths(&t, &text).unwrap();
-    assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, del)), "recomputed");
+    assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, redel)), "recomputed");
+}
+
+// spec/commits.md §5 (a snapshot carries a dying write only when its body holds a write of its
+// stamp): A puts k0 in a keep-at-most-0 map and undoes it; B, holding both, compacts (its
+// snapshot holds nothing of k0); C, holding the put alone, overwrites k0 after the snapshot. A
+// node taking the put, the snapshot, the overwrite and the undo last dates the put's value dead
+// at the overwrite while holding the snapshot, which never carried it: no death, the snapshot
+// stays, live and recomputed (was: credited from its frontier, taken after the put and before
+// the date, and dropped early with live writes).
+#[test]
+fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1 };
+    let h = vec![Write { by: 0, t: 0, op: 19, k: 0, v: 6 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 0 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 19 }, tick, Write { by: 2, t: 0, op: 19, k: 0, v: 7 }];
+    let played = play(83028, &h);
+    let b = played.base;
+    assert_eq!(played.packs.len(), b + 4);
+    let (put, undo, snap, over) = (b, b + 1, b + 2, b + 3);
+    let order: Vec<usize> = (0..b).chain([put, snap, over, undo]).collect();
+    let mut p = deliver(&played, &order);
+    let a = osis_base::Ak::new("t:gonemap.0").unwrap();
+    let ids: Vec<CommitId> = [put, undo, snap, over].iter().map(|i| played.packs[*i].id).collect();
+    let t = p.engine.header(&ids[2]).unwrap().aspects[0].tid;
+    assert_eq!(p.engine.header(&ids[2]).unwrap().kind, osis_commit::Kind::ContentSnapshot);
+    assert!(!p.engine.body_not_dropped(&ids[0], &t, &a), "the put's body dropped at the overwrite");
+    assert!(p.engine.body_not_dropped(&ids[2], &t, &a), "the snapshot stays");
+    assert_eq!(p.engine.deaths(&ids[2], &t, &a).unwrap(), None, "live");
+    p.engine.replay_deaths(&t, &a).unwrap();
+    assert!(p.engine.body_not_dropped(&ids[2], &t, &a), "the snapshot stays, recomputed");
+    assert_eq!(p.engine.deaths(&ids[2], &t, &a).unwrap(), None, "recomputed");
 }
 
 // spec/crdt.md §4.8, spec/commits.md §5 (a snapshot's writes die for it no earlier than its

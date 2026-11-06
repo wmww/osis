@@ -2018,11 +2018,11 @@ fn remove_all(lp: &mut LocalPeer, t: osis_base::Tid, w: osis_base::Tid) -> osis_
     lp.peers[0].engine.header(&d).unwrap().ts
 }
 
-// spec/commits.md §5: a write that falls counts dead from the demotion that took it: under at most
-// 0 its body drops with the demotion, value included; again if a copy comes. A node keeping every
-// body dates it at the demotion's `ts`, not the write's.
+// spec/commits.md §5: a write invalid here counts dead at its own `ts`: under at most 0 its body
+// drops with the demotion that took it, value included; again if a copy comes. A node keeping
+// every body dates it at the write's `ts` (the demotion's says nothing: 0 means 0).
 #[test]
-fn invalid_write_drops_at_its_fall_spec_commits_5() {
+fn invalid_write_drops_as_invalid_spec_commits_5() {
     let mut lp = net(3, 981);
     lp.peers[2].engine.keep_bodies(true);
     let (t, w) = with_writer(&mut lp);
@@ -2032,11 +2032,12 @@ fn invalid_write_drops_at_its_fall_spec_commits_5() {
     sync(&mut lp, 1, 0);
     sync(&mut lp, 1, 2);
     lp.advance(1_000);
-    let fell = remove_all(&mut lp, t, w);
+    remove_all(&mut lp, t, w);
     sync(&mut lp, 0, 2);
     let e = &mut lp.peers[2].engine;
-    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((fell, fell)), "the demotion's `ts`, not the write's");
-    assert_eq!(e.body_keep(&c, &t, &a).unwrap().at_most, Some(fell.wall_ms().0));
+    let own = e.header(&c).unwrap().ts;
+    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((own, own)), "the write's own `ts`");
+    assert_eq!(e.body_keep(&c, &t, &a).unwrap().at_most, Some(own.wall_ms().0));
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&t, &a).unwrap(), None);
     assert!(!e.body_not_dropped(&c, &t, &a), "at its fall");
@@ -2046,10 +2047,10 @@ fn invalid_write_drops_at_its_fall_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), None);
 }
 
-// spec/commits.md §5: the demotion it fell by falls, another still takes it: dated again from that
-// one, never early.
+// spec/commits.md §5: the demotion it fell by falls, another still takes it: still dead, at its
+// own `ts`.
 #[test]
-fn fall_of_a_fall_dates_a_write_again_spec_commits_5() {
+fn fall_of_a_fall_keeps_a_write_dead_spec_commits_5() {
     let mut lp = net(3, 989);
     lp.sync_all().unwrap();
     let (t, w) = with_writer(&mut lp);
@@ -2063,17 +2064,17 @@ fn fall_of_a_fall_dates_a_write_again_spec_commits_5() {
     lp.advance(10);
     let none = || Some(osis_schema::core_types::Frontier::default().to_value());
     let e = &mut lp.peers[2].engine;
-    let d = set_edge(e, t, w, None, none());
-    let first = e.header(&d).unwrap().ts;
+    set_edge(e, t, w, None, none());
     lp.advance(1_000);
-    let second = remove_all(&mut lp, t, w);
+    remove_all(&mut lp, t, w);
     sync(&mut lp, 2, 0);
     let a = ak("t:gone.0");
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((first, first)));
+    let own = e.header(&c).unwrap().ts;
+    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((own, own)));
     set_edge(e, t, x, None, none());
     assert_eq!(e.body_valid(&c, &t, &a), Some(false));
-    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((second, second)));
+    assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((own, own)));
 }
 
 // spec/commits.md §5: invalid here from its own `ts`: its author held no right when it wrote.
