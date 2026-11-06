@@ -165,7 +165,7 @@ fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
 
 /// Every split thing: they are all in the closure of a group with a source node.
 fn split_things(l: &mut Locked) -> BTreeSet<Tid> {
-    let inside: BTreeSet<Tid> = l.group_sources.keys().flat_map(|g| l.sync.engine().closure_with_ephemeral(g)).collect();
+    let inside: BTreeSet<Tid> = l.group_sources.keys().flat_map(|g| l.sync.engine().closure(g).iter().copied().collect::<Vec<_>>()).collect();
     inside.into_iter().filter(|t| split_in(l, *t).is_some()).collect()
 }
 
@@ -257,7 +257,7 @@ impl Osis {
             crate::commits::Scope::Group(g) if self.routed() => {
                 let things: Vec<Tid> = self.locked(|l| {
                     let e = l.sync.engine();
-                    e.closure_with_ephemeral(g).into_iter().collect()
+                    e.closure(g).iter().copied().collect()
                 });
                 self.check_split(&things)?;
             }

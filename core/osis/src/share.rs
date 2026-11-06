@@ -589,14 +589,6 @@ impl Osis {
         }
     }
 
-    /// Persists the ephemeral things among `tids` with their record chains by a content commit
-    /// of their own (notes/ephemeral.md Persistence: a role operation on an ephemeral thing
-    /// persists it first); durable ones are left alone.
-    fn persist(&self, tids: &[Tid]) -> Result<()> {
-        let me = self.me();
-        self.guarded(tids, |e| persist_in(e, me, tids))
-    }
-
     /// Grants `holder` `role` on `target`: adds a holder, raises a role, or changes `until` and
     /// `may_grant` (what `opts` leaves out goes). It never waits and never lowers a role: a role below
     /// the holder's present one, or below one it lost when its grant ended or it left, is `Invalid`
@@ -623,7 +615,6 @@ impl Osis {
         if !self.holds(target) {
             return Err(Error::UnknownThing { tid: target });
         }
-        self.persist(&[target])?;
         self.after_source();
         let done = self.locked(|l| {
             self.guard_local(l, &[target])?;
@@ -648,7 +639,7 @@ impl Osis {
     /// Already a member, nothing more is written to the group. A grant of the group at `role` or
     /// above stays as it is, tied or not, and a raise of a grant made by hand stays untied.
     ///
-    /// Several commits, not one: keeping a draft, the membership, the grant. A crash between them
+    /// Two commits, not one: the membership, the grant. A crash between them
     /// leaves the earlier ones, and calling this again finishes the rest.
     ///
     /// Needs write on the group and admin on the thing (or a `may_grant` of at least `role`, the
@@ -679,10 +670,6 @@ impl Osis {
             let gs = r.groups_of(tid);
             if subgroup { gs.subgroup_of.contains(&group) } else { gs.item_of.contains(&group) }
         });
-        if grant {
-            // durable first, so the membership is too
-            self.persist(&[tid])?;
-        }
         if !listed {
             let mut w = self.write();
             w.sharing = true;
@@ -1038,7 +1025,6 @@ impl Osis {
         if opts.direct && self.locked(|x| x.sync.own_reach()).is_none() {
             return Err(Error::Invalid("a direct link needs this node reachable: a runtime with Config.direct_sync on".into()));
         }
-        self.persist(&[target])?;
         self.after_source();
         let (mut link, keep, done) = self.locked(|l| {
             self.guard_local(l, &[target])?;
@@ -1342,7 +1328,6 @@ impl Osis {
         let mut w = self.write();
         let p = w.create()?;
         w.commit()?;
-        self.persist(&[p])?;
         self.locked(|x| -> Result<()> {
             // secrets of its own before the label, as `sync()` does
             let done = x.engine().give_own_secrets(&p)?;
@@ -1630,12 +1615,6 @@ impl Osis {
         if self.read_local(|r| r.role_on(group))? != Some(Role::Admin) {
             return Err(Error::Permission { tid: group, needs: Role::Admin });
         }
-        if home {
-            let me = self.me();
-            self.engine(|e| persist_in(e, me, &[group]))?;
-        } else {
-            self.persist(&[group])?;
-        }
         let named: BTreeSet<osis_label::Address> = hosts.iter().map(|s| s.0.clone()).collect();
         let hosts = if hosts.is_empty() { self.host_addrs() } else { hosts.iter().map(|s| s.0.clone()).collect() };
         if !home {
@@ -1847,17 +1826,6 @@ fn retain_only_on_removal(role: Option<Role>, o: SetRoleOpts) -> Result<()> {
     if role.is_some() && o.retain_copy.is_some() {
         return Err(Error::Invalid("retain_copy is for removing a role: there is no copy to retain while a role remains".into()));
     }
-    Ok(())
-}
-
-/// The commit of `Osis::persist`.
-fn persist_in(e: &mut osis_node::Engine, me: Tid, tids: &[Tid]) -> Result<()> {
-    let mut m = osis_node::Mutation::new();
-    m.act_as(me);
-    for t in tids {
-        m.persist(*t);
-    }
-    e.write(m)?;
     Ok(())
 }
 

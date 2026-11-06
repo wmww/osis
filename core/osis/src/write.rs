@@ -25,10 +25,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::time::Duration;
 
-/// A commit just made: an atomic write, whole at every node that applies it. A write that made or
-/// freed only a draft has nothing for other nodes to apply, and an id all the same. What a durable
-/// write ends in memory without asking (a `delete`'s ephemeral aspects, a saved draft's or removed
-/// member's ephemeral memberships) goes as a second commit, which a node may get apart from this.
+/// A commit just made: an atomic write, whole at every node that applies it. A `delete` of a thing
+/// with ephemeral aspects also resets those, as a second commit, which a node may get apart from
+/// this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     /// Names this commit.
@@ -106,15 +105,13 @@ impl WriteOp {
 /// a commit fails `commit` with `Invalid`, naming what clashed; writing it as several commits is up
 /// to the app:
 /// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing's
-///   record never expires, so the commit that first keeps a thing has none: expiring content goes
-///   in a later commit (for no content before it, have the first commit `remove` an aspect: that
-///   stores no value).
+///   record never expires, so the commit creating a thing has none: expiring content goes in a
+///   later commit.
 /// - A write under retention `nobody` shares a commit only with others like it.
 /// - A commit is durable or ephemeral (keys marked `~`), and a signal (keys marked `*`) is a commit
-///   of its own. The exception makes two commits, durable then memory: what a durable write does
-///   in memory without asking (a `delete`'s removal of what the thing holds in memory, a kept
-///   draft's memberships becoming durable, a removal of a member listed ephemerally too). Each
-///   reaches other nodes on its own.
+///   of its own. A new thing is durable, so ephemeral writes on it go in a later commit. The
+///   exception makes two commits, durable then memory: a `delete` of a thing with ephemeral
+///   aspects resets those in the second. Each reaches other nodes on its own.
 ///
 /// This is judged on what the ops ask, not on what they turn out to write: a `set` of the value
 /// already there still counts.
@@ -240,9 +237,8 @@ impl<'d> Write<'d> {
         i
     }
 
-    /// A new thing, the acting actor its first admin: a draft, held in memory and gone at restart,
-    /// until its first durable write, which keeps it with its tid and its memberships. `Invalid`
-    /// at commit on a thin client's handle: its actor goes with the client, so what it makes
+    /// A new thing, the acting actor its first admin, stored with this commit. `Invalid` at
+    /// commit on a thin client's handle: its actor goes with the client, so what it makes
     /// names who stays (`create_with_admin`).
     pub fn create(&mut self) -> Result<Tid> {
         self.create_with_admin(self.actor)
@@ -270,8 +266,6 @@ impl<'d> Write<'d> {
     fn member(&mut self, g: Tid, m: Member, add: bool) -> Result<()> {
         let g = self.known(g)?;
         let (member, subgroup) = m.parts();
-        // a draft's membership is an ephemeral write (notes/ephemeral.md Draft memberships):
-        // `Engine::write` sends the group ops by what persists (notes/api.md Writes)
         self.ops.push(WriteOp::Group { g, member, items: !subgroup, add });
         Ok(())
     }
@@ -464,7 +458,7 @@ impl<'d> Write<'d> {
                         }
                         b.group(&gk, g, t, items, false)?;
                     }
-                    b.m.free(t);
+                    b.m.deleting(t);
                 }
             }
         }
@@ -592,7 +586,7 @@ impl Built {
 
 /// Whether a label carries `t` (a subgroup's own aspects go by its own memberships, not its parents).
 fn carried(e: &osis_node::Engine, labeled: &BTreeSet<Tid>, t: &Tid) -> bool {
-    labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g))
+    labeled.contains(t) || e.groups_of(t).iter().any(|g| labeled.contains(g))
 }
 
 /// What the cut subgroups hold that a label carries, before the commit cuts them.
@@ -619,23 +613,20 @@ fn cut_off(e: &mut osis_node::Engine, was: BTreeSet<Tid>) {
 }
 
 /// Reports added things that no synced group holds (spec/requirements.md, Offline
-/// and network): durable closures only, what sync carries.
+/// and network).
 fn not_synced(e: &mut osis_node::Engine, added: &[(Tid, Tid)], sharing: bool) {
     if added.is_empty() {
         return;
     }
     let labeled = e.labeled_groups();
     for (t, g) in added {
-        if e.ephemeral_thing(t).is_some() {
-            continue;
-        }
         // entitlement (spec/sync.md §3): the group's holders read what is under it or was given
         if labeled.contains(g) && !e.may_read(&e.group_actor(g), t) {
             if sharing {
                 continue;
             }
             e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "in a group whose holders may not read it: it does not reach them (add_with_grant)".into() });
-        } else if !(labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g))) {
+        } else if !carried(e, &labeled.iter().copied().collect(), t) {
             e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "only in groups no synced group holds: it stays on this node".into() });
         }
     }
@@ -648,14 +639,13 @@ pub struct GroupWrite<'w, 'd> {
 }
 
 impl<'w, 'd> GroupWrite<'w, 'd> {
-    /// Adds a member. A thing becomes a group with its first member. A draft
-    /// joins in memory, and for good when it is kept; else the add is durable, and keeps the group.
-    /// In a commit that expires (`Write::expires`) the member leaves by itself at that time: a
-    /// disappearing message leaves its group.
+    /// Adds a member. A thing becomes a group with its first member. In a commit that expires
+    /// (`Write::expires`) the member leaves by itself at that time: a disappearing message leaves
+    /// its group.
     ///
     /// A group's items sync only through groups listing it as a subgroup: its members are its
-    /// items and its subgroups' members, not its items' items. So when an item stays durable, is
-    /// in no synced group, and the group's own aspects sync (the group is an item of a synced
+    /// items and its subgroups' members, not its items' items. So when an item is in no synced
+    /// group, and the group's own aspects sync (the group is an item of a synced
     /// group, no subgroup of one), the commit fails `Invalid` before anything applies: add the
     /// group as a subgroup too. An item only in groups that do not sync at all (node-local
     /// data) is allowed and reported by a `NotSynced` diagnostic, as is one in a synced group

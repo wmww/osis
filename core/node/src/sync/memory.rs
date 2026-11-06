@@ -349,7 +349,6 @@ impl SyncEngine {
                 // counted past the cap if need be: the engine holds it
                 let charge = self.engine.memory_charge(&c)?.max(size);
                 self.state.charge_memory(l, b, Some(charge));
-                self.note_synced_of(&c);
             }
         }
         for l in room {
@@ -458,16 +457,7 @@ impl SyncEngine {
         // label stays under the cap
         let charge = self.engine.memory_charge(&commit)?.max(size);
         self.state.charge_memory(l, b, Some(charge));
-        self.note_synced_of(&commit);
         Ok(())
-    }
-
-    /// The things of held memory commit `c` were a label entry here (`Engine::note_memory_synced`).
-    fn note_synced_of(&mut self, c: &CommitId) {
-        if let Some(h) = self.engine.header(c) {
-            let things: Vec<Tid> = h.aspects.iter().map(|a| a.tid).collect();
-            self.engine.note_memory_synced(things);
-        }
     }
 
     /// Entry `b` of `l` is no valid memory commit blob: never opened or judged again.
@@ -722,7 +712,7 @@ impl SyncEngine {
             let l = gl.id;
             let closure = self.engine.closure(&g);
             let actor = self.engine.group_actor(&g);
-            if !blob.header.aspects.iter().any(|a| (a.tid == g || closure.contains(&a.tid)) && self.engine.may_read(&actor, &self.engine.reader_of(&a.tid))) {
+            if !blob.header.aspects.iter().any(|a| (a.tid == g || closure.contains(&a.tid)) && self.engine.may_read(&actor, &self.engine.core.reader_of(&a.tid))) {
                 continue;
             }
             let Some(secret) = self.engine.wrap_secret(&g, None)? else { continue };

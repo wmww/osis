@@ -10,7 +10,7 @@ use crate::commit_id::{CommitId, HistoryPos};
 use osis_base::{Ak, Role, Tid, Ts, Value, Time};
 use osis_node::{Diagnostic, Engine};
 use osis_schema::AspectKey;
-use osis_schema::core_types::{GROUP, EPHEMERAL_GROUP};
+use osis_schema::core_types::GROUP;
 use osis_schema::{Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 
@@ -65,8 +65,8 @@ impl Stamp {
 /// When a thing was made or last changed (`Osis::created`, `Osis::changed`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThingStamp {
-    /// The commit; `None` when it is only the creation of a draft.
-    pub id: Option<CommitId>,
+    /// The commit.
+    pub id: CommitId,
     /// The actor the author acted for.
     pub actor: Tid,
     /// The authoring node.
@@ -87,7 +87,7 @@ impl ThingStamp {
 }
 
 fn stamp(c: osis_node::Creation) -> ThingStamp {
-    ThingStamp { id: c.commit.map(CommitId::commit), written: c.ts.wall_ms(), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
+    ThingStamp { id: CommitId::commit(c.commit), written: c.ts.wall_ms(), ts: c.ts, node: c.node, actor: c.actor, received: c.received }
 }
 
 /// The groups a thing is in (`Osis::groups_of`), each list in tid order.
@@ -365,29 +365,23 @@ impl Reader<'_> {
     }
 
     /// Whether the thing is here with content: its creation is held and some aspect a `Write`
-    /// sets is present, or it is a draft here (or one again: its save undone) (content or
-    /// not, unless an undo of its creation deleted it). `false` for an unknown thing and for one
-    /// with no content: deleted, and equally never written (a thing just created and added to a group, an
-    /// actor carrying only role data).
+    /// sets is present. `false` for an unknown thing and for one with no content: deleted, and
+    /// equally never written (a thing just created and added to a group, an actor carrying only
+    /// role data).
     pub fn knows(&mut self, tid: Tid) -> Result<bool> {
         if self.hidden(tid) {
             return Ok(false);
         }
-        if self.e.ephemeral_thing(&tid).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&tid) {
-            return Ok(true);
-        }
         Ok(self.e.knows(&tid) && self.e.has_content(&tid)?)
     }
 
-    /// Whether the thing's creation is held or it is a draft here, deleted or not: what a
-    /// write or grant needs.
+    /// Whether the thing's creation is held: what a write or grant needs.
     pub(crate) fn holds(&self, tid: Tid) -> bool {
         !self.hidden(tid) && self.e.knows(&tid)
     }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
-    /// snapshot (a draft's write); `None` while it is unknown or
-    /// only a snapshot carrying its `created.0` is here.
+    /// snapshot; `None` while it is unknown or only a snapshot carrying its `created.0` is here.
     pub fn created(&self, tid: Tid) -> Option<ThingStamp> {
         if self.hidden(tid) {
             return None;
@@ -442,14 +436,11 @@ impl Osis {
     /// never had a member). A thing both item and subgroup appears as both. Being in a group grants
     /// nothing: who holds a role on it is `grants`.
     pub fn members(&self, group: Tid) -> Result<Vec<Member>> {
-        let (durable, eph) = match self.source(group) {
-            crate::sources::Source::Node(_) => (self.at(group, GROUP).get()?, self.at(group, EPHEMERAL_GROUP).get()?),
-            crate::sources::Source::Local => self.read_local(|r| Ok::<_, Error>((r.get(group, &GROUP)?, r.get(group, &EPHEMERAL_GROUP)?)))?,
-        };
-        let mut d = durable.unwrap_or_default();
-        let p = eph.unwrap_or_default();
-        d.items.extend(p.items);
-        d.subgroups.extend(p.subgroups);
+        let d = match self.source(group) {
+            crate::sources::Source::Node(_) => self.at(group, GROUP).get()?,
+            crate::sources::Source::Local => self.read_local(|r| r.get(group, &GROUP))?,
+        }
+        .unwrap_or_default();
         Ok(d.items.into_iter().map(Member::Item).chain(d.subgroups.into_iter().map(Member::Subgroup)).collect())
     }
 
@@ -492,8 +483,8 @@ impl Osis {
         crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::thing_stamp).transpose()
     }
 
-    /// When the thing was created: the oldest valid commit carrying its creation (a draft's: no
-    /// commit); `None` while it is unknown here.
+    /// When the thing was created: the oldest valid commit carrying its creation; `None` while it
+    /// is unknown here.
     pub fn created(&self, tid: Tid) -> Result<Option<ThingStamp>> {
         if let crate::sources::Source::Node(r) = self.source(tid) {
             return self.node_stamp(&r, m::CREATED, tid);
