@@ -525,7 +525,7 @@ fn kept_copy_still_disappears_spec_commits_6() {
     assert!(texts(&b, c).is_empty(), "gone from the copy: {:?}", texts(&b, c));
 }
 
-// spec/permissions.md §1 (admins all equal): a later admin may kick the creator; with no admin left participants still post; two admins kicking each other end the same everywhere
+// spec/permissions.md §1 (admins all equal): a later admin may kick the creator; with no admin left participants still post; two admins kicking each other, neither having seen the other's kick, each keep their own side (spec/permissions.md §5.1 Trust set: a node holds its own write first; notes/owner-removal-plan.md step 4)
 #[test]
 fn admins_are_equal_spec_perm_1() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
@@ -546,7 +546,9 @@ fn admins_are_equal_spec_perm_1() {
     w.set_online(&b, true);
     w.advance(60_000);
     w.run();
-    assert_eq!(participants(&a, c).unwrap(), participants(&b, c).unwrap());
+    let (pa, pb) = (participants(&a, c).unwrap(), participants(&b, c).unwrap());
+    assert!(pa.contains_key(&a.me()) && !pa.contains_key(&bob), "{pa:?}");
+    assert!(pb.contains_key(&bob) && !pb.contains_key(&a.me()), "{pb:?}");
 }
 
 // spec/permissions.md §3 (Retain): an erased participant added again gets the chat back

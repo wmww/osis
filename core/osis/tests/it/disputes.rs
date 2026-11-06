@@ -6,11 +6,12 @@ use crate::common::*;
 use osis::{MemStore, Side};
 use std::sync::mpsc::channel;
 
+// spec/permissions.md §5.1 Trust set: a node's side is its own; notes/owner-removal-plan.md step 4
 #[test]
 fn disputes_listed_told_and_chosen_spec_permissions_5_1() {
     let (ca, cb, cc) = (clock(), clock(), clock());
     let a = osis::internals::create(cfg(1, MemStore::new(), &ca)).unwrap();
-    let mut join = |seed: u64, c: &std::sync::Arc<osis::internals::ManualClock>| {
+    let join = |seed: u64, c: &std::sync::Arc<osis::internals::ManualClock>| {
         let j = osis::internals::pair(cfg(seed, MemStore::new(), c), &a.pair_offer().unwrap()).unwrap();
         let (node, reply) = a.pair_accept(j.request()).unwrap();
         (j.finish(&reply).unwrap(), node)
