@@ -1,7 +1,7 @@
-# An invalid delta's arrival recomputes its aspect's deaths
-> Summary: `join_part`'s `unmerged` marks the aspect whenever a held body has a relative keep bound, so each forged write on such an aspect replays every held body (`replay_all`), though it took nothing. A forged write can itself be that bound.
+# An invalid delta's arrival rebuilds its aspect
+> Summary: An invalid delta is never joined: its arrival rebuilds its aspect from every held body (`join_part` adds it to `Joins::rebuild`, the one path of issues/drop-rejoin-robust.md item 1), and where a held body has a relative keep bound the rebuild marks deaths for a replay (`mark_if_bounded`, `replay_all`). So each forged write on an aspect costs O(held bodies) though it took nothing. A forged write can itself be that bound.
 > Tags: engine, retention, security
 
-Measured in a debug build: 20 us per small held body (2000 bodies: 41 ms per arrival; a release build should be several times less). Bodies a snapshot covers are gone, so this matters on an aspect that does not compact. The forger needs a chain to the thing, not a right on it.
+The forger needs a chain to the thing, not a right on it. Bodies a snapshot covers are gone, so this matters on an aspect that does not compact. Measured before the one rebuild path (debug build): 20 µs per small held body for the deaths replay alone (2000 bodies: 41 ms per arrival); not re-measured.
 
-Not the only such cost: a forged write that supersedes (`dots_supersede`) rebuilds the aspect as well (`unmerge_part`), so fixing the mark alone does not make an invalid arrival cheap. A fix for the mark: only when the state held a write under one of the arriving delta's dots before its join (a write of another nested in its creation), else nothing it took can need a date.
+Possible fix: skip the rebuild when the state held no write under any of the arriving delta's dots before (nothing of it can be in the state, so the rebuild is a fixpoint and no death needs a date). That is a second path beside the rebuild, which drop-rejoin-robust avoids on purpose; worth it only with a measured cost, and the debug rebuild check (`check_rebuilt`) would cover it.

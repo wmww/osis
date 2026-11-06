@@ -11,7 +11,7 @@
 
 **Refused though a user may not expect it** (`Invalid`/`Clash`, nothing applies; the app writes two commits itself): durable and ephemeral writes in one `Write` (a title and a cursor); plain and expiring ephemeral writes; a signal beside any other write; deltas wanting different expiries; saving a draft whose ephemeral membership expires (spec/data-model.md §8); a `delete` of a thing whose aspects or groups fall under different `required.0^` rules; an ephemeral delta larger than a blob.
 
-**Why**: on the wire a commit has one storage class (below), and the two halves are stored differently: durable in logs and stores, memory only in memory. Effects today: with the durable half alone, a deleted thing's ephemeral values or a stale `placed.0~` entry show until the memory half arrives or the holders restart (mild); with the memory half alone (the ephemeral lane uploads apart from the durable passes), a saved draft is briefly in none of its groups at that peer (cases 2 and 4), until the durable half arrives.
+**Why**: on the wire a commit has one storage class (below), and the two halves are stored differently: durable in logs and stores, memory only in memory. Effects today: with the durable half alone, a deleted thing's ephemeral values or a stale `placed.0~` entry show until the memory half arrives or the holders restart (mild); with the memory half alone (the two are separate blobs), a saved draft is briefly in none of its groups at that peer (cases 2 and 4), until the durable half arrives.
 
 **Decide**:
 - (a) Cases 2 and 3: adopt the receiver rule "`placed.0~` lists drafts only" (below). Then neither makes a memory commit. Needs a call on `MembershipNotSaved` (a saving node that may not write the group): the membership is lost (recommended: an ephemeral membership is already lossy), or the save is refused (one more surprising refusal).
@@ -36,5 +36,4 @@ A stamp rule ("an entry reads as nothing where `group.0` has a later write on th
 
 ## Left
 - spec/requirements.md (Atomic, line "A commit is never split") conflicts with the four cases, and its Limit lists only expiry and `nobody` mixes, not durable beside ephemeral or signal: left for Tess with this call (a requirements change).
-- `core/osis/src/lib.rs` "One write, one commit" still says a `Write` is one commit, whole at every node; it needs this exception (the file was api-setrole-now's when this was written).
-- Fixed alongside: signal writes went as one relay-only commit per actor per pass, so two writes of one signal aspect before a pass made a commit repeating it, refused, and both were lost; now one per write (`signal_writes_one_commit_each_spec_sync_9`).
+- `core/osis/src/lib.rs` "One write, one commit" still says a `Write` is one commit, whole at every node; it needs this exception.
