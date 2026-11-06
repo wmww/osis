@@ -1,5 +1,5 @@
 -------------------------------- MODULE Depth0 --------------------------------
-(* Depth-0 sealing (notes/keys-requirements-study.md 2.1, Q2 decided A): a    *)
+(* Depth-0 sealing (notes/keys-requirements-study.md, Q2 decided A): a        *)
 (* rotation, re-seal or write of actor a never looks inside a holder actor h  *)
 (* past what the node itself holds: an epoch of h whose secret it holds and  *)
 (* that misses a departure from h it knows is blocked (Blocked), and so is   *)

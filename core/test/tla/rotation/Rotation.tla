@@ -91,7 +91,7 @@ Holders(x, e) == (IF e \in kn[x] THEN ep[e].ob ELSE {})
 \* The box rule (crypto §4 before frozen coverage, the _box cfgs): an epoch
 \* covers a departure of M if it holds no box for M.
 CoversBox(x, e) == \A m \in dep[x] : m \notin Holders(x, e)
-\* Frozen coverage (notes/epoch-establishment-study.md §3): e covers exactly
+\* Frozen coverage (notes/crypto.md, Frozen coverage): e covers exactly
 \* the departures its names name: the removals carried by the rotation
 \* commits its rotator held (nm) and by itself (the departs mark). Boxes
 \* decide nothing (NoBoxCovers: the old base case back, a negative control).
