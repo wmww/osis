@@ -54,7 +54,10 @@ instances=(
   "sides MC tidy_need.cfg small pass"         # need rule: they go
   "rotation Lockout L_list.cfg all pass"              # lockout recovery by listing (notes/lockout-recovery.md)
   "rotation Lockout L_list_honest.cfg all pass"      # ... the rotator boxed h too (a rotation missing a)
-  "rotation Lockout L_list_missed.cfg all pass"      # ... h's rotation leaves a out: the removal waits for a re-seal
+  "rotation Lockout L_list_missed.cfg all pass"      # ... h's rotation leaves a out: the removal goes alone, h rotates
+  "rotation Lockout L_two.cfg all pass"              # two rogues: the first removal goes alone, the second recovers
+  "rotation Lockout L_two_write.cfg all pass"        # ... with a write (NoLeak, Repairable)
+  "rotation Lockout L_two_own.cfg small fail"        # negative control: lacked epochs only the removed rogue's
   "rotation Lockout L_probe_refused.cfg small fail"  # probe: the refusal is reached
   "rotation Lockout L_fork.cfg small fail"           # negative control: a fork from a's own epochs
   "rotation Lockout L_none.cfg small fail"           # negative control: no recovery

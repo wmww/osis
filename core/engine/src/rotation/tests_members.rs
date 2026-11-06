@@ -1069,15 +1069,16 @@ fn lacking_write_resealed(seed: u64) {
 }
 
 // A removal P makes itself in that shape: it must rotate A's write, whose current secret P
-// lacks, so it is refused with an error saying it waits for a re-seal, and changes nothing.
+// lacks and whose maker (A's owner) keeps write, so the removal goes alone (spec/crypto.md §4,
+// Boxes; spec/permissions.md §3): F is out, A's epochs are unchanged, the departure uncovered.
 #[test]
-fn removal_lacking_rotated_secret_refused_spec_permissions_3() {
+fn removal_lacking_rotated_secret_goes_alone_spec_permissions_3() {
     let (mut lp, a, _) = lacking_write(963);
     let f = lp.peers[5].engine.tid();
-    let before = lp.peers[1].engine.core.current_holders(&a).len();
-    let err = lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced, retain: None }).unwrap_err();
-    assert!(format!("{err}").contains("re-seal"), "{err}");
-    assert_eq!(lp.peers[1].engine.core.current_holders(&a).len(), before);
+    let epochs = lp.peers[1].engine.epochs(&a);
+    lp.peers[1].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    assert!(!lp.peers[1].engine.core.current_holders(&a).iter().any(|(m, _, _)| *m == f), "F removed");
+    assert_eq!(lp.peers[1].engine.epochs(&a), epochs, "no rotation");
 }
 
 // spec/crypto.md §4, spec/permissions.md §3 (Role cycles, key access): random role graphs of
