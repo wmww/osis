@@ -79,7 +79,7 @@
   - A link's K reads its target's own label alone, so making a link gives its target one if it has none.
 
 ## 3. What goes under a label
-- **Closure**: the blobs of group G are the commits touching any thing in G's transitive closure (through `group.0` and `ephemeral_group.0~`, spec/data-model.md §8: an ephemeral membership brings its item's ephemeral commits), plus the chunk, tree-node and page blobs they reference (every blob their values link, whether or not the linking commit's chunk list names it).
+- **Closure**: the blobs of group G are the commits touching any thing in G's transitive closure (through `group.0`, spec/data-model.md §8), plus the chunk, tree-node and page blobs they reference (every blob their values link, whether or not the linking commit's chunk list names it).
   - Each node tags commits with their things' `groups.0` and retags when group membership changes.
 - **Entitlement**: a thing's **reader actor** is the thing if it has secrets of its own, else the nearest actor up its record chain that has them (a key actor is its own). G's actor is the group thing if it has secrets of its own, else its base actor (spec/crypto.md §3). G's actor may read a thing iff the thing's secrets derive from its own or it holds read or above on the thing's reader actor. A commit's blob belongs under G's label iff G's actor may read a part of it on a thing of the closure (or published there, §2).
   - Only a writer of G stamps entries (§5).
@@ -348,9 +348,9 @@ Each operation names a label. Writes are signed with the role keys of the host's
 A connection may subscribe to labels. The peer then pushes new log events (with blobs, wraps and stamps) as they arrive (held back for a slow subscriber, §6 Flow control), in the cursor-reply format, until the open ends (§5).
 
 ## 9. Ephemeral commits
-- **Sending**: a node's own writes of ephemeral aspects and on drafts (spec/data-model.md §1, §2) are ephemeral commits (spec/commits.md §2) like its durable writes are durable commits.
-  - **One commit**: a write's ephemeral writes are one session-form commit (without `expires` under the node's session, with one under its second session, spec/crdt.md §2.1), carrying the records of the drafts it writes or its `ephemeral_group.0~` writes add (spec/commits.md §2), so a deletion's resets ride with the removal that takes the thing out of the closure, as a durable commit's do.
-  - **Second commit**: a durable write's own consequences in memory (a persisted thing's memberships leaving `ephemeral_group.0~`, a durable removal's entry in `ephemeral_group.0~`, a deleted thing's ephemeral aspects; their revert) go as a second commit of that form, under the durable commit's `ts`. The two are separate commits: a peer may hold either alone.
+- **Sending**: a node's own writes of ephemeral aspects (spec/data-model.md §2) are ephemeral commits (spec/commits.md §2) like its durable writes are durable commits.
+  - **One commit**: a write's ephemeral writes are one session-form commit (without `expires` under the node's session, with one under its second session, spec/crdt.md §2.1).
+  - **Second commit**: a delete's resets of the thing's ephemeral aspects (and their revert) go as a second commit of that form, under the durable commit's `ts`. The two are separate commits: a peer may hold either alone. Limit: placed after the durable one took the thing out of every closure, the second goes nowhere, and a holder keeps reading the thing's ephemeral values until it restarts.
   - **Signals**: a write's signal writes go as one relay-only commit, at once.
   - A commit whose delta does not fit a blob is refused at the writer (spec/commits.md §2).
 - **As durable bodies**: an ephemeral commit's bodies are judged, placed, uploaded, relayed and deleted exactly as durable bodies are (§3, §5-§7): under the labels of the closures its things are in, must-hold while established uncovered, stamped under the head's write key at each upload (so a refusal under an older key, code 9, is answered by the next pass under the new head), relayed stamped by readers, deleted at a label once a snapshot there carries them, re-placed as a fresh encryption where the old blob is tombstoned.
@@ -369,12 +369,10 @@ A connection may subscribe to labels. The peer then pushes new log events (with 
     - A session-form one applies atomically and an invalid part is un-merged (spec/crdt.md §4.6).
     - A part past its `expires` vanishes whole at every node (spec/crdt.md §4.7), so one arriving past it is never held.
     - An ephemeral commit more than `MAX_DRIFT` ahead of the corrected clock waits as a durable one does.
-  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered, expired, superseded or its thing freed) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
-    - A freed thing's parts of a commit that also touches things not freed are dropped; the commit stays for those.
-    - The record of a draft received from another node goes once no held or waiting ephemeral commit is on it and no held draft names it as first admin (every commit about it carries the record again).
+  - **Forgetting**: a node forgets an ephemeral commit whole, header included, once none of its parts is held any more (each covered, expired or superseded) and none waits, keeping of its header only what deleting its entries at hosts needs while it has any.
     - A copy of a forgotten commit arriving again applies and goes again by the same rules.
 - **Compaction**: any writer of the aspect compacts (spec/commits.md §2, §5).
-  - **Trigger**: a node writes an ephemeral snapshot of an aspect of a thing in a labeled closure here, or never under a label here, once the session-form bodies it holds of it without `expires`, two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.
+  - **Trigger**: a node writes an ephemeral snapshot of an aspect once the session-form bodies it holds of it without `expires`, two at least, cost more than twice a snapshot of it, each counted as its deltas' bytes plus a per-part and a per-entry charge (local policy, what a holder's cap and a host charge). A host's refusal triggers nothing.
   - **Dropping covered bodies**: every node drops a held body a held valid ephemeral snapshot covers (spec/commits.md §5) at once, keep bounds aside (ephemeral bodies have none).
     - Exception: a node drops a body it authored only under one of its own snapshots (local policy).
     - A snapshot stamped no later and covered by another goes the same way.

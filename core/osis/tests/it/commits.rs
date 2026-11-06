@@ -156,7 +156,8 @@ fn query_filters_api_commits() {
     let c = clock();
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let (k, j) = (ak("t:x.0"), ak("t:y.0"));
-    let t = db.commit_with(|w| w.create()).unwrap();
+    // made acting for the account (a record alone would act for the node)
+    let t = db.commit_with(|w| w.create_with_content(db.me())).unwrap();
     let c1 = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)));
     c.advance(1);
     let mut w = db.write();
@@ -444,7 +445,13 @@ fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let k = ak("app:draft.0~");
     let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.me())).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
-    let e = db.commit_with(|w| w.create_in(db.me(), &[f])).unwrap();
+    let e = db
+        .commit_with(|w| {
+            let e = w.create_with_content(db.me())?;
+            w.group(f).add(osis::Member::Item(e))?;
+            Ok(e)
+        })
+        .unwrap();
     db.commit_set(e, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     let mut w = db.write();
     w.group(f2).add(osis::Member::Item(e)).unwrap();

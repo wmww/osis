@@ -51,7 +51,8 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     let made = commit_with(&db, |w| w.create().map(drop));
     let win = db.engine(|e| e.header(&made.id.commit().unwrap())).unwrap().aspects[0].tid;
     let c = db.created(win).unwrap().unwrap();
-    assert_eq!((c.id, c.ts(), c.node, c.actor), (made.id, made.ts(), db.node(), db.me()), "a new thing is durable");
+    // a record alone acts for its signer (spec/commits.md §2)
+    assert_eq!((c.id, c.ts(), c.node, c.actor), (made.id, made.ts(), db.node(), db.node()), "a new thing is durable");
     let before = durable_marks(&db);
     let mut w = db.write();
     w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![s("a")]))].into())).unwrap();
@@ -77,7 +78,7 @@ fn write_and_watch_without_commit_spec_data_model_2() {
     assert_eq!(db.at(win, state.clone()).path(field(1)).get::<Vec<String>>().unwrap(), Some(vec!["a".to_string(), "b".to_string()]));
     assert!(watch.changed_timeout(Duration::from_secs(20)));
     assert!(watch.current().unwrap().is_some());
-    assert_eq!(db.aspects(win).unwrap(), vec![osis::Ak::new("win:state.0~").unwrap()]);
+    assert_eq!(db.aspects(win).unwrap(), vec![osis::Ak::new("created.0").unwrap(), osis::Ak::new("win:state.0~").unwrap()]);
     // an ephemeral aspect of a durable thing
     let cur = ak("app:selection.0~");
     db.commit_set(db.me(), osis::DynamicAspectKey::untyped(cur.clone()), &Value::Int(7)).unwrap();
@@ -221,6 +222,9 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     assert_eq!(recv(&rx).value, Ok(None));
     let (ttx, trx) = channel();
     let _th = db.on_thing_change(t, move |_, c| ttx.send(c).unwrap()).unwrap();
+    // the thing's initial reads (its `created.0`)
+    db.settle();
+    while trx.try_recv().is_ok() {}
     let before = durable_marks(&db);
     for _ in 0..2 {
         db.commit_set(t, ring.clone(), &s("ding")).unwrap();
@@ -234,7 +238,7 @@ fn signal_aspects_fire_once_never_in_state_spec_data_model_2() {
     db.settle();
     assert!(rx.try_recv().is_err(), "once each");
     assert_eq!(db.at(t, ring.clone()).get().unwrap(), None, "a signal holds nothing");
-    assert!(db.aspects(t).unwrap().is_empty());
+    assert!(!db.aspects(t).unwrap().contains(&ak("win:ring.0*")));
     assert_eq!(durable_marks(&db), before);
     let mut w = db.write();
     w.at(t, ring.clone()).remove().unwrap();
@@ -484,32 +488,6 @@ fn group_of(db: &Osis, g: osis::Tid) -> osis::internals::core_types::Group {
 /// `g`'s `group.0` items.
 fn durable_items(db: &Osis, g: osis::Tid) -> Vec<osis::Tid> {
     group_of(db, g).items.into_iter().collect()
-}
-
-// spec/data-model.md §8, spec/crdt.md §4.7: a thing given its first member in an expiring commit
-// is a group in that commit (its empty `group.0` takes the commit's expiry, which removes no value
-// of it), whatever the tid order, and stays a group after the membership expires.
-#[test]
-fn expiring_first_member_leaves_a_group_spec_data_model_8() {
-    for order in 0..4 {
-        let (db, c) = setup(40 + order);
-        let (g, x) = db
-            .commit_with(|w| {
-                let a = w.create()?;
-                let b = w.create()?;
-                let (g, x) = if (a < b) == (order % 2 == 0) { (a, b) } else { (b, a) };
-                Ok((g, x))
-            })
-            .unwrap();
-        let mut w = db.write();
-        w.expires(osis::Expiry::In(Duration::from_secs(60)));
-        w.group(g).add(osis::Member::Item(x)).unwrap();
-        w.commit().unwrap();
-        assert!(durable_items(&db, g).contains(&x), "order {order}");
-        c.advance(120_000);
-        db.engine(|e| e.tick().unwrap());
-        assert_eq!(db.at(g, osis::internals::core_types::GROUP).get().unwrap(), Some(Default::default()), "order {order}: still a group");
-    }
 }
 
 // spec/permissions.md §4: a memory commit acting for the account counts among the actors this

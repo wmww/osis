@@ -125,8 +125,8 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
     }
     let mut out = AspectView::new();
     for (t, a) in e.all_aspects().map_err(|x| x.to_string())? {
-        // an aspect with ephemeral state (`ephemeral_group.0~`): its durable side alone (ephemeral state
-        // converges only where host caps let it through, `ephemeral::check`)
+        // durable aspects alone (ephemeral state converges only where host caps let it through,
+        // `ephemeral::check`)
         if !osis_schema::RawKey::lifetime(&a).is_durable() {
             continue;
         }

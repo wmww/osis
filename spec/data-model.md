@@ -8,10 +8,7 @@
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
 - A thing never changes its record (its first admin is history; its admins change by grants).
-- A **draft** is a thing whose creation record no durable commit holds at the node: the record lives in memory, with the same tid derivation and first admin, and travels beside the deltas of ephemeral commits (spec/commits.md §2).
-  - The durable set is closed up the record chain: the first commit with a durable delta on a draft (or a durable add of a member to it, §8) carries `created.0` of it and of every draft up its record chain (spec/permissions.md §1) (spec/commits.md §2), keeping the tids, and makes its ephemeral memberships durable (§8).
-  - A durable thing never becomes a draft.
-  - A draft never given durable data is gone when no node holds it.
+- A thing is made by a durable commit carrying its `created.0` (spec/commits.md §2); no ephemeral commit carries a record. Ephemeral writes (§2) are on things already made.
 
 ## 2. Aspects
 - An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) "." version ["^"] ["~" / "*"]`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo.1^~`. Anything else, or longer than the AK limit (spec/wire.md §4), is not an AK.
@@ -24,7 +21,7 @@
     - `*` **signal**: an ephemeral write with no lasting value (delivered to listeners here and on the nodes connected now, never in state; only a whole-value set).
   - A node decides an aspect's storage class from its AK alone (spec/commits.md §2).
   - Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory).
-  - Core aspects are durable but `ephemeral_group.0~` (§8), which is ephemeral.
+  - Core aspects are durable.
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker administers, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
 - A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in the forms spec/commits.md §5 allows), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `ro`, `synthetic`, `guaranteed`, `indexed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry.
@@ -102,20 +99,9 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - There is no thing hash and no state hash.
 
 ## 8. Groups
-- A **group** is a thing with a `group.0` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are the items of its `group.0` and `ephemeral_group.0~` plus, transitively, the members of their subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
+- A **group** is a thing with a `group.0` aspect: `items: set<tid>`, `subgroups: set<tid>`. Its members are the items of its `group.0` plus, transitively, the members of their subgroups. Groups may overlap, nest and be cyclic; membership changes over time.
 - Member, membership and member of a group mean only this listing, which grants no rights (spec/permissions.md §1). Groups are the sync unit (spec/sync.md §3).
-- `groups.0` (synthetic) on a thing: the locally known groups containing it, directly or transitively, through `group.0` and `ephemeral_group.0~`.
-- `ephemeral_group.0~`, of `group.0`'s type, is the one ephemeral core aspect: the group's ephemeral members, written by group operations only.
-- **Group writes**:
-  - Adding or removing an item or subgroup that is ephemeral after the write is a write of the group's `ephemeral_group.0~`, needing write on the group.
-  - Any other write of a draft group's `group.0` is ephemeral too and goes to `ephemeral_group.0~`.
-  - Adding a durable item or subgroup is durable and persists the group (§1).
-  - Removing a durable item or subgroup also removes it from `ephemeral_group.0~`.
-- **When a thing persists**:
-  - The persisting commit adds it durably to each group it is an ephemeral member of that the persisting node may write, and the node removes it from `ephemeral_group.0~`; a writer refuses a persisting write when such a membership expires (spec/commits.md §6).
-  - A membership in a group it may not write stays ephemeral.
-  - A persisting thing with an `ephemeral_group.0~` and no `group.0` gets an empty durable `group.0` in that commit.
-  - Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral memberships durably (a membership made while it persisted elsewhere, or restored by an undo).
+- `groups.0` (synthetic) on a thing: the locally known groups containing it, directly or transitively.
 
 ## 9. Core schema
 The core aspects form the core schema, evolving under spec/versioning.md. The block below (DSL of notes/data-model.md) gives their exact types and flags; `creation`, `signing_key`, `signature`, `kem_key`, `sealed` are spec/wire.md §3.
@@ -137,7 +123,6 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `required.0^` | `rules`: the retention the thing requires, by AK prefix (spec/commits.md §5); `retain`: a removal from the thing retains by default (spec/permissions.md §2, §3); a separate setting per thing |
 | `purge.0` | when a purge request naming no aspect to reset was made here: the delta such a commit carries (spec/commits.md §5) |
 | `group.0` | §8 |
-| `ephemeral_group.0~` | the ephemeral members, §8 |
 | `groups.0` | the locally known groups holding the thing, §8 |
 | `name.0` | what humans call the thing |
 | `body.0` | freeform content: a note's text, notes on anything |
@@ -198,7 +183,6 @@ aspect clients.0^: map<tid, client>;
 aspect required.0^: required_rules;
 aspect purge.0: timestamp;
 aspect group.0: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
-aspect ephemeral_group.0~: struct { 0 items: set<tid> = [], 1 subgroups: set<tid> = [] };
 aspect groups.0: set<tid> [synthetic, guaranteed];
 aspect name.0: string;
 aspect body.0: markdown;

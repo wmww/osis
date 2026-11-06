@@ -1,5 +1,5 @@
 # Questions for Tess
-> Summary: Open requirement and edge-case questions for Tess, each with a recommendation: realms (on hold), three limits kept in spec/requirements.md, depth 0 bending for stale member keys, and one cut (drafts shared into groups). Coordinators append; an answered question leaves this file and its answer goes to the spec or the relevant note.
+> Summary: Open requirement and edge-case questions for Tess, each with a recommendation: realms (on hold), three limits kept in spec/requirements.md, depth 0 bending for stale member keys. Coordinators append; an answered question leaves this file and its answer goes to the spec or the relevant note.
 
 Background: notes/core-triage.md §2. Ask one at a time, saying the trade-off and why users care.
 

@@ -38,16 +38,15 @@ Encoding: spec/wire.md §4. Fields:
 - **`created.0`** is carried by the thing's first durable commit, of either kind; a commit whose only deltas are `created.0` is a role commit.
   - A compaction snapshot or ephemeral commit never carries it (§5). A compaction snapshot carrying `required.0^` is bad input likewise.
   - A durable commit's `created.0` part MUST be exactly one minting of the record: the delta of one write setting the thing's record (typed by the `creation` struct, spec/data-model.md §9), nothing else; otherwise that delta is bad input (§4).
-  - The first content commit with a durable delta on a draft (spec/data-model.md §1) also carries `created.0` of each draft up that thing's record chain and the durable adds of its ephemeral memberships (spec/data-model.md §8).
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its author, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
   - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
-- **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), `ephemeral_group.0~` among them, one of:
+- **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), one of:
   - a session-form content commit (its author's own writes under one of its sessions, §3);
   - a commit-form content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
 
   With the relay marker instead it is **relay-only**: writes of signal (`*`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
-  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the drafts (at its author) the delta is on or its `ephemeral_group.0~` writes add that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral record chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
+  - **Records**: it carries no creation record; its things' records come in durable commits, and a part on a thing whose record is not held waits for it (§4).
   - **Shape**: every delta has retention `writer` with no bounds. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):
@@ -62,7 +61,7 @@ Encoding: spec/wire.md §4. Fields:
   - an AK without `*` in a relay-only commit;
   - an AK with `~` or `*` in a durable commit.
 
-  For such a part: a writer MUST NOT write one (a durable write on a draft is a durable commit persisting it, spec/data-model.md §1), and a receiver drops it alone, as a part not matching its header entry (§4).
+  For such a part: a writer MUST NOT write one, and a receiver drops it alone, as a part not matching its header entry (§4).
 - A commit spanning several kinds is invalid.
 
 ## 3. Dot forms
@@ -231,7 +230,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - A writer whose `ts` has reached the T it was given (its HLC ahead of its clock) writes `wall_ms(ts) + 1`.
 - The schema may give a default per AK as a duration from the write.
 - The blob prefix carries the commit's T (spec/sync.md §1, §3).
-- A write is one commit, with one exception: what a durable write does in memory goes as a second, ephemeral commit under its `ts` (spec/sync.md §9 Sending). A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect or a purge request; and one asking for durable, ephemeral and relay-only writes together (§2, spec/sync.md §9).
+- A write is one commit, with one exception: a delete's resets of the thing's ephemeral aspects go as a second, ephemeral commit under its `ts` (spec/sync.md §9 Sending). A writer refuses, before anything applies, a write whose deltas want different expiries, that mixes `nobody` deltas with others (§5), or that asks for an expiry beside a fixed-retention aspect or a purge request; and one asking for durable, ephemeral and relay-only writes together (§2, spec/sync.md §9).
 - At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less, the body and every held body carrying a copy of their values as its leftover, whatever the delta's keep-at-least bound.
 - A delta never received stays never received: a copy arriving after T joins value-less (held as its leftover from then on), and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
 - Hosts delete the blob at T unattended (spec/sync.md §5).

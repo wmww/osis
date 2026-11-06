@@ -1093,10 +1093,10 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
         x.p.engine(|e| e.knows(&other))
     });
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.clone());
-    // the grant's own step, past `source_write` and the `persist` before it
+    // the grant's own step, past `source_write`
     let calls = std::sync::atomic::AtomicUsize::new(0);
     x.p.after_source(Box::new(move || {
-        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
             p.set_source(g, Some(addr.clone()));
             let _ = p.set_sync_options(g, osis::SyncOptions { mode: osis::SyncMode::LogOnly, ..Default::default() });
         }

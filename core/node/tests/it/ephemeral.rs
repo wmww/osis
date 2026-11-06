@@ -169,7 +169,7 @@ pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
     b.scan(&[], None, usize::MAX).unwrap().len()
 }
 
-// notes/ephemeral.md step 3, spec/sync.md §4: a draft window added to a synced group
+// notes/ephemeral.md step 3, spec/sync.md §4: a window's ephemeral state in a synced group
 // reaches the other holder's reads and watches; neither its store nor the host's gains a row
 // (the host reserves log numbers in its label meta, the same row)
 #[test]
@@ -2814,48 +2814,6 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
     assert_eq!((held(&mut net, a) - ha, held(&mut net, b) - hb), (3, 3), "a replace supersedes nothing");
     let want = Some(Value::Map([(me, s("y"))].into()));
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (want.clone(), want));
-}
-
-// spec/sync.md §9 (superseded expiring writes, core keys alike): a membership (`ephemeral_group.0~`) made
-// again after an expiring removal supersedes the first membership at every node. Once the removal
-// expired and the second membership is undone, the item is out of the group at the author and the holder
-// alike (a node keeping the first membership read it a member again until that one expired)
-#[test]
-fn membership_superseded_like_any_write_spec_sync_9() {
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    net.run();
-    let w = window(&mut net, a, g, "w");
-    net.run();
-    let write = |net: &mut Net, op: Op, ms: u64| {
-        let mut m = Mutation::new();
-        m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op }).unwrap();
-        m.expires(g, &ct::GROUP, osis_base::WallMs(net.now() + ms)).unwrap();
-        let id = net.engine(a).write(m).unwrap().unwrap().id;
-        local(net, a);
-        net.run();
-        net.advance(33);
-        id
-    };
-    // the window's own membership (no expiry) goes first: removed, then added expiring
-    write(&mut net, Op::Remove(Value::Tid(w)), 60_000);
-    write(&mut net, Op::Add(Value::Tid(w)), 60_000);
-    write(&mut net, Op::Remove(Value::Tid(w)), 5_000);
-    let again = write(&mut net, Op::Add(Value::Tid(w)), 60_000);
-    let placed = |net: &mut Net, n: usize| net.engine(n).groups_of(&w).contains(&g);
-    assert!(placed(&mut net, a) && placed(&mut net, b));
-    let me = net.tid(a);
-    net.engine(a).revert_batch(again, me).unwrap();
-    local(&mut net, a);
-    net.run();
-    net.advance(10_000);
-    net.run();
-    for n in [a, b] {
-        assert!(!placed(&mut net, n), "node {n}: the first expiring membership went with the second");
-    }
 }
 
 // spec/sync.md §9 (a superseding part expires): a plain move after an expiring one supersedes

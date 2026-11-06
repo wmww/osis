@@ -65,7 +65,7 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/node-sync.md: node sync as built: module map, records, the pass, certificates, inbound, receipts-only reads, junk copies, first sync, simulator invariants.
 - notes/node-sync-work-sets.md: work sets, which labels a change marks, idle labels, many labels, measured pass costs.
 - notes/crypto.md: suite choices, epochs and establishment, holder actors at depth 0, delete keys, costs, crates.
-- notes/ephemeral.md: ephemeral data as built (drafts, `~` aspects, persistence, draft memberships, undo, memory commits held at every node holding them, relay-only signals, values kept alive by their author's rewrites, superseded expiring writes, bounds), expiry, the all-nodes predicate, heartbeats and the stranded flag.
+- notes/ephemeral.md: ephemeral data as built (`~` aspects on durable things, deletion, undo, memory commits held at every node holding them, relay-only signals, values kept alive by their author's rewrites, superseded expiring writes, bounds), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: chat (design E, libs/chat): why that shape, Tess's decisions, what is built, costs, realms, rejected designs; notes/chat-cases.md: chat behavior case by case.
 - notes/tags.md: the standard core aspects (`name.0`, `body.0`, `tag.0`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
 - notes/networking.md: network design (own transport abstraction, own P2P, no central server, reachability, transport keys), first contact by link, risks, push wake-up proposal, osis-transport as built.

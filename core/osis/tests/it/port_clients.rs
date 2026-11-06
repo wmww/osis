@@ -911,8 +911,7 @@ fn raw_group_ops_list_nothing_hidden() {
         let g = x.n.at(x.g, ct::GROUP).get().unwrap().unwrap();
         assert!(!g.items.contains(&x.out) && !g.subgroups.contains(&x.out), "{i}");
     }
-    // the ephemeral side and its neighbours add nothing
-    assert!(matches!(path_op(&mut r, 100, a, "ephemeral_group.0~", x.g, vec![field(0)], vec![n(4), out.clone()]), Outcome::Err { .. }));
+    // a neighbouring key adds nothing
     path_op(&mut r, 101, a, "group.1", x.g, vec![field(0)], vec![n(4), out.clone()]);
     assert!(!x.n.groups_of(x.out).unwrap().item_of.contains(&x.g));
 }

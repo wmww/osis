@@ -768,43 +768,46 @@ fn text_session_after_remote_delete_drops() {
     }
 }
 
-// notes/api.md Text sessions, spec/commits.md §6: a session whose commit is refused (a draft that keeps
-// expiring in a group cannot be kept yet) says so at `commit`, keeps its edits, commits them once it can;
-// dropped meanwhile it reports them lost.
+// notes/api.md Text sessions: a session whose commit is refused (its writer lost write) says so at
+// `commit`, keeps its edits, commits them once it can; dropped meanwhile it reports them lost.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn text_session_refused_commit_keeps_edits() {
-    let db = db(70);
-    db.register_schema("t.osis", "version 1;\naspect n:t.0: text;").unwrap();
-    let key = db.aspect_key("n:t.0").unwrap();
-    let g = db.commit_with(|w| {
-        let g = w.create()?;
-        w.at(g, osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap())).set(&Value::Int(1))?;
-        Ok(g)
-    })
-    .unwrap();
-    let draft = |db: &Osis| {
-        let mut w = db.write();
-        w.expires(osis::Expiry::In(std::time::Duration::from_secs(3600)));
-        let t = w.create().unwrap();
-        w.group(g).add(osis::Member::Item(t)).unwrap();
-        w.commit().unwrap();
-        t
+    let mut w = World::new();
+    let host = w.add_host();
+    let alice = w.account(1, &[host]);
+    let bob = w.account(2, &[host]);
+    w.run();
+    let card = bob.contact_card().unwrap();
+    w.run();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    for d in [&alice, &bob] {
+        d.register_schema("t.osis", "version 1;\naspect n:t.0: text;").unwrap();
+    }
+    let g = alice.commit_with(|x| x.create_in(alice.me(), &[alice.me()])).unwrap();
+    alice.sync(g, &[]).unwrap();
+    alice.grant(g, b, Role::Write, Default::default()).unwrap();
+    w.run();
+    let key = bob.aspect_key("n:t.0").unwrap();
+    let role = |r: Role, w: &mut World| {
+        alice.set_role_now(g, b, Some(r), SetRoleOpts::default()).unwrap();
+        w.run();
+        bob.settle();
     };
-    let t = draft(&db);
-    let s = db.at(t, key.clone()).path(osis::p![]).edit_text().unwrap();
+    role(Role::Read, &mut w);
+    let s = bob.at(g, key.clone()).path(osis::p![]).edit_text().unwrap();
     s.splice(0..0, "kept").unwrap();
-    assert!(matches!(s.commit(), Err(osis::Error::Invalid(m)) if m.contains("member of")));
+    assert!(matches!(s.commit(), Err(osis::Error::Permission { .. })));
     assert_eq!(s.text(), "kept");
-    db.commit_with(|w| w.group(g).remove(osis::Member::Item(t))).unwrap();
+    role(Role::Write, &mut w);
     s.commit().unwrap().unwrap();
-    assert_eq!(db.at(t, key.clone()).get().unwrap(), Some(Value::Str("kept".into())));
-    let (_d, rx) = uncommitted(&db);
-    let t = draft(&db);
-    let s = db.at(t, key).path(osis::p![]).edit_text().unwrap();
+    assert_eq!(bob.at(g, key.clone()).get().unwrap(), Some(Value::Str("kept".into())));
+    role(Role::Read, &mut w);
+    let (_d, rx) = uncommitted(&bob);
+    let s = bob.at(g, key).path(osis::p![]).edit_text().unwrap();
     s.splice(0..0, "lost").unwrap();
     drop(s);
-    assert_eq!(recv(&rx), vec![t]);
+    assert_eq!(recv(&rx), vec![g]);
 }
 
 // notes/api.md Text sessions: the same for a delete on the session's own node.
