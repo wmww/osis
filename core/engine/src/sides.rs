@@ -112,11 +112,14 @@ fn default_side(d: &Detected) -> bool {
 
 /// Records a default side for every dispute the last timeline update detected and not recorded
 /// yet, feeds the trust set to the walk when a side trusts, reports each (`Event::DisputeDetected`)
-/// and the candidates left unexamined (`DiagnosticKind::DisputesUnexamined`).
+/// and the candidates left unexamined (`DiagnosticKind::DisputesUnexamined`). An unexamined op
+/// that stood here keeps its side (trusted, fail safe: a flood of contestable writes cannot
+/// hand the walk's side to the backdated write that voided it); it is not told, maybe being
+/// no dispute.
 pub(crate) fn after_update(core: &mut Core) {
-    let (found, unexamined) = core.timelines.take_detected();
+    let det = core.timelines.take_detected();
     let mut trusts = false;
-    for d in found {
+    for d in det.found {
         let (op, holder) = (d.dispute.op, d.dispute.holder);
         if core.sides.get(op, holder).is_some() {
             continue;
@@ -126,12 +129,19 @@ pub(crate) fn after_update(core: &mut Core) {
         trusts |= trust;
         core.events.queue(Event::DisputeDetected { commit: op.0, op: op.1, holder, target: d.target, author: d.author, trust });
     }
+    for d in &det.kept {
+        if core.sides.get(d.op, d.holder).is_none() {
+            core.sides.set(d.op, d.holder, Side { trust: true, chosen: false });
+            trusts = true;
+        }
+    }
     if trusts {
         feed(core);
     }
-    if unexamined > 0 {
+    if det.unexamined + det.kept.len() > 0 {
         let now = core.now();
-        core.events.diagnostic(Diagnostic { kind: DiagnosticKind::DisputesUnexamined, tids: Vec::new(), commit: None, peer: None, detail: format!("{unexamined} contestable role writes arrived or stopped applying beyond what one update examines: the dispute list shows them, with no side taken by default") }, now);
+        let detail = format!("beyond what one update examines: {} role writes that stopped applying kept their side, {} newly held ones took the walk's", det.kept.len(), det.unexamined);
+        core.events.diagnostic(Diagnostic { kind: DiagnosticKind::DisputesUnexamined, tids: Vec::new(), commit: None, peer: None, detail }, now);
     }
 }
 
@@ -181,8 +191,8 @@ impl crate::engine::Engine {
         let mut left = 0;
         let mut budget = max;
         for tl in self.core.timelines.each() {
-            let (ds, l) = tl.disputes_up_to(budget);
-            budget = budget.saturating_sub(ds.len());
+            let (ds, walked, l) = tl.disputes_up_to(budget);
+            budget = budget.saturating_sub(walked);
             left += l;
             for d in ds {
                 let Some((author, holder, target)) = tl.edge_op(&d.op) else { continue };

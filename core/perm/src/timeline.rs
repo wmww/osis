@@ -241,10 +241,10 @@ impl Timeline {
     }
 
     /// `disputes` walking at most `max` candidates (in point order): the disputes among them,
-    /// and how many candidates were left unexamined.
-    pub fn disputes_up_to(&self, max: usize) -> (Vec<Dispute>, usize) {
-        let (d, _, left) = self.scan(&self.candidates(), max, &BTreeSet::new(), None);
-        (d.into_iter().map(|d| d.dispute).collect(), left)
+    /// the walks made and how many candidates were left unexamined.
+    pub fn disputes_up_to(&self, max: usize) -> (Vec<Dispute>, usize, usize) {
+        let (d, walked, left) = self.scan(&self.candidates(), max, &BTreeSet::new(), None);
+        (d.into_iter().map(|d| d.dispute).collect(), walked, left.len())
     }
 
     /// The op of `commit` on edge (`holder`, `target`), if held here.
@@ -274,13 +274,14 @@ impl Timeline {
     /// skipped) examined: each with seeds costs one walk, at most `max` of them; the rest are
     /// counted, not examined. `stood` marks those applied before the update that asks; `me`
     /// (if any) gives the standing facts (`Detected`). Returns the disputes found, the walks
-    /// made and the candidates left that needed one.
-    pub(crate) fn scan(&self, cands: &[WriteId], max: usize, stood: &BTreeSet<WriteId>, me: Option<Tid>) -> (Vec<Detected>, usize, usize) {
+    /// made and the candidates left that needed one (each with the holder it lowers: maybe no
+    /// dispute).
+    pub(crate) fn scan(&self, cands: &[WriteId], max: usize, stood: &BTreeSet<WriteId>, me: Option<Tid>) -> (Vec<Detected>, usize, Vec<Dispute>) {
         // the index over every held commit only once a candidate needs seeds (honest arrivals
         // apply, and detection asks at every update)
         let mut ix: Option<TrustIndex> = None;
         let mut out = Vec::new();
-        let (mut walked, mut left) = (0, 0);
+        let (mut walked, mut left) = (0, Vec::new());
         let mut own_roles: Option<BTreeMap<Tid, Role>> = None;
         let mut reach: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         for id in cands {
@@ -294,7 +295,7 @@ impl Timeline {
                 continue;
             }
             if walked >= max {
-                left += 1;
+                left.push(Dispute { op: *id, holder: op.holder });
                 continue;
             }
             for (w, p) in &self.seeds {

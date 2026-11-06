@@ -63,11 +63,26 @@ pub struct Detected {
     pub standing: (bool, bool),
 }
 
+/// What an update's dispute detection found (`Timelines::take_detected`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Detection {
+    /// The disputes among the candidates examined.
+    pub found: Vec<Detected>,
+    /// Candidates that applied before the update and stopped applying, left unexamined past
+    /// `DETECT_MAX`: maybe disputes. Fail safe: the node keeps the side it held (trusts each).
+    pub kept: Vec<Dispute>,
+    /// Newly held candidates left unexamined: the walk's side, as their default would be
+    /// unless the node's own standing exists on R's side only.
+    pub unexamined: usize,
+}
+
 /// Candidates walked per update by dispute detection (`Timelines::detect`): a resource bound
 /// against a hostile author, whose every contestable write costs a walk once, when it arrives
-/// or stops applying. Past it candidates wait for the scan (`Timeline::disputes`), reported
-/// as unexamined, with no default side. At 0 detection records no default (the walk's side
-/// everywhere, as before step 4); at infinity a batch of k hostile writes costs k walks.
+/// or stops applying. Past it a candidate that stood keeps its side unexamined
+/// (`Detection::kept`) and a newly held one gets the walk's (`Detection::unexamined`). At 0
+/// every op that stops applying is trusted unexamined (no warning, no standing rule); at
+/// infinity a batch of k hostile writes, or k honest writes one backdated removal voids,
+/// costs k walks.
 pub const DETECT_MAX: usize = 16;
 
 /// A held write on an edge: (point, op, value).

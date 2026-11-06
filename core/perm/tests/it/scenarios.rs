@@ -916,38 +916,98 @@ fn detection_reports_stood_and_standing_spec_permissions_5_1() {
     let mut tls = Timelines::new();
     tls.detect(Some(me));
     tls.update_touched(&w.held_without(&skip(&[r, back, grant])), &touched);
-    assert!(tls.take_detected().0.is_empty());
+    assert!(tls.take_detected().found.is_empty());
     tls.update_touched(&w.held_without(&skip(&[back, grant])), &touched);
-    assert!(tls.take_detected().0.is_empty(), "the removal applies: no dispute");
+    assert!(tls.take_detected().found.is_empty(), "the removal applies: no dispute");
     tls.update_touched(&w.held_without(&skip(&[grant])), &touched);
-    let (d, left) = tls.take_detected();
-    assert_eq!(left, 0);
+    let det = tls.take_detected();
+    assert_eq!((det.unexamined, det.kept.len()), (0, 0));
+    let d = det.found;
     assert_eq!(d.len(), 1);
     assert_eq!((d[0].dispute, d[0].author, d[0].target, d[0].stood, d[0].standing), (Dispute { op: WriteId(r, 0), holder: n[0] }, n[1], g, true, (false, false)));
     // a switch detects nothing, and detection goes on after it
     tls.set_trust(&w.held_without(&skip(&[grant])), trust(&[r]));
-    assert!(tls.take_detected().0.is_empty());
+    assert!(tls.take_detected().found.is_empty());
     tls.set_trust(&w.held_without(&skip(&[grant])), Trust::default());
-    assert!(tls.take_detected().0.is_empty());
+    assert!(tls.take_detected().found.is_empty());
     // the backdated one first, then the grant of the detecting node, then the honest
     // removal: it arrives unapplied, and the node's grant counts on its side only
     let mut tls = Timelines::new();
     tls.detect(Some(me));
     tls.update_touched(&w.held_without(&skip(&[r, grant])), &touched);
     tls.update_touched(&w.held_without(&skip(&[r])), &touched);
-    assert!(tls.take_detected().0.is_empty());
+    assert!(tls.take_detected().found.is_empty());
     tls.update_touched(&w.held(), &touched);
-    let (d, _) = tls.take_detected();
+    let d = tls.take_detected().found;
     assert_eq!(d.len(), 1);
     assert_eq!((d[0].dispute.op, d[0].stood, d[0].standing), (WriteId(r, 0), false, (false, true)));
-    assert!(tls.take_detected().0.is_empty(), "reported once");
+    assert!(tls.take_detected().found.is_empty(), "reported once");
     // the bounded scan
     let tl = tls.get(&g).unwrap();
     // (the unapplied grant of n2 is a candidate with no seeds: no walk, never counted)
-    assert_eq!(tl.disputes_up_to(0), (vec![], 1));
-    assert_eq!(tl.disputes_up_to(1), (vec![Dispute { op: WriteId(r, 0), holder: n[0] }], 0));
+    assert_eq!(tl.disputes_up_to(0), (vec![], 0, 1));
+    assert_eq!(tl.disputes_up_to(1), (vec![Dispute { op: WriteId(r, 0), holder: n[0] }], 1, 0));
     // detection off: nothing reported
     let mut tls = Timelines::new();
     tls.update_touched(&w.held(), &touched);
-    assert!(tls.take_detected().0.is_empty());
+    assert!(tls.take_detected().found.is_empty());
+}
+
+/// §5.1 Trust, notes/owner-removal-plan.md step 4 (detection bound): a backdated removal that
+/// voids more contestable writes than one update examines, the honest removal among the last
+/// in point order, and a flood of the author's newly held unapplied writes in the same update:
+/// the removal that stood is still examined first or kept unexamined (`Detection::kept`, the
+/// fail-safe side), never left to the walk's side.
+#[test]
+fn flood_cannot_hide_a_removal_that_stood_spec_permissions_5_1() {
+    use osis_perm::DETECT_MAX;
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let hs = w.nodes_salted(DETECT_MAX + 4, 2);
+    let g = w.thing(n[0]);
+    let all: Vec<(Tid, u64)> = n.iter().chain(&hs).map(|x| (*x, 11)).collect();
+    w.set(n[0], g, n[1], edge(Admin), 10, &all);
+    for h in &hs {
+        w.set(n[0], g, *h, edge(Admin), 10, &all);
+    }
+    // each holder writes on g, unseen by n1: a seed of n1's removal of it
+    for (k, h) in hs.iter().enumerate() {
+        w.set(*h, g, n[2], edge(Read), 20 + k as u64, &[]);
+    }
+    // n1 removes every holder, then n0, all after the point n0's removal will claim
+    let mut removals = Vec::new();
+    for (k, h) in hs.iter().enumerate() {
+        removals.push(w.set(n[1], g, *h, None, 60 + k as u64, &[]));
+    }
+    let r = w.set(n[1], g, n[0], None, 100, &[]);
+    let back = w.set(n[0], g, n[1], None, 50, &[]);
+    // the flood: n0's unapplied writes on a thing it has no role on, each with a seed
+    let g2 = w.thing(n[2]);
+    w.set(n[2], g2, n[1], edge(Admin), 5, &[]);
+    w.set(n[1], g2, n[2], edge(Read), 6, &[]);
+    let mut flood = Vec::new();
+    for k in 0..DETECT_MAX as u64 + 4 {
+        flood.push(w.set(n[0], g2, n[1], None, 200 + k, &[]));
+    }
+    let touched: std::collections::BTreeSet<Tid> = [g, g2].into_iter().collect();
+    let skip: std::collections::BTreeSet<_> = flood.iter().copied().chain([back]).collect();
+    let mut tls = Timelines::new();
+    tls.detect(Some(n[2]));
+    tls.update_touched(&w.held_without(&skip), &touched);
+    assert_eq!(tls.take_detected(), Default::default());
+    let tl = tls.get(&g).unwrap();
+    assert!(removals.iter().chain([&r]).all(|c| tl.applied().contains_key(&WriteId(*c, 0))), "n1's removals stood");
+    tls.update_touched(&w.held(), &touched);
+    let det = tls.take_detected();
+    let r_op = Dispute { op: WriteId(r, 0), holder: n[0] };
+    // the last in point order, past the bound: kept, as is every removal left unexamined
+    assert!(det.kept.contains(&r_op), "{det:?}");
+    assert_eq!(det.kept.len(), hs.len() + 1 - DETECT_MAX);
+    assert_eq!(det.unexamined, flood.len(), "the flood waits behind what stood");
+    // the plain walk hands g to n0; the kept side keeps n1
+    let tl = tls.get(&g).unwrap();
+    assert_eq!((tl.role(&n[0], &g, At::END), tl.role(&n[1], &g, At::END)), (Some(Admin), None));
+    tls.set_trust(&w.held(), Trust { ops: det.kept.iter().map(|d| d.op).collect() });
+    let tl = tls.get(&g).unwrap();
+    assert_eq!((tl.role(&n[0], &g, At::END), tl.role(&n[1], &g, At::END)), (None, Some(Admin)));
 }
