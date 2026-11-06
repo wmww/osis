@@ -103,7 +103,7 @@ fn undo_blocked_by_dropped_body_spec_commits_7() {
 fn undo_mutation_alone_spec_commits_7() {
     let db = db(1);
     let mut w = db.write();
-    let t = w.create_durable(db.me()).unwrap();
+    let t = w.create_with_content(db.me()).unwrap();
     let c = w.commit().unwrap().unwrap().id.commit().unwrap();
     let mut m = osis::internals::node::Mutation::new();
     m.undo(c).set(t, &ak("t:x.0"), &Value::Int(1)).unwrap();
@@ -284,7 +284,7 @@ fn snapshot_only_attribution_api_history() {
     use osis::Origin;
     let (a, b, c) = (db(1), db(2), db(3));
     let k = ak("t:x.0");
-    let t = a.commit_with(|w| w.create_durable(a.me())).unwrap();
+    let t = a.commit_with(|w| w.create_with_content(a.me())).unwrap();
     deliver(&a, &b);
     deliver(&a, &c);
     let done = commit_with(&a, |w| w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(7)));
@@ -400,10 +400,10 @@ fn step(db: &Osis, scope: &Scope, redo: bool) -> Option<CommitId> {
 fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(1);
     let (x, y) = (ak("t:x.0"), ak("t:y.0"));
-    let mk = |db: &Osis| db.commit_with(|w| w.create_durable(db.me())).unwrap();
+    let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.me())).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.commit_with(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))?; Ok(t) }).unwrap();
-    let created = db.created(t).unwrap().unwrap().id.unwrap();
+    let created = db.created(t).unwrap().unwrap().id;
     db.commit_with(|w| { w.group(f2).add(osis::Member::Item(t))?; w.group(f3).add(osis::Member::Subgroup(t)) }).unwrap();
     let edit = commit_with(&db, |w| w.at(t, osis::DynamicAspectKey::untyped(y.clone())).set(&Value::Int(2))).id;
     let s = Scope::Thing(t);
@@ -435,19 +435,17 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
     assert!(db.at(t, osis::DynamicAspectKey::untyped(x)).get().unwrap() == Some(Value::Int(1)) && db.at(t, osis::DynamicAspectKey::untyped(y)).get().unwrap() == Some(Value::Int(2)) && db.groups_of(t).unwrap().within.len() == 2);
 }
 
-// notes/ephemeral.md API (Undo), spec/crdt.md §4.6: undoing the commit that created an
-// draft deletes it (it reads unknown, its ephemeral memberships in every group go);
-// redo brings it back in its groups.
+// notes/ephemeral.md API (Undo), spec/crdt.md §4.6: undoing the commit that created a thing
+// deletes it, its ephemeral aspects and its memberships in every group too; redo brings it back
+// in its groups, its ephemeral aspects too.
 #[test]
-fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
+fn undo_of_creation_resets_ephemeral_aspects_spec_crdt_4_6() {
     let db = db(2);
     let k = ak("app:draft.0~");
-    let mk = |db: &Osis| db.commit_with(|w| w.create_durable(db.me())).unwrap();
+    let mk = |db: &Osis| db.commit_with(|w| w.create_with_content(db.me())).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
-    let mut w = db.write();
-    let e = w.create_in(db.me(), &[f]).unwrap();
-    w.at(e, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Int(1)).unwrap();
-    w.commit().unwrap();
+    let e = db.commit_with(|w| w.create_in(db.me(), &[f])).unwrap();
+    db.commit_set(e, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     let mut w = db.write();
     w.group(f2).add(osis::Member::Item(e)).unwrap();
     w.commit().unwrap();
@@ -457,17 +455,16 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     };
     assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
     let s = Scope::Thing(e);
-    // the membership in f2 is a write of f2: outside the thing's scope, so undo picks the creation
+    // the membership in f2 is a write of f2 and the ephemeral write is no durable aspect: outside
+    // the thing's scope, so undo picks the creation
     let picked = next(&db, &s, false).unwrap();
-    assert!(picked.commit().is_none());
+    assert_eq!(picked, db.created(e).unwrap().unwrap().id);
     step(&db, &s, false).unwrap();
     assert!(!db.has_content(e).unwrap() && db.groups_of(e).unwrap().item_of.is_empty() && db.at(e, osis::DynamicAspectKey::untyped(k.clone())).get().unwrap().is_none());
     assert_eq!(step(&db, &s, false), None);
     step(&db, &s, true).unwrap();
     assert!(db.has_content(e).unwrap() && db.at(e, osis::DynamicAspectKey::untyped(k)).get().unwrap() == Some(Value::Int(1)));
     assert_eq!(sorted(db.groups_of(e).unwrap().item_of), sorted(vec![f, f2]));
-    // still a draft: nothing reached the store for it
-    assert_eq!(db.created(e).unwrap().unwrap().id, None);
 }
 
 // notes/api.md Commits: `next` reports what undo and redo would revert, in a thing and in a
@@ -476,9 +473,9 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
 fn next_reports_what_undo_and_redo_revert_api_commits() {
     let db = db(3);
     let k = ak("t:x.0");
-    let f = db.commit_with(|w| { let g = w.create_durable(db.me())?; Ok(g) }).unwrap();
+    let f = db.commit_with(|w| { let g = w.create_with_content(db.me())?; Ok(g) }).unwrap();
     let in_f = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
-        let t = w.create_durable(db.me())?;
+        let t = w.create_with_content(db.me())?;
         w.group(f).add(osis::Member::Item(t))?;
         Ok(t)
     };
@@ -527,14 +524,14 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     alice.redo(&s).unwrap().unwrap();
     w.run();
     assert!(bob.has_content(t).unwrap() && bob.at(t, osis::DynamicAspectKey::untyped(x.clone())).get().unwrap() == Some(Value::Int(1)) && bob.groups_of(t).unwrap().item_of == vec![g]);
-    let c = alice.created(t).unwrap().unwrap().id.unwrap();
+    let c = alice.created(t).unwrap().unwrap().id;
     bob.revert(c).unwrap();
     w.run();
     assert!(!alice.has_content(t).unwrap() && alice.groups_of(t).unwrap().within.is_empty());
     let t3 = mk(alice.me());
     w.run();
     assert_eq!(bob.role_on(t3).unwrap(), None);
-    let c3 = alice.created(t3).unwrap().unwrap().id.unwrap();
+    let c3 = alice.created(t3).unwrap().unwrap().id;
     assert!(matches!(bob.revert(c3), Err(Error::Permission { .. })));
     w.run();
     assert!(alice.has_content(t3).unwrap() && alice.groups_of(t3).unwrap().item_of == vec![g]);
@@ -546,8 +543,8 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
 #[test]
 fn creation_revert_found_by_created_scope_api_commits() {
     let (da, db) = two_nodes();
-    let t = da.commit_with(|w| w.create_durable(da.me())).unwrap();
-    let c = da.created(t).unwrap().unwrap().id.unwrap();
+    let t = da.commit_with(|w| w.create_with_content(da.me())).unwrap();
+    let c = da.created(t).unwrap().unwrap().id;
     commit_with(&da, |w| {
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:made.0"))).remove()?;
         w.at(t, osis::DynamicAspectKey::untyped(ak("t:y.0"))).set(&Value::Int(1))

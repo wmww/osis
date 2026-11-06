@@ -930,7 +930,7 @@ fn show(ctx: &mut Ctx<'_>, t: &str, width: usize) -> anyhow::Result<()> {
 }
 
 fn stamp_json(c: osis::ThingStamp) -> J {
-    J::obj([("commit", J::opt(c.id.map(|x| J::str(x.to_string())))), ("node", J::tid(c.node)), ("ts", J::int(c.written.0))])
+    J::obj([("commit", J::str(c.id.to_string())), ("node", J::tid(c.node)), ("ts", J::int(c.written.0))])
 }
 
 fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {

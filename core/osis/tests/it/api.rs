@@ -722,9 +722,9 @@ fn not_synced_diagnostic_spec_api_diagnostics() {
     let g = w.create().unwrap();
     // durable things: an ephemeral membership is no `NotSynced` matter (nothing leaves the
     // node anyway); placing a durable thing persists the group
-    let home_item = w.create_durable(db.me()).unwrap();
+    let home_item = w.create_with_content(db.me()).unwrap();
     w.group(db.me()).add(osis::Member::Item(home_item)).unwrap();
-    let lost = w.create_durable(db.me()).unwrap();
+    let lost = w.create_with_content(db.me()).unwrap();
     w.group(g).add(osis::Member::Item(lost)).unwrap();
     w.commit().unwrap();
     db.settle();
@@ -784,7 +784,7 @@ fn groups_of_relations_spec_data_model_8() {
         w.group(g1).add(osis::Member::Item(tag))?;
         w.group(g1).add(osis::Member::Subgroup(tag))?;
         w.group(g2).add(osis::Member::Subgroup(tag))?;
-        let x = w.create_durable(db.me())?;
+        let x = w.create_with_content(db.me())?;
         w.group(tag).add(osis::Member::Item(x))?;
         Ok((g1, g2, tag, x))
     }).unwrap();
@@ -810,9 +810,8 @@ fn groups_of_relations_spec_data_model_8() {
 
 // notes/api.md Writes (place): a membership leaving a durable thing in no synced group while the
 // target group's own aspects sync (an item of the synced home, no subgroup of it) fails before
-// anything applies, also when a durable write persists a draft added there; the
-// same commit adding the group as a subgroup succeeds; a node-local group (in no synced
-// group) and a thing that stays ephemeral are allowed.
+// anything applies; the same commit adding the group as a subgroup succeeds; a node-local group
+// (in no synced group) is allowed.
 // spec: none (API surface, notes/api.md)
 #[test]
 fn membership_reaching_no_synced_group_fails_spec_api_writes() {
@@ -822,30 +821,21 @@ fn membership_reaching_no_synced_group_fails_spec_api_writes() {
     let g = w.create_in(db.me(), &[home]).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
-    let x = w.create_durable(db.me()).unwrap();
+    let x = w.create_with_content(db.me()).unwrap();
     w.group(g).add(osis::Member::Item(x)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(m)) if m.contains("as a subgroup")));
     assert!(!db.has_content(x).unwrap() && db.created(x).unwrap().is_none(), "nothing applied");
-    // a draft stays on this node anyway
-    let mut w = db.write();
-    let e = w.create_in(db.me(), &[g]).unwrap();
-    w.commit().unwrap();
-    assert!(db.groups_of(e).unwrap().item_of.contains(&g));
-    // ... until a durable write persists it with that membership: the same check
-    let r = db.commit_set(e, osis::DynamicAspectKey::untyped(ak("t:x.0")), &Value::Int(1));
-    assert!(matches!(&r, Err(Error::Invalid(m)) if m.contains("as a subgroup")), "{r:?}");
-    assert_eq!(db.created(e).unwrap().unwrap().id, None, "still ephemeral");
     // a group with no synced group at all: node-local, allowed (a `NotSynced` diagnostic)
     let mut w = db.write();
-    let l = w.create_durable(db.me()).unwrap();
-    let y = w.create_durable(db.me()).unwrap();
+    let l = w.create_with_content(db.me()).unwrap();
+    let y = w.create_with_content(db.me()).unwrap();
     w.group(l).add(osis::Member::Item(y)).unwrap();
     let local = l;
     w.commit().unwrap();
     assert!(db.has_content(local).unwrap());
     // the fix: the group as a subgroup too, in the same commit
     let mut w = db.write();
-    let x = w.create_durable(db.me()).unwrap();
+    let x = w.create_with_content(db.me()).unwrap();
     w.group(g).add(osis::Member::Item(x)).unwrap();
     w.group(home).add(osis::Member::Subgroup(g)).unwrap();
     w.commit().unwrap();
@@ -1020,10 +1010,10 @@ fn created_now_api_reads() {
     c.advance(5);
     assert_eq!(db.now().unwrap(), osis::Time(T0 + 5));
     let mut w = db.write();
-    let t = w.create_durable(db.me()).unwrap();
+    let t = w.create_with_content(db.me()).unwrap();
     let done = w.commit().unwrap().unwrap();
     let ci = db.created(t).unwrap().unwrap();
-    assert_eq!((ci.id, ci.ts(), ci.node, ci.actor, ci.received), (Some(done.id), done.ts(), db.node(), db.me(), osis::Time(T0 + 5)));
+    assert_eq!((ci.id, ci.ts(), ci.node, ci.actor, ci.received), (done.id, done.ts(), db.node(), db.me(), osis::Time(T0 + 5)));
     assert_eq!(ci.shown(), osis::Time(T0 + 5));
     c.advance(5);
     db.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("later")).unwrap();
@@ -1046,20 +1036,20 @@ fn changed_content_only_api_reads() {
     let (_, reply) = a.pair_accept(j.request()).unwrap();
     let b = j.finish(&reply).unwrap();
     let mut w = a.write();
-    let t = w.create_durable(a.me()).unwrap();
+    let t = w.create_with_content(a.me()).unwrap();
     w.group(a.me()).add(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();
     assert_eq!(a.changed(t).unwrap(), a.created(t).unwrap());
     ca.advance(10);
     a.commit_set(t, osis::DynamicAspectKey::untyped(ak("t:x.0")), &s("1")).unwrap();
     let ch = a.changed(t).unwrap().unwrap();
-    assert_eq!((ch.id, ch.shown()), (Some(newest(&a, t).into()), osis::Time(T0 + 10)));
+    assert_eq!((ch.id, ch.shown()), (newest(&a, t).into(), osis::Time(T0 + 10)));
     assert_ne!(a.created(t).unwrap(), Some(ch));
     // membership: neither the item's nor the group's content
     let home = a.changed(a.me()).unwrap();
     ca.advance(10);
     let mut w = a.write();
-    let g = w.create_durable(a.me()).unwrap();
+    let g = w.create_with_content(a.me()).unwrap();
     w.commit().unwrap();
     let mut w = a.write();
     w.group(g).add(osis::Member::Item(t)).unwrap();
@@ -1084,11 +1074,9 @@ fn changed_content_only_api_reads() {
     w.commit().unwrap();
     assert!(!a.has_content(t).unwrap());
     assert_eq!(a.changed(t).unwrap().unwrap().shown(), osis::Time(T0 + 40), "a delete is a change");
-    let mut w = a.write();
-    let e = w.create().unwrap();
-    w.at(e, osis::DynamicAspectKey::untyped(ak("t:x.0~"))).set(&s("draft")).unwrap();
-    w.commit().unwrap();
-    assert!(a.created(e).unwrap().unwrap().id.is_none());
+    // an ephemeral write is no content change
+    let e = a.commit_with(|w| w.create()).unwrap();
+    a.commit_set(e, osis::DynamicAspectKey::untyped(ak("t:x.0~")), &s("typing")).unwrap();
     assert_eq!(a.changed(e).unwrap(), a.created(e).unwrap());
 }
 
@@ -1109,7 +1097,7 @@ fn path_op_into_absent_key_spec_crdt_5_6() {
     let b = j.finish(&reply).unwrap();
     let r = ak("t:reactions.0");
     let mut w = a.write();
-    let t = w.create_durable(a.me()).unwrap();
+    let t = w.create_with_content(a.me()).unwrap();
     w.commit().unwrap();
     deliver(&a, &b);
     let mut w = a.write();
@@ -1141,7 +1129,7 @@ fn created_not_a_snapshot_spec_commits_2() {
     let done = w.commit().unwrap().unwrap();
     c.advance(60_000);
     let snap = a.engine(|e| e.snapshot(&t, &ak("t:x.0"))).unwrap().unwrap();
-    assert_eq!(a.created(t).unwrap().unwrap().id, Some(done.id));
+    assert_eq!(a.created(t).unwrap().unwrap().id, done.id);
     let pks = a.engine(|e| e.commit_ids().iter().filter(|id| **id != done.id.commit().unwrap()).filter_map(|id| e.package(id).unwrap()).collect::<Vec<_>>());
     for pk in pks {
         b.engine(|e| e.ingest(&pk.bytes, pk.blobs.clone()).unwrap());
@@ -1206,7 +1194,7 @@ fn knows_is_about_content() {
     let t = w.create().unwrap();
     w.commit().unwrap();
     db.sync(t, &[]).unwrap();
-    assert_eq!(db.created(t).unwrap().map(|c| c.id.is_some()), Some(true), "durable");
+    assert!(db.created(t).unwrap().is_some(), "durable");
     assert!(!db.has_content(t).unwrap(), "no content yet");
     db.commit_set(t, osis::DynamicAspectKey::untyped(k.clone()), &Value::Int(1)).unwrap();
     assert!(db.has_content(t).unwrap());
@@ -1406,7 +1394,7 @@ fn a_first_member_makes_a_group() {
     let db = db(1);
     let (plain, other, a, b) = db
         .commit_with(|w| {
-            let v = [w.create_durable(db.me())?, w.create_durable(db.me())?, w.create_durable(db.me())?, w.create_durable(db.me())?];
+            let v = [w.create_with_content(db.me())?, w.create_with_content(db.me())?, w.create_with_content(db.me())?, w.create_with_content(db.me())?];
             Ok((v[0], v[1], v[2], v[3]))
         })
         .unwrap();
@@ -1434,7 +1422,7 @@ fn a_first_member_makes_a_group() {
     assert!(db.members(other).unwrap().is_empty() && db.at(other, osis::internals::core_types::GROUP).get().unwrap().is_some());
     // the acting actor's, whoever the commit acts as
     let mut w = db.write();
-    let group_actor = w.create_durable(db.me()).unwrap();
+    let group_actor = w.create_with_content(db.me()).unwrap();
     w.commit().unwrap();
     let mut w = db.write();
     w.act_as(group_actor);
@@ -1465,7 +1453,7 @@ fn a_first_member_makes_a_group() {
 
 /// A durable thing of `db`'s.
 fn made(db: &Osis) -> osis::Tid {
-    db.commit_with(|w| w.create_durable(db.me())).unwrap()
+    db.commit_with(|w| w.create_with_content(db.me())).unwrap()
 }
 
 // spec/data-model.md §8: two nodes each adding what is to them a first member both keep theirs, whichever arrives first
@@ -1575,7 +1563,7 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
     let db = osis::internals::create(cfg(1, MemStore::new(), &c)).unwrap();
     let minute = osis::Expiry::In(std::time::Duration::from_secs(60));
     let mut w = db.write();
-    let (g, t, s, kept) = (w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap(), w.create_durable(db.me()).unwrap());
+    let (g, t, s, kept) = (w.create_with_content(db.me()).unwrap(), w.create_with_content(db.me()).unwrap(), w.create_with_content(db.me()).unwrap(), w.create_with_content(db.me()).unwrap());
     w.commit().unwrap();
     let mut w = db.write();
     w.expires(minute);
@@ -1605,47 +1593,6 @@ fn membership_expires_item_or_subgroup_spec_commits_6() {
     w.group(g).add(osis::Member::Item(kept)).unwrap();
     w.commit().unwrap();
     assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(kept)], "and it can be one again");
-}
-
-// spec/data-model.md §8: a group and its member, made in memory in one commit, keep as either is written: the member's first durable
-// write keeps both, in one commit with the add or a later one; the group's keeps it alone, the member still in memory there
-#[test]
-fn a_group_and_member_of_one_commit_keep_by_what_is_written() {
-    let db = db(1);
-    let x = ak("t:x.0");
-    let kept = |t: osis::Tid| db.created(t).unwrap().unwrap().id.is_some();
-    let new = |write_member: bool| {
-        db.commit_with(|w| {
-            let (g, m) = (w.create()?, w.create()?);
-            w.group(g).add(osis::Member::Item(m))?;
-            if write_member {
-                w.at(m, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))?;
-            }
-            Ok((g, m))
-        })
-        .unwrap()
-    };
-    let check = |g, m, what: &str| {
-        assert!(kept(g) && kept(m), "{what}");
-        assert_eq!(db.at(g, osis::internals::core_types::GROUP).get().unwrap().unwrap().items, [m].into(), "{what}: durably");
-        assert_eq!(db.groups_of(m).unwrap().item_of, vec![g], "{what}: one membership");
-        db.engine(|e| {
-            assert!(e.closure(&g).contains(&m), "{what}: sync follows");
-        });
-    };
-    let (g, m) = new(true);
-    check(g, m, "the same commit");
-    let (g, m) = new(false);
-    assert!(!kept(g) && !kept(m));
-    db.commit_with(|w| w.at(m, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))).unwrap();
-    check(g, m, "the member later");
-    let (g, m) = new(false);
-    db.commit_with(|w| w.at(g, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))).unwrap();
-    assert!(kept(g) && !kept(m), "the group alone");
-    assert_eq!(db.members(g).unwrap(), vec![osis::Member::Item(m)]);
-    assert!(db.engine(|e| e.durable_groups_of(&m).is_empty()), "only in memory");
-    db.commit_with(|w| w.at(m, osis::DynamicAspectKey::untyped(x.clone())).set(&Value::Int(1))).unwrap();
-    check(g, m, "then the member");
 }
 
 // spec: none (client surface: notes/api.md Writes). One splice for a list and for text: replaces a range, an empty range inserts, no items delete

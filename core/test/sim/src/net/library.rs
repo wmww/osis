@@ -651,7 +651,6 @@ pub fn disappearing(seed: u64) -> Res<Report> {
         // are two commits (spec/commits.md §6)
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, g);
-        m.persist(t);
         if sim.write(n, m)?.is_empty() {
             continue;
         }

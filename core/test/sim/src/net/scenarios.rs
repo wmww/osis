@@ -645,7 +645,6 @@ pub fn work_sets(seed: u64) -> Res<Report> {
         let e = sim.engine(n)?;
         let at = e.now().0 + (10 + d.below(20)) * 60_000;
         let x = e.new_thing(&mut m, g);
-        m.persist(x);
         // the record and the plain write, then the expiring note (spec/commits.md §6)
         if !sim.write(n, m)?.is_empty() {
             let mut m = Mutation::new();
