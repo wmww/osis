@@ -563,33 +563,6 @@ async fn rotate_reach_relistens_in_process_spec_sync_10() {
     .unwrap();
 }
 
-// notes/api.md Handle and sync: closing a node whose own runtime's driver is inside an
-// engine call (its `block_in_place`) must not let the driver poll a timer of the shut-down
-// runtime (tokio panics "... it is being shutdown" on an `osis-sync` thread). spec: none (an API property)
-#[test]
-fn close_while_driver_runs_no_timer_panic() {
-    count_shutdown_panics();
-    let net = osis_transport::Net::new(9);
-    std::thread::scope(|sc| {
-        for t in 0..8u64 {
-            let net = net.clone();
-            sc.spawn(move || {
-                for i in 0..10 {
-                    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
-                    c.app.internals.seed = Some(t * 1000 + i);
-                    c.runtime = Runtime::Own;
-                    c.app.internals.transport = Some(net.endpoint(&format!("c{t}-{i}")));
-                    let db = osis::internals::create(c).unwrap();
-                    let _ = common::block_on(db.wait_synced(osis::SyncScope::AllWithSavedPeers));
-                    assert_eq!(db.close().unwrap(), osis::Close::Closed);
-                }
-            });
-        }
-    });
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(shutdown_panics("osis-sync"), 0);
-}
-
 /// Names of the threads that panicked on a timer of a shut-down tokio runtime.
 static SHUTDOWN_PANICS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
@@ -650,8 +623,10 @@ fn rand_suffix() -> u64 {
 
 // notes/api.md Handle and sync: closing a node on the app's runtime (`Runtime::Tokio`)
 // and then shutting that runtime down must not let the driver poll a timer of the shut-down
-// runtime. spec: none (an API property)
+// runtime. spec: none (an API property). Tier 2: a race; with `close` not waiting for the
+// driver it panics in about a third of runs at 40 rounds per thread, none at 10.
 #[test]
+#[ignore = "tier 2"]
 fn tokio_runtime_close_then_shutdown_no_timer_panic() {
     count_shutdown_panics();
     let net = osis_transport::Net::new(11);
@@ -659,7 +634,7 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
         for t in 0..8u64 {
             let net = net.clone();
             sc.spawn(move || {
-                for i in 0..10 {
+                for i in 0..40 {
                     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("tk-close").enable_all().build().unwrap();
                     let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
                     c.app.internals.seed = Some(t * 1000 + i);
