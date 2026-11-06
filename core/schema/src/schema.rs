@@ -253,10 +253,8 @@ impl Schema {
             if def.expires == Some(0) {
                 bad(&item, "expires must be positive".into());
             }
-            // `ephemeral_group.0~` (spec/data-model.md §8) is the one core aspect that is not
-            // durable
-            if core && !lifetime.is_durable() && ak.as_str() != "ephemeral_group.0~" {
-                bad(&item, "core aspects are durable, ephemeral_group.0~ ephemeral".into());
+            if core && !lifetime.is_durable() {
+                bad(&item, "core aspects are durable".into());
             }
             if !lifetime.is_durable() && def.retention != Retention::default() {
                 bad(&item, "retention applies to durable aspects only".into());

@@ -29,14 +29,12 @@ pub struct AspectWrite {
     /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
     /// keys, [`delete_keys`]).
     pub chunks: Vec<BlobId>,
-    /// Creation records its part carries (an ephemeral commit, spec/commits.md §2).
-    pub records: Vec<osis_base::CreationRecord>,
 }
 
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), chunks: Vec::new(), records: Vec::new() }
+        AspectWrite { tid, ak, lo, hi, delta, retention: Retention::default(), chunks: Vec::new() }
     }
 }
 
@@ -101,12 +99,7 @@ impl CommitBuilder {
         let mut aspect_keys = Vec::with_capacity(self.aspects.len());
         let mut entries = Vec::with_capacity(self.aspects.len());
         let mut deltas = Vec::with_capacity(self.aspects.len());
-        let mut records = Vec::with_capacity(self.aspects.len());
         for a in std::mem::take(&mut self.aspects) {
-            let mut rs = a.records;
-            rs.sort_by_cached_key(osis_base::CreationRecord::tid);
-            rs.dedup_by_key(|r| r.tid());
-            records.push(rs);
             let dedup = secrets.dedup(&a.tid).ok_or(Error::Build("dedup secret not supplied"))?;
             let hash = delta_hash(&dedup, &a.delta);
             let (lo, hi) = if kind.has_own_writes() { (a.lo, a.hi) } else { (0, 0) };
@@ -194,13 +187,7 @@ impl CommitBuilder {
         }
 
         let signature = header.sign(key);
-        let mut parts = Vec::new();
-        for (ai, (delta, records)) in deltas.into_iter().zip(records).enumerate() {
-            if !records.is_empty() && header.ephemeral.is_none() {
-                return Err(Error::Build("creation records beside a durable commit's delta"));
-            }
-            parts.push(Part { ai, delta, records });
-        }
+        let parts = deltas.into_iter().enumerate().map(|(ai, delta)| Part { ai, delta }).collect();
         let commit = CommitBlob { header, signature, parts };
         check_fits(&commit, self.max_blob)?;
         Ok(Built { commit, list_blobs })

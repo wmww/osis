@@ -318,7 +318,7 @@ pub fn required_for<'a>(rules: &'a RequiredRules, ak: &str) -> Option<&'a Requir
     (0..=ak.len()).rev().filter(|n| ak.is_char_boundary(*n)).find_map(|n| ak.get(..n).and_then(|p| rules.rules.get(p)))
 }
 
-/// `group.0`, `ephemeral_group.0~`: a field never written reads empty, its default in the
+/// `group.0`: a field never written reads empty, its default in the
 /// schema. A first member so needs no write of the other field, which beside a concurrent add
 /// would risk it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -364,8 +364,6 @@ pub const REQUIRED: Aspect<RequiredRules> = Aspect::new("required.0^", &CORE);
 /// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
-/// The ephemeral memberships into a group (spec/data-model.md §8): written by group ops only.
-pub const EPHEMERAL_GROUP: Aspect<Group> = Aspect::new("ephemeral_group.0~", &CORE);
 pub const GROUPS: Aspect<BTreeSet<Tid>> = Aspect::new("groups.0", &CORE);
 pub const NAME: Aspect<String> = Aspect::new("name.0", &CORE);
 pub const BODY: Aspect<String> = Aspect::new("body.0", &CORE);
