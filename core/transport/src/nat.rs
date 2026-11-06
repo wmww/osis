@@ -188,12 +188,6 @@ pub struct MemUdp {
     ip: IpAddr,
 }
 
-impl MemUdp {
-    pub fn net(&self) -> &Net {
-        &self.net
-    }
-}
-
 impl UdpT for MemUdp {
     type Sock = MemSock;
 

@@ -711,10 +711,6 @@ impl<U: Udp> P2p<U> {
         self
     }
 
-    pub fn udp(&self) -> &U {
-        &self.udp
-    }
-
     /// Keys registered here as a relay.
     pub fn relayed_keys(&self) -> Vec<PublicKey> {
         self.relay.as_ref().map(|r| lock(&r.st).regs.keys().copied().collect()).unwrap_or_default()
