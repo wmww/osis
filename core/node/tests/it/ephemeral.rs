@@ -2219,7 +2219,8 @@ fn random_churn_run(seed: u64) {
     let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, tied: None };
     let mut demoted: BTreeSet<usize> = BTreeSet::new();
     // nodes once demoted: a demoted author's view of its own writes differs from the others'
-    // (issue eph-demoted-own-writes, closed), so only the others' reads are compared
+    // (cause not recorded: the issue this named was never filed), so only the others' reads are
+    // compared
     let mut ever: BTreeSet<usize> = BTreeSet::new();
     let mut last: BTreeMap<usize, osis_node::BatchId> = BTreeMap::new();
     let mut restarts = 100;

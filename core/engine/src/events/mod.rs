@@ -106,7 +106,7 @@ pub enum DiagnosticKind {
     /// A thing was placed only in groups whose closure no synced group holds (the `osis` API,
     /// spec/requirements.md Offline and network).
     NotSynced,
-    /// A persisted thing's ephemeral placement stayed ephemeral: this node may not write the
+    /// A saved thing's ephemeral membership stayed ephemeral: this node may not write the
     /// group (`tids`: item, group).
     MembershipNotSaved,
     /// A demotion was stamped without its pre-sync (spec/permissions.md §5.3).

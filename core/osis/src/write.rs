@@ -26,7 +26,9 @@ use std::ops::Range;
 use std::time::Duration;
 
 /// A commit just made: an atomic write, whole at every node that applies it. A write that made or
-/// freed only a draft has nothing for other nodes to apply, and an id all the same.
+/// freed only a draft has nothing for other nodes to apply, and an id all the same. What a durable
+/// write ends in memory without asking (a `delete`'s ephemeral aspects, a saved draft's or removed
+/// member's ephemeral memberships) goes as a second commit, which a node may get apart from this.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     /// Names this commit.
