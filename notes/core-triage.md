@@ -56,7 +56,7 @@ account-rename, api-deferred, api-after-owners, api-leaving-give-up, app-attach-
 
 ## Not yet triaged (unranked)
 Grouped by their tags only; read the issue before placing it.
-- Tagged security: blocked-walk-stops-at-readers, grant-audits-without-frontier, keys-depth0-removed-member-rotates, ownerless-first-admin-backdate, reader-persists-memory-thing.
+- Tagged security: blocked-walk-stops-at-readers, grant-audits-without-frontier, keys-depth0-removed-member-rotates, reader-persists-memory-thing.
 - Waiting on Tess (`tess-call`): commit-memory-half, node-host-unify, no-server-audit, recovery-redesign, revocation-without-arbiter.
 - Engine and retention: delete-required-rules, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip, subgroup-expiry-strands-silently, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
 - Cost: copy-expiry-probe-cost, role-history-join-cost, rotation-names-grow.
