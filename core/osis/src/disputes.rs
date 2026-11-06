@@ -65,7 +65,8 @@ pub struct Dispute {
 }
 
 /// Candidates `disputes` examines at most (each costs a walk of the role history: a removed
-/// admin can sign any number); the rest are counted.
+/// admin can sign any number); the rest are counted. A resource bound: at 0 the list is empty
+/// and everything counted, at infinity a hostile flood of k writes costs k walks per call.
 const LIST_MAX: usize = 64;
 
 impl Dispute {
