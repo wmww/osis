@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! What a host learns (spec/requirements.md Data a node cannot read; notes/sync.md What a node learns): real engines sync scripted scenarios through an osis-host hub, then the
+//! What a host learns (spec/requirements.md Data a node cannot read; notes/unreadable-data.md): real engines sync scripted scenarios through an osis-host hub, then the
 //! hub's stored bytes are searched for every secret and identifier of the scenario, blob sizes
 //! checked against Padmé, labels checked for shared bytes, claim sets for reader counts and
 //! heartbeats for content beyond `seen.0`.
@@ -174,7 +174,7 @@ fn no_linkage_across_labels() {
     assert!(c1.intersection(&c2).next().is_some(), "certificate commits travel under both labels (as distinct blobs)");
 }
 
-// spec/sync.md §2 (claim set), notes/sync.md "What a host learns": claim sets are padded
+// spec/sync.md §2 (claim set), notes/unreadable-data.md: claim sets are padded
 // to a power of two in random order: labels with 3 and 4 readers show the same set size
 #[test]
 fn claim_sets_hide_reader_counts() {

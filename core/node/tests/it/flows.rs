@@ -1436,7 +1436,7 @@ fn an_ended_edge_departs_by_its_finalize_spec_crypto_4() {
     assert!(again.commits.is_empty(), "covered by the finalize's own rotation");
 }
 
-// notes/sync.md Limits (stranded node re-paired), spec/permissions.md §3: a node whose
+// notes/label-access.md Limits (stranded node re-paired), spec/permissions.md §3: a node whose
 // grant raced a rotation of its account is re-sealed over the pairing channel.
 #[test]
 fn stranded_node_repaired_spec_perm_3() {

@@ -630,7 +630,7 @@ impl SyncEngine {
     }
 
     /// Whether `reach.0` goes under `g`'s labels: the policy set for `g`, else when everyone who
-    /// reads it is this node's own or a contact (notes/sync.md: excluded by default from labels
+    /// reads it is this node's own or a contact (notes/peers.md: excluded by default from labels
     /// shared with non-contacts): its reader actor is this node's own (an actor this node is a
     /// holder of), or each holder of it is this node's own, a contact, or a thing such an actor
     /// owns whose own holders pass the same test (a link's group holds a key actor: it fails).

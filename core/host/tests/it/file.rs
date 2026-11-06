@@ -59,7 +59,7 @@ fn redb_store_survives_reopen() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-// spec: none (cost, notes/sync.md Hub stall bounds): one whole-space Reconcile over a label of
+// spec: none (cost, notes/flow-control.md Hub stall bounds): one whole-space Reconcile over a label of
 // `OSIS_SCALE_N` (default 10^5) live entries on redb, against 1024 puts in one store transaction. By hand,
 // release: `cargo test --release -p osis-host --test it -- --ignored reconcile_whole_space_budget --nocapture`
 #[test]

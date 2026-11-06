@@ -124,7 +124,7 @@ async fn redeem_over(host_ep: Option<osis::internals::InProcess>, url: &str, a: 
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::AllWithSavedPeers)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(Duration::from_secs(90), bob.redeem(&link)).await.unwrap().unwrap(), g);
-    // spec/permissions.md §4, notes/sync.md: `reach.0` under the home group, not under a group
+    // spec/permissions.md §4, notes/peers.md: `reach.0` under the home group, not under a group
     // shared with a non-contact, until the policy says so
     let home = alice.me();
     assert!(alice.sync_engine(|s| s.publishes_reach(&home)));

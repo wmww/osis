@@ -56,7 +56,7 @@ fn demotion_unsynced() {
     ok("demotion_unsynced", 1);
 }
 
-// spec/permissions.md §5.1, §5.3, notes/sync.md Receipts-only reads: a phone holding part of the
+// spec/permissions.md §5.1, §5.3, notes/node-sync.md Receipts-only reads: a phone holding part of the
 // tree removes a holder after reading the rest for receipts; his unseen edits there stay and
 // nothing goes under the labels it reads.
 #[test]

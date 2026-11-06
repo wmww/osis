@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Inbox deposits refused for now (spec/sync.md §3; notes/sync.md Limits): the grantee's inbox
+//! Inbox deposits refused for now (spec/sync.md §3; notes/inbox.md, The outbox): the grantee's inbox
 //! label is not registered yet, so the host answers code 13; the sender keeps the blob and
 //! deposits it again (backing off from `retry_ms`) until the label exists.
 

@@ -43,7 +43,7 @@ use std::sync::Arc;
 /// Deposit budget unit (spec/sync.md §5 recommended minimum).
 pub const DEPOSIT_ENTRY_BYTES: u64 = 32 * 1024;
 
-/// Host policy (spec/sync.md §5: caps, budget, rate limits; notes/sync.md Policy defaults).
+/// Host policy (spec/sync.md §5: caps, budget, rate limits; notes/serving.md Host policy).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostPolicy {
     /// Live entries per label beyond which new entries are refused.

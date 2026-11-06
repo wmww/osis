@@ -1,4 +1,4 @@
-//! Negative cases (spec/sync.md §5; notes/sync.md "Limits"): what a stale, reading or hostile
+//! Negative cases (spec/sync.md §5; notes/label-access.md and notes/inbox.md "Limits"): what a stale, reading or hostile
 //! client cannot do at a host.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

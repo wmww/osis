@@ -1,4 +1,4 @@
-//! What a host learns (spec/requirements.md Data a node cannot read; notes/sync.md What a node learns): a scripted run whose blobs carry tids, AKs and author keys in their plaintext,
+//! What a host learns (spec/requirements.md Data a node cannot read; notes/unreadable-data.md): a scripted run whose blobs carry tids, AKs and author keys in their plaintext,
 //! then every byte the node ever wrote, and every host-store row an attacker holding the device
 //! decrypts from it, is searched for them.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]

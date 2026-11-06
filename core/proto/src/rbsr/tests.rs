@@ -132,7 +132,7 @@ fn large_sets_rounds() {
 }
 
 // spec/wire.md §11.3, spec/sync.md §6: a million-blob label with 1% difference reconciles in
-// about log16(n/32) round trips (notes/sync.md); tier 2 scale check, numbers in notes/testing.md
+// about log16(n/32) round trips (notes/sync-protocol.md); tier 2 scale check, numbers in notes/testing.md
 // (`cargo test --workspace --lib million_blob_rounds -- --ignored --nocapture`).
 #[test]
 #[ignore]

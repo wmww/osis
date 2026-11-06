@@ -993,7 +993,7 @@ impl SyncEngine {
     /// label that the commit gave this node a read secret of (`Engine::boxed_by`), one per blob
     /// (a delivery names one thing), so the hints a stranger makes are bounded by the inbox's
     /// deposit budget and go with the blob (a connected sender's stamped ones: by what the host
-    /// takes, notes/sync.md Limits). The payload is the sender's word: hosts only, never
+    /// takes, notes/inbox.md Invite requests). The payload is the sender's word: hosts only, never
     /// a node to dial (`peer://`); a label a key actor's entry is followed for (`via`) is left
     /// to that follow. A label a group here records is that group's, whether synced now or not:
     /// never a hint (it would take the label's place on the connection under the wrong thing's

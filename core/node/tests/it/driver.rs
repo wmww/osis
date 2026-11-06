@@ -50,8 +50,8 @@ fn read(s: &mut SyncEngine, t: Tid) -> Option<Value> {
     s.engine_mut().get(&t, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap()
 }
 
-/// Two nodes of one group under the tokio driver converge through a's host (notes/sync.md
-/// Hosting): a's `host.0^` has it listen at `url` with `own` admission, and the group's label
+/// Two nodes of one group under the tokio driver converge through a's host (notes/serving.md,
+/// Hosting in the node): a's `host.0^` has it listen at `url` with `own` admission, and the group's label
 /// names a's host address. b is served from a's host store; a's own copy reaches its host over
 /// the in-process loopback (`cut` then cuts a's transport from itself, so nothing else could).
 async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce()) {
@@ -101,7 +101,7 @@ async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce())
     db.await.unwrap();
 }
 
-// spec/sync.md §5, §6, §10, notes/sync.md Hosting: two nodes under the tokio driver converge
+// spec/sync.md §5, §6, §10, notes/serving.md, Hosting in the node: two nodes under the tokio driver converge
 // through one node's host over in-process sessions (ephemeral client keys, the host's key
 // checked); the hosting node reaches its own host only through the loopback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -121,7 +121,7 @@ async fn driver_quic_localhost_spec_sync_10() {
     converge(&format!("quic://127.0.0.1:{port}"), Quic::new(), Quic::new(), || {}).await;
 }
 
-// spec/requirements.md Deletion, notes/sync.md Hosting in the node: the host secret lives only
+// spec/requirements.md Deletion, notes/serving.md Hosting in the node: the host secret lives only
 // while `host.0^` is set. Removing it shreds the secret, and the driver taking the earlier
 // config late gets no secret for it: a stale `Action::Host` cannot bring a shredded secret back
 // (nor listen with a key other than the config's), and a new start has a new key.

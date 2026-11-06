@@ -466,7 +466,7 @@ fn removal_rotates_spec_permissions_3() {
     assert_eq!(x(carol, by_bob), Some(s("bob was here")));
 }
 
-// spec: none (API surface); notes/sync.md Receipts-only reads, notes/client-port.md §2 (rows that wait): a pre-sync's read of a receipts-only group ends with its future, also one dropped before it finished: a daemon outlives a client gone mid-demote
+// spec: none (API surface); notes/node-sync.md Receipts-only reads, notes/client-port.md §2 (rows that wait): a pre-sync's read of a receipts-only group ends with its future, also one dropped before it finished: a daemon outlives a client gone mid-demote
 #[test]
 fn dropped_set_role_ends_its_receipts_read() {
     use std::future::Future;
@@ -493,7 +493,7 @@ fn dropped_set_role_ends_its_receipts_read() {
     assert_eq!(alice.sync_engine(|s| s.receipts_read(&[h])), Some(Ok(())), "nobody reads any more");
 }
 
-// spec/permissions.md §5.1 (frontier received), §5.3 (receipts only), notes/sync.md
+// spec/permissions.md §5.1 (frontier received), §5.3 (receipts only), notes/node-sync.md
 // Receipts-only reads: Alice's phone holds group G but none of its subgroup H (receipts-only).
 // Bob writes in both; the phone removes him with the required pre-sync, which reads H's commit
 // headers only. His edit in H, which the phone never held, is kept at Carol; nothing went under

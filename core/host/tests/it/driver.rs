@@ -65,7 +65,7 @@ async fn hosts_replicate_through_dialed_links() {
     s2.stop().await;
 }
 
-// spec: none (driver policy, notes/sync.md Hub stall bounds): connections take turns per input,
+// spec: none (driver policy, notes/flow-control.md Hub stall bounds): connections take turns per input,
 // so one connection's backlog of inputs does not delay another's request: an opener writes a
 // flood of uploads at once (many 64 KiB reads queued behind its reader); a reader's Sync, sent
 // while the flood runs, waits a few of its inputs, not the backlog

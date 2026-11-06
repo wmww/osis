@@ -760,7 +760,7 @@ impl Osis {
 
     /// Catches up before a demotion (spec/permissions.md §5.3) over the labels holding `things`,
     /// with every peer reachable now (`caught_up`): groups held here are synced, those held for
-    /// receipts only read for receipts (their commit headers, notes/sync.md Receipts-only reads).
+    /// receipts only read for receipts (their commit headers, notes/node-sync.md Receipts-only reads).
     /// Nothing to wait for: done at once, with no runtime too; anything else without a runtime
     /// fails `Network`.
     async fn catch_up(&self, things: BTreeSet<Tid>) -> Result<()> {

@@ -6,7 +6,7 @@
 
 An ordinary node (a laptop, a phone) may keep data it cannot read for others, and a backup machine may read some of what it holds (its settings, a website's data). Same binary, run the same way, any mix.
 
-What already holds: hosting runs inside a node, from its `host.0^` (notes/sync.md, Hosting in the node), and there is no separate host program. So a laptop can already host, and a mostly encrypted machine already has an account and data of its own.
+What already holds: hosting runs inside a node, from its `host.0^` (notes/serving.md, Hosting in the node), and there is no separate host program. So a laptop can already host, and a mostly encrypted machine already has an account and data of its own.
 
 ## Keep
 The code that serves data a node may not read cannot decrypt anything (`osis-host` has no engine or keys, `tools/policy.py` `host_blind`). That is a security boundary inside every node, not a kind of node. Describe it that way.

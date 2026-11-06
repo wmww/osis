@@ -227,7 +227,7 @@ fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
     sim.finish()
 }
 
-/// A demotion from a node holding part of the tree (notes/sync.md Receipts-only reads;
+/// A demotion from a node holding part of the tree (notes/node-sync.md Receipts-only reads;
 /// spec/permissions.md §5.1, §5.3): Alice's phone holds her group G but holds its subgroup H for
 /// receipts only. Bob writes under both; the phone, alone with the host, reads H's commit
 /// headers and removes Bob: H's log there does not move (the phone uploads and deletes
