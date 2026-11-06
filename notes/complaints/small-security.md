@@ -1,1 +1,0 @@
-small-security review: a message loop under `Net::run` looks like a hang (settle's bound is 200k messages, 7 min at 2 ms each); tests expecting quiet can `settle` with a low bound. `gdb -p` is refused here (ptrace_scope).

@@ -1,6 +1,0 @@
-# order-seeds-c
-- The failing pair of seed 7340007 was the "held set, then the rest" comparison, which `dump_orders` does not print for; `OSIS_ORDER_DUMP=1` showed nothing until the first fix moved the failure to a plain order. A per-step probe test (reads, invalid writes, one commit's drop/death status after each ingest) found both causes faster than the dump.
-- A `dating` failure ("body dropped before its keep-at-most bound") also prints no dump; the oracle's "earliest superseders None" was the key fact and came only from the probe.
-- Shrinking 52040 was skipped: `OSIS_ORDER_SHRINK=0` plus the one failing held set and order reproduces in under a second, and the history pins as is (70 steps).
-- Review: the order harness delivers every commit at `played.now`, so a node holding a history before an expiry and passing it later is never compared; `key_erased_copy_keeps_record_before_expiry` does it by hand. A harness mode delivering at an earlier clock, then advancing, would cover expiry timing generally.
-- Review: a first simplification (vouch by any `(d, None)` entry of `copies::vouched`) passed all seven order oracles on fresh offsets but broke tier-1 `validity::misstated_copy_keeps_no_other_record`: `None` there also means any non-creation write under the dot. Run the area's tier-1 module (`validity::`, `order::`) before spending oracle time.

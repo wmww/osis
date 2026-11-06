@@ -1,3 +1,0 @@
-- Sweep split across helpers: a word with two senses (sync "placed under a label" vs membership "placed") got renamed one way in notes and kept in spec and tests; needed a token-level revert. Give helpers the per-sense decision up front.
-- A helper renamed a parenthesised spec anchor in a test comment; `spec_map --gaps` caught it. Anchors look like prose but are keys.
-- The in-flight branches named in notes/handoff.md no longer exist locally (`git branch` shows only main), so "don't touch their files" had nothing to check against.

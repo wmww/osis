@@ -1,3 +1,0 @@
-- `Engine::take_changed` returns empty until its first call (`changed` starts `None`): a test asserting on it must call it once first, or it fails looking like a product bug.
-- `cargo test ... | grep` shows nothing until the run ends, so `claudewait` gives no progress on tier 1.
-- Review: the `order::` purge oracles (180 seeds, about 15000 orders) never reach `send_away`: their requests sit on the thing they name, so they wait with it. Green there said nothing about the record-away half of this branch (since removed); only the `shred` and `parts_relay` tests did.
