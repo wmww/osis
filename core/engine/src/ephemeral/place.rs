@@ -1,4 +1,4 @@
-//! Ephemeral placements (notes/ephemeral.md Step 2 as built, spec/data-model.md §8): a group op
+//! Ephemeral placements (notes/ephemeral.md Local engine, spec/data-model.md §8): a group op
 //! whose item stays ephemeral after the batch is an ephemeral write into the group's `placed.0~`
 //! (the core ephemeral aspect read with `group.0`); one on a durable item is a durable write of
 //! `group.0` and persists the group. When a thing persists, each of its ephemeral placements the node may write becomes a

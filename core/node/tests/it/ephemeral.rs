@@ -876,7 +876,7 @@ fn host_cap_one_huge_write_reports_spec_sync_5() {
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
 }
 
-// spec/sync.md §9 (caps), notes/ephemeral.md Node cap: the node cap counts what a held commit
+// spec/sync.md §9 (caps), notes/ephemeral.md Bounds: the node cap counts what a held commit
 // takes in memory, not its encoded bytes, and a commit is checked against the room left before it
 // is decoded (`Engine::memory_bound`): one of many tiny entries (about 200 times its size
 // decoded) is refused whole and reported, never held past the cap; a small one is held, counted
@@ -1405,7 +1405,7 @@ fn ephemeral_part_waits_for_its_record_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "doc:cursor.0~"), Some(Value::Int(7)));
 }
 
-// notes/ephemeral.md Node cap: a blob that could never fit the label's cap (its bound past the
+// notes/ephemeral.md Bounds: a blob that could never fit the label's cap (its bound past the
 // whole cap) is remembered: a drop under the cap reconciles the label without fetching it again
 #[test]
 fn never_fitting_blob_not_fetched_again_spec_sync_9() {
@@ -2677,7 +2677,7 @@ fn invalid_on_arrival_held_once_valid_spec_sync_9() {
     assert_eq!(notes(&mut net, d, w).get("r").map(String::as_str), Some("ok"), "valid now: joined; the earlier one still invalid");
 }
 
-// notes/ephemeral.md Bounds, notes/ephemeral.md Own covers: entries refused for a node's cap are
+// notes/ephemeral.md Bounds, notes/ephemeral.md Memory commits: entries refused for a node's cap are
 // fetched again once its bytes drop (here another's write expires): the label is reconciled at
 // the next periodic pass instead of staying short until a restart. The cap fits the cursor and
 // the big write decoded (`osis_crdt::decoded_bound`: strings, so mostly their bytes), not both
