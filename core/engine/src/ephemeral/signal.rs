@@ -40,6 +40,9 @@ pub(super) struct Delivered {
     floor: BTreeMap<Tid, u64>,
 }
 
+/// One signal delta of a relay-only commit: thing, aspect, fragment.
+type Signal = (Tid, Ak, Fragment);
+
 impl Engine {
     /// Notes an own signal write for sync (things in a labeled closure only).
     pub(super) fn note_signal(&mut self, tid: &Tid, ak: &Ak, v: &Value, ts: Ts, actor: Tid) {
@@ -51,7 +54,8 @@ impl Engine {
     /// The relay-only commits of the unsent signal writes: one per write (its `ts`, spec/sync.md
     /// §9), each part carrying the records of the ephemeral things it is on (spec/commits.md §2).
     pub fn take_signals(&mut self) -> Result<Vec<EphCommit>> {
-        let mut by_write: BTreeMap<(Ts, Tid), Vec<(Tid, Ak, Fragment)>> = BTreeMap::new();
+        // per write (its `ts` and actor): its signal deltas
+        let mut by_write: BTreeMap<(Ts, Tid), Vec<Signal>> = BTreeMap::new();
         let src = Source::session(self.core.session);
         for (tid, ak, v, ts, actor) in std::mem::take(&mut self.eph.signals) {
             // never joined anywhere: any counter
@@ -71,7 +75,7 @@ impl Engine {
     }
 
     /// Builds and signs one relay-only commit of `deltas` for `actor`.
-    fn build_relay(&mut self, actor: Tid, deltas: Vec<(Tid, Ak, Fragment)>) -> Result<EphCommit> {
+    fn build_relay(&mut self, actor: Tid, deltas: Vec<Signal>) -> Result<EphCommit> {
         let me = self.tid();
         let ts = self.core.hlc.next();
         self.run(|tx| {
