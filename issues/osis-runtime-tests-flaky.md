@@ -1,7 +1,0 @@
-# osis runtime:: tests flaky under load
-> Summary: `runtime::keep_alive_rewrites_until_dropped` (6 of 20) and `runtime::single_use_direct_keeps_key_in_process_spec_permissions_7` (1 of 20, "admin delete key not supplied") fail when `runtime::` runs four copies at once under TLC load; each passes alone.
-> Tags: tests, osis
-
-Repro: the osis `it` binary, `runtime::`, 5 rounds of 4 concurrent runs beside a 12-worker TLC simulation (load about 15): 7 of 20 runs failed. `single_use_direct_...` alone, 12 at once beside TLC: 120 of 120 passed.
-- `keep_alive_rewrites_until_dropped` (runtime.rs:207, `mine(&db)` None after five kept writes): `c:cursor.0~` expires in 60 ms and is rewritten every 30 ms; a scheduling gap over 30 ms lets it lapse. A wall-time dependence in tier 1: the assert after the loop should not depend on the gap (a longer expiry against the rewrite period, or only checking the value is rewritten).
-- `single_use_direct_...` (runtime.rs:525, Bob's `w.commit()` right after Alice's link is finalized): `Invalid("commit: cannot build commit: admin delete key not supplied")`. Bob, a writer, needs g's published admin delete key (`CommitSecrets::admin_key`, from g's `keys.0`); likely not yet received when `redeem` has returned and Alice has finalized. If so a writer's first write right after joining fails for a user too, not only in the test: either the write should wait for (or fetch) the key, or redeem should not return before it holds it. Unconfirmed: record the full state next time.
