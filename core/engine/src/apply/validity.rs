@@ -697,23 +697,6 @@ impl<'a> Judge<'a> {
     }
 }
 
-/// When part `ai` of `id`, invalid here, fell (spec/commits.md §5): the `ts` of the demotion that
-/// took it, on its thing or for its author's acting, no earlier than its own; its own with none
-/// (its author held no right when it wrote, or its fault is of the delta alone). Read from what
-/// is held now, and judged again whenever its thing is.
-pub(crate) fn fell_at(core: &Core, h: &Header, id: &CommitId, ai: usize) -> osis_base::Ts {
-    let point = Point { ts: h.ts, node: h.author, commit: *id };
-    let by = |tid: &Tid, role: Role| match core.timelines.get(tid).map(|tl| tl.delta_valid(point, tid, role)) {
-        Some(Validity::Invalid { by: Some(d) }) => d.ts,
-        _ => h.ts,
-    };
-    let Some(a) = h.aspects.get(ai) else { return h.ts };
-    let ak = a.ak.as_str();
-    let role = if h.kind.is_compaction() { crate::engine::write::snapshot_role(ak) } else { core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak)) };
-    let acting = if h.author == h.actor { h.ts } else { by(&h.actor, Role::Write) };
-    h.ts.max(by(&a.tid, role)).max(acting)
-}
-
 /// What possession is judged by (`osis_keys::possession::View`): the roles just before a role
 /// commit's key on the actor's timeline, and the held valid keysets.
 struct Possession<'a> {
