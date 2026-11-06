@@ -32,7 +32,8 @@ pub struct Held {
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Owner -> things it owns (by creation records).
+    /// Owner or first admin -> the things whose creation record names it: the record chain's
+    /// links down (spec/permissions.md §1).
     owned: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Commit -> its edge commit held here.
     ids: BTreeMap<CommitId, Arc<RoleCommit>>,
@@ -55,7 +56,8 @@ impl Held {
     pub fn created(&self, t: &Tid) -> Option<&CreationRecord> {
         self.created.get(t).map(|r| &r.record)
     }
-    /// The held things whose record names `t` as owner.
+    /// The held things whose record names `t` as owner or first admin (one link down the record
+    /// chain).
     pub fn owned(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
         self.owned.get(t).into_iter().flatten()
     }
@@ -121,7 +123,8 @@ impl Held {
         out
     }
 
-    /// `from` and everything below them by owner links: the things whose owner chains hold them.
+    /// `from` and everything below them by record links: the things whose record chains hold
+    /// them.
     pub fn below(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
         let mut stack: Vec<Tid> = from.iter().copied().collect();
@@ -202,21 +205,21 @@ impl Held {
     fn set_created(&mut self, t: Tid, r: Option<Rec>) -> Option<Rec> {
         let old = match r {
             Some(r) => {
-                if let CreationRecord::Thing { owner, .. } = &r.record {
-                    self.owned.entry(*owner).or_default().insert(t);
+                if let Some(up) = r.record.up() {
+                    self.owned.entry(up).or_default().insert(t);
                 }
                 self.created.insert(t, r)
             }
             None => self.created.remove(&t),
         };
         let class_only = matches!((&old, self.created.get(&t)), (Some(o), Some(n)) if o.record == n.record);
-        if let Some(Rec { record: CreationRecord::Thing { owner, .. }, .. }) = &old
-            && self.created.get(&t).is_none_or(|n| !matches!(&n.record, CreationRecord::Thing { owner: o, .. } if o == owner))
-            && let Some(s) = self.owned.get_mut(owner)
+        if let Some(up) = old.as_ref().and_then(|o| o.record.up())
+            && self.created.get(&t).is_none_or(|n| n.record.up() != Some(up))
+            && let Some(s) = self.owned.get_mut(&up)
         {
             s.remove(&t);
             if s.is_empty() {
-                self.owned.remove(owner);
+                self.owned.remove(&up);
             }
         }
         if class_only {

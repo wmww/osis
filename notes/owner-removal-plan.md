@@ -31,7 +31,7 @@ Staged plan with inventory, spec text, tests and risks: issues/owner-to-first-ad
 - Record: `{ first_admin, nonce }` or `{ key, nonce }`. Every non-key thing has a first admin.
 - Implicit edge: stands until removed, stored nowhere, so plain things stay free. For the no-key-cycles rule it is a grant ordered at the thing's creation, so it always wins; its removal may give a later keyless grant key access (a re-seal, as a new grant; spec/crypto.md §4 Key access, modelled `D0_fa_*`).
 - One authority class: delete `Class::Chain` and the rule that an edge cannot name the owner. Effective role is the path rule only.
-- Secrets: a derived epoch someone wrote under counts as a current epoch of the thing, so its writer merges the thing (spec/crypto.md §4 Current; not built: issues/derived-write-merge.md); a write concurrent with its author's removal is a stated limit there.
+- Secrets: a derived epoch someone wrote under should count as a current epoch of the thing, so its writer merges the thing (modelled, not built: issues/derived-write-merge.md; spec/crypto.md §4 Current states the limit meanwhile).
 - The owner chain becomes a derivation chain used only by keys (`[owner*]`; delete base). Rewrite `admit own`, the inbox fallback, ephemeral rules, links, API `owner_of`.
 - Account: a node is first admin; a recovery card is a key actor with a plain admin edge. Moving: grant then remove (notes/moves.md).
 - The words owner, ownerless and owning leave spec, code, API and CLI. Realms and tags resume once this settles.

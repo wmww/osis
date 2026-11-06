@@ -16,7 +16,7 @@
 
 **The refused case**: a node MUST NOT remove or lower the last admin edge of a plain thing (refused locally, `Invalid`). Signed anyway it applies; the thing stays plain, its content stays readable through derivation by the first admin's holders, and nobody writes it. A stated limit, no machinery (only the remover's own data).
 
-**Naming a first admin** needs write on it (today's owned rule, a client check: the record itself needs no authority once it carries nothing else). The creator then holds write on T through F, and F's admins hold admin. Tess asked for this to be settled (issues/api-after-owners.md): question below.
+**Naming a first admin** needs write on it (today's owned rule, a client check: the record itself needs no authority once it carries nothing else). The creator then holds write on T through F, and F's admins hold admin. Settled: Decided (Tess) below.
 
 ## Inventory
 Counts are `grep -ci owner` per file at 8c168bf1c; words with another meaning are marked.
@@ -30,8 +30,9 @@ Counts are `grep -ci owner` per file at 8c168bf1c; words with another meaning ar
 **Models**: held-model (`roles.rs` `Owner`, `World::owner`; `spec_roles`, `spec_commits`, `spec_undo`, `spec_waits` owner fixtures), roles-model (`joint.rs` `Owner::{Node, Actor, None}` and chain class, `single.rs`, `edges.rs`; `trust.rs` already post-owner), TLA (`roles/Roles.tla` class 3 owner chain, `MaxDepth`, `MC_core.cfg`, `MC_depth.cfg`). Vectors: `tid/thing.vec` (owner, ownerless, both-field cases), `judgment/models.vec` (two joint owner cases).
 
 ## Left from Stage A
-- Rule 2 of the model (a derived epoch written under is current until listed; its writer merges) is in spec/crypto.md §4 but not built: issues/derived-write-merge.md.
-- A node removing its account's admin edge (the first admin's record edge included) writes a self-removal perm voids: issues/self-removal-admin-through-holder.md.
+- Rule 2 of the model (a derived epoch written under is current until listed; its writer merges): issues/derived-write-merge.md (spec/crypto.md §4 states the limit meanwhile).
+- The inbox fallback and the `label.0` cross-publish go up first-admin links whether or not the record edge still stands: a removed first admin of an ownerless thing that names no inbox gets inbox blobs about it (boxes it cannot open) and its `label.0` writes (label IDs, steps, hosts) until B's rules (Risk 5).
+- A node removing its account's admin edge (the first admin's record edge included) writes a self-removal perm voids: issues/self-removal-through-holder-disagrees.md.
 
 ## Stage B: one record, one authority class
 Useful alone: owners are gone in meaning; every thing is removable from its first admin; the API keeps compiling through doc-hidden aliases.
@@ -59,7 +60,7 @@ Conflicts with the API work (notes/api-design.md checklist applies); A-C touch o
 1. **Key access after a grant is removed**: modelled (`D0_fa_flip`, `D0_fa_both`) and stated (spec/crypto.md §4 Key access: a removed actor edge is no standing; notes/crypto.md). The engine judges key access over standings already (`Timeline::standing_since`). Needs in B: F's admins learn the removal (T's rotation carrying it is T's `keys.0`, which F's label carries as a holder's; the model assumes it arrives).
 2. **Walk cost of a record edge per thing.** `Items::initial` and `Ever` hold every ownerless edge today and `Items` clones; B makes that every thing. Keep record edges virtual (read from the records; a written edge overrides) and measure perm `bench`, node `scale::`, sim scale before and after B. Audits by edge reach need a first-admin reverse index (today's ownership tree has the same size).
 3. **Interim hole**: from B until step 3 a removed admin can backdate and take back any thing, accounts included (recovery no longer settles it). Pre-release; build step 3 next.
-4. **Derivation after the edge goes**: the refused case (built in A; a local refusal, not modelled). A derived write after the switch: `D0_fa_derive`/`D0_fa_dmerge`/`D0_fa_dmerge_rm`, rule and limit in spec/crypto.md §4 Current, merge not built (issues/derived-write-merge.md).
+4. **Derivation after the edge goes**: the refused case (built in A; a local refusal, not modelled). A derived write after the switch: `D0_fa_derive`/`D0_fa_dmerge`/`D0_fa_dmerge_rm`, merge not built (issues/derived-write-merge.md, the rule's text; spec/crypto.md §4 Current states the limit).
 5. **Record-chain reads that outlive removal**: `admit own` (hosting only, ciphertext: kept static), inbox and `label.0` cross-publish (rules above so nothing goes to a removed first admin).
 6. **Depth**: ownerless things no longer reset the cap (built in A); chats add two links. Check app trees stay far under 64.
 

@@ -1,6 +1,8 @@
 # A derived write after the own-secrets switch is never merged
-> Summary: spec/crypto.md §4 Current says a derived epoch some held commit encrypts under counts as current until a rotation lists it, so its writer merges the thing; the engine does not do this: holders that hold no secret of the base actor never read such a write.
+> Summary: a write under a derived epoch made after its thing got secrets of its own (its writer not yet holding them) is read only by holders of the base actor's secrets (spec/crypto.md §4 Current, a stated limit); the modelled fix: such an epoch counts as current until a rotation lists it, so its writer merges.
 > Tags: keys, engine, security
+
+Rule to add to spec/crypto.md §4 Current when built: "A derived epoch (§3) of a thing with secrets of its own that some held commit encrypts under is current too unless a rotation lists it (its history box carries it): its writer, which wrote before it held the thing's own epochs, merges (Merger). Other derived epochs of the base actor's later epochs are none of the thing's." Its limit replaces today's: "such a write concurrent with its writer's removal from the thing is read only by holders of the base actor's secrets, as the writer may no longer merge (one stamped after the removal is invalid anyway)."
 
 Model: core/test/tla/rotation `D0_fa_derive` (fails `ReadsAll` without the rule), `D0_fa_dmerge` (passes with it), `D0_fa_dmerge_rm` (the stated limit).
 

@@ -155,6 +155,18 @@ pub(crate) enum Step {
     /// A removal of `holder` on `t` with its frontier as of now, padded past `CHUNK_THRESHOLD`
     /// with things nobody holds, so it goes by link.
     LinkedDemote { by: usize, t: usize, holder: usize },
+    // `ownerless_history` (`random_step` never draws these):
+    /// `by` makes an ownerless thing whose first admin is itself, or thing `under` (needing
+    /// write on it), with a write on it: a plain thing deriving from its first admin, whose
+    /// record edge no entry holds.
+    Ownerless { by: usize, under: Option<usize> },
+    /// `by` grants `holder` (a peer, or 3: G) `role` on `t` through `Engine::grant`: a plain
+    /// target gets secrets of its own first.
+    GrantFlow { by: usize, t: usize, holder: usize, role: Role },
+    /// `by` removes `holder`'s edge (a peer, or 3: G) on `t`, or lowers it to write, through
+    /// `Engine::demote`: a first admin's record edge included (a removal of no entry,
+    /// spec/permissions.md §2).
+    RemoveFlow { by: usize, t: usize, holder: usize, lower: bool },
 }
 
 const OPS: u8 = 35;
@@ -382,6 +394,13 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         PurgeNamed { by, t, of, back, v } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| PurgeNamed { by, t, of, back, v }),
         Purge { by, t, of, back, v } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| Purge { by, t, of, back, v }),
         PurgeAuthor { by, t, of } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| PurgeAuthor { by, t, of }),
+        Ownerless { by, under: Some(t) } => pick(lp, by, t, &write).map(|(by, t)| Ownerless { by, under: Some(t) }),
+        GrantFlow { by, t, holder, role } => pick(lp, by, t, &admin).map(|(by, t)| GrantFlow { by, t, holder, role }),
+        RemoveFlow { by, t, holder, lower } => {
+            let h = if holder < 3 { ids[holder] } else { things[0] };
+            let held = |lp: &LocalPeer, b: usize, x: &Tid| admin(lp, b, x) && lp.peers[b].engine.roster(x).get(&h).is_some_and(|e| !lower || e.role > Role::Write);
+            pick(lp, by, t, &held).map(|(by, t)| RemoveFlow { by, t, holder, lower })
+        }
         Undo { by, back } => {
             // one of the author's last content commits
             let content: Vec<usize> = own[by].iter().enumerate().filter(|(_, id)| lp.peers[by].engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Content)).map(|(i, _)| i).collect();
@@ -597,6 +616,8 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     let mut tally = Tally::default();
     // each made thing's creating commit (`Forged` tells of it)
     let mut made_by: BTreeMap<Tid, (usize, CommitId)> = BTreeMap::new();
+    // each ownerless thing's first admin
+    let mut firsts: BTreeMap<Tid, Tid> = BTreeMap::new();
     // the blobs of `BadPart`, with what their authors' own copies dropped
     let mut forged: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
     for st in steps {
@@ -625,6 +646,8 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
         let th = |t: usize| things[t % things.len()];
         // why this step made no commit, when refused
         let mut no: Option<String> = None;
+        // a `RemoveFlow` of a first admin's edge
+        let mut record = false;
         let acted = match st_ {
             Step::Aim(_) | Step::Old(_) | Step::Typed { .. } | Step::NestedItem { .. } => unreachable!("aimed and twinned above"),
             Step::Write { by, t, op, k, v } => {
@@ -912,6 +935,35 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 }
                 None
             }
+            Step::Ownerless { by, under } => {
+                let first = under.map_or(ids[by], th);
+                let r = lp.peers[by].engine.create_ownerless(&first);
+                no = why(&r);
+                if let Ok((t, done)) = r {
+                    if let Some(id) = done.commits.first() {
+                        made_by.insert(t, (by, *id));
+                    }
+                    let mut m = Mutation::new();
+                    m.set(t, &REG, &s("o")).unwrap();
+                    no = why(&lp.peers[by].commit(m));
+                    things.push(t);
+                    firsts.insert(t, first);
+                    marks[by].push(lp.peers[by].engine.now());
+                }
+                Some(by)
+            }
+            Step::GrantFlow { by, t, holder, role } => {
+                let h = if holder < 3 { ids[holder] } else { things[0] };
+                no = why(&lp.peers[by].engine.grant(&th(t), &h, &edge(role)));
+                Some(by)
+            }
+            Step::RemoveFlow { by, t, holder, lower } => {
+                let h = if holder < 3 { ids[holder] } else { things[0] };
+                record = firsts.get(&th(t)) == Some(&h);
+                let d = osis_node::flows::Demotion { holder: h, new: lower.then(|| edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, retain: None };
+                no = why(&lp.peers[by].engine.demote(&th(t), &d));
+                Some(by)
+            }
             Step::NewTop { by } => {
                 let mut m = Mutation::new();
                 let t = lp.peers[by].engine.new_thing(&mut m, ids[by]);
@@ -1071,7 +1123,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
         if let Some(i) = acted {
             collect(&mut lp, i, &mut seen, &mut packs, &mut authors, &mut own);
             let kind = format!("{st:?}");
-            let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else { "" };
+            let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else if record { "(record)" } else { "" };
             let e = tally.kinds.entry(kind.clone()).or_default();
             e.0 += 1;
             if packs.len() > before {
@@ -2320,6 +2372,8 @@ impl Seen {
         assert!(n < 20 || m * 2 >= n || name.contains("settled"), "order::{name}: {m} of {n} commit steps made a commit:\n{}", self.tally.show());
         // what the required retention harness is for
         assert!(!name.contains("required") || (self.broken > 0 && self.fallen > 0), "order::{name}: no delta broke a required retention, or none of them fell: {self:?}");
+        // what the ownerless harness is for: a first admin's record edge removed
+        assert!(!name.contains("ownerless") || seeds < 4 || self.tally.kinds.get("RemoveFlow(record)").is_some_and(|k| k.1 > 0), "order::{name}: no record edge removed:\n{}", self.tally.show());
         if seeds < 20 {
             return;
         }
@@ -2583,6 +2637,26 @@ fn history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
         for _ in 0..len / 6 {
             steps.insert(r.below(steps.len() as u64 + 1) as usize, required_step(&mut r));
         }
+    }
+    steps
+}
+
+/// `history`'s random steps with ownerless things among G's (spec/permissions.md §1, §2, §3): their
+/// creation (first admin a peer or G), grants through the flow (a plain thing's secrets of its own
+/// first) and removals or lowerings through the flow, a first admin's record edge included.
+fn ownerless_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
+    let aim = |x: Step| Step::Aim(Box::new(x));
+    let mut steps = vec![Step::Ownerless { by: 0, under: None }];
+    for _ in 0..len {
+        let (by, t) = (rng.below(3) as usize, rng.below(8) as usize);
+        steps.push(match rng.below(10) {
+            0 if rng.below(2) == 0 => Step::Ownerless { by, under: None },
+            0 => aim(Step::Ownerless { by, under: Some(0) }),
+            1 | 2 => aim(Step::GrantFlow { by, t, holder: rng.below(4) as usize, role: rng.pick(&[Role::Read, Role::Write, Role::Admin, Role::Admin]) }),
+            3 | 4 => aim(Step::RemoveFlow { by, t, holder: rng.below(4) as usize, lower: rng.below(4) == 0 }),
+            _ => random_step(&mut rng),
+        });
     }
     steps
 }
@@ -2889,6 +2963,34 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
 #[test]
 fn arrival_order_alike_small_spec_permissions_5_2() {
     run("arrival_order_alike_small_spec_permissions_5_2", 0..4, 8, SMALL, history);
+}
+
+// spec/permissions.md §1, §2, §5.2: histories with ownerless things (derived secrets, grants
+// giving secrets of their own, removals of a first admin's record edge, which no entry holds)
+// judged alike in every arrival order.
+#[test]
+fn arrival_order_ownerless_small_spec_permissions_2() {
+    run("arrival_order_ownerless_small_spec_permissions_2", 0..2, 16, SMALL, ownerless_history);
+}
+
+// The same over more and longer histories. About a fifth of seeds fail on two classes that
+// reproduce with owned things too (a plain thing's own-secrets grant and flow removals):
+// issues/own-secrets-grant-index-rebuild.md, issues/flow-removal-validity-rejudge.md.
+#[test]
+#[ignore = "repro: issues/own-secrets-grant-index-rebuild.md, issues/flow-removal-validity-rejudge.md"]
+fn repro_arrival_order_ownerless_large_spec_permissions_2() {
+    run("repro_arrival_order_ownerless_large_spec_permissions_2", osis_base::testenv::large(0..60), 40, LARGE, ownerless_history);
+}
+
+// spec/permissions.md §1: a new record makes stale what is below it on the record chain, through
+// first-admin links too (`Held::below`): a write on a thing under ownerless things is re-judged
+// when the chain's records arrive (seed 31517018 of the ownerless harness, shrunk).
+#[test]
+fn record_chain_below_first_admin_rejudged_spec_permissions_1() {
+    use Step::*;
+    let a = |x: Step| Aim(Box::new(x));
+    let h = vec![Ownerless { by: 0, under: None }, a(Ownerless { by: 0, under: Some(0) }), a(Nested { by: 0, other: 1, t: 6, k: 1, text: false, compact: true, also: true }), a(GrantFlow { by: 0, t: 2, holder: 0, role: Role::Admin }), a(GrantFlow { by: 0, t: 4, holder: 2, role: Role::Read }), a(GrantFlow { by: 0, t: 6, holder: 3, role: Role::Admin }), a(RemoveFlow { by: 1, t: 4, holder: 3, lower: false })];
+    check(31517018, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/commits.md §5, spec/permissions.md §5.2: required retention judged by the setting in force
@@ -4825,3 +4927,4 @@ fn stripped_snapshot_named_by_purge_drops_seed_9500003() {
     let h = vec![Aim(Box::new(Leave { by: 1, t: 3 })), Aim(Box::new(Compact { by: 1, t: 3, op: 0 })), Advance { who: Some(0), ms: 1571 }, Aim(Box::new(Purge { by: 0, t: 4, of: 1, back: 1, v: 0 }))];
     check(9500003, &h, Cfg { sync: true, model: true, ..LARGE }).unwrap();
 }
+

@@ -112,8 +112,7 @@ Terms in this section depend on each other; each is defined once, under its bold
     - if the node holds e's secret (other than for reading only), some live entry of e's history box that opens under that secret has its names met.
 - A node compacts `secrets.0` only while every epoch its state keys is established.
 - **Current**: a role's current epochs are its established epochs that no established rotation superseded.
-  - A derived epoch (§3) of a thing with secrets of its own that some held commit encrypts under is current too unless a rotation lists it (its history box carries it): its writer, which wrote before it held the thing's own epochs, merges (Merger). Other derived epochs of the base actor's later epochs are none of the thing's.
-  - Limit: such a write concurrent with its writer's removal from the thing is read only by holders of the base actor's secrets, as the writer may no longer merge (one stamped after the removal is invalid anyway).
+  - Limit: a write under a derived epoch (§3) that no epoch of the thing's own carries in its history (written before its writer held the thing's own epochs) is read only by holders of the base actor's secrets.
 - **Newest**: a role's newest epoch is the current one with the greatest order n (its n, a derived epoch's per §3), ties by lowest nonce; "newer" compares alike.
 - **Uses**: a node uses an epoch (encrypts under it, boxes its secret, puts it in a history box) only when it is established.
 
