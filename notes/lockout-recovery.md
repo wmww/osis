@@ -11,6 +11,10 @@ An admin removes W (or demotes it below write) with `set_role`, like any holder:
 - the history box carries the established secrets it holds (e_n and earlier), not e_W's;
 - the commit wraps under the greatest-n superseded read epoch whose secret it holds (spec/crypto.md §5): the history box lists e_n, so e_n is superseded and the ordinary rule names it. `osis_keys::produce::rotate` and `RoleEpochs::wrapped_under` both pick from the superseded held epochs.
 
+A commit's signer is a node, so "or by a node holding write or above on it" is what counts a person's own devices (and a team's writers) as that holder; it is judged now, not at the commit. Such a node's honest epoch the remover lacks is superseded with the rest: no secret leaks (the recovery carries only what the remover holds), and its holders keep reading it, as in "A rotation by W that missed the admin" below.
+
+**Limits.** Two colluding writers that each rotate concurrently from the same epoch lock A for good: removing either refuses on the other's epoch, and `set_role` removes one holder per commit (issues/lockout-two-writers.md). An epoch whose rotation commits a node no longer holds (a node that joined after a `secrets.0` compaction, or dropped them `ROLE_KEEP` after it) has no maker there, so that node cannot recover; one still holding them can.
+
 Receivers apply the ordinary Supersedes rule: e_W is superseded, the recovery epoch alone is current, every holder it boxed holds it. Code: `rotation::lacked_made_by` gates the refusal in `flows::edges::demote_in`.
 
 **Things below.** W may also have locked things A's roles open (it rotated T boxing A at its own e_W keyset of A). After the removal commit, `rotation::recover_reached` rotates each such thing (nearest first) whose role the remover may rotate, holds no current secret of, and lacks only epochs made by the removed holders. It must happen then: later the removal's context is gone and no rotation of T could be made.
