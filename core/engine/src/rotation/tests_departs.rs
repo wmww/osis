@@ -65,6 +65,9 @@ enum Forge {
     /// Its self-removal commit puts an entry naming the mark of an earlier rotation commit that
     /// departed another holder (`Mark`).
     Replayed(Ts, Tid),
+    /// After its self-removal, a commit backdated before it puts an entry listing the
+    /// self-removal by its key (not a mark).
+    Listed,
 }
 
 /// Peer `i` leaves `g` by a self-removal, forging as `how`. Returns the (role, epoch) secrets it
@@ -95,14 +98,25 @@ fn leave(lp: &mut LocalPeer, i: usize, g: Tid, how: Forge) -> crate::Result<BTre
                 assert!(rot.names.departs.is_some());
                 out.extend(rot.rotated.iter().map(|r| (r.role, r.epoch)));
             }
-            Forge::None | Forge::Earlier => {}
+            Forge::None | Forge::Earlier | Forge::Listed => {}
         }
         m.unchecked();
         // past this node's own refusal (a reader writing `secrets.0`): receivers judge it
         tx.core.skip_writer_rules = true;
         let c = crate::engine::Engine::commit_tx(tx, m);
         tx.core.skip_writer_rules = false;
-        c?;
+        let c = c?;
+        if let Forge::Listed = how {
+            let name = osis_keys::Name { thing: g, key: osis_keys::Key { ts: ts.to_u64(), node: me, commit: c.unwrap() } };
+            let mut m = Mutation::new();
+            m.ts = Some(t1);
+            forged_entry(tx, &mut m, g, &Names { list: [name].into(), departs: None })?;
+            m.unchecked();
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m);
+            tx.core.skip_writer_rules = false;
+            c?;
+        }
         Ok(out)
     })
 }
@@ -142,6 +156,10 @@ fn leaver_uncovered_as(seed: u64, role: Role, how: Forge) {
             };
             assert!(e.read.epochs().any(|(_, x)| x.names.iter().any(|n| n.departs.is_some_and(|o| forged(&o)))), "peer {i} opened W's entry ({how:?})");
         }
+        if let Forge::Listed = how {
+            let e = lp.peers[i].engine.epochs(&g).unwrap();
+            assert!(e.read.epochs().any(|(_, x)| x.names.iter().any(|n| n.list.iter().any(|m| m.key.node == tids[W]))), "peer {i} opened W's entry ({how:?})");
+        }
         assert!(super::tests::blocked_at(&mut lp, i, g).contains(&Role::Read), "peer {i}: W's departure covered ({how:?})");
         lp.peers[i].engine.ensure_rotated(&g).unwrap();
         let now = newest_read(&lp, i, g).unwrap();
@@ -167,6 +185,15 @@ fn self_removal_own_mark_entry_spec_crypto_4() {
 #[test]
 fn self_removal_predicted_mark_entry_spec_crypto_4() {
     leaver_uncovered(5_103, Forge::Earlier);
+}
+
+/// issues/own-departure-named-by-own-entry.md: after its self-removal, W backdates a commit
+/// before it putting an entry at the current read epoch that lists the self-removal by its key
+/// (a list name, not a mark): the epoch covers W's departure.
+#[test]
+#[ignore = "issues/own-departure-named-by-own-entry.md"]
+fn repro_self_removal_listed_by_backdated_entry() {
+    leaver_uncovered(5_108, Forge::Listed);
 }
 
 // spec/crypto.md §4 (Names, departs mark), spec/permissions.md §3 (a self-removal carries no
@@ -344,5 +371,70 @@ fn forged_departs(seed: u64) {
                 assert!(!opens.contains(&(g, r, e)), "seed {seed}: owner encrypts under {r:?} epoch {e:?}, held by peer {d} (now {role_d:?})");
             }
         }
+    }
+}
+
+/// issues/own-departure-named-by-own-entry.md: group M holds admin on A; P1, M's owner, holding
+/// admin on A only through M, demotes M to write as an explicit demotion (perm judges it one:
+/// it has edge-admin authority through M) rotating admin (the role M left) and read (boxing M,
+/// which shows M: Authority holds). Its mark names M's departure from admin; P1 made the new
+/// admin secret and holds only write after, yet the owner keeps that admin epoch.
+#[test]
+#[ignore = "issues/own-departure-named-by-own-entry.md"]
+fn repro_holder_actor_demoted_by_its_own_admin() {
+    let mut lp = LocalPeer::new(3, 5_107, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let p2 = lp.peers[2].engine.tid();
+    let a = group(&mut lp, 0);
+    let m = group(&mut lp, 1);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&a, &p2, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let made = lp.peers[1]
+        .engine
+        .run(|tx| {
+            let held = tx.core.epochs(&a).unwrap();
+            let me = tx.core.id.tid();
+            let mut m_ = Mutation::new();
+            m_.ts = Some(tx.core.hlc.next());
+            crate::flows::put_edge(&mut m_, a, m, &edge(Role::Write))?;
+            let holders = super::recipients(tx, &me, &a, &[(m, Some(Role::Write))])?.ok_or(super::SEAL_WAITS)?;
+            let dep = osis_keys::Departure::holder(m, Role::Admin).upto(Role::Admin);
+            let rot = super::rotation_into(tx, &mut m_, a, &[Role::Read, Role::Admin].into(), &held, &holders, &[dep])?;
+            assert!(rot.names.departs.is_some());
+            tx.core.skip_writer_rules = true;
+            let c = crate::engine::Engine::commit_tx(tx, m_);
+            tx.core.skip_writer_rules = false;
+            c?;
+            Ok(rot.rotated.iter().filter(|r| r.role == Role::Admin).map(|r| r.epoch).collect::<BTreeSet<Epoch>>())
+        })
+        .unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.core.key_holders(&a).into_iter().find(|h| h.0 == m).map(|h| h.1), Some(Role::Write), "M demoted to write");
+    lp.peers[0].engine.ensure_rotated(&a).unwrap();
+    let now = lp.peers[0].engine.epochs(&a).unwrap().admin.newest_held().map(|x| x.0).unwrap();
+    assert!(!made.contains(&now), "owner's admin epoch {now:?} is one P1 made");
+}
+
+/// issues/self-removal-through-holder-disagrees.md: group M holds admin on A; P1, M's owner, has
+/// admin on A only through M. Its honest removal of M is written as a self-removal (no frontier,
+/// no rotation: `validity::self_removal` reads P1's authority with M's edge left out), but the
+/// perm judge counts edge-admin authority through M, so it is no self-removal, no finalize either,
+/// and applies nothing: M stays.
+#[test]
+#[ignore = "issues/self-removal-through-holder-disagrees.md"]
+fn repro_own_group_removal_applies_nothing() {
+    let mut lp = LocalPeer::new(2, 5_109, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let a = group(&mut lp, 0);
+    let m = group(&mut lp, 1);
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&a, &m, &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.demote(&a, &Demotion { holder: m, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    lp.sync_all().unwrap();
+    for i in 0..2 {
+        assert!(!lp.peers[i].engine.core.key_holders(&a).iter().any(|h| h.0 == m), "peer {i}: M removed");
     }
 }

@@ -58,9 +58,9 @@ account-rename, api-deferred, api-after-owners, api-leaving-give-up, app-attach-
 
 ## Not yet triaged (unranked)
 Grouped by their tags only; read the issue before placing it.
-- Tagged security: blocked-walk-stops-at-readers, departure-attributed-to-later-audit-drop, grant-audits-without-frontier, keys-depth0-removed-member-rotates, ownerless-first-admin-backdate, reader-persists-memory-thing.
+- Tagged security: blocked-walk-stops-at-readers, departure-attributed-to-later-audit-drop, own-departure-named-by-own-entry, grant-audits-without-frontier, keys-depth0-removed-member-rotates, ownerless-first-admin-backdate, reader-persists-memory-thing.
 - Waiting on Tess (`tess-call`): commit-memory-half, node-host-unify, no-server-audit, recovery-redesign, revocation-without-arbiter.
-- Engine and retention: at-most-grace-dating-churn (unverified), copy-expiry-collateral, delete-required-rules, gone-body-drop-seeds, settled-seed-7032, subgroup-expiry-strands-silently, undo-two-expiries, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
+- Engine and retention: self-removal-through-holder-disagrees, at-most-grace-dating-churn (unverified), copy-expiry-collateral, delete-required-rules, gone-body-drop-seeds, settled-seed-7032, subgroup-expiry-strands-silently, undo-two-expiries, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
 - Cost: copy-expiry-probe-cost, role-history-join-cost, rotation-names-grow.
 - Tests and tooling: held-model-unpinned-rules, judgment-vectors-can-fail-shorter-order.
 - Naming, app: deprecated-terms, app-workarounds.
