@@ -134,7 +134,7 @@ struct EPass {
     dropped: u64,
     attr: Vec<Attr>,
     demoting: u64,
-    /// Ops applied as explicit demotions (the holder's class fell; audited).
+    /// Ops applied as explicit writes lowering another holder's edge (its value just before).
     demoting_ops: u64,
     grew: bool,
 }
@@ -282,7 +282,13 @@ impl EHist {
                 }
                 applied |= 1 << op;
                 attr[op] = at;
+                let old = edges[x];
                 edges[x] = new;
+                // An explicit write lowering another holder's edge (its value just before):
+                // what a dispute asks of a trusted op (`crate::trust`).
+                if at == Attr::Admin && x != w.author && lowers(new, old) && new != old {
+                    demoting_ops |= 1 << op;
+                }
                 let now = class(auth(new, w.t));
                 // Self-removal and invite grants audit nothing; `held` keeps the highest
                 // class since the last audit, so the next explicit demotion audits as if
@@ -293,7 +299,6 @@ impl EHist {
                 }
                 let before = held[x];
                 held[x] = now;
-                demoting_ops |= 1 << op;
                 if mode == Drops::Off || cycled {
                     continue;
                 }
@@ -960,10 +965,27 @@ pub fn run(samples: u64, mode: Drops) {
 
 // ---------- disputes (crate::trust) ----------
 
-/// A plain op lowering another holder's edge in a way that can take admin away: a removal,
-/// or a value below admin or timed.
+/// A plain op that can lower another holder's edge: anything but the full admin edge (a
+/// removal, a value below admin in role or invite, a timed one).
 fn lowering(e: Option<Edge>) -> bool {
-    e.map_or(true, |e| e.role < Role::Admin || e.until != NEVER)
+    e.map_or(true, |e| e.role < Role::Admin || e.until != NEVER || e.invite < Role::Admin)
+}
+
+impl EHist {
+    /// Whether op `k` of commit `j` lowers its author's own edge: strictly below (`lowers`,
+    /// not equal) the value the last held op on that edge in a commit ordered before `j` set
+    /// (else genesis). Static: a function of the history, not of any walk.
+    fn lowers_own(&self, j: usize, k: usize) -> bool {
+        let w = &self.writes[j];
+        let (x, e) = w.ops[k];
+        if x != w.author {
+            return false;
+        }
+        let key = |i: usize| (self.writes[i].t, self.writes[i].author, self.writes[i].id);
+        let prev = (0..self.writes.len()).filter(|&i| i != j && key(i) < key(j) && self.writes[i].ops.iter().any(|o| o.0 == x)).max_by_key(|&i| key(i));
+        let old = prev.map_or(self.genesis[x], |i| self.writes[i].ops.iter().rev().find(|o| o.0 == x).map_or(None, |o| o.1));
+        lowers(e, old) && e != old
+    }
 }
 
 impl crate::trust::Trusting for EHist {
@@ -989,7 +1011,8 @@ impl crate::trust::Trusting for EHist {
         (!w.fin && x != w.author).then_some(x)
     }
     /// Every op of the victim's commits ordered before R that the demoter had not received
-    /// before `t`, but those on its own edge (one target: everything is in question).
+    /// before `t` (one target: everything is in question), but those lowering its own edge
+    /// (`lowers_own`: a self-grant is a seed, a self-removal not).
     fn seeds(&self, op: usize) -> u64 {
         let Some(x) = self.victim(op) else { return 0 };
         let base = self.bases();
@@ -997,7 +1020,7 @@ impl crate::trust::Trusting for EHist {
         let r = &self.writes[c];
         (0..self.writes.len())
             .filter(|&j| j != c && self.writes[j].author == x && self.recv[j][r.author] >= r.t && (self.writes[j].t, self.writes[j].author, self.writes[j].id) < (r.t, r.author, r.id))
-            .flat_map(|j| self.writes[j].ops.iter().enumerate().filter(|o| o.1 .0 != x).map(|(k, _)| base[j] + k).collect::<Vec<_>>())
+            .flat_map(|j| self.writes[j].ops.iter().enumerate().filter(|&(k, _)| !self.lowers_own(j, k)).map(|(k, _)| base[j] + k).collect::<Vec<_>>())
             .fold(0, |m, q| m | 1 << q)
     }
     fn key(&self, op: usize) -> (u32, usize) {
@@ -1058,7 +1081,8 @@ pub fn random_shaped(rng: &mut Rng, who: Who, net: Net) -> EHist {
     let n = 3 + rng.below(4);
     let full = Edge { role: Role::Admin, until: NEVER, invite: Role::Admin };
     let mut genesis: Vec<Option<Edge>> = (0..n).map(|_| if rng.below(3) == 0 { None } else { Some(rand_edge(rng)) }).collect();
-    genesis[O] = Some(full);
+    // the record edge (spec/permissions.md §1): admin, no invite
+    genesis[O] = Some(Edge { role: Role::Admin, until: NEVER, invite: Role::None });
     let k = 2 + rng.below(7);
     let mut h = EHist { genesis, writes: vec![], recv: vec![] };
     while h.writes.len() < k {

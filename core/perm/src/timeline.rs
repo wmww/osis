@@ -3,6 +3,7 @@
 
 use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View, INITIAL, RECORD_EDGE};
 use crate::held::HeldSet;
+use crate::trust::{self, Dispute, Trust, TrustIndex};
 use crate::types::{Edge, EdgeOp, RoleCommit, Point, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
@@ -58,6 +59,12 @@ pub struct Timeline {
     pub(crate) memo: Memo,
     /// Commits the last `append` placed without walking again.
     pub(crate) placed: usize,
+    /// The trust set this was evaluated under (`crate::trust`).
+    pub(crate) trust: Trust,
+    /// Its ops in force: trustable here and applied (the void ones shrunk out).
+    active: BTreeSet<WriteId>,
+    /// Their seeds: D before the first walk, each with its op's point.
+    seeds: BTreeMap<WriteId, Point>,
 }
 
 /// `first_held` by (node, thing, role).
@@ -91,6 +98,8 @@ pub(crate) struct Memo {
     /// The edge writes applied, by their target; and the indexes built (a measure).
     pub on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,
     pub on_target_built: std::sync::atomic::AtomicU64,
+    /// `Timeline::disputes`.
+    pub disputes: std::sync::OnceLock<Vec<Dispute>>,
 }
 
 /// Kept edge states (`Timeline::checkpoints`).
@@ -176,19 +185,91 @@ impl EdgeEnd {
 }
 
 impl Timeline {
-    /// Evaluates from scratch (D rebuilt, §5.1 step 5).
+    /// Evaluates from scratch (D rebuilt, §5.1 step 5) under an empty trust set.
     pub fn evaluate(held: &dyn HeldSet) -> Timeline {
-        let input = Input::gather(held);
-        let out = walk::run(&input);
-        Timeline::from_outcome(input, out)
+        Timeline::evaluate_with(held, &Trust::default())
+    }
+
+    /// Evaluates from scratch under `trust` (`crate::trust`): D starts at the seeds of the
+    /// trusted ops held here; a trusted op the settled walk leaves unapplied is void, every
+    /// void one loses its seeds at once and the walk is redone, until none is (at most one
+    /// round per trusted op). Equal to `evaluate` when no trusted op is held here.
+    pub fn evaluate_with(held: &dyn HeldSet, trust: &Trust) -> Timeline {
+        Timeline::from_input(Input::gather(held), trust)
+    }
+
+    pub(crate) fn from_input(input: Input, trust: &Trust) -> Timeline {
+        let mut active: BTreeSet<WriteId> = trust.ops.iter().filter(|w| input.trustable(w).is_some()).copied().collect();
+        let ix = (!active.is_empty()).then(|| TrustIndex::new(&input));
+        let mut passes = 0;
+        loop {
+            let seeds = ix.as_ref().map(|ix| trust::seeds_of(&input, ix, &active)).unwrap_or_default();
+            let out = walk::run(&input, seeds.clone());
+            passes += out.passes;
+            let void: Vec<WriteId> = active.iter().filter(|r| !out.walked.applied.contains_key(r)).copied().collect();
+            if void.is_empty() {
+                let mut tl = Timeline::from_outcome(input, out);
+                tl.passes = passes;
+                tl.trust = trust.clone();
+                tl.active = active;
+                tl.seeds = seeds;
+                return tl;
+            }
+            for r in void {
+                active.remove(&r);
+            }
+        }
+    }
+
+    /// Whether a timeline under this trust set over `commits` may only be evaluated from
+    /// scratch: a trusted op is among them (`crate::trust`).
+    fn trusted(&self, commits: impl IntoIterator<Item = CommitId>) -> bool {
+        !self.trust.is_empty() && commits.into_iter().any(|id| self.trust.names(&id))
+    }
+
+    /// The trusted ops in force: held here, applied, their seeds in D.
+    pub fn active(&self) -> &BTreeSet<WriteId> {
+        &self.active
+    }
+
+    /// The open disputes (`crate::trust`): the trustable ops the settled walk did not apply
+    /// and no seed dropped, that apply as an explicit write lowering their holder's edge in
+    /// the walk with their seeds added to D. One extra walk per candidate with seeds.
+    pub fn disputes(&self) -> &[Dispute] {
+        self.memo.disputes.get_or_init(|| {
+            let ix = TrustIndex::new(&self.input);
+            let mut out = Vec::new();
+            for c in self.input.commits.values().filter(|c| c.frontier.is_some()) {
+                for (k, op) in c.ops.iter().enumerate() {
+                    let Ok(k32) = u32::try_from(k) else { continue };
+                    let id = WriteId(c.id, k32);
+                    if self.input.trustable(&id).is_none() || self.walked.applied.contains_key(&id) || self.seeds.contains_key(&id) {
+                        continue;
+                    }
+                    let mut d = self.input.seeds(&ix, &id);
+                    if d.is_empty() {
+                        continue;
+                    }
+                    for (w, p) in &self.seeds {
+                        d.entry(*w).and_modify(|q| *q = (*q).min(*p)).or_insert(*p);
+                    }
+                    let o = walk::run(&self.input, d);
+                    if trust::demoting(&o.walked, &self.input.owners, c, k) {
+                        out.push(Dispute { op: id, holder: op.holder });
+                    }
+                }
+            }
+            out
+        })
     }
 
     /// This timeline's walk and inputs without its memos, to append to (`demotion_scope`).
     pub(crate) fn copy(&self) -> Timeline {
         let (input, items, walked) = (self.input.clone(), self.items.clone(), self.walked.clone());
         let (dropped, checkpoints) = (self.dropped.clone(), self.checkpoints.clone());
+        let (trust, active, seeds) = (self.trust.clone(), self.active.clone(), self.seeds.clone());
         let Timeline { passes, reach, .. } = *self;
-        Timeline { input, items, walked, dropped, passes, reach, checkpoints, memo: Memo::default(), placed: 0 }
+        Timeline { input, items, walked, dropped, passes, reach, checkpoints, memo: Memo::default(), placed: 0, trust, active, seeds }
     }
 
     pub(crate) fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
@@ -211,6 +292,9 @@ impl Timeline {
             checkpoints,
             memo: Memo { first_held: Mutex::new(first_held), ..Memo::default() },
             placed: 0,
+            trust: Trust::default(),
+            active: BTreeSet::new(),
+            seeds: BTreeMap::new(),
         }
     }
 
@@ -224,10 +308,11 @@ impl Timeline {
     /// those, is rolled back to `p` (or to the first write a drop found after it dropped, D
     /// keeping what was found before) and goes on from there instead of starting over. `None`
     /// when that does not hold (a node gone that has no record now, a new node first admin of a
-    /// thing walked before, a record changed under its ID): evaluate.
+    /// thing walked before, a record changed under its ID) or a trusted op is held (seeds and
+    /// void ops are read from the whole held set, `crate::trust`): evaluate.
     pub fn extend(mut self, held: &dyn HeldSet) -> Option<Timeline> {
         let input = Input::gather(held);
-        if !self.input.commits.keys().all(|k| input.commits.contains_key(k)) || !self.input.kept_in(&input) {
+        if !self.input.commits.keys().all(|k| input.commits.contains_key(k)) || !self.input.kept_in(&input) || self.trusted(input.commits.keys().copied()) {
             return None;
         }
         let added = input.commits.iter().filter(|(k, _)| !self.input.commits.contains_key(*k)).map(|(_, c)| c.point()).min();
@@ -319,7 +404,7 @@ impl Timeline {
         if new.is_empty() {
             return Ok(self);
         }
-        if !self.input.can_append(new) || keys.iter().any(|(t, r)| self.input.owners.owner(t).is_some() || r.tid() != *t || !matches!(r, CreationRecord::KeyActor { .. })) {
+        if !self.input.can_append(new) || keys.iter().any(|(t, r)| self.input.owners.owner(t).is_some() || r.tid() != *t || !matches!(r, CreationRecord::KeyActor { .. })) || self.trusted(new.iter().chain(self.input.commits.values()).map(|c| c.id)) {
             return Err(Box::new(self));
         }
         for (t, r) in keys {
@@ -395,6 +480,9 @@ impl Timeline {
             })
             .collect();
         let Some(links) = links else { return Err(Box::new(self)) };
+        if self.trusted(self.input.commits.keys().copied()) {
+            return Err(Box::new(self));
+        }
         let new: BTreeSet<Tid> = links.iter().map(|l| l.0).collect();
         debug_assert!(self.items.first_naming(&new, None).is_none(), "a leaf an item names");
         let cut = self.walked.log.len();

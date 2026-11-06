@@ -28,7 +28,7 @@
 //! Disputes (`trust`; results in notes/owners.md, "Model results, committed"). A node's
 //! trust set is one more walk input: ops it sides with, each an edge write R by A lowering
 //! another holder X. R seeds D with X's writes ordered before R that R's frontier does not
-//! list, X's writes on its own edges excepted. Shrink: trusted ops a walk leaves unapplied
+//! list, X's writes lowering its own edges excepted. Shrink: trusted ops a walk leaves unapplied
 //! lose their seeds for good, all at once, and the walk is redone from scratch. A dispute is
 //! an unapplied R that applies as an explicit demotion of X once its seeds are added to D,
 //! keyed (R, X). `edges::random_shaped` limits who may lower whom and who is online. Both

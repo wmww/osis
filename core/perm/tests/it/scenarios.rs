@@ -691,3 +691,155 @@ fn an_invite_does_not_say_keep_spec_permissions_2() {
     w.set(z[0], g, z[2], edge(Read), 4, &[]);
     assert!(eval(&w).roster(&g, At::END).contains_key(&z[2]));
 }
+
+// ---------- trust sets and disputes (spec/permissions.md §5.1 Trust) ----------
+
+use osis_perm::{Dispute, Timelines, Trust};
+
+fn trust(ops: &[osis_base::CommitId]) -> Trust {
+    Trust { ops: ops.iter().map(|id| WriteId(*id, 0)).collect() }
+}
+
+fn eval_with(w: &World, t: &Trust) -> Timeline {
+    Timeline::evaluate_with(&w.held(), t)
+}
+
+/// §5.1 Trust: a removed admin taking a thing back by backdating (the hole of one authority
+/// class). n0, G's first admin, grants n1; n1 removes n0 at 10; n0 then signs a removal of n1
+/// stamped 5, which the plain walk applies (n1 out, n0 back, also on a thing below). That
+/// removal is unlisted by n1's, so n1's removal is the one open dispute (R, n0). A node
+/// trusting it seeds D with n0's backdated removal: n1 stays admin, n0 holds nothing, above
+/// and below, and no dispute is open there. Trusting n0's instead changes nothing (it applies
+/// anyway) and the dispute stays open. The result is a function of the trust set alone: a
+/// `Timelines` switched to n1's side and back reads as the plain walk.
+#[test]
+fn backdated_takeback_settled_by_trust_spec_permissions_5_1() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let g = w.thing(n[0]);
+    let below = w.thing(g);
+    w.set(n[0], g, n[1], edge(Admin), 1, &[(n[1], 1)]);
+    let r = w.set(n[1], g, n[0], None, 10, &[]);
+    let back = w.set(n[0], g, n[1], None, 5, &[]);
+    let tl = eval(&w);
+    assert_eq!((role(&tl, n[0], g), role(&tl, n[1], g), role(&tl, n[0], below)), (Some(Admin), None, Some(Admin)));
+    assert_eq!(tl.disputes(), &[Dispute { op: WriteId(r, 0), holder: n[0] }]);
+    assert!(tl.active().is_empty() && tl.dropped().is_empty());
+    let side = eval_with(&w, &trust(&[r]));
+    assert_eq!((role(&side, n[0], g), role(&side, n[1], g), role(&side, n[0], below), role(&side, n[1], below)), (None, Some(Admin), None, Some(Admin)));
+    assert_eq!(side.dropped().keys().copied().collect::<Vec<_>>(), vec![WriteId(back, 0)]);
+    assert_eq!(side.active().iter().copied().collect::<Vec<_>>(), vec![WriteId(r, 0)]);
+    assert!(side.disputes().is_empty());
+    let other = eval_with(&w, &trust(&[back]));
+    assert_eq!((role(&other, n[0], g), role(&other, n[1], g)), (Some(Admin), None));
+    assert_eq!(other.disputes(), tl.disputes());
+    let held = w.held();
+    let mut tls = Timelines::new();
+    tls.update(&held);
+    let c = tls.set_trust(&held, trust(&[r]));
+    assert!(c.evaluated.contains(&g) && c.edges.contains(&(n[1], g)), "{c:?}");
+    assert_eq!(tls.get(&g).unwrap().role(&n[0], &g, At::END), None);
+    assert!(tls.get(&g).unwrap().disputes().is_empty());
+    let c = tls.set_trust(&held, Trust::default());
+    assert!(c.evaluated.contains(&g) && c.edges.contains(&(n[1], g)), "{c:?}");
+    let back_again = tls.get(&g).unwrap();
+    assert_eq!((role(back_again, n[0], g), role(back_again, n[1], g)), (Some(Admin), None));
+    assert_eq!(back_again.disputes(), tl.disputes());
+}
+
+/// §5.1 Trust, seeds (a self-grant below, notes/owner-removal-plan.md step 3): X, admin of A0 (first admin
+/// n1), grants itself admin on A1 (first admin A0) and removes n1, both unseen by n1, who then
+/// removes X from A0 (R). The plain walk keeps X everywhere (its removal is stamped first) and
+/// raises (R, X). Trusting R seeds the self-grant too: X holds nothing on A1. A self-removal
+/// (X lowering its own edge) is no seed: it applies on the trusting side.
+#[test]
+fn self_grant_below_is_a_seed_spec_permissions_5_1() {
+    for leaves in [false, true] {
+        let mut w = World::new();
+        let n = w.nodes(2);
+        let x = n[0];
+        let a0 = w.thing(n[1]);
+        let a1 = w.thing(a0);
+        w.set(n[1], a0, x, edge(Admin), 0, &[(x, 0)]);
+        if leaves {
+            w.set(n[1], a1, x, edge(Admin), 0, &[(x, 0)]);
+        }
+        let own = w.set(x, a1, x, if leaves { edge(Write) } else { edge(Admin) }, 1, &[]);
+        w.set(x, a0, n[1], None, 2, &[]);
+        let r = w.set(n[1], a0, x, None, 3, &[]);
+        let tl = eval(&w);
+        assert_eq!((role(&tl, x, a0), role(&tl, x, a1), role(&tl, n[1], a0)), (Some(Admin), Some(Admin), None), "leaves {leaves}");
+        assert_eq!(tl.disputes(), &[Dispute { op: WriteId(r, 0), holder: x }]);
+        let side = eval_with(&w, &trust(&[r]));
+        assert_eq!((role(&side, x, a0), role(&side, n[1], a0)), (None, Some(Admin)));
+        if leaves {
+            // the self-lowering applied; R's audit then drops it with X's class on A1 (an
+            // unlisted write of a class X fell through), which gives X's genesis edge back
+            assert!(!side.dropped().contains_key(&WriteId(own, 0)) || side.dropped()[&WriteId(own, 0)] == side.role_commit(&r).unwrap().point());
+            assert!(side.dropped().contains_key(&WriteId(own, 0)) && !side.is_applied(&WriteId(own, 0)));
+        } else {
+            assert_eq!(role(&side, x, a1), None);
+            assert!(side.dropped().contains_key(&WriteId(own, 0)));
+        }
+    }
+}
+
+/// §5.1 Trust: no dispute, no effect. An honest history raises none; trusting a demotion that
+/// applies anyway, an op not held, a finalize or a write on the author's own edge changes
+/// nothing, and the empty trust set is `evaluate`. Both sides of one fight trusted: the
+/// earlier-stamped removal has no seeds, turns void and shrinks out; the later one stands,
+/// and the void one is rejected, not disputed.
+#[test]
+fn trust_set_limits_spec_permissions_5_1() {
+    let (mut w, n, g) = group();
+    let rm = w.set(n[0], g, n[2], None, 2, &n.iter().map(|x| (*x, 2)).collect::<Vec<_>>());
+    let leave = w.set(n[3], g, n[3], None, 3, &[]);
+    let fin = w.fresh_id();
+    w.commit_spec(fin, n[1], 4, &[(g, n[4], None)], &[], true);
+    let tl = eval(&w);
+    assert!(tl.disputes().is_empty());
+    let plain = (tl.roster(&g, At::END), tl.applied().clone());
+    for t in [trust(&[]), trust(&[rm]), trust(&[leave]), trust(&[fin]), trust(&[cid(7)])] {
+        let side = eval_with(&w, &t);
+        assert_eq!((side.roster(&g, At::END), side.applied().clone()), plain, "{t:?}");
+        assert_eq!(side.active().iter().copied().collect::<Vec<_>>(), if t.ops.contains(&WriteId(rm, 0)) { vec![WriteId(rm, 0)] } else { vec![] });
+        assert!(side.disputes().is_empty());
+    }
+    let (mut w, n, g) = group();
+    let early = w.set(n[1], g, n[2], None, 2, &[]);
+    let late = w.set(n[2], g, n[1], None, 3, &[]);
+    let tl = eval(&w);
+    assert_eq!(tl.disputes(), &[Dispute { op: WriteId(late, 0), holder: n[1] }]);
+    let both = eval_with(&w, &trust(&[early, late]));
+    assert_eq!((edge_role(&both, n[1], g), edge_role(&both, n[2], g)), (None, Some(Admin)));
+    assert_eq!(both.active().iter().copied().collect::<Vec<_>>(), vec![WriteId(late, 0)]);
+    // the void op has no seeds, so it is rejected, not disputed
+    assert!(both.disputes().is_empty());
+}
+
+/// §5.1 Trust: a component holding a trusted op is only evaluated from scratch: a later commit
+/// evaluates it anew (never appended), nothing of it is saved, and a demotion scope reads it
+/// with the trust set.
+#[test]
+fn trusted_component_evaluates_from_scratch_spec_permissions_5_1() {
+    let (mut w, n, g) = group();
+    w.set(n[2], g, n[1], None, 3, &[]);
+    let r = w.set(n[1], g, n[2], None, 4, &[]);
+    let held = w.held();
+    let mut tls = Timelines::new();
+    tls.update(&held);
+    tls.set_trust(&held, trust(&[r]));
+    assert!(tls.to_save(b"x", 1, true).put.is_empty());
+    let scope = tls.get(&g).unwrap().demotion_scope(osis_perm::RoleCommit { id: cid(9), ts: ts(9), author: n[1], actor: n[1], frontier: Some(std::sync::Arc::new(osis_perm::Frontier::default())), ops: vec![osis_perm::EdgeOp { target: g, holder: n[3], edge: None }] });
+    assert!(scope.roles.contains_key(&n[3]));
+    w.set(n[0], g, n[4], edge(Read), 5, &[]);
+    let held = w.held();
+    let c = tls.update_touched(&held, &std::collections::BTreeSet::from([g]));
+    assert!(c.evaluated.contains(&g) && tls.appended() == 0, "{c:?}");
+    let tl = tls.get(&g).unwrap();
+    assert_eq!((edge_role(tl, n[1], g), edge_role(tl, n[2], g), edge_role(tl, n[4], g)), (Some(Admin), None, Some(Read)));
+    assert!(tls.to_save(b"x", 1, true).put.is_empty());
+    tls.set_trust(&held, Trust::default());
+    assert_eq!(tls.to_save(b"x", 1, true).put.len(), 1);
+}
+

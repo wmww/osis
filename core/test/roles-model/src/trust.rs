@@ -2,15 +2,16 @@
 //! over any walk implementing `Trusting` (`edges`, `joint`).
 //!
 //! A node's **trust set** T is a set of ops it sides with, each an edge write R by A lowering
-//! another holder X's edge (X is R's victim). R's **seeds**: X's writes (on what R puts in
-//! question) not listed in R's frontier, whenever stamped, but X's writes on its own edges (a
-//! self-removal never contests R; dropping one only keeps X longer). The walk takes T as one more input:
+//! another holder X's edge (X is R's victim). R's **seeds**: X's writes ordered before R (on
+//! what R puts in question) not listed in R's frontier, but X's writes lowering its own edges
+//! (a self-removal never contests R; dropping one only keeps X longer; a self-grant does
+//! contest and is a seed). The walk takes T as one more input:
 //! - **Shrink**: D starts at the seeds of the active trusted ops (all of T at first); a walk
 //!   that leaves an active op unapplied ("void") drops all void ones at once, for good, and
 //!   the walk is redone from scratch with the rest. At most |T| + 1 rounds.
 //! - **Dispute**: an op R of victim X, unapplied in the settled walk, that applies as an
-//!   explicit demotion of X in the walk with R's seeds added to D: R is voided by X's writes R
-//!   did not list. Keyed (R, X). A contest by X listing R (X had received it) raises none; a
+//!   explicit write lowering X's edge (below its value just before R) in the walk with R's
+//!   seeds added to D: R is voided by X's writes R did not list. Keyed (R, X). A contest by X listing R (X had received it) raises none; a
 //!   trusted R raises none, nor does an R a trusted op seeded (its author was rejected).
 //! - The result is a pure function of (held writes, T): nothing else is kept between calls,
 //!   so switching T, T', T reads as T by construction (the implementation must rebuild D).
@@ -27,7 +28,8 @@ pub struct Walked<R> {
     pub res: R,
     /// Ops applied in the settled walk.
     pub applied: u64,
-    /// Ops the settled walk applied as explicit demotions of another holder.
+    /// Ops the settled walk applied as explicit writes lowering another holder's edge below
+    /// its value just before.
     pub demoting: u64,
 }
 
@@ -580,6 +582,45 @@ mod tests {
         assert!(h.outside_equal(1, &s0.res, &s1.res));
         assert_eq!(s1.res.1[2][1], Write);
         assert_order_independent(&h, 1 << 1);
+    }
+
+    /// A removed admin's self-grant below (notes/owner-removal-plan.md step 3, seeds): doc
+    /// A1 has A0 as first admin; n1, admin of A0, grants itself admin on A1 and removes n0
+    /// from A0, both unseen by n0, who then removes n1 from A0 (R). The plain walk keeps n1
+    /// (its earlier-stamped removal wins) and raises the dispute (R, n1); trusting R seeds
+    /// the self-grant too, so n1 holds nothing on A1 there. A self-removal is no seed.
+    #[test]
+    fn self_grant_below_is_a_seed() {
+        let w = |author, t, id, target, holder, role| JWrite { author, t, id, target, holder, role };
+        // entities: n0, n1, A0, A1; A0's first admin n0, A1's A0
+        let mut genesis = vec![vec![NI; 2]; 4];
+        genesis[0][0] = Admin;
+        genesis[1][0] = Admin;
+        genesis[2][1] = Admin;
+        let late = |a: usize, t: u32| (0..2).map(|n| if n == a { t } else { LATE }).collect::<Vec<u32>>();
+        let mut h = JHist {
+            nodes: 2,
+            admins: vec![0, 2],
+            genesis,
+            writes: vec![w(1, 1, 1, 1, 1, Admin), w(1, 2, 2, 0, 0, NI), w(0, 3, 3, 0, 1, NI)],
+            recv: vec![late(1, 1), late(1, 2), late(0, 3)],
+        };
+        let s0 = side(&h, 0);
+        assert_eq!((s0.res.1[1][0], s0.res.1[1][1]), (Admin, Admin));
+        assert_eq!(s0.disputes, vec![(2, 1)]);
+        let s1 = side(&h, 1 << 2);
+        assert_eq!(s1.d0, 0b011, "the self-grant and the contest are seeds");
+        assert_eq!((s1.res.1[1][0], s1.res.1[1][1], s1.res.1[0][0]), (NI, NI, Admin));
+        assert_order_independent(&h, 1 << 2);
+        // n1 lowering its own edge on A1 (admin to write) instead: no seed (R's audit drops
+        // it as an unlisted write of a class n1 fell through, which gives the genesis edge
+        // back: the accepted cost of auditing self-removals, notes/permissions.md).
+        h.genesis[1][1] = Admin;
+        h.writes[0].role = Write;
+        let s1 = side(&h, 1 << 2);
+        assert_eq!(s1.d0, 0b010);
+        assert_eq!(s1.applied & 1, 0);
+        assert_eq!(s1.res.1[1][1], Admin);
     }
 
     /// The searches' hard properties on a sample of each generator, and the exhaustive tier

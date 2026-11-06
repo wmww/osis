@@ -9,6 +9,7 @@
 use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
+use crate::trust::Trust;
 use crate::types::{Point, RoleCommit};
 use crate::walk::Change;
 use osis_base::{CommitId, CreationRecord, Tid};
@@ -126,6 +127,9 @@ pub struct Timelines {
     general_only: bool,
     /// Things the last general path queued to find its region (scale checks).
     region_queued: usize,
+    /// The node's trust set (`crate::trust`): a component holding one of its ops is only
+    /// evaluated from scratch, never continued, saved or restored.
+    trust: Trust,
 }
 
 /// Walks to write to and delete from a node's cache, by component root (`Timelines::to_save`).
@@ -182,6 +186,30 @@ impl Timelines {
         }
         let (evaluated, _) = self.update_region(held, region, &mut |_| None, &[]);
         evaluated
+    }
+
+    /// Sets the trust set (`crate::trust`) and evaluates the components it touched or touches
+    /// anew; what changed, as `update_touched`.
+    pub fn set_trust(&mut self, held: &dyn HeldSet, trust: Trust) -> Changed {
+        let old = std::mem::replace(&mut self.trust, trust);
+        let touched: Vec<u64> = self.comps.iter().filter(|(_, c)| c.inputs.1.iter().any(|id| old.names(id) || self.trust.names(id))).map(|(i, _)| *i).collect();
+        let mut things = BTreeSet::new();
+        for i in touched {
+            if let Some(c) = self.comps.remove(&i) {
+                for t in &c.inputs.0 {
+                    self.of.remove(t);
+                }
+                self.unsaved.remove(&i);
+                self.retire(&c.inputs, c.basis);
+                things.extend(c.inputs.0.iter().copied());
+            }
+        }
+        self.update_touched(held, &things)
+    }
+
+    /// Whether the trust set names one of `commits` (such a component is evaluated from scratch).
+    fn trusts<'c>(&self, commits: impl IntoIterator<Item = &'c CommitId>) -> bool {
+        !self.trust.is_empty() && commits.into_iter().any(|id| self.trust.names(id))
     }
 
     /// Turns `update_touched`'s fast path (`append`) off, for tests comparing it with the
@@ -287,7 +315,7 @@ impl Timelines {
             };
             let c = self.comps.get(&i)?;
             let old = c.per.get(t);
-            if c.inputs.2.contains(t) != held.created(t).is_some() {
+            if c.inputs.2.contains(t) != held.created(t).is_some() || self.trusts(&c.inputs.1) {
                 return None;
             }
             let (mut kept, mut ids) = (0, BTreeSet::new());
@@ -301,7 +329,7 @@ impl Timelines {
                         return None;
                     }
                     kept += 1;
-                } else if c.inputs.1.contains(&m.id) {
+                } else if c.inputs.1.contains(&m.id) || self.trusts([&m.id]) {
                     return None;
                 } else {
                     let names = std::iter::once(&m.author).chain(m.ops.iter().flat_map(|o| [&o.holder, &o.target]));
@@ -553,7 +581,7 @@ impl Timelines {
                             changed.evaluated.extend(inputs.0.iter().copied());
                             match self.restore(&inputs, &part, saved, salt) {
                                 Some((tl, basis)) => (tl, basis, true),
-                                None => (Timeline::evaluate(&part), 0, true),
+                                None => (Timeline::evaluate_with(&part, &self.trust), 0, true),
                             }
                         }
                     }
@@ -599,6 +627,9 @@ impl Timelines {
     /// Every other walk saved under its things is retired: one under a root that moved
     /// before the next `to_save` (a restart in between) is found only here.
     fn restore(&mut self, inputs: &Inputs, part: &Only<'_>, saved: &mut dyn FnMut(&Tid) -> Option<Vec<u8>>, salt: &[u8]) -> Option<(Timeline, usize)> {
+        if self.trusts(&inputs.1) {
+            return None;
+        }
         let mut out = None;
         for (j, t) in inputs.0.iter().enumerate() {
             let Some(bytes) = saved(t) else { continue };
@@ -644,6 +675,9 @@ impl Timelines {
         for i in &ids {
             let Some(c) = self.comps.get(i) else { continue };
             let Some(root) = c.inputs.0.first().copied() else { continue };
+            if self.trusts(&c.inputs.1) {
+                continue;
+            }
             if Self::save_due(c, min, all)
                 && let Some(bytes) = cache::save(&c.inputs, &c.tl, salt)
             {

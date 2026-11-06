@@ -186,7 +186,7 @@
 - A node that does not sync a thing applies the certificate deltas it holds; its timeline for that thing runs over the entries it was given.
 
 ## 5. Validity
-Validity is a deterministic function of the commits a node holds.
+Validity is a deterministic function of the commits a node holds and its trust set (§5.1, Trust set).
 
 ### 5.1 Layer 1: role timeline
 The timeline covers **edge writes**: writes to `roles.0`. Every other role-class write (`secrets.0`, `keys.0`, `label.0`) is judged like content (§5.2) by the role its aspect requires (§1, §3).
@@ -207,7 +207,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
    - **Edge as restored**: an explicit write on grant (M, T) judges X's class before it with the edge as restored: the join (componentwise maximum, alive) of the grant's values since the last explicit write on it, values taken away by `until`, self-removal or finalize included, plus, for X, the standing it kept as the author of an earlier explicit write on that grant (below).
    - R never demotes its own author: an author that is or reaches the holder (by edges alive just before R) keeps the standing the edge as restored for it gave it, even when R writes it unchanged, until the next explicit write on that edge, which audits it against the edge as restored.
    - Each edge write of a commit is judged on its own, against the state before the commit. The commit's applied edge writes then take effect one at a time in order (the header's aspect order, then by holder tid, bytewise); each write's demotions and whether its author reaches the holder just before it are judged with the earlier ones in effect.
-5. A walk that adds nothing to D has settled; the timeline is the settled walk. D is rebuilt from scratch whenever the held set changes.
+5. A walk that adds nothing to D has settled; the timeline is the settled walk. D is rebuilt from scratch whenever the held set or the trust set changes.
 
 - **Frontier**: R embeds what its author A had received of X's writes as of T on the aspects R puts in question in the settled walk with R and that frontier, as commit IDs, never counters.
   - **Aspects in question**:
@@ -230,6 +230,10 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
   - Besides R itself, nothing but the frontier decides what X's writes before T survive: a write on A's chain that the frontier does not list is audited like any other.
   - A frontier above `CHUNK_THRESHOLD` is a chunked large value referenced by link (spec/commits.md §1).
 - A demotion by `until`, self-removal or finalize audits nothing. The next explicit write on that grant, by any node, audits with its frontier against the edge as restored.
+- **Trust set**: a node's walk takes one more input, its trust set: held edge writes it sides with, each carrying a frontier and lowering or setting the edge of a holder other than its author (and other than its target). Nodes holding the same commits under the same trust set read alike.
+  - **Seeds** of a trusted write R by A on edge (M, T): every held edge write ordered before R that R's frontier does not list, by M when M is a node or by any node that reaches M by admin edges at any time (edges any held write sets to admin, record edges included; A excepted), on T or on anything T reaches by edges at any time (as its target or its holder), except a write lowering its author's own edge: below the value the last held write on that edge ordered before it set (else the edge's record value) in every component (role, invite, `until`) and not equal to it.
+  - D starts at the seeds of every trusted write. A trusted write the settled walk does not apply is **void**: every void write loses its seeds at once and the walk is redone from scratch, until none is void.
+  - A **dispute** is a write R that may be trusted, which the settled walk does not apply and no seed dropped, and which the walk with D starting at the trusted writes' seeds plus R's own applies as an explicit write with a value below the edge's value just before it (the walk's last change to that edge, else its record value) in every component and not equal to it. Disputes are keyed by (R, M) and reported; the walk acts on the trust set alone.
 
 ### 5.2 Layer 2: content
 - A delta is judged by its author node's authority, whatever its header actor (Acting, below, adds a condition). A delta by X on thing N is valid if X held write or above on N just before the commit's key (§5.1; grants' `until` judged at its `ts`) and no valid explicit demotion of X below write on N is ordered after it.

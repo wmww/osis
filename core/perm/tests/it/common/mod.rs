@@ -56,6 +56,8 @@ pub struct CSpec {
     pub t: u64,
     pub ops: Vec<(Tid, Tid, Option<Edge>)>,
     pub recv: BTreeMap<Tid, u64>,
+    /// A finalize (spec/permissions.md §2): held with no frontier.
+    pub fin: bool,
 }
 
 /// A history under construction.
@@ -101,14 +103,18 @@ impl World {
         let id = self.fresh_id();
         let mut r: BTreeMap<Tid, u64> = recv.iter().copied().collect();
         r.insert(author, t);
-        self.commits.push(CSpec { id, author, t, ops: ops.to_vec(), recv: r });
+        self.commits.push(CSpec { id, author, t, ops: ops.to_vec(), recv: r, fin: false });
         id
     }
     /// A commit with a chosen ID.
     pub fn commit_id(&mut self, id: CommitId, author: Tid, t: u64, ops: &[(Tid, Tid, Option<Edge>)], recv: &[(Tid, u64)]) {
+        self.commit_spec(id, author, t, ops, recv, false);
+    }
+    /// A commit with a chosen ID, a finalize when `fin` (held with no frontier).
+    pub fn commit_spec(&mut self, id: CommitId, author: Tid, t: u64, ops: &[(Tid, Tid, Option<Edge>)], recv: &[(Tid, u64)], fin: bool) {
         let mut r: BTreeMap<Tid, u64> = recv.iter().copied().collect();
         r.insert(author, t);
-        self.commits.push(CSpec { id, author, t, ops: ops.to_vec(), recv: r });
+        self.commits.push(CSpec { id, author, t, ops: ops.to_vec(), recv: r, fin });
     }
     /// A content commit (no edge writes): only its receipts matter, for frontiers. Returns its
     /// point.
@@ -147,7 +153,7 @@ impl World {
                 ts: ts(c.t),
                 author: c.author,
                 actor: c.author,
-                frontier: Some(Arc::new(self.frontier(c.author, c.t))),
+                frontier: (!c.fin).then(|| Arc::new(self.frontier(c.author, c.t))),
                 ops: c.ops.iter().map(|&(target, holder, edge)| EdgeOp { target, holder, edge }).collect(),
             });
         }

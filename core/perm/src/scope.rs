@@ -7,7 +7,6 @@
 
 use crate::timeline::Timeline;
 use crate::types::{Frontier, RoleCommit};
-use crate::walk;
 use osis_base::{Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -63,12 +62,12 @@ impl Timeline {
         let r = [Arc::new(r)];
         let tl = match self.copy().append(&r, &[]) {
             Ok(tl) => tl,
-            // a commit `append` does not place (`Input::can_append`): walk with it from scratch
+            // a commit `append` does not place (`Input::can_append`, a trust set): walk with it
+            // from scratch
             Err(tl) => {
                 let mut input = tl.input;
                 input.append(&r);
-                let out = walk::run(&input);
-                Timeline::from_outcome(input, out)
+                Timeline::from_input(input, &tl.trust)
             }
         };
         let mut out = DemotionScope::default();
