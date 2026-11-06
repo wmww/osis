@@ -27,7 +27,7 @@ Check `git branch` and `wt list`; any worktree still claimed with no running age
 - issues/forged-departs-mark-entry.md (new, untested): a self-removing member may add a history entry saying its own removal is covered, so nobody rotates and it keeps reading. Confirm with a test and fix before other keys work.
 
 ## Open questions for Tess (notes/questions-for-tess.md)
-- Q12: depth 0 bends slightly (a device holding a member group's keys won't hand out its stale key). Recommended: accept. Already built (297).
+- Q12: depth 0 bends slightly (a node holding a member group's keys won't hand out its stale key). Recommended: accept. Already built (297).
 - Q13: anyone with write on G may create a thing whose first admin is G. Recommended: yes. Needed before step 2 stage B.
 - Q11: three small limits from the requirements pass. Q5 realms: on hold until owners settle.
 

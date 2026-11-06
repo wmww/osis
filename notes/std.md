@@ -7,7 +7,7 @@
 - Chat: `libs/chat` (osis-chat), `osis chat`: design E on primitives, a hand-written body, no schema yet (Tess designs the app layer later; notes/chat.md).
 - Be very careful with dates and times: milliseconds since the epoch are right for many things and wrong for the rest, and the rest gets complex fast.
 - Events are shared with read or write like anything else; no attendee or RSVP machinery now (link people in `body.0`, or an app-level aspect later).
-- Avoid API convenience functions that only save calling existing ones; the one addition here is `Osis::profile()` and `profile_of(person)`, because the profile thing is the API's own creation.
+- Avoid API convenience functions that only save calling existing ones; the one addition here is `Osis::profile()` and `profile_of(account)`, because the profile thing is the API's own creation.
 
 ## Time (spec/data-model.md §3)
 Four kinds, three types:
@@ -20,7 +20,7 @@ Four kinds, three types:
 
 ## Contact (schemas/contact.osis)
 - Many aspects, so a thing with only emails is a contact; display name `name.0`, notes `body.0`, groups are tags.
-- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), written by the account; everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(person)` gives the profile a card import brought.
+- A **profile** is the same aspects on the account's profile thing (`Osis::profile()`: the contact card's target, a group of itself under its own label), written by the account; everyone holding the card reads it and keeps receiving changes (the import's bearer follow stays). `Osis::profile_of(account)` gives the profile a card import brought.
 - A contact of mine that is an osis user carries `contact:profile.0`; my aspects override the profile's values field by field (tests/it/contact.rs `view`). A contact without it is just my data.
 - Entries are keyed maps (`emails`, `phones`, `urls` by value; `addresses`, `dates` by label), not lists: concurrent additions merge and one entry's label is editable alone. `labeled { label, pref }` marks the preferred one of a kind.
 - Left out of vCard on purpose: photo (a file type later), gender, language, timezone, geo, keys, sound, logo, categories (tags), and UID and revision bookkeeping, which belongs to the importing app.
@@ -32,7 +32,7 @@ Four kinds, three types:
 - Left out of iCalendar: attendees and RSVP, sub-daily frequencies, BYSETPOS and the rarer BY rules, RDATE, attachments, priority, transparency, sequence numbers, todos and journals.
 
 ## Tests (core/osis's `it` binary in `cargo test --workspace`; tier 2 `--ignored`)
-- core/osis/tests/it/notes.rs: two devices, offline edits merging, undo across devices; a notebook (a tag owning its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
+- core/osis/tests/it/notes.rs: two nodes, offline edits merging, undo across nodes; a notebook (a tag owning its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
 - core/osis/tests/it/tags.rs: notes/tags.md end to end (per-item share through one roster, sub-tags chaining rosters, only what you may share, tag-owned cards with demotion and invites).
 - core/osis/tests/it/contact.rs: profile filled, read through the card and updated; a linked contact overriding it; a contact without a profile.
 - core/osis/tests/it/event.rs: the civil-date conversion; a timed series with a skip and an override, an all-day span, a flight across zones, all in a read-only shared calendar.
