@@ -449,7 +449,7 @@ fn one_commit(entries: &[(Tid, &Ak, &Retention, Option<u64>)], purge: bool, way:
     let expires = first.and_then(|e| e.3);
     if let Some(at) = expires {
         if let Some(r) = entries.iter().find(|e| e.1.as_str() == CREATED.ak()) {
-            return Err(Error::Clash(format!("a thing's record never expires, and this write creates or first keeps {}, in a commit expiring at {at}. First commit the thing without an expiry: removing an aspect is enough, and stores no value", r.0)));
+            return Err(Error::Clash(format!("a thing's record never expires, and this write creates {} in a commit expiring at {at}. Create it in a commit of its own first", r.0)));
         }
         if let Some(r) = entries.iter().find(|e| free(e.1)) {
             return Err(Error::Clash(format!("{} {} never expires, and this commit expires at {at}. {way}", r.0, r.1)));

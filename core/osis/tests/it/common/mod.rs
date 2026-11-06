@@ -226,8 +226,8 @@ impl MembersOf for Osis {
 /// `create` and add to `groups` in one commit.
 pub trait CreateIn {
     fn create_in(&mut self, admin: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
-    /// `create` with a durable write (`t:made.0`), so the thing is persisted by this commit.
-    fn create_durable(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid>;
+    /// `create` with a write (`t:made.0`), so the thing has content.
+    fn create_with_content(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid>;
 }
 
 impl CreateIn for osis::Write<'_> {
@@ -238,7 +238,7 @@ impl CreateIn for osis::Write<'_> {
         }
         Ok(t)
     }
-    fn create_durable(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid> {
+    fn create_with_content(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid> {
         let t = self.create_with_admin(admin)?;
         self.at(t, osis::DynamicAspectKey::untyped(ak("t:made.0"))).set(&osis::Value::Bool(true))?;
         Ok(t)

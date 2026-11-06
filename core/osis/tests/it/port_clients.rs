@@ -872,24 +872,6 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     let (m, id) = made(&x);
     c.revert(id).unwrap();
     assert!(!x.n.has_content(m).unwrap());
-   // a draft likewise
-    let id_eph = {
-        let mut w = c.write();
-        let m = w.create_with_admin(x.g).unwrap();
-        w.at(m, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).set(&Value::Int(1)).unwrap();
-        w.group(x.g).add(osis::Member::Item(m)).unwrap();
-        (m, w.commit().unwrap().unwrap().id)
-    };
-    let (m, id) = id_eph;
-    assert!(x.n.engine(|e| e.ephemeral_thing(&m).is_some()));
-    let mut w = x.n.write();
-    w.group(x.h).add(osis::Member::Item(m)).unwrap();
-    w.commit().unwrap();
-    c.revert(id).unwrap();
-    let (mut gone, groups) = x.n.engine(|e| (e.ephemeral_thing(&m).is_none_or(|t| t.deleted), e.groups_of(&m)));
-    gone &= !groups.contains(&x.g);
-    assert!(gone, "{groups:?}");
-    assert!(groups.contains(&x.h), "a membership in a group it may not write");
 }
 
 // spec/wire.md §11.2: however a raw session spells an addition to `group.0` (set add, whole value, insert, edit, a key step), nothing it may not read gets listed
@@ -1058,19 +1040,16 @@ fn refused_undo_blocks_only_its_scope() {
     assert!(x.n.groups_of(x.member).unwrap().item_of.contains(&x.g));
 }
 
-// spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, made elsewhere, ephemeral
+// spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, made elsewhere
 #[test]
 fn hidden_answers_writes_as_unknown() {
     let x = node();
     let (_, _, c) = x.client(Role::Write);
     let me = x.n.me();
-    let ephg = x.n.commit_with(|w| { let e = w.create()?; Ok(e) }).unwrap();
-    let eph = x.n.commit_with(|w| { let e = w.create()?; w.at(e, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).set(&Value::Int(1))?; Ok(e) }).unwrap();
-    assert!(x.n.engine(|e| e.ephemeral_thing(&eph).is_some() && e.ephemeral_thing(&ephg).is_some()));
     let ghost = Tid::from_bytes([9; 15]);
     let g = write_answers(&c, &x, ghost);
     assert!(g.contains("UnknownThing"), "{g}");
-    for (name, t) in [("thing", x.out), ("group", x.h), ("its thing", x.u), ("ephemeral", eph), ("ephemeral group", ephg), ("account", me), ("node", x.n.node())] {
+    for (name, t) in [("thing", x.out), ("group", x.h), ("its thing", x.u), ("account", me), ("node", x.n.node())] {
         assert_eq!(write_answers(&c, &x, t), g, "{name}");
         assert_eq!(answers(&c, t).replace(&format!("{t:?}"), "T"), answers(&c, ghost).replace(&format!("{ghost:?}"), "T"), "{name}");
     }
@@ -1110,14 +1089,13 @@ fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
         write(&|w| w.at(t, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).set(&Value::Int(1))),
         read(c.at(t, osis::DynamicAspectKey::untyped(ak("groups.0"))).get().map(|v| format!("{v:?}"))),
         read(c.at(t, ct::GROUP).get().map(|v| format!("{v:?}"))),
-        read(c.at(t, osis::DynamicAspectKey::untyped(ak("ephemeral_group.0~"))).get().map(|v| format!("{v:?}"))),
         read(c.items(t).map(|v| format!("{v:?}"))),
         read(c.subgroups(t).map(|v| format!("{v:?}"))),
     ];
     out.join("\n").replace(&format!("{t:?}"), "T")
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3: a revert is held to the actor as a write is: reverting a removal or subgroup removal, durable or ephemeral, the actor's own too, puts back nothing it may not read, refused naming what it reads; what it reads goes back; the node's own revert is unchanged
+// spec/wire.md §11.2, notes/client-port.md §3: a revert is held to the actor as a write is: reverting a removal or subgroup removal, the actor's own too, puts back nothing it may not read, refused naming what it reads; what it reads goes back; the node's own revert is unchanged
 #[test]
 fn revert_lists_nothing_hidden() {
     let x = node();
@@ -1147,15 +1125,6 @@ fn revert_lists_nothing_hidden() {
     };
     refused(c.revert(rm), x.g);
     assert!(!x.n.groups_of(x.h).unwrap().subgroup_of.contains(&x.g));
-    // ephemeral
-    let mut w = x.n.write();
-    let e = w.create().unwrap();
-    w.group(x.g).add(osis::Member::Item(e)).unwrap();
-    w.commit().unwrap();
-    let eid = unplaced(e);
-    assert!(eid.commit().is_none());
-    refused(c.revert(eid), x.g);
-    assert!(!listed(e));
     // its own remove of a listed name it may not read: gone stays gone
     let mut w = x.n.write();
     w.group(x.g).add(osis::Member::Item(x.member)).unwrap();
@@ -1175,24 +1144,6 @@ fn revert_lists_nothing_hidden() {
     let id = unplaced(mine);
     c.revert(id).unwrap();
     assert!(listed(mine));
-    // a commit keeping a draft in a group, with the memory commit that follows it: the durable one refused after the other was built: nothing of either, nothing logged, no commit
-    let eph = ak("t:e.0~");
-    x.n.commit_set(x.t, osis::DynamicAspectKey::untyped(eph.clone()), &Value::Int(5)).unwrap();
-    let draft = x.n.commit_with(|w| {
-        let d = w.create()?;
-        w.group(x.g).add(osis::Member::Item(d))?;
-        Ok(d)
-    })
-    .unwrap();
-    let both = crate::common::commit_with(&x.n, |w| w.at(draft, osis::DynamicAspectKey::untyped(ak("t:name.0"))).set(&Value::Int(1))).id;
-    let (held, logged) = (x.n.commits(&CommitQuery::default()).unwrap().len(), x.n.engine(|e| e.ephemeral_log().len()));
-    let r = c.revert(both);
-    assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.g || tid == draft), "{r:?}");
-    assert!(x.n.items(x.g).unwrap().contains(&draft));
-    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(eph.clone())).get().unwrap(), Some(Value::Int(5)));
-    assert_eq!((x.n.commits(&CommitQuery::default()).unwrap().len(), x.n.engine(|e| e.ephemeral_log().len())), (held, logged));
-    c.commit_set(x.t, osis::DynamicAspectKey::untyped(eph.clone()), &Value::Int(6)).unwrap();
-    assert_eq!(x.n.at(x.t, osis::DynamicAspectKey::untyped(eph.clone())).get().unwrap(), Some(Value::Int(6)), "its counters still run");
     // the node may, what the actor may not
     let mut w = x.n.write();
     w.group(x.g).add(osis::Member::Item(x.out)).unwrap();
@@ -1200,15 +1151,15 @@ fn revert_lists_nothing_hidden() {
     let id = unplaced(x.out);
     x.n.revert(id).unwrap();
     assert!(listed(x.out));
-    // a client's draft saved, undone and redone: its own, added by it
+    // a client's thing, its write undone and redone: its own, added by it
     let name = ak("t:name.0");
-    let mut w = c.write();
-    let m = w.create_with_admin(x.g).unwrap();
-    w.at(m, osis::DynamicAspectKey::untyped(ak("t:e.0~"))).set(&Value::Int(1)).unwrap();
-    w.group(x.g).add(osis::Member::Item(m)).unwrap();
-    let d = m;
-    w.commit().unwrap();
-    assert!(x.n.engine(|e| e.ephemeral_thing(&d).is_some()));
+    let d = c
+        .commit_with(|w| {
+            let m = w.create_with_admin(x.g)?;
+            w.group(x.g).add(osis::Member::Item(m))?;
+            Ok(m)
+        })
+        .unwrap();
     c.commit_set(d, osis::DynamicAspectKey::untyped(name.clone()), &Value::Int(2)).unwrap();
     assert!(x.n.at(x.g, ct::GROUP).get().unwrap().unwrap().items.contains(&d));
     c.undo(&Scope::Thing(d)).unwrap().unwrap();
@@ -1237,35 +1188,6 @@ fn half_removed_client_stays_ended() {
     assert!(!x.n.grants(x.g).unwrap().contains_key(&a));
     assert!(x.n.clients().unwrap().is_empty());
     assert!(!x.n.remove_client(a).unwrap());
-}
-
-// spec/data-model.md §8, spec/wire.md §11.2, notes/client-port.md §3: persisting a thing converts its ephemeral memberships in the groups the writer may write: the actor's, not this node's
-#[test]
-fn persisting_converts_only_memberships_the_actor_may_write() {
-    let x = node();
-    let (_, _, c) = x.client(Role::Write);
-    let e = x
-        .n
-        .commit_with(|w| {
-            let e = w.create_with_admin(x.g)?;
-            w.group(x.h).add(osis::Member::Item(e))?;
-            Ok(e)
-        })
-        .unwrap();
-    c.commit_set(e, osis::DynamicAspectKey::untyped(ak("t:name.0")), &Value::Int(1)).unwrap();
-    assert_eq!(x.n.at(e, osis::DynamicAspectKey::untyped(ak("t:name.0"))).get().unwrap(), Some(Value::Int(1)));
-    assert!(!x.n.at(x.h, ct::GROUP).get().unwrap().unwrap_or_default().items.contains(&e), "written durably with this node's rights");
-    // the same write by the node converts it
-    let e2 = x
-        .n
-        .commit_with(|w| {
-            let e = w.create_with_admin(x.g)?;
-            w.group(x.h).add(osis::Member::Item(e))?;
-            Ok(e)
-        })
-        .unwrap();
-    x.n.commit_set(e2, osis::DynamicAspectKey::untyped(ak("t:name.0")), &Value::Int(1)).unwrap();
-    assert!(x.n.at(x.h, ct::GROUP).get().unwrap().unwrap().items.contains(&e2));
 }
 
 /// A small xorshift (the walk's choices; failure messages name the seed).

@@ -622,7 +622,7 @@ fn own_runtime_reopen_right_after_close() {
     };
     let db = osis::internals::create(at(0)).unwrap();
     let mut w = db.write();
-    let t = w.create_durable(db.me()).unwrap();
+    let t = w.create_with_content(db.me()).unwrap();
     w.commit().unwrap();
     assert_eq!(db.close().unwrap(), osis::Close::Closed);
     for i in 1..12u64 {

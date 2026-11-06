@@ -1791,41 +1791,6 @@ fn a_split_made_after_the_route_refuses_the_write() {
     drop(x.host);
 }
 
-// spec/sync.md §3, §10, notes/client-port.md §6, §8: an ephemeral membership counts like a durable one: a client of this node reads no local copy of a thing added ephemerally to a routed group; such a thing also carried by a group syncing here is split, in `status` and for an undo over the routed group
-#[test]
-fn an_ephemeral_membership_in_a_routed_group_counts() {
-    let x = world();
-    let h = second_group(&x);
-    let draft = ak("app:draft.0~");
-    let (a, _) = x.p.add_client(None).unwrap();
-    x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
-    let thing = |admin: Tid, also: Option<Tid>| {
-        x.p.commit_with(|w| {
-            let e = w.create_with_admin(admin)?;
-            w.at(e, osis::DynamicAspectKey::untyped(draft.clone())).set(&s("here"))?;
-            w.group(x.g).add(osis::Member::Item(e))?;
-            if let Some(h) = also {
-                w.group(h).add(osis::Member::Item(e))?;
-            }
-            Ok(e)
-        }).unwrap()
-    };
-    let (e, both) = (thing(x.g, None), thing(h, Some(h)));
-    assert!(x.p.engine(|d| d.readable_by(&a, &e)));
-    assert!(x.p.engine(|d| !d.durable_groups_of(&e).contains(&x.g) && d.groups_of(&e).contains(&x.g)), "added ephemerally");
-    x.connect_p();
-    x.to_node();
-    assert!(x.p.engine(|d| d.groups_of(&e).contains(&x.g)), "still a member here");
-    assert!(!x.p.engine(|d| d.readable_by(&a, &e)), "this node's copy is stale");
-    let split = x.p.status().unwrap().two_sources;
-    assert!(split.contains(&both) && !split.contains(&e), "{split:?}");
-    let r = x.p.commit_set(both, osis::DynamicAspectKey::untyped(draft.clone()), &s("again"));
-    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
-    let r = x.p.undo(&osis::Scope::Group(x.g));
-    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
-    drop(x.host);
-}
-
 // spec/sync.md §10, notes/arbitrary-values.md, notes/client-port.md §1: `CONNECTION_WAIT`, as a test sets it: at 0 nothing connects, `Network`; long, it works as any
 #[test]
 fn connecting_at_zero_and_infinity() {
