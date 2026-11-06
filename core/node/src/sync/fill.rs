@@ -3,7 +3,7 @@
 //! changes: one not fetched yet is one not received. Only the order, and when the pass ends.
 
 use super::state::Kind;
-use super::{ConnId, LConn, Phase, SyncEngine};
+use super::{ConnId, HostKey, LConn, Phase, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
 use osis_proto::Cursor;
@@ -11,7 +11,11 @@ use std::collections::BTreeSet;
 
 /// Queue rank of what judging needs (order 0).
 const FIRST: u64 = 0;
-/// Queue rank of what does not open: chunks, epochs not held, inbox blobs.
+/// Queue rank of what does not open and the host holds deposited: inbox blobs (a grant or invite
+/// to the node's actors) and a reader's deposits under an epoch not held. As many as the host's
+/// deposit budget holds, whatever the label holds besides.
+const DEPOSITED: u64 = 1;
+/// Queue rank of the rest of what does not open: chunks, epochs not held.
 const LAST: u64 = u64::MAX;
 
 /// One label's fill on one connection.
@@ -40,10 +44,11 @@ impl Fill {
 impl SyncEngine {
     /// The rank of entry `b`. Everything listed is fetched, as a replay brought it inline; what
     /// no writer vouched for and does not open then goes (`drop_unvouched`).
-    fn rank(secrets: &[osis_crypto::Secret32], b: &BlobId, wrap: &[u8]) -> u64 {
+    fn rank(&self, secrets: &[osis_crypto::Secret32], host: HostKey, l: &LabelId, b: &BlobId, wrap: &[u8]) -> u64 {
         match osis_label::wrap_order(secrets.iter(), b, wrap) {
             // newest first; never `LAST`, and a wrap's own word can do no more than `FIRST`
             Some(t) => if t == FIRST { FIRST } else { (LAST - 1).saturating_sub(t) },
+            None if self.state.deposited.contains(&(host, *l, *b)) => DEPOSITED,
             None => LAST,
         }
     }
@@ -63,7 +68,7 @@ impl SyncEngine {
         if self.state.cursors.contains_key(&(host, l)) {
             for b in self.state.of_kind(&l, Kind::TAG_UNKNOWN) {
                 let Some(e) = self.state.entries.get(&(l, b)) else { continue };
-                let r = Self::rank(&secrets, &b, &e.wrap);
+                let r = self.rank(&secrets, host, &l, &b, &e.wrap);
                 if self.state.is_present(&host, &l, &b) && !self.engine.has_blob(&b) {
                     queue.insert((r, b));
                 }
@@ -80,8 +85,9 @@ impl SyncEngine {
         if ids.is_empty() {
             return;
         }
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return };
         let secrets = self.fill_secrets(conn, &l);
-        let ranked: Vec<(u64, BlobId)> = ids.iter().filter_map(|b| self.state.entries.get(&(l, *b)).map(|e| (Self::rank(&secrets, b, &e.wrap), *b))).collect();
+        let ranked: Vec<(u64, BlobId)> = ids.iter().filter_map(|b| self.state.entries.get(&(l, *b)).map(|e| (self.rank(&secrets, host, &l, b, &e.wrap), *b))).collect();
         if let Some(f) = self.lc_mut(conn, &l).and_then(|x| x.fill.as_mut()) {
             f.queue.extend(ranked);
         }
@@ -136,7 +142,7 @@ impl SyncEngine {
             f.secrets = secrets_now;
             let secrets = self.fill_secrets(conn, &l);
             for (_, b) in f.queue.split_off(&(LAST, BlobId([0; 32]))) {
-                let r = self.state.entries.get(&(l, b)).map(|e| Self::rank(&secrets, &b, &e.wrap));
+                let r = self.state.entries.get(&(l, b)).map(|e| self.rank(&secrets, host, &l, &b, &e.wrap));
                 f.queue.extend(r.map(|r| (r, b)));
             }
         }

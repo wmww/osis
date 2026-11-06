@@ -241,6 +241,38 @@ fn chunks_at_a_groups_inbox_come_last_spec_sync_6() {
     assert!(chunks.iter().all(|b| f.net.engine(c).has_blob(b)), "every chunk in the end");
 }
 
+// spec/sync.md §6: at an inbox (a group's home label) a deposit that opens under nothing (here
+// junk; a grant waiting for the node's actor alike) comes right after order 0, before the newest
+// messages, while the chunks written before them come last.
+#[test]
+fn a_deposit_comes_after_order_0_spec_sync_6() {
+    let mut f = chat_with(Role::Read, |net, a, _, t| {
+        let mut m = Mutation::new();
+        m.set(t, &crate::net::REG, &net::s(&"x".repeat(1 << 20))).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+    });
+    let (a, c, g, l, host) = (f.a, f.c, f.g, f.l, f.host);
+    let (_, gl) = f.net.sync(a).labels().into_iter().find(|(_, x)| x.id == l).unwrap();
+    let head = f.net.host_path(host, &l).last().unwrap().clone();
+    let keys = f.net.engine(a).head_keys(&g, gl.index, &head).unwrap();
+    let mut rng = osis_crypto::SeededRng::from_u64(7);
+    let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();
+    let (_, blob) = osis_label::frame(&prefix, b"deposit", &mut rng).unwrap();
+    let id = osis_label::blob_id(&blob);
+    let wrap = [0x13; osis_crypto::WRAP_LEN];
+    let sig = osis_label::sign_deposit(keys.deposit.as_ref().unwrap(), &l, &id, &wrap);
+    crate::wrap_poison::send(&mut f.net, a, host, osis_proto::Message::Deposit { id: 0x4000_0001, label: l, blob, wrap, sig });
+    f.net.run();
+    assert!(f.net.host_ids(host, &l).contains(&id), "at the host");
+    let chunks: Vec<BlobId> = f.net.sync(a).entries(&l).into_iter().filter(|(b, k)| *k == EntryKind::Unknown && *b != id).map(|x| x.0).collect();
+    assert!(chunks.len() > 2, "{} chunks", chunks.len());
+    f.part_way();
+    f.assert_newest();
+    assert!(f.net.engine(c).has_blob(&id), "the deposit before the newest messages");
+    assert_eq!(chunks.iter().filter(|b| f.net.engine(c).has_blob(b)).count(), 0, "chunks after them");
+    f.finish();
+}
+
 // spec/crypto.md §5: what did not open at the listing takes its place in the order once secrets
 // arrive: messages under a rotation's new epoch, its rotation fetched first.
 #[test]
