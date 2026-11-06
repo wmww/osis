@@ -1,4 +1,4 @@
-//! Phase C adversaries (notes/testing.md, Phase C; not built: issues/tests-unbuilt.md): a dishonest host, a removed holder replaying
+//! Phase C adversaries (notes/testing.md, Phase C): a dishonest host, a removed holder replaying
 //! what it kept, a holder uploading malformed blobs, a flooding depositor. Each states its
 //! expected outcome; the invariant throughout is that honest nodes converge (through an honest
 //! host where one is dishonest) and never read an unauthorised write.
