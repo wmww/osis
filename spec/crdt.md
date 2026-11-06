@@ -353,12 +353,13 @@ A write is **dead** at a node once the join has superseded it:
 
 **When.** It dies at the earliest `ts` among the valid writes the node holds that supersede it, or at T by expiry (which dates no body, spec/commits.md §5).
 - Each is judged against the write alone, so the order of arrival does not matter.
+- A text element's creation undeleted (§5.7) and deleted again dies again, at the later delete.
 - A write's `ts` is its own commit's, also when a snapshot carries it, but for a valid snapshot's copy of a write whose own delta is held invalid: the snapshot's.
 
 **Revival.** Un-merge (§4.6) is the only way a dead write revives.
 - The invalid deltas' writes supersede nothing, so a write only they superseded has no death.
 - A valid write un-merged with the record it sits in still dies at a valid superseder (a reset on that record).
-- Retention alone counts an invalid write, or one so un-merged with no superseder, dead from its fall under keep at most 0 after replaced (spec/commits.md §5).
+- Retention alone counts an invalid write, or one so un-merged with no superseder, dead at its own `ts` under keep at most 0 after replaced (spec/commits.md §5).
 
 **Hidden writes.** A write hidden in an element that is not live (§5.6, §5.7 Live) is not dead by that: it dies when a reset prunes it, a compacting writer's sweep included (spec/sync.md §7).
 

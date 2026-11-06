@@ -129,13 +129,11 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - A **body** is the commit's blob (spec/sync.md §3): its held deltas, each in its thing's section; a rewrite holds fewer. Keep bounds and deaths are read per retention class (retention and delete keys) of its deltas.
 - A write **dies** when a later write supersedes it or at its delta's expiry (spec/crdt.md §4.8). A body is **replaced** as its writes die.
 - Each node dates deaths for itself, per body the first and last so far:
-  - a superseded write's death at the `ts` of the first superseder the node held, so never earlier than its death (spec/crdt.md §4.8); a superseder held later with a lower `ts` moves no date;
+  - a superseded write's death at the `ts` of the first superseder the node held, so never earlier than its death (spec/crdt.md §4.8); a superseder held later with a lower `ts` moves no date; a superseder the node holds only as a valid snapshot's copy of a delta invalid here dates at the earliest such snapshot's `ts` where that is later;
+  - a body's own writes die for it; a snapshot carries a dying write when its body holds a write of the write's stamp and none of the superseder's stamp; a write dies for a body no earlier than the body's `ts`;
   - a validity flip, an un-merge or a new judgment of an invalid delta may date the aspect's deaths again from what it then holds;
   - an expiry dates none: the delta's body goes at T (§6) and a snapshot holds the write value-less.
-- A write of a delta invalid here does not die, nor does a valid write an un-merge took with nothing superseding it (spec/crdt.md §4.6), nor, for an invalid snapshot's body, any write it carries. But under keep at most 0 after replaced, on a commit other than a role commit, each counts dead from its **fall** for its body's dates. With no such bound the body stays.
-  - An invalid delta's fall is at the `ts` of the demotion that its judgment names (spec/permissions.md §5.2), no earlier than its own `ts`, and with none at its own `ts`.
-  - An un-merged write's fall is at the latest fall among the invalid deltas of applied commits on the aspect, no earlier than its own `ts`.
-  - Only an applied commit's judgment counts: a commit that waits (§4) has no fall.
+- A write of a delta invalid here does not die, nor does a valid write an un-merge took with nothing superseding it (spec/crdt.md §4.6), nor, for an invalid snapshot's body, any write it carries. But under keep at most 0 after replaced, on a commit other than a role commit, each counts dead at its own `ts` for its body's dates. Only an applied commit's judgment counts: a commit that waits (§4) is not invalid here. With no such bound the body stays.
 - Nodes holding the same commits may hold different dates and different bodies. A write arriving after every write superseding it went with a body dropped for its keep bounds, none of them live, has no death there, and its body stays until a later death or another drop.
 
 ### Covered
