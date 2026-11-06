@@ -1,5 +1,5 @@
 //! HostStore over the redb file backend and a file key root: state survives closing and
-//! reopening the files (spec/sync.md §4). Tier 2 (disk): `cargo test --workspace --test it file:: -- --ignored`.
+//! reopening the files (spec/sync.md §4). Tier 2 (disk): `cargo test -p osis-host --test it -- --ignored file::`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{LabelId, ManualClock, WallMs};

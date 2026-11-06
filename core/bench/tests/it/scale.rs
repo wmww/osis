@@ -1,5 +1,5 @@
 //! Scale checks over the crdt paging (tier 2, release; numbers in notes/testing.md, "Scale
-//! checks"): `cargo test --release --workspace --test it scale::big_map_snapshot_rewrite -- --ignored --nocapture`.
+//! checks"): `cargo test --release -p osis-bench --test it -- --ignored --nocapture scale::big_map_snapshot_rewrite`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis_base::{Link, Tid, Ts, Value};

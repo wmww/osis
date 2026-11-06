@@ -946,7 +946,7 @@ fn any_order_until_seed(seed: u64) -> u64 {
 }
 
 fn any_order_until_replay(s: u64) -> String {
-    format!("OSIS_KEEP_START={s} OSIS_KEEP_SEEDS=1 cargo test --workspace --test it keep::any_order_until_keeps_no_more_large -- --ignored --exact")
+    format!("OSIS_KEEP_START={s} OSIS_KEEP_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact keep::any_order_until_keeps_no_more_large")
 }
 
 // spec/permissions.md §3, Retain: the same with `until` endings, which read the default in force at
@@ -966,7 +966,7 @@ fn any_order_until_keeps_no_more_large() {
 }
 
 fn any_order_replay(s: u64) -> String {
-    format!("OSIS_KEEP_START={s} OSIS_KEEP_SEEDS=1 cargo test --workspace --test it keep::any_order_keeps_no_more_large -- --ignored --exact")
+    format!("OSIS_KEEP_START={s} OSIS_KEEP_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact keep::any_order_keeps_no_more_large")
 }
 
 // spec/permissions.md §3, Retain: in any arrival order, with the trigger run after each commit, a node

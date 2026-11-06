@@ -658,7 +658,7 @@ fn relay_differential_large_spec_commits_4() {
 }
 
 fn relay_replay(s: u64) -> String {
-    format!("OSIS_RELAY_START={s} OSIS_RELAY_SEEDS=1 cargo test --workspace --test it parts_relay::relay_differential_large_spec_commits_4 -- --ignored --exact")
+    format!("OSIS_RELAY_START={s} OSIS_RELAY_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact parts_relay::relay_differential_large_spec_commits_4")
 }
 
 // spec/commits.md §4 (copies), §5: a commit applies without a part on a thing whose record is away, that

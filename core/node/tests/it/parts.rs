@@ -847,7 +847,7 @@ fn parts_seed(seed: u64) -> PartsSeed {
 }
 
 fn parts_replay(s: u64) -> String {
-    format!("OSIS_PARTS_START={s} OSIS_PARTS_SEEDS=1 cargo test --workspace --test it parts::parts_differential_large_spec_commits_4 -- --ignored --exact")
+    format!("OSIS_PARTS_START={s} OSIS_PARTS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact parts::parts_differential_large_spec_commits_4")
 }
 
 #[test]

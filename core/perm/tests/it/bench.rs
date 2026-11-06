@@ -1,5 +1,5 @@
 //! Cost of a 10^4-edge-write history (issues/perm-eval-cost.md): from scratch and incremental. Tier 2:
-//! `cargo test --release --workspace --test it bench::bench_ -- --ignored --nocapture`. Run it alone:
+//! `cargo test --release -p osis-perm --test it -- --ignored --nocapture bench::bench_`. Run it alone:
 //! `bench_10k_edges` peaks at about 13 GB (each held set of the org at 10^4 is about 3 GB).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

@@ -78,8 +78,8 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
 }
 
 /// Runs `samples` histories from `history` through `diff`, calling `each` on every one. A
-/// mismatching history is shrunk while it still mismatches and reported as a trace; the run
-/// fails after three.
+/// mismatching history is reported as a trace (`OSIS_PERM_SHRINK=1`: shrunk while it still
+/// mismatches); the run fails after three.
 fn model_run<H: Shrink + Clone + std::fmt::Display>(samples: u64, seed: u64, history: impl Fn(&mut Rng) -> H, diff: impl Fn(&H) -> Option<String>, mut each: impl FnMut(&H)) {
     let seed = seeded(seed);
     let mut rng = Rng(seed);
@@ -88,9 +88,10 @@ fn model_run<H: Shrink + Clone + std::fmt::Display>(samples: u64, seed: u64, his
         let h = history(&mut rng);
         each(&h);
         if diff(&h).is_some() {
-            let m = shrink(h.clone(), |c| diff(c).is_some());
+            let shrunk = osis_base::testenv::u64_var("OSIS_PERM_SHRINK").is_some_and(|n| n != 0);
+            let (m, what) = if shrunk { (shrink(h.clone(), |c| diff(c).is_some()), "shrunk") } else { (h, "as made; OSIS_PERM_SHRINK=1 shrinks it") };
             let d = diff(&m).unwrap_or_default();
-            fails.push(format!("seed {seed:#x} sample {s} (shrunk): {d}\n{m}"));
+            fails.push(format!("seed {seed:#x} sample {s} ({what}): {d}\n{m}"));
             if fails.len() >= 3 {
                 break;
             }

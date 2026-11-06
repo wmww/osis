@@ -96,6 +96,15 @@ gui_steps() {
   ( cd libs/kit && step cargo test --workspace --locked )
   ( cd libs/kit && step cargo deny check )
 }
+# Both workspaces' lockfiles, in about a second: a core dependency change leaves libs/kit/Cargo.lock
+# stale, which the kit's `--locked` steps would find only at the gate's end.
+locks() {
+  for d in . libs/kit; do
+    ( cd "$d" && cargo metadata --locked --offline --format-version 1 >/dev/null ) || {
+      echo "gate: $d/Cargo.lock is stale; refresh it with (cd $d && cargo metadata --offline --format-version 1 >/dev/null) and commit it" >&2; return 1; }
+  done
+}
+step locks
 if [ -z "$core" ]; then
   echo "== GUI-only change: core steps skipped"
   gui_steps

@@ -494,7 +494,7 @@ fn open_equals_rebuild_random_secrets_compactions_large() {
 }
 
 fn secrets_replay(s: u64) -> String {
-    format!("OSIS_WALKS_SECRETS_START={s} OSIS_WALKS_SECRETS_SEEDS=1 cargo test --workspace --test it walks::open_equals_rebuild_random_secrets_compactions_large -- --ignored --exact")
+    format!("OSIS_WALKS_SECRETS_START={s} OSIS_WALKS_SECRETS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact walks::open_equals_rebuild_random_secrets_compactions_large")
 }
 
 // spec/permissions.md §5.2 (a part dropped as covered whose coverer turns invalid is missing
@@ -738,7 +738,7 @@ fn open_equals_rebuild_random_histories_large() {
 }
 
 fn walks_replay(s: u64) -> String {
-    format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test --workspace --test it walks::open_equals_rebuild_random_histories_large -- --ignored --exact")
+    format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact walks::open_equals_rebuild_random_histories_large")
 }
 
 // as above, spec/crdt.md §4.8: seeds where a keep-at-most-0 body died and dropped, its killer
@@ -783,7 +783,7 @@ fn open_equals_rebuild_random_histories_forged_large() {
 }
 
 fn forged_replay(s: u64) -> String {
-    format!("OSIS_WALKS_FORGED_START={s} OSIS_WALKS_FORGED_SEEDS=1 cargo test --workspace --test it walks::open_equals_rebuild_random_histories_forged_large -- --ignored --exact")
+    format!("OSIS_WALKS_FORGED_START={s} OSIS_WALKS_FORGED_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact walks::open_equals_rebuild_random_histories_forged_large")
 }
 
 /// One random history of `open_equals_rebuild_random_histories`; returns what it reached on any
