@@ -237,13 +237,13 @@ impl Timeline {
     /// the walk with their seeds added to D. One extra walk per candidate with seeds: a
     /// removed admin can sign any number (`disputes_up_to` bounds a scan).
     pub fn disputes(&self) -> &[Dispute] {
-        self.memo.disputes.get_or_init(|| self.scan(&self.candidates(), usize::MAX, &BTreeSet::new(), None).0.into_iter().map(|d| d.dispute).collect())
+        self.memo.disputes.get_or_init(|| self.scan(&self.candidates(), usize::MAX, false).0.into_iter().map(|d| d.dispute).collect())
     }
 
     /// `disputes` walking at most `max` candidates (in point order): the disputes among them,
     /// the walks made and how many candidates were left unexamined.
     pub fn disputes_up_to(&self, max: usize) -> (Vec<Dispute>, usize, usize) {
-        let (d, walked, left) = self.scan(&self.candidates(), max, &BTreeSet::new(), None);
+        let (d, walked, left) = self.scan(&self.candidates(), max, false);
         (d.into_iter().map(|d| d.dispute).collect(), walked, left.len())
     }
 
@@ -272,18 +272,16 @@ impl Timeline {
 
     /// Candidates `cands` (ops of this timeline, in order; applied, seeded and untrustable ones
     /// skipped) examined: each with seeds costs one walk, at most `max` of them; the rest are
-    /// counted, not examined. `stood` marks those applied before the update that asks; `me`
-    /// (if any) gives the standing facts (`Detected`). Returns the disputes found, the walks
+    /// counted, not examined. `stood`: they applied before the update that asks (`Detected`).
+    /// Returns the disputes found, the walks
     /// made and the candidates left that needed one (each with the holder it lowers: maybe no
     /// dispute).
-    pub(crate) fn scan(&self, cands: &[WriteId], max: usize, stood: &BTreeSet<WriteId>, me: Option<Tid>) -> (Vec<Detected>, usize, Vec<Dispute>) {
+    pub(crate) fn scan(&self, cands: &[WriteId], max: usize, stood: bool) -> (Vec<Detected>, usize, Vec<Dispute>) {
         // the index over every held commit only once a candidate needs seeds (honest arrivals
         // apply, and detection asks at every update)
         let mut ix: Option<TrustIndex> = None;
         let mut out = Vec::new();
         let (mut walked, mut left) = (0, Vec::new());
-        let mut own_roles: Option<BTreeMap<Tid, Role>> = None;
-        let mut reach: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         for id in cands {
             let Some((c, op)) = self.input.trustable(id) else { continue };
             if self.walked.applied.contains_key(id) || self.seeds.contains_key(id) {
@@ -307,16 +305,7 @@ impl Timeline {
             if !trust::demoting(&o.walked, &self.input.records, c, k) {
                 continue;
             }
-            let standing = match me {
-                None => (false, false),
-                Some(me) => {
-                    let roles = own_roles.get_or_insert_with(|| self.roles_of(&me, At::END));
-                    let below = reach.entry(op.target).or_insert_with(|| self.input.ever_forward([op.target]));
-                    let with = Timeline::from_outcome(self.input.clone(), o).roles_of(&me, At::END);
-                    (roles.keys().any(|t| below.contains(t)), with.keys().any(|t| below.contains(t)))
-                }
-            };
-            out.push(Detected { dispute: Dispute { op: *id, holder: op.holder }, author: c.author, target: op.target, stood: stood.contains(id), standing });
+            out.push(Detected { dispute: Dispute { op: *id, holder: op.holder }, author: c.author, target: op.target, stood });
         }
         (out, walked, left)
     }

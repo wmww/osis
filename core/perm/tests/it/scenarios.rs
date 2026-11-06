@@ -897,11 +897,10 @@ fn accomplice_seeded_spec_permissions_5_1() {
 
 /// §5.1 Trust, notes/disputes-plan.md step 4 (detection): `Timelines` under `detect`
 /// reports a dispute once, when the removal it voids stops applying (`stood`) or when the
-/// voided removal arrives unapplied, with whether the detecting node holds a role in the
-/// target's reach on each side; a switch (`set_trust`) detects nothing; `disputes_up_to`
+/// voided removal arrives unapplied; a switch (`set_trust`) detects nothing; `disputes_up_to`
 /// bounds the scan and counts what it left.
 #[test]
-fn detection_reports_stood_and_standing_spec_permissions_5_1() {
+fn detection_reports_stood_spec_permissions_5_1() {
     let mut w = World::new();
     let n = w.nodes(3);
     let g = w.thing(n[0]);
@@ -911,10 +910,9 @@ fn detection_reports_stood_and_standing_spec_permissions_5_1() {
     let grant = w.set(n[1], g, n[2], edge(Write), 12, &[]);
     let touched: std::collections::BTreeSet<Tid> = [g].into_iter().collect();
     let skip = |ids: &[osis_base::CommitId]| ids.iter().copied().collect::<std::collections::BTreeSet<_>>();
-    let me = n[2];
     // the honest removal first: it stood, then the backdated one voids it
     let mut tls = Timelines::new();
-    tls.detect(Some(me));
+    tls.detect(true);
     tls.update_touched(&w.held_without(&skip(&[r, back, grant])), &touched);
     assert!(tls.take_detected().found.is_empty());
     tls.update_touched(&w.held_without(&skip(&[back, grant])), &touched);
@@ -924,23 +922,22 @@ fn detection_reports_stood_and_standing_spec_permissions_5_1() {
     assert_eq!((det.unexamined, det.kept.len()), (0, 0));
     let d = det.found;
     assert_eq!(d.len(), 1);
-    assert_eq!((d[0].dispute, d[0].author, d[0].target, d[0].stood, d[0].standing), (Dispute { op: WriteId(r, 0), holder: n[0] }, n[1], g, true, (false, false)));
+    assert_eq!((d[0].dispute, d[0].author, d[0].target, d[0].stood), (Dispute { op: WriteId(r, 0), holder: n[0] }, n[1], g, true));
     // a switch detects nothing, and detection goes on after it
     tls.set_trust(&w.held_without(&skip(&[grant])), trust(&[r]));
     assert!(tls.take_detected().found.is_empty());
     tls.set_trust(&w.held_without(&skip(&[grant])), Trust::default());
     assert!(tls.take_detected().found.is_empty());
-    // the backdated one first, then the grant of the detecting node, then the honest
-    // removal: it arrives unapplied, and the node's grant counts on its side only
+    // the backdated one first, then a grant, then the honest removal: it arrives unapplied
     let mut tls = Timelines::new();
-    tls.detect(Some(me));
+    tls.detect(true);
     tls.update_touched(&w.held_without(&skip(&[r, grant])), &touched);
     tls.update_touched(&w.held_without(&skip(&[r])), &touched);
     assert!(tls.take_detected().found.is_empty());
     tls.update_touched(&w.held(), &touched);
     let d = tls.take_detected().found;
     assert_eq!(d.len(), 1);
-    assert_eq!((d[0].dispute.op, d[0].stood, d[0].standing), (WriteId(r, 0), false, (false, true)));
+    assert_eq!((d[0].dispute.op, d[0].stood), (WriteId(r, 0), false));
     assert!(tls.take_detected().found.is_empty(), "reported once");
     // the bounded scan
     let tl = tls.get(&g).unwrap();
@@ -992,7 +989,7 @@ fn flood_cannot_hide_a_removal_that_stood_spec_permissions_5_1() {
     let touched: std::collections::BTreeSet<Tid> = [g, g2].into_iter().collect();
     let skip: std::collections::BTreeSet<_> = flood.iter().copied().chain([back]).collect();
     let mut tls = Timelines::new();
-    tls.detect(Some(n[2]));
+    tls.detect(true);
     tls.update_touched(&w.held_without(&skip), &touched);
     assert_eq!(tls.take_detected(), Default::default());
     let tl = tls.get(&g).unwrap();

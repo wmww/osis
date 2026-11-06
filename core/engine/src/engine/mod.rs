@@ -2247,7 +2247,7 @@ impl Engine {
     /// on may raise one.
     fn start_detection(&mut self) {
         self.core.detect = true;
-        self.core.timelines.detect(Some(self.core.id.tid()));
+        self.core.timelines.detect(true);
     }
 }
 

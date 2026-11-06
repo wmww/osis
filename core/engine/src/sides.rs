@@ -3,20 +3,19 @@
 //! `osis` API the one home of dispute types outside osis-perm (the coherence rule;
 //! tools/policy.py).
 //!
-//! A side is recorded once per dispute (R, M): at detection by default (`default_side`), or by
-//! `Engine::choose`. The default: the side this node's own standing exists on, when it exists
-//! on one side only; else first received: R is trusted iff it applied here before the write
-//! that voids it arrived (`Detected::stood`). A node that wrote R holds it first, so sides
-//! with itself. A recorded side stays until chosen otherwise, so switching back and forth
-//! returns to the same trust set; a trusted write the walk cannot apply is void there (a
-//! shrink round per evaluation, and no fast path for a component a trusted op names: step 3's
-//! cost, stated in notes/disputes-plan.md).
+//! A side is recorded once per dispute (R, M): at detection by default, or by `Engine::choose`.
+//! The default is first received: R is trusted iff it applied here before the write that voids
+//! it arrived (`Detected::stood`). A node holds its own writes first, so sides with itself. A
+//! recorded side stays until chosen otherwise, so switching back and forth returns to the same
+//! trust set; a trusted write the walk cannot apply is void there (a shrink round per
+//! evaluation, and no fast path for a component a trusted op names: step 3's cost, stated in
+//! notes/disputes-plan.md).
 
 use crate::engine::{records, Core, Tx};
 use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Event};
 use osis_base::{CommitId, Tid, Value};
-use osis_perm::{Detected, Trust, WriteId};
+use osis_perm::{Trust, WriteId};
 use std::collections::BTreeMap;
 
 /// The side taken in one dispute.
@@ -100,16 +99,6 @@ impl Sides {
     }
 }
 
-/// The default side of a newly detected dispute: the side this node's own standing exists on
-/// when it exists on one side only, else first received (R trusted iff it stood here first).
-fn default_side(d: &Detected) -> bool {
-    match d.standing {
-        (false, true) => true,
-        (true, false) => false,
-        _ => d.stood,
-    }
-}
-
 /// Records a default side for every dispute the last timeline update detected and not recorded
 /// yet, feeds the trust set to the walk when a side trusts, reports each (`Event::DisputeDetected`)
 /// and the candidates left unexamined (`DiagnosticKind::DisputesUnexamined`). An unexamined op
@@ -124,7 +113,7 @@ pub(crate) fn after_update(core: &mut Core) {
         if core.sides.get(op, holder).is_some() {
             continue;
         }
-        let trust = default_side(&d);
+        let trust = d.stood;
         core.sides.set(op, holder, Side { trust, chosen: false });
         trusts |= trust;
         core.events.queue(Event::DisputeDetected { commit: op.0, op: op.1, holder, target: d.target, author: d.author, trust });

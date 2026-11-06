@@ -58,9 +58,6 @@ pub struct Detected {
     /// R applied in this node's walk before the update (it stood here, then stopped applying),
     /// as against arriving unapplied.
     pub stood: bool,
-    /// Whether the node (`Timelines::detect`) holds a role on something the target reaches: on
-    /// the walk's side, and with R trusted.
-    pub standing: (bool, bool),
 }
 
 /// What an update's dispute detection found (`Timelines::take_detected`).
@@ -71,8 +68,7 @@ pub struct Detection {
     /// Candidates that applied before the update and stopped applying, left unexamined past
     /// `DETECT_MAX`: maybe disputes. Fail safe: the node keeps the side it held (trusts each).
     pub kept: Vec<Dispute>,
-    /// Newly held candidates left unexamined: the walk's side, as their default would be
-    /// unless the node's own standing exists on R's side only.
+    /// Newly held candidates left unexamined: the walk's side, as their default would be.
     pub unexamined: usize,
 }
 
@@ -80,7 +76,7 @@ pub struct Detection {
 /// against a hostile author, whose every contestable write costs a walk once, when it arrives
 /// or stops applying. Past it a candidate that stood keeps its side unexamined
 /// (`Detection::kept`) and a newly held one gets the walk's (`Detection::unexamined`). At 0
-/// every op that stops applying is trusted unexamined (no warning, no standing rule); at
+/// every op that stops applying is trusted unexamined (no warning); at
 /// infinity a batch of k hostile writes, or k honest writes one backdated removal voids,
 /// costs k walks.
 pub const DETECT_MAX: usize = 16;

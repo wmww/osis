@@ -1,5 +1,5 @@
 //! Admin disputes end to end (spec/permissions.md §5.1 Trust set; notes/disputes-plan.md
-//! step 4): the backdating attack, default sides, switching, a node joining mid-dispute, the
+//! step 4): the backdating attack, default sides, switching, the
 //! trust store across a restart. Over `LocalPeer`: commits delivered by hand, so who holds what
 //! first is the test's.
 
@@ -8,6 +8,7 @@ use osis_base::{CommitId, Role, Tid};
 use osis_node::flows::{Demotion, PreSync};
 use osis_node::local_peer::LocalPeer;
 use osis_node::Event;
+use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
 /// Takes the walk's side in every admin dispute `p` detected, as a user choosing it would (the
@@ -159,31 +160,6 @@ fn default_side_survives_a_restart_spec_permissions_5_1() {
     assert!(detected(&f.lp, 2).is_empty(), "an open detects nothing anew");
 }
 
-// notes/disputes-plan.md step 4 (a new node takes the side its own grant counts on): a
-// node granted by the honest admin after the fight, holding the backdated removal and its own
-// grant when the honest removal arrives, sides with the honest admin though it got the
-// backdated removal first: its grant exists on that side only.
-#[test]
-fn newcomer_takes_the_side_its_grant_counts_on_spec_permissions_5_1() {
-    let mut f = fight(4, 604);
-    let (w, r) = (f.w.clone(), f.r.clone());
-    let d = f.lp.peers[3].engine.tid();
-    let before = ids(&f.lp, 1);
-    f.lp.peers[1].engine.grant(&f.t, &d, &edge_of(Role::Write)).unwrap();
-    let g = new_ids(&f.lp, 1, &before);
-    send(&mut f.lp, 0, 3, &r);
-    send(&mut f.lp, 1, 3, &g);
-    assert_eq!(f.lp.peers[3].engine.role_on(&f.t), None, "granted by an admin the backdated removal removed");
-    send(&mut f.lp, 1, 3, &w);
-    assert_eq!(admins(&f, 3), (false, true));
-    assert_eq!(f.lp.peers[3].engine.role_on(&f.t), Some(Role::Write));
-    assert_eq!(the_dispute(&f, 3).side.map(|s| (s.trust, s.chosen)), Some((true, false)));
-    // a peer with no stake and the same order keeps the walk's side
-    send(&mut f.lp, 0, 2, &r);
-    send(&mut f.lp, 1, 2, &w);
-    assert_eq!(admins(&f, 2), (true, false));
-}
-
 // notes/disputes-plan.md step 4: a node on neither side of a fight reads the things the
 // fight cannot reach alike whichever side it takes, and switching does not touch them.
 #[test]
@@ -200,4 +176,37 @@ fn sides_leave_other_things_alone_spec_permissions_5_1() {
     assert_eq!(on_other(&f), Some(Role::Write));
     f.lp.peers[2].engine.choose(d.commit, d.op, d.holder, false).unwrap();
     assert_eq!(on_other(&f), Some(Role::Write));
+}
+
+// notes/disputes-plan.md step 4 (first received): a removal waiting for an entry's creation
+// (spec/permissions.md §2) counts from when it applies. `a` plants a forward-stamped removal of
+// `b` waiting at peer 2 on an entry only `a` holds; `b`'s removal of `a` (stamped earlier)
+// applies there; `a` then releases the entry: peer 2 keeps `b`.
+#[test]
+fn planted_removal_counts_from_when_it_applies_spec_permissions_5_1() {
+    let (mut lp, ps) = people(3, 608);
+    let (a, b, c) = (ps[0], ps[1], ps[2]);
+    let t = thing_of(&mut lp, 2, c);
+    lp.peers[2].engine.grant(&t, &a, &edge_of(Role::Admin)).unwrap();
+    lp.peers[2].engine.grant(&t, &b, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    lp.advance(1000);
+    let before = ids(&lp, 0);
+    lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..edge_of(Role::Admin) }).unwrap();
+    let e = new_ids(&lp, 0, &before);
+    lp.peers[0].clock.advance(5000);
+    let before = ids(&lp, 0);
+    lp.peers[0].engine.demote(&t, &Demotion { holder: b, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let p = new_ids(&lp, 0, &before);
+    send(&mut lp, 0, 2, &p);
+    let adm = |lp: &LocalPeer| { let r = lp.peers[2].engine.roster(&t); (r.contains_key(&a), r.contains_key(&b)) };
+    assert_eq!(adm(&lp), (true, true), "a's planted removal waits");
+    lp.advance(1000);
+    let before = ids(&lp, 1);
+    lp.peers[1].engine.demote(&t, &Demotion { holder: a, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    let w = new_ids(&lp, 1, &before);
+    send(&mut lp, 1, 2, &w);
+    assert_eq!(adm(&lp), (false, true));
+    send(&mut lp, 0, 2, &e);
+    assert_eq!(adm(&lp), (false, true), "b's removal was first and is earlier: kept");
 }
