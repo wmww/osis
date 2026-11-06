@@ -1,5 +1,5 @@
 # Option: grant a role without earlier history
-> Summary: Every grant carries the history box, which opens every earlier epoch, so a new holder reads all retained content. Tess wants adding members without revealing history as a core option, not a chain of chats (notes/chat-designs/e.md Adding without history). Also useful for documents and folders, which cannot be segmented.
+> Summary: Every grant carries the history box, which opens every earlier epoch, so a new holder reads all retained content. Tess wants adding members without revealing history as a core option, not a chain of chats (notes/chat.md Left out, segments). Also useful for documents and folders, which cannot be segmented.
 > Tags: spec, permissions, keys, crypto, engine
 
 A first sync (spec/sync.md §6) fetches what does not open last, after everything else; a holder with no old secrets would fetch and hold such bodies for nothing, so this option should stop that: the same stop a node-local cap would be (issues/partial-history-fetch.md).
