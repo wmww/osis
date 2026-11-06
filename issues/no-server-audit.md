@@ -48,6 +48,7 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 37 | Link expiry, K with no saved peer | Only the node that made the link finalizes it (`h.here`) | deliver.rs:485 (read) | degraded |
 
 ## Builds (`iroh`, `lan` on by default)
+Read against iroh, which is being replaced (issues/p2p-own.md): the Rust, deny and crate-count items go with it; unification and Android still apply to our own P2P and `lan`.
 - **Build**: `cargo test-net --tests --no-run` passes here, 4 min with iroh's tree. `osis` goes from 87 to 263 crates (`cargo tree`). Tier 2 passes but for row 33's flake. `clippy-net` not run.
 - **Rust**: iroh and netwatch say `rust-version = 1.91`; root and libs/kit manifests say 1.88. Raise both. Toolchain here is 1.99 (read; not tried on 1.88).
 - **Unification**: a default on `osis` alone breaks the gate's `unification_check`, since `-p osis-transport` then resolves differently (notes/build.md). Make `iroh` and `lan` non-optional in osis-transport, osis-node and osis, as QUIC is; keep only `relay` as a test feature. Every crate above osis-transport then pays for it (read).

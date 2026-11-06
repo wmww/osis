@@ -52,4 +52,4 @@ The only way a host runs. The node reads its own `host.0^` (any admin of the nod
 ## Abuse (open; deferred until a real problem, Tess)
 - Today: stamps (only writers add content), a deposit budget per label, per-label storage caps, per-label rate limits on deletes, deposits, registers and relays, per-label ephemeral caps, admin delete. Anyone may register a label up to the host-wide label cap (then Error 12, so squatters can exhaust it), and any writer can fill a label's cap with junk the host cannot tell from data. Inbox-specific limits: notes/inbox.md.
 - Per-holder limits would need pseudonymous holder keys (linkable uploads, forbidden) or anonymous credentials (zkgroup-class crypto). If paying accounts come, the credential goes to one host bound to (host, label), never into the relayed `label.0` chain.
-- Which free services the official host offers, and abuse limits for free relaying: undecided (notes/networking.md).
+- Abuse limits for relaying: issues/p2p-own.md.
