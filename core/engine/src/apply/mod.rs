@@ -512,14 +512,12 @@ fn thing_wait(
     // (`validity::too_deep`, spec/permissions.md §1)
     for step in osis_base::owner_chain(a.tid, |t| chain_rec(t, core).map(|r| r.owner_link())) {
         match step {
-            ChainStep::Up { owner, .. } => chain.push(owner),
+            ChainStep::Up { owner: up, .. } | ChainStep::Ownerless { admin: up, .. } => chain.push(up),
             ChainStep::Key(_) | ChainStep::TooDeep => {}
-            // its first admin's edge leads to it, the record perhaps not held yet (its creation)
-            ChainStep::Ownerless { admin, .. } => chain.push(admin),
             ChainStep::Unknown(t) => return Some(Reason::MissingChain(t)),
         }
     }
-    // it is on the owner chain, or held edge writes lead from it to the chain (a revoked author
+    // it is on the record chain, or held edge writes lead from it to the chain (a revoked author
     // keeps its certificates and still applies, judged invalid)
     (!chain.contains(&h.author) && !validity::reaches(core, &h.author, &chain)).then_some(Reason::MissingChain(h.author))
 }

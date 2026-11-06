@@ -209,9 +209,9 @@ impl Engine {
         frame_envelope(&env, &resolved, class, rng, &c).map(Some)
     }
 
-    /// The owner chain a section lists for thing `t` (spec/wire.md §4): from its owner up to
-    /// and including the actor its read secret derives from; empty for a thing with secrets of
-    /// its own, a key actor or an ownerless thing.
+    /// The record chain a section lists for thing `t` (spec/wire.md §4): from its owner or first
+    /// admin up to and including the actor its read secret derives from; empty for a thing with
+    /// secrets of its own or a key actor.
     fn section_owners(&self, t: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
         if self.core.ix.own_keys.contains(t) || *t == self.core.id.tid() {
@@ -219,9 +219,9 @@ impl Engine {
         }
         for step in self.core.owner_chain(t) {
             match step {
-                osis_base::ChainStep::Up { owner, .. } => {
-                    out.push(owner);
-                    if self.core.ix.own_keys.contains(&owner) || owner == self.core.id.tid() {
+                osis_base::ChainStep::Up { owner: up, .. } | osis_base::ChainStep::Ownerless { admin: up, .. } => {
+                    out.push(up);
+                    if self.core.ix.own_keys.contains(&up) || up == self.core.id.tid() {
                         return out;
                     }
                 }
@@ -511,16 +511,17 @@ impl Engine {
         })
     }
 
-    /// Held read secrets of a group, newest first; then those derived from its owner's (a
-    /// thing that got secrets of its own, or one owned by a key actor this node holds: the
-    /// rotation that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
+    /// Held read secrets of a group, newest first; then those derived from its base actor's, its
+    /// owner or first admin (a thing that got secrets of its own, or one under a key actor this
+    /// node holds: the rotation that gave it its own is wrapped under the derived epoch,
+    /// spec/crypto.md §5).
     pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
-        // the owner's epochs; a thing whose `created.0` is not here yet (a recovery card's
+        // the base actor's epochs; a thing whose `created.0` is not here yet (a recovery card's
         // person) may be owned by any key actor held
-        let owners: Vec<osis_keys::ActorEpochs> = match self.core.created(g) {
-            Some(osis_base::CreationRecord::Thing { owner, .. }) => self.epochs(owner).or_else(|| self.core.key_actors.get(owner).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
-            Some(osis_base::CreationRecord::KeyActor { .. } | osis_base::CreationRecord::Ownerless { .. }) => Vec::new(),
+        let owners: Vec<osis_keys::ActorEpochs> = match self.core.created(g).map(osis_base::CreationRecord::up) {
+            Some(Some(up)) => self.epochs(&up).or_else(|| self.core.key_actors.get(&up).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
+            Some(None) => Vec::new(),
             None => self.core.key_actors.values().map(|id| osis_keys::ActorEpochs::key_actor(id.seed())).collect(),
         };
         for oe in owners {
@@ -748,13 +749,13 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
     }
 }
 
-/// Labeled things by their nearest labeled owner-chain actor with secrets of its own
+/// Labeled things by their nearest labeled record-chain actor with secrets of its own
 /// (`Engine::published_under`).
 fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
     let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
     for h in labeled {
         for step in core.owner_chain(h) {
-            let osis_base::ChainStep::Up { owner, .. } = step else { break };
+            let (osis_base::ChainStep::Up { owner, .. } | osis_base::ChainStep::Ownerless { admin: owner, .. }) = step else { break };
             if labeled.contains(&owner) && core.ix.own_keys.contains(&owner) {
                 if owner != *h {
                     map.entry(owner).or_default().insert(*h);
@@ -770,6 +771,28 @@ fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BT
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // spec/crypto.md §3, spec/wire.md §4: a record chain owned-under-ownerless-under-node: ownerless
+    // O, whose first admin is the node, derives from the node's epochs and T, owned by O, from
+    // O's; a section on T lists the chain up to the node, one on O the node.
+    #[test]
+    fn derives_through_a_first_admin_spec_crypto_3() {
+        use crate::Mutation;
+        let mut lp = crate::local_peer::LocalPeer::new(1, 942, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let (o, _) = e.create_ownerless(&me).unwrap();
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, o);
+        m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &osis_base::Value::Int(1)).unwrap();
+        e.commit(m).unwrap().unwrap();
+        let node = e.core.epochs(&me).unwrap();
+        let of_o = ActorEpochs::derived(&node, &o);
+        assert_eq!(e.core.epochs(&o).unwrap(), of_o);
+        assert_eq!(e.core.epochs(&t).unwrap(), ActorEpochs::derived(&of_o, &t));
+        assert_eq!(e.section_owners(&t), vec![o, me]);
+        assert_eq!(e.section_owners(&o), vec![me]);
+    }
 
     // spec/sync.md §6 (convergence after each change; the pass's cost): a group's bodies are
     // projected per commit once and kept until that commit or the readers change, so one more

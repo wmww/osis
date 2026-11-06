@@ -107,8 +107,8 @@ pub const HEARTBEAT_MIN_INTERVAL_MS: u64 = 6 * HOUR_MS;
 /// Most suspect aspects one heartbeat reports (spec/wire.md §2, spec/permissions.md §4); the
 /// rest wait for those to clear. fixed.
 pub const MAX_HEARTBEAT_SUSPECTS: usize = 32;
-/// Most owner links from a thing up to its key actor (spec/wire.md §2, spec/permissions.md
-/// §1). fixed.
+/// Most links (owner and first-admin) from a thing up its record chain to its key actor
+/// (spec/wire.md §2, spec/permissions.md §1). fixed.
 pub const MAX_OWNER_DEPTH: usize = 64;
 
 /// Host policy default, not a format constant (spec/wire.md §2).

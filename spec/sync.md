@@ -30,7 +30,7 @@
 
 ## 2. Labels
 - A synced group has a **label**: the unit a host stores. A label has an **index** i (0 for a group's first label) and the role keys below.
-- **Role keys**: Ed25519 keys, the first three from the group thing's role secrets (explicit, or derived from its owner's by tid; spec/crypto.md §3):
+- **Role keys**: Ed25519 keys, the first three from the group thing's role secrets (explicit, or derived from its base actor's by tid; spec/crypto.md §3):
   - **sync** `kdf("label sync", read secret, le64(i))`;
   - **write** `kdf("label write", write secret, le64(i))`;
   - **delete** `kdf("label delete", admin secret, le64(i))`;
@@ -41,7 +41,7 @@
   - Each step is carried with its claim set.
   - A host holds one path from the genesis step to its **head** (§4). A new step is a child of the target host's head (§5).
   - An admin MAY issue a step without a rotation (same role keys, fresh step key) to list readers granted since its parent, key actors in particular.
-- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the owner included; of a plain group, its owner; a holder re-sealed later opens by sync key).
+- **Claim set** of a step: padded with random keys to a power of two, in random order. It lists each **reader** M of the registered read epoch: every actor holding its read secret as the registrar knows it at registration (the holders of boxes carrying it, the owner included; of a plain group, its base actor (spec/crypto.md §3); a holder re-sealed later opens by sync key).
   - A reader is listed by its claim public key (derivation: spec/wire.md §8). M's X25519 key is the X25519 half of its read-role KEM key in the newest `keys.0` of M the registrar holds (a key actor: its single KEM key). A non-contributory DH result omits M.
   - A reader that is a key actor other than a node (a recovery key, a link key) is listed instead by its **static entry** (spec/wire.md §8), the same 32 bytes.
   - The registrar erases the step private key after signing.
@@ -55,7 +55,7 @@
 - **`label.0`** on the group thing: `map<label ID, { index, steps: map<step ID, step>, hosts: list<address>, replaced: bool }>`. Role-class. An address: §10.
   - Each step is held with its claim set and entry boxes, which an admin MAY drop once the step has been superseded for `ROLE_KEEP` (counted from the `ts` of the write recording its first child).
   - Nodes upload under, and sync, every label of the group not marked replaced.
-  - A `label.0` write on a group is also published under the home label of the nearest actor in the group's owner chain that has one.
+  - A `label.0` write on a group is also published under the home label of the nearest actor up the group's record chain that has one.
   - One role commit may carry the `label.0` deltas of many groups.
 - **Replacement** of a label lost at a host:
   - An admin rotates the admin secret if the loss calls for it, creates label index `1 + max index in label.0`, uploads the live blobs under it and marks the old label replaced.
@@ -67,8 +67,7 @@
   - The home closure holds the actor thing and what its `group.0` lists, nothing by ownership.
   - A link's K label is K's home label.
 - **Inbox**: the label an actor with role secrets names in `keys.0` for inbox blobs (§3): a label of a group its admins administer (by default its home label).
-  - An actor that names none uses the inbox of the nearest actor above it in its owner chain.
-  - An ownerless thing that names none uses its own label, so its readers read those blobs.
+  - An actor that names none uses the inbox of the nearest actor up its record chain (spec/permissions.md §1) that names one, or an ownerless thing's own live label on the way, so its readers read those blobs.
   - Key actors have none: a node receives a direct grant only over a direct connection to the granting node (pairing); a recovery key or link key holds its label from its card or link and claims the current step by its static entry (§5).
 - A thing in no labeled group is not synced. Only an admin's `label.0` write makes a label; a grant makes none.
 - **Route**: a holder of a role on a thing reads it only through a live label it can open whose closure holds the thing (§3).
@@ -81,12 +80,12 @@
 ## 3. What goes under a label
 - **Closure**: the blobs of group G are the commits touching any thing in G's transitive closure (through `group.0` and `ephemeral_group.0~`, spec/data-model.md §8: an ephemeral membership brings its item's ephemeral commits), plus the chunk, tree-node and page blobs they reference (every blob their values link, whether or not the linking commit's chunk list names it).
   - Each node tags commits with their things' `groups.0` and retags when group membership changes.
-- **Entitlement**: a thing's **reader actor** is the thing if it has secrets of its own, else the nearest actor up its owner chain that has them (a key actor is its own). G's actor is the group thing if it has secrets of its own, else its owner. G's actor may read a thing iff the thing's secrets derive from its own or it holds read or above on the thing's reader actor. A commit's blob belongs under G's label iff G's actor may read a part of it on a thing of the closure (or published there, §2).
+- **Entitlement**: a thing's **reader actor** is the thing if it has secrets of its own, else the nearest actor up its record chain that has them (a key actor is its own). G's actor is the group thing if it has secrets of its own, else its base actor (spec/crypto.md §3). G's actor may read a thing iff the thing's secrets derive from its own or it holds read or above on the thing's reader actor. A commit's blob belongs under G's label iff G's actor may read a part of it on a thing of the closure (or published there, §2).
   - Only a writer of G stamps entries (§5).
   - A node that is not one deposits what it must place there (its chain certificates and node card, its invite grant or self-removal, its heartbeats, and the revokes it must place by spec/permissions.md §4) and relays stamped entries it holds.
 - **One blob per commit**: a commit is uploaded as one blob holding every part of it the uploader holds and can seal, each part in the section of its thing under the thing's read secret (spec/wire.md §4; a part of a thing whose read secret the uploader lacks, a key actor's own record or card, travels as a certificate copy). Every label of every thing the commit touches carries the one blob under its label's wrap; hosts and nodes syncing several of those labels dedup it by blob ID. No size split: a commit stays within `MAX_BLOB` by paging its deltas (spec/crdt.md §8), largest first, or is refused at the writer.
   - A node judges a blob by the parts the label's actor may read (§6); a section it cannot open it copies verbatim when it encrypts the commit again (a tombstoned entry, a purge rewrite).
-  - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the owner chain the section lists from an owner it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through a label carrying it (§2 Route).
+  - A section opens with the thing's read secret at the epoch the writer used: a reader of the thing holds it (its own, through its history boxes; a plain thing's by derivation through the record chain the section lists from a member it holds epochs of), and a holder of a role on the thing's reader actor keeps up with its rotations through a label carrying it (§2 Route).
   - **Per-label copies**: besides certificate copies (below), a label whose readers could not open a part's section in the shared blob gets a fresh blob of the parts its actor may read, one section under the read secret of the label's group, never shared with another label; judged like any body of the commit. Exactly two cases: a role commit with such a part on a thing other than the label's actor (its boxes are what give the readers that thing's secrets: a rotation, a grant, a cross-published `label.0`, §2); a part on a thing whose read secret derives from neither the label's actor nor an actor in its closure (a cross-published `created.0`, §2; a thing added from another actor's tree, read by role on a reader actor whose rotations the label does not carry). A blob a node opens only under the label group's secret for a section on another thing is such a copy: its sections are not copied into another encryption.
 - **Retag**: when a thing joins a group, any writer of the label that holds the thing's live blobs adds them under it; when it leaves, delete-key holders delete them under the old label as they see the change (§7).
 - **Certificate blobs**: chain certificates, node cards, heartbeats and revokes (spec/permissions.md §4): copies of the parts of a role commit about one actor.
@@ -122,7 +121,7 @@
 - **Invite requests**: a recipient node applies the commit of an opened inbox blob, and follows what it names, only once it **admits** the blob.
   - It admits the blob when either:
     - the commit is already held (applied or pending; a sibling node that accepted it places its copy under the home label); or
-    - its sender is **connected**: the header's author is a key actor whose creation record the node holds and under whose key the commit's signature verifies, and the author has an effective role now (spec/permissions.md §1, as this node judges it) on a group the node syncs (§2), on a thing on such a group's owner chain, or on an account whose contact card the node imported.
+    - its sender is **connected**: the header's author is a key actor whose creation record the node holds and under whose key the commit's signature verifies, and the author has an effective role now (spec/permissions.md §1, as this node judges it) on a group the node syncs (§2), on a thing up such a group's record chain, or on an account whose contact card the node imported.
   - A blob not admitted is an invite request: its commit is not applied, its chain certificates (spec/wire.md §9) are not ingested, and nothing it names is fetched, followed or dialed until the user accepts it.
   - It is judged again as the node's state changes.
   - Accepting admits it.

@@ -37,9 +37,6 @@ pub(crate) type Creates = BTreeMap<Tid, CreationRecord>;
 #[derive(Clone, Debug)]
 pub struct Mutation {
     pub(crate) creates: Creates,
-    /// The epochs the commit gives the ownerless things it creates: their first rotation's
-    /// (`Rotation::preview`), so their deltas list delete keys of their own (spec/crypto.md §7).
-    pub(crate) first: BTreeMap<Tid, osis_keys::ActorEpochs>,
     pub(crate) aspects: BTreeMap<(Tid, Ak), AspectMut>,
     pub(crate) actor: Option<Tid>,
     /// `Engine::write` holds the batch to `actor`'s own rights first (`Mutation::confine`).
@@ -59,6 +56,11 @@ pub struct Mutation {
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
     /// of an edge already removed (role flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<(osis_crdt::Dot, Value)>>,
+    /// Map keys holding no entry to reset anyway (spec/permissions.md §2: a removal of a first
+    /// admin's record edge, stored nowhere): each gets an entry of the delta's own, at a fresh
+    /// counter, holding nothing but the reset, so the removal names its key and its creation is
+    /// the delta itself.
+    pub(crate) fresh_resets: BTreeMap<(Tid, Ak), Vec<Value>>,
     /// Aspects whose hidden records this commit resets (`Fragment::sweep`, compaction).
     pub(crate) sweeps: BTreeSet<(Tid, Ak)>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
@@ -85,7 +87,7 @@ fn ak_of<K: RawKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), first: BTreeMap::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, dead_resets: BTreeMap::new(), fresh_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -279,7 +281,8 @@ pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid,
             ChainStep::Up { owner, .. } if owner == node => Some(Role::Admin),
             ChainStep::Up { .. } => continue,
             ChainStep::Key(k) => (k == node).then_some(Role::Admin),
-            // one not held yet: only its first admin's edge (spec/permissions.md §1)
+            // one not held yet: only its first admin's edge (spec/permissions.md §1); owner-chain
+            // authority stops here
             ChainStep::Ownerless { admin, .. } if admin == node => Some(Role::Admin),
             ChainStep::Ownerless { admin, .. } => role_with(core, node, records, &admin, ts),
             ChainStep::Unknown(t) => role_of(core, &node, &t, ts),
@@ -313,12 +316,12 @@ pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &T
     if node == *actor || role_with(core, node, records, actor, ts) >= Some(Role::Write) { Ok(()) } else { Err(Error::Permission { tid: *actor }) }
 }
 
-/// Whether `tid`'s owner chain, through the records not held as durable, reaches a key actor or
-/// an ownerless thing within `MAX_OWNER_DEPTH` owner links (spec/permissions.md §1: a write
+/// Whether `tid`'s record chain, through the records not held as durable, reaches a key actor
+/// within `MAX_OWNER_DEPTH` links, first-admin links counted (spec/permissions.md §1: a write
 /// deeper is invalid).
 fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
     let end = owner_chain(*tid, |t| records(t).or_else(|| core.created(t)).map(CreationRecord::owner_link)).end();
-    matches!(end, ChainStep::Key(_) | ChainStep::Ownerless { .. })
+    matches!(end, ChainStep::Key(_))
 }
 
 /// `created.0` of `rec`: one write of its record by a writer at `ts` under `src` from counter
@@ -376,8 +379,6 @@ pub(crate) struct CommitPlan {
     pub actor: Tid,
     pub form: Form,
     pub creates: Creates,
-    /// The epochs this commit gives the ownerless things it creates (their delete keys).
-    pub first: BTreeMap<Tid, osis_keys::ActorEpochs>,
     pub purge: Vec<PurgeItem>,
     pub undoes: Option<CommitId>,
     pub frontier: Option<Value>,
@@ -435,7 +436,7 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid,
 /// (spec/crypto.md §7): its thing's dedup secret, the commit's expiry and blind, the delete keys
 /// the retention calls for. `published`: [`super::secrets::published_keys`] of the commit's things.
 pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, retention: &Retention) -> Result<Framing> {
-    let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, first: &plan.first, published };
+    let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;
     Ok(Framing { dedup, expiry: plan.expires.map(WallMs), blind: plan.blind, keys: keys.iter().map(|k| Ok((k.level, k.verifying_key()?))).collect::<std::result::Result<_, osis_commit::Error>>()? })
@@ -586,7 +587,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
     let built = {
         let core: &Core = tx.core;
-        let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, first: &plan.first, published: &published };
+        let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published };
         let mut seed = [0u8; 32];
         tx.rng.fill_bytes(&mut seed);
         let mut list_rng = osis_crypto::SeededRng::from_seed(seed);
@@ -681,7 +682,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         e.schema = Some(core_schema.clone());
         e.ops.push(PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) });
     }
-    let dead: Vec<(Tid, Ak)> = m.dead_resets.keys().chain(&m.sweeps).cloned().collect();
+    let dead: Vec<(Tid, Ak)> = m.dead_resets.keys().chain(m.fresh_resets.keys()).chain(&m.sweeps).cloned().collect();
     for k in dead {
         m.aspects.entry(k).or_default();
     }
@@ -690,7 +691,14 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if role_commit && content {
         return Err(Error::Misuse("a commit is either a content or a role commit"));
     }
-    let kind = if role_commit { Kind::Role } else { Kind::Content };
+    // records alone travel as a role commit: what judging roles needs, fetched first
+    // (spec/commits.md §2)
+    let records_only = !content && !role_commit && !m.aspects.is_empty();
+    let kind = if role_commit || records_only { Kind::Role } else { Kind::Content };
+    // a record needs no authority: records alone act for their signer
+    if records_only {
+        m.actor = None;
+    }
     // edge writes are judged without the actor, so a role commit acts for its signer
     // (spec/wire.md §4)
     if kind != Kind::Content && m.actor.is_some_and(|a| a != node) {
@@ -702,7 +710,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             e => Err(e),
         });
     }
-    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), first: std::mem::take(&mut m.first), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: draw_blind(&mut *tx.rng), expires: None, restores: false };
+    let base = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: Form::Commit, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), signer: node, blind: draw_blind(&mut *tx.rng), expires: None, restores: false };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| base.creates.get(t), &base.actor, ts)?;
     }
@@ -817,6 +825,17 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                 Some((f, r))
             }
             (None, Some(ds)) => Some((osis_crdt::reset_entries(&w2, ds), w2.range())),
+        };
+        let out = match (out, m.fresh_resets.get(&(tid, ak.clone())).filter(|k| !k.is_empty())) {
+            (o, None) => o,
+            (o, Some(keys)) => {
+                // the counters after the delta's own creations (`lo` when it has none)
+                let (mut f, mut r) = o.unwrap_or_else(|| (Fragment::default(), osis_crdt::CounterRange { lo, hi: lo }));
+                let ids: Vec<(osis_crdt::Dot, Value)> = keys.iter().zip(r.hi..).map(|(k, c)| (osis_crdt::Dot::new(own_source(form, node), c), k.clone())).collect();
+                r.hi = r.hi.saturating_add(u64::try_from(keys.len()).unwrap_or(u64::MAX));
+                f.join(osis_crdt::reset_entries(&w2, &ids));
+                Some((f, r))
+            }
         };
         let out = if m.sweeps.contains(&(tid, ak.clone())) { sweep_of(tx, &tid, &ak, &w2.delta_stamp())?.map(|f| (f, w2.range())) } else { out };
         let Some((fragment, range)) = out else { continue };

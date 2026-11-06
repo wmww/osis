@@ -231,12 +231,26 @@ fn entry_dots(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Vec<(osis_crdt::Dot, o
 
 /// The reset of `holder`'s edge on `target` in `m`: its live entry and every entry of it the node
 /// saw, so it resets also an entry an earlier write reset in the state while applying nothing on
-/// the timeline (a void finalize, spec/permissions.md §2), where the edge still stands.
+/// the timeline (a void finalize, spec/permissions.md §2), where the edge still stands. A holder
+/// with no entry at all (a first admin's record edge, stored nowhere) gets an entry of this delta
+/// reset in it: a removal naming the holder whose creation every reader holds (spec/permissions.md
+/// §2), so it applies in any arrival order.
 pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
     remove_edge(m, target, holder)?;
     let dots = entry_dots(tx, &target, &holder);
-    m.dead_resets.entry((target, super::ak("roles.0")?)).or_default().extend(dots);
+    let key = (target, super::ak("roles.0")?);
+    if dots.is_empty() {
+        m.fresh_resets.entry(key).or_default().push(osis_base::Value::Tid(holder));
+    } else {
+        m.dead_resets.entry(key).or_default().extend(dots);
+    }
     Ok(())
+}
+
+/// Whether lowering `lowered` on plain `target` would leave it no admin (spec/permissions.md §1:
+/// refused; signed anyway, the thing stays plain and nobody administers it).
+fn leaves_no_admin(core: &crate::engine::Core, target: &Tid, lowered: &[(Tid, Option<Role>)]) -> bool {
+    !core.key_holders(target).into_iter().any(|(m, r)| r == Role::Admin && lowered.iter().all(|(x, n)| *x != m || *n == Some(Role::Admin)))
 }
 
 /// A removal or demotion (or a self-removal) of `d.holder` on `target` by `who`: an explicit
@@ -282,6 +296,15 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     if selfr && repudiate.is_some() {
         return Err(Error::Misuse("a self-removal carries no frontier to repudiate rotations with"));
+    }
+    // a plain thing's only holder for keys is its owner or first admin (a grant gives it secrets
+    // of its own first): lowering the first admin's edge would leave it no admin, refused
+    // (spec/permissions.md §1)
+    if !tx.core.has_own_secrets(&target) && !tx.core.is_key_actor(&target) {
+        let lowered: Vec<(Tid, Option<Role>)> = std::iter::once((holder, rotation::key_role(new_p.as_ref()))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
+        if leaves_no_admin(tx.core, &target, &lowered) && !tx.core.skip_writer_rules {
+            return Err(Error::Misuse("this would leave a plain thing with no admin: grant another admin first"));
+        }
     }
     let omit = repudiate.cloned().unwrap_or_default();
     // under the new frontier the omitted rotations are invalid: the epochs they superseded are
@@ -692,3 +715,4 @@ impl Engine {
         Ok((things, done))
     }
 }
+

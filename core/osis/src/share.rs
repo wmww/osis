@@ -1592,10 +1592,11 @@ impl Osis {
 
     /// Creates an ownerless thing: no owner, so nobody holds
     /// owner-chain authority on it; its admins are holders of a grant, all equal, starting with `admin`
-    /// (`me()`, or an actor this node is an admin of), fixed by its tid. It has secrets of its
-    /// own at once; give it a label with `sync` or place it like any thing. Its grants are never
-    /// compacted, and once no admin is left nobody can change it (members keep their roles).
-    /// `Permission` (admin on `admin`), `UnknownActor` (no `keys.0` of `admin` here).
+    /// (`me()`, or an actor this node holds write on), fixed by its tid. Its secrets derive from
+    /// `admin`'s until its first grant or `sync` gives it secrets of its own; place it like any
+    /// thing. Its grants are never compacted; its last admin cannot be removed while it has no
+    /// secrets of its own, and once no admin is left nobody can change it (members keep their
+    /// roles). `Permission` (write on `admin`), `UnknownActor` (no `keys.0` of `admin` here).
     // Removed with owners (issues/api-after-owners.md).
     #[doc(hidden)]
     pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
@@ -1608,7 +1609,10 @@ impl Osis {
             if admin != e.tid() && e.get_typed(&admin, &ct::KEYS)?.is_none() {
                 return Err(Error::UnknownActor { tid: admin });
             }
-            e.create_ownerless(&admin).map_err(needs_admin)
+            e.create_ownerless(&admin).map_err(|e| match e {
+                osis_node::Error::Permission { tid } => Error::Permission { tid, needs: Role::Write },
+                e => e.into(),
+            })
         })?;
         self.carry(done)?;
         Ok(t)

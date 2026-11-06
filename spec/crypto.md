@@ -32,11 +32,10 @@
 ## 3. Keys per actor kind
 - **Notation**: a `kdf` written with two arguments has empty input; a tid as input is its 15 bytes; an Ed25519 key "from" a kdf output is the key with that 32-byte seed (RFC 8032).
 - **Role secrets**: 32 random bytes per role (read, write, admin) per epoch (§4).
-- **Plain thing** (no non-owner holder): its role secrets derive from its owner's.
-  - Role secret = `kdf("thing <role>", owner's <role> secret, tid)`, one per epoch of the owner's role (forks included).
-  - It sits at the epoch with n = min(owner's n, 2^62 − 1) that the nonce rule (§4) gives the thing, role and derived secret.
-  - **Order n** (§4) of a derived epoch: the owner epoch's order n while the thing is plain, its n once the thing has secrets of its own.
-- An **ownerless thing** (spec/permissions.md §1) has no derived secrets: its creation commit rotates all three roles from no epoch.
+- **Plain thing** (spec/permissions.md §3): its role secrets derive from those of the next thing up its record chain (spec/permissions.md §1: its owner, or an ownerless thing's first admin), its **base actor**, and so on up while that one is plain too.
+  - Role secret = `kdf("thing <role>", base actor's <role> secret, tid)`, one per epoch of the base actor's role (forks included).
+  - It sits at the epoch with n = min(base actor's n, 2^62 − 1) that the nonce rule (§4) gives the thing, role and derived secret.
+  - **Order n** (§4) of a derived epoch: the base actor epoch's order n while the thing is plain, its n once the thing has secrets of its own.
 - **Giving a thing secrets of its own** (spec/permissions.md §3) is a rotation of all three roles from its derived epochs: the history boxes carry the derived secrets, the commit wraps under the derived read epoch, `keys.0` is written.
 - A node counts a thing as having **secrets of its own** iff it holds a role commit whose `keys.0` part is valid (spec/permissions.md §5.2) and wrote a keyset in the body the node held (its body since dropped or missing counts). A thing whose only such part turns invalid is plain again (derived secrets), the secrets it learned from that commit kept for reading only (§4).
 - **Key actor** (node, recovery key, link key): one 32-byte seed.
@@ -62,7 +61,7 @@ Terms in this section depend on each other; each is defined once, under its bold
 - **Nonce rule**: the nonce of role r's secret s of actor A at n is `kdf("epoch", s, A's tid || role byte || le64(n))` (32 bytes; role byte 0 read, 1 write, 2 admin).
   - A secret is the secret of the epoch its (actor, role, n) and the nonce rule name.
   - A box, history box entry or entry box carrying a secret is read as naming that epoch.
-- **Rotation** of a set of roles (spec/permissions.md §3): each role gets a fresh random secret under epoch n+1 with the nonce the rule gives; the other roles keep their secret and epoch. n is the greatest n of the role's current epochs at the rotator (epochs it has not established never count; 0 for an actor with no epoch of the role at all, an ownerless thing's creation).
+- **Rotation** of a set of roles (spec/permissions.md §3): each role gets a fresh random secret under epoch n+1 with the nonce the rule gives; the other roles keep their secret and epoch. n is the greatest n of the role's current epochs at the rotator (epochs it has not established never count; 0 for an actor with no epoch of the role at all).
 - **Lists**: a rotation's keyset of r (§3) lists each current epoch of r at the rotator other than a derived one (§3) (spec/wire.md §7).
 - **Supersedes**: what a rotation of r to epoch e supersedes is read from its rotation commit alone, whatever else the node held when the commit arrived:
   - the epochs below e's n its keyset lists;
@@ -106,13 +105,15 @@ Terms in this section depend on each other; each is defined once, under its bold
 
 ### Established and current
 - **Established**: an epoch e of r is established at a node in either of two cases.
-  - It is a key actor's fixed epoch, or derived (§3) from an established epoch of the owner.
+  - It is a key actor's fixed epoch, or derived (§3) from an established epoch of the base actor.
   - All of these hold:
     - the node holds a valid rotation commit of e (its own included) or a compaction snapshot of `secrets.0` that keys a box or history box with e;
     - e's n is at most 2^62, or the node holds another established epoch of r with n at least e's n − 1;
     - if the node holds e's secret (other than for reading only), some live entry of e's history box that opens under that secret has its names met.
 - A node compacts `secrets.0` only while every epoch its state keys is established.
 - **Current**: a role's current epochs are its established epochs that no established rotation superseded.
+  - A derived epoch (§3) of a thing with secrets of its own that some held commit encrypts under is current too unless a rotation lists it (its history box carries it): its writer, which wrote before it held the thing's own epochs, merges (Merger). Other derived epochs of the base actor's later epochs are none of the thing's.
+  - Limit: such a write concurrent with its writer's removal from the thing is read only by holders of the base actor's secrets, as the writer may no longer merge (one stamped after the removal is invalid anyway).
 - **Newest**: a role's newest epoch is the current one with the greatest order n (its n, a derived epoch's per §3), ties by lowest nonce; "newer" compares alike.
 - **Uses**: a node uses an epoch (encrypts under it, boxes its secret, puts it in a history box) only when it is established.
 
@@ -150,6 +151,7 @@ A **holder actor** of A is a holder for keys of A (its owner included) that is a
 - **Key access** (no key cycles):
   - An **actor grant** on A is a holder actor H's standing on A: its grant, or its owning A, which counts as a grant ordered before every grant (an owner's key yields A's from A's creation, so it is never the one left keyless).
   - Actor grants are ordered by the key (spec/permissions.md §5.1) of the write that started H's present standing on A: the earliest applied edge write since which H has held a role on A for keys without a break. One standing since A's creation (a first admin) is ordered before every write. Ties go by A's tid, then H's.
+  - An actor edge whose removal the node holds applied is no standing: key access is judged over the actor grants held less those, so a removal can give a later grant key access (re-sealed, spec/permissions.md §3).
   - A node takes the actor grants it holds in that order and gives each **key access** unless A's key already yields H's over the grants given key access before it (the grant would close a cycle): X's key **yields** Y's when X holds such a grant on Y, or on an actor whose key yields Y's. Such a grant is **keyless**: the earlier grant wins, the later reads nothing.
   - A rotation, grant or re-seal of A boxes no actor without key access to A. A keyless grant is a role all the same (spec/permissions.md §5).
 - **Tainted**: a keyset k of role r of actor M is tainted at a node when M's boxes include one at epoch k to a holder whose actor grant on M is keyless (a box to a departed holder is a departure from M, not a taint).
@@ -172,13 +174,13 @@ A **holder actor** of A is a holder for keys of A (its owner included) that is a
 ## 5. Blobs, wraps, inbox blobs
 - **Blob encryption**: a fresh random 32-byte key per encryption; nothing encrypts a blob under a caller-chosen key. Framing, padding, AD and blob ID: spec/wire.md §5; spec/sync.md §1.
 - **Wrap** (per label, per blob): carries the blob's suite byte, blob key and order under the label read key `kdf("wrap", label read secret)`. Deterministic. Bytes: spec/wire.md §5.
-- **Section** (per thing, inside a commit blob): its parts under a fresh random section key used once; the key under `kdf("section", read secret of the thing)` (own or derived, §3; the owner chain it derives through is in the clear beside it) with a fresh random nonce, AD = the commit ID. Bytes: spec/wire.md §4. The epoch is chosen as for a wrap (below, the rotation exception included); a per-label copy's one section goes under the label group's read secret as its wrap does.
+- **Section** (per thing, inside a commit blob): its parts under a fresh random section key used once; the key under `kdf("section", read secret of the thing)` (own or derived, §3; the record chain it derives through is in the clear beside it) with a fresh random nonce, AD = the commit ID. Bytes: spec/wire.md §4. The epoch is chosen as for a wrap (below, the rotation exception included); a per-label copy's one section goes under the label group's read secret as its wrap does.
 - **Order**: 0 for a commit with a purge request or a part on a role-class aspect, `created.0`, `required.0^` or `group.0`, else the commit's `ts` (a header-only blob too). It is read only to order a node's first sync (spec/sync.md §6), and a wrong one changes nothing else.
 - A wrap names no epoch: a reader tries the read secrets it holds, newest first.
 - **Who wraps under what**:
   - An uploader wraps under the newest current read epoch whose secret it holds (§4).
   - A node holding no current secret places only its stranded heartbeat (spec/permissions.md §4), wrapped under the newest established secret it holds.
-  - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every label whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4). One superseding none (an ownerless thing's creation) is wrapped under e.
+  - Exception: a commit carrying boxes of a read epoch e (a rotation) is wrapped, under every label whose read secret derives from that actor's, under the read epoch e supersedes whose secret the rotator holds with the greatest n, ties by lowest nonce (n, not order n, §4).
 - Label role keys for a host are those of the epochs its current step registers (spec/sync.md §5).
 - **Inbox blob** (spec/sync.md §3): a role commit (header and deltas) about the recipient, plus the label IDs and host addresses of the things it names, sealed to the recipient actor's read-role KEM key. Bytes: spec/wire.md §9.
   - Its prefix expiry is a delivery lifetime (`INBOX_LIFETIME`), not a commit expiry.
@@ -201,7 +203,7 @@ A **holder actor** of A is a holder for keys of A (its owner included) that is a
   | 3, writer | `writer` | the write secret of its thing |
   | none | `nobody` | none |
 
-- **Delete base**: a thing or actor without secrets of its own (§3) uses those of its owner, up its owner chain to the first actor with secrets of its own or a key actor (its delete base). An ownerless thing is its own, its creation commit's deltas on it at the epochs that commit makes.
+- **Delete base**: a thing or actor without secrets of its own (§3) uses those of its base actor, up its record chain to the first actor with secrets of its own or a key actor (its delete base).
 - **Delete key** of a role secret s: the Ed25519 key with seed `kdf("delete key", s)` (secret scalar a, public key A = a·B, RFC 8032).
   - Each keyset in `keys.0` publishes its epoch's (§3).
   - A delete base that is a key actor has its signing key (§3) as delete key at every level.
@@ -217,7 +219,7 @@ A **holder actor** of A is a holder for keys of A (its owner included) that is a
 - **Delete signature** for a blob: Ed25519 (RFC 8032 signing) over `"osis v1 delete" || digest` (§2, spec/wire.md §11.2) with secret scalar h·a mod ℓ, nonce prefix `kdf("delete nonce", seed, prefix salt || blind)` (seed: the delete key's RFC 8032 seed), and public key A'.
   - It verifies strictly under A' (§1).
   - A host checks it against the blob prefix's commitment at its level in a group, one per group for a Delete, and requires the label signature the levels call for (spec/sync.md §5).
-- A holder tries every epoch it holds of the level's secret along the delete base's owner chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists.
+- A holder tries every epoch it holds of the level's secret along the delete base's record chain (a thing that got secrets of its own keeps its earlier content under its former base's keys) and signs with the one whose key the header lists.
 
 ## 8. Agility
 - Keys, signatures, KEM public keys and sealed boxes are enums (`signing_key`, `signature`, `kem_key`, `sealed`) with one case today. Cases are never removed; a new primitive is a new case.

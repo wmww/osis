@@ -203,6 +203,12 @@ impl Core {
         self.created(tid)?.owner()
     }
 
+    /// The next actor up `tid`'s record chain: its owner or its first admin, whose secrets a plain
+    /// `tid` derives from (spec/crypto.md §3).
+    pub(crate) fn up(&self, tid: &Tid) -> Option<Tid> {
+        self.created(tid)?.up()
+    }
+
     pub fn is_key_actor(&self, tid: &Tid) -> bool {
         matches!(self.created(tid), Some(CreationRecord::KeyActor { .. }))
     }
@@ -269,8 +275,8 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
 }
 
 /// The inbox a role write about `holder` goes to (spec/sync.md §2): its own, else the nearest
-/// actor's above it; an ownerless thing that names none, its own label. `None` for a key actor
-/// (direct delivery only) and when none is known here.
+/// actor's up its record chain; an ownerless thing that names none, its own live label. `None`
+/// for a key actor (direct delivery only) and when none is known here.
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
     let steps: Vec<osis_base::ChainStep> = tx.core.owner_chain(holder).collect();
     for s in steps {
@@ -281,8 +287,10 @@ pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inb
         if let Some(i) = Core::keys_in(tx, &thing)?.and_then(|k| k.inbox) {
             return Ok(Some((thing, i)));
         }
-        if matches!(s, osis_base::ChainStep::Ownerless { .. }) {
-            return Ok(own_label(tx, &thing)?.map(|(label, _, hosts)| (thing, Inbox { label, hosts })));
+        if matches!(s, osis_base::ChainStep::Ownerless { .. })
+            && let Some((label, _, hosts)) = own_label(tx, &thing)?
+        {
+            return Ok(Some((thing, Inbox { label, hosts })));
         }
     }
     Ok(None)

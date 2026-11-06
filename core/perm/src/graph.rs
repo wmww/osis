@@ -91,11 +91,11 @@ impl Owners {
             _ => None,
         }
     }
-    /// Strict ancestors of `t` by ownership, nearest first (an ownerless top the last, a chain
-    /// with an unknown record up to that one), and the key actor at the top if the chain reaches
-    /// one (`t` itself for a key actor). None of either for a thing more than `MAX_OWNER_DEPTH`
-    /// owner links below its top (spec/permissions.md §1: it has no owner chain).
-    /// O(`MAX_OWNER_DEPTH`).
+    /// Strict ancestors of `t` by ownership, nearest first (an ownerless thing the last: owner-chain
+    /// authority stops there; a chain with an unknown record up to that one), and the key actor at
+    /// the top if owner links alone reach one (`t` itself for a key actor). None of either for a
+    /// thing more than `MAX_OWNER_DEPTH` links below its key actor, first-admin links counted
+    /// (spec/permissions.md §1: it has no record chain). O(`MAX_OWNER_DEPTH`).
     pub fn chain(&self, t: &Tid) -> (Vec<Tid>, Option<Tid>) {
         let chains = self.chains.get_or_init(|| self.owner.keys().map(|t| (*t, self.chain_searched(t))).collect());
         chains.get(t).cloned().unwrap_or_else(|| self.chain_searched(t))
@@ -103,12 +103,16 @@ impl Owners {
 
     fn chain_searched(&self, t: &Tid) -> (Vec<Tid>, Option<Tid>) {
         let mut up = Vec::new();
+        // past an ownerless thing the walk only counts links toward the cap
+        let mut authority = true;
         for step in owner_chain(*t, |x| self.owner(x)) {
             match step {
-                ChainStep::Up { owner, .. } => up.push(owner),
-                ChainStep::Key(k) => return (up, Some(k)),
+                ChainStep::Up { owner, .. } if authority => up.push(owner),
+                ChainStep::Up { .. } => {}
+                ChainStep::Ownerless { .. } => authority = false,
+                ChainStep::Key(k) => return (up, authority.then_some(k)),
                 ChainStep::TooDeep => return (Vec::new(), None),
-                ChainStep::Ownerless { .. } | ChainStep::Unknown(_) => break,
+                ChainStep::Unknown(_) => break,
             }
         }
         (up, None)

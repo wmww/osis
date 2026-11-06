@@ -135,7 +135,7 @@ impl Engine {
                 add(c, self.parts_of(&c, &mine, &[ak]));
             }
         }
-        // the owner chain's `created.0` records
+        // the record chain's `created.0` records
         for t in self.core.owner_chain(g).filter_map(|s| s.thing()) {
             if let Some(c) = self.latest_on(&t, "created.0") {
                 add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
@@ -173,8 +173,8 @@ impl Engine {
         newest.into_values().flat_map(|(_, c)| c).chain(self.latest_on(t, "keys.0")).collect()
     }
 
-    /// `node`'s chain certificates for `t` with the owner chains of both up to their key
-    /// actors or ownerless things, timeline or not.
+    /// `node`'s chain certificates for `t` with the record chains of both up to their key
+    /// actors, timeline or not.
     fn chain_to(&self, node: &Tid, t: &Tid) -> osis_perm::Certificates {
         let mut cs = match self.core.timelines.get(t) {
             Some(tl) => tl.certificates(node, t),
