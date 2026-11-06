@@ -753,4 +753,5 @@ Decided by Tess: spec/requirements.md Terms and Decentralization (one kind of no
 298. no-roster (owner-removal step 1; perm, engine, commit, spec/permissions (§6 purge rights, §7 links), requirements Scale): roster snapshots deleted: tenures.0, grant since, kind 4, MAX_LINKED_FRONTIERS, epoch starts; the walk starts at first admins' record edges and is one fixed point; one delta per aspect per commit. Requirements: role history grows (property-style). Pre-existing, filed: gone-body-drop-seeds, settled-seed-7032 (and order shrink has no time budget). Design step queued: issues/rotation-names-grow.md (names only departures not covered by superseded epochs).
 
 ## Fathom session
-In flight: forged-departs (issues/forged-departs-mark-entry.md), first-admin-a (owner removal step 2 stage A, with the firstadmin-model TLA commit), p2p-relay (issues/p2p-own.md first stage).
+In flight: first-admin-a (owner removal step 2 stage A, with the firstadmin-model TLA commit), p2p-relay (issues/p2p-own.md first stage).
+299. forged-departs (keys, engine secrets, spec/crypto §4, permissions §3): a departs mark is met only by a rotation commit that is no self-removal. Review found the class still open (own entry listing its removal by key, demoting one's own holder group, departure attributed to a later audit drop): taken as a class study, branch departure-cover (fable).
