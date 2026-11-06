@@ -19,7 +19,7 @@ pub enum HolderKeys {
     /// One KEM key; `seed` when the writer holds it (symmetric boxes under its role secrets).
     KeyActor { kem: KemPublicKey, seed: Option<Secret32> },
     /// The holder's newest keysets per role the writer holds, and its newest role secrets the
-    /// writer holds (symmetric boxes, e.g. a thing's owner).
+    /// writer holds (symmetric boxes, e.g. a thing's base actor).
     Actor { keysets: BTreeMap<Role, (Epoch, KemPublicKey)>, own: BTreeMap<Role, (Epoch, Secret32)> },
 }
 
@@ -55,7 +55,7 @@ impl HolderKeys {
     }
 }
 
-/// A holder to box: its tid, its role on the actor (an owner holds admin), its keys.
+/// A holder to box: its tid, its role on the actor, its keys.
 #[derive(Clone, Debug)]
 pub struct Recipient {
     pub holder: Tid,
@@ -189,7 +189,7 @@ fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) 
 
 /// Rotates `roles` of `actor` (spec/crypto.md §4, spec/permissions.md §3): per role a fresh
 /// secret at n+1 (n = greatest n of its current epochs; epochs merely seen, unestablished, never
-/// count), boxes for every holder holding the role (owner included, as a recipient with admin),
+/// count), boxes for every holder holding the role (first admin included while its record edge stands),
 /// the history box of every distinct earlier established secret held with `names` (spec/crypto.md
 /// §4: the departures from `actor` the rotator holds), the keyset, and the removal of the role's
 /// boxes held at its current epochs. `held` is the rotator's established view of the actor (a
@@ -204,7 +204,7 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
     for &r in roles {
         let re = held.role(r);
         let current = re.current();
-        // no epoch of any role at all: an ownerless thing's first (spec/crypto.md §3), n counted
+        // no epoch of any role at all: a plain thing's first (spec/crypto.md §3), n counted
         // as 0; an actor with epochs of other roles but none current of this one cannot rotate it
         let n = match current.iter().map(Epoch::n).max() {
             Some(n) => n,
@@ -222,7 +222,7 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
             wrap = newest_of(earlier.iter().map(|(e, _)| e));
         }
         secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &earlier, &names.to_value())?);
-        // the keyset lists its current epochs but derived ones (held only where the owner's
+        // the keyset lists its current epochs but derived ones (held only where the base actor's
         // secret is: superseded through the history box)
         let listed: BTreeSet<Epoch> = current.iter().filter(|e| re.provenance(e) != Some(Provenance::Derived)).copied().collect();
         keys.keysets.insert(r, keyset(&epoch, &secret, &listed, names));

@@ -35,7 +35,7 @@ pub fn newest_of<'a>(epochs: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoc
 pub enum Provenance {
     /// A key actor's fixed epoch.
     Fixed,
-    /// Derived from an established epoch of the owner (a plain thing).
+    /// Derived from an established epoch of the base actor (a plain thing).
     Derived,
     /// A valid rotation commit of it (this node's own included) or a `secrets.0` compaction
     /// snapshot keying it is held, within headroom, and, its secret held, some history entry of
@@ -79,9 +79,9 @@ pub struct EpochInfo {
     /// (`MAX_READING`, `MAX_READING_PER_AUTHOR`); dropped with their last source commit
     /// (`drop_reading_from`).
     pub reading: BTreeSet<Unchecked>,
-    /// A derived epoch's order n where it differs from its n: the owner epoch's (past the cap,
+    /// A derived epoch's order n where it differs from its n: the base epoch's (past the cap,
     /// `derived_n`). It orders (`RoleEpochs::is_newer`) by this, so derived epochs order as the
-    /// owner's (spec/crypto.md §3, §4).
+    /// base actor's (spec/crypto.md §3, §4).
     pub order: Option<u64>,
 }
 
@@ -364,7 +364,7 @@ impl RoleEpochs {
         self.is_established(e) && !self.superseded(e)
     }
 
-    /// `e`'s order n (spec/crypto.md §4): a derived epoch's is the owner epoch's, any other's
+    /// `e`'s order n (spec/crypto.md §4): a derived epoch's is the base epoch's, any other's
     /// its n.
     pub fn order(&self, e: &Epoch) -> u64 {
         self.map.get(e).and_then(|i| i.order).unwrap_or(e.n())
@@ -437,17 +437,17 @@ impl RoleEpochs {
     }
 }
 
-/// The n of the epochs derived from an owner epoch at `n` (spec/crypto.md §3): the owner's, capped
+/// The n of the epochs derived from a base epoch at `n` (spec/crypto.md §3): the base actor's, capped
 /// so that a thing's own chain starts at most at `MAX_FREE_N` and a holder holding no secret of
-/// the owner establishes it within headroom, whatever n a writer of the owner jumped to. Derived
-/// epochs still order as the owner's (`EpochInfo::order`): a re-registrar steps a plain group's
-/// labels on each owner rotation, a writer picks the owner's newest fork.
+/// the base actor establishes it within headroom, whatever n a writer of the base actor jumped to. Derived
+/// epochs still order as the base actor's (`EpochInfo::order`): a re-registrar steps a plain group's
+/// labels on each base actor rotation, a writer picks the base actor's newest fork.
 fn derived_n(n: u64) -> u64 {
     n.min(MAX_FREE_N - 1)
 }
 
-/// The nonce of the placeholder `ActorEpochs::derived` keeps for owner epoch `e` whose secret is
-/// not held: a hash of all of `e` (local only), so distinct owner epochs never share one even
+/// The nonce of the placeholder `ActorEpochs::derived` keeps for base epoch `e` whose secret is
+/// not held: a hash of all of `e` (local only), so distinct base epochs never share one even
 /// when made-up ones share a nonce or are capped to one n.
 fn placeholder_nonce(e: &Epoch) -> [u8; 32] {
     osis_base::hash::derive_key("osis v1 derived placeholder", &[e.n().to_le_bytes().as_slice(), e.nonce()].concat())
@@ -494,15 +494,15 @@ impl ActorEpochs {
         a
     }
 
-    /// A plain thing's derived role secrets `kdf("thing <role>", owner's secret, tid)`, one per
-    /// epoch of the owner, forks included, each at the epoch with n `derived_n` of the owner's
+    /// A plain thing's derived role secrets `kdf("thing <role>", base actor's secret, tid)`, one per
+    /// epoch of the base actor, forks included, each at the epoch with n `derived_n` of the base actor's
     /// that the nonce rule gives it (spec/crypto.md §3). Established (`Derived`) where the
-    /// owner's is. An owner epoch whose secret is not held stays known as a placeholder at that
+    /// base actor's is. A base epoch whose secret is not held stays known as a placeholder at that
     /// n (`placeholder_nonce`) that no secret names, so that what it supersedes stays superseded.
-    pub fn derived(owner: &ActorEpochs, tid: &Tid) -> ActorEpochs {
+    pub fn derived(base: &ActorEpochs, tid: &Tid) -> ActorEpochs {
         let mut a = ActorEpochs::default();
         for r in ROLES {
-            let o = owner.role(r);
+            let o = base.role(r);
             let ids: BTreeMap<Epoch, (Epoch, Option<Secret32>)> = o
                 .map
                 .iter()
@@ -522,7 +522,7 @@ impl ActorEpochs {
             for (e, i) in &o.map {
                 let Some((de, ds)) = ids.get(e) else { continue };
                 let info = EpochInfo {
-                    // past the cap two owner epochs with one secret derive one epoch: it never
+                    // past the cap two base epochs with one secret derive one epoch: it never
                     // supersedes itself
                     supersedes: i.superseded_epochs().iter().map(id).filter(|x| x != de).collect(),
                     rotations: BTreeMap::new(),
@@ -723,8 +723,8 @@ mod tests {
         assert!(r.is_established(&a) && r.is_established(&b));
     }
 
-    // spec/crypto.md §3: derived secrets take the owner's n at the epochs the nonce rule names;
-    // a key actor's are fixed; an owner epoch without a secret stays a placeholder, so what it
+    // spec/crypto.md §3: derived secrets take the base actor's n at the epochs the nonce rule names;
+    // a key actor's are fixed; a base epoch without a secret stays a placeholder, so what it
     // supersedes stays superseded.
     #[test]
     fn derived_and_key_actor() {
@@ -737,15 +737,15 @@ mod tests {
         let dz = Epoch::derive(&t, Role::Write, 0, &want).unwrap();
         assert_eq!(d.write.current(), vec![dz]);
         assert_eq!(d.write.secret(&dz), Some(&want));
-        let mut owner = ActorEpochs::default();
-        owner.read.set_secret(ep(1, 1), Secret32::from_bytes([1; 32]));
-        owner.read.set_secret(ep(1, 2), Secret32::from_bytes([2; 32]));
-        owner.read.rotation(ep(2, 0), [ep(1, 1)]);
+        let mut base = ActorEpochs::default();
+        base.read.set_secret(ep(1, 1), Secret32::from_bytes([1; 32]));
+        base.read.set_secret(ep(1, 2), Secret32::from_bytes([2; 32]));
+        base.read.rotation(ep(2, 0), [ep(1, 1)]);
         for e in [ep(1, 1), ep(1, 2), ep(2, 0)] {
-            owner.read.set_established(e, Provenance::Rotated);
+            base.read.set_established(e, Provenance::Rotated);
         }
-        owner.read.observe(ep(3, 0));
-        let d = ActorEpochs::derived(&owner, &t);
+        base.read.observe(ep(3, 0));
+        let d = ActorEpochs::derived(&base, &t);
         let de = |b: u8| Epoch::derive(&t, Role::Read, 1, &thing_role_secret(&Secret32::from_bytes([b; 32]), Role::Read, &t)).unwrap();
         let ph = |e: Epoch| Epoch::new(e.n(), placeholder_nonce(&e)).unwrap();
         assert_eq!(d.read.current(), vec![de(2), ph(ep(2, 0))]);
@@ -755,46 +755,46 @@ mod tests {
         assert_eq!(d.read.held().count(), 2);
     }
 
-    // spec/crypto.md §3: derived epochs keep the owner's n below the cap, so each owner rotation
+    // spec/crypto.md §3: derived epochs keep the base actor's n below the cap, so each base actor rotation
     // gives a newer derived epoch (a plain group's labels are stepped on it, spec/sync.md §5);
-    // owner epochs past the cap (a writer of the owner jumped them) all derive at the cap, so a
+    // base epochs past the cap (a writer of the base actor jumped them) all derive at the cap, so a
     // thing's own chain starts at most at `MAX_FREE_N`; placeholders there stay distinct.
     #[test]
-    fn derived_n_follows_owner_below_cap() {
+    fn derived_n_follows_base_below_cap() {
         let t = Tid::from_bytes([3; 15]);
         for b in 0..32u8 {
-            let mut owner = ActorEpochs::default();
+            let mut base = ActorEpochs::default();
             let s = |x: u8| Secret32::from_bytes([x; 32]);
-            owner.read.set_secret(ep(1, 1), s(b));
-            owner.read.set_secret(ep(2, 2), s(b ^ 0x80));
-            owner.read.rotation(ep(2, 2), [ep(1, 1)]);
+            base.read.set_secret(ep(1, 1), s(b));
+            base.read.set_secret(ep(2, 2), s(b ^ 0x80));
+            base.read.rotation(ep(2, 2), [ep(1, 1)]);
             for e in [ep(1, 1), ep(2, 2)] {
-                owner.read.set_established(e, Provenance::Rotated);
+                base.read.set_established(e, Provenance::Rotated);
             }
-            let d = ActorEpochs::derived(&owner, &t);
+            let d = ActorEpochs::derived(&base, &t);
             let old = Epoch::derive(&t, Role::Read, 1, &thing_role_secret(&s(b), Role::Read, &t)).unwrap();
             assert!(crate::is_newer(&d.read.newest().unwrap(), &old));
         }
-        let mut owner = ActorEpochs::default();
+        let mut base = ActorEpochs::default();
         for (i, n) in [MAX_FREE_N - 2, MAX_FREE_N + 5, MAX_FREE_N + 6].into_iter().enumerate() {
-            owner.read.set_secret(ep(n, 1), Secret32::from_bytes([i as u8; 32]));
-            owner.read.set_established(ep(n, 1), Provenance::Rotated);
+            base.read.set_secret(ep(n, 1), Secret32::from_bytes([i as u8; 32]));
+            base.read.set_established(ep(n, 1), Provenance::Rotated);
         }
-        owner.read.observe(ep(MAX_FREE_N + 7, 9));
-        owner.read.observe(ep(MAX_FREE_N + 8, 9));
-        let d = ActorEpochs::derived(&owner, &t);
+        base.read.observe(ep(MAX_FREE_N + 7, 9));
+        base.read.observe(ep(MAX_FREE_N + 8, 9));
+        let d = ActorEpochs::derived(&base, &t);
         let ns: Vec<u64> = d.read.epochs().map(|(e, _)| e.n()).collect();
         assert_eq!(ns, [MAX_FREE_N - 2, MAX_FREE_N - 1, MAX_FREE_N - 1, MAX_FREE_N - 1, MAX_FREE_N - 1]);
-        // one secret at two owner epochs past the cap, the later superseding the earlier: one
+        // one secret at two base epochs past the cap, the later superseding the earlier: one
         // derived epoch, still current
-        let mut owner = ActorEpochs::default();
+        let mut base = ActorEpochs::default();
         let (a, b) = (ep(MAX_FREE_N + 10, 1), ep(MAX_FREE_N + 11, 2));
         for e in [a, b] {
-            owner.read.set_secret(e, Secret32::from_bytes([7; 32]));
-            owner.read.set_established(e, Provenance::Rotated);
+            base.read.set_secret(e, Secret32::from_bytes([7; 32]));
+            base.read.set_established(e, Provenance::Rotated);
         }
-        owner.read.rotation(b, [a]);
-        let d = ActorEpochs::derived(&owner, &t);
+        base.read.rotation(b, [a]);
+        let d = ActorEpochs::derived(&base, &t);
         assert_eq!(d.read.current().len(), 1);
     }
 
@@ -868,7 +868,7 @@ mod tests {
                 let e = ep(base + rnd(4), rnd(3) as u8);
                 es.push(e);
                 let i = r.observe(e);
-                // order n: free, or a function of n as in a derived map (capped n, owner's order)
+                // order n: free, or a function of n as in a derived map (capped n, base actor's order)
                 i.order = match (free, rnd(3)) {
                     (true, 0) => Some(base + rnd(5)),
                     (false, 0) => Some(e.n() * 3 + 7),

@@ -140,7 +140,7 @@ pub fn fork_merger(epochs: &ActorEpochs, r: Role, maker: impl Fn(&Epoch) -> Opti
     others.iter().flatten().any(|m| m.me) || !others.iter().flatten().any(|m| m.may_rotate)
 }
 
-/// A current holder as a re-sealer sees it: its role on the actor (an owner: admin).
+/// A current holder as a re-sealer sees it: its role on the actor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Holder {
     pub holder: Tid,

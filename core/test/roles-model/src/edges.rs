@@ -1354,8 +1354,8 @@ mod tests {
         assert_eq!(roles(&b.0)[i], NONE);
     }
 
-    /// Two invitees vouching for each other: I1 (removed by the owner at t=5) mints a grant
-    /// of I2 backdated to t=4 that the owner never received; I2 re-adds I1 at t=6. The grant
+    /// Two invitees vouching for each other: I1 (removed by the first admin at t=5) mints a grant
+    /// of I2 backdated to t=4 that the first admin never received; I2 re-adds I1 at t=6. The grant
     /// is dropped, so I2 never had an edge and its re-add of I1 never applies.
     #[test]
     fn invitees_vouching_for_each_other() {
@@ -1382,7 +1382,7 @@ mod tests {
         assert_eq!((o.auth(i), o.auth(Z)), (NONE, NONE));
     }
 
-    /// An inviter re-adding a holder the owner removed: legitimate if the owner had seen it
+    /// An inviter re-adding a holder the first admin removed: legitimate if the first admin had seen it
     /// when revoking the inviter's invite, dropped otherwise; backdated before the removal
     /// it is no add (the holder still had an edge).
     #[test]
@@ -1414,7 +1414,7 @@ mod tests {
     }
 
     /// Finding: drops are sticky. Admin 1 removes 2 at t=4 without having received 2's
-    /// grant of 3, which the owner had; the owner removes 1 at t=6 without having received
+    /// grant of 3, which the first admin had; the first admin removes 1 at t=6 without having received
     /// that removal. It is dropped and 2 is back, but 2's grant stays dropped: a removed
     /// admin's dropped write still costs 3 its edge (for an inviter and an admin alike).
     /// `Provenance` (a drop lasts while its cause still demotes) restores it.
@@ -1433,7 +1433,7 @@ mod tests {
     }
 
     /// The same revives a used single-use link: admin E removes L without having received
-    /// its redemption; the owner removes E without having received that. The redemption
+    /// its redemption; the first admin removes E without having received that. The redemption
     /// stays dropped, so J is out and L's edge, invite included, is back.
     #[test]
     fn sticky_drop_revives_single_use_link() {

@@ -47,7 +47,7 @@ impl osis_keys::Held for Holding {
     }
 }
 
-/// Actor A owned by P; holders a2 (admin, a co-admin's actor) and m1 (read). Node a1 (one of
+/// Actor A (first admin P); holders a2 (admin, a co-admin's actor) and m1 (read). Node a1 (one of
 /// P's nodes) made A's secrets; node a2 applied that commit.
 struct World {
     a: Tid,
@@ -339,12 +339,12 @@ fn jumped_epochs_keep_rotation_possible() {
     assert!(v.read.is_established(&next) && !v.read.is_established(&skip));
 }
 
-// spec/crypto.md §3, §4 (headroom): a writer of the owner jumped its epochs past `MAX_FREE_N`;
+// spec/crypto.md §3, §4 (headroom): a writer of the base actor jumped its epochs past `MAX_FREE_N`;
 // a thing switching to secrets of its own still starts its chain at `MAX_FREE_N` at most (derived
-// epochs are capped below it), so a holder holding no secret of the owner establishes the switch from the
+// epochs are capped below it), so a holder holding no secret of the base actor establishes the switch from the
 // rotation commit alone and the headroom rule needs nothing it cannot check.
 #[test]
-fn switch_under_jumped_owner_establishes_at_holders() {
+fn switch_under_jumped_base_establishes_at_holders() {
     let (a, p, m) = (tid(1), tid(2), tid(3));
     let high = osis_keys::MAX_FREE_N + 5;
     let mut pe = ActorEpochs::default();
@@ -353,8 +353,8 @@ fn switch_under_jumped_owner_establishes_at_holders() {
         pe.role_mut(r).set_established(ep(high, 0x20), Provenance::Fixed);
     }
     let me = person(0x30);
-    let owner = Recipient { holder: p, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
-    let holders = [owner, actor_rcpt(m, Role::Write, &me)];
+    let admin = Recipient { holder: p, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
+    let holders = [admin, actor_rcpt(m, Role::Write, &me)];
     let rot = rotate(&a, &roles_up_to(Role::Admin), &ActorEpochs::derived(&pe, &a), &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(1)).unwrap();
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);

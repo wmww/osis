@@ -220,7 +220,7 @@ fn pending(sim: &mut NetSim) -> Res<()> {
     Ok(())
 }
 
-/// Liveness and agreement: every node of a current holder (by an admin's roster, the owner's
+/// Liveness and agreement: every node of a current holder (by an admin's roster, the first admin's
 /// nodes included) reads the group, and all read the same items.
 fn groups(sim: &mut NetSim) -> Res<()> {
     let gs = sim.groups.clone();
@@ -246,7 +246,7 @@ fn groups(sim: &mut NetSim) -> Res<()> {
             }
             let tid = sim.tid(n)?;
             let person = sim.person_of.get(&n).copied();
-            let expected = roster.contains(&tid) || person.is_some_and(|p| roster.contains(&p) || p == g.owner);
+            let expected = roster.contains(&tid) || person.is_some_and(|p| roster.contains(&p) || p == g.first_admin);
             let Some(s) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
             let e = s.engine_mut();
             if e.role_on(&g.g).is_none_or(|r| r < Role::Read) {

@@ -25,9 +25,9 @@ pub fn key_actor_role_secret(seed: &Secret32, role: Role) -> Secret32 {
     kdf(kdf::role_purpose(role), seed.expose(), b"")
 }
 
-/// A plain thing's role secret `kdf("thing <role>", owner's secret, tid)`.
-pub fn thing_role_secret(owner_secret: &Secret32, role: Role, tid: &Tid) -> Secret32 {
-    kdf(kdf::thing_purpose(role), owner_secret.expose(), tid.as_bytes())
+/// A plain thing's role secret `kdf("thing <role>", base actor's secret, tid)`.
+pub fn thing_role_secret(base_secret: &Secret32, role: Role, tid: &Tid) -> Secret32 {
+    kdf(kdf::thing_purpose(role), base_secret.expose(), tid.as_bytes())
 }
 
 /// A role's KEM key pair of one epoch, `kdf("kem", role secret)` (actors other than key actors).
