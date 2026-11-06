@@ -1153,31 +1153,33 @@ mod tests {
     use osis_schema::core_types as ct;
 
     // spec/sync.md §7 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
-    // write made invalid (a backdated removal of its author) counts dead; a re-grant that makes
-    // it valid again counts it live again.
+    // write made invalid (its author's removal by an admin that had not received it) counts
+    // dead; a re-grant that makes it valid again counts it live again.
     #[test]
     fn body_live_follows_validity_spec_sync_7() {
-        let mut lp = LocalPeer::new(2, 951, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::new(3, 951, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let (a, w, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+        let admin = ct::Edge { role: Role::Admin, ..write.clone() };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
+        lp.peers[0].engine.grant(&t, &x, &admin).unwrap();
         lp.sync_all().unwrap();
-        let before = lp.peers[0].engine.now();
         lp.advance(60_000);
         let mut m = Mutation::new();
         m.set(t, &ak, &Value::Int(1)).unwrap();
         let c = lp.peers[1].commit(m).unwrap().unwrap();
         lp.sync(1, 0).unwrap();
+        assert!(lp.peers[0].engine.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
+        lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Unsynced { proceed: true }, retain: None }).unwrap();
+        lp.sync(2, 0).unwrap();
         let e = &mut lp.peers[0].engine;
-        assert!(e.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
-        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before), retain: None }).unwrap();
-        assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after the backdated removal: dead");
+        assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after a removal not listing it: dead");
         e.grant(&t, &w, &write).unwrap();
         assert!(e.body_live(&c, &t, &ak).unwrap(), "valid again after the re-grant: live");
     }
@@ -1224,22 +1226,23 @@ mod tests {
     }
 
     // spec/sync.md §6 (work sets): node-sync's change hook marks a commit whose validity flipped
-    // (a backdated removal of its author), and one whose body was dropped; nothing is kept
-    // until node-sync asks.
+    // (its author's removal by an admin that had not received it), and one whose body was
+    // dropped; nothing is kept until node-sync asks.
     #[test]
     fn changed_marks_flips_and_drops_spec_sync_6() {
-        let mut lp = LocalPeer::new(2, 952, WallMs(1_700_000_000_000)).unwrap();
+        let mut lp = LocalPeer::new(3, 952, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let (a, w, x) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         let first = lp.peers[0].commit(m).unwrap().unwrap();
         let write = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
+        let admin = ct::Edge { role: Role::Admin, ..write.clone() };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
+        lp.peers[0].engine.grant(&t, &x, &admin).unwrap();
         lp.sync_all().unwrap();
-        let before = lp.peers[0].engine.now();
         lp.advance(60_000);
         let mut m = Mutation::new();
         m.set(t, &ak, &Value::Int(1)).unwrap();
@@ -1250,7 +1253,9 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.take_changed().commits.contains(&c), "applied");
-        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before), retain: None }).unwrap();
+        lp.peers[2].engine.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Unsynced { proceed: true }, retain: None }).unwrap();
+        lp.sync(2, 0).unwrap();
+        let e = &mut lp.peers[0].engine;
         let got = e.take_changed();
         assert!(got.commits.contains(&c), "the flipped commit");
         assert!(!got.commits.contains(&first), "not every commit on the flipped aspect");

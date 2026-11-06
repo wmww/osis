@@ -283,7 +283,6 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - Before stamping a role-lowering edge write a client SHOULD sync every label of every thing the demoted authority gave write on (found by walking the grants and `label.0` writes below), and take the write's `ts` after applying what it downloaded.
 - A label of a group the client does not hold MAY instead be read for receipts only: its commit headers decrypted and verified (§5.1), nothing kept or applied but the role commits that give its secrets; while doing so the client MUST NOT upload, delete or place anything under that label or register a step there.
 - When it cannot (a label unreachable, unopenable or too large, or the app will not wait) it SHOULD let the app choose between failing and stamping anyway; uncompacted writes by the demoted holder under the labels not synced are then lost (spec/requirements.md, Permissions).
-- An explicitly backdated revoke skips this.
 
 ## 6. Purge rights
 - **The right**: a delta's retention names who may purge it (spec/commits.md §5), judged at the request's time. Each member of the named set holds the right on its own:

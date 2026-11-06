@@ -689,7 +689,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Leave { by, t } => {
-                let d = osis_node::flows::Demotion { holder: ids[by], new: None, presync: osis_node::flows::PreSync::Backdated(T0), retain: None };
+                let d = osis_node::flows::Demotion { holder: ids[by], new: None, presync: osis_node::flows::PreSync::Synced, retain: None };
                 no = why(&lp.peers[by].engine.demote(&th(t), &d));
                 Some(by)
             }
@@ -3388,7 +3388,7 @@ fn carrierless_part_alike_large_spec_commits_4() {
     carrierless_run("carrierless_part_alike_large_spec_commits_4", osis_base::testenv::large(1000..1200), 30);
 }
 
-/// A history for `new_device_alike`: a random one with, in its middle, writer 1's commits
+/// A history for `new_node_alike`: a random one with, in its middle, writer 1's commits
 /// synced to the owner and compacted there, and at its end the owner's demotion of writer 1
 /// (its frontier as of a random point among 1's writes).
 fn node_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
@@ -4697,7 +4697,7 @@ fn dropped_live_write_given_again_after_flip_seed_733028_spec_crdt_4_6() {
 }
 
 
-// spec/permissions.md §5.2, seed 7340054 of `new_device_alike_large`: 1 puts k0, 0 writes a
+// spec/permissions.md §5.2, seed 7340054 of `new_node_alike_large`: 1 puts k0, 0 writes a
 // field into it, 1 removes k0 (its reset prunes the creation) and 0 compacts; 0 demotes 1 below
 // both. The snapshot holds the record k0 without its creation, alive by 0's field: it keeps the
 // record, so a node holding 1's invalid deltas reads k0 as a node holding the snapshot alone.

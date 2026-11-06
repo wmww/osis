@@ -40,11 +40,11 @@ fn at_host(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &osi
 
 // spec/permissions.md §5.2 (a write after a revoke's frontier is invalid, whatever the order
 // it arrives in), spec/crdt.md §4.6: a holder that was offline while a writer's later write
-// and a backdated revoke of that writer arrived must read what an online holder reads.
-// (Was order-dependent: the item's `created.0` reached perm's walk after the revoke, and the
-// walk kept no demotion for it; osis-perm `Walked::alias_leaves`.)
+// and a revoke of that writer by an admin that never received it arrived must read what an
+// online holder reads. (Was order-dependent: the item's `created.0` reached perm's walk after
+// the revoke, and the walk kept no demotion for it; osis-perm `Walked::alias_leaves`.)
 #[test]
-fn late_holder_judges_backdated_revoke_alike_spec_permissions_5() {
+fn late_holder_judges_revoke_alike_spec_permissions_5() {
     use osis_base::Role;
     use osis_node::flows::{Demotion, PreSync};
     let mut net = Net::new();
@@ -53,23 +53,27 @@ fn late_holder_judges_backdated_revoke_alike_spec_permissions_5() {
     let b = net.node(14, &[host]);
     let late = net.node(15, &[host]);
     let on = net.node(16, &[host]);
-    let g = net.group(a, &[(b, Role::Write), (late, Role::Read), (on, Role::Read)], &[host]);
+    let x = net.node(17, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (late, Role::Read), (on, Role::Read), (x, Role::Admin)], &[host]);
     net.set_online(late, false);
     let t = net.item(a, g, g, "v1");
     net.run();
     net.advance(60_000);
-    let before = net.now();
+    net.set_online(x, false);
     net.advance(1_000);
     net.write(b, t, "v2");
     net.run();
     net.advance(1_000);
     let bt = net.tid(b);
     net.set_online(b, false);
-    let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)), retain: None };
-    let done = net.engine(a).demote(&g, &d).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
+    let d = Demotion { holder: bt, new: None, presync: PreSync::Unsynced { proceed: true }, retain: None };
+    let done = net.engine(x).demote(&g, &d).unwrap();
+    let acts = net.sync(x).carry_out(done).unwrap();
+    net.actions(x, acts);
+    // back online: reconnects on its next tick
+    net.set_online(x, true);
     net.run();
+    net.advance(61_000);
     assert_eq!(net.read(a, t), Some(s("v1")));
     assert_eq!(net.read(on, t), Some(s("v1")), "an online holder");
     net.set_online(late, true);

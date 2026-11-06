@@ -41,8 +41,8 @@ impl osis_keys::Held for Holding {
     }
 }
 
-/// Actor A owned by P; holders a2 (admin, a co-admin's actor) and m1 (read). Node a1 (P's
-/// device) made A's secrets; node a2 applied that commit.
+/// Actor A owned by P; holders a2 (admin, a co-admin's actor) and m1 (read). Node a1 (one of
+/// P's nodes) made A's secrets; node a2 applied that commit.
 struct World {
     a: Tid,
     p: Tid,

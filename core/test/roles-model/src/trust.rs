@@ -478,7 +478,7 @@ mod tests {
 
     /// Kicked admin, variant A: 2 received its removal and contests it. Listing it (stamped
     /// after, as an honest clock does), the contest fails and raises nothing; omitting it
-    /// raises a dispute on the contest. Backdated before the removal (within skew, listing
+    /// raises a dispute on the contest. Stamped before the removal (within skew, listing
     /// it), the contest wins and the removal is the dispute.
     #[test]
     fn kicked_admin_variant_a() {

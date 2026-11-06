@@ -74,7 +74,7 @@ fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -
 /// A demoter leaves a commit out of its frontier only when each of its parts in question is
 /// such: the covering snapshot vouches for its live writes (spec/permissions.md §5.2), and its
 /// dead writes are what compaction erases anyway; a kept body's history stays valid. A coverer
-/// received after `as_of` (a backdated revoke) would not be listed if the demoted node wrote
+/// received after `as_of` (a frontier as of an earlier time) would not be listed if the demoted node wrote
 /// it, so it would vouch for nothing after the demotion.
 fn droppable_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: WallMs) -> Result<bool> {
     let by_then = |core: &crate::engine::Core, s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.received.0 <= as_of.0);
@@ -168,7 +168,7 @@ impl Engine {
     /// and, where it falls below write, its held commits acting for that thing, each left out
     /// under the same rule on every delta but `created.0`; and every purge request whose right
     /// may rest on a role it puts in question (`retention::requests_resting_on`). This node's own receipts only;
-    /// `as_of` earlier than now gives a backdated revoke's frontier.
+    /// A demotion stamps it as of now; an earlier `as_of` gives the frontier as of then.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         Ok(self.frontier_and_requests(scope, as_of)?.0)
     }

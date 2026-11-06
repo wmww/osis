@@ -44,7 +44,7 @@ pub struct SealedEntry {
     pub wraps: Vec<(osis_base::Tid, [u8; osis_crypto::WRAP_LEN])>,
 }
 
-/// One engine with its devices.
+/// One node: an engine with its clock, store and root.
 pub struct Peer {
     pub engine: Engine,
     pub clock: Arc<ManualClock>,

@@ -131,47 +131,6 @@ fn revocation(name: &str, seed: u64, carol: bool) -> Res<Report> {
     sim.finish()
 }
 
-/// A stolen node backdates (notes/permissions.md, Revocation; spec/permissions.md §5.1, §5.3):
-/// the thief winds its clock back and writes; the honest node removes it with a revoke
-/// backdated to the theft, so the forged edit is dropped everywhere and the node's honest edits
-/// before the theft stay.
-pub fn stolen_node(seed: u64) -> Res<Report> {
-    let mut d = Dice::new(seed ^ 0x57);
-    let mut sim = sim("stolen_node", seed, NetWeights::default());
-    let s = sim.add_host()?;
-    let d0 = sim.add_node(&[s], clock(&mut d))?;
-    let d1 = sim.add_node(&[s], clock(&mut d))?;
-    let p = sim.person(d1, &[s])?.person;
-    sim.pair(d1, d0, p)?;
-    let u = sim.item(d1, p)?;
-    sim.quiet(40)?;
-    add_tag(&mut sim, d0, u, "honest")?;
-    sim.run(40)?;
-    sim.quiet(40)?;
-    let theft = sim.engine(d0)?.now();
-    sim.excused.insert(d0);
-    sim.advance(2 * HOUR_MS)?;
-    // the thief winds its clock back to just after the theft and writes
-    let skew = sim.nodes.get(d0).map(|x| x.spec.skew_ms).unwrap_or(0);
-    sim.set_skew(d0, skew - 2 * HOUR_MS as i64 + 60_000)?;
-    add_tag(&mut sim, d0, u, "forged")?;
-    sim.run(30)?;
-    sim.quiet(40)?;
-    if !tags(&mut sim, d1, u)?.contains("forged") {
-        return Err(sim.fail("the honest node never received the forged edit"));
-    }
-    let backdated = PreSync::Backdated(WallMs(theft.0 + HOUR_MS / 2));
-    let dt = sim.tid(d0)?;
-    demote(&mut sim, d1, p, dt, None, backdated)?;
-    sim.run(40)?;
-    sim.run_until_quiescent(40)?;
-    expect_tags(&mut sim, &[d1], u, &["honest", "forged"], &["honest"])?;
-    if sim.engine(d1)?.roster(&p).contains_key(&dt) {
-        return Err(sim.fail("the stolen node is still on the account's roster"));
-    }
-    sim.finish()
-}
-
 /// Demotion to read with the pre-sync (spec/permissions.md §5.3): the writer's edits reached the
 /// host before the demotion; the admin syncs first, so its frontier covers them and they stay.
 pub fn demotion_synced(seed: u64) -> Res<Report> {
@@ -960,12 +919,12 @@ fn purge_falls_how(name: &str, seed: u64, churn: bool) -> Res<Report> {
         sim.commit(x, m)?.ok_or_else(|| sim.fail("wrote nothing"))?;
         Ok(())
     };
-    let backdated = d.pct(50);
-    if backdated {
+    let purge_first = d.pct(50);
+    if purge_first {
         purge(&mut sim)?;
     }
     sim.remove(a, g, px)?;
-    if !backdated {
+    if !purge_first {
         sim.run(5)?;
         purge(&mut sim)?;
     }

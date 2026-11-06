@@ -113,8 +113,8 @@ impl Engine {
     /// was claimed by the key's static entry and downloaded (node-sync; `hold_key_actor` with
     /// the card's seed came first so the key's boxes open): signing as the recovery key, grants
     /// this node admin on the account, then removes each `lost` node (an explicit demotion by
-    /// the owner, with the person's rotation; `presync` as for any demotion, a backdated revoke
-    /// to cancel a stolen node's backdated writes). The seed is dropped afterwards.
+    /// the owner, with the person's rotation; `presync` as for any demotion). The seed is
+    /// dropped afterwards.
     pub fn recover(&mut self, card: &RecoveryCard, lost: &[Tid], presync: PreSync) -> Result<Done> {
         let r = self.hold_key_actor(card.seed.clone())?;
         let res = self.recover_in(r, card.person, lost, presync);

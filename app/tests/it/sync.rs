@@ -54,7 +54,7 @@ fn views_in(d: &Data, v: &[Tid]) -> Vec<View> {
 /// Both nodes make an app group before they sync: afterwards both write to the same one, the
 /// views and favorites are not doubled, and a favorite made in the other group can be removed.
 #[test]
-fn two_devices_race_the_app_group() {
+fn two_nodes_race_the_app_group() {
     let (a, b) = two();
     let ga = a.main_group().unwrap();
     let gb = b.main_group().unwrap();
@@ -137,7 +137,7 @@ fn open_survives_a_merged_group() {
 
 /// Demo data once per account: a second node sees it and adds none; existing favorites stay.
 #[test]
-fn demo_once_per_person() {
+fn demo_once_per_account() {
     let (a, b) = two();
     let n = a.create_note().unwrap();
     a.toggle_favorite(n).unwrap();
