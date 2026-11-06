@@ -765,7 +765,7 @@ impl Drop for Io {
 }
 
 /// How a connection dials its node: the daemon's unix socket, or a node address over the
-/// in-process transport (tests) or QUIC (and iroh with that feature), the key pinned.
+/// in-process transport (tests) or QUIC (`quic://`, `peer://`), the key pinned.
 enum Via {
     Unix,
     Mem(osis_transport::InProcess),
@@ -778,12 +778,7 @@ async fn dial_via(via: &Via, addr: &Address, wait: Duration) -> std::result::Res
             Via::Unix => osis_transport::link::dial(&Unix, addr, None, wait).await,
             Via::Mem(m) => osis_transport::link::dial(&osis_transport::Multi { mem: Some(m.clone()), ..Default::default() }, addr, None, wait).await,
             Via::Net => {
-                let m = osis_transport::Multi {
-                    quic: Some(osis_transport::Quic::new()),
-                    #[cfg(feature = "iroh")]
-                    iroh: Some(osis_transport::Iroh::new()),
-                    ..Default::default()
-                };
+                let m = osis_transport::Multi { quic: Some(osis_transport::Quic::new()), p2p: Some(osis_transport::P2p::new(osis_transport::QuicUdp::new())), ..Default::default() };
                 osis_transport::link::dial(&m, addr, None, wait).await
             }
         }

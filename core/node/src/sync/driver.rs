@@ -21,7 +21,7 @@ use osis_host::{HostConfig, driver as host};
 use osis_transport::link::{self, Link, LinkTx, blocking};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -68,8 +68,8 @@ pub struct LanConfig {
     /// Where announcements go (the IPv4 broadcast address and the IPv6 all-nodes group at
     /// `lan::PORT`; single addresses in tests). Each carries the listener's port on its family.
     pub to: Vec<std::net::SocketAddr>,
-    /// The LAN listener's URL (`peer://0.0.0.0:0 [::]:0`: all interfaces of both families, any
-    /// port; IPv4 only where IPv6 cannot be bound).
+    /// The LAN listener's URL (`peer://[::]:0`: one dual-stack socket on all interfaces, any
+    /// port; `peer://0.0.0.0:0` where IPv6 cannot be bound).
     pub listen: String,
     /// Whether the network watch runs (off in tests: joins come from `Control::LanRejoin`).
     pub watch: bool,
@@ -80,7 +80,7 @@ pub struct LanConfig {
 impl Default for LanConfig {
     fn default() -> LanConfig {
         let p = osis_transport::lan::PORT;
-        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://0.0.0.0:0 [::]:0".into(), watch: true, rejoin_min: LAN_REJOIN_MIN }
+        LanConfig { port: p, to: vec![osis_transport::lan::broadcast(p), osis_transport::lan::multicast(p)], listen: "peer://[::]:0".into(), watch: true, rejoin_min: LAN_REJOIN_MIN }
     }
 }
 
@@ -94,8 +94,8 @@ pub enum Control {
     /// Actions the holder's own calls produced: carry them out.
     Apply(Vec<Action>),
     /// Listen at `url` with the engine's dialable secret and publish `reach.0` with that
-    /// listener's key and `relays` (spec/data-model.md §9). For iroh, `url` lists the relays the
-    /// listener registers at (`peer_url(relays)`).
+    /// listener's key and `relays` (spec/data-model.md §9). For `P2p`, `url` lists the socket
+    /// address to bind and the relays the listener registers at.
     Reach { url: String, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
     /// Serve the sessions a listener at `url` accepts (a client socket, `unix://`; its
     /// sessions are clients, notes/client-port.md §5), with a fresh secret of its own.
@@ -110,9 +110,16 @@ pub enum Control {
     /// The network may have changed (an app's OS callback): join the LAN again with a fresh key
     /// and listener, at most every `LanConfig::rejoin_min`.
     LanRejoin,
+    /// Hand the dialable keys of this node's co-readers (`SyncEngine::peers`) to this sink now
+    /// and whenever they change: who the transport relays for and exchanges IP addresses with
+    /// (`p2p::RelayConfig::allow`, `P2p::punching`).
+    PeerKeys(PeerKeys),
     /// Close every connection and return the engine.
     Shutdown,
 }
+
+/// Takes the co-readers' dialable keys (`Control::PeerKeys`).
+pub type PeerKeys = Arc<dyn Fn(&BTreeSet<[u8; 32]>) + Send + Sync>;
 
 /// What `Control::ClientListen` does.
 #[derive(Clone, Debug)]
@@ -239,23 +246,31 @@ struct Ports {
     v6: Option<u16>,
 }
 
-/// The ports of the socket addresses a listener URL lists, per family.
+/// The ports of the socket addresses a listener URL lists, per family; `[::]` (dual-stack)
+/// counts for both.
 #[cfg(feature = "lan")]
 fn listen_ports(url: &str) -> Ports {
     let mut p = Ports::default();
-    for a in osis_transport::peer_relays(url).unwrap_or_default().iter().filter_map(|h| h.parse::<std::net::SocketAddr>().ok()) {
-        let slot = if a.is_ipv4() { &mut p.v4 } else { &mut p.v6 };
-        slot.get_or_insert(a.port());
+    for a in osis_transport::peer_items(url).unwrap_or_default().iter().filter_map(|h| h.parse::<std::net::SocketAddr>().ok()) {
+        if a.is_ipv4() || a.ip().is_unspecified() {
+            p.v4.get_or_insert(a.port());
+        }
+        if a.is_ipv6() {
+            p.v6.get_or_insert(a.port());
+        }
     }
     p
 }
 
-/// A listener URL without its IPv6 socket addresses (a machine without IPv6).
+/// A listener URL with its `[::]` socket address as `0.0.0.0` (a machine without IPv6).
 #[cfg(feature = "lan")]
 fn v4_only(url: &str) -> Option<String> {
-    let items = osis_transport::peer_relays(url)?;
-    let kept: Vec<String> = items.iter().filter(|h| !h.parse::<std::net::SocketAddr>().is_ok_and(|a| a.is_ipv6())).cloned().collect();
-    (kept.len() < items.len()).then(|| osis_transport::peer_url(&kept))
+    let items = osis_transport::peer_items(url)?;
+    let v4: Vec<String> = items.iter().map(|h| match h.parse::<std::net::SocketAddr>() {
+        Ok(a) if a.is_ipv6() && a.ip().is_unspecified() => std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, a.port())).to_string(),
+        _ => h.clone(),
+    }).collect();
+    (v4 != items).then(|| osis_transport::peer_url(&v4))
 }
 
 struct Driver<T: Transport, H: Shared> {
@@ -284,6 +299,8 @@ struct Driver<T: Transport, H: Shared> {
     /// The dialable listener's URL and relays (`Control::Reach`), and its key.
     reach: Option<(String, Vec<String>)>,
     dialable: Option<[u8; 32]>,
+    /// Where the co-readers' dialable keys go, and the last keys given (`Control::PeerKeys`).
+    peer_keys: Option<(PeerKeys, BTreeSet<[u8; 32]>)>,
     /// The engine rotated the dialable secret (`Action::Reach`): listen again (not before
     /// `relisten_at` after a failure).
     relisten: bool,
@@ -408,6 +425,19 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             self.feed(Event::Sent { conns: moved });
         }
         self.feed(Event::Tick);
+        self.give_peer_keys(false);
+    }
+
+    /// Hands the co-readers' keys to the `Control::PeerKeys` sink when they changed (`force`: now).
+    fn give_peer_keys(&mut self, force: bool) {
+        if self.peer_keys.is_none() {
+            return;
+        }
+        let Some(keys) = self.read(|s| s.peers().keys().copied().collect::<BTreeSet<_>>()) else { return };
+        if let Some((sink, last)) = self.peer_keys.as_mut().filter(|(_, last)| force || *last != keys) {
+            sink(&keys);
+            *last = keys;
+        }
     }
 
     fn close(&mut self, conn: ConnId) {
@@ -513,7 +543,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     }
 
     /// `unlisten`, returning once the listener is dropped (its address is free again), and
-    /// closing the sessions it accepted (as an iroh endpoint closes its connections).
+    /// closing the sessions it accepted (as a P2P listener's socket ends its connections).
     async fn unlisten_now(&mut self, key: [u8; 32]) {
         if let Some(ts) = self.listeners.remove(&key) {
             for t in ts {
@@ -731,7 +761,14 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     /// Carries out a control; false: shut down.
     async fn control(&mut self, c: Option<Control>) -> bool {
         match c {
-            Some(Control::Local) => self.feed(Event::Local),
+            Some(Control::Local) => {
+                self.feed(Event::Local);
+                self.give_peer_keys(false);
+            }
+            Some(Control::PeerKeys(sink)) => {
+                self.peer_keys = Some((sink, BTreeSet::new()));
+                self.give_peer_keys(true);
+            }
             Some(Control::Tick) => self.tick(),
             Some(Control::Call(f)) => {
                 let mut f = Some(f);
@@ -941,6 +978,7 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         net_tx,
         reach: None,
         dialable: None,
+        peer_keys: None,
         relisten: false,
         relisten_at: None,
         served_by: HashMap::new(),

@@ -27,7 +27,7 @@ The code that serves data a node may not read cannot decrypt anything (`osis-hos
 
 ## No server assumed (Tess)
 Requirements: spec/requirements.md, Decentralization. Known departures, in order:
-1. **P2P is off in every build.** No manifest for the app, Android or CLI enables `iroh` or `lan`; only `cargo test-net` does. iroh is being replaced (issues/p2p-own.md); P2P is then on by default, tested on real devices, Android included.
+1. **LAN discovery is off in every build.** P2P is on everywhere, but no manifest for the app, Android or CLI enables `lan`; only `cargo test-net` does. Turn it on by default (`lan` non-optional), tested on real devices, Android included. Direct addresses in `reach.0` and co-readers as relays are still missing (issues/p2p-own.md): until then a node is reached only through configured relays or on its LAN.
 2. **Direct sync between users is off by default.** `reach.0` goes out only where every reader is this account or a contact, so a chat joined by link has none. Default to on. An open audience (public, bearer read) is the case to think about, as is what a user can do about address exposure without losing P2P.
 3. **Recovery** is tied to having hosts (no card without them, key discarded), and is being reworked anyway: an explicit step, with `create` returning only the handle.
 4. **Every feature with no hosts:** audited in issues/no-server-audit.md.

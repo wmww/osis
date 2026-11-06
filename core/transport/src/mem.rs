@@ -448,7 +448,7 @@ pub struct InProcess {
 
 impl InProcess {
     /// The public key a listener with `secret` presents: Ed25519 with `secret` as seed, as
-    /// `Quic` and `Iroh` (spec/sync.md §10).
+    /// `Quic` and `P2p` (spec/sync.md §10).
     pub fn public_key(secret: &crate::StaticSecret) -> PublicKey {
         ed25519_dalek::SigningKey::from_bytes(secret.as_bytes()).verifying_key().to_bytes()
     }
@@ -500,7 +500,7 @@ impl InProcess {
         crate::check_url(&addr.url)?;
         let mut st = lock(&self.net.0);
         // `peer://`: the listener presenting the key, as P2P transports dial
-        let name = match crate::peer_relays(&addr.url) {
+        let name = match crate::peer_items(&addr.url) {
             Some(_) => match st.listeners.iter().find(|(_, l)| l.key == addr.key) {
                 Some((n, _)) => n.clone(),
                 None => return Err(Error::Unreachable(addr.url.clone())),
@@ -858,8 +858,8 @@ mod tests {
         let key = l.address().key;
         let cli = net.endpoint("cli");
         let url = crate::peer_url(&["https://relay.example".into()]);
-        assert_eq!(crate::peer_relays(&url), Some(vec!["https://relay.example".to_owned()]));
-        assert_eq!(crate::peer_relays(&crate::peer_url(&[])), Some(vec![]));
+        assert_eq!(crate::peer_items(&url), Some(vec!["https://relay.example".to_owned()]));
+        assert_eq!(crate::peer_items(&crate::peer_url(&[])), Some(vec![]));
         let (u, c2) = (url.clone(), cli.clone());
         let c = s.block_on(async move { c2.dial(&Address { url: u, key }).await.unwrap() }).unwrap();
         assert_eq!(c.peer_key(), key);

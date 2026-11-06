@@ -2,19 +2,19 @@
 > Summary: What each feature does with no saved peers (nodes serving at a fixed address), relays or internet, only nodes that sometimes reach each other (spec/requirements.md, Offline and network). Data sync between nodes that already know each other works; getting to know each other, grants, revocation, recovery and sync status mostly don't, and no shipped build has P2P at all.
 > Tags: node, sync, api, tess-call
 
-Probes: throwaway tests in `core/osis/tests/it`, two or three `Osis` with no saved peers on `Runtime::Tokio`, not committed (`pNN`/`qN` below). `(tier 2)`: real iroh on localhost under `cargo test-net`. All others ran over `Transport::InProcess`, whose `peer://` finds any listener by key (core/transport/src/multi.rs:39). That is **kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other.
+Probes: throwaway tests in `core/osis/tests/it`, two or three `Osis` with no saved peers on `Runtime::Tokio`, not committed (`pNN`/`qN` below). `(tier 2)`: real sockets on localhost under `cargo test-net`. All others ran over `Transport::InProcess`, whose `peer://` finds any listener by key (core/transport/src/multi.rs:39). That is **kinder than reality**: a `works` from it says the sync logic holds, not that nodes find each other.
 
 ## Findings
 Severity: **fails** (error or never happens), **silent** (claims success or does nothing, no error), **degraded**, ok.
 
 | # | Feature | No saved peers, no internet | Evidence | Severity |
 |---|---|---|---|---|
-| 1 | P2P at all, today's builds | App, Android and CLI are `Transport::Quic` without `iroh`, so peers are turned off; a direct link is `Invalid` | net.rs:239,257; p01 `Quic iroh=false` | fails |
+| 1 | P2P at all, today's builds | P2P is on in every build, but no shipped build runs the LAN loop (`lan`), and with no relay configured and no direct addresses in `reach.0` (issues/p2p-own.md) nodes off one LAN cannot reach each other | net.rs `spawn_driver` | degraded |
 | 2 | Create account | Works, but no recovery card and the key is discarded | handle.rs:436; p01 | degraded |
 | 3 | CLI on a store with no saved peers | `Runtime::None`, never syncs; links always `direct: false` | cli/src/lib.rs:318, cmd.rs:582 (read) | fails |
 | 4 | Pair a second device | Works both ways: the app carries the texts, the reply brings the sharer's `reach.0`, so the new device dials it and hears its LAN tag | p02. Over a real LAN only in pieces: p02, `driver_lan_loop` (tier 2) | ok in-process; not run end to end |
-| 5 | `make_link` | Not direct: `Invalid`. Direct: fine, with a runtime and iroh. `Runtime::None`: `Invalid`, though a bundle could carry it | share.rs:958,961; p01 | degraded |
-| 6 | **Redeem a direct link on a LAN** | **Cannot find the sharer.** The link holds key and relays only; iroh refuses a key with no address (`No addressing information available`, 2 ms, same dial with a socket hint works in 6 ms); LAN tags match only co-readers' lan secrets, which the redeemer lacks | wire.md §10; iroh.rs:125; peers.rs:531; p20, p21 `Network("timed out")` at 40 s with the LAN loop on (tier 2); p09 `matched=false` for a joiner and a stranger | fails |
+| 5 | `make_link` | Not direct: `Invalid`. Direct: fine, with a runtime. `Runtime::None`: `Invalid`, though a bundle could carry it | share.rs:958,961; p01 | degraded |
+| 6 | **Redeem a direct link on a LAN** | **Cannot find the sharer.** The link holds key and relays only; with no relay a `peer://` URL lists nothing to dial (`Unreachable` at once); LAN tags match only co-readers' lan secrets, which the redeemer lacks | wire.md §10; p2p.rs `dial_inner`; peers.rs:531; p20, p21 `Network("timed out")` at 40 s with the LAN loop on (tier 2); p09 `matched=false` for a joiner and a stranger | fails |
 | 7 | Redeem, in-process | Works, also read role, also a joiner's `leave` of K | p04, p05 | ok in-process |
 | 8 | Contact card | `contact_card` and `profile` are `Invalid` (a card's link is never direct), so no `import_contact` and no names | share.rs:1227,1259; p01; app/src/chat.rs:61,77 | fails |
 | 9 | **Grant to a known account** | `Ok`, then never arrives: the inbox has no saved peers, the deposit loop runs zero times, the delivery is marked sent. `wait_synced(AllWithSavedPeers)` `Ok`, nothing pending, no invite, status `NoPeers`, `unrouted` empty; after 100 s Bob has no role and doesn't know the thing. Also removal notices and re-seals by inbox (read) | local.rs:466-469,340-345; status.rs:71; p03, q4 | silent |
@@ -28,7 +28,7 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 17 | Status | Fixed in wording: `NoPeers` only with nobody connected on the group; with co-readers having it open, dialed or served, `Connected`; `connected` counts sync connections both ways, no client's. `Connected` claims nothing of what they hold, and waits treat it as `NoPeers` (rows 13, 16, 18) | share.rs, status.rs; `runtime::status_says_connected_with_a_direct_peer` | degraded |
 | 18 | History `complete` | True whenever `NoPeers` or `Connected`, though a peer may hold more; the doc says so | share.rs:464, history.rs:146 (read) | silent |
 | 19 | Restore, recover | Gone from the API until a design exists (issues/recovery-redesign.md) | - | n/a |
-| 20 | Data between nodes that know each other | Works: writes both ways, a 3 MB value, reader deposits | p02, p05, p12; `driver_p2p_iroh`, LAN loop (tier 2) | ok |
+| 20 | Data between nodes that know each other | Works: writes both ways, a 3 MB value, reader deposits | p02, p05, p12; `driver_p2p_localhost`, LAN loop (tier 2) | ok |
 | 21 | Bundles | Work between co-readers, also with no saved peers and with `Runtime::None`. **Not** for first contact: redeem by bundle alone times out (cause not traced; the link key's entry box comes from an open reply) | p01, p11 | degraded |
 | 22 | **Peers of a link-shared group** | Default `reach.0` policy excludes it, so nobody knows anyone: a star on the sharer. Sharer gone: B to C never arrives. `Reach::Always` set by hand on every node fixes it | peers.rs:641-651; p07 | fails |
 | 23 | LAN after joining | Same cause: a joiner never hears the sharer's LAN announcement | p09 | fails |
@@ -47,17 +47,14 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 | 36 | Co-reader cap | At most 8 per label, chosen by newest `seen.0`, and LAN tags come from that same list: an unreachable 8 hide a reachable 9th | peers.rs:303-315,524 (read) | degraded |
 | 37 | Link expiry, K with no saved peer | Only the node that made the link finalizes it (`h.here`) | deliver.rs:485 (read) | degraded |
 
-## Builds (`iroh`, `lan` on by default)
-Read against iroh, which is being replaced (issues/p2p-own.md): the Rust, deny and crate-count items go with it; unification and Android still apply to our own P2P and `lan`.
-- **Build**: `cargo test-net --tests --no-run` passes here, 4 min with iroh's tree. `osis` goes from 87 to 263 crates (`cargo tree`). Tier 2 passes but for row 33's flake. `clippy-net` not run.
-- **Rust**: iroh and netwatch say `rust-version = 1.91`; root and libs/kit manifests say 1.88. Raise both. Toolchain here is 1.99 (read; not tried on 1.88).
-- **Unification**: a default on `osis` alone breaks the gate's `unification_check`, since `-p osis-transport` then resolves differently (notes/build.md). Make `iroh` and `lan` non-optional in osis-transport, osis-node and osis, as QUIC is; keep only `relay` as a test feature. Every crate above osis-transport then pays for it (read).
-- **deny**: root `cargo deny check` passes (`all-features` already covers iroh), but the `skip-tree` reason "off by default" goes stale. libs/kit: `Cargo.lock` has no iroh and `deny.toml` has no licence exceptions (CDLA-Permissive-2.0, Unlicense), so it needs both, and `--locked` fails until then (read).
-- **Android**: not built, no SDK at ~/android. For that target `cargo tree` adds jni, ndk-context, netdev, netlink (277 crates). The manifest has only `INTERNET`. Likely lacks `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE`, plus a held multicast lock for broadcast reception, and netlink is restricted on newer APIs. All unverified, from general Android knowledge; needs a real phone. The app has no Java (`hasCode="false"`), so the lock goes over JNI as the clipboard does.
-- **Browser**: no transport yet; iroh there is relay-only (notes/networking.md). No LAN, no direct. Not looked at further.
+## Builds (`lan` on by default)
+P2P is in every build; `lan` (socket2 only) is the one networking feature left.
+- **Unification**: a default on `osis` alone breaks the gate's `unification_check`, since `-p osis-transport` then resolves differently (notes/build.md). Make `lan` non-optional in osis-transport, osis-node and osis, as QUIC and P2P are (read).
+- **Android**: not built, no SDK at ~/android. The manifest has only `INTERNET`. Likely lacks `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE`, `CHANGE_WIFI_MULTICAST_STATE`, plus a held multicast lock for broadcast reception, and `/proc/net/if_inet6` (the IPv6 interface list) may be unreadable on newer APIs (then announcements go out the default interface only). All unverified, from general Android knowledge; needs a real phone. The app has no Java (`hasCode="false"`), so the lock goes over JNI as the clipboard does.
+- **Browser**: no transport yet; relay-only there (notes/networking.md). No LAN, no direct. Not looked at further.
 
 ## Fixes: few mechanisms, many rows
-1. **Tests that can fail** (all rows): `World` drops every dial that isn't a hub (core/test/sim/src/world.rs:424), so the sim and its sweeps never run peers; `InProcess` dials any key. Give `World` peer connections, and make `InProcess` honour `peer://` hints: no hint, no route, as iroh. Most of what's above then shows up in tier 1.
+1. **Tests that can fail** (all rows): `World` drops every dial that isn't a hub (core/test/sim/src/world.rs:424), so the sim and its sweeps never run peers; `InProcess` dials any key. Give `World` peer connections, and make `InProcess` honour `peer://` hints: no hint, no route, as `P2p`. Most of what's above then shows up in tier 1.
 2. **P2P on** (1, 3, 5, 12): Builds above; the CLI and app with no saved peers get a runtime.
 3. **`reach.0` to everyone who shares a group, by default** (10, 22, 23, 24 partly; issues/node-host-unify.md item 2): each side knows the other's key and lan secret, so joiners mesh, a rotated key spreads through the label, and either side can dial. Rotate only when someone is really removed. A joiner stops depending on the key in the link text. Open: public and bearer-read audiences.
 4. **One idea of a label's sources** (13-18, 19's wait): saved peers plus co-readers. `Synced` means a finished pass with each source reachable in the timeout, `Unsynced` only at the timeout, served sessions count as connected, `NoPeers` stops being a fault (a state "nobody else known" is enough). To decide: what `Required` promises when no single place holds all writes; proposed: a pass with the holder's own node if reachable, else any co-reader, else `Unsynced` at timeout.
@@ -71,7 +68,7 @@ Read against iroh, which is being replaced (issues/p2p-own.md): the Rust, deny a
 **First**: 1, then 2 and 3 (small, and they unblock the rest), then 4 (fixes the worst silent lies: rows 13-17). Then 5 and 6, which make a real first contact and grant work on a LAN.
 
 ## Verified or only read
-- **By probe**: rows marked with `p`/`q`, tier 2 tests. In-process results say nothing about finding a peer: only p20, p21 and the tier-2 tests ran iroh, and all on localhost, never between machines.
+- **By probe**: rows marked with `p`/`q`, tier 2 tests. In-process results say nothing about finding a peer: only p20, p21 and the tier-2 tests ran real sockets, and all on localhost, never between machines.
 - **By reading only**: 3, 18, 28, 31, 32, 36, 37, the "works, read" part of 12; 9's removal notices and re-seals; causes in 21, 24, 33; deny for libs/kit; everything on Android.
 - **Not checked**: real devices, Wi-Fi client isolation, ephemeral values and signals over peers beyond existing tests, thin clients with no saved peers, disk-backed restart of link peers.
 - notes/networking.md is out of date where it says a contact card may carry a dialable key, and names `sync_policy` (now `set_sync_options`).

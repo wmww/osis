@@ -194,13 +194,14 @@ impl Net {
     }
 
     /// Starts the driver task over one transport for every node it dials (`Multi`; what it serves
-    /// for others stored beside the node). With `p2p` (`Config::direct_sync`) and a peer transport, it listens with the dialable secret
-    /// (registered at `relays`) and publishes `reach.0`; with feature `lan` and QUIC it also runs
-    /// the LAN loop. Without a peer transport no peer is dialed.
+    /// for others stored beside the node). With `p2p` (`Config::direct_sync`) it listens with the
+    /// dialable secret (registered at `relays`) and publishes `reach.0`; over QUIC it relays for
+    /// its co-readers and exchanges IP addresses only with them (spec/sync.md §10), and with
+    /// feature `lan` also runs the LAN loop.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, store: crate::Store, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
         let shared = OsisShared(db.clone(), store);
-        let (transport, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.direct_sync, cfg.relays.iter().map(ToString::to_string).collect::<Vec<String>>());
+        let (transport, p2p, relays) = (cfg.app.internals.transport.clone(), cfg.direct_sync, cfg.relays.iter().filter_map(crate::share::Address::relay_item).collect::<Vec<String>>());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         // the client port's unix socket (`Osis::listen_socket`)
         let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
@@ -213,13 +214,20 @@ impl Net {
             }
             None => {
                 multi.quic = Some(osis_transport::Quic::new());
-                #[cfg(feature = "iroh")]
-                {
-                    multi.iroh = Some(osis_transport::Iroh::new());
-                    (Some(osis_transport::peer_url(&relays)), cfg!(feature = "lan"))
-                }
-                #[cfg(not(feature = "iroh"))]
-                (None, false)
+                // co-readers' dialable keys, from the driver (`Control::PeerKeys`)
+                let co: Arc<std::sync::RwLock<std::collections::BTreeSet<[u8; 32]>>> = Arc::default();
+                let co2 = co.clone();
+                let shares = move |k: &[u8; 32]| co.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(k);
+                let (s1, s2) = (shares.clone(), shares);
+                let p = osis_transport::P2p::new(osis_transport::QuicUdp::new()).relaying(osis_transport::RelayConfig::new(Arc::new(s1))).punching(Arc::new(s2));
+                multi.p2p = Some(p.clone());
+                let _ = ctl.send(Control::PeerKeys(Arc::new(move |keys| {
+                    *co2.write().unwrap_or_else(std::sync::PoisonError::into_inner) = keys.clone();
+                    p.recheck_relayed();
+                })));
+                let mut items = vec!["[::]:0".to_string()];
+                items.extend(relays.iter().cloned());
+                (Some(osis_transport::peer_url(&items)), cfg!(feature = "lan"))
             }
         };
         let alive = lock(stop).as_mut().and_then(|s| s.task.take());

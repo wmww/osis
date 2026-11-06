@@ -33,12 +33,8 @@ tokio = { workspace = true, optional = true }
 default = ["driver"]
 # The tokio driver over osis-transport sessions; off, the crate is the sans-I/O engine.
 driver = ["dep:tokio"]
-# Tier-2 tests of peers over iroh on localhost.
-iroh = ["driver", "osis-transport/iroh"]
 # The driver's LAN loop (UDP announcements, spec/sync.md §10).
 lan = ["driver", "osis-transport/lan"]
-# Tier-2 tests of peers through a self-hosted iroh-relay on localhost.
-relay = ["iroh", "osis-transport/relay"]
 
 [dev-dependencies]
 # Judgment vectors (tests/it/judgment.rs): the `.vec` format and the vectors directory.

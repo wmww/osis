@@ -1168,14 +1168,16 @@ fn peers_without_a_runtime_are_refused() {
     assert!(osis::internals::create(c).is_ok());
 }
 
-// notes/api.md Handle: relays need a transport to use them: a build without one says so.
+// notes/api.md Handle: a relay is a node at one socket address; any other form is refused.
 // spec: none (API surface, notes/api.md)
 #[test]
-fn relays_without_iroh_are_refused() {
-    let mut c = osis::internals::Opening::memory();
-    c.relays = vec!["https://relay.example.org".parse().unwrap()];
-    let r = osis::internals::create(c);
-    assert_eq!(r.is_err(), !cfg!(feature = "iroh"));
+fn relays_need_a_socket_address() {
+    let key = [7u8; 32];
+    for (url, ok) in [("peer://192.0.2.1:4040", true), ("peer://[2001:db8::1]:9", true), ("quic://example.org:4040", false), ("peer://example.org:4040", false), ("peer://x", false)] {
+        let mut c = osis::internals::Opening::memory();
+        c.relays = vec![osis::Address::new(&url.parse().unwrap(), key)];
+        assert_eq!(osis::internals::create(c).is_ok(), ok, "{url}");
+    }
 }
 
 // notes/api.md Sync configuration: `sync` of a group that has a label never moves it silently: its

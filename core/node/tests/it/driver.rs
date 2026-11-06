@@ -244,7 +244,7 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
             loop {
                 let routes = call(&ctl, |s| s.peer_routes()).await;
                 if let [(_, a, true)] = routes.as_slice()
-                    && osis_transport::peer_relays(&a.url).is_some_and(|h| h.iter().any(|x| x.parse::<std::net::SocketAddr>().is_ok()))
+                    && osis_transport::peer_items(&a.url).is_some_and(|h| h.iter().any(|x| x.parse::<std::net::SocketAddr>().is_ok()))
                 {
                     return;
                 }
@@ -277,83 +277,91 @@ async fn driver_p2p_lan_in_process_spec_sync_10() {
     converge_p2p(tnet.endpoint("a"), "mem://a", tnet.endpoint("b"), "mem://b", vec![], Direct::Heard(["mem://a-lan", "mem://b-lan"])).await;
 }
 
-// spec/sync.md §5, §10: the same over iroh on localhost, no relay (tier 2: touches the network).
-// Run: `cargo test-net --test it driver:: -- --ignored`.
-#[cfg(feature = "iroh")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore]
-async fn driver_p2p_iroh_localhost_spec_sync_10() {
-    use osis_transport::Iroh;
-    converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", vec![], Direct::Heard(["peer://127.0.0.1:0", "peer://127.0.0.1:0"])).await;
+/// A P2P transport over QUIC.
+fn p2p() -> osis_transport::P2p<osis_transport::QuicUdp> {
+    osis_transport::P2p::new(osis_transport::QuicUdp::new())
 }
 
-// spec/sync.md §10: two nodes over iroh find each other only by the driver's LAN loop: fresh
+/// A relaying node on localhost (for anyone), its listener kept while the test runs, and its
+/// `peer://` relay item.
+async fn relay_node() -> (osis_transport::P2pListener<osis_transport::QuicUdp>, String) {
+    let r = p2p().relaying(osis_transport::RelayConfig::new(Arc::new(|_| true)));
+    let l = r.listen(ListenConfig { url: "peer://127.0.0.1:0".into(), secret: StaticSecret::from_bytes([77; 32]) }).await.unwrap();
+    let addr = l.address().url.strip_prefix("peer://").unwrap().parse().unwrap();
+    let item = osis_transport::p2p::Relay { key: l.address().key, addr }.item();
+    (l, item)
+}
+
+// spec/sync.md §5, §10: the same over P2P (QUIC) on localhost, no relay (tier 2: touches the
+// network). Run: `cargo test-net --test it driver:: -- --ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn driver_p2p_localhost_spec_sync_10() {
+    converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Heard(["peer://127.0.0.1:0", "peer://127.0.0.1:0"])).await;
+}
+
+// spec/sync.md §10: two nodes over P2P find each other only by the driver's LAN loop: fresh
 // keys per network, signed announcements over UDP on localhost (tier 2).
 // Run: `cargo test-net --test it driver:: -- --ignored`.
-#[cfg(all(feature = "iroh", feature = "lan"))]
+#[cfg(feature = "lan")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_lan_loop_localhost_spec_sync_10() {
-    use osis_transport::Iroh;
     // two announcement ports, each node announcing to the other's
     let base = 40_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p))];
     let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
-    converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
+    converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
 // spec/sync.md §10 (IPv6 LAN discovery): the same over IPv6 loopback: announcements on the IPv6
 // socket carry the listener's IPv6 port and are dialed at their IPv6 source (tier 2).
 // Run: `cargo test-net --test it driver:: -- --ignored`.
-#[cfg(all(feature = "iroh", feature = "lan"))]
+#[cfg(feature = "lan")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_lan_loop_ipv6_localhost_spec_sync_10() {
-    use osis_transport::Iroh;
     let base = 30_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, p))];
     let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://[::1]:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
-    converge_p2p(Iroh::new(), "peer://127.0.0.1:0", Iroh::new(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
+    converge_p2p(p2p(), "peer://127.0.0.1:0", p2p(), "peer://127.0.0.1:0", vec![], Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
 // spec/sync.md §10 (the proven route first): two nodes whose `reach.0` names only a relay on
 // localhost also run the LAN loop: whatever route came up first, each ends on the other's LAN
 // route alone (a relay connection is replaced once the LAN one is up) (tier 2).
 // Run: `cargo test-net --test it driver:: -- --ignored`.
-#[cfg(all(feature = "relay", feature = "lan"))]
+#[cfg(feature = "lan")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_lan_replaces_relay_localhost_spec_sync_10() {
-    use osis_transport::{Iroh, TestRelay};
-    let relay = TestRelay::spawn().await.unwrap();
-    let r = vec![relay.url.clone()];
-    let url = format!("peer://{}", relay.url);
+    let (_relay, item) = relay_node().await;
+    let r = vec![item.clone()];
+    let url = format!("peer://127.0.0.1:0 {item}");
     let base = 20_000 + (std::process::id() % 10_000) as u16 * 2;
     let to = |p: u16| vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, p))];
     let cfg = |port: u16, other: u16| driver::LanConfig { port, to: to(other), listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: driver::LAN_REJOIN_MIN };
-    converge_p2p(Iroh::new(), &url, Iroh::new(), &url, r, Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
+    converge_p2p(p2p(), &url, p2p(), &url, r, Direct::Loop([cfg(base, base + 1), cfg(base + 1, base)])).await;
 }
 
-// spec/sync.md §10: two nodes over iroh reach each other through a self-hosted relay on
-// localhost, the only route `reach.0` names (tier 2).
+// spec/sync.md §10: two nodes over P2P reach each other through a relaying node on localhost,
+// the only route `reach.0` names (tier 2).
 // Run: `cargo test-net --test it driver:: -- --ignored`.
-#[cfg(feature = "relay")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_p2p_relay_localhost_spec_sync_10() {
-    use osis_transport::{Iroh, TestRelay};
-    let relay = TestRelay::spawn().await.unwrap();
-    let r = vec![relay.url.clone()];
-    let url = format!("peer://127.0.0.1:0 {}", relay.url);
-    converge_p2p(Iroh::new(), &url, Iroh::new(), &url, r, Direct::None).await;
+    let (_relay, item) = relay_node().await;
+    let r = vec![item.clone()];
+    let url = format!("peer://127.0.0.1:0 {item}");
+    converge_p2p(p2p(), &url, p2p(), &url, r, Direct::None).await;
 }
 
 // spec/sync.md §10 (a fresh key per network join), notes/networking.md (rejoin interval): a
 // network change right after a join is deferred to `rejoin_min` (each join drops the LAN
 // listener and its connections); the deferred join then announces a fresh key (tier 2: UDP and
-// iroh on localhost).
+// P2P on localhost).
 // Run: `cargo test-net --test it driver:: -- --ignored`.
-#[cfg(all(feature = "iroh", feature = "lan"))]
+#[cfg(feature = "lan")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn lan_rejoin_interval_spec_sync_10() {
@@ -370,7 +378,7 @@ async fn lan_rejoin_interval_spec_sync_10() {
     let to = vec![std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, ear.port()))];
     let cfg = driver::LanConfig { port: 0, to, listen: "peer://127.0.0.1:0".into(), watch: false, rejoin_min: Duration::from_millis(500) };
     let (ctl, rx) = mpsc::unbounded_channel();
-    let d = tokio::spawn(driver::run(net.take(a), osis_transport::Iroh::new(), clock, rx, log()));
+    let d = tokio::spawn(driver::run(net.take(a), p2p(), clock, rx, log()));
     assert!(ctl.send(Control::Lan(cfg)).is_ok());
     let (first, _) = tokio::time::timeout(GUARD, ear.recv()).await.unwrap().unwrap();
     // a change at once: deferred, nothing announced now

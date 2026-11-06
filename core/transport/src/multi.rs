@@ -1,11 +1,11 @@
 //! `Multi`: one transport over several, picked by URL scheme (spec/sync.md §10): `mem://` to
-//! `InProcess`, `quic://` to `Quic`, `peer://` to `Iroh` (feature `iroh`), else to
-//! `InProcess` (which finds a `peer://` listener by key), `unix://` to `Unix` (listen only). A scheme without its transport is
-//! `UnknownScheme`. Lets one driver reach hosts and peers.
+//! `InProcess`, `quic://` to `Quic`, `peer://` to `P2p` over QUIC when present, else to
+//! `InProcess` (which finds a `peer://` listener by key), `unix://` to `Unix` (listen only). A
+//! scheme without its transport is `UnknownScheme`. Lets one driver reach hosts and peers.
 
 use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
-#[cfg(feature = "iroh")]
-use crate::{Iroh, IrohConn, IrohListener, IrohRecv, IrohSend};
+use crate::p2p::{P2pRecv, P2pSend};
+use crate::{P2p, P2pConn, P2pListener, QuicUdp};
 use crate::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
 use crate::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 
@@ -14,16 +14,14 @@ use crate::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 pub struct Multi {
     pub mem: Option<InProcess>,
     pub quic: Option<Quic>,
-    #[cfg(feature = "iroh")]
-    pub iroh: Option<Iroh>,
+    pub p2p: Option<P2p<QuicUdp>>,
     pub unix: Option<Unix>,
 }
 
 enum Pick<'a> {
     Mem(&'a InProcess),
     Quic(&'a Quic),
-    #[cfg(feature = "iroh")]
-    Iroh(&'a Iroh),
+    P2p(&'a P2p<QuicUdp>),
     Unix(&'a Unix),
 }
 
@@ -34,8 +32,7 @@ impl Multi {
         match scheme {
             "quic" => self.quic.as_ref().map(Pick::Quic).ok_or_else(unknown),
             crate::unix::SCHEME => self.unix.as_ref().map(Pick::Unix).ok_or_else(unknown),
-            #[cfg(feature = "iroh")]
-            crate::PEER_SCHEME if self.iroh.is_some() => self.iroh.as_ref().map(Pick::Iroh).ok_or_else(unknown),
+            crate::PEER_SCHEME if self.p2p.is_some() => self.p2p.as_ref().map(Pick::P2p).ok_or_else(unknown),
             "mem" | crate::PEER_SCHEME => self.mem.as_ref().map(Pick::Mem).ok_or_else(unknown),
             _ => Err(unknown()),
         }
@@ -52,12 +49,11 @@ impl Multi {
 
 /// Defines an enum over the per-transport types, with `From` each of them.
 macro_rules! either {
-    ($name:ident, $mem:ty, $quic:ty, $iroh:ty, $unix:ty) => {
+    ($name:ident, $mem:ty, $quic:ty, $p2p:ty, $unix:ty) => {
         pub enum $name {
             Mem($mem),
             Quic($quic),
-            #[cfg(feature = "iroh")]
-            Iroh($iroh),
+            P2p($p2p),
             Unix($unix),
         }
         impl From<$unix> for $name {
@@ -75,10 +71,9 @@ macro_rules! either {
                 Self::Quic(x)
             }
         }
-        #[cfg(feature = "iroh")]
-        impl From<$iroh> for $name {
-            fn from(x: $iroh) -> Self {
-                Self::Iroh(x)
+        impl From<$p2p> for $name {
+            fn from(x: $p2p) -> Self {
+                Self::P2p(x)
             }
         }
     };
@@ -93,17 +88,16 @@ macro_rules! each {
         match $v {
             $e::Mem($x) => $body,
             $e::Quic($x) => $body,
-            #[cfg(feature = "iroh")]
-            $e::Iroh($x) => $body,
+            $e::P2p($x) => $body,
             $e::Unix($x) => $body,
         }
     };
 }
 
-either!(MultiConn, MemConn, QuicConn, IrohConn, UnixConn);
-either!(MultiListener, MemListener, QuicListener, IrohListener, UnixListener);
-either!(MultiSend, MemSend, QuicSend, IrohSend, UnixSend);
-either!(MultiRecv, MemRecv, QuicRecv, IrohRecv, UnixRecv);
+either!(MultiConn, MemConn, QuicConn, P2pConn<QuicConn>, UnixConn);
+either!(MultiListener, MemListener, QuicListener, P2pListener<QuicUdp>, UnixListener);
+either!(MultiSend, MemSend, QuicSend, P2pSend<QuicConn>, UnixSend);
+either!(MultiRecv, MemRecv, QuicRecv, P2pRecv<QuicConn>, UnixRecv);
 
 impl Clone for MultiConn {
     fn clone(&self) -> Self {
@@ -204,10 +198,9 @@ mod tests {
         StaticSecret::from_bytes([7; 32])
     }
 
-    // spec/sync.md §10: the URL scheme picks the transport; `peer://` without iroh goes to the
+    // spec/sync.md §10: the URL scheme picks the transport; `peer://` without `P2p` goes to the
     // in-process listener of that key; a scheme without its transport is unknown (parked); unix:// is never dialed.
     #[test]
-    #[allow(clippy::needless_update)] // the other fields exist with feature `iroh`
     fn dispatch_by_scheme_spec_sync_10() {
         let net = Net::new(3);
         let mut sched = Sched::new(3, Some(net.clone()));
