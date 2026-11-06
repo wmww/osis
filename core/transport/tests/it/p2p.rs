@@ -1,0 +1,535 @@
+//! P2P (`p2p`) over the in-process NAT model (`nat`): relaying, observed addresses, hole
+//! punching, switching to direct, relay limits; the relay wire bytes. spec/sync.md §10.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+
+use osis_transport::p2p::{Alpn, Relay, Sock, Udp};
+use osis_transport::*;
+use std::cell::RefCell;
+use std::net::{IpAddr, SocketAddr};
+use std::future::{poll_fn, Future};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::task::Poll;
+
+/// `f`'s output if it is ready at once.
+async fn now_or_never<T>(f: impl Future<Output = T>) -> Option<T> {
+    let mut f = std::pin::pin!(f);
+    poll_fn(|cx| Poll::Ready(match f.as_mut().poll(cx) {
+        Poll::Ready(v) => Some(v),
+        Poll::Pending => None,
+    }))
+    .await
+}
+
+fn ip(s: &str) -> IpAddr {
+    s.parse().unwrap()
+}
+
+fn sa(s: &str) -> SocketAddr {
+    s.parse().unwrap()
+}
+
+fn secret(b: u8) -> StaticSecret {
+    StaticSecret::from_bytes([b; 32])
+}
+
+const RELAY_IP: &str = "198.51.100.1";
+
+/// A net with a relaying node at `RELAY_IP:4040` (key of secret 1), its listener running.
+struct World {
+    net: Net,
+    sched: Sched,
+    relay: Relay,
+    _relay_l: P2pListener<MemUdp>,
+}
+
+fn world(seed: u64, cfg: RelayConfig) -> World {
+    let net = Net::new(seed);
+    let mut sched = Sched::new(seed, Some(net.clone()));
+    let r = P2p::new(net.udp("r", ip(RELAY_IP), None)).relaying(cfg);
+    let l = sched.block_on(async move { r.listen(ListenConfig { url: format!("peer://{RELAY_IP}:4040"), secret: secret(1) }).await.unwrap() }).unwrap();
+    let relay = Relay { key: l.address().key, addr: sa(&format!("{RELAY_IP}:4040")) };
+    World { net, sched, relay, _relay_l: l }
+}
+
+fn anyone() -> RelayConfig {
+    RelayConfig::new(Arc::new(|_| true))
+}
+
+/// A host at `inside`, behind a NAT at `public` with `nat` (none: `inside` is public).
+fn host(net: &Net, name: &str, inside: &str, public: &str, nat: Option<Nat>) -> MemUdp {
+    match nat {
+        Some(n) => {
+            net.add_nat(ip(public), n);
+            net.udp(name, ip(inside), Some(ip(public)))
+        }
+        None => net.udp(name, ip(inside), None),
+    }
+}
+
+/// Accepts connections; echoes each stream chunk by chunk; records whether each was relayed.
+fn echo(sched: &Sched, mut l: P2pListener<MemUdp>) -> Rc<RefCell<Vec<bool>>> {
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let (sp, s2) = (sched.spawner(), seen.clone());
+    sched.spawn(async move {
+        while let Ok(c) = l.accept().await {
+            s2.borrow_mut().push(c.is_relayed());
+            let sp2 = sp.clone();
+            sp.spawn(async move {
+                while let Ok((mut tx, mut rx)) = c.accept_stream().await {
+                    sp2.spawn(async move {
+                        let mut b = [0u8; 4096];
+                        while let Ok(n) = rx.read(&mut b).await {
+                            if n == 0 {
+                                let _ = tx.finish().await;
+                                return;
+                            }
+                            if tx.write_all(&b[..n]).await.is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+        }
+    });
+    seen
+}
+
+async fn try_round_trip(c: &P2pConn<MemConn>, data: &[u8]) -> Result<(P2pSend<MemConn>, P2pRecv<MemConn>), Error> {
+    let (mut tx, mut rx) = c.open_stream().await?;
+    tx.write_all(data).await?;
+    let mut got = vec![0u8; data.len()];
+    let mut at = 0;
+    while at < got.len() {
+        let n = rx.read(&mut got[at..]).await?;
+        assert!(n > 0);
+        at += n;
+    }
+    assert_eq!(got, data);
+    Ok((tx, rx))
+}
+
+async fn round_trip(c: &P2pConn<MemConn>, data: &[u8]) -> (P2pSend<MemConn>, P2pRecv<MemConn>) {
+    try_round_trip(c, data).await.unwrap()
+}
+
+use osis_transport::p2p::{P2pRecv, P2pSend};
+
+/// A dials B (behind `nat_b`) through the relay only; returns whether the first connection was
+/// direct and whether a direct one exists after the punch settled. Checks the session both ways.
+fn punch(seed: u64, nat_a: Option<Nat>, nat_b: Option<Nat>) -> (bool, bool) {
+    let mut w = world(seed, anyone());
+    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", nat_b));
+    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
+    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    let kb = lb.address().key;
+    // observed address: the NAT's public address (or the host's own)
+    let obs = lb.observed();
+    assert_eq!(obs.len(), 1, "registered");
+    assert_eq!(obs[0].1.ip(), ip(if nat_b.is_some() { "203.0.113.2" } else { "10.0.0.2" }));
+    let seen = echo(&w.sched, lb);
+    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", nat_a));
+    let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
+    let net = w.net.clone();
+    let (first_direct, direct_now) = w
+        .sched
+        .block_on(async move {
+            let c = a.dial(&addr).await.unwrap();
+            assert_eq!(c.peer_key(), kb);
+            // a relayed connection may switch to direct (and close) before the reply
+            let rt = try_round_trip(&c, b"hello through").await;
+            // every packet of the punch goes out in its first resends: a punch that has not
+            // got through after this long never does
+            net.sleep(10_000).await;
+            if !c.is_relayed() {
+                rt.unwrap();
+                return (true, true);
+            }
+            // switched: the relayed connection closed, the next dial takes the parked direct one
+            let switched = match rt {
+                Err(_) => true,
+                Ok((_t, mut r)) => now_or_never(r.read(&mut [0u8; 8])).await.is_some_and(|x| x.is_err()),
+            };
+            let next = a.dial(&addr).await.unwrap();
+            let _ = round_trip(&next, b"again").await;
+            assert_eq!(next.is_relayed(), !switched, "a switch leaves a parked direct connection");
+            (false, switched)
+        })
+        .unwrap();
+    w.sched.run();
+    let accepted = seen.borrow().clone();
+    assert_eq!(accepted.iter().any(|r| !r), direct_now, "B accepted a direct connection iff one exists: {accepted:?}");
+    (first_direct, direct_now)
+}
+
+// spec/sync.md §10 (hole punching): the dialer dials the target's observed address from the
+// socket it reached the relay from while the target punches back. Direct where a NAT's mapping
+// does not depend on the remote (or there is none) and the other side's filter allows the
+// punched pair; relayed where a mapping depends on the remote (address-dependent, symmetric) or
+// where only the target could open a path (the target never dials back).
+#[test]
+fn punch_by_nat_type_spec_sync_10() {
+    let full = Nat { mapping: Dep::Endpoint, filtering: Dep::Endpoint };
+    let restricted = Nat { mapping: Dep::Endpoint, filtering: Dep::Address };
+    let cases: &[(Option<Nat>, Option<Nat>, bool)] = &[
+        (None, None, true),
+        (None, Some(Nat::CONE), true),
+        (Some(Nat::CONE), None, true),
+        (Some(Nat::CONE), Some(Nat::CONE), true),
+        (Some(full), Some(restricted), true),
+        (Some(restricted), Some(Nat::CONE), true),
+        (Some(Nat::SYMMETRIC), Some(full), true),
+        (Some(Nat::CONE), Some(Nat::SYMMETRIC), false),
+        (Some(Nat::SYMMETRIC), Some(Nat::CONE), false),
+        (Some(Nat::SYMMETRIC), Some(Nat::SYMMETRIC), false),
+        (Some(Nat::ADDRESS), Some(Nat::ADDRESS), false),
+        (None, Some(Nat::SYMMETRIC), false),
+    ];
+    for (i, (na, nb, want)) in cases.iter().enumerate() {
+        for seed in 0..3u64 {
+            let (_, direct) = punch(seed * 100 + i as u64, *na, *nb);
+            assert_eq!(direct, *want, "case {i} {na:?} -> {nb:?} seed {seed}");
+        }
+    }
+}
+
+// spec/sync.md §10: direct socket addresses in the URL are dialed as they are; the key is pinned
+// (another key: KeyMismatch); nothing listening there and no relay: Unreachable.
+#[test]
+fn direct_items_spec_sync_10() {
+    let mut w = world(7, anyone());
+    let b = P2p::new(host(&w.net, "b", "192.0.2.7", "", None));
+    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url: "peer://192.0.2.7:7000".into(), secret: secret(3) }).await.unwrap() }).unwrap();
+    let kb = lb.address().key;
+    assert_eq!(lb.address().url, "peer://192.0.2.7:7000");
+    let _seen = echo(&w.sched, lb);
+    let a = P2p::new(host(&w.net, "a", "10.9.0.2", "203.0.113.9", Some(Nat::SYMMETRIC)));
+    let r = w.sched.block_on(async move {
+        let c = a.dial(&Address { url: "peer://192.0.2.7:7000".into(), key: kb }).await.unwrap();
+        assert!(!c.is_relayed());
+        let _ = round_trip(&c, b"direct").await;
+        let wrong = a.dial(&Address { url: "peer://192.0.2.7:7000".into(), key: [9; 32] }).await;
+        let none = a.dial(&Address { url: "peer://192.0.2.8:7000".into(), key: kb }).await;
+        let empty = a.dial(&Address { url: "peer://".into(), key: kb }).await;
+        (wrong.err(), none.err(), empty.err())
+    });
+    let (wrong, none, empty) = r.unwrap();
+    assert_eq!(wrong, Some(Error::KeyMismatch));
+    assert!(matches!(none, Some(Error::Unreachable(_))), "{none:?}");
+    assert!(matches!(empty, Some(Error::Unreachable(_))), "{empty:?}");
+}
+
+// spec/sync.md §10: through a relay the dialer pins the target's key end to end (TLS over the
+// forwarded stream) and the target sees the dialer's key: fresh per dial, or its own with dial_as;
+// a key nobody registered is unreachable.
+#[test]
+fn relayed_keys_spec_sync_10() {
+    let mut w = world(8, anyone());
+    let b = P2p::new(host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::SYMMETRIC)));
+    let url = format!("peer://10.0.0.2:7000 {}", w.relay.item());
+    let mut lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    let kb = lb.address().key;
+    let a = P2p::new(host(&w.net, "a", "10.0.1.2", "203.0.113.1", Some(Nat::SYMMETRIC)));
+    let url = peer_url(&[w.relay.item()]);
+    let (a2, u2) = (a.clone(), url.clone());
+    let got = w.sched.block_on(async move {
+        let c1 = a2.dial(&Address { url: u2.clone(), key: kb }).await.unwrap();
+        let (mut t1, _r1) = c1.open_stream().await.unwrap();
+        t1.write_all(b"x").await.unwrap();
+        let s1 = lb.accept().await.unwrap();
+        let c2 = a2.dial_as(&Address { url: u2.clone(), key: kb }, &secret(5)).await.unwrap();
+        let s2 = lb.accept().await.unwrap();
+        let none = a2.dial(&Address { url: u2, key: [7; 32] }).await.err();
+        assert!(c1.is_relayed() && c2.is_relayed() && s1.is_relayed() && s2.is_relayed());
+        // one stream per relayed connection
+        assert!(matches!(c1.open_stream().await, Err(Error::Protocol(_))));
+        (s1.peer_key(), s2.peer_key(), none)
+    });
+    let (k1, k2, none) = got.unwrap();
+    assert_ne!(k1, InProcess::public_key(&secret(5)));
+    assert_eq!(k2, InProcess::public_key(&secret(5)));
+    assert!(matches!(none, Some(Error::Unreachable(_))), "{none:?}");
+}
+
+/// Reads exactly `n` bytes.
+async fn read_n<R: RecvStream>(r: &mut R, n: usize) -> Vec<u8> {
+    let mut out = vec![0u8; n];
+    let mut at = 0;
+    while at < n {
+        let k = r.read(&mut out[at..]).await.unwrap();
+        assert!(k > 0, "ended after {at} of {n}");
+        at += k;
+    }
+    out
+}
+
+fn wire_addr(a: SocketAddr) -> Vec<u8> {
+    let v6 = match a.ip() {
+        IpAddr::V4(v4) => v4.to_ipv6_mapped(),
+        IpAddr::V6(v6) => v6,
+    };
+    let mut o = v6.octets().to_vec();
+    o.extend_from_slice(&a.port().to_be_bytes());
+    o
+}
+
+// spec/sync.md §10 (relay wire): register (kind 1, the connection's key) answers 0 and the
+// observed address; dial (kind 2 and the key) answers 0, the dialer's and the target's observed
+// addresses; the target gets a stream starting with the dialer's address; then bytes pass
+// unchanged both ways, ends included. Unknown key: 2. A key the relay does not allow: 1.
+#[test]
+fn relay_wire_spec_sync_10() {
+    let allowed = InProcess::public_key(&secret(2));
+    let mut w = world(9, RelayConfig::new(Arc::new(move |k| *k == allowed)));
+    let (rk, ra) = (w.relay.key, w.relay.addr);
+    let b = host(&w.net, "b", "10.0.0.2", "203.0.113.2", Some(Nat::CONE));
+    let a = host(&w.net, "a", "192.0.2.5", "", None);
+    let done = w.sched.block_on(async move {
+        let sb = b.bind(sa("0.0.0.0:6000"), None).unwrap();
+        let cb = sb.dial(ra, rk, Some(secret(2)), Alpn::Relay).await.unwrap();
+        let (mut tb, mut rb) = cb.open_stream().await.unwrap();
+        tb.write_all(&[1]).await.unwrap();
+        let reply = read_n(&mut rb, 19).await;
+        assert_eq!(reply[0], 0);
+        let obs_b = SocketAddr::new(ip("203.0.113.2"), u16::from_be_bytes([reply[17], reply[18]]));
+        assert_eq!(reply[1..], wire_addr(obs_b)[..]);
+        // a key the relay does not allow
+        let sx = b.bind(sa("0.0.0.0:6001"), None).unwrap();
+        let cx = sx.dial(ra, rk, Some(secret(4)), Alpn::Relay).await.unwrap();
+        let (mut tx, mut rx) = cx.open_stream().await.unwrap();
+        tx.write_all(&[1]).await.unwrap();
+        assert_eq!(read_n(&mut rx, 1).await, [1]);
+        // dial the registered key
+        let sa_ = a.bind(sa("0.0.0.0:5000"), None).unwrap();
+        let ca = sa_.dial(ra, rk, None, Alpn::Relay).await.unwrap();
+        let (mut ta, mut ra2) = ca.open_stream().await.unwrap();
+        let mut req = vec![2];
+        req.extend_from_slice(&allowed);
+        ta.write_all(&req).await.unwrap();
+        let reply = read_n(&mut ra2, 37).await;
+        assert_eq!(reply[0], 0);
+        assert_eq!(reply[1..19], wire_addr(sa("192.0.2.5:5000"))[..]);
+        assert_eq!(reply[19..], wire_addr(obs_b)[..]);
+        let (mut fb, mut gb) = cb.accept_stream().await.unwrap();
+        assert_eq!(read_n(&mut gb, 18).await, wire_addr(sa("192.0.2.5:5000")));
+        ta.write_all(b"ping").await.unwrap();
+        ta.finish().await.unwrap();
+        assert_eq!(read_n(&mut gb, 4).await, b"ping");
+        assert_eq!(gb.read(&mut [0u8; 4]).await.unwrap(), 0);
+        fb.write_all(b"pong").await.unwrap();
+        fb.finish().await.unwrap();
+        assert_eq!(read_n(&mut ra2, 4).await, b"pong");
+        assert_eq!(ra2.read(&mut [0u8; 4]).await.unwrap(), 0);
+        // a key nobody registered
+        let (mut tu, mut ru) = ca.open_stream().await.unwrap();
+        let mut req = vec![2];
+        req.extend_from_slice(&[7; 32]);
+        tu.write_all(&req).await.unwrap();
+        assert_eq!(read_n(&mut ru, 1).await, [2]);
+        true
+    });
+    assert_eq!(done, Some(true));
+}
+
+// spec/sync.md §10 (relay limits): forwarding is held to the per-source rate (virtual time), and
+// past the connection cap the source holding the most gives one up, else the newcomer is refused.
+#[test]
+fn relay_limits_spec_sync_10() {
+    let mut cfg = anyone();
+    cfg.rate = 10_000;
+    cfg.max_conns = 3;
+    let mut w = world(10, cfg);
+    let (rk, ra) = (w.relay.key, w.relay.addr);
+    let b = host(&w.net, "b", "192.0.2.2", "", None);
+    let a = host(&w.net, "a", "192.0.2.5", "", None);
+    let c = host(&w.net, "c", "192.0.2.6", "", None);
+    let net = w.net.clone();
+    let done = w.sched.block_on(async move {
+        let sb = b.bind(sa("0.0.0.0:6000"), None).unwrap();
+        let cb = sb.dial(ra, rk, Some(secret(2)), Alpn::Relay).await.unwrap();
+        let (mut tb, mut rb) = cb.open_stream().await.unwrap();
+        tb.write_all(&[1]).await.unwrap();
+        assert_eq!(read_n(&mut rb, 19).await[0], 0);
+        let sa_ = a.bind(sa("0.0.0.0:5000"), None).unwrap();
+        let ca = sa_.dial(ra, rk, None, Alpn::Relay).await.unwrap();
+        let (mut ta, mut ra2) = ca.open_stream().await.unwrap();
+        let mut req = vec![2];
+        req.extend_from_slice(&InProcess::public_key(&secret(2)));
+        ta.write_all(&req).await.unwrap();
+        assert_eq!(read_n(&mut ra2, 37).await[0], 0);
+        let (_fb, mut gb) = cb.accept_stream().await.unwrap();
+        let _ = read_n(&mut gb, 18).await;
+        // 50 kB at 10 kB/s with a one-second burst: at least four seconds
+        let t0 = net.now();
+        ta.write_all(&vec![7u8; 50_000]).await.unwrap();
+        let _ = read_n(&mut gb, 50_000).await;
+        let took = net.now() - t0;
+        assert!((4000..6000).contains(&took), "{took} ms");
+        // connections: b and a hold two of three; a second from a fills the cap
+        let ca2 = sa_.dial(ra, rk, None, Alpn::Relay).await.unwrap();
+        let (mut t2, r2) = ca2.open_stream().await.unwrap();
+        t2.write_all(&[2, 0]).await.unwrap();
+        // c arrives: a (two) gives one up, its oldest
+        let sc = c.bind(sa("0.0.0.0:5001"), None).unwrap();
+        let cc = sc.dial(ra, rk, None, Alpn::Relay).await.unwrap();
+        let (mut t3, mut r3) = cc.open_stream().await.unwrap();
+        let mut req = vec![2];
+        req.extend_from_slice(&[7; 32]);
+        t3.write_all(&req).await.unwrap();
+        assert_eq!(read_n(&mut r3, 1).await, [2], "c served");
+        assert!(ra2.read(&mut [0u8; 8]).await.is_err(), "a's oldest connection closed");
+        drop(r2);
+        // a third from c: c holds one, a one, b one: refused
+        let cc2 = sc.dial(ra, rk, None, Alpn::Relay).await.unwrap();
+        let (mut t4, mut r4) = cc2.open_stream().await.unwrap();
+        let _ = t4.write_all(&[2]).await;
+        assert!(r4.read(&mut [0u8; 8]).await.is_err(), "newcomer refused");
+        true
+    });
+    assert_eq!(done, Some(true));
+}
+
+// spec/sync.md §10: a listener whose relay refuses its key stays unregistered (no observed
+// address) and retries with backoff; dials through that relay find nobody.
+#[test]
+fn registration_refused_spec_sync_10() {
+    let mut w = world(11, RelayConfig::new(Arc::new(|_| false)));
+    w.sched.set_max_steps(200);
+    let b = P2p::new(host(&w.net, "b", "192.0.2.2", "", None));
+    let url = format!("peer://192.0.2.2:7000 {}", w.relay.item());
+    let lb = w.sched.block_on(async move { b.listen(ListenConfig { url, secret: secret(2) }).await.unwrap() }).unwrap();
+    w.sched.run();
+    assert!(lb.observed().is_empty());
+    let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None));
+    let addr = Address { url: peer_url(&[w.relay.item()]), key: lb.address().key };
+    let r = w.sched.block_on(async move { a.dial(&addr).await.err() });
+    assert!(matches!(r, Some(Some(Error::Unreachable(_)))), "{r:?}");
+}
+
+// spec: none (NAT model): mappings and filters behave as RFC 4787 describes
+#[test]
+fn nat_model() {
+    let net = Net::new(12);
+    let mut sched = Sched::new(12, Some(net.clone()));
+    net.add_nat(ip("203.0.113.1"), Nat::SYMMETRIC);
+    let a = net.udp("a", ip("10.0.0.2"), Some(ip("203.0.113.1")));
+    let lan = net.udp("lan", ip("10.0.0.3"), Some(ip("203.0.113.1")));
+    let p = net.udp("p", ip("192.0.2.1"), None);
+    let r = sched.block_on(async move {
+        let sp = p.bind(sa("0.0.0.0:80"), Some(&secret(1))).unwrap();
+        let sp2 = p.bind(sa("0.0.0.0:81"), Some(&secret(1))).unwrap();
+        let k = InProcess::public_key(&secret(1));
+        let sl = lan.bind(sa("0.0.0.0:90"), Some(&secret(1))).unwrap();
+        let s = a.bind(sa("0.0.0.0:0"), None).unwrap();
+        // out to two ports of one host: two mappings
+        let _c1 = s.dial(sp.local(), k, None, Alpn::Osis).await.unwrap();
+        let (_, _, f1) = sp.accept().await.unwrap();
+        let _c2 = s.dial(sp2.local(), k, None, Alpn::Osis).await.unwrap();
+        let (_, _, f2) = sp2.accept().await.unwrap();
+        assert_eq!(f1.ip(), ip("203.0.113.1"));
+        assert_ne!(f1.port(), f2.port());
+        // the same LAN at its own address, untranslated; not at the public one
+        let _c3 = s.dial(sl.local(), k, None, Alpn::Osis).await.unwrap();
+        let (_, _, f3) = sl.accept().await.unwrap();
+        assert_eq!(f3, s.local());
+        // a socket that only dials accepts nothing
+        let s2 = a.bind(sa("0.0.0.0:0"), None).unwrap();
+        let r = s.dial(s2.local(), k, None, Alpn::Osis).await;
+        (f1, r.err())
+    });
+    let (_, err) = r.unwrap();
+    assert!(matches!(err, Some(Error::Unreachable(_))));
+}
+
+/// Sends, reads the echo, finishes and reads the end.
+async fn session<C: Connection>(c: &C) -> Result<(), Error> {
+    let (mut tx, mut rx) = c.open_stream().await?;
+    tx.write_all(b"over quic").await?;
+    let mut got = Vec::new();
+    let mut b = [0u8; 64];
+    loop {
+        let n = rx.read(&mut b).await?;
+        if n == 0 {
+            break;
+        }
+        got.extend_from_slice(&b[..n]);
+        if got.len() == 9 {
+            tx.finish().await?;
+        }
+    }
+    assert_eq!(got, b"over quic");
+    Ok(())
+}
+
+// spec/sync.md §10 (tier 2, loopback QUIC): a listener registers at a relaying node over ALPN
+// `osis-relay` and learns its observed address; the relay wire runs over real QUIC; a dial
+// through the relay reaches the listener (directly once punched: no NAT on loopback) with the
+// key pinned.
+#[test]
+#[ignore]
+fn quic_relay_loopback_spec_sync_10() {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    rt.block_on(async {
+        let r = P2p::new(QuicUdp::new()).relaying(anyone());
+        let lr = r.listen(ListenConfig { url: "peer://127.0.0.1:0".into(), secret: secret(1) }).await.unwrap();
+        let ra = lr.address().url.strip_prefix("peer://").unwrap().parse::<SocketAddr>().unwrap();
+        let relay = Relay { key: lr.address().key, addr: ra };
+        let b = P2p::new(QuicUdp::new());
+        let mut lb = b.listen(ListenConfig { url: format!("peer://127.0.0.1:0 {}", relay.item()), secret: secret(2) }).await.unwrap();
+        let kb = lb.address().key;
+        for _ in 0..100 {
+            if !lb.observed().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let bound = lb.address().url.strip_prefix("peer://").unwrap().split(' ').next().unwrap().parse::<SocketAddr>().unwrap();
+        assert_eq!(lb.observed(), vec![(relay.clone(), bound)]);
+        assert_eq!(r.relayed_keys(), vec![kb]);
+        // the wire, by hand: a dial request answers both observed addresses
+        let s = QuicUdp::new().bind(sa("127.0.0.1:0"), None).unwrap();
+        let c = s.dial(ra, relay.key, None, Alpn::Relay).await.unwrap();
+        let (mut t, mut rr) = c.open_stream().await.unwrap();
+        let mut req = vec![2];
+        req.extend_from_slice(&kb);
+        t.write_all(&req).await.unwrap();
+        let reply = read_n(&mut rr, 37).await;
+        assert_eq!(reply[0], 0);
+        assert_eq!(reply[1..19], wire_addr(s.local())[..]);
+        assert_eq!(reply[19..], wire_addr(bound)[..]);
+        drop((t, rr, c));
+        // through the relay with p2p
+        let echo = tokio::spawn(async move {
+            loop {
+                let c = lb.accept().await.unwrap();
+                tokio::spawn(async move {
+                    if let Ok((mut tx, mut rx)) = c.accept_stream().await {
+                        let mut b = [0u8; 1024];
+                        while let Ok(n) = rx.read(&mut b).await {
+                            if n == 0 || tx.write_all(&b[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = tx.finish().await;
+                        let _ = c.accept_stream().await;
+                    }
+                });
+            }
+        });
+        let a = P2p::new(QuicUdp::new());
+        let addr = Address { url: peer_url(&[relay.item()]), key: kb };
+        let c = a.dial_as(&addr, &secret(5)).await.unwrap();
+        assert_eq!(c.peer_key(), kb);
+        if let Err(e) = session(&c).await {
+            // a relayed connection closes once the direct one completes; the next dial takes that
+            assert!(c.is_relayed(), "{e:?}");
+            let d = a.dial_as(&addr, &secret(5)).await.unwrap();
+            assert!(!d.is_relayed());
+            session(&d).await.unwrap();
+        }
+        echo.abort();
+    });
+}

@@ -57,7 +57,8 @@ pub struct Sched {
 }
 
 impl Sched {
-    /// `net`, if any, is stepped whenever no task is ready.
+    /// `net`, if any, is stepped whenever no task is ready; tasks spawned through it
+    /// (`Net::spawn`) run here.
     pub fn new(seed: u64, net: Option<Net>) -> Sched {
         Sched {
             rng: Rng::new(seed),
@@ -93,6 +94,11 @@ impl Sched {
         let mut steps = 0u64;
         self.capped = false;
         loop {
+            if let Some(net) = &self.net {
+                for f in net.take_spawned() {
+                    self.spawn(f);
+                }
+            }
             self.tasks.extend(self.shared.spawned.borrow_mut().drain(..));
             let pick = {
                 let mut ready = lock(&self.shared.ready);

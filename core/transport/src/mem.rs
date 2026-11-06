@@ -11,6 +11,7 @@
 use crate::util::{lock, Rng};
 use crate::{Address, Connection, Error, ListenConfig, Listener, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::net::SocketAddr;
 use std::future::{poll_fn, Future};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
@@ -33,7 +34,7 @@ pub struct Faults {
 #[derive(Clone)]
 pub struct Net(Arc<Mutex<State>>);
 
-struct State {
+pub(crate) struct State {
     step: u64,
     rng: Rng,
     faults: Faults,
@@ -42,7 +43,14 @@ struct State {
     cut: BTreeSet<(String, String)>,
     timers: BTreeMap<(u64, u64), Waker>,
     next_id: u64,
+    /// Hosts, NATs and sockets of the NAT model (`nat`).
+    pub(crate) udp: crate::nat::Udp,
+    /// Tasks spawned through the net (`Net::spawn`), for `Sched` to take.
+    spawned: Vec<Spawned>,
 }
+
+/// A task spawned through a `Net`.
+pub(crate) type Spawned = std::pin::Pin<Box<dyn Future<Output = ()> + Send>>;
 
 struct Lst {
     id: u64,
@@ -211,7 +219,7 @@ impl State {
         }
     }
 
-    fn close(&mut self, id: u64) {
+    pub(crate) fn close(&mut self, id: u64) {
         if let Some(c) = self.conns.get_mut(&id).filter(|c| !c.closed) {
             c.closed = true;
             for st in c.streams.values_mut() {
@@ -240,9 +248,46 @@ impl State {
         self.conns.get_mut(&id).filter(|c| !c.closed)
     }
 
-    fn id(&mut self) -> u64 {
+    pub(crate) fn id(&mut self) -> u64 {
         self.next_id = self.next_id.wrapping_add(1);
         self.next_id
+    }
+
+    pub(crate) fn rng(&mut self) -> &mut Rng {
+        &mut self.rng
+    }
+
+    /// Whether endpoints `a` and `b` are partitioned.
+    pub(crate) fn cut(&self, a: &str, b: &str) -> bool {
+        self.cut.contains(&pair(a, b))
+    }
+
+    /// A new connection between endpoints `ends` (side 0 dialed) presenting `keys`, side 1 not
+    /// yet accepted (`accept_conn`); the dialer's handle, which sees side 1 at `remote`.
+    pub(crate) fn new_conn(&mut self, net: &Net, ends: [String; 2], keys: [PublicKey; 2], remote: SocketAddr) -> (u64, MemConn) {
+        let id = self.id();
+        let peer = keys[1];
+        self.conns.insert(id, Conn {
+            ends,
+            keys,
+            streams: BTreeMap::new(),
+            accept: [VecDeque::new(), VecDeque::new()],
+            accept_waker: [None, None],
+            next_stream: 0,
+            closed: false,
+            dropped: [false, true],
+        });
+        let h = Handle { net: net.clone(), id, side: 0, peer, source: crate::ip_source(remote.ip()), remote: Some(remote) };
+        (id, MemConn(Arc::new(h)))
+    }
+
+    /// Side 1 of connection `id`, which sees side 0 at `remote`; `None` once reset.
+    pub(crate) fn accept_conn(&mut self, net: &Net, id: u64, remote: SocketAddr) -> Option<MemConn> {
+        let c = self.live(id)?;
+        let [_, d1] = &mut c.dropped;
+        *d1 = false;
+        let [peer, _] = c.keys;
+        Some(MemConn(Arc::new(Handle { net: net.clone(), id, side: 1, peer, source: crate::ip_source(remote.ip()), remote: Some(remote) })))
     }
 }
 
@@ -257,7 +302,22 @@ impl Net {
             cut: BTreeSet::new(),
             timers: BTreeMap::new(),
             next_id: 0,
+            udp: crate::nat::Udp::default(),
+            spawned: Vec::new(),
         })))
+    }
+
+    pub(crate) fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        lock(&self.0)
+    }
+
+    /// Runs `f` as a task of the `Sched` stepping this net (from its next turn).
+    pub fn spawn(&self, f: impl Future<Output = ()> + Send + 'static) {
+        lock(&self.0).spawned.push(Box::pin(f));
+    }
+
+    pub(crate) fn take_spawned(&self) -> Vec<Spawned> {
+        std::mem::take(&mut lock(&self.0).spawned)
     }
 
     /// A transport whose dials and listeners belong to endpoint `name` (for partitions).
@@ -303,6 +363,7 @@ impl Net {
         for n in names {
             st.drop_listener(&n, None);
         }
+        st.kill_socks(a);
     }
 
     /// Advances virtual time one step: delivers due data, fires due timers.
@@ -461,7 +522,7 @@ impl InProcess {
             l.queue.push_back(id);
             wake(&mut l.waker);
         }
-        Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0, peer: lkey, source })))
+        Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 0, peer: lkey, source, remote: None })))
     }
 }
 
@@ -489,7 +550,7 @@ impl Listener for MemListener {
                             *d1 = false;
                             let [peer, _] = c.keys;
                             let source = name_source(c.ends.first().map_or("", String::as_str));
-                            return Poll::Ready(Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 1, peer, source }))));
+                            return Poll::Ready(Ok(MemConn(Arc::new(Handle { net: self.net.clone(), id, side: 1, peer, source, remote: None }))));
                         }
                         // reset before accept: side 0 dropping removes it
                     }
@@ -523,8 +584,10 @@ struct Handle {
     id: u64,
     side: usize,
     peer: PublicKey,
-    /// The other end's endpoint name, hashed.
+    /// The other end's endpoint name hashed, or (a NAT-model socket) its address's source.
     source: crate::Source,
+    /// Where a NAT-model socket's connection sees the other end (`nat`).
+    remote: Option<SocketAddr>,
 }
 
 fn name_source(name: &str) -> crate::Source {
@@ -616,6 +679,11 @@ impl Connection for MemConn {
 }
 
 impl MemConn {
+    /// Where the other end is seen from here (connections of NAT-model sockets only).
+    pub fn remote(&self) -> Option<SocketAddr> {
+        self.0.remote
+    }
+
     fn halves(&self, s: u64) -> (MemSend, MemRecv) {
         (MemSend { h: self.0.clone(), s }, MemRecv { h: self.0.clone(), s })
     }

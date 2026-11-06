@@ -1,4 +1,4 @@
-//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess`, QUIC (`quic`), iroh (`iroh`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync.md §10).
+//! osis-transport: `Transport`: confidential authenticated byte streams; `InProcess` (with a NAT model, `nat`), QUIC (`quic`), P2P by dialable key with relaying and hole punching (`p2p`), iroh (`iroh`), `Multi` (by scheme); `link` sessions for tokio drivers (`link`) (spec/sync.md §10).
 //! Layer 1 (notes/architecture.md). Notes: notes/networking.md (Implementation); P2P: notes/networking.md.
 //!
 //! Traits use `impl Future + Send` returns and no runtime types: `InProcess` and `Sched` run
@@ -14,6 +14,8 @@ pub mod unix;
 mod util;
 pub mod manage;
 pub mod multi;
+pub mod nat;
+pub mod p2p;
 
 pub use error::Error;
 pub use mem::{Faults, InProcess, MemConn, MemListener, MemRecv, MemSend, Net};
@@ -21,7 +23,9 @@ pub use sched::{Sched, Spawner};
 pub use manage::{close_gracefully, connect, Backoff};
 pub use multi::{Multi, MultiConn, MultiListener, MultiRecv, MultiSend};
 pub use link::{Link, LinkRx, LinkTx};
-pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
+pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend, QuicSock, QuicUdp};
+pub use nat::{Dep, MemSock, MemUdp, Nat};
+pub use p2p::{P2p, P2pConn, P2pListener, RelayConfig};
 pub use unix::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 // codec always; the socket with feature `lan`
 pub mod lan;
