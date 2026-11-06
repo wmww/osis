@@ -1,4 +1,0 @@
-# at-most-zero
-- `LocalPeer::sync` delivers only the bodies the source still holds: a test that drops a body at the writer before syncing then finds the part missing (held, no death) at the receiver, which read like a bug for a while. A one-line doc on `sync` saying "what `from` holds now" would have saved it.
-- A full-size order harness's shrunk history can fail a different check than the unshrunk seed (the shrink keeps any failure): classifying "new or pre-existing" needed both the unshrunk seed and the pinned shrunk history on main's binary (`tools/bin-at`, two builds of about 2-3 min each).
-- Reviewer: telling "fixed" from "masked" for an order-harness seed needed the played history compared across builds (a test hashing `play`/`with_syncs` packages, built twice with `tools/bin-at --patch`, about 3 min each at load 30). A harness flag printing the played packages' hash would make that one run.

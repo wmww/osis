@@ -1,5 +1,0 @@
-# periodic-15
-- The whole tier-2 command (`--skip scale:: --skip bench:: --skip budget --skip sweep --skip repro_`) lets release-only tests through: `port::bench_worst_rows` (osis, ran 2000+ CPU-s in debug before I stopped it), `ephemeral::bench_*` (osis, node), `flows::scale_post_read`/`scale_long`/`scale_small` (chat, 500+ CPU-s each and still going), `deletion::covered_text_cost`, `retention::frontier_bytes_per_launch_probe`. Cost two restarts. Added `--skip bench_ --skip covered_text_cost --skip flows::scale_ --skip _probe`; the canonical command (notes/coordination.md) should carry them, or these tests should share one skippable prefix.
-- Order alike 300 seeds took 536 s (5826 CPU-s) at load 20, nice 19, not the documented 2 min; exhaustive 200 took 1326 s (12770 CPU-s).
-- `judgment::judgment_vectors_write` always fails under `--include-ignored` (needs `OSIS_WRITE_VECTORS=1`): the periodic tier-2 command should `--skip judgment_vectors_write`.
-- `ephemeral::many_authors_under_host_rates_large` ran alone at the tail of osis-node `it` for about 25 min (1300+ CPU-s at load near 0; notes say 742 s at load 30).

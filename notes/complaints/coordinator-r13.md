@@ -1,1 +1,0 @@
-- Stopping a background gate mid-build (TaskStop) can leave the worktree's incremental cache inconsistent: the next gate failed to link (`rust-lld: undefined hidden symbol anon.*`) in osis-engine. `cargo clean -p osis-engine` in that worktree fixed it.
