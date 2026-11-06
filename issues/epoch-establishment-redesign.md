@@ -1,5 +1,5 @@
 # Epoch establishment by names, frozen coverage: the review
-> Summary: Names establishment and frozen coverage (spec/crypto.md §4) are built for an actor's direct holders; holder actors are judged at depth 0 (issues/keys-depth0.md). Left: the review of the direct-holder model (study C2) and its open cases.
+> Summary: Names establishment and frozen coverage (spec/crypto.md §4) are built for an actor's direct holders; holder actors are judged at depth 0 (notes/crypto.md, Holder actors at depth 0). Left: the review of the direct-holder model (study C2) and its open cases.
 > Tags: security, keys, engine, tla
 
 - Rule and invariants: `osis_keys::covers` (by names), `EpochInfo::names_met`, `rotation::departures::{events, names}`; notes/crypto.md (Frozen coverage).

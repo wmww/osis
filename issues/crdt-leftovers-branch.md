@@ -1,5 +1,5 @@
 # Branch crdt-leftovers: decide, merge or delete
-> Summary: branch `crdt-leftovers` on origin (parked, not merged). Only commit 2 (issues/list-element-snapshot-before-expiry.md) is left of use, as a reference; when that issue is redone or dropped, delete the branch on origin and this issue.
+> Summary: branch `crdt-leftovers` on origin (parked, not merged). Only commit 2 (8ca8275f, a value-less mark on a list creation) is left of use, as a reference for issues/list-element-snapshot-before-expiry.md and issues/list-mark-lost-on-fall.md; when those are redone or dropped, delete the branch on origin and this issue.
 > Tags: crdt, retention
 
 - Commit 1 (removed text keys): superseded by spec/crdt.md §5.6 Bare anchors (branch removed-keys).

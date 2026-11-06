@@ -2,7 +2,7 @@
 > Summary: `env!("CARGO_MANIFEST_DIR")` in osis-base (and osis-vectors) puts the worktree's absolute path into compiled output, which likely makes every dependent miss a content-addressed build cache in another worktree. Found by a Claude outside this project and not yet validated here.
 > Tags: build, tests, performance
 
-- **Provenance: unvalidated.** A Claude working outside this project wrote this on 2026-11-02 while experimenting with shared Rust build caches. It ran on scratch clones at `f32242bd`, with no knowledge of the project beyond the code and notes/build.md. An osis Claude should validate it before acting on it. Full results, caveats and raw logs: `/home/ai/rust-builds/FINDINGS.md` and `/home/ai/rust-builds/experiments-2026-11-01/` (includes `path-fix.patch`).
+- **Provenance: unvalidated.** A Claude working outside this project wrote this while experimenting with shared Rust build caches, on scratch clones at `f32242bd`, knowing only the code and notes/build.md. Validate before acting on it. Its raw logs and `path-fix.patch` (under `/home/ai/rust-builds/`) are gone from this machine; the steps below reproduce what matters.
 - **No effect on today's workflow as far as tested.** Each worktree has its own `target/`, so cargo builds work as usual. This matters only if worktrees or machines are to share build outputs through a cache, or if a binary outlives its checkout.
 - **Where (library code, reaches dependents):**
   - `core/base/src/testenv.rs:10`: `KNOWN_FILE`, in the bottom crate, compiled into the lib rather than behind `cfg(test)`, so everything above it is affected.

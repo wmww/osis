@@ -2,6 +2,10 @@
 > Summary: accepted residual. The fresh deposit seed an admin's read rotation writes sits in `keys.0`, which travels wrapped under epochs the departed party still holds in three places: the rotation commit itself (wrapped under the epoch it supersedes, spec/crypto.md §5), the keyset commits a rotation, grant or re-seal of an actor holding M carries (spec/crypto.md §4, Carried), and the actor's chain certificates under any label the departed party still reads. A party that sees one can keep depositing under the actor's labels (filling their deposit budgets) until the seed is refreshed again. No clean fix exists without moving the seed out of certificate-visible `keys.0`.
 > Tags: security, sync, engine
 
+spec/crypto.md §3 asks for a fresh seed in each read rotation but does not claim it stops a departed party.
+
+Repro (the rotation commit path): Dave's plain `t`, granted to group H and synced on its own label; H's reader Bob reads `t`; Dave removes H (`set_role(t, H, None, ..)`); after sync Bob's `keys.0` of `t` has Dave's new `deposit_seed`, from `t`'s own label, where the removal's body is (one blob: the boxes need the old wrap, `keys.0` does not). A holder who read the thing through another label does not learn it (`tied::group_admin_learns_removal_elsewhere`, `tied::group_admin_copies_removal_without_new_keys`, `tied::group_removal_deposit_promoted_without_new_keys`, `tied::owner_home_copy_of_removal_without_new_keys`). By the same design (a holder's new `keys.0` goes under its targets' labels, spec/permissions.md §3, §4) a reader of target S learns holder T's current seed with no right on T; a revoke brings no keyset of a thing no actor path connects to the label (`revokes::revoke_on_an_unrelated_thing_brings_no_keys`).
+
 Severity: low (deposits only: junk fills a label's deposit budget, grants and heartbeats wait, admins delete junk; anyone holding an actor's `keys.0` can already do this to its inbox, notes/sync.md).
 
 Exact windows, for X departing actor M (rotation by an admin writing M's fresh seed):

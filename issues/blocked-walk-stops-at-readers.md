@@ -2,7 +2,7 @@
 > Summary: M holds a role on A, A on G; E leaves M; R may rotate G and only reads A and M: G's epoch is not blocked at R (`rotation::blocked_epoch` descends only through actors R may rotate), so R writes G content E opens. Model confirms (`D0_readers`). Descending through every held epoch ("out") is not enough: a second G admin not reading A re-seals A where R left it out, opening R's writes (also on main for alone-above, `D0_above_g2`). Candidate: the rotation records the keyset it left A out at ("mark"); unfinished.
 > Tags: security, keys, engine
 
-Found in review of alone-above. On main at every height, not only while a removal goes alone: the
+At every height, not only while a removal goes alone: the
 model's shortest trace has m1 remove E from M with M's rotation carried; R holds M's new keyset, but
 A's box to M names M's old one, and R, not A's rotator, writes G under its first epoch, which E
 opens through A and M. Window: until M's rotator and then A's rotator next sync, then R finds G's

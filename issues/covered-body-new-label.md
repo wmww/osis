@@ -4,8 +4,8 @@
 
 Pinned by `deletion::second_label_gets_kept_bodies_spec_sync_6` (`author` covered by an admin's snapshot stays off the new label). Same after `wipe_host`: measured with an `author` body under an admin's snapshot, 0 copies at the host, its author still holds it. A node coming after that gets the snapshot, not the history.
 
-Not worse than before the snapshot right: main's right holders dropped such a body outright. What is new is that the setting now reads as a promise this gap does not meet at hosts.
+The retention setting reads as a promise this gap does not meet at hosts.
 
 Not fixed by making a snapshot without the right count for nothing in must-hold: tried, and `net::coverer_revoked` stops converging. A right holder drops a part under its own snapshot, another writer's snapshot supersedes that one, and a holder without the right then finds the whole body must-hold, uploads it, and the right holder deletes it, over and over. The fix needs a must-hold rule that knows the body's part was rightly dropped by someone, or an upload of only the parts no right holder dropped.
 
-Not fixed either on top of join-only cover (`retention::covered`): must-hold counting only snapshots with the right fails `snapshot_rights` at 71 of 100 seeds. Still needs one of the two above.
+Not fixed either by, on top of join-only cover (`retention::covered`): must-hold counting only snapshots with the right fails `snapshot_rights` at 71 of 100 seeds. Still needs one of the two above.
