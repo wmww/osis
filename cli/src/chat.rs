@@ -212,7 +212,7 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             // over for good: the stream ends, and the command says so
             let ended = Arc::new(Mutex::new(None));
             let (mut tx, why) = (Some(tx), ended.clone());
-            let subs = osis_chat::watch(&db, t, move |_, e| {
+            let subs = osis_chat::on_event(&db, t, move |_, e| {
                 let line = match e {
                     Event::Entry(e) => entry_line(json, &e),
                     Event::Reread => if json { J::obj([("reread", J::Bool(true))]).text() } else { "reread".to_string() },
