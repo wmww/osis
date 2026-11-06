@@ -50,7 +50,7 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/convergence-study.md: validity flips against dropped data: the rejoin rule, repair, rejected removal rules, holes left.
 - notes/permissions.md: permission rules' reasons, roles model findings, revocation reasoning, role history cost, links, sharing patterns, osis-perm implementation.
 - notes/owners.md, notes/owner-removal-plan.md: why owners become first admins with disputes settled per node, and the step plan.
-- notes/lockout-recovery.md: recovering from a writer rotating keys to itself (designed, not built).
+- notes/lockout-recovery.md: recovering from a writer rotating keys to itself (removing it lists the epochs it made).
 - notes/moves.md: moving a thing (not built; the removed import design).
 - notes/realms.md: realms, user-facing actors (on hold).
 - notes/frontier-study.md, notes/keys-requirements-study.md: designs studied and dropped (compact frontiers; key-rotation relaxations and cycle rules).

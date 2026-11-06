@@ -23,7 +23,6 @@ These branches are gone; what they found is recorded only here. Redo the work fr
 Q12 (depth 0 bends, with the readers leak: mark or limit), Q11 (three kept limits), Q5 realms (on hold until owners settle).
 
 ## Other open work, rough priority
-- issues/lockout-recovery-without-omission.md: lockout recovery as an ordinary removal (notes/lockout-recovery.md); until built, a deliberate lockout has none.
 - issues/gone-body-drop-seeds.md, issues/settled-seed-7032.md: keep-at-most drops; the order harness's shrink needs a time budget.
 - issues/role-history-join-cost.md: a join of 10^4 role writes takes 2-3 CPU-minutes; evaluating from scratch takes about 2 s.
 - issues/eph-churn-delete-upload-loop.md: snapshot storm; a fix was too costly; re-study.

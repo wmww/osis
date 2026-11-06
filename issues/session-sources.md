@@ -24,5 +24,5 @@ Kept: the value-less list (`v/`) and leftovers (`w/`) of expired or purged parts
 - The demoter compacting before an explicit demotion: not built for now (nothing blinks out, frontiers stay bounded by compaction cadence); revisit if demotion frontiers measure large. It is drop-rejoin-robust item 7.
 
 ## Open from step 1
-- A removed admin's rotation covered by a role snapshot loses its record of which commit started the key epoch: an extra safe rotation, not a hole. Simplest fix: always list role commits in a frontier; square it with lockout recovery (issues/lockout-recovery-without-omission.md).
+- A removed admin's rotation covered by a role snapshot loses its record of which commit started the key epoch: an extra safe rotation, not a hole. Simplest fix: always list role commits in a frontier.
 - A commit whose held parts are covered is left out of a frontier even if it also touches a thing the demoter does not hold; spec/permissions.md §5.1 says it should be listed. notes/frontier-study.md's rule ("lists every received commit of X in scope that is not droppable now", heads per (aspect, node) for permanent aspects) would settle both.
