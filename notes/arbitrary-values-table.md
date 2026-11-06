@@ -4,7 +4,7 @@
 Classes: **P** performance switch between correct strategies (or a cache/batch size: only speed changes); **R** resource bound with a defined safe outcome past it; **M** minor consequence; **O** Tess-agreed tradeoff (protocol constant, spec); **X** not acceptable (only makes a bug unlikely): never kept; see Caps that must not come back. Left out: structural constants (CBOR tags, enum discriminants, byte lengths fixed by an algorithm, versions, table ids, values derived from listed ones), unit-test fixtures, libs/kit/ and app/.
 
 ## Caps that must not come back
-Each was a number that only made a bug unlikely (class X); the code now ends by a fixpoint, a window or a count it can argue, so no number replaces them.
+Each was a number that only made a bug unlikely (class X); the code ends by a fixpoint, a window or a count it can argue, so no number replaces them.
 | was | where | what holds instead | test |
 |---|---|---|---|
 | `reopen_all` sweeps, `reopen_dependents` steps | `engine/flows/mod.rs` | taking up a key actor reopens to a fixpoint, each learner's dependents at once; it terminates because an actor is pushed only when its held epochs grew (epochs and secrets are only added), bounded by the secrets the held `secrets.0` states carry | `keys::key_actor_opens_deep_holder_chain_spec_crypto_4` |

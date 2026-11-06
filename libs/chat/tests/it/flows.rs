@@ -1091,7 +1091,7 @@ fn join_held_target_redeems_nothing_kicked_rejoins() {
     assert!(b.retained_copies().unwrap().is_empty());
 }
 
-// spec: none. notes/chat.md Read, notes/api-design.md (stored data never fails a read): a message id is text another writer chose: what does not parse is no reply, a claim to replace what does not parse reads as a plain odd entry, and neither fails anyone's read, a delete or a kick
+// spec: none. notes/chat.md Message, notes/api-design.md (stored data never fails a read): a message id is text another writer chose: what does not parse is no reply, a claim to replace what does not parse reads as a plain odd entry, and neither fails anyone's read, a delete or a kick
 #[test]
 fn odd_ids_from_another_writer_fail_no_read() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
