@@ -51,7 +51,7 @@ Not format constants (§11). Per-message caps: §11.2.
 | `SMALL_REPLY` | 16 KiB (16 384 bytes): the smallest `max_reply` (§11.2) and the reply allowance of every kind without its own (spec/sync.md §6) |
 | `WINDOW` | 16 MiB (16 777 216 bytes) a requester keeps in flight per connection (spec/sync.md §6) |
 | `MAX_SUBS` | 4096 live subscriptions per connection, counted apart from open labels (§11.2) |
-| `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one thin client (§11.2) |
+| `MAX_CONNS_PER_CLIENT` | 8 authenticated sessions of one client actor (§11.2) |
 
 ### Host and node policy
 Not format constants. A value marked recommended is advice.
@@ -292,16 +292,16 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events after the cursor of the label's last Sync on this connection that returned `more` false (else after the log head at Subscribe), with blobs as in Sync under the connection's last `inline_limit` for that label, and the relay-only entries other connections upload.
 - **Client port** (kinds 24-29): served only on a node's own listeners; any other side answers them Error 11. `session_id` is 16 bytes; `secret` is exactly 32 bytes.
   - **Auth**: answered Reply `[0, []]`.
-    - An Owner session (the unix transport, spec/sync.md §10) sends Auth without `secret`.
-    - A thin client, on a keyed transport, sends it with its bearer secret (spec/data-model.md §9), which binds the session to the client actor of the `clients.0^` entry whose `secret_hash` is its BLAKE3, compared in constant time, `until` not passed.
-    - Any other Auth is answered Error 1: no matching entry, no secret on a keyed transport, a secret on the unix transport, a second Auth of a thin client's session.
+    - A main session (the unix transport, spec/sync.md §10) sends Auth without `secret`.
+    - A client-actor session, on a keyed transport, sends it with its bearer secret (spec/data-model.md §9), which binds the session to the client actor of the `clients.0^` entry whose `secret_hash` is its BLAKE3, compared in constant time, `until` not passed.
+    - Any other Auth is answered Error 1: no matching entry, no secret on a keyed transport, a secret on the unix transport, a second Auth of a client-actor session.
     - Past `MAX_CONNS_PER_CLIENT` authenticated sessions of one client or `max_clients` of all clients: Error 4.
     - A Call or Sub before an Auth answered by Reply is answered Error 1.
-  - **End of a thin client's session**: it ends when its entry goes, its `secret_hash` changes or its `until` passes. Each request is checked at the time it runs and does not run if any of those holds.
-  - **A thin client's rights**: every method of its session runs as its client actor, by that actor's rights at that time.
+  - **End of a client-actor session**: it ends when its entry goes, its `secret_hash` changes or its `until` passes. Each request is checked at the time it runs and does not run if any of those holds.
+  - **A client actor's rights**: every method of a client-actor session runs as its client actor, by that actor's rights at that time.
     - A thing the actor may not read (spec/sync.md §3, and not a kept copy it reads, spec/permissions.md §3) answers every method as a thing the node does not know.
-    - A write the actor may not make is code 3, placing a thing it may not read code 1, a `link` value anywhere in its write code 8.
-    - A revert needs the actor's rights on every write it makes (of a thing it deletes: every aspect, and its placements in every group both the node and the actor may write; a placement in any other group stays, as for a delete) and on everything the reverted change touched, and lists nothing the actor may not read (code 3).
+    - A write the actor may not make is code 3, adding a thing it may not read to a group code 1, a `link` value anywhere in its write code 8.
+    - A revert needs the actor's rights on every write it makes (of a thing it deletes: every aspect, and its memberships in every group both the node and the actor may write; a membership in any other group stays, as for a delete) and on everything the reverted commit touched, and lists nothing the actor may not read (code 3).
     - Methods carrying state beyond a thing the actor may read are Owner only, code 11 otherwise.
     - This is the serving node's own rule, not a validity rule: receivers judge its commits by the author node's rights (spec/permissions.md §1), and its header's actor only by whether the author node acts for it (spec/permissions.md §5.2), never by the actor's rights on what it writes.
   - **Write nonces**: a write's nonce is below 2^62, from 1 per (identity, session id).
@@ -322,7 +322,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     | 3 | permission | `[tid, role]` |
     | 4 | type | `[path, text]` |
     | 5 | too large | `[limit]` |
-    | 6 | not undoable | `[change, reason]` |
+    | 6 | not undoable | `[commit, reason]` |
     | 7 | unsynced | `[[tid*]]` |
     | 8 | invalid | `[text]` |
     | 9 | storage | `[text]` |
