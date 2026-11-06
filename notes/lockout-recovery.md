@@ -4,7 +4,7 @@
 ## Today: no recovery
 Repudiation (`Osis::repudiate`, port row 66, CLI `repudiate`) is gone from everything public (Tess Q6: omission as a recovery tool rests on a side effect; Q7: re-study as a key fork from the last epoch held). Accepted cost until a design below is built: a deliberate lockout (a writer rotating keys sealed only to itself) cannot be recovered from; the other holders keep what they hold and write nothing new on that thing. The spec rules stay, marked not offered (spec/permissions.md §3 Lockout recovery, §5.1 Omission on purpose). The engine's `demote_repudiating`, `lockout_rotations` and the omit set stay, used only by osis-node `flows::*_spec_perm_3` tests (issues/deprecated-terms.md). No osis or CLI test exercised recovery (only `waiting_calls_are_send` and the client's `Unsupported` check named it; both lines removed).
 
-This note's recommendation (listing, not forking) predates Q7's "key fork" wording; the re-study should weigh it against a fork (the fork's failure is `L_fork` below).
+Tess withdrew Q7's "key fork" wording: make it work. Listing (below) is the design; a fork fails (`L_fork`).
 
 ## The case
 A writer W rotates read and write of A boxing only itself (or garbage to the others). Its epoch e_W is valid and established everywhere (a node lacking a secret establishes the epoch from its commit alone), supersedes e_n, and no other node holds a current secret: it cannot write, and by spec/crypto.md §4 makes no rotation, so no removal of W. The old recovery (frontier study F5) removed W with a frontier leaving out e_W's commit, so e_W turned invalid. Tess (Q6, Q7): that relies on a side effect; recover explicitly.
@@ -20,8 +20,12 @@ Receivers apply the existing "Supersedes" rule (spec/crypto.md §4): the new epo
 
 The code already does this when the remover holds one current fork and lacks another (`produce::rotate` lists every current epoch). The refusal (`edges.rs`: "lacks a current secret of the target") is only for holding none. So the change is: drop that refusal under an explicit flag, fall back for the wrap, delete repudiation.
 
-### Why keep a flag
-Holding no current secret also happens honestly: a stranded node waiting for a re-seal. Superseding then drops the unheld epoch from the history chain (and the rotation removes the boxes at it, as every rotation does), so content under it is readable only by its holders until one of them rotates (its history box carries every established secret it holds, the superseded one included). The default stays "wait for a re-seal"; the flag says "I accept losing what I cannot open". Under the flag nothing is invalidated, so the worst an honest mistake costs is that delay, not today's permanent loss.
+### No flag: recovery is just removing the holder (Tess: no lockout concept in the API or UI)
+A removal lists the current epochs it cannot open only when **every one of them was made by the holder being removed** (its rotation commits, held and valid). Removing the person who locked you out then simply works, with nothing new to choose or show. Anything else keeps today's behaviour: a node lacking current secrets of another's making waits for a re-seal, as a stranded node does.
+
+Why that's safe without asking: the honest case that looks like a lockout is a rotation by W that boxed others and missed only this node. Removing W there costs only delay (below: its holders keep reading, later joiners read after a holder's next rotation), never data. And the remover was removing W anyway.
+
+To check while building: an epoch made by W and by another holder at once (two concurrent rotations, one of each, both current): the rule above refuses (not all W's). Is that right, or does listing only W's epochs while holding the other's work too? A model case in `Lockout.tla` for "lacks a current epoch not made by W" must keep `RemoveOK` and `NoLeak`.
 
 ### What the rogue's writes become
 - Its rotation commit: valid (listed). Its epoch: established, superseded. Its box removals at e_n: stand (harmless; e_n is in the new history box).
