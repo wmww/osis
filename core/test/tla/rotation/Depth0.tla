@@ -159,6 +159,15 @@ GNow(dn) == GAll \ {<<dp[2], dp[1]>> : dp \in {q \in dn : ActDep(q)}}
 RoleClos(h, a, G) == Fix(LAMBDA S : S \cup {b \in Acts \ {a} : \E c \in S : <<c, b>> \in Mem /\ <<c, b>> \in G}, {h})
 RoleOn(y, h, a, G) == \E c \in RoleClos(h, a, G) : <<c, y>> \in Mem
 
+\* spec/crypto.md §4 Boxes: a node rotates a role only holding the secret of
+\* every current epoch (a rotation supersedes them all, and its history box
+\* must carry each secret); FALSE: the negative control (D0_fork_lax)
+HeldAll == TRUE
+\* spec/crypto.md §4 Holder actors, Carried (the stated limit): a rotation may
+\* be learned before the keysets its boxes name (carried as separate blobs);
+\* FALSE: they come along
+Late == FALSE
+
 DK(d) == [t |-> "d", d |-> d, k |-> 0]
 KK(k) == [t |-> "k", d |-> "", k |-> k]
 Idx(a) == CHOOSE i \in 1..Len(ActSeq) : ActSeq[i] = a
@@ -309,12 +318,14 @@ Rotate(x, a, extra, race) ==
               knows |-> {dp \in Known(x) \cup extra : dp[2] = a},
               forged |-> FALSE,
               race |-> race,
+              whole |-> Cur(x, a) \subseteq Sec(x),
               \* "mark": each actor left out, at its blocked Seal keyset or
               \* the marks it was left out at before
               out |-> IF Walk # "mark" THEN {} ELSE
                       UNION {{<<h, k>> : k \in ({SealK(x, a, h)} \cap Blocked(x)) \cup OutAt(x, a, h)} :
                                h \in {g \in MemV(x, a, extra) : lo(g)}}]
   IN /\ ~(LeftOut = "wait" /\ Waits(x, a, extra))
+     /\ (HeldAll => new.whole)
      /\ BlindOK(a, {b.h : b \in new.bx})
      /\ ep' = Append(ep, new)
      /\ kn' = [kn EXCEPT ![x] = @ \cup {Len(ep) + 1}]
@@ -326,7 +337,7 @@ Init ==
                         h \in {g \in KeyIn(GAll, ActSeq[i]) : <<ActSeq[i], g>> \notin GLate}},
               hist |-> {},
               dhist |-> IF ActSeq[i] \in PlainActs THEN {Idx(PlainOf(ActSeq[i]))} ELSE {},
-              knows |-> {}, forged |-> FALSE, race |-> FALSE, out |-> {}]]
+              knows |-> {}, forged |-> FALSE, race |-> FALSE, whole |-> TRUE, out |-> {}]]
   /\ rs = {}
   /\ kn = [x \in Learners |-> {i \in 1..Len(ActSeq) : <<x, ActSeq[i]>> \notin Unaware}]
   /\ krs = [x \in Learners |-> {}]
@@ -416,7 +427,7 @@ Forge(d) ==
                                n |-> 1 + ep[Newest(ms)].n,
                                par |-> ms, by |-> d,
                                bx |-> {[h |-> d, key |-> DK(d), by |-> d, poss |-> TRUE]},
-                               hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, race |-> FALSE, out |-> {}])
+                               hist |-> {}, dhist |-> {}, knows |-> {}, forged |-> TRUE, race |-> FALSE, whole |-> TRUE, out |-> {}])
   /\ evd' = evd \cup {<<d, "forge">>}
   /\ UNCHANGED <<kg, rs, kn, krs, wr, done, nw, pl, kpl>>
 
@@ -426,6 +437,8 @@ VisNamed(x, bs) == {k \in Named(bs) : Vis(x, ep[k].act)}
 Learn(x, e) ==
   /\ e \in Ids /\ e \notin kn[x] /\ Vis(x, ep[e].act)
   /\ \/ kn' = [kn EXCEPT ![x] = @ \cup {e} \cup VisNamed(x, ep[e].bx)]
+     \/ /\ Late
+        /\ kn' = [kn EXCEPT ![x] = @ \cup {e}]
      \/ /\ Split /\ \E l \in Acts : Syncs(x, l) /\ ep[e].act \in ActHolders(l)
         /\ kn' = [kn EXCEPT ![x] = @ \cup {e}]
   /\ UNCHANGED <<kg, ep, rs, krs, wr, done, evd, nw, pl, kpl>>
@@ -567,6 +580,11 @@ RD(p, a) == IF p \in Acts THEN UNION {ReachD(d) : d \in DevsOf(p) \ CurDevs(a)} 
 GCur(a) == {e \in Ids : ep[e].act = a /\ ~ep[e].forged /\
                         ~\E f \in Ids : ~ep[f].forged /\ e \in AncH(f)}
 
+\* spec/crypto.md §4 Boxes: every rotation's maker held the secret of each
+\* epoch it superseded (its history box carries them all; a maker lacking
+\* one, a fork's box at a keyset it did not hold yet, would supersede an
+\* epoch it can never read again: nothing re-seals a superseded epoch)
+HistWhole == \A e \in 1..Len(ep) : ep[e].whole
 \* a directly removed holder reads no content written by a writer that knew
 NoLeakDirect == \A c \in wr : \A dp \in c.p1 : ~Opens(RD(dp[1], c.a), c)
 \* a device removed from a holder actor M of a reads no content of a written

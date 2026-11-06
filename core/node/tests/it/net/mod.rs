@@ -162,6 +162,10 @@ fn without_blobs(b: &[u8], hide: &BTreeSet<osis_base::BlobId>) -> Vec<u8> {
                     M::FetchReply { items, .. } => items.retain(|i| !hide.contains(&i.blob_id)),
                     _ => {}
                 }
+                // a push carries at least one event: one emptied is dropped whole
+                if matches!(&m, M::Push { events, .. } if events.is_empty()) {
+                    continue;
+                }
                 out.extend(osis_proto::encode_frame(&m.encode()));
             }
             Err(_) => out.extend(osis_proto::encode_frame(&body)),

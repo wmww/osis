@@ -101,6 +101,19 @@ fAdm == {<<"A", "m1">>, <<"A", "m2">>, <<"M", "m1">>, <<"M", "m2">>}
 fLearners == {"m1", "m2"}
 fDeps == {<<"D", "M", "m1">>}
 fEager == {<<"m1", "M">>, <<"m2", "M">>}
+fLax == FALSE
+fTrue == TRUE
+\* holder actor M of A; m1 and m2, members of M only, write A through M (Via)
+\* and may rotate M and A; a1 the admin of A; no removal: forks by eager
+\* rotations, keysets learned late (D0_via_*)
+viActs == <<"A", "M">>
+viMem == {<<"A", "a1">>, <<"A", "M">>, <<"M", "m1">>, <<"M", "m2">>}
+viAdm == {<<"A", "a1">>, <<"M", "m1">>, <<"M", "m2">>}
+viLearners == {"a1", "m1", "m2"}
+viEager == {<<"m1", "M">>, <<"m2", "M">>, <<"m1", "A">>, <<"m2", "A">>}
+viVia == {<<"m1", "A">>, <<"m2", "A">>}
+viG == << <<"A", "M">> >>
+
 fG == << <<"A", "M">> >>
 \* ... and device E reads A; m1 removes E from A (Alone: while the anchors
 \* fork the removal goes without A's rotation)

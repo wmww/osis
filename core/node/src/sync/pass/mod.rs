@@ -211,9 +211,6 @@ impl SyncEngine {
         // secrets may have arrived since the head was accepted
         self.recheck_doubts();
         let (keys, read_ok) = self.usable_keys(&g, index, &head)?;
-        if std::env::var("OSIS_DBG").is_ok() {
-            eprintln!("DBG pass node={} label={l:?} read_ok={read_ok} read_epoch={} write={} sync_est={}", self.engine.tid(), keys.epochs[0].is_some(), keys.write.is_some(), keys.sync_established);
-        }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.keys = keys.clone();
         }
@@ -414,9 +411,6 @@ impl SyncEngine {
         if let Some(c) = self.conns.get_mut(&conn) {
             c.req.sent.extend(ids.into_iter().chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), (raw, super::UNTAGGED))));
         }
-        if std::env::var("OSIS_DBG").is_ok() {
-            eprintln!("DBG send node={} label={l:?} sends={} write={} deposit={} uploads={} deposits={} queue_outbox={}", self.engine.tid(), seen.len(), keys.write.is_some(), keys.deposit.is_some(), uploads.len(), deposits.len(), self.state.outbox.len());
-        }
         if !uploads.is_empty() {
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
         }
@@ -569,10 +563,6 @@ impl SyncEngine {
     fn usable_keys(&mut self, g: &Tid, index: u64, head: &osis_label::Step) -> Result<(HeadKeys, bool)> {
         let mut keys = self.engine.head_keys(g, index, head)?;
         let still = self.uncovered(g, true)?;
-        if std::env::var("OSIS_DBG").is_ok() {
-            let held: Vec<String> = self.engine.epochs(g).map(|e| e.role(osis_base::Role::Write).held_newest_first().into_iter().map(|(ep, s)| format!("{}.{}{}", ep.n(), ep.nonce()[0], if osis_crypto::label_role_key(osis_keys::label_role(osis_base::Role::Write), s, index).verifying_key() == head.keys.write { "=head" } else { "" })).collect()).unwrap_or_default();
-            eprintln!("DBG usable node={} g={g} head={:?} epochs={:?} write_key={} still={still:?} held_write={held:?}", self.engine.tid(), &format!("{:?}", head.id())[8..14], keys.epochs.iter().map(|e| e.map(|e| (e.n(), e.nonce()[0]))).collect::<Vec<_>>(), keys.write.is_some());
-        }
         if still.contains(&Role::Write) {
             keys.write = None;
         }

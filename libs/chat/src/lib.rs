@@ -97,15 +97,20 @@ fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> Re
 }
 
 /// A new chat, this account its first admin: required retention set before anyone is granted, so no
-/// participant can write under an earlier key. One commit, then `sync`: a crash between leaves a
-/// chat of one, on this node only.
+/// participant can write under an earlier key. `sync`, then one commit: a crash between leaves a
+/// synced chat of one with no rules; make another.
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
+    // the record alone first (`sync` persists the draft by a role commit), then the rules and
+    // settings: a joiner reads C's record among the role commits, not from a content commit it
+    // waits on (notes/chat.md As built)
     let mut w = db.write();
     let c = w.create()?;
+    w.commit()?;
+    db.sync(c, &o.peers)?;
+    let mut w = db.write();
     w.at(c, REQUIRED).set(&rules(o.purge, o.disappear, o.retain_copies))?;
     w.at(c, settings_key(db)?).set(&settings_value(&o.name, o.edit))?;
     w.commit()?;
-    db.sync(c, &o.peers)?;
     Ok(c)
 }
 

@@ -16,7 +16,7 @@ Entries per (label, blob) with wrap, stamp, certificate flag and what the blob i
 
 ## The pass (`sync/pass/`)
 Runs after the log was read to its end (`Synced`) and on every later change marked into its work set:
-1. Head keys recomputed. No read epoch of the head held: open what it can and place a stranded heartbeat, nothing else (notes/label-access.md). An admin with a newer established epoch re-registers first (role commits, step, then the rest after `Registered`).
+1. Head keys recomputed. No read epoch of the head held: open what it can and place a stranded heartbeat, nothing else (notes/label-access.md), and `label_status` reports the label stranded (osis `SyncState::Stranded`): a pass without the head's read epoch is never complete (`sync_review::no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5`). An admin with a newer established epoch re-registers first (role commits, step, then the rest after `Registered`).
 2. Must-hold bodies (before keep-at-least, or not covered by a snapshot entry of the label), role commits first: uploaded stamped, relayed with their stamp by readers, deposited when a non-writer's own edge write. Chunk, page and list blobs of uploaded commits and the held blobs their deltas link though not listed (reused chunks, a snapshot's values) go with filler wraps.
 3. This node's certificates and node card per label (a fresh encryption), only the deltas no genuine entry of the same commit present at every host holds (any node's copy or closure blob), never closure deltas; another node's demotion or `keys.0` only `SETTLE_MS` after receipt; inbox grant copies; a heartbeat per `HEARTBEAT_MIN_INTERVAL`.
 4. Writers promote deposited entries (notes/inbox.md).

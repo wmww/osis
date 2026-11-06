@@ -401,6 +401,14 @@ impl RoleEpochs {
         self.current().into_iter().max_by_key(|e| self.by_order(e))
     }
 
+    /// Whether the secret of every current epoch is held, and there is one (spec/crypto.md §4,
+    /// Boxes: what a rotation of the role needs, since it supersedes every current epoch and its
+    /// history box carries each one's secret).
+    pub fn holds_current(&self) -> bool {
+        let cur = self.current();
+        !cur.is_empty() && cur.iter().all(|e| self.secret(e).is_some())
+    }
+
     /// The newest current epoch whose secret is held.
     pub fn newest_held(&self) -> Option<(Epoch, &Secret32)> {
         self.newest_with(self.held().filter(|(e, _)| self.is_current(e)))

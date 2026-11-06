@@ -308,7 +308,8 @@ pub enum SyncState {
     /// A saved peer does not take it (yet; `GroupSync::refused_by` names them) and no other has it open.
     /// It keeps asking.
     Refused,
-    /// This node lost the keys to it, and can read nothing new until another holder gives them again.
+    /// This node holds no key to read what its peers hold now (lost, or not given yet), and can read
+    /// nothing new until another holder gives them again.
     Stranded,
     /// Only the log of its commits is held (`SyncMode::LogOnly`): not synced, what is here is stale.
     LogOnly,
