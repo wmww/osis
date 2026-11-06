@@ -1,4 +1,4 @@
-//! The localhost end-to-end session (notes/apps.md, notes/cli.md Tests), tier 2: a node
+//! The localhost end-to-end session (notes/cli.md Tests), tier 2: a node
 //! serving in an `osis serve` process over QUIC on 127.0.0.1 and three more store directories
 //! (Alice's two nodes, Bob), driven only through the `osis` binary: init, pair offer/join, link make/redeem, writes
 //! on all three, sync, status, undo, bundles, inspect. Assertions read `--json` output.
