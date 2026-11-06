@@ -535,7 +535,7 @@ pub(crate) fn pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id:
         }
         // an author whose chain is not known here shares one budget with every such author (a
         // claimed grant earns nothing: its `roles.0` part is as unverified as the boxes)
-        let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
+        let author = if tx.core.created_for(&blob.header.author, blob.header.ephemeral.is_some()).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
         out.push((a, ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }, osis_keys::Unchecked { author, commit: *id }));
     }
     Ok(out)
@@ -816,6 +816,38 @@ mod tests {
         lp.peers[1].engine.reexamine().unwrap();
         assert!(!lp.peers[1].engine.pending().iter().any(|(c, _)| *c == g1), "applied");
         assert!(held(&lp, &t2), "read once a place is free");
+    }
+
+    // spec/crypto.md §4 (pending boxes are read for reading only), apply::waits: what a pending
+    // commit's boxes teach depends only on what its wait follows. Here the grant on `a` (first
+    // admin `u`, whose epochs the grantee holds) waits for `a`'s record; that record arriving as
+    // memory class, or `u`'s establishment changing (computed from applied commits and roles), wakes
+    // no wait, so reading the boxes again must give nothing new: no derived establishment from `u`.
+    #[test]
+    fn pending_boxes_read_no_chain_spec_crypto_4() {
+        let mut lp = LocalPeer::new(2, 909, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let b = lp.peers[1].engine.tid();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, tied: None };
+        let mut m = Mutation::new();
+        let u = lp.peers[0].engine.new_thing(&mut m, me);
+        m.set(u, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.grant(&u, &b, &edge).unwrap();
+        lp.sync(0, 1).unwrap();
+        assert!(lp.peers[1].engine.core.epochs(&u).is_some_and(|e| !e.read.current().is_empty()), "the grantee holds u's established epochs");
+        let mut m = Mutation::new();
+        let a = lp.peers[0].engine.new_thing(&mut m, u);
+        m.set(a, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(2)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let g = *lp.peers[0].engine.grant(&a, &b, &edge).unwrap().commits.last().unwrap();
+        let p = lp.peers[0].engine.package(&g).unwrap().unwrap();
+        lp.deliver(1, &p).unwrap();
+        assert!(lp.peers[1].engine.pending().iter().any(|(c, _)| *c == g), "waits for a's record");
+        let rec = lp.peers[0].engine.core.created(&a).unwrap().clone();
+        lp.peers[1].engine.core.ix.held.create_memory(rec);
+        lp.peers[1].engine.check_unchanged(&[]);
     }
 
     /// Peer 0 is first admin of thing `t` (`x:a.0` = 1); peer 1 is the grantee, holding nothing of peer 0;

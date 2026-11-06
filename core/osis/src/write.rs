@@ -444,9 +444,19 @@ impl<'d> Write<'d> {
                         b.m.remove_aspect(t, ak)?;
                     }
                     let gs = r.groups_of(t);
-                    let writable = |r: &Reader<'_>, g: &Tid| matches!(r.role_on(*g), Some(Role::Write | Role::Admin));
-                    let items: Vec<Tid> = gs.item_of.into_iter().filter(|g| *g != t && writable(r, g)).collect();
-                    let subs: Vec<Tid> = gs.subgroup_of.into_iter().filter(|g| *g != t && writable(r, g)).collect();
+                    let mut writable = |g: &Tid| -> Result<bool> { Ok(*g != t && matches!(r.role_on(*g)?, Some(Role::Write | Role::Admin))) };
+                    let mut items = Vec::new();
+                    for g in gs.item_of {
+                        if writable(&g)? {
+                            items.push(g);
+                        }
+                    }
+                    let mut subs = Vec::new();
+                    for g in gs.subgroup_of {
+                        if writable(&g)? {
+                            subs.push(g);
+                        }
+                    }
                     for (g, items) in items.into_iter().map(|g| (g, true)).chain(subs.into_iter().map(|g| (g, false))) {
                         // as `GroupWrite::remove` would record it
                         if !created.contains(&g) && !r.holds(g) {

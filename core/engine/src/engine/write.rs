@@ -428,6 +428,11 @@ pub(crate) fn settle(core: &Core, memory: bool, kind: Kind, ts: Ts, signer: Tid,
 /// (spec/crypto.md §7): its thing's dedup secret, the commit's expiry and blind, the delete keys
 /// the retention calls for. `published`: [`super::secrets::published_keys`] of the commit's things.
 pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(Tid, osis_base::Role), osis_crypto::VerifyingKey>, tid: &Tid, retention: &Retention) -> Result<Framing> {
+    // a role is of use once its delete keys are here (spec/crypto.md §7): until then this node
+    // writes nothing on the thing, whatever the delta's retention (`Engine::holds_delete_keys`)
+    if !super::secrets::holds_listed_keys(core, &plan.creates, published, tid) {
+        return Err(Error::Permission { tid: *tid });
+    }
     let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published };
     let keys = osis_commit::delete_keys(&secrets, tid, retention)?;
     let dedup = osis_commit::Secrets::dedup(&secrets, tid).ok_or(Error::UnknownThing(*tid))?;

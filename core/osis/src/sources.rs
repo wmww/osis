@@ -574,7 +574,7 @@ impl Osis {
         if at.is_none() && !stopped {
             return Ok(());
         }
-        if !held || role.is_none() {
+        if !held || role?.is_none() {
             return Err(Error::Invalid("this node does not hold the group: its keys are not here".into()));
         }
         if !has_label {

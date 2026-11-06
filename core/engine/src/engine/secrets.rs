@@ -266,7 +266,13 @@ impl Core {
         for (m, e) in &openers {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { holder: *m, epochs: e }, &mut epochs, unchecked);
         }
-        self.adopt_derived(actor, &mut epochs);
+        // a pending commit's boxes teach secrets only, read from the boxes and their openers'
+        // epochs (`apply::waits`, `Wait::openers`): the derived establishment comes once the
+        // commit applies, as it reads the base actor's establishment, which no wait can follow
+        // (computed from applied commits and roles, `Core::own_epochs`)
+        if unchecked.is_none() {
+            self.adopt_derived(actor, &mut epochs);
+        }
         let held_any = epochs.holds_any();
         (held_any && Some(&epochs) != before.as_ref()).then_some(epochs)
     }
@@ -499,6 +505,14 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
     Ok(out)
 }
 
+/// Whether a content write on `tid` can list its admin and write delete keys (`CommitSecrets`,
+/// `published` from `published_keys`): what every write on it needs, whatever its retention, so a
+/// write and `Engine::holds_delete_keys` agree.
+pub(crate) fn holds_listed_keys(core: &Core, created: &crate::engine::write::Creates, published: &BTreeMap<(Tid, Role), VerifyingKey>, tid: &Tid) -> bool {
+    let s = CommitSecrets { core, actor: core.id.tid(), created, published };
+    osis_commit::Secrets::admin_key(&s, tid).is_some() && osis_commit::Secrets::write_key(&s, tid).is_some()
+}
+
 /// The admin and write delete keys of `t` from its delete base `b` (`e` its held epochs): from
 /// held secrets, else published or hinted.
 fn base_keys(tx: &mut crate::engine::Tx<'_>, t: &Tid, b: Tid, e: Option<ActorEpochs>) -> Result<Option<(VerifyingKey, VerifyingKey)>> {
@@ -524,13 +538,13 @@ impl crate::Engine {
     }
 
     /// Whether this node holds the delete keys a write on `t` lists (spec/crypto.md §7): a
-    /// writer without them cannot write `t` yet.
+    /// writer without them cannot write `t` yet (`holds_listed_keys`).
     pub fn holds_delete_keys(&mut self, t: &Tid) -> Result<bool> {
         let t = *t;
-        self.run(|tx| match tx.core.delete_base(&t) {
-            Some(DeleteBase::KeyActor(_)) => Ok(true),
-            Some(DeleteBase::Actor(b, e)) => Ok(base_keys(tx, &t, b, e)?.is_some()),
-            None => Ok(false),
+        self.run(|tx| {
+            let created = Default::default();
+            let published = published_keys(tx, &created, [t])?;
+            Ok(holds_listed_keys(tx.core, &created, &published, &t))
         })
     }
 
