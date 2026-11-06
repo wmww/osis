@@ -1,12 +1,12 @@
 # Demotion frontiers are replicated as certificates under every label an account writes to, forever
-> Summary: a device removal from account P carries a frontier over every (tid, ak) the device ever wrote (10 bytes each; 10^5-10^6 aspects for a long-lived device: megabytes, by link); that commit is a chain certificate of every later device that device granted, so its frontier chunks are re-encrypted and uploaded under every label those devices write to (`place_linked`), and the removal is kept for good (role history is never compacted). Every verifier fetches the whole frontier to judge any one write. Cost grows as device churn × aspects written × labels, per account, and is never compacted away.
+> Summary: a node removal from account P carries a frontier over every (tid, ak) the node ever wrote (10 bytes each; 10^5-10^6 aspects for a long-lived node: megabytes, by link); that commit is a chain certificate of every later node that node granted, so its frontier chunks are re-encrypted and uploaded under every label those nodes write to (`place_linked`), and the removal is kept for good (role history is never compacted). Every verifier fetches the whole frontier to judge any one write. Cost grows as node churn × aspects written × labels, per account, and is never compacted away.
 > Tags: performance, permissions, sync, spec
 
-Mostly superseded by issues/session-sources.md step 1: demotion frontiers become commit IDs only (no per-aspect counters), listing the removed device's commits not yet covered by a snapshot. Re-measure after it lands; close if the split is no longer worth it.
+Mostly superseded by issues/session-sources.md step 1: demotion frontiers become commit IDs only (no per-aspect counters), listing the removed node's commits not yet covered by a snapshot. Re-measure after it lands; close if the split is no longer worth it.
 
 Where it comes from: spec/permissions.md §4 (certificates include every held demotion of the chain's authors, with frontier), §5.1 (frontier covers every aspect of everything the demoted authority gave write on), spec/commits.md §5 (`roles.0` never compaction-snapshotted, so the removal stays), spec/sync.md §3 (frontier chunks go under the label as certificate blobs); notes/permissions.md Revocation ("a frontier can reach megabytes").
 
-Order of magnitude: a heavy user with 10^5 aspects and a device replaced yearly: ~1 MB per removal, placed under every label the successor device writes (hundreds), and kept with the removal forever. A team label with 100 such holders accumulates ~1 GB of frontier chunks a decade in, which every new holder fetches to judge old writes.
+Order of magnitude: a heavy user with 10^5 aspects and a node replaced yearly: ~1 MB per removal, placed under every label the successor node writes (hundreds), and kept with the removal forever. A team label with 100 such holders accumulates ~1 GB of frontier chunks a decade in, which every new holder fetches to judge old writes.
 
 ## Recommended fix
 Split the frontier into the two things verifiers use it for, and let certificates carry only the small one.

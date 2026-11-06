@@ -4,4 +4,4 @@
 
 Found in idle-pass review; older than it. A quiet label's own bound is kept (notes/sync.md Idle labels). A session whose ping waits for the clock also learns no new clock sample and finds no dead connection until then. `reseal_quiet` assumes time only moves on: in release it stays quiet until a role change.
 
-Fix if it matters: compare each deadline against now plus its longest wait (a deadline further off than that: the clock went back), as `Work::resync_due` does. D is rare and small on a synced device; the cost is a stale node for D.
+Fix if it matters: compare each deadline against now plus its longest wait (a deadline further off than that: the clock went back), as `Work::resync_due` does. D is rare and small on a synced machine; the cost is a stale node for D.

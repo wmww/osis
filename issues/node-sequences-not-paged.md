@@ -1,6 +1,6 @@
 # Texts and lists: what still loads whole or writes more than it needs
 > Summary: An edit against a stale read (or a list edit whose window the list does not lend) and writing a whole collection load a paged sequence whole; a cold edit writes about twice the store bytes it did before the stored placement (two more B-tree leaves). Reads by index, local inserts, deletes, moves and pastes, text and list edits, anything inside a list element at an index, undos and received joins load only their pages.
-> Tags: performance, node, storage, crdt
+> Tags: performance, node, store, crdt
 
 Repro: `cargo test --release --workspace --test it scale::text_ -- --ignored --nocapture` (`text_undo_and_first_access_cost`, `text_range_and_edit_cost`; `OSIS_SCALE_ROWS=1` prints each step's store rows and cost spans).
 
