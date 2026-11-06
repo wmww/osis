@@ -31,7 +31,7 @@ Dev profile for all per-branch work (Cargo.toml): workspace crates `opt-level = 
 ## Components pay for themselves
 Iterating on one project must not run the others' tests or checks. The gate selects steps by what the branch touched:
 - only libs/kit/ or app/: the GUI steps alone (`policy.py libs/kit`, GUI test, clippy, deny in libs/kit/).
-- other paths all Markdown under spec/, notes/ or issues/ (`--plan` says `core=docs`): the instant checks and the one test that reads notes/ (osis-cli `cli::every_api_method_has_a_command_plan_cli_tests`, notes/cli.md), plus the GUI steps if libs/kit/ or app/ changed. Any other Rust line reading or including a path there (`git grep` in gate.sh, one-line calls only) sends the full gate and names it: add such a test to the docs step.
+- other paths all Markdown under spec/, notes/ or issues/ (`--plan` says `core=docs`): only the instant Python checks, no Rust build, plus the GUI steps if libs/kit/ or app/ changed. A Rust line reading or including a path there (`git grep` in gate.sh, one-line calls only) sends the full gate and names it: no test may read notes/, or docs-only diffs stop being cheap.
 - anything else: the core steps plus `cargo check --workspace --all-targets` of the GUI workspace (an osis API change must not silently break the app); everything on main or with `--all`.
 policy.py and spec_map.py look at the core workspace (spec_map: core/ and cli/ sources only); policy.py takes a workspace dir for the GUI one and skips vendored `patches/`. A new project extends the same pattern, with its own per-branch oracles and periodic checks (notes/coordination.md).
 

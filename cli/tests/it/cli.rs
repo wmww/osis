@@ -605,7 +605,7 @@ fn serving_commands_plan_cli_4() {
     assert!(two.contains("address quic://0.0.0.0:7400#"), "{two}");
 }
 
-// notes/cli.md Choices `-v`: a command that syncs prints the node's diagnostics on stderr
+// notes/cli.md Design `-v`: a command that syncs prints the node's diagnostics on stderr
 // (as `diag --follow`); without `-v`, or on a local command, none. The diagnostic: a thing
 // only in groups no synced group holds (`NotSynced`), by `add-with-grant` (it syncs) and by
 // `group add` (local).
