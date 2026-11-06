@@ -912,8 +912,9 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     for (c, author, gone) in &written {
         // past its bound at a, by a margin for the others' clocks and deaths (random writes go on)
         let e = sim.engine(a)?;
-        let (now, kept) = (e.now().0, e.body_keep(c, &t, &k));
-        let dead = bound == 2 && kept.map_err(|x| sim.fail(x.to_string()))?.at_most.is_some_and(|m| m + 600_000 <= now);
+        let ai = e.header(c).and_then(|h| h.aspects.iter().position(|x| x.tid == t && x.ak == k));
+        let (now, kept) = (e.now().0, e.body_keeps(c).map(|v| ai.and_then(|i| v.get(i).copied())));
+        let dead = bound == 2 && kept.map_err(|x| sim.fail(x.to_string()))?.ok_or_else(|| sim.fail("no part"))?.at_most.is_some_and(|m| m + 600_000 <= now);
         let gone = &(*gone || dead);
         // under keep at least a compacter's snapshot may be superseded before the bound passes: the
         // body then waits for the next snapshot with the right, so only what stays is certain

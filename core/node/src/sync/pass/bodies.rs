@@ -2,6 +2,7 @@
 //! placing one, and whether an entry is genuine.
 
 use super::*;
+use osis_commit::retention::Keep;
 
 impl SyncEngine {
     /// The entries the must-hold bodies of `l` need (spec/sync.md §6), by priority: the entry of
@@ -95,8 +96,9 @@ impl SyncEngine {
         let mut before = false;
         let mut covered = !aspects.is_empty();
         let mut needed = Vec::new();
+        let keeps = self.engine.body_keeps(&b.commit)?;
         for (ai, (t, a)) in b.parts.iter().zip(&aspects) {
-            let kept = self.part_kept(&h, &b.commit, *ai, note)?;
+            let kept = self.part_kept(&h, &keeps, *ai, note);
             before |= kept;
             let mut c = false;
             for s in snaps.get(&(*t, a.clone())).into_iter().flatten() {
@@ -126,16 +128,16 @@ impl SyncEngine {
     /// to `MAX_DRIFT` may already have dropped a part past keep-at-most and deleted its blob;
     /// this node then neither holds it must-hold nor heals it, so the two never delete and
     /// re-upload in turn. The cost: a must-hold part goes unhealed in its last `MAX_DRIFT`.
-    fn part_kept(&mut self, h: &osis_commit::Header, c: &CommitId, ai: usize, note: &mut Note) -> Result<bool> {
-        let Some(a) = h.aspects.get(ai) else { return Ok(false) };
-        let k = self.engine.body_keep(c, &a.tid, &a.ak)?;
+    /// `keeps`: the commit's `Engine::body_keeps`, read once per commit judged.
+    fn part_kept(&self, h: &osis_commit::Header, keeps: &[Keep], ai: usize, note: &mut Note) -> bool {
+        let (Some(a), Some(k)) = (h.aspects.get(ai), keeps.get(ai)) else { return false };
         let until = if a.retention.by == osis_base::PurgeBy::Nobody { u64::MAX } else { k.at_least };
         let until = k.at_most.map_or(until, |m| until.min(m.saturating_sub(osis_base::format::MAX_DRIFT_MS)));
         let kept = until > self.now();
         if kept && until != u64::MAX {
             note.at(until);
         }
-        Ok(kept)
+        kept
     }
 
     /// Whether only a blob of commit `c` can carry its part on aspect `ai` under the label (spec/sync.md §6):
@@ -147,8 +149,9 @@ impl SyncEngine {
     /// drop a covered body as past keep-at-least (no death yet, or an earlier one) while a holder
     /// dates a later death and judges it kept. Both sides read the covering snapshot under the
     /// label alike, so a covered part is never one only a blob carries.
-    pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, ai: usize, snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        if !self.part_kept(h, c, ai, note)? && !self.part_live(h, c, ai) {
+    /// `keeps`: the commit's `Engine::body_keeps`.
+    pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, keeps: &[Keep], ai: usize, snaps: &Snaps, note: &mut Note) -> Result<bool> {
+        if !self.part_kept(h, keeps, ai, note) && !self.part_live(h, c, ai) {
             return Ok(false);
         }
         Ok(!self.parts_covered(snaps, c, h, &[ai], note)?)
@@ -162,8 +165,9 @@ impl SyncEngine {
             return Ok(false);
         }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
+        let keeps = self.engine.body_keeps(&b.commit)?;
         for ai in parts {
-            if self.must_carry(&h, &b.commit, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) {
+            if self.must_carry(&h, &b.commit, &keeps, *ai, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*ai]) {
                 return Ok(false);
             }
         }

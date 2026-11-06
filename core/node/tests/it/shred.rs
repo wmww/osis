@@ -370,7 +370,7 @@ fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
         let e = &mut lp.peers[0].engine;
         assert!(e.body_not_dropped(&body, &t, &k), "compact {compact}: held until the timer");
         let first = e.deaths(&body, &t, &k).unwrap().unwrap().0.wall_ms().0;
-        assert_eq!(e.body_keep(&body, &t, &k).unwrap().at_most, Some(first), "the bound is the first death");
+        assert_eq!(body_keep(e, &body, &t, &k).at_most, Some(first), "the bound is the first death");
         assert!(e.due_live_drops().unwrap().iter().any(|x| x.0 == body), "compact {compact}: due at once, carrier first");
         lp.peers[0].engine.tick().unwrap();
         assert!(!lp.peers[0].engine.body_not_dropped(&body, &t, &k), "compact {compact}");

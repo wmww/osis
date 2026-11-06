@@ -1,6 +1,6 @@
 //! A held body's keep bounds and whether it holds a live write (spec/commits.md §5).
 
-use super::{aspect_index, body_class, deaths_of, gone_of, known_part, writes_of};
+use super::{aspect_index, body_class, body_classes, body_id, class_deaths, deaths_of, gone_of, known_part, writes_of};
 #[cfg(test)]
 use super::oracle;
 use crate::engine::{Engine, Tx};
@@ -32,6 +32,23 @@ pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
     let r = h.aspects.get(ai).ok_or(Error::UnknownCommit(*c))?.retention;
     let d = deaths_of(tx, &h, c, ai)?;
     Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0)))
+}
+
+/// `Engine::body_keeps` in `tx`, deaths settled: each body's deaths read once.
+fn body_keeps(tx: &mut Tx<'_>, c: &CommitId) -> Result<Vec<osis_commit::retention::Keep>> {
+    let h = tx.core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?.header.clone();
+    let mut out = vec![osis_commit::retention::Keep { at_least: 0, at_most: None }; h.aspects.len()];
+    for holders in body_classes(tx.core, &h) {
+        let Some(a) = holders.first().and_then(|x| h.aspects.get(*x)) else { continue };
+        let d = class_deaths(tx, &h, &body_id(c), &holders)?;
+        let k = osis_commit::retention::body_keep(&h, &a.retention, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0));
+        for x in holders {
+            if let Some(o) = out.get_mut(x) {
+                *o = k;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// From when this node's compaction may drop held body `(tid, ak)` of `c` as covered
@@ -125,11 +142,12 @@ pub(super) fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: 
 }
 
 impl Engine {
-    /// Keep bounds of a held body (wall ms): (keep at least, keep at most).
-    pub fn body_keep(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
+    /// Keep bounds (wall ms) of the body holding each part of known commit `c`, by aspect index:
+    /// judged once per body, so a commit's judgment costs O(parts) death reads.
+    pub fn body_keeps(&mut self, c: &CommitId) -> Result<Vec<osis_commit::retention::Keep>> {
         self.settle_deaths()?;
-        let (c, tid, ak) = (*c, *tid, ak.clone());
-        self.run(|tx| body_keep(tx, &c, &tid, &ak))
+        let c = *c;
+        self.run(|tx| body_keeps(tx, &c))
     }
 
     /// From when this node's compaction may drop held body `(tid, ak)` of `c` as covered
