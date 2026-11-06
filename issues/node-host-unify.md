@@ -39,15 +39,15 @@ Default policy (Tess):
 - **Unix socket**: open without authentication to the current user, as the node's main actor. There is no security boundary there anyway.
 - **Localhost or network listener**: a client may act only as actors it has cryptographically authenticated for.
 
-To build: a credential names the actor it acts as, the main one included if the node's owner chooses. Today the transport decides (socket: main actor; secret: an actor minted for it), and notes/client-port.md Rejected ("Thin nodes", now phrased as a default) argues from one threat model. Today's credential is a bearer secret inside TLS; decide whether "cryptographically authenticated" needs a signature by the actor's key instead. Also: acting as several actors in process, issues/grant-rename-multi-actor.md (public `act_as`).
+To build: a credential names the actor it acts as, the main one included if the node's operator chooses. Today the transport decides (socket: main actor; secret: an actor minted for it), and notes/client-port.md Rejected ("Thin nodes", now phrased as a default) argues from one threat model. Today's credential is a bearer secret inside TLS; decide whether "cryptographically authenticated" needs a signature by the actor's key instead. Also: acting as several actors in process, issues/grant-rename-multi-actor.md (public `act_as`).
 
 ## Spec needing a concept change, not a word change
-Rule text still says "host" here, waiting on this issue and owner removal. Swapping the word would keep the picture:
+Rule text still says "host" here, waiting on this issue. Swapping the word would keep the picture:
 - spec/overview.md Conventions: a label's hosts are "the addresses in its `label.0` record": a fixed list admins write, so a node is reachable as one only at a stable address.
 - spec/sync.md §2, §10, spec/wire.md §10 (`Link`, `Card`): `label.0`, link and card host lists hold fixed addresses; `peer://` is never one (issues/no-server-audit.md rows 26, 27).
 - spec/sync.md §4, §5, §6: two serving paths with different rules: host state and operations against a co-reader peer "serving it as its own host", with proof 3 refused at hosts. Item 2 above.
 - spec/permissions.md §3 (complete pass waits on hosts, and on peers only for a bounded time) and §7 (recovery card and links name hosts): issues/no-server-audit.md rows 13-19.
-- spec/data-model.md §9 (`host.0^`, `own`): admission by owner, also waiting on owner removal.
+- spec/data-model.md §9 (`host.0^`, `own`): admission by record chain (static: the record names the first admin for good), to rethink with this issue.
 - spec/requirements.md: "a hiding host", "Nothing trusts a host's word", an inbox's budget "at a host": each is about a node serving data it cannot read.
 
 ## Two kinds of peer
@@ -65,14 +65,14 @@ One kind of peer needs, in order of what it unblocks:
 1. **One idea of a group's sources** (issues/no-server-audit.md Fixes 4): states, waits, the pre-sync and `complete` judged over saved and direct alike. Meaning decided (above). No wire change. Most of the API's honesty comes from this.
 2. **An address that names a node**: `peer://` in `label.0`, link and card hosts, dialed by key (spec/sync.md §10, spec/wire.md §10, rows 26, 27); one key to name a node by, or a reason for each (item 3 above).
 3. **One serving path**: a reader serving a label and the hub, differing in what proof opens it (item 2; spec/sync.md §4-§6), and one store (item 1).
-4. **Consent**: `Admit` defaults to the user's own nodes (above; row 29, after owners).
+4. **Consent**: `Admit` defaults to the user's own nodes (above; row 29).
 5. **Finding carriers**: listed in group data (above; row 28, Fixes 7).
 
 Then, in the API: `add_peer` takes any node, `peers(g)` is one list and `sync(g, peers)` adds to it, `set_serving` is only limits, `AllWithSavedPeers` becomes all, and `Connected` goes.
 
 ## Names left
 The registry of every old word is issues/deprecated-terms.md; this list is the part this issue owns.
-The public API, CLI, app and notes say node, peer, `Address`, serving, `SyncId`, account (`osis`'s notes/api.md). What still says otherwise waits for owner removal, as the owner work is in there:
+The public API, CLI, app and notes say node, peer, `Address`, serving, `SyncId`, account (`osis`'s notes/api.md). What still says otherwise waits for stage D of issues/owner-to-first-admin.md, which touches the same code:
 - **Engine, perm, proto, `osis-host` names**: `label` and `LabelId`, `HostPolicy`, `host.0^`, `host.redb`, `Tier::Owner`, `Person`/`create_person`, `BatchId`, `Written`, `Mutation::expires` per aspect, `Edge`, `Hub`, `osis_label::ShareLink.hosts`, `CommitKind` beneath the API's, `Time` as `WallMs` by another name. The harness too (`World::add_host`, `Opening.hosts`, `hosts` in test helpers).
 - **Spec rule text**: "host" and "label" throughout; "edge", "rights", "demotion" and "revocation" where a role is meant, one word of "part" and "delta", and "placed" (membership words; a commit held at a host: "uploaded"). The concept changes are the list above.
 - **"Sync ID" over "label"**: engine and spec take the word then too. Today the `SyncId` type is an opaque label ID.
