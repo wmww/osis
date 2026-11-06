@@ -68,16 +68,11 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/cli.md: the `osis` command-line tool's design (commands themselves: `osis --help`), value syntax, JSON, exit codes.
 - notes/dogfood.md: the two-Claude channel over osis (deployment, pinned binary, recipe).
 - notes/std.md: the first-party schemas (notes, contacts, events), the time types, what was left out of vCard and iCalendar, the scenario tests.
-<<<<<<< HEAD
-- notes/testing.md: tiers, vectors, fuzzing, simulator, budgets, policy checks; notes/testing-map.md: the generated spec-to-test map.
+- notes/testing.md: tiers, per-branch oracles, what finds bugs, models, vectors, fuzzing, simulator, order differential, scale checks, policy checks; notes/testing-map.md: the generated spec-to-test map.
+- notes/core-triage.md: open issues sorted and ranked, the untriaged listed.
 - notes/app.md: the first-party app's design direction (facet views, lenses, state in osis, Masonry without Xilem, platform work, prototype order) and the prototype as built.
 - notes/theming.md: themes as a fixed set of safe parameters.
 - notes/android.md: the experimental Android build.
-=======
-- notes/testing.md: tiers, per-branch oracles, what finds bugs, models, vectors, fuzzing, simulator, order differential, scale checks, policy checks; notes/testing-map.md: the generated spec-to-test map.
-- notes/core-triage.md: open issues sorted and ranked, the untriaged listed.
-- notes/app.md: the first-party app's design direction (facet views, lenses, state in osis, Masonry without Xilem, platform work, prototype order).
->>>>>>> 7d0649a (notes/overview: index lines for these notes, open work through core-triage)
 - notes/explainer.md: the docs site.
 - notes/build.md: worktrees, command forms, the merge gate, footguns, disk, expected costs.
 - notes/coordination.md: how a coordinator runs workers, reviewers, periodic checks and the watchdog.

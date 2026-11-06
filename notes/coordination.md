@@ -14,7 +14,7 @@ The build and test mechanics are in notes/build.md; this note is the process aro
 - A cargo run stopped partway (TaskStop, a killed gate) can leave a crate's incremental cache unable to link (`rust-lld: undefined hidden symbol anon.*`): prefer letting a stale gate finish; else `cargo clean -p <crate>` for the crate that fails to link, not the whole target.
 - Hung agents: an agent quiet far past its task's usual length is asked (SendMessage) or stopped. Seen: agents sat for hours on a permission prompt (a foreground `rm` in the scratchpad), and one ended its turn waiting on a `Monitor` whose last event never woke it.
 - One intricate incremental change (fast path, window, cache with a from-scratch fallback) per area in flight at a time.
-- Seed chases: a second seed-found fix in one area stops patching; the next task is a study of the class (what rule is missing or wrong). Every chase so far ended with such a study after 10-30 patches (notes/order-study.md, notes/crypto.md (Frozen coverage)).
+- Seed chases: a second seed-found fix in one area stops patching; the next task is a study of the class (what rule is missing or wrong). Every chase so far ended with such a study after 10-30 patches (notes/testing.md (Arrival-order differential), notes/crypto.md (Frozen coverage)).
 - Simplification pass (Tess, standing): about every six merges, one behaviour-preserving simplification/refactor pass on the area that changed most since the last, with its own reviewer; it counts as a task.
 
 ## Standing rules (Tess)
@@ -27,7 +27,7 @@ The build and test mechanics are in notes/build.md; this note is the process aro
 - Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them.
 
 ## Test budget
-Seed breadth belongs to the periodic checks, not to branches (Tess: cut testing time without letting issues slip). Of about 200 merged tasks' bugs, reading and new targeted tests found about 225, per-branch oracles about 25, periodic and wide runs about 10, rerunning already-run ranges about 2 (notes/test-value-study.md).
+Seed breadth belongs to the periodic checks, not to branches (Tess: cut testing time without letting issues slip). Of about 200 merged tasks' bugs, reading and new targeted tests found about 225, per-branch oracles about 25, periodic and wide runs about 10, rerunning already-run ranges about 2 (notes/testing.md (What finds bugs)).
 - Worker: tier 1, clippy, its own tests, the task's repro, a quick targeted check of what it changed, and the instant checks (`python3 tools/policy.py && python3 tools/spec_map.py --uncited && python3 tools/spec_map.py --gaps`: uncited tests, MUSTs without a RULES anchor and unlisted `OSIS_*` variables are what failed reviewer gates). Then commit; no gate (the reviewer gates after rebasing; worker gates cost hours of agent wall and load everyone else's).
 - Reviewer: the per-branch oracles of notes/testing.md for the area the branch touched, at plain sizes (a tenth of full, `osis_base::testenv::large`; never `OSIS_FULL=1` per branch) on a fresh offset, plus any differential it writes, then the gate. The gate is its only full tier-1/clippy run.
 - Never periodic-sized ranges in a branch (300/200/1000/3000 seeds cost 30-60 min per agent and duplicate the next periodic run; one `_large` harness at 300 seeds was 19,450 CPU-s). Before briefing, add up the oracle set's CPU-s (testing.md costs) and keep it at default sizes. A branch that changes an invariant the per-branch set does not reach gets one targeted larger run, saying why in the brief.
