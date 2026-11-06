@@ -56,7 +56,7 @@ instances=(
   "rotation Lockout L_list_honest.cfg all pass"      # ... the rotator boxed h too (an honest rotation missing a)
   "rotation Lockout L_fork.cfg small fail"           # negative control: a fork from a's own epochs
   "rotation Lockout L_none.cfg small fail"           # negative control: today's refusal, no repudiation
-  "rotation Depth0MC D0_nc.cfg small pass"            # rule 4, no key cycles (issues/keys-depth0.md)
+  "rotation Depth0MC D0_nc.cfg small pass"            # rule 4, no key cycles (notes/crypto.md (Holder actors at depth 0))
   "rotation Depth0MC D0_nc_rev.cfg small pass"
   "rotation Depth0MC D0_nc2.cfg all pass"
   "rotation Depth0MC D0_nc3.cfg small pass"
@@ -88,7 +88,7 @@ instances=(
   "rotation Depth0MC D0_readers_g2.cfg small fail"    # ... a second admin of G re-seals A where it was left out
   "rotation Depth0MC D0_readers_g2_mark.cfg all pass" # ... the rotation records the keyset it left A out at
   "rotation Depth0MC D0_above_g2.cfg small fail"      # alone-above has the same re-seal hole
-  "rotation Finalize F_named_seed3.cfg small pass"       # a finalize names the writes it ends (issues/withheld-departures-seeds.md)
+  "rotation Finalize F_named_seed3.cfg small pass"       # a finalize names the writes it ends (notes/permissions.md (Keys))
   "rotation Finalize F_named_bogus.cfg small pass"
   "rotation Finalize F_named_renew.cfg all pass"
   "rotation Finalize F_old_seed3.cfg small fail"         # name met by the commit alone: seed 3 leaks

@@ -14,7 +14,7 @@
 (* a rotation finding no keyset of h descending from every anchor waits      *)
 (* (LeftOut "wait"), and a removal it would carry goes alone (Alone).       *)
 (* Every rule judges the boxes a node holds valid. Role cycles (rule 4,      *)
-(* issues/keys-depth0.md):                                                   *)
+(* notes/crypto.md (Holder actors at depth 0)):                                                   *)
 (* no key cycles: actor grants in an agreed order, one closing a cycle over  *)
 (* the earlier ones gives no key access, judged over the grants a node     *)
 (* holds. Fresh: the failed candidate it replaced (leave cycle members out, *)
