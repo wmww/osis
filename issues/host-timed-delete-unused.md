@@ -3,3 +3,4 @@
 > Tags: host, node-sync, spec
 
 Unblocked (whole commits step 2b, which reworked delete items in the same files, is built). Drop `at` from the Delete item and its signed digest, the host's pending-delete index and sweep step, `LogRecord::Pending`/`Event::Pending`/the bundle's timed-delete record, the sim's `check.rs` arm, and the spec lines; regenerate vectors.
+The TLA sync model (core/test/tla/sync: `SendTimed`, `timed.cfg`, `timed_live.cfg`, AMBIGUITIES S13, ASSUMPTIONS) still models timed deletes at first death plus D: cut it with them.
