@@ -10,7 +10,7 @@
 - Cost of the shape: validity after a demotion lists every surviving message of the removed author in the frontier (about 34 B per message, a kick caps near 1.9×10^6 messages of one participant) until frontier heads land (notes/frontier-study.md, unbuilt); no compaction; open is O(all commits) (issues/long-aspect-cost.md).
 
 ## Tess's decisions
-- The maker as first admin is the default app's default, not a rule: a chat's first admin may be a realm or anyone. A chat keeps all messages, so it keeps its member history too and needs no roster compaction. Recovery from a vandal writer needs only an admin able to demote, owned or not.
+- The maker as first admin is the default app's default, not a rule: a chat's first admin may be a realm or anyone. A chat keeps all messages, so it keeps its member history too and needs no roster compaction. Recovery from a vandal writer needs only an admin able to demote.
 - Accepted: a stolen unlocked device shows history; no deniability; deletion binds only honest clients; hosts see metadata. Eventual revocation is a general osis limit, not chat's.
 - Member forward secrecy is probably undesirable (and would need erasable per-device KEM keys, MLS-sized; against spec/crypto.md §3).
 - Adding without history should be a core op (issues/history-less-grant.md); segments (below) are the fallback.

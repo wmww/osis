@@ -396,8 +396,6 @@ fn reopen_all(tx: &mut Tx<'_>) -> Result<()> {
 }
 
 impl Engine {
-    /// Takes up a key actor from its seed (a recovery key from a card, a link key from a link)
-    /// for this session: it can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
     /// The inbox a role write about `holder` goes to (`inbox_of`): the actor whose inbox it is,
     /// and the inbox.
     pub fn inbox_of_actor(&mut self, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
@@ -405,6 +403,8 @@ impl Engine {
         self.run(|tx| inbox_of(tx, &h))
     }
 
+    /// Takes up a key actor from its seed (a recovery key from a card, a link key from a link)
+    /// for this session: it can sign (`Mutation::sign_as`) and its boxes open. Returns its tid.
     pub fn hold_key_actor(&mut self, seed: Secret32) -> Result<Tid> {
         let id = Identity::from_seed(seed);
         let t = id.tid();
