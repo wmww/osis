@@ -814,7 +814,7 @@ fn process_wide_rows_through_the_socket() {
     c3.import_bundle(&out[..]).unwrap();
     until(|| p2.at(t, osis::DynamicAspectKey::untyped(ak("note:big.0"))).get().is_ok_and(|v| v == Some(Value::Str(big.clone()))), "the bundle's value at the other node");
     // the new node removed, through the socket
-    c.set_role_now(c.me(), node, None, SetRoleOpts { retain_copy: None }).unwrap();
+    crate::common::block_on(c.remove_node(node, SetRoleOpts { retain_copy: None })).unwrap();
     assert_eq!(c.nodes().unwrap().len(), 1);
     // pages lost to a reconnect: the import says so and runs nothing
     let mut raw = Raw::unix(&sock);
