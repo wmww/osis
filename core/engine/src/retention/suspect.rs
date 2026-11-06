@@ -10,7 +10,7 @@
 //! (`receipt::settled`), judged when the flags are read, from what is held then: a snapshot that
 //! turns invalid gives nothing (spec/permissions.md §5.2), so the flag it had settled shows
 //! again. A snapshot's author that lacked the delta leaves a node that holds it richer until a
-//! writer holding it compacts (notes/node.md Suspect repair). A PendingExpiry entry is never
+//! writer holding it compacts (notes/engine-suspects.md). A PendingExpiry entry is never
 //! dormant: its part's writes reach this node only as a snapshot's copies, and no test on what a
 //! snapshot holds tells whether they repaired it (a listing snapshot may carry nothing of the part;
 //! a copy key-erased at expiry, spec/crdt.md §4.7, lands outside the entry the part wrote; writes

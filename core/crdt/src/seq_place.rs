@@ -1,5 +1,5 @@
 //! A sequence's placement for a node keeping it in its store beside the sequence's pages
-//! (osis-node, notes/node.md Paged state): the cached placement (`seq_lin::Lin`) in its stored
+//! (osis-node, notes/engine-paged.md Paged state): the cached placement (`seq_lin::Lin`) in its stored
 //! form (a top, the rows of each block by arena id, the dot map's chunks by first dot), loaded
 //! in part, with the rows, chunks and records an operation needs loaded on a miss.
 //!

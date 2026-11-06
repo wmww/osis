@@ -45,7 +45,7 @@ Standard footer: CLAUDE.md, notes/build.md, `claudewait`, no wait loops, commit,
 - Security or convergence fix: the worker writes the invariant the fix relies on as a code comment, plus a randomized differential (or an extended oracle) that fails with the fix disabled; the reviewer attacks that argument. Every new test is checked to fail with its fix disabled.
 - Ask the simplicity question in the worker brief ("is there a rule with no points/windows/caches that meets the budget?"), not first in review.
 - Say "first re-run the issue's repro on current main" (issue seeds go stale).
-- Name sections of the big notes, not whole files (testing.md, permissions.md, node.md, ephemeral.md, sync.md are each around 100 KB or more).
+- Name sections of the big notes, not whole files (testing.md, permissions.md, ephemeral.md, sync.md are each around 100 KB or more).
 - Grep the rule's words before citing a spec section or env var (a wrong env var name silently runs the default seeds).
 - A brief asking for TLA results names the instances (`run.sh all` and the C3 instances are periodic-sized: an hour each).
 - The three git footguns: squash with `git reset --soft $(git merge-base HEAD main)`, never `main`; wip-commit before a fix-disabled probe, so the `git checkout <file>` that undoes it loses nothing; `git fetch && git rebase origin/main` (local main lags when the other box merges), without a pipe, and read its result before gating (gates have passed on half-rebased trees; tools/gate.sh does not detect a rebase in progress).

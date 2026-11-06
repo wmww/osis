@@ -80,7 +80,7 @@ pub(crate) fn probe() -> (usize, usize) {
 }
 
 /// What a placement held in part is missing (a node keeps the rows and the dot map in its
-/// store and loads them as needed, notes/node.md Paged state): the blocks and dot-map chunks
+/// store and loads them as needed, notes/engine-paged.md Paged state): the blocks and dot-map chunks
 /// looked at whose rows are not loaded, and the record lookups outside the pages loaded
 /// (`cover`). Whatever misses fails (a follow returns `false`, an op's result is void); the
 /// caller loads what was missed and runs it again. Shared by the copies of one placement.

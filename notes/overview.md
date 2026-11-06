@@ -37,7 +37,7 @@ Open work: issues/, sorted in notes/core-triage.md.
 - Workflow: Tess and agent iterate by discussion. Notes mark what was Tess's decision, the agent's call or a proposal. Decisions waiting on Tess are issues tagged `tess-call`.
 
 ## Notes
-- notes/architecture.md: crate map and DAG, fixed abstractions, error classes, build and test rules, dependency allowlist, osis-base and osis-schema surfaces, where each crate's notes live.
+- notes/architecture.md: crate map and DAG, where each crate's notes live, fixed abstractions, error classes, build and test rules, dependency allowlist, conventions. notes/base-schema.md: the osis-base and osis-schema public surfaces.
 - notes/mvp-progress.md: the MVP final report and how to resume.
 - notes/api-design.md: Tess's API philosophy and the checklist for any API change.
 - notes/api-implementation.md: how the `osis` crate is built over the engine.
@@ -72,8 +72,16 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/networking.md: network design (own transport abstraction, iroh for P2P, official infrastructure, reachability, transport keys), first contact by link, risks, push wake-up proposal, osis-transport as built.
 - notes/peers.md: co-reader peers as built: `reach.0`, dialing, LAN announcements and routes, co-reader serving, local passes.
 - notes/client-port.md: using the API from another process or machine: sources, the client protocol, client actors, the daemon socket.
-- notes/local-store.md: encrypted local store and key-erasure deletion.
-- notes/node.md: osis-engine and osis-node module layout, engine surface, store records, validity, deaths, lost access, paged state.
+- notes/local-store.md: encrypted local store and key-erasure deletion, osis-store as built.
+- notes/engine.md: osis-engine and osis-node layering, the engine-to-sync hook, transactions and rollback, module map, engine surface; index of the engine-* notes:
+  - notes/engine-store.md: store records, index tables, the persisted index and open (lazy headers, saved walks), open costs.
+  - notes/engine-apply.md: examining, pending and re-examining commits, sessions and counters, late parts, writer-side rules, first-sync costs.
+  - notes/engine-validity.md: re-judging, the one rebuild path for un-merge, snapshot authority, carried writes and vouching, uncovering.
+  - notes/engine-retention.md: bodies, deaths dated per node, keep at most and live writes, carriers, dropped bodies coming back, leftovers, purge, waiting parts, undo buffer.
+  - notes/engine-suspects.md: suspect flags, settling, heartbeat repair.
+  - notes/engine-roles.md: edge writes, `secrets.0`/`keys.0` and established epochs, flows readings, rotation invariants, own self-removals in the cover check.
+  - notes/engine-lost-access.md: the lost-access trigger, forgetting, kept copies, bearers, self-removal drops.
+  - notes/engine-paged.md: paged state and sequences, streamed apply and readers, whole rewrites, large values, chunk repair, costs.
 - notes/growth.md: every known cause of permanent growth in stored or synced data.
 - notes/cli.md: the `osis` command-line tool's design (commands themselves: `osis --help`), value syntax, JSON, exit codes.
 - notes/dogfood.md: the two-Claude channel over osis (deployment, pinned binary, recipe).

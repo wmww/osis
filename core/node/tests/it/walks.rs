@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The saved role walks (notes/local-store.md, rebuildable caches; notes/node.md, Open):
+//! The saved role walks (notes/local-store.md, rebuildable caches; notes/engine-store.md, Open):
 //! an open resumes each component's walk from the store and gives what a from-scratch
 //! evaluation gives (spec/permissions.md §5.1 step 5: validity is a function of the held set);
 //! a damaged, truncated or foreign walk is evaluated anew, never an error; a crash at any write
@@ -136,7 +136,7 @@ fn reopen_from_saved_walks_equals_from_scratch() {
     assert!(restored > 0, "no walk was restored");
 }
 
-// spec/permissions.md §5.1 step 5; spec: none (local store index, notes/node.md Open): an open
+// spec/permissions.md §5.1 step 5; spec: none (local store index, notes/engine-store.md Open): an open
 // adapting perm's inputs from the index's per-commit rows gives what a rebuild from the commit
 // records gives (timelines, validity, the rows themselves) over random two-node histories with
 // late arrivals, demotions and role snapshots
@@ -154,7 +154,7 @@ fn reopen_from_edge_rows_equals_rebuild() {
     assert!(snapshots > 0, "no role snapshot");
 }
 
-// spec: none (local store index, notes/node.md Open): a truncated, garbled or missing
+// spec: none (local store index, notes/engine-store.md Open): a truncated, garbled or missing
 // `node/edges` row, or an index tagged with other rules, makes the open rebuild from the commit
 // records: the same timelines and validity, and the rows written again as they were
 #[test]
@@ -185,7 +185,7 @@ fn damaged_edge_rows_are_rebuilt() {
     }
 }
 
-// spec: none (notes/node.md, Open): a reopen of the caches never takes the engine's generation
+// spec: none (notes/engine-store.md, Open): a reopen of the caches never takes the engine's generation
 // back, so a cache keyed on it (the sync engine's labels) is never taken for current afterwards
 #[test]
 fn reload_never_takes_generation_back() {
