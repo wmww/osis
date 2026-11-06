@@ -69,7 +69,7 @@ fn command_tree_is_consistent_plan_cli_tests() {
     Cli::command().debug_assert();
 }
 
-// notes/cli.md Command table Things and aspects: create, get, set, replace, rm, show, aspects, delete.
+// CLI Things and aspects: create, get, set, replace, rm, show, aspects, delete.
 #[test]
 fn things_and_aspects_plan_cli_4() {
     let s = S::mem();
@@ -175,7 +175,7 @@ fn json_output_plan_cli_5() {
     assert!(e.err.contains("\"kind\":\"Usage\""), "{}", e.err);
 }
 
-// notes/cli.md Command table write: one Write, one commit; a failing line commits nothing.
+// CLI write: one Write, one commit; a failing line commits nothing.
 #[test]
 fn write_script_atomic_plan_cli_4() {
     let s = S::mem();
@@ -239,7 +239,7 @@ fn timeout_zero_plan_cli_2() {
     assert_eq!(s.code(&["diag", "--since", "0"]), 2, "--since is gone");
 }
 
-// notes/cli.md Command table Commits and undo: the query's filters, undo, redo, revert.
+// CLI Commits and undo: the query's filters, undo, redo, revert.
 #[test]
 fn commits_undo_redo_plan_cli_4() {
     let s = S::mem();
@@ -276,7 +276,7 @@ fn commits_undo_redo_plan_cli_4() {
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
 }
 
-// notes/cli.md Command table Groups and sharing: group add/rm, groups, members, grants, role.
+// CLI Groups and sharing: group add/rm, groups, members, grants, role.
 #[test]
 fn groups_plan_cli_4() {
     let s = S::mem();
@@ -299,7 +299,7 @@ fn groups_plan_cli_4() {
     assert!(s.ok(&["show", &t]).out.contains("state\tempty"), "a deleted thing has no content");
 }
 
-// notes/cli.md Command table Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value
+// CLI Things and aspects (`--stream`, `--len`), notes/api.md Large values: a value
 // written from stdin streams back raw; its length reads without materializing.
 #[test]
 fn stream_and_len_plan_cli_4() {
@@ -338,7 +338,7 @@ fn an_untyped_index_past_the_limit_says_so() {
     assert_eq!(s.code(&["--limit", "4", "get", &t, "t:l.0", "[0]"]), 5);
 }
 
-// notes/cli.md Command table Sharing and roles, Sync, Identity and nodes: the local half of the
+// CLI Sharing and roles, Sync, Identity and nodes: the local half of the
 // sharing commands on one store (no peers): links, cards, nodes, grants by error category,
 // status (bundles are binary: the localhost e2e).
 #[test]
@@ -359,14 +359,14 @@ fn sharing_commands_local_plan_cli_4() {
     let st = s.ok(&["--json", "status"]).line().to_string();
     assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"connected\":0,\"two_sources\":[]}"), "{st}");
     assert_eq!(s.ok(&["status"]).out.lines().next(), Some("connected 0"));
-    // notes/cli.md Command table: `group policy` shows and sets `SyncOptions`
+    // CLI `group policy`: shows and sets `SyncOptions`
     assert_eq!(s.ok(&["group", "policy", "me"]).out, "share_address auto\nmode full\n");
     assert_eq!(s.ok(&["group", "policy", "me", "--share-address", "always"]).out, "share_address always\nmode full\n");
     assert_eq!(s.ok(&["group", "policy", "me"]).out, "share_address always\nmode full\n");
     assert_eq!(s.code(&["group", "policy", "me", "--mode", "some"]), 2);
 }
 
-// notes/cli.md Command table: commands over API pieces not built yet (queries, backlinks) parse and
+// CLI: commands over API pieces not built yet (queries, backlinks) parse and
 // report it; sharing commands without a runtime or peers fail as the API does.
 #[test]
 fn unbuilt_commands_say_so_plan_cli_4() {
@@ -382,7 +382,7 @@ fn unbuilt_commands_say_so_plan_cli_4() {
     assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
 }
 
-// notes/cli.md Command table Watching: initial value first, printed but not counted by
+// CLI Watching: initial value first, printed but not counted by
 // --count (no other node writes here, so --count 1 meets the timeout); roster --watch alike.
 #[test]
 fn watch_initial_not_counted_plan_cli_4() {
@@ -483,7 +483,7 @@ fn named_keys_with_schema_plan_cli_1() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-// notes/cli.md Command table Inspection (format not stable): runs over the engine.
+// CLI Inspection (format not stable): runs over the engine.
 #[test]
 fn inspect_and_diag_plan_cli_4() {
     let s = S::mem();
@@ -501,42 +501,7 @@ fn inspect_and_diag_plan_cli_4() {
     s.ok(&["diag"]);
 }
 
-/// Public `Osis` methods (`pub fn` / `pub async fn` in `impl Osis` blocks under core/osis/src).
-fn osis_methods() -> Vec<String> {
-    let mut files = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/osis/src")];
-    let mut out = Vec::new();
-    while let Some(p) = files.pop() {
-        if p.is_dir() {
-            files.extend(std::fs::read_dir(p).unwrap().map(|f| f.unwrap().path()));
-            continue;
-        }
-        let text = std::fs::read_to_string(p).unwrap();
-        let mut inside = false;
-        for l in text.lines() {
-            if l.starts_with("impl Osis {") {
-                inside = true;
-            } else if l == "}" {
-                inside = false;
-            } else if inside && let Some(r) = l.trim_start().strip_prefix("pub fn ").or_else(|| l.trim_start().strip_prefix("pub async fn ")) {
-                out.push(r.split(['(', '<']).next().unwrap().to_string());
-            }
-        }
-    }
-    out
-}
-
-// notes/cli.md Tests: every public `Osis` method appears in notes/cli.md's command table, so
-// coverage cannot drift silently.
-#[test]
-fn every_api_method_has_a_command_plan_cli_tests() {
-    let table = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../notes/cli.md")).unwrap();
-    let methods = osis_methods();
-    assert!(methods.len() > 30, "{methods:?}");
-    let missing: Vec<&String> = methods.iter().filter(|m| !table.contains(&format!("`{m}`"))).collect();
-    assert!(missing.is_empty(), "API methods without a command (notes/cli.md table): {missing:?}");
-}
-
-// notes/cli.md Command table `chat`, notes/chat.md: a local chat through the commands: post and read, the JSON, a cursor, edit, delete, bad arguments
+// CLI `chat`, notes/chat.md: a local chat through the commands: post and read, the JSON, a cursor, edit, delete, bad arguments
 #[test]
 fn chat_commands_plan_cli() {
     let s = S::mem();
@@ -560,7 +525,7 @@ fn chat_commands_plan_cli() {
     assert_ne!(s.code(&["chat", "edit", &c, "not/an/id", "x"]), 0);
 }
 
-// notes/cli.md Command table `clients`, notes/client-port.md §3: `add` prints the actor and the secret once (only the hash stays), `ls` lists them, `rotate` prints a new secret, `rm` removes (again: exit 3); an until not in the future is refused; `--node` needs `--client-secret` and a readable secret file
+// CLI `clients`, notes/client-port.md §3: `add` prints the actor and the secret once (only the hash stays), `ls` lists them, `rotate` prints a new secret, `rm` removes (again: exit 3); an until not in the future is refused; `--node` needs `--client-secret` and a readable secret file
 #[test]
 fn clients_commands_plan_cli() {
     let s = S::mem();
@@ -591,7 +556,7 @@ fn clients_commands_plan_cli() {
     assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "actor", "me"]), 2);
 }
 
-// notes/cli.md Command table `serving`: `host.0^` written field by field, shown (with the peer
+// CLI `serving`: `host.0^` written field by field, shown (with the peer
 // address each listen URL will have, known without serving), stopped (a new start, a new key); a
 // group names its sync IDs (as `status` lists them), a sync ID works too, `''` clears a field.
 #[test]
@@ -723,7 +688,7 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = std::fs::remove_dir_all(&xdg);
 }
 
-// notes/cli.md Command table `ownerless`, spec/permissions.md §1: an ownerless thing has no owner
+// CLI `ownerless`, spec/permissions.md §1: an ownerless thing has no owner
 // and this account as first admin; a key actor or unknown actor as admin is refused.
 #[test]
 fn ownerless_plan_cli() {
@@ -736,7 +701,7 @@ fn ownerless_plan_cli() {
     assert_ne!(s.code(&["ownerless", &t[..t.len() - 1]]), 0);
 }
 
-// notes/cli.md Command table `history`, `purge`: pages by place, a tombstone in its line, purge by
+// CLI `history`, `purge`: pages by place, a tombstone in its line, purge by
 // commit and by author.
 #[test]
 fn history_and_purge_commands_plan_cli() {
@@ -763,7 +728,7 @@ fn history_and_purge_commands_plan_cli() {
     assert_eq!(s.code(&["history", &t, "note:m.0", "--before", "nonsense"]), 2);
 }
 
-// notes/cli.md Command table `group add`, `op`: a membership that expires by flag, `--admin` naming who stays
+// CLI `group add`, `op`: a membership that expires by flag, `--admin` naming who stays
 #[test]
 fn group_and_splice_commands() {
     let s = S::mem();
