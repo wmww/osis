@@ -1,5 +1,5 @@
 # Handoff to the next coordinator
-> Summary: Where the permissions and keys work stands for whoever coordinates next: Tess's standing guidance, the security issue to take first, owner removal (steps 0-1 built, step 2 planned), findings from unmerged branches that exist only here, open questions, other open work in rough priority, process lessons. Rewrite or delete once taken.
+> Summary: Where the permissions and keys work stands for whoever coordinates next: Tess's standing guidance, owner removal (steps 0-1 and step 2 stage A built), findings from unmerged branches that exist only here, open questions, other open work in rough priority, process lessons. Rewrite or delete once taken.
 
 Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md and notes/questions-for-tess.md first.
 
@@ -10,17 +10,14 @@ Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md and notes/que
 - Greenfield is cheap: build reference models and TLA checks freely. Model-check every major design change first; the models have found real holes every time.
 - Ask Tess questions one at a time, explaining the trade-off and why users care.
 
-## Security first
-Security issues (`> Tags: security`) before other keys work; notes/core-triage.md lists them.
-
 ## Owner removal (notes/owner-removal-plan.md)
 - Built: step 0 (keys at depth 0), step 1 (roster snapshots deleted).
-- Next: step 2, owners become first admins, staged in issues/owner-to-first-admin.md (A, ownerless things derive, built; B one record and one authority class, C words, D API and CLI). Build step 3 (disputes) right after B: between them a removed admin can backdate and take any thing back. Stage D overlaps the API work in issues/api-after-owners.md: coordinate.
+- Built: step 2 stage A (ownerless things derive). Next: stage B, staged in issues/owner-to-first-admin.md (B one record and one authority class, C words, D API and CLI). Build step 3 (disputes) right after B: between them a removed admin can backdate and take any thing back. Stage D overlaps the API work in issues/api-after-owners.md: coordinate.
 - Steps 3 and 6 are de-risked by models (core/test/roles-model `trust`; core/test/tla/sides).
 
 ## Findings from branches that never reached main
 These branches are gone; what they found is recorded only here. Redo the work from these notes.
-- **keys-tidy**: (1) a grant to a holder whose keyset is blocked should go through with the holder left out (`Sealed::Out`), not wait; (2) `NamesHeld::departed` (core/engine/src/engine/secrets.rs) counts a removal's own epoch before its edge write is applied; reported as a bug on main too, not confirmed here. (3) Bounding rotation names (issues/rotation-names-grow.md): the issue's "chain coverage through supersedes" proposal leaks (a TLA instance found it); a sound base-chain rule breaks when a base rotation turns invalid. Three options were drafted for Tess; they need redoing.
+- **keys-tidy**: (1) a grant to a holder whose keyset is blocked should go through with the holder left out (`Sealed::Out`), not wait; (2) a removal's own epoch counted as departed before its edge write is applied: reported, unconfirmed; recheck against the departure rule in spec/crypto.md §4. (3) Bounding rotation names (issues/rotation-names-grow.md): the issue's "chain coverage through supersedes" proposal leaks (a TLA instance found it); a sound base-chain rule breaks when a base rotation turns invalid. Three options were drafted for Tess; they need redoing.
 
 ## Open questions for Tess (notes/questions-for-tess.md)
 Q12 (depth 0 bends, with the readers leak: mark or limit), Q11 (three kept limits), Q5 realms (on hold until owners settle).
