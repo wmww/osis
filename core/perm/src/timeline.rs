@@ -34,6 +34,9 @@ impl At {
     /// The current state at the end of time: only edges without `until` count. Re-grant
     /// (§5.2) is judged here.
     pub const END: At = At { point: None, ts: None };
+    /// The current state as keys see it (spec/crypto.md §4): every `until` disregarded, a
+    /// removal's retain value (`until` 0, §2) counting as no edge.
+    pub const KEYS: At = At { point: None, ts: Some(Ts::ZERO) };
 }
 
 /// Layer 1 evaluated over a held set.

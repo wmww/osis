@@ -87,12 +87,13 @@ fn compacted_rotation_covers_its_names_spec_crypto_4() {
     }
 }
 
-// spec/crypto.md §4, spec/permissions.md §5.2: N drops R1's `keys.0` body under admin P's
-// compaction snapshot S; the owner then demotes P with a frontier not listing S, so S turns
-// invalid and that body is missing again at N (R1's `secrets.0` still held): the read epoch
-// still covers what its names name (W's departure); P's demotion rotates read anyway.
+// spec/crypto.md §4 (names: an entry is bound to a held valid keyset body), spec/permissions.md
+// §5.2: N drops R1's `keys.0` body under admin P's compaction snapshot S; the owner then demotes
+// P with a frontier not listing S, so S turns invalid and that body is missing again at N (R1's
+// `secrets.0` still held). No held valid keyset binds the read epoch's entry any more, so it
+// covers nothing: N rotates read once (an extra rotation, no lockout) and is covered by its own.
 #[test]
-fn rotation_missing_again_covers_its_names_spec_crypto_4() {
+fn rotation_missing_again_binds_nothing_spec_crypto_4() {
     let (mut lp, t, r1) = removed_writer(942, true);
     lp.sync_all().unwrap();
     let p = lp.peers[2].engine.tid();
@@ -111,8 +112,9 @@ fn rotation_missing_again_covers_its_names_spec_crypto_4() {
     lp.peers[0].engine.demote(&t, &Demotion { holder: p, new: Some(edge(Role::Read)), presync: PreSync::Synced, retain: None }).unwrap();
     lp.sync(0, 3).unwrap();
     assert!(!lp.peers[3].engine.core.ix.commits.get(&s).unwrap().valid.iter().any(|v| *v), "S invalid at N");
-    assert!(blocked_at(&mut lp, 3, t).is_empty(), "R1 missing again: still covered by names");
-    assert!(lp.peers[3].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "no extra rotation");
+    assert_eq!(blocked_at(&mut lp, 3, t), BTreeSet::from([Role::Read]), "R1's keyset missing again: its entry binds to nothing");
+    assert!(!lp.peers[3].engine.ensure_rotated(&t).unwrap().0.commits.is_empty(), "N rotates read");
+    assert!(blocked_at(&mut lp, 3, t).is_empty(), "covered by its own rotation");
 }
 
 /// A thing of peer `i`'s with secrets of its own.
@@ -237,7 +239,7 @@ fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Op
             let held = tx.core.epochs(&a).unwrap();
             let holders = super::recipients(tx, &tx.core.id.tid(), &a, &[(me, keep)])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
-            let rot = super::rotation_into(tx, &mut m, a, &roles, &held, &holders, &[])?;
+            let rot = super::rotation_into(tx, &mut m, a, &roles, &held, &holders, false)?;
             crate::engine::Engine::commit_tx(tx, m)?;
             super::record(tx, a, &rot)
         })
@@ -283,7 +285,7 @@ fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
             let held = tx.core.epochs(&g).unwrap();
             let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[(b, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
-            let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, &[])?;
+            let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, false)?;
             crate::engine::Engine::commit_tx(tx, m)?;
             super::record(tx, g, &rot)
         })
@@ -327,7 +329,7 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
                 let held = tx.core.epochs(&g).unwrap();
                 let holders = super::recipients(tx, &tx.core.id.tid(), &g, &[(other, Some(Role::Read))])?.ok_or(super::SEAL_WAITS)?;
                 let mut m = Mutation::new();
-                let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, &[])?;
+                let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, false)?;
                 crate::engine::Engine::commit_tx(tx, m)?;
                 super::record(tx, g, &rot)
             })
@@ -425,7 +427,7 @@ fn forked_reseals(seed: u64) -> (bool, usize) {
                 let held = tx.core.epochs(&g).unwrap();
                 let holders = super::recipients(tx, &tx.core.id.tid(), &g, &skip)?.ok_or(super::SEAL_WAITS)?;
                 let mut m = Mutation::new();
-                let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, &[])?;
+                let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, false)?;
                 crate::engine::Engine::commit_tx(tx, m)?;
                 super::record(tx, g, &r)
             });
@@ -570,7 +572,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
         .engine
         .run(|tx| {
             let held = tx.core.epochs(&g).unwrap();
-            let ks = osis_keys::keyset(&s, held.read.secret(&s).unwrap(), &Default::default());
+            let ks = osis_keys::keyset(&s, held.read.secret(&s).unwrap(), &Default::default(), &Default::default());
             let state = crate::flows::secrets_in(tx, &g)?;
             let at = ct::Epoch { n: s.n(), nonce: *s.nonce() };
             let key = ct::HistoryKey { role: Role::Read, epoch: at.clone() };
@@ -743,7 +745,7 @@ fn writer_rotation_skips(list_s: bool) {
             let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
             let r = &rot.rotated[0];
             let list: BTreeSet<osis_crypto::Epoch> = if list_s { [s].into() } else { BTreeSet::new() };
-            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(&r.epoch, &r.secret, &list));
+            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(&r.epoch, &r.secret, &list, &rot.names));
             crate::flows::put_secrets(&mut m, g, &rot.secrets, false)?;
             crate::flows::put_keysets(&mut m, g, &rot.keys)?;
             crate::engine::Engine::commit_tx(tx, m)?;
@@ -909,7 +911,7 @@ pub(super) fn rotate_leaving_out(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTr
         let held = tx.core.epochs(&g).unwrap();
         let holders = super::recipients(tx, &tx.core.id.tid(), &g, &skip)?.ok_or(super::SEAL_WAITS)?;
         let mut m = Mutation::new();
-        let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, &[])?;
+        let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
         crate::engine::Engine::commit_tx(tx, m)?;
         super::record(tx, g, &r)
     });

@@ -175,18 +175,16 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
 /// The rotation of `roles` of `a` (boxes for `holders`, from `recipients`), written into `m`, its
 /// history boxes carrying the names of the departures from `a` this node holds
 /// (`departures::names`). The superseded epochs' secrets must be held: `held` is this node's view
-/// (derived epochs for the switch to secrets of its own). `pending`: departures from `a` the same
-/// commit makes (a removal's: the names' departs mark).
-pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, holders: &[Recipient], pending: &[Departure]) -> Result<Rotation> {
+/// (derived epochs for the switch to secrets of its own). `departs`: the same commit makes a
+/// departure from `a` (a removal's rotation): its names mark it by `ts` and signer, and the
+/// commit covers that departure itself (spec/crypto.md §4, covers).
+pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, holders: &[Recipient], departs: bool) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
-    // a departing commit names itself by its `ts`, fixed here, and signer (set before this)
-    let departs = if pending.is_empty() {
-        None
-    } else {
+    let own = departs.then(|| {
         let ts = *m.ts.get_or_insert_with(|| tx.core.hlc.next());
-        Some(osis_keys::Own { ts: ts.to_u64(), node: m.signer.unwrap_or(tx.core.id.tid()) })
-    };
-    let names = departures::names(tx.core, &a, departs);
+        osis_keys::Own { ts: ts.to_u64(), node: m.signer.unwrap_or(tx.core.id.tid()) }
+    });
+    let names = departures::names(tx.core, &a, own);
     let rot = rotate(&a, roles, held, &secrets, holders, &names, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     put_keysets(m, a, &rot.keys)?;
@@ -251,7 +249,7 @@ fn rotate_boxing(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>, hold
     if who != tx.core.id.tid() {
         m.sign_as(who);
     }
-    let rot = rotation_into(tx, &mut m, a, roles, &held, holders, &[])?;
+    let rot = rotation_into(tx, &mut m, a, roles, &held, holders, false)?;
     if refreshes_deposit(tx.core, &who, &a, roles) {
         fresh_deposit_seed(tx, &mut m, a)?;
     }
@@ -433,7 +431,7 @@ fn own_secrets_rot(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<Option<Ow
     let held = tx.core.epochs(&t).ok_or(Error::Misuse("the secrets it derives from are not held"))?;
     let holders = recipients(tx, &who, &t, &[])?.ok_or(SEAL_WAITS)?;
     let mut m = Mutation::new();
-    let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, &[])?;
+    let rot = rotation_into(tx, &mut m, t, &ROLES.into_iter().collect(), &held, &holders, false)?;
     fresh_deposit_seed(tx, &mut m, t)?;
     let to = unreached(tx, &t, &rot)?;
     let c = Engine::commit_tx(tx, m)?;

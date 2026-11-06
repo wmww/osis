@@ -20,6 +20,7 @@ impl Time {
 pub struct Ts(u64);
 
 impl Ts {
+    pub const ZERO: Ts = Ts(0);
     /// Exclusive bound on `wall_ms`.
     pub const WALL_LIMIT: u64 = 1 << 47;
     /// `None` if `wall_ms >= 2^47` or `logical >= 2^16`.

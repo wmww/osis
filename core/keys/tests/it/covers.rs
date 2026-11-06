@@ -27,7 +27,7 @@ fn name(thing: Tid, b: u8) -> Name {
 }
 
 fn naming(n: Name) -> Names {
-    Names { list: [n].into(), ..Names::default() }
+    Names { list: [n].into(), departs: None }
 }
 
 /// Actor `a` owned by P after its own-secrets switch boxing `extra` holders too.
@@ -165,7 +165,13 @@ fn missing_box_covers_nothing() {
         fn met(&self, _: &Name) -> bool {
             false
         }
+        fn holds(&self, _: &osis_base::Tid, _: Role) -> bool {
+            true
+        }
         fn departed(&self, _: &osis_keys::Own) -> bool {
+            true
+        }
+        fn publishes(&self, _: Role, _: &osis_crypto::Epoch, _: &osis_keys::NamesDigest) -> bool {
             true
         }
     }

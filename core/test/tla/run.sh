@@ -102,6 +102,10 @@ instances=(
   "rotation Finalize F_issue_seed3.cfg small fail"        # rotate instead of re-seal: history leaks
   "rotation Finalize F_partial_all.cfg all fail"          # known writes apply alone: name covers too much
   "rotation Finalize F_partial_bogus.cfg small fail"      # ... and an unheld reset locks out
+  "rotation Cover C_leaver_mark.cfg small fail"           # negative control: any live entry covers (the leaver lists its self-removal)
+  "rotation Cover C_drop_any.cfg small fail"              # negative control: a departure attributed to a later audit drop
+  "rotation Cover C_drop.cfg small pass"                  # attribution to the newest lowering (notes/crypto.md (Frozen coverage))
+  "rotation Cover C_leaver.cfg all pass"                  # the author rule against every forgery of the leaver
   "roles Roles MC_core.cfg small pass"
   "roles Roles MC_multi.cfg small pass"
   "roles Roles MC_group.cfg all pass"

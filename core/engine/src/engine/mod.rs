@@ -169,17 +169,22 @@ pub struct KeysetRec {
     pub lists: Vec<osis_crypto::Epoch>,
     pub kem: Option<Vec<u8>>,
     pub possession: Option<[u8; 32]>,
+    /// The digest of the rotation's names it publishes (spec/crypto.md §4).
+    pub names: osis_keys::NamesDigest,
 }
 
 /// A held valid keyset (`Indexes::keysets`): the epochs the supersedes lists of the bodies
 /// writing it name, joined, its KEM key (the first such body's of suite 1 noted), and the
 /// possession keys those bodies publish, joined (any of them verifies a possession signature,
-/// spec/crypto.md §4: a body other than the keyset's rotation is a forgery, within its limit).
+/// spec/crypto.md §4: a body other than the keyset's rotation is a forgery, within its limit),
+/// and the names digests they publish, each with its body's author (what binds a history entry
+/// to a rotator, spec/crypto.md §4: a forger's body binds entries to the forger).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HeldKeyset {
     pub lists: BTreeSet<osis_crypto::Epoch>,
     pub kem: Option<Vec<u8>>,
     pub possession: BTreeSet<[u8; 32]>,
+    pub names: BTreeSet<(osis_keys::NamesDigest, Tid)>,
 }
 
 /// A snapshot part's frontiers and `Absorbed` (commit, author).

@@ -38,7 +38,7 @@ fn rotate_skipping(lp: &mut LocalPeer, i: usize, g: Tid, rot: &BTreeSet<Role>, s
             let held = tx.core.epochs(&g).unwrap();
             let holders = super::recipients(tx, &tx.core.id.tid(), &g, &skip)?.ok_or(super::SEAL_WAITS)?;
             let mut m = Mutation::new();
-            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, &[])?;
+            let r = super::rotation_into(tx, &mut m, g, rot, &held, &holders, false)?;
             crate::engine::Engine::commit_tx(tx, m)?;
             super::record(tx, g, &r)
         })
@@ -622,7 +622,7 @@ fn forged_keyset_invalid_where_removal_arrived_spec_crypto_4() {
     send_skipping(&mut lp, 1, 0, &c_m);
     let s_d = osis_crypto::Secret32::from_bytes([79; 32]);
     let x_d = Epoch::derive(&m, Role::Read, kk.n() + 1, &s_d).unwrap();
-    let forged = osis_keys::keyset(&x_d, &s_d, &BTreeSet::from([k0, kk]));
+    let forged = osis_keys::keyset(&x_d, &s_d, &BTreeSet::from([k0, kk]), &Default::default());
     let mut mu = Mutation::new();
     mu.op(m, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some(forged))) }).unwrap();
     mu.unchecked();

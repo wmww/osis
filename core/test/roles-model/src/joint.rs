@@ -233,10 +233,19 @@ impl JHist {
 
     /// §2 self-removal: lowers an edge whose holder the author has admin on, and either lowers
     /// the author's own edge or the author has no owner-chain or edge-admin authority on the
-    /// target at that point.
+    /// target at that point with the holder's edge there disregarded (authority through the
+    /// holder does not count).
     fn is_self_removal(&self, edges: &[Vec<Role>], r: &[Vec<Role>], w: &JWrite) -> bool {
         let lowers = w.role <= edges[w.holder][w.target];
-        lowers && self.admin_of(r, w.author, w.holder) && (w.holder == w.author || self.class(r, w.author, w.target) == Class::None)
+        if !lowers || !self.admin_of(r, w.author, w.holder) {
+            return false;
+        }
+        if w.holder == w.author {
+            return true;
+        }
+        let mut without = edges.to_vec();
+        without[w.holder][w.target] = Role::None;
+        self.class(&self.roles(&without), w.author, w.target) == Class::None
     }
 
     /// §5.1 steps 2-3: whether write `w` applies at this point, and its attribution: a

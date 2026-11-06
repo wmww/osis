@@ -122,10 +122,18 @@ impl EpochInfo {
         self.checked().is_none() || self.met_names(held).next().is_some()
     }
 
-    /// The names of its history entries whose names are all met under `held`: what a node relies
-    /// on it for (spec/crypto.md §4, covers).
+    /// The names of its history entries whose names are all met under `held`: what establishes
+    /// it (spec/crypto.md §4, established).
     pub fn met_names<'a>(&'a self, held: &'a dyn Held) -> impl Iterator<Item = &'a Names> + 'a {
         self.names.iter().filter(move |n| n.met(held))
+    }
+
+    /// The names it (epoch `e` of role `r`) covers departures by (spec/crypto.md §4, covers):
+    /// those of a history entry whose names are met and whose digest a held valid keyset of `e`
+    /// publishes by an author holding `r` (`Held::publishes`). An entry by anyone else, or by a
+    /// rotator since lowered below `r`, covers nothing.
+    pub fn covering_names<'a>(&'a self, r: Role, e: &'a Epoch, held: &'a dyn Held) -> impl Iterator<Item = &'a Names> + 'a {
+        self.met_names(held).filter(move |n| held.publishes(r, e, &n.digest()))
     }
 }
 
@@ -254,7 +262,8 @@ impl RoleEpochs {
     }
 
     /// Records that held valid rotation commit `commit` writes `e`'s keyset, listing `supersedes`
-    /// (`SecretsWrite::rotation_commit`). Only one below `e`'s n count. Returns whether it is new.
+    /// (`SecretsWrite::rotation_commit`). Only epochs below `e`'s n count. Returns whether it is
+    /// new.
     pub fn set_rotation(&mut self, e: Epoch, commit: CommitId, supersedes: BTreeSet<Epoch>) -> bool {
         let list: BTreeSet<Epoch> = supersedes.into_iter().filter(|s| s.n() < e.n()).collect();
         self.observe(e).rotations.insert(commit, list.clone()) != Some(list)
@@ -625,26 +634,31 @@ mod tests {
         assert_eq!(order, vec![ep(2, 5), ep(1, 0)]);
     }
 
-    /// Holds the named commits whose first byte is in `have`, and the departing commit when
-    /// `departed`.
+    /// Holds the named commits whose first byte is in `have`; every rotator holds its role.
     struct Holding {
         have: BTreeSet<u8>,
-        departed: bool,
     }
 
     impl Held for Holding {
         fn met(&self, n: &crate::Name) -> bool {
             self.have.contains(&n.key.commit.0[0])
         }
-        fn departed(&self, _: &crate::Own) -> bool {
-            self.departed
+        fn holds(&self, _: &Tid, _: Role) -> bool {
+            true
+        }
+        fn departed(&self, o: &crate::Own) -> bool {
+            u8::try_from(o.ts).is_ok_and(|b| self.have.contains(&b))
+        }
+        fn publishes(&self, _: Role, _: &Epoch, _: &crate::NamesDigest) -> bool {
+            true
         }
     }
 
-    fn names(cs: &[u8], departs: bool) -> Names {
+    /// Names of the commits `cs`; `own`: the entry's rotation commit departs, by its `ts`.
+    fn names(cs: &[u8], own: Option<u8>) -> Names {
         let t = Tid::from_bytes([5; 15]);
         let list = cs.iter().map(|c| crate::Name { thing: t, key: crate::Key { ts: u64::from(*c), node: t, commit: cid(*c) } }).collect();
-        Names { list, departs: departs.then_some(crate::Own { ts: 99, node: t }) }
+        Names { list, departs: own.map(|ts| crate::Own { ts: u64::from(ts), node: t }) }
     }
 
     // spec/crypto.md §4 (established; names): an epoch established by its rotation commit or a
@@ -655,35 +669,34 @@ mod tests {
     fn names_gate_establishment() {
         let mut r = RoleEpochs::default();
         r.set_rotation(ep(3, 0), cid(3), set(&[ep(2, 0)]));
-        let none = Holding { have: BTreeSet::new(), departed: false };
+        let none = Holding { have: BTreeSet::new() };
         r.establish(&none);
         assert_eq!(r.current(), vec![ep(3, 0)], "no secret: established by its commit alone, e2 never seen");
         r.set_secret(ep(3, 0), Secret32::from_bytes([3; 32]));
         r.establish(&none);
         assert!(!r.is_established(&ep(3, 0)), "secret held, no history entry opened");
-        r.add_names(ep(3, 0), names(&[7, 8], true));
+        r.add_names(ep(3, 0), names(&[7, 8], Some(3)));
         r.establish(&none);
         assert!(!r.is_established(&ep(3, 0)));
-        let some = Holding { have: [7].into(), departed: true };
-        r.establish(&some);
+        r.establish(&Holding { have: [3, 7].into() });
         assert!(!r.is_established(&ep(3, 0)), "8 not held");
-        r.establish(&Holding { have: [7, 8].into(), departed: false });
+        r.establish(&Holding { have: [7, 8].into() });
         assert!(!r.is_established(&ep(3, 0)), "the departing commit not held");
-        let all = Holding { have: [7, 8].into(), departed: true };
+        let all = Holding { have: [3, 7, 8].into() };
         r.establish(&all);
         assert!(r.is_established(&ep(3, 0)));
         // another entry (a forger holding e3) with fewer names: any entry met suffices
-        r.add_names(ep(3, 0), names(&[7], false));
-        r.establish(&Holding { have: [7].into(), departed: false });
+        r.add_names(ep(3, 0), names(&[7], None));
+        r.establish(&Holding { have: [7].into() });
         assert!(r.is_established(&ep(3, 0)));
         // by snapshot alone, alike
         let mut x = RoleEpochs::default();
         x.set_snapshot(ep(4, 0));
         x.set_secret(ep(4, 0), Secret32::from_bytes([4; 32]));
-        x.add_names(ep(4, 0), names(&[7], true));
-        x.establish(&Holding { have: [7].into(), departed: false });
+        x.add_names(ep(4, 0), names(&[7], Some(4)));
+        x.establish(&Holding { have: [7].into() });
         assert!(!x.is_established(&ep(4, 0)));
-        x.establish(&Holding { have: [7].into(), departed: true });
+        x.establish(&Holding { have: [4, 7].into() });
         assert!(x.is_established(&ep(4, 0)));
         // a reading-only secret needs no names (it is never used)
         let mut y = RoleEpochs::default();

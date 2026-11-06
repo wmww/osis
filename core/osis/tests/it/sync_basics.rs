@@ -194,6 +194,10 @@ fn polling_sync_now_costs_nothing_and_holds_nothing_back() {
     }
     let after = w.traffic(&b);
     assert_eq!((after.up, after.down), (before.up, before.down), "polling a live node sends nothing");
+    // every relay of another node's blob lands within SETTLE_MS of receiving it (a delay drawn
+    // from the blob's ID): let them, so that the connection is quiet below
+    w.advance(31_000);
+    w.run();
     // the connection may have died unnoticed (a network change): one ping asks, not one per poll
     w.advance(6000);
     w.run();

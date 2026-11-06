@@ -98,7 +98,7 @@ impl Engine {
                 let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
                 let mut holders = crate::rotation::recipients(tx, &tx.core.id.tid(), a, &[])?.ok_or(crate::rotation::SEAL_WAITS)?;
                 holders.retain(|r| boxed.contains(&r.holder));
-                rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, &[])?));
+                rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, false)?));
             }
             let c = Engine::commit_tx(tx, m)?;
             for (a, rot) in &rots {

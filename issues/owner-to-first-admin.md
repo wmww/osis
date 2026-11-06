@@ -32,7 +32,6 @@ Counts are `grep -ci owner` per file at 8c168bf1c; words with another meaning ar
 ## Left from Stage A
 - Rule 2 of the model (a derived epoch written under is current until listed; its writer merges): issues/derived-write-merge.md (spec/crypto.md §4 states the limit meanwhile).
 - The inbox fallback and the `label.0` cross-publish go up first-admin links whether or not the record edge still stands: a removed first admin of an ownerless thing that names no inbox gets inbox blobs about it (boxes it cannot open) and its `label.0` writes (label IDs, steps, hosts) until B's rules (Risk 5).
-- A node removing its account's admin edge (the first admin's record edge included) writes a self-removal perm voids: issues/self-removal-through-holder-disagrees.md.
 
 ## Stage B: one record, one authority class
 Useful alone: owners are gone in meaning; every thing is removable from its first admin; the API keeps compiling through doc-hidden aliases.
