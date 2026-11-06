@@ -1,0 +1,5 @@
+- `wt claim` printed wt2 while the session's working directory was wt1: the harness's cwd and the claimed worktree differ; every command needs the absolute wt2 path.
+- About 250 distinct dangling `issues/*.md` links, not the ~9 the brief expected (most in history notes); the brief's "deleted" examples (cli-proxy, eph-unify, session-sources) exist and are the files holding the links.
+- The handoff named a security issue (forged-departs-mark-entry) whose file was never committed: a "new" issue named only in notes/handoff.md is easily lost.
+- Engine `WriteId` was taken (osis_perm's edge write id), so `ChangeId` became `BatchId`: check the whole workspace for a name before a rename, not one crate.
+- The other branch's files (share.rs, handle.rs, lib.rs, app, cli) block renames that are otherwise mechanical (`Route`/`Remote`, app links, lib.rs's one-commit line); listed in issues/deprecated-terms.md.
