@@ -100,7 +100,7 @@ impl WriteOp {
     }
 }
 
-/// Writes that become one commit, all or nothing. Reads meanwhile do not see them. What cannot share
+/// Writes that become one commit (two: below), all or nothing. Reads meanwhile do not see them. What cannot share
 /// a commit fails `commit` with `Invalid`, naming what clashed; writing it as several commits is up
 /// to the app:
 /// - A commit has one expiry: `expires`, else what its keys say, which must then agree. A thing's
@@ -109,9 +109,10 @@ impl WriteOp {
 ///   stores no value).
 /// - A write under retention `nobody` shares a commit only with others like it.
 /// - A commit is durable or ephemeral (keys marked `~`), and a signal (keys marked `*`) is a commit
-///   of its own. Two things follow a durable commit in memory, asking for nothing of their own: a
-///   `delete`'s removal of what the thing holds in memory, and a kept draft's memberships becoming
-///   durable. Each reaches other nodes on its own.
+///   of its own. The exception makes two commits, durable then memory: what a durable write does
+///   in memory without asking (a `delete`'s removal of what the thing holds in memory, a kept
+///   draft's memberships becoming durable, a removal of a member listed ephemerally too). Each
+///   reaches other nodes on its own.
 ///
 /// This is judged on what the ops ask, not on what they turn out to write: a `set` of the value
 /// already there still counts.
@@ -324,7 +325,7 @@ impl<'d> Write<'d> {
         self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { owner, .. }) = o { Some(*owner) } else { None }).filter(|t| !self.created.contains(t)).collect()
     }
 
-    /// Writes every op as one commit; `None` when nothing changes. Fails before anything applies
+    /// Writes every op as one commit (two for what `Write` names); `None` when nothing changes. Fails before anything applies
     /// with `Permission`, `UnknownThing`, or `Invalid` (also when the ops cannot share a commit:
     /// `Write`, or past 1024 ops through another node); `OutcomeUnknown`, only through another node,
     /// may have applied: read before repeating it.

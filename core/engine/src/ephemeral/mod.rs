@@ -173,9 +173,10 @@ impl Engine {
     }
 
     /// Writes `m` as one commit: durable (with the creation records of the ephemeral things it
-    /// persists and their placements made durable, spec/data-model.md §1, §8) or memory.
-    /// `Clash` when it cannot be one: durable and ephemeral writes, or signals beside either; a
-    /// memory commit then carries only what follows the durable one (`Placed::asked`, `delete`).
+    /// persists and their placements made durable, spec/data-model.md §1, §8) or memory. Two
+    /// when the durable one does something in memory nobody asked for (`placed.0~` resets,
+    /// `delete`'s ephemeral ones): a second, memory commit under its `ts`
+    /// (issues/commit-memory-half.md). `Clash` when the ops ask for both, or signals beside either.
     /// When the commit or any op fails, nothing applies. `None` when nothing changes.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.tid();
@@ -209,7 +210,8 @@ impl Engine {
         for (g, am) in plan.durable {
             m.aspects.insert((g, gak.clone()), am);
         }
-        // one commit: a memory commit's writes and a durable commit's are not one (spec/commits.md §2)
+        // a memory commit's writes and a durable commit's are not one (spec/commits.md §2): only
+        // what follows the durable commit may go as a second one
         let asked = eph_ops.iter().find(|o| o.ak.lifetime() == Lifetime::Signal || !m.free.contains(&o.tid)).map(|o| format!("{} {}", o.tid, o.ak)).or(plan.asked.map(|g| format!("the members of {g}")));
         if let (Some(a), Some(((t, k), _))) = (&asked, m.aspects.iter().next()) {
             return Err(Error::Clash(format!("a commit is durable or ephemeral, and this write is both: {a} is ephemeral, {t} {k} is not. Write them as separate commits")));
