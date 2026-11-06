@@ -22,14 +22,8 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
         t
     }).collect();
     for i in 0..4 {
-        let owner = pick(rng, &tids);
-        let (t, r) = if rng.below(4) == 0 {
-            // an ownerless thing: its record's first admin is its initial state
-            let r = osis_base::CreationRecord::Ownerless { admin: owner, nonce: [rng.next() as u8 ^ i as u8; 32] };
-            (r.tid(), r)
-        } else {
-            thing_record(owner, rng.next() ^ i)
-        };
+        let admin = pick(rng, &tids);
+        let (t, r) = thing_record(admin, rng.next() ^ i);
         if rng.below(4) != 0 {
             h.created.insert(t, r);
         }

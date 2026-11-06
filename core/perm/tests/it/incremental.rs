@@ -1736,10 +1736,11 @@ fn falls_before_old_first_write_spec_permissions_5_1() {
     }
 }
 
-/// §1, §5.1: leaves joining an owner chain around `MAX_OWNER_DEPTH` (a deeper thing has no owner
-/// chain, so no role there and no demotion): through `update_touched` equal to from scratch.
+/// §1, §5.1: leaves joining a record chain around `MAX_OWNER_DEPTH` (perm follows record edges
+/// at any depth; the engine judges deltas on a deeper thing invalid): through `update_touched`
+/// equal to from scratch.
 #[test]
-fn leaves_past_owner_depth_spec_permissions_1() {
+fn leaves_past_record_depth_spec_permissions_1() {
     use osis_base::Role::Admin;
     let mut w = World::new();
     let n = w.nodes(2);
@@ -1779,8 +1780,8 @@ fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut
     // every tid the held set names
     let mut all: BTreeSet<Tid> = held.things().into_iter().collect();
     for t in held.things() {
-        if let Some(osis_base::CreationRecord::Thing { owner, .. }) = held.created(&t) {
-            all.insert(owner);
+        if let Some(osis_base::CreationRecord::Thing { admin, .. }) = held.created(&t) {
+            all.insert(admin);
         }
         for c in held.edge_commits(&t) {
             all.insert(c.author);
@@ -1898,8 +1899,8 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
             appended += fast.appended();
             // The general path may report more: when several old components merge it continues
             // the one with the most commits, then things, and names the others' things. Each
-            // must be a node bringing nothing, or owned under a thing the fast path names
-            // (authority there follows its owner's).
+            // must be a node bringing nothing, or below a thing the fast path names by record
+            // edges (authority there follows its first admin's).
             let fa: BTreeSet<Tid> = a.evaluated.union(&a.extended).copied().collect();
             let fb: BTreeSet<Tid> = b.evaluated.union(&b.extended).copied().collect();
             let covered = |x: &Tid| {
@@ -1909,7 +1910,7 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
                         return true;
                     }
                     match held.created(&cur) {
-                        Some(osis_base::CreationRecord::Thing { owner, .. }) => cur = owner,
+                        Some(osis_base::CreationRecord::Thing { admin, .. }) => cur = admin,
                         _ => return cur == *x && held.edge_commits(x).is_empty(),
                     }
                 }
@@ -1970,6 +1971,56 @@ fn merge_continues_the_larger_component_spec_permissions_5_1() {
         let want: BTreeSet<Tid> = if general_only { [lone, b].into() } else { [b].into() };
         assert_eq!(ch.extended, want, "general only: {general_only}");
         assert!(check(&held, &inc, &n).is_none(), "{:?}", check(&held, &inc, &n));
+    }
+}
+
+/// §1, §5.1: a leaf whose first admin has no record held (a node so far only the target of
+/// a commit) joins that component by the fast path; the next growth of the component that
+/// the fast path declines continues the walk (a first admin without a record is a node to
+/// `Timeline::add_leaves` as to `Input::gather`, so none "comes" at the extension), as the
+/// general path does (`creation_fast_equals_general_large` seed 0x5005eed0a02 sample 11: the
+/// fast path evaluated the component instead).
+#[test]
+fn leaf_under_a_late_node_continues_spec_permissions_5_1() {
+    use osis_base::Role::Write;
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let m = w.nodes_salted(1, 0x79)[0];
+    let a = w.thing(n[0]);
+    w.set(n[0], a, n[1], edge(Write), 1, &[]);
+    w.set(n[0], m, n[1], edge(Write), 2, &[]);
+    let x = w.thing(m);
+    let h0 = {
+        let mut h = w.held();
+        h.created.remove(&m);
+        h.created.remove(&x);
+        h
+    };
+    let h1 = {
+        let mut h = w.held();
+        h.created.remove(&m);
+        h
+    };
+    // a new thing with its record and a commit naming it: not a leaf, the general path
+    let y = w.thing(a);
+    w.set(n[0], y, n[1], edge(Write), 3, &[]);
+    let h2 = {
+        let mut h = w.held();
+        h.created.remove(&m);
+        h
+    };
+    for general_only in [false, true] {
+        let mut inc = Timelines::new();
+        inc.set_general_only(general_only);
+        inc.update(&h0);
+        let ch = update_moved(&mut inc, &h1, &h0);
+        assert!(ch.evaluated.is_empty(), "general only {general_only}: the leaf {ch:?}");
+        assert_eq!(inc.appended() > 0, !general_only, "general only {general_only}: the leaf by the fast path");
+        assert!(std::ptr::eq(inc.get(&x).unwrap(), inc.get(&a).unwrap()), "general only {general_only}: the leaf joins the node's component");
+        let ch = update_moved(&mut inc, &h2, &h1);
+        assert!(ch.evaluated.is_empty(), "general only {general_only}: the named thing {ch:?}");
+        assert!(ch.extended.contains(&y), "general only {general_only}: {ch:?}");
+        assert!(check(&h2, &inc, &n).is_none(), "{:?}", check(&h2, &inc, &n));
     }
 }
 
@@ -2079,16 +2130,9 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
         }
     }
     for (x, r) in &held.created {
-        match r.owner_link() {
-            osis_base::Owner::Actor(o) => {
-                link(o, *x);
-                owned.entry(o).or_default().insert(*x);
-            }
-            osis_base::Owner::Ownerless(o) => {
-                link(o, *x);
-                nodes.insert(o);
-            }
-            _ => {}
+        if let osis_base::Owner::Admin(o) = r.owner_link() {
+            link(o, *x);
+            owned.entry(o).or_default().insert(*x);
         }
         if matches!(r, osis_base::CreationRecord::KeyActor { .. }) {
             nodes.insert(*x);

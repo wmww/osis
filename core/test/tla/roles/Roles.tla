@@ -4,13 +4,15 @@
 (* may lie anywhere (clock skew, backdating) and a frontier taken from the    *)
 (* commits generated before it. The invariants run the walk over the history *)
 (* and check its verdicts.                                                    *)
-(* Things: actor A owned by key actor node 1; actor B owned by A. Edge holders: *)
-(* nodes, and B on A. Roles 0 none, 1 read, 2 write, 3 admin. Classes 0 none,  *)
-(* 2 edge admin, 3 owner chain; a write is audited by its author's class on   *)
-(* `on`: its target, or for a self-removal through B, B.                      *)
+(* Things: actor A, whose first admin is key actor node 1; actor B, whose     *)
+(* first admin is A: their record edges (1 on A, A on B) are in the edge      *)
+(* state before every write, removable like any edge. Edge holders: nodes, B  *)
+(* on A, A on B. Roles 0 none, 1 read, 2 write, 3 admin. Classes 0 none, 2    *)
+(* edge admin; a write is audited by its author's class on `on`: its target, *)
+(* or for a self-removal through an actor holder, that holder.               *)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
-CONSTANTS NN,           \* nodes 1..NN; node 1 is the key actor owning A
+CONSTANTS NN,           \* nodes 1..NN; node 1 is A's first admin
           Scenario,     \* picks Genesis and Menu below
           MaxLen,       \* commits in a history, genesis included
           TsSet,        \* ts a free commit may take (even)
@@ -26,7 +28,7 @@ A == 101
 B == 102
 Things == {A, B}
 Nodes == 1..NN
-EdgeDom == ({B} \cup Nodes) \X Things
+EdgeDom == (Things \cup Nodes) \X Things
 Depth(n) == IF n = A THEN 1 ELSE 2
 DepthOK(n) == Depth(n) <= MaxDepth
 Inf == 1000
@@ -63,6 +65,7 @@ Genesis ==
     [] Scenario = "depth" -> <<G(E1(1, A, 2, 3, 0), 2)>>
     [] Scenario = "sticky" -> <<G(E1(1, A, 2, 3, 0), 2), G(E1(1, A, 3, 3, 0), 4)>>
     [] Scenario = "forge" -> <<G(E1(1, A, 2, 3, 0), 2), G(E1(1, A, 3, 3, 0), 4)>>
+    [] Scenario = "first" -> <<G(E1(1, A, 2, 3, 0), 2), G(E1(1, A, 3, 3, 0), 4)>>
 
 Menu ==
   CASE Scenario = "core" ->
@@ -81,6 +84,8 @@ Menu ==
          <<E1(3, B, 2, 3, 0), E1(2, A, 3, 0, 0), E1(1, A, 2, 0, 0), Cn(3, A)>>
     [] Scenario = "forge" ->
          <<E1(2, A, 3, 0, 0), E1(3, A, 2, 3, 9), E1(3, A, 2, 3, 0), Cn(3, A)>>
+    [] Scenario = "first" ->
+         <<E1(2, A, 1, 0, 0), E1(1, A, 3, 0, 0), E1(1, A, 1, 3, 0), E1(3, A, 2, 0, 0), Cn(1, A), Cn(1, B)>>
 
 MkCommit(tpl, ts, fr, i) ==
   [kind |-> tpl.kind, id |-> i, gen |-> i, ts |-> ts, au |-> tpl.au,
@@ -99,14 +104,14 @@ HSet == {hist[j] : j \in 1..Len(hist)}
 
 Init == hist = GenHist(Len(Genesis)) /\ used = {}
 
-\* Commits setting an edge of x or of B (over-approximating x's paths).
-SetsFor(x) == {c \in HSet : c.kind = "e" /\ \E k \in 1..Len(c.ops) : c.ops[k].mb \in {x, B}}
+\* Commits setting an edge of x, of A or of B (over-approximating x's paths).
+SetsFor(x) == {c \in HSet : c.kind = "e" /\ \E k \in 1..Len(c.ops) : c.ops[k].mb \in {x, A, B}}
 \* An honest demoter holds its chain certificates (§4): the writes on its paths
 \* and on its grantors' paths; its frontier lists them (§5.1).
 Certs(au) == LET d1 == SetsFor(au)
-             IN {c.id : c \in {c \in d1 \cup UNION {SetsFor(c2.au) : c2 \in d1} : c.au # au /\ c.au # 1}}
+             IN {c.id : c \in {c \in d1 \cup UNION {SetsFor(c2.au) : c2 \in d1} : c.au # au}}
 FrChoices(au) ==
-  LET others == {c.id : c \in {c \in HSet : c.au # au /\ c.au # 1}}
+  LET others == {c.id : c \in {c \in HSet : c.au # au}}
   IN IF FrMode = "subset" THEN {S \cup Certs(au) : S \in SUBSET others} ELSE {others}
 
 KeyFree(au, ts) == au \in SameKey \/ ~\E c \in HSet : c.au = au /\ c.ts = ts
@@ -123,24 +128,25 @@ Next == Gen
 Spec == Init /\ [][Next]_vars
 
 (***************************************************************************)
-(* Roles and classes (§1). Paths climb alive edges and owner links: node 1  *)
-(* owns A, A owns B, B may be a holder of A (so admin of B can reach A).    *)
+(* Roles and classes (§1). Paths climb alive edges, record edges included:  *)
+(* A on B (its record edge) and B on A may both stand, so roles are a       *)
+(* fixpoint over the two (six rounds settle two four-valued unknowns).      *)
 (***************************************************************************)
 AR(E, p, t) == IF E[p].r > 0 /\ (E[p].u = 0 \/ t < E[p].u) THEN E[p].r ELSE 0
 Alive(v, t) == v.r > 0 /\ (v.u = 0 \/ t < v.u)
 
-Roles(E, t) ==
-  [x \in Nodes |->
-     LET a0 == Mx(IF x = 1 THEN 3 ELSE 0, AR(E, <<x, A>>, t))
-         dB == AR(E, <<x, B>>, t)
-         rA == Mx(a0, Mn(Mx(dB, a0), AR(E, <<B, A>>, t)))
-     IN [a |-> rA, b |-> Mx(dB, rA)]]
+RECURSIVE RolesIter(_, _, _, _, _, _)
+RolesIter(E, x, t, ra, rb, k) ==
+  IF k = 0 THEN [a |-> ra, b |-> rb]
+  ELSE RolesIter(E, x, t,
+                 Mx(AR(E, <<x, A>>, t), Mn(rb, AR(E, <<B, A>>, t))),
+                 Mx(AR(E, <<x, B>>, t), Mn(ra, AR(E, <<A, B>>, t))),
+                 k - 1)
+Roles(E, t) == [x \in Nodes |-> RolesIter(E, x, t, 0, 0, 6)]
 RoleOn(R, x, n) == IF n = A THEN R[x].a ELSE R[x].b
-\* owner chain: the key actor at the top, or admin of an actor above n
-Class(R, x, n) ==
-  IF n = A THEN (IF x = 1 THEN 3 ELSE IF R[x].a = 3 THEN 2 ELSE 0)
-  ELSE (IF x = 1 \/ R[x].a = 3 THEN 3 ELSE IF R[x].b = 3 THEN 2 ELSE 0)
-Reaches(R, x, m) == x = m \/ (m = B /\ R[x].b >= 1)
+\* edge admin: admin by any path
+Class(R, x, n) == IF RoleOn(R, x, n) = 3 THEN 2 ELSE 0
+Reaches(R, x, m) == x = m \/ (m \in Things /\ RoleOn(R, x, m) >= 1)
 
 UntilLE(a, b) == b = 0 \/ (a # 0 /\ a <= b)
 Lowers(nv, old, t) ==
@@ -154,8 +160,9 @@ Norm(v, t) == IF v.r = 0 \/ (v.u # 0 /\ v.u <= t) THEN Absent ELSE v
 (* The walk (§5.1).                                                         *)
 (***************************************************************************)
 Key0 == <<0, 0, 0>>
-\* No edges before the history (its genesis commits set them).
-E00 == [p \in EdgeDom |-> Absent]
+\* Before the history: the record edges (§1), node 1 on A and A on B; the
+\* genesis commits set the rest.
+E00 == [p \in EdgeDom |-> IF p \in {<<1, A>>, <<A, B>>} THEN [r |-> 3, u |-> 0] ELSE Absent]
 St0(D) ==
   [E |-> E00, P |-> [p \in EdgeDom |-> 0], K |-> [p \in EdgeDom |-> [x \in Nodes |-> 0]],
    D |-> D, app |-> {}, dem |-> {}, fall |-> {}, ex |-> {}, cinfo |-> {},
@@ -204,7 +211,7 @@ Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
                             : a \in drops},
           !.ex = @ \cup {[cid |-> cid, au |-> au, m |-> e[1], t |-> e[2], key |-> key, gen |-> gen,
                           fr |-> fr, nv |-> nv, reach |-> reach,
-                          reachAdmin |-> {x \in Nodes : x = e[1] \/ (e[1] = B /\ Rb[x].b = 3)},
+                          reachAdmin |-> {x \in Nodes : x = e[1] \/ (e[1] \in Things /\ RoleOn(Rb, x, e[1]) = 3)},
                           after |-> [x \in Nodes |-> Class(R1, x, e[2])],
                           was |-> Mx(base, kept[au]), auReach |-> au \in reach]}]
 
@@ -219,7 +226,7 @@ Judge(st, R, c, k) ==
       nv == Norm([r |-> o.r, u |-> o.u], c.ts)
       cls == Class(R, c.au, o.tg)
       clsWithout == Class(Roles([st.E EXCEPT ![e] = Absent], c.ts), c.au, o.tg)
-  IN IF o.mb = o.tg \/ (o.tg = A /\ o.mb = 1) \/ ~DepthOK(o.tg) \/ <<c.id, k>> \in st.D
+  IN IF o.mb = o.tg \/ ~DepthOK(o.tg) \/ <<c.id, k>> \in st.D
        THEN [a |-> -1, s |-> FALSE, on |-> o.tg]
      ELSE IF Lowers(nv, st.E[e], c.ts) /\ o.mb = c.au THEN [a |-> cls, s |-> TRUE, on |-> o.tg]
      ELSE IF Lowers(nv, st.E[e], c.ts) /\ o.mb \in Things /\ RoleOn(R, c.au, o.mb) = 3 /\ clsWithout < 2
@@ -328,11 +335,10 @@ StandingAudited ==
     => ~\E a \in W0.app : a.au = r1.au /\ a.on = r1.t /\ a.attr = 2 /\ Before(a.key, r1.key)
                            /\ a.cid \notin r2.fr
 
-\* (4) Owner chain: chain authority confers write wherever the chain reaches
-\* (content by a chain node stands unless a later demotion); nothing on a thing
-\* beyond MAX_OWNER_DEPTH is valid.
+\* (4) Admin content: content by a node with admin at its point stands unless
+\* a later demotion; nothing on a thing beyond MAX_OWNER_DEPTH is valid.
 ChainContent == \A c \in W0.cinfo :
-  (DepthOK(c.tg) /\ c.cls = 3 /\ ~\E d \in W0.dem : d.x = c.au /\ d.n = c.tg /\ Before(c.key, d.key))
+  (DepthOK(c.tg) /\ c.cls = 2 /\ ~\E d \in W0.dem : d.x = c.au /\ d.n = c.tg /\ Before(c.key, d.key))
     => CValid(W0, c)
 DepthCap == \A n \in Things : ~DepthOK(n) =>
   /\ \A a \in W0.app : a.tg # n

@@ -22,7 +22,7 @@ fn edge_role(tl: &Timeline, holder: Tid, t: Tid) -> Option<Role> {
     tl.roster(&t, At::END).get(&holder).map(|e| e.role)
 }
 
-/// Owner O owns G; A1..A3 admins, M writer.
+/// n0 is G's first admin; A1..A3 admins, M writer.
 fn group() -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     let n = w.nodes(5);
@@ -48,28 +48,34 @@ fn mutual_removal_earlier_wins() {
 /// node had received them before its revoke; another admin having seen them is no witness.
 #[test]
 fn stolen_node_backdated_removals() {
-    for owner_saw in [false, true] {
+    for remover_saw in [false, true] {
         let (mut w, n, g) = group();
-        let recv: Vec<(Tid, u64)> = if owner_saw { vec![(n[3], 5), (n[0], 6)] } else { vec![(n[3], 5)] };
+        let recv: Vec<(Tid, u64)> = if remover_saw { vec![(n[3], 5), (n[0], 6)] } else { vec![(n[3], 5)] };
         w.set(n[1], g, n[2], None, 2, &recv);
         w.set(n[1], g, n[4], None, 3, &recv);
         w.set(n[0], g, n[1], None, 10, &[]);
         let tl = eval(&w);
-        let expect = if owner_saw { (None, None) } else { (Some(Admin), Some(Write)) };
-        assert_eq!((edge_role(&tl, n[2], g), edge_role(&tl, n[4], g)), expect, "owner saw {owner_saw}");
+        let expect = if remover_saw { (None, None) } else { (Some(Admin), Some(Write)) };
+        assert_eq!((edge_role(&tl, n[2], g), edge_role(&tl, n[4], g)), expect, "remover saw {remover_saw}");
         assert_eq!(edge_role(&tl, n[1], g), None);
     }
 }
 
-/// §5.1: the owner's further-backdated revoke of the stolen node cancels its removal.
+/// §5.1: the earliest stamp wins between admins removing each other: n0's further-backdated
+/// revoke of the stolen node n1 cancels n1's removal of n2. Stated limit until disputes are
+/// settled per node (notes/owner-removal-plan.md step 3): n1 backdating further still takes G
+/// back, n0 being an ordinary admin.
 #[test]
-fn owner_further_backdated_revoke_cancels() {
+fn further_backdated_revoke_cancels() {
     let (mut w, n, g) = group();
     w.set(n[1], g, n[2], None, 5, &[(n[0], 6)]);
     w.set(n[0], g, n[1], None, 4, &[]);
     let tl = eval(&w);
     assert_eq!((edge_role(&tl, n[1], g), edge_role(&tl, n[2], g)), (None, Some(Admin)));
     assert!(tl.dropped().is_empty());
+    w.set(n[1], g, n[0], None, 3, &[]);
+    let tl = eval(&w);
+    assert_eq!((edge_role(&tl, n[0], g), edge_role(&tl, n[1], g), edge_role(&tl, n[2], g)), (None, Some(Admin), None));
 }
 
 /// §5.1 step 4: a cycle of removed witnesses validates nothing; a grant seen only by its
@@ -107,10 +113,10 @@ fn two_admin_paths_class_attribution() {
     }
 }
 
-/// §5.1 step 4: owner chain plus edge. Whichever path goes first, the removal leaving the
-/// node without admin on G audits its edge-class grant.
+/// §5.1 step 4: a record edge path plus an edge. Whichever path goes first, the removal leaving
+/// the node without admin on G audits its grant.
 #[test]
-fn chain_and_edge_paths() {
+fn record_edge_and_edge_paths() {
     for edge_first in [true, false] {
         let mut w = World::new();
         let n = w.nodes(5);
@@ -130,10 +136,10 @@ fn chain_and_edge_paths() {
     }
 }
 
-/// §5.1 step 4, transitive: a fall on P audits writes two ownership levels below, but not
-/// where the node keeps the owner chain by an admin edge on Q.
+/// §5.1 step 4, transitive: a fall on P audits writes two record edges below, but not where
+/// the node keeps admin on D by an admin edge on Q.
 #[test]
-fn transitive_ownership_audit() {
+fn transitive_record_edge_audit() {
     for keeps_q in [false, true] {
         let mut w = World::new();
         let n = w.nodes(5);
@@ -381,44 +387,65 @@ fn held_order_irrelevant() {
     assert_eq!(tl.dropped(), tr.dropped());
 }
 
-/// §2 self-removal / §5.1: A owns group G and doc T; X admin of G, G admin of T; X grants Y
-/// admin on T unseen by A. A removes G from T: with owner-chain authority on T this is an
-/// explicit demotion, not a self-removal, so Y's grant is dropped. When G is someone else's,
-/// the same.
+/// §2 self-removal / §5.1: A is the first admin of group G and doc T; X admin of G, G admin of
+/// T; X grants Y admin on T unseen by A. A removes G from T: with admin on T by T's record
+/// edge this is an explicit demotion, not a self-removal, so Y's grant is dropped. When G's
+/// first admin is someone else, the same.
 #[test]
-fn group_removal_by_owner_of_both() {
-    for a_owns_g in [true, false] {
+fn group_removal_by_first_admin_of_both() {
+    for a_first_of_g in [true, false] {
         let mut w = World::new();
         let n = w.nodes(4);
         let (a, x, y, o) = (n[0], n[1], n[2], n[3]);
-        let g_owner = if a_owns_g { a } else { o };
-        let g = w.thing(g_owner);
+        let g_first = if a_first_of_g { a } else { o };
+        let g = w.thing(g_first);
         let t = w.thing(a);
-        w.set(g_owner, g, x, edge(Admin), 1, &[]);
+        w.set(g_first, g, x, edge(Admin), 1, &[]);
         w.set(a, t, g, edge(Admin), 2, &[]);
         let grant = w.set(x, t, y, edge(Admin), 3, &[]);
         let rm = w.set(a, t, g, None, 10, &[]);
         let tl = eval(&w);
-        assert_eq!(role(&tl, y, t), None, "A owns G {a_owns_g}");
+        assert_eq!(role(&tl, y, t), None, "A first admin of G {a_first_of_g}");
         assert!(tl.dropped().contains_key(&WriteId(grant, 0)));
-        assert_eq!(tl.applied()[&WriteId(rm, 0)].attr, osis_perm::Attr::By(Class::Chain));
+        assert_eq!(tl.applied()[&WriteId(rm, 0)].attr, osis_perm::Attr::By(Class::Edge));
     }
 }
 
-/// §1: an actor's owner is implicitly its admin: other admins' removal or demotion edges for it
-/// change nothing, and the owner still removes such an admin afterwards.
-// spec/permissions.md §1 (owner not removable)
+/// §1: a first admin is an ordinary admin: another admin removes it (its record edge, stored
+/// nowhere, ends like any edge), a third grants it read, and its own removal of the remover
+/// afterwards applies nothing.
+// spec/permissions.md §1 (first admin removable)
 #[test]
-fn owner_not_removable_by_admins() {
+fn first_admin_removable_by_admins() {
     let (mut w, n, g) = group();
+    let tl = eval(&w);
+    assert_eq!(edge_role(&tl, n[0], g), Some(Admin), "the record edge is in the roster");
     w.set(n[1], g, n[0], None, 2, &[]);
+    let tl = eval(&w);
+    assert_eq!(role(&tl, n[0], g), None);
+    assert_eq!(edge_role(&tl, n[0], g), None);
     w.set(n[2], g, n[0], edge(Read), 3, &[]);
     let tl = eval(&w);
-    assert_eq!(role(&tl, n[0], g), Some(Admin));
+    assert_eq!(role(&tl, n[0], g), Some(Read));
     w.set(n[0], g, n[1], None, 4, &[]);
     let tl = eval(&w);
-    assert_eq!(role(&tl, n[0], g), Some(Admin));
-    assert_eq!(edge_role(&tl, n[1], g), None);
+    assert_eq!(role(&tl, n[0], g), Some(Read));
+    assert_eq!(edge_role(&tl, n[1], g), Some(Admin));
+}
+
+/// §1: a first admin that removes its own record edge leaves by self-removal (audits nothing),
+/// and a later explicit write on the edge restores it for the audit.
+// spec/permissions.md §1 (first admin removable), §2 (self-removal)
+#[test]
+fn first_admin_leaves_by_self_removal() {
+    let (mut w, n, g) = group();
+    let leave = w.set(n[0], g, n[0], None, 2, &[]);
+    let tl = eval(&w);
+    assert!(tl.is_applied(&WriteId(leave, 0)));
+    assert!(matches!(tl.applied()[&WriteId(leave, 0)].attr, osis_perm::Attr::SelfRemoval(Class::Edge, t) if t == g));
+    assert_eq!(role(&tl, n[0], g), None);
+    assert!(tl.lowered_unaudited(&n[0], &g));
+    assert_eq!(tl.role_lowered_unaudited(&n[0], &g), Some(Admin));
 }
 
 /// §1: edges are written only by admins: a writer's grant, raise or removal never applies.
@@ -460,12 +487,12 @@ fn residue_classifies_sticky_and_genuine_spec_perm_5() {
 }
 
 /// §5.1 (OSIS_PERM_SEED=3313): n2 removes n1 from P unseen, so n1's grant of admin on G to n2
-/// does not apply and n2's own lowering of that edge to write is a raise through P, which k's
-/// removal of n2 audits. That removal also drops n2's removal of n1; on the restart n1's grant
-/// applies and n2's lowering is a self-removal, attributed to n2's class on G, which k's
-/// removal of n2 audits too: no residue.
+/// does not apply and n2's own lowering of that edge to write is a raise through P's record
+/// edge, which k's removal of n2 audits. That removal also drops n2's removal of n1; on the
+/// restart n1's grant applies, so at k's removal n2 keeps admin on G by that grant: no fall on
+/// G in the settled walk explains the dropped raise (sticky residue, notes/permissions.md).
 #[test]
-fn self_removal_dropped_without_residue_spec_permissions_5_1() {
+fn self_removal_dropped_with_sticky_residue_spec_permissions_5_1() {
     let mut w = World::new();
     let n = w.nodes(3);
     let k = n[0];
@@ -481,7 +508,7 @@ fn self_removal_dropped_without_residue_spec_permissions_5_1() {
     let tl = eval(&w);
     assert!(tl.dropped().contains_key(&WriteId(lower, 0)));
     assert_eq!(edge_role(&tl, n[2], g), Some(Admin));
-    assert!(residue(&tl).is_empty());
+    assert_eq!(residue(&tl), std::collections::BTreeSet::from([WriteId(lower, 0)]));
 }
 
 /// §5.1 (OSIS_PERM_SEED=1900002, joint): n1's removal of n2's admin on A0 drops n2's grant of
@@ -495,7 +522,6 @@ fn sticky_residue_of_dropped_grant_spec_permissions_5_1() {
     let a1 = w.thing(a0);
     let all0: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 0)).collect();
     w.set(n[1], a1, n[0], edge(Write), 0, &all0);
-    w.set(n[1], a0, n[1], edge(Write), 0, &all0);
     w.set(n[1], a1, n[2], edge(Admin), 0, &all0);
     w.set(n[1], a0, a1, edge(Admin), 0, &all0);
     let r = |v: [u64; 3]| -> Vec<(Tid, u64)> { (0..3).map(|i| (n[i], v[i])).collect() };
@@ -510,12 +536,14 @@ fn sticky_residue_of_dropped_grant_spec_permissions_5_1() {
     assert!(!tl.is_applied(&WriteId(demote, 0)));
 }
 
-/// §5.1 (OSIS_PERM_SEED=52011, joint): n0 (admin on A0, so on A1 through A0's ownership)
+/// §5.1 (OSIS_PERM_SEED=52011, joint): n0 (admin on A0, so on A1 through A1's record edge)
 /// grants itself admin on A1, then removes A1 from A0; n1, seeing neither, demotes n0 on A0.
-/// That audit sees the removal in effect, so n0 falls on A0 and from the owner chain on A1, and
-/// drops both; the settled walk explains both drops (no residue).
+/// That audit sees the removal in effect: n0 falls on A0, which drops the removal; on A1 its
+/// own grant keeps its class (one class: a path lost while another keeps it is no fall), so
+/// the grant stands until an admin of A1 removes it. With A1's edge on A0 back, n0 keeps admin
+/// on A0 through A1 in the settled walk: the drop stays as sticky residue.
 #[test]
-fn audit_drops_grant_and_removal_spec_permissions_5_1() {
+fn audit_drops_removal_not_self_grant_spec_permissions_5_1() {
     let mut w = World::new();
     let n = w.nodes(3);
     let a0 = w.thing(n[1]);
@@ -536,8 +564,10 @@ fn audit_drops_grant_and_removal_spec_permissions_5_1() {
     w.set(n[2], a2, n[2], None, 5, &r([LATE, LATE, 5]));
     w.set(n[0], a0, n[1], edge(Admin), 7, &r([7, LATE, LATE]));
     let tl = eval(&w);
-    assert!(tl.dropped().contains_key(&WriteId(grant, 0)) && tl.dropped().contains_key(&WriteId(rm, 0)));
-    assert!(residue(&tl).is_empty());
+    assert!(tl.dropped().contains_key(&WriteId(rm, 0)));
+    assert!(tl.is_applied(&WriteId(grant, 0)));
+    assert_eq!((role(&tl, n[0], a1), role(&tl, n[0], a0)), (Some(Admin), Some(Admin)));
+    assert_eq!(residue(&tl), std::collections::BTreeSet::from([WriteId(rm, 0)]));
 }
 
 /// §5.1 (OSIS_PERM_SEED=89000): n1 (admin on P, so on G) grants n2 admin on P at 4, then sets
@@ -565,17 +595,15 @@ fn unseen_leave_stands_spec_permissions_5_1() {
     assert!(residue(&tl).is_empty());
 }
 
-// spec/permissions.md §1 (ownerless things): O has no owner; its record names n0 as first admin,
-// O's initial state. n0 grants n1 admin; n1 removes n0. No node ever holds owner-chain class on
-// O, so n0's later grants and re-grants through the record do nothing. On D, owned by O, n1
-// (admin of O) holds the owner chain: its grant on D applies.
+// spec/permissions.md §1 (first admin): O's record names n0 as its first admin, an edge in
+// force from the start. n0 grants n1 admin; n1 removes n0. n0's later grants and re-grants
+// through the record do nothing: the record gives no power once the edge is gone. On D, whose
+// first admin is O, n1 (admin of O) holds admin through D's record edge: its grant on D applies.
 #[test]
-fn ownerless_has_no_owner_chain() {
+fn removed_first_admin_has_nothing_left() {
     let mut w = World::new();
     let n = w.nodes(3);
-    let rec = osis_base::CreationRecord::Ownerless { admin: n[0], nonce: [9; 32] };
-    let o = rec.tid();
-    w.created.insert(o, rec);
+    let o = w.thing(n[0]);
     let d = w.thing(o);
     let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 1)).collect();
     w.set(n[0], o, n[1], edge(Admin), 1, &all);
@@ -584,7 +612,7 @@ fn ownerless_has_no_owner_chain() {
     assert_eq!(edge_role(&tl, n[0], o), Some(Admin));
     for x in &n[..2] {
         assert_eq!(tl.class(x, &o, At::END), Class::Edge);
-        assert_eq!(tl.class(x, &d, At::END), Class::Chain, "admin of D's owner");
+        assert_eq!(tl.class(x, &d, At::END), Class::Edge, "admin of D's first admin");
     }
     let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 3)).collect();
     w.set(n[1], o, n[0], None, 2, &all);
@@ -593,8 +621,8 @@ fn ownerless_has_no_owner_chain() {
     let gd = w.set(n[1], d, n[2], edge(Write), 8, &all);
     let tl = eval(&w);
     assert_eq!(role(&tl, n[0], o), None, "the first admin is removed like any");
+    assert_eq!((role(&tl, n[0], d), tl.class(&n[0], &d, At::END)), (None, Class::None));
     assert_eq!(role(&tl, n[1], o), Some(Admin));
-    assert!(n.iter().all(|x| tl.class(x, &o, At::END) < Class::Chain));
     assert!(!tl.is_applied(&WriteId(g0, 0)) && !tl.is_applied(&WriteId(r0, 0)));
     assert_eq!(role(&tl, n[2], o), None);
     assert!(tl.is_applied(&WriteId(gd, 0)));

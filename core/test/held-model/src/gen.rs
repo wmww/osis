@@ -50,27 +50,27 @@ pub const ADM: Aspect = Aspect::admin_reg(4);
 pub const PURGE: Aspect = Aspect::reg(9);
 pub const ASPECTS: [Aspect; 4] = [REG, MAP, TEXT, ADM];
 pub const NODES: u64 = 4;
-/// An account actor owned by node 2, owning thing 12.
+/// An account actor whose first admin is node 2, the first admin of thing 12.
 pub const ACCOUNT: ThingId = 20;
-/// A link: K (an actor owned by node 0, with an edge on thing 10) and L (a key actor).
+/// A link: K (an actor whose first admin is node 0, with an edge on thing 10) and L (a key actor).
 pub const LINK_K: ThingId = 21;
 pub const LINK_L: NodeId = 30;
-/// Every creation record: the nodes and L (key actors), things owned by nodes, by the account, and an
-/// ownerless thing whose first admin is node 3.
+/// Every creation record: the nodes and L (key actors), things with a node or the account as
+/// first admin.
 pub const THINGS: [Thing; 11] = [
     Thing { id: 0, owner: Owner::Key },
     Thing { id: 1, owner: Owner::Key },
     Thing { id: 2, owner: Owner::Key },
     Thing { id: 3, owner: Owner::Key },
     Thing { id: LINK_L, owner: Owner::Key },
-    Thing { id: 10, owner: Owner::Actor(0) },
-    Thing { id: 11, owner: Owner::Actor(1) },
-    Thing { id: ACCOUNT, owner: Owner::Actor(2) },
-    Thing { id: 12, owner: Owner::Actor(ACCOUNT) },
-    Thing { id: 13, owner: Owner::Ownerless { first_admin: 3 } },
-    Thing { id: LINK_K, owner: Owner::Actor(0) },
+    Thing { id: 10, owner: Owner::Admin(0) },
+    Thing { id: 11, owner: Owner::Admin(1) },
+    Thing { id: ACCOUNT, owner: Owner::Admin(2) },
+    Thing { id: 12, owner: Owner::Admin(ACCOUNT) },
+    Thing { id: 13, owner: Owner::Admin(3) },
+    Thing { id: LINK_K, owner: Owner::Admin(0) },
 ];
-/// Things content is written on, and the node with authority on each by its owner chain.
+/// Things content is written on, and the node with authority on each by its record chain.
 pub const CONTENT: [(ThingId, NodeId); 4] = [(10, 0), (11, 1), (12, 2), (13, 3)];
 /// Things roles are written on, with that node.
 pub const TARGETS: [(ThingId, NodeId); 6] = [(10, 0), (11, 1), (12, 2), (13, 3), (ACCOUNT, 2), (LINK_K, 0)];
@@ -210,7 +210,7 @@ pub fn history(seed: u64, n: usize) -> Held {
                 }
                 Commit { kind: CommitKind::Role, parts, ..base(id, LINK_L, ts) }
             } else {
-                // an owner-chain grant
+                // a grant by the record chain's node
                 let e = EdgeWrite::role(r.pick(&HOLDERS), Some(r.pick(&[Role::Read, Role::Write, Role::Admin])));
                 Commit { kind: CommitKind::Role, parts: vec![role_part(thing, e)], ..base(id, chief, ts) }
             }

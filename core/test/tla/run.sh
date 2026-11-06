@@ -114,6 +114,7 @@ instances=(
   "roles Roles MC_keepoff.cfg small fail"     # negative control: no kept standing
   "roles Roles MC_sticky.cfg small fail"      # AMBIGUITIES.md M2: drop order
   "roles Roles MC_forge.cfg small pass"       # AMBIGUITIES.md M1 (fixed)
+  "roles Roles MC_first.cfg small pass"
   "roles Roles MC_samets.cfg all pass"        # two commits of one node at one ts
 )
 

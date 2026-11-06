@@ -447,52 +447,9 @@ fn demotion_scope_as_restored_spec_permissions_5_1() {
     assert_eq!(s.content.get(&x), Some(&both));
 }
 
-/// spec/permissions.md §1: an owner chain reaches its key actor within `MAX_OWNER_DEPTH` owner
-/// links; a deeper thing has none, and a chain query walks at most that far.
-#[test]
-fn owner_chain_capped_spec_permissions_1() {
-    use osis_base::format::MAX_OWNER_DEPTH;
-    let (key, rec) = key_actors(1, 9).remove(0);
-    let mut o = osis_perm::Owners::default();
-    o.insert(key, &rec);
-    let mut chain = Vec::new();
-    let mut top = key;
-    for i in 0..=MAX_OWNER_DEPTH as u64 {
-        let (t, r) = thing_record(top, i);
-        o.insert(t, &r);
-        chain.push(t);
-        top = t;
-    }
-    // chain[i] is i + 1 links below the key actor; `up` ends with the key actor
-    let at_cap = chain[MAX_OWNER_DEPTH - 1];
-    let (up, k) = o.chain(&at_cap);
-    assert_eq!((up.len(), up.last(), k), (MAX_OWNER_DEPTH, Some(&key), Some(key)));
-    let (up, k) = o.chain(chain.last().unwrap());
-    assert_eq!((up.len(), k), (0, None), "one link deeper: no owner chain");
-}
-
-/// §1: the key actor holds owner-chain class on a thing `MAX_OWNER_DEPTH` links below it and
-/// none one link deeper (the engine judges writes there invalid; no class from the links above).
-#[test]
-fn chain_class_capped_spec_permissions_1() {
-    use osis_base::format::MAX_OWNER_DEPTH;
-    use osis_perm::Class;
-    let mut w = World::new();
-    let k = w.nodes(1)[0];
-    let mut chain = vec![w.thing(k)];
-    for _ in 0..MAX_OWNER_DEPTH {
-        let t = w.thing(*chain.last().unwrap());
-        chain.push(t);
-    }
-    // chain[i] is i + 1 links below k
-    let tl = Timeline::evaluate(&w.held());
-    assert_eq!(tl.class(&k, &chain[MAX_OWNER_DEPTH - 1], At::END), Class::Chain);
-    assert_ne!(tl.class(&k, &chain[MAX_OWNER_DEPTH], At::END), Class::Chain);
-}
-
 /// A `View` with one edge patched answers every authority query as the edge state cloned with
-/// that edge set (random owner trees, edges with `until` and invites, patches that add, change
-/// or remove an edge).
+/// that edge set (random record trees, edges with `until` and invites, patches that add, change
+/// or remove an edge, record edges included).
 #[test]
 fn patched_view_equals_cloned_edges() {
     use osis_perm::graph::View;
@@ -521,19 +478,19 @@ fn patched_view_equals_cloned_edges() {
         for _ in 0..rng.below(12) {
             let (m, t) = (ents[rng.below(ents.len())], ents[3 + rng.below(5)]);
             if m != t {
-                edges.set(m, t, pick(&mut rng));
+                edges.set(&o, m, t, pick(&mut rng));
             }
         }
         let (m, t) = (ents[rng.below(ents.len())], ents[3 + rng.below(5)]);
         let patch = pick(&mut rng);
         let mut cloned = edges.clone();
-        cloned.set(m, t, patch);
+        cloned.set(&o, m, t, patch);
         let at = (rng.below(2) == 0).then(|| ts(rng.below(10) as u64));
         let a = View::new(&o, &edges, at).patched(m, t, patch);
         let b = View::new(&o, &cloned, at);
         // the patch at least as wide as the edge it replaces: raising the old roles is exact
         let alive = |e: Option<Edge>| e.filter(|e| e.alive_at(at));
-        let wider = alive(patch).is_some() && alive(edges.get(&m, &t).copied()).is_none_or(|o| Some(o.role) <= patch.map(|p| p.role));
+        let wider = alive(patch).is_some() && alive(edges.get(&o, &m, &t).copied()).is_none_or(|o| Some(o.role) <= patch.map(|p| p.role));
         for x in &ents {
             let (ra, rb) = (a.roles_from(x), b.roles_from(x));
             assert_eq!(ra, rb);
@@ -548,7 +505,8 @@ fn patched_view_equals_cloned_edges() {
             assert_eq!(a.reach_forward(x), b.reach_forward(x));
             assert_eq!(a.reach_backward(x), b.reach_backward(x));
             for n in &ents {
-                assert_eq!(a.standing(x, &ra, n), b.standing(x, &rb, n));
+                assert_eq!(a.standing(&ra, n), b.standing(&rb, n));
+                assert_eq!(a.get(x, n), b.get(x, n));
             }
         }
     }

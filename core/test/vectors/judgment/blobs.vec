@@ -39,8 +39,8 @@ order: 0,1,2,3,4,5,6,7,8,9,10,11
 body a49d9317f46658dc1fb46e1fb2d279577259d49f300e8797e980bb29455038b3 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 body 7096ea607c461af0426831b65d8eb082cb423b8f5d38df99359424e81a32d9d6 7loH6i_G7GA9WPnGkkf7 t:big.0: valid held covered-by=-
 waiting: -
-thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=62079254ce9e006e6e75d0420c7897b24a62b1906efd68e5aa6e5e0073f1be74
+thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,szBvfboy9shLlO5BFUgE:admin,wUktf8JBT64Wjf6DQU60:admin
+aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=3700b6f9be247f368d468c5a4e261b4620095b11f3bbd90055a41729de56319c
 aspect 7loH6i_G7GA9WPnGkkf7 t:big.0: state=36510c02baa3f5e9ec3bac13f80c14863a8064642dece4a0d19327dec70a80bf read=e3fd2c03eb6cca655935257fea974b5e367fe5a5246ad57f278379aef92469df
 
 case: paged delta, reversed
@@ -53,8 +53,8 @@ order: 0,1,2,3,4,5,6,7,8,11,10,9
 body a49d9317f46658dc1fb46e1fb2d279577259d49f300e8797e980bb29455038b3 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 body 7096ea607c461af0426831b65d8eb082cb423b8f5d38df99359424e81a32d9d6 7loH6i_G7GA9WPnGkkf7 t:big.0: valid held covered-by=-
 waiting: -
-thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=62079254ce9e006e6e75d0420c7897b24a62b1906efd68e5aa6e5e0073f1be74
+thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,szBvfboy9shLlO5BFUgE:admin,wUktf8JBT64Wjf6DQU60:admin
+aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=3700b6f9be247f368d468c5a4e261b4620095b11f3bbd90055a41729de56319c
 aspect 7loH6i_G7GA9WPnGkkf7 t:big.0: state=36510c02baa3f5e9ec3bac13f80c14863a8064642dece4a0d19327dec70a80bf read=e3fd2c03eb6cca655935257fea974b5e367fe5a5246ad57f278379aef92469df
 
 case: paged delta, without its blobs
@@ -66,8 +66,8 @@ bundle: as in paged delta, as made
 order: 0,1,2,3,4,5,6,7,8,11
 body a49d9317f46658dc1fb46e1fb2d279577259d49f300e8797e980bb29455038b3 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 waiting: 7096ea607c461af0426831b65d8eb082cb423b8f5d38df99359424e81a32d9d6
-thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=62079254ce9e006e6e75d0420c7897b24a62b1906efd68e5aa6e5e0073f1be74
+thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,szBvfboy9shLlO5BFUgE:admin,wUktf8JBT64Wjf6DQU60:admin
+aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=3700b6f9be247f368d468c5a4e261b4620095b11f3bbd90055a41729de56319c
 
 case: large atomic value, as made
 spec: spec/commits.md §4, spec/data-model.md §6
@@ -79,8 +79,8 @@ order: 0,1,2,3,4,5,6,7,8,9
 body a49d9317f46658dc1fb46e1fb2d279577259d49f300e8797e980bb29455038b3 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 body 4a48776f4e638e81f988210b93fc96535c3e767670fabe35aa3d8bbf3dc47db3 7loH6i_G7GA9WPnGkkf7 t:blob.0: valid held covered-by=-
 waiting: -
-thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=62079254ce9e006e6e75d0420c7897b24a62b1906efd68e5aa6e5e0073f1be74
+thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,szBvfboy9shLlO5BFUgE:admin,wUktf8JBT64Wjf6DQU60:admin
+aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=3700b6f9be247f368d468c5a4e261b4620095b11f3bbd90055a41729de56319c
 aspect 7loH6i_G7GA9WPnGkkf7 t:blob.0: state=03f7c4643715ca8735d9faecd854489c07b3b8c0522de489aab4648e0831ddf3 read=ec0d9d57b70a274adf648bc7685944f4c155ea7a88c04fac9af97f1d9d6f3fa2
 
 case: demotion with a linked frontier, its blobs not held, as made
@@ -92,8 +92,8 @@ bundle: 00002e328202592e2d017c61a4242446e1686e506f11511c7fe700000000000000000001
 order: 0,1,2,3,4,5,6,7,8,12
 body a49d9317f46658dc1fb46e1fb2d279577259d49f300e8797e980bb29455038b3 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 waiting: f35b3ed78c81c564654403031e3d55544ec230d947b0dfacb03757c4c464180e
-thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=62079254ce9e006e6e75d0420c7897b24a62b1906efd68e5aa6e5e0073f1be74
+thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,szBvfboy9shLlO5BFUgE:admin,wUktf8JBT64Wjf6DQU60:admin
+aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=3700b6f9be247f368d468c5a4e261b4620095b11f3bbd90055a41729de56319c
 
 case: frontier coverage with a linked frontier, without the frontier's blobs
 spec: spec/commits.md §4, spec/permissions.md §5.1
@@ -106,8 +106,8 @@ body a49d9317f46658dc1fb46e1fb2d279577259d49f300e8797e980bb29455038b3 7loH6i_G7G
 body 742153b1e7d515bba7f5c66cdf86fc6d74de5fb46aa764797e6a359b37a08d8a 7loH6i_G7GA9WPnGkkf7 t:tags.0: valid held covered-by=-
 body 712f9d36277c7df20d9f3f9149f2b05aa0baa0ba64c7371b2094fefe3f1ac9a3 7loH6i_G7GA9WPnGkkf7 t:tags.0: valid held covered-by=-
 waiting: a760a899983a4b881af8e43152973593dd9a6fa49ed13a5448e087d5e194be77
-thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=62079254ce9e006e6e75d0420c7897b24a62b1906efd68e5aa6e5e0073f1be74
+thing 7loH6i_G7GA9WPnGkkf7: roster=VRE3qUZyYPOZgdY-Yc-K:write,szBvfboy9shLlO5BFUgE:admin,wUktf8JBT64Wjf6DQU60:admin
+aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1b8404eeae8c6ba088b7f655ea96279d224d869ee55a3775a331e11c47a6b945 read=3700b6f9be247f368d468c5a4e261b4620095b11f3bbd90055a41729de56319c
 aspect 7loH6i_G7GA9WPnGkkf7 t:tags.0: state=5ef71c5e7ba77f926b02531e821ab8b0b2d2ece95d0865d5d6c3e61351e42e73 read=edc825845e1bdd3e15da52f64005317094f00c759ed332474c860b987fb09143
 
 case: frontier coverage with a linked frontier, the frontier's blobs last
@@ -122,8 +122,8 @@ body 742153b1e7d515bba7f5c66cdf86fc6d74de5fb46aa764797e6a359b37a08d8a 7loH6i_G7G
 body 712f9d36277c7df20d9f3f9149f2b05aa0baa0ba64c7371b2094fefe3f1ac9a3 7loH6i_G7GA9WPnGkkf7 t:tags.0: invalid held covered-by=-
 body a760a899983a4b881af8e43152973593dd9a6fa49ed13a5448e087d5e194be77 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 waiting: -
-thing 7loH6i_G7GA9WPnGkkf7: roster=wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=b3912c4cafe4383d196cb670584ab13c58cb3c3670ccf08f69e01bbaea460fff read=3282abce23cce22f97d8900810cf714bdebc45900a970e09b779edb0b0342ac3
+thing 7loH6i_G7GA9WPnGkkf7: roster=szBvfboy9shLlO5BFUgE:admin,wUktf8JBT64Wjf6DQU60:admin
+aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=b3912c4cafe4383d196cb670584ab13c58cb3c3670ccf08f69e01bbaea460fff read=722d0fbe058284c0e2f212c918cd7751feffbfed8b18ccea38761ba74f20fd17
 aspect 7loH6i_G7GA9WPnGkkf7 t:tags.0: state=28f3275c769dddcbdd23039e599c0ddee0df6c4914a6a375081df221b46f83ec read=e6a04455c0d6aa9605e9162bdd62bfa53d0c20c2882187511d69ae771a80d6ca
 
 case: frontier coverage with a linked frontier, the frontier's blobs first
@@ -138,6 +138,6 @@ body 742153b1e7d515bba7f5c66cdf86fc6d74de5fb46aa764797e6a359b37a08d8a 7loH6i_G7G
 body 712f9d36277c7df20d9f3f9149f2b05aa0baa0ba64c7371b2094fefe3f1ac9a3 7loH6i_G7GA9WPnGkkf7 t:tags.0: invalid held covered-by=-
 body a760a899983a4b881af8e43152973593dd9a6fa49ed13a5448e087d5e194be77 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 waiting: -
-thing 7loH6i_G7GA9WPnGkkf7: roster=wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=b3912c4cafe4383d196cb670584ab13c58cb3c3670ccf08f69e01bbaea460fff read=3282abce23cce22f97d8900810cf714bdebc45900a970e09b779edb0b0342ac3
+thing 7loH6i_G7GA9WPnGkkf7: roster=szBvfboy9shLlO5BFUgE:admin,wUktf8JBT64Wjf6DQU60:admin
+aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=b3912c4cafe4383d196cb670584ab13c58cb3c3670ccf08f69e01bbaea460fff read=722d0fbe058284c0e2f212c918cd7751feffbfed8b18ccea38761ba74f20fd17
 aspect 7loH6i_G7GA9WPnGkkf7 t:tags.0: state=28f3275c769dddcbdd23039e599c0ddee0df6c4914a6a375081df221b46f83ec read=e6a04455c0d6aa9605e9162bdd62bfa53d0c20c2882187511d69ae771a80d6ca

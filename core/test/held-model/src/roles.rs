@@ -1,5 +1,5 @@
 //! Role timeline and validity (spec/permissions.md §5.1, §5.2, §6). Holders are actors (nodes or
-//! things); effective roles are widest paths over edges and owner links; authority classes, invites,
+//! things); effective roles are widest paths over edges (record edges included); authority classes, invites,
 //! `until`, self-removals, finalizes and audits with the edge as restored. Every query replays the
 //! settled walk.
 
@@ -51,10 +51,9 @@ pub type Edges = BTreeMap<(ThingId, NodeId), Edge>;
 pub enum Class {
     Invite(Role),
     EdgeAdmin,
-    Owner,
 }
 
-/// The creation records: ownership and first admins.
+/// The creation records: first admins.
 #[derive(Clone, Debug, Default)]
 pub struct World {
     pub owners: BTreeMap<ThingId, Owner>,
@@ -67,18 +66,18 @@ impl World {
     pub fn known(&self, t: ThingId) -> bool {
         self.owners.contains_key(&t)
     }
-    pub fn owner(&self, t: ThingId) -> Option<NodeId> {
+    pub fn first_admin(&self, t: ThingId) -> Option<NodeId> {
         match self.owners.get(&t) {
-            Some(Owner::Actor(o)) => Some(*o),
+            Some(Owner::Admin(o)) => Some(*o),
             _ => None,
         }
     }
-    /// The owners above `t`, nearest first (stops at a key actor, an ownerless thing, an unknown
-    /// record or a cycle).
+    /// The record chain above `t`, nearest first (stops at a key actor, an unknown record or a
+    /// cycle).
     pub fn chain_above(&self, t: ThingId) -> Vec<NodeId> {
         let mut v = Vec::new();
         let mut x = t;
-        while let Some(o) = self.owner(x) {
+        while let Some(o) = self.first_admin(x) {
             if o == t || v.contains(&o) {
                 break;
             }
@@ -87,23 +86,23 @@ impl World {
         }
         v
     }
-    /// `t` and every thing below it by ownership.
+    /// `t` and every thing below it by record chain.
     pub fn below(&self, t: ThingId) -> Vec<ThingId> {
         let mut v = vec![t];
         v.extend(self.owners.keys().copied().filter(|&x| x != t && self.chain_above(x).contains(&t)));
         v
     }
-    /// The walk's initial state: ownerless things' record edges.
+    /// The walk's initial state: every thing's record edge.
     pub fn initial(&self) -> Edges {
         self.owners
             .iter()
             .filter_map(|(&t, o)| match o {
-                Owner::Ownerless { first_admin } => Some(((t, *first_admin), Edge { role: Role::Admin, invite: None, until: None })),
-                _ => None,
+                Owner::Admin(a) => Some(((t, *a), Edge { role: Role::Admin, invite: None, until: None })),
+                Owner::Key => None,
             })
             .collect()
     }
-    /// Effective roles of `x` on everything (widest paths over alive edges and owner links).
+    /// Effective roles of `x` on everything (widest paths over alive edges).
     pub fn reach(&self, edges: &Edges, x: NodeId, wall: u64) -> BTreeMap<NodeId, Role> {
         let mut best = BTreeMap::from([(x, Role::Admin)]);
         loop {
@@ -114,13 +113,6 @@ impl World {
                     changed = true;
                 }
             };
-            for (&t, o) in &self.owners {
-                if let Owner::Actor(a) = o {
-                    if let Some(&r) = best.get(a) {
-                        raise(&mut best, t, r);
-                    }
-                }
-            }
             for (&(t, h), e) in edges {
                 if e.alive(wall) {
                     if let Some(&r) = best.get(&h) {
@@ -136,12 +128,9 @@ impl World {
     pub fn role(&self, edges: &Edges, x: NodeId, n: ThingId, wall: u64) -> Option<Role> {
         self.reach(edges, x, wall).get(&n).copied()
     }
-    /// X's authority class on N: owner chain (on it, or admin of an actor on it), edge admin, invite.
+    /// X's authority class on N: edge admin, invite.
     pub fn class(&self, edges: &Edges, x: NodeId, n: ThingId, wall: u64) -> Option<Class> {
         let r = self.reach(edges, x, wall);
-        if self.chain_above(n).iter().any(|a| r.get(a) == Some(&Role::Admin)) {
-            return Some(Class::Owner);
-        }
         let mut best = None;
         for (&(t, h), e) in edges {
             if t != n || !e.alive(wall) {
@@ -205,7 +194,7 @@ pub fn edge_events<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> Vec<Edg
 pub struct Applied {
     pub ev: EdgeEv,
     pub class: Option<Class>,
-    /// Attributed to owner-chain or edge-admin authority (spec/permissions.md §5.1 step 2).
+    /// Attributed to edge-admin authority (spec/permissions.md §5.1 step 2).
     pub explicit: bool,
     /// The thing it counts as a write on (a self-removal through actor M: M).
     pub on: ThingId,
@@ -234,7 +223,7 @@ impl Timeline {
         v
     }
 
-    /// The settled walk over `evs` (in walk order) from the ownerless things' record edges
+    /// The settled walk over `evs` (in walk order) from the things' record edges
     /// (spec/permissions.md §5.1 steps 1-5).
     pub fn walk(world: World, evs: Vec<EdgeEv>) -> Timeline {
         let actors: BTreeSet<NodeId> = world.owners.keys().copied().chain(evs.iter().flat_map(|e| [e.author, e.holder])).collect();
@@ -252,7 +241,7 @@ impl Timeline {
                         continue;
                     }
                     let (n, h, a) = (ev.thing, ev.holder, ev.author);
-                    if h == n || world.owner(n) == Some(h) {
+                    if h == n {
                         continue;
                     }
                     let Some((class, explicit, on)) = decide(&world, &pre, ev, wall_) else { continue };
@@ -407,7 +396,7 @@ fn decide(world: &World, pre: &Edges, ev: &EdgeEv, wall_: u64) -> Option<(Option
     let ca = world.class(pre, a, n, wall_);
     let removal = ev.value.map_or(true, |v| v.until == Some(0));
     // self-removal: lowering one's own edge, or an edge of a holder one is admin of when that is
-    // the only authority (no owner-chain or edge-admin authority on the target)
+    // the only authority (no edge-admin authority on the target)
     if lowers(ev.value, cur) && (h == a || (admin_on_h && ca < Some(Class::EdgeAdmin))) {
         return Some(if h == a { (ca, false, n) } else { (world.class(pre, a, h, wall_), false, h) });
     }

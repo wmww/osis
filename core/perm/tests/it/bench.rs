@@ -186,11 +186,11 @@ fn bench_10k_edges() {
         inc.update(&held4);
         let tl4 = Timeline::evaluate(&held4);
         let most = |things: Vec<Tid>| things.into_iter().map(|t| (nodes.iter().map(|x| tl4.demotions(x, &t).len()).sum::<usize>(), t)).max().unwrap();
-        let teams: Vec<Tid> = w.created.iter().filter(|(_, r)| matches!(r, osis_base::CreationRecord::Thing { owner, .. } if w.created.get(owner).is_some_and(|o| matches!(o, osis_base::CreationRecord::Thing { owner: oo, .. } if !w.created.get(oo).is_some_and(|x| matches!(x, osis_base::CreationRecord::Thing { .. })))))).map(|(t, _)| *t).collect();
-        let docs: Vec<Tid> = w.created.iter().filter(|(t, r)| !teams.contains(t) && matches!(r, osis_base::CreationRecord::Thing { owner, .. } if teams.contains(owner))).map(|(t, _)| *t).collect();
-        for (what, (dn, owner)) in [("team", most(teams)), ("doc", most(docs))] {
+        let teams: Vec<Tid> = w.created.iter().filter(|(_, r)| matches!(r, osis_base::CreationRecord::Thing { admin, .. } if w.created.get(admin).is_some_and(|o| matches!(o, osis_base::CreationRecord::Thing { admin: oo, .. } if !w.created.get(oo).is_some_and(|x| matches!(x, osis_base::CreationRecord::Thing { .. })))))).map(|(t, _)| *t).collect();
+        let docs: Vec<Tid> = w.created.iter().filter(|(t, r)| !teams.contains(t) && matches!(r, osis_base::CreationRecord::Thing { admin, .. } if teams.contains(admin))).map(|(t, _)| *t).collect();
+        for (what, (dn, admin)) in [("team", most(teams)), ("doc", most(docs))] {
             let mut w5 = w4.clone();
-            let leaf = w5.thing(owner);
+            let leaf = w5.thing(admin);
             let held5 = w5.held();
             let t13 = Instant::now();
             inc.update_touched(&held5, &std::collections::BTreeSet::from([leaf]));
@@ -209,12 +209,12 @@ fn bench_10k_edges() {
     }
 }
 
-// spec: none (cost measurement, issues/perm-eval-cost.md): an owner chain of depth d (each thing
-// owned by the previous), one holder granted at the top, 100 edge writes at the bottom; evaluate
-// and a role query at the leaf.
+// spec: none (cost measurement, issues/perm-eval-cost.md): a record chain of depth d (each
+// thing's first admin the previous), one holder granted at the top, 100 edge writes at the
+// bottom; evaluate and a role query at the leaf.
 #[test]
 #[ignore]
-fn bench_deep_owner_chain() {
+fn bench_deep_record_chain() {
     for depth in [10usize, osis_base::format::MAX_OWNER_DEPTH] {
         let mut w = World::new();
         let nodes = w.nodes(3);
@@ -336,7 +336,7 @@ fn bench_late_write() {
     // one more write at the end first
     let doc = *w.created.keys().last().unwrap();
     let team = match w.created[&doc] {
-        osis_base::CreationRecord::Thing { owner, .. } => owner,
+        osis_base::CreationRecord::Thing { admin, .. } => admin,
         _ => unreachable!(),
     };
     let mid = n as u64 / 2;
@@ -425,4 +425,47 @@ fn bench_certificates_drops() {
         again.commits.len(),
         c2.commits.len()
     );
+}
+
+// spec: none (cost measurement, issues/owner-to-first-admin.md risk 2): a million plain things
+// under one actor, each with its record edge in force by the record alone; evaluate, a role
+// query at a leaf, and one more leaf through `update_touched`.
+#[test]
+#[ignore]
+fn bench_million_leaves() {
+    let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(1_000_000);
+    let mut w = World::new();
+    let nodes = w.nodes(3);
+    let a = w.thing(nodes[0]);
+    w.set(nodes[0], a, nodes[1], edge(Admin), 1, &[(nodes[0], 1)]);
+    w.set(nodes[1], a, nodes[2], edge(Read), 2, &[(nodes[0], 2), (nodes[1], 2)]);
+    let t0 = Instant::now();
+    let leaves: Vec<Tid> = (0..n).map(|_| w.thing(a)).collect();
+    let made = t0.elapsed();
+    let held = w.held();
+    let t1 = Instant::now();
+    let tl = Timeline::evaluate(&held);
+    let eval = t1.elapsed();
+    let leaf = leaves[n / 2];
+    let t2 = Instant::now();
+    assert_eq!(tl.role(&nodes[1], &leaf, At::END), Some(Admin));
+    assert_eq!(tl.role(&nodes[2], &leaf, At::END), Some(Read));
+    let query = t2.elapsed();
+    let t3 = Instant::now();
+    let roster = tl.roster(&leaf, At::END);
+    let roster_q = t3.elapsed();
+    assert_eq!(roster.keys().copied().collect::<Vec<_>>(), vec![a], "the record edge alone");
+    drop(tl);
+    let t4 = Instant::now();
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    let inc_t = t4.elapsed();
+    let mut w2 = w.clone();
+    let extra = w2.thing(a);
+    let held2 = w2.held();
+    let t5 = Instant::now();
+    inc.update_touched(&held2, &std::collections::BTreeSet::from([extra]));
+    let one_more = t5.elapsed();
+    assert_eq!(inc.get(&extra).unwrap().role(&nodes[1], &extra, At::END), Some(Admin));
+    eprintln!("{n} leaves: made {made:?}, evaluate {eval:?}, role queries {query:?}, roster {roster_q:?}, timelines {inc_t:?}, one more leaf {one_more:?}");
 }

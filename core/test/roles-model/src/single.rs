@@ -1,13 +1,15 @@
 //! The single-actor model of the layer-1 rule and its rejected variants (spec/permissions.md
 //! §5.1; findings in notes/permissions.md, "Role timeline"). One group actor G; actor i
-//! has exactly one node i; actor 0 is G's owner (always admin, unremovable). `Rule::Frontier`
+//! has exactly one node i; actor 0 is G's first admin (admin by genesis; nobody writes its
+//! edge here). `Rule::Frontier`
 //! is the demoter-frontier rule the spec adopted; the others are the rejected as-written rule
 //! and its third-party-witness repairs.
 
 use crate::{Rng, Role};
 use std::collections::HashSet;
 
-const OWNER: usize = 0;
+/// G's first admin: admin by genesis, its edge never written here.
+const FIRST: usize = 0;
 /// Receipt time meaning "much later than anything else".
 const LATE: u32 = 1000;
 
@@ -85,16 +87,15 @@ impl Hist {
     fn walk(&self, dropped: u64) -> Walk {
         let n = self.n();
         let mut roles = self.genesis.clone();
-        roles[OWNER] = Role::Admin;
         let mut applied = 0u64;
         let mut adm_rev = vec![None; n];
         let mut wr_rev = vec![None; n];
         for i in self.order() {
             let w = &self.writes[i];
-            if dropped >> i & 1 == 1 || w.target == OWNER {
+            if dropped >> i & 1 == 1 {
                 continue;
             }
-            if w.author != OWNER && roles[w.author] != Role::Admin {
+            if roles[w.author] != Role::Admin {
                 continue;
             }
             let old = roles[w.target];
@@ -152,7 +153,7 @@ impl Hist {
         let mut out = 0u64;
         for (i, mw) in self.writes.iter().enumerate() {
             let a = mw.author;
-            if a == OWNER || w.roles[a] == Role::Admin {
+            if w.roles[a] == Role::Admin {
                 continue;
             }
             let Some(rv) = w.adm_rev[a] else { continue };
@@ -174,16 +175,15 @@ impl Hist {
     fn replay(&self, prefix: &[usize], dropped: u64, forced: u64) -> Walk {
         let n = self.n();
         let mut roles = self.genesis.clone();
-        roles[OWNER] = Role::Admin;
         let mut applied = 0u64;
         let mut adm_rev = vec![None; n];
         let mut wr_rev = vec![None; n];
         for &i in prefix {
             let w = &self.writes[i];
-            if dropped >> i & 1 == 1 || w.target == OWNER {
+            if dropped >> i & 1 == 1 {
                 continue;
             }
-            if forced >> i & 1 == 0 && w.author != OWNER && roles[w.author] != Role::Admin {
+            if forced >> i & 1 == 0 && roles[w.author] != Role::Admin {
                 continue;
             }
             let old = roles[w.target];
@@ -222,7 +222,7 @@ impl Hist {
                 let r = order[pos];
                 let w = &self.writes[r];
                 let before = self.replay(&order[..pos], dropped, forced).roles;
-                if w.target == OWNER || (w.author != OWNER && before[w.author] != Role::Admin) {
+                if before[w.author] != Role::Admin {
                     continue;
                 }
                 forced |= 1 << r;
@@ -236,13 +236,13 @@ impl Hist {
                     };
                     for &i in &order[..pos] {
                         let x = self.writes[i].author;
-                        if x != OWNER && q[x] && !witnessed(&|m| self.recv[i][m], &att_drop) {
+                        if q[x] && !witnessed(&|m| self.recv[i][m], &att_drop) {
                             dropped |= 1 << i;
                         }
                     }
                     for &r2 in &order[..pos] {
                         for x in 0..n {
-                            if q[x] && x != OWNER && !att_drop[r2][x] && !witnessed(&|m| self.att_recv[r2][x][m], &att_drop) {
+                            if q[x] && !att_drop[r2][x] && !witnessed(&|m| self.att_recv[r2][x][m], &att_drop) {
                                 att_drop[r2][x] = true;
                                 new_att_drop = true;
                             }
@@ -284,16 +284,15 @@ impl Hist {
         'walk: loop {
             passes += 1;
             let mut roles = self.genesis.clone();
-            roles[OWNER] = Role::Admin;
-            let mut applied = 0u64;
+                let mut applied = 0u64;
             let mut adm_rev = vec![None; n];
             let mut wr_rev = vec![None; n];
             for &i in &order {
                 let w = &self.writes[i];
-                if dropped >> i & 1 == 1 || w.target == OWNER {
+                if dropped >> i & 1 == 1 {
                     continue;
                 }
-                if w.author != OWNER && roles[w.author] != Role::Admin {
+                if roles[w.author] != Role::Admin {
                     continue;
                 }
                 let old = roles[w.target];
@@ -340,7 +339,7 @@ impl Hist {
     fn droppable(&self) -> u64 {
         let mut m = 0;
         for (i, w) in self.writes.iter().enumerate() {
-            if w.author != OWNER {
+            if w.author != FIRST {
                 m |= 1 << i;
             }
         }
@@ -390,7 +389,7 @@ impl Hist {
             .iter()
             .enumerate()
             .map(|(c, &(a, _))| {
-                if a == OWNER || w.roles[a] >= Role::Write {
+                if w.roles[a] >= Role::Write {
                     return true;
                 }
                 let Some(rv) = w.wr_rev[a] else { return false };
@@ -695,8 +694,8 @@ fn unique_times(h: &Hist) -> bool {
     h.writes.iter().all(|w| s.insert((w.t, w.author)))
 }
 
-/// Exhaustive: owner, 2 admins, 1 writer. All writes of up to `k` by owner/admins,
-/// targets the three non-owners, times {2,4,6}; receipts at non-author nodes from `recv_opts`.
+/// Exhaustive: the first admin, 2 admins, 1 writer. All writes of up to `k` by the admins,
+/// targets the three others, times {2,4,6}; receipts at non-author nodes from `recv_opts`.
 fn exhaustive(k: usize, roles: &[Role], recv_opts: &[u32], late_att: bool, rule: Rule) -> Stats {
     let genesis = [Role::Admin, Role::Admin, Role::Admin, Role::Write];
     let n = genesis.len();
@@ -886,7 +885,7 @@ mod tests {
     fn stolen_node_backdated_revoke_witnessed() {
         // A1 is a stolen node: backdated removals at t=2,3 reach admin A3 at t=5;
         // owner removes A1 at t=10 without backdating. Witness rules: the removals stand
-        // (A3 saw them). Frontier: they stand iff the owner itself had received them.
+        // (A3 saw them). Frontier: they stand iff the first admin itself had received them.
         let mut b = Builder::new(&G);
         b.set(A1, A2, None, 2, &[(A3, 5)]);
         b.set(A1, M, None, 3, &[(A3, 5)]);
@@ -921,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_further_backdated_revoke_cancels() {
+    fn first_admin_further_backdated_revoke_cancels() {
         let mut b = Builder::new(&G);
         b.set(A1, A2, None, 2, &[(A3, 5), (M, 5)]);
         b.set(A1, A3, None, 3, &[(A3, 5), (M, 5)]);
@@ -1020,7 +1019,7 @@ mod tests {
 
     /// Hole in every third-party-witness rule: an ex-admin's backdated grant whose only
     /// receiver is its beneficiary. The beneficiary is a holder at the end (and just
-    /// before the removal), so it witnesses its own grant. Frontier: the owner never
+    /// before the removal), so it witnesses its own grant. Frontier: the first admin never
     /// received the grant, so it is dropped.
     #[test]
     fn grant_witnessed_only_by_its_beneficiary() {
@@ -1055,7 +1054,7 @@ mod tests {
     }
 
     /// Frontier: the demoter's testimony is audited when the demoter is demoted. A2
-    /// removes A3 at t=3; the owner removes A2 at t=5. If the owner had received A2's
+    /// removes A3 at t=3; the first admin removes A2 at t=5. If the first admin had received A2's
     /// removal of A3, it stands; otherwise it falls with A2 and A3 is restored.
     #[test]
     fn frontier_demoters_testimony_is_audited() {
@@ -1072,7 +1071,7 @@ mod tests {
     }
 
     /// Frontier: a drop can move a demotion earlier. A1 removes A2 (nobody else saw it),
-    /// A2 removes A1 (A2 had not seen it), the owner removes A1 without having seen A1's
+    /// A2 removes A1 (A2 had not seen it), the first admin removes A1 without having seen A1's
     /// write. Dropping it makes A2's removal of A1 the operative one; the result is stable
     /// because drops are sticky (a from-scratch re-evaluation would oscillate).
     #[test]

@@ -368,7 +368,7 @@ pub fn random<H: Trusting>(samples: u64, seed: u64, gen: impl Fn(&mut Rng) -> H 
 
 /// The dispute searches (`roles-model -- N disputes`): exhaustive edge histories (unless
 /// `random_only`: `disputes-random`), then `N` random histories per shape of
-/// `edges::random_post`, then `N` of `joint::random_post`.
+/// `edges::random_shaped`, then `N` of `joint::random_hist`.
 pub fn run(samples: u64, random_only: bool) {
     use crate::edges::{self, Edge, Net, Who, NEVER};
     use crate::{joint, Role::{Admin, Read, Write}};
@@ -388,13 +388,13 @@ pub fn run(samples: u64, random_only: bool) {
     }
     for who in [Who::OneRemover, Who::Rank, Who::RankFreeGrants, Who::Anyone] {
         for net in [Net::Online, Net::Offline] {
-            let st = random(samples, 0x5eed, |rng| edges::random_post(rng, who, net));
+            let st = random(samples, 0x5eed, |rng| edges::random_shaped(rng, who, net));
             st.print(&format!("edges random {who:?} {net:?}"));
             hard += st.hard_failures();
         }
     }
-    let st = random(samples, 0x5eed, joint::random_post);
-    st.print("joint random post-owner");
+    let st = random(samples, 0x5eed, joint::random_hist);
+    st.print("joint random");
     hard += st.hard_failures();
     println!("hard failures {hard}");
 }
@@ -403,7 +403,7 @@ pub fn run(samples: u64, random_only: bool) {
 mod tests {
     use super::*;
     use crate::edges::{self, EHist, EWrite, Edge, Net, Who, NEVER};
-    use crate::joint::{self, JHist, JWrite, Owner};
+    use crate::joint::{self, JHist, JWrite};
     use crate::shrink::LATE;
     use crate::Role::{self, Admin, Read, Write};
 
@@ -416,7 +416,7 @@ mod tests {
         e(Admin, Admin, NEVER)
     }
 
-    /// Post-owner edge histories: 0 inert, 1 the first admin.
+    /// Edge histories with explicit genesis edges (0 holds none here, 1 is the first admin).
     struct B(EHist);
     impl B {
         fn new(genesis: &[Option<Edge>]) -> Self {
@@ -555,7 +555,7 @@ mod tests {
         assert!(s.applied >> late & 1 == 1, "{}", b.0);
     }
 
-    /// Joint walk, post-owner: doc D (A0) with admins n0 and n1, doc U (A1) with admin n1
+    /// Joint walk: doc D (A0) with admins n0 and n1 (n0 its first admin), doc U (A1) with admin n1
     /// only. n0 and n1 remove each other on D; n1 also grants n2 write on U, unseen by n0.
     /// Trusting n0's removal changes D only; U reads alike on both sides.
     #[test]
@@ -568,7 +568,7 @@ mod tests {
         let late = |a: usize, t: u32| (0..3).map(|n| if n == a { t } else { LATE }).collect::<Vec<u32>>();
         let h = JHist {
             nodes: 3,
-            owners: vec![Owner::None, Owner::None],
+            admins: vec![0, 1],
             genesis,
             writes: vec![w(1, 2, 1, 0, 0, NI), w(0, 3, 2, 0, 1, NI), w(1, 1, 3, 1, 2, Write)],
             recv: vec![late(1, 2), late(0, 3), late(1, 1)],
@@ -591,7 +591,7 @@ mod tests {
         for (i, who) in [Who::OneRemover, Who::Rank, Who::RankFreeGrants, Who::Anyone].into_iter().enumerate() {
             for net in [Net::Online, Net::Offline] {
                 for _ in 0..300 * (1 + 2 * (i == 3) as usize) {
-                    let h = edges::random_post(&mut rng, who, net);
+                    let h = edges::random_shaped(&mut rng, who, net);
                     check(&h, &mut st, &mut rng);
                 }
             }
@@ -599,7 +599,7 @@ mod tests {
         assert_eq!(st.hard_failures() + st.pick_open, 0);
         let mut js = Stats::default();
         for _ in 0..1500 {
-            let h = joint::random_post(&mut rng);
+            let h = joint::random_hist(&mut rng);
             check(&h, &mut js, &mut rng);
         }
         assert_eq!(js.hard_failures() + js.pick_open, 0);

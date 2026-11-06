@@ -21,7 +21,7 @@ use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-const FORMAT: &[u8] = b"osis-perm walk cache";
+const FORMAT: &[u8] = b"osis-perm walk cache 2";
 
 /// A component's exact inputs: its things, the IDs of its commits, and its
 /// held `created.0` records (by tid; a record's tid fixes its content).
@@ -137,7 +137,6 @@ impl W {
                 self.role(r);
             }
             Class::Edge => self.u8(2),
-            Class::Chain => self.u8(3),
         }
     }
     fn applied(&mut self, a: &Applied) {
@@ -176,6 +175,11 @@ impl W {
             self.tid(t);
             self.edge(e);
         }
+        let cut: Vec<_> = e.cuts().collect();
+        self.len(cut.len());
+        for k in cut {
+            self.pair(k);
+        }
     }
     /// A frontier as the tag covers it: its size (hashing its content would cost O(frontier)
     /// per save and restore).
@@ -196,15 +200,11 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
     for (t, o) in links {
         w.tid(t);
         match o {
-            Owner::Actor(y) => {
+            Owner::Admin(a) => {
                 w.u8(0);
-                w.tid(y);
-            }
-            Owner::Key => w.u8(1),
-            Owner::Ownerless(a) => {
-                w.u8(2);
                 w.tid(a);
             }
+            Owner::Key => w.u8(1),
         }
     }
     w.len(commits.len());
@@ -268,7 +268,6 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
     let cids = inputs.1.iter().enumerate().map(|(i, c)| (*c, i as u64)).collect();
     let mut w = W { out: Vec::new(), dict: Some(Dict { tids, extra: Vec::new(), cids }) };
     let wk = &tl.walked;
-    w.edges(&wk.initial);
     w.edges(&wk.edges);
     w.len(wk.history.len());
     for c in &wk.history {
@@ -519,7 +518,6 @@ impl<'a> R<'a> {
             0 => Some(Class::None),
             1 => Some(Class::Invite(self.role()?)),
             2 => Some(Class::Edge),
-            3 => Some(Class::Chain),
             _ => None,
         }
     }
@@ -537,12 +535,9 @@ impl<'a> R<'a> {
         Some((self.tid()?, self.tid()?))
     }
     fn edges(&mut self) -> Option<Edges> {
-        let mut e = Edges::default();
-        for _ in 0..self.len()? {
-            let (m, t) = (self.tid()?, self.tid()?);
-            e.set(m, t, Some(self.edge()?));
-        }
-        Some(e)
+        let written = (0..self.len()?).map(|_| Some((self.tid()?, self.tid()?, self.edge()?))).collect::<Option<Vec<_>>>()?;
+        let cut = (0..self.len()?).map(|_| self.pair()).collect::<Option<BTreeSet<_>>>()?;
+        Some(Edges::restore(written, cut))
     }
     fn raw_tids(&mut self) -> Option<Vec<Tid>> {
         (0..self.len()?).map(|_| self.raw_tid()).collect()
@@ -624,7 +619,6 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
             _ => None,
         }
     };
-    let initial = r.edges()?;
     let edges = r.edges()?;
     let mut history = Vec::new();
     for _ in 0..r.len()? {
@@ -684,6 +678,6 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
     if !r.b.is_empty() {
         return None;
     }
-    let walked = Walked { initial, history, edges, applied, demotions, falls, prior, dead, prior_node, by_author_target, setter, log, marks, found };
+    let walked = Walked { history, edges, applied, demotions, falls, prior, dead, prior_node, by_author_target, setter, log, marks, found };
     Some(Outcome { walked, dropped, passes, reach, items: None, common: None })
 }
