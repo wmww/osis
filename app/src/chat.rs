@@ -47,7 +47,7 @@ pub fn name(db: &Osis, c: Tid) -> Result<String> {
     Ok(if n.trim().is_empty() { "Chat".into() } else { n })
 }
 
-/// How long the app waits to confirm a link: it runs off the UI thread, and an account is watching.
+/// How long the app waits to confirm a link: it runs off the UI thread, and a user is waiting.
 /// Minor: at 0 every join fails, at infinity one that nobody answers waits for good.
 const JOIN_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
 

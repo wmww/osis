@@ -3,7 +3,7 @@
 //!
 //! The app's internal group (marked `osis_app:app.0`, no `tag.0`) is an item and a subgroup of
 //! home: its own aspects sync (favorites, the views) and so do its items. Every thing the app
-//! makes is placed in it; tags are also its subgroups, so their items sync too. Two nodes that
+//! makes is an item of it; tags are also its subgroups, so their items sync too. Two nodes that
 //! start before syncing each make one: every marked group among home's subgroups is read, and
 //! writes go to the smallest tid (notes/app.md kit and app).
 //!
@@ -144,7 +144,7 @@ pub struct Data {
 
 impl Data {
     pub fn new(db: Osis) -> Data {
-        // the schemas the app shows, so `db.key` types their aspects (the fallback view)
+        // the schemas the app shows, so `db.aspect_key` types their aspects (the fallback view)
         for s in [&crate::schema::SCHEMA, &crate::event::SCHEMA, &crate::contact::SCHEMA] {
             // a store error here shows again at the first write
             if let Err(e) = db.register_schema(s.file(), s.source()) {
@@ -293,7 +293,7 @@ impl Data {
         Ok(None)
     }
 
-    /// The tags `t` is placed in (not their parents), by name.
+    /// The tags `t` is an item of (not their parents), by name.
     pub fn tags_of(&self, t: Tid) -> Result<Vec<Tid>> {
         let mut out = Vec::new();
         // a tag nested in a tag is its subgroup, not a member: `groups_of` does not list the parent
@@ -512,9 +512,9 @@ impl Data {
         Ok(format!("someone ({})", p.to_string().chars().take(6).collect::<String>()))
     }
 
-    /// Tags `t` with `tag`: a thing is placed in it (an item), a tag is nested in it (a subgroup,
-    /// core's sub-tag: notes/tags.md). Placement grants nothing, so tagging shares nothing;
-    /// sharing through a tag waits on core (issues/tag-sharing-op.md).
+    /// Tags `t` with `tag`: a thing becomes an item of it, a tag is nested in it (a subgroup,
+    /// core's sub-tag: notes/tags.md). Membership grants nothing, so tagging shares nothing;
+    /// sharing through a tag waits on core (issues/group-access-follows-membership.md).
     pub fn add_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let nest = self.db.at(t, TAG).get()?.is_some();
         let mut w = self.db.write();
@@ -523,7 +523,7 @@ impl Data {
         Ok(())
     }
 
-    /// Takes `t` out of `tag` (it stays in the app group): unplaces a thing, un-nests a tag.
+    /// Takes `t` out of `tag` (it stays in the app group): removes a thing, un-nests a tag.
     pub fn remove_tag(&self, t: Tid, tag: Tid) -> Result<()> {
         let mut w = self.db.write();
         for m in self.db.members(tag)? {
@@ -535,9 +535,9 @@ impl Data {
         Ok(())
     }
 
-    /// Undoes my newest change to `t` (made on any of my nodes; never someone else's); `false`
-    /// when there is none. Its creation is not undone: that commit also placed it, so reverting
-    /// it would leave the thing in no group, gone from the app but not deleted.
+    /// Undoes my newest commit to `t` (made on any of my nodes; never someone else's); `false`
+    /// when there is none. Its creation is not undone: that commit also added it to the app
+    /// group, so reverting it would leave the thing in no group, gone from the app but not deleted.
     /// Works around issues/undo-creation-unplaces.md (with `next_undo`).
     pub fn undo(&self, t: Tid) -> Result<bool> {
         let scope = Scope::Thing(t);
@@ -549,7 +549,7 @@ impl Data {
         Ok(self.db.undo(&scope)?.is_some())
     }
 
-    /// The change `Osis::undo` would revert in `scope`: my newest change in effect that is not
+    /// The commit `Osis::undo` would revert in `scope`: my newest commit in effect that is not
     /// itself an undo (an even number of reverts deep).
     fn next_undo(&self, scope: &Scope) -> Result<Option<CommitId>> {
         let mine = self.db.commits(&CommitQuery { scope: Some(scope.clone()), actors: vec![self.db.me()], ..Default::default() })?;
@@ -568,7 +568,7 @@ impl Data {
             .map(|e| e.commit.id))
     }
 
-    /// "Edited 5 min ago" for `t` (its newest change).
+    /// "Edited 5 min ago" for `t` (its newest content commit).
     pub fn edited(&self, t: Tid) -> Result<String> {
         Ok(match self.changed(t)? {
             Some(ms) => format!("Edited {}", ago(self.db.now()?.0.saturating_sub(ms))),
@@ -928,15 +928,15 @@ impl Data {
         Ok(t)
     }
 
-    /// Deletes `t` (every aspect, placement and subgroup edge: a deleted tag must not stay in
+    /// Deletes `t` (every aspect and membership, as item or subgroup: a deleted tag must not stay in
     /// the app group as an empty thing) and goes home if it was open.
     pub fn delete(&self, t: Tid) -> Result<()> {
         let was = self.opened()? == Some(t);
         let mut parents = Vec::new();
-        // `groups_of` follows membership, not subgroup edges: look at every group the app shows
+        // `groups_of` lists item membership, not subgroup membership: look at every group the app shows
         // (issues/api-subgroup-parents.md)
         for g in self.groups()?.into_iter().chain(self.things()?) {
-            // a group I cannot edit keeps its edge (to a now empty thing) rather than fail the delete
+            // a group I cannot edit keeps it as a subgroup (a now empty thing) rather than fail the delete
             let writable = matches!(self.db.role_on(g)?, Some(osis::Role::Write | osis::Role::Admin));
             if writable && self.db.members(g)?.contains(&Member::Subgroup(t)) {
                 parents.push(g);
@@ -996,7 +996,7 @@ impl Data {
                 f.in_scopes.push(t);
             }
         }
-        // views hold things by kind, not placement
+        // views hold things by kind, not membership
         for (v, vt) in self.views()? {
             if f.scopes.contains(&vt) {
                 for t in self.view_items(&v)? {

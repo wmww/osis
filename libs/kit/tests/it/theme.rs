@@ -19,7 +19,7 @@ fn defaults_resolve_readably() {
     assert_eq!(Theme::named("cel").id, "cel");
 }
 
-/// Synced colour strings (a tag's colour can be any CSS colour another device wrote): every
+/// Synced colour strings (a tag's colour can be any CSS colour another node wrote): every
 /// resolved colour stays finite and in range, the background and accent opaque, and text on a
 /// card of that colour readable.
 #[test]
