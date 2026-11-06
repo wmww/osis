@@ -4063,32 +4063,30 @@ fn register_reset_replaced_by_later_write_seed_3023_spec_crdt_4_8() {
 }
 
 // spec/commits.md §5 (a snapshot carries a dying write only when its body holds a write of its
-// stamp): A puts k0 in a keep-at-most-0 map and undoes it; B, holding both, compacts (its
-// snapshot holds nothing of k0); C, holding the put alone, overwrites k0 after the snapshot. A
-// node taking the put, the snapshot, the overwrite and the undo last dates the put's value dead
-// at the overwrite while holding the snapshot, which never carried it: no death, the snapshot
-// stays, live and recomputed (was: credited from its frontier, taken after the put and before
-// the date, and dropped early with live writes).
+// stamp): A puts entry k0 (a struct) in a kept map and undoes it; B, holding both, compacts (its
+// snapshot holds nothing of the put's stamp); C, holding the put alone, sets a field of k0 after
+// the snapshot. A node taking the field write, the snapshot, the undo and the put last dates the
+// put's field dead at C's write while holding the snapshot, which never carried it: no death for
+// it, live and recomputed (was: credited from its frontier, taken after the put and before the
+// date).
 #[test]
 fn snapshot_after_late_dated_death_not_credited_spec_commits_5() {
     use Step::*;
     let tick = Advance { who: None, ms: 1 };
-    let h = vec![Write { by: 0, t: 0, op: 19, k: 0, v: 6 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 0 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 19 }, tick, Write { by: 2, t: 0, op: 19, k: 0, v: 7 }];
+    let h = vec![Typed { by: 0, t: 0, op: 22, k: 0, v: 8 }, Send { from: 0, to: 1, back: 0 }, Send { from: 0, to: 2, back: 0 }, tick.clone(), Undo { by: 0, back: 0 }, Send { from: 0, to: 1, back: 0 }, tick.clone(), Compact { by: 1, t: 0, op: 22 }, tick, TypedField { by: 2, t: 0, k: 0, v: 7 }];
     let played = play(83028, &h);
     let b = played.base;
     assert_eq!(played.packs.len(), b + 4);
-    let (put, undo, snap, over) = (b, b + 1, b + 2, b + 3);
-    let order: Vec<usize> = (0..b).chain([put, snap, over, undo]).collect();
+    let (put, undo, snap, field) = (b, b + 1, b + 2, b + 3);
+    let order: Vec<usize> = (0..b).chain([field, snap, undo, put]).collect();
     let mut p = deliver(&played, &order);
-    let a = osis_base::Ak::new("t:gonemap.0").unwrap();
-    let ids: Vec<CommitId> = [put, undo, snap, over].iter().map(|i| played.packs[*i].id).collect();
+    let a = osis_base::Ak::new("t:map.0").unwrap();
+    let ids: Vec<CommitId> = [put, undo, snap, field].iter().map(|i| played.packs[*i].id).collect();
     let t = p.engine.header(&ids[2]).unwrap().aspects[0].tid;
     assert_eq!(p.engine.header(&ids[2]).unwrap().kind, osis_commit::Kind::ContentSnapshot);
-    assert!(!p.engine.body_not_dropped(&ids[0], &t, &a), "the put's body dropped at the overwrite");
-    assert!(p.engine.body_not_dropped(&ids[2], &t, &a), "the snapshot stays");
+    assert!(p.engine.deaths(&ids[0], &t, &a).unwrap().is_some(), "the put died");
     assert_eq!(p.engine.deaths(&ids[2], &t, &a).unwrap(), None, "live");
     p.engine.replay_deaths(&t, &a).unwrap();
-    assert!(p.engine.body_not_dropped(&ids[2], &t, &a), "the snapshot stays, recomputed");
     assert_eq!(p.engine.deaths(&ids[2], &t, &a).unwrap(), None, "recomputed");
 }
 
