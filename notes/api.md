@@ -3,7 +3,7 @@
 
 ## Rules
 How to judge this shape, and the standing rules: notes/api-design.md.
-- Vocabulary (spec/requirements.md Terms): thing, aspect, group, member (what a group contains), holder (who has a role), actor, role, node, peer, serving, account. Below the API, "label" is a sync ID and "host" a saved peer; neither appears in anything public. Engine, `osis-host` and spec rule text keep theirs until owner removal (issues/node-host-unify.md).
+- Vocabulary (spec/requirements.md Terms): thing, aspect, group, member (what a group contains), holder (who has a role), actor, role, node, peer, serving, account. Below the API, "label" is a sync ID and "host" a saved peer; neither appears in anything public. Engine, `osis-host` and spec rule text keep theirs until owner removal (issues/node-host-unify.md); every old word left is in issues/deprecated-terms.md.
 - Decided words (Tess): a new thing not yet durably written is a **draft**, shared or not, and **ephemeral** stays for `~` aspects. `Tid` and `Ak` stay, and an aspect key is the whole string; a domain word plus a generic one is fine (one concept under two terms is not). "Keep" splits: a removed holder's copy is retained, `keep_alive`, `Retention::at_most`. "Invite" is an incoming request from a stranger; a grant's is `may_grant`. A role says who may, `sync` where the data goes (`grant` and `share` not bundled: revisit if the app finds it awkward).
 - Explicit choices: the read limit (`AppConfig::read_limit`), catching up before lowering a role (`SyncFirst`). Membership is a group op (a thing in no synced group gets `NotSynced`).
 - Callbacks run on one dispatcher per node, in commit order, on its own thread (default) or the app's (`Dispatcher::Pump`).
