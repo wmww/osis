@@ -55,6 +55,7 @@ pub struct CSpec {
     pub author: Tid,
     pub t: u64,
     pub ops: Vec<(Tid, Tid, Option<Edge>)>,
+    /// Who received this commit when (frontiers list what their author had received by its stamp).
     pub recv: BTreeMap<Tid, u64>,
     /// A finalize (spec/permissions.md §2): held with no frontier.
     pub fin: bool,
