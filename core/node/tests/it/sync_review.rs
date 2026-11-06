@@ -1003,3 +1003,50 @@ fn no_secret_of_the_heads_read_epoch_is_stranded_spec_sync_5() {
     assert!(!st.stranded && st.open == 1 && st.idle == 1, "{st:?}");
     assert_eq!(net.read(r, u), Some(s("after")));
 }
+
+
+// spec/sync.md §5 (reading without the head's read epoch): another admin removes two readers,
+// so the host's head registers the second removal's epoch, whose rotation commit is wrapped
+// under the first's (spec/crypto.md §5). The first rotation reaches this admin only after the
+// second was listed, which opened under nothing then. A node then holding the first epoch but
+// not the head's read epoch opens the second rotation, rather than counting itself stranded
+// with it listed, and its writes leave it again (member_churn seeds 9, 9390).
+#[test]
+fn rotation_wrapped_under_epoch_learned_later_is_read_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    // every entry announced without its bytes: fetched only once its wrap opens
+    let a = net.add_node(1, SyncConfig { hosts: vec![net.address(host)], inline_limit: 0, ..SyncConfig::default() });
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let d = net.node(4, &[host]);
+    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read), (d, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "before");
+    net.run();
+    let l = net.label(a);
+    let n0 = net.engine(a).epochs(&g).unwrap().read.newest().unwrap().n();
+    let remove = |net: &mut Net, x: usize| {
+        let holder = net.tid(x);
+        let done = net.engine(b).demote(&g, &osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, retain: None }).unwrap();
+        let c = done.commits.first().copied().unwrap();
+        let acts = net.sync(b).carry_out(done).unwrap();
+        net.actions(b, acts);
+        c
+    };
+    let r1 = remove(&mut net, c);
+    let held: Vec<osis_base::BlobId> = blobs_of(&mut net, b, &l, &r1);
+    assert!(!held.is_empty());
+    net.hold_blobs.extend(held);
+    net.run();
+    remove(&mut net, d);
+    net.run();
+    net.advance(61_000);
+    assert!(net.engine(a).epochs(&g).unwrap().read.held().all(|(e, _)| e.n() <= n0), "a holds neither new epoch yet");
+    net.release();
+    net.run();
+    net.advance(61_000);
+    assert!(net.engine(a).epochs(&g).unwrap().read.held().any(|(e, _)| e.n() == n0 + 2), "a read the head's rotation");
+    let w = net.write(a, t, "after");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("after")), "a's write {w:?} left it");
+}
