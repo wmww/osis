@@ -15,9 +15,7 @@
 use crate::{Address, PublicKey};
 #[cfg(feature = "lan")]
 use crate::Error;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr, SocketAddrV6};
-#[cfg(feature = "lan")]
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 #[cfg(feature = "lan")]
 use std::task::Poll;
 
@@ -260,10 +258,8 @@ impl Lan {
     }
 }
 
-/// The local IP address of the IPv4 route to the internet and the /64 prefix of the IPv6 one,
-/// if any: a change means another network. No packet is sent.
-#[cfg(feature = "lan")]
-pub async fn route_ip() -> (Option<IpAddr>, Option<IpAddr>) {
+/// The local IP addresses of the IPv4 and IPv6 routes to the internet, if any. No packet is sent.
+pub async fn route_ips() -> (Option<IpAddr>, Option<IpAddr>) {
     async fn via(local: IpAddr, to: IpAddr) -> Option<IpAddr> {
         let s = tokio::net::UdpSocket::bind(SocketAddr::new(local, 0)).await.ok()?;
         // documentation prefixes (RFC 5737, RFC 3849): connecting a UDP socket only picks the route
@@ -272,6 +268,14 @@ pub async fn route_ip() -> (Option<IpAddr>, Option<IpAddr>) {
     }
     let v4 = via(IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1))).await;
     let v6 = via(IpAddr::V6(Ipv6Addr::UNSPECIFIED), IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1))).await;
+    (v4, v6)
+}
+
+/// What identifies the network the routes go out on: the IPv4 address, the IPv6 /64 prefix
+/// (`network_of`); a change means another network.
+#[cfg(feature = "lan")]
+async fn route_networks() -> (Option<IpAddr>, Option<IpAddr>) {
+    let (v4, v6) = route_ips().await;
     (v4, v6.map(network_of))
 }
 
@@ -293,14 +297,14 @@ pub struct NetWatch {
 impl NetWatch {
     /// Starts watching (needs a tokio runtime); the current network is the baseline.
     pub async fn new() -> NetWatch {
-        NetWatch { route: route_ip().await }
+        NetWatch { route: route_networks().await }
     }
 
     /// Resolves at the next network change.
     pub async fn changed(&mut self) {
         loop {
             tokio::time::sleep(ROUTE_POLL).await;
-            let r = route_ip().await;
+            let r = route_networks().await;
             if r != self.route {
                 self.route = r;
                 return;
@@ -319,6 +323,14 @@ pub fn network_of(ip: IpAddr) -> IpAddr {
             IpAddr::V6(Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
         }
     }
+}
+
+/// Whether `ip` may be reached from other networks: none of unspecified, multicast, IPv4
+/// broadcast, `is_local`, or IPv4 shared address space (100.64/10, carrier NAT).
+pub fn is_global(ip: IpAddr) -> bool {
+    let shared = matches!(ip, IpAddr::V4(v) if matches!(v.octets(), [100, b, ..] if b & 0xc0 == 64));
+    let broadcast = matches!(ip, IpAddr::V4(v) if v.is_broadcast());
+    !(ip.is_unspecified() || ip.is_multicast() || broadcast || shared || is_local(ip))
 }
 
 /// Whether `ip` can be a LAN neighbour's source address: loopback, private or link-local

@@ -233,6 +233,23 @@ async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
     .unwrap()
 }
 
+// spec/permissions.md §7, spec/sync.md §10 (links list relays only): a direct link carries the
+// relays of the sharer's `reach.0`, never the socket addresses it lists.
+#[test]
+fn direct_link_carries_relays_only_spec_permissions_7() {
+    let mut c = osis::internals::Opening::at(Store::Memory(MemStore::new()));
+    c.runtime = Runtime::Manual(osis::internals::ManualNet::new());
+    let db = osis::internals::create(c).unwrap();
+    let relay = osis_transport::p2p::Relay { key: [7; 32], addr: "192.0.2.1:4040".parse().unwrap() }.item();
+    let _ = db.sync_engine(|s| s.publish_reach([9; 32], vec!["203.0.113.7:47381".into(), relay.clone()]));
+    let mut w = db.write();
+    let g = w.create_in(db.me(), &[db.me()]).unwrap();
+    w.commit().unwrap();
+    let link = db.make_link(g, osis::Role::Read, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
+    let parsed = osis_label::ShareLink::from_text(&link.to_string()).unwrap();
+    assert_eq!(parsed.peers.iter().map(|p| p.relays.clone()).collect::<Vec<_>>(), vec![vec![relay]]);
+}
+
 // spec/permissions.md §7 (first contact: the link carries the sharer's dialable key and relays),
 // spec/sync.md §5 (co-reader peer): Bob cannot reach Alice's peer; he redeems her direct link at
 // her node, opening the link's label there by the link key, and then syncs the target with

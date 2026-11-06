@@ -53,6 +53,12 @@ pub(crate) fn host_keys(hosts: &[Address]) -> impl Iterator<Item = super::state:
     hosts.iter().filter(|a| !is_peer(a)).map(|a| a.key)
 }
 
+/// `a` with only the relay items of its `peer://` URL (None: not `peer://`).
+fn relays_only(a: &Address) -> Option<Address> {
+    let relays: Vec<String> = osis_transport::p2p::items(&a.url).ok()?.relays.iter().map(osis_transport::p2p::Relay::item).collect();
+    Some(Address { url: osis_transport::peer_url(&relays), key: a.key })
+}
+
 /// A co-reader node this node may dial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Peer {
@@ -157,13 +163,13 @@ impl SyncEngine {
     }
 
     fn rotate_now(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let relays = self.own_reach().map(|r| r.relays);
+        let items = self.own_reach().map(|r| r.items);
         self.state.reach_secret = None;
         self.lan_rotate = true;
         let s = self.dialable_secret();
         // every transport's key is the Ed25519 key of its secret (the driver's listener presents it)
-        if let Some(relays) = relays {
-            self.write_reach(SigningSecret::from_seed(&s).verifying_key().to_bytes(), relays)?;
+        if let Some(items) = items {
+            self.write_reach(SigningSecret::from_seed(&s).verifying_key().to_bytes(), items)?;
         }
         out.push(Action::Reach);
         Ok(())
@@ -190,18 +196,19 @@ impl SyncEngine {
     }
 
     /// Writes `reach.0` on this node (spec/data-model.md §9) when it changed: `dialable` the key
-    /// the listener presents, the relays, and the lan secret (kept; fresh when none or after
+    /// the listener presents, its `peer://` items (direct addresses, relays;
+    /// `osis_transport::p2p::reach_items`), and the lan secret (kept; fresh when none or after
     /// `rotate_reach`). The node card goes under every synced label with the next pass
     /// (spec/permissions.md §4).
-    pub fn publish_reach(&mut self, dialable: [u8; 32], relays: Vec<String>) -> Result<Vec<Action>> {
-        if !self.write_reach(dialable, relays)? {
+    pub fn publish_reach(&mut self, dialable: [u8; 32], items: Vec<String>) -> Result<Vec<Action>> {
+        if !self.write_reach(dialable, items)? {
             return Ok(Vec::new());
         }
         Ok(self.handle(Event::Local))
     }
 
     /// Commits `reach.0` when it changed; true when it did.
-    fn write_reach(&mut self, dialable: [u8; 32], relays: Vec<String>) -> Result<bool> {
+    fn write_reach(&mut self, dialable: [u8; 32], items: Vec<String>) -> Result<bool> {
         let old = self.own_reach();
         let lan_secret = match &old {
             Some(r) if !self.lan_rotate => r.lan_secret,
@@ -211,7 +218,7 @@ impl SyncEngine {
                 b
             }
         };
-        let reach = Reach { dialable, relays, lan_secret };
+        let reach = Reach { dialable, items, lan_secret };
         if old.as_ref() == Some(&reach) {
             return Ok(false);
         }
@@ -348,7 +355,7 @@ impl SyncEngine {
         for (k, p) in self.peers().iter() {
             let route = self.lan.get(k);
             let ok = |x: &Option<(Address, u64)>| x.as_ref().filter(|(a, _)| route.is_none_or(|r| !r.failed.contains_key(a))).map(|(a, _)| a.clone());
-            let addr = route.and_then(|r| ok(&r.good).or_else(|| ok(&r.candidate))).unwrap_or_else(|| Address { url: osis_transport::peer_url(&p.reach.relays), key: *k });
+            let addr = route.and_then(|r| ok(&r.good).or_else(|| ok(&r.candidate))).unwrap_or_else(|| Address { url: osis_transport::peer_url(&p.reach.items), key: *k });
             out.insert(*k, (addr, p.labels.clone()));
         }
         out
@@ -402,10 +409,12 @@ impl SyncEngine {
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
     /// the link text only; spec/permissions.md §7). It is dialed like a co-reader (ephemeral key,
-    /// no co-reader proof) for K's labels and the target's, and nothing else, until `forget_link`.
-    /// This node shows the sharer its IP, never its dialable key.
+    /// no co-reader proof) for K's labels and the target's, and nothing else, until `forget_link`,
+    /// at the link's relays only: a link lists relays only, and this node dials socket addresses
+    /// only of nodes it shares data with (spec/sync.md §10, IP consent; the transport dials every
+    /// address a URL lists). The relays learn its IP, the sharer never its dialable key.
     pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
-        let peers: Vec<Address> = peers.into_iter().filter(is_peer).collect();
+        let peers: Vec<Address> = peers.into_iter().filter_map(|a| relays_only(&a)).collect();
         if peers.is_empty() {
             return;
         }

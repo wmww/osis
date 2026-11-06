@@ -49,8 +49,8 @@ aspect secrets.0: struct { 0 boxes: map<box_key, box>, 1 history: map<history_ke
 /// Label ID -> label.
 aspect label.0: map<blob, label> [by: admin, keep_at_least: 90d];
 aspect node.0: struct { 0 software: string };
-/// 32-byte P2P key, relay URLs, 32-byte LAN secret.
-aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };
+/// 32-byte P2P key, `peer://` items (global socket addresses, relays), 32-byte LAN secret.
+aspect reach.0: struct { 0 dialable: blob, 1 items: list<string>, 2 lan_secret: blob };
 /// ts: wall ms of the commit's ts.
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool, 2 suspect: set<suspect> };
 /// Hosting, on a node thing (absent: not hosting): listen URLs, admission, label IDs (16 bytes) admitted beside `own`'s, peer hosts to replicate to, policy knobs by name, per-label caps by label ID.

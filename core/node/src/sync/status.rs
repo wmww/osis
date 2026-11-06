@@ -82,7 +82,7 @@ impl SyncEngine {
         let ids: BTreeSet<LabelId> = self.labels().iter().filter(|(x, l)| x == g && !l.replaced).map(|(_, l)| l.id).collect();
         let mut out: Vec<Address> = self.labels().iter().filter(|(x, l)| x == g && !l.replaced).flat_map(|(_, l)| l.hosts.clone()).collect();
         if self.cfg.peers {
-            let co_readers: Vec<Address> = self.peers().iter().filter(|(_, p)| !p.labels.is_disjoint(&ids)).map(|(k, p)| Address { url: osis_transport::peer_url(&p.reach.relays), key: *k }).collect();
+            let co_readers: Vec<Address> = self.peers().iter().filter(|(_, p)| !p.labels.is_disjoint(&ids)).map(|(k, p)| Address { url: osis_transport::peer_url(&p.reach.items), key: *k }).collect();
             out.extend(co_readers);
             out.extend(self.link_routes().into_values().filter(|(_, ls)| !ls.is_disjoint(&ids)).map(|(a, _)| a));
         }

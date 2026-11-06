@@ -7,7 +7,8 @@
 //!   with ALPN `osis` (sessions) and, when this transport relays, `osis-relay`. It registers at
 //!   every relay its URL lists from that socket, so a relay sees the address its peers punch to.
 //! - **Dial**: a fresh socket per dial. Every direct address of the URL and every relay is tried
-//!   at once; the first connection up is returned. A direct one that completes after a relayed
+//!   at once (dialing an address shows ours there: the caller chooses the URL); the first
+//!   connection up is returned. A direct one that completes after a relayed
 //!   one was returned is parked and the relayed one closed: the caller dials again and gets the
 //!   parked one (switching; sync reconciles after a reconnect).
 //! - **Relayed connection**: one stream, end-to-end TLS 1.3 with raw keys (as `quic://`) over
@@ -178,6 +179,29 @@ pub fn items(url: &str) -> Result<Items, Error> {
         }
     }
     Ok(out)
+}
+
+/// What a node lists in `reach.0` for its listener at `listener` (the listener's `peer://`
+/// address): each socket address it is bound to that `lan::is_global` passes, an unspecified IP
+/// standing for `routes` of the families it serves (the routes' local addresses,
+/// `lan::route_ips`; `[::]` serves both), then its relays. Another scheme lists nothing.
+pub fn reach_items(listener: &str, routes: &[IpAddr]) -> Vec<String> {
+    let Ok(it) = items(listener) else { return Vec::new() };
+    let mut direct: Vec<SocketAddr> = Vec::new();
+    for a in it.direct {
+        let ips: Vec<IpAddr> = match a.ip() {
+            IpAddr::V4(v) if v.is_unspecified() => routes.iter().filter(|r| r.is_ipv4()).copied().collect(),
+            IpAddr::V6(v) if v.is_unspecified() => routes.to_vec(),
+            ip => vec![ip],
+        };
+        for ip in ips.into_iter().filter(|ip| crate::lan::is_global(*ip)) {
+            let s = SocketAddr::new(ip, a.port());
+            if !direct.contains(&s) {
+                direct.push(s);
+            }
+        }
+    }
+    direct.iter().map(SocketAddr::to_string).chain(it.relays.iter().map(Relay::item)).collect()
 }
 
 // ---- relay wire ----
@@ -428,9 +452,10 @@ fn tls_stream<S: SendStream, R: RecvStream>(tls: rustls::Connection, s: S, r: R,
 /// Invariant: a node's IP address reaches a peer only through this exchange, inside TLS with the
 /// peer's key proven, and only when `punching` accepts that key; the relay never forwards an
 /// address (a Dial answer carries the dialer's own, the target's stream starts with an opaque
-/// tag); a dial of a refused key tries no socket address of the URL; and a node punches or dials
-/// direct only to a peer that sent its own after it sent its own, so a peer it refused gets
-/// neither its address nor a packet from it.
+/// tag); and a node punches or dials direct only to a peer that sent its own after it sent its
+/// own, so a peer it refused gets neither its address nor a packet from it. Beyond that, a dial
+/// reaches exactly the addresses its URL lists (its socket addresses and relays): which those
+/// are is the caller's choice.
 async fn exchange<S: SendStream, R: RecvStream>(s: &mut TlsSend<S>, r: &mut TlsRecv<R>, mine: Option<SocketAddr>) -> Result<Option<SocketAddr>, Error> {
     let mut out = Vec::new();
     put_addr(&mut out, mine.unwrap_or(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0)));
@@ -814,8 +839,7 @@ impl<U: Udp> P2p<U> {
 
     /// Whom this node tells its IP address on a relayed connection: the peer's authenticated
     /// key (the dialed key, or a dialer's TLS key at a listener) must pass `punch`, else it
-    /// sends zeros and neither punches. A dial of a key `punch` refuses also skips the URL's
-    /// socket addresses.
+    /// sends zeros and neither punches. A dial still tries every socket address its URL lists.
     pub fn punching(mut self, punch: KeyFilter) -> P2p<U> {
         self.punch = punch;
         self
@@ -876,12 +900,8 @@ impl<U: Udp> P2p<U> {
         if let Some((_, c)) = lock(&self.parked).conns.remove(&tag) {
             return Ok(P2pConn::Direct(c));
         }
-        let mut it = items(&addr.url)?;
+        let it = items(&addr.url)?;
         let punch = (self.punch)(&addr.key);
-        // dialing an address shows ours
-        if !punch {
-            it.direct.clear();
-        }
         let first = it.direct.first().copied().or_else(|| it.relays.first().map(|r| r.addr)).ok_or_else(|| Error::Unreachable(addr.url.clone()))?;
         let any: IpAddr = if first.is_ipv4() { Ipv4Addr::UNSPECIFIED.into() } else { Ipv6Addr::UNSPECIFIED.into() };
         let sock = Arc::new(self.udp.bind(SocketAddr::new(any, 0), None)?);
