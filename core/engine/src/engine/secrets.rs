@@ -392,10 +392,28 @@ impl osis_keys::Held for NamesHeld<'_> {
         });
         applied && self.resolved(&n.key.commit)
     }
+    /// The commit by `own`'s `ts` and author among the held `roles.0` deltas of the actor, resolved,
+    /// writing a keyset of the actor (a rotation commit), and making no self-removal on it.
+    ///
+    /// Invariant: a departs mark covers only departures its rotation commit makes by an
+    /// explicit demotion or finalize, whose author stays a holder or was never the leaver. Any
+    /// writer holding an epoch's secret may put an entry at its history key naming any mark, and
+    /// a mark is predictable by its author: a leaver could name its own self-removal (in that
+    /// commit, an earlier one, or a rotation of its own in it, whose secrets it made), and a
+    /// leaver's guess at an admin's removal that carries no rotation (Seal waits) would name a
+    /// commit with no keyset. A self-removal carries no rotation (spec/permissions.md §3), so an
+    /// honest mark never names one.
     fn departed(&self, own: &Own) -> bool {
-        osis_base::Ak::new("roles.0").ok().and_then(|ak| self.core.ix.by_aspect.get(&(self.actor, ak))).is_some_and(|set| {
-            let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
-            set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node) && self.resolved(c))
+        let Ok(roles) = osis_base::Ak::new("roles.0") else { return false };
+        let Some(set) = self.core.ix.by_aspect.get(&(self.actor, roles)) else { return false };
+        let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
+        let tl = self.core.timelines.get(&self.actor);
+        set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| {
+            let rotates = self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node && m.header.aspects.iter().any(|a| a.tid == self.actor && a.ak.as_str() == "keys.0"));
+            let leaves = tl.is_some_and(|tl| {
+                tl.applied().range(osis_perm::WriteId(*c, 0)..=osis_perm::WriteId(*c, u32::MAX)).any(|(_, w)| w.target == self.actor && matches!(w.attr, osis_perm::Attr::SelfRemoval(..)))
+            });
+            rotates && !leaves && self.resolved(c)
         })
     }
 }

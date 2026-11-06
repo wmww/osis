@@ -232,7 +232,7 @@ fn entry_dots(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Vec<(osis_crdt::Dot, o
 /// The reset of `holder`'s edge on `target` in `m`: its live entry and every entry of it the node
 /// saw, so it resets also an entry an earlier write reset in the state while applying nothing on
 /// the timeline (a void finalize, spec/permissions.md §2), where the edge still stands.
-fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
+pub(crate) fn removal(tx: &Tx<'_>, m: &mut Mutation, target: Tid, holder: Tid) -> Result<()> {
     remove_edge(m, target, holder)?;
     let dots = entry_dots(tx, &target, &holder);
     m.dead_resets.entry((target, super::ak("roles.0")?)).or_default().extend(dots);

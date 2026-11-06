@@ -673,3 +673,5 @@ mod tests;
 mod tests_members;
 #[cfg(test)]
 mod tests_possession;
+#[cfg(test)]
+mod tests_departs;
