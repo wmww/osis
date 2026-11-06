@@ -50,19 +50,8 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     }
     let before = crate::engine::state::encode(&snap)?;
     let mut j = snap.clone();
-    j.join(body.clone());
-    if crate::engine::state::encode(&j)? != before {
-        return Ok(Some(false));
-    }
-    let mut ranges: Vec<(osis_crdt::Source, u64, u64)> = if is_snapshot {
-        body.writes().into_iter().filter(|w| w.1.is_some()).map(|(d, _)| (d.src.clone(), d.ctr, d.ctr.saturating_add(1))).collect()
-    } else {
-        crate::apply::copies::owned_ranges(&m.header, c, cai)
-    };
-    ranges.sort();
-    ranges.dedup();
-    let ix = snap.copy_index();
-    Ok(Some(ix.outside(&ranges, &osis_crdt::CopySet::of(&[&body])).is_empty()))
+    j.join(body);
+    Ok(Some(crate::engine::state::encode(&j)? == before))
 }
 
 pub(crate) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {

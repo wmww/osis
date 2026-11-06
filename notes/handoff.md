@@ -19,7 +19,7 @@ These branches are gone; what they found is recorded only here. Redo the work fr
 - **keys-tidy**: (1) a grant to a holder whose keyset is blocked should go through with the holder left out (`Sealed::Out`), not wait; (2) a removal's own epoch counted as departed before its edge write is applied: reported, unconfirmed; recheck against the departure rule in spec/crypto.md §4. (3) Bounding rotation names (issues/rotation-names-grow.md): the issue's "chain coverage through supersedes" proposal leaks (a TLA instance found it); a sound base-chain rule breaks when a base rotation turns invalid. Three options were drafted for Tess; they need redoing.
 
 ## Open questions for Tess (notes/questions-for-tess.md)
-Q17 (hole punching and IP consent), Q16 (misstated snapshots), Q15 (drafts in groups), Q12 (depth 0 bends), Q11 (three kept limits), Q5 realms (can resume: owners are gone).
+Q17 (hole punching and IP consent), Q15 (drafts in groups), Q12 (depth 0 bends), Q11 (three kept limits), Q5 realms (can resume: owners are gone).
 
 ## Other open work, rough priority
 - issues/link-leave-splits-thing.md: after a link joiner leaves, the maker and the other joiner stop seeing each other's posts (data loss, reproduced in one chat create order).

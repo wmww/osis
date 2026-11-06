@@ -1,37 +1,14 @@
-//! Which delta carries a dot (spec/permissions.md §5.2), what held snapshots carry of writes, and where a
-//! copy differs from its delta.
+//! Which delta carries a dot (spec/permissions.md §5.2), and what held valid snapshots vouch
+//! for: a valid snapshot's writes join like any write (spec/crdt.md §4.1 copy order) and are
+//! never compared with their own delta's.
 
 use crate::engine::{Core, Meta, Owned, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Value};
-use osis_commit::{Form, Header};
+use osis_commit::Form;
 use osis_crdt::{Dot, Fragment};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-/// Writes a held compaction snapshot holds under dots whose carrying delta was never received here
-/// (`delta_received`), per snapshot and source, counters sorted: the snapshots to compare with
-/// that delta once it arrives (`uncarry`, `differing_copies`). Kept for every held snapshot whatever its validity, in
-/// (snapshot, source) order whatever the arrival order. Nothing is judged per write: a valid
-/// snapshot vouches for every write it carries (spec/permissions.md §5.2).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Carried {
-    pub snap: CommitId,
-    pub src: osis_crdt::Source,
-    pub ctrs: Vec<u64>,
-}
-
-/// The writes of snapshot fragment `f` of `(tid, ak)` whose carrying delta was never received
-/// here, by source. A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
-pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTreeMap<osis_crdt::Source, BTreeSet<u64>> {
-    let mut out: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
-    for (d, ts) in f.writes() {
-        if ts.is_some() && !d.src.is_derived() && !delta_received(core, tid, ak, &d) {
-            out.entry(d.src.clone()).or_default().insert(d.ctr);
-        }
-    }
-    out
-}
 
 /// Whether some held commit carrying dot `d` on `(tid, ak)` (spec/permissions.md §5.2) has its
 /// delta of that aspect as `f` judges it: the session-form commit whose range holds it; for
@@ -51,11 +28,6 @@ pub(crate) fn delta_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai))
 }
 
-/// Whether the delta carrying dot `d` on `(tid, ak)` is held here (not dropped).
-pub(crate) fn delta_held(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_delta(core, tid, ak, d, &|_, m, ai| m.holds(ai))
-}
-
 /// Whether held snapshot `snap`'s part on `(tid, ak)` is valid (`Judge::part`: its author could
 /// write the aspect at it).
 pub(crate) fn snapshot_valid(core: &Core, snap: &CommitId, tid: &Tid, ak: &Ak) -> bool {
@@ -66,26 +38,6 @@ pub(crate) fn snapshot_valid(core: &Core, snap: &CommitId, tid: &Tid, ak: &Ak) -
 /// body gives nothing (not joined, replayed or covering).
 pub(crate) fn invalid_snapshot(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
     core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction()) && !snapshot_valid(core, c, tid, ak)
-}
-
-/// Records the writes snapshot `snap` of `(tid, ak)` carries whose carrying delta was never
-/// received here (any snapshot held, whatever its validity), as `carried_of` found them in its
-/// pieces, gathered.
-pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId, carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>>) {
-    let k = (*tid, ak.clone());
-    let before = core.ix.carried.get(&k).cloned().unwrap_or_default();
-    let mut cur: Vec<Carried> = before.iter().filter(|c| c.snap != *snap).cloned().collect();
-    cur.extend(carried.into_iter().map(|(src, ctrs)| Carried { snap: *snap, src, ctrs: ctrs.into_iter().collect() }));
-    // in one order whatever order the snapshots arrived in
-    cur.sort_by(|x, y| (x.snap, &x.src).cmp(&(y.snap, &y.src)));
-    if cur == before {
-        return;
-    }
-    if cur.is_empty() {
-        core.ix.carried.remove(&k);
-    } else {
-        core.ix.carried.insert(k, cur);
-    }
 }
 
 /// The writes of held snapshot `snap` on `(tid, ak)` whose carrying delta is held (whole or as its
@@ -169,57 +121,8 @@ fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(Co
     Ok(true)
 }
 
-/// Drops the carried writes of a commit on the aspects whose deltas it now holds (`held`):
-/// its counters (session form), its whole source (commit form).
-/// Returns, per such aspect, the snapshots whose copies it dropped: they are compared with the
-/// delta (`differing_copies`).
-pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(usize) -> bool) -> Vec<(Tid, Ak, BTreeSet<CommitId>)> {
-    let whole = (h.kind.has_own_writes() && h.form == Form::Commit).then(|| osis_crdt::Source::commit(*id));
-    let counted = (h.kind.has_own_writes() && h.form.counted()).then(|| h.form.own_source(h.author, *id));
-    let mut out = Vec::new();
-    if whole.is_none() && counted.is_none() {
-        return out;
-    }
-    for (_, a) in h.aspects.iter().enumerate().filter(|(ai, _)| held(*ai)) {
-        let k = (a.tid, a.ak.clone());
-        let owns = |src: &osis_crdt::Source, x: u64| whole.as_ref() == Some(src) || (counted.as_ref() == Some(src) && a.lo <= x && x < a.hi);
-        if !core.ix.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(&c.src, *x)))) {
-            continue;
-        }
-        let mut v = core.ix.carried.get(&k).cloned().unwrap_or_default();
-        let mut snaps = BTreeSet::new();
-        for c in v.iter_mut() {
-            let n = c.ctrs.len();
-            let src = c.src.clone();
-            c.ctrs.retain(|x| !owns(&src, *x));
-            if c.ctrs.len() != n {
-                snaps.insert(c.snap);
-            }
-        }
-        v.retain(|c| !c.ctrs.is_empty());
-        if v.is_empty() {
-            core.ix.carried.remove(&k);
-        } else {
-            core.ix.carried.insert(k, v);
-        }
-        out.push((a.tid, a.ak.clone(), snaps));
-    }
-    out
-}
-
 /// Writes held snapshots' copy indexes may hold in all (`Core::copy_index`).
 const COPY_CACHE_MAX: usize = 1 << 20;
-
-/// The origin dots of commit `id`'s delta `ai` (header `h`) as (source, counters `lo..hi`):
-/// its counter range, or its source in commit form.
-pub(crate) fn owned_ranges(h: &Header, id: &CommitId, ai: usize) -> Vec<(osis_crdt::Source, u64, u64)> {
-    match (h.form, h.aspects.get(ai)) {
-        (_, None) => Vec::new(),
-        (_, Some(_)) if !h.kind.has_own_writes() => Vec::new(),
-        (Form::Commit, Some(_)) => vec![(osis_crdt::Source::commit(*id), 1, u64::MAX)],
-        (f, Some(a)) => vec![(f.own_source(h.author, *id), a.lo, a.hi)],
-    }
-}
 
 /// Held snapshot `s`'s writes on `(tid, ak)` by dot (`Core::copy_index`), indexed a piece at
 /// a time.
@@ -311,78 +214,4 @@ pub(crate) fn vouches_any(f: &Fragment, owned: &[Owned]) -> bool {
     let (mut out, mut erased) = (Records::new(), BTreeSet::new());
     vouched_in(&f.copy_index_in(&ranges), owned, &mut out, &mut erased);
     !out.is_empty() || !erased.is_empty()
-}
-
-/// The dots under which the snapshots `snaps` hold copies of the writes of commit `id`'s delta
-/// `ai` (header `h`, stored) otherwise than that delta holds them (`misstated_in`). O(delta)
-/// once a snapshot is indexed.
-pub(crate) fn differing_copies(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, snaps: &BTreeSet<CommitId>) -> Result<BTreeSet<Dot>> {
-    let mut out = BTreeSet::new();
-    let Some(a) = h.aspects.get(ai) else { return Ok(out) };
-    let mut own = None;
-    for s in snaps {
-        if let Some(ix) = copy_index(tx, s, &a.tid, &a.ak)? {
-            out.extend(misstated_in(tx, &ix, h, id, ai, &mut own)?);
-        }
-    }
-    Ok(out)
-}
-
-/// The dots under which a snapshot (indexed `ix`) carries copies of the writes of commit `id`'s
-/// held delta `ai` (header `h`) otherwise than the delta holds them (spec/permissions.md §5.2:
-/// another value, `ts` or position, a dot the delta does not use, a value-less copy of a delta
-/// without expiry). `own`: the delta's writes, indexed a piece at a time on first need (only
-/// when the snapshot copies one of its dots).
-pub(crate) fn misstated_in(tx: &mut Tx<'_>, ix: &osis_crdt::CopyIndex, h: &Header, id: &CommitId, ai: usize, own: &mut Option<osis_crdt::CopySet>) -> Result<BTreeSet<Dot>> {
-    let ranges = owned_ranges(h, id, ai);
-    if !ix.any_in(&ranges) {
-        return Ok(BTreeSet::new());
-    }
-    let lax = h.aspects.get(ai).is_some_and(|_| h.expires.is_some());
-    Ok(ix.misstated(&ranges, held_copies(tx, id, ai, own)?, lax))
-}
-
-/// The writes of held commit `id`'s parts on aspect `ai`, indexed into `own` a piece at a time
-/// unless it is already.
-pub(crate) fn held_copies<'o>(tx: &mut Tx<'_>, id: &CommitId, ai: usize, own: &'o mut Option<osis_crdt::CopySet>) -> Result<&'o osis_crdt::CopySet> {
-    if own.is_none() {
-        let mut set = osis_crdt::CopySet::default();
-        super::each_held_piece(tx, id, ai, &mut |_, f| {
-            set.add(&f);
-            Ok(())
-        })?;
-        *own = Some(set);
-    }
-    Ok(own.get_or_insert_default())
-}
-
-/// Whether the delta carrying dot `d` on `(tid, ak)` expires: snapshots carry its writes
-/// value-less (spec/crdt.md §4.7), no misstatement.
-pub(crate) fn delta_expires(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_delta(core, tid, ak, d, &|_, m, ai| m.header.aspects.get(ai).is_some_and(|_| m.header.expires.is_some()))
-}
-
-/// The dots under which held snapshot `s` of `(tid, ak)` carries copies of held deltas' writes
-/// otherwise than those deltas hold them (`misstated_in`).
-pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Dot>> {
-    let mut out = BTreeSet::new();
-    let Some(ix) = copy_index(tx, s, tid, ak)? else { return Ok(out) };
-    let carriers = {
-        let core = &*tx.core;
-        let found = std::cell::RefCell::new(BTreeSet::new());
-        for d in ix.dots() {
-            any_delta(core, tid, ak, d, &|c, m, ai| {
-                if m.holds(ai) && !core.ix.void.contains(c) {
-                    found.borrow_mut().insert((*c, ai));
-                }
-                false
-            });
-        }
-        found.into_inner()
-    };
-    for (c, ai) in carriers {
-        let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
-        out.extend(misstated_in(tx, &ix, &h, &c, ai, &mut None)?);
-    }
-    Ok(out)
 }

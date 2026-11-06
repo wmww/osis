@@ -7,7 +7,7 @@ use crate::fragment::Meta;
 use crate::linearize::place;
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::seq_span::{expand, nth};
-use crate::stamp::{Dot, Source, Stamp};
+use crate::stamp::{Dot, Stamp};
 use std::collections::BTreeMap;
 use crate::stamp::{CounterRange, Interner};
 use crate::testutil::{frag, history, history_with, mapply, sess, sess_value, source, ts};
@@ -131,7 +131,7 @@ proptest! {
         crate::tests_life::deleted_creation_dies_check(seed, &Ty::List(Box::new(Ty::Struct([(1, Ty::Text)].into_iter().collect()))));
     }
 
-    /// spec/permissions.md §5.2: `copies_within` and `strip_copies` of text and list states.
+    /// spec/permissions.md §5.2: `strip_copies` of text and list states rejoined.
     #[test]
     fn seq_copies_agree_and_rejoin_spec_perm_5_2(seed in any::<u64>()) {
         crate::tests_life::copies_check(seed, &Ty::Text);
@@ -1396,7 +1396,6 @@ fn hostile_writes(r: &mut crdt_model::r#gen::Rng, list: bool, slots: bool, n: us
 /// `Parts::kills`, spec/commits.md §5), and the part of paged pieces is the part of their join: for
 /// any shape of delta, forged ones included. A false "joins unchanged" would lose history.
 fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_model::r#gen::Rng) {
-    use crate::copies::CopySet;
     let enc = |f: &Fragment| encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap();
     let joined = |a: &Fragment, b: &Fragment| {
         let mut x = a.clone();
@@ -1422,12 +1421,6 @@ fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_model::r#gen::
         }
         assert_eq!(enc(&joined(&from_pieces, d)) == enc(&from_pieces), enc(&joined(st, d)) == enc(st), "pieces' part judges as the whole");
     }
-    // the copies of a delta's writes a state holds, by ranges, against the delta whole and in part
-    let mut ranges: Vec<(Source, u64, u64)> = d.writes().into_iter().map(|(w, _)| (w.src.clone(), w.ctr, w.ctr.saturating_add(r.below(3) as u64 + 1))).collect();
-    ranges.sort();
-    ranges.dedup();
-    assert_eq!(st.copy_index_in(&ranges).outside(&ranges, &CopySet::of(&[&d.part_at(st)])), st.copy_index().outside(&ranges, &CopySet::of(&[d])), "copies outside by the index in ranges");
-    assert_eq!(d.copy_index_in(&ranges).outside(&ranges, &CopySet::of(&[&st.part_at(d)])), d.copy_index().outside(&ranges, &CopySet::of(&[st])), "copies outside by the state's part");
     // what a join of the source's part kills of a fragment, as `Parts::kills` keeps them
     let kills = |x: Fragment| {
         let (mut g, mut ch) = (d.clone(), crate::Changes::new());

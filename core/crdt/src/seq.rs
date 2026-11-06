@@ -1057,7 +1057,7 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn F
 /// matching dot created go too, and their records where no write is left (the copies never
 /// counted, spec/permissions.md §5.2: a node that never held them has no such record); one
 /// holding others' writes stays.
-pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keys: bool) {
+pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool) {
     let elems = s.elems_mut();
     // a range record of bare anchors may span deltas: edited per element
     let ranges: Vec<Dot> = elems.iter().filter(|(d, e)| e.span > 1 && (0..e.span).any(|k| pred(nth(d, k).origin()))).map(|(d, _)| d.clone()).collect();
@@ -1073,7 +1073,7 @@ pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keys: boo
             el.undel = None;
         }
         if let SeqContent::Frag(f) = &mut el.content {
-            f.drop_creations(pred, keys);
+            f.drop_creations(pred);
             if f.is_empty() {
                 el.content = SeqContent::None;
             }

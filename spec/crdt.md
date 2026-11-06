@@ -230,7 +230,7 @@ FlagW    := [i_from, i_to, Stamp, bool] | [i_from, i_to, Stamp, false, string]  
 ### 4.1 Join
 `join(A, B)` where both are the same encoding: take the union of all writes, keeping for each register the write with the greatest stamp, for each reset the greatest stamp, for each collection the union of elements by dot (joining records of one dot recursively), then **prune** (§4.2). Different encodings: §7. Join of a state with a delta is the same operation; a state is just a fragment with every stamp written in full.
 
-**Copy order.** Two copies of one write (equal stamps; a valid snapshot vouches for the copies it carries and its copy replaces a differing one of the write's own delta, spec/permissions.md §5.2, so copies of valid snapshots may differ) join to the greater in this order:
+**Copy order.** Two copies of one write (equal stamps; a valid snapshot's copy joins beside the write's own delta's, never compared with it, spec/permissions.md §5.2, so copies may differ) join to the greater in this total order:
 1. a valued copy over a value-less one (§4.7);
 2. then the greater payload:
    - a register value by its canonical encoding, bytewise (spec/data-model.md §5, links by their bytes);
@@ -320,7 +320,7 @@ Rules:
   - **Presence**: value-less writes do not count toward `written` (§4.3).
   - **Map entry**: an entry's key is the value of its creation wherever a record of the entry repeats it.
     - Once the creation's delta is held value-less (the expiry rule, a purge; judged by dot), every record of the dot moves into the dot's key-erased record (joined, §5.6), whose nested writes stay hidden until a reset sweeps them.
-    - A value-less copy alone (a snapshot's, the delta not held value-less) moves nothing: it only hides the dot (§5.6 Live), since a valued copy may still arrive. A copy misstating a held delta is spec/permissions.md §5.2's.
+    - A value-less copy alone (a snapshot's, the delta not held value-less) moves nothing: it only hides the dot (§5.6 Live), since a valued copy may still arrive.
   - **Text element**: it keeps its creation write (anchor) and drops its char. A text element so stripped is the same hidden anchor un-merge leaves (§4.6).
   - **List element**: it keeps its creation write (anchor) and loses the content writes of the expiring delta.
     - Once the delta is held value-less (the expiry rule, a purge) its element reset is at least its creation's own stamp, which ends it (§5.7 Live), so nested writes of other deltas stay in the state but do not show.

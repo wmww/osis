@@ -4,7 +4,7 @@
 //! `rejudge_purges`), and `signers_could`, by roles of any validity at any time, for what must not
 //! turn on arrival (`could_stand`). A header never names role-class deltas (`Header::validate`).
 
-use super::{gone_of, hold_valueless, note_carried_again, off_valueless, purged_changed, refetch, reopen_to_fetch, snapshots_of, suspect, uncover, unstrip, writes_of};
+use super::{gone_of, hold_valueless, off_valueless, purged_changed, refetch, reopen_to_fetch, snapshots_of, suspect, uncover, unstrip, writes_of};
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, DropFor, Engine, LazyHeader, Tx};
 use crate::error::{Error, Result};
@@ -417,9 +417,6 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
         return Ok(());
     }
     gone.extend(uncover(tx, tid, ak)?);
-    if !gone.is_empty() {
-        note_carried_again(tx, tid, ak)?;
-    }
     crate::apply::rebuild(tx, tid, ak, &gone, false)?;
     changed.insert((*tid, ak.clone()));
     Ok(())

@@ -623,14 +623,14 @@ fn hostile_paged_snapshots_match_whole_spec_crdt_8() {
 }
 
 /// Node 3 holds node 1's paged map; node 0's valid paged snapshot copies node 1's writes, some
-/// otherwise (a misstatement on a later page) or faithfully, with writes of
-/// its own: judged per page against the state before it exactly as whole (vouching, the
-/// rebuild, deaths), with a carried write stamped late refused the same.
+/// with another value (on a later page) or faithfully, with writes of its own: joined per page
+/// exactly as whole (the copy order, spec/crdt.md §4.1, deaths; nothing compared with the held
+/// delta, so no rebuild), with a carried write stamped late refused the same.
 #[test]
-fn paged_snapshot_misstating_held_matches_whole_spec_perm_5_2() {
+fn paged_snapshot_differing_copies_match_whole_spec_perm_5_2() {
     let a = aks()[0].clone();
     // (name, how many of node 1's entries the snapshot changes from the end, a late write)
-    for (name, changed, late) in [("faithful", 0u64, false), ("misstates the last entries", 5, false), ("misstates, late", 5, true)] {
+    for (name, changed, late) in [("faithful", 0u64, false), ("differs in the last entries", 5, false), ("differs, late", 5, true)] {
         let (c, outs) = both(10, |w| {
             let t = w.t;
             let b = w.lp.peers[1].engine.tid();
@@ -655,16 +655,13 @@ fn paged_snapshot_misstating_held_matches_whole_spec_perm_5_2() {
             if late {
                 f.join(one_entry(osis_base::Ts::make(WallMs(w.lp.peers[0].engine.now().0 + 1_000), 0).unwrap(), 1, 5001));
             }
-            if changed == 0 {
-                assert_eq!(f.misstated(&[&w.lp.peers[3].engine.state(&t, &a).unwrap().unwrap()], &|_| true, &|_| false).len(), 0, "{name}: the copy is faithful");
-            }
             let pk = forge_snapshot(w, 0, &a, now, f, &|_, _| {});
             assert!(pk.blobs.len() >= 2, "{name}: no later page");
             vec![pk]
         });
         let want = if late { "stamped after its commit" } else { "Applied" };
         assert!(outs.last().is_some_and(|o| o.contains(want)), "{name}: {outs:?}");
-        assert_eq!(c.contains_key("apply: vouched rebuild"), changed > 0 && !late, "{name}: {c:?}");
+        assert!(!c.contains_key("apply: vouched rebuild"), "{name}: {c:?}");
     }
 }
 

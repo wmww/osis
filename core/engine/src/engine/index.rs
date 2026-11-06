@@ -40,7 +40,6 @@ const KEYSETS: &[u8] = b"node/keysets";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const REQUIRED: &[u8] = b"node/required";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
-pub(super) const CARRIED: &[u8] = b"node/carried";
 /// Per role commit, what perm's adaptation reads of its held `roles.0` parts (`validity::EdgeParts`): written with the commit record (`Tx::put_commit`), so an open
 /// adapts these rows instead of decoding the bodies.
 pub(super) const EDGES: &[u8] = b"node/edges";
@@ -227,23 +226,6 @@ impl Rec for osis_crdt::Source {
             return Some(osis_crdt::Source::session(osis_crdt::Session::from_bytes(&s)));
         }
         Some(osis_crdt::Source::commit(CommitId(b.as_slice().try_into().ok()?)))
-    }
-}
-fn uints(v: &[u64]) -> Value {
-    Value::List(v.iter().map(|c| Value::uint(*c)).collect())
-}
-fn uints_of(v: &Value) -> Option<Vec<u64>> {
-    let Value::List(x) = v else { return None };
-    x.iter().map(|c| if let Value::Int(c) = c { u64::try_from(*c).ok() } else { None }).collect()
-}
-impl Rec for crate::apply::copies::Carried {
-    fn to(&self) -> Value {
-        Value::List(vec![self.snap.to(), self.src.to(), uints(&self.ctrs)])
-    }
-    fn from(v: &Value) -> Option<Self> {
-        let Value::List(x) = v else { return None };
-        let [snap, src, ctrs] = x.as_slice() else { return None };
-        Some(crate::apply::copies::Carried { snap: <CommitId as Rec>::from(snap)?, src: <osis_crdt::Source as Rec>::from(src)?, ctrs: uints_of(ctrs)? })
     }
 }
 impl Rec for std::sync::Arc<osis_schema::core_types::RequiredRules> {
@@ -750,7 +732,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_map(txn, REQUIRED, &c.ix.required, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
-    put_aspect_map(txn, CARRIED, &c.ix.carried, all)?;
     // after the indexes and in their transaction: a saved walk never runs ahead of the
     // commits it covers
     let min = tx.core.walk_cache_min;
@@ -795,7 +776,7 @@ pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
     tx.txn.drop_indexes()?;
     // the tables memory rows go to exist whatever they hold: a memory transaction registering
     // one would write it durably (a table's registration is always durable)
-    for name in [METAS, SNAPSHOTS, CARRIED] {
+    for name in [METAS, SNAPSHOTS] {
         tx.txn.index(name)?;
     }
     write_edges_all(tx)?;
@@ -929,9 +910,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, SNAPSHOTS)? {
         tx.core.ix.snapshots.insert(k, dec(&v)?);
-    }
-    for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, CARRIED)? {
-        tx.core.ix.carried.insert(k, dec(&v)?);
     }
     Ok(())
 }

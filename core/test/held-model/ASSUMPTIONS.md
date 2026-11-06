@@ -23,7 +23,7 @@
 
 **CRDT**
 - Register at the aspect root; a map of keys to registers (an entry's value is a single register; no key-erased records, `put_new` or nested composites); text with insert, delete and undelete (no moves, slots or embedding). No bags, sets, structs, enums or lists.
-- Snapshots are honest: no misstatement handling (spec/permissions.md §5.2). Snapshot retention is taken as given, not recomputed from its writes' own deltas.
+- Snapshots are honest: their copies equal the deltas' (a differing copy joins by the copy order, spec/permissions.md §5.2, spec/crdt.md §4.1; never generated here). Snapshot retention is taken as given, not recomputed from its writes' own deltas.
 - Undo (`undo::undo`): register, map and text rules, Absent before at the aspect root only; no creation undo (`created.0`), ephemeral undo, moves or position writes; an undo commit is one commit (the generator undoes one-part commits, so one expiry).
 - No ephemeral data, no bad-input rules (a write of the wrong kind for its aspect is ignored).
 - An unjoinable (parked) body ignores absolute keep-at-most bounds.

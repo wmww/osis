@@ -466,11 +466,12 @@ fn map_key_erased_record_spec_5_6() {
     all_orders(&[valued, erm], Some(Value::Map(Default::default())));
 }
 
-/// issues/forged-key-erased-reset.md: a dot under two keys (a forged copy), one removed. A node past the creation's `T` folds both into the key-erased record, whose reset
+/// notes/crdt.md (a map dot under two keys, a limit): a dot under two keys (a forged copy), one
+/// removed. A node past the creation's `T` folds both into the key-erased record, whose reset
 /// then prunes the other key's record too; a node before `T` holding that snapshot beside the
 /// valued records reads the other key gone, one without it reads it live, until it passes `T`.
 #[test]
-#[ignore = "issues/forged-key-erased-reset.md"]
+#[ignore = "a stated limit (notes/crdt.md): converges at T"]
 fn repro_forged_key_hidden_by_erased_reset() {
     let (a, b) = (Value::Str("a".into()), Value::Str("b".into()));
     let c = st(1, 1, 1);

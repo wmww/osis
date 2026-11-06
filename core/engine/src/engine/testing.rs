@@ -214,12 +214,27 @@ impl Engine {
     }
 
     /// The origin dots of the writes of `(tid, ak)` held valid snapshots carry whose own delta
-    /// was never received (tests: a recompute plays them at their snapshot, not at their own
-    /// `ts`; an invalid snapshot gives nothing, spec/permissions.md §5.2).
+    /// was never received, read from their bodies (tests: a recompute plays them at their
+    /// snapshot, not at their own `ts`; an invalid snapshot gives nothing, spec/permissions.md
+    /// §5.2). A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
     #[doc(hidden)]
-    pub fn carried_dots(&self, tid: &Tid, ak: &osis_base::Ak) -> Vec<osis_crdt::Dot> {
-        let groups = self.core.ix.carried.get(&(*tid, ak.clone())).into_iter().flatten();
-        groups.filter(|g| !crate::apply::copies::invalid_snapshot(&self.core, &g.snap, tid, ak)).flat_map(|g| g.ctrs.iter().map(|x| osis_crdt::Dot::new(g.src.clone(), *x))).collect()
+    pub fn carried_dots(&mut self, tid: &Tid, ak: &osis_base::Ak) -> Vec<osis_crdt::Dot> {
+        let (tid, ak) = (*tid, ak.clone());
+        self.run(|tx| {
+            let snaps: Vec<(CommitId, usize)> = tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten().filter_map(|s| tx.core.ix.commits.get(&s.1).and_then(|m| m.aspect(&tid, &ak)).map(|ai| (s.1, ai))).collect();
+            let mut out = std::collections::BTreeSet::new();
+            for (s, ai) in snaps {
+                if !crate::apply::copies::snapshot_valid(tx.core, &s, &tid, &ak) {
+                    continue;
+                }
+                crate::apply::each_held_piece(tx, &s, ai, &mut |tx, f| {
+                    out.extend(f.writes().into_iter().filter(|(d, ts)| ts.is_some() && !d.src.is_derived() && !crate::apply::copies::delta_received(tx.core, &tid, &ak, d)).map(|(d, _)| d));
+                    Ok(())
+                })?;
+            }
+            Ok(out.into_iter().collect())
+        })
+        .unwrap_or_default()
     }
 
     /// Keeps every body past its keep-at-most bound (tests: an oracle for the earliest
@@ -462,12 +477,6 @@ impl Engine {
                 dropped_snapshots.entry(*c).or_default().push((*t, a.clone()));
             }
         }
-        let mut carried: BTreeMap<CommitId, Vec<Carry>> = BTreeMap::new();
-        for ((t, a), v) in ix.carried.iter() {
-            for g in v {
-                carried.entry(g.snap).or_default().push(Carry { tid: *t, ak: a.clone(), src: g.src.clone(), ctrs: g.ctrs.clone() });
-            }
-        }
         let tables = [
             ("by_thing", format!("{:?}", *ix.by_thing)),
             ("by_actor", format!("{:?}", *ix.by_actor)),
@@ -491,21 +500,21 @@ impl Engine {
             ("valueless", format!("{:?}", *ix.valueless)),
             ("labeled", format!("{:?}", *ix.labeled)),
         ].into_iter().collect();
-        IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, carried, tables }
+        IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, tables }
     }
 
     /// Damages the persisted index (tests): `garble` a commit's parts row, else mislabel its tag.
     #[doc(hidden)]
     pub fn damage_index(&mut self, garble: bool) -> Result<()> {
         if !garble {
-            // another build's rules judged differently: every part valid, nothing carried, and
-            // the states joined so
+            // another build's rules judged differently: every part valid, and the states
+            // joined so
             return self.run(|tx| {
                 #[cfg(debug_assertions)]
                 {
                     tx.core.unchecked_tx = true;
                 }
-                let aspects: Vec<(Tid, osis_base::Ak)> = tx.core.ix.invalid.keys().cloned().chain(tx.core.ix.carried.keys().cloned()).collect();
+                let aspects: Vec<(Tid, osis_base::Ak)> = tx.core.ix.invalid.keys().cloned().collect();
                 for (tid, ak) in aspects {
                     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
                     let mut st = osis_crdt::Fragment::default();
@@ -527,11 +536,6 @@ impl Engine {
                 }).collect();
                 for (id, row) in rows {
                     tx.txn.table_put(t, &id.0, row, Shred::No)?;
-                }
-                let t = tx.txn.index(CARRIED)?;
-                let keys: Vec<(Tid, osis_base::Ak)> = tx.core.ix.carried.keys().cloned().collect();
-                for k in keys {
-                    tx.txn.table_remove(t, &enc(&k), Shred::No)?;
                 }
                 tx.txn.put_local(VERSION_KEY, b"another build", Shred::No).map_err(Error::from)
             });
@@ -735,8 +739,6 @@ pub struct IndexDigest {
     pub snapshots: BTreeMap<CommitId, Vec<(Tid, Ak, String)>>,
     /// Per snapshot: the aspects listing it in `dropped_snapshots`.
     pub dropped_snapshots: BTreeMap<CommitId, Vec<(Tid, Ak)>>,
-    /// Per carrying snapshot: its `carried` groups.
-    pub carried: BTreeMap<CommitId, Vec<Carry>>,
     pub tables: BTreeMap<&'static str, String>,
 }
 
@@ -763,16 +765,6 @@ pub struct CommitDigest {
 /// its edge (target, holder) (`Engine::drop_set`).
 pub type DropEntry = (osis_perm::WriteId, osis_perm::Point, (Tid, Tid));
 
-/// One `carried` group of `IndexDigest::carried`.
-#[doc(hidden)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Carry {
-    pub tid: Tid,
-    pub ak: Ak,
-    pub src: osis_crdt::Source,
-    pub ctrs: Vec<u64>,
-}
-
 /// Where two `IndexDigest`s differ: one entry per commit, thing, snapshot or named index.
 #[doc(hidden)]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -782,7 +774,6 @@ pub enum IndexField {
     ByChunk,
     Snapshots(CommitId),
     DroppedSnapshots(CommitId),
-    Carried(CommitId),
     Table(&'static str),
 }
 
@@ -790,7 +781,7 @@ impl IndexDigest {
     /// Every field where `self` and `other` differ, in field order.
     pub fn diff(&self, other: &Self) -> Vec<IndexField> {
         // destructured: a new field fails to compile until it is compared
-        let IndexDigest { commits, held, by_chunk, snapshots, dropped_snapshots, carried, tables } = self;
+        let IndexDigest { commits, held, by_chunk, snapshots, dropped_snapshots, tables } = self;
         let mut out = Vec::new();
         keyed(commits, &other.commits, IndexField::Commit, &mut out);
         keyed(held, &other.held, IndexField::Held, &mut out);
@@ -799,7 +790,6 @@ impl IndexDigest {
         }
         keyed(snapshots, &other.snapshots, IndexField::Snapshots, &mut out);
         keyed(dropped_snapshots, &other.dropped_snapshots, IndexField::DroppedSnapshots, &mut out);
-        keyed(carried, &other.carried, IndexField::Carried, &mut out);
         keyed(tables, &other.tables, IndexField::Table, &mut out);
         out
     }
@@ -813,7 +803,6 @@ impl IndexDigest {
             IndexField::ByChunk => s(Some(&self.by_chunk)),
             IndexField::Snapshots(c) => s(self.snapshots.get(c).map(|x| x as _)),
             IndexField::DroppedSnapshots(c) => s(self.dropped_snapshots.get(c).map(|x| x as _)),
-            IndexField::Carried(c) => s(self.carried.get(c).map(|x| x as _)),
             IndexField::Table(n) => self.tables.get(n).cloned(),
         }
     }

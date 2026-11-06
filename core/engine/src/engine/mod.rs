@@ -22,7 +22,7 @@ mod testing;
 pub mod write;
 
 #[doc(hidden)]
-pub use testing::{Carry, CommitDigest, IndexDigest, IndexField};
+pub use testing::{CommitDigest, IndexDigest, IndexField};
 pub use large::LiveTrees;
 pub use write::Mutation;
 
@@ -506,9 +506,6 @@ indexes! {
     /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
-    /// Writes held snapshots carry whose own delta was never received, per aspect
-    /// (`copies::Carried`).
-    pub carried: JMap<(Tid, Ak), Vec<crate::apply::copies::Carried>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits per (header actor, author), where those differ: re-judging
@@ -836,8 +833,7 @@ pub struct Core {
     /// Death records read to judge bodies' bounds (`retention::class_deaths`), for cost tests
     /// (`Engine::death_reads`).
     pub death_reads: u64,
-    /// Held snapshots' writes by dot (`copies::differing_copies`: deltas arriving after
-    /// snapshots that copied their writes compare against it; `copies::vouched`), per commit.
+    /// Held snapshots' writes by dot (`copies::vouched`), per commit.
     /// A commit's entries go whenever its stored body or leftover changes (`put_commit`,
     /// `remove_commit`, `leftover::put`/`remove`: a strip erases keys and values, a late part
     /// or an unstrip brings writes) and on rollback; all go past `COPY_CACHE_MAX` writes.
