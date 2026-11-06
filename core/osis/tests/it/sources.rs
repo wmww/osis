@@ -1002,7 +1002,7 @@ fn differential(seed: u64) -> usize {
         let (t, of) = &things[which];
         // the rule, for a thing known here
         let via_node = of.iter().any(|g| routed[ix(g)]);
-        // the groups other than the owner only list it: only the owner's label carries it
+        // the groups other than the first admin only list it: only the first admin's label carries it
         let split = via_node && !routed[ix(&of[0])] && !stopped[ix(&of[0])];
         match r.next(10) {
             0 | 1 => {
@@ -1800,9 +1800,9 @@ fn an_ephemeral_membership_in_a_routed_group_counts() {
     let draft = ak("app:draft.0~");
     let (a, _) = x.p.add_client(None).unwrap();
     x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
-    let thing = |owner: Tid, also: Option<Tid>| {
+    let thing = |admin: Tid, also: Option<Tid>| {
         x.p.commit_with(|w| {
-            let e = w.create_owned_by(owner)?;
+            let e = w.create_owned_by(admin)?;
             w.at(e, osis::DynamicAspectKey::untyped(draft.clone())).set(&s("here"))?;
             w.group(x.g).add(osis::Member::Item(e))?;
             if let Some(h) = also {

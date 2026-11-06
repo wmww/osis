@@ -444,7 +444,7 @@ fn group_holders_learn_grant_removal() {
     assert_ne!(seed(&carol), seed(&bob), "Carol does not learn the new one");
 }
 
-// spec/sync.md §2 (an actor naming no inbox uses its owner's), §3: Bob grants the tag (which names
+// spec/sync.md §2 (an actor naming no inbox uses its first admin's), §3: Bob grants the tag (which names
 // no inbox) read on his own tag; the blob sealed to the tag under Alice's home label opens there,
 // so Alice, the tag's admin, learns the grant and its removal.
 #[test]
@@ -590,9 +590,9 @@ fn group_removal_deposit_promoted_without_new_keys() {
     assert_ne!(seed_of(&zoe, t), seed_of(&dave, t), "zoe does not learn the fresh seed");
 }
 
-// spec/sync.md §3: M is owned by group O; Dave removes M's grant on his card; the copy under O's home label leaves out the fresh deposit seed, which a reader joining O later would otherwise read there
+// spec/sync.md §3: M's first admin is group O; Dave removes M's grant on his card; the copy under O's home label leaves out the fresh deposit seed, which a reader joining O later would otherwise read there
 #[test]
-fn owner_home_copy_of_removal_without_new_keys() {
+fn first_admin_home_copy_of_removal_without_new_keys() {
     let mut w = World::new();
     let host = w.add_host();
     let [alice, eve, dave, zoe] = [1, 2, 4, 6].map(|s| account(&mut w, s, host));
@@ -944,9 +944,9 @@ fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     later_reader_reads(&mut w, &alice, &bob, h, b, t, "owned by a group");
 }
 
-// spec/sync.md §3, spec/permissions.md §4: the granter's chain runs through an ownerless thing
+// spec/sync.md §3, spec/permissions.md §4: the granter's chain runs through a thing made by its record
 #[test]
-fn a_grant_by_a_chain_through_an_ownerless_thing() {
+fn a_grant_by_a_chain_through_a_record_made_thing() {
     let (mut w, alice, _e, dave, carol, bob, h, b, _t) = outsider();
     let frank = account(&mut w, 7, 0);
     let fd = introduce(&mut w, &frank, &dave);
@@ -968,7 +968,7 @@ fn a_grant_by_a_chain_through_an_ownerless_thing() {
     w.advance(60_000);
     w.run();
     assert_eq!(text(&carol, t).as_deref(), Some("dave's"), "carol");
-    later_reader_reads(&mut w, &alice, &bob, h, b, t, "through ownerless");
+    later_reader_reads(&mut w, &alice, &bob, h, b, t, "through a record-made thing");
 }
 
 // spec/sync.md §3: after a removal a later reader of the group neither reads the thing nor learns its keys, however often it rotated since

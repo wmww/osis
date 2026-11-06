@@ -424,7 +424,7 @@ impl Osis {
         engine.commit(m)?;
         engine.set_app_record(ACCOUNT, p.person.as_bytes())?;
         save_peers(engine, peers)?;
-        // the creation record's key goes with `p` (owner removal ends it, notes/disputes-plan.md)
+        // the creation record's key goes with `p` (a removal of its edge ends it, notes/disputes-plan.md)
         let db = Osis::start(sync, clock, store, &cfg, p.person)?;
         db.carry(done)?;
         Ok(db)

@@ -410,7 +410,7 @@ fn large_value_round_trip_spec_data_model_6() {
     assert_eq!(db.at(t, osis::DynamicAspectKey::untyped(k)).get().unwrap(), Some(big));
 }
 
-// notes/api.md Writes: create with explicit owner and membership; groups; add, remove,
+// notes/api.md Writes: create with explicit first admin and membership; groups; add, remove,
 // subgroups, delete.
 // spec/data-model.md §8
 #[test]
@@ -448,7 +448,7 @@ fn create_add_delete_spec_data_model_8() {
     assert!(!db.has_content(a).unwrap() && db.created(a).unwrap().is_some());
     db.commit_set(a, osis::DynamicAspectKey::untyped(ak("t:x.0")), &Value::Int(2)).unwrap();
     assert!(db.has_content(a).unwrap());
-    // an unknown group or owner
+    // an unknown group or first admin
     let mut w = db.write();
     let stranger = db_other_thing();
     assert_eq!(w.create_owned_by(stranger), Err(Error::UnknownThing { tid: stranger }));
@@ -643,7 +643,7 @@ fn local_sync_surface_spec_api_sync() {
     assert_eq!(db.saved_peers().unwrap(), vec![a]);
 }
 
-// spec/data-model.md §9: `created.0` is typed by its exclusivity rule (owner or key), not the
+// spec/data-model.md §9: `created.0` is typed by its exclusivity rule (admin or key), not the
 // missing-field rule, so a run-time core key (`Osis::key`, the CLI's) reads it.
 #[test]
 fn created_reads_through_run_time_key_spec_data_model_9() {

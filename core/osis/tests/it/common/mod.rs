@@ -225,21 +225,21 @@ impl MembersOf for Osis {
 
 /// `create` and add to `groups` in one commit.
 pub trait CreateIn {
-    fn create_in(&mut self, owner: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
+    fn create_in(&mut self, admin: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid>;
     /// `create` with a durable write (`t:made.0`), so the thing is persisted by this commit.
-    fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid>;
+    fn create_durable(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid>;
 }
 
 impl CreateIn for osis::Write<'_> {
-    fn create_in(&mut self, owner: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid> {
-        let t = self.create_owned_by(owner)?;
+    fn create_in(&mut self, admin: osis::Tid, groups: &[osis::Tid]) -> osis::Result<osis::Tid> {
+        let t = self.create_owned_by(admin)?;
         for g in groups {
             self.group(*g).add(osis::Member::Item(t))?;
         }
         Ok(t)
     }
-    fn create_durable(&mut self, owner: osis::Tid) -> osis::Result<osis::Tid> {
-        let t = self.create_owned_by(owner)?;
+    fn create_durable(&mut self, admin: osis::Tid) -> osis::Result<osis::Tid> {
+        let t = self.create_owned_by(admin)?;
         self.at(t, osis::DynamicAspectKey::untyped(ak("t:made.0"))).set(&osis::Value::Bool(true))?;
         Ok(t)
     }
