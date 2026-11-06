@@ -560,7 +560,7 @@ fn invite_accepted_on_one_node_admitted_on_the_other_spec_sync_3() {
         net.advance(70_000);
     }
     assert_eq!(net.read(b, t), Some(s("for bob")));
-    assert!(requests(&mut net, b2).is_empty(), "admitted on the other device");
+    assert!(requests(&mut net, b2).is_empty(), "admitted on the other node");
     assert_eq!(net.read(b2, t), Some(s("for bob")));
 }
 
@@ -1546,7 +1546,7 @@ fn fresh_device_keeps_requests_over_junk_spec_sync_5() {
     seen.sort();
     let mut want = real.clone();
     want.sort();
-    assert_eq!(seen, want, "the new device sees every request");
+    assert_eq!(seen, want, "the new node sees every request");
     let held = net.host_ids(host, &home);
     assert!(junk.iter().filter(|x| held.contains(x)).count() <= osis_base::format::INBOX_WAITING - real.len());
 }

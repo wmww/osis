@@ -2600,7 +2600,7 @@ fn honest_demotion_keeps_a_request_resting_on_the_person_spec_perm_6() {
         m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
         lp.peers[1].commit(m).unwrap().unwrap();
         crate::flows::spread(&mut lp);
-        assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the person");
+        assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the account");
         lp.advance(5);
         let (by, on, holder) = if on_person { (0, person, x) } else { (2, t, person) };
         let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };

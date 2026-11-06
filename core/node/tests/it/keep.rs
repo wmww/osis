@@ -446,11 +446,11 @@ fn node_removal_erases_what_its_account_retained_spec_perm_3() {
     let (mut lp, bob, p, c) = nested(9300, (false, true));
     lp.peers[0].engine.demote(&c, &remove(p)).unwrap();
     drop_due(&mut lp);
-    assert_eq!(read(&mut lp, c), Some(s(&big(D_MARK))), "the person's kick keeps");
+    assert_eq!(read(&mut lp, c), Some(s(&big(D_MARK))), "the account's kick keeps");
     assert!(lp.peers[1].engine.kept_copies().contains(&c));
     lp.peers[0].engine.demote(&p, &remove(bob)).unwrap();
     drop_due(&mut lp);
-    assert_eq!(read(&mut lp, c), None, "the device's removal erases it");
+    assert_eq!(read(&mut lp, c), None, "the node's removal erases it");
     assert!(!found(&mut lp, D_MARK));
     assert!(lp.peers[1].engine.kept_copies().is_empty());
 }

@@ -1,7 +1,7 @@
 //! Role history a joiner fetches: every role commit on the thing (notes/owner-removal-plan.md
 //! step 1; spec/requirements.md, Scale). By hand, release, one shape and size at a time:
 //! `OSIS_SCALE_SHAPE=chat OSIS_SCALE_N=10000 cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::role_history::cost`.
-//! Shapes: `chat` (1000 writers, n/4 below 4000 writes, joining and leaving), `readers` (the same at read), `devices`
+//! Shapes: `chat` (1000 writers, n/4 below 4000 writes, joining and leaving), `readers` (the same at read), `nodes`
 //! (3 accounts' nodes churning, each removal listing 10 commits), `invites` (links made and
 //! revoked, joiners granted), `kicks` (`chat` whose leaves are kicks listing 1..10^3 commits,
 //! log-uniform). One node writes every edge on one thing its account owns, raw edge writes (no
@@ -103,7 +103,7 @@ fn cost() {
     let n: usize = std::env::var("OSIS_SCALE_N").ok().and_then(|v| v.parse().ok()).unwrap_or(1_000);
     let mut lp = LocalPeer::new(2, 91, WallMs(1_700_000_000_000)).unwrap();
     let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
-    let things: Vec<Tid> = (0..if shape == "devices" { 3 } else { 1 }).map(|_| thing_of(&mut lp, 0, pa)).collect();
+    let things: Vec<Tid> = (0..if shape == "nodes" { 3 } else { 1 }).map(|_| thing_of(&mut lp, 0, pa)).collect();
     let base = lp.packages(0).unwrap();
     let mut rng = Rng(0x5eed_1234);
     let (mut ids, mut fr_total, mut fr_max, mut fr_n) = (Vec::new(), 0usize, 0usize, 0usize);
@@ -145,7 +145,7 @@ fn cost() {
                     set_edge(&mut lp.peers[0].engine, t, h, None, f)
                 }
             }
-            "devices" => {
+            "nodes" => {
                 if live[ti].len() < 5 || rng.below(2) == 0 {
                     add(&mut live, edge(Role::Admin, None), &mut lp)
                 } else {

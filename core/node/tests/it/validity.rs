@@ -3418,7 +3418,7 @@ fn stranger_label_listing_labels_nothing_spec_sync_2() {
     let t = lp.peers[0].engine.new_thing(&mut m, p.person);
     lp.peers[0].commit(m).unwrap();
     let e = &mut lp.peers[0].engine;
-    assert!(e.labeled_groups().contains(&p.person), "the person's home label");
+    assert!(e.labeled_groups().contains(&p.person), "the account's home label");
     let before = e.published_under(&p.person);
     let mut blob = forge_on(&mut lp, t, "label.0");
     blob.parts.clear();

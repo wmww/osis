@@ -186,7 +186,7 @@ fn other_retention_leaves_none_spec_commits_5() {
         assert!(at_host(&mut net, a, host, &l, c).is_empty(), "{what}: left at the host");
         net.set_online(n, true);
         net.run();
-        assert!(!net.engine(n).commit_ids().contains(&c), "{what}: reached a new device");
+        assert!(!net.engine(n).commit_ids().contains(&c), "{what}: reached a new node");
     }
 }
 
@@ -865,7 +865,7 @@ fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_6() {
         net.run();
         net.advance(120_000);
         net.run();
-        assert_eq!(net.engine(f).commit_ids().contains(&p), lasting, "what the fresh device holds of the request");
+        assert_eq!(net.engine(f).commit_ids().contains(&p), lasting, "what the fresh node holds of the request");
         let holder = net.tid(x);
         let d = osis_node::flows::Demotion { holder, new: Some(crate::common::edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, keep: None };
         let done = net.engine(f).demote(&g, &d).unwrap();

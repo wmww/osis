@@ -131,7 +131,7 @@ fn two_live_copies_of_one_store_converge_spec_crdt_2_1() {
     let copy = (dev.backend.copy(), dev.root.copy());
     let c: Arc<dyn Clock> = dev.clock.clone();
     let mut r = Engine::open(Box::new(copy.0), Box::new(copy.1), Config::default(), c, Box::new(SeededRng::from_u64(11))).unwrap();
-    assert_eq!(r.tid(), me, "the same device identity");
+    assert_eq!(r.tid(), me, "the same node identity");
     let ak = osis_base::Ak::new(osis_schema::RawKey::ak(&REG)).unwrap();
     let (mut a, mut b) = (Vec::new(), Vec::new());
     for i in 0..3 {
