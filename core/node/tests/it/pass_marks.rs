@@ -170,9 +170,10 @@ fn nobody_bodies_not_judged_again_spec_sync_6() {
     assert!(s1.bodies - s0.bodies < 15, "the kept bodies are not judged again: {s0:?} -> {s1:?}");
 }
 
-// spec/requirements.md Scale (a body's judgment costs O(its parts)), spec/sync.md §6: one body of
-// many bounded parts is judged with one death read per part, at its author and a reader (each
-// part's keep read over the whole body would cost parts²).
+// spec/requirements.md Scale (a body's judgment costs O(its parts)), spec/sync.md §6, spec/commits.md
+// §5: one body of many parts kept at least is judged with one death read per part, at its author
+// and a reader, written and then wholly replaced (each part's keep, or each killed part's keep at
+// most, read over the whole body would cost parts²).
 #[test]
 fn body_judged_once_per_body_spec_requirements_scale() {
     use osis_schema::{Bound, PurgeBy, Retention};
@@ -185,19 +186,21 @@ fn body_judged_once_per_body_spec_requirements_scale() {
     let t = net.item(a, g, g, "x");
     net.run();
     let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(86_400_000) }, ..Default::default() };
-    let mut m = Mutation::new();
-    for i in 0..n {
-        let k = osis_base::Ak::new(&format!("u:k{i}.0")).unwrap();
-        m.retention(t, &k, r).unwrap();
-        m.set(t, &k, &s("v")).unwrap();
-    }
-    let before = [net.engine(a).death_reads(), net.engine(b).death_reads()];
-    let c = net.engine(a).commit(m).unwrap().unwrap();
-    net.run();
-    net.advance(61_000);
-    assert!(net.engine(b).header(&c).is_some(), "the reader holds the commit");
-    for (x, r0) in [a, b].into_iter().zip(before) {
-        let reads = net.engine(x).death_reads() - r0;
-        assert!(reads <= 8 * n, "node {x}: {reads} death reads for one body of {n} parts");
+    for v in ["v", "w"] {
+        let mut m = Mutation::new();
+        for i in 0..n {
+            let k = osis_base::Ak::new(format!("u:k{i}.0")).unwrap();
+            m.retention(t, &k, r).unwrap();
+            m.set(t, &k, &s(v)).unwrap();
+        }
+        let before = [net.engine(a).death_reads(), net.engine(b).death_reads()];
+        let c = net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        net.advance(61_000);
+        assert!(net.engine(b).header(&c).is_some(), "the reader holds the commit");
+        for (x, r0) in [a, b].into_iter().zip(before) {
+            let reads = net.engine(x).death_reads() - r0;
+            assert!(reads <= 8 * n, "{v}: node {x}: {reads} death reads for a body of {n} parts");
+        }
     }
 }

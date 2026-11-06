@@ -229,11 +229,17 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
 /// purge request's floor, which holds by the clock). `None`: no bound.
 fn at_most_bound(tx: &mut Tx<'_>, c: &CommitId, m: &crate::engine::Meta, ai: usize) -> Result<Option<(u64, bool)>> {
     let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
-    let (body, holders) = body_class(tx.core, &m.header, c, ai);
-    let d = class_deaths(tx, &m.header, &body, &holders)?;
+    let rel = a.retention.at_most.rel.is_some();
+    // only a relative keep at most reads deaths: one death per killed part of a body kept at least
+    // would read its whole class each (parts²)
+    let d = if rel {
+        let (body, holders) = body_class(tx.core, &m.header, c, ai);
+        class_deaths(tx, &m.header, &body, &holders)?
+    } else {
+        None
+    };
     let first = d.map(|d| d.0.wall_ms().0);
     let keep = osis_commit::retention::body_keep(&m.header, &a.retention, first, d.map(|d| d.1.wall_ms().0));
-    let rel = a.retention.at_most.rel.is_some();
     Ok(keep.at_most.map(|t| (t, t <= tx.now().0 || (rel && first.is_some_and(|f| t <= f)))))
 }
 
