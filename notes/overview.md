@@ -52,16 +52,23 @@ Known open (issues/): cost residues (perm-eval-cost, node-core-gaps, node-sequen
 - notes/realms.md: realms, user-facing actors (on hold).
 - notes/frontier-study.md, notes/keys-requirements-study.md: designs studied and dropped (compact frontiers; key-rotation relaxations and cycle rules).
 - notes/questions-for-tess.md: open questions for Tess. notes/handoff.md: state for the next coordinator.
-- notes/sync.md: sync and serving reasons, limits, what a node learns about data it cannot read, policy defaults.
+- notes/sync.md: sync and serving reasons, limits, what a node learns about data it cannot read, policy defaults, and how proto, label, host and node sync implement it.
 - notes/crypto.md: suite choices, epochs and establishment, holder actors at depth 0, delete keys, costs, crates.
 - notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, memberships, undo, ephemeral commits held in memory at every node holding them, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.
 - notes/chat.md: chat as built on design E (examples/chat), with costs.
 - notes/tags.md: the standard core aspects (`name.0`, `body.0`, `tag.0`), tags as marked groups in a graph, sharing a tag per item through one nested roster, the confirmation guideline.
-- notes/networking.md: transports (iroh, known addresses), official infrastructure, push wake-up proposal, risks.
+- notes/networking.md: transports (QUIC, iroh, LAN, unix), reachability, first contact by link, co-reader peers, official infrastructure, push wake-up proposal, risks.
+- notes/client-port.md: using the API from another process or machine: sources, the client protocol, client actors, the daemon socket.
 - notes/local-store.md: encrypted local store and key-erasure deletion.
-- notes/node.md: osis-engine and osis-node module layout, engine surface, store records, node-core readings.
-- notes/cli.md: the `osis` command-line tool (command table, value syntax, JSON, exit codes).
+- notes/node.md: osis-engine and osis-node module layout, engine surface, store records, validity, deaths, lost access, paged state.
+- notes/growth.md: every known cause of permanent growth in stored or synced data.
+- notes/cli.md: the `osis` command-line tool's design (commands themselves: `osis --help`), value syntax, JSON, exit codes.
+- notes/dogfood.md: the two-Claude channel over osis (deployment, pinned binary, recipe).
 - notes/std.md: the first-party schemas (notes, contacts, events), the time types, what was left out of vCard and iCalendar, the scenario tests.
 - notes/testing.md: tiers, vectors, fuzzing, simulator, budgets, policy checks; notes/testing-map.md: the generated spec-to-test map.
-- notes/app.md: the first-party app's design direction (facet views, lenses, state in osis, Masonry without Xilem, platform work, prototype order).
+- notes/app.md: the first-party app's design direction (facet views, lenses, state in osis, Masonry without Xilem, platform work, prototype order) and the prototype as built.
+- notes/theming.md: themes as a fixed set of safe parameters.
+- notes/android.md: the experimental Android build.
 - notes/explainer.md: the docs site.
+- notes/build.md: worktrees, command forms, the merge gate, footguns, disk, expected costs.
+- notes/coordination.md: how a coordinator runs workers, reviewers, periodic checks and the watchdog.
