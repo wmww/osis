@@ -300,7 +300,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     }
     net.set_online(a, true);
     settle(&mut net);
-    assert!(!net.engine(a).may_read(&r2t, &p), "the admin does not hold r2's edge on the person");
+    assert!(!net.engine(a).may_read(&r2t, &p), "the admin does not hold r2's edge on the account");
     assert!(!card_entries(&mut net, a, host, &l, r2t, "reach.0").is_empty(), "r2's card is under the group's label");
     // the admin's timelines know r2 otherwise: an edge on another thing of the admin's
     let at = net.tid(a);
@@ -343,6 +343,6 @@ fn regrant_after_until_reads_again_spec_permissions_2() {
         net.advance(70_000);
     }
     settle(&mut net);
-    assert!(net.engine(r).may_read(&p, &g), "and at the holder's device");
+    assert!(net.engine(r).may_read(&p, &g), "and at the holder's node");
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "its card is under the label again");
 }

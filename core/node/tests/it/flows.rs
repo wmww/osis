@@ -1045,7 +1045,7 @@ fn stolen_device_recovery_spec_perm_7() {
         let r = lp.peers[i].engine.roster(&p);
         assert!(r.contains_key(&d2) && r.contains_key(&n) && !r.contains_key(&d1), "peer {i}: {r:?}");
     }
-    assert_eq!(newest_read(&lp, 1, p), Some(pe), "the honest device holds the new epoch");
+    assert_eq!(newest_read(&lp, 1, p), Some(pe), "the honest node holds the new epoch");
     assert!(lp.peers[0].engine.epochs(&p).unwrap().read.secret(&pe).is_none(), "the thief does not");
     assert_eq!(sealed_write(&mut lp, 3, p, "after"), BTreeSet::from([1]), "the thief reads nothing new");
     assert!(lp.peers[3].engine.departures(&p).unwrap().iter().any(|d| d.holder == d1));
@@ -1404,7 +1404,7 @@ fn key_actor_holders_not_resealed_spec_perm_3() {
     carry(&mut lp, 0, &done);
     spread(&mut lp);
     let e = newest_read(&lp, 0, p).unwrap();
-    assert_eq!(newest_read(&lp, 1, p), Some(e), "the remaining device follows");
+    assert_eq!(newest_read(&lp, 1, p), Some(e), "the remaining node follows");
     for i in [0, 1] {
         assert!(lp.peers[i].engine.reseal_due(&p, &Pass).unwrap().commits.is_empty(), "peer {i}: nothing to re-seal");
     }
@@ -1802,9 +1802,9 @@ fn node_removes_account_from_team_spec_perm_3() {
     let e1 = newest_read(&lp, 2, t).unwrap();
     spread(&mut lp);
     for i in [0, 1] {
-        assert!(lp.peers[i].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "device {i}");
+        assert!(lp.peers[i].engine.epochs(&t).is_none_or(|e| e.read.secret(&e1).is_none()), "node {i}");
     }
-    assert!(sealed_write(&mut lp, 2, t, "after").is_empty(), "neither device reads what follows");
+    assert!(sealed_write(&mut lp, 2, t, "after").is_empty(), "neither node reads what follows");
 }
 
 // spec/permissions.md §2, §5.1: a self-removal is audited like any write. Node d1 removes

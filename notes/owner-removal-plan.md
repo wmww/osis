@@ -36,18 +36,18 @@ Their whole shape was roster snapshots, epoch starts, ledgers or linked frontier
 - osis-node: `flows::{roster_snapshot_spec_perm_6, roster_snapshot_part_applies_alone_spec_commits_4, roster_copy_reads_at_each_node_spec_commits_4, roster_snapshot_one_delta_per_edge_spec_perm_6, roster_snapshot_certificate_projected_spec_perm_6}`, `keep::{a_snapshot_carries_the_word, a_second_snapshot_goes_on_saying, a_snapshot_keeps_the_default}_spec_perm_6`, `order::partial_roster_snapshot_removes_nobody_seed_3050{,_large}`, order found-history seed 1558 (an edge write nested into a snapshot's entry), `parts::removal_of_a_withheld_entry_alike_across_sync_sets_spec_permissions_6`, `parts_relay::restart_with_a_hole_in_an_aspect_spec_commits_4` (several deltas per aspect), `sync_more::nested_chain_empty_copy_spec_perm_6`, judgment-vector scenarios of epoch starts and chains. Also `order::body_dropped_at_its_fall_seed_9300016_spec_commits_5` and `order::class_drop_leaves_missing_part_missing_seed_106342_spec_commits_5`: pinned random seeds whose shape needed a roster step (a scan of seeds 9300000-9306000 found no replacement; the invariant stays checked in every harness run). The order and parts generators lost their roster steps.
 
 #### Step 1 measurements
-`scale::role_history::cost` (osis-node, release, by hand; shapes and how to run in its header). One node writes N raw edge writes on one thing (no boxes or rotations); a joiner gets every role commit ("off", today's default: nothing writes roster snapshots on its own) or one roster snapshot written at the end ("on"). Box at load 8-35: CPU-s are up to 2x high at 10^3. Shapes: chat (1000 writers joining and leaving, 250 at 10^3), readers (same at read), devices (3 accounts, about 5 admin nodes each, each removal listing 10 commits; per account), invites (link edges and joiner grants; the realm grows to N/2), kicks (chat whose leaves are kicks listing 1..10^3 commits, log-uniform).
+`scale::role_history::cost` (osis-node, release, by hand; shapes and how to run in its header). One node writes N raw edge writes on one thing (no boxes or rotations); a joiner gets every role commit ("off", today's default: nothing writes roster snapshots on its own) or one roster snapshot written at the end ("on"). Box at load 8-35: CPU-s are up to 2x high at 10^3. Shapes: chat (1000 writers joining and leaving, 250 at 10^3), readers (same at read), nodes (3 accounts, about 5 admin nodes each, each removal listing 10 commits; per account), invites (link edges and joiner grants; the realm grows to N/2), kicks (chat whose leaves are kicks listing 1..10^3 commits, log-uniform).
 
 | shape, N | history off | snapshot on | frontiers total, largest | joiner ingest CPU-s off / on | evaluate anew (open) off / on | joiner peak off |
 |---|---|---|---|---|---|---|
 | chat 10^3 | 366 KB | 160 KB | | 11 / 4.2 | 0.09 / 0.06 s | +14 MiB |
 | readers 10^3 | 366 KB | 47 KB | | 11 / 2.0 | 0.09 / 0.02 s | +13 MiB |
-| devices 10^3 | 176 KB | 98 KB | 161 KB, 346 B | 1.0 / 0.4 | 0.03 / 0.02 s | +1 MiB |
+| nodes 10^3 | 176 KB | 98 KB | 161 KB, 346 B | 1.0 / 0.4 | 0.03 / 0.02 s | +1 MiB |
 | invites 10^3 | 371 KB | 183 KB | | 8.9 / 9.6 | 0.08 / 0.05 s | +16 MiB |
 | kicks 10^3 | 2.1 MB | 1.9 MB | 1.7 MB, 34 KB | 10.5 / 10.7 | 0.16 / 0.13 s | +27 MiB |
 | chat 10^4 | 3.6 MB | 1.4 MB (writing it 294 CPU-s) | | 109 / 194 | 1.5 / 1.0 s | +228 MiB |
 | readers 10^4 | 3.6 MB | 176 KB (43 CPU-s) | | 112 / 30 | 2.4 / 0.03 s | +245 MiB |
-| devices 10^4 | 1.8 MB | 1.0 MB (53 CPU-s) | 1.7 MB, 346 B | 16 / 19 | 0.32 / 0.16 s | +35 MiB |
+| nodes 10^4 | 1.8 MB | 1.0 MB (53 CPU-s) | 1.7 MB, 346 B | 16 / 19 | 0.32 / 0.16 s | +35 MiB |
 | invites 10^4 | 3.7 MB | writing it (about 5000 holders) not done after 13 min; stopped | | 159 / - | 2.1 s | +435 MiB |
 | kicks 10^4 | 25.8 MB | cannot be written: "the commit does not fit a blob" | 22.2 MB, 34 KB | 132 / - | 1.8 s | +383 MiB |
 

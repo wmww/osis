@@ -162,7 +162,7 @@ fn window_reaches_holder_no_store_rows_spec_sync_4() {
     let w = window(&mut net, a, g, "hello");
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), Some(s("hello")));
-    assert!(net.engine(b).groups_of(&w).contains(&g), "the placement came along");
+    assert!(net.engine(b).groups_of(&w).contains(&g), "the membership came along");
     let changed: Vec<_> = rx.try_iter().filter_map(|e| if let osis_node::Event::Ephemeral { changed, origin: osis_node::Origin::Remote, .. } = e { Some(changed) } else { None }).flatten().collect();
     assert!(changed.iter().any(|(t, ak)| *t == w && ak.as_str() == STATE), "{changed:?}");
     assert_eq!(rows(&net.nodes[b].backend), rb, "nothing stored at the holder");
@@ -306,7 +306,7 @@ fn moved_thing_leaves_old_label_spec_sync_3() {
     local(&mut net, a);
     let ga = reading_group(&mut net, a, x, w, &[(c, Role::Read)], host, 2);
     let la = label_of(&mut net, a, ga);
-    assert!(!entries_under(&mut net, a, &la).is_empty(), "under A while placed");
+    assert!(!entries_under(&mut net, a, &la).is_empty(), "under A while a member");
     assert_eq!(net.eph_read(c, w, STATE), Some(s("v")));
     // moved from A to B
     let gb = reading_group(&mut net, a, x, w, &[], host, 3);
@@ -398,7 +398,7 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     m.set(u, &REG, &s("u")).unwrap();
     e.commit(m).unwrap();
     net.run();
-    net.eph_write(a, u, &eph(STATE), s("durable placement"));
+    net.eph_write(a, u, &eph(STATE), s("durable membership"));
     net.run();
     assert!(!net.engine(a).has_memory_changes());
     assert_eq!(net.eph_read(b, u, STATE), None);
@@ -409,14 +409,14 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     net.engine(a).commit(m).unwrap();
     local(&mut net, a);
     net.run();
-    assert_eq!(net.eph_read(b, u, STATE), Some(s("durable placement")));
+    assert_eq!(net.eph_read(b, u, STATE), Some(s("durable membership")));
     // an ephemeral membership, with nothing new kept under the label to bring on a walk
     let w = window(&mut net, a, g, "first");
     net.run();
     let e = net.engine(a);
     let mut m = Mutation::new();
     let x = e.new_thing(&mut m, g);
-    m.set(x, &eph(STATE), &s("ephemeral placement")).unwrap();
+    m.set(x, &eph(STATE), &s("ephemeral membership")).unwrap();
     e.write(m).unwrap();
     local(&mut net, a);
     net.run();
@@ -427,7 +427,7 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     local(&mut net, a);
     net.run();
     assert_eq!(net.eph_read(b, w, STATE), Some(s("first")));
-    assert_eq!(net.eph_read(b, x, STATE), Some(s("ephemeral placement")));
+    assert_eq!(net.eph_read(b, x, STATE), Some(s("ephemeral membership")));
     // a group with no label yet, then its label
     let e = net.engine(a);
     let mut m = Mutation::new();
@@ -714,7 +714,7 @@ fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
     assert!(net.engine(a).core.created(&w).is_some());
     assert!(net.engine(a).ephemeral_thing(&w).is_none(), "durable now");
     assert_eq!(net.read(a, w), Some(s("saved")));
-    assert!(net.engine(a).groups_of(&w).contains(&g), "its placement became durable");
+    assert!(net.engine(a).groups_of(&w).contains(&g), "its membership became durable");
     assert_eq!(net.eph_read(a, w, STATE), Some(s("draft")), "ephemeral aspects stay ephemeral");
 }
 
@@ -744,12 +744,12 @@ fn ephemeral_placement_of_durable_thing_converts_spec_data_model_8() {
     local(&mut net, a);
     net.run();
     for n in [a, b] {
-        assert!(net.engine(n).groups_of(&w).contains(&g) && !net.engine(n).durable_groups_of(&w).contains(&g), "placed ephemerally again");
+        assert!(net.engine(n).groups_of(&w).contains(&g) && !net.engine(n).durable_groups_of(&w).contains(&g), "an ephemeral member again");
         assert_eq!(net.read(n, w), None);
     }
     net.restart(a, 31);
     net.advance(10_000);
-    assert!(net.engine(a).groups_of(&w).contains(&g) && !net.engine(a).durable_groups_of(&w).contains(&g), "the ephemeral placement came back");
+    assert!(net.engine(a).groups_of(&w).contains(&g) && !net.engine(a).durable_groups_of(&w).contains(&g), "the ephemeral membership came back");
     assert_eq!(net.eph_read(a, w, STATE), Some(s("draft")));
     let mut m = Mutation::new();
     m.set(w, &REG, &s("again")).unwrap();
@@ -1018,7 +1018,7 @@ fn signal_once_to_connected_devices_spec_sync_5() {
     assert_eq!(net.hosts[s1].hub.store().ephemeral_bytes(&l), 0);
     net.set_online(c, true);
     net.advance(10_000);
-    assert!(fired(&rc).is_empty(), "a device connecting later never gets it");
+    assert!(fired(&rc).is_empty(), "a node connecting later never gets it");
     net.restart(b, 24);
     let rb = net.listen(b);
     net.advance(10_000);
@@ -1732,7 +1732,7 @@ fn deleted_synced_thing_keeps_tombstones_until_restart_spec_sync_9() {
     net.engine(b).write(m).unwrap();
     local(&mut net, b);
     net.run();
-    assert_eq!(notes(&mut net, a, w), map(&[]), "placed again: nothing comes back");
+    assert_eq!(notes(&mut net, a, w), map(&[]), "added again: nothing comes back");
     note(&mut net, b, w, "k2", "v2");
     net.run();
     for n in [a, b] {
@@ -3099,7 +3099,7 @@ fn placement_superseded_like_any_write_spec_sync_9() {
     net.advance(10_000);
     net.run();
     for n in [a, b] {
-        assert!(!placed(&mut net, n), "node {n}: the first expiring placement went with the second");
+        assert!(!placed(&mut net, n), "node {n}: the first expiring membership went with the second");
     }
 }
 
