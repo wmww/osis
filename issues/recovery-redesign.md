@@ -6,7 +6,7 @@ Taken out because it was tied to saved peers (no card without them, the key disc
 
 Until then an account is reached again only through one of its other nodes.
 
-What stays inside: the engine still mints a key for the account's creation record while owners exist, and drops it (`create_person`); the engine's `recover` and its node tests (core/node/tests/it/flows.rs: `stolen_device_recovery_spec_perm_7`, `recovery_erases_whatever_the_default_spec_perm_2`, ...) and `osis_label::RecoveryCard` stay until owner removal. Spec text on recovery cards (spec/permissions.md §7, spec/wire.md §10) is marked as not built.
+What stays inside: the engine still mints a recovery key for the account (an admin by a plain edge) and drops it (`create_person`); the engine's `recover` and its node tests (core/node/tests/it/flows.rs: `stolen_device_recovery_spec_perm_7`, `recovery_erases_whatever_the_default_spec_perm_2`, ...) and `osis_label::RecoveryCard` stay until stage D of issues/owner-to-first-admin.md. Spec text on recovery cards (spec/permissions.md §7, spec/wire.md §10) is marked as not built.
 
 ## Not in the API
 `RecoveryCard`, `Osis::restore`, `internals::restore`, CLI `restore`, and a card from `init`; `Osis::create` returns just the `Osis`. No app UI had it.
@@ -18,4 +18,4 @@ A head that moved while a fresh node read the home group by the card's key stran
 - Is recovery an explicit act after `create`, any time, with or without peers?
 - Where the data comes from on restore: any node of the account, saved peers, or an address typed in.
 - How a lost or stolen card is revoked.
-- Interaction with disputes (owner removal step 3).
+- Interaction with disputes (notes/disputes-plan.md step 3).

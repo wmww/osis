@@ -32,7 +32,7 @@ Four kinds, three types:
 - Left out of iCalendar: attendees and RSVP, sub-daily frequencies, BYSETPOS and the rarer BY rules, RDATE, attachments, priority, transparency, sequence numbers, todos and journals.
 
 ## Tests (core/osis's `it` binary in `cargo test --workspace`; tier 2 `--ignored`)
-- core/osis/tests/it/notes.rs: two nodes, offline edits merging, undo across nodes; a notebook (a tag owning its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
+- core/osis/tests/it/notes.rs: two nodes, offline edits merging, undo across nodes; a notebook (a tag that is first admin of its notes) shared and unshared, a private tag on a shared note staying private; a large body streamed; local undo, redo and history.
 - core/osis/tests/it/tags.rs: notes/tags.md end to end (per-item share through one roster, sub-tags chaining rosters, only what you may share, tag-owned cards with demotion and invites).
 - core/osis/tests/it/contact.rs: profile filled, read through the card and updated; a linked contact overriding it; a contact without a profile.
 - core/osis/tests/it/event.rs: the civil-date conversion; a timed series with a skip and an override, an all-day span, a flight across zones, all in a read-only shared calendar.

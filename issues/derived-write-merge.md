@@ -6,7 +6,7 @@ Rule to add to spec/crypto.md §4 Current when built: "A derived epoch (§3) of 
 
 Model: core/test/tla/rotation `D0_fa_derive` (fails `ReadsAll` without the rule), `D0_fa_dmerge` (passes with it), `D0_fa_dmerge_rm` (the stated limit).
 
-Case: T plain, deriving from F. t1 gives T secrets of its own (its first grant). f1, a writer of T through F that has not received that rotation, rotates F and writes T under the derived secret of F's new epoch. The switch rotation's history carries only the derived epochs t1 held, so t1 (no member of F) never reads f1's write. Holds for owned and ownerless plain things alike.
+Case: T plain, deriving from F. t1 gives T secrets of its own (its first grant). f1, a writer of T through F that has not received that rotation, rotates F and writes T under the derived secret of F's new epoch. The switch rotation's history carries only the derived epochs t1 held, so t1 (no member of F) never reads f1's write. Holds for every plain thing.
 
 What building it needs:
 - the writer remembers the derived epochs it wrote a thing under while it was plain to it (new local data per thing, cleared once a rotation of the thing lists them; notes/growth.md);

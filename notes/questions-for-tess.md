@@ -11,7 +11,7 @@ No realm or tag design work until owners are replaced by first admins (notes/dis
 4. Role on joining: write (recommended); read for "viewer" invites.
 5. Removed members keep their copies by default (recommended, as chat); admins may choose erase.
 6. Things made in a realm have the realm as first admin, so they stay when their maker leaves (recommended); things shared in keep their own admins.
-7. No single owner by default: a realm's admins are equals; a realm one account controls is allowed too (recommended).
+7. No single controlling account by default: a realm's admins are equals; a realm one account controls is allowed too (recommended).
 8. Host admission for realms: left to the admission work (recommended).
 
 ## 11. Limits kept in spec/requirements.md

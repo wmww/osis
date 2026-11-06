@@ -1,5 +1,5 @@
 # Handoff to the next coordinator
-> Summary: Where the permissions and keys work stands for whoever coordinates next: Tess's standing guidance, owner removal (steps 0-4 built), findings from unmerged branches that exist only here, open questions, other open work in rough priority, process lessons. Rewrite or delete once taken.
+> Summary: Where the permissions and keys work stands for whoever coordinates next: Tess's standing guidance, first admins and disputes (steps 0-4 built), findings from unmerged branches that exist only here, open questions, other open work in rough priority, process lessons. Rewrite or delete once taken.
 
 Read CLAUDE.md, notes/coordination.md, notes/disputes-plan.md and notes/questions-for-tess.md first.
 
@@ -10,16 +10,16 @@ Read CLAUDE.md, notes/coordination.md, notes/disputes-plan.md and notes/question
 - Greenfield is cheap: build reference models and TLA checks freely. Model-check every major design change first; the models have found real holes every time.
 - Ask Tess questions one at a time, explaining the trade-off and why users care.
 
-## Owner removal (notes/disputes-plan.md)
-- Built: steps 0-4 (keys at depth 0; no roster snapshots; first admins in meaning, stages A-B; disputes in the walk; per-node sides with defaults, API and CLI).
-- Next: stage C (renames: owner words out of spec and code), stage D (API and CLI, overlapping issues/api-after-owners.md), nodes following their account's published side, steps 5-6.
+## First admins and disputes (notes/disputes-plan.md)
+- Built: steps 0-4 (keys at depth 0; no roster snapshots; first admins in meaning and words, stages A-C; disputes in the walk; per-node sides with defaults, API and CLI).
+- Next: stage D (API and CLI, overlapping issues/api-after-owners.md), nodes following their account's published side, steps 5-6.
 
 ## Findings from branches that never reached main
 These branches are gone; what they found is recorded only here. Redo the work from these notes.
 - **keys-tidy**: (1) a grant to a holder whose keyset is blocked should go through with the holder left out (`Sealed::Out`), not wait; (2) a removal's own epoch counted as departed before its edge write is applied: reported, unconfirmed; recheck against the departure rule in spec/crypto.md §4. (3) Bounding rotation names (issues/rotation-names-grow.md): the issue's "chain coverage through supersedes" proposal leaks (a TLA instance found it); a sound base-chain rule breaks when a base rotation turns invalid. Three options were drafted for Tess; they need redoing.
 
 ## Open questions for Tess (notes/questions-for-tess.md)
-Q12 (depth 0 bends, with the readers leak: mark or limit), Q11 (three kept limits), Q5 realms (on hold until owners settle).
+Q12 (depth 0 bends, with the readers leak: mark or limit), Q11 (three kept limits), Q5 realms (on hold until stage D settles).
 
 ## Other open work, rough priority
 - issues/gone-body-drop-seeds.md, issues/settled-seed-7032.md: keep-at-most drops; the order harness's shrink needs a time budget.
