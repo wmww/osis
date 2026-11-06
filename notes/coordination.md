@@ -24,7 +24,7 @@ The build and test mechanics are in notes/build.md; this note is the process aro
 - Hostile-only shapes inside data the writer may write (notes/core-triage.md §1 D): very low priority; fix only when easy, with no added complexity.
 - App work (libs/kit/, app/) is planned with Tess in a separate UX session (notes/app.md) and counts toward the agent limit. When no app session is active, the core coordinator fixes app breakage (failing app tests, API adoption) itself. Whatever kit/app needs from core becomes an issue tagged `core-ask` (plus the component, and `tess-call` if the fix is not obvious); app work uses a workaround meanwhile and never edits core.
 - Names: each coordinator picks its own name and pronouns once it knows the codebase (check the registry for collisions), records both here and says them in chat. Sub-agents are `<coordinator>-<branch>` (e.g. `lodestar-grant-keyset`), stated in the brief's first line and used in reports and complaints.
-- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them.
+- Registry: **Lodestar**, she/her. **Tiller**, he/him. **Wren**, they/them. **Sorrel**, they/them.
 
 ## Test budget
 Seed breadth belongs to the periodic checks, not to branches (Tess: cut testing time without letting issues slip). Of about 200 merged tasks' bugs, reading and new targeted tests found about 225, per-branch oracles about 25, periodic and wide runs about 10, rerunning already-run ranges about 2 (notes/testing.md (What finds bugs)).
