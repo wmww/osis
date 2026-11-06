@@ -357,10 +357,6 @@ impl SyncEngine {
         if memory {
             self.state.memory_in_closure.insert((l, id));
         }
-        if memory && let Some(h) = self.engine.header(&b.commit) {
-            let things: Vec<Tid> = b.parts.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| a.tid).collect();
-            self.engine.note_memory_synced(things);
-        }
         Ok(Some(id))
     }
 

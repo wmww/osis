@@ -147,9 +147,7 @@ impl Osis {
         let things = |keep: &dyn Fn(&osis_node::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
             self.engine(|e| {
                 // an ephemeral aspect of a durable thing (a cursor) is in scope only when named
-                let mut out: Vec<(Tid, Ak)> = e.all_aspects()?.into_iter().filter(|(t, a)| a.lifetime() == crate::Lifetime::Durable && keep(e, t) && shown(e, t)).collect();
-                out.extend(e.ephemeral_scope_keys().into_iter().filter(|(t, _)| keep(e, t) && shown(e, t)));
-                Ok::<_, osis_node::Error>(out)
+                e.all_aspects().map(|v| v.into_iter().filter(|(t, a)| a.lifetime() == crate::Lifetime::Durable && keep(e, t) && shown(e, t)).collect::<Vec<(Tid, Ak)>>())
             })
             .map_err(Error::from)
         };
@@ -186,7 +184,6 @@ impl Osis {
             let log = e.ephemeral_log();
             let in_scope: Option<BTreeSet<&(Tid, Ak)>> = aks.as_ref().map(|a| a.iter().collect());
             // the entries: held commits in scope, then logged commits with an aspect in scope
-            // (a commit keeping a draft joins its entry)
             let mut entries: BTreeMap<(Ts, CommitId), CommitEntry> = BTreeMap::new();
             let mut at: BTreeMap<CommitId, Ts> = BTreeMap::new();
             let mut purges: BTreeMap<(Tid, Ak), BTreeMap<osis_base::CommitId, osis_base::CommitId>> = BTreeMap::new();

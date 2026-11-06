@@ -493,7 +493,7 @@ indexes! {
     /// Held commits per aspect their header lists: (`ts`, commit), whatever the part's validity
     /// and whether its body is held. Invariant (also for `by_thing`): it finds
     /// commits, never decides anything alone, since any signer's header can list any aspect.
-    /// What a thing has reads the state (`Tx::has_state`); what a commit counts for (keeping a memory thing, a field's retention) reads its parts valid here
+    /// What a thing has reads the state (`Tx::has_state`); what a commit counts for (a field's retention) reads its parts valid here
     /// (`Meta::valid_at`), body held or not.
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
     /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
@@ -1678,7 +1678,7 @@ impl Tx<'_> {
     }
 
     /// Whether `(tid, ak)` has a state: a valid write on it applied here. What a thing has is
-    /// read here (or from an index derived from states: `Indexes::labeled`, `ephemeral_group`, `groups`),
+    /// read here (or from an index derived from states: `Indexes::labeled`, `groups`),
     /// never from `Indexes::by_aspect`, which any signer's header adds to.
     pub fn has_state(&mut self, tid: &Tid, ak: &Ak) -> Result<bool> {
         self.load_lazy(tid, ak)?;
@@ -1868,7 +1868,7 @@ pub struct Engine {
     pub(crate) rng: Box<dyn CryptoRngCore + Send>,
     #[doc(hidden)]
     pub core: Core,
-    /// The local ephemeral write path's own state (`crate::ephemeral`): the undo log, drafts,
+    /// The local ephemeral write path's own state (`crate::ephemeral`): the undo log,
     /// unsent signals, delivered relay-only commits.
     pub(crate) eph: crate::ephemeral::Eph,
     clock: Arc<dyn Clock>,
@@ -2008,7 +2008,7 @@ impl Engine {
         self.core.first_admin(tid)
     }
 
-    /// `tid`, then its first admins up the record chain (durable and memory-class records): at
+    /// `tid`, then its first admins up the record chain: at
     /// most `MAX_CHAIN_DEPTH` links (`osis_base::record_chain`).
     pub fn record_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
         self.core.record_chain(tid).filter_map(|s| s.thing())

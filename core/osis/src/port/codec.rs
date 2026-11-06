@@ -235,12 +235,12 @@ pub(crate) fn stamp(v: Value) -> Result<Stamp> {
 }
 
 pub(crate) fn thing_stamp_v(s: &ThingStamp) -> Value {
-    Value::List(vec![opt(s.id, |c| commit_id_v(&c)), Value::Tid(s.actor), Value::Tid(s.node), ts_v(s.ts), u(s.received.0)])
+    Value::List(vec![commit_id_v(&s.id), Value::Tid(s.actor), Value::Tid(s.node), ts_v(s.ts), u(s.received.0)])
 }
 
 pub(crate) fn thing_stamp(v: Value) -> Result<ThingStamp> {
     let mut a = Args::new(v)?;
-    let (id, actor, node, t, received) = (a.opt()?.map(commit_id).transpose()?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
+    let (id, actor, node, t, received) = (commit_id(a.next()?)?, a.tid()?, a.tid()?, ts(&a.next()?)?, wall(&a.next()?)?);
     let s = ThingStamp { id, actor, node, written: t.wall_ms(), ts: t, received };
     a.end()?;
     Ok(s)

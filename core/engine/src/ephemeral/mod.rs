@@ -214,7 +214,7 @@ impl Engine {
     }
 
     /// Tests: an own memory commit of `m` (what `write` makes of a batch's ephemeral half; the
-    /// batch's log, drafts and event aside).
+    /// batch's log and event aside).
     #[doc(hidden)]
     pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {
         m.commit_form = false;
