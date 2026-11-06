@@ -44,7 +44,7 @@ impl Writer {
         self.keyed = on;
         self
     }
-    /// The owner dots of the writes whose content an undo wrote back (§4.6: from the undo
+    /// The origin dots of the writes whose content an undo wrote back (§4.6: from the undo
     /// buffer, or a text undelete's char): the undo takes the earliest expiry among them (§4.7).
     pub fn copied(&self) -> &BTreeSet<Dot> {
         &self.copied

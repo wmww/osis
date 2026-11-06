@@ -203,12 +203,12 @@ impl Visit for Writes {
     }
 }
 
-/// `Fragment::holds_owned`: owner dot ranges against a predicate, stopping at the first hit;
+/// `Fragment::holds_owned`: origin dot ranges against a predicate, stopping at the first hit;
 /// `live`: tombstones (`Rec::tomb`) are left out.
 struct Any<'a>(&'a dyn Fn(&Source, u64, u64) -> bool, bool);
 
 impl Any<'_> {
-    /// Owner dots of elements `d..d + n` (a `Derived` range has one owner).
+    /// Origin dots of elements `d..d + n` (a `Derived` range has one owner).
     fn range(&self, d: &Dot, n: u64) -> bool {
         match d.src.kind() {
             SourceKind::Derived(o) => (self.0)(&o.src, o.ctr, o.ctr.saturating_add(1)),
@@ -233,7 +233,7 @@ impl Visit for Any<'_> {
 }
 
 impl Fragment {
-    /// Whether some write's owner dot (as `writes` lists them) lies in a range `owned(src, lo,
+    /// Whether some write's origin dot (as `writes` lists them) lies in a range `owned(src, lo,
     /// hi)` accepts (any counter in `lo..hi` owned); stops at the first, and never expands range
     /// records.
     pub fn holds_owned(&self, owned: &dyn Fn(&Source, u64, u64) -> bool) -> bool {
@@ -249,7 +249,7 @@ impl Fragment {
 }
 
 impl Fragment {
-    /// Every write in this fragment by its owner dot: stamps with their `ts`, element
+    /// Every write in this fragment by its origin dot: stamps with their `ts`, element
     /// creations (map entries, set and bag elements, sequence elements) with their creation's
     /// `ts` where the record carries it (a map entry's creation, a set or bag element's value
     /// register, a sequence element's creation stamp), else without (tombstones, bare anchors). For judging a snapshot's writes as their

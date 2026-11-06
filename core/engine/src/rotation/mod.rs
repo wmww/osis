@@ -286,7 +286,7 @@ pub(crate) fn deliver_rotation(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::Com
 /// Records a rotation this node made (spec/crypto.md §4: its own epochs are established).
 pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.touch();
-    // a plain thing's: derived from its owner, with what an invalid rotation gave it for reading
+    // a plain thing's: derived from its base actor, with what an invalid rotation gave it for reading
     let base = tx.core.epochs(&a).or_else(|| tx.core.ix.secrets.get(&a).cloned()).unwrap_or_default();
     tx.core.ix.secrets.insert(a, base.into_record());
     let e = tx.core.ix.secrets.entry_or_default(a);
@@ -468,7 +468,7 @@ pub(crate) fn require_covered_but(tx: &mut Tx<'_>, who: Tid, a: Tid, rewriting: 
 /// Gives `t` secrets of its own (spec/permissions.md §3, spec/crypto.md §3): a rotation of all
 /// three roles from its derived epochs (those of the next actor up its record chain: rotated
 /// first where a departure is uncovered, the history boxes carry them), boxed to its current
-/// holders (its owner included), with a
+/// holders (its first admin included), with a
 /// `keys.0` carrying the keysets and a fresh deposit seed. Nothing when it has them already.
 pub(crate) fn own_secrets(tx: &mut Tx<'_>, t: Tid, done: &mut Done) -> Result<()> {
     if let Some((c, rot, _)) = own_secrets_rot(tx, t, done)? {
@@ -663,8 +663,8 @@ impl Engine {
         self.run(|tx| departures(tx, &a))
     }
 
-    /// Gives `thing` secrets of its own (spec/permissions.md §3): before its first non-owner
-    /// holder, or before it is made a holder of anything.
+    /// Gives `thing` secrets of its own (spec/permissions.md §3): before its first holder other
+    /// than its first admin, or before it is made a holder of anything.
     pub fn give_own_secrets(&mut self, thing: &Tid) -> Result<Done> {
         let t = *thing;
         self.run(|tx| {
@@ -675,7 +675,7 @@ impl Engine {
     }
 
     /// Gives secrets of their own again to the plain things whose secrets derive from `actor`
-    /// that this node administers and sees with a current non-owner holder (spec/permissions.md
+    /// that this node administers and sees with a current holder other than its first admin (spec/permissions.md
     /// §3), decided at the end of a complete pass of `actor`'s labels (`sync`); nothing
     /// otherwise. Each thing in a run of its own: one that fails leaves the others.
     pub fn own_secrets_due(&mut self, actor: &Tid, sync: &dyn SyncState) -> Result<Vec<(Tid, Result<Done>)>> {

@@ -23,7 +23,7 @@ impl Engine {
         Ts::make(self.now(), 0).unwrap_or_default()
     }
 
-    /// The effective role of `actor` on `t` now; a thing ephemeral here takes its owner's
+    /// The effective role of `actor` on `t` now; a thing ephemeral here takes its first admin's
     /// (spec/permissions.md §1).
     pub fn actor_role(&self, actor: &Tid, t: &Tid) -> Option<Role> {
         let records: Records<'_> = &|x| self.memory_record(x);
@@ -37,7 +37,7 @@ impl Engine {
         // through groups that stopped syncing here: stale here, and this node would serve it to a
         // client as if current (notes/client-port.md §6)
         if !self.core.receipts_only.is_empty() || !self.core.routed_away.is_empty() {
-            // `ephemeral_group.0~` too: as the owner's calls route (`Osis::route`)
+            // `ephemeral_group.0~` too: as the first admin's calls route (`Osis::route`)
             let gs = self.groups_of(t);
             if self.core.routed_away.contains(t) || gs.iter().any(|g| self.core.routed_away.contains(g)) {
                 return false;
@@ -51,7 +51,7 @@ impl Engine {
         self.entitled(actor, t) || (!self.core.ix.held.is_memory(t) && self.copy_readable_by(actor, t))
     }
 
-    /// The permission model's entitlement (spec/sync.md §3); a thing ephemeral here by its owner
+    /// The permission model's entitlement (spec/sync.md §3); a thing ephemeral here by its record
     /// chain. False for what this node does not know.
     pub fn entitled(&self, actor: &Tid, t: &Tid) -> bool {
         if self.core.ix.held.is_memory(t) {
@@ -61,7 +61,7 @@ impl Engine {
     }
 
     /// Fails `Permission` unless `actor` itself may do all of a confined `m`: every aspect's write,
-    /// every creation (write on the owner), every thing it persists or frees. A purge needs write:
+    /// every creation (write on the first admin), every thing it persists or frees. A purge needs write:
     /// what it drops receivers judge by this node's and the actor's rights together
     /// (spec/permissions.md §6). `group.0` gains only what it may
     /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
@@ -142,11 +142,11 @@ impl Engine {
     /// minted, and commits what `also` builds for it, all in one transaction: a crash or a
     /// failure leaves both or neither (`flows::links` shares the shape).
     pub fn mint_actor(&mut self, admin: &Tid, also: impl FnOnce(Tid) -> Result<Mutation>) -> Result<(Tid, Done)> {
-        let owner = *admin;
+        let admin = *admin;
         self.run(|tx| {
             let mut done = Done::default();
             let mut m = Mutation::new();
-            let a = m.create(crate::identity::thing_record(owner, &mut *tx.rng));
+            let a = m.create(crate::identity::thing_record(admin, &mut *tx.rng));
             done.add(Engine::commit_tx(tx, m)?);
             rotation::own_secrets(tx, a, &mut done)?;
             done.add(Engine::commit_tx(tx, also(a)?)?);

@@ -3,7 +3,7 @@
 //! (`unindex_commit`, the mirror of what applying a commit indexes) and its aspects' memory rows
 //! (one store call). Freeing leaves the indexes as if those commits had never applied
 //! (`tests::free_equals_never_indexed`); a memory commit that also touches a thing not freed
-//! stays for it, its freed parts dropped; the owner of a held thing not freed stays. Durable
+//! stays for it, its freed parts dropped; the first admin of a held thing not freed stays. Durable
 //! commits are never touched: none holds a part on a memory thing.
 
 use crate::engine::records;
@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 const ASPECT_RECORDS: [&[u8]; 5] = [records::ASPECTS, records::RECEIPT, records::VALUELESS, records::PURGES, records::DEATHS_DUE];
 
 /// Frees the memory things among `things` and those freed before but still in use (`freeing`):
-/// a thing stays (in `freeing`) while it owns a held thing not freed; the others go with their
+/// a thing stays (in `freeing`) while it is first admin of a held thing not freed; the others go with their
 /// records and aspects, every commit on them alone (`unindex_commit`), and their parts of
 /// commits that also touch things not freed (`drop_part`: the commit stays for those, forgotten
 /// once nothing of it is held).
@@ -36,10 +36,10 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
             tx.core.ix.freeing.remove(&t);
         }
     }
-    // what stays, to a fixpoint: the owner of a held thing not freed (its chain)
+    // what stays, to a fixpoint: the first admin of a held thing not freed (its chain)
     loop {
         let core = &*tx.core;
-        let stays: Vec<Tid> = freed.iter().filter(|t| core.ix.held.owned(t).any(|x| !freed.contains(x))).copied().collect();
+        let stays: Vec<Tid> = freed.iter().filter(|t| core.ix.held.first_admin_of(t).any(|x| !freed.contains(x))).copied().collect();
         if stays.is_empty() {
             break;
         }
@@ -247,7 +247,7 @@ mod tests {
             m.set(top, &ak("t:b.0~"), &Value::Set([Value::Str(format!("z{i}"))].into())).unwrap();
             e.commit_in_memory(m).unwrap().unwrap();
         }
-        // an owner no commit is on, of a thing one is on
+        // a first admin no commit is on, of a thing one is on
         let mut m = Mutation::new();
         let boss = e.new_thing(&mut m, g);
         let kid = e.new_thing(&mut m, boss);
@@ -261,7 +261,7 @@ mod tests {
         assert_ne!(digest(e), before);
         assert!(!rows(e).is_empty());
         e.free_memory(&BTreeSet::from([boss])).unwrap();
-        assert!(e.core.created(&boss).is_some(), "the owner of a held thing stays");
+        assert!(e.core.created(&boss).is_some(), "the first admin of a held thing stays");
         e.free_memory(&BTreeSet::from([kid])).unwrap();
         assert!(e.core.created(&boss).is_none() && e.core.created(&kid).is_none());
         e.free_memory(&BTreeSet::from([top])).unwrap();

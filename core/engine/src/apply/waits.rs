@@ -8,7 +8,7 @@
 //! examined at every `reexamine`, as all were.
 //!
 //! An examination also reads the commit's `secrets.0` boxes (`keys::read_pending_boxes`). That
-//! reads the epochs of the actors they are on, of those actors' owner chains and of the holders they
+//! reads the epochs of the actors they are on, of those actors' record chains and of the holders they
 //! box to (`Wait::openers`), and the reading-only budget: a change of any drops the wait
 //! (`Waits::secrets_changed`, `Waits::wake_refused`). `Engine::check_unchanged` checks it. A chat's
 //! joiner holds one such commit per member, waiting for that member's records.
@@ -16,7 +16,7 @@
 //! - A record wait stands while each record it names (several: parts on things waiting for
 //!   different ones) is still held or not as before; records held only accumulate, so every lookup
 //!   that found one finds the same. If it waits for its author's certificates (`MissingChain` of
-//!   the author), also while `validity::reaches` reads the same: the edges and owner links of the
+//!   the author), also while `validity::reaches` reads the same: the edges and record links of the
 //!   things its backward search reaches (`reach_watch`, `Held::take_moved`). Any of them wakes it.
 //!   The other record waits read no edge: the reason that comes first stands until its record
 //!   comes. So a joiner's waits on members' records and certificates, one per member, are not all
@@ -236,8 +236,8 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
 }
 
 /// What decides whether pending commit `id`'s author reaches its things (`apply::thing_wait`,
-/// `validity::reaches`): every thing its search backward from them can come to, by owner, first
-/// admin or holder. A path can appear only by an edge or a record on one of these.
+/// `validity::reaches`): every thing its search backward from them can come to, by first admin or
+/// holder. A path can appear only by an edge or a record on one of these.
 fn reach_watch(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeSet<Tid> {
     let carried = super::carried_records(&blob.header, blob, id);
     let mut stack: Vec<Tid> = blob.header.aspects.iter().map(|a| a.tid).collect();
@@ -261,7 +261,7 @@ fn openers(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeS
     let mut out = BTreeSet::new();
     for (a, w) in super::keys::pending_secrets_writes(blob, id) {
         out.insert(a);
-        // `Core::adopt_derived` reads the owner's epochs, derived from up its chain
+        // `Core::adopt_derived` reads the base actor's epochs, derived from up its chain
         out.extend(core.record_chain(&a).filter_map(|s| s.thing()));
         out.extend(w.boxes.keys().map(|k| k.holder));
     }

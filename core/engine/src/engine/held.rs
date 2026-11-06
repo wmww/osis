@@ -28,13 +28,13 @@ struct Rec {
 pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
     created: BTreeMap<Tid, Rec>,
-    /// Holder -> things it is named on (edge writes, an ownerless record), with counts.
+    /// Holder -> things it is named on (edge writes, a creation record naming its first admin), with counts.
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Owner or first admin -> the things whose creation record names it: the record chain's
+    /// First admin -> the things whose creation record names it: the record chain's
     /// links down (spec/permissions.md §1).
-    owned: BTreeMap<Tid, BTreeSet<Tid>>,
+    first_admin_of: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Commit -> its edge commit held here.
     ids: BTreeMap<CommitId, Arc<RoleCommit>>,
     log: Vec<Undo>,
@@ -56,10 +56,10 @@ impl Held {
     pub fn created(&self, t: &Tid) -> Option<&CreationRecord> {
         self.created.get(t).map(|r| &r.record)
     }
-    /// The held things whose record names `t` as owner or first admin (one link down the record
+    /// The held things whose record names `t` as first admin (one link down the record
     /// chain).
-    pub fn owned(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
-        self.owned.get(t).into_iter().flatten()
+    pub fn first_admin_of(&self, t: &Tid) -> impl Iterator<Item = &Tid> {
+        self.first_admin_of.get(t).into_iter().flatten()
     }
     /// Whether `t`'s record is held and memory class.
     pub fn is_memory(&self, t: &Tid) -> bool {
@@ -72,18 +72,18 @@ impl Held {
     pub fn commits_on(&self, t: &Tid) -> &[Arc<RoleCommit>] {
         self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
     }
-    /// Things `holder` is named on as a holder (edge writes, an ownerless record).
+    /// Things `holder` is named on as a holder (edge writes, a creation record naming its first admin).
     pub fn named_on(&self, holder: &Tid) -> impl Iterator<Item = &Tid> {
         self.holders.get(holder).into_iter().flat_map(|m| m.keys())
     }
 
-    /// Holders named on `thing` (edge writes, an ownerless record).
+    /// Holders named on `thing` (edge writes, a creation record naming its first admin).
     pub fn holders_of(&self, thing: &Tid) -> impl Iterator<Item = &Tid> {
         self.named.get(thing).into_iter().flatten()
     }
 
     /// `from` and everything authority flows to from them: what they own, the things they are
-    /// named on as holders, transitively (spec/permissions.md §1: paths climb owner links and
+    /// named on as holders, transitively (spec/permissions.md §1: paths climb record links and
     /// role edges). A change of authority at `from` changes it only there.
     pub fn reach(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         let mut out = BTreeSet::new();
@@ -92,7 +92,7 @@ impl Held {
             if !out.insert(t) {
                 continue;
             }
-            stack.extend(self.owned.get(&t).into_iter().flatten().copied());
+            stack.extend(self.first_admin_of.get(&t).into_iter().flatten().copied());
             stack.extend(self.named_on(&t).copied());
         }
         out
@@ -103,7 +103,7 @@ impl Held {
         self.named_with(t, Role::Read).map(|(_, h)| h).collect()
     }
 
-    /// `from` and everything authority comes to them from: their owners or first admins and the
+    /// `from` and everything authority comes to them from: their first admins and the
     /// holders named on them, transitively (the search `reach` answers forward). A changed edge
     /// to holder `z` changes the roles only of `upstream({z})`.
     pub fn upstream(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
@@ -128,7 +128,7 @@ impl Held {
         let mut stack: Vec<Tid> = from.iter().copied().collect();
         while let Some(t) = stack.pop() {
             if out.insert(t) {
-                stack.extend(self.owned(&t).copied());
+                stack.extend(self.first_admin_of(&t).copied());
             }
         }
         out
@@ -141,7 +141,7 @@ impl Held {
     }
 
     /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
-    /// owner or first admin and any holder named with admin on it by an edge write a member signed; of any validity and whatever followed. So a forger is in it only if a
+    /// first admin and any holder named with admin on it by an edge write a member signed; of any validity and whatever followed. So a forger is in it only if a
     /// member named it, and held inputs only grow, so it does, whatever the order: use it where
     /// "could this signer ever have been admin" must not depend on arrival (a timeline read does).
     /// A member need not hold admin on the thing it signs for: it could as well have named the holder
@@ -204,7 +204,7 @@ impl Held {
         let old = match r {
             Some(r) => {
                 if let Some(up) = r.record.first_admin() {
-                    self.owned.entry(up).or_default().insert(t);
+                    self.first_admin_of.entry(up).or_default().insert(t);
                 }
                 self.created.insert(t, r)
             }
@@ -213,11 +213,11 @@ impl Held {
         let class_only = matches!((&old, self.created.get(&t)), (Some(o), Some(n)) if o.record == n.record);
         if let Some(up) = old.as_ref().and_then(|o| o.record.first_admin())
             && self.created.get(&t).is_none_or(|n| n.record.first_admin() != Some(up))
-            && let Some(s) = self.owned.get_mut(&up)
+            && let Some(s) = self.first_admin_of.get_mut(&up)
         {
             s.remove(&t);
             if s.is_empty() {
-                self.owned.remove(&up);
+                self.first_admin_of.remove(&up);
             }
         }
         if class_only {
@@ -366,7 +366,7 @@ impl Held {
 impl Journaled for Held {
     #[cfg(test)]
     fn contents(&self) -> String {
-        format!("{:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.owned, self.ids)
+        format!("{:?} {:?} {:?} {:?} {:?} {:?}", self.commits, self.created, self.holders, self.named, self.first_admin_of, self.ids)
     }
     fn commit(&mut self) {
         self.log.clear();
@@ -498,7 +498,7 @@ mod tests {
                     assert_eq!(h.ever_writers(&t.tid()), writers);
                 }
             }
-            assert!(want.contains(&a[0]), "the owner's owner");
+            assert!(want.contains(&a[0]), "the first admin's first admin");
         }
     }
 }

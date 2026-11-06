@@ -18,7 +18,7 @@ pub(super) fn deliver_without_secrets(lp: &mut LocalPeer, from: usize, to: usize
     }
 }
 
-/// Peers: 0 = the owner of group `t`, 1 = W (a writer, then removed: rotation R1 of read
+/// Peers: 0 = the first admin of group `t`, 1 = W (a writer, then removed: rotation R1 of read
 /// and write), 2 = P (an admin), 3 = N (an admin when `n_first`, else granted later by the
 /// caller). Returns R1's commits.
 fn removed_writer(seed: u64, n_first: bool) -> (LocalPeer, Tid, Vec<osis_base::CommitId>) {
@@ -58,7 +58,7 @@ fn keys_secrets() -> [osis_base::Ak; 2] {
 }
 
 // spec/crypto.md §4 (covers by names, carried in the history box): N, granted admin after the
-// owner compacted and dropped R1's bodies (R1 removed writer W), holds the read epoch's history
+// first admin compacted and dropped R1's bodies (R1 removed writer W), holds the read epoch's history
 // box from the `secrets.0` snapshot, so the epoch covers W's departure there: no rotation, as
 // when N holds R1.
 #[test]
@@ -88,7 +88,7 @@ fn compacted_rotation_covers_its_names_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (names: an entry is bound to a held valid keyset body), spec/permissions.md
-// §5.2: N drops R1's `keys.0` body under admin P's compaction snapshot S; the owner then demotes
+// §5.2: N drops R1's `keys.0` body under admin P's compaction snapshot S; the first admin then demotes
 // P with a frontier not listing S, so S turns invalid and that body is missing again at N (R1's
 // `secrets.0` still held). No held valid keyset binds the read epoch's entry any more, so it
 // covers nothing: N rotates read once (an extra rotation, no lockout) and is covered by its own.
@@ -587,7 +587,7 @@ fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, h
     *ids(lp).difference(&before).next().unwrap()
 }
 
-// spec/crypto.md §4 (names): owner A (peer 0) removes reader M (2), rotating read to s (R_s).
+// spec/crypto.md §4 (names): first admin A (peer 0) removes reader M (2), rotating read to s (R_s).
 // Admin G (1) signs F, a forged rotation commit of s (s's keyset, history box and X's box
 // written again), then re-grants admin X (3), whose box record it replaces at s (C). A, holding C
 // but not F, removes G, rotating to e (naming R_s); so F is invalid (G demoted concurrently). X
@@ -640,7 +640,7 @@ fn withheld_arrives(lp: &mut LocalPeer, x: usize, g: Tid, e: osis_crypto::Epoch,
     assert!(lp.peers[x].engine.epochs(&g).unwrap().read.is_current(&e), "e current once the withheld commits arrive");
 }
 
-// spec/crypto.md §4 (names): owner A (peer 0) removes reader M (2), rotating read to s (R_s).
+// spec/crypto.md §4 (names): first admin A (peer 0) removes reader M (2), rotating read to s (R_s).
 // Writer W (1, may rotate read) signs F, a forged rotation commit of s, valid. A applies F, then
 // removes W, rotating to e (naming R_s). X (3) holds every commit but R_s: e must not be
 // established (else X, still seeing M as a reader, re-seals e to it, though both M and W departed
@@ -684,7 +684,7 @@ fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
     withheld_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
-/// Peers 0 (owner A of `g`), 1 (W, a writer), 2 (M, a reader), 3 (X, an admin), all synced; A
+/// Peers 0 (first admin A of `g`), 1 (W, a writer), 2 (M, a reader), 3 (X, an admin), all synced; A
 /// then removes M (R_s, rotating read to s). Returns `g`, the tids, R_s's commits and s.
 fn removed_reader(lp: &mut LocalPeer, extra_admin: bool) -> (Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>, osis_crypto::Epoch) {
     let n = lp.peers.len();
@@ -725,7 +725,7 @@ fn withheld_then_arrives(lp: &mut LocalPeer, x: usize, g: Tid, e: osis_crypto::E
 // spec/crypto.md §4 (names come from the rotator's own timeline, never from another's word):
 // writer W (1) saw R_s (M's removal) and rotates read to e1 itself, its history box naming
 // nothing and its keyset listing nothing (`list_s`: listing s, with a forged rotation commit F of
-// s beside it). At owner A e1 is current; A removes W, rotating to e (naming R_s). X (3), withheld
+// s beside it). At first admin A e1 is current; A removes W, rotating to e (naming R_s). X (3), withheld
 // R_s, must not establish e (it would re-seal e to M, departed before e).
 fn writer_rotation_skips(list_s: bool) {
     let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
@@ -776,7 +776,7 @@ fn writer_rotation_listing_forged_spec_crypto_4() {
     writer_rotation_skips(true);
 }
 
-// spec/crypto.md §4 (names; an epoch held by snapshot alone): owner A (0) removes M (2) by R_s,
+// spec/crypto.md §4 (names; an epoch held by snapshot alone): first admin A (0) removes M (2) by R_s,
 // compacts `secrets.0` (a snapshot keying s), then removes W, rotating to e (naming R_s). X (3)
 // gets everything but R_s: e must not be established (X sees M as a reader).
 #[test]
@@ -838,8 +838,8 @@ fn regrants_after_invalid_rotation_large() {
 }
 
 /// Random variations of `rotation_after_invalid_one_through_regrants_spec_crypto_4`: an
-/// admin demoted by the owner rotates read unaware (invalid) beside a valid fork; the other
-/// admins, cut off from the owner, re-grant each other (re-writing the invalid rotation's boxes),
+/// admin demoted by the first admin rotates read unaware (invalid) beside a valid fork; the other
+/// admins, cut off from the first admin, re-grant each other (re-writing the invalid rotation's boxes),
 /// then one removes the reader.
 fn regrants_after_invalid_rotation(seed: u64) {
     const N: usize = 5;
@@ -993,7 +993,7 @@ fn forks_with_departures(seed: u64, regrant: bool) {
 
 /// Syncs everything, then runs rounds of every remaining node's re-seals and rotations until
 /// nothing is written, and checks the invariant of `forks_with_departures` (`was`: the highest
-/// role each peer held; peer 0 is `g`'s owner).
+/// role each peer held; peer 0 is `g`'s first admin).
 fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: [Option<Role>; 5]) {
     const N: usize = 5;
     let roles = [Role::Read, Role::Write, Role::Admin];
@@ -1026,7 +1026,7 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
     assert!(settled, "seed {seed}: no fixpoint in 16 rounds");
     for r in roles {
         let ep = |p: usize| lp.peers[p].engine.epochs(&g).unwrap().role(r).clone();
-        // peer 0, G's owner, holds every role and is never demoted
+        // peer 0, G's first admin, holds every role and is never demoted
         let at0 = ep(0).current();
         for &p in &stay {
             let e = ep(p);
@@ -1082,7 +1082,7 @@ fn withheld_departures_leak_nothing() {
 
 // As `withheld_departures_leak_nothing`, `more` also: grants by admins, an `until` soon set on a
 // holder's edge at its role, and the clock moving on (ended edges finalized by whoever next
-// encrypts, spec/permissions.md §2). (The audit names matter only for a demotion on another thing, an owner chain's:
+// encrypts, spec/permissions.md §2). (The audit names matter only for a demotion on another thing, an record chain's:
 // `audit_dropped_grant_named_spec_crypto_4`.)
 #[test]
 fn withheld_departures_audits_and_expiries_leak_nothing() {
@@ -1110,7 +1110,7 @@ fn withheld_regrant_by_unaware_admin_spec_crypto_4() {
 // admin P removes holder M (rotating to e), its own edge passes an `until` set by another admin,
 // then P re-grants M at e. M takes e from that grant while it looks valid; it is invalid once
 // the `until` is known. M keeps e's secret (nothing unlearns it): no leak as long as no node
-// encrypts under e, which the harness checks at the owner after `ensure_rotated` (e, written by
+// encrypts under e, which the harness checks at the first admin after `ensure_rotated` (e, written by
 // the since-departed P, does not cover P's departure).
 #[test]
 fn withheld_regrant_past_own_until_spec_crypto_4() {
@@ -1224,7 +1224,7 @@ fn withheld_departures(seed: u64, more: bool) {
             lp.advance(rng.next(2_000));
         }
     }
-    // X: an admin that stays one at peer 0 (the owner never departs), given everything but
+    // X: an admin that stays one at peer 0 (the first admin never departs), given everything but
     // some departing commits (and, rarely, others), re-seals and rotates
     let x = (1..N).find(|p| lp.peers[0].engine.core.role_now(&tids[*p], &g) == Some(Role::Admin)).unwrap_or(0);
     let mut all = Vec::new();
@@ -1316,7 +1316,7 @@ fn withheld_departures(seed: u64, more: bool) {
                     assert!(sharers.iter().any(|o| o.role(r).secret(&e).is_some()), "seed {seed}: departed peer {d} opens {r:?} epoch {e:?} through an invalid write whose author does not hold it");
                     let _ = lp.peers[0].engine.ensure_rotated(&g);
                     let now = lp.peers[0].engine.epochs(&g).unwrap();
-                    assert!(now.role(r).newest() != Some(e), "seed {seed}: owner encrypts under {r:?} epoch {e:?}, which departed peer {d} opens from an invalid box");
+                    assert!(now.role(r).newest() != Some(e), "seed {seed}: first admin encrypts under {r:?} epoch {e:?}, which departed peer {d} opens from an invalid box");
                     continue;
                 }
                 assert!(!knew, "seed {seed}: departed peer {d} opens {r:?} epoch {e:?} made by a rotator that saw it depart");
@@ -1359,7 +1359,7 @@ fn opened_by_invalid(lp: &mut LocalPeer, i: usize, g: Tid, holder: Tid, seed: &o
     (out, authors)
 }
 
-// spec/permissions.md §2 (finalize before encrypting; lacking a secret, wait): owner A (0)
+// spec/permissions.md §2 (finalize before encrypting; lacking a secret, wait): first admin A (0)
 // rotates write leaving out admin X (2), then sets an `until` on writer D's (1) edge. Past it, X
 // may finalize D but cannot (no current write secret for the rotation): it encrypts nothing under
 // G, re-seals included, until it can.
@@ -1388,7 +1388,7 @@ fn finalize_due_without_secret_blocks_spec_permissions_2() {
 }
 
 // spec/crypto.md §4 (a name is met when its commit is applied with every entry it resets known),
-// spec/permissions.md §2: owner A (0) sets an `until` on writer D's (1) edge (U); past it, A
+// spec/permissions.md §2: first admin A (0) sets an `until` on writer D's (1) edge (U); past it, A
 // finalizes D, rotating to e (its departs mark). X (2, an admin) holds the finalize but not U, the
 // write it ends: there the finalize applies nothing and D is still a writer, so e must not be
 // established, nor re-sealed to D. Once U arrives, e is.
@@ -1425,7 +1425,7 @@ fn finalize_without_its_until_unmet_spec_crypto_4() {
 }
 
 // spec/permissions.md §2 (a commit's edge writes apply together), spec/crypto.md §4 (a name
-// covers its commit's departures): owner A (0) sets an `until` on writers D1 (3) and D2 (4); past
+// covers its commit's departures): first admin A (0) sets an `until` on writers D1 (3) and D2 (4); past
 // it, admin B (1) finalizes both in one commit F. Admin X (2) holds F and D2's `until` but not
 // D1's. Were F's write on D2 to apply alone there, X's rotation would name F while boxing D1, and
 // A, holding everything, would take that epoch as covering D1's departure.
@@ -1469,7 +1469,7 @@ fn finalize_applies_whole_or_not_spec_permissions_2() {
 }
 
 // spec/crypto.md §4 (a name is met when its commit is applied: its edge write on the name's
-// thing held): owner A (0) removes reader M (2) (R_s), then rotates read to e (naming R_s). X
+// thing held): first admin A (0) removes reader M (2) (R_s), then rotates read to e (naming R_s). X
 // (3, an admin) holds R_s without its `roles.0` delta on G (a copy of some parts: a certificate copy or
 // another label's parts), so it still sees M as a reader: e must not be established there.
 // Once R_s arrives whole, e is.
@@ -1500,8 +1500,8 @@ fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
 }
 
 // spec/crypto.md §4 (names: every commit whose demotion's audit dropped an edge write on the
-// actor, named by the thing the demotion is on): G is owned by actor O (peer 0's); W (1) an
-// admin of O grants D (2) read on G through the owner chain (C). Owner A demotes W to write on
+// actor, named by the thing the demotion is on): G's first admin is actor O (peer 0's); W (1) an
+// admin of O grants D (2) read on G through the record chain (C). First admin A demotes W to write on
 // O, not having received C (its frontier misses it), so C is audited away; A then gets C and
 // rotates G's read to e: no edge write on G departs anyone, and O's read keyset is unchanged, so
 // only the audit names W's demotion. X (3, G's admin) holds C but not the demotion: e must not
@@ -1541,7 +1541,7 @@ fn audit_dropped_grant_named_spec_crypto_4() {
 
 // spec/crypto.md §4 (a node attributes a departure to the name of the newest of its events,
 // by key, whatever thing names it): A removes D from G (rotation e1 names that removal on G);
-// W, an admin of G's owner O, grants D read on G again, boxing it at e1; A demotes W on O
+// W, an admin of G's first admin O, grants D read on G again, boxing it at e1; A demotes W on O
 // without that grant, so the audit drops it (named on O). D's newest departure is the drop,
 // which e1 does not name: A must rotate before encrypting under e1, which D holds.
 #[test]
@@ -1700,7 +1700,7 @@ fn bad_rotation_parts_read_as_missing_spec_commits_4() {
     }
 }
 
-// spec/permissions.md §4, spec/crypto.md §5: an owner's holder with K's keyset and none of K's secrets has K's derived read epochs, to open its label and nothing more: it wraps nothing, rotates and boxes nothing; a node not holding the owner has none; K's real box then replaces them
+// spec/permissions.md §4, spec/crypto.md §5: a first admin's holder with K's keyset and none of K's secrets has K's derived read epochs, to open its label and nothing more: it wraps nothing, rotates and boxes nothing; a node not holding the first admin has none; K's real box then replaces them
 #[test]
 fn keyset_before_box_reads_only_spec_permissions_4() {
     let mut lp = LocalPeer::new(3, 3_391, WallMs(1_700_000_000_000)).unwrap();
@@ -1732,7 +1732,7 @@ fn keyset_before_box_reads_only_spec_permissions_4() {
     assert!(e.grant(&k, &c, &admin).is_err(), "boxes nothing");
     assert!(e.run(|tx| super::rotate_now(tx, b, k, &BTreeSet::from([Role::Read]))).is_err(), "rotates nothing");
     assert_eq!(e.core.ix.commits.len(), before, "wrote nothing");
-    assert!(lp.peers[2].engine.core.epochs(&k).is_none_or(|e| !e.holds_any()), "not the owner's holder");
+    assert!(lp.peers[2].engine.core.epochs(&k).is_none_or(|e| !e.holds_any()), "not the first admin's holder");
 
     lp.sync(0, 1).unwrap();
     let e = &lp.peers[1].engine;
@@ -1740,7 +1740,7 @@ fn keyset_before_box_reads_only_spec_permissions_4() {
     assert!(e.core.ix.secrets.get(&k).is_some() && real.read.newest_held().is_some() && real.admin.newest_held().is_some(), "the box replaces them");
 }
 
-// spec/crypto.md §4 Met, spec/permissions.md §2 (a finalize names the writes it ends): owner A (0)
+// spec/crypto.md §4 Met, spec/permissions.md §2 (a finalize names the writes it ends): first admin A (0)
 // sets an `until` on writers D1 (2) and D2 (3), then renews D2 before it; admin B (1), not holding
 // the renewal, finalizes both past it, rotating to e. Where the renewal is held, the finalize's
 // write on D2 ends a write already superseded and applies nothing, yet the finalize is held whole,

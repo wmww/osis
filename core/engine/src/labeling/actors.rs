@@ -36,9 +36,9 @@ impl GroupLabel {
 
 impl Core {
     /// The reader actor of `t`, whose read role reads its deltas: `t` with secrets of its own,
-    /// else the nearest owner-chain actor that has them (a key actor is its own).
+    /// else the nearest record-chain actor that has them (a key actor is its own).
     pub fn reader_of(&self, t: &Tid) -> Tid {
-        // the actor whose secrets `t`'s derive from, up the owner chain
+        // the actor whose secrets `t`'s derive from, up the record chain
         self.secret_actor(t).unwrap_or(*t)
     }
 
@@ -72,8 +72,8 @@ impl Core {
 }
 
 impl Engine {
-    /// A group's actor (spec/sync.md §3): the group if it has secrets of its own, else its
-    /// owner.
+    /// A group's actor (spec/sync.md §3): the group if it has secrets of its own, else its base
+    /// actor.
     pub fn group_actor(&self, g: &Tid) -> Tid {
         self.core.reader_of(g)
     }
@@ -241,12 +241,12 @@ impl Engine {
             if self.labeled(&t) {
                 continue;
             }
-            let owner = self.core.first_admin(&t);
-            let person = owner.is_some_and(|o| self.core.is_key_actor(&o));
+            let first = self.core.first_admin(&t);
+            let person = first.is_some_and(|o| self.core.is_key_actor(&o));
             let mut holders = Vec::new();
             for (m, _, _) in self.core.current_holders(&t) {
                 let skip = self.core.is_key_actor(&m) && (person || !self.is_node(&m).unwrap_or(false));
-                if Some(m) != owner && !skip && !live.iter().any(|(a, c)| self.carries(a, c, &m, &t)) {
+                if Some(m) != first && !skip && !live.iter().any(|(a, c)| self.carries(a, c, &m, &t)) {
                     holders.push(m);
                 }
             }

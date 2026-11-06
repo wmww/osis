@@ -200,7 +200,7 @@ impl Engine {
             // a commit counts through a part valid here (any signer's header lists any thing)
             let core = &self.core;
             let on = |c: &CommitId| core.ix.commits.get(c).is_some_and(|m| m.view.memory && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == t && m.valid_at(ai)));
-            let used = core.on_thing(&t).any(|c| on(&c)) || core.ix.held.owned(&t).next().is_some();
+            let used = core.on_thing(&t).any(|c| on(&c)) || core.ix.held.first_admin_of(&t).next().is_some();
             if !made_here && !used {
                 free.insert(t);
             }

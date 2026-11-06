@@ -1120,7 +1120,7 @@ fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_node::Result
     lp.peers[i].commit(m)
 }
 
-// spec/permissions.md §1 (paths climb owner links and edges), §4 (chain certificates): n0 owns
+// spec/permissions.md §1 (paths climb record links and edges), §4 (chain certificates): n0 owns
 // A, A writes B, B admin of C (n1 owns B and C). n0's write on C applies at n0 and a receiver; a
 // node with no path may not write C. A fresh receiver given n0's certificates for C but A's
 // `created.0` (the owner-link step) keeps the write pending on n0's chain until it arrives.
@@ -1162,7 +1162,7 @@ fn owner_then_edge_chain_applies_spec_perm_1() {
 }
 
 // spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): n0 owns a chain of things down to one link past
-// the cap. Owner links count on a path as perm's effective role counts them: an edge on C to
+// the cap. Record links count on a path as perm's effective role counts them: an edge on C to
 // the thing at the cap or past it lets n0 write C, and the write applies at n0 and a receiver.
 #[test]
 fn owner_chain_depth_edge_chain_spec_perm_1() {

@@ -488,7 +488,7 @@ fn local_rights_check_spec_permissions_1() {
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
 }
 
-// spec/permissions.md §1 (the owner chain confers write), §5; notes/api.md Writes: one commit
+// spec/permissions.md §1 (the record chain confers write), §5; notes/api.md Writes: one commit
 // creates A, B owned by A and C owned by B; another node applying the commit holds all three.
 // A thing owned by one the writer may not write is still refused.
 #[test]

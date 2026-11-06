@@ -391,7 +391,7 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     net.run();
     let me = net.tid(a);
-    // a durable thing of `g`'s owner chain, written while listed nowhere
+    // a durable thing of `g`'s record chain, written while listed nowhere
     let e = net.engine(a);
     let mut m = Mutation::new();
     let u = e.new_thing(&mut m, g);
@@ -3438,7 +3438,7 @@ fn delta_past_a_blob_refused_spec_commits_2() {
 }
 
 
-// spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): a draft's whole owner chain counts,
+// spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): a draft's whole record chain counts,
 // its durable part included: a write on one at the cap applies at its author and a receiver, one
 // a link past it is refused at its author and, forged, invalid at a receiver (the old lane
 // counted only the links above the nearest durable thing, issue eph-write-depth (closed))
@@ -3757,7 +3757,7 @@ fn memory_commit_session_form_spec_commits_3() {
 
 // spec/commits.md §2 (records beside the deltas), spec/data-model.md §1: a thing a memory commit
 // makes is held as a memory-class record; the commit carries no `created.0` aspect, its parts carry
-// the thing's record and its memory owner chain; the first durable write on the thing persists
+// the thing's record and its memory record chain; the first durable write on the thing persists
 // the chain (`created.0` in that commit); a restart keeps only what was persisted.
 #[test]
 fn memory_records_beside_deltas_spec_commits_2() {

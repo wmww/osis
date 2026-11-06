@@ -44,7 +44,7 @@ use std::sync::Arc;
 /// Why a commit is pending (spec/commits.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
-    /// The `created.0` record (key) of the author or of a thing on an owner chain is missing.
+    /// The `created.0` record (key) of the author or of a thing on an record chain is missing.
     MissingChain(Tid),
     /// The `created.0` record of a thing whose part it holds is unknown.
     UnknownCreated(Tid),
@@ -358,7 +358,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if only_junk {
         return Err(Error::BadInput("delta hash"));
     }
-    // a part waits alone, for its thing's record, owner chain or the author's reach
+    // a part waits alone, for its thing's record, record chain or the author's reach
     let mut aside = Aside::default();
     for (ai, a) in h.aspects.iter().enumerate() {
         if skip.contains(&ai) || !blob.parts.iter().any(|p| p.ai == ai) {
@@ -495,7 +495,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     Ok(Judged::Good)
 }
 
-/// What thing `a.tid` waits for: its `created.0` record, the owner chain up to a key actor, the
+/// What thing `a.tid` waits for: its `created.0` record, the record chain up to a key actor, the
 /// author's chain certificates (spec/permissions.md §4). A function of the thing, not of the part.
 fn thing_wait(
     core: &crate::engine::Core,
@@ -1712,9 +1712,9 @@ mod tests {
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
     }
 
-    // spec/permissions.md §1 (an owner holds admin on what it owns; owner chains within
+    // spec/permissions.md §1 (a first admin holds admin on its things; record chains within
     // MAX_CHAIN_DEPTH), §5: a writer creates A under X, B under A and C under B in one commit;
-    // the commit is valid wherever applied. Owned by a thing the writer may not write, the same
+    // the commit is valid wherever applied. Under a first admin the writer may not write, the same
     // tree fails the local check, as does a chain of new things past MAX_CHAIN_DEPTH.
     #[test]
     fn tree_created_in_one_commit_spec_perm_1() {
@@ -1754,7 +1754,7 @@ mod tests {
             assert!(p0.engine.creation(&t).is_some());
             assert_eq!(p0.engine.get(&t, &reg).unwrap(), Some(Value::Int(i as i64 + 1)));
         }
-        // the owner's tree: the last thing's delete keys derive from its owner's secrets
+        // the first admin's tree: the last thing's delete keys derive from its base actor's secrets
         // through the two created above it (spec/crypto.md §3, §7)
         let mut m = Mutation::new();
         let d = p0.engine.new_thing(&mut m, x);

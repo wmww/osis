@@ -313,7 +313,7 @@ fn inbox_delivery_spec_sync_3() {
 use osis_schema::Codec;
 
 // spec/sync.md §2: a group's `label.0` (with its `created.0`) is also published under the home
-// label of the nearest owner-chain actor that has one, so that actor's other nodes find it.
+// label of the nearest record-chain actor that has one, so that actor's other nodes find it.
 #[test]
 fn label_published_under_home_label_spec_sync_2() {
     let mut net = Net::new();

@@ -42,13 +42,13 @@ impl Core {
     }
 
     /// The epochs this node holds for `tid`: its own, opened ones, or derived from those of the
-    /// next actor up its record chain (owner or first admin) for a plain thing. A plain thing's
+    /// next actor up its record chain (first admin) for a plain thing. A plain thing's
     /// epochs learned from a rotation since found invalid (`stale_epochs`) are added for reading
     /// only.
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let d = self.chain_epochs(tid).or_else(|| self.unboxed_epochs(tid));
         let Some(x) = self.stale_epochs(tid) else { return d };
-        // no owner's epochs held: the leftovers alone, still reading-only
+        // no base actor's epochs held: the leftovers alone, still reading-only
         let mut d = d.unwrap_or_default();
         for r in ROLES {
             for (ep, info) in x.role(r).epochs() {
@@ -130,7 +130,7 @@ impl Core {
         }
         // a held keyset part decides: all invalid, the thing is plain (a valid grant boxing under
         // that keyset's epochs counts for nothing; its derived epochs may predate a rotation of
-        // the owner)
+        // the base actor)
         if self.ix.keyset_parts.get(tid).is_some_and(|s| !s.is_empty()) {
             return None;
         }
@@ -331,7 +331,7 @@ impl Core {
     /// those derived from an established epoch of the next actor up its record chain are
     /// established (spec/crypto.md §4), so the rotation from them establishes
     /// and labels registered under them can be stepped. A derived epoch's ID names its secret, so
-    /// only an owner epoch whose secret is held matches.
+    /// only a base actor epoch whose secret is held matches.
     pub(crate) fn adopt_derived(&self, actor: &Tid, epochs: &mut ActorEpochs) {
         let Some(up) = self.created(actor).and_then(CreationRecord::first_admin) else { return };
         let Some(o) = self.epochs(&up) else { return };
@@ -367,7 +367,7 @@ pub(crate) struct NamesHeld<'c> {
 
 impl NamesHeld<'_> {
     /// Whether `who` holds `r` on the actor now, for keys (`At::KEYS`: every `until`
-    /// disregarded), over its owner chain and through holder actors alike.
+    /// disregarded), over its record chain and through holder actors alike.
     fn holder(&self, who: &Tid, r: Role) -> bool {
         self.core.timelines.get(&self.actor).and_then(|tl| tl.role(who, &self.actor, At::KEYS)) >= Some(r)
     }
@@ -394,7 +394,7 @@ impl osis_keys::Held for NamesHeld<'_> {
         applied && self.resolved(&n.key.commit)
     }
     /// The author of held commit `c` holds `r` on the actor now, for keys (`At::KEYS`: every
-    /// `until` disregarded), over its owner chain and through holder actors alike.
+    /// `until` disregarded), over its record chain and through holder actors alike.
     ///
     /// Invariant: what covers a departure is its rotator's word, and a rotator's word counts
     /// only while it holds the role (spec/crypto.md §4, covers). A rotator lowered below `r`
