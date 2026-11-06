@@ -503,16 +503,9 @@ impl SyncEngine {
         self.engine.read_secrets(g)
     }
 
-    /// Whether a held actor's `keys.0` names `l` as its inbox: its unopened entries may be
-    /// grants to the node's actors, fetched first (a group's own label standing in as its inbox
-    /// is first a group label: its fill keeps the newest-first order).
-    pub(crate) fn named_inbox_here(&mut self, l: &LabelId) -> bool {
-        self.engine.inbox_actors().named.contains(l)
-    }
-
     /// Actors with held secrets whose inbox blobs may come under `l`, the topmost first.
     pub(crate) fn inbox_actors(&mut self, l: &LabelId) -> Vec<Tid> {
-        self.engine.inbox_actors().by.get(l).cloned().unwrap_or_default()
+        self.engine.inbox_actors().get(l).cloned().unwrap_or_default()
     }
 
     /// Opens entries of `l` not opened yet (from connection `conn`: under its group), ingests
@@ -931,8 +924,8 @@ impl SyncEngine {
     }
 
     /// Opens inbox blob `bytes` under the held keys of an actor whose inbox `l` is. A blob whose
-    /// prefix no inbox blob has (an expiry, no commitments: spec/wire.md §9) costs no KEM: an
-    /// ownerless group's label is its inbox too, with every chunk of its content under it.
+    /// prefix no inbox blob has (an expiry, no commitments: spec/wire.md §9) costs no KEM: a group's
+    /// home label is its inbox too, with every chunk of its content under it.
     fn open_inbox(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(osis_label::Prefix, osis_label::InboxPayload)> {
         self.open_inbox_as(l, bytes).map(|x| (x.1, x.2))
     }
@@ -946,7 +939,7 @@ impl SyncEngine {
         self.stats.inbox_tries += 1;
         let by_label = self.engine.inbox_actors();
         // a KEM per try, so one at a time: a blob from outside can name any of them
-        for a in by_label.by.get(l)? {
+        for a in by_label.get(l)? {
             for s in self.read_secrets(a) {
                 self.stats.inbox_keys += 1;
                 if let Ok((p, x)) = osis_label::open_inbox_blob(bytes, a, &role_kem(&s)) {

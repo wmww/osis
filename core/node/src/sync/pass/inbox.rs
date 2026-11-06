@@ -163,8 +163,8 @@ impl SyncEngine {
         if self.engine.core.secret_actor(g) != Some(*g) || self.engine.role_on(g) != Some(Role::Admin) {
             return Ok(out);
         }
-        // every label a blob about `g` may have come under (a sender knowing `g` by its `keys.0`
-        // alone went up its record chain)
+        // every inbox a blob about `g` may have come under (a sender knowing an older `keys.0` of
+        // `g`, naming none, went up its record chain)
         let opened: Vec<(LabelId, BlobId, CommitId)> = self
             .engine
             .inbox_candidates(g)

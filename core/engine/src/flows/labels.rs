@@ -158,6 +158,20 @@ pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &
     Ok(step.label)
 }
 
+/// Names `label` on `hosts` as `actor`'s inbox in its `keys.0`, in `m` (spec/sync.md §2: in the
+/// commit that makes the label).
+pub(crate) fn name_inbox(m: &mut Mutation, actor: Tid, label: LabelId, hosts: &[Address]) -> Result<()> {
+    m.op(actor, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(ct::Inbox { label, hosts: hosts.to_vec() }).to_value()) })?;
+    Ok(())
+}
+
+/// Whether a new live label of actor `a` becomes its inbox (spec/sync.md §2): its `keys.0`
+/// names none, or names `old`, the label it replaces.
+pub(crate) fn takes_inbox(tx: &mut Tx<'_>, a: &Tid, old: Option<LabelId>) -> Result<bool> {
+    let named = Core::keys_in(tx, a)?.and_then(|k| k.inbox).map(|i| i.label);
+    Ok(named.is_none() || named == old)
+}
+
 /// Whether `group`'s newest admin epoch is one a step of `label` registers (its delete key).
 fn admin_registered(tx: &mut Tx<'_>, group: &Tid, label: &ct::Label) -> Result<bool> {
     let Some(epochs) = tx.core.epochs(group) else { return Ok(false) };
@@ -209,8 +223,12 @@ impl Engine {
             let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
             let rs = readers(tx, &g, &re)?;
             let first = !labels_of(tx, &g)?.values().any(|l| !l.replaced);
+            let inbox = tx.core.has_own_secrets(&g) && takes_inbox(tx, &g, None)?;
             let mut m = Mutation::new();
             let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, hosts)?;
+            if inbox {
+                name_inbox(&mut m, g, id, hosts)?;
+            }
             let c = Engine::commit_tx(tx, m)?;
             done.add(c);
             if let Some(c) = c
@@ -316,8 +334,12 @@ impl Engine {
             let deposit = deposit_seed(tx, &g)?;
             let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
             let rs = readers(tx, &g, &re)?;
+            let inbox = tx.core.has_own_secrets(&g) && takes_inbox(tx, &g, Some(o))?;
             let mut m = Mutation::new();
             let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, &rec.hosts)?;
+            if inbox {
+                name_inbox(&mut m, g, id, &rec.hosts)?;
+            }
             let path = vec![PathSeg::Key(o.to_value()), PathSeg::Field(3)];
             m.op(g, &ct::LABEL, PathOp { path, op: Op::Set(Value::Bool(true)) })?;
             done.add(Engine::commit_tx(tx, m)?);

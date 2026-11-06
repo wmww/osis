@@ -47,14 +47,19 @@ struct Chat {
 
 /// `a` writes `N` kept messages; `c`, a new node holding its grant, has never met the host.
 fn chat(role: Role) -> Chat {
+    // not an inbox: unvouched junk under it keeps no bytes (`junk_listed_goes_when_it_comes`)
+    chat_with(role, |net, a, g, _| net.name_inbox_elsewhere(a, g))
+}
+
+/// `chat` with `setup(net, a, g, t)` run before the messages.
+fn chat_with(role: Role, setup: impl FnOnce(&mut Net, usize, Tid, Tid)) -> Chat {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let c = filler(&mut net, &[host]);
     let g = net.group(a, &[(c, role)], &[host]);
-    // not an inbox: unvouched junk under it keeps no bytes (`junk_listed_goes_when_it_comes`)
-    net.name_inbox_elsewhere(a, g);
     let t = net.item(a, g, g, "chat");
+    setup(&mut net, a, g, t);
     net.set_online(c, false);
     net.run();
     for i in 0..N {
@@ -213,6 +218,27 @@ fn restart_goes_on_without_listing_again_spec_sync_6() {
     for b in ids {
         assert!(f.net.engine(c).has_blob(&b), "every entry fetched");
     }
+}
+
+// spec/sync.md §6, §2: a group's home label is its inbox, and what does not open there (here a
+// file's chunks, written before the messages) still comes after the newest messages.
+#[test]
+fn chunks_at_a_groups_inbox_come_last_spec_sync_6() {
+    let mut f = chat_with(Role::Read, |net, a, _, t| {
+        let mut m = Mutation::new();
+        m.set(t, &crate::net::REG, &net::s(&"x".repeat(1 << 20))).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap();
+    });
+    let (a, c, g, l) = (f.a, f.c, f.g, f.l);
+    assert_eq!(f.net.engine(a).get_typed(&g, &osis_schema::core_types::KEYS).unwrap().and_then(|k| k.inbox).map(|i| i.label), Some(l), "the group's label is its inbox");
+    let chunks: Vec<BlobId> = f.net.sync(a).entries(&l).into_iter().filter(|(_, k)| *k == EntryKind::Unknown).map(|x| x.0).collect();
+    assert!(chunks.len() > 2, "{} chunks", chunks.len());
+    f.part_way();
+    f.assert_newest();
+    let fetched = chunks.iter().filter(|b| f.net.engine(c).has_blob(b)).count();
+    assert_eq!(fetched, 0, "chunks before the newest messages");
+    f.finish();
+    assert!(chunks.iter().all(|b| f.net.engine(c).has_blob(b)), "every chunk in the end");
 }
 
 // spec/crypto.md §5: what did not open at the listing takes its place in the order once secrets

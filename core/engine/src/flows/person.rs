@@ -2,7 +2,7 @@
 //! a recovery key holds a plain admin edge on it; pairing a node (a direct grant, or a re-seal
 //! of a node already a holder, plus the commits it needs); recovery from a card on a fresh node.
 
-use super::labels::{ReaderKey, new_label};
+use super::labels::{ReaderKey, name_inbox, new_label};
 use super::{Delivery, Done, put_edge};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
@@ -16,7 +16,7 @@ use osis_crypto::{KeyActorKeys, Secret32};
 use osis_keys::{ActorEpochs, HolderKeys, ROLES, Recipient};
 use osis_label::{Address, RecoveryCard};
 use osis_schema::Codec;
-use osis_schema::core_types::{self as ct, Edge, Inbox, KemKey, Keys};
+use osis_schema::core_types::{self as ct, Edge, KemKey, Keys};
 use std::collections::BTreeSet;
 
 /// A person actor this node created.
@@ -167,7 +167,7 @@ fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, hosts: &[Address])
     let rvk = rkeys.signing.verifying_key();
     let readers = [ReaderKey::Static(rvk, rkeys.kem.public().clone()), ReaderKey::Dh(node_kem.x25519())];
     let label = new_label(tx, &mut m, p, &after, &readers, &deposit, hosts)?;
-    m.op(p, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, hosts: hosts.to_vec() }).to_value()) })?;
+    name_inbox(&mut m, p, label, hosts)?;
     m.op(p, &ct::KEYS, PathOp { path: vec![PathSeg::Field(5)], op: Op::Set(Some(dep).to_value()) })?;
     put_edge(&mut m, p, r, &admin_edge())?;
     let c = Engine::commit_tx(tx, m)?;

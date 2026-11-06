@@ -4,7 +4,7 @@
 //! invite grant signed as L, single use with L's self-removal in the same commit), bearer use,
 //! finalization and revoking a joiner are demotions by a sharer node.
 
-use super::labels::{ReaderKey, new_label};
+use super::labels::{ReaderKey, name_inbox, new_label};
 use super::person::key_actor_keys;
 use super::{Delivery, Done, put_edge, secrets_in};
 use crate::engine::{Engine, Tx};
@@ -14,12 +14,11 @@ use crate::identity::key_actor_record;
 use crate::rotation;
 use crate::Mutation;
 use osis_base::{Role, Tid, Value, WallMs};
-use osis_crdt::{Op, PathOp, PathSeg};
+use osis_crdt::{Op, PathOp};
 use osis_crypto::{KeyActorKeys, Secret32};
 use osis_keys::{HolderKeys, Recipient, box_holder, roles_up_to};
 use osis_label::{Address, ShareLink};
-use osis_schema::Codec;
-use osis_schema::core_types::{self as ct, Edge, Inbox};
+use osis_schema::core_types::{self as ct, Edge};
 use std::sync::Arc;
 
 /// The untyped aspect of the sharer-only thing that keeps a link's seed.
@@ -233,7 +232,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let deposit = osis_crypto::Secret32::from_bytes(super::super::flows::deposit_of(tx, &k)?);
     let mut m = Mutation::new();
     let label = new_label(tx, &mut m, k, &epochs, &readers, &deposit, &spec.hosts)?;
-    m.op(k, &ct::KEYS, PathOp { path: vec![PathSeg::Field(4)], op: Op::Set(Some(Inbox { label, hosts: spec.hosts.clone() }).to_value()) })?;
+    name_inbox(&mut m, k, label, &spec.hosts)?;
     done.add(Engine::commit_tx(tx, m)?);
     // L's card under K's label: a redeemer holds only the seed, and verifiers of L's commits
     // need L's `created.0`
