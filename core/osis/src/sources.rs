@@ -19,14 +19,14 @@
 //! `group_source` writes a route before it stops the local sync and drops one only after local
 //! sync caught up, so a crash or failure between leaves "routed and synced", which reads remote:
 //! there is no moment when this engine's copy answers while behind. A remote copy can: a move away
-//! waits for this node's writes to reach a host, not for that node to pull them.
+//! waits for this node's writes to reach a saved peer, not for that node to pull them.
 //!
 //! **No write is acknowledged and silently never sent.** A write through a route goes out under what
 //! that node syncs, so a thing split between a route and a group that carries it here (`split_in`:
 //! that group syncs here, or routes to another node) refuses writes (`route_write`): its other
 //! holders would miss them with no sign. Reads stay on the route: this engine's copy, fed by the
 //! other group alone, never answers. A split cannot always be refused where it starts (a holder of
-//! the other group may place the thing there at any time), so it is a state with one rule, not a
+//! the other group may add the thing to it at any time), so it is a state with one rule, not a
 //! refused step: the next write says so, `Status::two_sources` lists it, and moving either group ends it.
 //!
 //! The port worker (`port::serve`) serves every client of its node one call at a time, so it never
@@ -277,7 +277,7 @@ impl Osis {
                 Some(touched) => self.check_split(&touched)?,
                 None => {
                     if let Some(t) = self.locked(split_things).first() {
-                        return Err(Error::Invalid(format!("a change this node does not hold may touch {t}, which is split: see `status`")));
+                        return Err(Error::Invalid(format!("a commit this node does not hold may touch {t}, which is split: see `status`")));
                     }
                 }
             }
@@ -352,7 +352,7 @@ impl Osis {
             (Some(ts), _) => self.route_all(&ts),
             (None, []) => Ok(Route::Local),
             (None, [r]) => Ok(Route::Remote(self.reachable(r.clone()))),
-            (None, _) => Err(Error::Invalid("a change this node does not hold, with several nodes connected: revert it through a handle with one".into())),
+            (None, _) => Err(Error::Invalid("a commit this node does not hold, with several nodes connected: revert it through a handle with one".into())),
         }
     }
 
@@ -584,7 +584,7 @@ impl Osis {
         if stopped {
             self.act(|l| l.sync.set_receipts_only(group, false));
         }
-        // what was written at the node reaches a host first, else this engine would catch up
+        // what was written at the node reaches a saved peer first, else this engine would catch up
         // without it; not asked of a node that is gone
         if let Some(r) = route.as_ref().map(|a| self.locked(|l| remote_named(l, a))) {
             self.node_uploaded(&r, group).await?;

@@ -5,7 +5,7 @@
 //! and the commits it needs), both authenticated by the offer's one-time secret.
 
 use crate::error::{Error, Result};
-use crate::handle::{Fresh, Osis, PERSON, fresh_engine, save_hosts};
+use crate::handle::{Fresh, Osis, ACCOUNT, fresh_engine, save_peers};
 use crate::share::{RecoveryCard, Address, SyncState};
 use crate::{Config, Store};
 use osis_base::cbor::{Limits, decode, encode};
@@ -95,15 +95,15 @@ fn tag_ok(secret: &[u8; 32], purpose: &str, items: &[Value]) -> bool {
     same(&mac(secret, purpose, &Value::List(body.to_vec())), tag)
 }
 
-/// `hosts` plus those of `more` it lacks.
-fn with_hosts(hosts: &[Address], more: Vec<Address>) -> Vec<Address> {
-    let mut hosts = hosts.to_vec();
+/// `peers` plus those of `more` it lacks.
+fn with_peers(peers: &[Address], more: Vec<Address>) -> Vec<Address> {
+    let mut peers = peers.to_vec();
     for a in more {
-        if !hosts.contains(&a) {
-            hosts.push(a);
+        if !peers.contains(&a) {
+            peers.push(a);
         }
     }
-    hosts
+    peers
 }
 
 fn same(a: &[u8], b: &[u8]) -> bool {
@@ -139,7 +139,7 @@ fn packages_of(v: &Value) -> Result<Packages> {
 pub struct Joining {
     db: Osis,
     secret: [u8; 32],
-    person: Tid,
+    account: Tid,
     request: PairRequest,
 }
 
@@ -169,17 +169,17 @@ impl Joining {
         }
         let grant = RawCommitId(grant.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing reply".into()))?);
         let pks = packages_of(pks)?;
-        let person = self.person;
+        let account = self.account;
         let done = self.db.engine(|e| -> Result<_> {
             for (bytes, blobs) in pks {
                 e.ingest(&bytes, blobs)?;
             }
-            let done = e.paired(&person, &grant).map_err(|_| Error::Invalid("pairing reply: this node was not made an admin of the account".into()))?;
-            e.set_app_record(PERSON, person.as_bytes())?;
+            let done = e.paired(&account, &grant).map_err(|_| Error::Invalid("pairing reply: this node was not made an admin of the account".into()))?;
+            e.set_app_record(ACCOUNT, account.as_bytes())?;
             Ok(done)
         })?;
         let hosts = self.db.saved_peers()?;
-        self.db.engine(|e| save_hosts(e, &hosts))?;
+        self.db.engine(|e| save_peers(e, &hosts))?;
         self.db.carry(done)?;
         Ok(self.db)
     }
@@ -195,11 +195,11 @@ impl Osis {
     pub async fn restore(store: Store, peers: &[Address], card: &RecoveryCard, cfg: Config) -> Result<Osis> {
         cfg.check(peers)?;
         let c = card.parse()?;
-        let peers = with_hosts(peers, c.hosts.iter().cloned().map(Address).collect());
+        let peers = with_peers(peers, c.hosts.iter().cloned().map(Address).collect());
         let Fresh { mut sync, clock } = fresh_engine(&store, &cfg, &peers)?;
         let engine = sync.engine_mut();
         let r = engine.hold_key_actor(c.seed.clone())?;
-        save_hosts(engine, &peers)?;
+        save_peers(engine, &peers)?;
         let db = Osis::start(sync, clock, store, &cfg, c.person)?;
         let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
         db.act(|x| x.sync.follow(r, c.person, c.home_label, c.hosts.clone()));
@@ -221,7 +221,7 @@ impl Osis {
         drop(key);
         db.carry(done)?;
         // the account record last: a store without it is no osis node yet
-        db.engine(|e| e.set_app_record(PERSON, c.person.as_bytes()))?;
+        db.engine(|e| e.set_app_record(ACCOUNT, c.person.as_bytes()))?;
         Ok(db)
     }
 
@@ -292,12 +292,12 @@ impl Osis {
     pub fn pair(store: Store, peers: &[Address], offer: &PairOffer, cfg: Config) -> Result<Joining> {
         cfg.check(peers)?;
         let items = unpack(&offer.0, OFFER)?;
-        let [_, Value::Tid(person), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
+        let [_, Value::Tid(account), Value::Tid(_), Value::Bytes(secret), Value::List(addrs)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing offer".into())) };
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error::Invalid("malformed pairing offer".into()))?;
         let addrs = addrs.iter().map(|a| if let Value::Str(s) = a { s.parse() } else { Err(Error::Invalid("malformed pairing offer".into())) }).collect::<Result<_>>()?;
-        let peers = with_hosts(peers, addrs);
+        let peers = with_peers(peers, addrs);
         let Fresh { sync, clock } = fresh_engine(&store, &cfg, &peers)?;
-        let db = Osis::start(sync, clock, store, &cfg, *person)?;
+        let db = Osis::start(sync, clock, store, &cfg, *account)?;
         let node = db.node();
         let pks = db.engine(|e| -> Result<Vec<Package>> {
             let ids = e.commit_ids();
@@ -308,6 +308,6 @@ impl Osis {
             Ok(v)
         })?;
         let request = PairRequest(seal(REQUEST, &secret, "osis pair request", vec![Value::Tid(node), packages_value(&pks)]));
-        Ok(Joining { db, secret, person: *person, request })
+        Ok(Joining { db, secret, account: *account, request })
     }
 }

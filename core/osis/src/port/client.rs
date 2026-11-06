@@ -378,7 +378,7 @@ struct SubEntry {
     sink: Sink,
 }
 
-/// A protocol Error 11 to a request: what answered is no node serving the client port (a host).
+/// A protocol Error 11 to a request: what answered serves sync at that address, not the client port.
 const NO_PORT: &str = "this address serves no client port";
 
 /// How a connection's start ended.
@@ -919,7 +919,7 @@ impl Osis {
         Ok(db)
     }
 
-    /// The stand-in database of a process without a store.
+    /// The stand-in node of a process without a store.
     fn scratch(cfg: AppConfig) -> Result<Osis> {
         Ok(Osis::create(crate::Store::Memory(crate::MemStore::new()), &[], Config { app: cfg, ..Config::default() })?.0)
     }

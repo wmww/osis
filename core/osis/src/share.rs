@@ -4,7 +4,7 @@
 //! carries out; calls that wait for another node are `async` (runtime-agnostic futures).
 
 use crate::error::{Error, Result};
-use crate::handle::{LINKS, Locked, MadeLink, Osis, save_hosts};
+use crate::handle::{LINKS, Locked, MadeLink, Osis, save_peers};
 use crate::watch::{Delivery, Filter, Subscription};
 use osis_base::{Ak, Role, Tid, Value, Time};
 use osis_node::flows::{self, PreSync};
@@ -313,7 +313,7 @@ pub enum SyncState {
     Synced,
     /// Sending or fetching.
     Syncing,
-    /// No saved peer, but other readers have it open with this node: changes go to them as they
+    /// No saved peer, but other readers have it open with this node: commits go to them as they
     /// happen, and nothing says either side holds all the other does.
     Connected,
     /// No saved peer of it answers now (a node that does not serve never does). It keeps trying.
@@ -326,7 +326,7 @@ pub enum SyncState {
     Refused,
     /// This node lost the keys to it, and can read nothing new until another holder gives them again.
     Stranded,
-    /// Only the log of its changes is held (`SyncMode::LogOnly`): not synced, what is here is stale.
+    /// Only the log of its commits is held (`SyncMode::LogOnly`): not synced, what is here is stale.
     LogOnly,
     /// A holder of a role on this thing gets none of its data (`GroupSync::not_carried_to`): the role
     /// stands, and it reads nothing until `sync` syncs the thing or a synced group the holder reads
@@ -873,7 +873,7 @@ impl Osis {
     /// them; what was written under the undone keys stays readable only where they are already held.
     ///
     /// Only after a lockout: on a node that merely lacks a key someone has yet to send it, this
-    /// discards an honest change. `holder` must hold a grant on `target` itself (else `Invalid`), and
+    /// undoes an honest key change. `holder` must hold a grant on `target` itself (else `Invalid`), and
     /// only that grant is touched; `role` can lower or remove, not raise. Nothing to undo: that grant
     /// changes as `set_role` would change it. `Unsupported` as for `set_role`.
     pub async fn repudiate(&self, target: Tid, holder: Tid, role: Option<Role>, o: SetRoleOpts) -> Result<()> {
@@ -1513,7 +1513,7 @@ impl Osis {
             }
             // the labels first: a failed commit leaves the list as it was, so a retry matches
             follow_labels(x.engine(), me, &fixed, &old, &new)?;
-            save_hosts(x.engine(), &v)?;
+            save_peers(x.engine(), &v)?;
             x.sync.set_hosts(new.clone());
             follow_inbox(x.engine(), me, &old, &new)
         })?;
@@ -1812,12 +1812,12 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
 /// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync.md §2 `label.0`
 /// hosts; the sync engine registers a label's path at a host that does not know it): the
 /// home label and the labels of groups in the account's own owner tree this node administers,
-/// except `fixed` ones (links, the contact card) and groups with a holder of no owner here (a
+/// except `fixed` ones (links, the contact card) and groups with a holder of no owner here (an
 /// account, a link's key actor). A group with holders besides the account and its
 /// nodes never loses its last one.
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
-    let devices: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
+    let nodes: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
     let mine = |e: &osis_node::Engine, g: Tid| e.owner_chain(&g).any(|c| c == me);
     let mut m = osis_node::Mutation::new();
     let mut any = false;
@@ -1825,7 +1825,7 @@ fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old:
         if fixed.contains(&g) || e.role_on(&g) != Some(Role::Admin) || !mine(e, g) {
             continue;
         }
-        let holders: Vec<Tid> = e.roster(&g).into_keys().filter(|x| *x != me && !devices.contains(x)).collect();
+        let holders: Vec<Tid> = e.roster(&g).into_keys().filter(|x| *x != me && !nodes.contains(x)).collect();
         if holders.iter().any(|x| e.owner(x).is_none()) || new.is_empty() && !holders.is_empty() {
             continue;
         }

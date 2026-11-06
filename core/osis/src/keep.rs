@@ -18,7 +18,7 @@ use std::time::Duration;
 /// (upload, delivery, the nodes' clock differences) before the last write expires; past it the
 /// value blinks off at a holder until the rewrite arrives. 1 (no slack): it blinks at every
 /// refresh; infinity: a write per moment. Each rewrite supersedes the one before (spec/sync.md
-/// §9), so holders and hosts keep about one write per kept value.
+/// §9), so holders and serving nodes keep about one write per kept value.
 const REFRESH_DIVISOR: u32 = 2;
 
 struct Kept {

@@ -275,8 +275,8 @@ impl<'d> Write<'d> {
     fn member(&mut self, g: Tid, m: Member, add: bool) -> Result<()> {
         let g = self.known(g)?;
         let (member, subgroup) = m.parts();
-        // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
-        // placements): `Engine::write` splits the group ops by what persists
+        // a draft's membership is an ephemeral write (notes/ephemeral.md Ephemeral
+        // placements): `Engine::write` sends the group ops by what persists (notes/api.md Writes)
         self.ops.push(WriteOp::Group { g, member, items: !subgroup, add });
         Ok(())
     }
@@ -341,7 +341,7 @@ impl<'d> Write<'d> {
         db.after_route();
         let limit = db.inner.limit;
         let expires = self.expires.map(|e| expiry_at(db, e)).transpose()?;
-        let (r, unplaced) = db.locked(|l| {
+        let (r, removed) = db.locked(|l| {
             // the routing invariant's second half: under the lock this commit takes, every thing it
             // writes is still this engine's. A write decided Local before a move fails here, never
             // lands in a group that no longer syncs (crate::sources)
@@ -354,7 +354,7 @@ impl<'d> Write<'d> {
             }
             let actor = db.acting;
             let sharing = self.sharing;
-            let Built { mut m, placed, unplaced, cut } = self.build(&mut Reader { e, limit, actor }, expires)?;
+            let Built { mut m, added, removed, cut } = self.build(&mut Reader { e, limit, actor }, expires)?;
             let carried = carried_under(e, &cut);
             // whatever actor the write names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
@@ -363,16 +363,16 @@ impl<'d> Write<'d> {
             let r = match e.write(m)? {
                 Some(w) => {
                     if w.id.commit().is_some() {
-                        not_synced(e, &placed, sharing);
+                        not_synced(e, &added, sharing);
                         cut_off(e, carried);
                     }
                     Some(Commit::of(w))
                 }
                 None => None,
             };
-            Ok((r, unplaced))
+            Ok((r, removed))
         })?;
-        db.untie_now(&unplaced);
+        db.untie_now(&removed);
         Ok(r)
     }
 
@@ -410,7 +410,7 @@ impl<'d> Write<'d> {
         let acting = self.db.acting;
         let Write { ops, keys, actor, created, .. } = self;
         let gk = DynamicAspectKey { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) };
-        let mut b = Built { m: Mutation::new(), placed: Vec::new(), unplaced: Vec::new(), cut: Vec::new() };
+        let mut b = Built { m: Mutation::new(), added: Vec::new(), removed: Vec::new(), cut: Vec::new() };
         let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its write".into()));
         for op in ops {
             match op {
@@ -556,14 +556,14 @@ fn op_links(p: &PathOp) -> bool {
         }
 }
 
-/// A write's engine mutation and the placements its commit acts on.
+/// A write's engine mutation and the memberships its commit acts on.
 struct Built {
     m: Mutation,
-    /// Things placed into groups and the group (the `NotSynced` check).
-    placed: Vec<(Tid, Tid)>,
-    /// (thing, group) placements and subgroup edges removed: their tied edges go after the
+    /// Things added to groups and the group (the `NotSynced` check).
+    added: Vec<(Tid, Tid)>,
+    /// (thing, group) memberships removed, items and subgroups: their tied grants go after the
     /// commit where that is a self-removal (`Osis::untie_now`).
-    unplaced: Vec<(Tid, Tid)>,
+    removed: Vec<(Tid, Tid)>,
     /// Subgroups cut from a parent (the `NotSynced` check).
     cut: Vec<Tid>,
 }
@@ -573,10 +573,10 @@ impl Built {
         self.m.op(g, gk, group_op(items, member, add))?;
         if items && add {
             self.m.require_synced(member, g);
-            self.placed.push((member, g));
+            self.added.push((member, g));
         }
         if !add {
-            self.unplaced.push((member, g));
+            self.removed.push((member, g));
             if !items {
                 self.cut.push(member);
             }
@@ -585,7 +585,7 @@ impl Built {
     }
 }
 
-/// Whether a label carries `t` (a subgroup's own aspects go by its own placements, not its parents).
+/// Whether a label carries `t` (a subgroup's own aspects go by its own memberships, not its parents).
 fn carried(e: &osis_node::Engine, labeled: &BTreeSet<Tid>, t: &Tid) -> bool {
     labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g))
 }
@@ -608,19 +608,19 @@ fn cut_off(e: &mut osis_node::Engine, was: BTreeSet<Tid>) {
     let labeled: BTreeSet<Tid> = e.labeled_groups().into_iter().collect();
     for t in was {
         if !carried(e, &labeled, &t) {
-            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail: "a subgroup left the synced group that held it: this stays on this device".into() });
+            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![t], commit: None, peer: None, detail: "a subgroup left the synced group that held it: this stays on this node".into() });
         }
     }
 }
 
-/// Reports things placed only where no synced group holds them (spec/requirements.md, Offline
+/// Reports added things that no synced group holds (spec/requirements.md, Offline
 /// and network): durable closures only, what sync carries.
-fn not_synced(e: &mut osis_node::Engine, placed: &[(Tid, Tid)], sharing: bool) {
-    if placed.is_empty() {
+fn not_synced(e: &mut osis_node::Engine, added: &[(Tid, Tid)], sharing: bool) {
+    if added.is_empty() {
         return;
     }
     let labeled = e.labeled_groups();
-    for (t, g) in placed {
+    for (t, g) in added {
         if e.ephemeral_thing(t).is_some() {
             continue;
         }
