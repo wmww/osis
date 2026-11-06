@@ -215,8 +215,8 @@ impl Dot {
     pub fn new(src: Source, ctr: u64) -> Dot {
         Dot { src, ctr }
     }
-    /// The non-`Derived` dot whose delta owns writes under this one (§4.7).
-    pub fn owner(&self) -> &Dot {
+    /// The non-`Derived` dot whose delta carries writes under this one (§4.7).
+    pub fn origin(&self) -> &Dot {
         match self.src.kind() {
             SourceKind::Derived(d) => d,
             _ => self,

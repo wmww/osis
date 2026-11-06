@@ -1,5 +1,5 @@
 //! Untrusted records never panic perm (notes/architecture.md §3): seeded junk held sets with
-//! self edges, owner edges, ownerless things, invites above roles, inverted ranges, unknown
+//! self edges, record edges, invites above roles, inverted ranges, unknown
 //! things, then every query.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

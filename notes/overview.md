@@ -11,7 +11,7 @@ The repo is meant to become a small monorepo of projects worked on independently
 - `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
 
 ## Status
-The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design work in progress: owners becoming first admins (notes/owner-removal-plan.md); open design questions for Tess are issues tagged `tess-call`. Byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
+The MVP is built: every subsystem of the spec is implemented and tested (final report, deviations and open issues: notes/mvp-progress.md). Design work in progress: owners becoming first admins (notes/disputes-plan.md); open design questions for Tess are issues tagged `tess-call`. Byte layouts are in spec/wire.md; conformance vectors are all provisional until the first stable release (nothing is frozen or logged as a format change before then).
 
 Code map (crate DAG and rules: notes/architecture.md):
 - `core/` (package names keep the `osis-` prefix): `base` osis-base (values, CBOR, ids, chunker), -crypto, -crdt, -schema, -perm, -store (encrypted local store), -commit, -keys, -label (blobs, labels, steps, large values), -proto (sans-I/O sync protocol), -transport (in-process, QUIC, P2P, LAN), -host (serving), -node (engine, sync engine, role flows), `osis` (the app API), `bench` osis-bench. `libs/chat` osis-chat. `cli/` osis-cli (binary `osis`).
@@ -49,7 +49,7 @@ Open work: issues/, sorted in notes/core-triage.md.
 - notes/whole-commits.md: one blob per commit, one expiry per commit, apply never waits for a part: reasons, exposures, what is left.
 - notes/convergence-study.md: validity flips against dropped data: the rejoin rule, repair, rejected removal rules, holes left.
 - notes/permissions.md: permission rules' reasons, roles model findings, revocation reasoning, role history cost, links, sharing patterns, osis-perm implementation.
-- notes/owners.md, notes/owner-removal-plan.md: why owners become first admins with disputes settled per node, and the step plan.
+- notes/disputes.md, notes/disputes-plan.md: why owners become first admins with disputes settled per node, and the step plan.
 - notes/lockout-recovery.md: recovering from a writer rotating keys to itself (removing it lists the epochs it made).
 - notes/moves.md: moving a thing (not built; the removed import design).
 - notes/realms.md: realms, user-facing actors (on hold).

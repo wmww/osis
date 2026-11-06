@@ -136,7 +136,7 @@ impl Engine {
             }
         }
         // the record chain's `created.0` records
-        for t in self.core.owner_chain(g).filter_map(|s| s.thing()) {
+        for t in self.core.record_chain(g).filter_map(|s| s.thing()) {
             if let Some(c) = self.latest_on(&t, "created.0") {
                 add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
             }
@@ -192,7 +192,7 @@ impl Engine {
             None => osis_perm::Certificates::default(),
         };
         for x in [t, node] {
-            for step in self.core.owner_chain(x) {
+            for step in self.core.record_chain(x) {
                 match step {
                     ChainStep::Up { thing, .. } => {
                         cs.created.insert(thing);

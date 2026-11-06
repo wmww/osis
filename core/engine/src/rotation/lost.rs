@@ -198,7 +198,7 @@ fn ours(core: &Core, m: &Tid) -> bool {
 
 /// Whether a role on `x` gives one on `a`: `x` is `a`, on its owner chain, or holds a role on it.
 fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
-    core.owner_chain(a).filter_map(|s| s.thing()).any(|c| c == *x) || core.role_now(x, a).is_some()
+    core.record_chain(a).filter_map(|s| s.thing()).any(|c| c == *x) || core.role_now(x, a).is_some()
 }
 
 /// How long after its `ts` a held pending grant by a plausible granter keeps this node from

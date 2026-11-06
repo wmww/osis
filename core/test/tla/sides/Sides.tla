@@ -1,5 +1,5 @@
 -------------------------------- MODULE Sides --------------------------------
-(* Hosts and storage during a dispute (notes/owner-removal-plan.md step 6).   *)
+(* Hosts and storage during a dispute (notes/disputes-plan.md step 6).   *)
 (* Admins X and Y of actor A removed each other; each node takes a side and   *)
 (* runs the ordinary sync rules (spec/sync.md §6-§7) over its side's          *)
 (* validity. One host, one label L (a label where both sides act with the     *)

@@ -106,7 +106,7 @@ pub const HEARTBEAT_MIN_INTERVAL_MS: u64 = 6 * HOUR_MS;
 pub const MAX_HEARTBEAT_SUSPECTS: usize = 32;
 /// Most first-admin links from a thing up its record chain to its key actor
 /// (spec/wire.md §2, spec/permissions.md §1). fixed.
-pub const MAX_OWNER_DEPTH: usize = 64;
+pub const MAX_CHAIN_DEPTH: usize = 64;
 
 /// Host policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;

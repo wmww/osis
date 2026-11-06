@@ -1,4 +1,4 @@
-//! The trust store (notes/owner-removal-plan.md step 4): this node's sides in admin disputes,
+//! The trust store (notes/disputes-plan.md step 4): this node's sides in admin disputes,
 //! durable in one local record (`records::SIDES`), fed to the walk as its trust set. With the
 //! `osis` API the one home of dispute types outside osis-perm (the coherence rule;
 //! tools/policy.py).
@@ -10,7 +10,7 @@
 //! with itself. A recorded side stays until chosen otherwise, so switching back and forth
 //! returns to the same trust set; a trusted write the walk cannot apply is void there (a
 //! shrink round per evaluation, and no fast path for a component a trusted op names: step 3's
-//! cost, stated in notes/owner-removal-plan.md).
+//! cost, stated in notes/disputes-plan.md).
 
 use crate::engine::{records, Core, Tx};
 use crate::error::{Error, Result};

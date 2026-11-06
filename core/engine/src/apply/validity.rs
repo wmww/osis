@@ -105,7 +105,7 @@ fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -
     let mut new = false;
     for (d, k, _) in es {
         if let Some(m) = k
-            && own.is_some_and(|o| o.owns(d.owner()))
+            && own.is_some_and(|o| o.owns(d.origin()))
             && core.ix.holder_keys.get(&(*target, d.clone())).is_none()
         {
             core.ix.holder_keys.insert((*target, d.clone()), *m);
@@ -127,7 +127,7 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Ve
     let mut per: BTreeMap<Tid, Option<Edge>> = BTreeMap::new();
     for (d, k, v) in es {
         if let (Some(m), Some(e)) = (k, v)
-            && own.is_some_and(|o| o.owns(d.owner()))
+            && own.is_some_and(|o| o.owns(d.origin()))
         {
             per.insert(*m, Some(*e));
         }
@@ -183,7 +183,7 @@ pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, De
         }
         if h.kind.has_own_writes() {
             let own = Owned::of(h, id, *ai);
-            if es.iter().any(|(dot, _, f)| f.is_some() && !own.as_ref().is_some_and(|o| o.owns(dot.owner()))) {
+            if es.iter().any(|(dot, _, f)| f.is_some() && !own.as_ref().is_some_and(|o| o.owns(dot.origin()))) {
                 return Err(Error::BadInput("a roles.0 write inside an entry the delta did not create"));
             }
         }
@@ -485,12 +485,12 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
     Ok(any)
 }
 
-/// Whether `t`'s record chain is not known to end at a key actor within `MAX_OWNER_DEPTH` links,
+/// Whether `t`'s record chain is not known to end at a key actor within `MAX_CHAIN_DEPTH` links,
 /// first-admin links counted (spec/permissions.md §1): deeper, or a creation record on it is not
 /// held (unknown counts as invalid, so forgetting a record never makes a deep delta valid).
-/// O(`MAX_OWNER_DEPTH`).
+/// O(`MAX_CHAIN_DEPTH`).
 pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
-    !matches!(core.owner_chain(t).end(), ChainStep::Key(_))
+    !matches!(core.record_chain(t).end(), ChainStep::Key(_))
 }
 
 /// Is aspect `ai` of a held commit valid (spec/permissions.md §5.2)?
@@ -664,7 +664,7 @@ impl<'a> Judge<'a> {
         if self.broken(h, id, a).is_some() {
             return false;
         }
-        // a thing more than `MAX_OWNER_DEPTH` owner links below its key actor: nothing written on
+        // a thing more than `MAX_CHAIN_DEPTH` owner links below its key actor: nothing written on
         // it applies (spec/permissions.md §1); judged per delta from creation records alone
         let (deep, tl) = self.thing(&a.tid);
         if deep {

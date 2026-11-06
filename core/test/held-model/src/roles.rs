@@ -56,19 +56,19 @@ pub enum Class {
 /// The creation records: first admins.
 #[derive(Clone, Debug, Default)]
 pub struct World {
-    pub owners: BTreeMap<ThingId, Owner>,
+    pub links: BTreeMap<ThingId, RecordLink>,
 }
 
 impl World {
     pub fn new(things: &[Thing]) -> World {
-        World { owners: things.iter().map(|t| (t.id, t.owner)).collect() }
+        World { links: things.iter().map(|t| (t.id, t.link)).collect() }
     }
     pub fn known(&self, t: ThingId) -> bool {
-        self.owners.contains_key(&t)
+        self.links.contains_key(&t)
     }
     pub fn first_admin(&self, t: ThingId) -> Option<NodeId> {
-        match self.owners.get(&t) {
-            Some(Owner::Admin(o)) => Some(*o),
+        match self.links.get(&t) {
+            Some(RecordLink::Admin(o)) => Some(*o),
             _ => None,
         }
     }
@@ -89,16 +89,16 @@ impl World {
     /// `t` and every thing below it by record chain.
     pub fn below(&self, t: ThingId) -> Vec<ThingId> {
         let mut v = vec![t];
-        v.extend(self.owners.keys().copied().filter(|&x| x != t && self.chain_above(x).contains(&t)));
+        v.extend(self.links.keys().copied().filter(|&x| x != t && self.chain_above(x).contains(&t)));
         v
     }
     /// The walk's initial state: every thing's record edge.
     pub fn initial(&self) -> Edges {
-        self.owners
+        self.links
             .iter()
             .filter_map(|(&t, o)| match o {
-                Owner::Admin(a) => Some(((t, *a), Edge { role: Role::Admin, invite: None, until: None })),
-                Owner::Key => None,
+                RecordLink::Admin(a) => Some(((t, *a), Edge { role: Role::Admin, invite: None, until: None })),
+                RecordLink::Key => None,
             })
             .collect()
     }
@@ -226,7 +226,7 @@ impl Timeline {
     /// The settled walk over `evs` (in walk order) from the things' record edges
     /// (spec/permissions.md §5.1 steps 1-5).
     pub fn walk(world: World, evs: Vec<EdgeEv>) -> Timeline {
-        let actors: BTreeSet<NodeId> = world.owners.keys().copied().chain(evs.iter().flat_map(|e| [e.author, e.holder])).collect();
+        let actors: BTreeSet<NodeId> = world.links.keys().copied().chain(evs.iter().flat_map(|e| [e.author, e.holder])).collect();
         let initial = world.initial();
         let mut dropped: BTreeSet<(CommitId, usize)> = BTreeSet::new();
         'restart: loop {

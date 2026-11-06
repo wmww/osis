@@ -1,5 +1,5 @@
 # Removing immutable owners: reasoning
-> Summary: Why owners went (built: every thing's first admin is an ordinary admin, notes/owner-removal-plan.md step 2) and why disputes are settled per node (option F, chosen with Tess): what an owner did and what replaced it, the limit on any conflict rule, the options compared, the dispute rules, model results, review findings, the optional recovery key. The build plan is notes/owner-removal-plan.md.
+> Summary: Why owners went (built: every thing's first admin is an ordinary admin, notes/disputes-plan.md step 2) and why disputes are settled per node (option F, chosen with Tess): what an owner did and what replaced it, the limit on any conflict rule, the options compared, the dispute rules, model results, review findings, the optional recovery key. The build plan is notes/disputes-plan.md.
 
 ## What an owner did, and what replaced it
 1. Fixed the tid (the creation record commits to it), so nobody can publish a competing creation. Needs only a genesis, not an owner.

@@ -780,7 +780,7 @@ impl SyncEngine {
             // the pass of the inbox's label stamps it, the home label's of the actor it is sealed
             // to or one above it places its copy (`inbox_certificates`); applying starts them only
             // if the commit is new here, and a sender's own deposit under its own inbox is not
-            let scope: BTreeSet<Tid> = self.engine.owner_chain(&actor).collect();
+            let scope: BTreeSet<Tid> = self.engine.record_chain(&actor).collect();
             self.mark_dirty_of(&scope);
             self.mark_labels(&[l]);
         }
@@ -811,7 +811,7 @@ impl SyncEngine {
             None => {
                 let mut r = self.state.contacts.clone();
                 for (g, _) in self.labels() {
-                    r.extend(self.engine.owner_chain(&g));
+                    r.extend(self.engine.record_chain(&g));
                 }
                 roots.insert(r)
             }

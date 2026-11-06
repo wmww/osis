@@ -6,7 +6,7 @@
 use super::Core;
 use osis_base::CommitId;
 use crate::error::{Error, Result};
-use osis_base::{ChainStep, CreationRecord, Owner, OwnerChain, Role, Tid, Value};
+use osis_base::{ChainStep, CreationRecord, RecordLink, RecordChain, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Name, Opener, Own, Provenance, ROLES, Unchecked};
 use osis_perm::At;
@@ -15,9 +15,9 @@ use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
 
 impl Core {
-    /// The steps up `tid`'s record chain through the held records (`osis_base::owner_chain`).
-    pub(crate) fn owner_chain(&self, tid: &Tid) -> OwnerChain<impl FnMut(&Tid) -> Option<Owner> + '_> {
-        osis_base::owner_chain(*tid, |t| self.created(t).map(CreationRecord::owner_link))
+    /// The steps up `tid`'s record chain through the held records (`osis_base::record_chain`).
+    pub(crate) fn record_chain(&self, tid: &Tid) -> RecordChain<impl FnMut(&Tid) -> Option<RecordLink> + '_> {
+        osis_base::record_chain(*tid, |t| self.created(t).map(CreationRecord::record_link))
     }
 
     /// The creation record of `tid`, durable or memory class (an ephemeral thing's).
@@ -64,7 +64,7 @@ impl Core {
 
     fn chain_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let mut chain = Vec::new();
-        for step in self.owner_chain(tid) {
+        for step in self.record_chain(tid) {
             let cur = step.thing()?;
             let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.own_epochs(&cur));
             if let Some(mut e) = held {
@@ -160,7 +160,7 @@ impl Core {
     /// itself first, with secrets of its own (all three roles at once, spec/crypto.md §3), or the
     /// key actor the chain ends at.
     pub(crate) fn delete_base(&self, tid: &Tid) -> Option<DeleteBase> {
-        for step in self.owner_chain(tid) {
+        for step in self.record_chain(tid) {
             let cur = step.thing()?;
             if cur == self.id.tid() {
                 return Some(DeleteBase::KeyActor(self.id.keys().signing.verifying_key()));
@@ -186,7 +186,7 @@ impl Core {
     /// keeps content of its derived era under its former base's keys).
     pub(crate) fn delete_chain(&self, tid: &Tid) -> Vec<DeleteSource> {
         let mut out = Vec::new();
-        for step in self.owner_chain(tid) {
+        for step in self.record_chain(tid) {
             let Some(cur) = step.thing() else { break };
             let seed = if cur == self.id.tid() { Some(self.id.seed().clone()) } else { self.key_actors.get(&cur).map(|k| k.seed().clone()) };
             if let Some(seed) = seed {
@@ -452,7 +452,7 @@ pub struct CommitSecrets<'c> {
 /// The delete base of `tid` ([`Core::delete_base`]); a thing `created` in this commit is plain,
 /// so it uses that of the next actor up its record chain.
 fn base_of(core: &Core, created: &crate::engine::write::Creates, tid: &Tid) -> Option<DeleteBase> {
-    match osis_base::owner_chain(*tid, |t| created.get(t).map(CreationRecord::owner_link)).end() {
+    match osis_base::record_chain(*tid, |t| created.get(t).map(CreationRecord::record_link)).end() {
         ChainStep::Key(k) => match created.get(&k)? {
             CreationRecord::KeyActor { public_key, .. } => VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
             _ => None,
@@ -594,7 +594,7 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
 impl CommitSecrets<'_> {
     /// Whether this node holds the key actor at the end of the commit actor's record chain.
     fn chain_holder(&self) -> bool {
-        self.core.owner_chain(&self.actor).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t))
+        self.core.record_chain(&self.actor).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t))
     }
 
     /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from

@@ -6,7 +6,7 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 ## In progress
 - **whole-commits**: steps 2a, 2b and 3 built (notes/whole-commits.md); 4 the per-part strip, 5 cleanup and the sealed-sections call.
 - **drop-rejoin-robust**: holders re-upload, brute-force refetch, the reference model (held-model exists; issues/held-model-unpinned-rules.md), the revoker snapshot.
-- **owner-to-first-admin** (notes/owner-removal-plan.md step 2).
+- **owner-to-first-admin** (notes/disputes-plan.md step 2).
 
 ## A-C, ranked (severity first, then size)
 

@@ -51,11 +51,11 @@ impl Writer {
     }
     /// Notes that the undo writes back the content of `f`'s writes.
     pub(crate) fn copy_from(&mut self, f: &Fragment) {
-        f.owner_dots(&mut self.copied);
+        f.origin_dots(&mut self.copied);
     }
     /// Notes that the undo writes back the content of the write dotted `d`.
     pub(crate) fn copy_dot(&mut self, d: &Dot) {
-        self.copied.insert(d.owner().clone());
+        self.copied.insert(d.origin().clone());
     }
     /// The record a removal of entry record `id` writes (§5.6).
     pub(crate) fn removal(&self, id: &Eid) -> Eid {

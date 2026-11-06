@@ -46,7 +46,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let is_snapshot = m.header.kind.is_compaction();
     if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;
-        body.strip_copies(&|d| crate::apply::copies::any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
+        body.strip_copies(&|d| crate::apply::copies::any_delta(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
     }
     let before = crate::engine::state::encode(&snap)?;
     let mut j = snap.clone();
@@ -115,7 +115,7 @@ pub(crate) fn body_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, a
     let invalid = crate::apply::invalid_of(tx.core, tid, ak);
     for d in ch.into_deaths().into_iter().filter(|d| super::deaths::dies_in(&f, d)) {
         let mut at = d.at;
-        if invalid.iter().any(|o| o.owns(d.by.owner())) {
+        if invalid.iter().any(|o| o.owns(d.by.origin())) {
             let k = super::deaths::killer(&d);
             let mut snaps: Vec<(Ts, CommitId)> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| !crate::apply::copies::invalid_snapshot(tx.core, &x.1, tid, ak)).map(|x| (x.0, x.1)).collect();
             snaps.sort();

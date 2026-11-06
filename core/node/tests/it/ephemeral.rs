@@ -3438,13 +3438,13 @@ fn delta_past_a_blob_refused_spec_commits_2() {
 }
 
 
-// spec/permissions.md §1 (`MAX_OWNER_DEPTH`): a draft's whole owner chain counts,
+// spec/permissions.md §1 (`MAX_CHAIN_DEPTH`): a draft's whole owner chain counts,
 // its durable part included: a write on one at the cap applies at its author and a receiver, one
 // a link past it is refused at its author and, forged, invalid at a receiver (the old lane
 // counted only the links above the nearest durable thing, issue eph-write-depth (closed))
 #[test]
 fn ephemeral_chain_depth_counts_durable_links_spec_permissions_1() {
-    use osis_base::format::MAX_OWNER_DEPTH;
+    use osis_base::format::MAX_CHAIN_DEPTH;
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -3452,7 +3452,7 @@ fn ephemeral_chain_depth_counts_durable_links_spec_permissions_1() {
     let g = net.group(a, &[(b, Role::Write)], &[host]);
     // g is one link below a's key; durable things down to one link above the cap
     let mut owner = g;
-    for _ in 2..MAX_OWNER_DEPTH {
+    for _ in 2..MAX_CHAIN_DEPTH {
         owner = net.item(a, g, owner, "d");
     }
     net.run();

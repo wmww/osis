@@ -211,9 +211,9 @@ codec_struct! {
     pub struct Suspect { 0 thing: Tid, 1 ak: String, 2 digest: [u8; 16] }
 }
 codec_enum! {
-    /// Which groups a serving node takes: `Own`, groups its account owns that name its serving address
-    /// (only owning counts: a group it only reads or administers is not one); `Open`, any group within
-    /// the caps.
+    /// Which groups a serving node takes: `Own`, groups whose record chain reaches the node or its
+    /// account and that name its serving address (a group it only reads or administers by a grant is
+    /// not one); `Open`, any group within the caps.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub enum Admit { #[default] 0 Own, 1 Open }
 }

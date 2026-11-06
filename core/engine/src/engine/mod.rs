@@ -1421,7 +1421,7 @@ impl Core {
 
     /// The commit that wrote dot `d` on `(tid, ak)`, if held.
     pub fn commit_of(&self, tid: &Tid, ak: &Ak, d: &Dot) -> Option<CommitId> {
-        let d = d.owner();
+        let d = d.origin();
         match d.src.kind() {
             SourceKind::Commit(c) => Some(*c),
             SourceKind::Session(_) => {
@@ -2062,9 +2062,9 @@ impl Engine {
     }
 
     /// `tid`, then its first admins up the record chain (durable and memory-class records): at
-    /// most `MAX_OWNER_DEPTH` links (`osis_base::owner_chain`).
-    pub fn owner_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
-        self.core.owner_chain(tid).filter_map(|s| s.thing())
+    /// most `MAX_CHAIN_DEPTH` links (`osis_base::record_chain`).
+    pub fn record_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
+        self.core.record_chain(tid).filter_map(|s| s.thing())
     }
 
     /// This node's tid.

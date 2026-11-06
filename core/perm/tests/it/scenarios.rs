@@ -63,7 +63,7 @@ fn stolen_node_backdated_removals() {
 
 /// §5.1: the earliest stamp wins between admins removing each other: n0's further-backdated
 /// revoke of the stolen node n1 cancels n1's removal of n2. Stated limit until disputes are
-/// settled per node (notes/owner-removal-plan.md step 3): n1 backdating further still takes G
+/// settled per node (notes/disputes-plan.md step 3): n1 backdating further still takes G
 /// back, n0 being an ordinary admin.
 #[test]
 fn further_backdated_revoke_cancels() {
@@ -223,7 +223,7 @@ fn received_chain_write_covered_spec_permissions_5_1() {
     assert_eq!(tl.roster(&g, At::END).get(&n[1]).and_then(|e| e.invite), Some(Write));
 }
 
-/// Link K: L (node 1) holds (write, invite write) on K owned by sharer 0; J, Z joiners, Y holder.
+/// Link K: L (node 1) holds (write, invite write) on K (first admin: sharer 0); J, Z joiners, Y holder.
 fn link(l_edge: Option<Edge>) -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     let n = w.nodes(5);
@@ -324,7 +324,7 @@ fn invite_holder_limits() {
     assert_eq!(eval(&w).invite(&i, &k, At::END), Some(Write));
 }
 
-/// §2: invitees vouching for each other fail: I1's backdated grant of I2 (removed by the owner,
+/// §2: invitees vouching for each other fail: I1's backdated grant of I2 (removed by the first admin,
 /// unseen) drops, so I2's re-add of I1 never applies.
 #[test]
 fn invitees_vouching_for_each_other() {
@@ -352,7 +352,7 @@ fn invite_audit_by_level() {
 }
 
 /// Finding: drops are sticky. Admin 1 removes 2 without having received 2's grant of 3; the
-/// owner removes 1 without having received that removal: it drops and 2 is back, but 2's
+/// first admin removes 1 without having received that removal: it drops and 2 is back, but 2's
 /// grant stays dropped (re-grant repairs).
 #[test]
 fn sticky_drop_outlives_its_cause() {
@@ -747,7 +747,7 @@ fn backdated_takeback_settled_by_trust_spec_permissions_5_1() {
     assert_eq!(back_again.disputes(), tl.disputes());
 }
 
-/// §5.1 Trust, seeds (a self-grant below, notes/owner-removal-plan.md step 3): X, admin of A0 (first admin
+/// §5.1 Trust, seeds (a self-grant below, notes/disputes-plan.md step 3): X, admin of A0 (first admin
 /// n1), grants itself admin on A1 (first admin A0) and removes n1, both unseen by n1, who then
 /// removes X from A0 (R). The plain walk keeps X everywhere (its removal is stamped first) and
 /// raises (R, X). Trusting R seeds the self-grant too: X holds nothing on A1. With X lowering
@@ -895,7 +895,7 @@ fn accomplice_seeded_spec_permissions_5_1() {
     assert!(side.disputes().is_empty());
 }
 
-/// §5.1 Trust, notes/owner-removal-plan.md step 4 (detection): `Timelines` under `detect`
+/// §5.1 Trust, notes/disputes-plan.md step 4 (detection): `Timelines` under `detect`
 /// reports a dispute once, when the removal it voids stops applying (`stood`) or when the
 /// voided removal arrives unapplied, with whether the detecting node holds a role in the
 /// target's reach on each side; a switch (`set_trust`) detects nothing; `disputes_up_to`
@@ -953,7 +953,7 @@ fn detection_reports_stood_and_standing_spec_permissions_5_1() {
     assert!(tls.take_detected().found.is_empty());
 }
 
-/// §5.1 Trust, notes/owner-removal-plan.md step 4 (detection bound): a backdated removal that
+/// §5.1 Trust, notes/disputes-plan.md step 4 (detection bound): a backdated removal that
 /// voids more contestable writes than one update examines, the honest removal among the last
 /// in point order, and a flood of the author's newly held unapplied writes in the same update:
 /// the removal that stood is still examined first or kept unexamined (`Detection::kept`, the

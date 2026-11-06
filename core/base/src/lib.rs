@@ -20,7 +20,7 @@ mod time;
 mod sorted;
 mod value;
 
-pub use chain::{ChainStep, Owner, OwnerChain, owner_chain};
+pub use chain::{ChainStep, RecordLink, RecordChain, record_chain};
 pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, Reader, decode, decode_prefix, encode, item_prefix, visit_items};
 pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};

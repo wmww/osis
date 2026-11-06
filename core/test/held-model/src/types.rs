@@ -125,13 +125,13 @@ impl Write {
             Op::Undelete { elem, .. } => (s, 8, *elem),
         }
     }
-    /// The commit whose delta owns the write (attribution by dot, spec/crdt.md §4.7).
-    pub fn owner(&self) -> CommitId {
+    /// The commit whose delta carries the write (attribution by dot, spec/crdt.md §4.7).
+    pub fn origin(&self) -> CommitId {
         self.stamp.dot.commit
     }
-    /// The value fields with the commit owning each (a `SetIn` key is the entry creation's).
+    /// The value fields with the commit carrying each (a `SetIn` key is the entry creation's).
     pub fn values(&self) -> Vec<(CommitId, Option<Val>)> {
-        let own = self.owner();
+        let own = self.origin();
         match &self.op {
             Op::Set { value } => vec![(own, *value)],
             Op::Create { key } => vec![(own, *key)],
@@ -141,9 +141,9 @@ impl Write {
             _ => vec![],
         }
     }
-    /// Strips every value field whose owning commit `drop` names.
+    /// Strips every value field whose carrying commit `drop` names.
     pub fn strip(&mut self, drop: impl Fn(CommitId) -> bool) {
-        let own = self.owner();
+        let own = self.origin();
         match &mut self.op {
             Op::Set { value } if drop(own) => *value = None,
             Op::Create { key } if drop(own) => *key = None,
@@ -298,7 +298,7 @@ pub struct Part {
     pub aspect: Aspect,
     pub retention: Retention,
     pub body: Body,
-    /// Owners whose values this node stripped from the held body (it holds its leftover); one
+    /// The commits whose values this node stripped from the held body (it holds its leftover); one
     /// no longer held value-less makes the body count as never received (spec/permissions.md §6).
     pub stripped: std::collections::BTreeSet<CommitId>,
 }
@@ -358,7 +358,7 @@ impl Commit {
 
 /// What a creation record puts above its thing (spec/permissions.md §1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Owner {
+pub enum RecordLink {
     /// A key actor (node, link key, recovery key): admin of itself.
     Key,
     /// Its first admin (a key actor or a thing that is an actor): holds its record edge.
@@ -370,7 +370,7 @@ pub enum Owner {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Thing {
     pub id: ThingId,
-    pub owner: Owner,
+    pub link: RecordLink,
 }
 
 /// A write the node's state holds while no held body does (a body dropped for its keep bounds

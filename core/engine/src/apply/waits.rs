@@ -262,7 +262,7 @@ fn openers(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeS
     for (a, w) in super::keys::pending_secrets_writes(blob, id) {
         out.insert(a);
         // `Core::adopt_derived` reads the owner's epochs, derived from up its chain
-        out.extend(core.owner_chain(&a).filter_map(|s| s.thing()));
+        out.extend(core.record_chain(&a).filter_map(|s| s.thing()));
         out.extend(w.boxes.keys().map(|k| k.holder));
     }
     out

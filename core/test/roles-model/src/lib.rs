@@ -14,7 +14,7 @@
 //!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
 //! - `content`: §5.2 per-delta content validity.
 //! - `shrink`: counterexample shrinking (`Shrink` per history type; `shrink::shrink`).
-//! - `trust`: disputes and trust sets over `edges` and `joint` (notes/owner-removal-plan.md
+//! - `trust`: disputes and trust sets over `edges` and `joint` (notes/disputes-plan.md
 //!   step 3), below.
 //! Each model's library API: `walk(h)`, the timeline as a pure function of a history;
 //! `random_hist`; `quiescent(h)` (every node's walk over the writes in its delivery order
@@ -25,7 +25,7 @@
 //! Binary: `cargo run --bin roles-model -- [samples] [mode]`; `cargo test` runs
 //! the scenarios.
 //!
-//! Disputes (`trust`; results in notes/owners.md, "Model results, committed"). A node's
+//! Disputes (`trust`; results in notes/disputes.md, "Model results, committed"). A node's
 //! trust set is one more walk input: ops it sides with, each an edge write R by A lowering
 //! another holder X. R seeds D with X's writes ordered before R that R's frontier does not
 //! list, X's writes lowering its own edges excepted. Shrink: trusted ops a walk leaves unapplied

@@ -35,7 +35,7 @@ instances=(
   "rotation Rotation MC_c2_box.cfg small fail"         # study C2 under the box-inspection rule
   "rotation Rotation MC_c2.cfg all pass"               # C2 under frozen coverage
   "rotation Rotation MC_c2_boxcovers.cfg small fail"   # negative control: no box counts as covering
-  "sides MC kill_touch.cfg small pass"        # notes/owner-removal-plan.md step 6
+  "sides MC kill_touch.cfg small pass"        # notes/disputes-plan.md step 6
   "sides MC purge_touch.cfg small pass"
   "sides MC place_touch.cfg small pass"
   "sides MC kill_none.cfg small fail"         # no gate: loss and loop

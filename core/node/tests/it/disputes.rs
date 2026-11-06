@@ -1,4 +1,4 @@
-//! Admin disputes end to end (spec/permissions.md §5.1 Trust set; notes/owner-removal-plan.md
+//! Admin disputes end to end (spec/permissions.md §5.1 Trust set; notes/disputes-plan.md
 //! step 4): the backdating attack, default sides, switching, a node joining mid-dispute, the
 //! trust store across a restart. Over `LocalPeer`: commits delivered by hand, so who holds what
 //! first is the test's.
@@ -69,7 +69,7 @@ fn detected(lp: &LocalPeer, i: usize) -> Vec<(Tid, Tid, bool)> {
     lp.peers[i].drain_events().into_iter().filter_map(|e| if let Event::DisputeDetected { holder, author, trust, .. } = e { Some((holder, author, trust)) } else { None }).collect()
 }
 
-// spec/permissions.md §5.1 Trust set; notes/owner-removal-plan.md step 4 (first received): a
+// spec/permissions.md §5.1 Trust set; notes/disputes-plan.md step 4 (first received): a
 // node that held the honest removal first keeps its side when the backdated one arrives (the
 // removal it applied stops applying: the dispute is detected, the side taken by default and
 // told); one that got the backdated removal first stays with it, warned the same way.
@@ -103,7 +103,7 @@ fn backdated_removal_loses_where_the_honest_one_was_first_spec_permissions_5_1()
     assert_eq!(the_dispute(&f, 1).side.map(|s| s.trust), Some(true));
 }
 
-// notes/owner-removal-plan.md step 4 (choices): a chosen side replaces the default, switching
+// notes/disputes-plan.md step 4 (choices): a chosen side replaces the default, switching
 // back and forth reads each side as a node that always stood there, and a choice survives a
 // restart as the default does.
 #[test]
@@ -131,7 +131,7 @@ fn choose_switches_sides_and_persists_spec_permissions_5_1() {
     assert!(matches!(f.lp.peers[2].engine.choose(d.commit, 7, d.holder, true), Err(osis_node::Error::UnknownCommit(_))));
 }
 
-// notes/owner-removal-plan.md step 4: the default side is durable: after a restart the node
+// notes/disputes-plan.md step 4: the default side is durable: after a restart the node
 // reads as before, and the dispute is listed with the side it took.
 #[test]
 fn default_side_survives_a_restart_spec_permissions_5_1() {
@@ -146,7 +146,7 @@ fn default_side_survives_a_restart_spec_permissions_5_1() {
     assert!(detected(&f.lp, 2).is_empty(), "an open detects nothing anew");
 }
 
-// notes/owner-removal-plan.md step 4 (a new node takes the side its own grant counts on): a
+// notes/disputes-plan.md step 4 (a new node takes the side its own grant counts on): a
 // node granted by the honest admin after the fight, holding the backdated removal and its own
 // grant when the honest removal arrives, sides with the honest admin though it got the
 // backdated removal first: its grant exists on that side only.
@@ -171,7 +171,7 @@ fn newcomer_takes_the_side_its_grant_counts_on_spec_permissions_5_1() {
     assert_eq!(admins(&f, 2), (true, false));
 }
 
-// notes/owner-removal-plan.md step 4: a node on neither side of a fight reads the things the
+// notes/disputes-plan.md step 4: a node on neither side of a fight reads the things the
 // fight cannot reach alike whichever side it takes, and switching does not touch them.
 #[test]
 fn sides_leave_other_things_alone_spec_permissions_5_1() {

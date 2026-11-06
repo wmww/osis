@@ -62,13 +62,13 @@ fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &
 }
 
 fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<bool> {
-    if !f.holds_owned(&|src, lo, hi| super::atomic::core_holds_owner(tx.core, tid, ak, src, lo, hi)) {
+    if !f.holds_owned(&|src, lo, hi| super::atomic::core_holds_delta(tx.core, tid, ak, src, lo, hi)) {
         return Ok(false);
     }
     tx.load(tid, ak)?;
     let core = &*tx.core;
     let Some(Some(st)) = core.states.get(&(*tid, ak.clone())) else { return Ok(false) };
-    Ok(!f.misstated(&[st], &|d| copies::owner_held(core, tid, ak, d), &|d| copies::owner_expires(core, tid, ak, d)).is_empty())
+    Ok(!f.misstated(&[st], &|d| copies::delta_held(core, tid, ak, d), &|d| copies::delta_expires(core, tid, ak, d)).is_empty())
 }
 
 fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool) -> Result<Changes> {

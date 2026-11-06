@@ -213,7 +213,7 @@ impl Core {
     /// `a`'s record edge stands here, and so on up its record chain (key actors have none).
     pub(crate) fn inbox_chain(&self, a: &Tid) -> Vec<Tid> {
         let mut out = Vec::new();
-        for step in self.owner_chain(a) {
+        for step in self.record_chain(a) {
             let osis_base::ChainStep::Up { thing, admin } = step else { break };
             out.push(thing);
             if !self.key_holders(&thing).iter().any(|(m, _)| *m == admin) {

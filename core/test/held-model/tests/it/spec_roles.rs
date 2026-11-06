@@ -1,4 +1,4 @@
-//! spec/permissions.md §1 (ownership), §2 (self-removal, `until`, finalize, invites), §5.2 (acting),
+//! spec/permissions.md §1 (first admins), §2 (self-removal, `until`, finalize, invites), §5.2 (acting),
 //! §7 (links).
 use crate::util::*;
 use held_model::gen::{ACCOUNT, LINK_K, LINK_L, REG};
@@ -91,10 +91,10 @@ fn link_redeem_and_finalize_spec_permissions_7() {
     assert!(o.valid[&(7, 0)] && o.valid[&(10, 0)]);
 }
 
-// spec/permissions.md §1 (Ownership), §5.2: owner-chain authority through an account actor; an admin
+// spec/permissions.md §1 (first admins), §5.2: authority through an account actor's record edge; an admin
 // of the account loses it with an explicit demotion
 #[test]
-fn owner_chain_through_an_account_spec_permissions_1() {
+fn record_edge_through_an_account_spec_permissions_1() {
     let on12 = |id, author, h| Commit { parts: vec![Part { thing: 12, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
     let cs = |demote: bool| {
         let mut v = vec![on12(10, 2, 1), edge_on(5, 2, 1, ACCOUNT, EdgeWrite::role(3, Some(Role::Admin)), None), on12(11, 3, 2)];
@@ -108,9 +108,9 @@ fn owner_chain_through_an_account_spec_permissions_1() {
     assert!(!evaluate(&cs(true)).valid[&(11, 0)]);
 }
 
-// spec/permissions.md §1 (Ownerless thing): the first admin's record edge is an edge like any
+// spec/permissions.md §1: the first admin's record edge is an edge like any
 #[test]
-fn ownerless_first_admin_is_an_edge_spec_permissions_1() {
+fn first_admin_is_an_edge_spec_permissions_1() {
     let on13 = |id, author, h| Commit { parts: vec![Part { thing: 13, ..part(REG, Retention::PLAIN, vec![set(h, id, 1)]) }], ..content(id, author, h, vec![]) };
     let cs = |remove: bool| {
         let mut v = vec![edge_on(5, 3, 0, 13, EdgeWrite::role(1, Some(Role::Admin)), None), on13(10, 3, 2)];

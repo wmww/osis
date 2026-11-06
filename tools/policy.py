@@ -204,7 +204,7 @@ def host_blind():
             if p in ("*", "as") or not allowed(p, NODE_HOST):
                 yield f"{rel}: osis_host::{p} is not the host's public surface"
 
-# notes/owner-removal-plan.md, the coherence rule: the dispute types are private to osis-perm and
+# notes/disputes-plan.md, the coherence rule: the dispute types are private to osis-perm and
 # the API layer; nothing else names a side or asks whether a dispute is open.
 # The trust store (core/engine/src/sides.rs) is the rule's second exception: durable sides, fed
 # to the walk; its end-to-end tests are core/node/tests/it/disputes.rs.

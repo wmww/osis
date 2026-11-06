@@ -1,7 +1,7 @@
 //! The role timeline (spec/permissions.md §5.1) and its queries: roster, effective role,
 //! effective invite and authority class at a point, the applied and dropped edge writes.
 
-use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View, INITIAL, RECORD_EDGE};
+use crate::graph::{Class, Edges, EdgesAt, Records, Standing, View, INITIAL, RECORD_EDGE};
 use crate::held::HeldSet;
 use crate::trust::{self, Detected, Dispute, Trust, TrustIndex};
 use crate::types::{Edge, EdgeOp, RoleCommit, Point, WriteId};
@@ -106,7 +106,7 @@ pub(crate) struct Memo {
 type Checkpoints = Vec<(usize, Arc<Edges>)>;
 
 /// The kept edge states of `w`'s history, going on from those in `out` (still valid for it).
-fn checkpoints(records: &Owners, w: &walk::Walked, mut out: Checkpoints) -> Checkpoints {
+fn checkpoints(records: &Records, w: &walk::Walked, mut out: Checkpoints) -> Checkpoints {
     let len = w.history.len();
     out.retain(|c| c.0 < len);
     let (start, mut e) = match out.last() {
@@ -139,7 +139,7 @@ impl Kept {
     }
 
     /// The kept states and `first_held` answers still valid for `w`.
-    fn carry(self, records: &Owners, w: &walk::Walked, common: Option<(usize, Option<Point>)>) -> (Checkpoints, FirstHeld) {
+    fn carry(self, records: &Records, w: &walk::Walked, common: Option<(usize, Option<Point>)>) -> (Checkpoints, FirstHeld) {
         let mut cps = self.checkpoints;
         let mut fh = self.first_held;
         match common {
@@ -304,7 +304,7 @@ impl Timeline {
             walked += 1;
             let o = walk::run(&self.input, d);
             let k = usize::try_from(id.1).unwrap_or(usize::MAX);
-            if !trust::demoting(&o.walked, &self.input.owners, c, k) {
+            if !trust::demoting(&o.walked, &self.input.records, c, k) {
                 continue;
             }
             let standing = match me {
@@ -336,8 +336,8 @@ impl Timeline {
 
     fn from_kept(input: Input, out: walk::Outcome, kept: Option<Kept>) -> Timeline {
         let (checkpoints, first_held) = match kept {
-            Some(k) => k.carry(&input.owners, &out.walked, out.common),
-            None => (checkpoints(&input.owners, &out.walked, Vec::new()), FirstHeld::new()),
+            Some(k) => k.carry(&input.records, &out.walked, out.common),
+            None => (checkpoints(&input.records, &out.walked, Vec::new()), FirstHeld::new()),
         };
         let items = out.items.unwrap_or_else(|| walk::items(&input));
         Timeline {
@@ -379,10 +379,10 @@ impl Timeline {
             Some(f) => self.walked.marks.get(self.items.list_before(f)).map_or(self.walked.log.len(), |m| m.0),
             None => self.walked.log.len(),
         };
-        let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.owners.first_admin(t).map(|o| (*t, o))).collect();
+        let leaves: Vec<(Tid, Tid)> = below.iter().filter_map(|t| input.records.first_admin(t).map(|o| (*t, o))).collect();
         // the record edges of the records new here: in force from the start, which the walk's
         // undo entries (logged with the record unknown) do not restore
-        let fresh: Vec<(Tid, Tid)> = leaves.iter().filter(|(t, _)| self.input.owners.owner(t).is_none()).map(|(t, a)| (*a, *t)).collect();
+        let fresh: Vec<(Tid, Tid)> = leaves.iter().filter(|(t, _)| self.input.records.link(t).is_none()).map(|(t, a)| (*a, *t)).collect();
         let joins = !below.is_empty() || input.nodes != self.input.nodes;
         let mut kept = Kept::of(&mut self);
         // a role through a new record edge may differ from where the walk meets it on, its
@@ -419,13 +419,13 @@ impl Timeline {
     /// does, and no commit is new). `None` when a record is gone, a node is gone that has no
     /// record now, or a new node is first admin of a thing not among them.
     fn joined(&self, input: &Input, added: Option<Point>) -> Option<(BTreeSet<Tid>, Option<Point>)> {
-        if !self.input.owners.links().all(|(t, o)| input.owners.owner(t) == Some(*o)) {
+        if !self.input.records.links().all(|(t, o)| input.records.link(t) == Some(*o)) {
             return None;
         }
-        let mut below: BTreeSet<Tid> = input.owners.links().filter(|(t, _)| self.input.owners.owner(t).is_none()).map(|(t, _)| *t).collect();
+        let mut below: BTreeSet<Tid> = input.records.links().filter(|(t, _)| self.input.records.link(t).is_none()).map(|(t, _)| *t).collect();
         let mut stack: Vec<Tid> = below.iter().copied().collect();
         while let Some(t) = stack.pop() {
-            for y in input.owners.owned(&t) {
+            for y in input.records.first_admin_of(&t) {
                 if below.insert(*y) {
                     stack.push(*y);
                 }
@@ -435,7 +435,7 @@ impl Timeline {
             return None;
         }
         let came: Vec<Tid> = input.nodes.difference(&self.input.nodes).filter(|n| !below.contains(n)).copied().collect();
-        if came.iter().any(|n| input.owners.owned(n).iter().any(|y| !below.contains(y))) {
+        if came.iter().any(|n| input.records.first_admin_of(n).iter().any(|y| !below.contains(y))) {
             return None;
         }
         let mut named = below.clone();
@@ -462,15 +462,15 @@ impl Timeline {
         if new.is_empty() {
             return Ok(self);
         }
-        if !self.input.can_append(new) || keys.iter().any(|(t, r)| self.input.owners.owner(t).is_some() || r.tid() != *t || !matches!(r, CreationRecord::KeyActor { .. })) || self.trusted(new.iter().chain(self.input.commits.values()).map(|c| c.id)) {
+        if !self.input.can_append(new) || keys.iter().any(|(t, r)| self.input.records.link(t).is_some() || r.tid() != *t || !matches!(r, CreationRecord::KeyActor { .. })) || self.trusted(new.iter().chain(self.input.commits.values()).map(|c| c.id)) {
             return Err(Box::new(self));
         }
         for (t, r) in keys {
-            self.input.owners.insert(*t, r);
+            self.input.records.insert(*t, r);
         }
         let mut new = new.to_vec();
         new.sort_by_key(|c| c.point());
-        // chain certificates list held writes; what is ever reached and owned moves
+        // chain certificates list held writes; what is ever reached and what lies below moves
         self.memo.certs = std::sync::OnceLock::new();
         self.memo.on_target = std::sync::OnceLock::new();
         *self.memo.forward.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
@@ -529,11 +529,11 @@ impl Timeline {
     /// (`Walked::alias_leaves`). `Err(self)`, unchanged, when one is known here, a key actor,
     /// or the records cycle.
     pub fn add_leaves(mut self, leaves: &[(Tid, CreationRecord)]) -> Result<Timeline, Box<Timeline>> {
-        let owners = &self.input.owners;
+        let records = &self.input.records;
         let links: Option<Vec<(Tid, Tid)>> = leaves
             .iter()
             .map(|(t, r)| match r {
-                CreationRecord::Thing { admin, .. } if owners.owner(t).is_none() && owners.owned(t).is_empty() && !self.input.nodes.contains(t) => Some((*t, *admin)),
+                CreationRecord::Thing { admin, .. } if records.link(t).is_none() && records.first_admin_of(t).is_empty() && !self.input.nodes.contains(t) => Some((*t, *admin)),
                 _ => None,
             })
             .collect();
@@ -548,11 +548,11 @@ impl Timeline {
             return Err(Box::new(self));
         }
         for (t, r) in leaves {
-            self.input.owners.insert(*t, r);
+            self.input.records.insert(*t, r);
         }
         // a first admin whose record is not held is a node, as `Input::gather` has it
         for (_, a) in &links {
-            if self.input.owners.owner(a).is_none() {
+            if self.input.records.link(a).is_none() {
                 self.input.nodes.insert(*a);
             }
         }
@@ -576,7 +576,7 @@ impl Timeline {
             None => (Edges::default(), 0),
         };
         for x in self.walked.history.iter().take(h).skip(pos) {
-            e.set(&self.input.owners, x.holder, x.target, x.edge);
+            e.set(&self.input.records, x.holder, x.target, x.edge);
         }
         e
     }
@@ -595,7 +595,7 @@ impl Timeline {
         for c in later.iter_mut() {
             c.0 += n;
         }
-        Edges::set_all(&self.input.owners, later.iter_mut().map(|c| &mut c.1), &changes);
+        Edges::set_all(&self.input.records, later.iter_mut().map(|c| &mut c.1), &changes);
         // keep the gap the insert widened within twice the interval
         let end = self.checkpoints.get(k).map_or(self.walked.history.len(), |c| c.0);
         if let Some((i, base)) = k.checked_sub(1).and_then(|k| self.checkpoints.get(k)).cloned()
@@ -603,7 +603,7 @@ impl Timeline {
         {
             let mut e = (*base).clone();
             for c in self.walked.history.iter().skip(i).take(CHECKPOINT) {
-                e.set(&self.input.owners, c.holder, c.target, c.edge);
+                e.set(&self.input.records, c.holder, c.target, c.edge);
             }
             self.checkpoints.insert(k, (i + CHECKPOINT, Arc::new(e)));
         }
@@ -615,7 +615,7 @@ impl Timeline {
                 while let Some((j, s)) = cps.next_if(|x| x.0 == i) {
                     debug_assert!(**s == e, "kept state {j} after an insert at {h}");
                 }
-                e.set(&self.input.owners, c.holder, c.target, c.edge);
+                e.set(&self.input.records, c.holder, c.target, c.edge);
             }
             debug_assert!(cps.next().is_none(), "kept states past the history");
         }
@@ -633,8 +633,8 @@ impl Timeline {
     pub fn passes(&self) -> usize {
         self.passes
     }
-    pub fn owners(&self) -> &Owners {
-        &self.input.owners
+    pub fn records(&self) -> &Records {
+        &self.input.records
     }
     /// The drop set D, each with the point of the demotion whose audit dropped it.
     pub fn dropped(&self) -> &BTreeMap<WriteId, Point> {
@@ -744,8 +744,8 @@ impl Timeline {
 
     /// The edge state just before `point` (`None`: the current state).
     pub fn edges_at(&self, point: Option<Point>) -> EdgesAt<'_> {
-        let Some(p) = point else { return EdgesAt::new(&self.input.owners, &self.walked.edges) };
-        let mut e = EdgesAt::new(&self.input.owners, &INITIAL);
+        let Some(p) = point else { return EdgesAt::new(&self.input.records, &self.walked.edges) };
+        let mut e = EdgesAt::new(&self.input.records, &INITIAL);
         self.advance(&mut e, 0, self.walked.history.partition_point(|c| c.point < p));
         e
     }
@@ -758,7 +758,7 @@ impl Timeline {
         if let Some((i, base)) = k.checked_sub(1).and_then(|k| self.checkpoints.get(k))
             && *i > pos
         {
-            *e = EdgesAt::new(&self.input.owners, base);
+            *e = EdgesAt::new(&self.input.records, base);
             pos = *i;
         }
         for c in self.walked.history.iter().take(n).skip(pos) {
@@ -783,7 +783,7 @@ impl Timeline {
     /// the point of the change since which it has held such an edge without a break (`None`:
     /// since before every change: its record edge). O(the walk's history of `thing`).
     pub fn standing_since(&self, thing: &Tid) -> BTreeMap<Tid, Option<Point>> {
-        let mut out: BTreeMap<Tid, Option<Point>> = self.input.owners.first_admin(thing).map(|a| (a, None)).into_iter().collect();
+        let mut out: BTreeMap<Tid, Option<Point>> = self.input.records.first_admin(thing).map(|a| (a, None)).into_iter().collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {
             if c.edge.is_some_and(|e| !e.says_retain()) {
                 out.entry(c.holder).or_insert(Some(c.point));
@@ -798,7 +798,7 @@ impl Timeline {
     /// edge ended and the point of its last write (`None`: its record edge, never written).
     /// O(the walk's history): only a node that lost access asks (spec/permissions.md §3, Retain).
     pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (EdgeEnd, Option<Point>)> {
-        let mut out: BTreeMap<Tid, (EdgeEnd, Option<Point>)> = self.input.owners.first_admin(thing).map(|a| (a, (EdgeEnd::of(&RECORD_EDGE, None), None))).into_iter().collect();
+        let mut out: BTreeMap<Tid, (EdgeEnd, Option<Point>)> = self.input.records.first_admin(thing).map(|a| (a, (EdgeEnd::of(&RECORD_EDGE, None), None))).into_iter().collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {
             match (c.edge, out.get_mut(&c.holder)) {
                 (Some(e), _) => {

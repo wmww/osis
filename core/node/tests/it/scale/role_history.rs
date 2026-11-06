@@ -1,4 +1,4 @@
-//! Role history a joiner fetches: every role commit on the thing (notes/owner-removal-plan.md
+//! Role history a joiner fetches: every role commit on the thing (notes/disputes-plan.md
 //! step 1; spec/requirements.md, Scale). By hand, release, one shape and size at a time:
 //! `OSIS_SCALE_SHAPE=chat OSIS_SCALE_N=10000 cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::role_history::cost`.
 //! Shapes: `chat` (1000 writers, n/4 below 4000 writes, joining and leaving), `readers` (the same at read), `nodes`

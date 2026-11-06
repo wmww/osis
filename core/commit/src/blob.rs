@@ -9,7 +9,7 @@
 //!   nonce carried in the wrap (`osis_crypto::wrap_section`), so two wraps of one commit's
 //!   section under one read secret never share a nonce;
 //! - both AEADs take the commit ID as AD, so a section opens only inside its own commit;
-//! - a reader that cannot open a section learns its `ai` list, its thing's owner chain and its
+//! - a reader that cannot open a section learns its `ai` list, its thing's derivation chain and its
 //!   size, nothing else, and copies it verbatim into a fresh encryption (`seal_commit`'s
 //!   `extra`).
 
@@ -142,15 +142,15 @@ pub(crate) fn records_value(rs: &[CreationRecord]) -> Value {
     Value::List(rs.iter().map(CreationRecord::to_value).collect())
 }
 
-/// One section of a commit blob `[[ai*], [owner*], wrap, ciphertext]` (spec/wire.md §4): the
-/// aspect indices of its parts (ascending, distinct, each with a part inside), the owner chain
+/// One section of a commit blob `[[ai*], [chain*], wrap, ciphertext]` (spec/wire.md §4): the
+/// aspect indices of its parts (ascending, distinct, each with a part inside), the derivation chain
 /// of their thing up to the actor its read secret derives from (a reader derives the secret
 /// through it without the thing's record), the section key wrapped under that read secret,
 /// the parts sealed under that key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub ais: Vec<usize>,
-    pub owners: Vec<Tid>,
+    pub chain: Vec<Tid>,
     pub wrap: Vec<u8>,
     pub ciphertext: Vec<u8>,
 }
@@ -160,8 +160,8 @@ impl Section {
     pub fn len(&self) -> usize {
         use osis_base::cbor::head_len;
         let ais = head_len(self.ais.len() as u64) + self.ais.iter().map(|a| head_len(*a as u64)).sum::<usize>();
-        let owners = head_len(self.owners.len() as u64) + self.owners.len() * (1 + osis_base::format::TID_LEN);
-        head_len(4) + ais + owners + head_len(self.wrap.len() as u64) + self.wrap.len() + head_len(self.ciphertext.len() as u64) + self.ciphertext.len()
+        let chain = head_len(self.chain.len() as u64) + self.chain.len() * (1 + osis_base::format::TID_LEN);
+        head_len(4) + ais + chain + head_len(self.wrap.len() as u64) + self.wrap.len() + head_len(self.ciphertext.len() as u64) + self.ciphertext.len()
     }
 
     /// Never empty; for clippy's `len` convention.
@@ -170,29 +170,29 @@ impl Section {
     }
 
     fn to_value(&self) -> Value {
-        Value::List(vec![Value::List(self.ais.iter().map(|a| uidx(*a)).collect()), Value::List(self.owners.iter().map(crate::cbor::tid).collect()), Value::bytes(&self.wrap), Value::bytes(&self.ciphertext)])
+        Value::List(vec![Value::List(self.ais.iter().map(|a| uidx(*a)).collect()), Value::List(self.chain.iter().map(crate::cbor::tid).collect()), Value::bytes(&self.wrap), Value::bytes(&self.ciphertext)])
     }
 
     fn from_value(v: &Value) -> Result<Section, Error> {
-        let [ais, owners, wrap, ct] = as_list(v)? else { return Err(Error::Malformed("section arity")) };
+        let [ais, chain, wrap, ct] = as_list(v)? else { return Err(Error::Malformed("section arity")) };
         let ais = as_list(ais)?.iter().map(as_idx).collect::<Result<Vec<_>, _>>()?;
         if ais.is_empty() || !strictly_ascending(&ais, |a| *a) {
             return Err(Error::Malformed("section aspects not ascending and distinct"));
         }
-        let owners = as_list(owners)?.iter().map(crate::cbor::as_tid).collect::<Result<Vec<_>, _>>()?;
-        if owners.len() > osis_base::format::MAX_OWNER_DEPTH {
-            return Err(Error::Malformed("section owner chain too deep"));
+        let chain = as_list(chain)?.iter().map(crate::cbor::as_tid).collect::<Result<Vec<_>, _>>()?;
+        if chain.len() > osis_base::format::MAX_CHAIN_DEPTH {
+            return Err(Error::Malformed("section chain too deep"));
         }
         let mut seen = std::collections::BTreeSet::new();
-        if !owners.iter().all(|o| seen.insert(*o)) {
-            return Err(Error::Malformed("section owner chain repeats a thing"));
+        if !chain.iter().all(|o| seen.insert(*o)) {
+            return Err(Error::Malformed("section chain repeats a thing"));
         }
         let wrap = wrap.as_bytes().ok_or(Error::Malformed("section wrap"))?.to_vec();
         if wrap.len() != SECTION_WRAP_LEN {
             return Err(Error::Malformed("section wrap length"));
         }
         let ciphertext = ct.as_bytes().ok_or(Error::Malformed("section ciphertext"))?.to_vec();
-        Ok(Section { ais, owners, wrap, ciphertext })
+        Ok(Section { ais, chain, wrap, ciphertext })
     }
 
     /// Whether `key` may be this section's key, judged by its first plaintext bytes alone (an
@@ -226,15 +226,15 @@ impl Section {
         Ok(Some(parts))
     }
 
-    /// Seals `parts` (sorted) under the read secret `secret` of their thing, listing its owner
-    /// chain `owners`.
-    pub fn seal(commit: &CommitId, parts: &[Part], owners: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Section, Error> {
+    /// Seals `parts` (sorted) under the read secret `secret` of their thing, listing its derivation
+    /// chain `chain`.
+    pub fn seal(commit: &CommitId, parts: &[Part], chain: Vec<Tid>, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<Section, Error> {
         let mut pt = Vec::new();
         encode_parts(parts, &mut pt);
         let (key, ciphertext) = osis_crypto::seal_section(commit, &pt, rng)?;
         let wrap = osis_crypto::wrap_section(secret, commit, &key, rng)?.to_vec();
         let ais: Vec<usize> = parts.iter().map(|p| p.ai).collect();
-        Ok(Section { ais, owners, wrap, ciphertext })
+        Ok(Section { ais, chain, wrap, ciphertext })
     }
 }
 
@@ -317,7 +317,7 @@ pub struct Opened {
 
 /// Seals a commit's parts into sections, one per value of `section_of(ai)` (the aspect's
 /// thing), each wrapped under the read secret `secret_of(key, parts)` gives with the thing's
-/// owner chain (that secret at the epoch the writer uses, spec/crypto.md §5); a section whose
+/// derivation chain (that secret at the epoch the writer uses, spec/crypto.md §5); a section whose
 /// secret is not held (`None`) is left out, its parts travelling in other copies; `extra`
 /// sections are copied verbatim, except one listing an aspect a sealed part is on.
 pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, section_of: impl Fn(usize) -> K, mut secret_of: impl FnMut(&K, &[usize]) -> Option<(Secret32, Vec<Tid>)>, extra: &[Section], rng: &mut dyn CryptoRngCore) -> Result<Envelope, Error> {
@@ -330,10 +330,10 @@ pub fn seal_commit<K: Ord + Clone>(c: &CommitBlob, section_of: impl Fn(usize) ->
     let mut own: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for (k, ps) in by {
         let ais: Vec<usize> = ps.iter().map(|p| p.ai).collect();
-        let Some((secret, owners)) = secret_of(&k, &ais) else { continue };
+        let Some((secret, chain)) = secret_of(&k, &ais) else { continue };
         own.extend(ais.iter().copied());
         let owned: Vec<Part> = ps.into_iter().cloned().collect();
-        sections.push(Section::seal(&id, &owned, owners, &secret, rng)?);
+        sections.push(Section::seal(&id, &owned, chain, &secret, rng)?);
     }
     let mut seen = own.clone();
     for s in extra {

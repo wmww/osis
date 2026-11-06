@@ -150,10 +150,10 @@ pub fn max_valued<T: Ord>(a: Option<(Stamp, Option<T>)>, b: Option<(Stamp, Optio
     a.max(b)
 }
 
-/// The non-`Derived` dot whose commit owns writes under `d` (§2.1, §4.7).
-pub fn owner(d: &Dot) -> &Dot {
+/// The non-`Derived` dot whose commit carries writes under `d` (§2.1, §4.7).
+pub fn origin(d: &Dot) -> &Dot {
     match &d.source {
-        Source::Derived(x) => owner(x),
+        Source::Derived(x) => origin(x),
         _ => d,
     }
 }
@@ -868,7 +868,7 @@ impl Frag {
 
     // -------------------------------------------------------------- expiry
 
-    /// Hold every value-carrying write owned by an expired commit value-less (§4.7). `expired` is asked about owner
+    /// Hold every value-carrying write owned by an expired commit value-less (§4.7). `expired` is asked about origin
     /// dots (never `Derived`). Commutes with join; applied after every join on a node past the commit's T.
     pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
         self.strip_values(expired, false);
@@ -884,7 +884,7 @@ impl Frag {
     }
 
     fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, at_node: bool) {
-        let exp = |d: &Dot| expired(owner(d));
+        let exp = |d: &Dot| expired(origin(d));
         match self {
             Frag::Slots { reg, slots } => {
                 reg.iter_mut().for_each(|r| r.strip_values(expired, at_node));

@@ -29,7 +29,7 @@ impl Fragment {
     }
 
     pub(crate) fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, at_node: bool, ch: &mut Changes) {
-        let exp = |d: &Dot| expired(d.owner());
+        let exp = |d: &Dot| expired(d.origin());
         let reg = |r: &mut Register| {
             if let Some(w) = &mut r.write
                 && exp(&w.stamp.dot)
@@ -93,7 +93,7 @@ impl Fragment {
                         }
                     } else if id.key.is_some() || en.frag.is_some() || en.reset.is_some() {
                         let recs = || m.of_dot(&id.dot);
-                        let hid = gone(id.dot.owner()) || recs().any(|(_, x)| x.reset.is_some());
+                        let hid = gone(id.dot.origin()) || recs().any(|(_, x)| x.reset.is_some());
                         // a key a record repeats goes with any write, a value-less one too; a
                         // key-erased record has bytes to lose only in a valued one. A sequence's
                         // bare anchors are no write: no reset takes them, so swept they would
@@ -115,7 +115,7 @@ impl Fragment {
                         if let Some(inner) = f.sweep(r, gone) {
                             out.elems_mut().insert(d.clone(), SeqElem { content: SeqContent::Frag(Box::new(inner)), ..SeqElem::bare() });
                         }
-                    } else if f.written().is_some() && (el.reset().is_some() || gone(d.owner())) {
+                    } else if f.written().is_some() && (el.reset().is_some() || gone(d.origin())) {
                         out.elems_mut().insert(d.clone(), SeqElem { deleted: Some((r.clone(), true)), ..SeqElem::bare() });
                     }
                 }
@@ -150,7 +150,7 @@ impl Fragment {
     }
 
     pub(crate) fn remove_dots_in(&mut self, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot, Option<&Value>) -> bool) {
-        let bad = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| pred(s.dot.owner()));
+        let bad = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| pred(s.dot.origin()));
         match self {
             Fragment::Slots(_) => {
                 // in place, not re-joined: a join would prune the creations kept below (a map
@@ -161,7 +161,7 @@ impl Fragment {
                     if bad(&r.reset) {
                         r.reset = None;
                     }
-                    if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.owner())) {
+                    if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.origin())) {
                         r.write = None;
                     }
                     r
@@ -177,7 +177,7 @@ impl Fragment {
                 if bad(&r.reset) {
                     r.reset = None;
                 }
-                if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.owner())) {
+                if r.write.as_ref().is_some_and(|w| pred(w.stamp.dot.origin())) {
                     r.write = None;
                 }
             }
@@ -198,7 +198,7 @@ impl Fragment {
                 !f.is_empty()
             }),
             Fragment::Enum(e) => {
-                if e.case.as_ref().is_some_and(|c| pred(c.stamp.dot.owner())) {
+                if e.case.as_ref().is_some_and(|c| pred(c.stamp.dot.origin())) {
                     e.case = None;
                 }
                 e.payloads.retain(|_, f| {
@@ -208,12 +208,12 @@ impl Fragment {
             }
             Fragment::Map(Map { entries, .. }) => entries.retain(|id, en| {
                 let d = &id.dot;
-                if en.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
+                if en.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) {
                     en.reset = None;
                 }
-                if pred(d.owner()) {
+                if pred(d.origin()) {
                     en.created = None;
-                    if !keep(d.owner(), id.key()) {
+                    if !keep(d.origin(), id.key()) {
                         en.frag = None;
                     }
                 }
@@ -276,8 +276,8 @@ impl Fragment {
     }
 
     /// Adds the owner dot of every write and live record here to `out` (a range record's first).
-    pub fn owner_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
-        walk(&mut OwnerDots(out), self);
+    pub fn origin_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
+        walk(&mut OriginDots(out), self);
     }
 
     /// Whether a write of the delta owning dot `d` is here: a write stamped with its dot or a
@@ -292,12 +292,12 @@ impl Fragment {
     }
 }
 
-/// `Fragment::owner_dots`.
-struct OwnerDots<'a>(&'a mut std::collections::BTreeSet<Dot>);
+/// `Fragment::origin_dots`.
+struct OriginDots<'a>(&'a mut std::collections::BTreeSet<Dot>);
 
-impl Visit for OwnerDots<'_> {
+impl Visit for OriginDots<'_> {
     fn stamp(&mut self, s: &Stamp) -> bool {
-        self.0.insert(s.dot.owner().clone());
+        self.0.insert(s.dot.origin().clone());
         false
     }
     fn rec(&mut self, r: Rec<'_>) -> Next {
@@ -310,7 +310,7 @@ impl Visit for OwnerDots<'_> {
         if !live {
             return Next::NoContent;
         }
-        self.0.insert(d.owner().clone());
+        self.0.insert(d.origin().clone());
         Next::On
     }
 }
@@ -320,13 +320,13 @@ struct HoldsWrite<'a>(&'a Dot);
 
 impl Visit for HoldsWrite<'_> {
     fn stamp(&mut self, s: &Stamp) -> bool {
-        s.dot.owner() == self.0
+        s.dot.origin() == self.0
     }
     fn rec(&mut self, r: Rec<'_>) -> Next {
         let hit = match r {
-            Rec::Elem(d, x) => x.frag.is_some() && d.owner() == self.0,
-            Rec::Entry(id, e) => e.created.is_some() && id.dot.owner() == self.0,
-            Rec::Seq(d, el) => el.created.is_some() && d.owner() == self.0,
+            Rec::Elem(d, x) => x.frag.is_some() && d.origin() == self.0,
+            Rec::Entry(id, e) => e.created.is_some() && id.dot.origin() == self.0,
+            Rec::Seq(d, el) => el.created.is_some() && d.origin() == self.0,
         };
         if hit { Next::Stop } else { Next::On }
     }
@@ -415,7 +415,7 @@ struct DotsIn<'a> {
 
 impl Visit for DotsIn<'_> {
     fn stamp(&mut self, s: &Stamp) -> bool {
-        (self.pred)(s.dot.owner())
+        (self.pred)(s.dot.origin())
     }
     fn rec(&mut self, r: Rec<'_>) -> Next {
         let pred = self.pred;
@@ -425,9 +425,9 @@ impl Visit for DotsIn<'_> {
             // a sequence element: with content (an undelete's copy of its char included, §4.7);
             // a flag or a position write of theirs other than the element's own creation, which
             // `remove_dots` keeps
-            Rec::Seq(d, el) => (d, !matches!(el.content, SeqContent::None) || el.undel.is_some(), el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner())) || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))),
+            Rec::Seq(d, el) => (d, !matches!(el.content, SeqContent::None) || el.undel.is_some(), el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.origin())) || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.origin()))),
         };
-        let theirs = pred(d.owner());
+        let theirs = pred(d.origin());
         if other || (self.holds && theirs && own) {
             Next::Stop
         } else if self.holds || !theirs {
@@ -440,10 +440,10 @@ impl Visit for DotsIn<'_> {
 
 fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot, Option<&Value>) -> bool) {
     elems.retain(|d, el| {
-        if el.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
+        if el.reset.as_ref().is_some_and(|r| pred(r.dot.origin())) {
             el.reset = None;
         }
-        if pred(d.owner()) && !keep(d.owner(), None) {
+        if pred(d.origin()) && !keep(d.origin(), None) {
             el.frag = None;
         } else if let Some(f) = &mut el.frag {
             f.remove_dots_in(pred, keep);

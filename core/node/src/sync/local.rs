@@ -441,7 +441,7 @@ impl SyncEngine {
             let h = &m.view;
             h.ts > since
                 && (h.author == *holder || h.actor == *holder || tl.is_some_and(|tl| tl.role(&h.author, holder, At::now(h.ts)).is_some()))
-                && h.aspects.iter().any(|a| self.engine.owner_chain(&a.tid).any(|t| things.contains(&t)))
+                && h.aspects.iter().any(|a| self.engine.record_chain(&a.tid).any(|t| things.contains(&t)))
         })
     }
 

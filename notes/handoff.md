@@ -1,7 +1,7 @@
 # Handoff to the next coordinator
 > Summary: Where the permissions and keys work stands for whoever coordinates next: Tess's standing guidance, owner removal (steps 0-4 built), findings from unmerged branches that exist only here, open questions, other open work in rough priority, process lessons. Rewrite or delete once taken.
 
-Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md and notes/questions-for-tess.md first.
+Read CLAUDE.md, notes/coordination.md, notes/disputes-plan.md and notes/questions-for-tess.md first.
 
 ## Tess's standing guidance
 - Rethink and rewrite, don't tack on. A precisely stated design problem beats a hollow finished build. Coordinators may change the design within the requirements' words or spirit.
@@ -10,7 +10,7 @@ Read CLAUDE.md, notes/coordination.md, notes/owner-removal-plan.md and notes/que
 - Greenfield is cheap: build reference models and TLA checks freely. Model-check every major design change first; the models have found real holes every time.
 - Ask Tess questions one at a time, explaining the trade-off and why users care.
 
-## Owner removal (notes/owner-removal-plan.md)
+## Owner removal (notes/disputes-plan.md)
 - Built: steps 0-4 (keys at depth 0; no roster snapshots; first admins in meaning, stages A-B; disputes in the walk; per-node sides with defaults, API and CLI).
 - Next: stage C (renames: owner words out of spec and code), stage D (API and CLI, overlapping issues/api-after-owners.md), nodes following their account's published side, steps 5-6.
 

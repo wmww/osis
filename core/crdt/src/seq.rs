@@ -1004,7 +1004,7 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
 pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, at_node: bool, ch: &mut Changes) {
     let text = s.text;
     for (d, el) in s.elems_mut().iter_mut() {
-        if at_node && !text && expired(d.owner())
+        if at_node && !text && expired(d.origin())
             && let Some((c, _)) = &el.created
             && el.deleted.as_ref().is_none_or(|x| x.0 < *c)
         {
@@ -1014,7 +1014,7 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, at_node:
             // a list element loses only the content writes of the expiring delta (§4.7)
             SeqContent::Frag(f) => f.strip_values(expired, at_node, ch),
             // a text element's char, the undelete's copy included (§4.7)
-            _ if expired(d.owner()) => {
+            _ if expired(d.origin()) => {
                 el.content = SeqContent::None;
                 el.undel = None;
                 if d.src.is_derived() {
@@ -1031,7 +1031,7 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, at_node:
 /// Removes every write whose dot's author matches (un-merge, §4.6); records stay as anchors.
 /// With `nested`, an element a matching dot created keeps others' writes in its list content.
 pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot, Option<&Value>) -> bool) {
-    let bad = |st: &Stamp| pred(st.dot.owner());
+    let bad = |st: &Stamp| pred(st.dot.origin());
     let elems = s.elems_mut();
     for (d, el) in elems.iter_mut() {
         // the creation write of an invalid insert stays, so the element is a hidden anchor
@@ -1040,7 +1040,7 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn F
             el.deleted = None;
             el.undel = None;
         }
-        if pred(d.owner()) && !(keep(d.owner(), None) && matches!(el.content, SeqContent::Frag(_))) {
+        if pred(d.origin()) && !(keep(d.origin(), None) && matches!(el.content, SeqContent::Frag(_))) {
             el.content = SeqContent::None;
             el.undel = None;
         } else if let SeqContent::Frag(f) = &mut el.content {
@@ -1060,11 +1060,11 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn F
 pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keys: bool) {
     let elems = s.elems_mut();
     // a range record of bare anchors may span deltas: edited per element
-    let ranges: Vec<Dot> = elems.iter().filter(|(d, e)| e.span > 1 && (0..e.span).any(|k| pred(nth(d, k).owner()))).map(|(d, _)| d.clone()).collect();
+    let ranges: Vec<Dot> = elems.iter().filter(|(d, e)| e.span > 1 && (0..e.span).any(|k| pred(nth(d, k).origin()))).map(|(d, _)| d.clone()).collect();
     let held: Elems = ranges.into_iter().filter_map(|k| elems.remove(&k).map(|e| (k, e))).collect();
     elems.extend(crate::seq_span::expand(held));
     elems.retain(|d, el| {
-        if pred(d.owner()) {
+        if pred(d.origin()) {
             el.created = None;
             el.pos.retain(|p| p.0.dot != *d);
             if matches!(el.content, SeqContent::Char(_)) {
@@ -1078,7 +1078,7 @@ pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keys: boo
                 el.content = SeqContent::None;
             }
         }
-        !pred(d.owner()) || el.is_record()
+        !pred(d.origin()) || el.is_record()
     });
 }
 

@@ -1,7 +1,7 @@
 //! A component's walk as bytes, for the node's rebuildable store cache (notes/permissions.md,
 //! Implementation; notes/local-store.md). Local format, never on the wire. A saved walk is
 //! restored only over exactly the inputs it was walked from: the bytes carry a BLAKE3 tag over
-//! the format, the caller's salt (the rules), the walk's whole input (owner links, every
+//! the format, the caller's salt (the rules), the walk's whole input (record links, every
 //! role commit, frontiers by their sizes: a record's frontier is
 //! fixed by its commit ID, `HeldSet`) and the body, so anything else (other rules, other or
 //! changed inputs, damaged bytes) gives `None` and the caller evaluates from scratch. Commits
@@ -11,8 +11,8 @@
 //! tids (`Inputs`), then the walk (`Walked` with its undo log, D, passes, `reach`). Frontiers
 //! are referenced by the commit that holds them, not copied.
 
-use crate::graph::{Class, Edges, Owners};
-use osis_base::Owner;
+use crate::graph::{Class, Edges, Records};
+use osis_base::RecordLink;
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
 use crate::types::{Edge, Frontier, RoleCommit, Point, Tie, TieSource, WriteId};
@@ -189,22 +189,22 @@ impl W {
 }
 
 /// Hashes the walk's whole input, as the tag covers it.
-fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit>>) {
+fn put_input(h: &mut osis_base::hash::Hasher, records: &Records, commits: &BTreeMap<CommitId, Arc<RoleCommit>>) {
     let mut w = W::default();
     let mut flush = |w: &mut W| {
         h.update(&w.out);
         w.out.clear();
     };
-    let links: Vec<_> = owners.links().collect();
+    let links: Vec<_> = records.links().collect();
     w.len(links.len());
     for (t, o) in links {
         w.tid(t);
         match o {
-            Owner::Admin(a) => {
+            RecordLink::Admin(a) => {
                 w.u8(0);
                 w.tid(a);
             }
-            Owner::Key => w.u8(1),
+            RecordLink::Key => w.u8(1),
         }
     }
     w.len(commits.len());
@@ -225,10 +225,10 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
     flush(&mut w);
 }
 
-fn tag(salt: &[u8], owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit>>, body: &[u8]) -> [u8; 32] {
+fn tag(salt: &[u8], records: &Records, commits: &BTreeMap<CommitId, Arc<RoleCommit>>, body: &[u8]) -> [u8; 32] {
     let mut h = osis_base::hash::Hasher::new();
     h.update(FORMAT).update(&(salt.len() as u64).to_le_bytes()).update(salt);
-    put_input(&mut h, owners, commits);
+    put_input(&mut h, records, commits);
     h.update(body);
     h.finalize()
 }
@@ -404,7 +404,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
     }
     let mut body = head.out;
     body.extend_from_slice(&w.out);
-    let mut out = tag(salt, &tl.input.owners, &tl.input.commits, &body).to_vec();
+    let mut out = tag(salt, &tl.input.records, &tl.input.commits, &body).to_vec();
     out.extend_from_slice(&body);
     Some(out)
 }
@@ -602,7 +602,7 @@ impl HeldSet for Only<'_> {
 /// `held` gives for exactly those.
 pub(crate) fn restore(s: &Saved<'_>, held: &dyn HeldSet, salt: &[u8]) -> Option<Timeline> {
     let input = Input::gather(&Only { held, things: &s.inputs.0, created: Some(&s.inputs.2), ids: Some(&s.inputs.1) });
-    if tag(salt, &input.owners, &input.commits, s.body)[..] != *s.tag {
+    if tag(salt, &input.records, &input.commits, s.body)[..] != *s.tag {
         return None;
     }
     let mut r = R { b: s.walk, tids: s.tids.clone(), cids: s.inputs.1.iter().copied().collect() };

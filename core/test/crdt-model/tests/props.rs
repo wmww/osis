@@ -34,7 +34,7 @@ fn range(w: &Writer) -> Range {
     (w.source.clone(), w.lo, w.hi())
 }
 
-/// Predicate over owner dots: the dot lies in one of `ranges`.
+/// Predicate over origin dots: the dot lies in one of `ranges`.
 fn in_ranges(ranges: &[Range]) -> impl Fn(&Dot) -> bool + '_ {
     move |d: &Dot| ranges.iter().any(|(s, lo, hi)| d.source == *s && (*lo..*hi).contains(&d.ctr))
 }

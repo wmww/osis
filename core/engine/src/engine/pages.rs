@@ -120,7 +120,7 @@ impl PageIndex {
     /// Whether a paged collection lies below a map entry whose dot matches `pred` (an
     /// un-merge removing that entry takes the collection's every page with it).
     pub fn below_entry_of(&self, pred: &dyn Fn(&Dot) -> bool) -> bool {
-        self.sets.keys().any(|p| p.iter().any(|s| matches!(s, Step::Entry(id) if pred(id.dot.owner()))))
+        self.sets.keys().any(|p| p.iter().any(|s| matches!(s, Step::Entry(id) if pred(id.dot.origin()))))
     }
     /// How many collections are paged.
     #[cfg(test)]
@@ -2152,7 +2152,7 @@ mod tests {
                     // whole state written again (a rebuild)
                     0 => {
                         let (_, range) = received[r(received.len() as u64) as usize].clone();
-                        let pred = move |d: &Dot| d.owner().src == sess(2) && (range.lo..range.hi).contains(&d.owner().ctr);
+                        let pred = move |d: &Dot| d.origin().src == sess(2) && (range.lo..range.hi).contains(&d.origin().ctr);
                         st.expire(&pred);
                         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
                         f.expire(&pred);

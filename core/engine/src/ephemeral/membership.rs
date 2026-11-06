@@ -129,7 +129,7 @@ impl Engine {
         let chain = |roots: &BTreeSet<Tid>| {
             let mut out = BTreeSet::new();
             for t in roots {
-                for step in osis_base::owner_chain(*t, |x| records(x).map(CreationRecord::owner_link)) {
+                for step in osis_base::record_chain(*t, |x| records(x).map(CreationRecord::record_link)) {
                     let (ChainStep::Up { thing, .. } | ChainStep::Key(thing)) = step else { break };
                     if !out.insert(thing) {
                         break;

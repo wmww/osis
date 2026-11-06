@@ -1552,7 +1552,7 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
     }
     if let Fragment::Seq(sq) = &late {
         for (d, e) in sq.elems() {
-            assert!(!exp(d.owner()) || e.char().is_none(), "an expired creation's char outlives it: {d:?}");
+            assert!(!exp(d.origin()) || e.char().is_none(), "an expired creation's char outlives it: {d:?}");
         }
     }
 }

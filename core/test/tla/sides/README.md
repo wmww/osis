@@ -1,5 +1,5 @@
 # Sides (TLA+)
-> Summary: TLC model of hosts and storage under a fork of an actor (notes/owner-removal-plan.md step 6): nodes on side X or Y run the ordinary sync rules over their side's validity at one host; step 6 candidates as modes. Results: at labels both sides use, deletes at hosts follow a "no side needs it" rule (the plain per-reason gate keeps every superseded one-side write forever); the forked actor's own label works as a host branch per side, with members carrying clean bodies across; re-upload once, a neutral view, per-aspect, the parties' own writes and ungated one-side covers fail.
+> Summary: TLC model of hosts and storage under a fork of an actor (notes/disputes-plan.md step 6): nodes on side X or Y run the ordinary sync rules over their side's validity at one host; step 6 candidates as modes. Results: at labels both sides use, deletes at hosts follow a "no side needs it" rule (the plain per-reason gate keeps every superseded one-side write forever); the forked actor's own label works as a host branch per side, with members carrying clean bodies across; re-upload once, a neutral view, per-aspect, the parties' own writes and ungated one-side covers fail.
 
 Files: `Sides.tla` (the model), `MC.tla` (scenarios), named `.cfg` instances, `matrix.sh` (every scenario under every mode), `ASSUMPTIONS.md`. A design exploration forked from `../sync` with notes/ at hand, not an independent spec check.
 
@@ -46,7 +46,7 @@ Named instances (`run.sh`): `kill_touch`, `purge_touch`, `place_touch`, `branch_
 
 Reading the new rows: with branching, the losses of the replacement fork (c) go; what is left is a body first uploaded after the split (F: u; P: the purge) reaching only the uploader's branch, fixed by members carrying clean bodies across. Lifting the gate at a branch changes no result. Q0 is the old unheld-placement shape (concX passes it only because there the placement's side loses). With a concession, the conceded side's branch keeps what it had (P): nobody acts there any more.
 
-What the counterexamples are, and what follows from them: notes/owner-removal-plan.md, step 6.
+What the counterexamples are, and what follows from them: notes/disputes-plan.md, step 6.
 
 ## Not covered
 Several hosts, several disputes (the `need` rule over more than two sides), honest concurrent rotations under branching, a removed admin branching from an old step, keep-at-least and `nobody`, live writes surviving a kill, covers resting on deaths that rest on a disputed write, inbox and deposits, the party erasing itself on a switch, stale views, clock skew.

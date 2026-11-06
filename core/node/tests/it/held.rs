@@ -3,7 +3,7 @@
 //! harness (`order.rs`, `Cfg::model`) runs it on every node it judges.
 //!
 //! Input: every commit the node holds (applied, and waiting with the parts its stored copy
-//! holds), bodies as the node holds them (missing, dropped, held: a leftover's value-less owners
+//! holds), bodies as the node holds them (missing, dropped, held: a leftover's value-less carriers
 //! as `stripped`), as own state the writes its state holds that no held body does, and every
 //! creation record it holds of an actor or thing the input names. Ids, dots and values are
 //! relabelled: commits ordered as their dots order (spec/crdt.md §2.2: source kind, source bytes,
@@ -35,7 +35,7 @@
 //!
 //! Normalizations: a waiting commit's held parts carry no writes or edges (the model only needs
 //! that they are held); a part an applied commit misses, or holds waiting alone (spec/commits.md
-//! §4), is missing; a leftover's value-less owners are taken as stripped by the node, also for
+//! §4), is missing; a leftover's value-less carriers are taken as stripped by the node, also for
 //! a value that arrived value-less; an edge's `tied` and `keyset` are dropped (carried,
 //! never an authority); a keep-at-most-0 snapshot body the node dropped with no live write
 //! (`Dropped::live`) past a death is let go (liveness is judged at the drop, `compare`).
@@ -175,14 +175,14 @@ impl Conv<'_> {
             }
         }
     }
-    /// The model dot of `d` on `(t, a)`: its owning commit by the header ranges.
+    /// The model dot of `d` on `(t, a)`: its carrying commit by the header ranges.
     fn dot(&mut self, d: &osis_crdt::Dot, t: &Tid, a: &Ak) -> hm::Dot {
-        let d = d.owner();
-        let owner = match d.src.kind() {
+        let d = d.origin();
+        let origin = match d.src.kind() {
             osis_crdt::SourceKind::Commit(c) => Some(*c),
             _ => self.hist.ranges.get(&(d.src.clone(), *t, a.clone())).and_then(|v| v.iter().find(|x| x.0 <= d.ctr && d.ctr < x.1)).map(|x| x.2),
         };
-        let commit = match owner {
+        let commit = match origin {
             Some(c) => self.commit(&c),
             None => self.extra(format!("{:?}", d.src)),
         };
@@ -502,7 +502,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
                     let ws = if ok { bodies.get(&(*id, ai)).cloned().unwrap_or_default() } else { Vec::new() };
                     let mut p = part(hm::Body::Held(hm::Delta::Writes(Vec::new())));
                     if meta.as_ref().is_some_and(|m| m.stripped.contains(&ai)) {
-                        p.stripped = valueless_owners(&ws);
+                        p.stripped = valueless_carriers(&ws);
                     }
                     p.body = hm::Body::Held(hm::Delta::Writes(ws));
                     parts.push(p);
@@ -548,7 +548,7 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         own_state.extend(ws.into_iter().filter(|w| !in_bodies.contains(&w.id())).map(|write| hm::StateWrite { thing, aspect, write }));
     }
     let me = cv.id(&e.tid());
-    // every record the node holds of an id named, owners and first admins naming more
+    // every record the node holds of an id named, first admins naming more
     let mut things = Vec::new();
     let mut done = BTreeSet::new();
     loop {
@@ -558,12 +558,12 @@ fn convert(e: &mut Engine, hist: &History) -> Input {
         }
         for t in todo {
             done.insert(t);
-            let owner = match e.core.created(&t) {
+            let link = match e.core.created(&t) {
                 None => continue,
-                Some(CreationRecord::KeyActor { .. }) => hm::Owner::Key,
-                Some(CreationRecord::Thing { admin, .. }) => hm::Owner::Admin(cv.id(admin)),
+                Some(CreationRecord::KeyActor { .. }) => hm::RecordLink::Key,
+                Some(CreationRecord::Thing { admin, .. }) => hm::RecordLink::Admin(cv.id(admin)),
             };
-            things.push(hm::Thing { id: cv.id(&t), owner });
+            things.push(hm::Thing { id: cv.id(&t), link });
         }
     }
     inside.retain(|k, _| sc.out(&k.0, &k.1).is_none());
@@ -615,8 +615,8 @@ fn held_body(e: &Engine, c: &CommitId, ai: usize) -> bool {
     e.core.ix.commits.get(c).is_some_and(|m| !m.dropped.contains_key(&ai) && !m.missing.contains(&ai))
 }
 
-/// Value-less owners of a held body: taken as what the node stripped (`Part::stripped`).
-fn valueless_owners(ws: &[hm::Write]) -> BTreeSet<hm::CommitId> {
+/// Value-less carriers of a held body: taken as what the node stripped (`Part::stripped`).
+fn valueless_carriers(ws: &[hm::Write]) -> BTreeSet<hm::CommitId> {
     ws.iter().flat_map(|w| w.values()).filter(|x| x.1.is_none()).map(|x| x.0).collect()
 }
 
@@ -673,7 +673,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         let own = !hist.headers.contains_key(&id);
         if touches && !own && o.applied.contains(&c.id) != applied {
             let h = &hist.headers[&id];
-            let parts: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {} syncs {} owner {:?}", a.tid, a.ak.as_str(), e.core.syncs(&a.tid), e.first_admin(&a.tid))).collect();
+            let parts: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {} syncs {} first admin {:?}", a.tid, a.ak.as_str(), e.core.syncs(&a.tid), e.first_admin(&a.tid))).collect();
             let missing = e.core.ix.commits.get(&id).map(|m| m.missing.clone());
             return differ(format!("commit {id:?} (#{}) applied: model {}, node {applied}; parts {parts:?}, node misses {missing:?}", c.id, o.applied.contains(&c.id)), &c.parts.iter().map(|p| p.thing).collect::<Vec<_>>());
         }
@@ -747,7 +747,7 @@ pub(crate) fn compare(e: &mut Engine, hist: &History, kept: &Bodies, cov: &mut C
         let Some(c) = back.commits.iter_mut().find(|c| c.id == *label) else { continue };
         let kind = c.parts[*i].aspect.kind;
         let Ok(ws) = cv.writes(f, t, a, kind) else { continue };
-        c.parts[*i].stripped = valueless_owners(&ws);
+        c.parts[*i].stripped = valueless_carriers(&ws);
         c.parts[*i].body = hm::Body::Held(hm::Delta::Writes(ws));
         given.push((*label, *i, *id, *t, a.clone()));
     }
