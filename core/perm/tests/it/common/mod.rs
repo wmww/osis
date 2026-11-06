@@ -42,10 +42,10 @@ pub fn key_actors(n: usize, salt: u8) -> Vec<(Tid, CreationRecord)> {
     v
 }
 
-pub fn thing_record(owner: Tid, i: u64) -> (Tid, CreationRecord) {
+pub fn thing_record(admin: Tid, i: u64) -> (Tid, CreationRecord) {
     let mut nonce = [7u8; 32];
     nonce[..8].copy_from_slice(&i.to_be_bytes());
-    let rec = CreationRecord::Thing { owner, nonce };
+    let rec = CreationRecord::Thing { admin, nonce };
     (rec.tid(), rec)
 }
 
@@ -81,8 +81,9 @@ impl World {
             t
         }).collect()
     }
-    pub fn thing(&mut self, owner: Tid) -> Tid {
-        let (t, r) = thing_record(owner, self.created.len() as u64 ^ u64::from(owner.as_bytes()[0]) << 32);
+    /// A thing whose first admin is `admin`.
+    pub fn thing(&mut self, admin: Tid) -> Tid {
+        let (t, r) = thing_record(admin, self.created.len() as u64 ^ u64::from(admin.as_bytes()[0]) << 32);
         self.created.insert(t, r);
         t
     }
@@ -170,7 +171,7 @@ pub fn residue(tl: &osis_perm::Timeline) -> BTreeSet<WriteId> {
         let at = osis_perm::At::before(m.point());
         let old = tl.edges_at(Some(m.point())).get(&op.holder, &op.target).copied();
         let class = tl.class(&m.author, &op.target, at);
-        let through = op.holder != m.author && osis_perm::types::lowers(op.edge.as_ref(), old.as_ref()) && tl.role(&m.author, &op.holder, at) == Some(Role::Admin) && !matches!(class, osis_perm::Class::Chain | osis_perm::Class::Edge);
+        let through = op.holder != m.author && osis_perm::types::lowers(op.edge.as_ref(), old.as_ref()) && tl.role(&m.author, &op.holder, at) == Some(Role::Admin) && class != osis_perm::Class::Edge;
         if through { op.holder } else { target }
     };
     let audits = |w: &WriteId, p: &osis_perm::Point| {
@@ -196,44 +197,32 @@ pub fn model_role(r: roles_model::Role) -> Option<Role> {
     }
 }
 
-/// A joint-model history's actors in `w` (nodes `nodes`): their tids and the key actor at the
-/// top of each one's owner chain (none below an ownerless actor). Genesis edges are writes by
-/// that key actor at t=0 (`genesis`, from `ids` when given); an ownerless actor's one genesis
-/// edge is its record's first admin (spec/permissions.md §1), the actor below it have none
-/// (`joint::random_hist`).
-pub fn joint_actors(w: &mut World, h: &roles_model::joint::JHist, nodes: &[Tid]) -> (Vec<Tid>, Vec<Option<Tid>>) {
-    use roles_model::joint::Owner;
-    let (mut actors, mut top): (Vec<Tid>, Vec<Option<Tid>>) = (Vec::new(), Vec::new());
-    for (x, o) in h.owners.iter().enumerate() {
-        let (t, tp) = match *o {
-            Owner::Node(n) => (w.thing(nodes[n]), Some(nodes[n])),
-            Owner::Actor(y) => (w.thing(actors[y]), top[y]),
-            Owner::None => {
-                let m = (0..h.genesis.len()).find(|m| h.genesis[*m][x] == roles_model::Role::Admin).expect("an ownerless actor's first admin");
-                let admin = if m < h.nodes { nodes[m] } else { actors[m - h.nodes] };
-                let mut nonce = [5u8; 32];
-                nonce[..8].copy_from_slice(&(w.created.len() as u64).to_be_bytes());
-                let rec = CreationRecord::Ownerless { admin, nonce };
-                let t = rec.tid();
-                w.created.insert(t, rec);
-                (t, None)
-            }
-        };
+/// A joint-model history's actors in `w` (nodes `nodes`): their tids (each one's record names
+/// its first admin, `JHist::admins`) and the key actor at the top of each one's record chain.
+/// The model's other genesis edges are writes by that key actor at t=0 (`joint_genesis`, from
+/// `ids` when given); the record edge is in force by the record alone.
+pub fn joint_actors(w: &mut World, h: &roles_model::joint::JHist, nodes: &[Tid]) -> (Vec<Tid>, Vec<Tid>) {
+    let (mut actors, mut top): (Vec<Tid>, Vec<Tid>) = (Vec::new(), Vec::new());
+    for &a in &h.admins {
+        let (t, tp) = if a < h.nodes { (w.thing(nodes[a]), nodes[a]) } else { (w.thing(actors[a - h.nodes]), top[a - h.nodes]) };
         actors.push(t);
         top.push(tp);
     }
     (actors, top)
 }
 
-/// The genesis edges of `h` as writes by the top key actors at t=0 (`joint_actors`), commit IDs
-/// from `id` when given.
-pub fn joint_genesis(w: &mut World, h: &roles_model::joint::JHist, nodes: &[Tid], actors: &[Tid], top: &[Option<Tid>], id: Option<&dyn Fn(usize) -> CommitId>) {
+/// The genesis edges of `h` but the record edges as writes by the top key actors at t=0
+/// (`joint_actors`), commit IDs from `id` when given.
+pub fn joint_genesis(w: &mut World, h: &roles_model::joint::JHist, nodes: &[Tid], actors: &[Tid], top: &[Tid], id: Option<&dyn Fn(usize) -> CommitId>) {
     let ent = |e: usize| if e < h.nodes { nodes[e] } else { actors[e - h.nodes] };
     let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
     let mut g = 0;
     for (m, row) in h.genesis.iter().enumerate() {
         for (x, &r) in row.iter().enumerate() {
-            let (Some(r), Some(tp)) = (model_role(r), top[x]) else { continue };
+            if h.admins[x] == m {
+                continue;
+            }
+            let (Some(r), tp) = (model_role(r), top[x]) else { continue };
             g += 1;
             match id {
                 Some(f) => w.commit_id(f(g), tp, 0, &[(actors[x], ent(m), Some(Edge::new(r)))], &all0),
@@ -268,7 +257,8 @@ pub fn model_edge(e: Option<roles_model::edges::Edge>) -> Option<Edge> {
     e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), tied: tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1) })
 }
 
-/// An edges-model history as a world: node 0 owns the one target.
+/// An edges-model history as a world: node 0 is the one target's first admin; the other
+/// genesis edges are its writes at t=0.
 pub fn edges_world(h: &roles_model::edges::EHist, salt: u8) -> (World, Vec<Tid>, Tid) {
     let mut w = World::new();
     w.next = 1000 + u32::from(salt) * 100_000;

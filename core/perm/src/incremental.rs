@@ -1,6 +1,6 @@
 //! Incremental evaluation (notes/permissions.md Implementation): the timeline split into connected components of
-//! things (edges join holder, target and author; ownership joins a thing and its owner, an
-//! ownerless thing its first admin), each cached by its exact
+//! things (edges join holder, target and author; a record joins a thing and its first admin),
+//! each cached by its exact
 //! inputs. A held-set change touches only the components whose inputs changed: continued in
 //! place (`Timeline::append`, `add_leaves`), from the old walk (`Timeline::extend`), from a
 //! saved walk, or evaluated. Components are independent: no write in one can change authority
@@ -78,18 +78,16 @@ fn history_diff<'a>(old: &[&'a Change], new: &[&'a Change], out: &mut BTreeSet<(
 
 /// What a component's walk was, to tell what an update changed (`Changed::edges`).
 struct WalkWas {
-    initial: crate::graph::Edges,
     edges: crate::graph::Edges,
     history: Vec<Change>,
 }
 
 impl WalkWas {
     fn of(tl: &Timeline) -> WalkWas {
-        WalkWas { initial: tl.initial().clone(), edges: tl.edges().clone(), history: tl.history().to_vec() }
+        WalkWas { edges: tl.edges().clone(), history: tl.history().to_vec() }
     }
 
     fn diff(&self, tl: &Timeline, out: &mut BTreeSet<(Tid, Tid)>) {
-        tl.initial().diff(&self.initial, out);
         tl.edges().diff(&self.edges, out);
         history_diff(&self.history.iter().collect::<Vec<_>>(), &tl.history().iter().collect::<Vec<_>>(), out);
     }
@@ -148,13 +146,11 @@ pub struct SaveDone {
 }
 
 /// The unions of the partition that thing `t`'s held inputs make (`created` its record,
-/// `commits` those held on it): with its owner, or an ownerless thing with its first admin;
-/// each edge write's author and holder with its target.
+/// `commits` those held on it): with its first admin; each edge write's author and holder with
+/// its target.
 fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], mut join: impl FnMut(Tid, Tid)) {
-    match created {
-        Some(CreationRecord::Thing { owner, .. }) => join(t, *owner),
-        Some(CreationRecord::Ownerless { admin, .. }) => join(t, *admin),
-        _ => {}
+    if let Some(CreationRecord::Thing { admin, .. }) = created {
+        join(t, *admin);
     }
     for c in commits {
         for o in &c.ops {
@@ -274,7 +270,7 @@ impl Timelines {
             }
             unseen(x, rec.is_some()).then_some(rec)
         };
-        // A thing whose `created.0` is all that names it joins its owner's component.
+        // A thing whose `created.0` is all that names it joins its first admin's component.
         let leaf = |x: &Tid| held.created(x).filter(|r| matches!(r, CreationRecord::Thing { .. }) && unseen(x, false) && r.tid() == *x);
         let mut joining: BTreeMap<Tid, u64> = BTreeMap::new();
         let mut unplaced = Vec::new();
@@ -331,22 +327,22 @@ impl Timelines {
         if unplaced.iter().any(|t| !joining.contains_key(t)) {
             return None;
         }
-        // each leaf in its owner's component, through owners that are new leaves too
+        // each leaf in its first admin's component, through first admins that are new leaves too
         let new_leaves: BTreeSet<Tid> = leaves.iter().map(|l| l.0).collect();
         let mut at: BTreeMap<Tid, u64> = BTreeMap::new();
         while !leaves.is_empty() {
             let n = leaves.len();
             for (x, rec) in std::mem::take(&mut leaves) {
-                let CreationRecord::Thing { owner, .. } = rec else { return None };
-                let i = match at.get(&owner) {
+                let CreationRecord::Thing { admin, .. } = rec else { return None };
+                let i = match at.get(&admin) {
                     Some(&i) => i,
-                    None if new_leaves.contains(&owner) => {
+                    None if new_leaves.contains(&admin) => {
                         leaves.push((x, rec));
                         continue;
                     }
-                    // (an owner joining now moves components)
-                    None if joining.contains_key(&owner) => return None,
-                    None => *self.of.get(&owner)?,
+                    // (a first admin joining now moves components)
+                    None if joining.contains_key(&admin) => return None,
+                    None => *self.of.get(&admin)?,
                 };
                 let w = work.entry(i).or_default();
                 // (one below the root would move it: saved walks are under the root)
@@ -448,12 +444,10 @@ impl Timelines {
         let mut cache: BTreeMap<Inputs, (Timeline, usize, bool)> = BTreeMap::new();
         let old: BTreeSet<u64> = region.iter().filter_map(|t| self.of.get(t).copied()).collect();
         let (mut before, mut after) = (crate::graph::Edges::default(), crate::graph::Edges::default());
-        let (mut first, mut new_first) = (crate::graph::Edges::default(), crate::graph::Edges::default());
         let (mut history, mut records): (Vec<Change>, BTreeSet<Tid>) = (Vec::new(), BTreeSet::new());
         for c in old {
             if let Some(comp) = self.comps.remove(&c) {
                 before.take_targets(comp.tl.edges());
-                first.take_targets(comp.tl.initial());
                 history.extend_from_slice(comp.tl.history());
                 records.extend(comp.inputs.2.iter().copied());
                 for t in &comp.inputs.0 {
@@ -566,7 +560,6 @@ impl Timelines {
                 }
             };
             after.take_targets(tl.edges());
-            new_first.take_targets(tl.initial());
             new_history.extend_from_slice(tl.history());
             new_records.extend(inputs.2.iter().copied());
             let i = self.next;
@@ -584,7 +577,6 @@ impl Timelines {
             self.retire(&k, basis);
         }
         after.diff(&before, &mut changed.edges);
-        new_first.diff(&first, &mut changed.edges);
         history_diff(&history.iter().collect::<Vec<_>>(), &new_history.iter().collect::<Vec<_>>(), &mut changed.edges);
         changed.created.extend(records.symmetric_difference(&new_records).copied());
         (evaluated, changed)

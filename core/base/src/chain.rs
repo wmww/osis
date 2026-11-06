@@ -1,7 +1,7 @@
 //! The record-chain walk (spec/permissions.md §1): every walk up creation records goes through
 //! `owner_chain`, so the chain's stop rules and its depth limit live in one place. The chain goes
-//! up owner links and first-admin links alike (derivation and the depth cap count both); owner-chain
-//! authority stops at the first `Ownerless` step, which its callers check explicitly.
+//! up first-admin links (derivation and the depth cap count them); it says nothing about
+//! authority, which is the role timeline's (a record edge may be removed).
 
 use crate::format::MAX_OWNER_DEPTH;
 use crate::ids::{CreationRecord, Tid};
@@ -9,36 +9,29 @@ use crate::ids::{CreationRecord, Tid};
 /// What a thing's creation record puts above it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Owner {
-    /// An ordinary thing's owner actor.
-    Actor(Tid),
+    /// An ordinary thing's first admin: the record chain goes on to that actor.
+    Admin(Tid),
     /// A key actor: the top of its chain.
     Key,
-    /// An ownerless thing: its record's first admin holds an admin edge on it from the start, and
-    /// the record chain goes on to that actor.
-    Ownerless(Tid),
 }
 
 impl CreationRecord {
     /// What the record puts above its thing.
     pub fn owner_link(&self) -> Owner {
         match self {
-            CreationRecord::Thing { owner, .. } => Owner::Actor(*owner),
+            CreationRecord::Thing { admin, .. } => Owner::Admin(*admin),
             CreationRecord::KeyActor { .. } => Owner::Key,
-            CreationRecord::Ownerless { admin, .. } => Owner::Ownerless(*admin),
         }
     }
 }
 
-/// One step of a record-chain walk. Every step but `Up` and `Ownerless` ends the walk.
+/// One step of a record-chain walk. Every step but `Up` ends the walk.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChainStep {
-    /// `thing` is owned by `owner`, where the walk goes on.
-    Up { thing: Tid, owner: Tid },
+    /// `thing`'s first admin is `admin`, where the walk goes on.
+    Up { thing: Tid, admin: Tid },
     /// `thing` is a key actor: the top.
     Key(Tid),
-    /// `thing` is an ownerless thing whose first admin is `admin`, where the walk goes on (a
-    /// link like an owner's; owner-chain authority ends here).
-    Ownerless { thing: Tid, admin: Tid },
     /// `thing`'s creation record is not known to the lookup.
     Unknown(Tid),
     /// The chain goes past `MAX_OWNER_DEPTH` links: the walk's first thing has no record chain.
@@ -49,14 +42,14 @@ impl ChainStep {
     /// The thing this step is at (none past the depth limit).
     pub fn thing(&self) -> Option<Tid> {
         match *self {
-            ChainStep::Up { thing, .. } | ChainStep::Key(thing) | ChainStep::Ownerless { thing, .. } | ChainStep::Unknown(thing) => Some(thing),
+            ChainStep::Up { thing, .. } | ChainStep::Key(thing) | ChainStep::Unknown(thing) => Some(thing),
             ChainStep::TooDeep => None,
         }
     }
 }
 
 /// The steps up `t`'s record chain, `t` first, with creation records looked up by `lookup`: one
-/// `Up` or `Ownerless` per link, then the end (a key actor, an unknown record, or `TooDeep` after
+/// `Up` per link, then the end (a key actor, an unknown record, or `TooDeep` after
 /// `MAX_OWNER_DEPTH` links). At most `MAX_OWNER_DEPTH + 2` steps, so a cycle ends too.
 pub fn owner_chain<F: FnMut(&Tid) -> Option<Owner>>(t: Tid, lookup: F) -> OwnerChain<F> {
     OwnerChain { at: Some((t, 0)), lookup }
@@ -84,15 +77,11 @@ impl<F: FnMut(&Tid) -> Option<Owner>> Iterator for OwnerChain<F> {
             return Some(ChainStep::TooDeep);
         }
         Some(match (self.lookup)(&thing) {
-            Some(Owner::Actor(owner)) => {
-                self.at = Some((owner, links + 1));
-                ChainStep::Up { thing, owner }
+            Some(Owner::Admin(admin)) => {
+                self.at = Some((admin, links + 1));
+                ChainStep::Up { thing, admin }
             }
             Some(Owner::Key) => ChainStep::Key(thing),
-            Some(Owner::Ownerless(admin)) => {
-                self.at = Some((admin, links + 1));
-                ChainStep::Ownerless { thing, admin }
-            }
             None => ChainStep::Unknown(thing),
         })
     }
@@ -107,10 +96,10 @@ mod tests {
         Tid::from_bytes([i; crate::format::TID_LEN])
     }
 
-    /// A chain of `n` owned things below `top`: `tid(1)` deepest, `tid(n)` owned by `top`.
+    /// A chain of `n` things below `top`: `tid(1)` deepest, `tid(n)`'s first admin `top`.
     fn chain(n: u8, top: Option<Owner>) -> BTreeMap<Tid, Owner> {
-        let mut m: BTreeMap<Tid, Owner> = (1..n).map(|i| (tid(i), Owner::Actor(tid(i + 1)))).collect();
-        m.insert(tid(n), Owner::Actor(tid(0)));
+        let mut m: BTreeMap<Tid, Owner> = (1..n).map(|i| (tid(i), Owner::Admin(tid(i + 1)))).collect();
+        m.insert(tid(n), Owner::Admin(tid(0)));
         if let Some(o) = top {
             m.insert(tid(0), o);
         }
@@ -123,13 +112,9 @@ mod tests {
 
     #[test]
     fn each_end() {
-        let ups = |n: u8| -> Vec<ChainStep> { (1..=n).map(|i| ChainStep::Up { thing: tid(i), owner: tid(if i == n { 0 } else { i + 1 }) }).collect() };
+        let ups = |n: u8| -> Vec<ChainStep> { (1..=n).map(|i| ChainStep::Up { thing: tid(i), admin: tid(if i == n { 0 } else { i + 1 }) }).collect() };
         let with = |n: u8, end: ChainStep| -> Vec<ChainStep> { ups(n).into_iter().chain([end]).collect() };
         assert_eq!(walk(&chain(3, Some(Owner::Key)), tid(1)), with(3, ChainStep::Key(tid(0))));
-        // a first-admin link goes on like an owner link
-        let mut m = chain(3, Some(Owner::Ownerless(tid(9))));
-        m.insert(tid(9), Owner::Key);
-        assert_eq!(walk(&m, tid(1)), with(3, ChainStep::Ownerless { thing: tid(0), admin: tid(9) }).into_iter().chain([ChainStep::Key(tid(9))]).collect::<Vec<_>>());
         assert_eq!(walk(&chain(3, None), tid(1)), with(3, ChainStep::Unknown(tid(0))));
         // the first thing itself a top, or unknown
         assert_eq!(walk(&chain(3, Some(Owner::Key)), tid(0)), vec![ChainStep::Key(tid(0))]);
@@ -152,26 +137,14 @@ mod tests {
         assert!(steps[..=MAX_OWNER_DEPTH].iter().all(|s| matches!(s, ChainStep::Up { .. })));
         assert_eq!(owner_chain(tid(1), |x| m.get(x).copied()).end(), ChainStep::TooDeep);
         // a cycle ends too
-        let cyc = BTreeMap::from([(tid(1), Owner::Actor(tid(2))), (tid(2), Owner::Actor(tid(1)))]);
+        let cyc = BTreeMap::from([(tid(1), Owner::Admin(tid(2))), (tid(2), Owner::Admin(tid(1)))]);
         assert_eq!(owner_chain(tid(1), |x| cyc.get(x).copied()).end(), ChainStep::TooDeep);
-        // first-admin links count toward the limit: half of them, half owner links
-        let mut m = BTreeMap::new();
-        for i in 1..=d {
-            let up = tid(i + 1);
-            m.insert(tid(i), if i % 2 == 0 { Owner::Ownerless(up) } else { Owner::Actor(up) });
-        }
-        m.insert(tid(d + 1), Owner::Key);
-        assert_eq!(owner_chain(tid(1), |x| m.get(x).copied()).end(), ChainStep::Key(tid(d + 1)));
-        m.insert(tid(d + 1), Owner::Ownerless(tid(d + 2)));
-        m.insert(tid(d + 2), Owner::Key);
-        assert_eq!(owner_chain(tid(1), |x| m.get(x).copied()).end(), ChainStep::TooDeep);
     }
 
     #[test]
     fn owner_link_of_each_record() {
         let nonce = [7; 32];
-        assert_eq!(CreationRecord::Thing { owner: tid(1), nonce }.owner_link(), Owner::Actor(tid(1)));
+        assert_eq!(CreationRecord::Thing { admin: tid(1), nonce }.owner_link(), Owner::Admin(tid(1)));
         assert_eq!(CreationRecord::KeyActor { alg: 1, public_key: vec![0; 32], nonce }.owner_link(), Owner::Key);
-        assert_eq!(CreationRecord::Ownerless { admin: tid(2), nonce }.owner_link(), Owner::Ownerless(tid(2)));
     }
 }

@@ -11,7 +11,8 @@ use osis_base::{CommitId, Role, Tid};
 use osis_perm::{At, Edge, Timeline, WriteId};
 
 /// A joint-model history as a world: node i is the i-th smallest key-actor tid, genesis edges
-/// are writes by the key actor at the top of the target's chain at t=0.
+/// but the record edges are writes by the key actor at the top of the target's record chain at
+/// t=0.
 struct JointWorld {
     w: World,
     nodes: Vec<Tid>,
@@ -41,19 +42,18 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
     let jw = joint_world(h);
     let o = joint::walk(h);
     let tl = Timeline::evaluate(&jw.w.held());
-    let owner_of = |x: usize| h.owner(x);
     for n in 0..h.nodes {
-        for x in 0..h.owners.len() {
+        for x in 0..h.admins.len() {
             let (m, p) = (model_role(o.roles[n][x]), tl.role(&jw.nodes[n], &jw.actors[x], At::END));
             if m != p {
                 return Some(format!("role of node {n} on actor {x}: model {m:?} perm {p:?}"));
             }
         }
     }
-    let ents = h.nodes + h.owners.len();
+    let ents = h.nodes + h.admins.len();
     for m in 0..ents {
-        for x in 0..h.owners.len() {
-            if owner_of(x) == Some(m) || m == h.nodes + x {
+        for x in 0..h.admins.len() {
+            if m == h.nodes + x {
                 continue;
             }
             let holder = if m < h.nodes { jw.nodes[m] } else { jw.actors[m - h.nodes] };
@@ -63,10 +63,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
             }
         }
     }
-    for (i, jwr) in h.writes.iter().enumerate() {
-        if owner_of(jwr.target) == Some(jwr.holder) {
-            continue;
-        }
+    for i in 0..h.writes.len() {
         let id = WriteId(jw.ids[i], 0);
         let (ma, md) = (o.applied >> i & 1 == 1, o.dropped >> i & 1 == 1);
         let (pa, pd) = (tl.is_applied(&id), tl.dropped().contains_key(&id));
@@ -136,17 +133,19 @@ fn joint_kept_standing_survives_absent_edge_removal() {
 
 /// The history of `joint_kept_standing_survives_absent_edge_removal`.
 fn absent_edge_removal_hist() -> joint::JHist {
-    use joint::{JHist, JWrite, Owner};
+    use joint::{JHist, JWrite};
     use roles_model::Role::{Admin, None as Gone};
     const LATE: u32 = roles_model::shrink::LATE;
     let w = |author, t, id, holder| JWrite { author, t, id, target: 0, holder, role: Gone };
-    // entities: n0, n1, A0, A1
+    // entities: n0, n1, A0, A1; n0 is A0's first admin, n1 A1's
     let mut genesis = vec![vec![Gone; 2]; 4];
+    genesis[0][0] = Admin;
+    genesis[1][1] = Admin;
     genesis[1][0] = Admin;
     genesis[3][0] = Admin;
     JHist {
         nodes: 2,
-        owners: vec![Owner::Node(0), Owner::Node(1)],
+        admins: vec![0, 1],
         genesis,
         writes: vec![w(1, 1, 4, 3), w(0, 3, 2, 3), w(1, 2, 1, 1), w(1, 1, 3, 3)],
         recv: vec![vec![LATE, 1], vec![3, LATE], vec![LATE, 2], vec![LATE, 1]],
@@ -158,17 +157,19 @@ fn absent_edge_removal_hist() -> joint::JHist {
 /// n2 read on A0 between n1's removals and n1's self-removal, so the removal of the absent edge
 /// can arrive late and be inserted before it.
 pub(crate) fn absent_edge_removal_spread_hist() -> joint::JHist {
-    use joint::{JHist, JWrite, Owner};
+    use joint::{JHist, JWrite};
     use roles_model::Role::{Admin, None as Gone, Read};
     const LATE: u32 = roles_model::shrink::LATE;
     let w = |author, t, id, holder, role| JWrite { author, t, id, target: 0, holder, role };
-    // entities: n0, n1, n2, A0, A1
+    // entities: n0, n1, n2, A0, A1; n0 is A0's first admin, n1 A1's
     let mut genesis = vec![vec![Gone; 2]; 5];
+    genesis[0][0] = Admin;
+    genesis[1][1] = Admin;
     genesis[1][0] = Admin;
     genesis[4][0] = Admin;
     JHist {
         nodes: 3,
-        owners: vec![Owner::Node(0), Owner::Node(1)],
+        admins: vec![0, 1],
         genesis,
         writes: vec![w(1, 1, 3, 4, Gone), w(1, 1, 4, 4, Gone), w(0, 5, 5, 2, Read), w(1, 6, 1, 1, Gone), w(0, 7, 2, 4, Gone)],
         recv: vec![vec![LATE, 1, LATE], vec![LATE, 1, LATE], vec![5, LATE, LATE], vec![LATE, 6, LATE], vec![7, LATE, LATE]],

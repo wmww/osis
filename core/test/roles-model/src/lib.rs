@@ -2,12 +2,13 @@
 //! notes/permissions.md). Independent of any real implementation: a differential oracle for
 //! osis-perm. Patched only to follow the spec where it had simplified it (osis-perm's
 //! differential runs exposed each): `joint` judges a demotion against the edge restored as
-//! if the holder still held its role (spec §5.1), ignores edges for the target's owner (§1),
-//! and treats removing a holder one is admin of as a self-removal only without authority on
-//! the target (§2). No model exempts the demoter's chain writes: only its frontier covers
-//! them (§5.1). Modules by spec section:
+//! if the holder still held its role (spec §5.1) and treats removing a holder one is admin of
+//! as a self-removal only without authority on the target (§2). No model exempts the
+//! demoter's chain writes: only its frontier covers them (§5.1). Every actor's first admin
+//! holds its record edge (admin) in genesis, removable like any edge (§1). Modules by spec
+//! section:
 //! - `single`: §5.1 on one actor, the adopted demoter-frontier rule and rejected variants.
-//! - `joint`: §5.1 steps 1-5 over several actors (owner chains, actor holders, mutual
+//! - `joint`: §5.1 steps 1-5 over several actors (record edges, actor holders, mutual
 //!   roles, commit-ID ties); `joint::walk`, `joint::random_hist`.
 //! - `edges`: §2 (`until`, invite power, self-removal) and §7 (links) on one target, with
 //!   §5.1 attribution by invite level; `edges::walk`, `edges::random_hist`.
@@ -30,10 +31,8 @@
 //! list, X's writes on its own edges excepted. Shrink: trusted ops a walk leaves unapplied
 //! lose their seeds for good, all at once, and the walk is redone from scratch. A dispute is
 //! an unapplied R that applies as an explicit demotion of X once its seeds are added to D,
-//! keyed (R, X). Post-owner shape (owner-removal step 2): `edges::random_post` keeps node 0
-//! as an inert old owner and gives node 1 the first admin's edge before every write;
-//! `joint::random_post` makes every actor ownerless with its first admin's edge in genesis.
-//! Both walks gain `eval_from` (D seeded) and the demotions they applied; `edges` gains
+//! keyed (R, X). `edges::random_shaped` limits who may lower whom and who is online. Both
+//! walks gain `eval_from` (D seeded) and the demotions they applied; `edges` gains
 //! finalizes (`EWrite::fin`, spec/permissions.md §2). Searches: `roles-model -- N disputes`
 //! (exhaustive edge tiers, then N random histories per shape: who may lower whom × online or
 //! offline, then N joint histories); `disputes-random` skips the exhaustive tiers. Hard

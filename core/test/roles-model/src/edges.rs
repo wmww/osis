@@ -1,11 +1,12 @@
 //! One-level model of edges with `until`, invite power and self-removal (spec/permissions.md
-//! §2, §5.1, §7). One thing T; node 0 is T's owner (admin, unremovable); every other node is a
-//! key actor (admin of itself, so effective invite = its edge's invite). An edge is (role,
-//! until, invite ≤ role). A commit (normally one op; a redemption has two) is ordered by (t,
-//! author, commit ID) and each op is judged on its own with the author's authority just before
-//! the commit: an op lowering the author's own edge is a self-removal, always applied and
-//! attributed to the author's class (Admin, its invite level, else SelfOnly: no class); an
-//! admin's (owner, or an alive admin edge) other ops apply (Admin); otherwise an op applies iff
+//! §2, §5.1, §7). One thing T; node 0 is T's first admin (its record edge, admin, in genesis
+//! before every write and removable like any edge); every node is a key actor (admin of
+//! itself, so effective invite = its edge's invite). An edge is (role, until, invite ≤ role).
+//! A commit (normally one op; a redemption has two) is ordered by (t, author, commit ID) and
+//! each op is judged on its own with the author's authority just before the commit: an op
+//! lowering the author's own edge is a self-removal, always applied and attributed to the
+//! author's class (Admin, its invite level, else SelfOnly: no class); an admin's (an alive
+//! admin edge) other ops apply (Admin); otherwise an op applies iff
 //! it adds an edge alive when written, role ≤ the author's invite, for an actor with no alive edge (Invite, with
 //! the author's invite level).
 //!
@@ -89,7 +90,6 @@ pub struct EHist {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Attr {
     Skipped,
-    Owner,
     Admin,
     /// With the author's effective invite at that point (its level).
     Invite(Role),
@@ -107,7 +107,7 @@ fn class((role, invite): (Role, Role)) -> u8 {
     }
 }
 
-/// Class an op was attributed to; Owner and SelfOnly (no class) are never audited.
+/// Class an op was attributed to; SelfOnly (no class) is never audited.
 fn attr_class(a: Attr) -> u8 {
     match a {
         Attr::Admin => 4,
@@ -154,11 +154,7 @@ pub enum Drops {
 
 impl EOut {
     pub fn auth(&self, x: usize) -> (Role, Role) {
-        if x == O {
-            (Role::Admin, Role::Admin)
-        } else {
-            auth(self.edges[x], NOW)
-        }
+        auth(self.edges[x], NOW)
     }
     /// Commits with a dropped op.
     pub fn dropped_commits(&self) -> u64 {
@@ -191,10 +187,8 @@ impl EHist {
         w.ops
             .iter()
             .map(|&(x, new)| {
-                if x == O {
-                    Attr::Skipped
-                } else if w.fin && x != a {
-                    let mine = if a == O { Role::Admin } else { role };
+                if w.fin && x != a {
+                    let mine = role;
                     let ended = edges[x].is_some_and(|e| w.t >= e.until);
                     let ok = new.is_none() && ended && mine >= Role::Write && edges[x].is_some_and(|e| mine >= e.role);
                     if ok {
@@ -202,8 +196,6 @@ impl EHist {
                     } else {
                         Attr::Skipped
                     }
-                } else if a == O {
-                    Attr::Owner
                 } else if x == a {
                     // A self-removal applies by the author's class and is audited like its
                     // other writes (a redemption's falls with its grant when the sharer
@@ -392,11 +384,11 @@ impl EHist {
         self.keep(&keep, genesis)
     }
 
-    /// Removed actors: x whose edge only the owner and x itself write, the owner last, by a
-    /// plain removal at T_x. Returns the history without each such x's commits the owner had
-    /// not received before T_x (what its frontier does not cover), or None if there is no
-    /// such x. Those commits should leave no trace. (When another admin removed x first, its
-    /// frontier is the one that counts, so such x are excluded.)
+    /// Removed actors: x whose edge only the first admin (node 0) and x itself write, node 0
+    /// last, by a plain removal at T_x. Returns the history without each such x's commits node
+    /// 0 had not received before T_x (what its frontier does not cover), or None if there is
+    /// no such x. Those commits should leave no trace. (When another admin removed x first,
+    /// its frontier is the one that counts, so such x are excluded.)
     pub fn residue(&self) -> Option<EHist> {
         let mut cut: Vec<Option<u32>> = vec![None; self.n()];
         let mut other = vec![false; self.n()];
@@ -424,7 +416,6 @@ impl EHist {
     /// Authors that never hold an admin role (genesis or any write).
     pub fn never_admin(&self) -> Vec<bool> {
         let mut v: Vec<bool> = self.genesis.iter().map(|e| e.map_or(true, |e| e.role < Role::Admin)).collect();
-        v[O] = false;
         for w in &self.writes {
             for &(x, new) in &w.ops {
                 if new.map_or(false, |e| e.role == Role::Admin) {
@@ -715,7 +706,7 @@ impl crate::shrink::Shrink for EHist {
                 out.push(h);
             }
         }
-        // An unused node other than the owner.
+        // An unused node other than the first admin.
         for k in (1..n).filter(|_| n > 2) {
             if self.genesis[k].is_none() && self.writes.iter().all(|w| w.author != k && w.ops.iter().all(|&(x, _)| x != k)) {
                 let mut h = self.clone();
@@ -810,10 +801,12 @@ fn rand_lower(rng: &mut Rng, e: Option<Edge>) -> Option<Edge> {
     Some(Edge { role, until, invite })
 }
 
+/// A random history: node 0 the first admin (genesis: a full admin edge), the others starting
+/// with random edges or none; a quarter of the writes by node 0.
 pub fn random_hist(rng: &mut Rng) -> EHist {
     let n = 3 + rng.below(4);
     let mut genesis: Vec<Option<Edge>> = (0..n).map(|_| if rng.below(4) == 0 { None } else { Some(rand_edge(rng)) }).collect();
-    genesis[O] = None;
+    genesis[O] = Some(Edge { role: Role::Admin, until: NEVER, invite: Role::Admin });
     let k = 2 + rng.below(7);
     let mut h = EHist { genesis, writes: vec![], recv: vec![] };
     let rt = |rng: &mut Rng, t: u32| -> u32 {
@@ -836,14 +829,14 @@ pub fn random_hist(rng: &mut Rng) -> EHist {
             continue;
         }
         let other = |rng: &mut Rng| loop {
-            let x = 1 + rng.below(n - 1);
+            let x = rng.below(n);
             if x != author {
                 return x;
             }
         };
         let ops = match rng.below(8) {
-            0 | 1 if author != O => vec![(author, rand_lower(rng, h.genesis[author]))],
-            2 if author != O => vec![(other(rng), Some(rand_edge(rng))), (author, None)],
+            0 | 1 => vec![(author, rand_lower(rng, h.genesis[author]))],
+            2 => vec![(other(rng), Some(rand_edge(rng))), (author, None)],
             _ => vec![(other(rng), if rng.below(3) == 0 { None } else { Some(rand_edge(rng)) })],
         };
         let mut r: Vec<u32> = (0..n).map(|_| rt(rng, t)).collect();
@@ -885,13 +878,13 @@ pub fn random(samples: u64, seed: u64, mode: Drops) -> Stats {
     })
 }
 
-/// Exhaustive: owner 0, admin 1, inviter 2 (write, invite write), outsider 3. Every set of
-/// `k` commits from a menu: author × target × edge (plus a redemption by 2: add 3 and
+/// Exhaustive: first admin 0, admin 1, inviter 2 (write, invite write), outsider 3. Every set
+/// of `k` commits from a menu: author × target (1-3) × edge (plus a redemption by 2: add 3 and
 /// remove itself), times {2,4,6}, receipts in `recv_opts` at the nodes in `recv_at`
 /// (others receive at 0).
 pub fn exhaustive(k: usize, edges: &[Option<Edge>], recv_opts: &[u32], recv_at: &[usize], mode: Drops) -> Stats {
     let w = |role, invite| Some(Edge { role, until: NEVER, invite });
-    let genesis = vec![None, w(Role::Admin, Role::Admin), w(Role::Write, Role::Write), None];
+    let genesis = vec![w(Role::Admin, Role::Admin), w(Role::Admin, Role::Admin), w(Role::Write, Role::Write), None];
     let n = genesis.len();
     let mut menu = Vec::new();
     let mut ops_menu: Vec<(usize, Vec<(usize, Option<Edge>)>)> = Vec::new();
@@ -993,7 +986,7 @@ impl crate::trust::Trusting for EHist {
         let base = self.bases();
         let w = &self.writes[self.commit_of(&base, op)];
         let x = w.ops[op - base[self.commit_of(&base, op)]].0;
-        (!w.fin && x != w.author && x != O).then_some(x)
+        (!w.fin && x != w.author).then_some(x)
     }
     /// Every op of the victim's commits ordered before R that the demoter had not received
     /// before `t`, but those on its own edge (one target: everything is in question).
@@ -1026,8 +1019,8 @@ impl crate::trust::Trusting for EHist {
         let granted = |y: usize, a: usize| self.writes.iter().any(|w| w.author == y && w.ops.iter().any(|&(z, e)| z == a && e.is_some()));
         (0..n).any(|i| (0..n).any(|j| {
             let (a, x) = (self.writes[i].author, self.writes[j].author);
-            let hits = |b: usize| b != x && b != O && lowers(j, x, b);
-            a != x && a != O && x != O && lowers(i, a, x) && (hits(a) || (1..self.n()).any(|g| granted(g, a) && hits(g))) && unlisted(i, j)
+            let hits = |b: usize| b != x && lowers(j, x, b);
+            a != x && lowers(i, a, x) && (hits(a) || (0..self.n()).any(|g| granted(g, a) && hits(g))) && unlisted(i, j)
         }))
     }
     fn same_state(&self, a: &Self::Res, b: &Self::Res) -> bool {
@@ -1057,20 +1050,19 @@ pub enum Net {
     Offline,
 }
 
-/// A random post-owner history (notes/owner-removal-plan.md step 2): node 0 is the inert old
-/// owner (never writes, holds nothing), node 1 the first admin by its implicit edge (genesis:
-/// before every write, removable), other nodes start with random edges (earlier history every
-/// node saw). Commits as in `random_hist` plus finalizes, limited by `who`, received by `net`.
-pub fn random_post(rng: &mut Rng, who: Who, net: Net) -> EHist {
+/// A random history shaped for the dispute searches: node 0 the first admin by its record edge
+/// (genesis: before every write, removable), other nodes starting with random edges (earlier
+/// history every node saw). Commits as in `random_hist` plus finalizes, limited by `who`,
+/// received by `net`.
+pub fn random_shaped(rng: &mut Rng, who: Who, net: Net) -> EHist {
     let n = 3 + rng.below(4);
     let full = Edge { role: Role::Admin, until: NEVER, invite: Role::Admin };
     let mut genesis: Vec<Option<Edge>> = (0..n).map(|_| if rng.below(3) == 0 { None } else { Some(rand_edge(rng)) }).collect();
-    genesis[O] = None;
-    genesis[1] = Some(full);
+    genesis[O] = Some(full);
     let k = 2 + rng.below(7);
     let mut h = EHist { genesis, writes: vec![], recv: vec![] };
     while h.writes.len() < k {
-        let author = 1 + rng.below(n - 1);
+        let author = rng.below(n);
         let t = 1 + rng.below(10) as u32;
         if rng.below(4) != 0 && h.writes.iter().any(|w| w.t == t && w.author == author) {
             continue;
@@ -1080,12 +1072,12 @@ pub fn random_post(rng: &mut Rng, who: Who, net: Net) -> EHist {
             continue;
         }
         let may_lower = |y: usize| match who {
-            Who::OneRemover => author == 1,
+            Who::OneRemover => author == O,
             Who::Rank | Who::RankFreeGrants => author < y,
             Who::Anyone => true,
         };
         // Rank: only lower ranks are written at all.
-        let targets: Vec<usize> = (1..n).filter(|&y| y != author && (who != Who::Rank || may_lower(y))).collect();
+        let targets: Vec<usize> = (0..n).filter(|&y| y != author && (who != Who::Rank || may_lower(y))).collect();
         let mut fin = false;
         let ops = match rng.below(10) {
             _ if targets.is_empty() => vec![(author, rand_lower(rng, h.genesis[author]))],
@@ -1117,28 +1109,28 @@ pub fn random_post(rng: &mut Rng, who: Who, net: Net) -> EHist {
     h
 }
 
-/// Exhaustive dispute search: inert 0, first admin 1, admin 2, inviter 3 (write, invite
-/// write), outsider 4. Every set of `k` commits from a menu: author (1-3) × holder × edge in
-/// `edges`, a finalize by each author of each other holder, a redemption by 3; times {2,4,6};
-/// receipts in `recv_opts` at nodes 1 and 2 (others receive at 0).
+/// Exhaustive dispute search: first admin 0, admin 1, inviter 2 (write, invite write),
+/// outsider 3. Every set of `k` commits from a menu: author (0-2) × holder × edge in `edges`,
+/// a finalize by each author of each other holder, a redemption by 2; times {2,4,6}; receipts
+/// in `recv_opts` at nodes 0 and 1 (others receive at 0).
 pub fn exhaustive_disputes(k: usize, edges: &[Option<Edge>], recv_opts: &[u32]) -> crate::trust::Stats<EHist> {
     let e = |role, invite, until| Some(Edge { role, until, invite });
-    let genesis = vec![None, e(Role::Admin, Role::Admin, NEVER), e(Role::Admin, Role::Admin, NEVER), e(Role::Write, Role::Write, NEVER), None];
+    let genesis = vec![e(Role::Admin, Role::Admin, NEVER), e(Role::Admin, Role::Admin, NEVER), e(Role::Write, Role::Write, NEVER), None];
     let n = genesis.len();
     let mut ops_menu: Vec<(usize, Vec<(usize, Option<Edge>)>, bool)> = Vec::new();
-    for author in 1..4 {
-        for x in (1..n).filter(|&x| x != author) {
+    for author in 0..3 {
+        for x in (0..n).filter(|&x| x != author) {
             for &ed in edges {
                 ops_menu.push((author, vec![(x, ed)], false));
             }
             ops_menu.push((author, vec![(x, None)], true));
         }
     }
-    ops_menu.push((3, vec![(4, e(Role::Write, Role::None, NEVER)), (3, None)], false));
+    ops_menu.push((2, vec![(3, e(Role::Write, Role::None, NEVER)), (2, None)], false));
     let mut menu = Vec::new();
     for (author, ops, fin) in &ops_menu {
         for t in [2, 4, 6] {
-            let others: Vec<usize> = [1, 2].into_iter().filter(|m| m != author).collect();
+            let others: Vec<usize> = [0, 1].into_iter().filter(|m| m != author).collect();
             for c in 0..recv_opts.len().pow(others.len() as u32) {
                 let mut r = vec![0; n];
                 r[*author] = t;
@@ -1194,8 +1186,12 @@ mod tests {
 
     struct B(EHist);
     impl B {
+        /// Node 0 is the first admin: its record edge (admin) is in genesis whatever `genesis`
+        /// says for it.
         fn new(genesis: &[Option<Edge>]) -> Self {
-            B(EHist { genesis: genesis.to_vec(), writes: vec![], recv: vec![] })
+            let mut genesis = genesis.to_vec();
+            genesis[O] = e(Admin, Admin);
+            B(EHist { genesis, writes: vec![], recv: vec![] })
         }
         /// Commit; `recv` lists (node, time) receipts, others get LATE.
         fn ops(&mut self, author: usize, ops: &[(usize, Option<Edge>)], t: u32, recv: &[(usize, u32)]) -> usize {

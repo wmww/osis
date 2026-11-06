@@ -356,15 +356,13 @@ impl Commit {
     }
 }
 
-/// Who a creation record makes the owner (spec/permissions.md §1).
+/// What a creation record puts above its thing (spec/permissions.md §1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Owner {
-    /// A key actor (node, link key, recovery key): it owns itself.
+    /// A key actor (node, link key, recovery key): admin of itself.
     Key,
-    /// Owned by that actor (a key actor or a thing that is an actor).
-    Actor(NodeId),
-    /// Ownerless, with its first admin's record edge.
-    Ownerless { first_admin: NodeId },
+    /// Its first admin (a key actor or a thing that is an actor): holds its record edge.
+    Admin(NodeId),
 }
 
 /// A known creation record. A thing, node or actor not listed has an unknown record

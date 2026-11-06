@@ -155,13 +155,13 @@ fn join_held<'a>(h: &'a Held, parked: &BTreeSet<CommitId>) -> Joined<'a> {
     Joined { live, applied, waiting, view, tl }
 }
 
-/// Per author, the things something leads to from it (spec/commits.md §4 A held part waits): owner
-/// links, first admins, and holders named by a joined part of an applied role commit, whether the
-/// walk applies it or not.
+/// Per author, the things something leads to from it (spec/commits.md §4 A held part waits):
+/// record edges, and holders named by a joined part of an applied role commit, whether the walk
+/// applies it or not.
 fn leads(world: &World, live: &[&Commit], view: &[Commit]) -> BTreeMap<NodeId, BTreeSet<ThingId>> {
     let mut adj: BTreeMap<NodeId, BTreeSet<ThingId>> = BTreeMap::new();
     for (&t, o) in &world.owners {
-        if let Owner::Actor(a) | Owner::Ownerless { first_admin: a } = o {
+        if let Owner::Admin(a) = o {
             adj.entry(*a).or_default().insert(t);
         }
     }
@@ -186,7 +186,7 @@ fn leads(world: &World, live: &[&Commit], view: &[Commit]) -> BTreeMap<NodeId, B
         .collect()
 }
 
-/// spec/commits.md §4: a held part waits while its thing's record or one up its owner chain is
+/// spec/commits.md §4: a held part waits while its thing's record or one up its record chain is
 /// unknown, nothing leads from the author to it, or it is parked.
 fn part_waits(world: &World, leads: &BTreeMap<NodeId, BTreeSet<ThingId>>, c: &Commit, p: &Part) -> bool {
     let t = p.thing;

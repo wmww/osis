@@ -104,15 +104,15 @@ impl Timeline {
     fn first_held_uncached(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let mut replays = self.memo.replays.lock().unwrap_or_else(|e| e.into_inner());
         let r = replays.entry((*x, required)).or_insert_with(|| {
-            let edges = EdgesAt::new(&self.walked.initial);
-            let (best, expires) = View::at(&self.input.owners, &edges, Some(Ts::default())).roles_expiring(x);
+            let edges = EdgesAt::new(&self.input.owners, &crate::graph::INITIAL);
+            let (best, expires) = View::at(&edges, Some(Ts::default())).roles_expiring(x);
             let first = best.iter().filter(|(_, r)| **r >= required).map(|(t, _)| (*t, None)).collect();
             Replay { pos: 0, best, expires, first }
         });
         if let Some(p) = r.first.get(thing) {
             return Some(*p);
         }
-        let mut edges = EdgesAt::new(&self.walked.initial);
+        let mut edges = EdgesAt::new(&self.input.owners, &crate::graph::INITIAL);
         let mut pos = 0;
         while let Some(c) = self.walked.history.get(r.pos) {
             let i = r.pos;
@@ -124,7 +124,7 @@ impl Timeline {
             let old = edges.get(&c.holder, &c.target).copied();
             edges.set(c.holder, c.target, c.edge);
             pos = i + 1;
-            let view = View::at(&self.input.owners, &edges, Some(ts));
+            let view = View::at(&edges, Some(ts));
             let gives = |e: Option<Edge>| e.filter(|e| e.alive_at(Some(ts))).map(|e| level.min(e.role));
             let (was, now, cur) = (gives(old), gives(c.edge), r.best.get(&c.target).copied());
             if r.expires.is_some_and(|u| ts.wall_ms() >= u) || (was.is_some() && was >= cur && now < was) {
@@ -157,13 +157,13 @@ impl Timeline {
     /// `first_held_uncached` by a search at every change (debug check).
     #[cfg(debug_assertions)]
     fn first_held_replayed(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
-        let mut edges = self.walked.initial.clone();
+        let mut edges = crate::graph::Edges::default();
         let holds = |edges: &crate::graph::Edges, ts: Ts| View::new(&self.input.owners, edges, Some(ts)).roles_from(x).get(thing).copied() >= Some(required);
         if holds(&edges, Ts::default()) {
             return Some(None);
         }
         for c in &self.walked.history {
-            edges.set(c.holder, c.target, c.edge);
+            edges.set(&self.input.owners, c.holder, c.target, c.edge);
             if holds(&edges, c.point.ts) {
                 return Some(Some(c.point));
             }
