@@ -13,7 +13,7 @@ An admin removes W (or demotes it below write) with `set_role`, like any holder:
 
 A commit's signer is a node, so "or by a node holding write or above on it" is what counts a person's own devices (and a team's writers) as that holder; it is judged now, not at the commit. Such a node's honest epoch the remover lacks is superseded with the rest: no secret leaks (the recovery carries only what the remover holds), and its holders keep reading it, as in "A rotation by W that missed the admin" below.
 
-**Limits.** Two colluding writers that each rotate concurrently from the same epoch lock A for good: removing either refuses on the other's epoch, and `set_role` removes one holder per commit (issues/lockout-two-writers.md). An epoch whose rotation commits a node no longer holds (a node that joined after a `secrets.0` compaction, or dropped them `ROLE_KEEP` after it) has no maker there, so that node cannot recover; one still holding them can.
+**Limits.** Two colluding writers that each rotate concurrently from the same epoch lock A for good: removing either refuses on the other's epoch, and `set_role` removes one holder per commit (issues/lockout-two-writers.md). An epoch a node knows only from a `secrets.0` compaction snapshot (it joined after the compaction) has no maker there, so that node cannot recover; one still holding them can.
 
 Receivers apply the ordinary Supersedes rule: e_W is superseded, the recovery epoch alone is current, every holder it boxed holds it. Code: `rotation::lacked_made_by` gates the refusal in `flows::edges::demote_in`.
 
