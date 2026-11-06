@@ -834,8 +834,8 @@ impl Osis {
     ///
     /// A writer that changed the keys so only it can read locks the others out; removing it (or
     /// lowering it below write) here recovers: the new keys replace the ones it made. Lacking keys
-    /// a holder it keeps made, a lowering that must change the keys fails `Invalid`, writing
-    /// nothing, until a holder gives them again.
+    /// made by a writer it keeps, the lowering applies without changing the keys, and nothing is
+    /// written under the thing here until that writer changes them (or is removed too).
     ///
     /// `Unsupported` on a client with its own actor, and on a thing this node reads at another node: move its group
     /// home first. A removal written to the copy here would never leave it.
