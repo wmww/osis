@@ -130,6 +130,7 @@ Every delta carries **retention** on the wire: who may purge it and how long its
 - A write **dies** when a later write supersedes it or at its delta's expiry (spec/crdt.md §4.8). A body is **replaced** as its writes die.
 - Each node dates deaths for itself, per body the first and last so far:
   - a superseded write's death at the `ts` of the first superseder the node held, so never earlier than its death (spec/crdt.md §4.8); a superseder held later with a lower `ts` moves no date; a superseder the node holds only as a valid snapshot's copy of a delta invalid here dates at the earliest such snapshot's `ts` where that is later;
+  - a text element's creation deleted again over an undelete (spec/crdt.md §5.7) may be dated again at that delete, a later date;
   - a body's own writes die for it; a snapshot carries a dying write when its body holds a write of the write's stamp and none of the superseder's stamp; a write dies for a body no earlier than the body's `ts`;
   - a validity flip, an un-merge or a new judgment of an invalid delta may date the aspect's deaths again from what it then holds;
   - an expiry dates none: the delta's body goes at T (§6) and a snapshot holds the write value-less.
