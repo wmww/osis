@@ -305,7 +305,7 @@ Writes of deltas the node judges invalid are not undone. Redo is an undo of the 
 **Un-merge of an ephemeral commit** (revoked author, spec/sync.md §9): the aspect is rebuilt from the node's own writes and the valid held parts left. The commit's writes and records go, as at a node that never held it (writes anchored at them are hidden, §6.1).
 
 ### 4.7 Expiry and value-less writes
-A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commit is rejected) owns the writes of its source with a counter in its range (commit form: every write of its source in that aspect).
+A delta with `expires: T` (header, per aspect; `T > wall_ms(ts)`, else the commit is rejected) carries the writes of its source with a counter in its range (commit form: every write of its source in that aspect).
 - **Value-carrying** writes are register values, enum case writes, set and bag element values, map entry creations (the key is the creation's value) and sequence element creations (the text char or list element). A delta's other writes (resets, `W`, deleted flags, position writes) carry no app data.
 - **Attribution** is by dot: a write, element or entry belongs to the delta whose range holds its dot (a `Derived` dot to the delta of its underlying dot).
 - **An undelete's char** (§5.7) is a copy of the element's creation's value and goes wherever that value goes (value-less, stripped, un-merged with the creator). The flag write itself is the undeleting delta's.

@@ -35,7 +35,7 @@ Built from the mirrored-grants pattern of notes/permissions.md Patterns with **t
 - The tag becomes an actor (secrets of its own, a label, a roster). Each direct item gets one grant for the tag's actor at the share's role or lower; a sub-tag gets the same grant and is made a shared actor itself if it is not one yet. Rights chain through role grants (spec/permissions.md §1): a holder on T reaches an item of sub-tag U by the path T → U → item, role = the minimum along it.
 - Items keep tid and first admin; an item in several shared tags has one grant per tag; moving between tags is a grant change. Everything under the tag travels under the tag's one label (entitlement holds through the chain).
 - Rosters nest: U's roster lists T as one holder actor. Removing Bob from T rotates T, then lazily each sub-tag and item below it once (the cascade of spec/permissions.md §3), whatever the graph shape.
-- Holders of write on the tag may add their own things (grant for the tag) or create tag-owned things in it.
+- Holders of write on the tag may add their own things (grant for the tag) or create things under the tag in it.
 - **Recursive by default**: sharing a tag shares everything reachable below it, a sub-tag that also hangs under a private tag included. "Items only" is the same operation without the grants on sub-tags: their contents stay unentitled and are not uploaded under T's label.
 - **Only what you may share**: granting T a grant on a sub-tag or item needs admin on it (or `may_grant`). A tag or thing someone shared with me read-only, added to my tag T, is not shared on when I share T; the client shows the tag's reach and what is excluded. This is the honest property the grant model gives over inherited folder ACLs; keep it.
 - Unsharing: removing the last holders of T; the grants on items may stay (harmless; T then reads nothing new). Removing an item: remove it from the group (its tied grant follows).
@@ -45,7 +45,7 @@ Built from the mirrored-grants pattern of notes/permissions.md Patterns with **t
 Adding a thing or a tag to a shared tag has significant privacy implications and gets a **confirmation** showing who will see it (as Drive does for moving into a shared folder). Same when sharing a tag that already has contents: show the reach. Not an API-level rule: the `osis` crate is used by apps and agents that know what they are doing.
 
 ## Logical documents
-A thing made of parts (a presentation of slides) owns its parts and is a group of them; sharing it is one grant on the whole. Users never see this as a container. Apps must not depend on sharing parts individually.
+A thing made of parts (a presentation of slides) is first admin of its parts and a group of them; sharing it is one grant on the whole. Users never see this as a container. Apps must not depend on sharing parts individually.
 
 ## Other conventions settled
 - Shared roots (a shared tag, a chat) are created in no group and synced under their own label, not added to the home group (notes/api.md `create`).

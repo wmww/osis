@@ -285,7 +285,7 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
 44. Every syncing node places its chain (11.5 KB per account), card (1.5 KB) and four heartbeats a day under each label it reads: about 13 MB once and 2.4 MB a day at 1000; about 1.4 GB and 240 MB a day at 100,000.
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
-46. Messages on a thing owned by the chat with an admin grant for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
+46. Messages on a thing under the chat with an admin grant for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.
 48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
 49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
@@ -293,6 +293,6 @@ Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client def
 51. Grant the private channel only to a role realm. Left: its serving nodes see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
 52. Entry counts are drowned by heartbeats and certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
-54. A thing owned by the realm or holding a grant for it is in the realm; as a member of the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain grants (notes/realms.md open question 1) a writer's removing it from the group only stops the auto-sync; removing it from the realm is an admin's grant removal.
+54. A thing under the realm or holding a grant for it is in the realm; as a member of the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain grants (notes/realms.md open question 1) a writer's removing it from the group only stops the auto-sync; removing it from the realm is an admin's grant removal.
 55. Every thing's role history is kept forever and readable by its holders.
 56. Rights: lower the top realm's role on each child, one commit per child; one step only as a client-honored flag.
