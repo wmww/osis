@@ -9,7 +9,7 @@ Many apps and app versions share data like a file format. Apps do not always upg
 Three layers of compatibility: store/relay/merge (universal: merge is schema-free), typing (per app, ordinary errors), semantics (doc comments, uncheckable). App versions do not exist for the core.
 
 ## Core vs convention
-The core does four things (spec/versioning.md): IDs never reused, open structs with reader defaults, an additive checker, and the parking rule plus encoding lattice. No schema ID or version travels on the wire (Tess, round 13): a node types an AK by the schema it holds. Everything below is a codegen convention over ordinary writes: the core never interprets it, merge converges whatever maintainers do, and the convention can change without touching stored data.
+The core does four things (spec/versioning.md): IDs never reused, open structs with reader defaults, an additive checker, and the parking rule plus encoding lattice. No schema ID or version travels on the wire (Tess): a node types an AK by the schema it holds. Everything below is a codegen convention over ordinary writes: the core never interprets it, merge converges whatever maintainers do, and the convention can change without touching stored data.
 - Writers emitting the oldest format version that fits means one upgraded node strands nobody unless it uses a new feature, and then only on that aspect.
 - Defaults are never materialized and immutable: changing one would read old data differently per version; materializing them would make a default-valued field distinguishable from an unwritten one.
 - Without the schema-aware diff an old app's save of a `set<struct>` would remove every element a newer app had extended and add a stripped copy, and a list with one unreadable element would be rewritten around it.
@@ -60,7 +60,7 @@ Format version 1 is the header's first field; the blob prefix has its own framin
 - Schema written into every group it is used in (needs an owner per writer; concurrent first writers mint two things).
 - `succeeds` resolved by comparing old with g(new): needs g∘f exact, which float conversions break.
 - Schema-relative AK indexes or hashed AK names (deltas unjoinable until the schema arrives).
-- Per-delta type hash in the header (above).
+- Per-delta type hash in the header (a node types an AK by the schema it holds).
 
 ## Implemented (osis-schema) vs open
 - Implemented: DSL syntax (notes/data-model.md); the additive checker, one named `Rule` per spec/versioning.md §4 item, types compared structurally after expanding named types (renames are free, recursion coinductive); a `DefaultAdded` passes only for locations the caller lists (the "explicitly marked" escape; the schema value has no marker bit). Lock file `<file>.osis.lock`: header, BLAKE3 of the canonical form, canonical bytes in hex (`provisional`). "Publishing" = `osis-schema-gen --publish`, which refuses a version that breaks the rules. Transition helpers (tie-break, write policy) are not built: no code reads `succeeds` yet; the links are data in the schema value.
