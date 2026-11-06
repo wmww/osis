@@ -8,4 +8,4 @@ Sketch from the chat design (unbuilt, traced by reading only): a read rotation a
 
 `required.0^` (spec/commits.md §5) must reach a history-less holder: its deltas are read like content, so a newcomer that cannot open an earlier epoch's setting does not know it, writes under no rule and sees its deltas invalid at everyone else. The grant must carry the setting in force or re-seal it.
 
-This is not forward secrecy against a stolen device: that needs erasable per-device keys (notes/chat-designs/d.md).
+This is not forward secrecy against a stolen device: that needs erasable per-device keys (notes/chat.md Rejected designs).

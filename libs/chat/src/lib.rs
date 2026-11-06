@@ -1,4 +1,4 @@
-//! Group chat on osis primitives alone (notes/chat.md, design notes/chat-designs/e.md): a chat is one
+//! Group chat on osis primitives alone (notes/chat.md): a chat is one
 //! ownerless actor C; participants hold write on it; a message is one kept write on a per-year aspect of
 //! C, its sender the commit's verified actor. No participant actor, participant list or per-message thing.
 

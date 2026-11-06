@@ -1622,7 +1622,7 @@ fn a_grant_to_a_group_is_copied_only_by_its_admin() {
     assert_eq!(took(2), took(4));
 }
 
-// spec/sync.md §3, notes/chat-designs/e-realms.md: realms nest by grants to groups: a reader of the top reads the child and what the child holds, whichever grant came first
+// spec/sync.md §3, notes/chat.md Realms: realms nest by grants to groups: a reader of the top reads the child and what the child holds, whichever grant came first
 #[test]
 fn grants_to_groups_nest() {
     let mut w = World::new();

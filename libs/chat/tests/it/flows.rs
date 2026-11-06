@@ -78,7 +78,7 @@ fn create_post_read_spec_commits_5() {
     assert!(!next.more);
 }
 
-// notes/chat-designs/e.md Edit, spec/permissions.md §5.2: edits: newest wins in any arrival order; the old text purged by default with no stray tombstone; a repeat edit still answers for the old one; another's edit is its own message, not an edit; off mode ignores replaces; keep mode shows versions
+// notes/chat.md Edit, spec/permissions.md §5.2: edits: newest wins in any arrival order; the old text purged by default with no stray tombstone; a repeat edit still answers for the old one; another's edit is its own message, not an edit; off mode ignores replaces; keep mode shows versions
 #[test]
 fn edit_modes_spec_perm_5() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
@@ -126,7 +126,7 @@ fn edit_modes_spec_perm_5() {
     assert_eq!(texts(&a, c), ["fixed", "a plain message"]);
 }
 
-// notes/chat-designs/e.md Edit: two nodes' edits arrive in either order; the same newest wins
+// notes/chat.md Edit: two nodes' edits arrive in either order; the same newest wins
 #[test]
 fn concurrent_edits_agree_spec_crdt_1() {
     let mut w = World::new();
@@ -988,7 +988,7 @@ fn leave_promote_newcomer_spec_perm_3() {
     assert_eq!(participants(&a, c).unwrap().len(), 1);
 }
 
-// notes/chat-designs/e.md What is different: per-year aspects: reads merge across the new year; a watch hears the next year's first message; a new node gets both
+// notes/chat.md Design E: per-year aspects: reads merge across the new year; a watch hears the next year's first message; a new node gets both
 #[test]
 fn across_a_new_year_spec_data_model_2() {
     let Room { mut w, a, b, c, .. } = room(Options::default());
