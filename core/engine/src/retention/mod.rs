@@ -131,24 +131,12 @@ fn snapshots_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
     core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| core.ix.commits.get(s).is_some_and(|m| m.view.kind.is_compaction())).collect()
 }
 
-/// The actor whose readers a delta's thing has (spec/sync.md §3 entitlement): the thing if it
-/// has secrets of its own, else its owner.
-fn reader(core: &Core, tid: &Tid) -> Tid {
-    if core.ix.own_keys.contains(tid) {
-        return *tid;
-    }
-    match core.created(tid) {
-        Some(osis_base::CreationRecord::Thing { owner, .. }) => *owner,
-        _ => *tid,
-    }
-}
-
 /// The retention class holding aspect `ai` of a commit (spec/commits.md §5: reader actor and
 /// retention class) and the aspects it holds. The ID (of the commit, not the class) keys
-/// a part's death record with its aspect: a class moves as records and keys arrive (`reader`), a
-/// death record must not.
+/// a part's death record with its aspect: a class moves as records and keys arrive (the reader
+/// actor, `Core::reader_of`), a death record must not.
 pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (BlobId, Vec<usize>) {
-    let key = |a: &osis_commit::AspectEntry| (reader(core, &a.tid), a.retention, a.keys.clone());
+    let key = |a: &osis_commit::AspectEntry| (core.reader_of(&a.tid), a.retention, a.keys.clone());
     let Some(me) = h.aspects.get(ai) else { return (BlobId(c.0), vec![ai]) };
     let k = key(me);
     let holders: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();
@@ -1151,6 +1139,45 @@ mod tests {
     use crate::local_peer::LocalPeer;
     use osis_base::{Ak, Role, Value, WallMs};
     use osis_schema::core_types as ct;
+
+    // spec/sync.md §3 Entitlement: a thing's reader actor is the nearest actor up its record
+    // chain with secrets of its own, through first-admin links as through owner links: a plain
+    // ownerless thing's is its first admin's, and so is that of a thing it owns; once a grant
+    // gives it secrets of its own, its own.
+    #[test]
+    fn reader_actor_up_the_record_chain_spec_sync_3() {
+        let mut lp = LocalPeer::new(2, 952, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let x = Ak::new("x:a.0").unwrap();
+        let e = &mut lp.peers[0].engine;
+        let p = e.create_ownerless(&a).unwrap().0;
+        let r = e.create_ownerless(&p).unwrap().0;
+        let mut m = Mutation::new();
+        let q = e.new_thing(&mut m, p);
+        let s = e.new_thing(&mut m, a);
+        for t in [p, q, r, s] {
+            m.set(t, &x, &Value::Int(1)).unwrap();
+        }
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        // the things whose write of `x` in `c` is in the body class of its write on P
+        let class = |e: &crate::Engine| {
+            let h = e.core.ix.commits.get(&c).unwrap().header.clone();
+            let ai = h.aspects.iter().position(|y| y.tid == p && y.ak == x).unwrap();
+            let mut ts: Vec<_> = super::body_class(&e.core, &h, &c, ai).1.iter().map(|i| &h.aspects[*i]).filter(|y| y.ak == x).map(|y| y.tid).collect();
+            ts.sort();
+            ts
+        };
+        let mut all = vec![p, q, r, s];
+        all.sort();
+        assert_eq!(class(&lp.peers[0].engine), all, "plain: every reader actor is A");
+        let e = &mut lp.peers[0].engine;
+        e.grant(&p, &b, &ct::Edge { role: Role::Read, until: None, invite: None, tied: None }).unwrap();
+        assert!(e.core.ix.own_keys.contains(&p), "the grant gave P secrets of its own");
+        let mut own = vec![p, q, r];
+        own.sort();
+        assert_eq!(class(&lp.peers[0].engine), own, "P's own, S still A's");
+    }
 
     // spec/sync.md §7 (a body with live writes needs a carrier), spec/permissions.md §5.2: a
     // write made invalid (its author's removal by an admin that had not received it) counts

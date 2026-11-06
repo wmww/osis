@@ -512,21 +512,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
         w = w.u8(u8::from(d.stands_in));
         w = match &d.shown {
             None => w.u8(0),
-            Some(x) => {
-                let mut w = w.u8(1).u8(u8::from(x.rotates)).u32(x.removed.len() as u32);
-                for (m, r) in &x.removed {
-                    w = w.raw(m.as_bytes()).u8(*r as u8);
-                }
-                w = w.u32(x.shown.len() as u32);
-                for b in &x.shown {
-                    w = w.raw(b.holder.as_bytes()).u8(b.role as u8).u64(b.keyset.n()).raw(b.keyset.nonce());
-                    w = match &b.signed {
-                        Some((d, sig)) => w.u8(1).raw(d).raw(sig),
-                        None => w.u8(0),
-                    };
-                }
-                w
-            }
+            Some(x) => put_showing(w.u8(1), x),
         };
     }
     w = w.u32(m.stripped.len() as u32);
@@ -576,11 +562,57 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
             w = w.u8(1).bytes(&osis_base::encode(&f.to_value()));
         }
     }
+    // what its `secrets.0` parts show for possession (`Indexes::shown`): an input of their
+    // judgment, as the rotation roles above are
+    let shown: Vec<(usize, &Arc<super::Showing>)> = (0..m.valid.len()).filter_map(|ai| Some((ai, core.ix.shown.get(&(*id, ai))?))).collect();
+    w = w.u32(shown.len() as u32);
+    for (ai, x) in shown {
+        w = put_showing(w.u32(ai as u32), x);
+    }
     w.take()
 }
 
-/// A `METAS` row's part bytes and view.
-fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
+/// What a `secrets.0` part shows (`Showing`), in a meta row or a dropped part's record.
+fn put_showing(w: records::Wr, x: &super::Showing) -> records::Wr {
+    let mut w = w.u8(u8::from(x.rotates)).u32(x.removed.len() as u32);
+    for (m, r) in &x.removed {
+        w = w.raw(m.as_bytes()).u8(*r as u8);
+    }
+    w = w.u32(x.shown.len() as u32);
+    for b in &x.shown {
+        w = w.raw(b.holder.as_bytes()).u8(b.role as u8).u64(b.keyset.n()).raw(b.keyset.nonce());
+        w = match &b.signed {
+            Some((d, sig)) => w.u8(1).raw(d).raw(sig),
+            None => w.u8(0),
+        };
+    }
+    w
+}
+
+fn read_showing(r: &mut records::Rd<'_>) -> Result<super::Showing> {
+    let role = |b: u8| [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(b)).copied().ok_or(Error::Corrupt("shown role"));
+    let rotates = r.u8()? != 0;
+    let mut removed = Vec::new();
+    for _ in 0..r.u32()? {
+        let m = Tid::from_bytes(r.arr()?);
+        removed.push((m, role(r.u8()?)?));
+    }
+    let mut shown = Vec::new();
+    for _ in 0..r.u32()? {
+        let holder = Tid::from_bytes(r.arr()?);
+        let role = role(r.u8()?)?;
+        let keyset = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("shown epoch"))?;
+        let signed = if r.u8()? != 0 { Some((r.arr()?, r.arr()?)) } else { None };
+        shown.push(osis_keys::possession::Shown { holder, role, keyset, signed });
+    }
+    Ok(super::Showing { rotates, removed, shown })
+}
+
+/// What a commit's parts show, by part (`Indexes::shown`), as a `METAS` row keeps it.
+type PartsShown = Vec<(usize, super::Showing)>;
+
+/// A `METAS` row's part bytes, view and what its parts show.
+fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View, PartsShown)> {
     let mut r = records::Rd::new(row);
     if r.u8()? != 1 {
         return Err(Error::Corrupt("meta row version"));
@@ -623,8 +655,13 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         }
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
+    let mut shown = Vec::new();
+    for _ in 0..r.u32()? {
+        let ai = r.u32()? as usize;
+        shown.push((ai, read_showing(&mut r)?));
+    }
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks, undoes, purges }))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks, undoes, purges }, shown))
 }
 
 /// A commit record's head and its blob bytes.
@@ -656,25 +693,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             keysets.push(super::KeysetRec { role, epoch: e, lists, kem, possession });
         }
         let stands_in = r.u8()? != 0;
-        let shown = if r.u8()? != 0 {
-            let rotates = r.u8()? != 0;
-            let mut removed = Vec::new();
-            for _ in 0..r.u32()? {
-                let m = Tid::from_bytes(r.arr()?);
-                removed.push((m, [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped shown role"))?));
-            }
-            let mut shown = Vec::new();
-            for _ in 0..r.u32()? {
-                let holder = Tid::from_bytes(r.arr()?);
-                let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped shown role"))?;
-                let keyset = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped shown epoch"))?;
-                let signed = if r.u8()? != 0 { Some((r.arr()?, r.arr()?)) } else { None };
-                shown.push(osis_keys::possession::Shown { holder, role, keyset, signed });
-            }
-            Some(std::sync::Arc::new(super::Showing { rotates, removed, shown }))
-        } else {
-            None
-        };
+        let shown = if r.u8()? != 0 { Some(std::sync::Arc::new(read_showing(&mut r)?)) } else { None };
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
         dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Invalid } else { super::DropFor::Other }, live: flags & 2 != 0, gave: flags & 64 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, shown });
     }
@@ -693,13 +712,14 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
 fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     let c = &*tx.core;
     let txn = &mut tx.txn;
-    // a commit's parts row carries their validity, rotation roles and grant overreach
+    // a commit's parts row carries their validity, rotation roles, grant overreach and showing
     let ids: Vec<CommitId> = if all {
         c.ix.commits.keys().copied().collect()
     } else {
         let mut s: BTreeSet<CommitId> = c.ix.commits.logged().into_iter().collect();
         s.extend(c.ix.rotation_role.logged().into_iter().map(|k| k.0));
         s.extend(c.ix.grant_overreach.logged().into_iter().map(|k| k.0));
+        s.extend(c.ix.shown.logged().into_iter().map(|k| k.0));
         s.into_iter().collect()
     };
     if !ids.is_empty() {
@@ -845,7 +865,10 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     let fault = tx.core.header_fault.clone();
     for (id, head, bytes) in recs {
         let row = rows.remove(&id).ok_or(Error::Corrupt("meta row missing"))?;
-        let (parts, view) = parse_meta_row(&row)?;
+        let (parts, view, shown) = parse_meta_row(&row)?;
+        for (ai, x) in shown {
+            tx.core.ix.shown.insert((id, ai), Arc::new(x));
+        }
         let mut valid = Vec::with_capacity(parts.len());
         let mut missing = BTreeSet::new();
         for (ai, p) in parts.iter().enumerate() {

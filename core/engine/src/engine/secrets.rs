@@ -345,16 +345,14 @@ impl Core {
         }
     }
 
-    /// Notes the `keys.0` state of `actor`: its published delete keys replace any inbox hint, and
-    /// the keysets' epochs and suites are recorded with its epochs. Whether it has secrets of its
-    /// own is the parts' (`apply::keys::refresh_own_keys`), not the state's.
+    /// Notes the `keys.0` state of `actor`: its published delete keys replace any inbox hint. It
+    /// names no epoch in the held epochs (`keys.0` vouches for no secret, spec/crypto.md §4: a
+    /// keyset alone would make them depend on which of `keys.0` and `secrets.0` joined first).
+    /// Whether it has secrets of its own is the parts' (`apply::keys::refresh_own_keys`).
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
             self.ix.delete_hints.remove(actor);
             self.role_changed();
-            if let Some(e) = self.ix.secrets.get_mut(actor) {
-                let _ = osis_keys::observe_keys(keys, e);
-            }
         }
     }
 }
@@ -620,7 +618,6 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                         let sticky = i.established.filter(|p| p.sticky()).map(|p| Value::Bool(p == Provenance::Derived));
                         Value::List(vec![
                             e.to_wire(),
-                            Value::uint(i.suite),
                             Value::List(i.rotations.iter().map(|(c, sup)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::List(sup.iter().map(Epoch::to_wire).collect())])).collect()),
                             Value::Bool(i.snapshot),
                             Value::List(i.names.iter().map(osis_keys::Names::to_value).collect()),
@@ -707,10 +704,9 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::Int(suite), Value::List(rotations), Value::Bool(snapshot), Value::List(names), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::List(rotations), Value::Bool(snapshot), Value::List(names), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
-            info.suite = u64::try_from(*suite).map_err(|_| bad())?;
             for x in rotations {
                 let Value::List(x) = x else { return Err(bad()) };
                 let [Value::Bytes(c), Value::List(list)] = x.as_slice() else { return Err(bad()) };

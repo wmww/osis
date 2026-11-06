@@ -334,6 +334,7 @@ pub(crate) fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
     let had = (validity(e.index_digest()), e.perm_digest(false), states(e, things));
     e.reload().unwrap();
     assert_eq!(e.headers_decoded(), 0, "{at}: headers the open decoded");
+    assert_eq!(e.misjudged(), None, "{at}: judged anew after the open");
     assert_eq!(had.0.first_diff(&validity(e.index_digest())), None, "{at}: index opened");
     assert_eq!((validity(e.index_digest()), e.perm_digest(false), states(e, things)), had, "{at}: opened from the index");
     e.rebuild_index().unwrap();

@@ -812,6 +812,22 @@ pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak
     }
 }
 
+/// The first held commit whose flags differ from what judging it now gives (decodes every
+/// header). Debug builds check it after each re-judge; tests after an open from the persisted
+/// index (`Engine::misjudged`: every input of a judgment that comes from a body is persisted with
+/// the flag, `index::meta_row`).
+pub(crate) fn misjudged(core: &Core) -> Option<String> {
+    for (id, m) in core.ix.commits.iter() {
+        let h = &m.header;
+        let now: Vec<bool> = (0..h.aspects.len()).map(|ai| part_valid(core, h, id, ai)).collect();
+        if now != m.valid {
+            let parts: Vec<_> = h.aspects.iter().zip(m.valid.iter().zip(&now)).filter(|(_, (a, b))| a != b).map(|(x, (a, _))| (x.tid, x.ak.as_str(), *a)).collect();
+            return Some(format!("validity of {id:?} ({:?} by {}): {parts:?}", h.kind, h.author));
+        }
+    }
+    None
+}
+
 /// One pass of `rejudge_all`.
 fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     if resolve_unresolved(tx)? {
@@ -961,9 +977,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     }
     // what was not re-judged has not changed (debug builds: decodes every header)
     #[cfg(debug_assertions)]
-    for (id, m) in tx.core.ix.commits.iter() {
-        let now: Vec<bool> = (0..m.header.aspects.len()).map(|ai| part_valid(tx.core, &m.header, id, ai)).collect();
-        debug_assert!(now == m.valid, "validity of {id:?} changed outside the re-judged set");
+    {
+        let d = misjudged(tx.core);
+        debug_assert!(d.is_none(), "{} changed outside the re-judged set", d.unwrap_or_default());
     }
     for (tid, ak) in &flipped {
         tx.core.mark_aspect_changed(tid, ak);

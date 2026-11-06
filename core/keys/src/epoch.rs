@@ -51,10 +51,8 @@ impl Provenance {
 }
 
 /// What a node knows of one epoch.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EpochInfo {
-    /// Suite ID (from the keyset that named it; 1 until one is seen).
-    pub suite: u64,
     /// Epochs its opened history box lists (and its rotator's own record). With its rotation
     /// commits' lists (`superseded_epochs`), what it supersedes; counts only once established.
     pub supersedes: BTreeSet<Epoch>,
@@ -85,22 +83,6 @@ pub struct EpochInfo {
     /// `derived_n`). It orders (`RoleEpochs::is_newer`) by this, so derived epochs order as the
     /// owner's (spec/crypto.md §3, §4).
     pub order: Option<u64>,
-}
-
-impl Default for EpochInfo {
-    fn default() -> EpochInfo {
-        EpochInfo {
-            suite: SUITE,
-            supersedes: BTreeSet::new(),
-            rotations: BTreeMap::new(),
-            snapshot: false,
-            names: BTreeSet::new(),
-            established: None,
-            secret: None,
-            reading: BTreeSet::new(),
-            order: None,
-        }
-    }
 }
 
 impl EpochInfo {
@@ -330,10 +312,6 @@ impl RoleEpochs {
         self.map.get(e).and_then(|i| i.established)
     }
 
-    pub fn set_suite(&mut self, e: Epoch, suite: u64) {
-        self.observe(e).suite = suite;
-    }
-
     pub fn get(&self, e: &Epoch) -> Option<&EpochInfo> {
         self.map.get(e)
     }
@@ -535,7 +513,6 @@ impl ActorEpochs {
             for (e, i) in &o.map {
                 let Some((de, ds)) = ids.get(e) else { continue };
                 let info = EpochInfo {
-                    suite: i.suite,
                     // past the cap two owner epochs with one secret derive one epoch: it never
                     // supersedes itself
                     supersedes: i.superseded_epochs().iter().map(id).filter(|x| x != de).collect(),
