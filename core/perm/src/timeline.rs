@@ -276,16 +276,20 @@ impl Timeline {
     /// (if any) gives the standing facts (`Detected`). Returns the disputes found, the walks
     /// made and the candidates left that needed one.
     pub(crate) fn scan(&self, cands: &[WriteId], max: usize, stood: &BTreeSet<WriteId>, me: Option<Tid>) -> (Vec<Detected>, usize, usize) {
-        let ix = TrustIndex::new(&self.input);
+        // the index over every held commit only once a candidate needs seeds (honest arrivals
+        // apply, and detection asks at every update)
+        let mut ix: Option<TrustIndex> = None;
         let mut out = Vec::new();
         let (mut walked, mut left) = (0, 0);
-        let mut own: Option<(BTreeMap<Tid, Role>, BTreeMap<Tid, BTreeSet<Tid>>)> = None;
+        let mut own_roles: Option<BTreeMap<Tid, Role>> = None;
+        let mut reach: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         for id in cands {
             let Some((c, op)) = self.input.trustable(id) else { continue };
             if self.walked.applied.contains_key(id) || self.seeds.contains_key(id) {
                 continue;
             }
-            let mut d = self.input.seeds(&ix, id);
+            let ix = ix.get_or_insert_with(|| TrustIndex::new(&self.input));
+            let mut d = self.input.seeds(ix, id);
             if d.is_empty() {
                 continue;
             }
@@ -305,7 +309,7 @@ impl Timeline {
             let standing = match me {
                 None => (false, false),
                 Some(me) => {
-                    let (roles, reach) = own.get_or_insert_with(|| (self.roles_of(&me, At::END), BTreeMap::new()));
+                    let roles = own_roles.get_or_insert_with(|| self.roles_of(&me, At::END));
                     let below = reach.entry(op.target).or_insert_with(|| self.input.ever_forward([op.target]));
                     let with = Timeline::from_outcome(self.input.clone(), o).roles_of(&me, At::END);
                     (roles.keys().any(|t| below.contains(t)), with.keys().any(|t| below.contains(t)))
