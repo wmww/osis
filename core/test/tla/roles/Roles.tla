@@ -56,7 +56,7 @@ G(tpl, ts) == [tpl |-> tpl, ts |-> ts]
 
 Genesis ==
   CASE Scenario = "core" -> <<G(E1(1, A, 2, 3, 0), 2), G(E1(1, A, 3, 3, 0), 4)>>
-    [] Scenario = "group" -> <<G(E1(1, A, B, 3, 0), 2), G(E1(1, B, 2, 3, 0), 4)>>
+    [] Scenario = "group" -> <<G(E1(1, A, B, 3, 0), 2), G(E1(1, B, 2, 3, 0), 4), G(E1(1, A, 2, 3, 9), 5)>>
     [] Scenario = "until" -> <<G(E1(1, A, 2, 3, 7), 2)>>
     [] Scenario = "samets" -> <<G(E1(1, A, 2, 3, 0), 2)>>
     [] Scenario = "multi" -> <<G(E1(1, A, B, 3, 0), 2), G(E1(1, B, 2, 3, 0), 4)>>
@@ -210,16 +210,19 @@ Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
 
 \* §5.1 step 2 and §2: a = -1 not applied, else the class attributed (on `on`);
 \* s: a self-removal (audits nothing), attributed to the author's class on the
-\* holder it is admin of, or on the target for its own edge.
+\* holder it is admin of, or on the target for its own edge. Through a holder,
+\* the author's class on the target is taken with that edge disregarded
+\* (authority through the holder does not count).
 Judge(st, R, c, k) ==
   LET o == c.ops[k]
       e == <<o.mb, o.tg>>
       nv == Norm([r |-> o.r, u |-> o.u], c.ts)
       cls == Class(R, c.au, o.tg)
+      clsWithout == Class(Roles([st.E EXCEPT ![e] = Absent], c.ts), c.au, o.tg)
   IN IF o.mb = o.tg \/ (o.tg = A /\ o.mb = 1) \/ ~DepthOK(o.tg) \/ <<c.id, k>> \in st.D
        THEN [a |-> -1, s |-> FALSE, on |-> o.tg]
      ELSE IF Lowers(nv, st.E[e], c.ts) /\ o.mb = c.au THEN [a |-> cls, s |-> TRUE, on |-> o.tg]
-     ELSE IF Lowers(nv, st.E[e], c.ts) /\ o.mb \in Things /\ RoleOn(R, c.au, o.mb) = 3 /\ cls < 2
+     ELSE IF Lowers(nv, st.E[e], c.ts) /\ o.mb \in Things /\ RoleOn(R, c.au, o.mb) = 3 /\ clsWithout < 2
        THEN [a |-> Class(R, c.au, o.mb), s |-> TRUE, on |-> o.mb]
      ELSE [a |-> IF cls >= 2 THEN cls ELSE -1, s |-> FALSE, on |-> o.tg]
 

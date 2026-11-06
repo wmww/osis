@@ -20,12 +20,12 @@ TLC 2.19, 8 workers, shared 16-core machine (wall clock). 3 nodes; writes at ts 
 |---|---|---|---|---|
 | `MC_core` | n2, n3 admins of A: mutual removals, a demotion, a chain grant on B, content; 3 free commits; drop order | all pass | 2,380 | 3 s |
 | `MC_multi` | n2 admin of B, B admin of A: several-edge removal of B and n3 and the one-edge versions; drop order | all pass | 1,852 | 2 s |
-| `MC_group` | as MC_multi's genesis: n2 removes B (demotes itself, keeps its standing), n1 rewrites the edge, n2 grants through B | all pass | 5,782 | 4 s |
+| `MC_group` | as MC_multi's genesis plus n2 admin of A until 9: n2 removes B (before 9 an explicit write that demotes itself and keeps its standing, after it a self-removal), n1 rewrites the edge, n2 grants through B | all pass | 5,782 | 10 s |
 | `MC_until` | n2 admin of A until 7, resets and re-grants, a self demotion | all pass | 107,959 | 37 s |
 | `MC_depth` | `MaxDepth` 1: nothing on B valid | all pass | 31,660 | 14 s |
 | `MC_samets` | n1 stamps two commits at one ts (a removal and a re-grant of n2); drop order | all pass | 8,971 | 11 s |
 | `MC_forge` | removed admin backdates a write on its remover's edge (M1, fixed) | all pass | 580 | 2 s |
-| `MC_keepoff` | negative control: MC_group without the kept standing | **fails** StandingAudited (expected) | 664 | 3 s |
+| `MC_keepoff` | negative control: MC_group without the kept standing | **fails** StandingAudited (expected) | 719 | 2 s |
 | `MC_sticky` | drop order (M2) | **fails** DropOrderFree (expected) | 822 | 3 s |
 
 Probes (`Probe*`, run by hand) confirm that drops, layer-2 demotions, invalid content and kept standings (`MC_group`) all occur. Not reached: several drops in one walk outside `MC_sticky` (so `DropOrderFree` only bites there).
