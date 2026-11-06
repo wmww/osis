@@ -427,7 +427,7 @@ fn bench_certificates_drops() {
     );
 }
 
-// spec: none (cost measurement, issues/owner-to-first-admin.md risk 2): a million plain things
+// spec: none (cost measurement, notes/permissions.md First admins, Costs): a million plain things
 // under one actor, each with its record edge in force by the record alone; evaluate, a role
 // query at a leaf, and one more leaf through `update_touched`.
 #[test]

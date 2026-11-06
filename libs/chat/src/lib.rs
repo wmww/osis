@@ -1,5 +1,5 @@
 //! Group chat on osis primitives alone (notes/chat.md): a chat is one
-//! ownerless actor C; participants hold write on it; a message is one kept write on a per-year aspect of
+//! actor C; participants hold write on it; a message is one kept write on a per-year aspect of
 //! C, its sender the commit's verified actor. No participant actor, participant list or per-message thing.
 
 #![forbid(unsafe_code)]
@@ -77,8 +77,8 @@ pub struct Options {
     pub disappear: Option<Duration>,
     /// A kicked participant retains a read-only copy, unless the kick says otherwise.
     pub retain_copies: bool,
-    /// Whom the chat syncs with; empty: this node's saved peers. A serving node must admit it by its
-    /// sync ID or admit anyone: `admit own` does not take it.
+    /// Whom the chat syncs with; empty: this node's saved peers. The maker's serving nodes take it
+    /// by `admit own`; another serving node must admit it by its sync ID or admit anyone.
     pub peers: Vec<osis::Address>,
 }
 
@@ -97,10 +97,11 @@ fn rules(purge: PurgeBy, disappear: Option<Duration>, retain_copies: bool) -> Re
 }
 
 /// A new chat, this account its first admin: required retention set before anyone is granted, so no
-/// participant can write under an earlier key. One flow, several commits: a crash leaves a chat of one.
+/// participant can write under an earlier key. One commit, then `sync`: a crash between leaves a
+/// chat of one, on this node only.
 pub fn create(db: &Osis, o: &Options) -> Result<Tid> {
-    let c = db.create_ownerless(db.me())?;
     let mut w = db.write();
+    let c = w.create()?;
     w.at(c, REQUIRED).set(&rules(o.purge, o.disappear, o.retain_copies))?;
     w.at(c, settings_key(db)?).set(&settings_value(&o.name, o.edit))?;
     w.commit()?;
@@ -210,16 +211,20 @@ pub fn leave(db: &Osis, c: Tid) -> Result<()> {
 }
 
 /// Whether `h` is an actor accounts hold the chat through, as a link's actor K (spec/permissions.md
-/// §7) or a team: owned by an actor that has an owner itself. An account's owner is a key, and the
-/// holders of an account are its nodes.
+/// §7) or a team: some holder of `h` has holders itself. An account's holders are its nodes and its
+/// recovery key, key actors that nobody holds; a team's and K's include accounts.
 fn held_through(db: &Osis, h: Tid) -> Result<bool> {
-    let Some(o) = db.owner_of(h)? else { return Ok(false) };
-    Ok(db.owner_of(o)?.is_some())
+    for m in db.grants(h)?.into_keys() {
+        if !db.grants(m)?.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-/// A link's key on K: a key actor with `may_grant`. Never an account.
+/// A link's key on K: a key actor (nobody holds it) with `may_grant`. Never an account.
 fn link_key(db: &Osis, m: Tid, e: &osis::Grant) -> Result<bool> {
-    Ok(e.may_grant.is_some() && db.owner_of(m)?.is_none())
+    Ok(e.may_grant.is_some() && db.grants(m)?.is_empty())
 }
 
 /// Who holds the chat, with the role they have: its direct holders and those holding it through an

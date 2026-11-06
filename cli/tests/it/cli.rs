@@ -491,9 +491,9 @@ fn inspect_and_diag_plan_cli_4() {
     let o = s.ok(&["inspect", "thing", &t]).out;
     assert!(o.contains("aspect a:b.0 commits=1"), "{o}");
     assert!(s.ok(&["inspect", "group", "me"]).out.contains(&t));
-    // notes/api.md Reads: `show` names the owner and the creating commit; `now` the clock
+    // notes/api.md Reads: `show` names the creating commit; `now` the clock
     let shown = s.ok(&["show", &t]).out;
-    assert!(shown.contains("owner\tosis://") && shown.contains("created\t"), "{shown}");
+    assert!(shown.contains("created\t"), "{shown}");
     assert!(!s.ok(&["now"]).out.trim().is_empty());
     assert!(s.ok(&["inspect", "actor", "me"]).out.starts_with("actor osis://"));
     let id = s.ok(&["commits", "--thing", &t]).out.split(' ').next().unwrap().to_string();
@@ -688,20 +688,6 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = std::fs::remove_dir_all(&xdg);
 }
 
-// CLI `ownerless`, spec/permissions.md §1: a thing made by its record alone has this account
-// as first admin; a key actor or unknown actor as admin is refused.
-#[test]
-fn ownerless_plan_cli() {
-    let s = S::mem();
-    let t = s.ok(&["ownerless", "me"]).line().to_string();
-    assert_eq!(s.ok(&["role", &t]).line(), "admin");
-    let me = s.ok(&["whoami"]).out.lines().find_map(|l| l.strip_prefix("me\t")).unwrap().to_string();
-    assert!(s.ok(&["show", &t]).out.contains(&format!("owner\t{me}")), "the first admin");
-    assert!(s.ok(&["grants", &t]).out.contains("admin"));
-    s.ok(&["set", &t, "name.0", "\"chat\""]);
-    assert_ne!(s.code(&["ownerless", &t[..t.len() - 1]]), 0);
-}
-
 // CLI `history`, `purge`: pages by place, a tombstone in its line, purge by
 // commit and by author.
 #[test]
@@ -742,8 +728,11 @@ fn group_and_splice_commands() {
     assert!(two.code == 2 && two.err.contains("one expiry"), "{}", two.err);
     assert_eq!(s.call(&["write"], &format!("set --expires-in 1h {t} a:x.0 1\nset {t} a:y.0 1\n")).code, 0, "the flag is the commit's, whichever line gives it");
     assert_eq!(s.call(&["write"], &format!("set {t} a:x.0 1\nset {t} a:cursor.0~ 1\n")).code, 7, "durable beside ephemeral");
-    let owned = s.ok(&["create", "--admin", &g, "t:x.0", "1"]).line().to_string();
-    assert!(s.ok(&["show", &owned]).out.contains(&format!("owner\t{g}")), "{}", s.ok(&["show", &owned]).out);
+    // spec/permissions.md §1: `--admin G` makes G the first admin, which `grants` lists
+    let made = s.ok(&["create", "--admin", &g, "t:x.0", "1"]).line().to_string();
+    let gs = s.ok(&["grants", &made]).out;
+    assert!(gs.lines().any(|l| l.starts_with(&format!("{g} admin "))), "{gs}");
+    assert_ne!(s.code(&["create", "--admin", &g[..g.len() - 1], "t:x.0", "1"]), 0, "a malformed admin");
     let schema = s.ok(&["create", "t:made.0", "true"]).line().to_string();
     assert_eq!(s.code(&["op", &schema, "t:made.0", "", "splice"]), 2, "a range");
 }

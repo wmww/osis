@@ -142,8 +142,9 @@ pub const MAX_CONNS_PER_CLIENT: usize = 8;
 /// type, never by a key value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
-    /// A unix-socket peer of this process's uid: the same person at the keyboard.
-    Owner,
+    /// A unix-socket peer of this process's uid, the same person at the keyboard: it acts as the
+    /// node's main actor.
+    Main,
     /// A keyed transport: nothing of it reaches the port until its Auth matches `clients.0^`.
     Keyed,
     /// A keyed session whose bearer secret matched this client actor's entry in `clients.0^`

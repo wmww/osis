@@ -146,7 +146,6 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
         format!("{:?}", c.groups_of(t).unwrap()),
         format!("{:?}", c.grants(t).unwrap()),
         format!("{:?}", c.role_on(t).unwrap()),
-        format!("{:?}", c.owner_of(t).unwrap()),
         format!("{:?}", c.created(t).unwrap()),
         format!("{:?}", c.changed(t).unwrap()),
         e(c.commits(&CommitQuery { scope: Some(Scope::Thing(t)), ..Default::default() }).map(|v| format!("{v:?}"))),
@@ -165,7 +164,7 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
     out.join("\n")
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3: a client granted Read on a group reads what is under the group; the account, its node, a link's K and seed, another group and its thing, a member of the group owned elsewhere all answer every read and write exactly as a tid nobody knows; no row runs as the node's account
+// spec/wire.md §11.2, notes/client-port.md §3: a client granted Read on a group reads what is under the group; the account, its node, a link's K and seed, another group and its thing, a member of the group made under another account all answer every read and write exactly as a tid nobody knows; no row runs as the node's account
 #[test]
 fn reads_are_exactly_the_actors() {
     let x = node();
@@ -176,7 +175,7 @@ fn reads_are_exactly_the_actors() {
     assert_eq!(c.role_on(x.g).unwrap(), Some(Role::Read));
     assert!(c.has_content(x.t).unwrap());
     assert_eq!(c.groups_of(x.t).unwrap(), x.n.groups_of(x.t).unwrap());
-    assert_eq!(c.owner_of(x.t).unwrap(), Some(x.g));
+    assert_eq!(c.grants(x.t).unwrap().get(&x.g).map(|e| e.role), Some(Role::Admin), "its first admin");
     assert_eq!(c.commits(&CommitQuery { scope: Some(Scope::Thing(x.t)), ..Default::default() }).unwrap(), x.n.commits(&CommitQuery { scope: Some(Scope::Thing(x.t)), ..Default::default() }).unwrap());
     // a group listing it shows only groups it reads
     let mut w = x.n.write();
@@ -195,7 +194,7 @@ fn reads_are_exactly_the_actors() {
     let d = |t: Tid| answers(&c, t).replace(&format!("{t:?}"), "T");
     let gd = g_answers.replace(&format!("{ghost:?}"), "T");
     assert!(gd.contains("UnknownThing"), "{gd}");
-    for (name, t) in [("account", x.n.me()), ("node", x.n.node()), ("k", k), ("seed", seed), ("other group", x.h), ("its thing", x.u), ("member only", x.member), ("owned elsewhere", x.out)] {
+    for (name, t) in [("account", x.n.me()), ("node", x.n.node()), ("k", k), ("seed", seed), ("other group", x.h), ("its thing", x.u), ("member only", x.member), ("made elsewhere", x.out)] {
         assert_eq!(d(t), gd, "{name}");
     }
     // nothing of it changed through those attempts
@@ -230,7 +229,7 @@ fn writes_are_the_actors() {
         Ok(m)
     });
     let made = made.unwrap();
-    assert_eq!(x.n.owner_of(made).unwrap(), Some(x.g));
+    assert_eq!(x.n.grants(made).unwrap().get(&x.g).map(|e| e.role), Some(Role::Admin), "its first admin");
     assert_eq!(c.at(made, osis::DynamicAspectKey::untyped(name.clone())).get().unwrap(), Some(Value::Int(3)));
     assert!(matches!(c.commit_with(|w| w.create_with_admin(a)), Err(Error::Invalid(_))), "its own actor as first admin");
     assert!(matches!(c.commit_with(|w| w.create_with_admin(x.n.me())), Err(Error::Permission { .. })), "the account as first admin");
@@ -715,7 +714,7 @@ fn connections_past_the_cap() {
 
 // spec/sync.md §10 (never on another transport), notes/client-port.md §3 (main-actor rows): the registry calls run through a daemon's main actor session; a client secret never goes to a unix socket
 #[test]
-fn registry_through_the_owner_session() {
+fn registry_through_the_main_session() {
     let (net, clock, store) = (osis_transport::Net::new(1), Arc::new(ManualClock::new(Time(T0))), MemStore::new());
     let n = open(&store, &net, &clock, true);
     let dir = std::env::temp_dir().join(format!("osis-port-clients-{}-{}", std::process::id(), NAMES.fetch_add(1, Ordering::Relaxed)));
@@ -1059,7 +1058,7 @@ fn refused_undo_blocks_only_its_scope() {
     assert!(x.n.groups_of(x.member).unwrap().item_of.contains(&x.g));
 }
 
-// spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, owned elsewhere, ephemeral
+// spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, made elsewhere, ephemeral
 #[test]
 fn hidden_answers_writes_as_unknown() {
     let x = node();

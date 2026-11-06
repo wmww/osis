@@ -456,9 +456,9 @@ impl Data {
         Ok(out)
     }
 
-    /// Who can see `t`: its owner and its holders, through holder actors (shared tags, with their
-    /// owners) down to people; me and my nodes are "you". Grants with an `until` count until it
-    /// passes.
+    /// Who can see `t`: its holders (its first admin among them while that edge stands), through
+    /// holder actors (shared tags) down to people; me and my nodes are "you". Grants with an
+    /// `until` count until it passes.
     pub fn reach(&self, t: Tid) -> Result<Reach> {
         let db = &self.db;
         let me = db.me();
@@ -467,9 +467,6 @@ impl Data {
         let mut r = Reach::default();
         let mut seen = BTreeSet::new();
         let mut todo = vec![t];
-        if let Some(o) = db.owner_of(t)? {
-            todo.push(o);
-        }
         while let Some(x) = todo.pop() {
             if !seen.insert(x) {
                 continue;
@@ -478,10 +475,8 @@ impl Data {
                 continue;
             }
             if x != t && db.has_content(x)? && self.db.at(x, TAG).get()?.is_some() {
-                // a shared tag: its holders see what it holds, and so does its owner (implicitly
-                // its admin, with no grant)
+                // a shared tag: its holders see what it holds
                 r.via.push(x);
-                todo.extend(db.owner_of(x)?);
             } else if x != t {
                 let name = self.account_name(x)?;
                 if !r.people.contains(&name) {

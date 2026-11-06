@@ -371,13 +371,6 @@ impl Reader<'_> {
         !self.hidden(tid) && self.e.knows(&tid)
     }
 
-    /// The thing's first admin (`None`: unknown, or a key actor).
-    pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
-        if self.hidden(tid) {
-            return None;
-        }
-        self.e.first_admin(&tid)
-    }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
     /// snapshot (a draft's write); `None` while it is unknown or
@@ -477,18 +470,6 @@ impl Osis {
 
     pub(crate) fn holds(&self, tid: Tid) -> bool {
         self.read_local(|r| r.holds(tid))
-    }
-
-    /// The thing's first admin, fixed at creation (`None`: unknown, or a key actor): history,
-    /// not a right (its record edge may be gone, `holders` says).
-    // Removed with owners (issues/api-after-owners.md).
-    #[doc(hidden)]
-    pub fn owner_of(&self, tid: Tid) -> Result<Option<Tid>> {
-        if let crate::sources::Source::Node(r) = self.source(tid) {
-            let v = r.call(m::OWNER_OF, vec![Value::Tid(tid)])?;
-            return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::tid(&t)).transpose();
-        }
-        Ok(self.read_local(|r| r.owner_of(tid)))
     }
 
     fn node_stamp(&self, r: &crate::port::client::Connection, m: u64, tid: Tid) -> Result<Option<ThingStamp>> {

@@ -302,7 +302,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
     - A thing the actor may not read (spec/sync.md §3, and not a kept copy it reads, spec/permissions.md §3) answers every method as a thing the node does not know.
     - A write the actor may not make is code 3, adding a thing it may not read to a group code 1, a `link` value anywhere in its write code 8.
     - A revert needs the actor's rights on every write it makes (of a thing it deletes: every aspect, and its memberships in every group both the node and the actor may write; a membership in any other group stays, as for a delete) and on everything the reverted commit touched, and lists nothing the actor may not read (code 3).
-    - Methods carrying state beyond a thing the actor may read are Owner only, code 11 otherwise.
+    - Methods carrying state beyond a thing the actor may read are for main sessions only, code 11 otherwise.
     - This is the serving node's own rule, not a validity rule: receivers judge its commits by the author node's rights (spec/permissions.md §1), and its header's actor only by whether the author node acts for it (spec/permissions.md §5.2), never by the actor's rights on what it writes.
   - **Write nonces**: a write's nonce is below 2^62, from 1 per (identity, session id).
     - A client resending a write it had no answer to sets bit 62.

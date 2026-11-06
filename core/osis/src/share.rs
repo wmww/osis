@@ -1532,7 +1532,7 @@ impl Osis {
     /// Saves a peer: a node serving at this address (`set_serving`, its `serving_address`), whether or
     /// not it can read what it gets. This node stays connected to it, and what syncs from now on syncs
     /// with it (links, `sync`). What already syncs with all the saved peers moves to the new list: the home group and
-    /// groups this account owns that this node administers; not links or the contact card (their text
+    /// groups made under this account (their record chain reaches it) that this node administers; not links or the contact card (their text
     /// names their peers), not others' groups. With `Runtime::None` the list is only stored, for the
     /// next open with a runtime: until then `status` shows nothing connected and `wait_synced` fails
     /// `Network`.
@@ -1595,35 +1595,6 @@ impl Osis {
             return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(peers.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
         }
         self.sync_here(group, peers, false)
-    }
-
-    /// Creates a thing by its record alone, `admin` its first admin (`me()`, or an actor this
-    /// node holds write on), fixed by its tid; its admins are all equal, the first one removable
-    /// like any. Its secrets derive from `admin`'s until its first grant or `sync` gives it
-    /// secrets of its own; place it like any thing. Its grants are never compacted; its last
-    /// admin cannot be removed while it has no secrets of its own, and once no admin is left
-    /// nobody can change it (members keep their roles). `Permission` (write on `admin`),
-    /// `UnknownActor` (no `keys.0` of `admin` here).
-    // An alias of `Write::create_with_admin` plus a durable write until the API work
-    // (issues/api-after-owners.md).
-    #[doc(hidden)]
-    pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
-        if !self.has_store() {
-            let v = self.rcall(crate::port::method::CREATE_OWNERLESS, vec![Value::Tid(admin)])?;
-            return crate::port::codec::tid(&v);
-        }
-        let (t, done) = self.locked(|l| {
-            let e = l.engine();
-            if admin != e.tid() && e.get_typed(&admin, &ct::KEYS)?.is_none() {
-                return Err(Error::UnknownActor { tid: admin });
-            }
-            e.create_with_admin(&admin).map_err(|e| match e {
-                osis_node::Error::Permission { tid } => Error::Permission { tid, needs: Role::Write },
-                e => e.into(),
-            })
-        })?;
-        self.carry(done)?;
-        Ok(t)
     }
 
     /// `sync` on this engine. `home`: `group_source` bringing it back, while its source still stands

@@ -516,13 +516,13 @@ impl SyncEngine {
     }
 
     /// `accept` with the peer as the transport type reported it: a `Peer::Unix` session of this
-    /// process's uid is a client in the Owner tier (notes/client-port.md §0, §5), in its own
+    /// process's uid is a client in the main tier (notes/client-port.md §0, §5), in its own
     /// pool of `SyncConfig.max_clients` (an authenticated one counts as opened); every other
     /// session is keyed, in `max_served` (another uid's too, whatever its listener let in), but
     /// one on the client listener, in `client_pending`, so a flood there costs co-readers nothing.
     pub fn accept_peer(&mut self, local: [u8; 32], peer: osis_transport::Peer) -> (ConnId, Vec<Action>) {
         let (tier, peer, cap) = match peer {
-            osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => (super::Tier::Owner, osis_transport::unix::uid_key(uid), self.cfg.max_clients),
+            osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => (super::Tier::Main, osis_transport::unix::uid_key(uid), self.cfg.max_clients),
             osis_transport::Peer::Unix { uid } => (super::Tier::Keyed, osis_transport::unix::uid_key(uid), self.cfg.max_served),
             osis_transport::Peer::Key(k) => (super::Tier::Keyed, k, self.cfg.max_served),
         };
@@ -731,7 +731,7 @@ impl SyncEngine {
     }
 
     /// Decides what a served session's client-port request goes up as (notes/client-port.md §3).
-    /// An Owner's Auth without a secret; a keyed session's with a secret matching a current
+    /// A main session's Auth without a secret; a keyed session's with a secret matching a current
     /// `clients.0^` entry, which binds the session to that client actor, its secret stripped;
     /// any other Auth (a second one too) is Error 1. Proto refuses Call, Sub and Unsub before an
     /// answered Auth, so a keyed session never gets further unauthenticated.
@@ -744,7 +744,7 @@ impl SyncEngine {
             return if tier == Tier::Keyed { Err((id, Code::REFUSED)) } else { Ok((tier, msg)) };
         };
         match (tier, secret) {
-            (Tier::Owner, None) => Ok((tier, Message::Auth { id, secret: None, session })),
+            (Tier::Main, None) => Ok((tier, Message::Auth { id, secret: None, session })),
             (Tier::Keyed, Some(secret)) => {
                 let hash = osis_base::hash::hash(secret.expose());
                 let Some((actor, until)) = self.client_entry_by_hash(&hash) else { return Err((id, Code::REFUSED)) };

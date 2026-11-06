@@ -32,7 +32,7 @@ fn chat(a: &Osis, hosts: &[Address]) -> Tid {
 /// A message in `g`.
 fn message(db: &Osis, g: Tid, v: &str) -> Tid {
     db.commit_with(|w| {
-        let m = w.create_owned_by(g)?;
+        let m = w.create_with_admin(g)?;
         w.group(g).add(osis::Member::Item(m))?;
         w.at(m, osis::DynamicAspectKey::untyped(text())).set(&s(v))?;
         Ok(m)
@@ -118,7 +118,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     // one commit across both, each thing new and added to it
     let (m1, m2) = a
         .commit_with(|x| {
-            let (m1, m2) = (x.create_owned_by(g1)?, x.create_owned_by(g2)?);
+            let (m1, m2) = (x.create_with_admin(g1)?, x.create_with_admin(g2)?);
             x.group(g1).add(osis::Member::Item(m1))?;
             x.group(g2).add(osis::Member::Item(m2))?;
             x.at(m1, osis::DynamicAspectKey::untyped(text())).set(&s("one"))?;
@@ -137,7 +137,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     assert_eq!((says(&b, m1), says(&c, m2)), (Some(s("one more")), Some(s("two more"))));
     // a group under the first with a label of its own: a message in it is in both labels
     let mut x = a.write();
-    let t = x.create_owned_by(g1).unwrap();
+    let t = x.create_with_admin(g1).unwrap();
     x.group(g1).add(osis::Member::Subgroup(t)).unwrap();
     let sub = t;
     x.commit().unwrap();
@@ -152,7 +152,7 @@ fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
     assert_eq!((says(&b, both), says(&c, both)), (Some(s("both again")), Some(s("both again"))));
     // a nested group without one, then a message in it
     let mut x = a.write();
-    let t = x.create_owned_by(g2).unwrap();
+    let t = x.create_with_admin(g2).unwrap();
     x.group(g2).add(osis::Member::Subgroup(t)).unwrap();
     let nested = t;
     x.commit().unwrap();

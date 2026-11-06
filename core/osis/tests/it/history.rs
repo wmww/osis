@@ -336,7 +336,7 @@ fn delete_under_required_rules_says_what_to_do_spec_commits_6() {
     let rule = [ct::Required::new(osis::internals::schema::Retention::default(), Some(60_000)), ct::Required::new(nobody, None)];
     for (i, r) in rule.into_iter().enumerate() {
         let db = db_at(50 + i as u64);
-        let t = db.create_ownerless(db.me()).unwrap();
+        let t = db.commit_with(|w| w.create()).unwrap();
         let rules: ct::RequiredRules = [("app:m".to_string(), r), (String::new(), ct::Required::new(osis::internals::schema::Retention::default(), None))].into_iter().collect();
         db.commit_set(t, ct::REQUIRED, &rules).unwrap();
         let (m, plain) = (osis::DynamicAspectKey::untyped(osis::Ak::new("app:m.0").unwrap()), osis::DynamicAspectKey::untyped(osis::Ak::new("app:s.0").unwrap()));

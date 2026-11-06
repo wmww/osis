@@ -176,7 +176,7 @@ pub enum Message {
     Subscribe { id: Id, labels: Vec<LabelId> },
     Unsubscribe { id: Id, labels: Vec<LabelId> },
     Push { label: LabelId, events: Vec<Event>, cursor: Cursor },
-    /// Client port (notes/client-port.md §2): an Owner session sends no secret, a thin client
+    /// Client port (notes/client-port.md §2): a main session sends no secret, a thin client
     /// its bearer secret (`Debug` redacted, zeroized on drop).
     Auth { id: Id, secret: Option<osis_crypto::Secret32>, session: [u8; 16] },
     /// `max_reply`: the reply's frame body bound, `SMALL_REPLY..=REPLY_BUDGET`; `args` a list.

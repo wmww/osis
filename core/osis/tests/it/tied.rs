@@ -603,7 +603,7 @@ fn first_admin_home_copy_of_removal_without_new_keys() {
     alice.grant(o, e, Role::Read, GrantOpts::default()).unwrap();
     let m = alice
         .commit_with(|w| {
-            let m = w.create_owned_by(o)?;
+            let m = w.create_with_admin(o)?;
             Ok(m)
         })
         .unwrap();
@@ -927,7 +927,7 @@ fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
     frank.grant(p, fd, Role::Admin, GrantOpts::default()).unwrap();
     w.run();
     let mut x = dave.write();
-    let c = x.create_owned_by(p).unwrap();
+    let c = x.create_with_admin(p).unwrap();
     x.at(c, BODY).set(&"dave's".to_string()).unwrap();
     let t = c;
     x.commit().unwrap();
@@ -951,7 +951,7 @@ fn a_grant_by_a_chain_through_a_record_made_thing() {
     let frank = account(&mut w, 7, 0);
     let fd = introduce(&mut w, &frank, &dave);
     let df = introduce(&mut w, &dave, &frank);
-    let f = dave.create_ownerless(dave.me()).unwrap();
+    let f = dave.commit_with(|w| w.create()).unwrap();
     dave.sync(f, &[]).unwrap();
     dave.grant(f, df, Role::Read, GrantOpts::default()).unwrap();
     w.run();

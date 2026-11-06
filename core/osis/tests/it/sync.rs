@@ -313,7 +313,7 @@ fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    let l = alice.grants(k).unwrap().into_keys().find(|m| alice.owner_of(*m).unwrap().is_none()).unwrap();
+    let l = alice.grants(k).unwrap().into_keys().find(|m| alice.grants(*m).unwrap().is_empty()).unwrap();
     (alice, bob, g, k, l)
 }
 
@@ -382,7 +382,7 @@ fn joined_by_link() -> (World, Osis, Osis, Osis, Tid, Tid, Tid) {
         w.run();
     }
     let k = alice.links_of(g).unwrap()[0].id.actor();
-    let l = alice.grants(k).unwrap().into_keys().find(|m| alice.owner_of(*m).unwrap().is_none()).unwrap();
+    let l = alice.grants(k).unwrap().into_keys().find(|m| alice.grants(*m).unwrap().is_empty()).unwrap();
     (w, alice, bob, carol, g, k, l)
 }
 
@@ -1483,13 +1483,13 @@ fn a_holder_read_through_a_synced_group_has_a_route() {
     assert!(unrouted(&alice, sub).is_empty() && unrouted(bob, sub).is_empty());
 }
 
-// spec/sync.md §2 (Route): what nobody misses shows no missing route: a thing made by its record and a local group's items here, at their only reader; a thing a removed reader's node still holds the roster of; a thing whose roster reached a reader as a writer's chain, its label unknown there
+// spec/sync.md §2 (Route): what nobody misses shows no missing route: a thing in no group and a local group's items here, at their only reader; a thing a removed reader's node still holds the roster of; a thing whose roster reached a reader as a writer's chain, its label unknown there
 #[test]
 fn no_missing_route_where_nobody_misses_one() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 2);
     let (bob, frank) = (&others[0], &others[1]);
-    let o = alice.create_ownerless(alice.me()).unwrap();
+    let o = plain(&alice, "alone");
     w.run();
     assert!(unrouted(&alice, o).is_empty(), "local, as any thing in no group");
     let p = crate::scenario::private_tag(&alice, "private").unwrap();
@@ -1527,7 +1527,7 @@ fn no_missing_route_where_nobody_misses_one() {
     w.run();
     let shared = alice
         .commit_with(|w| {
-            let c = w.create_owned_by(up)?;
+            let c = w.create_with_admin(up)?;
             w.at(c, osis::DynamicAspectKey::untyped(ak("t:x.0"))).set(&s("shared"))?;
             Ok(c)
         })
@@ -1580,7 +1580,7 @@ fn a_grant_to_a_group_by_record() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 2);
     let (bob, carol) = (&others[0], &others[1]);
-    let f = alice.create_ownerless(alice.me()).unwrap();
+    let f = alice.commit_with(|w| w.create()).unwrap();
     alice.sync(f, &[]).unwrap();
     alice.grant(f, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
@@ -1600,7 +1600,7 @@ fn a_grant_to_a_group_is_copied_only_by_its_admin() {
     let took = |readers: usize| {
         let mut w = World::new();
         let (alice, others, ids) = people(&mut w, readers);
-        let f = alice.create_ownerless(alice.me()).unwrap();
+        let f = alice.commit_with(|w| w.create()).unwrap();
         alice.sync(f, &[]).unwrap();
         for id in &ids {
             alice.grant(f, *id, Role::Read, Default::default()).unwrap();
@@ -1650,7 +1650,7 @@ fn chunks_under_an_inbox_label_cost_no_kem() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let bob = &others[0];
-    let f = alice.create_ownerless(alice.me()).unwrap();
+    let f = alice.commit_with(|w| w.create()).unwrap();
     alice.sync(f, &[]).unwrap();
     alice.grant(f, ids[0], Role::Read, Default::default()).unwrap();
     w.run();
@@ -1706,7 +1706,7 @@ fn a_grant_to_a_holder_nothing_reaches() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 1);
     let dave = &others[0];
-    let f = alice.create_ownerless(alice.me()).unwrap();
+    let f = alice.commit_with(|w| w.create()).unwrap();
     alice.sync(f, &[]).unwrap();
     let m = plain(&alice, "meeting");
     alice.sync(m, &[]).unwrap();
@@ -1965,7 +1965,7 @@ fn a_grant_to_a_group_with_the_admin_away_and_two_admins() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 3);
     let (bob, eve, dave) = (&others[0], &others[1], &others[2]);
-    let f = alice.create_ownerless(alice.me()).unwrap();
+    let f = alice.commit_with(|w| w.create()).unwrap();
     alice.sync(f, &[]).unwrap();
     alice.grant(f, ids[0], Role::Read, Default::default()).unwrap();
     alice.grant(f, ids[1], Role::Admin, Default::default()).unwrap();

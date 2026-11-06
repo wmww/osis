@@ -6,7 +6,7 @@ Taken out because it was tied to saved peers (no card without them, the key disc
 
 Until then an account is reached again only through one of its other nodes.
 
-What stays inside: the engine still mints a recovery key for the account (an admin by a plain edge) and drops it (`create_person`); the engine's `recover` and its node tests (core/node/tests/it/flows.rs: `stolen_device_recovery_spec_perm_7`, `recovery_erases_whatever_the_default_spec_perm_2`, ...) and `osis_label::RecoveryCard` stay until stage D of issues/owner-to-first-admin.md. Spec text on recovery cards (spec/permissions.md §7, spec/wire.md §10) is marked as not built.
+What stays inside: the engine still mints a recovery key for the account (an admin by a plain edge) and drops it (`create_person`); the engine's `recover` and its node tests (core/node/tests/it/flows.rs: `stolen_device_recovery_spec_perm_7`, `recovery_erases_whatever_the_default_spec_perm_2`, ...) and `osis_label::RecoveryCard` stay until this redesign. Spec text on recovery cards (spec/permissions.md §7, spec/wire.md §10) is marked as not built.
 
 ## Not in the API
 `RecoveryCard`, `Osis::restore`, `internals::restore`, CLI `restore`, and a card from `init`; `Osis::create` returns just the `Osis`. No app UI had it.

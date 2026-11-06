@@ -86,7 +86,7 @@ fn client_handle_works_at_the_node() {
     assert!(c.groups_of(t).unwrap().item_of.contains(&g));
     assert_eq!(c.grants(t).unwrap(), n.grants(t).unwrap());
     assert_eq!(c.role_on(t).unwrap(), n.role_on(t).unwrap());
-    assert_eq!(c.owner_of(t).unwrap(), Some(n.me()));
+    assert_eq!(c.grants(t).unwrap().get(&n.me()).map(|e| e.role), Some(osis::Role::Admin), "its first admin");
     assert_eq!(c.created(t).unwrap(), n.created(t).unwrap());
     assert_eq!(c.changed(t).unwrap(), n.changed(t).unwrap());
     // a client's status adds its node connection
@@ -321,7 +321,7 @@ fn write_nonces_per_session() {
 
 // spec/sync.md §10 (unix), spec/wire.md §11.2 (Error 1), notes/client-port.md §0, §5: the main-actor tier comes from the unix transport alone: a keyed InProcess peer on the node's own listener is refused at Auth (Error 1) and its calls too
 #[test]
-fn keyed_peer_is_never_owner() {
+fn keyed_peer_is_never_main() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
     let net = osis_transport::Net::new(1);
@@ -474,7 +474,7 @@ fn client_wait_synced_as_at_the_node() {
     let (g, t) = c
         .commit_with(|w| {
             let g = w.create()?;
-            let t = w.create_owned_by(g)?;
+            let t = w.create_with_admin(g)?;
             w.at(t, osis::DynamicAspectKey::untyped(ak("note:title.0"))).set(&Value::Str("a".into()))?;
             w.group(g).add(osis::Member::Item(t))?;
             Ok((g, t))
@@ -600,7 +600,7 @@ fn rows_that_wait_through_the_socket() {
         let (g, t) = ca
             .commit_with(|w| {
                 let g = w.create()?;
-                let t = w.create_owned_by(g)?;
+                let t = w.create_with_admin(g)?;
                 w.at(t, osis::DynamicAspectKey::untyped(k.clone())).set(&Value::Str(text.into()))?;
                 w.group(g).add(osis::Member::Item(t))?;
                 Ok((g, t))
@@ -800,7 +800,7 @@ fn process_wide_rows_through_the_socket() {
     // a bundle of more than a page, out through the socket and in through another's
     let big = "b".repeat(osis::internals::STREAM_CHUNK * 3 / 2);
     let mut w = c.write();
-    let t = w.create_owned_by(g).unwrap();
+    let t = w.create_with_admin(g).unwrap();
     w.at(t, osis::DynamicAspectKey::untyped(ak("note:big.0"))).set(&Value::Str(big.clone())).unwrap();
     w.group(g).add(osis::Member::Item(t)).unwrap();
     w.commit().unwrap();

@@ -6,7 +6,6 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 ## In progress
 - **whole-commits**: steps 2a, 2b and 3 built (notes/whole-commits.md); 4 the per-part strip, 5 cleanup and the sealed-sections call.
 - **drop-rejoin-robust**: holders re-upload, brute-force refetch, the reference model (held-model exists; issues/held-model-unpinned-rules.md), the revoker snapshot.
-- **owner-to-first-admin** (notes/disputes-plan.md step 2).
 
 ## A-C, ranked (severity first, then size)
 
@@ -52,7 +51,7 @@ Tess: shapes only a malicious writer can craft inside data it may write are very
 big-map-rewrite-cost, chat-add-cost, covered-cost-whole-snapshot, crdt-seq-linearization-cost, durable-decode-bound (left: the writer's whole-state snapshot), frontier-certificate-cost (re-measure; close if the split is not worth it), idle-pass-per-label, long-aspect-cost, node-core-gaps, node-sequences-not-paged, perm-eval-cost, sync-step-cost, text-redelete-recompute-cost.
 
 ## F: optional features, API, tooling, cleanup
-account-rename, api-deferred, api-after-owners, api-leaving-give-up, app-attach-daemon, app-chat-multiline, app-group-helper, grant-rename-multi-actor, history-less-grant, partial-history-fetch, schema-discovery, cli-own-admission (label-ID admission), cli-proxy (e, f, g), magic-number-review, root-key-erasure-tier, pending-grant-unreachable (deletable machinery), eph-unify (left: D undo over held bodies, E durable auto-compaction), eph-unpaged-cover (memory pages), host-timed-delete-unused (after WC), mid-cleanup, spec-audit-engine-rest, spec-audit-sync, validity-conformance-vectors, seed-pinned-bugs-without-test, paged-apply-test-slow, build-baked-absolute-paths.
+account-rename, api-deferred, api-leaving-give-up, app-attach-daemon, app-chat-multiline, app-group-helper, grant-rename-multi-actor, history-less-grant, partial-history-fetch, schema-discovery, cli-own-admission (label-ID admission), cli-proxy (e, f, g), magic-number-review, root-key-erasure-tier, pending-grant-unreachable (deletable machinery), eph-unify (left: D undo over held bodies, E durable auto-compaction), eph-unpaged-cover (memory pages), host-timed-delete-unused (after WC), mid-cleanup, spec-audit-engine-rest, spec-audit-sync, validity-conformance-vectors, seed-pinned-bugs-without-test, paged-apply-test-slow, build-baked-absolute-paths.
 
 ## Not yet triaged (unranked)
 Grouped by their tags only; read the issue before placing it.

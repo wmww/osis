@@ -55,11 +55,11 @@ fn newest(db: &Osis, c: Tid) -> Message {
     Timeline::new(db, c).unwrap().older(db, 1).unwrap().messages.remove(0)
 }
 
-// spec/permissions.md §1, §5.2 and spec/commits.md §5: a chat in one flow: ownerless, synced, required retention; a post reaches a participant with its verified sender; identical posts are two messages; paging both ways
+// spec/permissions.md §1, §5.2 and spec/commits.md §5: a chat in one flow: this account its first admin, synced, required retention; a post reaches a participant with its verified sender; identical posts are two messages; paging both ways
 #[test]
 fn create_post_read_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    assert_eq!(a.owner_of(c).unwrap(), Some(a.me()), "the first admin, history");
+    assert_eq!(a.grants(c).unwrap().get(&a.me()).map(|e| e.role), Some(Role::Admin), "its first admin");
     assert_eq!(participants(&a, c).unwrap().get(&bob), Some(&Role::Write));
     post(&a, c, "hi").unwrap();
     post(&a, c, "hi").unwrap();

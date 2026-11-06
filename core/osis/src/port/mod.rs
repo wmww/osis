@@ -30,8 +30,6 @@ pub(crate) mod method {
     pub const GRANTS: u64 = 5;
     /// `[tid]` -> Opt(role)
     pub const ROLE_ON: u64 = 6;
-    /// `[tid]` -> Opt(tid)
-    pub const OWNER_OF: u64 = 7;
     /// `[tid]` -> Opt(stamp)
     pub const CREATED: u64 = 8;
     pub const CHANGED: u64 = 9;
@@ -100,8 +98,6 @@ pub(crate) mod method {
     pub const DROP_RETAINED_COPY: u64 = 40;
     /// `[tid, ak, from, limit, max bytes]` -> `[[entry*], more, complete]`
     pub const HISTORY: u64 = 41;
-    /// `[admin]` -> tid (`Osis::create_ownerless`)
-    pub const CREATE_OWNERLESS: u64 = 43;
     /// `[]` -> `[[node, role]*]`
     pub const NODES: u64 = 44;
     /// `[address text]` -> `[]`
@@ -162,7 +158,7 @@ pub(crate) mod method {
     /// this node's authority and take no actor (they would be a confused deputy). `LEAVE` is such a
     /// flow, and only ever on the actor's own grant (`Osis::leave`).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | OWNER_OF | CREATED | CHANGED | WRITE | COMMITS | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | HISTORY)
+        matches!(m, WHOAMI | GET | ASPECTS | HAS_CONTENT | HOLDS | GROUPS_OF | GRANTS | HOLDERS | LEAVE | ROLE_ON | CREATED | CHANGED | WRITE | COMMITS | UNDO_TARGET | REDO_TARGET | UNDO | REDO | REVERT | STATUS | BYTE_LEN | STREAM_READ | SETTLE | NOW | RETAINED_COPIES | HISTORY)
     }
 }
 

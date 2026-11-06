@@ -1,5 +1,5 @@
 //! Client-port plumbing in the sync engine (notes/client-port.md §0, §2, §5): the tier is the
-//! transport type's (`Peer::Unix` is Owner, a key never is), requests go up as actions, clients
+//! transport type's (`Peer::Unix` is main, a key never is), requests go up as actions, clients
 //! have their own pool, an authenticated client is exempt from the idle bound, a ported
 //! session's end is reported.
 
@@ -60,7 +60,7 @@ fn auth(net: &mut Net, n: usize, conn: ConnId, cs: &mut ClientSession) -> Vec<Ac
     feed(net, n, conn, cs, outs, Vec::new())
 }
 
-// spec/sync.md §10 (client port), notes/client-port.md §0, §5: Owner only from Peer::Unix; a keyed peer's Auth is refused by the sync engine (Error 1) whatever its key, never handed up
+// spec/sync.md §10 (client port), notes/client-port.md §0, §5: main only from Peer::Unix; a keyed peer's Auth is refused by the sync engine (Error 1) whatever its key, never handed up
 #[test]
 fn tier_is_the_transport_types() {
     let mut net = Net::new();
@@ -68,8 +68,8 @@ fn tier_is_the_transport_types() {
     let uid = osis_transport::unix::own_uid().unwrap();
     let (c, mut cs, _) = client(&mut net, a, Peer::Unix { uid });
     let got = auth(&mut net, a, c, &mut cs);
-    assert!(got.iter().any(|x| matches!(x, Action::Request { conn, tier: Tier::Owner, msg } if *conn == c && matches!(**msg, Message::Auth { .. }))), "{got:?}");
-    // a unix peer of another uid (whatever listener let it in) is never Owner
+    assert!(got.iter().any(|x| matches!(x, Action::Request { conn, tier: Tier::Main, msg } if *conn == c && matches!(**msg, Message::Auth { .. }))), "{got:?}");
+    // a unix peer of another uid (whatever listener let it in) is never main
     let (o, mut os, _) = client(&mut net, a, Peer::Unix { uid: uid.wrapping_add(1) });
     let got = auth(&mut net, a, o, &mut os);
     assert!(!got.iter().any(|x| matches!(x, Action::Request { .. })), "{got:?}");
@@ -181,7 +181,7 @@ fn request(acts: &[Action]) -> Option<(Tier, &Message)> {
     })
 }
 
-// spec/wire.md §11.2 (Auth), spec/sync.md §10, notes/client-port.md §3: a keyed session's Auth goes up only when its secret's hash is a current entry, bound to that entry's actor with the secret stripped; an unknown secret, no secret, and an entry past its until are Error 1 and never reach the worker; a second Auth on a bound session is Error 1; an Owner session's Auth with a secret is Error 1
+// spec/wire.md §11.2 (Auth), spec/sync.md §10, notes/client-port.md §3: a keyed session's Auth goes up only when its secret's hash is a current entry, bound to that entry's actor with the secret stripped; an unknown secret, no secret, and an entry past its until are Error 1 and never reach the worker; a second Auth on a bound session is Error 1; a main session's Auth with a secret is Error 1
 #[test]
 fn bearer_auth_gated_in_the_sync_engine() {
     let mut net = Net::new();
@@ -209,7 +209,7 @@ fn bearer_auth_gated_in_the_sync_engine() {
     let (acts, code) = bearer(&mut net, a, o, &mut os, Some(SECRET));
     assert_eq!(code, Some(osis_proto::Code::REFUSED));
     assert!(request(&acts).is_none());
-    assert_eq!(net.sync(a).client_of(o), None, "the Owner session is no client");
+    assert_eq!(net.sync(a).client_of(o), None, "the main session is no client");
     // expired: past its until at Auth
     let now = net.now();
     let late = Tid::from_bytes([6; 15]);
@@ -263,7 +263,7 @@ fn bound_sessions_end_with_their_entry() {
     assert!(acts.contains(&Action::Close { conn: k }), "{acts:?}");
 }
 
-// spec/wire.md §11.2, notes/client-port.md §3 and Picked numbers: past MAX_CONNS_PER_CLIENT authenticated connections of one client a further Auth is Error 4 and goes nowhere; another client is unaffected; one ending frees a slot; max_clients bounds all clients together whatever the per-client cap (0 serves none); neither counts against max_served or the Owner's pool
+// spec/wire.md §11.2, notes/client-port.md §3 and Picked numbers: past MAX_CONNS_PER_CLIENT authenticated connections of one client a further Auth is Error 4 and goes nowhere; another client is unaffected; one ending frees a slot; max_clients bounds all clients together whatever the per-client cap (0 serves none); neither counts against max_served or the main sessions' pool
 #[test]
 fn client_connection_caps() {
     let mut net = Net::new();

@@ -245,7 +245,7 @@ impl<'d> Write<'d> {
     /// at commit on a thin client's handle: its actor goes with the client, so what it makes
     /// names who stays (`create_with_admin`).
     pub fn create(&mut self) -> Result<Tid> {
-        self.create_owned_by(self.actor)
+        self.create_with_admin(self.actor)
     }
 
     /// `create`, with `admin` as the first admin in place of the acting actor: a group or account
@@ -260,13 +260,6 @@ impl<'d> Write<'d> {
         self.ops.push(WriteOp::Create(rec));
         self.created.push(t);
         Ok(t)
-    }
-
-    /// `create_with_admin`.
-    // Removed with owners (issues/api-after-owners.md).
-    #[doc(hidden)]
-    pub fn create_owned_by(&mut self, admin: Tid) -> Result<Tid> {
-        self.create_with_admin(admin)
     }
 
     /// The members of `group`: what it contains, to add or remove.

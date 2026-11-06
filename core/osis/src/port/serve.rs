@@ -421,7 +421,7 @@ impl Worker {
     /// is ended here; `None` then, as for a session this worker does not hold.
     fn session(&mut self, db: &Osis, conn: ConnId) -> Option<Osis> {
         match self.conns.get(&conn)?.tier {
-            Tier::Owner => Some(Osis::internal(db.inner.clone())),
+            Tier::Main => Some(Osis::internal(db.inner.clone())),
             Tier::Keyed => None,
             Tier::Client(actor) => {
                 let live = db.locked(|l| l.sync.client_of(conn)) == Some(actor);
@@ -558,7 +558,6 @@ impl Worker {
             method::GROUPS_OF => c::groups_v(&db.groups_of(a.tid()?)?),
             method::GRANTS => c::grants_v(&db.grants(a.tid()?)?),
             method::ROLE_ON => c::opt(db.role_on(a.tid()?)?, c::role_v),
-            method::OWNER_OF => c::opt(db.owner_of(a.tid()?)?, Value::Tid),
             method::CREATED => c::opt(db.created(a.tid()?)?, |s| c::thing_stamp_v(&s)),
             method::CHANGED => c::opt(db.changed(a.tid()?)?, |s| c::thing_stamp_v(&s)),
             method::WRITE => {
@@ -667,7 +666,6 @@ impl Worker {
                 db.add_with_grant(c::member(a.next()?)?, a.tid()?, c::role(&a.next()?)?)?;
                 Value::List(vec![])
             }
-            method::CREATE_OWNERLESS => Value::Tid(db.create_ownerless(a.tid()?)?),
             method::NODES => Value::List(db.nodes()?.iter().map(|x| Value::List(vec![Value::Tid(x.node), c::role_v(x.role)])).collect()),
             method::ADD_PEER | method::REMOVE_PEER => {
                 let h: crate::Address = a.text()?.parse()?;

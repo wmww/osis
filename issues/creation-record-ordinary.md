@@ -1,5 +1,5 @@
 # A thing's creation as an ordinary write
-> Summary: Proposal (Tess): `created.0` follows the ordinary purge and expiry rules, and purging or expiring a thing's creation ends the thing. That removes its special cases, including the exemption from the `nobody` rule and the two commits for creating a thing with expiring content. Open: what must remain to judge late writes and prove the purge was allowed. Design after stage D of issues/owner-to-first-admin.md (the API names around the record).
+> Summary: Proposal (Tess): `created.0` follows the ordinary purge and expiry rules, and purging or expiring a thing's creation ends the thing. That removes its special cases, including the exemption from the `nobody` rule and the two commits for creating a thing with expiring content. Open: what must remain to judge late writes and prove the purge was allowed.
 > Tags: spec, permissions, api
 
 Today `created.0` has fixed `nobody` retention, kept forever, with an exemption so it can share a commit (spec/commits.md §5), and can't go in an expiring commit, so creating a thing with expiring content takes two (§6). `delete` keeps it, and a later write recreates the thing (notes/api.md).
