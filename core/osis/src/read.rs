@@ -371,7 +371,6 @@ impl Reader<'_> {
         !self.hidden(tid) && self.e.knows(&tid)
     }
 
-
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
     /// snapshot (a draft's write); `None` while it is unknown or
     /// only a snapshot carrying its `created.0` is here.
