@@ -643,7 +643,7 @@ impl Timeline {
 pub struct Since {
     /// Each under the original's id, in its newest version: an edit of an older message comes as
     /// that message again, a late post (a participant was offline) as what it is. A deletion of an older
-    /// message moves no cursor: `watch`.
+    /// message moves no cursor: `on_event`.
     pub messages: Vec<Message>,
     /// Where to go on from: the entry that arrived last of those read (`None`: nothing read, the
     /// same cursor).
@@ -659,7 +659,7 @@ fn arrival(e: &Entry) -> (u64, HistoryPos) {
 
 /// What arrived after `after` (`None`: from the start), `n` entries at most, read in arrival order.
 /// A cursor is this node's: any entry's id does, and it means the arrival of that entry. Reads the
-/// whole history (no arrival index): an app showing a timeline uses `watch`.
+/// whole history (no arrival index): an app showing a timeline uses `on_event`.
 /// Limits: an entry arriving in the cursor's millisecond with a lesser ID, or after this node's
 /// clock jumped back past the cursor, is not returned.
 pub fn since(db: &Osis, c: Tid, after: Option<&Id>, n: usize) -> Result<Since> {
@@ -810,8 +810,8 @@ pub enum Event {
 }
 
 /// Calls `f` per commit, through the years from the chat's creation to the next. Subscribe, then
-/// read: nothing after the subscription is missed. A watch living past next year needs renewing.
-pub fn watch(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) -> Result<Vec<Subscription>> {
+/// read: nothing after the subscription is missed. Subscriptions living past next year need renewing.
+pub fn on_event(db: &Osis, c: Tid, f: impl FnMut(&Osis, Event) + Send + 'static) -> Result<Vec<Subscription>> {
     let mode = settings(db, c)?.edit;
     let f = std::sync::Arc::new(std::sync::Mutex::new(f));
     let mut subs = Vec::new();

@@ -943,7 +943,7 @@ impl Osis {
     }
 
     /// Makes this node a client of the node at `login`'s address, beside its own store:
-    /// `group_source` can then route groups there, and a thing known nowhere here goes there.
+    /// `group_source` can then make it the source of groups, and a call on a thing known nowhere here goes there.
     /// Stays connected, reconnecting by itself, until `disconnect_node`.
     ///
     /// `Ok` once the first attempt to reach it ended and left the connection in place, up or not:
