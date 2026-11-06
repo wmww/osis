@@ -1588,7 +1588,7 @@ fn differing_copies_join_by_copy_order_alike_spec_perm_5_2() {
             let by_bob = e.held_commits(Some(&[(d, reg.clone())])).iter().any(|x| x.header.author == b);
             assert_eq!(by_bob, real_first.is_some(), "peer {i}: Bob's commit listed only where held");
             let ch = e.changed(&d).unwrap();
-            assert_eq!(ch.commit == Some(real), real_first.is_some(), "peer {i}: last change");
+            assert_eq!(ch.commit == real, real_first.is_some(), "peer {i}: last change");
             assert!(ch.node != c, "peer {i}: a snapshot is no change");
         }
         let (p0, p1, p2) = (peers[0].0, peers[1].0, peers[2].0);
