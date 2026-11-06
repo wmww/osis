@@ -30,3 +30,6 @@ A draft (ephemeral thing) can be added to a group before it is saved, and that m
 
 ## 16. Detecting misstated snapshots
 Machinery checks that a writer's compaction snapshot doesn't misstate co-writers' history (spec/permissions.md §5.2 Copies, Misstates, cover chains; `apply/copies.rs`, `crdt/src/copies.rs`, much of `apply/atomic.rs`; the key-erased/vouch issues). Only a hostile writer can trigger it, inside data it may already overwrite. Recommended: a valid snapshot speaks for what it carries, stated as a limit ("a writer may misstate others' history in its own snapshot"). Lost: detecting forged attribution there; it touches "every write is attributable", so it is your call.
+
+## 17. Hole punching shows IPs
+A direct connection through a relay (hole punching) shows each side's IP to the other. Your rule: IPs go to a stranger only after consent. Default being built (reversible): punch only between nodes that already share data; a stranger (e.g. redeeming a link) stays relayed until the invite is accepted. Alternative: redeeming a link counts as consent, so it goes direct at once (faster, shows the IP to whoever made the link).
