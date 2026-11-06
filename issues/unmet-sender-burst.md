@@ -9,7 +9,7 @@ Tess: left to the coordinators, may circle back. Kept as a stated limit, also wi
 ## Why the cheap step is not cheap (inbox-two)
 Tried: 40 shares while the recipient is away, it clears to 32, accepts one, 4 syncs.
 - Unlabeled things (what `invites` makes): the recipient syncs no label of the sender's, so nothing it does reaches the sender.
-- Labeled things: the recipient reads the accepted thing's label and holds its deposit seed, yet places nothing there that the sender applies within 4 syncs (6 new entries at the host, no new commit at the sender).
+- Labeled things: the recipient reads the accepted thing's label and holds its deposit seed, yet writes nothing there that the sender applies within 4 syncs (6 new entries at the host, no new commit at the sender).
 - So "re-send once the recipient acts" has nothing to see. Worse, once the recipient wrote anything the sender syncs, `acted` (then any commit by the holder after the delivery's `ts`) made the re-send forget the cleared deliveries for good. Fixed (inbox-two review): `acted` counts only the holder's writes on a thing the delivery names or one it owns (`cleared_share_sent_again_after_the_holder_acted_elsewhere_spec_sync_3`), so cleared shares come back at the 90-day re-send.
 
 **Decision (coordinator): option 3, the stated limit.** Options recorded, each a design change:

@@ -3,7 +3,7 @@
 > Tags: engine, node, perm, crdt, spec, design
 
 ## Rules
-1. **Dot forms.** Node form goes, and with it the `Node` source kind. A content commit (durable or memory) uses session form: dots `(Session(author, nonce), ctr)`. The nonce is drawn at random when the process starts and lives only in memory. Counters run per (aspect, session) from 1 and are kept only in memory. Role commits stay in commit form. Link and recovery keys may use session form too, because a random nonce is safe on several devices. Snapshots have no own writes.
+1. **Dot forms.** Node form goes, and with it the `Node` source kind. A content commit (durable or memory) uses session form: dots `(Session(author, nonce), ctr)`. The nonce is drawn at random when the process starts and lives only in memory. Counters run per (aspect, session) from 1 and are kept only in memory. Role commits stay in commit form. Link and recovery keys may use session form too, because a random nonce is safe on several nodes. Snapshots have no own writes.
 2. **Traced session.** A session S is *traced* in an aspect at a node while S occurs in the node's state of that aspect, or in a body of it the node holds. "Occurs" means a stamp, an element or entry dot, an anchor or a sibling key that names S, value-less writes, tombstones and bare anchors included. For a snapshot, S occurs if it is in the fragment's `Sources`.
 3. **Snapshot tables.** A snapshot's `Frontiers` lists exactly the sessions that occur in its fragment, one entry each, ctr ≥ 0 (0: the writer applied none of the session's writes contiguously, yet one is in the fragment: a gap, e.g. a released part; without 0 entries "absent" could not stand for "no trace"), and `Absorbed` lists exactly the commit-form commits whose source occurs in it. Frontier-only sources go. A frontier entry missing or untraced is bad input, so "S absent" always means "S left no trace". (`Absorbed` is not checked at decode: the ephemeral lane's covers list absorbed session-form commits by ID, which never occur as commit sources; its readers take an absent commit as untraced either way, so an extra entry changes nothing but bytes. Closes with eph-unify's swap, which retires that lane.)
 4. **Covered** (commits.md §5). A body of session S, or of commit C, is covered by snapshot Z when two things hold. First, joining it leaves Z's canonical bytes unchanged. Second, either Z's frontier for S reaches the body's counters (or `Absorbed` names C), or S (C) does not occur in Z. A snapshot body Z1 is covered by Z2 when Z1 is stamped no later than Z2, it joins unchanged and Z2 reaches Z1 for every source both list. So covered-equal snapshots have equal `ts` (the higher ID goes); of others the older goes.
@@ -22,7 +22,7 @@ The residual: a demoted X writes c2 under counters its demotion D covers in sess
 
 **The candidate fix fails.** The candidate was: snapshots keep entries for sessions a held demotion covers, plus the hardening rule ("a write under a dot a held valid snapshot's frontier reaches but the snapshot does not carry counts for nothing"), optionally `ts ≤ T`.
 - If the kept entry takes D's counter, the snapshot claims writes its writer never applied. The hardening rule then deletes honest live writes the writer lacked. The entry would have to be the writer's own applied counter.
-- A writer that has not yet received D prunes S like any untraced session. Under rule 4 its snapshot covers the older snapshots that traced S, so those drop at hosts. Nodes that get D later have forgotten S's receipts (rule 6), so nobody can add the entry back. New devices then count c2. This is an honest race, but X can see the result and exploit it.
+- A writer that has not yet received D prunes S like any untraced session. Under rule 4 its snapshot covers the older snapshots that traced S, so those drop at hosts. Nodes that get D later have forgotten S's receipts (rule 6), so nobody can add the entry back. New nodes then count c2. This is an honest race, but X can see the result and exploit it.
 - Closing that race takes five rules:
   - sticky pins, set by a snapshot written with D;
   - a covering rule that keeps pins;
@@ -38,7 +38,7 @@ The residual: a demoted X writes c2 under counters its demotion D covers in sess
 - Snapshots by X before D: X's snapshots are listed by ID as today. A valid one vouches for what it carries, which X could write anyway while it held write.
 - Forks and clones: every copy draws its own nonce, so no two copies share counters.
 - A node that has not yet received D counts c2 as a valid writer's write until D arrives, like any write by a removed writer. An honest compactor that snapshots c2 before it learns of D keeps it for good (a valid snapshot vouches for what it carries, spec/permissions.md §5.2).
-- New devices: they hold D (role commits) and judge c2 invalid.
+- New nodes: they hold D (role commits) and judge c2 invalid.
 - Arrival order: rule 7 is a function of the held set, so a node getting D after c2 and one getting it before end up alike.
 - Compaction pruning and header forgetting no longer matter here: no demotion reads snapshot frontiers or counters.
 - Cost: 32 B per listed commit, against 10 B per (aspect, node) today. The list is X's commits with uncovered held parts in scope: the tail since the last snapshot. A demoter that compacts first (rule 7) lists about none; a backdated revoke lists the tail. No pins, no permanent per-session entries: notes/growth.md's "demoted writers' session entries" row goes.
@@ -56,9 +56,9 @@ B never needs to know which case it is in. Per construct:
 - **Set and bag elements:** the same as map removals.
 - **Sequences:** records are never removed, so every inserting session stays traced for good (see Costs). Deletes, undeletes and moves are flag max and top-2 positions, which are lattices.
 - **Resets** (fragment and element): the effective reset is a max, and a superseded reset leaves nothing.
-- **Value-less residues:** a value-less write in Z is a stamp, so it is traced. Late valued copies of expired or purged writes are stripped by the kept `v/` list. A new device takes T from the blob's header.
+- **Value-less residues:** a value-less write in Z is a stamp, so it is traced. Late valued copies of expired or purged writes are stripped by the kept `v/` list. A new node takes T from the blob's header.
 - **Undo:** writer-local. A forgotten later commit counts as in effect and not an undo, so undo does not step back past compacted history. That is the existing "dropped bodies cannot be undone", one level further.
-- **Validity:** Z vouches for what it carries ("Snapshots vouch"). Forgotten commits' writes are either in Z or dead. If Z turns invalid, today's "counts as never received" path refetches what is still at hosts. A new device does the same.
+- **Validity:** Z vouches for what it carries ("Snapshots vouch"). Forgotten commits' writes are either in Z or dead. If Z turns invalid, today's "counts as never received" path refetches what is still at hosts. A new node does the same.
 
 ## Readers and replacements
 | Reader | Today | Without the entry or header | Replacement |
@@ -71,7 +71,7 @@ B never needs to know which case it is in. Per construct:
 | Dedup by commit ID (`ingest_class`, node inbound `admits`) | Header held | Forgotten commit re-applies | Rule 9 |
 | Expiry T (`write_expiry`, strip_valueless) | Header | Late valued copy shows | `v/` list kept (rule 8) |
 | Death dating, own-delta retention bounds | Header of held bodies | Already falls back to snapshot bodies (commits.md §5) | None |
-| Purge judging (`stands`, `purge_one`, `drop_purged_snapshot`) | Named commit's header | Request naming a forgotten commit judged nowhere | As at a new device today. The purger resets live content and re-snapshots (commits.md §5), so only dead history was named. A permanent delta's commit and its request are not forgotten (rule 8) |
+| Purge judging (`stands`, `purge_one`, `drop_purged_snapshot`) | Named commit's header | Request naming a forgotten commit judged nowhere | As at a new node today. The purger resets live content and re-snapshots (commits.md §5), so only dead history was named. A permanent delta's commit and its request are not forgotten (rule 8) |
 | Undo "in effect" (undo/mod.rs:204, :311) | Headers of later commits | Undo commit forgotten | Forgotten counts as in effect (above) |
 | Validity re-judge (`rejudge_once`, `Judge::part`) | Every meta | Nothing to judge | None. Writes live in snapshots |
 | Node-sync header reads (work.rs, pass/delete.rs, local.rs, inbound.rs) | Header per entry | Stuck deletes | Rule 8 waits for entries to go |
@@ -84,7 +84,7 @@ B never needs to know which case it is in. Per construct:
 - Node form, `Node` sources, per-aspect counter rows.
 - Counter receipts (`r/` ranges per minute bucket) and per-(aspect, node) demotion entries; perm `Frontier.writes`.
 - Frontier-only sources, so per-writer entries for long-gone writers leave snapshots.
-- Headers at old devices: about 690 B per overwriting commit, measured (notes/growth.md).
+- Headers at old nodes: about 690 B per overwriting commit, measured (notes/growth.md).
 
 ## Costs
 - **Header:** +16 B nonce per commit (about 290 B now; budget test ≤ 330 B, check in step 2).
@@ -106,10 +106,10 @@ Tess accepted both the Atomic exception and the suspect-flag hole below ("fine i
 - **Transient after a demotion with compaction first (step 3):** a node that holds X's original bodies and gets D before the demoter's snapshot un-merges X's writes until the snapshot arrives. Listing IDs instead (no compaction) has no such window.
 
 ## Open points, resolved
-- **Equivocation by a valid writer** (overlapping counters in one session): nodes holding the first commit void both. Nodes that forgot it, and new devices today, count the second. Where the first's writes are live, a held valid snapshot carries them and the misstatement rule (permissions.md §5.2) voids the second's writes under those dots. So only a still-valid writer whose first commit's writes are all dead can split nodes. It could write the second commit with fresh counters anyway. Not hardened: the hardening rule only narrows this (it stops once S is pruned), and rule 7 already removes the demoted-writer case. Accepted under "authenticated malicious writers are bounded". The overlap void stays: one dot names one write.
+- **Equivocation by a valid writer** (overlapping counters in one session): nodes holding the first commit void both. Nodes that forgot it, and new nodes today, count the second. Where the first's writes are live, a held valid snapshot carries them and the misstatement rule (permissions.md §5.2) voids the second's writes under those dots. So only a still-valid writer whose first commit's writes are all dead can split nodes. It could write the second commit with fresh counters anyway. Not hardened: the hardening rule only narrows this (it stops once S is pruned), and rule 7 already removes the demoted-writer case. Accepted under "authenticated malicious writers are bounded". The overlap void stays: one dot names one write.
 - **Other per-node state a cloned store shares**, checked:
   - HLC record: both copies continue from one last `ts`. Equal `ts` across copies is harmless, because stamps break ties by dot and the nonces differ.
-  - Label steps and rotations: two copies act like two admin devices. A host takes one child of its head; concurrent rotations fork as spec'd.
+  - Label steps and rotations: two copies act like two admin nodes. A host takes one child of its head; concurrent rotations fork as spec'd.
   - Heartbeats (`seen.0`): ordinary content writes in session form, so the newest wins.
   - Undo buffers: each copy undoes under its own session.
   - Own deposits: same bytes, so the same blob ID.
@@ -128,7 +128,7 @@ Merging this with the swap would put two intricate changes in one branch (notes/
 Step 1 is merged (item 219). Its review left two things for step 2:
 - The covered filter also leaves out role commits and snapshots, but rule 7 says they stay listed. A removed admin's rotation covered by a role snapshot then loses its record of which commit started the key epoch. That costs an extra safe rotation, not a security hole. Simplest fix: always list role commits. Square this with the lockout recovery (spec/permissions.md §3), which needs an admin to be able to leave a hostile rotation out.
 - A commit whose held parts are covered is left out even if it also touches a thing the demoter does not hold. The spec says it should be listed. Main did the same before.
-- Frontier size: 32 B per commit of the removed device. A frontier past `MAX_LIST_BYTES` (64 MiB, about 1.9 million commits) cannot be written, so step 3 (compact before removing) or a cap rethink is needed.
+- Frontier size: 32 B per commit of the removed node. A frontier past `MAX_LIST_BYTES` (64 MiB, about 1.9 million commits) cannot be written, so step 3 (compact before removing) or a cap rethink is needed.
 
 ## Plan
 Each step merges alone, passes the gate, and updates the spec sections it changes. The verification lists targeted differentials; seed breadth comes from the periodic runs.
@@ -146,7 +146,7 @@ Each step merges alone, passes the gate, and updates the spec sections it change
      - new: X's received uncompacted live write stays (listed), and its compacted one stays (vouched);
      - new: a backdated revoke lists only commits received by its cutoff;
      - rework: `contiguous_as_of_spec_5_1`, `apply/tests_order.rs`, `tests_linked.rs`, `tests_paged.rs` frontier asserts.
-   - Verification: perm tier 2 (`differential:: roster:: queries:: incremental::`); order `arrival_order_alike`. New differential: random histories with a demotion, comparing a node that holds every body with a fresh node that holds only D, the snapshots and the uncovered bodies (the new-device equivalence decision (a) is about).
+   - Verification: perm tier 2 (`differential:: roster:: queries:: incremental::`); order `arrival_order_alike`. New differential: random histories with a demotion, comparing a node that holds every body with a fresh node that holds only D, the snapshots and the uncovered bodies (the new-node equivalence decision (a) is about).
 2. **Session form for durable content; item 193 deleted.**
    - commit `validate.rs`: session form allowed for any content commit; a role or roster-snapshot commit in session form is bad input (replaces the node-form check); node form refused.
    - Plans use `Form::Session(eph.session().nonce)`; snapshots `Form::Commit` (`retention/mod.rs:1048`, `write.rs:82`); undo always session (`undo/mod.rs:137`).
@@ -188,4 +188,4 @@ Each step merges alone, passes the gate, and updates the spec sections it change
 - Tess earlier: "if it all checks out feel free to implement": build steps 1, 2, 4, 5, 6 in order.
 
 ## Frontier study
-notes/frontier-study.md: rule 7 becomes "lists every received commit of X in scope that is not droppable now" (covered by a snapshot received by T, past keep-at-least, purgeable), with a head per (aspect, device) instead of IDs for aspects whose deltas are all permanent (keep forever, no keep-at-most, no expiry), followed through per-session predecessor links in X's own headers (needs step 2). Fixes issues/frontier-clobbers-history.md, dissolves both step-2 carry-overs (role commits follow the same rule; a commit with a part this node does not hold is listed). Rule 8 gains: a permanent delta's header is never forgotten, its purge residue stays must-hold. Step 3 now also bounds kick cost on compacting aspects. Chains across all aspects of a session are rejected (unwalkable across labels).
+notes/frontier-study.md: rule 7 becomes "lists every received commit of X in scope that is not droppable now" (covered by a snapshot received by T, past keep-at-least, purgeable), with a head per (aspect, node) instead of IDs for aspects whose deltas are all permanent (keep forever, no keep-at-most, no expiry), followed through per-session predecessor links in X's own headers (needs step 2). Fixes issues/frontier-clobbers-history.md, dissolves both step-2 carry-overs (role commits follow the same rule; a commit with a part this node does not hold is listed). Rule 8 gains: a permanent delta's header is never forgotten, its purge residue stays must-hold. Step 3 now also bounds kick cost on compacting aspects. Chains across all aspects of a session are rejected (unwalkable across labels).

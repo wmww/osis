@@ -11,7 +11,7 @@ box to A stale.
 ## Model (core/test/tla/rotation/Depth0.tla, constant `Walk`)
 `NoLeakAbove` now covers chains: a writer knowing a removal from any actor below the written one
 (`KClos`), holding every epoch of it and of each actor between (and every re-seal box of the epoch
-at write time), writes nothing the removed device opens. Instance `vActs` (Depth0MC.tla): G {R, A},
+at write time), writes nothing the removed node opens. Instance `vActs` (Depth0MC.tla): G {R, A},
 A {a1, M}, M {m1, R, E}; R the one admin of G, reading A only through M; m1 removes E from M (alone
 or carried, `Alone = "any"`). `Walk` values:
 - `"rotator"` (main): `D0_readers` **fails** in 4 steps (above).

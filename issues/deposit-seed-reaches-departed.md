@@ -2,7 +2,7 @@
 > Summary: spec/crypto.md §3 says a read rotation's fresh deposit seed stops a departed holder depositing, but the rotation commit is wrapped under the epoch it supersedes (§5), so a departed holder syncing that label opens it and reads the new `keys.0`.
 > Tags: security, keys, node-sync
 
-Repro: Dave's plain `t`, shared with group H (`share`: its own label); H's reader Bob reads `t`; `dave.demote(t, H, Remove, ..)`; after sync `bob.get(t, KEYS).deposit_seed` equals Dave's new one. Bob got it from `t`'s own label, where the removal's body is. The whole body is one blob: the boxes need the old wrap, `keys.0` does not.
+Repro: Dave's plain `t`, granted to group H and synced on its own (its own label); H's reader Bob reads `t`; Dave removes H (`set_role(t, H, None, ..)`); after sync Bob's `keys.0` of `t` has Dave's new `deposit_seed`. Bob got it from `t`'s own label, where the removal's body is. The whole body is one blob: the boxes need the old wrap, `keys.0` does not.
 
 Holds only for a holder who read the removal under a label the commit's body goes to; one who read the thing through another label does not learn it (`tied::group_admin_learns_removal_elsewhere`, `tied::group_admin_copies_removal_without_new_keys`, `tied::group_removal_deposit_promoted_without_new_keys`, `tied::owner_home_copy_of_removal_without_new_keys`).
 
