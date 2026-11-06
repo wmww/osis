@@ -1024,7 +1024,7 @@ fn recovery_erases_whatever_the_default_spec_perm_2() {
 // account (as the recovery key: grants itself admin) and removes the stolen node with the
 // account's rotation; the stolen node's later removal of the honest node is invalid.
 #[test]
-fn stolen_device_recovery_spec_perm_7() {
+fn stolen_node_recovery_spec_perm_7() {
     let (mut lp, p, _pa, card) = nodes_and_alice(508);
     let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
     let mut fresh = net(1, 509);
@@ -1902,60 +1902,6 @@ fn create_label_after_inside_removal_spec_sync_2() {
     assert_eq!(step.keys.sync, osis_crypto::label_role_key(osis_crypto::LabelRole::Sync, &read, 0).verifying_key());
 }
 
-// notes/permissions.md Revocation (stolen node): the thief backdates a write; the honest
-// node's backdated revoke takes its frontier from its receipts as of the theft, so the
-// thief's edits are dropped and the node's earlier ones stay.
-// spec/permissions.md §5.3
-#[test]
-fn backdated_revoke_spec_perm_5_3() {
-    const HOUR: u64 = 3_600_000;
-    let (mut lp, p, _pa, _) = nodes_and_alice(524);
-    let d1 = lp.peers[0].engine.tid();
-    let u = thing_of(&mut lp, 1, p);
-    spread(&mut lp);
-    add_tag(&mut lp, 0, u, "honest");
-    spread(&mut lp);
-    let theft = lp.peers[0].engine.now();
-    lp.advance(2 * HOUR);
-    // the thief winds its clock back to just after the theft
-    lp.peers[0].clock.set(osis_base::WallMs(theft.0 + 60_000));
-    add_tag(&mut lp, 0, u, "forged");
-    lp.peers[0].clock.set(osis_base::WallMs(theft.0 + 3 * HOUR));
-    sync(&mut lp, 0, 1);
-    lp.advance(HOUR);
-    let backdated = PreSync::Backdated(osis_base::WallMs(theft.0 + HOUR / 2));
-    lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, presync: backdated, retain: None }).unwrap();
-    spread(&mut lp);
-    for i in [1, 2] {
-        assert_eq!(tags(&mut lp, i, u), BTreeSet::from(["honest".to_string()]), "peer {i}");
-    }
-}
-
-// spec/permissions.md §5.1 (frontier: chain certificates as of T): a backdated revoke lists
-// only the certificate commits its author had received by its cutoff. The thief's write on an
-// edge of the demoter's own chain (d1 re-grants d2 on P), received after the cutoff, is
-// dropped.
-#[test]
-fn backdated_revoke_lists_certs_as_of_cutoff_spec_perm_5_1() {
-    const HOUR: u64 = 3_600_000;
-    let (mut lp, p, _pa, _) = nodes_and_alice(525);
-    let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let theft = lp.peers[0].engine.now();
-    lp.advance(2 * HOUR);
-    let done = lp.peers[0].engine.grant(&p, &d2, &edge_of(Role::Admin)).unwrap();
-    let forged: Vec<CommitId> = done.commits.iter().copied().filter(|c| lp.peers[0].engine.edge_applied(&p, c)).collect();
-    assert_eq!(forged.len(), 1);
-    spread(&mut lp);
-    assert!(lp.peers[1].engine.edge_applied(&p, &forged[0]));
-    lp.advance(HOUR);
-    let backdated = PreSync::Backdated(osis_base::WallMs(theft.0 + HOUR / 2));
-    lp.peers[1].engine.demote(&p, &Demotion { holder: d1, new: None, presync: backdated, retain: None }).unwrap();
-    spread(&mut lp);
-    for i in [1, 2] {
-        assert!(!lp.peers[i].engine.edge_applied(&p, &forged[0]), "peer {i}");
-    }
-}
-
 // spec/crypto.md §4 (covers by names), spec/permissions.md §2 (finalize). A node granted write
 // with `until` while another admin rotated write only (a demotion it had not seen with the grant)
 // keeps its box at the current read epoch. Once `until` passes, the next writer finalizes the
@@ -2155,38 +2101,6 @@ fn frontier_lists_commit_ids_spec_perm_5_1() {
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     assert!(!e.is_empty() && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
-}
-
-// spec/permissions.md §5.1 (frontier: chain certificates as of T): the demoter's own grant by
-// X, stamped before the cutoff but received after it, is not listed, so a revoke of X cut off
-// before that receipt would drop the grant its own authority rests on: refused here. Cut off
-// after the receipt, it removes X and keeps the grant.
-#[test]
-fn backdated_revoke_before_own_grant_received_spec_perm_5_1() {
-    const HOUR: u64 = 3_600_000;
-    let mut lp = net(3, 526);
-    let (x, a) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    let pa = lp.peers[2].engine.create_person(&hosts()).unwrap().0.person;
-    let t = thing_of(&mut lp, 2, pa);
-    spread(&mut lp);
-    lp.peers[2].engine.grant(&t, &x, &edge_of(Role::Admin)).unwrap();
-    spread(&mut lp);
-    lp.peers[0].engine.grant(&t, &a, &edge_of(Role::Admin)).unwrap();
-    lp.advance(HOUR);
-    let early = lp.peers[0].engine.now();
-    lp.advance(HOUR);
-    spread(&mut lp);
-    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
-    lp.advance(HOUR);
-    let late = osis_base::WallMs(lp.peers[1].engine.now().0 - HOUR / 2);
-    let cut = |w| Demotion { holder: x, new: None, presync: PreSync::Backdated(w), retain: None };
-    assert!(lp.peers[1].engine.demote(&t, &cut(early)).is_err());
-    lp.peers[1].engine.demote(&t, &cut(late)).unwrap();
-    spread(&mut lp);
-    for i in 0..3 {
-        let r = lp.peers[i].engine.roster(&t);
-        assert!(!r.contains_key(&x) && r.get(&a).is_some_and(|e| e.role == Role::Admin), "peer {i}");
-    }
 }
 
 // spec/permissions.md §5.1 Frontier, §5.2 Acting; notes/frontier-study.md (a kick

@@ -3,7 +3,7 @@
 
 ## 1. The shape
 Validity (spec/permissions.md §5.2) is a function of the held set, and that function is **non-monotone**: adding an explicit demotion D to a node's held set turns writes it had applied invalid. A node that applied X's write before it held D un-merges on D (spec/crdt.md §4.6), and un-merge is "the join of every body and residue the node holds, minus the invalid writes". A node that dropped a body it would need (keep-at-most bound, purge, expiry, pending part dropped at T, a cover that itself turned invalid) computes a different join than a node that kept it. So the class is **(a validity flip) × (a non-vouching drop under the flipped write)**.
-- Every flip is an explicit demotion arriving late (a removal, a demotion, a revoke of a snapshot's or cover's author; `until` and self-removals audit nothing and are judged at the write's own `ts`, so they never flip). Late means the demoted writer's write reached the node first: a backdated revoke (stolen node: honest and common), an unsynced or offline revoke, P2P-only edits, in-flight uploads.
+- Every flip is an explicit demotion arriving late (a removal, a demotion, a revoke of a snapshot's or cover's author; `until` and self-removals audit nothing and are judged at the write's own `ts`, so they never flip). Late means the demoted writer's write reached the node first: an unsynced or offline revoke, P2P-only edits, in-flight uploads.
 - Compaction is a vouching drop and does not cause the class: a valid snapshot vouches for what it carries (notes/permissions.md Snapshots and history), so a write compacted before the compactor learned of the demotion stays at every node alike. The divergent drops are the non-vouching ones: keep-at-most, expiry, purge, a pending part dropped at T.
 - In honest use the class needs an aspect with retention bounds (or expiry/purge), written by a holder later demoted with a frontier not covering the write. Rare, but each new dropping mechanism re-opens a shape of it, which is why the fix is a rule, not per-case patches.
 
@@ -32,7 +32,7 @@ Classes: **F** forged copies by an authenticated writer (bounded, out of scope b
 - A value reads past its T until the next call or Tick (notes/ephemeral.md Expiry). C. A relay-only signal delivered twice after a restart, or late within `MAX_DRIFT` (spec/sync.md §9). C.
 - A cross-group commit at a receipts-only partial node pends (issues/revoke-needs-whole-tree.md). L, until policy lifted.
 - Session-sources double removal: a write left out of A's frontier because Y's snapshot Z covered it, then Y removed by a frontier not covering Z: lost alike (issues/session-sources.md). L; a demoter listing every commit avoids it.
-- Writes the revoker had not received (unreachable hosts, P2P-only edits, in transit, backdated revokes): lost alike until re-grant (spec/requirements.md Permissions). The designed semantics.
+- Writes the revoker had not received (unreachable hosts, P2P-only edits, in transit): lost alike until re-grant (spec/requirements.md Permissions). The designed semantics.
 - Every writer dropped what only a reader kept: lasts to the next write (spec/requirements.md Deterministic; notes/engine.md Suspect repair).
 
 ## 5. Not built: label digests

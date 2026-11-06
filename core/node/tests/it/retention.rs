@@ -213,7 +213,7 @@ fn purge_rights(orders: &[[usize; 3]]) {
 /// Peers 0 (owner) and the admin or writer `x` (1) and `w` (2) of a new thing, a fresh node 3; `w`'s
 /// message `c` and `x`'s request `p` naming it, stamped before 0's demotion of `x`, whose frontier
 /// lacks `p`.
-struct Backdated {
+struct Unlisted {
     lp: LocalPeer,
     t: osis_base::Tid,
     c: osis_base::CommitId,
@@ -221,7 +221,7 @@ struct Backdated {
     d: osis_base::CommitId,
 }
 
-fn backdated(seed: u64) -> Backdated {
+fn unlisted(seed: u64) -> Unlisted {
     let mut lp = net(4, seed);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -241,10 +241,10 @@ fn backdated(seed: u64) -> Backdated {
     let p = lp.peers[1].commit(m).unwrap().unwrap();
     lp.advance(5);
     let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
-    Backdated { lp, t, c, p, d }
+    Unlisted { lp, t, c, p, d }
 }
 
-impl Backdated {
+impl Unlisted {
     /// The commits up to the demotion's, the setup first, to node 3 in `order` (0: `c`, 1: `p`, 2: `d`).
     fn give(&mut self, order: &[usize]) {
         let (c, p, d) = (self.c, self.p, self.d);
@@ -265,7 +265,7 @@ impl Backdated {
 // no right: a node holding the demotion drops nothing and shows no purge.
 #[test]
 fn request_outside_the_frontier_drops_nothing_spec_perm_6() {
-    let mut b = backdated(0x61);
+    let mut b = unlisted(0x61);
     b.give(&[2, 0, 1]);
     let (t, c) = (b.t, b.c);
     let e = &mut b.lp.peers[3].engine;
@@ -304,7 +304,7 @@ fn forged_role_class_purge_refused_spec_commits_5() {
 // the demotion first reads.
 #[test]
 fn fallen_purge_comes_back_spec_perm_6() {
-    let mut b = backdated(0x62);
+    let mut b = unlisted(0x62);
     b.give(&[0, 1]);
     let (t, c, d) = (b.t, b.c, b.d);
     let k = ak("t:reg.0");
@@ -2026,9 +2026,7 @@ fn fall_of_a_fall_dates_a_write_again_spec_commits_5() {
     let x = lp.peers[2].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
     sync(&mut lp, 0, 2);
-    lp.advance(10);
-    let before = lp.peers[0].engine.now();
-    lp.advance(10);
+    lp.advance(20);
     lp.peers[0].engine.keep_bodies(true);
     let c = set(&mut lp, 1, t, &GONE, "parked");
     sync(&mut lp, 1, 0);
@@ -2043,7 +2041,7 @@ fn fall_of_a_fall_dates_a_write_again_spec_commits_5() {
     let a = ak("t:gone.0");
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((first, first)));
-    e.demote(&t, &osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Backdated(before), retain: None }).unwrap();
+    set_edge(e, t, x, None, none());
     assert_eq!(e.body_valid(&c, &t, &a), Some(false));
     assert_eq!(e.deaths(&c, &t, &a).unwrap(), Some((second, second)));
 }

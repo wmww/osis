@@ -25,8 +25,6 @@ pub enum PreSync {
     /// Some label could not be synced: stamp anyway (`proceed`; uncompacted writes by the
     /// demoted holder under those labels are lost) or fail.
     Unsynced { proceed: bool },
-    /// An explicitly backdated revoke: the frontier as of this time; no pre-sync.
-    Backdated(WallMs),
 }
 
 /// A role-lowering edge write: `holder`'s new edge on the target (`None` removes it).
@@ -627,19 +625,13 @@ impl Engine {
     pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid], repudiate: bool) -> Result<Done> {
         let who = signer.unwrap_or(self.tid());
         let t = *target;
-        let as_of = match d.presync {
-            PreSync::Backdated(w) => w,
-            _ => self.now(),
-        };
+        let as_of = self.now();
         let mut omit = BTreeSet::new();
         let frontier = match self.core.timelines.get(&t) {
             Some(tl) => {
                 // this node's own chain counts only as listed: its chain certificates for the
-                // target, by commit ID, those received by `as_of` (a backdated revoke lists none
-                // received after its cutoff; spec/permissions.md §5.1, §4)
-                let certs = tl.certificates(&who, &t);
-                let by_then = |c: &CommitId| self.core.ix.commits.get(c).is_some_and(|m| m.received.0 <= as_of.0);
-                let own: BTreeSet<CommitId> = certs.commits.into_iter().filter(|c| by_then(c)).collect();
+                // target, by commit ID (spec/permissions.md §5.1, §4)
+                let own = tl.certificates(&who, &t).commits;
                 let new = written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?;
                 let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new.as_ref().map(perm_edge))).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
                 // what this node received on the aspects the demotion puts in question with

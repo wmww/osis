@@ -42,7 +42,6 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("snapshot_rights", net::snapshot_rights),
     ("revocation_bob", library::revocation_bob),
     ("revocation_carol", library::revocation_carol),
-    ("stolen_node", library::stolen_node),
     ("demotion_synced", library::demotion_synced),
     ("demotion_unsynced", library::demotion_unsynced),
     ("demotion_receipts", library::demotion_receipts),

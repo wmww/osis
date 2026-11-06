@@ -1453,15 +1453,6 @@ impl NetSim {
         self.unreachable.remove(&(b, a));
     }
 
-    /// Node `n`'s clock is set `skew_ms` off true time from now on (a thief winding it back).
-    pub fn set_skew(&mut self, n: usize, skew_ms: i64) -> Res<()> {
-        let elapsed = self.elapsed;
-        let node = self.node(n)?;
-        node.spec.skew_ms = skew_ms;
-        node.clock.set(WallMs(wall_of(node.spec, elapsed)));
-        Ok(())
-    }
-
     pub fn heal(&mut self, a: Party, b: Party) {
         self.blocked.remove(&(a, b));
         self.blocked.remove(&(b, a));
