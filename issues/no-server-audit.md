@@ -9,7 +9,7 @@ Severity: **fails** (error or never happens), **silent** (claims success or does
 
 | # | Feature | No saved peers, no internet | Evidence | Severity |
 |---|---|---|---|---|
-| 1 | P2P at all, today's builds | P2P is on in every build, but no shipped build runs the LAN loop (`lan`), and with no relay configured and no direct addresses in `reach.0` (issues/p2p-own.md) nodes off one LAN cannot reach each other | net.rs `spawn_driver` | degraded |
+| 1 | P2P at all, today's builds | P2P is on in every build, but no shipped build runs the LAN loop (`lan`), and with no relay configured, nodes off one LAN reach each other only when one has a global address (listed in `reach.0`; issues/p2p-own.md) | net.rs `spawn_driver` | degraded |
 | 2 | Create account | Works, but no recovery card and the key is discarded | handle.rs:436; p01 | degraded |
 | 3 | CLI on a store with no saved peers | `Runtime::None`, never syncs; links always `direct: false` | cli/src/lib.rs:318, cmd.rs:582 (read) | fails |
 | 4 | Pair a second device | Works both ways: the app carries the texts, the reply brings the sharer's `reach.0`, so the new device dials it and hears its LAN tag | p02. Over a real LAN only in pieces: p02, `driver_lan_loop` (tier 2) | ok in-process; not run end to end |

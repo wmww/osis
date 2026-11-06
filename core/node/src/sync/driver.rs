@@ -94,9 +94,10 @@ pub enum Control {
     /// Actions the holder's own calls produced: carry them out.
     Apply(Vec<Action>),
     /// Listen at the first of `urls` that listens, with the engine's dialable secret, and
-    /// publish `reach.0` with that listener's key and `relays` (spec/data-model.md §9). For
-    /// `P2p`, a URL lists the socket address to bind and the relays the listener registers at.
-    Reach { urls: Vec<String>, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
+    /// publish `reach.0` with that listener's key and items (spec/data-model.md §9). For
+    /// `P2p`, a URL lists the socket address to bind and the relays the listener registers at;
+    /// `reach.0` lists its global addresses (`p2p::reach_items`) and those relays.
+    Reach { urls: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
     /// Serve the sessions a listener at `url` accepts (a client socket, `unix://`; its
     /// sessions are clients, notes/client-port.md §5), with a fresh secret of its own.
     Listen { url: String, reply: Option<oneshot::Sender<Result<Address, String>>> },
@@ -296,8 +297,8 @@ struct Driver<T: Transport, H: Shared> {
     /// Network changes from the LAN loop's watch.
     #[cfg_attr(not(feature = "lan"), allow(dead_code))]
     net_tx: mpsc::Sender<()>,
-    /// The dialable listener's URLs and relays (`Control::Reach`), and its key.
-    reach: Option<(Vec<String>, Vec<String>)>,
+    /// The dialable listener's URLs (`Control::Reach`), and its key.
+    reach: Option<Vec<String>>,
     dialable: Option<[u8; 32]>,
     /// Where the co-readers' dialable keys go, and the last keys given (`Control::PeerKeys`).
     peer_keys: Option<(PeerKeys, BTreeSet<[u8; 32]>)>,
@@ -570,10 +571,11 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
     }
 
-    /// Listens with the dialable secret and publishes `reach.0` with that listener's key; a
-    /// listener of an older dialable key stops.
-    async fn reach(&mut self, urls: Vec<String>, relays: Vec<String>) -> Result<Address, String> {
-        self.reach = Some((urls.clone(), relays.clone()));
+    /// Listens with the dialable secret and publishes `reach.0` with that listener's key and
+    /// items (its global addresses as of now, its relays); a listener of an older dialable key
+    /// stops.
+    async fn reach(&mut self, urls: Vec<String>) -> Result<Address, String> {
+        self.reach = Some(urls.clone());
         let Some(secret) = self.read(|s| transport_secret(&s.dialable_secret())) else { return Err("engine gone".into()) };
         let mut res = Err("no URL to listen at".to_string());
         for url in urls {
@@ -587,7 +589,16 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         if let Some(old) = self.dialable.replace(key).filter(|k| *k != key) {
             self.unlisten(old);
         }
-        self.call(&mut |s| match s.publish_reach(key, relays.clone()) {
+        // an unspecified bound IP stands for the routes' local addresses
+        let unspecified = osis_transport::p2p::items(&addr.url).is_ok_and(|it| it.direct.iter().any(|a| a.ip().is_unspecified()));
+        let routes: Vec<std::net::IpAddr> = if unspecified {
+            let (v4, v6) = osis_transport::lan::route_ips().await;
+            v4.into_iter().chain(v6).collect()
+        } else {
+            Vec::new()
+        };
+        let items = osis_transport::p2p::reach_items(&addr.url, &routes);
+        self.call(&mut |s| match s.publish_reach(key, items.clone()) {
             Ok(a) => a,
             Err(e) => {
                 s.diag(format!("publishing reach.0: {e}"));
@@ -783,8 +794,8 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 self.call(&mut |s| f.take().map(|f| f(s)).unwrap_or_default());
             }
             Some(Control::Apply(acts)) => self.apply(acts),
-            Some(Control::Reach { urls, relays, reply }) => {
-                let r = self.reach(urls, relays).await;
+            Some(Control::Reach { urls, reply }) => {
+                let r = self.reach(urls).await;
                 if let Some(reply) = reply {
                     let _ = reply.send(r);
                 }
@@ -915,12 +926,12 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
         self.relisten = false;
         self.relisten_at = None;
-        if let Some((urls, relays)) = self.reach.clone() {
+        if let Some(urls) = self.reach.clone() {
             // the old listener goes first: the new one takes its place (its URL, its relays)
             if let Some(old) = self.dialable.take() {
                 self.unlisten_now(old).await;
             }
-            if let Err(e) = self.reach(urls, relays).await {
+            if let Err(e) = self.reach(urls).await {
                 // `reach.0` already names the new key: keep trying
                 (self.log)(&format!("listening with the new dialable key: {e}; again in {RELISTEN_RETRY:?}"));
                 self.relisten = true;
@@ -944,8 +955,8 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
 /// `Control::Reach` and the LAN loop): one listening with the engine's `dialable_secret`
 /// (publish its `address().key` with `publish_reach`), and one per LAN join with a fresh secret
 /// whose key is announced with the LAN tag (spec/sync.md §10). Never put a listener's
-/// `address().url` into `reach.0`: it lists bound IP addresses, which are never published
-/// (spec/sync.md §10); only its key and the relays go there.
+/// `address().url` into `reach.0` as it is: it lists bound IP addresses; `p2p::reach_items`
+/// says what goes there.
 pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
     let Owned(m) = run_shared(Owned(std::sync::Mutex::new(sync)), transport, listeners, clock, control, log).await;
     m.into_inner().unwrap_or_else(|p| p.into_inner())

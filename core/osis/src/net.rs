@@ -242,7 +242,7 @@ impl Net {
         });
         match reach {
             Some(urls) if p2p => {
-                let _ = ctl.send(Control::Reach { urls, relays, reply: None });
+                let _ = ctl.send(Control::Reach { urls, reply: None });
                 if lan {
                     let _ = ctl.send(Control::Lan(driver::LanConfig::default()));
                 }

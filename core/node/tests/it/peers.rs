@@ -83,6 +83,25 @@ fn co_reader_selection_spec_sync_5() {
     assert!(dials.iter().all(|(d, dialable)| if d.key == [0x5e; 32] { !dialable } else { *dialable && d.key == [0xb3; 32] && d.url == "peer://https://relay.example" }), "{dials:?}");
 }
 
+// spec/sync.md §10 (IP consent): a followed link's sharer node is dialed at the link's relays
+// only: a socket address the link lists is dropped (the transport dials every address a URL
+// lists, and a stranger chose this one).
+#[test]
+fn link_peer_dialed_at_relays_only_spec_sync_10() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let c = net.node(3, &[]);
+    reach(&mut net, a, 0xa3);
+    let g = net.group_at(a, &[], vec![]);
+    let tc = net.tid(c);
+    let relay = osis_transport::p2p::Relay { key: [0x7e; 32], addr: "192.0.2.1:4040".parse().unwrap() }.item();
+    let url = osis_transport::peer_url(&["192.0.2.9:47381".into(), relay.clone()]);
+    net.sync(a).follow_link_peer(g, tc, vec![Address { url, key: [0x5e; 32] }]);
+    let acts = net.sync(a).handle(osis_node::sync::Event::Local);
+    let got: Vec<Address> = dials(&acts).into_iter().filter(|d| d.key == [0x5e; 32]).collect();
+    assert_eq!(got, vec![Address { url: osis_transport::peer_url(&[relay]), key: [0x5e; 32] }]);
+}
+
 // spec/sync.md §10: LAN tags are the kdf of the lan secret and the 10-minute window: equal
 // within a window, different across windows and across secrets.
 #[test]

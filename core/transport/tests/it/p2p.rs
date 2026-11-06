@@ -866,18 +866,31 @@ fn ip_consent_target_spec_sync_10() {
 }
 
 // spec/sync.md §10 (IP consent), the other way: a node dialing a key its `punching` refuses
-// (a link's sharer) sends no address and skips the URL's direct items, so a target that would
-// punch to anyone learns nothing of it: the connection stays relayed and the target's source
-// for it is the relay's tag, not the dialer's address.
+// (a link's sharer, at the link's relays) sends no address, so a target that would punch to
+// anyone learns nothing of it: the connection stays relayed and the target's source for it is
+// the relay's tag, not the dialer's address.
 #[test]
 fn ip_consent_dialer_spec_sync_10() {
     let mut w = world(18, anyone());
     let (kb, seen) = consenting_target(&mut w, None);
     let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None)).punching(Arc::new(move |k| *k != kb));
-    let addr = Address { url: peer_url(&["192.0.2.2:7000".into(), w.relay.item()]), key: kb };
+    let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
     assert!(!dial_settled(&mut w, a, addr, None), "the dialer reached B direct");
     let seen = seen.borrow();
     assert!(!seen.is_empty() && seen.iter().all(|(r, s)| *r && *s != Some(ip_source(ip("192.0.2.5")))), "{seen:?}");
+}
+
+// spec/sync.md §10 (dialing): a dial tries every socket address its URL lists, whatever
+// `punching` says of the key: a node dials a co-reader's LAN address by its per-network LAN key,
+// which no `punching` filter of dialable keys accepts.
+#[test]
+fn direct_items_dialed_whatever_punching_spec_sync_10() {
+    let mut w = world(19, anyone());
+    let (kb, seen) = consenting_target(&mut w, None);
+    let a = P2p::new(host(&w.net, "a", "192.0.2.5", "", None)).punching(Arc::new(|_| false));
+    let addr = Address { url: peer_url(&["192.0.2.2:7000".into()]), key: kb };
+    assert!(dial_settled(&mut w, a, addr, None), "the dialer did not reach B direct");
+    assert!(seen.borrow().iter().all(|(r, _)| !*r), "{:?}", seen.borrow());
 }
 
 // spec/sync.md §10 (IP consent): each side consents for itself: with each side's `punching`
@@ -893,6 +906,24 @@ fn ip_consent_both_sides_spec_sync_10() {
         let addr = Address { url: peer_url(&[w.relay.item()]), key: kb };
         assert_eq!(dial_settled(&mut w, a, addr, Some(secret(5))), a_ok && b_ok, "a accepts b: {a_ok}, b accepts a: {b_ok}");
     }
+}
+
+// spec/sync.md §10 (`reach.0` items): a listener is listed at each global address it is bound
+// to, an unspecified IP standing for the routes' local addresses of the families it serves,
+// then its relays; local, loopback and carrier-NAT addresses are not listed.
+#[test]
+fn reach_items_global_addresses_spec_sync_10() {
+    use osis_transport::p2p::reach_items;
+    let relay = Relay { key: [7; 32], addr: sa("192.0.2.1:4040") }.item();
+    let routes = [ip("192.168.1.5"), ip("2001:db8::5")];
+    let wide = [ip("203.0.113.7"), ip("2001:db8::5")];
+    assert_eq!(reach_items(&peer_url(&["[::]:47381".into(), relay.clone()]), &wide), vec!["203.0.113.7:47381".to_owned(), "[2001:db8::5]:47381".into(), relay.clone()]);
+    assert_eq!(reach_items(&peer_url(&["[::]:47381".into(), relay.clone()]), &routes), vec!["[2001:db8::5]:47381".to_owned(), relay.clone()]);
+    assert_eq!(reach_items(&peer_url(&["0.0.0.0:9".into()]), &wide), vec!["203.0.113.7:9".to_owned()]);
+    assert_eq!(reach_items(&peer_url(&["0.0.0.0:9".into()]), &[ip("100.64.0.9"), ip("10.0.0.2")]), Vec::<String>::new());
+    assert_eq!(reach_items(&peer_url(&["127.0.0.1:9".into(), "[fd00::1]:9".into(), "[fe80::1]:9".into()]), &wide), Vec::<String>::new());
+    assert_eq!(reach_items(&peer_url(&["203.0.113.8:9".into()]), &[]), vec!["203.0.113.8:9".to_owned()]);
+    assert_eq!(reach_items("mem://a", &wide), Vec::<String>::new());
 }
 
 // spec/sync.md §10 (relaying): a key the relay stops allowing loses its registration at its next

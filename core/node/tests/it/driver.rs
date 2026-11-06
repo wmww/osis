@@ -320,7 +320,7 @@ async fn reach_takes_first_url_that_listens() {
     let (ctl, rx) = mpsc::unbounded_channel();
     let d = tokio::spawn(driver::run(net.take(a), tnet.endpoint("a"), clock, rx, log()));
     let (tx, reply) = oneshot::channel();
-    assert!(ctl.send(Control::Reach { urls: vec!["mem://a-fixed".into(), "mem://a-any".into()], relays: vec![], reply: Some(tx) }).is_ok());
+    assert!(ctl.send(Control::Reach { urls: vec!["mem://a-fixed".into(), "mem://a-any".into()], reply: Some(tx) }).is_ok());
     let addr = tokio::time::timeout(GUARD, reply).await.unwrap().unwrap().unwrap();
     assert_eq!(addr.url, "mem://a-any");
     assert_eq!(call(&ctl, |s| s.own_reach().map(|r| r.dialable)).await, Some(addr.key));
@@ -328,9 +328,10 @@ async fn reach_takes_first_url_that_listens() {
     d.await.unwrap();
 }
 
-/// A P2P transport over QUIC.
+/// A P2P transport over QUIC, exchanging addresses with no key: a node's `punching` accepts
+/// co-readers' dialable keys only (osis), never the per-network LAN keys it dials LAN routes by.
 fn p2p() -> osis_transport::P2p<osis_transport::QuicUdp> {
-    osis_transport::P2p::new(osis_transport::QuicUdp::new())
+    osis_transport::P2p::new(osis_transport::QuicUdp::new()).punching(Arc::new(|_| false))
 }
 
 /// A relaying node on localhost (for anyone), its listener kept while the test runs, and its

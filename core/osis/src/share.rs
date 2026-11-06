@@ -1060,9 +1060,11 @@ impl Osis {
         // spec/permissions.md §4): the link carries the key it listens with after that
         self.carry(done)?;
         if opts.direct {
-            // only the dialable key and relays, never the lan secret (spec/permissions.md §7)
+            // only the dialable key and relays, never direct addresses or the lan secret
+            // (spec/permissions.md §7)
             let r = self.locked(|x| x.sync.own_reach()).ok_or(Error::Invalid("this node's reach is gone".into()))?;
-            link.peers = vec![osis_label::Peer { dialable: r.dialable, relays: r.relays }];
+            let relays = r.items.iter().filter(|i| osis_transport::p2p::Relay::parse(i).is_some()).cloned().collect();
+            link.peers = vec![osis_label::Peer { dialable: r.dialable, relays }];
             if let Some(until) = opts.until {
                 // the link ends by expiry: `upkeep_links` rotates the key then
                 let wait = Duration::from_millis(until.0.saturating_sub(self.inner.clock.now_wall_ms().0).saturating_add(1));

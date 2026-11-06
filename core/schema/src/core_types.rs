@@ -196,9 +196,9 @@ codec_struct! {
     pub struct NodeInfo { 0 software: String }
 }
 codec_struct! {
-    /// `reach.0`: 32-byte P2P key, relay URLs, 32-byte LAN secret.
+    /// `reach.0`: 32-byte P2P key, `peer://` items (direct addresses, relays), 32-byte LAN secret.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Reach { 0 dialable: [u8; 32], 1 relays: Vec<String>, 2 lan_secret: [u8; 32] }
+    pub struct Reach { 0 dialable: [u8; 32], 1 items: Vec<String>, 2 lan_secret: [u8; 32] }
 }
 codec_struct! {
     /// `seen.0`: heartbeat (wall ms of the commit's ts), the aspects its node reports suspect.

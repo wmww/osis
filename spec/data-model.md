@@ -130,7 +130,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. The bl
 | `secrets.0` | an actor's boxes and history boxes (spec/crypto.md §4) |
 | `label.0` | labels of a synced group (spec/sync.md §2) |
 | `node.0` | on a node thing: its software version |
-| `reach.0` | on a node thing (spec/sync.md §10); never direct addresses |
+| `reach.0` | on a node thing (spec/sync.md §10) |
 | `seen.0` | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `host.0^` | on a node thing: the node hosts (below) |
 | `clients.0^` | on a node thing: the clients with an actor of their own it serves (below) |
@@ -191,7 +191,7 @@ aspect keys.0: struct {
 aspect secrets.0: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> };
 aspect label.0: map<blob, label>;                                // label ID -> label
 aspect node.0: struct { 0 software: string };
-aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relays as `peer://` relay items (spec/sync.md §10), 32 bytes
+aspect reach.0: struct { 0 dialable: blob, 1 items: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, `peer://` items: the node's global socket addresses then its relays (spec/sync.md §10), 32 bytes
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool, 2 suspect: set<suspect> };    // ts: wall ms of the commit's ts
 aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<blob>, 3 replicate: list<address>, 4 policy: map<string, int>, 5 caps: map<blob, host_caps> };   // label IDs: 16 bytes
 aspect clients.0^: map<tid, client>;
