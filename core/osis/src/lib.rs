@@ -11,7 +11,7 @@
 //!
 //! # A first write
 //! You are the first admin of a thing you create. `me()` is your account, and also a group synced to
-//! all your nodes. A new thing is a **draft**, in memory, until its first durable write.
+//! all your nodes.
 //! ```
 //! use osis::{Config, Member, MemStore, Osis, Store, Value};
 //! let db = Osis::create(Store::Memory(MemStore::new()), &[], Config::default())?;
@@ -106,7 +106,7 @@
 //! w.commit()?;
 //! // memory and disk are two commits: a peer could see one without the other
 //! let mut w = db.write();
-//! w.at(t, title.clone()).set(&Value::Str("draft".into()))?;
+//! w.at(t, title.clone()).set(&Value::Str("edited".into()))?;
 //! w.at(t, typing.clone()).set(&Value::Bool(true))?;
 //! assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 //! // a commit has one expiry
