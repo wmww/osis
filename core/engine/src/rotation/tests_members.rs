@@ -1009,7 +1009,7 @@ fn rotator_lacking_write_resealed_spec_permissions_3() {
 #[ignore = "tier 2"]
 fn rotator_lacking_write_resealed_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_LACKING_START", "OSIS_LACKING_SEEDS", osis_base::testenv::large(955..975));
-    let replay = |s: u64| format!("OSIS_LACKING_START={s} OSIS_LACKING_SEEDS=1 cargo test -p osis-engine --lib rotation::tests_members::rotator_lacking_write_resealed_large -- --ignored --exact");
+    let replay = |s: u64| format!("OSIS_LACKING_START={s} OSIS_LACKING_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_members::rotator_lacking_write_resealed_large");
     s.run("rotation::tests_members::rotator_lacking_write_resealed_large", replay, lacking_write_resealed);
 }
 
@@ -1075,7 +1075,7 @@ fn cycle_removals_leak_nothing_random_large() {
 }
 
 fn cycle_replay(s: u64) -> String {
-    format!("OSIS_CYCLE_START={s} OSIS_CYCLE_SEEDS=1 cargo test -p osis-engine --lib rotation::tests_members::cycle_removals_leak_nothing_random_large -- --ignored --exact")
+    format!("OSIS_CYCLE_START={s} OSIS_CYCLE_SEEDS=1 cargo test -p osis-engine --lib -- --ignored --exact rotation::tests_members::cycle_removals_leak_nothing_random_large")
 }
 
 fn cycle_stats(runs: Vec<(usize, bool)>) {

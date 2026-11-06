@@ -1711,7 +1711,7 @@ fn away_seed(seed: u64) -> AwaySeed {
 }
 
 fn away_replay(s: u64) -> String {
-    format!("OSIS_AWAY_START={s} OSIS_AWAY_SEEDS=1 cargo test -p osis-node --test it parts::part_away_differential_large_spec_commits_4 -- --ignored --exact")
+    format!("OSIS_AWAY_START={s} OSIS_AWAY_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact parts::part_away_differential_large_spec_commits_4")
 }
 
 // spec/commits.md §4: commits on two things, each with a part away: what a reader applies is alike in

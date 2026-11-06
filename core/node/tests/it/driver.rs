@@ -112,7 +112,7 @@ async fn driver_in_process_spec_sync_10() {
 }
 
 // spec/sync.md §10: the same over QUIC on localhost (tier 2: touches the network).
-// Run: `cargo test-net --test it driver:: -- --ignored`.
+// Run: `cargo test-net -- --ignored driver::`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_quic_localhost_spec_sync_10() {
@@ -345,7 +345,7 @@ async fn relay_node() -> (osis_transport::P2pListener<osis_transport::QuicUdp>, 
 }
 
 // spec/sync.md §5, §10: the same over P2P (QUIC) on localhost, no relay (tier 2: touches the
-// network). Run: `cargo test-net --test it driver:: -- --ignored`.
+// network). Run: `cargo test-net -- --ignored driver::`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_p2p_localhost_spec_sync_10() {
@@ -354,7 +354,7 @@ async fn driver_p2p_localhost_spec_sync_10() {
 
 // spec/sync.md §10: two nodes over P2P find each other only by the driver's LAN loop: fresh
 // keys per network, signed announcements over UDP on localhost (tier 2).
-// Run: `cargo test-net --test it driver:: -- --ignored`.
+// Run: `cargo test-net -- --ignored driver::`.
 #[cfg(feature = "lan")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -368,7 +368,7 @@ async fn driver_lan_loop_localhost_spec_sync_10() {
 
 // spec/sync.md §10 (IPv6 LAN discovery): the same over IPv6 loopback: announcements on the IPv6
 // socket carry the listener's IPv6 port and are dialed at their IPv6 source (tier 2).
-// Run: `cargo test-net --test it driver:: -- --ignored`.
+// Run: `cargo test-net -- --ignored driver::`.
 #[cfg(feature = "lan")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -382,7 +382,7 @@ async fn driver_lan_loop_ipv6_localhost_spec_sync_10() {
 // spec/sync.md §10 (the proven route first): two nodes whose `reach.0` names only a relay on
 // localhost also run the LAN loop: whatever route came up first, each ends on the other's LAN
 // route alone (a relay connection is replaced once the LAN one is up) (tier 2).
-// Run: `cargo test-net --test it driver:: -- --ignored`.
+// Run: `cargo test-net -- --ignored driver::`.
 #[cfg(feature = "lan")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
@@ -398,7 +398,7 @@ async fn driver_lan_replaces_relay_localhost_spec_sync_10() {
 
 // spec/sync.md §10: two nodes over P2P reach each other through a relaying node on localhost,
 // the only route `reach.0` names (tier 2).
-// Run: `cargo test-net --test it driver:: -- --ignored`.
+// Run: `cargo test-net -- --ignored driver::`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn driver_p2p_relay_localhost_spec_sync_10() {
@@ -412,7 +412,7 @@ async fn driver_p2p_relay_localhost_spec_sync_10() {
 // network change right after a join is deferred to `rejoin_min` (each join drops the LAN
 // listener and its connections); the deferred join then announces a fresh key (tier 2: UDP and
 // P2P on localhost).
-// Run: `cargo test-net --test it driver:: -- --ignored`.
+// Run: `cargo test-net -- --ignored driver::`.
 #[cfg(feature = "lan")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
