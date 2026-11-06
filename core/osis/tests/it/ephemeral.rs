@@ -128,7 +128,7 @@ fn first_durable_write_persists_chain_spec_commits_2() {
     assert_eq!(db.at(leaf, saved).get().unwrap(), Some(s("hello")));
     assert_eq!(db.at(leaf, osis::DynamicAspectKey::untyped(ak("app:draft.0~"))).get().unwrap(), Some(s("hello")));
     assert!(db.at(leaf, state).get().unwrap().is_some());
-    // placing a draft keeps it ephemeral (notes/ephemeral.md (`group.0~`))
+    // placing a draft keeps it ephemeral (notes/ephemeral.md (`ephemeral_group.0~`))
     let mut w = db.write();
     w.group(db.me()).add(osis::Member::Item(other)).unwrap();
     w.commit().unwrap();
@@ -575,7 +575,7 @@ fn roles_persist_first_spec_data_model_1() {
 // notes/ephemeral.md API (Writes): an ephemeral op that fails when it resolves (a list
 // index past the end) fails the whole commit: no commit, no new thing. Persisting a thing leaves
 // the drafts it owns ephemeral; ephemeral memberships are written only through group
-// ops (a raw `group.0~` write is Invalid).
+// ops (a raw `ephemeral_group.0~` write is Invalid).
 // spec/data-model.md §1, §2
 #[test]
 fn mixed_commit_resolution_failure_and_partial_chain() {
@@ -607,16 +607,16 @@ fn mixed_commit_resolution_failure_and_partial_chain() {
     assert_eq!(db.engine(|e| e.commit_ids().len()), n + 1);
     assert!(db.created(c).unwrap().unwrap().id.is_some());
     assert_eq!(db.at(c, osis::DynamicAspectKey::untyped(draft)).get().unwrap(), Some(Value::Int(1)));
-    // `group.0~` is written by group ops only (`group.0`'s key is durable: no ephemeral raw write)
+    // `ephemeral_group.0~` is written by group ops only (`group.0`'s key is durable: no ephemeral raw write)
     let mut w = db.write();
-    w.at(p, osis::DynamicAspectKey::untyped(ak("group.0~"))).set(&Value::Int(1)).unwrap();
+    w.at(p, osis::DynamicAspectKey::untyped(ak("ephemeral_group.0~"))).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Invalid(_))));
 }
 
-/// What `g` lists: its `group.0` and its ephemeral memberships (`group.0~`).
+/// What `g` lists: its `group.0` and its ephemeral memberships (`ephemeral_group.0~`).
 fn group_of(db: &Osis, g: osis::Tid) -> osis::internals::core_types::Group {
     let mut d = db.at(g, osis::internals::core_types::GROUP).get().unwrap().unwrap_or_default();
-    let p = db.at(g, osis::internals::core_types::GROUP_EPHEMERAL).get().unwrap().unwrap_or_default();
+    let p = db.at(g, osis::internals::core_types::EPHEMERAL_GROUP).get().unwrap().unwrap_or_default();
     d.items.extend(p.items);
     d.subgroups.extend(p.subgroups);
     d
@@ -627,16 +627,16 @@ fn durable_items(db: &Osis, g: osis::Tid) -> Vec<osis::Tid> {
     db.at(g, osis::internals::core_types::GROUP).get().unwrap().unwrap_or_default().items.into_iter().collect()
 }
 
-// notes/ephemeral.md (`group.0~`): an ephemeral item added to a durable group is an
-// ephemeral write of the group's `group.0~`: it lists there, in its `groups.0` and in a watch of
-// `group.0~`, with no commit and no store write; removing it is ephemeral too.
+// notes/ephemeral.md (`ephemeral_group.0~`): an ephemeral item added to a durable group is an
+// ephemeral write of the group's `ephemeral_group.0~`: it lists there, in its `groups.0` and in a watch of
+// `ephemeral_group.0~`, with no commit and no store write; removing it is ephemeral too.
 // spec/data-model.md §8
 #[test]
 fn ephemeral_membership_lists_without_commit_spec_data_model_8() {
     let (db, _c) = setup(30);
     let home = db.me();
     let (tx, rx) = channel();
-    let _sub = db.at(home, osis::internals::core_types::GROUP_EPHEMERAL).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
+    let _sub = db.at(home, osis::internals::core_types::EPHEMERAL_GROUP).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
     let before = durable_marks(&db);
     let mut w = db.write();
@@ -660,7 +660,7 @@ fn ephemeral_membership_lists_without_commit_spec_data_model_8() {
     assert!(db.groups_of(t).unwrap().within.is_empty());
 }
 
-// notes/ephemeral.md Persistence (`group.0~`): persisting a added draft
+// notes/ephemeral.md Persistence (`ephemeral_group.0~`): persisting a added draft
 // writes its `created.0` and the durable `group.0` adds, an expiring one in a commit of its own
 // (one expiry per commit), and the ephemeral element goes. spec/data-model.md §8, spec/commits.md
 // §2, §6
@@ -725,7 +725,7 @@ fn persisting_makes_memberships_durable_spec_data_model_8() {
     assert!(!group_of(&db, home).items.contains(&u) && !durable_items(&db, home).contains(&u));
 }
 
-// notes/ephemeral.md (`group.0~`): a draft added to a folder lands there at save
+// notes/ephemeral.md (`ephemeral_group.0~`): a draft added to a folder lands there at save
 // (the save copies the draft's ephemeral content into a durable aspect).
 // spec/data-model.md §1, §8
 #[test]
@@ -753,8 +753,8 @@ fn draft_lands_in_folder_at_save_spec_data_model_8() {
     assert_eq!(group_of(&db, folder).items.into_iter().collect::<Vec<_>>(), vec![draft]);
 }
 
-// notes/ephemeral.md (`group.0~`): a draft holding ephemeral memberships is a
-// group already: another ephemeral item in a later commit neither clears `group.0~` nor persists
+// notes/ephemeral.md (`ephemeral_group.0~`): a draft holding ephemeral memberships is a
+// group already: another ephemeral item in a later commit neither clears `ephemeral_group.0~` nor persists
 // the thing.
 // spec/data-model.md §8
 #[test]
@@ -774,7 +774,7 @@ fn adding_to_an_ephemeral_group_keeps_it_ephemeral_spec_data_model_8() {
     assert!(db.created(g).unwrap().unwrap().id.is_none(), "still ephemeral");
 }
 
-// notes/ephemeral.md Local engine (Restart, `group.0~`): a restart before persisting
+// notes/ephemeral.md Local engine (Restart, `ephemeral_group.0~`): a restart before persisting
 // leaves no ghost: no durable group names the ephemeral tid, and it reads unknown.
 // spec/data-model.md §8
 #[test]
@@ -816,7 +816,7 @@ fn restart_leaves_no_dead_tids_in_groups_spec_data_model_8() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// notes/ephemeral.md (`group.0~`): a durable item added to an ephemeral group persists
+// notes/ephemeral.md (`ephemeral_group.0~`): a durable item added to an ephemeral group persists
 // the group (and the group's own ephemeral memberships, and that it is a group); an ephemeral
 // group of ephemeral items stays in memory, its remove persists nothing.
 // spec/data-model.md §1, §8
@@ -866,7 +866,7 @@ fn durable_item_persists_ephemeral_group_spec_data_model_8() {
     assert!(db.engine(|x| x.core.ix.by_aspect.get(&(e, ak("group.0"))).is_some_and(|s| !s.is_empty())));
 }
 
-// spec/permissions.md §1, notes/ephemeral.md (`group.0~`): persisting an item converts
+// spec/permissions.md §1, notes/ephemeral.md (`ephemeral_group.0~`): persisting an item converts
 // its ephemeral memberships, but only in groups the node may write: one added by a writer of a
 // group this node only reads stays ephemeral there, reported once (`MembershipNotSaved`)
 #[test]
@@ -898,7 +898,7 @@ fn membership_not_saved_without_write_on_group_spec_permissions_1() {
     assert!(durable_items(&bob, g1).contains(&t), "the membership bob may write converted");
 }
 
-// notes/ephemeral.md (`group.0~`): persisting an item added with an expiry in an
+// notes/ephemeral.md (`ephemeral_group.0~`): persisting an item added with an expiry in an
 // ephemeral group persists the group in the same commit whatever the tid order (its empty
 // `group.0` takes the membership's expiry, which removes no value of it), and it stays a group
 // after the membership expires. spec/crdt.md §4.7, spec/data-model.md §8

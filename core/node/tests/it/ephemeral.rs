@@ -72,7 +72,7 @@ fn local(net: &mut Net, n: usize) {
     net.actions(n, acts);
 }
 
-/// Node `n` makes an ephemeral window owned by `g`, a member of `g` (its `group.0~`), with `win:state.0` = `v`.
+/// Node `n` makes an ephemeral window owned by `g`, a member of `g` (its `ephemeral_group.0~`), with `win:state.0` = `v`.
 fn window(net: &mut Net, n: usize, g: Tid, v: &str) -> Tid {
     let e = net.engine(n);
     let mut m = Mutation::new();
@@ -3093,7 +3093,7 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (want.clone(), want));
 }
 
-// spec/sync.md §9 (superseded expiring writes, core keys alike): a membership (`group.0~`) made
+// spec/sync.md §9 (superseded expiring writes, core keys alike): a membership (`ephemeral_group.0~`) made
 // again after an expiring removal supersedes the first membership at every node. Once the removal
 // expired and the second membership is undone, the item is out of the group at the author and the holder
 // alike (a node keeping the first membership read it a member again until that one expired)
@@ -3859,7 +3859,7 @@ fn memory_commit_expiry_stays_in_memory() {
 
 // spec/commits.md §2 (records beside a delta of the things it adds with its reader): a
 // draft under another reader added to a group goes with its record beside its own
-// deltas only, never beside the group's `group.0~` delta (its nonce, its dedup secret, would show
+// deltas only, never beside the group's `ephemeral_group.0~` delta (its nonce, its dedup secret, would show
 // to the group's readers)
 #[test]
 fn member_record_only_to_its_reader_spec_commits_2() {
@@ -3883,7 +3883,7 @@ fn member_record_only_to_its_reader_spec_commits_2() {
     assert_ne!(e.ephemeral_reader(&w), e.ephemeral_reader(&g));
     let built = take_memory(&mut net, a);
     let parts: Vec<(String, Tid, Vec<Tid>)> = built.iter().flat_map(|c| c.1.parts.iter().map(|p| { let a = &c.1.header.aspects[p.ai]; (a.ak.as_str().to_string(), a.tid, p.records.iter().map(|r| r.tid()).collect()) }).collect::<Vec<_>>()).collect();
-    assert!(parts.iter().any(|(ak, t, rs)| ak == "group.0~" && *t == g && !rs.contains(&w)), "{parts:?}");
+    assert!(parts.iter().any(|(ak, t, rs)| ak == "ephemeral_group.0~" && *t == g && !rs.contains(&w)), "{parts:?}");
     assert!(parts.iter().any(|(ak, t, rs)| ak == STATE && *t == w && rs.contains(&w)), "{parts:?}");
 }
 
@@ -5242,7 +5242,7 @@ fn redo_keeps_later_membership_spec_crdt_4_6() {
     assert!(!net.engine(b).groups_of(&w).contains(&g));
 }
 
-// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `group.0~` makes one delta under one stamp (the thing added under two dots here: its first and the redo's).
+// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `ephemeral_group.0~` makes one delta under one stamp (the thing added under two dots here: its first and the redo's).
 #[test]
 fn undo_with_deletion_on_one_membership_has_one_delta_stamp_spec_crdt_2_3() {
     let (mut net, a, b, g, tb, w, id) = undo_world();

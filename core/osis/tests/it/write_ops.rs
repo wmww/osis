@@ -255,9 +255,9 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
     for t in things.iter().chain(&wd.groups) {
         let mut vals = Vec::new();
         for a in db.aspects(*t).unwrap() {
-            // `group.0~`: a draft's memberships, left empty where it persisted
+            // `ephemeral_group.0~`: a draft's memberships, left empty where it persisted
             // (unbatched: added while ephemeral); `groups_of` compares what they mean
-            if a.as_str() == "created.0" || a.as_str() == "group.0~" {
+            if a.as_str() == "created.0" || a.as_str() == "ephemeral_group.0~" {
                 continue;
             }
             vals.push(format!("{a}={:?}", db.at(*t, osis::DynamicAspectKey::untyped(a.clone())).get().unwrap()));

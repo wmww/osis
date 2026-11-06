@@ -330,7 +330,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let stripped_ais: BTreeSet<usize> = stripped.keys().copied().collect();
     let kept = |p: &osis_commit::Part| p.delta == emptied && stripped_ais.contains(&p.ai);
     // a part that does not hash to its header entry is no part of this commit, and one on an aspect
-    // of the wrong storage class (core keys are unmarked but `group.0~`) is never applied: dropped
+    // of the wrong storage class (core keys are unmarked but `ephemeral_group.0~`) is never applied: dropped
     // alone, before anything reads what is held (spec/commits.md §4)
     let junk: Vec<usize> = blob
         .parts

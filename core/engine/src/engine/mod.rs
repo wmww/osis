@@ -538,7 +538,7 @@ indexes! {
     /// (`records::OWN_KEYS`): thing -> commits.
     pub keyset_parts: JSetMap<Tid, CommitId>,
     /// Things with a `label.0` state (`Engine::labeled_groups`), kept with the state
-    /// (`Tx::derive`) like `eph_members`.
+    /// (`Tx::derive`) like `ephemeral_group`.
     pub labeled: JSet<Tid>,
     /// Admin and write delete keys of things an inbox payload named (`[admin, write]` bytes),
     /// listed until their `keys.0` arrives (spec/crypto.md §7, spec/wire.md §9): taken only from
@@ -546,9 +546,9 @@ indexes! {
     pub delete_hints: JMap<Tid, osis_base::Value>,
     /// `group.0` definitions and `groups.0` (thing -> groups containing it, transitively).
     pub groups: groups::Groups,
-    /// Each `group.0~` state as read: a group's ephemeral memberships (`Engine::groups_of` reads
+    /// Each `ephemeral_group.0~` state as read: a group's ephemeral memberships (`Engine::groups_of` reads
     /// them with `groups`; the closure node-sync uses reads `groups` alone).
-    pub eph_members: JMap<Tid, groups::Def>,
+    pub ephemeral_group: JMap<Tid, groups::Def>,
     /// Keyed `roles.0` entries seen: (target, entry dot) -> (holder, created value).
     pub holder_keys: JMap<(Tid, Dot), Tid>,
     /// Role commits whose removed keys are not known yet.
@@ -683,7 +683,7 @@ pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);
 /// journaled (`journal`): a failed transaction undoes its own changes to them.
 #[doc(hidden)]
 /// A cached full closure (`Core::full_closures`): the durable closure it was built from, the
-/// `eph_members_gen` then, and the closure through `group.0~` too.
+/// `ephemeral_group_gen` then, and the closure through `ephemeral_group.0~` too.
 pub(crate) type FullClosure = (Arc<BTreeSet<Tid>>, u64, Arc<BTreeSet<Tid>>);
 
 pub struct Core {
@@ -843,10 +843,10 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
-    /// Steps at every change of `Indexes::eph_members` (`Engine::closure` caches by it).
-    pub eph_members_gen: u64,
-    /// `Engine::closure` per group: the durable closure it was built from, the `eph_members_gen` it
-    /// was built at, and the closure through `group.0~` too.
+    /// Steps at every change of `Indexes::ephemeral_group` (`Engine::closure` caches by it).
+    pub ephemeral_group_gen: u64,
+    /// `Engine::closure` per group: the durable closure it was built from, the `ephemeral_group_gen` it
+    /// was built at, and the closure through `ephemeral_group.0~` too.
     pub(crate) full_closures: std::cell::RefCell<HashMap<Tid, FullClosure>>,
     /// Debug builds: the cache hits compared with a fresh read at this point of the store
     /// (`Engine::recheck`).
@@ -1295,7 +1295,7 @@ impl Core {
             generation: 0,
             memory_generation: 0,
             memory_tx: false,
-            eph_members_gen: 0,
+            ephemeral_group_gen: 0,
             full_closures: Default::default(),
             #[cfg(debug_assertions)]
             rechecked: Default::default(),
@@ -1696,7 +1696,7 @@ impl Tx<'_> {
     }
 
     /// Whether `(tid, ak)` has a state: a valid write on it applied here. What a thing has is
-    /// read here (or from an index derived from states: `Indexes::labeled`, `eph_members`, `groups`),
+    /// read here (or from an index derived from states: `Indexes::labeled`, `ephemeral_group`, `groups`),
     /// never from `Indexes::by_aspect`, which any signer's header adds to.
     pub fn has_state(&mut self, tid: &Tid, ak: &Ak) -> Result<bool> {
         self.load_lazy(tid, ak)?;
@@ -1738,16 +1738,16 @@ impl Tx<'_> {
     }
 
     /// Keeps the indexes derived from states at the state `f` of `(tid, ak)`, whatever wrote
-    /// it: `Indexes::eph_members` (the ephemeral memberships, read with `group.0`) and
+    /// it: `Indexes::ephemeral_group` (the ephemeral memberships, read with `group.0`) and
     /// `Indexes::labeled`.
     fn derive(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
         match ak.as_str() {
-            "group.0~" => {
+            "ephemeral_group.0~" => {
                 match f.and_then(crate::ephemeral::def_of) {
-                    Some(d) => self.core.ix.eph_members.insert(*tid, d),
-                    None => self.core.ix.eph_members.remove(tid),
+                    Some(d) => self.core.ix.ephemeral_group.insert(*tid, d),
+                    None => self.core.ix.ephemeral_group.remove(tid),
                 };
-                self.core.eph_members_gen += 1;
+                self.core.ephemeral_group_gen += 1;
             }
             "label.0" => {
                 match f {

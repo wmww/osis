@@ -4,7 +4,7 @@
 //! everything else is as for durable data (issues/eph-unify.md). `Engine::write` splits a
 //! `Mutation` by key: a commit, durable or memory (plain writes under this open's session, expiring
 //! ones under its second session, spec/crdt.md §2.1), or `Clash` when it asks for both. What only
-//! follows a durable commit (a kept thing's memberships leaving `group.0~`, a deleted thing's
+//! follows a durable commit (a kept thing's memberships leaving `ephemeral_group.0~`, a deleted thing's
 //! memory side) goes in a memory commit beside it, in one transaction. Signal writes go as relay-only
 //! commits (`signal`). Reads come from Core as for any aspect. This module keeps only what
 //! belongs to the local write path: the undo log of own batches (`log`), drafts again, things
@@ -27,7 +27,7 @@ use crate::error::{Error, Result};
 use crate::events::{BatchId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Fragment, Source};
-use osis_schema::core_types::{CREATED, GROUP, GROUP_EPHEMERAL};
+use osis_schema::core_types::{CREATED, GROUP, EPHEMERAL_GROUP};
 use osis_schema::{RawKey, Lifetime};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -174,7 +174,7 @@ impl Engine {
 
     /// Writes `m` as one commit: durable (with the creation records of the ephemeral things it
     /// persists and their memberships made durable, spec/data-model.md §1, §8) or memory. Two
-    /// when the durable one does something in memory nobody asked for (`group.0~` resets,
+    /// when the durable one does something in memory nobody asked for (`ephemeral_group.0~` resets,
     /// `delete`'s ephemeral ones): a second, memory commit under its `ts`
     /// (issues/commit-memory-half.md). `Clash` when the ops ask for both, or signals beside either.
     /// When the commit or any op fails, nothing applies. `None` when nothing changes.
@@ -192,7 +192,7 @@ impl Engine {
         let mut gops: Vec<(Tid, AspectMut)> = Vec::new();
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {
             let group = ak.as_str() == GROUP.ak();
-            if ak.as_str() == GROUP_EPHEMERAL.ak() {
+            if ak.as_str() == EPHEMERAL_GROUP.ak() {
                 return Err(Error::Misuse("ephemeral memberships are written through group ops only"));
             } else if group {
                 gops.push((tid, a));
@@ -286,7 +286,7 @@ impl Engine {
         // batch's own membership removals, in no labeled closure (a synced one keeps its record and
         // tombstones while held: an older copy elsewhere would revive the values), with the
         // ephemeral things they own
-        let removed: BTreeSet<(Tid, Tid)> = eph_ops.iter().filter(|op| op.ak.as_str() == GROUP_EPHEMERAL.ak()).flat_map(|op| op.am.ops.iter().filter_map(|o| membership::member_removal(o).map(|x| (op.tid, x)))).chain(m.aspects.iter().filter(|((_, ak), _)| ak.as_str() == GROUP.ak()).flat_map(|((g, _), am)| am.ops.iter().filter_map(|o| membership::member_removal(o).map(|x| (*g, x))))).collect();
+        let removed: BTreeSet<(Tid, Tid)> = eph_ops.iter().filter(|op| op.ak.as_str() == EPHEMERAL_GROUP.ak()).flat_map(|op| op.am.ops.iter().filter_map(|o| membership::member_removal(o).map(|x| (op.tid, x)))).chain(m.aspects.iter().filter(|((_, ak), _)| ak.as_str() == GROUP.ak()).flat_map(|((g, _), am)| am.ops.iter().filter_map(|o| membership::member_removal(o).map(|x| (*g, x))))).collect();
         let free = m.free.clone();
         let gone = self.freeable(&free, &removed);
         // a signal is a relay-only commit of its own (spec/sync.md §9)
@@ -326,10 +326,10 @@ impl Engine {
                 }
             }
         }
-        // their entries leave every `group.0~` listing them (a reset that goes with them
+        // their entries leave every `ephemeral_group.0~` listing them (a reset that goes with them
         // otherwise, at a group that stays)
         for (g, ops) in self.remove_freed_members(&gone) {
-            let e = batch(&mut batches, false, actor, ts).aspects.entry((g, membership::group_eph_ak()?)).or_insert_with(|| AspectMut { schema: Some(std::sync::Arc::new(osis_schema::core_schema().clone())), ..AspectMut::default() });
+            let e = batch(&mut batches, false, actor, ts).aspects.entry((g, membership::ephemeral_group_ak()?)).or_insert_with(|| AspectMut { schema: Some(std::sync::Arc::new(osis_schema::core_schema().clone())), ..AspectMut::default() });
             e.ops.extend(ops);
         }
         if let (Some(p), Some(x)) = (batches.get(&false).and_then(|x| x.aspects.keys().next()), batches.get(&true).and_then(|x| x.aspects.keys().next())) {
@@ -425,7 +425,7 @@ impl Engine {
             }
         }
         for t in gone {
-            changed.push((*t, membership::group_eph_ak().unwrap_or_else(|_| unreachable!("a core key"))));
+            changed.push((*t, membership::ephemeral_group_ak().unwrap_or_else(|_| unreachable!("a core key"))));
         }
         logged.retain(|a| !gone.contains(&a.tid));
         making.made.retain(|t| !gone.contains(t));
@@ -468,12 +468,12 @@ impl Engine {
         }
     }
 
-    /// Per group that stays, the removals of `gone` from its `group.0~`.
+    /// Per group that stays, the removals of `gone` from its `ephemeral_group.0~`.
     fn remove_freed_members(&self, gone: &BTreeSet<Tid>) -> Vec<(Tid, Vec<osis_crdt::PathOp>)> {
         if gone.is_empty() {
             return Vec::new();
         }
-        self.core.ix.eph_members.iter().filter(|(g, _)| !gone.contains(g)).map(|(g, (items, subs))| (*g, membership::removal_ops(items, subs, gone))).filter(|(_, ops)| !ops.is_empty()).collect()
+        self.core.ix.ephemeral_group.iter().filter(|(g, _)| !gone.contains(g)).map(|(g, (items, subs))| (*g, membership::removal_ops(items, subs, gone))).filter(|(_, ops)| !ops.is_empty()).collect()
     }
 
     /// The role this node has on an ephemeral thing: its role on a new thing owned by the
@@ -494,10 +494,10 @@ impl Engine {
         }))
     }
 
-    /// The read value of `group.0~` of `tid`: the group its items and subgroups make (its
+    /// The read value of `ephemeral_group.0~` of `tid`: the group its items and subgroups make (its
     /// adds carry no presence of the struct).
-    pub(crate) fn group_eph_value(&self, tid: &Tid) -> Option<Value> {
-        self.core.ix.eph_members.get(tid).map(|(items, subgroups)| GROUP_EPHEMERAL.encode(&osis_schema::core_types::Group { items: items.clone(), subgroups: subgroups.clone() }))
+    pub(crate) fn ephemeral_group_value(&self, tid: &Tid) -> Option<Value> {
+        self.core.ix.ephemeral_group.get(tid).map(|(items, subgroups)| EPHEMERAL_GROUP.encode(&osis_schema::core_types::Group { items: items.clone(), subgroups: subgroups.clone() }))
     }
 
     /// Tests: an own memory commit of `m` (what `write` makes of a batch's ephemeral half; the

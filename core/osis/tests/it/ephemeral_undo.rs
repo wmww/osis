@@ -102,7 +102,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
 }
 
 // spec/crdt.md §4.6: a commit that keeps a draft added to a group has a memory commit following it
-// (the membership leaving `group.0~`): undo takes both in one step, the draft back in the group in
+// (the membership leaving `ephemeral_group.0~`): undo takes both in one step, the draft back in the group in
 // memory; redo keeps it again. The commit names the entry.
 #[test]
 fn keeping_a_draft_undone_in_one_step_spec_crdt_4_6() {
@@ -120,7 +120,7 @@ fn keeping_a_draft_undone_in_one_step_spec_crdt_4_6() {
     let c = w.commit().unwrap().unwrap();
     assert!(c.id.commit().is_some());
     let durable = |db: &Osis| db.at(g, osis::internals::core_types::GROUP).get().unwrap().unwrap_or_default().items.contains(&d);
-    let placed = |db: &Osis| db.at(g, osis::internals::core_types::GROUP_EPHEMERAL).get().unwrap().unwrap_or_default().items.contains(&d);
+    let placed = |db: &Osis| db.at(g, osis::internals::core_types::EPHEMERAL_GROUP).get().unwrap().unwrap_or_default().items.contains(&d);
     assert!(durable(&db) && !placed(&db));
     let scope = Scope::Thing(d);
     assert_eq!(db.commits(&CommitQuery { scope: Some(scope.clone()), ..Default::default() }).unwrap()[0].commit.id, c.id);
@@ -333,9 +333,9 @@ fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
 #[test]
 fn undo_takes_no_key_default_spec_crdt_4_6() {
     let db = setup(30);
-    db.register_schema("rv.osis", "version 1;\naspect app:d.0: int [expires: 30d];\naspect app:p.0: int;\naspect app:d.0~: int [expires: 30s];\naspect app:p.0~: int;").unwrap();
+    db.register_schema("rv.osis", "version 1;\naspect app:d.0: int [expires: 30d];\naspect app:p.0: int;\naspect app:de.0~: int [expires: 30s];\naspect app:pe.0~: int;").unwrap();
     let t = db.commit_with(|w| w.create_durable(db.me())).unwrap();
-    for (x, y) in [("app:d.0", "app:p.0"), ("app:d.0~", "app:p.0~")] {
+    for (x, y) in [("app:d.0", "app:p.0"), ("app:de.0~", "app:pe.0~")] {
         let (a, b) = (db.aspect_key(x).unwrap(), db.aspect_key(y).unwrap());
         let mut w = db.write();
         w.expires(osis::Expiry::In(std::time::Duration::from_secs(3600)));

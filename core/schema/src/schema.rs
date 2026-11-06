@@ -220,8 +220,13 @@ impl Schema {
             bad(&format!("type {name}"), msg);
         }
         let core = self.declares_core();
+        // one AK per (tid, names, version): markers are not part of the name
+        let mut unmarked: BTreeMap<&str, &str> = BTreeMap::new();
         for (ak, def) in &self.aspects {
             let item = format!("aspect {ak}");
+            if let Some(other) = unmarked.insert(ak.trim_end_matches(['~', '*']).trim_end_matches('^'), ak) {
+                bad(&item, format!("differs from {other} only in markers: a change of markers takes a new version (spec/data-model.md §2)"));
+            }
             let lifetime = match Ak::new(ak.as_str()) {
                 Ok(_) if crate::core_types::is_core_key(ak) != core => {
                     bad(&item, "a schema declares core AKs (one name segment, no tid) only, or app AKs (two or more, or a tid) only".into());
@@ -246,10 +251,10 @@ impl Schema {
             if def.expires == Some(0) {
                 bad(&item, "expires must be positive".into());
             }
-            // `group.0~`, the ephemeral memberships (spec/data-model.md §8), is the one core aspect
-            // that is not durable
-            if core && !lifetime.is_durable() && ak.as_str() != "group.0~" {
-                bad(&item, "core aspects are durable, group.0~ ephemeral".into());
+            // `ephemeral_group.0~` (spec/data-model.md §8) is the one core aspect that is not
+            // durable
+            if core && !lifetime.is_durable() && ak.as_str() != "ephemeral_group.0~" {
+                bad(&item, "core aspects are durable, ephemeral_group.0~ ephemeral".into());
             }
             if !lifetime.is_durable() && def.retention != Retention::default() {
                 bad(&item, "retention applies to durable aspects only".into());

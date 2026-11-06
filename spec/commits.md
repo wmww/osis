@@ -42,12 +42,12 @@ Encoding: spec/wire.md §4. Fields:
 - **Compaction snapshot**: content or role kind with the compaction-snapshot marker; snapshot deltas (spec/crdt.md §8); no own writes, empty counter ranges (spec/sync.md §7).
   - Written by a node that may write the aspect (admin for `keys.0` and `secrets.0`, spec/permissions.md §5.2). A receiver judges this as for any delta of its author, and a snapshot failing it gives nothing (spec/permissions.md §5.2).
   - `roles.0` is never compaction-snapshotted: the role timeline walks every edge write (spec/permissions.md §5.1).
-- **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), `group.0~` among them, one of:
+- **Ephemeral commit**: a commit with the ephemeral marker, carrying writes of ephemeral (`~`) aspects (spec/data-model.md §2), `ephemeral_group.0~` among them, one of:
   - a session-form content commit (its author's own writes under one of its sessions, §3);
   - a commit-form content compaction snapshot of one `~` aspect (an ephemeral snapshot, below).
 
   With the relay marker instead it is **relay-only**: writes of signal (`*`) aspects, commit form, snapshot deltas with empty tables. For an ephemeral commit of either form and any marker:
-  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the drafts (at its author) the delta is on or its `group.0~` writes add that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral owner chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
+  - **Creation records**: it carries no `created.0` delta. Beside each delta a part carries the creation records (spec/wire.md §3, §4) of the drafts (at its author) the delta is on or its `ephemeral_group.0~` writes add that have the delta's thing's reader actor (spec/sync.md §3; a record gives its thing's dedup secret, so none goes to another reader), and of their ephemeral owner chains. A record needs no signature (it hashes to its tid). A receiver keeps those of things it does not hold as it keeps the commit (in memory).
   - **Shape**: every delta has retention `writer` with no bounds. It has no chunks, pages (each delta must fit a blob alone, spec/crdt.md §8), purge, undo or list by link. A relay-only commit carries no `expires`.
   - **Holding**: nodes and hosts hold ephemeral commits in memory only (spec/sync.md §4, §9). Nothing of them joins durable state.
   - **Receiving**: a receiver verifies, judges and applies it as the durable commit of its kind (§4, spec/permissions.md §5.2):

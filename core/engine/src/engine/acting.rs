@@ -37,7 +37,7 @@ impl Engine {
         // through groups that stopped syncing here: stale here, and this node would serve it to a
         // client as if current (notes/client-port.md §6)
         if !self.core.receipts_only.is_empty() || !self.core.routed_away.is_empty() {
-            // `group.0~` too: as the owner's calls route (`Osis::route`)
+            // `ephemeral_group.0~` too: as the owner's calls route (`Osis::route`)
             let gs = self.groups_of(t);
             if self.core.routed_away.contains(t) || gs.iter().any(|g| self.core.routed_away.contains(g)) {
                 return false;

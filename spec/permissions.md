@@ -7,7 +7,7 @@
   - A **role commit** (spec/commits.md §2) carries writes of **role-class aspects** (spec/data-model.md §9).
   - The **role timeline** (§5.1) orders edge writes.
   - A **co-reader open** (proof 3, spec/sync.md §5) is a label open by a node that reads the label.
-  - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0` or `group.0~`, spec/data-model.md §8), which grants no rights.
+  - **Member**, **membership** and **member of a group** mean only being listed in a group (`group.0` or `ephemeral_group.0~`, spec/data-model.md §8), which grants no rights.
   - A value in a CRDT set is an **element**.
 - **Actor**: a thing that can hold roles and act. Thing, group and actor are overlapping capabilities of one object, not kinds. A thing has this capability by having role secrets (spec/crypto.md §3).
   - A **key actor** (node, recovery key, link key) also has a signing key committed by its tid and owns itself.
@@ -276,7 +276,7 @@ The timeline covers **edge writes**: writes to `roles.0`. Every other role-class
 - **Ephemeral parts**: a part of an ephemeral commit (spec/commits.md §2) is judged as the durable part of its kind would be, at the commit's key, needing the aspect's role (§1; on a draft, through its nearest durable owner):
   - a session-form one as its author's content delta;
   - a snapshot one as its author's compaction snapshot delta.
-  - A part on a core aspect other than `group.0~` (spec/data-model.md §9) is invalid.
+  - A part on a core aspect other than `ephemeral_group.0~` (spec/data-model.md §9) is invalid.
   - A demotion's frontier lists no ephemeral commit, so an explicit demotion invalidates all the demoted node's ephemeral commits, its snapshots included. What a valid ephemeral snapshot carries it vouches for, as any snapshot does; one turned invalid gives nothing, and a body dropped as covered by it counts as never received, as for a durable snapshot. What becomes invalid is un-merged (spec/crdt.md §4.6).
 
 ### 5.3 Revoking (client behavior)

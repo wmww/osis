@@ -924,12 +924,12 @@ pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
 }
 
 /// The records a memory commit carries beside its delta on `(tid, ak)` (spec/commits.md §2):
-/// the memory chains of `tid` and, on `group.0~`, of the things `members` its delta adds that
+/// the memory chains of `tid` and, on `ephemeral_group.0~`, of the things `members` its delta adds that
 /// have `tid`'s reader (a record names its nonce, its dedup secret: never shown to another
 /// reader).
 pub(crate) fn memory_records(core: &Core, tid: &Tid, ak: &Ak, members: impl Iterator<Item = Tid>) -> Vec<CreationRecord> {
     let mut things = vec![*tid];
-    if ak.as_str() == osis_schema::core_types::GROUP_EPHEMERAL.ak() {
+    if ak.as_str() == osis_schema::core_types::EPHEMERAL_GROUP.ak() {
         let reader = core.reader_of(tid);
         things.extend(members.filter(|x| core.reader_of(x) == reader));
     }
