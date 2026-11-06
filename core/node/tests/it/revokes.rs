@@ -178,3 +178,138 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     assert!(!placed.is_empty(), "the revoke is under G's label");
     assert!(placed.iter().flatten().all(|ai| h.aspects[*ai].ak.as_str() != "keys.0"), "no keyset of M");
 }
+
+fn carry(net: &mut Net, n: usize, done: osis_node::flows::Done) {
+    let acts = net.sync(n).carry_out(done).unwrap();
+    net.actions(n, acts);
+}
+
+fn brief(net: &mut Net, name: &str, n: usize, c: osis_base::Tid, k: osis_base::Tid) {
+    let mut line = String::new();
+    for (lbl, t) in [("C", c), ("K", k)] {
+        if let Some(ep) = net.engine(n).epochs(&t) {
+            let re = ep.role(Role::Read);
+            let cur: Vec<String> = re.epochs().map(|(e, i)| format!("{}.{}{}{}", e.n(), e.nonce()[0], if i.secret.is_some() { "+" } else { "-" }, if re.is_current(e) { "*" } else { "" })).collect();
+            line.push_str(&format!(" {lbl}:{cur:?}"));
+        }
+    }
+    let rc: Vec<String> = net.engine(n).core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role() && m.view.aspects.iter().any(|a| a.tid == c)).map(|(id, m)| format!("{}@{}", &format!("{id:?}")[9..13], m.view.ts.to_u64() % 1000)).collect();
+    let me = net.tid(n);
+    let deps = net.engine(n).departures(&c).unwrap();
+    let blocked = net.engine(n).run(|tx| osis_node::rotation::blocked_roles_of(tx, &me, &c, &deps)).unwrap();
+    let st: Vec<String> = net.sync(n).label_status().into_iter().filter(|s| s.group == c).map(|s| format!("open={} idle={} stranded={} refused={}", s.open, s.idle, s.stranded, s.refused)).collect();
+    let diags = net.diagnostics(n);
+    eprintln!("[{name}] node {n}{line} C-role-commits={rc:?} deps={} blocked={blocked:?} st={st:?} diags={diags:?}", deps.len());
+}
+
+/// TEMP probe
+fn probe_c(net: &mut Net, name: &str, n: usize, c: osis_base::Tid, host: usize) {
+    let ep = net.engine(n).epochs(&c);
+    eprintln!("[{name}] node {n} C: roster={:?}", net.engine(n).roster(&c).iter().map(|(h, e)| format!("{h}:{:?}", e.role)).collect::<Vec<_>>());
+    if let Some(ep) = ep {
+        for r in [Role::Read, Role::Write, Role::Admin] {
+            let re = ep.role(r);
+            for (e, info) in re.epochs() {
+                let rots: Vec<String> = info.rotations.iter().map(|(id, l)| format!("{:?}->{:?}", id, l.iter().map(|x| (x.n(), x.nonce()[0])).collect::<Vec<_>>())).collect();
+                eprintln!("    {r:?} n={} nonce={} secret={} est={:?} cur={} sup={:?} rots={rots:?}", e.n(), e.nonce()[0], info.secret.is_some(), info.established.is_some(), re.is_current(e), info.supersedes.iter().map(|x| (x.n(), x.nonce()[0])).collect::<Vec<_>>());
+            }
+        }
+    }
+    if let Some(sec) = net.engine(n).get_typed(&c, &ct::SECRETS).unwrap() {
+        for (k, b) in &sec.boxes {
+            let form = match b {
+                ct::SecretBox::Sealed(b) => format!("sealed at keyset {:?}", b.keyset.as_ref().map(|e| (e.n, e.nonce[0]))),
+                ct::SecretBox::Symmetric(b) => format!("symmetric at {:?}", (b.epoch.n, b.epoch.nonce[0])),
+            };
+            eprintln!("    box {} {:?} ({}, {}) {form}", k.holder, k.role, k.epoch.n, k.epoch.nonce[0]);
+        }
+    }
+    let commits: Vec<String> = net.engine(n).core.ix.commits.iter().filter(|(_, m)| m.view.aspects.iter().any(|a| a.tid == c)).map(|(id, m)| {
+        let aks: Vec<String> = m.view.aspects.iter().enumerate().filter(|(_, a)| a.tid == c).map(|(i, a)| format!("{}{}", a.ak.as_str(), if m.valid.get(i).copied().unwrap_or(false) { "" } else { "!" })).collect();
+        format!("{:?}@{:?} by {} {:?} {:?}", m.view.kind, m.view.ts, m.view.author, aks, id)
+    }).collect();
+    for x in commits { eprintln!("    {x}"); }
+    let labels: Vec<(osis_base::Tid, osis_base::LabelId)> = net.sync(n).labels().into_iter().filter(|(g, _)| *g == c).map(|(g, l)| (g, l.id)).collect();
+    for (_, l) in labels {
+        let at_host = net.host_ids(host, &l);
+        let mine: Vec<String> = net.sync(n).entries(&l).into_iter().map(|(id, k)| format!("{:?} {}", id, match k { EntryKind::Commit { commit, .. } => format!("commit {commit:?}"), EntryKind::Unknown => "unknown".into(), other => format!("{other:?}") })).collect();
+        eprintln!("    label {l:?}: host has {} entries; node knows {}:", at_host.len(), mine.len());
+        for m in mine { eprintln!("        {m}"); }
+        for h in at_host { eprintln!("        host: {h:?}"); }
+    }
+    let d = net.diagnostics(n);
+    if !d.is_empty() { eprintln!("    diags: {d:?}"); }
+}
+
+// TEMP repro of issues/link-leave-splits-thing.md at the node level
+#[test]
+fn tmp_link_leave_node_repro() {
+    use osis_node::Mutation;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let home = vec![net.address(host)];
+    let a = net.node(40, &[host]);
+    let b = net.node(41, &[host]);
+    let d = net.node(42, &[host]);
+    let (pa, done) = net.engine(a).create_person(&home).unwrap();
+    carry(&mut net, a, done);
+    let (pb, done) = net.engine(b).create_person(&home).unwrap();
+    carry(&mut net, b, done);
+    let (pd, done) = net.engine(d).create_person(&home).unwrap();
+    carry(&mut net, d, done);
+    net.run();
+    eprintln!("A node {} B node {} D node {}; pa {} pb {} pd {}", net.tid(a), net.tid(b), net.tid(d), pa.person, pb.person, pd.person);
+    // a plain thing with content, then synced as a group of itself (`Osis::sync`: own secrets, then a label)
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let c = e.new_thing(&mut m, pa.person);
+    m.set(c, &REG, &s("hi")).unwrap();
+    e.commit(m).unwrap();
+    let done = net.engine(a).give_own_secrets(&c).unwrap();
+    carry(&mut net, a, done);
+    let (_, acts) = net.sync(a).create_label(&c, home.clone()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let spec = osis_node::flows::LinkSpec { target: c, role: Role::Write, until: None, hosts: home.clone(), peers: Vec::new(), single_use: false };
+    let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
+    carry(&mut net, a, done);
+    net.run();
+    eprintln!("C {c} K {}", link.k);
+    for (x, px) in [(b, pb.person), (d, pd.person)] {
+        let held = net.engine(x).hold_key_actor(link.seed.clone()).unwrap();
+        let acts = net.sync(x).follow(held, link.k, link.k_label, link.hosts.clone());
+        net.actions(x, acts);
+        net.run();
+        let done = net.engine(x).redeem(&link, &px, false).unwrap();
+        net.engine(x).drop_key_actor(&held);
+        carry(&mut net, x, done);
+        net.run();
+    }
+    assert_eq!(net.read(d, c), Some(s("hi")));
+    probe_c(&mut net, "before leave", a, c, host);
+    probe_c(&mut net, "before leave", d, c, host);
+    // B leaves: its own grant is on K
+    let done = net.engine(b).demote(&link.k, &Demotion { holder: pb.person, new: None, presync: PreSync::Synced, retain: None }).unwrap();
+    carry(&mut net, b, done);
+    for n in 0..net.nodes.len() {
+        net.feed(n, osis_node::sync::Event::Local);
+    }
+    let mut r = 0;
+    while net.queue_len() > 0 && r < 400 {
+        net.round();
+        r += 1;
+        for n in [a, d] {
+            brief(&mut net, &format!("round {r}"), n, c, link.k);
+        }
+    }
+    net.run();
+    probe_c(&mut net, "after leave", a, c, host);
+    probe_c(&mut net, "after leave", d, c, host);
+    probe_c(&mut net, "after leave K", a, link.k, host);
+    probe_c(&mut net, "after leave K", d, link.k, host);
+    net.write(d, c, "still here");
+    net.run();
+    probe_c(&mut net, "after write", a, c, host);
+    probe_c(&mut net, "after write", d, c, host);
+    assert_eq!(net.read(a, c), Some(s("still here")));
+}
