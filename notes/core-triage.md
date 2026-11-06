@@ -23,7 +23,6 @@ Categories: **A** security (leak of purged or expired content, privilege, forger
 | unmet sender burst (no issue) | B | stated | Shares past `INBOX_WAITING` from someone not met come back only at the 90-day re-send (option 3: send the card first). |
 | eph-churn-delete-upload-loop | C/E | M | A compaction snapshot storm (upload and delete per pass, forever) on an honest path. A fix branch was too costly. |
 | list-element-snapshot-before-expiry | C | M | A late node holding a pre-T snapshot shows others' writes in an expired list element until a post-T snapshot. Ignored repro; full fix is a simplification. |
-| ephemeral-restart-reverts-diverge | C | M | About 1 in 3000 seeds: a membership left at one node only after restarts. Cause unknown. |
 | shared-key-actor-ephemeral | C | S | Ephemeral writes by a shared key actor are undecided. |
 | snapshot-late-death-credit | C | S | A late-dated death drops a snapshot early at one node; reads agree. |
 | clock skew around a map entry's expiry (no issue; notes/engine-validity.md Limit) | C | stated | A post-T snapshot's value-less creation copy vouches only the key-erased record: states differ before T, reads alike. |
@@ -55,7 +54,7 @@ account-rename, api-deferred, api-leaving-give-up, app-attach-daemon, app-chat-m
 
 ## Not yet triaged (unranked)
 Grouped by their tags only; read the issue before placing it.
-- Tagged security: blocked-walk-stops-at-readers, grant-audits-without-frontier, keys-depth0-removed-member-rotates, reader-persists-memory-thing.
+- Tagged security: blocked-walk-stops-at-readers, grant-audits-without-frontier, keys-depth0-removed-member-rotates.
 - Waiting on Tess (`tess-call`): commit-memory-half, node-host-unify, no-server-audit, recovery-redesign, revocation-without-arbiter.
 - Engine and retention: delete-required-rules, gone-body-drop-seeds, purge-and-kill-in-one-commit-no-leftover, alike-seed-913022-nested-text-after-flip, subgroup-expiry-strands-silently, removal-without-possession, parked-diagnostic, creation-record-ordinary (a proposal).
 - Cost: copy-expiry-probe-cost, role-history-join-cost, rotation-names-grow.
@@ -69,5 +68,5 @@ Grouped by their tags only; read the issue before placing it.
 - **Prompt purge**: the honest path is closed except waiting copies and an undiagnosed read (purge-no-reset-older-value). Hostile residue in D.
 - **Keys**: where the cost went: notes/keys-requirements-study.md. Timed ends finalized and depth 0 (a group never looks inside its member actors, notes/crypto.md (Holder actors at depth 0)) are built; the new security-tagged keys issues above are its tail.
 - **Inbox budget**: converged; a burst from an unmet sender is a stated limit.
-- **Ephemeral**: on Core and the durable sync path (notes/ephemeral.md). Open: eph-churn-delete-upload-loop (not ephemeral-only), ephemeral-restart-reverts-diverge, eph-unpaged-cover, eph-node-cost-bounds; eph-unify D and E are features.
+- **Ephemeral**: on Core and the durable sync path (notes/ephemeral.md). Open: eph-churn-delete-upload-loop (not ephemeral-only), churn-cursor-rebuild-differs, eph-unpaged-cover, eph-node-cost-bounds; eph-unify D and E are features.
 - **Removal is final** (no key or value outlives its entry): bare anchors keep no key (spec/crdt.md §5.6). Open: hidden-writes-not-swept, list-element-snapshot-before-expiry; both list issues point to one rule (value-less as its own state bit, the map's rule). The requirement is fine; the CRDT's anchor and mark records are where it leaks.
