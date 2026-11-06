@@ -13,7 +13,7 @@ Seeds come from the vectors: `cargo run -p osis-vectors --bin gen-vectors -- cor
 
 ## A crash
 1. Reproduce: `cargo +nightly fuzz run --fuzz-dir . <target> artifacts/<target>/crash-...`.
-2. Fix it in the owning crate and add a regression test there with the input as a hex literal, citing the spec section and `fuzz: <target>`.
+2. Fix it in the crate the code lives in and add a regression test there with the input as a hex literal, citing the spec section and `fuzz: <target>`.
 3. If the input is a useful seed, add it as a vector case (preferred) or to `corpus.rs`.
 
 ## Targets

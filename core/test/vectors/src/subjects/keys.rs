@@ -26,7 +26,7 @@ pub fn seed() -> VecFile {
     cases.push(c);
 
     let tid = Tid::from_bytes([0x01; 15]);
-    let mut c = case("plain thing secrets", "spec/crypto.md §3").with("owner-secret", hex(seed.expose())).with("tid", hex(tid.as_bytes()));
+    let mut c = case("plain thing secrets", "spec/crypto.md §3").with("base-secret", hex(seed.expose())).with("tid", hex(tid.as_bytes()));
     for (n, r) in [("read", Role::Read), ("write", Role::Write), ("admin", Role::Admin)] {
         c = c.with(&format!("thing-secret-{n}"), hex(thing_role_secret(&seed, r, &tid).expose()));
     }

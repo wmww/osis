@@ -245,7 +245,7 @@ def main():
         for name in mods:
             test_prefixes += mod_paths(f, name)
 
-    def owner(f):
+    def crate_of(f):
         d = os.path.dirname(f)
         while d and d not in crates:
             d = os.path.dirname(d)
@@ -253,7 +253,7 @@ def main():
 
     totals, per_file = {}, {}
     for f in rs:
-        c = owner(f)
+        c = crate_of(f)
         if c is None:
             continue
         code, test, _, whole = info[f]
