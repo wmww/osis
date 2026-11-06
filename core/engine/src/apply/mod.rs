@@ -512,7 +512,7 @@ fn thing_wait(
     // (`validity::too_deep`, spec/permissions.md §1)
     for step in osis_base::owner_chain(a.tid, |t| chain_rec(t, core).map(|r| r.owner_link())) {
         match step {
-            ChainStep::Up { owner: up, .. } | ChainStep::Ownerless { admin: up, .. } => chain.push(up),
+            ChainStep::Up { admin: up, .. } => chain.push(up),
             ChainStep::Key(_) | ChainStep::TooDeep => {}
             ChainStep::Unknown(t) => return Some(Reason::MissingChain(t)),
         }
@@ -792,7 +792,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
     let id = blob.id();
     let mut b = blob.clone();
     match examine(tx, &mut b, &id, &BTreeSet::new())? {
-        Exam::Ready(parts) if parts.waiting.is_some() => Err(Error::Misuse("own commit not applicable")),
+        Exam::Ready(parts) if parts.waiting.is_some() => Err(Error::Misuse("own commit not applicable: a part waits")),
         // a node never writes a part others would drop
         Exam::Ready(Parts { bad: Some(e), .. }) if !tx.core.skip_writer_rules => Err(e),
         Exam::Ready(parts) => {
@@ -807,7 +807,14 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
             }
             Ok(())
         }
-        _ => Err(Error::Misuse("own commit not applicable")),
+        Exam::Pending(r, _) => Err(Error::Misuse(match r {
+            Reason::MissingChain(_) => "own commit not applicable: a record on its chain is missing",
+            Reason::UnknownCreated(_) => "own commit not applicable: a thing's record is unknown",
+            Reason::Drift => "own commit not applicable: ts drift",
+            Reason::WaitBlobs => "own commit not applicable: blobs missing",
+            Reason::Parked | Reason::Unexamined => "own commit not applicable: parked",
+        })),
+        Exam::Parked => Err(Error::Misuse("own commit not applicable: parked")),
     }
 }
 

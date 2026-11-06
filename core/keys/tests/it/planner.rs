@@ -48,7 +48,7 @@ fn reached_is_the_hop_fixpoint() {
             for t in 1..=8u8 {
                 if t != v && next(4) == 0 {
                     let role = [Role::Read, Role::Write, Role::Admin][next(3) as usize];
-                    if next(5) == 0 { g.owned.entry(tid(v)).or_default().push(tid(t)) } else { g.edges.entry(tid(v)).or_default().push((tid(t), role)) }
+                    g.edges.entry(tid(v)).or_default().push((tid(t), role));
                 }
             }
         }
@@ -56,7 +56,7 @@ fn reached_is_the_hop_fixpoint() {
         if start == avoid {
             continue;
         }
-        let hop = |v: &Tid| g.owned.get(v).cloned().unwrap_or_default().into_iter().chain(g.edges.get(v).into_iter().flatten().map(|x| x.0));
+        let hop = |v: &Tid| g.edges.get(v).into_iter().flatten().map(|x| x.0);
         let mut want: BTreeSet<Tid> = BTreeSet::new();
         loop {
             let more: BTreeSet<Tid> = std::iter::once(start).chain(want.iter().copied()).flat_map(|v| hop(&v).collect::<Vec<_>>()).filter(|t| *t != start && *t != avoid).collect();
@@ -79,14 +79,14 @@ fn reached_is_the_hop_fixpoint() {
     assert_eq!(reached(&g, tid(200), tid(250)).len(), 72);
 }
 
-// spec/permissions.md §3: the graph over perm's timeline (owned things and live edges).
+// spec/permissions.md §3: the graph over perm's timeline (live edges, record edges included).
 #[test]
 fn perm_graph() {
     let mut held = MemoryHeldSet::new();
     let d = held.create(CreationRecord::KeyActor { alg: 1, public_key: vec![7; 32], nonce: [1; 32] });
-    let p = held.create(CreationRecord::Thing { owner: d, nonce: [2; 32] });
-    let t = held.create(CreationRecord::Thing { owner: p, nonce: [3; 32] });
-    let a2 = held.create(CreationRecord::Thing { owner: d, nonce: [4; 32] });
+    let p = held.create(CreationRecord::Thing { admin: d, nonce: [2; 32] });
+    let t = held.create(CreationRecord::Thing { admin: p, nonce: [3; 32] });
+    let a2 = held.create(CreationRecord::Thing { admin: d, nonce: [4; 32] });
     held.add_commit(RoleCommit {
         id: CommitId([9; 32]),
         ts: Ts::make(osis_base::WallMs(1000), 0).unwrap(),
@@ -97,8 +97,11 @@ fn perm_graph() {
     });
     let tl = Timeline::evaluate(&held);
     let g = PermGraph { timeline: &tl, at: At::now(Ts::make(osis_base::WallMs(2000), 0).unwrap()) };
-    assert_eq!(g.owned(&p), vec![t]);
-    assert_eq!(g.edges(&p), vec![(a2, Role::Write)]);
+    let mut edges = g.edges(&p);
+    edges.sort();
+    let mut want = vec![(a2, Role::Write), (t, Role::Admin)];
+    want.sort();
+    assert_eq!(edges, want);
     assert_eq!(reached(&g, p, tid(99)), BTreeSet::from([t, a2]));
 }
 

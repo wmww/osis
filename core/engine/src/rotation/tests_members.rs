@@ -225,6 +225,41 @@ fn keyless_holder_never_resealed_spec_crypto_4() {
     assert_eq!(settle(&mut lp, &[0], &[b, p, q]), 0);
 }
 
+// spec/crypto.md §4 (key access; model `D0_fa_flip`), spec/permissions.md §1: T's first admin is
+// X, so T's grant on X closes a cycle through the record edge and is keyless (X boxes T nothing).
+// Another admin of T removes X's record edge: T's grant is the only link left, it gains key
+// access, and X's admin re-seals T; nothing leaks to X's side meanwhile and nobody is locked out.
+#[test]
+fn grant_on_first_admin_keyless_until_record_edge_goes_spec_crypto_4() {
+    let mut lp = LocalPeer::new(2, 954, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let d = lp.peers[1].engine.tid();
+    let x = group(&mut lp, 0);
+    let t = {
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, x);
+        lp.peers[0].commit(m).unwrap();
+        t
+    };
+    lp.peers[0].clock.advance(1);
+    lp.peers[0].engine.grant(&x, &t, &edge(Role::Read)).unwrap();
+    assert!(!boxes(&mut lp, 0, x, t), "T's grant on X is keyless: X's key yields T's by the record edge");
+    lp.peers[0].clock.advance(1);
+    lp.peers[0].engine.grant(&t, &d, &edge(Role::Admin)).unwrap();
+    lp.sync(0, 1).unwrap();
+    assert!(lp.peers[1].engine.reseal_due(&x, &Pass).unwrap().commits.is_empty(), "nothing to re-seal while the record edge stands");
+    lp.peers[1].clock.advance(1);
+    removal(&mut lp, 1, t, x);
+    lp.sync(1, 0).unwrap();
+    assert!(!lp.peers[0].engine.roster(&t).contains_key(&x), "X's record edge is gone");
+    let done = lp.peers[0].engine.reseal_due(&x, &Pass).unwrap();
+    assert_eq!(done.commits.len(), 1, "X re-seals T: its grant has key access now");
+    assert!(boxes(&mut lp, 0, x, t));
+    lp.sync(0, 1).unwrap();
+    assert_eq!(settle(&mut lp, &[0, 1], &[x, t]), 0, "settled");
+    assert!(all_boxed(&mut lp, 0, &[x, t]));
+}
+
 // spec/crypto.md §4, spec/permissions.md §3 (model `D0_nc_below`): X and Y readers of each
 // other (X granted on Y first, Y's grant on X keyless), Z a reader of X, D a reader of Z: D reads
 // Z, X and Y. D's removal from Z makes X's box to Z stale, then Y's to X: the cascade rotates

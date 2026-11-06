@@ -688,14 +688,15 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = std::fs::remove_dir_all(&xdg);
 }
 
-// CLI `ownerless`, spec/permissions.md §1: an ownerless thing has no owner
-// and this account as first admin; a key actor or unknown actor as admin is refused.
+// CLI `ownerless`, spec/permissions.md §1: a thing made by its record alone has this account
+// as first admin; a key actor or unknown actor as admin is refused.
 #[test]
 fn ownerless_plan_cli() {
     let s = S::mem();
     let t = s.ok(&["ownerless", "me"]).line().to_string();
     assert_eq!(s.ok(&["role", &t]).line(), "admin");
-    assert!(s.ok(&["show", &t]).out.contains("owner\tnone"));
+    let me = s.ok(&["whoami"]).out.lines().find_map(|l| l.strip_prefix("me\t")).unwrap().to_string();
+    assert!(s.ok(&["show", &t]).out.contains(&format!("owner\t{me}")), "the first admin");
     assert!(s.ok(&["grants", &t]).out.contains("admin"));
     s.ok(&["set", &t, "name.0", "\"chat\""]);
     assert_ne!(s.code(&["ownerless", &t[..t.len() - 1]]), 0);

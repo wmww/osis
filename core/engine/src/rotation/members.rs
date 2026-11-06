@@ -16,35 +16,33 @@ use osis_schema::core_types::Secrets;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// The order of an actor grant (spec/crypto.md §4, key access): an owner's first, then an edge
-/// by the write that began its standing (`None`: since before every change), then a grant being
-/// written now.
+/// The order of an actor grant (spec/crypto.md §4, key access): an edge by the write that began
+/// its standing (`None`: a record edge, since before every change, so never the one left
+/// keyless), then a grant being written now.
 type Order = (u8, Option<osis_perm::Point>);
 
 /// The actor grants this node holds (spec/crypto.md §4, key access): each holder actor's standing
-/// on each thing with a timeline (`Timeline::standing_since`), and the owner, if an actor, of
-/// each thing such a grant touches and of each of `also` (its implicit edge from creation, ordered
-/// before every edge, never the one left keyless).
+/// on each thing with a timeline (`Timeline::standing_since`, record edges included), and the
+/// record edge of each of `also` without a timeline here (nothing wrote it: in force).
 fn grants(core: &Core, also: &[Tid]) -> Vec<osis_keys::Grant<Order>> {
     let mut grants = Vec::new();
-    let mut seen: BTreeSet<Tid> = also.iter().copied().collect();
+    let actors = |m: &Tid| !core.is_key_actor(m);
     for t in core.timelines.things() {
         let Some(tl) = core.timelines.get(t) else { continue };
-        let owner = core.owner(t);
-        let actors = |m: &Tid| Some(*m) != owner && !core.is_key_actor(m);
         if !tl.edges_at(None).holders(t).any(|(m, _)| actors(m)) {
             continue;
         }
         for (h, since) in tl.standing_since(t) {
             if actors(&h) {
                 grants.push(Grant { order: (1, since), target: *t, holder: h });
-                seen.extend([*t, h]);
             }
         }
     }
-    for t in seen {
-        if let Some(o) = core.owner(&t).filter(|o| !core.is_key_actor(o)) {
-            grants.push(Grant { order: (0, None), target: t, holder: o });
+    for t in also {
+        if core.timelines.get(t).is_none()
+            && let Some(a) = core.first_admin(t).filter(actors)
+        {
+            grants.push(Grant { order: (1, None), target: *t, holder: a });
         }
     }
     grants
@@ -76,8 +74,9 @@ pub(crate) fn grant_keyless(core: &mut Core, target: &Tid, holder: &Tid) -> bool
     if core.key_holders(target).iter().any(|(m, _)| m == holder) {
         return key_access(core).contains(&(*target, *holder));
     }
-    // the grants held with this one last, and the owners of both ends (an actor owned by the
-    // target closes a cycle through its implicit edge, though it holds nothing yet)
+    // the grants held with this one last, and the record edges of both ends (an actor whose
+    // first admin is the target closes a cycle through its record edge, though it holds nothing
+    // yet)
     let mut gs = grants(core, &[*target, *holder]);
     gs.push(Grant { order: (2, None), target: *target, holder: *holder });
     osis_keys::key_access(gs).contains(&(*target, *holder))

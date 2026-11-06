@@ -232,14 +232,10 @@ impl Engine {
             }
         }
         let fresh: BTreeMap<Tid, CreationRecord> = m.creates.iter().filter(|(t, _)| !persisted.contains(t)).map(|(t, r)| (*t, r.clone())).collect();
-        // as a commit refuses it: a held record carried again would read as new (an ownerless
-        // thing's first admin as in force, though since removed)
+        // as a commit refuses it: a held record carried again would read as new (its first
+        // admin's record edge as in force, though since removed)
         if fresh.keys().any(|t| self.core.created(t).is_some()) {
             return Err(Error::Misuse("thing already exists"));
-        }
-        // an ownerless thing is a durable thing: its first admin's edge persists it at once
-        if fresh.values().any(|r| matches!(r, CreationRecord::Ownerless { .. })) {
-            return Err(Error::Misuse("an ownerless thing is created durably"));
         }
         m.creates.retain(|t, _| persisted.contains(t));
         let durable = !(m.creates.is_empty() && m.aspects.is_empty() && m.purge.is_empty() && m.dead_resets.is_empty() && m.fresh_resets.is_empty() && m.undoes.is_none());

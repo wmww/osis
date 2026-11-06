@@ -11,7 +11,6 @@ use crate::flows::{Delivery, Done, SyncState};
 use crate::rotation::{Dropped, Leaving, LostScope};
 use crate::local_peer::Package;
 use osis_base::{CommitId, LabelId, Tid};
-use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What `drop_left` last found, and when.
@@ -429,16 +428,10 @@ impl SyncEngine {
         out
     }
 
-    /// The actor up `to`'s owner chain whose inbox `label` is, named in its `keys.0` or its own
-    /// label (`inbox_label`; its deposit seed signs the deposit).
+    /// The actor whose inbox `label` is for `to` (`Engine::inbox_of_actor`; its deposit seed
+    /// signs the deposit).
     pub(crate) fn inbox_owner(&mut self, to: &Tid, label: &LabelId) -> Result<Option<Tid>> {
-        let chain: Vec<Tid> = self.engine.owner_chain(to).collect();
-        for t in chain {
-            if self.engine.get_typed(&t, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| i.label == *label) || self.engine.labels_of(&t).iter().any(|l| l.id == *label) {
-                return Ok(Some(t));
-            }
-        }
-        Ok(None)
+        Ok(self.engine.inbox_of_actor(to)?.filter(|(_, i)| i.label == *label).map(|(o, _)| o))
     }
 
     /// Commits for nodes over a direct connection (pairing): the app carries them, the

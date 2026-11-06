@@ -1709,7 +1709,8 @@ fn holders_and_targets_show_only_what_the_actor_reads() {
     let seen = c.holders(x.g).unwrap();
     assert!(seen.iter().any(|w| w.actor == a && w.through.is_empty()), "{seen:?}");
     assert!(seen.iter().any(|w| w.actor == x.h && w.through.is_empty()), "the team is on the thing it reads: {seen:?}");
-    assert!(seen.iter().all(|w| w.actor != behind && w.through.is_empty()), "nothing behind an actor it may not read: {seen:?}");
+    // (its account administers the client's own actor by that actor's record edge: shown through it)
+    assert!(seen.iter().all(|w| w.actor != behind && (w.through.is_empty() || w.through == vec![a])), "nothing behind an actor it may not read: {seen:?}");
     for hidden in [x.out, x.h] {
         assert!(!x.n.holders(hidden).unwrap().is_empty(), "the node knows who holds it");
         assert_eq!(c.holders(hidden).unwrap(), vec![], "as a thing the node does not know");

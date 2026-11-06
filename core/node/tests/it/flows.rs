@@ -129,7 +129,7 @@ pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
 fn account_two_nodes(seed: u64) -> (LocalPeer, Tid, osis_label::RecoveryCard) {
     let mut lp = net(2, seed);
     let (p, done) = lp.peers[0].engine.create_person(&hosts()).unwrap();
-    assert_eq!(done.commits.len(), 1);
+    assert_eq!(done.commits.len(), 2, "the key's card, then the person");
     // the new node's card over the direct connection
     let n = lp.peers[1].engine.tid();
     let card: Vec<CommitId> = lp.peers[1].engine.commit_ids();
@@ -591,7 +591,7 @@ fn removal_with_another_path_keeps_all_spec_perm_3() {
 #[test]
 fn pending_grant_survives_unrelated_removal_spec_perm_3() {
     let mut x = lost_setup(519);
-    let (pa, pb) = (x.lp.peers[0].engine.owner(&x.d).unwrap(), x.lp.peers[1].engine.owner(&x.mine).unwrap());
+    let (pa, pb) = (x.lp.peers[0].engine.first_admin(&x.d).unwrap(), x.lp.peers[1].engine.first_admin(&x.mine).unwrap());
     let g = thing_of(&mut x.lp, 0, pa);
     let done = x.lp.peers[0].engine.grant(&g, &pb, &edge_of(Role::Read)).unwrap();
     let Some(Delivery::Inbox { blob, .. }) = done.deliveries.iter().find(|d| matches!(d, Delivery::Inbox { .. })) else { panic!("no inbox blob") };
@@ -2440,12 +2440,12 @@ fn frontier_lists_what_the_demoter_may_not_purge_spec_perm_5_1() {
 #[test]
 fn ownerless_chat_spec_perm_1() {
     let (mut lp, ps) = people(4, 581);
-    let (o, done) = lp.peers[0].engine.create_ownerless(&ps[0]).unwrap();
+    let (o, done) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     assert_eq!(done.commits.len(), 1);
     let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
     let aks: BTreeSet<&str> = h.aspects.iter().map(|a| a.ak.as_str()).collect();
     assert_eq!(aks, BTreeSet::from(["created.0"]));
-    assert_eq!(lp.peers[0].engine.owner(&o), None);
+    assert_eq!(lp.peers[0].engine.first_admin(&o), Some(ps[0]));
     assert_eq!(lp.peers[0].engine.role_on(&o), Some(Role::Admin));
     assert_eq!(newest_read(&lp, 0, o).map(|e| e.n()), newest_read(&lp, 0, ps[0]).map(|e| e.n()), "derived from the first admin's");
     assert_eq!(lp.peers[0].engine.get(&o, &ak("keys.0")).unwrap(), None);
@@ -2504,7 +2504,7 @@ fn ownerless_chat_spec_perm_1() {
 #[test]
 fn record_edge_removal_any_order_spec_perm_2() {
     let (mut lp, ps) = people(4, 583);
-    let (o, _) = lp.peers[0].engine.create_ownerless(&ps[0]).unwrap();
+    let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
     let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
     send(&mut lp, 0, 1, &ids);
@@ -2530,7 +2530,7 @@ fn record_edge_removal_any_order_spec_perm_2() {
 #[test]
 fn first_grant_on_plain_ownerless_rotates_first_spec_perm_3() {
     let (mut lp, ps) = people(3, 584);
-    let (o, _) = lp.peers[0].engine.create_ownerless(&ps[0]).unwrap();
+    let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     let mut m = Mutation::new();
     m.set(o, &REG, &s("derived")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -2556,7 +2556,7 @@ fn first_grant_on_plain_ownerless_rotates_first_spec_perm_3() {
 fn last_admin_of_plain_thing_refused_spec_perm_1() {
     let (mut lp, _) = people(2, 585);
     let n = lp.peers[0].engine.tid();
-    let (o, _) = lp.peers[0].engine.create_ownerless(&n).unwrap();
+    let (o, _) = lp.peers[0].engine.create_with_admin(&n).unwrap();
     let mut m = Mutation::new();
     m.set(o, &REG, &s("v")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -2586,7 +2586,7 @@ fn last_admin_of_plain_thing_refused_spec_perm_1() {
 #[test]
 fn first_admin_record_edge_removed_by_its_node_spec_permissions_2() {
     let (mut lp, ps) = people(2, 586);
-    let (o, _) = lp.peers[0].engine.create_ownerless(&ps[0]).unwrap();
+    let (o, _) = lp.peers[0].engine.create_with_admin(&ps[0]).unwrap();
     lp.peers[0].engine.grant(&o, &ps[1], &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     let done = lp.peers[0].engine.demote(&o, &remove(ps[0])).unwrap();
@@ -2596,6 +2596,39 @@ fn first_admin_record_edge_removed_by_its_node_spec_permissions_2() {
         assert!(!lp.peers[i].engine.roster(&o).contains_key(&ps[0]), "peer {i}: P removed");
     }
     assert_eq!(lp.peers[0].engine.role_on(&o), None);
+}
+
+// spec/permissions.md §1 (first admin removable), notes/moves.md: a move is a grant then a
+// removal. T made in a content commit under account A (its first admin); A grants team B admin
+// on T, then B's admin removes A's record edge: T keeps its tid and content, B's nodes read and
+// write it, A's node opens nothing written since (the removal rotated T) and cannot write it.
+#[test]
+fn move_by_grant_then_remove_spec_perm_1() {
+    let (mut lp, ps) = people(3, 587);
+    let (a, b) = (ps[0], ps[1]);
+    let t = thing_of(&mut lp, 0, a);
+    lp.peers[0].engine.grant(&t, &b, &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Admin));
+    assert_eq!(sealed_write(&mut lp, 0, t, "shared"), BTreeSet::from([1]));
+    let done = lp.peers[1].engine.demote(&t, &remove(a)).unwrap();
+    assert!(aks_of(&lp, 1, &done.commits[0]).contains("secrets.0"), "an explicit demotion: T rotated");
+    spread_sealed(&mut lp);
+    for i in 0..2 {
+        assert_eq!(lp.peers[i].engine.roster(&t).get(&a), None, "peer {i}: A's record edge is gone");
+        assert_eq!(lp.peers[i].engine.roster(&t).get(&b).map(|e| e.role), Some(Role::Admin), "peer {i}");
+    }
+    assert_eq!(lp.peers[0].engine.role_on(&t), None);
+    assert_eq!(lp.peers[1].engine.get_typed(&t, &REG).unwrap(), Some(s("shared")), "the content stays under the same tid");
+    assert_eq!(sealed_write(&mut lp, 1, t, "moved"), BTreeSet::new(), "A's node opens nothing new");
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("mine")).unwrap();
+    assert!(lp.peers[0].commit(m).is_err(), "A's node cannot write it");
+    // B's admin grants A write back: A's node reads again, as any holder
+    lp.peers[1].engine.grant(&t, &a, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    assert_eq!(lp.peers[0].engine.role_on(&t), Some(Role::Write));
+    assert_eq!(sealed_write(&mut lp, 1, t, "shared"), BTreeSet::from([0]));
 }
 
 // spec/commits.md §5: a request names earlier deltas: one stamped before the named commit, as a

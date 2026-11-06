@@ -119,8 +119,8 @@ impl Engine {
             && self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|u| u.commit == *c)))
     }
 
-    /// This node's chain certificates for `g` and its node card (spec/permissions.md §4), as
-    /// commits with the parts to carry.
+    /// This node's chain certificates for `g`, its node card and the cards of the key actors
+    /// holding `g` (spec/permissions.md §4), as commits with the parts to carry.
     pub fn certificates(&mut self, g: &Tid) -> BTreeMap<CommitId, Parts> {
         let me = self.tid();
         let mut out: BTreeMap<CommitId, Parts> = BTreeMap::new();
@@ -139,6 +139,17 @@ impl Engine {
         for t in self.core.owner_chain(g).filter_map(|s| s.thing()) {
             if let Some(c) = self.latest_on(&t, "created.0") {
                 add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
+            }
+        }
+        // the cards of the key actors holding `g` that are no node (a recovery key: its writes
+        // under the label verify by its card, which no chain of this node's carries; a node
+        // places its own)
+        let keys: Vec<Tid> = self.core.roster_of(g).into_keys().filter(|k| *k != me && self.core.is_key_actor(k)).collect();
+        for k in keys.into_iter().filter(|k| self.latest_on(k, "node.0").is_none()) {
+            for ak in ["created.0", "keys.0"] {
+                if let Some(c) = self.latest_on(&k, ak) {
+                    add(c, self.parts_of(&c, &BTreeSet::from([k]), &[ak]));
+                }
             }
         }
         if let Some(tl) = self.core.timelines.get(g) {
@@ -183,7 +194,7 @@ impl Engine {
         for x in [t, node] {
             for step in self.core.owner_chain(x) {
                 match step {
-                    ChainStep::Up { thing, .. } | ChainStep::Ownerless { thing, .. } => {
+                    ChainStep::Up { thing, .. } => {
                         cs.created.insert(thing);
                         cs.keys.insert(thing);
                     }

@@ -333,7 +333,7 @@ mod tests {
         let mut up = lp.peers[0].engine.tid();
         for i in 0..MAX_OWNER_DEPTH {
             let t = if i % 4 == 0 {
-                lp.peers[0].engine.create_ownerless(&up).unwrap().0
+                lp.peers[0].engine.create_with_admin(&up).unwrap().0
             } else {
                 let mut m = Mutation::new();
                 let t = lp.peers[0].engine.new_thing(&mut m, up);
@@ -348,7 +348,7 @@ mod tests {
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.get(&up, &x).unwrap(), Some(Value::Int(1)), "at the cap: applies");
         let mut m = Mutation::new();
-        let d = m.create(osis_base::CreationRecord::Ownerless { admin: up, nonce: [7; 32] });
+        let d = m.create(osis_base::CreationRecord::Thing { admin: up, nonce: [7; 32] });
         m.set(d, &x, &Value::Int(9)).unwrap();
         assert!(lp.peers[0].commit(m.clone()).is_err(), "the writer refuses it");
         lp.peers[0].engine.core.skip_writer_rules = true;

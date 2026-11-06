@@ -23,6 +23,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
     let w = net.node(3, &[host]);
     let r = net.node(4, &[host]);
     let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
+    net.name_inbox_elsewhere(b, x);
     net.pair(b, a);
     let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
     let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
@@ -79,6 +80,8 @@ fn nested_departure_removed_writer_waits_spec_crypto_4() {
     let r = net.node(4, &[host]);
     let x2 = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     let x1 = net.group_seeded(b, &[], vec![net.address(host)], 2);
+    net.name_inbox_elsewhere(b, x2);
+    net.name_inbox_elsewhere(b, x1);
     let edge = ct::Edge { role: Role::Write, until: None, invite: None, tied: None };
     let done = net.engine(b).grant(&x1, &x2, &edge).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
@@ -136,6 +139,7 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     let w = net.node(3, &[host]);
     let r = net.node(4, &[host]);
     let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
+    net.name_inbox_elsewhere(b, x);
     let m = net.group_seeded(b, &[(w, Role::Read), (r, Role::Read)], vec![net.address(host)], 3);
     net.pair(b, a);
     let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
@@ -152,6 +156,7 @@ fn revoke_on_an_unrelated_thing_brings_no_keys() {
     }
     assert_eq!(net.read(r, t), Some(s("by w")));
     let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
     let done = net.engine(b).demote(&m, &Demotion { holder: wt, new: None, presync: PreSync::Synced, retain: None }).unwrap();
     let rm = *done.commits.first().unwrap();

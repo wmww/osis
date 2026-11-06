@@ -371,12 +371,12 @@ impl Reader<'_> {
         !self.hidden(tid) && self.e.knows(&tid)
     }
 
-    /// The thing's owner (`None`: unknown, or a key actor).
+    /// The thing's first admin (`None`: unknown, or a key actor).
     pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
         if self.hidden(tid) {
             return None;
         }
-        self.e.owner(&tid)
+        self.e.first_admin(&tid)
     }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
@@ -479,7 +479,8 @@ impl Osis {
         self.read_local(|r| r.holds(tid))
     }
 
-    /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).
+    /// The thing's first admin, fixed at creation (`None`: unknown, or a key actor): history,
+    /// not a right (its record edge may be gone, `holders` says).
     // Removed with owners (issues/api-after-owners.md).
     #[doc(hidden)]
     pub fn owner_of(&self, tid: Tid) -> Result<Option<Tid>> {

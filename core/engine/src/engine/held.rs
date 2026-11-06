@@ -113,10 +113,8 @@ impl Held {
             if !out.insert(t) {
                 continue;
             }
-            match self.created(&t) {
-                Some(CreationRecord::Thing { owner, .. }) => stack.push(*owner),
-                Some(CreationRecord::Ownerless { admin, .. }) => stack.push(*admin),
-                _ => {}
+            if let Some(CreationRecord::Thing { admin, .. }) = self.created(&t) {
+                stack.push(*admin);
             }
             stack.extend(self.holders_of(&t).copied());
         }
@@ -155,7 +153,7 @@ impl Held {
         let mut waiting: BTreeMap<Tid, Vec<Tid>> = BTreeMap::new();
         while let Some(c) = todo.pop() {
             let mut named = waiting.remove(&c).unwrap_or_default();
-            if let Some(Owner::Actor(x) | Owner::Ownerless(x)) = self.created(&c).map(CreationRecord::owner_link) {
+            if let Some(Owner::Admin(x)) = self.created(&c).map(CreationRecord::owner_link) {
                 named.push(x);
             }
             for (by, h) in self.named_with(&c, Role::Admin) {
@@ -205,7 +203,7 @@ impl Held {
     fn set_created(&mut self, t: Tid, r: Option<Rec>) -> Option<Rec> {
         let old = match r {
             Some(r) => {
-                if let Some(up) = r.record.up() {
+                if let Some(up) = r.record.first_admin() {
                     self.owned.entry(up).or_default().insert(t);
                 }
                 self.created.insert(t, r)
@@ -213,8 +211,8 @@ impl Held {
             None => self.created.remove(&t),
         };
         let class_only = matches!((&old, self.created.get(&t)), (Some(o), Some(n)) if o.record == n.record);
-        if let Some(up) = old.as_ref().and_then(|o| o.record.up())
-            && self.created.get(&t).is_none_or(|n| n.record.up() != Some(up))
+        if let Some(up) = old.as_ref().and_then(|o| o.record.first_admin())
+            && self.created.get(&t).is_none_or(|n| n.record.first_admin() != Some(up))
             && let Some(s) = self.owned.get_mut(&up)
         {
             s.remove(&t);
@@ -226,9 +224,9 @@ impl Held {
             // persisted: the same record, nothing perm reads changed
             return old;
         }
-        // an ownerless thing's first admin is named on it by its record (spec/permissions.md §1)
+        // a thing's first admin is named on it by its record (spec/permissions.md §1)
         let genesis = |r: Option<&Rec>| match r.map(|r| &r.record) {
-            Some(CreationRecord::Ownerless { admin, .. }) => vec![(*admin, t)],
+            Some(CreationRecord::Thing { admin, .. }) => vec![(*admin, t)],
             _ => Vec::new(),
         };
         let (was, now) = (genesis(old.as_ref()), genesis(self.created.get(&t)));
@@ -408,8 +406,8 @@ mod tests {
     use osis_base::Ts;
     use osis_perm::{Edge, EdgeOp};
 
-    fn thing(owner: Tid, n: u8) -> CreationRecord {
-        CreationRecord::Thing { owner, nonce: [n; 32] }
+    fn thing(admin: Tid, n: u8) -> CreationRecord {
+        CreationRecord::Thing { admin, nonce: [n; 32] }
     }
     fn actor(n: u8) -> CreationRecord {
         CreationRecord::KeyActor { alg: 1, public_key: vec![n; 32], nonce: [n; 32] }
@@ -426,7 +424,7 @@ mod tests {
         loop {
             let mut next = set.clone();
             for c in &set {
-                if let Some(Owner::Actor(x) | Owner::Ownerless(x)) = h.created(c).map(CreationRecord::owner_link) {
+                if let Some(Owner::Admin(x)) = h.created(c).map(CreationRecord::owner_link) {
                     next.insert(x);
                 }
                 for r in h.commits_on(c).iter().filter(|r| set.contains(&r.author)) {

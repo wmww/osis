@@ -45,6 +45,8 @@ fn chat(role: Role) -> Chat {
     let a = net.node(1, &[host]);
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(c, role)], &[host]);
+    // not an inbox: unvouched junk under it keeps no bytes (`junk_listed_goes_when_it_comes`)
+    net.name_inbox_elsewhere(a, g);
     let t = net.item(a, g, g, "chat");
     net.set_online(c, false);
     net.run();

@@ -156,16 +156,15 @@ fn events(core: &Core, tl: &Timeline, a: &Tid) -> Vec<(Tid, Role, Role, Name)> {
 /// of theirs (`events`) or a box of the `secrets.0` state at a current epoch had them hold (spec/crypto.md §4), each
 /// concerning the roles above its current one up to the highest it left, and named by its newest
 /// event (a box holder with none: by nothing, so no epoch covers it until a rotation supersedes
-/// the box). The owner never departs.
+/// the box).
 fn direct_departures(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Departure>> {
-    let owner = tx.core.owner(a);
     let current: BTreeMap<Tid, Role> = tx.core.key_holders(a).into_iter().collect();
     // per holder: the roles it left that it holds less than now, and its newest event
     let mut left: BTreeMap<Tid, (Role, Role, Option<Name>)> = BTreeMap::new();
     let mut note = |m: Tid, from: Role, upto: Role, at: Option<Name>| {
         let cur = current.get(&m).copied();
         let Some(from) = above_role(cur).map(|x| x.max(from)).filter(|f| *f <= upto) else { return };
-        if Some(m) == owner || m == *a {
+        if m == *a {
             return;
         }
         let x = left.entry(m).or_insert((from, upto, None));

@@ -584,7 +584,7 @@ fn a_commit_beside_an_expired_edge_waits_spec_perm_2() {
     // the renewal passes; another holder's grant arrives beside the expired edge
     x.lp.peers[1].clock.set(osis_base::WallMs(later.0 + 1));
     x.lp.peers[0].clock.set(osis_base::WallMs(later.0 + 1));
-    let pa = x.lp.peers[0].engine.owner(&x.d).unwrap();
+    let pa = x.lp.peers[0].engine.first_admin(&x.d).unwrap();
     let other = thing_of(&mut x.lp, 0, pa);
     x.lp.peers[0].engine.grant(&x.d, &other, &edge_of(Role::Read)).unwrap();
     spread(&mut x.lp);

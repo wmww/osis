@@ -30,12 +30,12 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
     Ok(KemPublicKey::from_slice(b)?)
 }
 
-/// The readers of `group`'s read epoch `e` (spec/sync.md §2): holders of read boxes at `e`, the
-/// owner included; a node by its KEM key, another key actor by static entry, an actor by its
-/// newest read keyset.
+/// The readers of `group`'s read epoch `e` (spec/sync.md §2): holders of read boxes at `e`, its
+/// first admin included while its record edge stands; a node by its KEM key, another key actor
+/// by static entry, an actor by its newest read keyset.
 pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut holders: Vec<Tid> = Vec::new();
-    if let Some(o) = tx.core.owner(group) {
+    if let Some(o) = tx.core.first_admin(group).filter(|a| tx.core.key_holders(group).iter().any(|(m, _)| m == a)) {
         holders.push(o);
     }
     let secrets = super::secrets_in(tx, group)?;
@@ -77,7 +77,7 @@ fn reader_key(tx: &mut Tx<'_>, m: &Tid) -> Result<Option<ReaderKey>> {
 
 /// The deposit seed of the actor `group`'s labels derive from (spec/sync.md §2).
 fn deposit_seed(tx: &mut Tx<'_>, group: &Tid) -> Result<Secret32> {
-    let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.up(group).ok_or(Error::UnknownThing(*group))? };
+    let actor = if tx.core.has_own_secrets(group) { *group } else { tx.core.first_admin(group).ok_or(Error::UnknownThing(*group))? };
     let k = Core::keys_in(tx, &actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in keys.0"))?;
     Ok(Secret32::from_bytes(k))
 }
@@ -216,10 +216,10 @@ impl Engine {
             if let Some(c) = c
                 && first
             {
-                // the roster's actors: not the owner chain (its nodes read `label.0` under the
-                // owner's home label), not a key actor (a node reads the thing's labels or has no
-                // route; a recovery or link key reads by static entry)
-                let owner = tx.core.owner(&g);
+                // the roster's actors: not the first admin (its nodes read `label.0` under its
+                // home label), not a key actor (a node reads the thing's labels or has no route;
+                // a recovery or link key reads by static entry)
+                let owner = tx.core.first_admin(&g);
                 let holders: Vec<Tid> = tx.core.current_holders(&g).into_iter().map(|(m, _, _)| m).filter(|m| Some(*m) != owner && !tx.core.is_key_actor(m)).collect();
                 for h in holders {
                     done.deliveries.extend(super::edges::deliver_to(tx, h, c, &[g])?);

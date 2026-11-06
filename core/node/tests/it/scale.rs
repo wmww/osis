@@ -598,7 +598,8 @@ fn role_change_and_open_cost() {
     let t3 = Instant::now();
     e.rebuild_index().unwrap();
     println!("open with 10^4 commits held: {opened:?} (rebuilding the index from every commit record: {:?})", t3.elapsed());
-    assert_eq!(e.roster(&things[0]).len(), 1);
+    // the record edge and the grant
+    assert_eq!(e.roster(&things[0]).len(), 2);
     // 10^4 edge writes in the tree's one role component: 20 holders' roles toggled
     // a dev build: about 0.27 s per edge write with 10^4 commits held (debug-only checks)
     let n: usize = size("OSIS_SCALE_EDGES", 10_000, 100);

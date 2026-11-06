@@ -163,12 +163,19 @@ impl SyncEngine {
         if self.engine.core.secret_actor(g) != Some(*g) || self.engine.role_on(g) != Some(Role::Admin) {
             return Ok(out);
         }
-        let Some(li) = self.inbox_label(g) else { return Ok(out) };
+        // every label a blob about `g` may have come under (a sender knowing `g` by its `keys.0`
+        // alone went up its record chain)
+        let opened: Vec<(LabelId, BlobId, CommitId)> = self
+            .engine
+            .inbox_candidates(g)
+            .into_iter()
+            .flat_map(|li| self.state.of_kind(&li, Kind::TAG_INBOX).into_iter().map(move |b| (li, b)))
+            .filter_map(|(li, b)| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((li, b, *c)) } else { None })
+            .collect();
         let now = self.now();
-        let opened: Vec<(BlobId, CommitId)> = self.state.of_kind(&li, Kind::TAG_INBOX).into_iter().filter_map(|b| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((b, *c)) } else { None }).collect();
         // what the last passes found all there (`InboxCopied`): a pass walks only what is new
         self.inbox_copied.lost(self.state.losses);
-        for (b, c) in opened {
+        for (li, b, c) in opened {
             let copied = self.inbox_copied.has(&l, &b);
             #[cfg(not(debug_assertions))]
             if copied {

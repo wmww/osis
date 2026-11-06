@@ -138,11 +138,11 @@ impl Engine {
         out
     }
 
-    /// Mints an actor owned by `owner` with secrets of its own (and `keys.0`), as a link's K is
+    /// Mints an actor whose first admin is `admin` with secrets of its own (and `keys.0`), as a link's K is
     /// minted, and commits what `also` builds for it, all in one transaction: a crash or a
     /// failure leaves both or neither (`flows::links` shares the shape).
-    pub fn mint_actor(&mut self, owner: &Tid, also: impl FnOnce(Tid) -> Result<Mutation>) -> Result<(Tid, Done)> {
-        let owner = *owner;
+    pub fn mint_actor(&mut self, admin: &Tid, also: impl FnOnce(Tid) -> Result<Mutation>) -> Result<(Tid, Done)> {
+        let owner = *admin;
         self.run(|tx| {
             let mut done = Done::default();
             let mut m = Mutation::new();

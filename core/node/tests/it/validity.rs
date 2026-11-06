@@ -430,7 +430,7 @@ fn role_content_rules_spec_commits_2() {
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
     lp.peers[1].restart(470).unwrap();
     assert_eq!(lp.peers[1].engine.role_on(&d), None);
-    assert_eq!(lp.peers[1].engine.roster(&d).len(), 1);
+    assert_eq!(lp.peers[1].engine.roster(&d).len(), 2, "the record edge and the one grant left");
 }
 
 // spec/crdt.md §3.3 rule 2: a commit-form delta's own dots sort above node dots (and below
@@ -1065,8 +1065,9 @@ fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[osis_base::CommitId])
 
 // spec/permissions.md §5.1 step 4 (D only grows): osis-perm joint neutrality seed 6's shape
 // (notes/permissions.md, sticky residue). n0 removes A2 from A0 (W, unseen by n1) and grants n1
-// write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The full walk drops W and G (R is
-// a fall while W stands) and keeps them dropped after R stops being one.
+// write on A2 (G, unseen too); n1 lowers A1 to write on A0 (R). The full walk drops W (R is a
+// fall on A0 while W stands) and keeps it dropped after R stops being one; G stands, n0 keeping
+// admin on A2 through A1 (one class: a path lost while another keeps it is no fall).
 #[test]
 fn sticky_residue_spec_perm_5_1() {
     let mut lp = net(3, 61);
@@ -1110,7 +1111,7 @@ fn sticky_residue_spec_perm_5_1() {
     }
     let has_g = |lp: &LocalPeer, i: usize| lp.peers[i].engine.roster(&a2).contains_key(&n1);
     assert!(lp.peers[2].engine.roster(&a0).contains_key(&a2), "W dropped: A2 stays admin on A0");
-    assert!(!has_g(&lp, 2) && !has_g(&lp, 1), "the full walk keeps G dropped (sticky)");
+    assert!(has_g(&lp, 2) && has_g(&lp, 1), "G stands: no fall on A2");
 }
 
 fn write_reg(lp: &mut LocalPeer, i: usize, t: Tid, v: &str) -> osis_node::Result<Option<osis_base::CommitId>> {
@@ -3385,7 +3386,7 @@ fn stranger_card_makes_no_node_spec_perm_4() {
         lp.sync_all().unwrap();
         let hosts = vec![osis_label::Address { url: "quic://s1:1".into(), key: [7; 32] }];
         let (p, _) = lp.peers[0].engine.create_person(&hosts).unwrap();
-        let recovery = lp.peers[0].engine.owner(&p.person).unwrap();
+        let recovery = osis_node::identity::Identity::from_seed(p.card.seed.clone()).tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, p.person);
         lp.peers[0].commit(m).unwrap();

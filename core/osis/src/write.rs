@@ -251,23 +251,22 @@ impl<'d> Write<'d> {
     /// `create`, with `admin` as the first admin in place of the acting actor: a group or account
     /// this actor may write (`Permission` at commit otherwise). Beside `create` because a thing's
     /// first admin is fixed when it is made: a thin client's things need one that outlives the
-    /// client, and a thing made for a group's holders needs no grant to reach them.
-    // Today `admin` is its owner; the owner work makes this the record's first admin
-    // (issues/api-after-owners.md).
+    /// client, and a thing made for a group's holders needs no grant to reach them. The first
+    /// admin is an ordinary admin, removable like any other (spec/permissions.md §1).
     pub fn create_with_admin(&mut self, admin: Tid) -> Result<Tid> {
-        self.create_owned_by(admin)
-    }
-
-    /// A new thing owned by `owner` (fixed forever; needs write on it).
-    // Removed with owners (issues/api-after-owners.md).
-    #[doc(hidden)]
-    pub fn create_owned_by(&mut self, owner: Tid) -> Result<Tid> {
-        let owner = self.known(owner)?;
-        let rec = self.db.engine(|e| e.thing_record(owner));
+        let admin = self.known(admin)?;
+        let rec = self.db.engine(|e| e.thing_record(admin));
         let t = rec.tid();
         self.ops.push(WriteOp::Create(rec));
         self.created.push(t);
         Ok(t)
+    }
+
+    /// `create_with_admin`.
+    // Removed with owners (issues/api-after-owners.md).
+    #[doc(hidden)]
+    pub fn create_owned_by(&mut self, admin: Tid) -> Result<Tid> {
+        self.create_with_admin(admin)
     }
 
     /// The members of `group`: what it contains, to add or remove.
@@ -318,13 +317,13 @@ impl<'d> Write<'d> {
     }
 
     /// The things that decide the write's source: those it names but does not create; creates
-    /// only: their owners.
+    /// only: their first admins.
     fn deciders(&self) -> Vec<Tid> {
         let named: Vec<Tid> = self.ops.iter().filter_map(WriteOp::tid).filter(|t| !self.created.contains(t)).collect();
         if !named.is_empty() {
             return named;
         }
-        self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { owner, .. }) = o { Some(*owner) } else { None }).filter(|t| !self.created.contains(t)).collect()
+        self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { admin, .. }) = o { Some(*admin) } else { None }).filter(|t| !self.created.contains(t)).collect()
     }
 
     /// Writes every op as one commit (two for what `Write` names); `None` when nothing changes. Fails before anything applies
@@ -420,8 +419,8 @@ impl<'d> Write<'d> {
                 WriteOp::Create(rec) => {
                     // the account's nodes administer what a client makes through the groups;
                     // the client's actor goes away with the client (notes/client-port.md §3)
-                    if let (Some(a), CreationRecord::Thing { owner, .. }) = (acting, &rec)
-                        && *owner == a
+                    if let (Some(a), CreationRecord::Thing { admin, .. }) = (acting, &rec)
+                        && *admin == a
                     {
                         return Err(Error::Invalid("a thin client's actor goes with it, so it creates nothing of its own: name a group that stays (create_with_admin)".into()));
                     }

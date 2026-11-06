@@ -59,7 +59,7 @@ fn newest(db: &Osis, c: Tid) -> Message {
 #[test]
 fn create_post_read_spec_commits_5() {
     let Room { mut w, a, b, c, bob } = room(Options::default());
-    assert_eq!(a.owner_of(c).unwrap(), None);
+    assert_eq!(a.owner_of(c).unwrap(), Some(a.me()), "the first admin, history");
     assert_eq!(participants(&a, c).unwrap().get(&bob), Some(&Role::Write));
     post(&a, c, "hi").unwrap();
     post(&a, c, "hi").unwrap();

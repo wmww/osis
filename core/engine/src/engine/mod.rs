@@ -707,14 +707,15 @@ pub struct Core {
     /// The keyless actor grants (target, holder) over those held (`rotation::members::key_access`):
     /// O(edges) to build. Cleared by `role_changed` and a rollback (the timelines move back).
     pub key_access: Option<Arc<BTreeSet<(Tid, Tid)>>>,
-    /// `Engine::inbox_label`'s answers by actor, and the things on their owner chains above them:
-    /// a write there can move many answers (`inbox_moved`).
-    pub inbox_labels: BTreeMap<Tid, Option<LabelId>>,
+    /// `Engine::inbox_candidates`' answers by actor, and the things up their record chains those
+    /// read through: a write there can move many answers (`inbox_moved`); a role change can end
+    /// a record edge they go through (`role_changed`).
+    pub inbox_labels: BTreeMap<Tid, Vec<LabelId>>,
     pub inbox_uppers: BTreeSet<Tid>,
     /// `acting` at this engine generation (both: memory commits are in `by_actor` too).
     acting_memo: Option<(u64, u64, Arc<Vec<Tid>>)>,
-    /// Actors with secrets held by inbox label, the topmost first (`Engine::inbox_actors`).
-    pub inbox_actors: Option<Arc<BTreeMap<LabelId, Vec<Tid>>>>,
+    /// `Engine::inbox_actors`.
+    pub inbox_actors: Option<Arc<crate::labeling::InboxActors>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     pub timelines: Timelines,
@@ -1022,6 +1023,8 @@ impl Core {
 
     pub fn role_changed(&mut self) {
         self.inbox_actors = None;
+        self.inbox_labels.clear();
+        self.inbox_uppers.clear();
         self.head_keys.clear();
         self.holders_named.clear();
         self.reseal_quiet.clear();
@@ -2028,13 +2031,13 @@ impl Engine {
         self.core.events.diagnostic(d, now);
     }
 
-    /// The owner of `tid` (`None`: a key actor, an ownerless thing or an unknown thing).
-    pub fn owner(&self, tid: &Tid) -> Option<Tid> {
-        self.core.owner(tid)
+    /// The first admin of `tid` (`None`: a key actor or an unknown thing).
+    pub fn first_admin(&self, tid: &Tid) -> Option<Tid> {
+        self.core.first_admin(tid)
     }
 
-    /// `tid`, then its owners up the chain (durable and memory-class records): at most
-    /// `MAX_OWNER_DEPTH` owner links (`osis_base::owner_chain`).
+    /// `tid`, then its first admins up the record chain (durable and memory-class records): at
+    /// most `MAX_OWNER_DEPTH` links (`osis_base::owner_chain`).
     pub fn owner_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
         self.core.owner_chain(tid).filter_map(|s| s.thing())
     }

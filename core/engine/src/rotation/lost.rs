@@ -398,9 +398,6 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
             w.extend(tl.ended(a, ts).into_iter().map(|(h, (e, end))| (h, Way { retain: says(e), end })));
             w.extend(tl.roster(a, At::now(ts)).into_keys().map(|h| (h, live)));
         }
-        if let Some(o) = core.owner(a) {
-            w.insert(o, live);
-        }
     }
     out
 }
@@ -700,13 +697,14 @@ impl Engine {
 
     /// Whether a client of this node, `actor`, reads `t` as a kept copy (notes/client-port.md §3):
     /// it is a holder the copy hangs on, or an app of the person, holding a role on the person
-    /// that owns it, with a role now on such a holder (through a holder that is itself kept, too).
+    /// that is its first admin, with a role now on such a holder (through a holder that is itself
+    /// kept, too).
     /// Invariant: a copy is the person's: a role on a holder alone, as a member of a group the
     /// person is in, reads nothing of it, nor does any other client; no write right follows.
     pub fn copy_readable_by(&self, actor: &Tid, t: &Tid) -> bool {
         let core = &self.core;
         let Some(a) = crate::retention::forget::copy_of(core, t) else { return false };
-        let app = core.owner(actor).is_some_and(|p| core.role_now(actor, &p).is_some());
+        let app = core.first_admin(actor).is_some_and(|p| core.role_now(actor, &p).is_some());
         let mut seen = BTreeSet::from([a]);
         let mut todo = vec![a];
         while let Some(x) = todo.pop() {
